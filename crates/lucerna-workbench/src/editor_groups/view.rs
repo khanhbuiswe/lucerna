@@ -61,10 +61,10 @@ pub struct EditorGroupsView {
     widths: Vec<f32>,
     bodies: HashMap<TabId, AnyView>,
     make_body: TabBodyFactory,
-    /// `(group, position)` of the tab under the mouse; its close button
-    /// shows. Positional, like the tab elements' ids, so a tab that slides
-    /// under a still mouse after a close counts as hovered.
-    hovered_tab: Option<(usize, usize)>,
+    /// The tab under the mouse; its close button shows. Tab elements are
+    /// keyed by tab id, so a tab moving into another's place starts with
+    /// fresh hover state and GPUI reports its hover on the next frame.
+    hovered_tab: Option<TabId>,
 }
 
 impl Default for EditorGroupsView {
@@ -92,6 +92,17 @@ impl EditorGroupsView {
         f: impl FnOnce(&mut EditorGroups) -> R,
     ) -> R {
         let result = f(&mut self.model);
+        // A closed tab's element is gone and never reports hover-leave.
+        if let Some(hovered) = self.hovered_tab {
+            let exists = self
+                .model
+                .groups()
+                .iter()
+                .any(|g| g.tabs.iter().any(|t| t.id == hovered));
+            if !exists {
+                self.hovered_tab = None;
+            }
+        }
         let n = self.model.groups().len();
         if self.widths.len() != n {
             self.widths = vec![1.0 / n as f32; n];
@@ -127,7 +138,7 @@ impl EditorGroupsView {
         cx.notify();
     }
 
-    fn set_hovered(&mut self, tab: (usize, usize), hovered: bool, cx: &mut Context<Self>) {
+    fn set_hovered(&mut self, tab: TabId, hovered: bool, cx: &mut Context<Self>) {
         if hovered {
             self.hovered_tab = Some(tab);
         } else if self.hovered_tab == Some(tab) {
@@ -198,11 +209,11 @@ impl Render for EditorGroupsView {
                     .unwrap_or(tab.path.as_os_str())
                     .to_string_lossy()
                     .into_owned();
-                let show_close = active || self.hovered_tab == Some((gi, ti));
+                let show_close = active || self.hovered_tab == Some(id);
                 let hover = color(ui.ghost_element_hover);
                 let close = show_close.then(|| {
                     div()
-                        .id(("tab-close", ti))
+                        .id(("tab-close", id.as_u64()))
                         .debug_selector(move || format!("tab-close-{gi}-{ti}"))
                         .flex()
                         .justify_center()
@@ -223,7 +234,7 @@ impl Render for EditorGroupsView {
                         )
                 });
                 div()
-                    .id(("tab", ti))
+                    .id(("tab", id.as_u64()))
                     .debug_selector(move || format!("tab-{gi}-{ti}"))
                     .flex()
                     .flex_none()
@@ -245,7 +256,7 @@ impl Render for EditorGroupsView {
                     .text_color(color(fg))
                     .cursor_pointer()
                     .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
-                        view.set_hovered((gi, ti), *hovered, cx);
+                        view.set_hovered(id, *hovered, cx);
                     }))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         view.update_model(cx, |m| m.activate(id));

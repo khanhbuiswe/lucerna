@@ -3,8 +3,8 @@
 //! double-click zooms it.
 
 use gpui::{
-    Bounds, Context, IntoElement, MouseButton, ParentElement, Pixels, Styled, TitlebarOptions,
-    WindowBounds, WindowOptions, div, point, prelude::*, px,
+    Bounds, Context, IntoElement, MouseButton, MouseMoveEvent, ParentElement, Pixels, Styled,
+    TitlebarOptions, WindowBounds, WindowOptions, div, point, prelude::*, px,
 };
 use lucerna_theme::UiColors;
 
@@ -59,8 +59,11 @@ pub(crate) fn render(
             MouseButton::Left,
             cx.listener(|wb, _, _, _| wb.title_bar_pressed = false),
         )
-        .on_mouse_move(cx.listener(|wb, _, window, _| {
-            if std::mem::take(&mut wb.title_bar_pressed) {
+        .on_mouse_move(cx.listener(|wb, ev: &MouseMoveEvent, window, _| {
+            // The press may have been released outside the bar, where the
+            // mouse-up above never fires: only move while the button is held.
+            let pressed = std::mem::take(&mut wb.title_bar_pressed);
+            if pressed && ev.pressed_button == Some(MouseButton::Left) {
                 window.start_window_move();
             }
         }))

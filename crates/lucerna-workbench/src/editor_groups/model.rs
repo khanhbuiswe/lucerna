@@ -83,6 +83,13 @@ impl Default for EditorGroups {
     }
 }
 
+impl TabId {
+    /// For keying per-tab UI state, such as element ids.
+    pub(crate) fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 impl EditorGroups {
     /// Opens `path` in the active group (or, for [`OpenMode::ToSide`], the
     /// group to its right), activates it, and returns its tab.

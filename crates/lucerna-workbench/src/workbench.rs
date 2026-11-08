@@ -44,7 +44,7 @@ pub struct Workbench {
     /// Keystrokes of a chord in progress, e.g. `[cmd+k]`.
     pending_chord: Vec<Keystroke>,
     /// The left button went down on the title bar and the window has not
-    /// started moving yet.
+    /// started moving yet. Only acted on while the button is still held.
     pub(crate) title_bar_pressed: bool,
 }
 

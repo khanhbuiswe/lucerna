@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    AbsoluteLength, Bounds, Entity, Fill, Length, Modifiers, Styled, TestAppContext,
+    AbsoluteLength, Bounds, Entity, Fill, Length, Modifiers, MouseButton, Styled, TestAppContext,
     VisualTestContext, point, px, size,
 };
 use lucerna_settings::{Keymap, SettingsStore};
@@ -228,4 +228,60 @@ fn icon_button_colors_follow_active(cx: &mut TestAppContext) {
         assert_eq!(on.style().size.width, Some(px(24.).into()));
         assert_eq!(on.style().size.height, Some(px(20.).into()));
     });
+}
+
+fn activate_first(wb: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| {
+            let first = m.groups()[0].tabs[0].id;
+            m.activate(first)
+        })
+    });
+}
+
+#[gpui::test]
+fn closed_hovered_tab_leaves_no_stale_close_button(cx: &mut TestAppContext) {
+    init(cx);
+    let (wb, cx) = open(cx);
+    for path in ["a.rs", "b.rs", "c.rs"] {
+        open_path(&wb, path, cx);
+    }
+    activate_first(&wb, cx);
+    draw(cx);
+    // Hover the last tab and close it with its ×.
+    let c = bounds("tab-0-2", cx);
+    cx.simulate_mouse_move(c.center(), None, Modifiers::none());
+    draw(cx);
+    let close = bounds("tab-close-0-2", cx);
+    cx.simulate_click(close.center(), Modifiers::none());
+    // Move away from the tab bar, then open a file into the freed slot.
+    let editor = bounds("editor-groups", cx);
+    cx.simulate_mouse_move(editor.center(), None, Modifiers::none());
+    open_path(&wb, "d.rs", cx);
+    activate_first(&wb, cx);
+    draw(cx);
+    assert!(cx.debug_bounds("tab-close-0-0").is_some(), "active tab");
+    for name in ["tab-close-0-1", "tab-close-0-2"] {
+        assert!(
+            cx.debug_bounds(name).is_none(),
+            "{name} shown without hover"
+        );
+    }
+}
+
+#[gpui::test]
+fn title_bar_release_outside_does_not_move_window_later(cx: &mut TestAppContext) {
+    init(cx);
+    let (_wb, cx) = open(cx);
+    draw(cx);
+    let title = bounds("title-bar", cx);
+    let editor = bounds("editor-groups", cx);
+    let spot = point(title.right() - px(40.), title.center().y);
+    // Press on the title bar, release over the editor.
+    cx.simulate_mouse_down(spot, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(editor.center(), MouseButton::Left, Modifiers::none());
+    // Hovering the title bar with no button held must not start a window
+    // move (the test platform panics if one starts).
+    cx.simulate_mouse_move(spot, None, Modifiers::none());
+    cx.simulate_mouse_move(spot + point(px(5.), px(0.)), None, Modifiers::none());
 }
