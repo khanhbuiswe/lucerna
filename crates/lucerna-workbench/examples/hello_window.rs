@@ -4,12 +4,12 @@
 //! picks a theme by name (default "One Dark").
 use std::sync::Arc;
 
-use gpui::{App, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui::{App, Bounds, prelude::*, px, size};
 use gpui_platform::application;
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
-use lucerna_workbench::{AppState, Workbench};
+use lucerna_workbench::{AppState, Workbench, window_options};
 
 fn main() {
     let theme_name = std::env::args().nth(1).unwrap_or_else(|| "One Dark".into());
@@ -29,13 +29,9 @@ fn main() {
             languages: Arc::new(LanguageRegistry::bundled()),
         });
         let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            |window, cx| cx.new(|cx| Workbench::new(root, window, cx)),
-        )
+        cx.open_window(window_options(bounds), |window, cx| {
+            cx.new(|cx| Workbench::new(root, window, cx))
+        })
         .unwrap();
         cx.activate(true);
     });

@@ -74,6 +74,16 @@ impl ThemeDef {
             search_match_background: color("search.match_background")
                 .unwrap_or(fb.search_match_background),
             selection: selection.unwrap_or(fb.selection),
+            title_bar_background: color("title_bar.background").unwrap_or(fb.title_bar_background),
+            elevated_surface_background: color("elevated_surface.background")
+                .unwrap_or(fb.elevated_surface_background),
+            ghost_element_hover: color("ghost_element.hover").unwrap_or(fb.ghost_element_hover),
+            border_variant: color("border.variant").unwrap_or(fb.border_variant),
+            icon: color("icon").unwrap_or(fb.icon),
+            icon_muted: color("icon.muted").unwrap_or(fb.icon_muted),
+            tab_bar_background: color("tab_bar.background")
+                .or_else(|| color("panel.background"))
+                .unwrap_or(fb.tab_bar_background),
         };
 
         let mut syntax = HashMap::new();

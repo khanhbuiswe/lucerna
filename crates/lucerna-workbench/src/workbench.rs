@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, ParentElement, Pixels, Render, Styled, Window, div, prelude::*,
+    KeyDownEvent, ParentElement, Pixels, Render, Styled, Window, div, prelude::*, px,
 };
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
 use serde_json::Value;
@@ -14,9 +14,10 @@ use serde_json::Value;
 use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode};
 use crate::layout::sidebar::SidebarSash;
 use crate::layout::{
-    ACTIVITY_BAR_WIDTH, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide,
-    activity_bar, color, sidebar, status_bar,
+    SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
+    panel_toggles, sidebar, status_bar, title_bar,
 };
+use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE};
 use crate::{AppState, CommandRegistry, keys};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +43,9 @@ pub struct Workbench {
     status_right: Vec<AnyView>,
     /// Keystrokes of a chord in progress, e.g. `[cmd+k]`.
     pending_chord: Vec<Keystroke>,
+    /// The left button went down on the title bar and the window has not
+    /// started moving yet.
+    pub(crate) title_bar_pressed: bool,
 }
 
 impl Workbench {
@@ -79,12 +83,22 @@ impl Workbench {
             status_left: Vec::new(),
             status_right: Vec::new(),
             pending_chord: Vec::new(),
+            title_bar_pressed: false,
         }
     }
 
     /// The opened folder.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The opened folder's name, as the title bar shows it.
+    pub fn root_name(&self) -> String {
+        self.root
+            .file_name()
+            .unwrap_or(self.root.as_os_str())
+            .to_string_lossy()
+            .into_owned()
     }
 
     pub fn commands(&self) -> &CommandRegistry {
@@ -209,18 +223,24 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Activity bar click: clicking the active view's icon hides the sidebar.
-    pub(crate) fn activity_clicked(
+    /// Status-bar panel toggle click: the active panel's button hides the
+    /// sidebar, the other one switches to its panel. Runs the same commands
+    /// as the keybindings.
+    pub(crate) fn panel_toggle_clicked(
         &mut self,
         view: SidebarView,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.sidebar_visible && self.active_sidebar == view {
-            self.toggle_sidebar(window, cx);
+        let command = if self.sidebar_visible && self.active_sidebar == view {
+            "workbench.action.toggleSidebarVisibility"
         } else {
-            self.show_sidebar_view(view, window, cx);
-        }
+            match view {
+                SidebarView::Explorer => "workbench.view.explorer",
+                SidebarView::Search => "workbench.view.search",
+            }
+        };
+        self.run_command(command, None, window, cx);
     }
 
     pub fn focus_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -375,6 +395,7 @@ impl Render for Workbench {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<AppState>().theme.clone();
         let ui = &theme.ui;
+        let root_name = self.root_name();
         let sidebar_slot = match self.active_sidebar {
             SidebarView::Explorer => self.explorer_view.clone(),
             SidebarView::Search => self.search_view.clone(),
@@ -400,14 +421,18 @@ impl Render for Workbench {
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::dispatch_key))
             .on_drag_move(cx.listener(|wb, ev: &DragMoveEvent<SidebarSash>, _, cx| {
-                wb.set_sidebar_width(ev.event.position.x - ACTIVITY_BAR_WIDTH, cx)
+                // The sidebar starts at the window's left edge.
+                wb.set_sidebar_width(ev.event.position.x - ev.bounds.left(), cx)
             }))
+            .relative()
             .flex()
             .flex_col()
             .size_full()
             .bg(color(ui.background))
             .text_color(color(ui.text))
-            .text_sm()
+            .font_family(UI_FONT_FAMILY)
+            .text_size(px(UI_FONT_SIZE))
+            .child(title_bar::render(root_name.clone(), ui, cx))
             .child(
                 div()
                     .flex()
@@ -415,15 +440,10 @@ impl Render for Workbench {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .child(activity_bar::render(
-                        self.active_sidebar,
-                        self.sidebar_visible,
-                        ui,
-                        cx,
-                    ))
                     .when(self.sidebar_visible, |row| {
                         row.child(sidebar::render(
                             self.sidebar_width,
+                            &root_name,
                             self.active_sidebar,
                             sidebar_slot,
                             &self.sidebar_focus,
@@ -433,6 +453,7 @@ impl Render for Workbench {
                     .child(editor_area),
             )
             .child(status_bar::render(
+                panel_toggles::render(self.active_sidebar, self.sidebar_visible, cx),
                 &self.status_left,
                 self.pending_chord_label(),
                 &self.status_right,

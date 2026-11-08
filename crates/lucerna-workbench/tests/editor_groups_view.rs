@@ -210,7 +210,10 @@ fn tab_bar_mouse_activates_and_closes(cx: &mut TestAppContext) {
         vec![vec!["a.rs".to_string(), "c.rs".to_string()]]
     );
 
-    // The close button closes its tab.
+    // The close button of an inactive tab shows on hover and closes it.
+    draw(cx);
+    let c = bounds("tab-0-1", cx);
+    cx.simulate_mouse_move(c.center(), None, Modifiers::none());
     draw(cx);
     let close = bounds("tab-close-0-1", cx);
     cx.simulate_click(close.center(), Modifiers::none());

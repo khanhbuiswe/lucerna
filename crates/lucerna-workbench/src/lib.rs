@@ -1,10 +1,12 @@
-//! Lucerna workbench UI: the GPUI shell, command registry and key dispatch.
+//! Lucerna workbench UI: the GPUI shell (Zed-style chrome), command
+//! registry and key dispatch.
 
 mod app_state;
 mod commands;
 mod editor_groups;
 pub mod keys;
 mod layout;
+pub mod ui;
 mod workbench;
 
 pub use app_state::AppState;
@@ -14,4 +16,5 @@ pub use editor_groups::{
     TabId, placeholder_body,
 };
 pub use layout::StatusBarSide;
+pub use layout::title_bar::window_options;
 pub use workbench::{SidebarView, Workbench};

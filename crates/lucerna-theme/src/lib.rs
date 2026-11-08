@@ -67,6 +67,17 @@ pub struct UiColors {
     pub editor_active_line_background: Rgba,
     pub search_match_background: Rgba,
     pub selection: Rgba,
+    pub title_bar_background: Rgba,
+    /// Floating surfaces: popovers, Quick Open, the find widget.
+    pub elevated_surface_background: Rgba,
+    /// Background of a borderless control under the mouse.
+    pub ghost_element_hover: Rgba,
+    /// The subtle border between chrome regions and between tabs.
+    pub border_variant: Rgba,
+    pub icon: Rgba,
+    pub icon_muted: Rgba,
+    /// `tab_bar.background`, else the theme's `panel.background`.
+    pub tab_bar_background: Rgba,
 }
 
 const fn gray(v: u8, a: u8) -> Rgba {
@@ -103,6 +114,20 @@ impl UiColors {
                 gray(0x33, 255),
             ),
         };
+        let (title_bar, elevated, hover, border_variant) = match appearance {
+            Appearance::Dark => (
+                gray(0x2b, 255),
+                gray(0x2c, 255),
+                gray(0x33, 255),
+                gray(0x30, 255),
+            ),
+            Appearance::Light => (
+                gray(0xe8, 255),
+                gray(0xfa, 255),
+                gray(0xe4, 255),
+                gray(0xe2, 255),
+            ),
+        };
         UiColors {
             background: panel,
             border,
@@ -120,6 +145,13 @@ impl UiColors {
             editor_active_line_background: gray(0x80, 0x1f),
             search_match_background: gray(0x80, 0x55),
             selection: gray(0x80, 0x44),
+            title_bar_background: title_bar,
+            elevated_surface_background: elevated,
+            ghost_element_hover: hover,
+            border_variant,
+            icon: fg,
+            icon_muted: muted,
+            tab_bar_background: panel,
         }
     }
 }

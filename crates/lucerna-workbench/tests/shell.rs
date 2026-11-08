@@ -199,16 +199,17 @@ fn sidebar_width_is_clamped(cx: &mut TestAppContext) {
 fn dragging_sash_resizes_sidebar(cx: &mut TestAppContext) {
     init(cx, None);
     let (wb, cx) = open(cx);
-    // Activity bar 48 px + sidebar 260 px: the sash is the 4 px strip ending at x = 308.
-    let sash = point(px(306.), px(200.));
+    // No activity bar: the sidebar starts at x = 0, so its sash is the 4 px
+    // strip ending at x = 260.
+    let sash = point(px(258.), px(200.));
     cx.simulate_mouse_down(sash, MouseButton::Left, Modifiers::none());
     cx.simulate_mouse_move(
-        point(px(330.), px(200.)),
+        point(px(280.), px(200.)),
         MouseButton::Left,
         Modifiers::none(),
     );
     cx.simulate_mouse_move(
-        point(px(448.), px(200.)),
+        point(px(400.), px(200.)),
         MouseButton::Left,
         Modifiers::none(),
     );

@@ -117,3 +117,78 @@ fn theme_and_registry_are_send_sync() {
     check::<lucerna_theme::Theme>();
     check::<ThemeRegistry>();
 }
+
+/// The chrome colors added for the Zed-style layout, by Zed key.
+fn chrome_colors(ui: &UiColors) -> [(&'static str, Rgba); 7] {
+    [
+        ("title_bar.background", ui.title_bar_background),
+        (
+            "elevated_surface.background",
+            ui.elevated_surface_background,
+        ),
+        ("ghost_element.hover", ui.ghost_element_hover),
+        ("border.variant", ui.border_variant),
+        ("icon", ui.icon),
+        ("icon.muted", ui.icon_muted),
+        ("tab_bar.background", ui.tab_bar_background),
+    ]
+}
+
+#[test]
+fn new_ui_colors_read_from_one_dark() {
+    let t = ThemeRegistry::builtin().get("One Dark").unwrap();
+    let fallback = UiColors::fallback(Appearance::Dark);
+    let expected = [
+        "#3b414dff",
+        "#2f343eff",
+        "#363c46ff",
+        "#363c46ff",
+        "#dce0e5ff",
+        "#a9afbcff",
+        "#2f343eff",
+    ];
+    let got = chrome_colors(&t.ui);
+    let fb = chrome_colors(&fallback);
+    for (((key, got), (_, fb)), hex) in got.into_iter().zip(fb).zip(expected) {
+        assert_eq!(got, Rgba::parse_hex(hex).unwrap(), "{key}");
+        assert_ne!(got, fb, "{key} must come from the theme");
+    }
+}
+
+#[test]
+fn new_ui_colors_fall_back_when_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "t.json",
+        r##"{"name":"F","themes":[
+            {"name":"Bare Dark","appearance":"dark","style":{}},
+            {"name":"Bare Light","appearance":"light","style":{}},
+            {"name":"Panel Only","appearance":"dark","style":{"panel.background":"#123456ff"}}
+        ]}"##,
+    );
+    let mut reg = ThemeRegistry::builtin();
+    assert!(reg.load_dir(dir.path()).is_empty());
+    for (name, appearance) in [
+        ("Bare Dark", Appearance::Dark),
+        ("Bare Light", Appearance::Light),
+    ] {
+        let fb = UiColors::fallback(appearance);
+        let got = reg.get(name).unwrap();
+        for ((key, a), (_, b)) in chrome_colors(&got.ui).into_iter().zip(chrome_colors(&fb)) {
+            assert_eq!(a, b, "{name} {key}");
+        }
+    }
+    // The two appearances' fallbacks differ.
+    let dark = chrome_colors(&UiColors::fallback(Appearance::Dark));
+    let light = chrome_colors(&UiColors::fallback(Appearance::Light));
+    for ((key, d), (_, l)) in dark.into_iter().zip(light) {
+        assert_ne!(d, l, "{key}");
+    }
+    // Without `tab_bar.background` the tab bar uses the theme's panel color.
+    let panel = reg.get("Panel Only").unwrap();
+    assert_eq!(
+        panel.ui.tab_bar_background,
+        Rgba::parse_hex("#123456ff").unwrap()
+    );
+}

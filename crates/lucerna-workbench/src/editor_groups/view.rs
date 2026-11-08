@@ -8,15 +8,19 @@ use std::sync::Arc;
 
 use gpui::{
     AnyView, App, Context, DragMoveEvent, IntoElement, MouseButton, ParentElement, Pixels, Render,
-    Styled, Window, div, prelude::*, px, relative,
+    Styled, Window, div, prelude::*, px, relative, svg,
 };
+use lucerna_theme::UiColors;
 
 use super::model::{EditorGroups, Tab, TabId};
 use crate::AppState;
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
+use crate::ui::{CLOSE_ICON, GRID, TAB_HEIGHT};
 
-const TAB_BAR_HEIGHT: Pixels = px(35.);
+/// Square slot that holds a tab's close button, kept even while the
+/// button is hidden so tabs do not change width on hover.
+const CLOSE_SLOT: Pixels = px(16.);
 const SASH_WIDTH: Pixels = px(4.);
 const MIN_GROUP_WIDTH: Pixels = px(120.);
 
@@ -57,6 +61,10 @@ pub struct EditorGroupsView {
     widths: Vec<f32>,
     bodies: HashMap<TabId, AnyView>,
     make_body: TabBodyFactory,
+    /// `(group, position)` of the tab under the mouse; its close button
+    /// shows. Positional, like the tab elements' ids, so a tab that slides
+    /// under a still mouse after a close counts as hovered.
+    hovered_tab: Option<(usize, usize)>,
 }
 
 impl Default for EditorGroupsView {
@@ -66,6 +74,7 @@ impl Default for EditorGroupsView {
             widths: vec![1.0],
             bodies: HashMap::new(),
             make_body: Rc::new(placeholder_body),
+            hovered_tab: None,
         }
     }
 }
@@ -115,6 +124,15 @@ impl EditorGroupsView {
         let width = (fraction - left).clamp(min, pair - min);
         self.widths[index] = width;
         self.widths[index + 1] = pair - width;
+        cx.notify();
+    }
+
+    fn set_hovered(&mut self, tab: (usize, usize), hovered: bool, cx: &mut Context<Self>) {
+        if hovered {
+            self.hovered_tab = Some(tab);
+        } else if self.hovered_tab == Some(tab) {
+            self.hovered_tab = None;
+        }
         cx.notify();
     }
 
@@ -180,37 +198,55 @@ impl Render for EditorGroupsView {
                     .unwrap_or(tab.path.as_os_str())
                     .to_string_lossy()
                     .into_owned();
-                let close = div()
-                    .id(("tab-close", ti))
-                    .debug_selector(move || format!("tab-close-{gi}-{ti}"))
-                    .px_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(color(ui.element_selected)))
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        cx.stop_propagation();
-                        view.update_model(cx, |m| m.close(id));
-                    }))
-                    .child("×");
+                let show_close = active || self.hovered_tab == Some((gi, ti));
+                let hover = color(ui.ghost_element_hover);
+                let close = show_close.then(|| {
+                    div()
+                        .id(("tab-close", ti))
+                        .debug_selector(move || format!("tab-close-{gi}-{ti}"))
+                        .flex()
+                        .justify_center()
+                        .items_center()
+                        .size_full()
+                        .rounded(px(GRID))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            cx.stop_propagation();
+                            view.update_model(cx, |m| m.close(id));
+                        }))
+                        .child(
+                            svg()
+                                .data(CLOSE_ICON)
+                                .size(px(10.))
+                                .text_color(color(ui.icon_muted)),
+                        )
+                });
                 div()
                     .id(("tab", ti))
                     .debug_selector(move || format!("tab-{gi}-{ti}"))
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap_2()
-                    .pl_3()
-                    .pr_1()
+                    .gap(px(1.5 * GRID))
+                    .px(px(3. * GRID))
                     .h_full()
                     .border_r_1()
-                    .border_color(color(ui.border))
+                    .border_color(color(ui.border_variant))
+                    // The bar's bottom border runs under every tab but the
+                    // active one, which opens onto the editor below.
+                    .when(!active, |d| d.border_b_1())
                     .bg(color(if active {
-                        ui.tab_active_background
+                        ui.editor_background
                     } else {
                         ui.tab_inactive_background
                     }))
+                    .when(!active, |d| d.hover(move |s| s.bg(hover)))
                     .text_color(color(fg))
                     .cursor_pointer()
+                    .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                        view.set_hovered((gi, ti), *hovered, cx);
+                    }))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         view.update_model(cx, |m| m.activate(id));
                     }))
@@ -221,7 +257,7 @@ impl Render for EditorGroupsView {
                         }),
                     )
                     .child(div().when(!tab.pinned, |d| d.italic()).child(title))
-                    .child(close)
+                    .child(div().flex_none().size(CLOSE_SLOT).children(close))
             });
             let tab_bar = div()
                 .id(("tab-bar", gi))
@@ -229,12 +265,21 @@ impl Render for EditorGroupsView {
                 .flex_row()
                 .flex_none()
                 .w_full()
-                .h(TAB_BAR_HEIGHT)
+                .h(px(TAB_HEIGHT))
                 .overflow_x_scroll()
-                .bg(color(ui.tab_inactive_background))
-                .border_b_1()
-                .border_color(color(ui.border))
-                .children(tabs);
+                .bg(color(ui.tab_bar_background))
+                .children(tabs)
+                .child(
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .border_b_1()
+                        .border_color(color(ui.border_variant)),
+                );
+            let body = match body {
+                Some(body) => body.into_any_element(),
+                None => empty_hint(ui, cx).into_any_element(),
+            };
             let sash = (gi + 1 < count).then(|| {
                 div()
                     .id(("group-sash", gi))
@@ -257,7 +302,9 @@ impl Render for EditorGroupsView {
                     .h_full()
                     .min_w_0()
                     .w(relative(self.widths.get(gi).copied().unwrap_or(0.)))
-                    .when(gi > 0, |d| d.border_l_1().border_color(color(ui.border)))
+                    .when(gi > 0, |d| {
+                        d.border_l_1().border_color(color(ui.border_variant))
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, _, cx| {
@@ -265,10 +312,43 @@ impl Render for EditorGroupsView {
                         }),
                     )
                     .child(tab_bar)
-                    .child(div().flex_1().min_h_0().overflow_hidden().children(body))
+                    .child(div().flex_1().min_h_0().overflow_hidden().child(body))
                     .children(sash),
             );
         }
         row
     }
+}
+
+/// Shown in a group with no tabs: the app name and the shortcuts to find
+/// something to open, labelled from the user's keymap.
+fn empty_hint(ui: &UiColors, cx: &App) -> impl IntoElement + use<> {
+    let keymap = &cx.global::<AppState>().keymap;
+    let lines = [
+        ("Go to file", "workbench.action.quickOpen"),
+        ("Find in project", "workbench.action.findInFiles"),
+    ]
+    .into_iter()
+    .filter_map(|(label, command)| {
+        let keys = keymap.label_for(command)?;
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(3. * GRID))
+                .child(label)
+                .child(keys),
+        )
+    });
+    div()
+        .debug_selector(|| "editor-empty-hint".into())
+        .flex()
+        .flex_col()
+        .size_full()
+        .justify_center()
+        .items_center()
+        .gap(px(GRID))
+        .text_color(color(ui.text_muted))
+        .child(div().mb(px(2. * GRID)).text_size(px(20.)).child("Lucerna"))
+        .children(lines)
 }
