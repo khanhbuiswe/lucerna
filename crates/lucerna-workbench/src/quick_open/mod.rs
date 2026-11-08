@@ -183,7 +183,7 @@ impl Workbench {
     }
 
     /// The code view of the focused group's active tab, once drawn.
-    fn active_code_view(&self, cx: &gpui::App) -> Option<gpui::Entity<CodeView>> {
+    pub(crate) fn active_code_view(&self, cx: &gpui::App) -> Option<gpui::Entity<CodeView>> {
         self.editor_groups()
             .read(cx)
             .active_body()

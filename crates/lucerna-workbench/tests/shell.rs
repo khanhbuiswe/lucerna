@@ -279,13 +279,13 @@ fn unregistered_command_key_propagates_to_children(cx: &mut TestAppContext) {
     wb.update(cx, |wb, cx| wb.set_editor_area(probe.clone().into(), cx));
     draw(cx);
     focus(&probe, cx);
-    // Bound to workbench.action.findInFiles, which nothing registered yet.
-    cx.simulate_keystrokes("cmd-shift-f");
+    // Bound to workbench.action.openSettingsJson, which nothing registered yet.
+    cx.simulate_keystrokes("cmd-,");
     // Bound to a registered command: consumed by the workbench.
     cx.simulate_keystrokes("cmd-b");
     assert_eq!(
         probe.read_with(cx, |p, _| p.keys.clone()),
-        vec!["f".to_string()]
+        vec![",".to_string()]
     );
 }
 

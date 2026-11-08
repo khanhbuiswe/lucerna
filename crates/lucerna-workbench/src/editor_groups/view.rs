@@ -126,6 +126,17 @@ impl EditorGroupsView {
         self.bodies.get(&tab.id).cloned()
     }
 
+    /// The body of the focused group's active tab, made now if it has not
+    /// been drawn yet.
+    pub(crate) fn ensure_active_body(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyView> {
+        let tab = self.model.active_tab()?.clone();
+        Some(self.body(&tab, window, cx))
+    }
+
     /// Replaces how tab bodies are made; existing bodies are rebuilt.
     pub fn set_tab_body_factory(&mut self, make_body: TabBodyFactory, cx: &mut Context<Self>) {
         self.make_body = make_body;

@@ -1,9 +1,13 @@
 //! Painting a laid-out [`Frame`]: background, active line, selection,
 //! text, whitespace marks, bracket boxes and the gutter.
 
-use gpui::{App, Bounds, ContentMask, ShapedLine, TextAlign, Window, fill, outline, point, size};
+use std::ops::Range;
 
-use super::super::selection::Selection;
+use gpui::{
+    App, Bounds, ContentMask, Pixels, ShapedLine, TextAlign, Window, fill, outline, point, size,
+};
+use lucerna_text::Point;
+
 use super::Frame;
 
 pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
@@ -21,8 +25,22 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
                 ));
             }
         }
+        for (range, active) in &frame.matches {
+            for bounds in range_bounds(frame, range.clone()) {
+                window.paint_quad(fill(bounds, colors.search_match));
+                if *active {
+                    window.paint_quad(outline(
+                        bounds,
+                        colors.active_match,
+                        gpui::BorderStyle::Solid,
+                    ));
+                }
+            }
+        }
         if let Some(selection) = frame.selection.filter(|s| !s.is_empty()) {
-            paint_selection(frame, selection, window);
+            for bounds in range_bounds(frame, selection.range()) {
+                window.paint_quad(fill(bounds, colors.selection));
+            }
         }
         // Rows do not overlap: one draw order for all their glyphs.
         window.paint_layer(text, |window| {
@@ -74,8 +92,10 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
     }
 }
 
-fn paint_selection(frame: &Frame, selection: Selection, window: &mut Window) {
-    let range = selection.range();
+/// The boxes covering `range` on the display lines on screen; a covered
+/// line ending adds half a char.
+fn range_bounds(frame: &Frame, range: Range<Point>) -> Vec<Bounds<Pixels>> {
+    let mut boxes = Vec::new();
     for row in &frame.rows {
         let r = row.buffer_row;
         if r < range.start.row || r > range.end.row {
@@ -106,15 +126,13 @@ fn paint_selection(frame: &Frame, selection: Selection, window: &mut Window) {
             x2 += frame.char_width * 0.5;
         }
         if x2 > x1 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(frame.text_x + x1, row.top),
-                    size(x2 - x1, frame.line_height),
-                ),
-                frame.colors.selection,
+            boxes.push(Bounds::new(
+                point(frame.text_x + x1, row.top),
+                size(x2 - x1, frame.line_height),
             ));
         }
     }
+    boxes
 }
 
 fn paint_whitespace(

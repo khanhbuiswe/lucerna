@@ -28,6 +28,10 @@ const GUTTER_EXTRA_CHARS: f32 = 4.;
 /// Left padding of the text, in chars.
 const TEXT_PADDING_CHARS: f32 = 0.5;
 const BRACKET_BOX_ALPHA: f32 = 0.4;
+const ACTIVE_MATCH_ALPHA: f32 = 0.6;
+/// Most search matches painted in one frame (a minified line can hold
+/// thousands).
+const MAX_PAINTED_MATCHES: usize = 2_000;
 
 /// Maps between a wrapped piece's buffer columns and the bytes of its
 /// displayed text, where tabs are expanded to spaces.
@@ -134,6 +138,8 @@ pub(crate) struct Frame {
     /// Fold chevrons: (top, header row, chevron).
     chevrons: Vec<(Pixels, u32, ShapedLine)>,
     selection: Option<Selection>,
+    /// Search matches touching the rows on screen; `true` for the active one.
+    matches: Vec<(std::ops::Range<Point>, bool)>,
     cursor_row: Option<u32>,
     brackets: Vec<Point>,
     /// `·` and `→`, when whitespace is rendered.
@@ -149,6 +155,8 @@ struct FrameColors {
     active_line: Hsla,
     selection: Hsla,
     bracket: Hsla,
+    search_match: Hsla,
+    active_match: Hsla,
 }
 
 impl Frame {
@@ -408,6 +416,12 @@ impl CodeView {
                 shape(window, "→", font_size, self.base_font(), muted),
             )
         });
+        let matches = match (frame_rows.first(), frame_rows.last()) {
+            (Some(first), Some(last)) => {
+                self.visible_matches(first.buffer_row..last.buffer_row + 1)
+            }
+            _ => Vec::new(),
+        };
         let brackets = self
             .brackets
             .iter()
@@ -426,6 +440,7 @@ impl CodeView {
             numbers,
             chevrons,
             selection: self.selection,
+            matches,
             cursor_row,
             brackets,
             whitespace,
@@ -436,10 +451,32 @@ impl CodeView {
                 active_line: hsla(ui.editor_active_line_background),
                 selection: hsla(ui.selection),
                 bracket: hsla(ui.editor_foreground).opacity(BRACKET_BOX_ALPHA),
+                search_match: hsla(ui.search_match_background),
+                active_match: hsla(ui.editor_foreground).opacity(ACTIVE_MATCH_ALPHA),
             },
         });
         self.frame = Some(frame.clone());
         frame
+    }
+
+    /// The search matches overlapping buffer `rows`, as points, with
+    /// whether each is the active one.
+    fn visible_matches(&self, rows: std::ops::Range<u32>) -> Vec<(std::ops::Range<Point>, bool)> {
+        let start = row_start(&self.snapshot, rows.start);
+        let end = row_start(&self.snapshot, rows.end);
+        let len = self.snapshot.len_bytes();
+        let first = self.match_highlights.partition_point(|r| r.end <= start);
+        self.match_highlights[first..]
+            .iter()
+            .take_while(|r| r.start < end)
+            .take(MAX_PAINTED_MATCHES)
+            .enumerate()
+            .map(|(i, r)| {
+                let range = self.snapshot.offset_to_point(r.start.min(len))
+                    ..self.snapshot.offset_to_point(r.end.min(len));
+                (range, self.active_match == Some(first + i))
+            })
+            .collect()
     }
 
     /// The shaped pieces of `row`, from the cache or shaped now.

@@ -3063,6 +3063,7 @@ dependencies = [
 name = "lucerna-workbench"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "futures",
  "gpui",
  "gpui_platform",
@@ -3072,6 +3073,7 @@ dependencies = [
  "lucerna-text",
  "lucerna-theme",
  "nucleo-matcher",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

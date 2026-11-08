@@ -7,9 +7,11 @@ mod commands;
 mod documents;
 mod editor_groups;
 mod explorer;
+mod find_widget;
 pub mod keys;
 mod layout;
 mod quick_open;
+mod search_panel;
 mod text_input;
 pub mod ui;
 mod workbench;
@@ -22,10 +24,12 @@ pub use editor_groups::{
     TabId, placeholder_body,
 };
 pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
+pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, find_in_snapshot};
 pub use layout::StatusBarSide;
 pub use layout::title_bar::window_options;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
 };
+pub use search_panel::{SEARCH_DEBOUNCE, SearchPanel};
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use workbench::{SidebarView, Workbench};

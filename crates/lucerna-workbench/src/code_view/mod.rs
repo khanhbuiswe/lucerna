@@ -32,6 +32,7 @@ use self::element::{CodeElement, Frame};
 use self::selection::Selection;
 use crate::documents::{DocState, Documents};
 use crate::editor_groups::{EditorGroupsView, Tab};
+use crate::find_widget::FindWidget;
 use crate::layout::color;
 use crate::ui::GRID;
 use crate::{AppState, CommandRegistry, Workbench};
@@ -136,6 +137,14 @@ pub struct CodeView {
     doc_state: DocState,
     /// Where the error actions ("Retry", "Open as text") go.
     documents: Option<WeakEntity<Documents>>,
+    /// Search matches painted with `search_match_background`: sorted,
+    /// non-overlapping byte ranges. Cleared by every new snapshot.
+    match_highlights: Arc<[Range<usize>]>,
+    /// The index in `match_highlights` drawn with an outline.
+    active_match: Option<usize>,
+    /// The find widget, kept while hidden so it remembers its query.
+    find: Option<Entity<FindWidget>>,
+    find_visible: bool,
 }
 
 impl CodeView {
@@ -169,6 +178,10 @@ impl CodeView {
             pending_center: None,
             doc_state: DocState::Ready,
             documents: None,
+            match_highlights: Arc::from([]),
+            active_match: None,
+            find: None,
+            find_visible: false,
         }
     }
 
@@ -270,6 +283,8 @@ impl CodeView {
     }
 
     fn replace_snapshot(&mut self, snapshot: BufferSnapshot, cx: &mut Context<Self>) {
+        self.match_highlights = Arc::from([]);
+        self.active_match = None;
         self.large = snapshot.len_bytes() as u64 > self.config.max_bytes
             || snapshot.line_count() > self.config.max_lines;
         self.snapshot = snapshot;
@@ -297,6 +312,55 @@ impl CodeView {
             })
             .ok();
         })
+    }
+
+    /// Bumped by every new snapshot (load or reload).
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Paints `ranges` (sorted, non-overlapping byte ranges) with
+    /// `search_match_background`, and outlines `active`. Only the ranges
+    /// on screen are painted. A new snapshot clears them.
+    pub fn set_match_highlights(
+        &mut self,
+        ranges: impl Into<Arc<[Range<usize>]>>,
+        active: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.match_highlights = ranges.into();
+        self.active_match = active.filter(|&i| i < self.match_highlights.len());
+        cx.notify();
+    }
+
+    pub fn match_highlights(&self) -> &[Range<usize>] {
+        &self.match_highlights
+    }
+
+    pub fn active_match(&self) -> Option<usize> {
+        self.active_match
+    }
+
+    /// The find widget, while it is shown.
+    pub fn find_widget(&self) -> Option<&Entity<FindWidget>> {
+        self.find.as_ref().filter(|_| self.find_visible)
+    }
+
+    /// The find widget, shown or not.
+    pub(crate) fn find_widget_any(&self) -> Option<&Entity<FindWidget>> {
+        self.find.as_ref()
+    }
+
+    pub(crate) fn show_find_widget(&mut self, find: Entity<FindWidget>, cx: &mut Context<Self>) {
+        self.find = Some(find);
+        self.find_visible = true;
+        cx.notify();
+    }
+
+    /// Hides the find widget and clears its highlights.
+    pub(crate) fn hide_find_widget(&mut self, cx: &mut Context<Self>) {
+        self.find_visible = false;
+        self.set_match_highlights(Vec::new(), None, cx);
     }
 
     /// Whether the file is over the large-file limits.
@@ -582,10 +646,18 @@ impl Render for CodeView {
             .bg(color(ui.editor_background))
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(CodeElement::new(view.clone())),
+                    .child(CodeElement::new(view.clone()))
+                    .children(self.find_widget().cloned().map(|find| {
+                        div()
+                            .absolute()
+                            .top(px(GRID))
+                            .right(px(4. * GRID))
+                            .child(find)
+                    })),
             )
             .when(show_minimap, |d| d.child(minimap::render(view)))
     }

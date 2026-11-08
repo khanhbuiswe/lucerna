@@ -22,8 +22,8 @@
   { "key": "ctrl+tab", "command": "workbench.action.quickOpenPreviousRecentlyUsedEditorInGroup" },
   { "key": "cmd+k cmd+t", "command": "workbench.action.selectTheme" },
   { "key": "cmd+,", "command": "workbench.action.openSettingsJson" },
-  { "key": "alt+z", "command": "editor.action.toggleWordWrap" },
+  { "key": "alt+z", "command": "editor.action.toggleWordWrap", "when": "!textInputFocus" },
   { "key": "cmd+=", "command": "editor.action.fontZoomIn" },
   { "key": "cmd+-", "command": "editor.action.fontZoomOut" },
-  { "key": "cmd+c", "command": "editor.action.clipboardCopyAction", "when": "editorFocus" }
+  { "key": "cmd+c", "command": "editor.action.clipboardCopyAction", "when": "editorFocus && !textInputFocus" }
 ]

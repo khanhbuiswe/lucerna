@@ -147,3 +147,22 @@ fn defaults_all_parse() {
     );
     assert_eq!(km.resolve(&keys("cmd+9"), &ctx), Resolution::NoMatch);
 }
+
+#[test]
+fn text_inputs_keep_option_z_and_cmd_c() {
+    let km = defaults();
+    let mut ctx = Context::default();
+    ctx.set("editorFocus", ContextValue::Bool(true));
+    assert_eq!(
+        command(km.resolve(&keys("alt+z"), &ctx)),
+        "editor.action.toggleWordWrap"
+    );
+    assert_eq!(
+        command(km.resolve(&keys("cmd+c"), &ctx)),
+        "editor.action.clipboardCopyAction"
+    );
+    // The find widget's input sits inside the editor: the input gets them.
+    ctx.set("textInputFocus", ContextValue::Bool(true));
+    assert_eq!(km.resolve(&keys("alt+z"), &ctx), Resolution::NoMatch);
+    assert_eq!(km.resolve(&keys("cmd+c"), &ctx), Resolution::NoMatch);
+}

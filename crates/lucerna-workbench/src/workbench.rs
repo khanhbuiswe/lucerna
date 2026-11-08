@@ -25,9 +25,10 @@ use crate::layout::{
     panel_toggles, sidebar, status_bar, title_bar,
 };
 use crate::quick_open::{self, QuickOpen, RecentFiles};
+use crate::search_panel::SearchPanel;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
-use crate::{AppState, CommandRegistry, keys};
+use crate::{AppState, CommandRegistry, find_widget, keys, search_panel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarView {
@@ -40,6 +41,8 @@ pub struct Workbench {
     /// The one background scan of `root`; every view reads the tree from it.
     worktree: Worktree,
     explorer: Entity<ExplorerView>,
+    /// The Search panel, installed in the Search sidebar slot.
+    search_panel: Entity<SearchPanel>,
     /// Every open file; tab bodies are its code views.
     documents: Entity<Documents>,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
@@ -90,6 +93,8 @@ impl Workbench {
         editor_groups::register_commands(&mut commands);
         code_view::register_commands(&mut commands);
         quick_open::register_commands(&mut commands);
+        find_widget::register_commands(&mut commands);
+        search_panel::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let editor_groups = cx.new(|cx| {
             let mut groups = EditorGroupsView::default();
@@ -115,13 +120,17 @@ impl Workbench {
         let worktree = Worktree::start(
             root.clone(),
             ScanOptions {
-                exclude: files_exclude(cx),
+                exclude: enabled_globs(cx, "files.exclude"),
             },
         );
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
             cx.new(|cx| ExplorerView::new(root, snapshot, workbench, &groups, cx))
+        };
+        let search_panel = {
+            let (root, workbench) = (root.clone(), cx.weak_entity());
+            cx.new(|cx| SearchPanel::new(root, workbench, cx))
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let mut workbench = Workbench {
@@ -138,7 +147,8 @@ impl Workbench {
             explorer_view: Some(explorer.clone().into()),
             explorer,
             documents,
-            search_view: None,
+            search_view: Some(search_panel.clone().into()),
+            search_panel,
             editor_area: Some(editor_groups.clone().into()),
             editor_groups,
             status_left: Vec::new(),
@@ -192,6 +202,11 @@ impl Workbench {
         });
         self.documents
             .update(cx, |documents, cx| documents.on_worktree_event(ev, cx));
+    }
+
+    /// The Search panel in the sidebar.
+    pub fn search_panel(&self) -> &Entity<SearchPanel> {
+        &self.search_panel
     }
 
     /// Every open file, shown by the code views in the tabs.
@@ -300,8 +315,7 @@ impl Workbench {
                 .iter()
                 .any(|c| c.contains(TEXT_INPUT_KEY_CONTEXT)),
         );
-        // Owned by the find widget once it exists.
-        flag("findWidgetVisible", false);
+        flag("findWidgetVisible", self.find_widget_visible(cx));
         let active = self.editor_groups.read(cx).model().active_tab();
         let path = active.map(|tab| &tab.path);
         let extname = path.map(|p| extname(p)).unwrap_or_default();
@@ -498,11 +512,12 @@ fn extname(path: &Path) -> String {
     }
 }
 
-/// The `files.exclude` globs that are switched on.
-fn files_exclude(cx: &App) -> Vec<String> {
+/// The globs of a glob → bool setting such as `files.exclude` that are
+/// switched on.
+pub(crate) fn enabled_globs(cx: &App, key: &str) -> Vec<String> {
     cx.global::<AppState>()
         .settings
-        .get::<serde_json::Map<String, Value>>("files.exclude", None)
+        .get::<serde_json::Map<String, Value>>(key, None)
         .unwrap_or_default()
         .into_iter()
         .filter(|(_, on)| *on == Value::Bool(true))

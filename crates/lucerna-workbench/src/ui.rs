@@ -1,7 +1,9 @@
 //! Shared chrome metrics, icons and styled building blocks. Every view that
 //! draws chrome takes its sizes and popover/icon-button styling from here.
 
-use gpui::{App, Div, ElementId, ParentElement, Stateful, Styled, div, prelude::*, px, svg};
+use gpui::{
+    App, Div, ElementId, MouseButton, ParentElement, Stateful, Styled, div, prelude::*, px, svg,
+};
 
 use crate::AppState;
 use crate::layout::color;
@@ -34,6 +36,9 @@ pub const CHEVRON_RIGHT_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg
 
 /// A chevron pointing down: an expanded directory.
 pub const CHEVRON_DOWN_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6 8 10.5 12.5 6"/></svg>"#;
+
+/// A chevron pointing up: previous match.
+pub const CHEVRON_UP_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 10 8 5.5 12.5 10"/></svg>"#;
 
 /// A single page with a folded corner.
 pub const FILE_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.25" stroke-linejoin="round"><path d="M3.5 1.5H9L12.5 5v9.5h-9Z"/><path d="M9 1.5V5h3.5"/></svg>"#;
@@ -103,4 +108,40 @@ pub fn icon_button(
                 .size(px(14.))
                 .text_color(color(if active { ui.icon } else { ui.icon_muted })),
         )
+}
+
+/// A 24×20 text toggle such as `Aa`, `ab` or `.*`, styled like
+/// [`icon_button`]: `element.selected` while `active`. Clicking it leaves
+/// focus where it was (in the input it belongs to). Its debug selector is
+/// `id`; add `on_click` to the result.
+pub fn toggle_button(
+    id: &'static str,
+    label: &'static str,
+    active: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let hover = color(ui.ghost_element_hover);
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex()
+        .flex_none()
+        .justify_center()
+        .items_center()
+        .w(px(6. * GRID))
+        .h(px(5. * GRID))
+        .rounded(px(GRID))
+        .cursor_pointer()
+        // Keeps a focusable ancestor (the sidebar) from taking focus.
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .text_size(px(11.))
+        .when(active, |d| {
+            d.bg(color(ui.element_selected)).text_color(color(ui.icon))
+        })
+        .when(!active, |d| {
+            d.text_color(color(ui.icon_muted))
+                .hover(move |s| s.bg(hover))
+        })
+        .child(label)
 }
