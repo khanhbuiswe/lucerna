@@ -4,14 +4,17 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use futures::StreamExt;
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, ParentElement, Pixels, Render, Styled, Window, div, prelude::*, px,
+    KeyDownEvent, ParentElement, Pixels, Render, Styled, Task, Window, div, prelude::*, px,
 };
+use lucerna_project::{ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
 use serde_json::Value;
 
 use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode};
+use crate::explorer::ExplorerView;
 use crate::layout::sidebar::SidebarSash;
 use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
@@ -28,6 +31,11 @@ pub enum SidebarView {
 
 pub struct Workbench {
     root: PathBuf,
+    /// The one background scan of `root`; every view reads the tree from it.
+    worktree: Worktree,
+    explorer: Entity<ExplorerView>,
+    /// Forwards worktree events to [`Workbench::on_worktree_event`].
+    _worktree_events: Task<()>,
     commands: Rc<CommandRegistry>,
     focus: FocusHandle,
     sidebar_focus: FocusHandle,
@@ -67,8 +75,22 @@ impl Workbench {
         register_shell_commands(&mut commands);
         editor_groups::register_commands(&mut commands);
         let editor_groups = cx.new(|_| EditorGroupsView::default());
+        let worktree = Worktree::start(
+            root.clone(),
+            ScanOptions {
+                exclude: files_exclude(cx),
+            },
+        );
+        let explorer = {
+            let (root, snapshot) = (root.clone(), worktree.snapshot());
+            let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
+            cx.new(|cx| ExplorerView::new(root, snapshot, workbench, &groups, cx))
+        };
+        let worktree_events = pump_worktree_events(&worktree, cx);
         Workbench {
             root,
+            worktree,
+            _worktree_events: worktree_events,
             commands: Rc::new(commands),
             focus,
             sidebar_focus: cx.focus_handle(),
@@ -76,7 +98,8 @@ impl Workbench {
             sidebar_visible: true,
             active_sidebar: SidebarView::Explorer,
             sidebar_width: SIDEBAR_DEFAULT_WIDTH,
-            explorer_view: None,
+            explorer_view: Some(explorer.clone().into()),
+            explorer,
             search_view: None,
             editor_area: Some(editor_groups.clone().into()),
             editor_groups,
@@ -99,6 +122,30 @@ impl Workbench {
             .unwrap_or(self.root.as_os_str())
             .to_string_lossy()
             .into_owned()
+    }
+
+    /// The background scan of the opened folder.
+    pub fn worktree(&self) -> &Worktree {
+        &self.worktree
+    }
+
+    /// The Explorer, installed in the Explorer sidebar slot by [`Workbench::new`].
+    pub fn explorer(&self) -> &Entity<ExplorerView> {
+        &self.explorer
+    }
+
+    /// Hands a worktree event to every view that follows the tree. Called
+    /// for each event the worktree sends; tests call it directly.
+    pub fn on_worktree_event(&mut self, ev: &WorktreeEvent, cx: &mut Context<Self>) {
+        let snapshot = self.worktree.snapshot();
+        let decorate = cx
+            .global::<AppState>()
+            .settings
+            .get::<bool>("explorer.decorations.externalChanges", None)
+            .unwrap_or(true);
+        self.explorer.update(cx, |explorer, cx| {
+            explorer.on_worktree_event(ev, snapshot, decorate, cx)
+        });
     }
 
     pub fn commands(&self) -> &CommandRegistry {
@@ -365,6 +412,56 @@ fn extname(path: &Path) -> String {
             .map(|n| n.into_owned())
             .unwrap_or_default(),
     }
+}
+
+/// The `files.exclude` globs that are switched on.
+fn files_exclude(cx: &App) -> Vec<String> {
+    cx.global::<AppState>()
+        .settings
+        .get::<serde_json::Map<String, Value>>("files.exclude", None)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, on)| *on == Value::Bool(true))
+        .map(|(glob, _)| glob)
+        .collect()
+}
+
+/// The single consumer of `worktree.events()`. `recv` blocks, so a
+/// dedicated thread receives and the foreground task delivers each event
+/// to [`Workbench::on_worktree_event`]. Both stop once the worktree or the
+/// workbench is gone.
+///
+/// Not started on GPUI's deterministic test scheduler, which rejects
+/// wake-ups from other threads: tests deliver events by calling
+/// `on_worktree_event` themselves.
+fn pump_worktree_events(worktree: &Worktree, cx: &mut Context<Workbench>) -> Task<()> {
+    if cx.background_executor().is_test() {
+        return Task::ready(());
+    }
+    let events = worktree.events();
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    let spawned = std::thread::Builder::new()
+        .name("lucerna-worktree-events".into())
+        .spawn(move || {
+            while let Ok(ev) = events.recv() {
+                if tx.unbounded_send(ev).is_err() {
+                    break;
+                }
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::error!(%err, "could not start the worktree event pump");
+    }
+    cx.spawn(async move |workbench, cx| {
+        while let Some(ev) = rx.next().await {
+            if workbench
+                .update(cx, |wb, cx| wb.on_worktree_event(&ev, cx))
+                .is_err()
+            {
+                break;
+            }
+        }
+    })
 }
 
 fn register_shell_commands(commands: &mut CommandRegistry) {

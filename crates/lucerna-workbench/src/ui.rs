@@ -29,6 +29,15 @@ pub const SEARCH_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewB
 /// A thin ×, for closing tabs.
 pub const CLOSE_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>"#;
 
+/// A chevron pointing right: a collapsed directory.
+pub const CHEVRON_RIGHT_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg>"#;
+
+/// A chevron pointing down: an expanded directory.
+pub const CHEVRON_DOWN_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6 8 10.5 12.5 6"/></svg>"#;
+
+/// A single page with a folded corner.
+pub const FILE_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.25" stroke-linejoin="round"><path d="M3.5 1.5H9L12.5 5v9.5h-9Z"/><path d="M9 1.5V5h3.5"/></svg>"#;
+
 /// The floating container for Quick Open, the theme picker and the find
 /// widget: up to [`POPOVER_MAX_WIDTH`] wide, rounded, bordered, shadowed,
 /// on `elevated_surface.background`. Place it with [`popover_overlay`].

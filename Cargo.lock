@@ -3063,13 +3063,16 @@ dependencies = [
 name = "lucerna-workbench"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "gpui",
  "gpui_platform",
+ "lucerna-project",
  "lucerna-settings",
  "lucerna-syntax",
  "lucerna-theme",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
 ]
 

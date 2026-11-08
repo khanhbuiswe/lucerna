@@ -305,7 +305,12 @@ fn slots_show_views_and_track_focus(cx: &mut TestAppContext) {
     });
     wb.read_with(cx, |wb, _| {
         assert!(same(wb.sidebar_view(SidebarView::Search), &search));
-        assert!(wb.sidebar_view(SidebarView::Explorer).is_none());
+        // The built-in Explorer fills its own slot.
+        assert_eq!(
+            wb.sidebar_view(SidebarView::Explorer)
+                .map(|v| v.entity_id()),
+            Some(wb.explorer().entity_id())
+        );
         assert!(same(wb.editor_area(), &editor));
         let [l] = wb.status_items(StatusBarSide::Left) else {
             panic!("one left item")
