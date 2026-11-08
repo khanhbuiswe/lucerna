@@ -2436,6 +2436,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonc-parser"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d6d80e6d70e7911a29f3cf3f44f452df85d06f73572b494ca99a2cad3fcf8f4"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2586,6 +2595,15 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+]
+
+[[package]]
+name = "lucerna-settings"
+version = "0.1.0"
+dependencies = [
+ "jsonc-parser",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
