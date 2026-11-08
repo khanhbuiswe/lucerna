@@ -52,6 +52,9 @@ fn when_gates_binding() {
     let mut ctx = Context::default();
     assert_eq!(km.resolve(&keys("escape"), &ctx), Resolution::NoMatch);
     ctx.set("findWidgetVisible", ContextValue::Bool(true));
+    // Focus elsewhere (the Search panel): Esc is not the find widget's.
+    assert_eq!(km.resolve(&keys("escape"), &ctx), Resolution::NoMatch);
+    ctx.set("editorFocus", ContextValue::Bool(true));
     assert_eq!(
         command(km.resolve(&keys("escape"), &ctx)),
         "closeFindWidget"
@@ -82,9 +85,10 @@ fn minus_removes_default() {
 
 #[test]
 fn minus_with_when_removes_only_matching_when() {
-    let user = r#"[{"key":"escape","command":"-closeFindWidget","when":"findWidgetVisible"}]"#;
+    let user = r#"[{"key":"escape","command":"-closeFindWidget","when":"editorFocus && findWidgetVisible"}]"#;
     let (km, _) = Keymap::load(Keymap::default_bindings(), Some(user));
     let mut ctx = Context::default();
+    ctx.set("editorFocus", ContextValue::Bool(true));
     ctx.set("findWidgetVisible", ContextValue::Bool(true));
     assert_eq!(km.resolve(&keys("escape"), &ctx), Resolution::NoMatch);
     // A different `when` does not match, so the default stays.

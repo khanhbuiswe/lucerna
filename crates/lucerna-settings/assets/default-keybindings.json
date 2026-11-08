@@ -5,7 +5,7 @@
   { "key": "ctrl+g", "command": "workbench.action.gotoLine" },
   { "key": "cmd+shift+f", "command": "workbench.action.findInFiles" },
   { "key": "cmd+f", "command": "actions.find", "when": "editorFocus" },
-  { "key": "escape", "command": "closeFindWidget", "when": "findWidgetVisible" },
+  { "key": "escape", "command": "closeFindWidget", "when": "editorFocus && findWidgetVisible" },
   { "key": "escape", "command": "workbench.action.closeQuickOpen", "when": "inQuickOpen" },
   { "key": "cmd+b", "command": "workbench.action.toggleSidebarVisibility" },
   { "key": "cmd+shift+e", "command": "workbench.view.explorer" },

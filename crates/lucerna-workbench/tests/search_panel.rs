@@ -365,3 +365,77 @@ fn search_include_exclude_filters(cx: &mut TestAppContext) {
     settle_search(cx);
     assert_eq!(files(&panel, cx), vec![(p("a.rs"), 1)]);
 }
+
+/// Searches `needle` in a project with only `file`, clicks its first
+/// result and returns where the cursor and highlight landed.
+fn click_needle(file: &[u8], cx: &mut TestAppContext) -> (Point, Vec<std::ops::Range<usize>>) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.txt"), file).unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    let panel = panel(&wb, cx);
+    assert_eq!(files(&panel, cx), vec![(p("a.txt"), 1)]);
+    click("search-match-0-0", cx);
+    let view = active_view(&wb, cx);
+    view.read_with(cx, |v, _| (v.cursor(), v.match_highlights().to_vec()))
+}
+
+#[gpui::test]
+fn click_result_past_reported_text_finds_column(cx: &mut TestAppContext) {
+    // The search reports at most 1,000 chars of a line, without this match.
+    let line = format!("{}needle\n", "-".repeat(1500));
+    let (cursor, highlights) = click_needle(line.as_bytes(), cx);
+    assert_eq!(
+        cursor,
+        Point {
+            row: 0,
+            column: 1500
+        }
+    );
+    assert_eq!(highlights, vec![1500..1506]);
+}
+
+#[gpui::test]
+fn click_result_uses_decoded_columns(cx: &mut TestAppContext) {
+    // windows-1252 `é`: one byte on disk, two in the decoded buffer, and a
+    // three-byte U+FFFD in the search's lossy line.
+    let (cursor, highlights) = click_needle(b"caf\xe9 needle\n", cx);
+    assert_eq!(cursor, Point { row: 0, column: 6 });
+    assert_eq!(highlights, vec![6..12]);
+}
+
+#[gpui::test]
+fn escape_in_search_panel_keeps_find_widget(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.rs", "needle\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("a.rs")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    keys("cmd-f", cx);
+    let view = active_view(&wb, cx);
+    let shown = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.find_widget().is_some());
+    assert!(shown(cx));
+
+    keys("cmd-shift-f", cx);
+    keys("escape", cx);
+    assert!(
+        shown(cx),
+        "Esc in the Search panel leaves the find widget open"
+    );
+    assert!(holds(&wb, "searchViewletFocus && textInputFocus", cx));
+
+    // The command alone, run with focus outside the editor, does nothing.
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command("closeFindWidget", None, window, cx)
+        })
+    });
+    draw(cx);
+    assert!(shown(cx));
+    assert!(holds(&wb, "searchViewletFocus && textInputFocus", cx));
+}

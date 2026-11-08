@@ -23,7 +23,7 @@ use lucerna_project::{LineMatch, MAX_RESULTS, SearchEvent, SearchQuery, search};
 use lucerna_text::Point;
 
 use crate::code_view::CodeView;
-use crate::find_widget::single_line_selection;
+use crate::find_widget::{build_regex, single_line_selection};
 use crate::layout::color;
 use crate::text_input::TextInput;
 use crate::ui::{CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, GRID, TREE_ROW_HEIGHT, toggle_button};
@@ -70,6 +70,8 @@ pub struct SearchPanel {
     /// `Some(truncated)` once the search finished.
     done: Option<bool>,
     error: Option<String>,
+    /// The query the shown results came from.
+    last_query: Option<SearchQuery>,
     /// Bumped by every change; events of older searches are dropped.
     generation: u64,
     cancel: Arc<AtomicBool>,
@@ -113,6 +115,7 @@ impl SearchPanel {
             searched: false,
             done: None,
             error: None,
+            last_query: None,
             generation: 0,
             cancel: Arc::new(AtomicBool::new(false)),
             _debounce: Task::ready(()),
@@ -252,6 +255,7 @@ impl SearchPanel {
             include: globs(self.include.read(cx).text()),
             exclude: globs(self.exclude.read(cx).text()),
         };
+        self.last_query = Some(query.clone());
         // VS Code: `search.exclude` inherits `files.exclude`.
         let mut settings_exclude = enabled_globs(cx, "search.exclude");
         settings_exclude.extend(enabled_globs(cx, "files.exclude"));
@@ -360,12 +364,15 @@ impl SearchPanel {
         let Some(m) = file.matches.get(index) else {
             return;
         };
-        let range = m.ranges.first().cloned().unwrap_or(0..0);
-        let point = Point {
-            row: m.line_number.saturating_sub(1),
-            column: range.start as u32,
+        let row = m.line_number.saturating_sub(1);
+        let Some(query) = self.last_query.clone() else {
+            return;
         };
         let path = file.path.clone();
+        // The reported line may be cut at 1,000 chars and was decoded
+        // lossily: the column comes from matching again on the buffer's
+        // own decoded line once it is loaded (ruling R24).
+        let point = Point { row, column: 0 };
         let view = workbench.update(cx, |wb, cx| {
             wb.open_path_at(path, OpenMode::Preview, point, cx);
             wb.editor_groups()
@@ -374,24 +381,35 @@ impl SearchPanel {
         let Some(view) = view.and_then(|v| v.downcast::<CodeView>().ok()) else {
             return;
         };
-        let highlight = move |view: &mut CodeView, cx: &mut Context<CodeView>| {
-            if view.doc_state() != &DocState::Ready || point.row >= view.snapshot().line_count() {
+        let reveal = move |view: &mut CodeView, cx: &mut Context<CodeView>| {
+            if view.doc_state() != &DocState::Ready || row >= view.snapshot().line_count() {
                 return false;
             }
-            let at = |column: usize| {
-                view.snapshot().point_to_offset(Point {
-                    row: point.row,
-                    column: column as u32,
-                })
+            let line = view.snapshot().line(row);
+            let range = first_match(&query, &line).unwrap_or_else(|| {
+                tracing::debug!(row, "search result no longer matches its line");
+                0..0
+            });
+            let at = |column: usize| Point {
+                row,
+                column: column as u32,
             };
-            let (start, end) = (at(range.start), at(range.end));
-            view.set_match_highlights(std::iter::once(start..end).collect::<Vec<_>>(), Some(0), cx);
+            view.go_to(at(range.start), cx);
+            let highlights: Vec<Range<usize>> = if range.is_empty() {
+                Vec::new()
+            } else {
+                let snapshot = view.snapshot();
+                let start = snapshot.point_to_offset(at(range.start));
+                std::iter::once(start..start + range.len()).collect()
+            };
+            let active = (!highlights.is_empty()).then_some(0);
+            view.set_match_highlights(highlights, active, cx);
             true
         };
         self._highlight = None;
-        if !view.update(cx, highlight) {
+        if !view.update(cx, reveal.clone()) {
             self._highlight = Some(cx.observe(&view, move |panel, view, cx| {
-                if view.update(cx, highlight) {
+                if view.update(cx, reveal.clone()) {
                     panel._highlight = None;
                 }
             }));
@@ -528,6 +546,21 @@ fn row(id: impl Into<gpui::ElementId>, selector: String, cx: &App) -> gpui::Stat
         .pr(px(2. * GRID))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
+}
+
+/// The byte range of the first non-empty match of `query` in `line`.
+fn first_match(query: &SearchQuery, line: &str) -> Option<Range<usize>> {
+    let regex = build_regex(
+        &query.pattern,
+        query.is_regex,
+        query.case_sensitive,
+        query.whole_word,
+    )
+    .ok()?;
+    regex
+        .find_iter(line)
+        .find(|m| !m.is_empty())
+        .map(|m| m.range())
 }
 
 /// Comma-separated globs, trimmed, empty ones dropped.

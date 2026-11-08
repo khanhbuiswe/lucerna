@@ -15,7 +15,7 @@ use gpui::{
 };
 use lucerna_project::build_pattern;
 use lucerna_text::BufferSnapshot;
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
 
 use crate::code_view::CodeView;
 use crate::layout::color;
@@ -45,17 +45,29 @@ pub fn find_in_snapshot(
     if pattern.is_empty() {
         return Ok(Vec::new());
     }
-    let regex = RegexBuilder::new(&build_pattern(pattern, is_regex, whole_word))
-        .case_insensitive(!case_sensitive)
-        .multi_line(true)
-        .build()
-        .map_err(|err| err.to_string())?;
+    let regex = build_regex(pattern, is_regex, case_sensitive, whole_word)?;
     let text = snapshot.text_for_range(0..snapshot.len_bytes());
     Ok(regex
         .find_iter(&text)
         .filter(|m| !m.is_empty())
         .map(|m| m.range())
         .collect())
+}
+
+/// The regex for a find or search query, as both build it: the source from
+/// [`build_pattern`], case folding unless `case_sensitive`, and `^`/`$`
+/// at line ends.
+pub(crate) fn build_regex(
+    pattern: &str,
+    is_regex: bool,
+    case_sensitive: bool,
+    whole_word: bool,
+) -> Result<Regex, String> {
+    RegexBuilder::new(&build_pattern(pattern, is_regex, whole_word))
+        .case_insensitive(!case_sensitive)
+        .multi_line(true)
+        .build()
+        .map_err(|err| err.to_string())
 }
 
 /// Which match becomes active after a search.
@@ -438,7 +450,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         }
     });
     commands.register("closeFindWidget", "Close Find", |wb, _, window, cx| {
-        if let Some(view) = wb.active_code_view(cx) {
+        // Only while focus is in the view or its widget: Esc elsewhere (the
+        // Search panel) must not close it or take focus.
+        if let Some(view) = wb.active_code_view(cx)
+            && view.focus_handle(cx).contains_focused(window, cx)
+        {
             close(&view, window, cx);
         }
     });
