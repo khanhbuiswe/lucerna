@@ -1,0 +1,8 @@
+:root {
+  --accent: #3366ff;
+}
+
+.button:hover {
+  color: var(--accent);
+  margin: 0 auto;
+}

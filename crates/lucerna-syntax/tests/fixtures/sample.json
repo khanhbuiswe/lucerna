@@ -1,0 +1,7 @@
+{
+  "name": "lucerna",
+  "version": 1,
+  "enabled": true,
+  "tags": ["viewer", "rust"],
+  "nested": { "value": null }
+}

@@ -13,6 +13,30 @@ pulled in transitively for macOS glyph rasterization. Only the Apache-2.0 licens
 GPUI crates are used; no GPL-licensed crate from that repository is a
 dependency.
 
+## Tree-sitter grammars
+
+`lucerna-syntax` bundles these grammars. Each crate compiles its grammar's C
+sources into the binary, and every highlights query is the one the crate
+itself ships (`HIGHLIGHTS_QUERY` or equivalent); no query file is vendored.
+All are MIT licensed.
+
+| Crate | Version | License | Upstream |
+|---|---|---|---|
+| `tree-sitter` (core library) | 0.27.2 | MIT | https://github.com/tree-sitter/tree-sitter |
+| `tree-sitter-language` | 0.1.9 | MIT | https://github.com/tree-sitter/tree-sitter |
+| `tree-sitter-rust` | 0.24.2 | MIT | https://github.com/tree-sitter/tree-sitter-rust |
+| `tree-sitter-typescript` (TypeScript, TSX) | 0.23.2 | MIT | https://github.com/tree-sitter/tree-sitter-typescript |
+| `tree-sitter-javascript` | 0.25.0 | MIT | https://github.com/tree-sitter/tree-sitter-javascript |
+| `tree-sitter-python` | 0.25.0 | MIT | https://github.com/tree-sitter/tree-sitter-python |
+| `tree-sitter-go` | 0.25.0 | MIT | https://github.com/tree-sitter/tree-sitter-go |
+| `tree-sitter-json` | 0.24.8 | MIT | https://github.com/tree-sitter/tree-sitter-json |
+| `tree-sitter-md` (block + inline) | 0.5.4 | MIT | https://github.com/tree-sitter-grammars/tree-sitter-markdown |
+| `tree-sitter-toml-ng` | 0.7.0 | MIT | https://github.com/tree-sitter-grammars/tree-sitter-toml |
+| `tree-sitter-yaml` | 0.7.2 | MIT | https://github.com/tree-sitter-grammars/tree-sitter-yaml |
+| `tree-sitter-bash` | 0.25.1 | MIT | https://github.com/tree-sitter/tree-sitter-bash |
+| `tree-sitter-html` | 0.23.2 | MIT | https://github.com/tree-sitter/tree-sitter-html |
+| `tree-sitter-css` | 0.25.0 | MIT | https://github.com/tree-sitter/tree-sitter-css |
+
 ## Additional licenses
 
 Licenses outside the base list that were added to `deny.toml` are recorded

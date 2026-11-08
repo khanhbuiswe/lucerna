@@ -1,0 +1,9 @@
+name: CI
+on:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - run: cargo test # run the tests

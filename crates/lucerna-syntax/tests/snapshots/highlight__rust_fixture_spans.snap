@@ -1,0 +1,616 @@
+---
+source: crates/lucerna-syntax/tests/highlight.rs
+assertion_line: 202
+expression: spans
+---
+[
+    (
+        HighlightSpan {
+            range: 0..23,
+            capture: "comment",
+        },
+        "// A small Rust sample.",
+    ),
+    (
+        HighlightSpan {
+            range: 24..27,
+            capture: "keyword",
+        },
+        "use",
+    ),
+    (
+        HighlightSpan {
+            range: 31..33,
+            capture: "punctuation.delimiter",
+        },
+        "::",
+    ),
+    (
+        HighlightSpan {
+            range: 36..37,
+            capture: "punctuation.delimiter",
+        },
+        ";",
+    ),
+    (
+        HighlightSpan {
+            range: 39..44,
+            capture: "keyword",
+        },
+        "const",
+    ),
+    (
+        HighlightSpan {
+            range: 45..50,
+            capture: "constructor",
+        },
+        "LIMIT",
+    ),
+    (
+        HighlightSpan {
+            range: 50..51,
+            capture: "punctuation.delimiter",
+        },
+        ":",
+    ),
+    (
+        HighlightSpan {
+            range: 52..55,
+            capture: "type.builtin",
+        },
+        "u32",
+    ),
+    (
+        HighlightSpan {
+            range: 58..60,
+            capture: "constant.builtin",
+        },
+        "10",
+    ),
+    (
+        HighlightSpan {
+            range: 60..61,
+            capture: "punctuation.delimiter",
+        },
+        ";",
+    ),
+    (
+        HighlightSpan {
+            range: 63..69,
+            capture: "keyword",
+        },
+        "struct",
+    ),
+    (
+        HighlightSpan {
+            range: 70..75,
+            capture: "type",
+        },
+        "Point",
+    ),
+    (
+        HighlightSpan {
+            range: 76..77,
+            capture: "punctuation.bracket",
+        },
+        "{",
+    ),
+    (
+        HighlightSpan {
+            range: 82..83,
+            capture: "property",
+        },
+        "x",
+    ),
+    (
+        HighlightSpan {
+            range: 83..84,
+            capture: "punctuation.delimiter",
+        },
+        ":",
+    ),
+    (
+        HighlightSpan {
+            range: 85..88,
+            capture: "type.builtin",
+        },
+        "i32",
+    ),
+    (
+        HighlightSpan {
+            range: 88..89,
+            capture: "punctuation.delimiter",
+        },
+        ",",
+    ),
+    (
+        HighlightSpan {
+            range: 94..95,
+            capture: "property",
+        },
+        "y",
+    ),
+    (
+        HighlightSpan {
+            range: 95..96,
+            capture: "punctuation.delimiter",
+        },
+        ":",
+    ),
+    (
+        HighlightSpan {
+            range: 97..100,
+            capture: "type.builtin",
+        },
+        "i32",
+    ),
+    (
+        HighlightSpan {
+            range: 100..101,
+            capture: "punctuation.delimiter",
+        },
+        ",",
+    ),
+    (
+        HighlightSpan {
+            range: 102..103,
+            capture: "punctuation.bracket",
+        },
+        "}",
+    ),
+    (
+        HighlightSpan {
+            range: 105..109,
+            capture: "keyword",
+        },
+        "impl",
+    ),
+    (
+        HighlightSpan {
+            range: 113..115,
+            capture: "punctuation.delimiter",
+        },
+        "::",
+    ),
+    (
+        HighlightSpan {
+            range: 115..122,
+            capture: "type",
+        },
+        "Display",
+    ),
+    (
+        HighlightSpan {
+            range: 123..126,
+            capture: "keyword",
+        },
+        "for",
+    ),
+    (
+        HighlightSpan {
+            range: 127..132,
+            capture: "type",
+        },
+        "Point",
+    ),
+    (
+        HighlightSpan {
+            range: 133..134,
+            capture: "punctuation.bracket",
+        },
+        "{",
+    ),
+    (
+        HighlightSpan {
+            range: 139..141,
+            capture: "keyword",
+        },
+        "fn",
+    ),
+    (
+        HighlightSpan {
+            range: 142..145,
+            capture: "function",
+        },
+        "fmt",
+    ),
+    (
+        HighlightSpan {
+            range: 145..146,
+            capture: "punctuation.bracket",
+        },
+        "(",
+    ),
+    (
+        HighlightSpan {
+            range: 146..147,
+            capture: "operator",
+        },
+        "&",
+    ),
+    (
+        HighlightSpan {
+            range: 147..151,
+            capture: "variable.builtin",
+        },
+        "self",
+    ),
+    (
+        HighlightSpan {
+            range: 151..152,
+            capture: "punctuation.delimiter",
+        },
+        ",",
+    ),
+    (
+        HighlightSpan {
+            range: 153..154,
+            capture: "variable.parameter",
+        },
+        "f",
+    ),
+    (
+        HighlightSpan {
+            range: 154..155,
+            capture: "punctuation.delimiter",
+        },
+        ":",
+    ),
+    (
+        HighlightSpan {
+            range: 156..157,
+            capture: "operator",
+        },
+        "&",
+    ),
+    (
+        HighlightSpan {
+            range: 157..160,
+            capture: "keyword",
+        },
+        "mut",
+    ),
+    (
+        HighlightSpan {
+            range: 164..166,
+            capture: "punctuation.delimiter",
+        },
+        "::",
+    ),
+    (
+        HighlightSpan {
+            range: 166..175,
+            capture: "type",
+        },
+        "Formatter",
+    ),
+    (
+        HighlightSpan {
+            range: 175..176,
+            capture: "punctuation.bracket",
+        },
+        ")",
+    ),
+    (
+        HighlightSpan {
+            range: 183..185,
+            capture: "punctuation.delimiter",
+        },
+        "::",
+    ),
+    (
+        HighlightSpan {
+            range: 185..191,
+            capture: "type",
+        },
+        "Result",
+    ),
+    (
+        HighlightSpan {
+            range: 192..193,
+            capture: "punctuation.bracket",
+        },
+        "{",
+    ),
+    (
+        HighlightSpan {
+            range: 202..207,
+            capture: "function.macro",
+        },
+        "write",
+    ),
+    (
+        HighlightSpan {
+            range: 207..208,
+            capture: "function.macro",
+        },
+        "!",
+    ),
+    (
+        HighlightSpan {
+            range: 208..209,
+            capture: "punctuation.bracket",
+        },
+        "(",
+    ),
+    (
+        HighlightSpan {
+            range: 210..211,
+            capture: "punctuation.delimiter",
+        },
+        ",",
+    ),
+    (
+        HighlightSpan {
+            range: 212..222,
+            capture: "string",
+        },
+        "\"({}, {})\"",
+    ),
+    (
+        HighlightSpan {
+            range: 222..223,
+            capture: "punctuation.delimiter",
+        },
+        ",",
+    ),
+    (
+        HighlightSpan {
+            range: 224..228,
+            capture: "variable.builtin",
+        },
+        "self",
+    ),
+    (
+        HighlightSpan {
+            range: 228..229,
+            capture: "punctuation.delimiter",
+        },
+        ".",
+    ),
+    (
+        HighlightSpan {
+            range: 230..231,
+            capture: "punctuation.delimiter",
+        },
+        ",",
+    ),
+    (
+        HighlightSpan {
+            range: 232..236,
+            capture: "variable.builtin",
+        },
+        "self",
+    ),
+    (
+        HighlightSpan {
+            range: 236..237,
+            capture: "punctuation.delimiter",
+        },
+        ".",
+    ),
+    (
+        HighlightSpan {
+            range: 238..239,
+            capture: "punctuation.bracket",
+        },
+        ")",
+    ),
+    (
+        HighlightSpan {
+            range: 244..245,
+            capture: "punctuation.bracket",
+        },
+        "}",
+    ),
+    (
+        HighlightSpan {
+            range: 246..247,
+            capture: "punctuation.bracket",
+        },
+        "}",
+    ),
+    (
+        HighlightSpan {
+            range: 249..251,
+            capture: "keyword",
+        },
+        "fn",
+    ),
+    (
+        HighlightSpan {
+            range: 252..256,
+            capture: "function",
+        },
+        "main",
+    ),
+    (
+        HighlightSpan {
+            range: 256..257,
+            capture: "punctuation.bracket",
+        },
+        "(",
+    ),
+    (
+        HighlightSpan {
+            range: 257..258,
+            capture: "punctuation.bracket",
+        },
+        ")",
+    ),
+    (
+        HighlightSpan {
+            range: 259..260,
+            capture: "punctuation.bracket",
+        },
+        "{",
+    ),
+    (
+        HighlightSpan {
+            range: 265..268,
+            capture: "keyword",
+        },
+        "let",
+    ),
+    (
+        HighlightSpan {
+            range: 273..278,
+            capture: "type",
+        },
+        "Point",
+    ),
+    (
+        HighlightSpan {
+            range: 279..280,
+            capture: "punctuation.bracket",
+        },
+        "{",
+    ),
+    (
+        HighlightSpan {
+            range: 281..282,
+            capture: "property",
+        },
+        "x",
+    ),
+    (
+        HighlightSpan {
+            range: 282..283,
+            capture: "punctuation.delimiter",
+        },
+        ":",
+    ),
+    (
+        HighlightSpan {
+            range: 284..285,
+            capture: "constant.builtin",
+        },
+        "1",
+    ),
+    (
+        HighlightSpan {
+            range: 285..286,
+            capture: "punctuation.delimiter",
+        },
+        ",",
+    ),
+    (
+        HighlightSpan {
+            range: 287..288,
+            capture: "property",
+        },
+        "y",
+    ),
+    (
+        HighlightSpan {
+            range: 288..289,
+            capture: "punctuation.delimiter",
+        },
+        ":",
+    ),
+    (
+        HighlightSpan {
+            range: 290..291,
+            capture: "constant.builtin",
+        },
+        "2",
+    ),
+    (
+        HighlightSpan {
+            range: 292..293,
+            capture: "punctuation.bracket",
+        },
+        "}",
+    ),
+    (
+        HighlightSpan {
+            range: 293..294,
+            capture: "punctuation.delimiter",
+        },
+        ";",
+    ),
+    (
+        HighlightSpan {
+            range: 299..301,
+            capture: "keyword",
+        },
+        "if",
+    ),
+    (
+        HighlightSpan {
+            range: 302..307,
+            capture: "constructor",
+        },
+        "LIMIT",
+    ),
+    (
+        HighlightSpan {
+            range: 310..311,
+            capture: "constant.builtin",
+        },
+        "5",
+    ),
+    (
+        HighlightSpan {
+            range: 312..313,
+            capture: "punctuation.bracket",
+        },
+        "{",
+    ),
+    (
+        HighlightSpan {
+            range: 322..329,
+            capture: "function.macro",
+        },
+        "println",
+    ),
+    (
+        HighlightSpan {
+            range: 329..330,
+            capture: "function.macro",
+        },
+        "!",
+    ),
+    (
+        HighlightSpan {
+            range: 330..331,
+            capture: "punctuation.bracket",
+        },
+        "(",
+    ),
+    (
+        HighlightSpan {
+            range: 331..336,
+            capture: "string",
+        },
+        "\"{p}\"",
+    ),
+    (
+        HighlightSpan {
+            range: 336..337,
+            capture: "punctuation.bracket",
+        },
+        ")",
+    ),
+    (
+        HighlightSpan {
+            range: 337..338,
+            capture: "punctuation.delimiter",
+        },
+        ";",
+    ),
+    (
+        HighlightSpan {
+            range: 343..344,
+            capture: "punctuation.bracket",
+        },
+        "}",
+    ),
+    (
+        HighlightSpan {
+            range: 345..346,
+            capture: "punctuation.bracket",
+        },
+        "}",
+    ),
+]

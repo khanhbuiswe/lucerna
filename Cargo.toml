@@ -15,6 +15,7 @@ lucerna-workbench = { path = "crates/lucerna-workbench" }
 lucerna-settings = { path = "crates/lucerna-settings" }
 lucerna-text = { path = "crates/lucerna-text" }
 lucerna-project = { path = "crates/lucerna-project" }
+lucerna-syntax = { path = "crates/lucerna-syntax" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -41,6 +42,23 @@ crossbeam-channel = "0.5"
 tracing = "0.1"
 nucleo-matcher = "0.3"
 tempfile = "3"
+
+# Syntax: one tree-sitter core; every grammar exposes `LANGUAGE: LanguageFn`.
+tree-sitter = "0.27"
+streaming-iterator = "0.1"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-md = "0.5"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-yaml = "0.7"
+tree-sitter-bash = "0.25"
+tree-sitter-html = "0.23"
+tree-sitter-css = "0.25"
+insta = "1"
 
 # UI: only lucerna-workbench may depend on these. Pinned to one Zed commit.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "b5cd310b3b54dfc659fcc06453e6358843dfe216" }

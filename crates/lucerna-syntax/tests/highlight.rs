@@ -1,0 +1,229 @@
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use lucerna_syntax::{HighlightSpan, Language, LanguageRegistry, ParseOutcome, SyntaxState};
+use lucerna_text::{Buffer, BufferSnapshot};
+
+fn snapshot(text: &str) -> BufferSnapshot {
+    Buffer::from_bytes(text.as_bytes(), false)
+        .expect("text decodes")
+        .snapshot()
+}
+
+fn language(path: &str) -> Arc<Language> {
+    LanguageRegistry::bundled()
+        .language_for_path(Path::new(path))
+        .unwrap_or_else(|| panic!("no language for {path}"))
+}
+
+fn parsed(path: &str, text: &str) -> (SyntaxState, BufferSnapshot) {
+    let snap = snapshot(text);
+    let mut state = SyntaxState::new(language(path));
+    assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
+    (state, snap)
+}
+
+fn id_for(registry: &LanguageRegistry, path: &str) -> Option<&'static str> {
+    registry.language_for_path(Path::new(path)).map(|l| l.id)
+}
+
+#[test]
+fn detects_by_extension_and_filename() {
+    let registry = LanguageRegistry::bundled();
+    let cases = [
+        ("src/main.rs", "rust"),
+        ("a.ts", "typescript"),
+        ("a.mts", "typescript"),
+        ("a.cts", "typescript"),
+        ("a.tsx", "typescriptreact"),
+        ("a.js", "javascript"),
+        ("a.mjs", "javascript"),
+        ("a.cjs", "javascript"),
+        ("a.jsx", "javascript"),
+        ("a.py", "python"),
+        ("a.pyi", "python"),
+        ("a.go", "go"),
+        ("a.json", "json"),
+        ("a.jsonc", "json"),
+        ("proj/tsconfig.json", "json"),
+        ("settings.json", "json"),
+        ("README.md", "markdown"),
+        ("a.markdown", "markdown"),
+        ("Cargo.toml", "toml"),
+        ("Cargo.lock", "toml"),
+        ("ci.yml", "yaml"),
+        ("ci.yaml", "yaml"),
+        ("run.sh", "shellscript"),
+        ("run.bash", "shellscript"),
+        ("run.zsh", "shellscript"),
+        ("/Users/me/.zshrc", "shellscript"),
+        (".bashrc", "shellscript"),
+        ("index.html", "html"),
+        ("index.htm", "html"),
+        ("style.css", "css"),
+        ("UPPER.RS", "rust"),
+    ];
+    for (path, id) in cases {
+        assert_eq!(id_for(&registry, path), Some(id), "{path}");
+    }
+    let rust = registry.language_for_path(Path::new("x.rs")).unwrap();
+    assert_eq!(rust.name, "Rust");
+}
+
+#[test]
+fn unknown_extension_none() {
+    let registry = LanguageRegistry::bundled();
+    for path in ["a.unknownext", "Makefile", "noext", "a.lock"] {
+        assert_eq!(id_for(&registry, path), None, "{path}");
+    }
+}
+
+#[test]
+fn rust_keyword_highlighted() {
+    let (state, snap) = parsed("main.rs", "fn main() {}");
+    let spans = state.highlights(&snap, 0..1);
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.range.start == 0 && s.range.end >= 2 && s.capture.starts_with("keyword")),
+        "{spans:?}"
+    );
+}
+
+#[test]
+fn highlights_empty_without_tree() {
+    let snap = snapshot("fn main() {}");
+    let state = SyntaxState::new(language("main.rs"));
+    assert!(state.highlights(&snap, 0..1).is_empty());
+}
+
+#[test]
+fn every_bundled_language_parses_fixture() {
+    let registry = LanguageRegistry::bundled();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut covered = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let lang = registry
+            .language_for_path(&path)
+            .unwrap_or_else(|| panic!("no language for fixture {}", path.display()));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let snap = snapshot(&text);
+        let mut state = SyntaxState::new(lang.clone());
+        assert_eq!(state.parse(&snap, None), ParseOutcome::Done, "{}", lang.id);
+        let root = state.tree().expect("tree after Done").root_node();
+        assert!(
+            !root.has_error(),
+            "{} fixture has a parse error: {}",
+            lang.id,
+            root.to_sexp()
+        );
+        let spans = state.highlights(&snap, 0..snap.line_count());
+        assert!(!spans.is_empty(), "{} gave no spans", lang.id);
+        covered.push(lang.id);
+    }
+    covered.sort_unstable();
+    let mut all: Vec<_> = registry.languages().iter().map(|l| l.id).collect();
+    all.sort_unstable();
+    assert_eq!(
+        covered, all,
+        "every bundled language needs exactly one fixture"
+    );
+}
+
+#[test]
+fn markdown_inline_emphasis_highlighted() {
+    let text = "# T\n\n**bold**";
+    let (state, snap) = parsed("a.md", text);
+    let strong = text.find("**bold**").unwrap()..text.len();
+    let bold = strong.start + 2..strong.end - 2;
+    let spans = state.highlights(&snap, 0..snap.line_count());
+    // Only the inline layer highlights inside the paragraph `**bold**`.
+    assert!(
+        spans.iter().any(|s| s.range.start < bold.end
+            && s.range.end > bold.start
+            && s.range.start >= strong.start
+            && s.range.end <= strong.end),
+        "{spans:?}"
+    );
+}
+
+#[test]
+fn highlights_limited_to_rows() {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.rs"),
+    )
+    .unwrap();
+    let (state, snap) = parsed("sample.rs", &text);
+    let rows = 5..9;
+    let spans = state.highlights(&snap, rows.clone());
+    assert!(!spans.is_empty());
+    let first = snap.point_to_offset(lucerna_text::Point {
+        row: rows.start,
+        column: 0,
+    });
+    let end = snap.point_to_offset(lucerna_text::Point {
+        row: rows.end,
+        column: 0,
+    });
+    for s in &spans {
+        let row = snap.offset_to_point(s.range.start).row;
+        assert!(
+            row < rows.end,
+            "span starts after last requested row: {s:?}"
+        );
+        assert!(
+            s.range.start >= first && s.range.end <= end,
+            "{s:?} outside {first}..{end}"
+        );
+    }
+}
+
+#[test]
+fn minified_line_spans_capped() {
+    let unit = "var a=[1,\"s\",{b:2}];";
+    let text = unit.repeat(5 * 1024 * 1024 / unit.len());
+    assert!(text.len() > 5_000_000 && !text.contains('\n'));
+    let (state, snap) = parsed("min.js", &text);
+    let spans = state.highlights(&snap, 0..1);
+    assert!(!spans.is_empty());
+    assert!(
+        spans.iter().all(|s| s.range.end <= 10_000),
+        "a span passes byte 10000"
+    );
+}
+
+#[test]
+fn timeout_keeps_old_tree() {
+    let unit = "fn f(x: u32) -> u32 { let y = x * 2; if y > 3 { y } else { x } }\n";
+    let text = unit.repeat(40_000);
+    let (mut state, snap) = parsed("big.rs", &text);
+    let before = state.highlights(&snap, 0..10);
+    assert!(!before.is_empty());
+    assert_eq!(
+        state.parse(&snap, Some(Duration::ZERO)),
+        ParseOutcome::TimedOut
+    );
+    assert_eq!(state.highlights(&snap, 0..10), before);
+    // The parser is usable again after a cancelled parse.
+    assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
+}
+
+#[test]
+fn rust_fixture_spans() {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.rs"),
+    )
+    .unwrap();
+    let (state, snap) = parsed("sample.rs", &text);
+    let spans: Vec<(HighlightSpan, &str)> = state
+        .highlights(&snap, 0..snap.line_count())
+        .into_iter()
+        .map(|s| {
+            let t = &text[s.range.clone()];
+            (s, t)
+        })
+        .collect();
+    insta::assert_debug_snapshot!(spans);
+}

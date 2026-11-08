@@ -1,0 +1,23 @@
+//! Bundled tree-sitter languages, viewport highlights, indent folds and
+//! bracket matching for Lucerna's read-only code view.
+
+mod brackets;
+mod folds;
+mod registry;
+mod syntax_state;
+
+use lucerna_text::{BufferSnapshot, Point};
+
+pub use brackets::matching_bracket;
+pub use folds::indent_folds;
+pub use registry::{Language, LanguageRegistry};
+pub use syntax_state::{HighlightSpan, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
+
+/// The byte offset where `row` starts; rows past the end give the length.
+pub(crate) fn row_start(snapshot: &BufferSnapshot, row: u32) -> usize {
+    if row >= snapshot.line_count() {
+        snapshot.len_bytes()
+    } else {
+        snapshot.point_to_offset(Point { row, column: 0 })
+    }
+}
