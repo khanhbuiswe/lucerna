@@ -11,9 +11,11 @@ use gpui::{
 };
 use lucerna_project::{ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
+use lucerna_text::Point;
 use serde_json::Value;
 
-use crate::code_view::{self, LargeFileStatus};
+use crate::code_view::{self, CodeView, LargeFileStatus};
+use crate::documents::{DocumentStatusItem, Documents};
 use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode};
 use crate::explorer::ExplorerView;
 use crate::layout::sidebar::SidebarSash;
@@ -35,6 +37,8 @@ pub struct Workbench {
     /// The one background scan of `root`; every view reads the tree from it.
     worktree: Worktree,
     explorer: Entity<ExplorerView>,
+    /// Every open file; tab bodies are its code views.
+    documents: Entity<Documents>,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
     _worktree_events: Task<()>,
     commands: Rc<CommandRegistry>,
@@ -76,10 +80,27 @@ impl Workbench {
         register_shell_commands(&mut commands);
         editor_groups::register_commands(&mut commands);
         code_view::register_commands(&mut commands);
-        let editor_groups = cx.new(|_| EditorGroupsView::default());
+        let documents = cx.new(|_| Documents::new(root.clone()));
+        let editor_groups = cx.new(|cx| {
+            let mut groups = EditorGroupsView::default();
+            let docs = documents.clone();
+            groups.set_tab_body_factory(
+                Rc::new(move |tab, _, cx| {
+                    let path = tab.path.clone();
+                    docs.update(cx, |docs, cx| docs.open(path, cx)).into()
+                }),
+                cx,
+            );
+            groups.set_documents(documents.clone());
+            groups
+        });
         let large_file_status = {
             let groups = editor_groups.clone();
             cx.new(|_| LargeFileStatus::new(groups))
+        };
+        let document_status = {
+            let (groups, docs) = (editor_groups.clone(), documents.clone());
+            cx.new(|_| DocumentStatusItem::new(groups, docs))
         };
         let worktree = Worktree::start(
             root.clone(),
@@ -106,6 +127,7 @@ impl Workbench {
             sidebar_width: SIDEBAR_DEFAULT_WIDTH,
             explorer_view: Some(explorer.clone().into()),
             explorer,
+            documents,
             search_view: None,
             editor_area: Some(editor_groups.clone().into()),
             editor_groups,
@@ -115,6 +137,7 @@ impl Workbench {
             title_bar_pressed: false,
         };
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
+        workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
         workbench
     }
 
@@ -154,6 +177,13 @@ impl Workbench {
         self.explorer.update(cx, |explorer, cx| {
             explorer.on_worktree_event(ev, snapshot, decorate, cx)
         });
+        self.documents
+            .update(cx, |documents, cx| documents.on_worktree_event(ev, cx));
+    }
+
+    /// Every open file, shown by the code views in the tabs.
+    pub fn documents(&self) -> &Entity<Documents> {
+        &self.documents
     }
 
     pub fn commands(&self) -> &CommandRegistry {
@@ -202,6 +232,29 @@ impl Workbench {
             .get::<bool>("workbench.editor.enablePreview", None)
             .unwrap_or(true);
         self.update_editor_groups(cx, |m| m.open(path, mode, preview_enabled));
+    }
+
+    /// Opens `path` like [`Workbench::open_path`], then puts the cursor at
+    /// `point` and scrolls it to the middle, once the file is loaded. For
+    /// Quick Open, search results and go-to-line.
+    pub fn open_path_at(
+        &mut self,
+        path: Arc<Path>,
+        mode: OpenMode,
+        point: Point,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_path(path.clone(), mode, cx);
+        // An already-drawn tab has its view; a new one gets it on draw.
+        let view = self
+            .editor_groups
+            .read(cx)
+            .active_body()
+            .and_then(|v| v.downcast::<CodeView>().ok());
+        self.documents.update(cx, |docs, cx| match view {
+            Some(view) => docs.go_to(&view, point, cx),
+            None => docs.go_to_when_opened(&path, point),
+        });
     }
 
     /// The `when`-clause context for key bindings.

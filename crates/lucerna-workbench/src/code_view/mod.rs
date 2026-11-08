@@ -18,10 +18,10 @@ use std::sync::Arc;
 
 use gpui::{
     AnyView, App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement,
-    ParentElement, Render, SharedString, Styled, Task, Window, div, prelude::*,
+    ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use lucerna_syntax::{SyntaxState, indent_folds};
-use lucerna_text::{Buffer, BufferSnapshot, Point, Reload};
+use lucerna_text::{Buffer, BufferSnapshot, LoadError, Point, Reload};
 
 pub use layout::{
     DisplayLine, FoldState, MAX_RENDERED_LINE_CHARS, display_lines, display_lines_with_tab_size,
@@ -30,8 +30,10 @@ pub use layout::{
 use self::cache::Caches;
 use self::element::{CodeElement, Frame};
 use self::selection::Selection;
+use crate::documents::{DocState, Documents};
 use crate::editor_groups::{EditorGroupsView, Tab};
 use crate::layout::color;
+use crate::ui::GRID;
 use crate::{AppState, CommandRegistry, Workbench};
 
 /// The status-bar text shown while the active view is a large file.
@@ -130,6 +132,10 @@ pub struct CodeView {
     frame: Option<Arc<Frame>>,
     /// A row to center once the viewport size is known.
     pending_center: Option<u32>,
+    /// The file's state; errors replace the text with a message.
+    doc_state: DocState,
+    /// Where the error actions ("Retry", "Open as text") go.
+    documents: Option<WeakEntity<Documents>>,
 }
 
 impl CodeView {
@@ -161,6 +167,8 @@ impl CodeView {
             caches: Caches::default(),
             frame: None,
             pending_center: None,
+            doc_state: DocState::Ready,
+            documents: None,
         }
     }
 
@@ -176,6 +184,28 @@ impl CodeView {
 
     pub fn snapshot(&self) -> &BufferSnapshot {
         &self.snapshot
+    }
+
+    /// The parsed syntax shown, if any.
+    pub fn syntax(&self) -> Option<&Arc<SyntaxState>> {
+        self.syntax.as_ref()
+    }
+
+    /// The state of the file shown; [`DocState::Ready`] for a view not
+    /// made by [`Documents`].
+    pub fn doc_state(&self) -> &DocState {
+        &self.doc_state
+    }
+
+    pub(crate) fn set_doc_state(&mut self, state: DocState, cx: &mut Context<Self>) {
+        if self.doc_state != state {
+            self.doc_state = state;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_documents(&mut self, documents: WeakEntity<Documents>) {
+        self.documents = Some(documents);
     }
 
     /// Shows `snapshot` from the top, dropping the selection, folds and
@@ -194,8 +224,9 @@ impl CodeView {
     }
 
     /// Shows a reloaded version of the file, keeping the scroll position
-    /// and selection on the same lines. The syntax is dropped until the
-    /// next [`CodeView::set_syntax`].
+    /// and selection on the same lines; a selection touching a changed
+    /// row is cleared. The syntax is dropped until the next
+    /// [`CodeView::set_syntax`].
     pub fn apply_reload(
         &mut self,
         snapshot: BufferSnapshot,
@@ -211,10 +242,17 @@ impl CodeView {
             top_row: reload.adjust_row(self.scroll.top_row, rows),
             offset: 0.,
         };
-        self.selection = self.selection.map(|s| Selection {
-            anchor: adjust(s.anchor),
-            head: adjust(s.head),
-        });
+        let changed = reload.start_row..reload.old_end_row;
+        self.selection = self
+            .selection
+            .filter(|s| {
+                let r = s.range();
+                r.end.row < changed.start || r.start.row >= changed.end
+            })
+            .map(|s| Selection {
+                anchor: adjust(s.anchor),
+                head: adjust(s.head),
+            });
         self.replace_snapshot(snapshot, cx);
         self.syntax = None;
         self.folds.clear();
@@ -522,6 +560,17 @@ impl Focusable for CodeView {
 impl Render for CodeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = &cx.global::<AppState>().theme.ui;
+        match &self.doc_state {
+            DocState::Ready | DocState::Deleted => {}
+            DocState::Loading => {
+                return div()
+                    .id("code-view")
+                    .track_focus(&self.focus)
+                    .size_full()
+                    .bg(color(ui.editor_background));
+            }
+            DocState::Error(err) => return self.render_error(err.clone(), cx),
+        }
         let show_minimap = self.config.minimap && !self.large;
         let view = cx.entity();
         div()
@@ -539,6 +588,79 @@ impl Render for CodeView {
                     .child(CodeElement::new(view.clone())),
             )
             .when(show_minimap, |d| d.child(minimap::render(view)))
+    }
+}
+
+/// What the error block offers for each load error.
+enum ErrorAction {
+    Retry,
+    OpenAsText,
+    None,
+}
+
+impl CodeView {
+    /// A centred, muted message with at most one action button.
+    fn render_error(&self, err: LoadError, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let ui = &cx.global::<AppState>().theme.ui;
+        let (message, action) = match err {
+            LoadError::Binary => ("Binary file".to_string(), ErrorAction::OpenAsText),
+            LoadError::TooLarge { .. } => ("File is larger than 512 MB".into(), ErrorAction::None),
+            err @ (LoadError::NotFound | LoadError::PermissionDenied | LoadError::Io(_)) => {
+                (err.to_string(), ErrorAction::Retry)
+            }
+        };
+        let hover = color(ui.ghost_element_hover);
+        let button = |id: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px(px(2. * GRID))
+                .py(px(GRID))
+                .rounded(px(GRID))
+                .border_1()
+                .border_color(color(ui.border_variant))
+                .text_color(color(ui.text))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(label)
+        };
+        let path = self.path.clone();
+        let documents = self.documents.clone();
+        let button = match action {
+            ErrorAction::Retry => Some(button("doc-retry", "Retry").on_click(move |_, _, cx| {
+                if let Some(docs) = documents.as_ref().and_then(WeakEntity::upgrade) {
+                    docs.update(cx, |docs, cx| docs.retry(&path, cx));
+                }
+            })),
+            ErrorAction::OpenAsText => Some(button("doc-open-as-text", "Open as text").on_click(
+                move |_, _, cx| {
+                    if let Some(docs) = documents.as_ref().and_then(WeakEntity::upgrade) {
+                        docs.update(cx, |docs, cx| docs.open_as_text(&path, cx));
+                    }
+                },
+            )),
+            ErrorAction::None => None,
+        };
+        div()
+            .id("code-view")
+            .track_focus(&self.focus)
+            .flex()
+            .size_full()
+            .justify_center()
+            .items_center()
+            .bg(color(ui.editor_background))
+            .child(
+                div()
+                    .debug_selector(|| "doc-error".into())
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(3. * GRID))
+                    .max_w(px(480.))
+                    .text_color(color(ui.text_muted))
+                    .child(message)
+                    .children(button),
+            )
     }
 }
 

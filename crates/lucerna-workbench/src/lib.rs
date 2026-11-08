@@ -4,6 +4,7 @@
 mod app_state;
 pub mod code_view;
 mod commands;
+mod documents;
 mod editor_groups;
 mod explorer;
 pub mod keys;
@@ -13,6 +14,7 @@ mod workbench;
 
 pub use app_state::AppState;
 pub use commands::{CommandHandler, CommandRegistry};
+pub use documents::{DocState, DocumentStatus, Documents};
 pub use editor_groups::{
     EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode, Tab, TabBodyFactory,
     TabId, placeholder_body,

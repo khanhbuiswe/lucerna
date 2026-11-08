@@ -7,13 +7,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, Context, DragMoveEvent, IntoElement, MouseButton, ParentElement, Pixels, Render,
-    Styled, Window, div, prelude::*, px, relative, svg,
+    AnyView, App, Context, DragMoveEvent, Entity, IntoElement, MouseButton, ParentElement, Pixels,
+    Render, Styled, Window, div, prelude::*, px, relative, svg,
 };
 use lucerna_theme::UiColors;
 
 use super::model::{EditorGroups, Tab, TabId};
 use crate::AppState;
+use crate::documents::{DocState, Documents};
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
 use crate::ui::{CLOSE_ICON, GRID, TAB_HEIGHT};
@@ -65,6 +66,8 @@ pub struct EditorGroupsView {
     /// keyed by tab id, so a tab moving into another's place starts with
     /// fresh hover state and GPUI reports its hover on the next frame.
     hovered_tab: Option<TabId>,
+    /// Consulted for each tab's title: deleted files are struck through.
+    documents: Option<Entity<Documents>>,
 }
 
 impl Default for EditorGroupsView {
@@ -75,6 +78,7 @@ impl Default for EditorGroupsView {
             bodies: HashMap::new(),
             make_body: Rc::new(placeholder_body),
             hovered_tab: None,
+            documents: None,
         }
     }
 }
@@ -127,6 +131,12 @@ impl EditorGroupsView {
         self.make_body = make_body;
         self.bodies.clear();
         cx.notify();
+    }
+
+    /// Strikes through the titles of tabs whose file `documents` reports
+    /// deleted.
+    pub(crate) fn set_documents(&mut self, documents: Entity<Documents>) {
+        self.documents = Some(documents);
     }
 
     /// Moves the divider right of group `index` to `fraction` of the area,
@@ -185,6 +195,21 @@ impl Render for EditorGroupsView {
             .map(|tab| tab.as_ref().map(|t| self.body(t, window, cx)))
             .collect();
 
+        let deleted: Vec<Vec<bool>> = self
+            .model
+            .groups()
+            .iter()
+            .map(|g| {
+                g.tabs
+                    .iter()
+                    .map(|t| {
+                        self.documents
+                            .as_ref()
+                            .is_some_and(|d| d.read(cx).state(&t.path) == Some(&DocState::Deleted))
+                    })
+                    .collect()
+            })
+            .collect();
         let count = self.model.groups().len();
         let focused_group = self.model.active_group();
         let mut row = div()
@@ -216,6 +241,7 @@ impl Render for EditorGroupsView {
                     .to_string_lossy()
                     .into_owned();
                 let show_close = active || self.hovered_tab == Some(id);
+                let deleted = deleted[gi][ti];
                 let hover = color(ui.ghost_element_hover);
                 let close = show_close.then(|| {
                     div()
@@ -273,7 +299,15 @@ impl Render for EditorGroupsView {
                             view.update_model(cx, |m| m.close(id));
                         }),
                     )
-                    .child(div().when(!tab.pinned, |d| d.italic()).child(title))
+                    .child(
+                        div()
+                            .when(!tab.pinned, |d| d.italic())
+                            .when(deleted, |d| {
+                                d.line_through()
+                                    .debug_selector(move || format!("tab-deleted-{gi}-{ti}"))
+                            })
+                            .child(title),
+                    )
                     .child(div().flex_none().size(CLOSE_SLOT).children(close))
             });
             let tab_bar = div()
