@@ -17,7 +17,8 @@ pub struct Keystroke {
 }
 
 impl Keystroke {
-    fn label(&self) -> String {
+    /// Display label, e.g. `"⌘K"` or `"⌃⇧Tab"`.
+    pub fn label(&self) -> String {
         let mut out = String::new();
         for (on, sym) in [
             (self.ctrl, '⌃'),

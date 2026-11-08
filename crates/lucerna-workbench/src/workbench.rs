@@ -1,0 +1,352 @@
+//! The root view: shell layout, view slots and VS Code–style key dispatch.
+
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+
+use gpui::{
+    AnyView, App, Context, DragMoveEvent, FocusHandle, Focusable, IntoElement, KeyDownEvent,
+    ParentElement, Pixels, Render, Styled, Window, div, prelude::*,
+};
+use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
+use serde_json::Value;
+
+use crate::layout::sidebar::SidebarSash;
+use crate::layout::{
+    ACTIVITY_BAR_WIDTH, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide,
+    activity_bar, color, sidebar, status_bar,
+};
+use crate::{AppState, CommandRegistry, keys};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarView {
+    Explorer,
+    Search,
+}
+
+pub struct Workbench {
+    root: PathBuf,
+    commands: Rc<CommandRegistry>,
+    focus: FocusHandle,
+    sidebar_focus: FocusHandle,
+    editor_focus: FocusHandle,
+    sidebar_visible: bool,
+    active_sidebar: SidebarView,
+    sidebar_width: Pixels,
+    explorer_view: Option<AnyView>,
+    search_view: Option<AnyView>,
+    editor_area: Option<AnyView>,
+    status_left: Vec<AnyView>,
+    status_right: Vec<AnyView>,
+    /// Keystrokes of a chord in progress, e.g. `[cmd+k]`.
+    pending_chord: Vec<Keystroke>,
+}
+
+impl Workbench {
+    /// Reads [`AppState`] from the GPUI global, which must be set first.
+    /// Focuses the workbench so key dispatch works from the start.
+    pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        let mut commands = CommandRegistry::default();
+        register_shell_commands(&mut commands);
+        Workbench {
+            root,
+            commands: Rc::new(commands),
+            focus,
+            sidebar_focus: cx.focus_handle(),
+            editor_focus: cx.focus_handle(),
+            sidebar_visible: true,
+            active_sidebar: SidebarView::Explorer,
+            sidebar_width: SIDEBAR_DEFAULT_WIDTH,
+            explorer_view: None,
+            search_view: None,
+            editor_area: None,
+            status_left: Vec::new(),
+            status_right: Vec::new(),
+            pending_chord: Vec::new(),
+        }
+    }
+
+    /// The opened folder.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn commands(&self) -> &CommandRegistry {
+        &self.commands
+    }
+
+    /// For other modules to register their commands at startup.
+    pub fn commands_mut(&mut self) -> &mut CommandRegistry {
+        Rc::make_mut(&mut self.commands)
+    }
+
+    /// Runs a registered command. Returns `false` when `id` is unknown.
+    pub fn run_command(
+        &mut self,
+        id: &str,
+        args: Option<&Value>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // The registry is shared so a handler may borrow `self` mutably.
+        let commands = Rc::clone(&self.commands);
+        commands.run(id, args, self, window, cx)
+    }
+
+    /// The `when`-clause context for key bindings.
+    pub fn context_keys(&self, window: &Window, cx: &App) -> WhenContext {
+        let sidebar_focus = self.sidebar_visible && self.sidebar_focus.contains_focused(window, cx);
+        let mut ctx = WhenContext::default();
+        let mut flag = |key: &str, on: bool| ctx.set(key, ContextValue::Bool(on));
+        flag(
+            "editorFocus",
+            self.editor_focus.contains_focused(window, cx),
+        );
+        flag("sideBarVisible", self.sidebar_visible);
+        flag("sideBarFocus", sidebar_focus);
+        flag(
+            "explorerViewletFocus",
+            sidebar_focus && self.active_sidebar == SidebarView::Explorer,
+        );
+        flag(
+            "searchViewletFocus",
+            sidebar_focus && self.active_sidebar == SidebarView::Search,
+        );
+        // Owned by Quick Open and the find widget once they exist.
+        flag("inQuickOpen", false);
+        flag("findWidgetVisible", false);
+        // Owned by the editor area once it shows files; nothing is open yet.
+        ctx.set("resourceExtname", ContextValue::Str(String::new()));
+        ctx.set("editorLangId", ContextValue::Str(String::new()));
+        ctx
+    }
+
+    pub fn sidebar_visible(&self) -> bool {
+        self.sidebar_visible
+    }
+
+    pub fn active_sidebar(&self) -> SidebarView {
+        self.active_sidebar
+    }
+
+    pub fn sidebar_width(&self) -> Pixels {
+        self.sidebar_width
+    }
+
+    /// Sets the sidebar width, clamped to 160–600 px.
+    pub fn set_sidebar_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        self.sidebar_width = width.clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+        cx.notify();
+    }
+
+    /// Shows or hides the sidebar. Hiding it moves focus out of it.
+    pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sidebar_visible && self.sidebar_focus.contains_focused(window, cx) {
+            self.focus_editor_area(window, cx);
+        }
+        self.sidebar_visible = !self.sidebar_visible;
+        cx.notify();
+    }
+
+    /// Shows the sidebar with `view` active and focuses it.
+    pub fn show_sidebar_view(
+        &mut self,
+        view: SidebarView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_visible = true;
+        self.active_sidebar = view;
+        self.focus_sidebar(window, cx);
+        cx.notify();
+    }
+
+    /// Activity bar click: clicking the active view's icon hides the sidebar.
+    pub(crate) fn activity_clicked(
+        &mut self,
+        view: SidebarView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sidebar_visible && self.active_sidebar == view {
+            self.toggle_sidebar(window, cx);
+        } else {
+            self.show_sidebar_view(view, window, cx);
+        }
+    }
+
+    pub fn focus_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.sidebar_focus, cx);
+        cx.notify();
+    }
+
+    pub fn focus_editor_area(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.editor_focus, cx);
+        cx.notify();
+    }
+
+    /// Puts `view` in the sidebar slot for `kind`; shown while `kind` is active.
+    pub fn set_sidebar_view(&mut self, kind: SidebarView, view: AnyView, cx: &mut Context<Self>) {
+        match kind {
+            SidebarView::Explorer => self.explorer_view = Some(view),
+            SidebarView::Search => self.search_view = Some(view),
+        }
+        cx.notify();
+    }
+
+    /// Replaces the editor area placeholder.
+    pub fn set_editor_area(&mut self, view: AnyView, cx: &mut Context<Self>) {
+        self.editor_area = Some(view);
+        cx.notify();
+    }
+
+    /// Appends an item to one end of the status bar.
+    pub fn add_status_item(&mut self, side: StatusBarSide, view: AnyView, cx: &mut Context<Self>) {
+        match side {
+            StatusBarSide::Left => self.status_left.push(view),
+            StatusBarSide::Right => self.status_right.push(view),
+        }
+        cx.notify();
+    }
+
+    /// The chord typed so far, e.g. `"⌘K"`, while waiting for its next key.
+    pub fn pending_chord_label(&self) -> Option<String> {
+        if self.pending_chord.is_empty() {
+            return None;
+        }
+        Some(
+            self.pending_chord
+                .iter()
+                .map(Keystroke::label)
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
+
+    /// Resolves the key against the user keymap (GPUI's own keymap is not
+    /// used). Runs in the capture phase so bindings win over child views;
+    /// unbound keys propagate to them.
+    fn dispatch_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let stroke = keys::to_keystroke(ev);
+        let ctx = self.context_keys(window, cx);
+        let had_pending = !self.pending_chord.is_empty();
+        let mut chord = std::mem::take(&mut self.pending_chord);
+        chord.push(stroke.clone());
+        let keymap = &cx.global::<AppState>().keymap;
+        let mut resolution = keymap.resolve(&chord, &ctx);
+        if had_pending && resolution == Resolution::NoMatch {
+            // VS Code: a key that breaks a chord is tried again on its own.
+            chord = vec![stroke];
+            resolution = keymap.resolve(&chord, &ctx);
+        }
+        match resolution {
+            Resolution::Command { command, args } => {
+                cx.stop_propagation();
+                self.run_command(&command, args.as_ref(), window, cx);
+            }
+            Resolution::Pending => {
+                cx.stop_propagation();
+                self.pending_chord = chord;
+            }
+            Resolution::NoMatch => {}
+        }
+        if had_pending || !self.pending_chord.is_empty() {
+            cx.notify();
+        }
+    }
+}
+
+fn register_shell_commands(commands: &mut CommandRegistry) {
+    commands.register(
+        "workbench.action.toggleSidebarVisibility",
+        "View: Toggle Primary Side Bar Visibility",
+        |wb, _, window, cx| wb.toggle_sidebar(window, cx),
+    );
+    commands.register(
+        "workbench.view.explorer",
+        "View: Show Explorer",
+        |wb, _, window, cx| wb.show_sidebar_view(SidebarView::Explorer, window, cx),
+    );
+    commands.register(
+        "workbench.view.search",
+        "View: Show Search",
+        |wb, _, window, cx| wb.show_sidebar_view(SidebarView::Search, window, cx),
+    );
+}
+
+impl Focusable for Workbench {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for Workbench {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<AppState>().theme.clone();
+        let ui = &theme.ui;
+        let sidebar_slot = match self.active_sidebar {
+            SidebarView::Explorer => self.explorer_view.clone(),
+            SidebarView::Search => self.search_view.clone(),
+        };
+        let editor_area = div()
+            .id("editor-area")
+            .track_focus(&self.editor_focus)
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .bg(color(ui.editor_background))
+            .children(self.editor_area.clone())
+            .when(self.editor_area.is_none(), |area| {
+                area.justify_center()
+                    .items_center()
+                    .text_color(color(ui.text_muted))
+                    .child("Lucerna")
+            });
+
+        div()
+            .id("workbench")
+            .track_focus(&self.focus)
+            .capture_key_down(cx.listener(Self::dispatch_key))
+            .on_drag_move(cx.listener(|wb, ev: &DragMoveEvent<SidebarSash>, _, cx| {
+                wb.set_sidebar_width(ev.event.position.x - ACTIVITY_BAR_WIDTH, cx)
+            }))
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(color(ui.background))
+            .text_color(color(ui.text))
+            .text_sm()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(activity_bar::render(
+                        self.active_sidebar,
+                        self.sidebar_visible,
+                        ui,
+                        cx,
+                    ))
+                    .when(self.sidebar_visible, |row| {
+                        row.child(sidebar::render(
+                            self.sidebar_width,
+                            self.active_sidebar,
+                            sidebar_slot,
+                            &self.sidebar_focus,
+                            ui,
+                        ))
+                    })
+                    .child(editor_area),
+            )
+            .child(status_bar::render(
+                &self.status_left,
+                self.pending_chord_label(),
+                &self.status_right,
+                ui,
+            ))
+    }
+}
