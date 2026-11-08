@@ -85,6 +85,19 @@ fn lookup<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
 }
 
 fn parse_object(text: &str) -> Result<Map<String, Value>, SettingsError> {
+    match parse_jsonc(text)? {
+        None => Ok(Map::new()),
+        Some(Value::Object(map)) => Ok(map),
+        Some(_) => Err(SettingsError {
+            message: "settings must be a JSON object".into(),
+            line: None,
+        }),
+    }
+}
+
+/// Parses JSONC (comments and trailing commas allowed, missing commas
+/// rejected). `None` means the text holds no value (empty or comments only).
+pub(crate) fn parse_jsonc(text: &str) -> Result<Option<Value>, SettingsError> {
     let options = ParseOptions {
         allow_comments: true,
         allow_trailing_commas: true,
@@ -97,17 +110,11 @@ fn parse_object(text: &str) -> Result<Map<String, Value>, SettingsError> {
     let ast = parse_to_ast(text, &collect, &options)
         .map_err(|e| error_at(text, e.range().start, e.to_string()))?;
     let Some(root) = ast.value else {
-        return Ok(Map::new());
+        return Ok(None);
     };
     // The parser accepts a missing comma between members; JSONC does not.
     check_separators(text, &root)?;
-    match Value::from(root) {
-        Value::Object(map) => Ok(map),
-        _ => Err(SettingsError {
-            message: "settings must be a JSON object".into(),
-            line: None,
-        }),
-    }
+    Ok(Some(Value::from(root)))
 }
 
 fn error_at(text: &str, offset: usize, message: String) -> SettingsError {

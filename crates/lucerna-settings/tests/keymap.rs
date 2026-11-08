@@ -1,0 +1,149 @@
+use lucerna_settings::{Context, ContextValue, Keymap, Resolution, parse_keys};
+
+fn defaults() -> Keymap {
+    Keymap::load(Keymap::default_bindings(), None).0
+}
+
+fn keys(s: &str) -> Vec<lucerna_settings::Keystroke> {
+    parse_keys(s).unwrap()
+}
+
+fn command(r: Resolution) -> String {
+    match r {
+        Resolution::Command { command, .. } => command,
+        other => panic!("expected command, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_modifiers() {
+    let k = keys("cmd+shift+p");
+    assert_eq!(k.len(), 1);
+    assert!(k[0].cmd && k[0].shift && !k[0].ctrl && !k[0].alt);
+    assert_eq!(k[0].key, "p");
+}
+
+#[test]
+fn parses_chord() {
+    assert_eq!(keys("cmd+k cmd+t").len(), 2);
+    assert!(parse_keys("").is_err());
+    assert!(parse_keys("cmd+").is_err());
+}
+
+#[test]
+fn default_cmd_p_resolves() {
+    let r = defaults().resolve(&keys("cmd+p"), &Context::default());
+    assert_eq!(command(r), "workbench.action.quickOpen");
+}
+
+#[test]
+fn chord_pending_then_command() {
+    let km = defaults();
+    let ctx = Context::default();
+    assert_eq!(km.resolve(&keys("cmd+k"), &ctx), Resolution::Pending);
+    let r = km.resolve(&keys("cmd+k cmd+t"), &ctx);
+    assert_eq!(command(r), "workbench.action.selectTheme");
+    assert_eq!(km.resolve(&keys("cmd+k cmd+x"), &ctx), Resolution::NoMatch);
+}
+
+#[test]
+fn when_gates_binding() {
+    let km = defaults();
+    let mut ctx = Context::default();
+    assert_eq!(km.resolve(&keys("escape"), &ctx), Resolution::NoMatch);
+    ctx.set("findWidgetVisible", ContextValue::Bool(true));
+    assert_eq!(
+        command(km.resolve(&keys("escape"), &ctx)),
+        "closeFindWidget"
+    );
+}
+
+#[test]
+fn later_binding_wins() {
+    let user = r#"[{"key":"cmd+p","command":"foo"}]"#;
+    let (km, err) = Keymap::load(Keymap::default_bindings(), Some(user));
+    assert!(err.is_none());
+    assert_eq!(
+        command(km.resolve(&keys("cmd+p"), &Context::default())),
+        "foo"
+    );
+}
+
+#[test]
+fn minus_removes_default() {
+    let user = r#"[{"key":"cmd+b","command":"-workbench.action.toggleSidebarVisibility"}]"#;
+    let (km, err) = Keymap::load(Keymap::default_bindings(), Some(user));
+    assert!(err.is_none());
+    assert_eq!(
+        km.resolve(&keys("cmd+b"), &Context::default()),
+        Resolution::NoMatch
+    );
+}
+
+#[test]
+fn minus_with_when_removes_only_matching_when() {
+    let user = r#"[{"key":"escape","command":"-closeFindWidget","when":"findWidgetVisible"}]"#;
+    let (km, _) = Keymap::load(Keymap::default_bindings(), Some(user));
+    let mut ctx = Context::default();
+    ctx.set("findWidgetVisible", ContextValue::Bool(true));
+    assert_eq!(km.resolve(&keys("escape"), &ctx), Resolution::NoMatch);
+    // A different `when` does not match, so the default stays.
+    let user = r#"[{"key":"escape","command":"-closeFindWidget","when":"other"}]"#;
+    let (km, _) = Keymap::load(Keymap::default_bindings(), Some(user));
+    assert_eq!(
+        command(km.resolve(&keys("escape"), &ctx)),
+        "closeFindWidget"
+    );
+}
+
+#[test]
+fn broken_user_file_falls_back() {
+    let (km, err) = Keymap::load(Keymap::default_bindings(), Some("["));
+    assert!(err.is_some());
+    assert_eq!(
+        command(km.resolve(&keys("cmd+p"), &Context::default())),
+        "workbench.action.quickOpen"
+    );
+}
+
+#[test]
+fn bad_user_entry_falls_back() {
+    let (km, err) = Keymap::load(Keymap::default_bindings(), Some(r#"[{"key":"cmd+p"}]"#));
+    assert!(err.is_some());
+    assert_eq!(
+        command(km.resolve(&keys("cmd+p"), &Context::default())),
+        "workbench.action.quickOpen"
+    );
+}
+
+#[test]
+fn label_for_quick_open() {
+    let km = defaults();
+    assert_eq!(
+        km.label_for("workbench.action.quickOpen"),
+        Some("⌘P".into())
+    );
+    assert_eq!(
+        km.label_for("workbench.action.selectTheme"),
+        Some("⌘K ⌘T".into())
+    );
+    assert_eq!(
+        km.label_for("workbench.action.quickOpenPreviousRecentlyUsedEditorInGroup"),
+        Some("⌃Tab".into())
+    );
+    assert_eq!(km.label_for("closeFindWidget"), Some("Esc".into()));
+    assert_eq!(km.label_for("nope"), None);
+}
+
+#[test]
+fn defaults_all_parse() {
+    // The bundled asset must load without error and include cmd+1..8, not 9.
+    let (km, err) = Keymap::load(Keymap::default_bindings(), None);
+    assert!(err.is_none());
+    let ctx = Context::default();
+    assert_eq!(
+        command(km.resolve(&keys("cmd+8"), &ctx)),
+        "workbench.action.focusEighthEditorGroup"
+    );
+    assert_eq!(km.resolve(&keys("cmd+9"), &ctx), Resolution::NoMatch);
+}
