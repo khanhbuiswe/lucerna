@@ -1,0 +1,37 @@
+[graph]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+
+[advisories]
+# Unmaintained notices for gpui's transitive deps (paste, rustybuzz, ttf-parser)
+# are not actionable by us; only flag unmaintained crates we depend on directly.
+unmaintained = "workspace"
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# The Zed repo, plus the font-kit fork it pins for glyph rasterization.
+allow-git = [
+    "https://github.com/zed-industries/zed",
+    "https://github.com/zed-industries/font-kit",
+]

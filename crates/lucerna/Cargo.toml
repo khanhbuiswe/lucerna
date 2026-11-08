@@ -1,0 +1,17 @@
+[package]
+name = "lucerna"
+description = "Lucerna: a read-only code viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "luc"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
