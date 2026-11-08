@@ -1,6 +1,6 @@
 //! Opens an 800x600 window showing "Lucerna". Used to verify the GPUI pin.
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, Window, WindowBounds, WindowOptions,
+    App, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
 

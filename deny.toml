@@ -1,3 +1,4 @@
+# Phase 1 is macOS-only, so the gate checks macOS targets only.
 [graph]
 targets = [
     "aarch64-apple-darwin",
