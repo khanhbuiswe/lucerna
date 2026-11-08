@@ -89,7 +89,8 @@ impl WorktreeSnapshot {
 }
 
 /// Depth-first order: at the first differing component, directories come
-/// before files, then names compare case-insensitively. Allocation-free.
+/// before files, then names compare case-insensitively. Allocation-free for
+/// valid UTF-8 names (lossy conversion borrows; lowercasing is lazy).
 fn compare_entries(a: &Entry, b: &Entry) -> Ordering {
     let mut ai = a.path.components();
     let mut bi = b.path.components();
@@ -111,7 +112,11 @@ fn compare_entries(a: &Entry, b: &Entry) -> Ordering {
         );
         return b_dir
             .cmp(&a_dir)
-            .then_with(|| an.to_lowercase().cmp(&bn.to_lowercase()))
+            .then_with(|| {
+                an.chars()
+                    .flat_map(char::to_lowercase)
+                    .cmp(bn.chars().flat_map(char::to_lowercase))
+            })
             .then_with(|| an.cmp(&bn));
     }
 }
