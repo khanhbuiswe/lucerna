@@ -123,6 +123,10 @@ pub struct ConfigState {
     errors: BTreeMap<ConfigFile, ConfigError>,
     watcher: Option<ConfigWatcher>,
     _pump: Task<()>,
+    /// A theme picker is previewing: reloads leave the active theme alone.
+    theme_preview: bool,
+    /// Bumped by every keymap load.
+    keymap_generation: u64,
 }
 
 impl gpui::Global for ConfigState {}
@@ -130,6 +134,12 @@ impl gpui::Global for ConfigState {}
 impl ConfigState {
     pub fn paths(&self) -> &ConfigPaths {
         &self.paths
+    }
+
+    /// Bumped each time keybindings are loaded into [`AppState`], so the
+    /// workbench can drop a chord typed against the old keymap.
+    pub fn keymap_generation(&self) -> u64 {
+        self.keymap_generation
     }
 
     /// Files that failed to load, user settings first.
@@ -165,6 +175,8 @@ pub fn watch_config(paths: ConfigPaths, cx: &mut App) {
         errors: BTreeMap::new(),
         watcher,
         _pump: pump,
+        theme_preview: false,
+        keymap_generation: 0,
     });
     load(
         [
@@ -224,6 +236,7 @@ fn load(files: impl IntoIterator<Item = ConfigFile>, cx: &mut App) {
                 let result = read(&path).and_then(|text| {
                     match Keymap::load(Keymap::default_bindings(), text.as_deref()) {
                         (keymap, None) => {
+                            cx.global_mut::<ConfigState>().keymap_generation += 1;
                             cx.global_mut::<AppState>().keymap = keymap;
                             Ok(())
                         }
@@ -245,7 +258,22 @@ fn load(files: impl IntoIterator<Item = ConfigFile>, cx: &mut App) {
             }
         }
     }
-    apply_configured_theme(cx);
+    if !cx.global::<ConfigState>().theme_preview {
+        apply_configured_theme(cx);
+    }
+}
+
+/// While `previewing`, reloads keep the theme a picker shows. Does
+/// nothing without configuration files.
+pub(crate) fn set_theme_preview(previewing: bool, cx: &mut App) {
+    if cx.has_global::<ConfigState>() {
+        cx.global_mut::<ConfigState>().theme_preview = previewing;
+    }
+}
+
+/// Shows `error` for `file` in the status bar until the file next loads.
+pub(crate) fn record_error(file: ConfigFile, path: PathBuf, error: SettingsError, cx: &mut App) {
+    record(file, path, Err(error), cx);
 }
 
 fn load_settings(file: ConfigFile, layer: Layer, path: PathBuf, cx: &mut App) {

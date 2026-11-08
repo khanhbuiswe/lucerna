@@ -309,10 +309,12 @@ impl CodeView {
     /// Re-reads the `editor.*` settings and applies what changed:
     /// font, line height, wrap, minimap, whitespace, tab size and the
     /// large-file limits. Font-size zoom and the wrap toggle survive
-    /// unless their setting changed. Called on every [`AppState`] change.
+    /// unless their setting changed, and the top visible row stays. Called on every [`AppState`] change.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
         let (config, font_size, word_wrap) = Config::read(cx);
+        let old_line_height = self.line_height();
         let mut changed = false;
+        let mut wrap_changed = false;
         if font_size != self.settings_font_size {
             self.settings_font_size = font_size;
             self.font_size = font_size;
@@ -322,6 +324,7 @@ impl CodeView {
             self.settings_word_wrap = word_wrap;
             self.word_wrap = word_wrap;
             self.scroll_x = 0.;
+            wrap_changed = true;
             changed = true;
         }
         if config != self.config {
@@ -340,7 +343,13 @@ impl CodeView {
         }
         if changed {
             self.caches.layout_changed();
-            self.scroll.offset = 0.;
+            // The top buffer row stays; the part of it scrolled out keeps
+            // its share of the (maybe new) line height.
+            self.scroll.offset = if wrap_changed {
+                0.
+            } else {
+                self.scroll.offset * self.line_height() / old_line_height
+            };
             self.max_line_width = 0.;
             cx.notify();
         }

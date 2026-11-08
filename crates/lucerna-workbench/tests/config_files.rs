@@ -514,3 +514,100 @@ fn config_paths_layout() {
         home.user_dir
     );
 }
+
+#[gpui::test]
+fn reload_mid_preview_keeps_preview(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+
+    keys("cmd-k cmd-t", cx);
+    keys("down", cx);
+    assert_eq!(theme_name(cx), "One Light");
+    // Unrelated reloads arrive while the preview is shown.
+    write(&dirs.settings(), "{ \"editor.fontSize\": 15 }", cx);
+    write(&dirs.keybindings(), "[]", cx);
+    assert_eq!(theme_name(cx), "One Light", "the preview survives reloads");
+    assert!(theme_picker(&wb, cx).is_some());
+
+    // Escape goes back to the configured theme, as last loaded.
+    write(
+        &dirs.settings(),
+        "{ \"workbench.colorTheme\": \"One Light\" }",
+        cx,
+    );
+    keys("up", cx);
+    assert_eq!(theme_name(cx), "One Dark");
+    keys("escape", cx);
+    assert_eq!(theme_name(cx), "One Light");
+    // Closed: reloads apply the configured theme again.
+    write(
+        &dirs.settings(),
+        "{ \"workbench.colorTheme\": \"One Dark\" }",
+        cx,
+    );
+    assert_eq!(theme_name(cx), "One Dark");
+}
+
+#[gpui::test]
+fn failed_theme_save_keeps_picker_open(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let broken = "{ \"editor.fontSize\": ";
+    std::fs::write(dirs.settings(), broken).unwrap();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    keys("cmd-k cmd-t", cx);
+    keys("down", cx);
+    assert_eq!(theme_name(cx), "One Light");
+    keys("enter", cx);
+
+    assert!(theme_picker(&wb, cx).is_some(), "the picker stays open");
+    assert_eq!(theme_name(cx), "One Dark", "the preview is reverted");
+    assert_eq!(std::fs::read_to_string(dirs.settings()).unwrap(), broken);
+    let errors = error_texts(cx);
+    assert!(
+        errors.iter().any(|e| e.starts_with("settings.json: ")),
+        "{errors:?}"
+    );
+    assert!(cx.debug_bounds("settings-error").is_some());
+}
+
+#[gpui::test]
+fn keymap_reload_drops_pending_chord(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    keys("cmd-k", cx);
+    assert!(wb.read_with(cx, |wb, _| wb.pending_chord_label()).is_some());
+
+    write(&dirs.keybindings(), "[]", cx);
+
+    assert_eq!(wb.read_with(cx, |wb, _| wb.pending_chord_label()), None);
+}
+
+#[gpui::test]
+fn settings_change_keeps_scroll_position(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let long: String = (1..=300).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(dirs.root.path().join("long.txt"), long).unwrap();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("long.txt")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    let view = active_view(&wb, cx);
+    view.update(cx, |v, cx| v.set_scroll_top_row(120, cx));
+    draw(cx);
+
+    write(&dirs.settings(), "{ \"editor.fontSize\": 18 }", cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).font_size()), 18.);
+    assert_eq!(cx.update(|_, cx| view.read(cx).scroll_top_row()), 120);
+
+    write(
+        &dirs.settings(),
+        "{ \"editor.fontSize\": 18, \"editor.minimap.enabled\": false }",
+        cx,
+    );
+    assert_eq!(cx.update(|_, cx| view.read(cx).scroll_top_row()), 120);
+}

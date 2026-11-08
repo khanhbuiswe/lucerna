@@ -16,7 +16,7 @@ use lucerna_text::Point;
 use serde_json::Value;
 
 use crate::code_view::{self, CodeView, LargeFileStatus};
-use crate::config_files::{self, ConfigErrorItem};
+use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::documents::{DocumentStatusItem, Documents};
 use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode};
 use crate::explorer::ExplorerView;
@@ -46,6 +46,8 @@ pub struct Workbench {
     scan_options: ScanOptions,
     /// Re-themes and rescans when [`AppState`] changes.
     _settings: Subscription,
+    /// [`ConfigState::keymap_generation`] as last seen.
+    keymap_generation: u64,
     explorer: Entity<ExplorerView>,
     /// The Search panel, installed in the Search sidebar slot.
     search_panel: Entity<SearchPanel>,
@@ -150,6 +152,7 @@ impl Workbench {
             worktree,
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
+            keymap_generation: keymap_generation(cx),
             _worktree_events: worktree_events,
             commands: Rc::new(commands),
             focus,
@@ -205,12 +208,19 @@ impl Workbench {
     }
 
     /// After any [`AppState`] change: rescans when `files.exclude`
-    /// changed, and redraws (the theme may have changed).
+    /// changed, drops a pending chord when the keymap was reloaded, and
+    /// redraws (the theme may have changed).
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
         let exclude = enabled_globs(cx, "files.exclude");
         if exclude != self.scan_options.exclude {
             self.scan_options = ScanOptions { exclude };
             self.worktree.set_options(self.scan_options.clone());
+        }
+        // A chord typed against the old keymap means nothing now.
+        let generation = keymap_generation(cx);
+        if generation != self.keymap_generation {
+            self.keymap_generation = generation;
+            self.pending_chord.clear();
         }
         cx.notify();
     }
@@ -546,6 +556,11 @@ fn extname(path: &Path) -> String {
             .map(|n| n.into_owned())
             .unwrap_or_default(),
     }
+}
+
+fn keymap_generation(cx: &App) -> u64 {
+    cx.try_global::<ConfigState>()
+        .map_or(0, ConfigState::keymap_generation)
 }
 
 /// The globs of a glob → bool setting such as `files.exclude` that are

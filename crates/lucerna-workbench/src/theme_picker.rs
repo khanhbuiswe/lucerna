@@ -17,7 +17,10 @@ use jsonc_parser::{CollectOptions, CommentCollectionStrategy, ParseOptions, ast,
 use lucerna_settings::{Layer, SettingsError, SettingsStore};
 use lucerna_theme::Theme;
 
-use crate::config_files::{ConfigState, USER_SETTINGS_TEMPLATE, reload_config};
+use crate::config_files::{
+    ConfigFile, ConfigState, USER_SETTINGS_TEMPLATE, apply_configured_theme, record_error,
+    reload_config, set_theme_preview,
+};
 use crate::quick_open::picker::{
     fuzzy_filter, highlighted, picker_input_row, picker_list, picker_row, wrap_index,
 };
@@ -168,7 +171,8 @@ impl Render for ThemePicker {
 pub(crate) struct ShownThemePicker {
     picker: Entity<ThemePicker>,
     _events: Subscription,
-    /// The theme before the picker opened; Escape restores it.
+    /// The theme before the picker opened. Escape restores it when no
+    /// configuration files are loaded (no [`ConfigState`]).
     original: Arc<Theme>,
     focus_before: Option<FocusHandle>,
 }
@@ -200,6 +204,7 @@ impl Workbench {
         let events = cx.subscribe_in(&picker, window, Self::on_theme_picker_event);
         let focus_before = window.focused(cx);
         window.focus(&picker.focus_handle(cx), cx);
+        set_theme_preview(true, cx);
         self.theme_picker = Some(ShownThemePicker {
             picker,
             _events: events,
@@ -209,8 +214,10 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Closes the theme picker; `revert` puts the theme from before it
-    /// opened back.
+    /// Closes the theme picker. `revert` makes the configured theme
+    /// (`workbench.colorTheme` as last loaded, so a reload during the
+    /// preview counts) active again; without configuration files, the
+    /// theme from before the picker opened.
     pub(crate) fn close_theme_picker(
         &mut self,
         revert: bool,
@@ -220,8 +227,9 @@ impl Workbench {
         let Some(shown) = self.theme_picker.take() else {
             return;
         };
+        set_theme_preview(false, cx);
         if revert {
-            cx.global_mut::<AppState>().set_theme(shown.original);
+            revert_preview(shown.original, cx);
         }
         let focused = window.focused(cx);
         if focused.is_none() || shown.picker.focus_handle(cx).contains_focused(window, cx) {
@@ -246,41 +254,69 @@ impl Workbench {
                     cx.global_mut::<AppState>().set_theme(theme);
                 }
             }
-            ThemePickerEvent::Confirm(name) => {
-                if let Some(theme) = cx.global::<AppState>().themes.get(name) {
-                    cx.global_mut::<AppState>().set_theme(theme);
+            ThemePickerEvent::Confirm(name) => match save_color_theme(name, cx) {
+                Ok(()) => {
+                    if let Some(theme) = cx.global::<AppState>().themes.get(name) {
+                        cx.global_mut::<AppState>().set_theme(theme);
+                    }
+                    self.close_theme_picker(false, window, cx);
+                    if let Some(path) = cx
+                        .try_global::<ConfigState>()
+                        .map(|s| s.paths().user_settings())
+                    {
+                        reload_config(&[path], cx);
+                    }
                 }
-                self.close_theme_picker(false, window, cx);
-                save_color_theme(name, cx);
-            }
+                // The picker stays open; the status bar shows why.
+                Err(()) => {
+                    if let Some(shown) = &self.theme_picker {
+                        revert_preview(shown.original.clone(), cx);
+                    }
+                }
+            },
             ThemePickerEvent::Dismiss => self.close_theme_picker(true, window, cx),
         }
     }
 }
 
-/// Writes `name` as `workbench.colorTheme` into the user `settings.json`
-/// and applies the file. A file that does not parse is left alone.
-fn save_color_theme(name: &str, cx: &mut App) {
-    let Some(state) = cx.try_global::<ConfigState>() else {
-        tracing::warn!("watch_config was not called: the theme is not saved");
-        return;
-    };
-    let path = state.paths().user_settings();
-    match write_color_theme(&path, name) {
-        Ok(()) => reload_config(&[path], cx),
-        Err(err) => tracing::error!(path = %path.display(), %err, "could not save the theme"),
+/// Makes the configured theme active again, or `original` when no
+/// configuration files are loaded.
+fn revert_preview(original: Arc<Theme>, cx: &mut App) {
+    if cx.has_global::<ConfigState>() {
+        apply_configured_theme(cx);
+    } else {
+        cx.global_mut::<AppState>().set_theme(original);
     }
 }
 
-fn write_color_theme(path: &Path, name: &str) -> io::Result<()> {
+/// Writes `name` as `workbench.colorTheme` into the user `settings.json`.
+/// A file that cannot be read or does not parse is left alone and the
+/// failure is shown as its configuration error. Without configuration
+/// files (no [`ConfigState`]) there is nothing to write.
+fn save_color_theme(name: &str, cx: &mut App) -> Result<(), ()> {
+    let Some(state) = cx.try_global::<ConfigState>() else {
+        tracing::warn!("watch_config was not called: the theme is not saved");
+        return Ok(());
+    };
+    let path = state.paths().user_settings();
+    write_color_theme(&path, name).map_err(|error| {
+        tracing::error!(path = %path.display(), %error, "could not save the theme");
+        record_error(ConfigFile::UserSettings, path, error, cx);
+    })
+}
+
+fn write_color_theme(path: &Path, name: &str) -> Result<(), SettingsError> {
+    let io_error = |e: io::Error| SettingsError {
+        message: e.to_string(),
+        line: None,
+    };
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) if err.kind() == io::ErrorKind::NotFound => USER_SETTINGS_TEMPLATE.to_string(),
-        Err(err) => return Err(err),
+        Err(err) => return Err(io_error(err)),
     };
-    let updated = set_string_setting(&text, COLOR_THEME_KEY, name)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    write_atomically(path, &updated)
+    let updated = set_string_setting(&text, COLOR_THEME_KEY, name)?;
+    write_atomically(path, &updated).map_err(io_error)
 }
 
 /// Writes a sibling temp file and renames it over `path` (over the file a
@@ -306,7 +342,8 @@ fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
 }
 
 /// `text` (a JSONC object) with the top-level `key` set to the string
-/// `value`: an existing value is replaced in place, else the member is
+/// `value`: an existing value (the last one, when the key is duplicated)
+/// is replaced in place, else the member is
 /// appended before the closing `}`. Comments and formatting elsewhere are
 /// kept.
 pub(crate) fn set_string_setting(
@@ -335,7 +372,13 @@ pub(crate) fn set_string_setting(
         };
         return Ok(format!("{text}{sep}{{\n  \"{key}\": {quoted}\n}}\n"));
     };
-    if let Some(prop) = object.properties.iter().find(|p| p.name.as_str() == key) {
+    // The store reads the last of duplicate keys, so edit that one.
+    if let Some(prop) = object
+        .properties
+        .iter()
+        .rev()
+        .find(|p| p.name.as_str() == key)
+    {
         let range = prop.value.range();
         return Ok(format!(
             "{}{quoted}{}",
@@ -401,6 +444,44 @@ mod tests {
         assert_eq!(
             set("{ \"x\": { \"workbench.colorTheme\": 1 } }"),
             "{ \"x\": { \"workbench.colorTheme\": 1 },\n  \"workbench.colorTheme\": \"One Light\"\n}"
+        );
+    }
+
+    #[test]
+    fn edits_the_last_duplicate_key() {
+        let text = "{\n  \"workbench.colorTheme\": \"A\",\n  \"workbench.colorTheme\": \"B\"\n}";
+        let updated = set(text);
+        assert_eq!(
+            updated,
+            "{\n  \"workbench.colorTheme\": \"A\",\n  \"workbench.colorTheme\": \"One Light\"\n}"
+        );
+        let mut store = SettingsStore::default();
+        store.set_layer(Layer::User, &updated).unwrap();
+        assert_eq!(
+            store.get::<String>(COLOR_THEME_KEY, None).as_deref(),
+            Some("One Light")
+        );
+    }
+
+    #[test]
+    fn language_override_is_left_alone() {
+        let text = "{\n  \"[rust]\": { \"workbench.colorTheme\": \"A\" }\n}";
+        let updated = set(text);
+        assert_eq!(
+            updated,
+            "{\n  \"[rust]\": { \"workbench.colorTheme\": \"A\" },\n  \"workbench.colorTheme\": \"One Light\"\n}"
+        );
+        let mut store = SettingsStore::default();
+        store.set_layer(Layer::User, &updated).unwrap();
+        assert_eq!(
+            store.get::<String>(COLOR_THEME_KEY, None).as_deref(),
+            Some("One Light")
+        );
+        assert_eq!(
+            store
+                .get::<String>(COLOR_THEME_KEY, Some("rust"))
+                .as_deref(),
+            Some("A")
         );
     }
 
