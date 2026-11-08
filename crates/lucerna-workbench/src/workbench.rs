@@ -42,9 +42,16 @@ pub struct Workbench {
 }
 
 impl Workbench {
-    /// Reads [`AppState`] from the GPUI global, which must be set first.
     /// Focuses the workbench so key dispatch works from the start.
+    ///
+    /// # Panics
+    /// If the [`AppState`] global is not set: rendering and key dispatch
+    /// read the theme and keymap from it.
     pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        assert!(
+            cx.has_global::<AppState>(),
+            "set the AppState global before creating the Workbench"
+        );
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let mut commands = CommandRegistry::default();
@@ -201,6 +208,27 @@ impl Workbench {
         cx.notify();
     }
 
+    /// The view in the sidebar slot for `kind`, if one was set.
+    pub fn sidebar_view(&self, kind: SidebarView) -> Option<&AnyView> {
+        match kind {
+            SidebarView::Explorer => self.explorer_view.as_ref(),
+            SidebarView::Search => self.search_view.as_ref(),
+        }
+    }
+
+    /// The view in the editor area, if one replaced the placeholder.
+    pub fn editor_area(&self) -> Option<&AnyView> {
+        self.editor_area.as_ref()
+    }
+
+    /// The status bar items on `side`, in order.
+    pub fn status_items(&self, side: StatusBarSide) -> &[AnyView] {
+        match side {
+            StatusBarSide::Left => &self.status_left,
+            StatusBarSide::Right => &self.status_right,
+        }
+    }
+
     /// Appends an item to one end of the status bar.
     pub fn add_status_item(&mut self, side: StatusBarSide, view: AnyView, cx: &mut Context<Self>) {
         match side {
@@ -226,7 +254,12 @@ impl Workbench {
 
     /// Resolves the key against the user keymap (GPUI's own keymap is not
     /// used). Runs in the capture phase so bindings win over child views;
-    /// unbound keys propagate to them.
+    /// unbound keys, and keys bound to commands nobody registered,
+    /// propagate to them.
+    ///
+    /// Because this runs before any text input sees the key, a binding for
+    /// a plain character (no cmd/ctrl/alt) must carry a `when` clause, or it
+    /// swallows that character in every text input.
     fn dispatch_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let stroke = keys::to_keystroke(ev);
         let ctx = self.context_keys(window, cx);
@@ -242,8 +275,11 @@ impl Workbench {
         }
         match resolution {
             Resolution::Command { command, args } => {
-                cx.stop_propagation();
-                self.run_command(&command, args.as_ref(), window, cx);
+                if self.run_command(&command, args.as_ref(), window, cx) {
+                    cx.stop_propagation();
+                } else {
+                    tracing::debug!(command, "key bound to an unregistered command");
+                }
             }
             Resolution::Pending => {
                 cx.stop_propagation();

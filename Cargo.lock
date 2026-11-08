@@ -3068,6 +3068,7 @@ dependencies = [
  "lucerna-settings",
  "lucerna-theme",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

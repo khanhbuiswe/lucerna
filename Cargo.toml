@@ -65,6 +65,14 @@ insta = "1"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "b5cd310b3b54dfc659fcc06453e6358843dfe216" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "b5cd310b3b54dfc659fcc06453e6358843dfe216", features = ["font-kit", "runtime_shaders"] }
 
+# Keep build output small: the dev disk is tight. `test` inherits from `dev`.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
 # Keep hot paths fast in debug builds.
 [profile.dev.package.tree-sitter]
 opt-level = 3

@@ -3,10 +3,13 @@
 
 use std::path::PathBuf;
 
-use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
+use gpui::{
+    AnyView, Context as ViewContext, Entity, FocusHandle, KeyDownEvent, Modifiers, MouseButton,
+    Render, TestAppContext, VisualTestContext, Window, div, point, prelude::*, px,
+};
 use lucerna_settings::{Context, Keymap, SettingsStore, parse_when};
 use lucerna_theme::ThemeRegistry;
-use lucerna_workbench::{AppState, SidebarView, Workbench};
+use lucerna_workbench::{AppState, SidebarView, StatusBarSide, Workbench};
 
 fn init(cx: &mut TestAppContext, user_keymap: Option<&str>) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), user_keymap);
@@ -218,4 +221,119 @@ fn dragging_sash_resizes_sidebar(cx: &mut TestAppContext) {
         Modifiers::none(),
     );
     assert_eq!(wb.read_with(cx, |wb, _| wb.sidebar_width()), px(160.));
+}
+
+/// A focusable child view that counts renders and records keys it receives.
+struct Probe {
+    focus: FocusHandle,
+    renders: usize,
+    keys: Vec<String>,
+}
+
+impl Probe {
+    fn new(cx: &mut TestAppContext) -> Entity<Probe> {
+        cx.new(|cx| Probe {
+            focus: cx.focus_handle(),
+            renders: 0,
+            keys: Vec::new(),
+        })
+    }
+}
+
+impl Render for Probe {
+    fn render(&mut self, _: &mut Window, cx: &mut ViewContext<Self>) -> impl IntoElement {
+        self.renders += 1;
+        div()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|probe, ev: &KeyDownEvent, _, _| {
+                probe.keys.push(ev.keystroke.key.clone());
+            }))
+            .size_full()
+    }
+}
+
+fn draw(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+fn focus(probe: &Entity<Probe>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        let handle = probe.read(cx).focus.clone();
+        window.focus(&handle, cx);
+    });
+}
+
+fn same(view: Option<&AnyView>, probe: &Entity<Probe>) -> bool {
+    view.is_some_and(|v| v.entity_id() == probe.entity_id())
+}
+
+#[gpui::test]
+fn unregistered_command_key_propagates_to_children(cx: &mut TestAppContext) {
+    init(cx, None);
+    let probe = Probe::new(cx);
+    let (wb, cx) = open(cx);
+    wb.update(cx, |wb, cx| wb.set_editor_area(probe.clone().into(), cx));
+    draw(cx);
+    focus(&probe, cx);
+    // Bound to workbench.action.findInFiles, which nothing registered yet.
+    cx.simulate_keystrokes("cmd-shift-f");
+    // Bound to a registered command: consumed by the workbench.
+    cx.simulate_keystrokes("cmd-b");
+    assert_eq!(
+        probe.read_with(cx, |p, _| p.keys.clone()),
+        vec!["f".to_string()]
+    );
+}
+
+#[gpui::test]
+fn slots_show_views_and_track_focus(cx: &mut TestAppContext) {
+    init(cx, None);
+    let search = Probe::new(cx);
+    let editor = Probe::new(cx);
+    let left = Probe::new(cx);
+    let right = Probe::new(cx);
+    let (wb, cx) = open(cx);
+    wb.update(cx, |wb, cx| {
+        wb.set_sidebar_view(SidebarView::Search, search.clone().into(), cx);
+        wb.set_editor_area(editor.clone().into(), cx);
+        wb.add_status_item(StatusBarSide::Left, left.clone().into(), cx);
+        wb.add_status_item(StatusBarSide::Right, right.clone().into(), cx);
+    });
+    wb.read_with(cx, |wb, _| {
+        assert!(same(wb.sidebar_view(SidebarView::Search), &search));
+        assert!(wb.sidebar_view(SidebarView::Explorer).is_none());
+        assert!(same(wb.editor_area(), &editor));
+        let [l] = wb.status_items(StatusBarSide::Left) else {
+            panic!("one left item")
+        };
+        let [r] = wb.status_items(StatusBarSide::Right) else {
+            panic!("one right item")
+        };
+        assert_eq!(l.entity_id(), left.entity_id());
+        assert_eq!(r.entity_id(), right.entity_id());
+    });
+
+    // Explorer is active: the Search slot is not drawn.
+    draw(cx);
+    assert_eq!(search.read_with(cx, |p, _| p.renders), 0);
+    for probe in [&editor, &left, &right] {
+        assert!(probe.read_with(cx, |p, _| p.renders) > 0);
+    }
+
+    wb.update_in(cx, |wb, window, cx| {
+        wb.show_sidebar_view(SidebarView::Search, window, cx)
+    });
+    draw(cx);
+    assert!(search.read_with(cx, |p, _| p.renders) > 0);
+
+    focus(&search, cx);
+    let ctx = context(&wb, cx);
+    assert!(holds(
+        &ctx,
+        "sideBarFocus && searchViewletFocus && !editorFocus"
+    ));
+
+    focus(&editor, cx);
+    let ctx = context(&wb, cx);
+    assert!(holds(&ctx, "editorFocus && !sideBarFocus"));
 }
