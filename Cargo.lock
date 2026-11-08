@@ -3069,6 +3069,7 @@ dependencies = [
  "lucerna-project",
  "lucerna-settings",
  "lucerna-syntax",
+ "lucerna-text",
  "lucerna-theme",
  "serde",
  "serde_json",

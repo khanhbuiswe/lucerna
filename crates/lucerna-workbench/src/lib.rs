@@ -2,6 +2,7 @@
 //! registry and key dispatch.
 
 mod app_state;
+pub mod code_view;
 mod commands;
 mod editor_groups;
 mod explorer;

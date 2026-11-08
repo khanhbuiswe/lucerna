@@ -116,6 +116,12 @@ impl EditorGroupsView {
         &self.widths
     }
 
+    /// The body of the focused group's active tab, once it has been drawn.
+    pub fn active_body(&self) -> Option<AnyView> {
+        let tab = self.model.active_tab()?;
+        self.bodies.get(&tab.id).cloned()
+    }
+
     /// Replaces how tab bodies are made; existing bodies are rebuilt.
     pub fn set_tab_body_factory(&mut self, make_body: TabBodyFactory, cx: &mut Context<Self>) {
         self.make_body = make_body;

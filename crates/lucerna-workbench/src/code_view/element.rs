@@ -1,0 +1,748 @@
+//! The custom element that lays out, shapes and paints the visible rows:
+//! gutter, text, selection, bracket boxes and whitespace marks. It also
+//! turns mouse and scroll events into view changes.
+
+mod paint;
+
+use std::sync::Arc;
+
+use gpui::{
+    App, Bounds, CursorStyle, DispatchPhase, Element, ElementId, Font, GlobalElementId, Hitbox,
+    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent, ShapedLine, SharedString, Style, TextRun,
+    Window, font, point, px, relative, size,
+};
+use lucerna_text::Point;
+use lucerna_theme::Theme;
+
+use super::cache::ShapeKey;
+use super::layout::{FoldState, display_lines, row_start};
+use super::selection::{self, Selection};
+use super::{CodeView, Drag, hsla};
+use crate::AppState;
+
+/// Rows shaped below the viewport so the next scroll step is ready.
+const OVERSCAN_ROWS: u32 = 3;
+/// Gutter width in chars, beyond the line number digits.
+const GUTTER_EXTRA_CHARS: f32 = 4.;
+/// Left padding of the text, in chars.
+const TEXT_PADDING_CHARS: f32 = 0.5;
+const BRACKET_BOX_ALPHA: f32 = 0.4;
+
+/// Maps between a wrapped piece's buffer columns and the bytes of its
+/// displayed text, where tabs are expanded to spaces.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ColumnMap {
+    /// Buffer column (byte in the line) where the piece starts.
+    buf_start: u32,
+    /// Buffer bytes the piece shows (the `…` of a cut line is not one).
+    buf_len: u32,
+    /// Expanded tabs: (buffer byte in piece, display byte, display width).
+    tabs: Vec<(u32, u32, u32)>,
+}
+
+impl ColumnMap {
+    fn contains(&self, column: u32) -> bool {
+        (self.buf_start..=self.buf_start + self.buf_len).contains(&column)
+    }
+
+    /// The display byte of buffer `column`, clamped to the piece.
+    fn to_display(&self, column: u32) -> usize {
+        let rel = column.clamp(self.buf_start, self.buf_start + self.buf_len) - self.buf_start;
+        let extra: u32 = self
+            .tabs
+            .iter()
+            .take_while(|(buf, _, _)| *buf < rel)
+            .map(|(_, _, width)| width - 1)
+            .sum();
+        (rel + extra) as usize
+    }
+
+    /// The buffer column at display byte `display`.
+    fn to_buffer(&self, display: usize) -> u32 {
+        let display = display as u32;
+        let mut extra = 0;
+        for &(buf, disp, width) in &self.tabs {
+            if display < disp {
+                break;
+            }
+            if display < disp + width {
+                // Inside the tab: snap to its nearer side.
+                let after = display - disp > width / 2;
+                return self.buf_start + buf + u32::from(after);
+            }
+            extra += width - 1;
+        }
+        self.buf_start + (display - extra).min(self.buf_len)
+    }
+
+    fn is_tab_fill(&self, display: usize) -> bool {
+        let display = display as u32;
+        self.tabs
+            .iter()
+            .any(|&(_, disp, width)| (disp..disp + width).contains(&display))
+    }
+}
+
+/// One wrapped piece of a row, shaped.
+pub(crate) struct Piece {
+    pub line: ShapedLine,
+    pub map: ColumnMap,
+}
+
+/// A buffer row's shaped pieces (one unless wrapped).
+pub(crate) struct ShapedRow {
+    pub pieces: Vec<Piece>,
+}
+
+/// One display line on screen.
+pub(crate) struct FrameRow {
+    /// Absolute y of the line's top.
+    top: Pixels,
+    buffer_row: u32,
+    shaped: Arc<ShapedRow>,
+    piece: usize,
+}
+
+impl FrameRow {
+    fn piece(&self) -> &Piece {
+        &self.shaped.pieces[self.piece]
+    }
+
+    fn is_last_piece(&self) -> bool {
+        self.piece + 1 == self.shaped.pieces.len()
+    }
+
+    fn x_for(&self, column: u32) -> Pixels {
+        let piece = self.piece();
+        piece.line.x_for_index(piece.map.to_display(column))
+    }
+}
+
+/// Everything one frame laid out: geometry for painting and hit testing.
+pub(crate) struct Frame {
+    bounds: Bounds<Pixels>,
+    text_bounds: Bounds<Pixels>,
+    /// Absolute x of column 0, after horizontal scrolling.
+    text_x: Pixels,
+    line_height: Pixels,
+    char_width: Pixels,
+    /// Chars per display line when wrapping.
+    pub wrap_chars: Option<u32>,
+    rows: Vec<FrameRow>,
+    numbers: Vec<(Pixels, ShapedLine)>,
+    /// Fold chevrons: (top, header row, chevron).
+    chevrons: Vec<(Pixels, u32, ShapedLine)>,
+    selection: Option<Selection>,
+    cursor_row: Option<u32>,
+    brackets: Vec<Point>,
+    /// `·` and `→`, when whitespace is rendered.
+    whitespace: Option<(ShapedLine, ShapedLine)>,
+    hitbox: Option<Hitbox>,
+    colors: FrameColors,
+}
+
+#[derive(Clone, Copy)]
+struct FrameColors {
+    background: Hsla,
+    gutter: Hsla,
+    active_line: Hsla,
+    selection: Hsla,
+    bracket: Hsla,
+}
+
+impl Frame {
+    pub fn visible_rows(&self) -> u32 {
+        (self.bounds.size.height / self.line_height).floor().max(0.) as u32
+    }
+
+    /// The buffer position under `position`, clamped to the rows on screen.
+    fn point_at(&self, position: gpui::Point<Pixels>) -> Option<Point> {
+        let row = self
+            .rows
+            .iter()
+            .find(|r| position.y < r.top + self.line_height)
+            .or(self.rows.last())?;
+        let piece = row.piece();
+        let index = piece.line.closest_index_for_x(position.x - self.text_x);
+        Some(Point {
+            row: row.buffer_row,
+            column: piece.map.to_buffer(index),
+        })
+    }
+
+    fn row_at(&self, y: Pixels) -> Option<&FrameRow> {
+        self.rows
+            .iter()
+            .find(|r| y >= r.top && y < r.top + self.line_height)
+    }
+}
+
+pub(crate) struct CodeElement {
+    view: gpui::Entity<CodeView>,
+}
+
+impl CodeElement {
+    pub fn new(view: gpui::Entity<CodeView>) -> Self {
+        CodeElement { view }
+    }
+}
+
+impl IntoElement for CodeElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for CodeElement {
+    type RequestLayoutState = ();
+    type PrepaintState = Arc<Frame>;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        style.size.height = relative(1.).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Arc<Frame> {
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        self.view
+            .update(cx, |view, cx| view.layout_frame(bounds, hitbox, window, cx))
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        frame: &mut Arc<Frame>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        paint::paint_frame(frame, window, cx);
+        if let Some(hitbox) = &frame.hitbox {
+            window.set_cursor_style(CursorStyle::IBeam, hitbox);
+        }
+        register_mouse(&self.view, frame, window);
+    }
+}
+
+impl CodeView {
+    fn base_font(&self) -> Font {
+        font(self.config.font_family.clone())
+    }
+
+    /// Lays out the rows that fit in `bounds`, shaping only those (and a
+    /// few more below) that are not cached.
+    fn layout_frame(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        hitbox: Hitbox,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> Arc<Frame> {
+        let theme = cx.global::<AppState>().theme.clone();
+        let ui = &theme.ui;
+        let font_size = px(self.font_size);
+        let line_height = px(self.line_height());
+        let text_system = window.text_system();
+        let font_id = text_system.resolve_font(&self.base_font());
+        let char_width = text_system
+            .em_advance(font_id, font_size)
+            .ok()
+            .filter(|w| *w > px(0.))
+            .unwrap_or(font_size * 0.6);
+
+        let line_count = self.snapshot.line_count();
+        let digits = line_count.max(1).ilog10() + 1;
+        let gutter_width = char_width * (digits.max(2) as f32 + GUTTER_EXTRA_CHARS);
+        let text_bounds = Bounds {
+            origin: point(bounds.left() + gutter_width, bounds.top()),
+            size: size(
+                (bounds.size.width - gutter_width).max(px(0.)),
+                bounds.size.height,
+            ),
+        };
+        let padding = char_width * TEXT_PADDING_CHARS;
+        let wrap_chars = self.word_wrap.then(|| {
+            ((text_bounds.size.width - padding * 2.) / char_width)
+                .floor()
+                .max(1.) as u32
+        });
+        if self.frame.as_ref().map(|f| f.wrap_chars) != Some(wrap_chars) {
+            self.scroll.offset = 0.;
+        }
+        let visible_rows = (bounds.size.height / line_height).floor().max(0.) as u32;
+        if let Some(row) = self.pending_center
+            && visible_rows > 0
+        {
+            self.center(row, visible_rows);
+        }
+        let last = line_count.saturating_sub(1);
+        self.scroll.top_row = self.folds.prev_visible(self.scroll.top_row.min(last));
+
+        // Which rows show: walk down from the top using wrap counts only.
+        let mut rows = Vec::new();
+        let mut y = bounds.top() - px(self.scroll.offset);
+        let mut row = self.scroll.top_row;
+        let mut extra = 0;
+        while row < line_count && extra <= OVERSCAN_ROWS {
+            if y >= bounds.bottom() {
+                extra += 1;
+            }
+            let count = self
+                .caches
+                .wrap_count(&self.snapshot, self.revision, row, wrap_chars);
+            rows.push((row, y));
+            y += line_height * count as f32;
+            row = self.folds.next_visible(row + 1);
+        }
+
+        if let (false, Some(syntax), Some(&(first, _)), Some(&(end, _))) =
+            (self.large, &self.syntax, rows.first(), rows.last())
+            && syntax.tree().is_some()
+        {
+            let syntax = syntax.clone();
+            self.caches
+                .ensure_highlights(&self.snapshot, self.revision, &syntax, first..end + 1);
+        }
+
+        let key = ShapeKey {
+            revision: self.revision,
+            wrap_chars,
+            font_size: self.font_size,
+            tab_size: self.config.tab_size,
+            theme: Arc::as_ptr(&theme) as usize,
+        };
+        let mut frame_rows = Vec::new();
+        let mut max_width = px(0.);
+        for &(row, top) in &rows {
+            let shaped = self.shaped_row(key, row, &theme, window);
+            if top >= bounds.bottom() {
+                continue;
+            }
+            for (piece, p) in shaped.pieces.iter().enumerate() {
+                max_width = max_width.max(p.line.width());
+                frame_rows.push(FrameRow {
+                    top: top + line_height * piece as f32,
+                    buffer_row: row,
+                    shaped: shaped.clone(),
+                    piece,
+                });
+            }
+        }
+        // The widest line seen so far, so scrolling vertically into short
+        // lines does not snap the view back to the left.
+        self.max_line_width = self.max_line_width.max(f32::from(max_width));
+        let max_scroll_x =
+            (px(self.max_line_width) + padding * 2. - text_bounds.size.width).max(px(0.));
+        self.scroll_x = if wrap_chars.is_some() {
+            0.
+        } else {
+            self.scroll_x.clamp(0., f32::from(max_scroll_x))
+        };
+        let text_x = text_bounds.left() + padding - px(self.scroll_x);
+
+        let cursor_row = self.selection.map(|s| s.head.row);
+        let number_color = hsla(ui.editor_line_number);
+        let active_color = hsla(ui.editor_active_line_number);
+        let mut numbers = Vec::new();
+        let mut chevrons = Vec::new();
+        for r in frame_rows.iter().filter(|r| r.piece == 0) {
+            let color = if Some(r.buffer_row) == cursor_row {
+                active_color
+            } else {
+                number_color
+            };
+            let label = (r.buffer_row + 1).to_string();
+            let shaped = shape(window, label, font_size, self.base_font(), color);
+            numbers.push((r.top, shaped));
+            if self
+                .fold_ranges
+                .binary_search_by_key(&r.buffer_row, |f| f.start)
+                .is_ok()
+            {
+                let glyph = if self.folds.is_folded(r.buffer_row) {
+                    "▸"
+                } else {
+                    "▾"
+                };
+                let shaped = shape(window, glyph, font_size, self.base_font(), number_color);
+                chevrons.push((r.top, r.buffer_row, shaped));
+            }
+        }
+        let whitespace = self.config.render_whitespace.then(|| {
+            let muted = hsla(ui.text_muted);
+            (
+                shape(window, "·", font_size, self.base_font(), muted),
+                shape(window, "→", font_size, self.base_font(), muted),
+            )
+        });
+        let brackets = self
+            .brackets
+            .iter()
+            .flatten()
+            .map(|&offset| self.snapshot.offset_to_point(offset))
+            .collect();
+
+        let frame = Arc::new(Frame {
+            bounds,
+            text_bounds,
+            text_x,
+            line_height,
+            char_width,
+            wrap_chars,
+            rows: frame_rows,
+            numbers,
+            chevrons,
+            selection: self.selection,
+            cursor_row,
+            brackets,
+            whitespace,
+            hitbox: Some(hitbox),
+            colors: FrameColors {
+                background: hsla(ui.editor_background),
+                gutter: hsla(ui.editor_background),
+                active_line: hsla(ui.editor_active_line_background),
+                selection: hsla(ui.selection),
+                bracket: hsla(ui.editor_foreground).opacity(BRACKET_BOX_ALPHA),
+            },
+        });
+        self.frame = Some(frame.clone());
+        frame
+    }
+
+    /// The shaped pieces of `row`, from the cache or shaped now.
+    fn shaped_row(
+        &mut self,
+        key: ShapeKey,
+        row: u32,
+        theme: &Theme,
+        window: &mut Window,
+    ) -> Arc<ShapedRow> {
+        if let Some(shaped) = self.caches.shaped(key, row) {
+            return shaped;
+        }
+        let lines = display_lines(
+            &self.snapshot,
+            &FoldState::default(),
+            key.wrap_chars,
+            row..row + 1,
+        );
+        let line_start = row_start(&self.snapshot, row);
+        let spans = self.caches.spans(row).unwrap_or(&[]);
+        let base = self.base_font();
+        let default_color = hsla(theme.ui.editor_foreground);
+        let piece_count = lines.len();
+        let mut buf_start = 0u32;
+        let mut pieces = Vec::with_capacity(piece_count);
+        for (i, line) in lines.into_iter().enumerate() {
+            let cut = line.truncated && i + 1 == piece_count;
+            let buf_text = if cut {
+                line.text.strip_suffix('…').unwrap_or(&line.text)
+            } else {
+                line.text.as_str()
+            };
+            let abs = line_start + buf_start as usize;
+            let styles = span_styles(spans, abs..abs + buf_text.len());
+            let mut text = String::with_capacity(line.text.len());
+            let mut keys: Vec<(usize, Option<usize>)> = Vec::new();
+            let mut push = |text: &mut String, s: &str, style: Option<usize>| {
+                match keys.last_mut() {
+                    Some((len, last)) if *last == style => *len += s.len(),
+                    _ => keys.push((s.len(), style)),
+                }
+                text.push_str(s);
+            };
+            let mut map = ColumnMap {
+                buf_start,
+                buf_len: buf_text.len() as u32,
+                tabs: Vec::new(),
+            };
+            let mut column = 0u32;
+            for (b, c) in buf_text.char_indices() {
+                let style = styles[b];
+                if c == '\t' {
+                    let width = key.tab_size - column % key.tab_size;
+                    map.tabs.push((b as u32, text.len() as u32, width));
+                    push(&mut text, &" ".repeat(width as usize), style);
+                    column += width;
+                } else {
+                    let mut utf8 = [0; 4];
+                    push(&mut text, c.encode_utf8(&mut utf8), style);
+                    column += 1;
+                }
+            }
+            if cut {
+                push(&mut text, "…", None);
+            }
+            let runs: Vec<TextRun> = keys
+                .into_iter()
+                .map(|(len, style)| {
+                    let style = style.and_then(|s| theme.style_for(&spans[s].1));
+                    let mut font = base.clone();
+                    if style.is_some_and(|s| s.bold) {
+                        font = font.bold();
+                    }
+                    if style.is_some_and(|s| s.italic) {
+                        font = font.italic();
+                    }
+                    TextRun {
+                        len,
+                        font,
+                        color: style.and_then(|s| s.color).map_or(default_color, hsla),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }
+                })
+                .collect();
+            let shaped =
+                window
+                    .text_system()
+                    .shape_line(text.into(), px(key.font_size), &runs, None);
+            buf_start += buf_text.len() as u32;
+            pieces.push(Piece { line: shaped, map });
+        }
+        let shaped = Arc::new(ShapedRow { pieces });
+        self.caches.insert_shaped(row, shaped.clone());
+        shaped
+    }
+
+    fn mouse_down(
+        &mut self,
+        ev: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        window.focus(&self.focus, cx);
+        let Some(frame) = self.frame.clone() else {
+            return;
+        };
+        if ev.position.x < frame.text_bounds.left() {
+            let Some(row) = frame.row_at(ev.position.y) else {
+                return;
+            };
+            let on_chevron = frame.chevrons.iter().any(|(_, r, _)| *r == row.buffer_row)
+                && ev.position.x >= frame.text_bounds.left() - frame.char_width * 2.;
+            if on_chevron {
+                self.toggle_fold(row.buffer_row, cx);
+                return;
+            }
+            let line = selection::line_at(&self.snapshot, row.buffer_row);
+            self.select(line, cx);
+            self.drag = Some(Drag::Text);
+            return;
+        }
+        let Some(p) = frame.point_at(ev.position) else {
+            return;
+        };
+        let selection = match ev.click_count {
+            0 | 1 => match self.selection {
+                Some(s) if ev.modifiers.shift => Selection { head: p, ..s },
+                _ => Selection::cursor(p),
+            },
+            2 => {
+                let word = selection::word_at(&self.snapshot, p);
+                Selection {
+                    anchor: word.start,
+                    head: word.end,
+                }
+            }
+            _ => {
+                let line = selection::line_at(&self.snapshot, p.row);
+                Selection {
+                    anchor: line.start,
+                    head: line.end,
+                }
+            }
+        };
+        self.set_selection(selection, cx);
+        self.drag = Some(Drag::Text);
+    }
+
+    fn mouse_drag(&mut self, position: gpui::Point<Pixels>, cx: &mut gpui::Context<Self>) {
+        let (Some(frame), Some(selection)) = (self.frame.clone(), self.selection) else {
+            return;
+        };
+        if let Some(p) = frame.point_at(position)
+            && p != selection.head
+        {
+            self.set_selection(
+                Selection {
+                    head: p,
+                    ..selection
+                },
+                cx,
+            );
+        }
+    }
+
+    fn scroll_wheel(&mut self, ev: &ScrollEvent, cx: &mut gpui::Context<Self>) {
+        let delta = ev.delta.pixel_delta(px(self.line_height()));
+        self.scroll_by(-f32::from(delta.y));
+        if !self.word_wrap {
+            self.scroll_x = (self.scroll_x - f32::from(delta.x)).max(0.);
+        }
+        cx.notify();
+    }
+}
+
+/// For each byte of `range`, the index in `spans` of the innermost span
+/// covering it.
+fn span_styles(
+    spans: &[(std::ops::Range<usize>, Arc<str>)],
+    range: std::ops::Range<usize>,
+) -> Vec<Option<usize>> {
+    let mut styles = vec![None; range.len()];
+    for (i, (span, _)) in spans.iter().enumerate() {
+        let start = span.start.max(range.start);
+        let end = span.end.min(range.end);
+        for style in styles
+            .iter_mut()
+            .take(end.saturating_sub(range.start))
+            .skip(start.saturating_sub(range.start))
+        {
+            *style = Some(i);
+        }
+    }
+    styles
+}
+
+fn shape(
+    window: &mut Window,
+    text: impl Into<SharedString>,
+    font_size: Pixels,
+    font: Font,
+    color: Hsla,
+) -> ShapedLine {
+    let text = text.into();
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(text, font_size, &[run], None)
+}
+
+/// Mouse and scroll listeners for this frame: clicks and wheel only over
+/// the element, drags wherever the mouse goes until the button is up.
+fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mut Window) {
+    let Some(hitbox) = frame.hitbox.clone() else {
+        return;
+    };
+    window.on_mouse_event({
+        let (view, hitbox) = (view.clone(), hitbox.clone());
+        move |ev: &MouseDownEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble
+                && ev.button == MouseButton::Left
+                && hitbox.is_hovered(window)
+            {
+                view.update(cx, |v, cx| v.mouse_down(ev, window, cx));
+                cx.stop_propagation();
+            }
+        }
+    });
+    window.on_mouse_event({
+        let view = view.clone();
+        move |ev: &MouseMoveEvent, phase, _, cx| {
+            if phase != DispatchPhase::Bubble || ev.pressed_button != Some(MouseButton::Left) {
+                return;
+            }
+            if view.read(cx).drag == Some(Drag::Text) {
+                view.update(cx, |v, cx| v.mouse_drag(ev.position, cx));
+            }
+        }
+    });
+    window.on_mouse_event({
+        let view = view.clone();
+        move |ev: &MouseUpEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left {
+                view.update(cx, |v, _| v.drag = None);
+            }
+        }
+    });
+    window.on_mouse_event({
+        let view = view.clone();
+        move |ev: &ScrollEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
+                view.update(cx, |v, cx| v.scroll_wheel(ev, cx));
+                cx.stop_propagation();
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ColumnMap;
+
+    /// `a\tbc` shown with tab size 4 from column 0: `a` then 3 spaces.
+    fn map() -> ColumnMap {
+        ColumnMap {
+            buf_start: 0,
+            buf_len: 4,
+            tabs: vec![(1, 1, 3)],
+        }
+    }
+
+    #[test]
+    fn tabs_widen_display_columns() {
+        let m = map();
+        let display: Vec<_> = (0..=4).map(|c| m.to_display(c)).collect();
+        assert_eq!(display, vec![0, 1, 4, 5, 6]);
+        // Past the piece clamps to its end.
+        assert_eq!(m.to_display(9), 6);
+    }
+
+    #[test]
+    fn display_columns_map_back_snapping_inside_tabs() {
+        let m = map();
+        let buffer: Vec<_> = (0..=7).map(|d| m.to_buffer(d)).collect();
+        assert_eq!(buffer, vec![0, 1, 1, 2, 2, 3, 4, 4]);
+        assert!(m.is_tab_fill(2) && !m.is_tab_fill(4));
+    }
+
+    #[test]
+    fn wrapped_pieces_offset_buffer_columns() {
+        let m = ColumnMap {
+            buf_start: 10,
+            buf_len: 5,
+            tabs: Vec::new(),
+        };
+        assert!(m.contains(10) && m.contains(15) && !m.contains(9));
+        assert_eq!(m.to_display(12), 2);
+        assert_eq!(m.to_buffer(3), 13);
+    }
+}

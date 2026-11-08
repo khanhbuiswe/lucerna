@@ -13,6 +13,7 @@ use lucerna_project::{ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
 use serde_json::Value;
 
+use crate::code_view::{self, LargeFileStatus};
 use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode};
 use crate::explorer::ExplorerView;
 use crate::layout::sidebar::SidebarSash;
@@ -74,7 +75,12 @@ impl Workbench {
         let mut commands = CommandRegistry::default();
         register_shell_commands(&mut commands);
         editor_groups::register_commands(&mut commands);
+        code_view::register_commands(&mut commands);
         let editor_groups = cx.new(|_| EditorGroupsView::default());
+        let large_file_status = {
+            let groups = editor_groups.clone();
+            cx.new(|_| LargeFileStatus::new(groups))
+        };
         let worktree = Worktree::start(
             root.clone(),
             ScanOptions {
@@ -87,7 +93,7 @@ impl Workbench {
             cx.new(|cx| ExplorerView::new(root, snapshot, workbench, &groups, cx))
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
-        Workbench {
+        let mut workbench = Workbench {
             root,
             worktree,
             _worktree_events: worktree_events,
@@ -107,7 +113,9 @@ impl Workbench {
             status_right: Vec::new(),
             pending_chord: Vec::new(),
             title_bar_pressed: false,
-        }
+        };
+        workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
+        workbench
     }
 
     /// The opened folder.
