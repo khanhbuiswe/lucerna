@@ -27,6 +27,7 @@ pub struct Buffer {
     rope: Rope,
     encoding: &'static Encoding,
     line_ending: LineEnding,
+    force_text: bool,
 }
 
 impl Buffer {
@@ -43,6 +44,7 @@ impl Buffer {
             line_ending: dominant_line_ending(&text),
             rope: Rope::from_str(&text),
             encoding,
+            force_text,
         })
     }
 
@@ -63,7 +65,7 @@ impl Buffer {
     /// Replaces the contents with `bytes` and describes what changed.
     /// On error the buffer is left untouched.
     pub fn reload(&mut self, bytes: &[u8]) -> Result<Reload, LoadError> {
-        let (text, encoding) = decode(bytes, false)?;
+        let (text, encoding) = decode(bytes, self.force_text)?;
         let new = BufferSnapshot {
             rope: Rope::from_str(&text),
         };

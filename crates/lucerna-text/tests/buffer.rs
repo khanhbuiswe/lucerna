@@ -136,3 +136,44 @@ fn reload_edit_inside_changed_region() {
     assert_eq!(r.adjust_row(5, 11), 4);
     assert_eq!(r.adjust_row(6, 11), 7);
 }
+
+#[test]
+fn reload_keeps_force_text() {
+    let mut b = Buffer::from_bytes(b"a\0b", true).unwrap();
+    assert!(b.reload(b"a\0c").is_ok());
+    let mut plain = buf("a");
+    assert_eq!(plain.reload(b"a\0c").err(), Some(LoadError::Binary));
+}
+
+#[test]
+fn crlf_line_counts() {
+    assert_eq!(buf("a\r\n").snapshot().line_count(), 1);
+    let s = buf("a\r\nb\r\nc\r\n").snapshot();
+    assert_eq!(s.line_count(), 3);
+    assert_eq!(s.line(2), "c");
+}
+
+#[test]
+fn long_crlf_line_spans_chunks() {
+    let long = "x".repeat(10_000);
+    let s = buf(&format!("{long}\r\nend\r\n")).snapshot();
+    let line = s.line(0);
+    assert!(!line.contains('\r'));
+    assert_eq!(line.len(), 10_000);
+    assert_eq!(s.line(1), "end");
+}
+
+#[test]
+fn reload_shrink_below_scroll_clamps_to_last_row() {
+    let mut b = buf(&numbered(100));
+    let r = b.reload(numbered(10).as_bytes()).unwrap();
+    assert_eq!(r.adjust_row(80, 10), 9);
+}
+
+#[test]
+fn reload_with_crlf_content() {
+    let mut b = buf("a\r\nb\r\nc\r\nd\r\n");
+    let r = b.reload(b"a\r\nb\r\nX\r\nY\r\nd\r\n").unwrap();
+    assert_eq!((r.start_row, r.old_end_row, r.new_end_row), (2, 3, 4));
+    assert_eq!(b.line_ending(), LineEnding::CrLf);
+}
