@@ -2838,6 +2838,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucerna-theme"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "lucerna-workbench"
 version = "0.1.0"
 dependencies = [

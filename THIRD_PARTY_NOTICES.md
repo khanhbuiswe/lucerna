@@ -46,3 +46,12 @@ here with the crate that required them.
 - `notify` (file watching in `lucerna-project`): CC0-1.0, a public-domain
   dedication. Allowed for this crate only through a `[licenses.exceptions]`
   entry in `deny.toml`; the global allow list is unchanged.
+
+## Themes
+
+`lucerna-theme` bundles the "One" theme family (One Dark, One Light) as a data
+file: `assets/themes/one/one.json` from the Zed repository
+(https://github.com/zed-industries/zed) at revision
+`b5cd310b3b54dfc659fcc06453e6358843dfe216`, stored as
+`crates/lucerna-theme/assets/one.json`. It is MIT licensed (Copyright (c) 2014
+GitHub Inc.); the license text is `crates/lucerna-theme/assets/LICENSE-one`.

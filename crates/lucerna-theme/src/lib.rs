@@ -1,0 +1,147 @@
+//! Zed theme loading. Pure data: no UI dependencies.
+
+mod registry;
+mod schema;
+
+pub use registry::ThemeRegistry;
+
+use std::collections::HashMap;
+
+/// A color with components in `0.0..=1.0`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rgba {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+impl Rgba {
+    /// Parses `#rrggbb` or `#rrggbbaa`.
+    pub fn parse_hex(s: &str) -> Option<Rgba> {
+        let hex = s.strip_prefix('#')?;
+        if !hex.is_ascii() || !(hex.len() == 6 || hex.len() == 8) {
+            return None;
+        }
+        let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+        let a = if hex.len() == 8 { byte(6)? } else { 255 };
+        Some(Rgba {
+            r: f32::from(byte(0)?) / 255.0,
+            g: f32::from(byte(2)?) / 255.0,
+            b: f32::from(byte(4)?) / 255.0,
+            a: f32::from(a) / 255.0,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Appearance {
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HighlightStyle {
+    pub color: Option<Rgba>,
+    pub italic: bool,
+    pub bold: bool,
+}
+
+/// UI colors taken from a Zed theme's `style`. Keys the theme lacks use the
+/// neutral per-appearance colors from [`UiColors::fallback`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiColors {
+    pub background: Rgba,
+    pub border: Rgba,
+    pub text: Rgba,
+    pub text_muted: Rgba,
+    pub element_selected: Rgba,
+    pub panel_background: Rgba,
+    pub status_bar_background: Rgba,
+    pub tab_active_background: Rgba,
+    pub tab_inactive_background: Rgba,
+    pub editor_background: Rgba,
+    pub editor_foreground: Rgba,
+    pub editor_line_number: Rgba,
+    pub editor_active_line_number: Rgba,
+    pub editor_active_line_background: Rgba,
+    pub search_match_background: Rgba,
+    pub selection: Rgba,
+}
+
+const fn gray(v: u8, a: u8) -> Rgba {
+    Rgba {
+        r: v as f32 / 255.0,
+        g: v as f32 / 255.0,
+        b: v as f32 / 255.0,
+        a: a as f32 / 255.0,
+    }
+}
+
+impl UiColors {
+    /// The single place that defines fallback colors for missing theme keys.
+    pub fn fallback(appearance: Appearance) -> UiColors {
+        let (bg, panel, fg, muted, border, sel, line_no, active_no) = match appearance {
+            Appearance::Dark => (
+                gray(0x1e, 255),
+                gray(0x25, 255),
+                gray(0xd4, 255),
+                gray(0x8a, 255),
+                gray(0x3c, 255),
+                gray(0x3a, 255),
+                gray(0x6e, 255),
+                gray(0xc0, 255),
+            ),
+            Appearance::Light => (
+                gray(0xff, 255),
+                gray(0xf3, 255),
+                gray(0x33, 255),
+                gray(0x77, 255),
+                gray(0xd0, 255),
+                gray(0xdd, 255),
+                gray(0x99, 255),
+                gray(0x33, 255),
+            ),
+        };
+        UiColors {
+            background: panel,
+            border,
+            text: fg,
+            text_muted: muted,
+            element_selected: sel,
+            panel_background: panel,
+            status_bar_background: panel,
+            tab_active_background: bg,
+            tab_inactive_background: panel,
+            editor_background: bg,
+            editor_foreground: fg,
+            editor_line_number: line_no,
+            editor_active_line_number: active_no,
+            editor_active_line_background: gray(0x80, 0x1f),
+            search_match_background: gray(0x80, 0x55),
+            selection: gray(0x80, 0x44),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Theme {
+    pub name: String,
+    pub appearance: Appearance,
+    pub ui: UiColors,
+    syntax: HashMap<String, HighlightStyle>,
+}
+
+impl Theme {
+    /// Style for a tree-sitter capture name: exact match first, then the
+    /// name with its last `.segment` dropped, repeatedly.
+    pub fn style_for(&self, capture: &str) -> Option<&HighlightStyle> {
+        let mut name = capture;
+        loop {
+            if let Some(style) = self.syntax.get(name) {
+                return Some(style);
+            }
+            name = name.rsplit_once('.')?.0;
+        }
+    }
+}
