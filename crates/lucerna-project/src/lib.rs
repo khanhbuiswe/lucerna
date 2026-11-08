@@ -1,12 +1,14 @@
 //! Project model: background, gitignore-aware worktree scanning.
 
 mod coalesce;
+mod fuzzy;
 mod ignored;
 mod snapshot;
 mod watch;
 mod worktree;
 
 pub use coalesce::{Coalesced, RESCAN_THRESHOLD, RawEvent, coalesce};
+pub use fuzzy::{FileMatch, QUICK_OPEN_LIMIT, match_files};
 pub use watch::DEBOUNCE;
 
 pub use snapshot::{Entry, EntryKind, WorktreeSnapshot};

@@ -35,6 +35,13 @@ impl WorktreeSnapshot {
         Self::build(Vec::new(), false)
     }
 
+    /// Builds a complete snapshot from raw entries. Test support: real
+    /// snapshots come from a `Worktree` scan.
+    #[doc(hidden)]
+    pub fn from_entries(entries: Vec<Entry>) -> Self {
+        Self::build(entries, true)
+    }
+
     pub(crate) fn build(mut entries: Vec<Entry>, complete: bool) -> Self {
         entries.sort_by(compare_entries);
         let mut by_parent: Vec<Entry> = entries.clone();
