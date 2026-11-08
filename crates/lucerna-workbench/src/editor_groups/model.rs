@@ -227,41 +227,69 @@ impl EditorGroups {
         &self.groups
     }
 
-    /// Rebuilds groups from persisted state with fresh tab ids. Indices out
-    /// of range are clamped; an emptied state gives one empty group.
+    /// Rebuilds groups from persisted state with fresh tab ids, repairing
+    /// what a stale or hand-edited file may contain:
+    /// - duplicate paths in a group keep their first entry;
+    /// - of several unpinned tabs only the last stays a preview;
+    /// - a missing or out-of-range active tab becomes the group's last tab;
+    /// - empty groups other than the first are dropped, and an active group
+    ///   that was dropped falls back to its left neighbour.
     pub fn restore(state: &GroupsState) -> Self {
         let mut model = EditorGroups {
             groups: Vec::new(),
             active_group: 0,
             next_id: 0,
         };
+        // Restored index of each saved group; `None` when it was dropped.
+        let mut restored_index = Vec::with_capacity(state.groups.len());
         for saved in &state.groups {
             let mut group = Group::default();
             for (path, pinned) in &saved.tabs {
+                if group.tabs.iter().any(|t| *t.path == **path) {
+                    continue;
+                }
                 group.tabs.push(Tab {
                     id: model.new_id(),
                     path: Arc::from(path.as_path()),
                     pinned: *pinned,
                 });
             }
+            if let Some(preview) = group.tabs.iter().rposition(|t| !t.pinned) {
+                for tab in &mut group.tabs[..preview] {
+                    tab.pinned = true;
+                }
+            }
             // MRU history is not persisted: tab order, active tab first.
             group.mru = group.tabs.iter().map(|t| t.id).collect();
-            let active = saved
+            let saved_active = saved
                 .active
-                .map(|i| i.min(group.tabs.len().saturating_sub(1)))
-                .and_then(|i| group.tabs.get(i))
-                .map(|t| t.id);
-            if let Some(id) = active {
+                .and_then(|i| saved.tabs.get(i))
+                .and_then(|(path, _)| group.tabs.iter().find(|t| *t.path == **path));
+            if let Some(id) = saved_active.or(group.tabs.last()).map(|t| t.id) {
                 group.activate(id);
             }
             if model.groups.is_empty() || !group.tabs.is_empty() {
+                restored_index.push(Some(model.groups.len()));
                 model.groups.push(group);
+            } else {
+                restored_index.push(None);
             }
         }
         if model.groups.is_empty() {
             model.groups.push(Group::default());
         }
-        model.active_group = state.active_group.min(model.groups.len() - 1);
+        let last = model.groups.len() - 1;
+        model.active_group = match restored_index.get(state.active_group) {
+            Some(Some(index)) => *index,
+            // Dropped: the nearest kept group to its left (the first group
+            // is always kept).
+            Some(None) => restored_index[..state.active_group]
+                .iter()
+                .rev()
+                .find_map(|i| *i)
+                .unwrap_or(0),
+            None => last,
+        };
         model
     }
 

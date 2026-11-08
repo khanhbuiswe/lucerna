@@ -159,10 +159,7 @@ impl Workbench {
         flag("findWidgetVisible", false);
         let active = self.editor_groups.read(cx).model().active_tab();
         let path = active.map(|tab| &tab.path);
-        let extname = path
-            .and_then(|p| p.extension())
-            .map(|ext| format!(".{}", ext.to_string_lossy()))
-            .unwrap_or_default();
+        let extname = path.map(|p| extname(p)).unwrap_or_default();
         let lang_id = path
             .and_then(|p| cx.global::<AppState>().languages.language_for_path(p))
             .map(|lang| lang.id.to_string())
@@ -333,6 +330,20 @@ impl Workbench {
         if had_pending || !self.pending_chord.is_empty() {
             cx.notify();
         }
+    }
+}
+
+/// VS Code's `resourceExtname`: `".rs"` for `main.rs`, and the whole name
+/// for a dotfile such as `.gitignore`.
+fn extname(path: &Path) -> String {
+    match path.extension() {
+        Some(ext) => format!(".{}", ext.to_string_lossy()),
+        None => path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .filter(|n| n.starts_with('.'))
+            .map(|n| n.into_owned())
+            .unwrap_or_default(),
     }
 }
 

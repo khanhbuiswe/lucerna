@@ -167,6 +167,11 @@ fn context_keys_follow_active_tab(cx: &mut TestAppContext) {
     open_path(&wb, "/tmp/project/Makefile", OpenMode::Preview, cx);
     let ctx = context(&wb, cx);
     assert!(holds(&ctx, "resourceExtname == ''"));
+
+    // VS Code: a dotfile's whole name is its extension.
+    open_path(&wb, "/tmp/project/.gitignore", OpenMode::Preview, cx);
+    let ctx = context(&wb, cx);
+    assert!(holds(&ctx, "resourceExtname == '.gitignore'"));
 }
 
 #[gpui::test]

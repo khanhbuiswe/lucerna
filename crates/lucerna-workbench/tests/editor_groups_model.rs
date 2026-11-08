@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lucerna_workbench::{EditorGroups, GroupState, GroupsState, OpenMode, TabId};
+use lucerna_workbench::{EditorGroups, GroupState, GroupsState, OpenMode};
 
 fn p(name: &str) -> Arc<Path> {
     Arc::from(Path::new(name))
@@ -239,5 +239,115 @@ fn state_roundtrip() {
         active_group: 0,
     });
     assert_eq!(empty.groups().len(), 1);
-    let _: Option<TabId> = empty.groups()[0].active;
+    assert_eq!(empty.groups()[0].active, None);
+}
+
+fn saved(tabs: &[(&str, bool)], active: Option<usize>) -> GroupState {
+    GroupState {
+        tabs: tabs.iter().map(|(p, b)| (PathBuf::from(p), *b)).collect(),
+        active,
+    }
+}
+
+#[test]
+fn restore_remaps_active_group_past_dropped_groups() {
+    // [A, empty, C, D] with D active: D is restored index 2.
+    let state = GroupsState {
+        groups: vec![
+            saved(&[("a.rs", true)], Some(0)),
+            saved(&[], None),
+            saved(&[("c.rs", true)], Some(0)),
+            saved(&[("d.rs", true)], Some(0)),
+        ],
+        active_group: 3,
+    };
+    let g = EditorGroups::restore(&state);
+    assert_eq!(g.groups().len(), 3);
+    assert_eq!(g.active_group(), 2);
+    assert_eq!(active_path(&g).as_deref(), Some("d.rs"));
+
+    // A dropped active group falls back to its left neighbour.
+    let g = EditorGroups::restore(&GroupsState {
+        active_group: 1,
+        ..state.clone()
+    });
+    assert_eq!(active_path(&g).as_deref(), Some("a.rs"));
+    let g = EditorGroups::restore(&GroupsState {
+        active_group: 2,
+        ..state.clone()
+    });
+    assert_eq!(active_path(&g).as_deref(), Some("c.rs"));
+    // Out of range clamps to the last group.
+    let g = EditorGroups::restore(&GroupsState {
+        active_group: 9,
+        ..state
+    });
+    assert_eq!(active_path(&g).as_deref(), Some("d.rs"));
+}
+
+#[test]
+fn restore_without_active_tab_activates_last() {
+    let state = GroupsState {
+        groups: vec![saved(&[("a.rs", true), ("b.rs", true)], None)],
+        active_group: 0,
+    };
+    let g = EditorGroups::restore(&state);
+    assert_eq!(active_path(&g).as_deref(), Some("b.rs"));
+    let state = GroupsState {
+        groups: vec![saved(&[("a.rs", true), ("b.rs", true)], Some(7))],
+        active_group: 0,
+    };
+    assert_eq!(
+        active_path(&EditorGroups::restore(&state)).as_deref(),
+        Some("b.rs")
+    );
+}
+
+#[test]
+fn restore_drops_duplicates_and_extra_previews() {
+    let state = GroupsState {
+        groups: vec![saved(
+            &[
+                ("a.rs", false),
+                ("b.rs", true),
+                ("a.rs", true),
+                ("c.rs", false),
+                ("d.rs", false),
+            ],
+            // The duplicate a.rs entry: resolves to the kept a.rs tab.
+            Some(2),
+        )],
+        active_group: 0,
+    };
+    let g = EditorGroups::restore(&state);
+    assert_eq!(
+        tabs(&g, 0),
+        owned(&[
+            ("a.rs", true),
+            ("b.rs", true),
+            ("c.rs", true),
+            ("d.rs", false)
+        ])
+    );
+    assert_eq!(active_path(&g).as_deref(), Some("a.rs"));
+    // The single preview is still replaced by the next preview open.
+    let mut g = g;
+    g.open(p("e.rs"), OpenMode::Preview, true);
+    assert_eq!(tabs(&g, 0)[3], ("e.rs".to_string(), false));
+    assert_eq!(tabs(&g, 0).len(), 4);
+}
+
+#[test]
+fn to_side_pins_already_open_tab() {
+    let mut g = EditorGroups::default();
+    g.open(p("a.rs"), OpenMode::Pinned, true);
+    let b = g.open(p("b.rs"), OpenMode::ToSide, true);
+    g.open(p("c.rs"), OpenMode::Preview, true);
+    g.focus_group(0);
+    // c.rs is a preview in group 1; ToSide from group 0 activates and pins it.
+    let c = g.open(p("c.rs"), OpenMode::ToSide, true);
+    assert_eq!(g.active_group(), 1);
+    assert_eq!(tabs(&g, 1), owned(&[("b.rs", true), ("c.rs", true)]));
+    assert_eq!(g.groups()[1].mru, vec![c, b]);
+    assert_eq!(tabs(&g, 0), owned(&[("a.rs", true)]));
 }
