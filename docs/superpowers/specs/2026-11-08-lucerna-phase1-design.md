@@ -318,3 +318,21 @@ Sau khi spec này được duyệt, viết kế hoạch triển khai bằng skil
 7. Quick Open và search.
 8. Lưu trạng thái workspace.
 9. Benchmark và tinh chỉnh.
+
+## 12. Thay đổi 2026-11-08: giao diện kiểu Zed
+
+Người dùng đã quyết định dùng **bố cục và phong cách hiện đại kiểu Zed**, đồng thời **giữ phím tắt, `settings.json` và `keybindings.json` kiểu VS Code**. Mục này thay thế phần "Bố cục" ở mục 2.1 và phần "Thiết kế, phần 1" liên quan tới activity bar.
+
+**Bố cục**
+- **Không có activity bar.** Sidebar (dock trái) bật/tắt bằng Cmd+B.
+- **Nút đổi panel ở status bar.** Hai nút icon Explorer và Search nằm ở góc trái status bar. Bấm vào nút của panel đang mở thì ẩn sidebar, bấm nút còn lại thì đổi panel. Cmd+Shift+E và Cmd+Shift+F vẫn hoạt động như cũ.
+- **Title bar tích hợp:** cao 34 px, nền trong suốt, ba nút đèn giao thông của macOS nằm trong cửa sổ. Bên phải ba nút là tên thư mục gốc của project. Kéo title bar để di chuyển cửa sổ, double-click để phóng to.
+- **Status bar** cao 26 px. Bên trái là các nút đổi panel, bên phải là các mục thông tin (dòng/cột, ngôn ngữ, encoding, LF/CRLF).
+
+**Phong cách**
+- **Tab:** phẳng, cao 32 px. Tab đang chọn có nền trùng nền editor và không có viền dưới. Tab không chọn dùng `tab.inactive_background`. Nút đóng chỉ hiện khi rê chuột qua tab hoặc ở tab đang chọn. Viền giữa các tab dày 1 px, màu `border.variant`.
+- **Khoảng cách theo lưới 4 px.** Mỗi dòng trong cây file cao 24 px. Font giao diện là font hệ thống, cỡ 13 px. Font editor giữ theo `editor.fontFamily`.
+- **Popup** (Quick Open, chọn theme, widget tìm kiếm): nổi phía trên giữa màn hình, rộng tối đa 600 px, bo góc 8 px, viền 1 px, có bóng đổ, nền `elevated_surface.background`.
+- **Hover:** khi rê chuột, nền chuyển sang `ghost_element.hover`.
+- **Panel không có header nặng.** Explorer chỉ có một dòng tên thư mục gốc, chữ nhỏ, màu nhạt.
+- **Màu mới cần đọc từ theme Zed**, đều có giá trị dự phòng: `title_bar.background`, `elevated_surface.background`, `ghost_element.hover`, `border.variant`, `icon`, `icon.muted`.

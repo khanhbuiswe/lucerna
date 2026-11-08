@@ -1164,3 +1164,62 @@
 - [ ] **Step 3: Walk through the manual checklist** on a release build and record the results.
   - Any target that misses gets a follow-up task added to this plan **before** Phase 1 is declared done.
 - [ ] **Step 4: Commit** with message `perf: criterion benches, bench repo generator, CI regression gate, perf checklist`.
+
+### Task 22: Zed-style chrome (runs after Task 13, before Task 12)
+
+Spec: section 12 ("Thay đổi 2026-11-08: giao diện kiểu Zed"). This is a user decision that replaces the activity bar layout.
+
+**Files:**
+- Modify: `crates/lucerna-theme/src/lib.rs`, `src/schema.rs`, `tests/theme.rs`
+- Modify: `crates/lucerna-workbench/src/layout/*`, `src/workbench.rs`, `src/editor_groups/view.rs`
+- Delete: `crates/lucerna-workbench/src/layout/activity_bar.rs`
+- Create: `crates/lucerna-workbench/src/layout/title_bar.rs`, `src/layout/panel_toggles.rs`, `src/ui.rs` (shared style constants and helpers)
+- Test: `crates/lucerna-workbench/tests/chrome.rs`; update `tests/shell.rs`
+
+**Interfaces:**
+- **Theme fields.** `UiColors` gains these fields, each with a fallback per `Appearance`:
+
+  | Field | Zed key |
+  |---|---|
+  | `title_bar_background` | `title_bar.background` |
+  | `elevated_surface_background` | `elevated_surface.background` |
+  | `ghost_element_hover` | `ghost_element.hover` |
+  | `border_variant` | `border.variant` |
+  | `icon` | `icon` |
+  | `icon_muted` | `icon.muted` |
+
+- **Shared UI module.** `pub mod ui` holds:
+  - Constants: `GRID = 4.0`, `TITLE_BAR_HEIGHT = 34.0`, `STATUS_BAR_HEIGHT = 26.0`, `TAB_HEIGHT = 32.0`, `TREE_ROW_HEIGHT = 24.0`, `POPOVER_MAX_WIDTH = 600.0`, `POPOVER_RADIUS = 8.0`.
+  - Helpers: `fn popover(cx) -> Div`, a styled container that Tasks 16, 17 and 18 must use, and `fn icon_button(id, svg_path, active, cx) -> Stateful<Div>`.
+- **Window.** The window opens with `titlebar: Some(TitlebarOptions { appears_transparent: true, traffic_light_position: Some(point(px(12.), px(11.))), .. })`.
+- **Layout.** The window is stacked top to bottom: title bar, then the body (sidebar + editor area), then the status bar. There is no activity bar.
+- **Panel toggles.** The status-bar left holds icon buttons for Explorer and Search:
+  - clicking the active panel's button runs `workbench.action.toggleSidebarVisibility`;
+  - clicking the other button runs `workbench.view.explorer` or `workbench.view.search`.
+  - The existing status-bar left items follow the toggles.
+- **Title bar content.**
+  - Shows the root folder's file name, starting after a fixed left inset of 80 px reserved for the traffic lights.
+  - Title bar mouse-down calls `window.start_window_move()` if the pinned GPUI offers it; otherwise rely on native drag via the transparent titlebar.
+  - Double-click calls `window.zoom_window()`.
+- **Tabs** (Task 13's view):
+  - Height `TAB_HEIGHT`.
+  - The active tab uses `editor_background` and has no bottom border; inactive tabs use `tab_inactive_background`.
+  - Tabs are separated by 1 px `border_variant` dividers.
+  - The close button is visible only on hover or on the active tab.
+  - Preview tabs stay italic.
+- **Explorer header** (for Task 12): a single 24 px row showing the root name in `text_muted` at 11 px, uppercase.
+
+- [ ] **Step 1: Write failing theme tests.**
+  - `new_ui_colors_read_from_one_dark`: One Dark defines these keys, so the values must differ from the fallback.
+  - `new_ui_colors_fall_back_when_missing`.
+- [ ] **Step 2: Write failing GPUI tests** in `tests/chrome.rs`.
+  - `no_activity_bar`: the layout no longer renders an activity bar; assert via the absence of its element id or test accessor.
+  - `status_toggle_switches_panel`: clicking the Search toggle shows Search; clicking it again hides the sidebar.
+  - `title_bar_shows_root_name`.
+  - `tab_close_button_only_on_hover_or_active`.
+  - `popover_helper_has_radius_border_and_max_width`: assert via the style the helper builds.
+  - Update `tests/shell.rs` tests that referenced the activity bar.
+- [ ] **Step 3: Run** `cargo test -p lucerna-theme -p lucerna-workbench`. Expected: FAIL.
+- [ ] **Step 4: Implement.**
+- [ ] **Step 5: Run** the tests again. Expected: PASS. Then run the example ~5 s in both themes and check it does not crash.
+- [ ] **Step 6: Commit** with message `feat(workbench): Zed-style chrome — title bar, status-bar panel toggles, flat tabs`.
