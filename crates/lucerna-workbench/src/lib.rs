@@ -4,6 +4,7 @@
 mod app_state;
 pub mod code_view;
 mod commands;
+mod config_files;
 mod documents;
 mod editor_groups;
 mod explorer;
@@ -13,11 +14,16 @@ mod layout;
 mod quick_open;
 mod search_panel;
 mod text_input;
+mod theme_picker;
 pub mod ui;
 mod workbench;
 
 pub use app_state::AppState;
 pub use commands::{CommandHandler, CommandRegistry};
+pub use config_files::{
+    CONFIG_DEBOUNCE, ConfigError, ConfigFile, ConfigPaths, ConfigState, ConfigWatcher,
+    reload_config, watch_config,
+};
 pub use documents::{DocState, DocumentStatus, Documents};
 pub use editor_groups::{
     EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode, Tab, TabBodyFactory,
@@ -32,4 +38,5 @@ pub use quick_open::{
 };
 pub use search_panel::{SEARCH_DEBOUNCE, SearchPanel};
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
+pub use theme_picker::{ThemePicker, ThemePickerEvent};
 pub use workbench::{SidebarView, Workbench};

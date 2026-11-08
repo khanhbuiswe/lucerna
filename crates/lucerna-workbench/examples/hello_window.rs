@@ -26,6 +26,7 @@ fn main() {
             keymap,
             themes,
             theme,
+            theme_generation: 0,
             languages: Arc::new(LanguageRegistry::bundled()),
         });
         let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);

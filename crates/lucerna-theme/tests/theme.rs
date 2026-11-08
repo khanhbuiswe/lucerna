@@ -192,3 +192,23 @@ fn new_ui_colors_fall_back_when_missing() {
         Rgba::parse_hex("#123456ff").unwrap()
     );
 }
+
+#[test]
+fn error_color_from_theme_or_red_fallback() {
+    let t = ThemeRegistry::builtin().get("One Dark").unwrap();
+    assert_eq!(t.ui.error, Rgba::parse_hex("#d07277ff").unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "plain.json",
+        r#"{"name":"P","themes":[{"name":"Plain","appearance":"dark","style":{}}]}"#,
+    );
+    let mut reg = ThemeRegistry::builtin();
+    assert!(reg.load_dir(dir.path()).is_empty());
+    let fallback = reg.get("Plain").unwrap().ui.error;
+    assert_eq!(fallback, UiColors::fallback(Appearance::Dark).error);
+    assert!(
+        fallback.r > 0.8 && fallback.g < 0.4 && fallback.b < 0.4,
+        "red: {fallback:?}"
+    );
+}

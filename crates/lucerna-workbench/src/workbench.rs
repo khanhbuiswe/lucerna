@@ -16,6 +16,7 @@ use lucerna_text::Point;
 use serde_json::Value;
 
 use crate::code_view::{self, CodeView, LargeFileStatus};
+use crate::config_files::{self, ConfigErrorItem};
 use crate::documents::{DocumentStatusItem, Documents};
 use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode};
 use crate::explorer::ExplorerView;
@@ -27,6 +28,7 @@ use crate::layout::{
 use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::search_panel::SearchPanel;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
+use crate::theme_picker::{self, ShownThemePicker};
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
 use crate::{AppState, CommandRegistry, find_widget, keys, search_panel};
 
@@ -40,6 +42,10 @@ pub struct Workbench {
     root: PathBuf,
     /// The one background scan of `root`; every view reads the tree from it.
     worktree: Worktree,
+    /// The options of the scan, from `files.exclude`.
+    scan_options: ScanOptions,
+    /// Re-themes and rescans when [`AppState`] changes.
+    _settings: Subscription,
     explorer: Entity<ExplorerView>,
     /// The Search panel, installed in the Search sidebar slot.
     search_panel: Entity<SearchPanel>,
@@ -71,6 +77,8 @@ pub struct Workbench {
     pub(crate) focus_before_quick_open: Option<FocusHandle>,
     /// Every opened file, newest first; Quick Open ranks them first.
     pub(crate) recent_files: RecentFiles,
+    /// The shown theme picker.
+    pub(crate) theme_picker: Option<ShownThemePicker>,
 }
 
 impl Workbench {
@@ -95,6 +103,8 @@ impl Workbench {
         quick_open::register_commands(&mut commands);
         find_widget::register_commands(&mut commands);
         search_panel::register_commands(&mut commands);
+        config_files::register_commands(&mut commands);
+        theme_picker::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let editor_groups = cx.new(|cx| {
             let mut groups = EditorGroupsView::default();
@@ -117,12 +127,10 @@ impl Workbench {
             let (groups, docs) = (editor_groups.clone(), documents.clone());
             cx.new(|_| DocumentStatusItem::new(groups, docs))
         };
-        let worktree = Worktree::start(
-            root.clone(),
-            ScanOptions {
-                exclude: enabled_globs(cx, "files.exclude"),
-            },
-        );
+        let scan_options = ScanOptions {
+            exclude: enabled_globs(cx, "files.exclude"),
+        };
+        let worktree = Worktree::start(root.clone(), scan_options.clone());
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
@@ -133,9 +141,15 @@ impl Workbench {
             cx.new(|cx| SearchPanel::new(root, workbench, cx))
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
+        let config_error = {
+            let workbench = cx.weak_entity();
+            cx.new(|cx| ConfigErrorItem::new(workbench, cx))
+        };
         let mut workbench = Workbench {
             root,
             worktree,
+            scan_options,
+            _settings: cx.observe_global::<AppState>(Self::settings_changed),
             _worktree_events: worktree_events,
             commands: Rc::new(commands),
             focus,
@@ -158,7 +172,9 @@ impl Workbench {
             quick_open: None,
             focus_before_quick_open: None,
             recent_files: RecentFiles::default(),
+            theme_picker: None,
         };
+        workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
         workbench
@@ -181,6 +197,22 @@ impl Workbench {
     /// The background scan of the opened folder.
     pub fn worktree(&self) -> &Worktree {
         &self.worktree
+    }
+
+    /// The options of the current scan; `files.exclude` changes replace them.
+    pub fn scan_options(&self) -> &ScanOptions {
+        &self.scan_options
+    }
+
+    /// After any [`AppState`] change: rescans when `files.exclude`
+    /// changed, and redraws (the theme may have changed).
+    fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        let exclude = enabled_globs(cx, "files.exclude");
+        if exclude != self.scan_options.exclude {
+            self.scan_options = ScanOptions { exclude };
+            self.worktree.set_options(self.scan_options.clone());
+        }
+        cx.notify();
     }
 
     /// The Explorer, installed in the Explorer sidebar slot by [`Workbench::new`].
@@ -306,7 +338,11 @@ impl Workbench {
             "searchViewletFocus",
             sidebar_focus && self.active_sidebar == SidebarView::Search,
         );
-        flag("inQuickOpen", self.quick_open.is_some());
+        // The theme picker is a quick pick too: Escape closes it.
+        flag(
+            "inQuickOpen",
+            self.quick_open.is_some() || self.theme_picker.is_some(),
+        );
         // As of the last frame: GPUI knows key contexts only once drawn.
         flag(
             "textInputFocus",
@@ -659,6 +695,10 @@ impl Render for Workbench {
                 self.quick_open
                     .as_ref()
                     .map(|(qo, _)| popover_overlay(qo.clone())),
+            )
+            .children(
+                self.theme_picker()
+                    .map(|picker| popover_overlay(picker.clone())),
             )
     }
 }

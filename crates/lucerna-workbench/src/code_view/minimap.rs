@@ -80,7 +80,7 @@ impl CodeView {
         let minimap_rows = (bounds.size.height / px(ROW_HEIGHT)).ceil() as u32;
         let start = self.minimap_start(minimap_rows);
         let end = (start + minimap_rows).min(self.snapshot.line_count());
-        let key = (self.revision, Arc::as_ptr(&theme) as usize);
+        let key = (self.revision, cx.global::<AppState>().theme_generation);
         let foreground = hsla(theme.ui.editor_foreground).opacity(TEXT_ALPHA);
         let mut rows = Vec::with_capacity((end - start) as usize);
         for row in start..end {

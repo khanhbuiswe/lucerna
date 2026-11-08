@@ -23,6 +23,7 @@ fn init(cx: &mut TestAppContext, user_keymap: Option<&str>) {
         keymap,
         themes,
         theme,
+        theme_generation: 0,
         languages: Arc::new(LanguageRegistry::bundled()),
     });
 }
@@ -273,13 +274,16 @@ fn same(view: Option<&AnyView>, probe: &Entity<Probe>) -> bool {
 
 #[gpui::test]
 fn unregistered_command_key_propagates_to_children(cx: &mut TestAppContext) {
-    init(cx, None);
+    init(
+        cx,
+        Some(r#"[{ "key": "cmd+,", "command": "test.notRegistered" }]"#),
+    );
     let probe = Probe::new(cx);
     let (wb, cx) = open(cx);
     wb.update(cx, |wb, cx| wb.set_editor_area(probe.clone().into(), cx));
     draw(cx);
     focus(&probe, cx);
-    // Bound to workbench.action.openSettingsJson, which nothing registered yet.
+    // Bound to a command nobody registered.
     cx.simulate_keystrokes("cmd-,");
     // Bound to a registered command: consumed by the workbench.
     cx.simulate_keystrokes("cmd-b");
@@ -312,8 +316,9 @@ fn slots_show_views_and_track_focus(cx: &mut TestAppContext) {
             Some(wb.explorer().entity_id())
         );
         assert!(same(wb.editor_area(), &editor));
-        let [l] = wb.status_items(StatusBarSide::Left) else {
-            panic!("one left item")
+        // The built-in configuration error item comes first.
+        let [_, l] = wb.status_items(StatusBarSide::Left) else {
+            panic!("one left item after the built-in one")
         };
         // The built-in large-file notice and document status come first.
         let [_, _, r] = wb.status_items(StatusBarSide::Right) else {

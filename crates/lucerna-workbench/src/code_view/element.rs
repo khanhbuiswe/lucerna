@@ -350,7 +350,7 @@ impl CodeView {
             wrap_chars,
             font_size: self.font_size,
             tab_size: self.config.tab_size,
-            theme: Arc::as_ptr(&theme) as usize,
+            theme: cx.global::<AppState>().theme_generation,
         };
         let mut frame_rows = Vec::new();
         let mut max_width = px(0.);

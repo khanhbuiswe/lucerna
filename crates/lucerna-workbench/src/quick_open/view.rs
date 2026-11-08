@@ -1,32 +1,26 @@
 //! The Quick Open popover: a [`TextInput`] over a list of files, commands
-//! or a go-to-line row, plus the picker building blocks the theme picker
-//! reuses.
+//! or a go-to-line row, drawn with the shared [`super::picker`] pieces.
 
-use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{
-    AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle,
-    IntoElement, KeyDownEvent, ParentElement, Render, ScrollHandle, SharedString, Stateful,
-    StyledText, Task, WeakEntity, Window, div, prelude::*, px,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    KeyDownEvent, ParentElement, Render, ScrollHandle, SharedString, Task, WeakEntity, Window, div,
+    prelude::*, px,
 };
 use lucerna_project::{FileMatch, QUICK_OPEN_LIMIT, WorktreeSnapshot, match_files};
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
+use super::picker::{highlighted, picker_input_row, picker_list, picker_row, wrap_index};
 use super::query::{QuickOpenQuery, parse_query};
 use crate::layout::color;
 use crate::text_input::TextInput;
 use crate::ui::{GRID, popover};
 use crate::{AppState, OpenMode, Workbench};
-
-/// Height of one picker row.
-pub(crate) const PICKER_ROW_HEIGHT: f32 = 7. * GRID;
-/// Rows shown before the list scrolls.
-const PICKER_VISIBLE_ROWS: f32 = 12.;
 
 /// A command as the palette lists it.
 #[derive(Debug, Clone)]
@@ -414,93 +408,9 @@ fn filter_commands(commands: &[CommandItem], query: &str) -> Vec<Row> {
         .collect()
 }
 
-/// `current` moved by `delta` within `0..len`, wrapping at both ends.
-pub(crate) fn wrap_index(current: usize, len: usize, delta: isize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    (current as isize + delta).rem_euclid(len as isize) as usize
-}
-
-/// `text` with the chars at `positions` (char indices) in the accent color.
-pub(crate) fn highlighted(text: SharedString, positions: &[u32], cx: &App) -> StyledText {
-    // The theme has no `text.accent`; the active line number is its accent.
-    let accent = color(cx.global::<AppState>().theme.ui.editor_active_line_number);
-    let style = HighlightStyle {
-        color: Some(accent.into()),
-        ..Default::default()
-    };
-    let ranges: Vec<(Range<usize>, HighlightStyle)> = text
-        .char_indices()
-        .enumerate()
-        .filter(|(i, _)| positions.binary_search(&(*i as u32)).is_ok())
-        .map(|(_, (byte, ch))| (byte..byte + ch.len_utf8(), style))
-        .collect();
-    StyledText::new(text).with_highlights(ranges)
-}
-
-/// The input row at the top of a picker, with a divider below it.
-pub(crate) fn picker_input_row(input: &Entity<TextInput>, cx: &App) -> Div {
-    let ui = &cx.global::<AppState>().theme.ui;
-    div()
-        .flex()
-        .items_center()
-        .h(px(9. * GRID))
-        .px(px(3. * GRID))
-        .border_b_1()
-        .border_color(color(ui.border_variant))
-        .child(input.clone())
-}
-
-/// The scrolling list under a picker's input.
-pub(crate) fn picker_list(id: &'static str, scroll: &ScrollHandle) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_col()
-        .p(px(GRID))
-        .max_h(px(PICKER_ROW_HEIGHT * PICKER_VISIBLE_ROWS + 2. * GRID))
-        .overflow_y_scroll()
-        .track_scroll(scroll)
-}
-
-/// One picker row: `element.selected` when selected, `ghost_element.hover`
-/// on hover. Its debug selector is `"{id}-{index}"`; add `on_click` and
-/// the content.
-pub(crate) fn picker_row(
-    id: &'static str,
-    index: usize,
-    selected: bool,
-    cx: &App,
-) -> Stateful<Div> {
-    let ui = &cx.global::<AppState>().theme.ui;
-    let hover = color(ui.ghost_element_hover);
-    div()
-        .id((id, index))
-        .debug_selector(|| format!("{id}-{index}"))
-        .flex()
-        .flex_none()
-        .items_center()
-        .h(px(PICKER_ROW_HEIGHT))
-        .px(px(2. * GRID))
-        .rounded(px(GRID))
-        .overflow_hidden()
-        .cursor_pointer()
-        .when(selected, |row| row.bg(color(ui.element_selected)))
-        .when(!selected, |row| row.hover(move |s| s.bg(hover)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn wrap_index_wraps_both_ways() {
-        assert_eq!(wrap_index(0, 3, -1), 2);
-        assert_eq!(wrap_index(2, 3, 1), 0);
-        assert_eq!(wrap_index(1, 3, 1), 2);
-        assert_eq!(wrap_index(0, 0, 1), 0);
-    }
 
     #[test]
     fn split_path_root_and_nested() {

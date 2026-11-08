@@ -27,6 +27,7 @@ fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
         keymap,
         themes,
         theme,
+        theme_generation: 0,
         languages: Arc::new(LanguageRegistry::bundled()),
     });
 }

@@ -1,0 +1,694 @@
+//! The user's settings, keybindings and theme files: where they live,
+//! loading them into [`AppState`], hot reload through a debounced file
+//! watcher, the commands that open them, and the status-bar item that
+//! reports a broken file.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use crossbeam_channel::{Receiver, RecvTimeoutError, unbounded};
+use futures::StreamExt;
+use gpui::{
+    App, Context, IntoElement, ParentElement, Render, Styled, Subscription, Task, WeakEntity,
+    Window, div, prelude::*,
+};
+use lucerna_settings::{Keymap, Layer, SettingsError};
+use lucerna_text::Point;
+use lucerna_theme::ThemeRegistry;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
+
+use crate::layout::color;
+use crate::{AppState, CommandRegistry, OpenMode, Workbench};
+
+/// A batch of changes ends once no event arrived for this long...
+pub const CONFIG_DEBOUNCE: Duration = Duration::from_millis(50);
+/// ...or when it has been collecting for this long.
+const MAX_BATCH: Duration = Duration::from_millis(200);
+
+/// What a missing user `settings.json` is created with.
+pub(crate) const USER_SETTINGS_TEMPLATE: &str = "// Lucerna user settings\n{\n}\n";
+const WORKSPACE_SETTINGS_TEMPLATE: &str = "// Lucerna workspace settings\n{\n}\n";
+const KEYBINDINGS_TEMPLATE: &str = "// Lucerna user keybindings\n[\n]\n";
+
+/// Where the configuration files are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigPaths {
+    /// `~/.config/lucerna`: `settings.json`, `keybindings.json`, `themes/`.
+    pub user_dir: PathBuf,
+    /// `<root>/.lucerna/settings.json`.
+    pub workspace_settings: PathBuf,
+}
+
+impl ConfigPaths {
+    /// The user directory under `$HOME`, and the workspace settings of
+    /// `root`.
+    pub fn for_root(root: &Path) -> ConfigPaths {
+        let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        ConfigPaths::with_user_dir(home.join(".config").join("lucerna"), root)
+    }
+
+    /// Like [`ConfigPaths::for_root`] with another user directory; for tests.
+    pub fn with_user_dir(user_dir: impl Into<PathBuf>, root: &Path) -> ConfigPaths {
+        ConfigPaths {
+            user_dir: user_dir.into(),
+            workspace_settings: root.join(".lucerna").join("settings.json"),
+        }
+    }
+
+    pub fn user_settings(&self) -> PathBuf {
+        self.user_dir.join("settings.json")
+    }
+
+    pub fn keybindings(&self) -> PathBuf {
+        self.user_dir.join("keybindings.json")
+    }
+
+    /// User theme families, `*.json` in Zed's format.
+    pub fn themes_dir(&self) -> PathBuf {
+        self.user_dir.join("themes")
+    }
+
+    /// `<root>/.lucerna`.
+    pub fn workspace_dir(&self) -> &Path {
+        self.workspace_settings
+            .parent()
+            .expect("workspace settings live in a directory")
+    }
+
+    /// The directories the watcher follows.
+    fn watched_dirs(&self) -> Vec<PathBuf> {
+        vec![self.user_dir.clone(), self.workspace_dir().to_path_buf()]
+    }
+}
+
+/// One configuration file (or the themes directory).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConfigFile {
+    UserSettings,
+    WorkspaceSettings,
+    Keybindings,
+    Themes,
+}
+
+/// A configuration file that could not be read or parsed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigError {
+    pub file: ConfigFile,
+    pub path: PathBuf,
+    pub error: SettingsError,
+}
+
+impl ConfigError {
+    /// `"settings.json: line 3: expected value"`; workspace settings are
+    /// named `.lucerna/settings.json`.
+    pub fn status_text(&self) -> String {
+        let name = match self.file {
+            ConfigFile::UserSettings => "settings.json",
+            ConfigFile::WorkspaceSettings => ".lucerna/settings.json",
+            ConfigFile::Keybindings => "keybindings.json",
+            ConfigFile::Themes => "themes",
+        };
+        format!("{name}: {}", self.error)
+    }
+}
+
+/// The configuration files in use, their current errors and the watcher.
+/// A GPUI global set by [`watch_config`].
+pub struct ConfigState {
+    paths: ConfigPaths,
+    errors: BTreeMap<ConfigFile, ConfigError>,
+    watcher: Option<ConfigWatcher>,
+    _pump: Task<()>,
+}
+
+impl gpui::Global for ConfigState {}
+
+impl ConfigState {
+    pub fn paths(&self) -> &ConfigPaths {
+        &self.paths
+    }
+
+    /// Files that failed to load, user settings first.
+    pub fn errors(&self) -> impl Iterator<Item = &ConfigError> {
+        self.errors.values()
+    }
+}
+
+/// Loads every configuration file into [`AppState`], then follows changes
+/// to them: settings go through `set_layer`, keybindings through
+/// `Keymap::load`, user themes through `load_dir`, and the theme named by
+/// `workbench.colorTheme` is made active. Replaces an earlier call's
+/// paths and watcher.
+///
+/// The watcher is not started on GPUI's deterministic test scheduler,
+/// which rejects wake-ups from other threads; tests deliver changes with
+/// [`reload_config`].
+///
+/// # Panics
+/// If the [`AppState`] global is not set.
+pub fn watch_config(paths: ConfigPaths, cx: &mut App) {
+    assert!(
+        cx.has_global::<AppState>(),
+        "set the AppState global before watch_config"
+    );
+    let (watcher, pump) = if cx.background_executor().is_test() {
+        (None, Task::ready(()))
+    } else {
+        start_watching(&paths, cx)
+    };
+    cx.set_global(ConfigState {
+        paths,
+        errors: BTreeMap::new(),
+        watcher,
+        _pump: pump,
+    });
+    load(
+        [
+            ConfigFile::Themes,
+            ConfigFile::UserSettings,
+            ConfigFile::WorkspaceSettings,
+            ConfigFile::Keybindings,
+        ],
+        cx,
+    );
+}
+
+/// Re-reads the configuration files that `changed` paths touch and
+/// applies them. What the watcher calls for each debounced batch.
+pub fn reload_config(changed: &[PathBuf], cx: &mut App) {
+    let Some(state) = cx.try_global::<ConfigState>() else {
+        return;
+    };
+    let files = classify(&state.paths, changed);
+    if !files.is_empty() {
+        load(files, cx);
+    }
+}
+
+fn start_watching(paths: &ConfigPaths, cx: &mut App) -> (Option<ConfigWatcher>, Task<()>) {
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    let watcher = ConfigWatcher::start(paths, move |batch| {
+        let _ = tx.unbounded_send(batch);
+    });
+    match watcher {
+        Ok(watcher) => {
+            let pump = cx.spawn(async move |cx| {
+                while let Some(batch) = rx.next().await {
+                    cx.update(|cx| reload_config(&batch, cx));
+                }
+            });
+            (Some(watcher), pump)
+        }
+        Err(err) => {
+            tracing::error!(%err, "could not watch the configuration files");
+            (None, Task::ready(()))
+        }
+    }
+}
+
+/// Loads `files` and makes the configured theme active.
+fn load(files: impl IntoIterator<Item = ConfigFile>, cx: &mut App) {
+    let paths = cx.global::<ConfigState>().paths.clone();
+    for file in files {
+        match file {
+            ConfigFile::UserSettings => load_settings(file, Layer::User, paths.user_settings(), cx),
+            ConfigFile::WorkspaceSettings => {
+                load_settings(file, Layer::Workspace, paths.workspace_settings.clone(), cx)
+            }
+            ConfigFile::Keybindings => {
+                let path = paths.keybindings();
+                let result = read(&path).and_then(|text| {
+                    match Keymap::load(Keymap::default_bindings(), text.as_deref()) {
+                        (keymap, None) => {
+                            cx.global_mut::<AppState>().keymap = keymap;
+                            Ok(())
+                        }
+                        // The bindings in use stay.
+                        (_, Some(err)) => Err(err),
+                    }
+                });
+                record(file, path, result, cx);
+            }
+            ConfigFile::Themes => {
+                let dir = paths.themes_dir();
+                let mut themes = ThemeRegistry::builtin();
+                if dir.is_dir() {
+                    for (path, err) in themes.load_dir(&dir) {
+                        tracing::warn!(path = %path.display(), %err, "could not load theme");
+                    }
+                }
+                cx.global_mut::<AppState>().themes = themes;
+            }
+        }
+    }
+    apply_configured_theme(cx);
+}
+
+fn load_settings(file: ConfigFile, layer: Layer, path: PathBuf, cx: &mut App) {
+    let result = read(&path).and_then(|text| {
+        let text = text.as_deref().unwrap_or("{}");
+        cx.global_mut::<AppState>().settings.set_layer(layer, text)
+    });
+    record(file, path, result, cx);
+}
+
+/// The file's text; `None` when it does not exist.
+fn read(path: &Path) -> Result<Option<String>, SettingsError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(SettingsError {
+            message: err.to_string(),
+            line: None,
+        }),
+    }
+}
+
+fn record(file: ConfigFile, path: PathBuf, result: Result<(), SettingsError>, cx: &mut App) {
+    let errors = &cx.global::<ConfigState>().errors;
+    let new = result.err().map(|error| ConfigError { file, path, error });
+    if errors.get(&file) == new.as_ref() {
+        return;
+    }
+    let errors = &mut cx.global_mut::<ConfigState>().errors;
+    match new {
+        Some(err) => errors.insert(file, err),
+        None => errors.remove(&file),
+    };
+}
+
+/// Makes the theme named by `workbench.colorTheme` active ("One Dark"
+/// when it names no known theme).
+pub(crate) fn apply_configured_theme(cx: &mut App) {
+    let state = cx.global::<AppState>();
+    let name: String = state
+        .settings
+        .get("workbench.colorTheme", None)
+        .unwrap_or_default();
+    let theme = state.themes.get_or_default(&name);
+    if !Arc::ptr_eq(&theme, &state.theme) {
+        cx.global_mut::<AppState>().set_theme(theme);
+    }
+}
+
+/// Which configuration files the changed paths touch. A change to a
+/// configuration directory itself (created, removed, or events lost)
+/// touches every file in it.
+fn classify(paths: &ConfigPaths, changed: &[PathBuf]) -> BTreeSet<ConfigFile> {
+    let user_dir = real_path(&paths.user_dir);
+    let themes = user_dir.join("themes");
+    let workspace_dir = real_path(paths.workspace_dir());
+    let mut files = BTreeSet::new();
+    for path in changed {
+        let path = real_path(path);
+        if user_dir.starts_with(&path) {
+            files.extend([
+                ConfigFile::UserSettings,
+                ConfigFile::Keybindings,
+                ConfigFile::Themes,
+            ]);
+        }
+        if workspace_dir.starts_with(&path) || path == workspace_dir.join("settings.json") {
+            files.insert(ConfigFile::WorkspaceSettings);
+        }
+        if path == user_dir.join("settings.json") {
+            files.insert(ConfigFile::UserSettings);
+        }
+        if path == user_dir.join("keybindings.json") {
+            files.insert(ConfigFile::Keybindings);
+        }
+        if path.starts_with(&themes) {
+            files.insert(ConfigFile::Themes);
+        }
+    }
+    files
+}
+
+/// `path` with symlinks resolved, as FSEvents reports it (`/private/var`
+/// for `/var`). Missing components are resolved through the deepest
+/// ancestor that exists.
+fn real_path(path: &Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(real) = std::fs::canonicalize(ancestor) {
+            let rest = path
+                .strip_prefix(ancestor)
+                .expect("an ancestor is a prefix");
+            return if rest.as_os_str().is_empty() {
+                real
+            } else {
+                real.join(rest)
+            };
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Watches the user and workspace configuration directories and reports
+/// changed paths in batches debounced by [`CONFIG_DEBOUNCE`]. A directory
+/// that does not exist yet is followed through its parent until it does.
+/// Dropping it stops watching.
+pub struct ConfigWatcher {
+    state: Arc<Mutex<WatchState>>,
+}
+
+struct WatchState {
+    watcher: RecommendedWatcher,
+    dirs: Vec<PathBuf>,
+    watched: Vec<(PathBuf, RecursiveMode)>,
+}
+
+impl ConfigWatcher {
+    /// Starts watching; `on_batch` runs on the watcher's thread.
+    pub fn start(
+        paths: &ConfigPaths,
+        on_batch: impl Fn(Vec<PathBuf>) + Send + 'static,
+    ) -> notify::Result<ConfigWatcher> {
+        let (tx, rx) = unbounded();
+        let watcher = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        })?;
+        let state = Arc::new(Mutex::new(WatchState {
+            watcher,
+            dirs: paths.watched_dirs(),
+            watched: Vec::new(),
+        }));
+        lock(&state).rearm();
+        let weak = Arc::downgrade(&state);
+        thread::Builder::new()
+            .name("lucerna-config-watch".into())
+            .spawn(move || debounce_loop(&rx, &weak, &on_batch))
+            .map_err(notify::Error::io)?;
+        Ok(ConfigWatcher { state })
+    }
+
+    /// Re-picks what to watch, after a configuration directory was made.
+    pub fn rearm(&self) {
+        lock(&self.state).rearm();
+    }
+}
+
+fn lock(state: &Mutex<WatchState>) -> std::sync::MutexGuard<'_, WatchState> {
+    state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl WatchState {
+    /// Watches each directory that exists, recursively, and the parent of
+    /// each that does not.
+    fn rearm(&mut self) {
+        let mut wanted: Vec<(PathBuf, RecursiveMode)> = Vec::new();
+        for dir in &self.dirs {
+            let target = if dir.is_dir() {
+                Some((dir.clone(), RecursiveMode::Recursive))
+            } else {
+                dir.parent()
+                    .filter(|p| p.is_dir())
+                    .map(|p| (p.to_path_buf(), RecursiveMode::NonRecursive))
+            };
+            if let Some(target) = target.filter(|t| !wanted.contains(t)) {
+                wanted.push(target);
+            }
+        }
+        for (path, mode) in &self.watched {
+            if !wanted.contains(&(path.clone(), *mode)) {
+                let _ = self.watcher.unwatch(path);
+            }
+        }
+        let mut watched = Vec::new();
+        for target in wanted {
+            if self.watched.contains(&target) {
+                watched.push(target);
+                continue;
+            }
+            match self.watcher.watch(&target.0, target.1) {
+                Ok(()) => watched.push(target),
+                Err(err) => {
+                    tracing::warn!(path = %target.0.display(), %err, "could not watch")
+                }
+            }
+        }
+        self.watched = watched;
+    }
+}
+
+fn debounce_loop(
+    rx: &Receiver<notify::Result<notify::Event>>,
+    state: &Weak<Mutex<WatchState>>,
+    on_batch: &dyn Fn(Vec<PathBuf>),
+) {
+    // Ends once the watcher, which holds the sender, is dropped.
+    while let Ok(first) = rx.recv() {
+        let started = Instant::now();
+        let mut events = vec![first];
+        loop {
+            let left = MAX_BATCH
+                .saturating_sub(started.elapsed())
+                .min(CONFIG_DEBOUNCE);
+            if left.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(left) {
+                Ok(event) => events.push(event),
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        let Some(state) = state.upgrade() else {
+            return;
+        };
+        let dirs = {
+            let mut state = lock(&state);
+            state.rearm();
+            state.dirs.clone()
+        };
+        drop(state);
+        let mut changed = BTreeSet::new();
+        for event in events {
+            match event {
+                Ok(event) => {
+                    if event.need_rescan() {
+                        changed.extend(dirs.iter().cloned());
+                    }
+                    changed.extend(event.paths);
+                }
+                // Events may have been lost: reload everything.
+                Err(_) => changed.extend(dirs.iter().cloned()),
+            }
+        }
+        if !changed.is_empty() {
+            on_batch(changed.into_iter().collect());
+        }
+    }
+}
+
+pub(crate) fn register_commands(commands: &mut CommandRegistry) {
+    commands.register(
+        "workbench.action.openSettingsJson",
+        "Preferences: Open User Settings (JSON)",
+        |wb, _, window, cx| {
+            open_config_file(
+                wb,
+                ConfigPaths::user_settings,
+                USER_SETTINGS_TEMPLATE,
+                window,
+                cx,
+            )
+        },
+    );
+    commands.register(
+        "workbench.action.openGlobalKeybindingsFile",
+        "Preferences: Open Keyboard Shortcuts (JSON)",
+        |wb, _, window, cx| {
+            open_config_file(
+                wb,
+                ConfigPaths::keybindings,
+                KEYBINDINGS_TEMPLATE,
+                window,
+                cx,
+            )
+        },
+    );
+    commands.register(
+        "workbench.action.openWorkspaceSettingsFile",
+        "Preferences: Open Workspace Settings (JSON)",
+        |wb, _, window, cx| {
+            open_config_file(
+                wb,
+                |paths| paths.workspace_settings.clone(),
+                WORKSPACE_SETTINGS_TEMPLATE,
+                window,
+                cx,
+            )
+        },
+    );
+    commands.register(
+        "lucerna.openLogsFolder",
+        "Lucerna: Open Logs Folder",
+        |_, _, _, _| open_logs_folder(),
+    );
+}
+
+/// Opens a configuration file in a pinned tab, creating it (and its
+/// directory) from `template` first when it does not exist.
+fn open_config_file(
+    wb: &mut Workbench,
+    path: impl FnOnce(&ConfigPaths) -> PathBuf,
+    template: &str,
+    window: &mut Window,
+    cx: &mut Context<Workbench>,
+) {
+    let Some(state) = cx.try_global::<ConfigState>() else {
+        tracing::warn!("watch_config was not called: no configuration files to open");
+        return;
+    };
+    let path = path(&state.paths);
+    match create_if_missing(&path, template) {
+        Ok(true) => {
+            if let Some(watcher) = &state.watcher {
+                watcher.rearm();
+            }
+        }
+        Ok(false) => {}
+        Err(err) => {
+            tracing::error!(path = %path.display(), %err, "could not create the file");
+            return;
+        }
+    }
+    wb.open_path(Arc::from(path), OpenMode::Pinned, cx);
+    wb.focus_editor_area(window, cx);
+}
+
+/// Writes `template` to `path` unless it exists. Returns whether it did.
+fn create_if_missing(path: &Path, template: &str) -> io::Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    use std::io::Write as _;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => file.write_all(template.as_bytes()).map(|()| true),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// `open ~/Library/Logs/Lucerna`, creating the folder first.
+fn open_logs_folder() {
+    let Some(home) = std::env::home_dir() else {
+        return;
+    };
+    let dir = home.join("Library").join("Logs").join("Lucerna");
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        tracing::error!(%err, "could not create the logs folder");
+        return;
+    }
+    match std::process::Command::new("open").arg(&dir).spawn() {
+        // Reap it off the main thread.
+        Ok(mut child) => drop(thread::spawn(move || child.wait())),
+        Err(err) => tracing::error!(%err, "could not open the logs folder"),
+    }
+}
+
+/// The status-bar item for a broken configuration file, in the theme's
+/// error color. Clicking it opens the file at the reported line.
+pub(crate) struct ConfigErrorItem {
+    workbench: WeakEntity<Workbench>,
+    _errors: Subscription,
+}
+
+impl ConfigErrorItem {
+    pub(crate) fn new(workbench: WeakEntity<Workbench>, cx: &mut Context<Self>) -> Self {
+        ConfigErrorItem {
+            workbench,
+            _errors: cx.observe_global::<ConfigState>(|_, cx| cx.notify()),
+        }
+    }
+}
+
+impl Render for ConfigErrorItem {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let error = cx
+            .try_global::<ConfigState>()
+            .and_then(|state| state.errors().next().cloned());
+        let error_color = color(cx.global::<AppState>().theme.ui.error);
+        let workbench = self.workbench.clone();
+        div()
+            .id("settings-error")
+            .when(error.is_none(), |d| d.hidden())
+            .when_some(error, |d, error| {
+                let row = error.error.line.unwrap_or(1).saturating_sub(1) as u32;
+                let path: Arc<Path> = Arc::from(error.path.as_path());
+                d.debug_selector(|| "settings-error".into())
+                    .text_color(error_color)
+                    .cursor_pointer()
+                    .child(error.status_text())
+                    .on_click(move |_, window, cx| {
+                        let point = Point { row, column: 0 };
+                        let path = path.clone();
+                        workbench
+                            .update(cx, |wb, cx| {
+                                wb.open_path_at(path, OpenMode::Pinned, point, cx);
+                                wb.focus_editor_area(window, cx);
+                            })
+                            .ok();
+                    })
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_maps_paths_to_files() {
+        let user = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::with_user_dir(user.path(), root.path());
+        let files = |changed: &[PathBuf]| -> Vec<ConfigFile> {
+            classify(&paths, changed).into_iter().collect()
+        };
+        assert_eq!(files(&[paths.user_settings()]), [ConfigFile::UserSettings]);
+        assert_eq!(files(&[paths.keybindings()]), [ConfigFile::Keybindings]);
+        assert_eq!(
+            files(&[paths.themes_dir().join("x.json")]),
+            [ConfigFile::Themes]
+        );
+        assert_eq!(
+            files(std::slice::from_ref(&paths.workspace_settings)),
+            [ConfigFile::WorkspaceSettings]
+        );
+        assert_eq!(
+            files(std::slice::from_ref(&paths.user_dir)),
+            [
+                ConfigFile::UserSettings,
+                ConfigFile::Keybindings,
+                ConfigFile::Themes
+            ]
+        );
+        assert!(files(&[root.path().join("a.txt")]).is_empty());
+        assert!(files(&[user.path().join("other.json")]).is_empty());
+    }
+
+    #[test]
+    fn create_if_missing_keeps_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new").join("settings.json");
+        assert!(create_if_missing(&path, USER_SETTINGS_TEMPLATE).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            USER_SETTINGS_TEMPLATE
+        );
+        std::fs::write(&path, "{}").unwrap();
+        assert!(!create_if_missing(&path, USER_SETTINGS_TEMPLATE).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+    }
+}

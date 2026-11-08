@@ -78,6 +78,8 @@ pub struct UiColors {
     pub icon_muted: Rgba,
     /// `tab_bar.background`, else the theme's `panel.background`.
     pub tab_bar_background: Rgba,
+    /// Error text, such as a broken settings file in the status bar.
+    pub error: Rgba,
 }
 
 const fn gray(v: u8, a: u8) -> Rgba {
@@ -88,6 +90,14 @@ const fn gray(v: u8, a: u8) -> Rgba {
         a: a as f32 / 255.0,
     }
 }
+
+/// Error color for themes without an `error` key.
+const ERROR_RED: Rgba = Rgba {
+    r: 0xe5 as f32 / 255.0,
+    g: 0x48 as f32 / 255.0,
+    b: 0x4d as f32 / 255.0,
+    a: 1.0,
+};
 
 impl UiColors {
     /// The single place that defines fallback colors for missing theme keys.
@@ -152,6 +162,7 @@ impl UiColors {
             icon: fg,
             icon_muted: muted,
             tab_bar_background: panel,
+            error: ERROR_RED,
         }
     }
 }

@@ -31,8 +31,8 @@ pub(crate) struct ShapeKey {
     pub wrap_chars: Option<u32>,
     pub font_size: f32,
     pub tab_size: u32,
-    /// Identity of the active theme.
-    pub theme: usize,
+    /// [`crate::AppState::theme_generation`].
+    pub theme: u64,
 }
 
 #[derive(Default)]
@@ -45,7 +45,7 @@ pub(crate) struct Caches {
     shaped_order: VecDeque<u32>,
     wrap_key: Option<(u64, Option<u32>, u32)>,
     wraps: HashMap<u32, u32>,
-    minimap_key: Option<(u64, usize)>,
+    minimap_key: Option<(u64, u64)>,
     minimap: HashMap<u32, Arc<MinimapRow>>,
 }
 
@@ -61,6 +61,18 @@ impl Caches {
         self.highlights.clear();
         self.shaped.clear();
         self.shaped_order.clear();
+        self.minimap.clear();
+    }
+
+    /// Drops what depends on the font, tab size or other config: shaped
+    /// rows, wrap counts and minimap rows.
+    pub fn layout_changed(&mut self) {
+        self.shape_key = None;
+        self.shaped.clear();
+        self.shaped_order.clear();
+        self.wrap_key = None;
+        self.wraps.clear();
+        self.minimap_key = None;
         self.minimap.clear();
     }
 
@@ -157,7 +169,7 @@ impl Caches {
             .or_insert_with(|| wrap_count(snapshot, row, wrap_chars, tab_size))
     }
 
-    pub fn minimap_row(&mut self, key: (u64, usize), row: u32) -> Option<Arc<MinimapRow>> {
+    pub fn minimap_row(&mut self, key: (u64, u64), row: u32) -> Option<Arc<MinimapRow>> {
         if self.minimap_key != Some(key) || self.minimap.len() >= MINIMAP_ROWS {
             self.minimap_key = Some(key);
             self.minimap.clear();

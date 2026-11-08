@@ -84,6 +84,7 @@ impl ThemeDef {
             tab_bar_background: color("tab_bar.background")
                 .or_else(|| color("panel.background"))
                 .unwrap_or(fb.tab_bar_background),
+            error: color("error").unwrap_or(fb.error),
         };
 
         let mut syntax = HashMap::new();

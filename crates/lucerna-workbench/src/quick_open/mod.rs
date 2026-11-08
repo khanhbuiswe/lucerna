@@ -2,10 +2,10 @@
 //! `>` prefix) and go to line (`⌃G`, `:` prefix), and the recently
 //! opened files that rank first in it.
 
+/// The picker building blocks shared with the theme picker.
+pub(crate) mod picker;
 mod query;
-/// Also the picker building blocks (`picker_input_row`, `picker_list`,
-/// `picker_row`, `highlighted`, `wrap_index`) for other pickers.
-pub(crate) mod view;
+mod view;
 
 pub use query::{QuickOpenQuery, parse_query};
 pub use view::{QuickOpen, QuickOpenEvent};
@@ -66,7 +66,10 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "workbench.action.closeQuickOpen",
         "Close Quick Open",
-        |wb, _, window, cx| wb.close_quick_open(window, cx),
+        |wb, _, window, cx| {
+            wb.close_quick_open(window, cx);
+            wb.close_theme_picker(true, window, cx);
+        },
     );
 }
 

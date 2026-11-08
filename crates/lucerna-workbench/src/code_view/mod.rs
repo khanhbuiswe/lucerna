@@ -18,7 +18,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyView, App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement,
-    ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, div, prelude::*, px,
+    ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
+    prelude::*, px,
 };
 use lucerna_syntax::{SyntaxState, indent_folds};
 use lucerna_text::{Buffer, BufferSnapshot, LoadError, Point, Reload};
@@ -43,8 +44,9 @@ pub const LARGE_FILE_STATUS: &str = "Large file: highlighting disabled";
 const MIN_FONT_SIZE: f32 = 6.;
 const MAX_FONT_SIZE: f32 = 40.;
 
-/// Settings read once when the view is made.
-#[derive(Debug, Clone)]
+/// The `editor.*` settings a view follows; re-read on every settings
+/// change by [`CodeView::reload_config`].
+#[derive(Debug, Clone, PartialEq)]
 struct Config {
     font_family: SharedString,
     /// `editor.lineHeight`: below 8 a multiple of the font size, else px.
@@ -116,6 +118,12 @@ pub struct CodeView {
     config: Config,
     font_size: f32,
     word_wrap: bool,
+    /// `editor.fontSize` and `editor.wordWrap` as last read: a settings
+    /// change overrides zoom and the wrap toggle only when these change.
+    settings_font_size: f32,
+    settings_word_wrap: bool,
+    /// Re-reads the config whenever [`AppState`] changes.
+    _settings: Subscription,
     scroll: Scroll,
     scroll_x: f32,
     /// Widest line laid out since the text, wrap or font last changed.
@@ -164,6 +172,9 @@ impl CodeView {
             config,
             font_size,
             word_wrap,
+            settings_font_size: font_size,
+            settings_word_wrap: word_wrap,
+            _settings: cx.observe_global::<AppState>(Self::reload_config),
             scroll: Scroll::default(),
             scroll_x: 0.,
             max_line_width: 0.,
@@ -293,6 +304,46 @@ impl CodeView {
         self.caches.clear();
         self.fold_ranges.clear();
         self._fold_task = (!self.large).then(|| self.compute_folds(cx));
+    }
+
+    /// Re-reads the `editor.*` settings and applies what changed:
+    /// font, line height, wrap, minimap, whitespace, tab size and the
+    /// large-file limits. Font-size zoom and the wrap toggle survive
+    /// unless their setting changed. Called on every [`AppState`] change.
+    pub fn reload_config(&mut self, cx: &mut Context<Self>) {
+        let (config, font_size, word_wrap) = Config::read(cx);
+        let mut changed = false;
+        if font_size != self.settings_font_size {
+            self.settings_font_size = font_size;
+            self.font_size = font_size;
+            changed = true;
+        }
+        if word_wrap != self.settings_word_wrap {
+            self.settings_word_wrap = word_wrap;
+            self.word_wrap = word_wrap;
+            self.scroll_x = 0.;
+            changed = true;
+        }
+        if config != self.config {
+            let refold = config.tab_size != self.config.tab_size
+                || config.max_bytes != self.config.max_bytes
+                || config.max_lines != self.config.max_lines;
+            self.config = config;
+            if refold {
+                self.large = self.snapshot.len_bytes() as u64 > self.config.max_bytes
+                    || self.snapshot.line_count() > self.config.max_lines;
+                self.folds.clear();
+                self.fold_ranges.clear();
+                self._fold_task = (!self.large).then(|| self.compute_folds(cx));
+            }
+            changed = true;
+        }
+        if changed {
+            self.caches.layout_changed();
+            self.scroll.offset = 0.;
+            self.max_line_width = 0.;
+            cx.notify();
+        }
     }
 
     /// Fold ranges are found once per snapshot, off the main thread.

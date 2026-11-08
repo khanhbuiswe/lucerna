@@ -19,7 +19,7 @@ use regex::{Regex, RegexBuilder};
 
 use crate::code_view::CodeView;
 use crate::layout::color;
-use crate::quick_open::view::wrap_index;
+use crate::quick_open::picker::wrap_index;
 use crate::text_input::TextInput;
 use crate::ui::{
     CHEVRON_DOWN_ICON, CHEVRON_UP_ICON, CLOSE_ICON, GRID, icon_button, popover, toggle_button,
