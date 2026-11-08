@@ -169,6 +169,18 @@ impl Drop for Worktree {
 /// even without a `.git` directory); the user's global gitignore does not, so
 /// results do not depend on the machine. `files.exclude` globs are overrides.
 pub(crate) fn walk_builder(root: &Path, opts: &ScanOptions) -> WalkBuilder {
+    walk_builder_with_includes(root, opts, &[])
+}
+
+/// `walk_builder` plus positive `include` globs in the same override set, so
+/// that nothing replaces the exclude overrides. Excludes come last and win.
+/// With any include, files matching no glob are skipped; directories are not
+/// affected, so included files stay reachable.
+pub(crate) fn walk_builder_with_includes(
+    root: &Path,
+    opts: &ScanOptions,
+    include: &[String],
+) -> WalkBuilder {
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -180,6 +192,11 @@ pub(crate) fn walk_builder(root: &Path, opts: &ScanOptions) -> WalkBuilder {
         .require_git(false)
         .follow_links(false);
     let mut overrides = OverrideBuilder::new(root);
+    for glob in include {
+        if let Err(err) = overrides.add(glob) {
+            tracing::warn!(%glob, %err, "invalid include glob");
+        }
+    }
     for glob in &opts.exclude {
         if let Err(err) = overrides.add(&format!("!{glob}")) {
             tracing::warn!(%glob, %err, "invalid files.exclude glob");
