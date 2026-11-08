@@ -71,7 +71,12 @@ pub fn build_pattern(pattern: &str, is_regex: bool, whole_word: bool) -> String 
 /// The walk uses the worktree scan's ignore policy; `query.include` limits
 /// the files, `query.exclude` and `settings_exclude` remove files. At most
 /// `MAX_RESULTS` matches are sent; reaching that limit ends the search with
-/// `truncated: true`. A cancelled search sends nothing more, not even `Done`.
+/// `truncated: true`. A cancelled search sends no `Done` and stops early.
+///
+/// `cancel` is re-checked inside the line loop and again right before a
+/// file's events are sent, but a microscopic window remains between that
+/// check and the send. Consumers must therefore also drop events from
+/// superseded searches (use a fresh channel per search).
 pub fn search(
     root: &Path,
     query: &SearchQuery,
@@ -86,6 +91,9 @@ pub fn search(
     {
         Ok(matcher) => matcher,
         Err(err) => {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
             let _ = sink.send(SearchEvent::Error(err.to_string()));
             let _ = sink.send(SearchEvent::Done {
                 total: 0,
@@ -121,7 +129,7 @@ pub fn search(
             }
             let path = entry.path();
             let result = catch_unwind(AssertUnwindSafe(|| {
-                search_file(&mut searcher, matcher, path)
+                search_file(&mut searcher, matcher, path, cancel)
             }));
             let mut matches = match result {
                 Ok(matches) => matches,
@@ -131,6 +139,9 @@ pub fn search(
                     return WalkState::Continue;
                 }
             };
+            if cancel.load(Ordering::Relaxed) {
+                return WalkState::Quit;
+            }
             if matches.is_empty() {
                 return WalkState::Continue;
             }
@@ -174,14 +185,19 @@ pub fn search(
 }
 
 /// The matching lines of one file. Unreadable files yield nothing.
-fn search_file(searcher: &mut Searcher, matcher: &RegexMatcher, path: &Path) -> Vec<LineMatch> {
+fn search_file(
+    searcher: &mut Searcher,
+    matcher: &RegexMatcher,
+    path: &Path,
+    cancel: &AtomicBool,
+) -> Vec<LineMatch> {
     let mut matches = Vec::new();
     let result = searcher.search_path(
         matcher,
         path,
         Lossy(|line_number, line| {
             matches.push(line_match(matcher, line_number, line));
-            Ok(matches.len() < MAX_RESULTS)
+            Ok(matches.len() < MAX_RESULTS && !cancel.load(Ordering::Relaxed))
         }),
     );
     if let Err(err) = result {

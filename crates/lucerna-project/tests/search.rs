@@ -222,3 +222,43 @@ fn cancel_stops_without_done() {
     let ev: Vec<_> = rx.try_iter().collect();
     assert!(dones(&ev).is_empty(), "{ev:?}");
 }
+
+#[test]
+fn cancel_during_walk_sends_no_done() {
+    let dir = TempDir::new().unwrap();
+    for i in 0..300 {
+        write(
+            dir.path(),
+            &format!("d{}/f{i}.txt", i % 10),
+            "needle\n".repeat(2000),
+        );
+    }
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let root = dir.path().to_path_buf();
+    let flag = cancel.clone();
+    let handle = std::thread::spawn(move || {
+        let mut q = query("needle");
+        q.case_sensitive = true;
+        search(&root, &q, &[], tx, flag);
+    });
+    // Wait for the search to be in progress, then cancel.
+    let first = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(matches!(first, SearchEvent::File { .. }));
+    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    // The channel holds one event, so the walk cannot have finished before
+    // the flag was set. Draining lets blocked senders return.
+    let rest: Vec<_> = rx.iter().collect();
+    handle.join().unwrap();
+    assert!(dones(&rest).is_empty(), "Done after cancel");
+}
+
+#[test]
+fn invalid_regex_with_cancel_sends_nothing() {
+    let dir = TempDir::new().unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let mut q = query("(unclosed");
+    q.is_regex = true;
+    search(dir.path(), &q, &[], tx, Arc::new(AtomicBool::new(true)));
+    assert!(rx.try_iter().next().is_none());
+}
