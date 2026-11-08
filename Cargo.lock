@@ -3071,10 +3071,12 @@ dependencies = [
  "lucerna-syntax",
  "lucerna-text",
  "lucerna-theme",
+ "nucleo-matcher",
  "serde",
  "serde_json",
  "tempfile",
  "tracing",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

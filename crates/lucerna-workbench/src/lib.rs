@@ -9,6 +9,8 @@ mod editor_groups;
 mod explorer;
 pub mod keys;
 mod layout;
+mod quick_open;
+mod text_input;
 pub mod ui;
 mod workbench;
 
@@ -22,4 +24,8 @@ pub use editor_groups::{
 pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
 pub use layout::StatusBarSide;
 pub use layout::title_bar::window_options;
+pub use quick_open::{
+    QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
+};
+pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use workbench::{SidebarView, Workbench};

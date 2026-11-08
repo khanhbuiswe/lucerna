@@ -63,6 +63,7 @@ tree-sitter-css = "0.25"
 insta = "1"
 
 unicode-width = "0.2"
+unicode-segmentation = "1"
 
 # UI: only lucerna-workbench may depend on these. Pinned to one Zed commit.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "b5cd310b3b54dfc659fcc06453e6358843dfe216" }

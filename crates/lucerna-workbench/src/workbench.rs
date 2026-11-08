@@ -7,7 +7,8 @@ use std::sync::Arc;
 use futures::StreamExt;
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, ParentElement, Pixels, Render, Styled, Task, Window, div, prelude::*, px,
+    KeyDownEvent, ParentElement, Pixels, Render, Styled, Subscription, Task, Window, div,
+    prelude::*, px,
 };
 use lucerna_project::{ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
@@ -23,7 +24,9 @@ use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
     panel_toggles, sidebar, status_bar, title_bar,
 };
-use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE};
+use crate::quick_open::{self, QuickOpen, RecentFiles};
+use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
+use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
 use crate::{AppState, CommandRegistry, keys};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +62,12 @@ pub struct Workbench {
     /// The left button went down on the title bar and the window has not
     /// started moving yet. Only acted on while the button is still held.
     pub(crate) title_bar_pressed: bool,
+    /// The shown Quick Open and the subscription to its events.
+    pub(crate) quick_open: Option<(Entity<QuickOpen>, Subscription)>,
+    /// Where focus goes back to when Quick Open closes.
+    pub(crate) focus_before_quick_open: Option<FocusHandle>,
+    /// Every opened file, newest first; Quick Open ranks them first.
+    pub(crate) recent_files: RecentFiles,
 }
 
 impl Workbench {
@@ -80,6 +89,7 @@ impl Workbench {
         register_shell_commands(&mut commands);
         editor_groups::register_commands(&mut commands);
         code_view::register_commands(&mut commands);
+        quick_open::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let editor_groups = cx.new(|cx| {
             let mut groups = EditorGroupsView::default();
@@ -135,6 +145,9 @@ impl Workbench {
             status_right: Vec::new(),
             pending_chord: Vec::new(),
             title_bar_pressed: false,
+            quick_open: None,
+            focus_before_quick_open: None,
+            recent_files: RecentFiles::default(),
         };
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
@@ -224,8 +237,10 @@ impl Workbench {
     }
 
     /// Opens `path` in the editor area. `Preview` honours the
-    /// `workbench.editor.enablePreview` setting.
+    /// `workbench.editor.enablePreview` setting. Records `path` in
+    /// [`Workbench::recent_files`].
     pub fn open_path(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
+        self.recent_files.record(path.clone());
         let preview_enabled = cx
             .global::<AppState>()
             .settings
@@ -276,8 +291,16 @@ impl Workbench {
             "searchViewletFocus",
             sidebar_focus && self.active_sidebar == SidebarView::Search,
         );
-        // Owned by Quick Open and the find widget once they exist.
-        flag("inQuickOpen", false);
+        flag("inQuickOpen", self.quick_open.is_some());
+        // As of the last frame: GPUI knows key contexts only once drawn.
+        flag(
+            "textInputFocus",
+            window
+                .context_stack()
+                .iter()
+                .any(|c| c.contains(TEXT_INPUT_KEY_CONTEXT)),
+        );
+        // Owned by the find widget once it exists.
         flag("findWidgetVisible", false);
         let active = self.editor_groups.read(cx).model().active_tab();
         let path = active.map(|tab| &tab.path);
@@ -617,5 +640,10 @@ impl Render for Workbench {
                 &self.status_right,
                 ui,
             ))
+            .children(
+                self.quick_open
+                    .as_ref()
+                    .map(|(qo, _)| popover_overlay(qo.clone())),
+            )
     }
 }
