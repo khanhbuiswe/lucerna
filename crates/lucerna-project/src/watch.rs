@@ -76,17 +76,22 @@ fn debounce_loop(rx: &Receiver<notify::Result<Event>>, root: &Path, on_batch: &d
             }
         }));
         if let Err(payload) = result {
-            let message = payload
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "non-string panic payload".into());
+            let message = panic_message(payload.as_ref());
             tracing::error!(%message, "file watcher batch panicked");
         }
         if closed {
             return;
         }
     }
+}
+
+/// Readable text of a caught panic payload.
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".into())
 }
 
 /// Maps a notify result to raw events.

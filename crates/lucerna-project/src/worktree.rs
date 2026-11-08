@@ -16,11 +16,15 @@ use ignore::overrides::OverrideBuilder;
 use crate::coalesce::{Coalesced, RESCAN_THRESHOLD};
 use crate::ignored::{IgnoreChecker, is_ignore_source};
 use crate::snapshot::{Entry, EntryKind, WorktreeSnapshot};
-use crate::watch::Watcher;
+use crate::watch::{Watcher, panic_message};
 
 /// How many times the initial scan is repeated when the watcher reports lost
 /// events while it ran.
 const MAX_INITIAL_RESCANS: usize = 3;
+
+/// After the initial `ScanComplete`, FSEvents may still replay changes from
+/// before the stream started. Events are checked for that only this long.
+const REPLAY_GRACE: Duration = Duration::from_secs(2);
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(16);
 
@@ -77,6 +81,8 @@ pub struct Worktree {
     thread: Option<JoinHandle<()>>,
     #[cfg(test)]
     fail_next_scan: Arc<AtomicBool>,
+    #[cfg(test)]
+    fail_next_apply: Arc<AtomicBool>,
 }
 
 impl Worktree {
@@ -88,6 +94,8 @@ impl Worktree {
         let generation = Arc::new(AtomicU64::new(0));
         #[cfg(test)]
         let fail_next_scan = Arc::new(AtomicBool::new(false));
+        #[cfg(test)]
+        let fail_next_apply = Arc::new(AtomicBool::new(false));
         let worker = Worker {
             root: root.clone(),
             snapshot: snapshot.clone(),
@@ -96,8 +104,12 @@ impl Worktree {
             stop: stop.clone(),
             generation: generation.clone(),
             watch_started: Cell::new(UNIX_EPOCH),
+            initial_scan: Cell::new(true),
+            replay_until: Cell::new(None),
             #[cfg(test)]
             fail_next_scan: fail_next_scan.clone(),
+            #[cfg(test)]
+            fail_next_apply: fail_next_apply.clone(),
         };
         let thread = thread::Builder::new()
             .name("lucerna-worktree".into())
@@ -113,6 +125,8 @@ impl Worktree {
             thread: Some(thread),
             #[cfg(test)]
             fail_next_scan,
+            #[cfg(test)]
+            fail_next_apply,
         }
     }
 
@@ -205,8 +219,14 @@ struct Worker {
     /// When the OS watcher was started. FSEvents can replay changes made
     /// just before that; the scan already saw them (see `is_stale`).
     watch_started: Cell<SystemTime>,
+    /// True until the initial scan completes.
+    initial_scan: Cell<bool>,
+    /// End of the post-initial-scan grace period (monotonic).
+    replay_until: Cell<Option<Instant>>,
     #[cfg(test)]
     fail_next_scan: Arc<AtomicBool>,
+    #[cfg(test)]
+    fail_next_apply: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -229,12 +249,13 @@ impl Worker {
         let mut backlog: VecDeque<Command> = VecDeque::new();
         // The initial scan is progressive; it is superseded by generation 1+.
         self.scan_and_publish(&opts, 0, true, Some((&commands, &mut backlog)));
-        // The loop ends on Shutdown or when the Worktree (sender) is dropped.
+        // The worker holds its own command sender (for the watcher), so the
+        // channel never disconnects: the loop ends only on Shutdown.
         while let Some(command) = backlog.pop_front().or_else(|| commands.recv().ok()) {
             match command {
                 Command::Shutdown => break,
                 Command::FsEvents(batch) => {
-                    if self.apply_fs_events(batch, &opts) {
+                    if self.apply_fs_events_guarded(batch, &opts) {
                         let generation = self.generation.load(Ordering::SeqCst);
                         if self.scan_and_publish(&opts, generation, false, None) {
                             self.send(WorktreeEvent::Rescanned);
@@ -279,11 +300,7 @@ impl Worker {
                 self.scan(opts, generation, progressive, &mut entries)
             }));
             let outcome = result.unwrap_or_else(|payload| {
-                let message = payload
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| payload.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "non-string panic payload".into());
+                let message = panic_message(payload.as_ref());
                 tracing::error!(root = %self.root.display(), %message, "worktree scan panicked");
                 ScanOutcome::Panicked
             });
@@ -301,6 +318,9 @@ impl Worker {
                 progressive = false;
                 continue;
             }
+            if self.initial_scan.replace(false) {
+                self.replay_until.set(Some(Instant::now() + REPLAY_GRACE));
+            }
             self.send(WorktreeEvent::ScanComplete);
             return matches!(outcome, ScanOutcome::Completed);
         }
@@ -317,11 +337,22 @@ impl Worker {
         let mut rescan = false;
         while let Ok(command) = commands.try_recv() {
             match command {
-                Command::FsEvents(batch) => rescan |= self.apply_fs_events(batch, opts),
+                Command::FsEvents(batch) => rescan |= self.apply_fs_events_guarded(batch, opts),
                 other => backlog.push_back(other),
             }
         }
         rescan
+    }
+
+    /// `apply_fs_events`, but a panic is logged and answered with a rescan.
+    fn apply_fs_events_guarded(&self, batch: Coalesced, opts: &ScanOptions) -> bool {
+        catch_unwind(AssertUnwindSafe(|| self.apply_fs_events(batch, opts))).unwrap_or_else(
+            |payload| {
+                let message = panic_message(payload.as_ref());
+                tracing::error!(root = %self.root.display(), %message, "applying file events panicked; rescanning");
+                true
+            },
+        )
     }
 
     /// Reconciles a watcher batch with the snapshot and the disk, publishes
@@ -337,13 +368,9 @@ impl Worker {
         let Coalesced::Changes(changes) = batch else {
             return true;
         };
-        let ignore_rules_changed = changes.iter().any(|c| {
-            is_ignore_source(&c.path)
-                && fs::symlink_metadata(self.root.join(&c.path))
-                    .map_or(true, |meta| !self.is_stale(&meta))
-        });
-        if ignore_rules_changed {
-            return true;
+        #[cfg(test)]
+        if self.fail_next_apply.swap(false, Ordering::SeqCst) {
+            panic!("injected apply failure");
         }
         let snapshot = self
             .snapshot
@@ -351,29 +378,51 @@ impl Worker {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let mut checker = IgnoreChecker::new(&self.root, opts);
+        // Ignore files inside ignored directories (`.venv/.gitignore`) cannot
+        // affect the worktree, so only the others force a rescan.
+        let ignore_rules_changed = changes.iter().any(|c| {
+            is_ignore_source(&c.path)
+                && !self.ignore_source_is_inert(&c.path, &mut checker)
+                && fs::symlink_metadata(self.root.join(&c.path))
+                    .map_or(true, |meta| !self.is_stale(&meta))
+        });
+        if ignore_rules_changed {
+            return true;
+        }
         let mut out: Vec<Change> = Vec::new();
         let mut added: Vec<Entry> = Vec::new();
         let mut added_paths: HashSet<Arc<Path>> = HashSet::new();
         let mut removed: HashSet<Arc<Path>> = HashSet::new();
+        let mut removed_below = 0;
         let known = |path: &Path, added_paths: &HashSet<Arc<Path>>| {
             added_paths.contains(path) || snapshot.contains(path)
         };
         for change in changes {
             let rel = change.path;
             let Ok(meta) = fs::symlink_metadata(self.root.join(&rel)) else {
+                // Under a removed directory already: reported with it.
+                if rel.ancestors().skip(1).any(|a| removed.contains(a)) {
+                    continue;
+                }
                 if snapshot.contains(&rel) && removed.insert(rel.clone()) {
+                    // Children reported earlier in the batch fold into the
+                    // directory's removal.
+                    out.retain(|c| !c.path.starts_with(&rel));
+                    added.retain(|e| !e.path.starts_with(&rel));
+                    added_paths.retain(|p| !p.starts_with(&rel));
                     out.push(Change {
                         path: rel.clone(),
                         kind: ChangeKind::Removed,
                     });
-                    for entry in snapshot.entries() {
-                        if entry.path.starts_with(&rel) && entry.path != rel {
-                            out.push(Change {
-                                path: entry.path.clone(),
-                                kind: ChangeKind::Removed,
-                            });
-                        }
+                    let below = snapshot.descendants(&rel);
+                    removed_below += below.len();
+                    if removed_below > RESCAN_THRESHOLD {
+                        return true;
                     }
+                    out.extend(below.iter().map(|e| Change {
+                        path: e.path.clone(),
+                        kind: ChangeKind::Removed,
+                    }));
                 }
                 continue;
             };
@@ -449,16 +498,39 @@ impl Worker {
         false
     }
 
-    /// True if the inode last changed before the watcher started, so a report
-    /// for it is a replay of something the initial scan already covered.
-    /// ctime, unlike mtime, cannot be set backwards by `cp -p` or `touch -d`.
+    /// True if the inode last changed before the watcher started AND we are
+    /// still in the replay window (the initial scan plus `REPLAY_GRACE`), so
+    /// the report is a replay of something the scan already covered. Outside
+    /// the window nothing is dropped by timestamp, so clock steps or coarse
+    /// filesystem timestamps cannot hide a real edit. ctime, unlike mtime,
+    /// cannot be set backwards by `cp -p` or `touch -d`.
     fn is_stale(&self, meta: &fs::Metadata) -> bool {
+        if !self.in_replay_window() {
+            return false;
+        }
         let changed = UNIX_EPOCH
             + Duration::new(
                 meta.ctime().max(0) as u64,
                 meta.ctime_nsec().clamp(0, 999_999_999) as u32,
             );
         changed < self.watch_started.get()
+    }
+
+    fn in_replay_window(&self) -> bool {
+        self.initial_scan.get() || self.replay_until.get().is_some_and(|t| Instant::now() < t)
+    }
+
+    /// True if a change to this ignore-source file cannot alter the worktree
+    /// because the directory whose rules it defines is itself ignored. For
+    /// `.git/info/exclude` that directory is the one holding `.git`.
+    fn ignore_source_is_inert(&self, rel: &Path, checker: &mut IgnoreChecker) -> bool {
+        let dir = if rel.ends_with(".git/info/exclude") {
+            rel.parent().and_then(Path::parent).and_then(Path::parent)
+        } else {
+            rel.parent()
+        }
+        .unwrap_or(Path::new(""));
+        !dir.as_os_str().is_empty() && checker.is_ignored(dir, true)
     }
 
     /// Entries below the root-relative directory `dir`, skipping ignored ones.
@@ -580,5 +652,59 @@ mod tests {
         });
         wait(&wt, |e| matches!(e, WorktreeEvent::Rescanned));
         assert!(!wt.snapshot().contains(Path::new("a.txt")));
+    }
+
+    #[test]
+    fn panicking_apply_falls_back_to_rescan() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let wt = Worktree::start(dir.path().to_path_buf(), ScanOptions::default());
+        wait(&wt, |e| matches!(e, WorktreeEvent::ScanComplete));
+
+        wt.fail_next_apply.store(true, Ordering::SeqCst);
+        fs::write(dir.path().join("b.txt"), "x").unwrap();
+        wait(&wt, |e| matches!(e, WorktreeEvent::Rescanned));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !wt.snapshot().contains(Path::new("b.txt")) {
+            assert!(Instant::now() < deadline, "b.txt never appeared");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn bare_worker(dir: &Path) -> Worker {
+        let (events, _) = unbounded();
+        let (command_tx, _) = unbounded();
+        Worker {
+            root: dir.to_path_buf(),
+            snapshot: Arc::new(Mutex::new(WorktreeSnapshot::empty())),
+            events,
+            command_tx,
+            stop: Arc::new(AtomicBool::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
+            watch_started: Cell::new(SystemTime::now() + Duration::from_secs(3600)),
+            initial_scan: Cell::new(false),
+            replay_until: Cell::new(None),
+            fail_next_scan: Arc::new(AtomicBool::new(false)),
+            fail_next_apply: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[test]
+    fn stale_guard_only_applies_in_the_replay_window() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(dir.path().join("f"), "x").unwrap();
+        let meta = fs::symlink_metadata(dir.path().join("f")).unwrap();
+        // The file's ctime is "before" watch_started (an hour ahead).
+        let worker = bare_worker(dir.path());
+        assert!(!worker.is_stale(&meta), "window closed: never stale");
+        worker
+            .replay_until
+            .set(Some(Instant::now() + Duration::from_secs(60)));
+        assert!(worker.is_stale(&meta), "inside the grace period");
+        worker
+            .replay_until
+            .set(Some(Instant::now() - Duration::from_millis(1)));
+        assert!(!worker.is_stale(&meta), "grace period over");
+        worker.initial_scan.set(true);
+        assert!(worker.is_stale(&meta), "during the initial scan");
     }
 }

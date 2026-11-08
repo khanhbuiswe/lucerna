@@ -156,3 +156,83 @@ fn bulk_write_5000_files_rescans() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[test]
+fn ignore_file_inside_ignored_dir_is_silent() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    fs::write(r.join(".gitignore"), "out/\n").unwrap();
+    fs::create_dir(r.join("out")).unwrap();
+    let wt = started(r);
+
+    fs::write(r.join("out/.gitignore"), "*\n").unwrap();
+    let rx = wt.events();
+    let deadline = Instant::now() + SILENCE;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(ev @ (WorktreeEvent::Changed(_) | WorktreeEvent::Rescanned)) => {
+                panic!("ignored change produced {ev:?}")
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+}
+
+#[test]
+fn removing_a_directory_reports_each_path_once() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    for f in ["d/a.txt", "d/sub/b.txt", "d/sub/deep/c.txt", "keep.txt"] {
+        fs::create_dir_all(r.join(f).parent().unwrap()).unwrap();
+        fs::write(r.join(f), "x").unwrap();
+    }
+    let wt = started(r);
+
+    fs::remove_dir_all(r.join("d")).unwrap();
+    let want = [
+        "d",
+        "d/a.txt",
+        "d/sub",
+        "d/sub/b.txt",
+        "d/sub/deep",
+        "d/sub/deep/c.txt",
+    ];
+    let seen = collect_until(&wt, |s| want.iter().all(|w| has(s, w, ChangeKind::Removed)));
+    // Straggling batches would show up as duplicates.
+    let more = collect_until(&wt, |_| false);
+    let all: Vec<_> = seen.into_iter().chain(more).collect();
+    for w in want {
+        let n = all.iter().filter(|(p, _)| p == w).count();
+        assert_eq!(n, 1, "{w} reported {n} times in {all:?}");
+        assert!(has(&all, w, ChangeKind::Removed), "{all:?}");
+    }
+    assert_eq!(all.len(), want.len(), "{all:?}");
+    assert!(wt.snapshot().contains(Path::new("keep.txt")));
+    assert!(!wt.snapshot().contains(Path::new("d")));
+}
+
+#[test]
+fn edit_after_the_replay_window_is_reported_despite_old_mtime() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    fs::write(r.join("f"), "old").unwrap();
+    let wt = started(r);
+    // Past the 2 s replay grace period.
+    std::thread::sleep(Duration::from_millis(2300));
+
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(r.join("f"))
+        .unwrap();
+    use std::io::Write as _;
+    (&file).write_all(b"new contents").unwrap();
+    let past = std::time::SystemTime::now() - Duration::from_secs(86_400);
+    file.set_times(fs::FileTimes::new().set_modified(past))
+        .unwrap();
+    drop(file);
+
+    let seen = collect_until(&wt, |s| has(s, "f", ChangeKind::Modified));
+    assert!(has(&seen, "f", ChangeKind::Modified), "{seen:?}");
+}

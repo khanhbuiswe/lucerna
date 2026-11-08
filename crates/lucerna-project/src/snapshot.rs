@@ -77,6 +77,24 @@ impl WorktreeSnapshot {
         }
     }
 
+    /// Everything below the root-relative `dir` (not `dir` itself), as one
+    /// contiguous slice of the depth-first ordering.
+    pub(crate) fn descendants(&self, dir: &Path) -> &[Entry] {
+        let probe = Entry {
+            path: Arc::from(dir),
+            kind: EntryKind::Dir,
+        };
+        let Ok(at) = self
+            .entries
+            .binary_search_by(|e| compare_entries(e, &probe))
+        else {
+            return &[];
+        };
+        let rest = &self.entries[at + 1..];
+        let len = rest.iter().take_while(|e| e.path.starts_with(dir)).count();
+        &rest[..len]
+    }
+
     pub fn contains(&self, path: &Path) -> bool {
         self.children(path.parent().unwrap_or(Path::new("")))
             .iter()
