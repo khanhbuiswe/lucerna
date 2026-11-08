@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use lucerna_text::{BufferSnapshot, Point};
+use unicode_width::UnicodeWidthChar;
 
 /// Chars of a line that are drawn; the rest is replaced by `…`.
 pub const MAX_RENDERED_LINE_CHARS: usize = 10_000;
@@ -85,67 +86,100 @@ impl FoldState {
 }
 
 /// The display lines of the visible rows in `rows`, clamped to the buffer.
-/// `wrap_width_chars` splits lines into pieces of that many chars.
+/// `wrap_width_chars` splits lines into pieces of at most that many
+/// display columns, with a tab one column wide; see
+/// [`display_lines_with_tab_size`].
 pub fn display_lines(
     snapshot: &BufferSnapshot,
     folds: &FoldState,
     wrap_width_chars: Option<u32>,
     rows: Range<u32>,
 ) -> Vec<DisplayLine> {
+    display_lines_with_tab_size(snapshot, folds, wrap_width_chars, 1, rows)
+}
+
+/// Like [`display_lines`], wrapping on display columns as the view draws
+/// them: a tab advances to the next multiple of `tab_size` (counted from
+/// the start of its piece) and wide chars such as CJK take two columns.
+pub fn display_lines_with_tab_size(
+    snapshot: &BufferSnapshot,
+    folds: &FoldState,
+    wrap_width_chars: Option<u32>,
+    tab_size: u32,
+    rows: Range<u32>,
+) -> Vec<DisplayLine> {
     let end = rows.end.min(snapshot.line_count());
     let mut lines = Vec::new();
     let mut row = folds.next_visible(rows.start);
     while row < end {
-        let (text, truncated) = line_prefix(snapshot, row, MAX_RENDERED_LINE_CHARS);
-        push_pieces(&mut lines, row, text, truncated, wrap_width_chars);
+        let (mut text, truncated) = line_prefix(snapshot, row, MAX_RENDERED_LINE_CHARS);
+        if truncated {
+            text.push('…');
+        }
+        let mut start = 0;
+        let splits = wrap_splits(&text, wrap_width_chars, tab_size);
+        for (wrap_index, &split) in splits.iter().chain([&text.len()]).enumerate() {
+            lines.push(DisplayLine {
+                buffer_row: row,
+                text: text[start..split].to_string(),
+                truncated,
+                wrap_index: wrap_index.min(u16::MAX as usize) as u16,
+            });
+            start = split;
+        }
         row = folds.next_visible(row + 1);
     }
     lines
 }
 
-/// How many display lines `row` takes with `wrap_width_chars` (at least 1).
-pub fn wrap_count(snapshot: &BufferSnapshot, row: u32, wrap_width_chars: Option<u32>) -> u32 {
-    let Some(width) = wrap_width_chars else {
-        return 1;
-    };
-    let (text, truncated) = line_prefix(snapshot, row, MAX_RENDERED_LINE_CHARS);
-    let chars = text.chars().count() + usize::from(truncated);
-    chars.div_ceil(width.max(1) as usize).max(1) as u32
-}
-
-fn push_pieces(
-    lines: &mut Vec<DisplayLine>,
-    buffer_row: u32,
-    mut text: String,
-    truncated: bool,
+/// How many display lines `row` takes (at least 1); agrees with
+/// [`display_lines_with_tab_size`].
+pub(crate) fn wrap_count(
+    snapshot: &BufferSnapshot,
+    row: u32,
     wrap_width_chars: Option<u32>,
-) {
+    tab_size: u32,
+) -> u32 {
+    if wrap_width_chars.is_none() {
+        return 1;
+    }
+    let (mut text, truncated) = line_prefix(snapshot, row, MAX_RENDERED_LINE_CHARS);
     if truncated {
         text.push('…');
     }
-    let width = match wrap_width_chars {
-        Some(w) => w.max(1) as usize,
-        None => usize::MAX,
-    };
-    let mut rest = text.as_str();
-    let mut wrap_index = 0u16;
-    loop {
-        let split = rest
-            .char_indices()
-            .nth(width)
-            .map_or(rest.len(), |(i, _)| i);
-        lines.push(DisplayLine {
-            buffer_row,
-            text: rest[..split].to_string(),
-            truncated,
-            wrap_index,
-        });
-        rest = &rest[split..];
-        if rest.is_empty() {
-            break;
-        }
-        wrap_index = wrap_index.saturating_add(1);
+    wrap_splits(&text, wrap_width_chars, tab_size).len() as u32 + 1
+}
+
+/// The display columns `c` takes at `column` of its piece.
+pub(crate) fn char_columns(c: char, column: u32, tab_size: u32) -> u32 {
+    if c == '\t' {
+        let tab_size = tab_size.max(1);
+        tab_size - column % tab_size
+    } else {
+        // Control chars have no width but are still drawn as something.
+        c.width().map_or(1, |w| w as u32)
     }
+}
+
+/// Byte offsets where `text` breaks into pieces of at most `width`
+/// display columns. A char wider than the whole width gets a piece alone.
+fn wrap_splits(text: &str, width: Option<u32>, tab_size: u32) -> Vec<usize> {
+    let Some(width) = width else {
+        return Vec::new();
+    };
+    let width = width.max(1);
+    let mut splits = Vec::new();
+    let mut column = 0;
+    for (i, c) in text.char_indices() {
+        let mut w = char_columns(c, column, tab_size);
+        if column > 0 && column + w > width {
+            splits.push(i);
+            column = 0;
+            w = char_columns(c, 0, tab_size);
+        }
+        column += w;
+    }
+    splits
 }
 
 /// The first `max_chars` chars of `row` without its line ending, and
@@ -197,5 +231,28 @@ pub(crate) fn row_start(snapshot: &BufferSnapshot, row: u32) -> usize {
         snapshot.len_bytes()
     } else {
         snapshot.point_to_offset(Point { row, column: 0 })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucerna_text::Buffer;
+
+    #[test]
+    fn wrap_count_agrees_with_pieces() {
+        let text = "\t\tabcd\n  \tx  \ty\n日本語\nplain\n\t\n";
+        let s = Buffer::from_bytes(text.as_bytes(), false)
+            .unwrap()
+            .snapshot();
+        for row in 0..s.line_count() {
+            let pieces =
+                display_lines_with_tab_size(&s, &FoldState::default(), Some(6), 4, row..row + 1);
+            assert_eq!(
+                wrap_count(&s, row, Some(6), 4),
+                pieces.len() as u32,
+                "row {row}"
+            );
+        }
     }
 }

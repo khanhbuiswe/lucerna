@@ -4,7 +4,9 @@
 use std::time::{Duration, Instant};
 
 use lucerna_text::{Buffer, BufferSnapshot};
-use lucerna_workbench::code_view::{FoldState, MAX_RENDERED_LINE_CHARS, display_lines};
+use lucerna_workbench::code_view::{
+    FoldState, MAX_RENDERED_LINE_CHARS, display_lines, display_lines_with_tab_size,
+};
 
 fn snapshot(text: &str) -> BufferSnapshot {
     Buffer::from_bytes(text.as_bytes(), false)
@@ -120,4 +122,50 @@ fn rows_beyond_end_clamped() {
         .collect();
     assert_eq!(got, vec![(1, "two")]);
     assert!(display_lines(&s, &FoldState::default(), None, 7..9).is_empty());
+}
+
+/// Display columns of a wrapped piece: tabs advance to the next multiple
+/// of `tab_size` from the piece start, CJK chars take two columns.
+fn piece_columns(text: &str, tab_size: u32) -> u32 {
+    text.chars().fold(0, |col, c| match c {
+        '\t' => col + tab_size - col % tab_size,
+        c if ('\u{3040}'..='\u{9fff}').contains(&c) => col + 2,
+        _ => col + 1,
+    })
+}
+
+fn wrapped(text: &str, wrap: u32, tab_size: u32) -> Vec<String> {
+    let s = snapshot(text);
+    display_lines_with_tab_size(&s, &FoldState::default(), Some(wrap), tab_size, 0..1)
+        .into_iter()
+        .map(|l| l.text)
+        .collect()
+}
+
+#[test]
+fn wrap_counts_tabs_as_display_columns() {
+    // Two tabs reach the wrap width of 8 on their own; by chars (6) the
+    // line would fit and overflow by 4 columns when drawn.
+    let pieces = wrapped("\t\tabcd", 8, 4);
+    assert_eq!(pieces, vec!["\t\t", "abcd"]);
+    for piece in &pieces {
+        assert!(piece_columns(piece, 4) <= 8, "{piece:?}");
+    }
+    // Exactly the width fits in one piece.
+    assert_eq!(wrapped("\tabcd", 8, 4), vec!["\tabcd"]);
+}
+
+#[test]
+fn wrap_counts_mixed_tabs_and_spaces() {
+    let pieces = wrapped("  \tx  \ty  \tz", 6, 4);
+    assert_eq!(pieces.concat(), "  \tx  \ty  \tz");
+    assert!(pieces.len() > 1);
+    for piece in &pieces {
+        assert!(piece_columns(piece, 4) <= 6, "{piece:?}");
+    }
+}
+
+#[test]
+fn wrap_counts_wide_chars_as_two_columns() {
+    assert_eq!(wrapped("日本語", 4, 4), vec!["日本", "語"]);
 }

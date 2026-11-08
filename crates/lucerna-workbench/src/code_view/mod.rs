@@ -23,7 +23,9 @@ use gpui::{
 use lucerna_syntax::{SyntaxState, indent_folds};
 use lucerna_text::{Buffer, BufferSnapshot, Point, Reload};
 
-pub use layout::{DisplayLine, FoldState, MAX_RENDERED_LINE_CHARS, display_lines};
+pub use layout::{
+    DisplayLine, FoldState, MAX_RENDERED_LINE_CHARS, display_lines, display_lines_with_tab_size,
+};
 
 use self::cache::Caches;
 use self::element::{CodeElement, Frame};
@@ -421,8 +423,13 @@ impl CodeView {
     /// Display lines `row` takes at the current wrap width.
     fn wrap_count(&mut self, row: u32) -> u32 {
         let wrap = self.wrap_chars();
-        self.caches
-            .wrap_count(&self.snapshot, self.revision, row, wrap)
+        self.caches.wrap_count(
+            &self.snapshot,
+            self.revision,
+            row,
+            wrap,
+            self.config.tab_size,
+        )
     }
 
     fn wrap_chars(&self) -> Option<u32> {

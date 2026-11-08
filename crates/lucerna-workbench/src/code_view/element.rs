@@ -16,7 +16,7 @@ use lucerna_text::Point;
 use lucerna_theme::Theme;
 
 use super::cache::ShapeKey;
-use super::layout::{FoldState, display_lines, row_start};
+use super::layout::{FoldState, char_columns, display_lines_with_tab_size, row_start};
 use super::selection::{self, Selection};
 use super::{CodeView, Drag, hsla};
 use crate::AppState;
@@ -316,9 +316,13 @@ impl CodeView {
             if y >= bounds.bottom() {
                 extra += 1;
             }
-            let count = self
-                .caches
-                .wrap_count(&self.snapshot, self.revision, row, wrap_chars);
+            let count = self.caches.wrap_count(
+                &self.snapshot,
+                self.revision,
+                row,
+                wrap_chars,
+                self.config.tab_size,
+            );
             rows.push((row, y));
             y += line_height * count as f32;
             row = self.folds.next_visible(row + 1);
@@ -449,10 +453,11 @@ impl CodeView {
         if let Some(shaped) = self.caches.shaped(key, row) {
             return shaped;
         }
-        let lines = display_lines(
+        let lines = display_lines_with_tab_size(
             &self.snapshot,
             &FoldState::default(),
             key.wrap_chars,
+            key.tab_size,
             row..row + 1,
         );
         let line_start = row_start(&self.snapshot, row);
@@ -485,18 +490,19 @@ impl CodeView {
                 buf_len: buf_text.len() as u32,
                 tabs: Vec::new(),
             };
+            // Display columns from the piece start, as wrapping counts them.
             let mut column = 0u32;
             for (b, c) in buf_text.char_indices() {
                 let style = styles[b];
                 if c == '\t' {
-                    let width = key.tab_size - column % key.tab_size;
+                    let width = char_columns(c, column, key.tab_size);
                     map.tabs.push((b as u32, text.len() as u32, width));
                     push(&mut text, &" ".repeat(width as usize), style);
                     column += width;
                 } else {
                     let mut utf8 = [0; 4];
                     push(&mut text, c.encode_utf8(&mut utf8), style);
-                    column += 1;
+                    column += char_columns(c, column, key.tab_size);
                 }
             }
             if cut {

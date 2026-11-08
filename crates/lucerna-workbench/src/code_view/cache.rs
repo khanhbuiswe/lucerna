@@ -43,7 +43,7 @@ pub(crate) struct Caches {
     shape_key: Option<ShapeKey>,
     shaped: HashMap<u32, Arc<ShapedRow>>,
     shaped_order: VecDeque<u32>,
-    wrap_key: Option<(u64, Option<u32>)>,
+    wrap_key: Option<(u64, Option<u32>, u32)>,
     wraps: HashMap<u32, u32>,
     minimap_key: Option<(u64, usize)>,
     minimap: HashMap<u32, Arc<MinimapRow>>,
@@ -134,18 +134,19 @@ impl Caches {
         }
     }
 
-    /// Display lines of `row`, cached per wrap width.
+    /// Display lines of `row`, cached per wrap width and tab size.
     pub fn wrap_count(
         &mut self,
         snapshot: &BufferSnapshot,
         revision: u64,
         row: u32,
         wrap_chars: Option<u32>,
+        tab_size: u32,
     ) -> u32 {
         if wrap_chars.is_none() {
             return 1;
         }
-        let key = (revision, wrap_chars);
+        let key = (revision, wrap_chars, tab_size);
         if self.wrap_key != Some(key) || self.wraps.len() >= WRAP_COUNTS {
             self.wrap_key = Some(key);
             self.wraps.clear();
@@ -153,7 +154,7 @@ impl Caches {
         *self
             .wraps
             .entry(row)
-            .or_insert_with(|| wrap_count(snapshot, row, wrap_chars))
+            .or_insert_with(|| wrap_count(snapshot, row, wrap_chars, tab_size))
     }
 
     pub fn minimap_row(&mut self, key: (u64, usize), row: u32) -> Option<Arc<MinimapRow>> {
