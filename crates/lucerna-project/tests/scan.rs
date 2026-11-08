@@ -147,3 +147,32 @@ fn set_options_rescans() {
     assert!(!snap.contains(Path::new("x.log")));
     assert!(snap.contains(Path::new("y.rs")));
 }
+
+#[test]
+fn rapid_set_options_coalesce_to_latest() {
+    let dir = TempDir::new().unwrap();
+    for i in 0..200 {
+        touch(dir.path(), &format!("d{}/f{i}.log", i % 10));
+        touch(dir.path(), &format!("d{}/f{i}.rs", i % 10));
+    }
+    let wt = Worktree::start(dir.path().to_path_buf(), ScanOptions::default());
+    wait_complete(&wt);
+    wt.set_options(ScanOptions {
+        exclude: vec!["**/*.rs".into()],
+    });
+    wt.set_options(ScanOptions {
+        exclude: vec!["**/*.log".into()],
+    });
+    wait_for(&wt, |e| matches!(e, WorktreeEvent::Rescanned));
+    let snap = wt.snapshot();
+    assert!(snap.contains(Path::new("d0/f0.rs")));
+    assert!(!snap.contains(Path::new("d0/f0.log")));
+    // Exactly one Rescanned for the two requests.
+    std::thread::sleep(Duration::from_millis(200));
+    let extra = wt
+        .events()
+        .try_iter()
+        .filter(|e| matches!(e, WorktreeEvent::Rescanned))
+        .count();
+    assert_eq!(extra, 0);
+}

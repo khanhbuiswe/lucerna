@@ -89,24 +89,29 @@ impl WorktreeSnapshot {
 }
 
 /// Depth-first order: at the first differing component, directories come
-/// before files, then names compare case-insensitively.
+/// before files, then names compare case-insensitively. Allocation-free.
 fn compare_entries(a: &Entry, b: &Entry) -> Ordering {
-    let ac: Vec<_> = a.path.components().collect();
-    let bc: Vec<_> = b.path.components().collect();
-    for i in 0..ac.len().min(bc.len()) {
-        if ac[i] == bc[i] {
+    let mut ai = a.path.components();
+    let mut bi = b.path.components();
+    loop {
+        let (ca, cb) = match (ai.next(), bi.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(ca), Some(cb)) => (ca, cb),
+        };
+        if ca == cb {
             continue;
         }
-        let a_dir = i + 1 < ac.len() || a.kind == EntryKind::Dir;
-        let b_dir = i + 1 < bc.len() || b.kind == EntryKind::Dir;
+        let a_dir = ai.clone().next().is_some() || a.kind == EntryKind::Dir;
+        let b_dir = bi.clone().next().is_some() || b.kind == EntryKind::Dir;
         let (an, bn) = (
-            ac[i].as_os_str().to_string_lossy(),
-            bc[i].as_os_str().to_string_lossy(),
+            ca.as_os_str().to_string_lossy(),
+            cb.as_os_str().to_string_lossy(),
         );
         return b_dir
             .cmp(&a_dir)
             .then_with(|| an.to_lowercase().cmp(&bn.to_lowercase()))
             .then_with(|| an.cmp(&bn));
     }
-    ac.len().cmp(&bc.len())
 }
