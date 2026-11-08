@@ -17,7 +17,7 @@ pub(crate) struct SidebarSash;
 
 /// GPUI requires a view to draw under the cursor while dragging; the sash
 /// drag draws nothing.
-struct SashGhost;
+pub(crate) struct SashGhost;
 
 impl Render for SashGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

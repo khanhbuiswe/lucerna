@@ -3066,7 +3066,9 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "lucerna-settings",
+ "lucerna-syntax",
  "lucerna-theme",
+ "serde",
  "serde_json",
  "tracing",
 ]

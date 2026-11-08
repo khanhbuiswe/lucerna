@@ -2,9 +2,12 @@
 //!
 //! `cargo run -p lucerna-workbench --example hello_window -- "One Light"`
 //! picks a theme by name (default "One Dark").
+use std::sync::Arc;
+
 use gpui::{App, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
 use gpui_platform::application;
 use lucerna_settings::{Keymap, SettingsStore};
+use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::{AppState, Workbench};
 
@@ -23,6 +26,7 @@ fn main() {
             keymap,
             themes,
             theme,
+            languages: Arc::new(LanguageRegistry::bundled()),
         });
         let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);
         cx.open_window(

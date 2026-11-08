@@ -2,12 +2,14 @@
 //! dispatch, driven through GPUI's test platform.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::{
     AnyView, Context as ViewContext, Entity, FocusHandle, KeyDownEvent, Modifiers, MouseButton,
     Render, TestAppContext, VisualTestContext, Window, div, point, prelude::*, px,
 };
 use lucerna_settings::{Context, Keymap, SettingsStore, parse_when};
+use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::{AppState, SidebarView, StatusBarSide, Workbench};
 
@@ -21,6 +23,7 @@ fn init(cx: &mut TestAppContext, user_keymap: Option<&str>) {
         keymap,
         themes,
         theme,
+        languages: Arc::new(LanguageRegistry::bundled()),
     });
 }
 

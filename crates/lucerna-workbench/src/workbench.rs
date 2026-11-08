@@ -2,14 +2,16 @@
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, Context, DragMoveEvent, FocusHandle, Focusable, IntoElement, KeyDownEvent,
-    ParentElement, Pixels, Render, Styled, Window, div, prelude::*,
+    AnyView, App, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
+    KeyDownEvent, ParentElement, Pixels, Render, Styled, Window, div, prelude::*,
 };
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
 use serde_json::Value;
 
+use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode};
 use crate::layout::sidebar::SidebarSash;
 use crate::layout::{
     ACTIVITY_BAR_WIDTH, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide,
@@ -34,6 +36,7 @@ pub struct Workbench {
     sidebar_width: Pixels,
     explorer_view: Option<AnyView>,
     search_view: Option<AnyView>,
+    editor_groups: Entity<EditorGroupsView>,
     editor_area: Option<AnyView>,
     status_left: Vec<AnyView>,
     status_right: Vec<AnyView>,
@@ -42,7 +45,8 @@ pub struct Workbench {
 }
 
 impl Workbench {
-    /// Focuses the workbench so key dispatch works from the start.
+    /// Focuses the editor area, so key dispatch and `editorFocus`
+    /// bindings work from the start.
     ///
     /// # Panics
     /// If the [`AppState`] global is not set: rendering and key dispatch
@@ -53,21 +57,25 @@ impl Workbench {
             "set the AppState global before creating the Workbench"
         );
         let focus = cx.focus_handle();
-        window.focus(&focus, cx);
+        let editor_focus = cx.focus_handle();
+        window.focus(&editor_focus, cx);
         let mut commands = CommandRegistry::default();
         register_shell_commands(&mut commands);
+        editor_groups::register_commands(&mut commands);
+        let editor_groups = cx.new(|_| EditorGroupsView::default());
         Workbench {
             root,
             commands: Rc::new(commands),
             focus,
             sidebar_focus: cx.focus_handle(),
-            editor_focus: cx.focus_handle(),
+            editor_focus,
             sidebar_visible: true,
             active_sidebar: SidebarView::Explorer,
             sidebar_width: SIDEBAR_DEFAULT_WIDTH,
             explorer_view: None,
             search_view: None,
-            editor_area: None,
+            editor_area: Some(editor_groups.clone().into()),
+            editor_groups,
             status_left: Vec::new(),
             status_right: Vec::new(),
             pending_chord: Vec::new(),
@@ -101,6 +109,32 @@ impl Workbench {
         commands.run(id, args, self, window, cx)
     }
 
+    /// The editor groups view, installed in the editor area by [`Workbench::new`].
+    pub fn editor_groups(&self) -> &Entity<EditorGroupsView> {
+        &self.editor_groups
+    }
+
+    /// Changes the editor groups model and redraws it.
+    pub fn update_editor_groups<R>(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut EditorGroups) -> R,
+    ) -> R {
+        self.editor_groups
+            .update(cx, |view, cx| view.update_model(cx, f))
+    }
+
+    /// Opens `path` in the editor area. `Preview` honours the
+    /// `workbench.editor.enablePreview` setting.
+    pub fn open_path(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
+        let preview_enabled = cx
+            .global::<AppState>()
+            .settings
+            .get::<bool>("workbench.editor.enablePreview", None)
+            .unwrap_or(true);
+        self.update_editor_groups(cx, |m| m.open(path, mode, preview_enabled));
+    }
+
     /// The `when`-clause context for key bindings.
     pub fn context_keys(&self, window: &Window, cx: &App) -> WhenContext {
         let sidebar_focus = self.sidebar_visible && self.sidebar_focus.contains_focused(window, cx);
@@ -123,9 +157,18 @@ impl Workbench {
         // Owned by Quick Open and the find widget once they exist.
         flag("inQuickOpen", false);
         flag("findWidgetVisible", false);
-        // Owned by the editor area once it shows files; nothing is open yet.
-        ctx.set("resourceExtname", ContextValue::Str(String::new()));
-        ctx.set("editorLangId", ContextValue::Str(String::new()));
+        let active = self.editor_groups.read(cx).model().active_tab();
+        let path = active.map(|tab| &tab.path);
+        let extname = path
+            .and_then(|p| p.extension())
+            .map(|ext| format!(".{}", ext.to_string_lossy()))
+            .unwrap_or_default();
+        let lang_id = path
+            .and_then(|p| cx.global::<AppState>().languages.language_for_path(p))
+            .map(|lang| lang.id.to_string())
+            .unwrap_or_default();
+        ctx.set("resourceExtname", ContextValue::Str(extname));
+        ctx.set("editorLangId", ContextValue::Str(lang_id));
         ctx
     }
 
