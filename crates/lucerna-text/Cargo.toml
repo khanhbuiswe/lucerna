@@ -1,0 +1,12 @@
+[package]
+name = "lucerna-text"
+description = "Lucerna: rope text buffer with encoding detection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ropey.workspace = true
+encoding_rs.workspace = true
+chardetng.workspace = true
