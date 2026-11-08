@@ -22,6 +22,10 @@ allow = [
     "MPL-2.0",
 ]
 confidence-threshold = 0.9
+# CC0-1.0 is a public-domain dedication; allowed for `notify` only (file watching).
+exceptions = [
+    { allow = ["CC0-1.0"], crate = "notify" },
+]
 
 [bans]
 multiple-versions = "warn"

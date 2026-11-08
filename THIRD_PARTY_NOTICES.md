@@ -18,3 +18,7 @@ dependency.
 Licenses outside the base list that were added to `deny.toml` are recorded
 here with the crate that required them.
 
+
+- `notify` (file watching in `lucerna-project`): CC0-1.0, a public-domain
+  dedication. Allowed for this crate only through a `[licenses.exceptions]`
+  entry in `deny.toml`; the global allow list is unchanged.

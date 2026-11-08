@@ -32,6 +32,7 @@ chardetng = "1"
 
 # Project
 ignore = "0.4"
+notify = "8"
 crossbeam-channel = "0.5"
 tracing = "0.1"
 tempfile = "3"
