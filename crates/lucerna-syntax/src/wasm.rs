@@ -2,8 +2,9 @@
 //! validation helpers an installer uses before accepting a grammar.
 
 use std::collections::HashMap;
-use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 use tree_sitter::{Query, WasmStore, wasmtime};
 
@@ -15,45 +16,101 @@ pub fn engine() -> &'static wasmtime::Engine {
     ENGINE.get_or_init(wasmtime::Engine::default)
 }
 
-/// A fresh store for one parser. Languages loaded by another store of the
-/// same engine work in it.
-pub(crate) fn new_store() -> Result<WasmStore, GrammarError> {
+/// Most idle stores kept for reuse.
+const POOL_CAP: usize = 8;
+
+fn pool() -> &'static Mutex<Vec<WasmStore>> {
+    static POOL: OnceLock<Mutex<Vec<WasmStore>>> = OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// A store for one parser: a pooled one (already holding the grammars it
+/// ran before) or a fresh one. Languages loaded by another store of the
+/// same engine work in it. Give it back with [`return_store`].
+pub(crate) fn take_store() -> Result<WasmStore, GrammarError> {
+    if let Some(store) = pool().lock().unwrap_or_else(|e| e.into_inner()).pop() {
+        return Ok(store);
+    }
+    new_store()
+}
+
+/// Keeps `store` for reuse, or drops it when the pool is full.
+pub(crate) fn return_store(store: WasmStore) {
+    let mut pool = pool().lock().unwrap_or_else(|e| e.into_inner());
+    if pool.len() < POOL_CAP {
+        pool.push(store);
+    }
+}
+
+fn new_store() -> Result<WasmStore, GrammarError> {
     WasmStore::new(engine()).map_err(|e| GrammarError(format!("wasm store: {e}")))
 }
 
+/// A grammar file as it was when loaded: an extension updated in place
+/// changes the stamp and so loads afresh.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    grammar: GrammarKey,
+    path: PathBuf,
+    stamp: Option<(SystemTime, u64)>,
+}
+
+impl CacheKey {
+    fn new(grammar: &GrammarKey, path: &Path) -> CacheKey {
+        let stamp = std::fs::metadata(path)
+            .ok()
+            .and_then(|m| Some((m.modified().ok()?, m.len())));
+        CacheKey {
+            grammar: grammar.clone(),
+            path: path.to_path_buf(),
+            stamp,
+        }
+    }
+}
+
+type Slot = Arc<OnceLock<Result<tree_sitter::Language, GrammarError>>>;
+
 struct Cache {
-    languages: HashMap<GrammarKey, Result<tree_sitter::Language, GrammarError>>,
+    slots: HashMap<CacheKey, Slot>,
     /// The stores that loaded the languages, kept alive with them.
     stores: Vec<WasmStore>,
 }
 
-/// Loads (once per process) the grammar at `path`. A failure is cached too,
-/// so a broken grammar is not re-read on every document.
+fn cache() -> &'static Mutex<Cache> {
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        Mutex::new(Cache {
+            slots: HashMap::new(),
+            stores: Vec::new(),
+        })
+    })
+}
+
+fn lock() -> std::sync::MutexGuard<'static, Cache> {
+    cache().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether [`load_wasm_grammar`] would answer without reading the file.
+pub(crate) fn is_loaded(key: &GrammarKey, path: &Path) -> bool {
+    let key = CacheKey::new(key, path);
+    lock().slots.get(&key).is_some_and(|s| s.get().is_some())
+}
+
+/// Loads (once per file version and process) the grammar at `path`. A
+/// failure is cached too, so a broken grammar is not re-read on every
+/// document. The cache lock is not held while compiling.
 pub(crate) fn load_wasm_grammar(
     key: &GrammarKey,
     path: &Path,
 ) -> Result<tree_sitter::Language, GrammarError> {
-    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| {
-        Mutex::new(Cache {
-            languages: HashMap::new(),
-            stores: Vec::new(),
-        })
-    });
-    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(cached) = cache.languages.get(key) {
-        return cached.clone();
-    }
-    let loaded = load(&key.name, path);
-    let result = match loaded {
-        Ok((store, language)) => {
-            cache.stores.push(store);
-            Ok(language)
-        }
-        Err(e) => Err(e),
-    };
-    cache.languages.insert(key.clone(), result.clone());
-    result
+    let cache_key = CacheKey::new(key, path);
+    let slot = lock().slots.entry(cache_key).or_default().clone();
+    slot.get_or_init(|| {
+        let (store, language) = load(&key.name, path)?;
+        lock().stores.push(store);
+        Ok(language)
+    })
+    .clone()
 }
 
 fn load(name: &str, path: &Path) -> Result<(WasmStore, tree_sitter::Language), GrammarError> {

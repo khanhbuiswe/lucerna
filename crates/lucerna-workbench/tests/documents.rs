@@ -595,3 +595,29 @@ fn same_content_rewrite_does_not_bump_the_revision(cx: &mut TestAppContext) {
     );
     assert_eq!(state(&wb, Path::new("f.rs"), cx), Some(DocState::Ready));
 }
+
+#[gpui::test]
+fn failed_grammar_shows_plain_text_not_loading(cx: &mut TestAppContext) {
+    init(cx);
+    let broken = lucerna_syntax::Language::from_wasm_for_test_with(
+        "broken",
+        Path::new("/nonexistent/broken.wasm"),
+        "(x) @x",
+        false,
+        &["zzz"],
+    );
+    cx.update(|cx| {
+        let state = cx.global_mut::<AppState>();
+        state.languages = Arc::new(LanguageRegistry::bundled_plus_for_test(broken));
+    });
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.zzz"), "hello\nworld\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "a.zzz", cx);
+    assert_eq!(
+        state(&wb, &dir.path().join("a.zzz"), cx),
+        Some(DocState::Ready)
+    );
+    assert_eq!(text(&view, cx), "hello\nworld\n");
+    view.read_with(cx, |v, _| assert!(v.syntax().is_none()));
+}

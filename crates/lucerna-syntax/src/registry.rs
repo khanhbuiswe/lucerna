@@ -127,6 +127,15 @@ impl Language {
         result
     }
 
+    /// Whether [`Language::grammar`] returns without loading a file. A WASM
+    /// grammar's first load compiles a module: do it off the UI thread.
+    pub fn grammar_ready(&self) -> bool {
+        match &self.source {
+            GrammarSource::Native(_) => true,
+            GrammarSource::Wasm { key, path } => wasm::is_loaded(key, path),
+        }
+    }
+
     pub fn origin(&self) -> &LanguageOrigin {
         &self.origin
     }
@@ -144,7 +153,7 @@ impl Language {
     /// A language whose grammar is the WASM file at `wasm_path`, for tests.
     #[doc(hidden)]
     pub fn from_wasm_for_test(id: &str, wasm_path: &Path, highlights_src: &str) -> Arc<Language> {
-        Self::from_wasm_for_test_with(id, wasm_path, highlights_src, false)
+        Self::from_wasm_for_test_with(id, wasm_path, highlights_src, false, &[])
     }
 
     /// Like [`Language::from_wasm_for_test`], choosing the precedence.
@@ -154,6 +163,7 @@ impl Language {
         wasm_path: &Path,
         highlights_src: &str,
         last_pattern_wins: bool,
+        extensions: &[&str],
     ) -> Arc<Language> {
         Arc::new(Language {
             id: Arc::from(id),
@@ -162,7 +172,7 @@ impl Language {
                 extension_id: Arc::from("test"),
             },
             hidden: false,
-            extensions: Vec::new(),
+            extensions: extensions.iter().map(|e| e.to_string()).collect(),
             filenames: Vec::new(),
             source: GrammarSource::Wasm {
                 // The grammar name is the file stem (`json.wasm` exports
@@ -393,6 +403,14 @@ impl LanguageRegistry {
         LanguageRegistry {
             languages: languages.into_iter().map(Arc::new).collect(),
         }
+    }
+
+    /// The bundled languages plus `extra`, for tests.
+    #[doc(hidden)]
+    pub fn bundled_plus_for_test(extra: Arc<Language>) -> LanguageRegistry {
+        let mut registry = LanguageRegistry::bundled();
+        registry.languages.push(extra);
+        registry
     }
 
     pub fn languages(&self) -> &[Arc<Language>] {

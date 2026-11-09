@@ -47,22 +47,54 @@ fn missing_wasm_file_is_grammar_error() {
 }
 
 #[test]
-fn failure_is_cached() {
+fn failure_is_cached_and_file_change_recovers() {
     let dir = std::env::temp_dir().join(format!("lucerna-cache-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("json.wasm");
-    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, b"garbage").unwrap();
     let language = Language::from_wasm_for_test("t-cached", &path, "(string) @s");
+    assert!(!language.grammar_ready());
     assert!(SyntaxState::new(language.clone()).is_err());
+    assert!(SyntaxState::new(language.clone()).is_err());
+    assert!(language.is_failed());
+    // The extension is updated in place: the new file (a different
+    // length) loads rather than the cached failure.
     std::fs::copy(json_wasm(), &path).unwrap();
-    assert!(SyntaxState::new(language).is_err());
+    assert!(SyntaxState::new(language.clone()).is_ok());
+    assert!(language.grammar_ready());
+    let fresh = Language::from_wasm_for_test("t-cached-fresh", &path, "(string) @s");
+    assert!(SyntaxState::new(fresh).is_ok());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn bad_highlights_query_marks_extension_language_failed() {
+    let language = Language::from_wasm_for_test("t-badquery", &json_wasm(), "(no_such_node) @x");
+    let buffer = Buffer::from_bytes(br#"{"a": 1}"#, false).unwrap();
+    let snap = buffer.snapshot();
+    let mut state = SyntaxState::new(language.clone()).expect("grammar loads");
+    state.parse(&snap, None);
+    assert!(
+        state
+            .highlights(&snap, 0..snap.line_count(), &|_| true)
+            .is_empty()
+    );
+    assert!(language.is_failed());
+}
+
+#[test]
+fn states_are_created_and_dropped_repeatedly() {
+    let language = Language::from_wasm_for_test("t-pool", &json_wasm(), "(string) @string");
+    for _ in 0..20 {
+        let state = SyntaxState::new(language.clone()).unwrap();
+        drop(state);
+    }
 }
 
 #[test]
 fn styled_filter_drops_unstyled_captures() {
     let query = "(pair key: (_) @a)\n(pair key: (_) @b)";
-    let language = Language::from_wasm_for_test_with("t-styled", &json_wasm(), query, true);
+    let language = Language::from_wasm_for_test_with("t-styled", &json_wasm(), query, true, &[]);
     let only_a = highlight(language.clone(), r#"{"a": 1}"#, &|c| c == "a");
     assert_eq!(only_a, vec![("\"a\"".to_string(), "a".to_string())]);
     let all = highlight(language, r#"{"a": 1}"#, &|_| true);

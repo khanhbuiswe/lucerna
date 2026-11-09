@@ -3295,6 +3295,7 @@ dependencies = [
  "insta",
  "lucerna-text",
  "streaming-iterator",
+ "tracing",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-css",

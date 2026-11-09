@@ -46,6 +46,14 @@ pub struct SyntaxState {
     tree: Option<Tree>,
 }
 
+impl Drop for SyntaxState {
+    fn drop(&mut self) {
+        if let Some(store) = self.parser.take_wasm_store() {
+            wasm::return_store(store);
+        }
+    }
+}
+
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<SyntaxState>();
@@ -59,7 +67,7 @@ impl SyntaxState {
         let mut parser = Parser::new();
         if language.is_wasm() {
             parser
-                .set_wasm_store(wasm::new_store()?)
+                .set_wasm_store(wasm::take_store()?)
                 .map_err(|e| GrammarError(format!("wasm store: {e}")))?;
         }
         parser.set_language(&grammar).map_err(|e| {

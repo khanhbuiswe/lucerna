@@ -509,34 +509,42 @@ impl Documents {
             return;
         }
         let snapshot = buffer.snapshot();
-        // On the UI thread: a panic in the grammar must not take the app
-        // down (spec §7). It is logged; the file shows as plain text.
-        let sync = catch_panic("parse", || {
-            let mut syntax = SyntaxState::new(language)?;
-            let outcome = syntax.parse(&snapshot, Some(SYNC_PARSE_BUDGET));
-            Ok::<_, GrammarError>((syntax, outcome))
-        });
-        let mut syntax = match sync {
-            Ok(Ok((syntax, ParseOutcome::Done))) => {
-                set_syntax(doc, Arc::new(syntax), cx);
-                return;
-            }
-            Ok(Ok((syntax, ParseOutcome::TimedOut))) => syntax,
-            Ok(Err(err)) => {
-                // The grammar did not load: show the text unhighlighted.
-                tracing::warn!(path = %key.display(), %err, "grammar failed to load");
-                clear_syntax(doc, cx);
-                return;
-            }
-            Err(_) => {
-                clear_syntax(doc, cx);
-                return;
-            }
-        };
         let revision = doc.revision;
+        // A WASM grammar's first load compiles a module, far over the sync
+        // budget: it happens in the background job. Otherwise, on the UI
+        // thread, a panic in the grammar must not take the app down (spec
+        // §7); it is logged and the file shows as plain text.
+        let mut started = None;
+        if language.grammar_ready() {
+            let sync = catch_panic("parse", || {
+                let mut syntax = SyntaxState::new(language.clone())?;
+                let outcome = syntax.parse(&snapshot, Some(SYNC_PARSE_BUDGET));
+                Ok::<_, GrammarError>((syntax, outcome))
+            });
+            match sync {
+                Ok(Ok((syntax, ParseOutcome::Done))) => {
+                    set_syntax(doc, Arc::new(syntax), cx);
+                    return;
+                }
+                Ok(Ok((syntax, ParseOutcome::TimedOut))) => started = Some(syntax),
+                Ok(Err(err)) => {
+                    tracing::warn!(path = %key.display(), %err, "grammar failed to load");
+                    clear_syntax(doc, cx);
+                    return;
+                }
+                Err(_) => {
+                    clear_syntax(doc, cx);
+                    return;
+                }
+            }
+        }
         let work = spawn_contained(cx, move || {
+            let mut syntax = match started {
+                Some(syntax) => syntax,
+                None => SyntaxState::new(language)?,
+            };
             syntax.parse(&snapshot, None);
-            syntax
+            Ok::<_, GrammarError>(syntax)
         });
         let key = key.clone();
         doc.parse = Some(cx.spawn(async move |this, cx| {
@@ -550,7 +558,11 @@ impl Documents {
                 }
                 doc.parse = None;
                 match syntax {
-                    Ok(syntax) => set_syntax(doc, Arc::new(syntax), cx),
+                    Ok(Ok(syntax)) => set_syntax(doc, Arc::new(syntax), cx),
+                    Ok(Err(err)) => {
+                        tracing::warn!(path = %key.display(), %err, "grammar failed to load");
+                        clear_syntax(doc, cx);
+                    }
                     // The text stays readable without highlighting.
                     Err(err) => tracing::error!(path = %key.display(), %err, "parse failed"),
                 }
