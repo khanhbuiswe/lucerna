@@ -8,6 +8,8 @@
 
 use std::path::Path;
 
+use lucerna_theme::{IconSource, IconTheme, lucide_icon_theme};
+
 macro_rules! lucide {
     ($name:literal) => {
         include_bytes!(concat!(
@@ -60,42 +62,24 @@ pub const ALL: &[(&str, &[u8])] = &[
     ("chevron-up", CHEVRON_UP),
 ];
 
-const SOURCE_EXTENSIONS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "c", "h", "cpp", "java", "kt",
-    "swift", "rb", "php", "cs", "html", "css", "scss",
-];
+/// The bundled SVG for a Lucide icon name.
+pub fn lucide_svg(name: &str) -> Option<&'static [u8]> {
+    ALL.iter().find(|(n, _)| *n == name).map(|(_, svg)| *svg)
+}
 
-/// The icon for a tree entry: an open or closed folder for directories,
-/// otherwise chosen by file name, then by extension (case-insensitive).
+/// The icon for a tree entry, through the built-in Lucide theme. Temporary:
+/// the Explorer moves to the active icon theme later.
 pub fn icon_for_path(path: &Path, is_dir: bool, expanded: bool) -> &'static [u8] {
-    if is_dir {
-        return if expanded { FOLDER_OPEN } else { FOLDER };
-    }
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    if matches!(
-        name.as_str(),
-        ".gitignore" | ".gitattributes" | ".gitmodules"
-    ) {
-        return GIT_BRANCH;
-    }
-    if name.starts_with("license") || name.starts_with("copying") {
-        return SCALE;
-    }
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
-        "lock" => LOCK,
-        "json" | "jsonc" => BRACES,
-        "md" | "markdown" => BOOK_OPEN,
-        "toml" | "yaml" | "yml" => SETTINGS,
-        "sh" | "bash" | "zsh" => TERMINAL,
-        "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" => IMAGE,
-        e if SOURCE_EXTENSIONS.contains(&e) => FILE_CODE,
+    static LUCIDE: std::sync::OnceLock<IconTheme> = std::sync::OnceLock::new();
+    let theme = LUCIDE.get_or_init(lucide_icon_theme);
+    let icon = if is_dir {
+        let name = path.file_name().map(|n| n.to_string_lossy());
+        theme.directory_icon(name.as_deref().unwrap_or(""), expanded)
+    } else {
+        theme.file_icon(path)
+    };
+    match icon {
+        Some(IconSource::Builtin(name)) => lucide_svg(name).unwrap_or(FILE),
         _ => FILE,
     }
 }
@@ -155,10 +139,11 @@ mod tests {
     }
 
     #[test]
-    fn source_extensions_use_file_code() {
-        for ext in SOURCE_EXTENSIONS {
-            assert!(file(&format!("src/x.{ext}")) == FILE_CODE, "{ext}");
+    fn lucide_svg_resolves_every_bundled_name() {
+        for (name, svg) in ALL {
+            assert!(lucide_svg(name) == Some(*svg), "{name}");
         }
+        assert!(lucide_svg("nope").is_none());
         assert!(file("src/main.RS") == FILE_CODE);
     }
 
