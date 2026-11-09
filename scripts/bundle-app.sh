@@ -77,6 +77,14 @@ if [ "$install" -eq 1 ]; then
 exec "$dest/Contents/MacOS/luc" "\$@"
 EOF
   chmod +x "$bin_dir/luc"
+  # LaunchServices registers every copy it sees and may pick the build copy
+  # under target/ for "Open With" and the default app, since all share one
+  # bundle ID. Keep only the installed one registered.
+  lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  for copy in target/release/Lucerna.app target/debug/Lucerna.app; do
+    [ -d "$copy" ] && "$lsregister" -u "$copy" 2>/dev/null || true
+  done
+  "$lsregister" -f "$dest"
   echo "bundle-app: installed $dest and $bin_dir/luc"
   case ":$PATH:" in
     *":$bin_dir:"*) ;;
