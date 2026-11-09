@@ -41,6 +41,7 @@ fn sample(paths: &[&Path]) -> WorkspaceState {
             active_group: 1,
         },
         scroll: paths.iter().map(|p| (p.to_path_buf(), 7)).collect(),
+        group_widths: vec![0.25, 0.75],
     }
 }
 
@@ -422,4 +423,73 @@ fn relative_and_absolute_open_the_same_tab(cx: &mut TestAppContext) {
         cx.update(|_, cx| wb.read(cx).recent_files().to_vec()),
         vec![Arc::<Path>::from(project.file("a.txt").as_path())]
     );
+}
+
+/// Spec §2.1: the split sizes come back. A file from before widths were
+/// saved, or whose widths do not fit the restored groups, gets equal ones.
+#[gpui::test]
+fn group_widths_round_trip(cx: &mut TestAppContext) {
+    init(cx);
+    let project = Project::new();
+    let (a, b) = (project.file("a.txt"), project.file("b.txt"));
+    save_state(&project.state_file(), &sample(&[&a, &b])).unwrap();
+    {
+        let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
+        let widths =
+            cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).group_widths().to_vec());
+        assert_eq!(widths, [0.25, 0.75]);
+        // Open another file so the state differs from what was loaded.
+        let c: Arc<Path> = Arc::from(project.file("c.txt").as_path());
+        wb.update(cx, |wb, cx| wb.open_path(c, OpenMode::Pinned, cx));
+        wb.update(cx, |wb, cx| wb.save_workspace_state(cx));
+    }
+    assert_eq!(
+        load_state(&project.state_file()).unwrap().group_widths,
+        [0.25, 0.75]
+    );
+
+    // Old file without the field: equal widths.
+    let json = fs::read_to_string(project.state_file()).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    value.as_object_mut().unwrap().remove("group_widths");
+    fs::write(project.state_file(), value.to_string()).unwrap();
+    let old = load_state(&project.state_file()).expect("still loads");
+    assert!(old.group_widths.is_empty());
+    let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
+    let widths = cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).group_widths().to_vec());
+    assert_eq!(widths, [0.5, 0.5]);
+}
+
+/// The group widths a workbench restores from `state`.
+fn restored_widths(project: &Project, state: &WorkspaceState, cx: &mut TestAppContext) -> Vec<f32> {
+    save_state(&project.state_file(), state).unwrap();
+    let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
+    cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).group_widths().to_vec())
+}
+
+#[gpui::test]
+fn mismatched_group_widths_are_normalised(cx: &mut TestAppContext) {
+    init(cx);
+    let project = Project::new();
+    let (a, b, gone) = (
+        project.file("a.txt"),
+        project.file("b.txt"),
+        project.file("gone.txt"),
+    );
+    // Three widths for two groups.
+    let mut state = sample(&[&a, &b]);
+    state.group_widths = vec![0.2, 0.3, 0.5];
+    assert_eq!(restored_widths(&project, &state, cx), [0.5, 0.5]);
+
+    // The right group's only file is gone: one group, the full width.
+    let mut state = sample(&[&a, &gone]);
+    state.group_widths = vec![0.25, 0.75];
+    assert_eq!(restored_widths(&project, &state, cx), [1.0]);
+
+    // Widths that do not sum to 1 are scaled; nonsense ones are dropped.
+    let mut state = sample(&[&a, &b]);
+    state.group_widths = vec![1.0, 3.0];
+    assert_eq!(restored_widths(&project, &state, cx), [0.25, 0.75]);
+    state.group_widths = vec![-1.0, 1.0];
+    assert_eq!(restored_widths(&project, &state, cx), [0.5, 0.5]);
 }

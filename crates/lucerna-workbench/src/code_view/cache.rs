@@ -13,6 +13,7 @@ use lucerna_text::BufferSnapshot;
 use super::element::ShapedRow;
 use super::layout::wrap_count;
 use super::minimap::MinimapRow;
+use crate::tasks::catch_panic;
 
 /// Rows above and below the viewport whose highlights are fetched with it.
 const HIGHLIGHT_MARGIN: u32 = 100;
@@ -100,7 +101,12 @@ impl Caches {
         let rows = visible.start.saturating_sub(HIGHLIGHT_MARGIN)
             ..visible.end.saturating_add(HIGHLIGHT_MARGIN).min(line_count);
         self.highlights.clear();
-        for span in syntax.highlights(snapshot, rows.clone()) {
+        // Runs while painting, on the UI thread: a panic in a query is
+        // logged and these rows are drawn plain (and not fetched again
+        // until they scroll out of the cached range).
+        let spans = catch_panic("highlights", || syntax.highlights(snapshot, rows.clone()))
+            .unwrap_or_default();
+        for span in spans {
             if span.range.is_empty() {
                 continue;
             }

@@ -500,19 +500,28 @@ impl Documents {
             return;
         };
         if buffer.is_large(max_bytes, max_lines) {
-            if doc.syntax.take().is_some() {
-                for view in doc.views() {
-                    view.update(cx, |v, cx| v.set_syntax(None, cx));
-                }
-            }
+            clear_syntax(doc, cx);
             return;
         }
         let snapshot = buffer.snapshot();
-        let mut syntax = SyntaxState::new(language);
-        if syntax.parse(&snapshot, Some(SYNC_PARSE_BUDGET)) == ParseOutcome::Done {
-            set_syntax(doc, Arc::new(syntax), cx);
-            return;
-        }
+        // On the UI thread: a panic in the grammar must not take the app
+        // down (spec §7). It is logged; the file shows as plain text.
+        let sync = catch_panic("parse", || {
+            let mut syntax = SyntaxState::new(language);
+            let outcome = syntax.parse(&snapshot, Some(SYNC_PARSE_BUDGET));
+            (syntax, outcome)
+        });
+        let mut syntax = match sync {
+            Ok((syntax, ParseOutcome::Done)) => {
+                set_syntax(doc, Arc::new(syntax), cx);
+                return;
+            }
+            Ok((syntax, ParseOutcome::TimedOut)) => syntax,
+            Err(_) => {
+                clear_syntax(doc, cx);
+                return;
+            }
+        };
         let revision = doc.revision;
         let work = spawn_contained(cx, move || {
             syntax.parse(&snapshot, None);
@@ -569,6 +578,15 @@ fn failure_state(doc: &Document, err: LoadError) -> DocState {
         DocState::Deleted
     } else {
         DocState::Error(err)
+    }
+}
+
+/// Shows the document as plain text.
+fn clear_syntax(doc: &mut Document, cx: &mut App) {
+    if doc.syntax.take().is_some() {
+        for view in doc.views() {
+            view.update(cx, |v, cx| v.set_syntax(None, cx));
+        }
     }
 }
 

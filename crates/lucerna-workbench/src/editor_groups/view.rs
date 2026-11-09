@@ -116,14 +116,23 @@ impl EditorGroupsView {
     }
 
     /// Replaces the layout with the one saved in `state` (see
-    /// [`EditorGroups::restore`]). Tab bodies are made again, through the
-    /// factory, as they are drawn.
-    pub fn restore(&mut self, state: &GroupsState, cx: &mut Context<Self>) {
+    /// [`EditorGroups::restore`]) and the saved group `widths`. Widths
+    /// that do not fit the restored groups (another count, say after an
+    /// empty group was dropped, or not positive) become equal; others are
+    /// scaled to sum to 1. Tab bodies are made again, through the factory,
+    /// as they are drawn.
+    pub fn restore(&mut self, state: &GroupsState, widths: &[f32], cx: &mut Context<Self>) {
         self.model = EditorGroups::restore(state);
         self.bodies.clear();
         self.hovered_tab = None;
         let n = self.model.groups().len();
-        self.widths = vec![1.0 / n as f32; n];
+        let total: f32 = widths.iter().sum();
+        let fits = widths.len() == n && widths.iter().all(|w| w.is_finite() && *w > 0.);
+        self.widths = if fits && total.is_finite() {
+            widths.iter().map(|w| w / total).collect()
+        } else {
+            vec![1.0 / n as f32; n]
+        };
         cx.notify();
     }
 

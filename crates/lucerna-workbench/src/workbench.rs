@@ -237,7 +237,9 @@ impl Workbench {
             .and_then(WorkspaceStateStore::load)
             .map(|state| state.without_missing_files(&root));
         if let Some(state) = &restored {
-            editor_groups.update(cx, |view, cx| view.restore(&state.groups, cx));
+            editor_groups.update(cx, |view, cx| {
+                view.restore(&state.groups, &state.group_widths, cx)
+            });
             let open: Vec<PathBuf> = editor_groups
                 .read(cx)
                 .model()
@@ -394,6 +396,7 @@ impl Workbench {
             .into(),
             groups: groups.model().state(),
             scroll,
+            group_widths: groups.group_widths().to_vec(),
         };
         if let Some(p) = &mut self.persistence {
             p.scroll_rows = state.scroll.clone();

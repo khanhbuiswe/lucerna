@@ -35,7 +35,7 @@ use crate::documents::{DocState, Documents};
 use crate::editor_groups::{EditorGroupsView, Tab};
 use crate::find_widget::FindWidget;
 use crate::layout::color;
-use crate::tasks::guarded;
+use crate::tasks::{catch_panic, guarded};
 use crate::ui::GRID;
 use crate::{AppState, CommandRegistry, Workbench};
 
@@ -539,11 +539,17 @@ impl CodeView {
     fn update_brackets(&mut self) {
         self.brackets = self.selection.and_then(|s| {
             let at = selection::boundary_offset(&self.snapshot, s.head);
-            let matching = |offset| match &self.syntax {
-                Some(syntax) if syntax.tree().is_some() => {
-                    syntax.matching_bracket(&self.snapshot, offset)
-                }
-                _ => lucerna_syntax::matching_bracket(&self.snapshot, offset),
+            // On the UI thread: a panic is logged and shows no pair.
+            let matching = |offset| {
+                catch_panic("brackets", || match &self.syntax {
+                    Some(syntax) if syntax.tree().is_some() => {
+                        syntax.matching_bracket(&self.snapshot, offset)
+                    }
+                    _ => lucerna_syntax::matching_bracket(&self.snapshot, offset),
+                })
+                .ok()
+                .flatten()
+                .filter(|&at| at < self.snapshot.len_bytes())
             };
             let partner = matching(at)?;
             Some([matching(partner)?, partner])

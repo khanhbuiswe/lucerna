@@ -25,6 +25,11 @@ pub struct WorkspaceState {
     pub groups: GroupsState,
     /// Top visible row of each open tab's file, by absolute path.
     pub scroll: HashMap<PathBuf, u32>,
+    /// Fraction of the editor area each group takes, left to right. Empty
+    /// in files from before it was saved; widths that do not fit the
+    /// restored groups are replaced by equal ones.
+    #[serde(default)]
+    pub group_widths: Vec<f32>,
 }
 
 impl WorkspaceState {
