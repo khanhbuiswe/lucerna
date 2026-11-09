@@ -215,3 +215,35 @@ fn non_object_root_is_rejected() {
     let mut s = SettingsStore::with_defaults();
     assert!(s.set_layer(Layer::User, "[1]").is_err());
 }
+
+#[test]
+fn defaults_include_phase2_keys() {
+    let s = SettingsStore::with_defaults();
+    assert_eq!(
+        s.get::<String>("workbench.iconTheme", None).as_deref(),
+        Some("Lucide")
+    );
+    assert_eq!(
+        s.get::<bool>("extensions.autoCheckUpdates", None),
+        Some(true)
+    );
+    let assoc = s
+        .get::<BTreeMap<String, String>>("files.associations", None)
+        .unwrap();
+    assert!(assoc.is_empty());
+}
+
+#[test]
+fn files_associations_merge_across_layers() {
+    let mut s = SettingsStore::with_defaults();
+    s.set_layer(Layer::User, r#"{"files.associations": {"*.a": "x"}}"#)
+        .unwrap();
+    s.set_layer(Layer::Workspace, r#"{"files.associations": {"*.b": "y"}}"#)
+        .unwrap();
+    let assoc = s
+        .get::<BTreeMap<String, String>>("files.associations", None)
+        .unwrap();
+    assert_eq!(assoc.len(), 2);
+    assert_eq!(assoc["*.a"], "x");
+    assert_eq!(assoc["*.b"], "y");
+}

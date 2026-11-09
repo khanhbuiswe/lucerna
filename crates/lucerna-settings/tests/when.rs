@@ -61,3 +61,14 @@ fn parse_error_reports() {
     assert!(parse_when("a b").is_err());
     assert!(parse_when("").is_err());
 }
+
+#[test]
+fn extensions_viewlet_focus_evaluates() {
+    let e = parse_when("sideBarFocus && extensionsViewletFocus").unwrap();
+    let on = ctx(&[
+        ("sideBarFocus", b(true)),
+        ("extensionsViewletFocus", b(true)),
+    ]);
+    assert!(e.eval(&on));
+    assert!(!e.eval(&ctx(&[("sideBarFocus", b(true))])));
+}
