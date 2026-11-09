@@ -112,6 +112,10 @@ fi
 
 chmod -Rf go-w "$mount" || true
 sync
+# Finder registered the app on the temporary volume with LaunchServices.
+# Drop it, so "Open With" and the default app never pick that stale copy.
+lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$lsregister" -u "$mount/Lucerna.app" 2>/dev/null || true
 hdiutil detach "$device" -quiet
 device=
 
