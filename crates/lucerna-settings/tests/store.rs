@@ -53,14 +53,55 @@ fn language_override() {
     assert_eq!(fs(&s, Some("python"), "editor.tabSize"), Some(4));
 }
 
+/// R28: VS Code's order. Any language override beats every plain value.
 #[test]
-fn workspace_plain_beats_user_language() {
+fn user_language_beats_workspace_plain() {
     let mut s = SettingsStore::with_defaults();
     s.set_layer(Layer::User, r#"{"[rust]": {"editor.tabSize": 2}}"#)
         .unwrap();
     s.set_layer(Layer::Workspace, r#"{"editor.tabSize": 8}"#)
         .unwrap();
-    assert_eq!(fs(&s, Some("rust"), "editor.tabSize"), Some(8));
+    assert_eq!(fs(&s, Some("rust"), "editor.tabSize"), Some(2));
+    assert_eq!(fs(&s, Some("python"), "editor.tabSize"), Some(8));
+}
+
+/// Workspace[lang], User[lang], Default[lang], Workspace, User, Default:
+/// each value shows once every layer above it is taken away.
+#[test]
+fn precedence_is_language_layers_then_plain_layers() {
+    let order = [
+        (Layer::Workspace, true, 1),
+        (Layer::User, true, 2),
+        (Layer::Default, true, 3),
+        (Layer::Workspace, false, 4),
+        (Layer::User, false, 5),
+        (Layer::Default, false, 6),
+    ];
+    for winner in 0..order.len() {
+        let mut layers: [Vec<String>; 3] = Default::default();
+        for &(layer, lang, value) in &order[winner..] {
+            let entry = if lang {
+                format!(r#""[go]": {{"editor.tabSize": {value}}}"#)
+            } else {
+                format!(r#""editor.tabSize": {value}"#)
+            };
+            layers[layer as usize].push(entry);
+        }
+        let mut s = SettingsStore::default();
+        for (layer, entries) in [Layer::Default, Layer::User, Layer::Workspace]
+            .into_iter()
+            .zip(&layers)
+        {
+            s.set_layer(layer, &format!("{{{}}}", entries.join(",")))
+                .unwrap();
+        }
+        assert_eq!(
+            fs(&s, Some("go"), "editor.tabSize"),
+            Some(order[winner].2),
+            "with {:?}",
+            &order[winner..]
+        );
+    }
 }
 
 #[test]

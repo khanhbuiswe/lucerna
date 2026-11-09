@@ -482,16 +482,17 @@ impl Documents {
     /// Parses the current text: within [`SYNC_PARSE_BUDGET`] here, else to
     /// completion on a background thread. Large files are not parsed.
     fn parse(&mut self, key: &Arc<Path>, cx: &mut Context<Self>) {
-        let settings = &cx.global::<AppState>().settings;
-        let max_bytes = settings
-            .get::<u64>("lucerna.largeFile.maxBytes", None)
-            .unwrap_or(20 * 1024 * 1024);
-        let max_lines = settings
-            .get::<u32>("lucerna.largeFile.maxLines", None)
-            .unwrap_or(300_000);
         let Some(doc) = self.docs.get_mut(key) else {
             return;
         };
+        let settings = &cx.global::<AppState>().settings;
+        let language = doc.language.as_ref().map(|l| l.id);
+        let max_bytes = settings
+            .get::<u64>("lucerna.largeFile.maxBytes", language)
+            .unwrap_or(20 * 1024 * 1024);
+        let max_lines = settings
+            .get::<u32>("lucerna.largeFile.maxLines", language)
+            .unwrap_or(300_000);
         // A parse of older text is cancelled; its syntax stays shown (see
         // `finish_job`) until this one lands.
         doc.parse = None;

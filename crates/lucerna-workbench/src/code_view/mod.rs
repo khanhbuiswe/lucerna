@@ -60,35 +60,39 @@ struct Config {
 }
 
 impl Config {
-    fn read(cx: &App) -> (Config, f32, bool) {
+    /// The settings for a view of `language` (a language id such as
+    /// `"rust"`), so `"[rust]": {...}` overrides apply.
+    fn read(language: Option<&str>, cx: &App) -> (Config, f32, bool) {
         let settings = &cx.global::<AppState>().settings;
         let config = Config {
             font_family: settings
-                .get::<String>("editor.fontFamily", None)
+                .get::<String>("editor.fontFamily", language)
                 .unwrap_or_else(|| "Menlo".into())
                 .into(),
-            line_height: settings.get("editor.lineHeight", None).unwrap_or(1.5),
-            minimap: settings.get("editor.minimap.enabled", None).unwrap_or(true),
+            line_height: settings.get("editor.lineHeight", language).unwrap_or(1.5),
+            minimap: settings
+                .get("editor.minimap.enabled", language)
+                .unwrap_or(true),
             render_whitespace: settings
-                .get::<String>("editor.renderWhitespace", None)
+                .get::<String>("editor.renderWhitespace", language)
                 .is_some_and(|w| w == "all"),
             tab_size: settings
-                .get::<u32>("editor.tabSize", None)
+                .get::<u32>("editor.tabSize", language)
                 .unwrap_or(4)
                 .max(1),
             max_bytes: settings
-                .get("lucerna.largeFile.maxBytes", None)
+                .get("lucerna.largeFile.maxBytes", language)
                 .unwrap_or(20 * 1024 * 1024),
             max_lines: settings
-                .get("lucerna.largeFile.maxLines", None)
+                .get("lucerna.largeFile.maxLines", language)
                 .unwrap_or(300_000),
         };
         let font_size = settings
-            .get::<f32>("editor.fontSize", None)
+            .get::<f32>("editor.fontSize", language)
             .unwrap_or(13.)
             .clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let wrap = settings
-            .get::<String>("editor.wordWrap", None)
+            .get::<String>("editor.wordWrap", language)
             .is_some_and(|w| w == "on");
         (config, font_size, wrap)
     }
@@ -110,6 +114,8 @@ enum Drag {
 
 pub struct CodeView {
     path: Arc<Path>,
+    /// The id of the file's language, for `"[lang]"` settings overrides.
+    language_id: Option<&'static str>,
     focus: FocusHandle,
     snapshot: BufferSnapshot,
     /// Bumped by every new snapshot; keys every cache.
@@ -161,12 +167,19 @@ pub struct CodeView {
 impl CodeView {
     /// An empty view of `path`; [`CodeView::set_buffer`] gives it text.
     pub fn new(path: Arc<Path>, cx: &mut Context<Self>) -> Self {
-        let (config, font_size, word_wrap) = Config::read(cx);
+        // The same lookup `Documents` makes for the file's syntax.
+        let language_id = cx
+            .global::<AppState>()
+            .languages
+            .language_for_path(&path)
+            .map(|lang| lang.id);
+        let (config, font_size, word_wrap) = Config::read(language_id, cx);
         let snapshot = Buffer::from_bytes(b"", false)
             .expect("empty text decodes")
             .snapshot();
         CodeView {
             path,
+            language_id,
             focus: cx.focus_handle(),
             snapshot,
             revision: 0,
@@ -321,7 +334,7 @@ impl CodeView {
     /// large-file limits. Font-size zoom and the wrap toggle survive
     /// unless their setting changed, and the top visible row stays. Called on every [`AppState`] change.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
-        let (config, font_size, word_wrap) = Config::read(cx);
+        let (config, font_size, word_wrap) = Config::read(self.language_id, cx);
         let old_line_height = self.line_height();
         let mut changed = false;
         let mut wrap_changed = false;
@@ -535,6 +548,11 @@ impl CodeView {
             let partner = matching(at)?;
             Some([matching(partner)?, partner])
         });
+    }
+
+    /// `editor.tabSize` for this view's language.
+    pub fn tab_size(&self) -> u32 {
+        self.config.tab_size
     }
 
     pub fn word_wrap(&self) -> bool {

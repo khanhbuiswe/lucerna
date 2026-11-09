@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{Entity, TestAppContext, VisualTestContext};
+use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::{LanguageRegistry, SyntaxState};
 use lucerna_text::{Buffer, BufferSnapshot, Point};
@@ -440,5 +440,24 @@ fn reload_remaps_folds(cx: &mut TestAppContext) {
     view.read_with(cx, |v, _| {
         assert!(v.is_folded(2), "the fold moved down two lines");
         assert!(!v.is_folded(0));
+    });
+}
+
+/// `"[rust]"` overrides apply to Rust views only.
+#[gpui::test]
+fn language_overrides_apply_to_their_language(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"[rust]": {"editor.tabSize": 2}, "[python]": {"editor.wordWrap": "on"}}"#),
+    );
+    let (rust, cx) = cx.add_window_view(|_, cx| CodeView::new(p("src/main.rs"), cx));
+    let python = cx.update(|_, cx| cx.new(|cx| CodeView::new(p("tool.py"), cx)));
+    rust.read_with(cx, |v, _| {
+        assert_eq!(v.tab_size(), 2);
+        assert!(!v.word_wrap());
+    });
+    python.read_with(cx, |v, _| {
+        assert_eq!(v.tab_size(), 4);
+        assert!(v.word_wrap());
     });
 }

@@ -45,30 +45,36 @@ impl SettingsStore {
         Ok(())
     }
 
-    /// Looks up `key`, preferring (highest first) Workspace `[lang]`,
-    /// Workspace, User `[lang]`, User, Default `[lang]`, Default. The first
-    /// value found replaces lower ones wholesale (no object merging). A value
-    /// that does not deserialize into `T` yields `None`.
+    /// Looks up `key`, preferring (highest first) VS Code's order:
+    /// Workspace `[lang]`, User `[lang]`, Default `[lang]`, then Workspace,
+    /// User, Default. The first value found replaces lower ones wholesale
+    /// (no object merging). A value that does not deserialize into `T`
+    /// yields `None`.
     pub fn get<T: DeserializeOwned>(&self, key: &str, language: Option<&str>) -> Option<T> {
-        let value = [&self.workspace, &self.user, &self.default]
-            .into_iter()
-            .find_map(|layer| lookup_in_layer(layer, key, language))?;
+        let value = self.candidates(key, language).next()?;
         T::deserialize(value).ok()
     }
-}
 
-fn lookup_in_layer<'a>(
-    layer: &'a Map<String, Value>,
-    key: &str,
-    language: Option<&str>,
-) -> Option<&'a Value> {
-    if let Some(lang) = language
-        && let Some(Value::Object(overrides)) = layer.get(&format!("[{lang}]"))
-        && let Some(v) = lookup(overrides, key)
-    {
-        return Some(v);
+    /// Every value of `key`, highest precedence first.
+    fn candidates<'a>(
+        &'a self,
+        key: &'a str,
+        language: Option<&str>,
+    ) -> impl Iterator<Item = &'a Value> + 'a {
+        let layers = [&self.workspace, &self.user, &self.default];
+        let section = language.map(|lang| format!("[{lang}]"));
+        let overrides = layers.into_iter().filter_map(move |layer| {
+            let Some(Value::Object(overrides)) = layer.get(section.as_deref()?) else {
+                return None;
+            };
+            lookup(overrides, key)
+        });
+        overrides.chain(
+            layers
+                .into_iter()
+                .filter_map(move |layer| lookup(layer, key)),
+        )
     }
-    lookup(layer, key)
 }
 
 /// Exact flat key first, then the nested path.
