@@ -369,7 +369,7 @@ Người dùng đã duyệt mục này sau khi so ảnh chụp Lucerna với Zed
 - Màu icon là `icon.muted`.
 
 **Cây file**
-- Dòng đầu là dòng gốc gồm icon thư mục và tên project viết thường. Dòng này thay cho header chữ hoa ở mục 12.
+- Dòng đầu là dòng gốc gồm icon thư mục và tên thư mục project đúng như trên ổ đĩa (không ép chữ hoa). Dòng này thay cho header chữ hoa ở mục 12.
 - Mỗi cấp thụt lề có đường kẻ dọc 1 px màu `border.variant`.
 - Có thanh cuộn mảnh.
 
@@ -381,7 +381,8 @@ Người dùng đã duyệt mục này sau khi so ảnh chụp Lucerna với Zed
 
 **Tab và title bar**
 - Chữ trên tab cỡ 13, padding gọn hơn. Tab không được chọn dùng màu `text.muted`.
-- Title bar hiện tên nhánh git cạnh tên project (`lucerna ⎇ main`). Tên nhánh đọc từ `.git/HEAD` và hỗ trợ cả trường hợp `.git` là file. Tên tự cập nhật khi đổi nhánh và không thêm thư viện git nào. Ở detached HEAD thì hiện SHA rút gọn.
+- Tab đang chọn của nhóm editor đang có focus dùng màu `text`. Tab đang chọn của nhóm không có focus mờ hơn một chút: màu nằm giữa `text` và `text.muted`.
+- Title bar hiện tên nhánh git cạnh tên project, kèm icon Lucide `git-branch` (không dùng ký tự ⎇): `lucerna [git-branch] main`. Tên nhánh đọc từ `.git/HEAD` và hỗ trợ cả trường hợp `.git` là file. Tên tự cập nhật khi đổi nhánh và không thêm thư viện git nào. Ở detached HEAD thì hiện SHA rút gọn.
 
 **Chưa làm**
 - Hiện file bị gitignore ở dạng mờ, vì cần đổi cách quét.
