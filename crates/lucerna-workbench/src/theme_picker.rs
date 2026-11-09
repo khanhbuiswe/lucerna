@@ -344,6 +344,26 @@ impl Workbench {
     }
 }
 
+/// Writes `name` as the color theme (or, with `icons`, the file icon
+/// theme) into the user settings and makes it active. On failure the
+/// status bar shows why.
+pub(crate) fn set_theme_setting(name: &str, icons: bool, cx: &mut App) -> Result<(), ()> {
+    let key = if icons {
+        ICON_THEME_KEY
+    } else {
+        COLOR_THEME_KEY
+    };
+    save_setting(key, name, cx)?;
+    preview(name, icons, cx);
+    if let Some(path) = cx
+        .try_global::<ConfigState>()
+        .map(|s| s.paths().user_settings())
+    {
+        reload_config(&[path], cx);
+    }
+    Ok(())
+}
+
 /// Makes the named theme (colors or icons) active without saving it.
 fn preview(name: &str, icons: bool, cx: &mut App) {
     if icons {

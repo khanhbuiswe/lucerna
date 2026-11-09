@@ -76,6 +76,7 @@ mod tests {
             (event("escape", None, Modifiers::none()), "escape"),
             (event("b", None, cmd()), "cmd+b"),
             (event("e", None, cmd_shift()), "cmd+shift+e"),
+            (event("x", None, cmd_shift()), "cmd+shift+x"),
             (event("\\", None, cmd()), "cmd+\\"),
             (event("w", None, cmd()), "cmd+w"),
             (event("q", None, cmd()), "cmd+q"),

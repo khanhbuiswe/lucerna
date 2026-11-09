@@ -15,7 +15,9 @@ use lucerna_project::{FileMatch, QUICK_OPEN_LIMIT, WorktreeSnapshot, match_files
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
-use super::picker::{highlighted, picker_input_row, picker_list, picker_row, wrap_index};
+use super::picker::{
+    fuzzy_filter, highlighted, picker_input_row, picker_list, picker_row, wrap_index,
+};
 use super::query::{QuickOpenQuery, parse_query};
 use crate::layout::color;
 use crate::tasks::guarded;
@@ -41,6 +43,9 @@ pub(crate) struct Sources {
     pub commands: Vec<CommandItem>,
     /// Whether a code view is active, so go-to-line has a target.
     pub has_editor: bool,
+    /// Lists these extension ids instead (the install command): Enter
+    /// installs the selected one.
+    pub extension_ids: Option<Vec<String>>,
 }
 
 /// What the workbench does when a row is activated.
@@ -51,6 +56,8 @@ pub enum QuickOpenEvent {
         mode: OpenMode,
     },
     RunCommand(String),
+    /// Install the extension with this registry id.
+    InstallExtension(String),
     /// 1-based line and column.
     GoToLine {
         line: u32,
@@ -70,6 +77,11 @@ enum Row {
         line: u32,
         column: Option<u32>,
     },
+    Extension {
+        index: usize,
+        /// Char indices into the id.
+        positions: Vec<u32>,
+    },
     Message(&'static str),
 }
 
@@ -80,6 +92,7 @@ pub struct QuickOpen {
     recent: Arc<[Arc<Path>]>,
     commands: Rc<[CommandItem]>,
     has_editor: bool,
+    extension_ids: Option<Rc<[String]>>,
     rows: Vec<Row>,
     selected: usize,
     scroll: ScrollHandle,
@@ -105,7 +118,11 @@ impl QuickOpen {
         let this = cx.weak_entity();
         let input = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder("Search files by name (> for commands, : to go to a line)");
+            input.set_placeholder(if sources.extension_ids.is_some() {
+                "Type an extension id to install"
+            } else {
+                "Search files by name (> for commands, : to go to a line)"
+            });
             input.on_change(move |text, _, cx| {
                 this.update(cx, |qo, cx| qo.query_changed(text, cx)).ok();
             });
@@ -119,6 +136,7 @@ impl QuickOpen {
             recent: sources.recent,
             commands: sources.commands.into(),
             has_editor: sources.has_editor,
+            extension_ids: sources.extension_ids.map(Into::into),
             rows: Vec::new(),
             selected: 0,
             scroll: ScrollHandle::new(),
@@ -126,6 +144,11 @@ impl QuickOpen {
             cancel: Arc::new(AtomicBool::new(false)),
             _matching: Task::ready(()),
         }
+    }
+
+    /// Whether it lists extension ids (the install command).
+    pub(crate) fn lists_extensions(&self) -> bool {
+        self.extension_ids.is_some()
     }
 
     pub fn input(&self) -> &Entity<TextInput> {
@@ -168,6 +191,10 @@ impl QuickOpen {
                 (c.title.clone().into(), c.keybinding.clone().map(Into::into))
             }
             Row::GoToLine { line, column } => (go_to_line_label(*line, *column).into(), None),
+            Row::Extension { index, .. } => {
+                let ids = self.extension_ids.as_deref().unwrap_or_default();
+                (ids[*index].clone().into(), None)
+            }
             Row::Message(text) => ((*text).into(), None),
         }
     }
@@ -175,6 +202,14 @@ impl QuickOpen {
     fn query_changed(&mut self, text: &str, cx: &mut Context<Self>) {
         self.generation += 1;
         self.cancel.store(true, Ordering::Relaxed);
+        if let Some(ids) = &self.extension_ids {
+            let rows = fuzzy_filter(ids.iter().map(String::as_str), text.trim())
+                .into_iter()
+                .map(|(index, positions)| Row::Extension { index, positions })
+                .collect();
+            self.set_rows(rows, cx);
+            return;
+        }
         match parse_query(text) {
             QuickOpenQuery::Files(query) => self.match_files(query, cx),
             QuickOpenQuery::Commands(query) => {
@@ -247,6 +282,10 @@ impl QuickOpen {
                 QuickOpenEvent::RunCommand(self.commands[*index].id.clone())
             }
             Some(&Row::GoToLine { line, column }) => QuickOpenEvent::GoToLine { line, column },
+            Some(Row::Extension { index, .. }) => {
+                let ids = self.extension_ids.as_deref().unwrap_or_default();
+                QuickOpenEvent::InstallExtension(ids[*index].clone())
+            }
             Some(Row::Message(_)) | None => return,
         };
         cx.emit(event);
@@ -272,7 +311,7 @@ impl QuickOpen {
         let (main, detail) = self.row_parts(row);
         let positions: &[u32] = match row {
             Row::File(m) => &m.positions,
-            Row::Command { positions, .. } => positions,
+            Row::Command { positions, .. } | Row::Extension { positions, .. } => positions,
             _ => &[],
         };
         let content = match row {
@@ -308,6 +347,7 @@ impl QuickOpen {
                 .gap(px(2. * GRID))
                 .child(highlighted(main, positions, cx))
                 .children(detail.map(|label| div().text_color(color(ui.text_muted)).child(label))),
+            Row::Extension { .. } => div().child(highlighted(main, positions, cx)),
             _ => div().child(main),
         };
         picker_row("quick-open-row", index, index == self.selected, cx)

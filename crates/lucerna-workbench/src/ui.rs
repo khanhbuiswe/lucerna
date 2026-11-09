@@ -46,6 +46,9 @@ pub const FILES_ICON: &[u8] = icons::FILES;
 /// A magnifying glass.
 pub const SEARCH_ICON: &[u8] = icons::SEARCH;
 
+/// Four blocks, one apart: the Extensions toggle.
+pub const BLOCKS_ICON: &[u8] = icons::BLOCKS;
+
 /// A thin ×, for closing tabs.
 pub const CLOSE_ICON: &[u8] = icons::X;
 

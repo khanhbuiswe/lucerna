@@ -1,13 +1,20 @@
 //! Extension support shared by the app and the `luc ext` CLI.
 
+mod panel;
+pub mod panel_model;
 pub(crate) mod service;
+mod toast;
 mod validator;
 
 use std::path::PathBuf;
 
+pub use panel::ExtensionsPanel;
+pub(crate) use panel::register_commands;
 pub use service::{
     ExtensionService, Registries, STARTUP_REFRESH_DELAY, extension_languages, rebuild_registries,
 };
+pub(crate) use toast::render as toast_element;
+pub use toast::{TOAST_DURATION, Toast};
 pub use validator::WasmGrammarValidator;
 
 /// Environment variable that overrides the extensions directory (tests).

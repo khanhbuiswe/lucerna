@@ -89,4 +89,4 @@ ISC; the icons it lists as derived from Feather are also under MIT (Copyright (c
 
 Icons: `folder`, `folder-open`, `file`, `file-code`, `braces`, `book-open`,
 `settings`, `lock`, `git-branch`, `scale`, `terminal`, `image`, `search`, `files`,
-`x`, `chevron-right`, `chevron-down`, `chevron-up`.
+`x`, `chevron-right`, `chevron-down`, `chevron-up`, `blocks`, `loader-circle`.

@@ -122,6 +122,12 @@ fn install_app_menu(cx: &mut App) {
 /// at `extensions_root`.
 pub fn set_app_state(extensions_root: PathBuf, cx: &mut App) {
     let store = Store::open(extensions_root, Arc::new(WasmGrammarValidator));
+    set_app_state_with_store(store, cx);
+}
+
+/// [`set_app_state`] on a given store (tests use one with a fake registry
+/// and toolchain).
+pub fn set_app_state_with_store(store: Store, cx: &mut App) {
     let languages = LanguageRegistry::build(
         &extension_languages(&store.index()),
         Associations::default(),

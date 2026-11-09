@@ -17,6 +17,7 @@ use gpui::{AppContext, Context, Focusable, Window};
 use lucerna_text::Point;
 
 use crate::code_view::CodeView;
+use crate::extensions::ExtensionService;
 use crate::{AppState, CommandRegistry, Workbench};
 use view::{CommandItem, Sources};
 
@@ -100,12 +101,14 @@ impl Workbench {
     /// one already shown, and focuses its input.
     pub fn show_quick_open(&mut self, prefix: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((qo, _)) = &self.quick_open {
-            let input = qo.read(cx).input().clone();
-            input.update(cx, |input, cx| input.set_text(prefix, window, cx));
-            window.focus(&input.focus_handle(cx), cx);
-            return;
+            if !qo.read(cx).lists_extensions() {
+                let input = qo.read(cx).input().clone();
+                input.update(cx, |input, cx| input.set_text(prefix, window, cx));
+                window.focus(&input.focus_handle(cx), cx);
+                return;
+            }
+            self.close_quick_open(window, cx);
         }
-        self.focus_before_quick_open = window.focused(cx);
         let keymap = &cx.global::<AppState>().keymap;
         let commands = self
             .commands()
@@ -123,7 +126,41 @@ impl Workbench {
             recent: self.recent_relative_to_root(),
             commands,
             has_editor: self.active_code_view(cx).is_some(),
+            extension_ids: None,
         };
+        self.open_quick_open(prefix, sources, window, cx);
+    }
+
+    /// Shows Quick Open listing `ids` (the install command); Enter installs
+    /// the selected one. Replaces a Quick Open already shown.
+    pub(crate) fn show_extension_ids(
+        &mut self,
+        ids: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.quick_open.is_some() {
+            self.close_quick_open(window, cx);
+        }
+        let sources = Sources {
+            workbench: cx.weak_entity(),
+            snapshot: self.worktree().snapshot(),
+            recent: Arc::from([]),
+            commands: Vec::new(),
+            has_editor: false,
+            extension_ids: Some(ids),
+        };
+        self.open_quick_open("", sources, window, cx);
+    }
+
+    fn open_quick_open(
+        &mut self,
+        prefix: &str,
+        sources: Sources,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_before_quick_open = window.focused(cx);
         let qo = cx.new(|cx| QuickOpen::new(prefix, sources, window, cx));
         let events = cx.subscribe_in(&qo, window, Self::on_quick_open_event);
         window.focus(&qo.focus_handle(cx), cx);
@@ -163,6 +200,11 @@ impl Workbench {
             }
             QuickOpenEvent::RunCommand(id) => {
                 self.run_command(id, None, window, cx);
+            }
+            QuickOpenEvent::InstallExtension(id) => {
+                if cx.has_global::<ExtensionService>() {
+                    ExtensionService::install(id.clone(), cx);
+                }
             }
             QuickOpenEvent::GoToLine { line, column } => {
                 self.go_to_line(*line, *column, cx);

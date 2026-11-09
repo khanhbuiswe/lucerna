@@ -11,7 +11,7 @@ use futures::StreamExt;
 use gpui::{App, Task};
 use lucerna_extension::index::{ExtensionIndex, IndexedExtension, LanguageEntry};
 use lucerna_extension::process::CancelToken;
-use lucerna_extension::registry::is_stale;
+use lucerna_extension::registry::{Registry, is_stale};
 use lucerna_extension::store::{InstallProgress, Store, StoreError, StoreEvent};
 use lucerna_syntax::{Associations, ExtensionLanguage, LanguageRegistry};
 use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
@@ -379,7 +379,7 @@ pub struct ExtensionService {
     /// The store's events, when no pump forwards them (tests).
     events: Option<crossbeam_channel::Receiver<StoreEvent>>,
     /// Running operations, by extension id.
-    running: HashMap<String, CancelToken>,
+    running: HashMap<String, (CancelToken, OpKind)>,
     progress: HashMap<String, InstallProgress>,
     errors: HashMap<String, String>,
     warnings: HashMap<String, Vec<String>>,
@@ -390,7 +390,26 @@ pub struct ExtensionService {
     updates: Vec<String>,
     refreshing: Option<CancelToken>,
     registry_error: Option<String>,
+    /// The last registry refresh failed because git cannot run.
+    git_missing: bool,
+    /// `registry.json` as last read (off the main thread).
+    registry: Option<Arc<Registry>>,
+    /// `registry.json` was read at least once.
+    registry_loaded: bool,
+    /// Extensions installed (not updated) successfully, oldest first.
+    fresh_installs: Vec<String>,
     _pump: Task<()>,
+}
+
+/// What an operation does, as the UI tells them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpKind {
+    /// An install; `fresh` when the extension was not installed before.
+    Install {
+        fresh: bool,
+    },
+    Uninstall,
+    Describe,
 }
 
 impl gpui::Global for ExtensionService {}
@@ -428,8 +447,13 @@ impl ExtensionService {
             updates: Vec::new(),
             refreshing: None,
             registry_error: None,
+            git_missing: false,
+            registry: None,
+            registry_loaded: false,
+            fresh_installs: Vec::new(),
             _pump: pump,
         });
+        reload_registry(cx);
         refresh_updates(cx);
     }
 
@@ -441,6 +465,45 @@ impl ExtensionService {
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// The index the registries follow.
+    pub fn index(&self) -> &Arc<ExtensionIndex> {
+        &self.index
+    }
+
+    /// `registry.json` as last read; `None` before the first read or when
+    /// there is none.
+    pub fn registry(&self) -> Option<&Arc<Registry>> {
+        self.registry.as_ref()
+    }
+
+    /// Whether `registry.json` was read at least once.
+    pub fn registry_loaded(&self) -> bool {
+        self.registry_loaded
+    }
+
+    /// Whether the last registry refresh failed because git cannot run.
+    pub fn git_missing(&self) -> bool {
+        self.git_missing
+    }
+
+    /// Whether an install of `id` runs.
+    pub fn is_installing(&self, id: &str) -> bool {
+        matches!(self.running.get(id), Some((_, OpKind::Install { .. })))
+    }
+
+    /// Whether any install runs.
+    pub fn any_installing(&self) -> bool {
+        self.running
+            .values()
+            .any(|(_, kind)| matches!(kind, OpKind::Install { .. }))
+    }
+
+    /// Extensions installed (not updated) successfully since the service
+    /// started, oldest first.
+    pub fn fresh_installs(&self) -> &[String] {
+        &self.fresh_installs
     }
 
     /// The stage of the install running for `id`.
@@ -494,14 +557,22 @@ impl ExtensionService {
     /// Installs or updates `id` from the registry.
     pub fn install(id: String, cx: &mut App) {
         let op_id = id.clone();
-        Self::run_op(id, cx, move |store, progress, cancel| {
-            store.install(&op_id, progress, cancel)
-        });
+        let fresh = !cx
+            .global::<ExtensionService>()
+            .index
+            .extensions
+            .contains_key(&id);
+        Self::run_op(
+            id,
+            OpKind::Install { fresh },
+            cx,
+            move |store, progress, cancel| store.install(&op_id, progress, cancel),
+        );
     }
 
     pub fn uninstall(id: String, cx: &mut App) {
         let op_id = id.clone();
-        Self::run_op(id, cx, move |store, _, _| {
+        Self::run_op(id, OpKind::Uninstall, cx, move |store, _, _| {
             store.uninstall(&op_id).map(|()| Vec::new())
         });
     }
@@ -509,7 +580,7 @@ impl ExtensionService {
     /// Fetches `id` to read its name and description into `registry.json`.
     pub fn describe(id: String, cx: &mut App) {
         let op_id = id.clone();
-        Self::run_op(id, cx, move |store, _, cancel| {
+        Self::run_op(id, OpKind::Describe, cx, move |store, _, cancel| {
             store.describe(&op_id, cancel).map(|_| Vec::new())
         });
     }
@@ -529,7 +600,7 @@ impl ExtensionService {
     pub fn cancel(id: String, cx: &mut App) {
         let service = cx.global_mut::<ExtensionService>();
         service.queue.retain(|q| *q != id);
-        if let Some(token) = service.running.get(&id) {
+        if let Some((token, _)) = service.running.get(&id) {
             token.cancel();
         }
         cx.refresh_windows();
@@ -552,6 +623,7 @@ impl ExtensionService {
             cx.update(|cx| {
                 let service = cx.global_mut::<ExtensionService>();
                 service.refreshing = None;
+                service.git_missing = matches!(result, Ok(Err(StoreError::GitMissing)));
                 service.registry_error = match result {
                     Ok(Ok(warnings)) => {
                         for warning in warnings {
@@ -563,11 +635,27 @@ impl ExtensionService {
                     Err(panic) => Some(format!("internal error: {panic}")),
                 };
                 Self::drain_events(cx);
+                reload_registry(cx);
                 refresh_updates(cx);
                 cx.refresh_windows();
             });
         })
         .detach();
+    }
+
+    /// Deletes the fetched sources and cached grammar builds, in the
+    /// background.
+    pub fn clear_build_cache(cx: &mut App) {
+        let store = cx.global::<ExtensionService>().store.clone();
+        cx.background_executor()
+            .spawn(async move {
+                // A panic is logged by `catch_panic`.
+                if let Ok(Err(err)) = catch_panic("clear build cache", || store.clear_build_cache())
+                {
+                    tracing::warn!(%err, "could not clear the build cache");
+                }
+            })
+            .detach();
     }
 
     /// Refreshes the registry [`STARTUP_REFRESH_DELAY`] from now when it is
@@ -607,6 +695,7 @@ impl ExtensionService {
     /// `id` already runs; progress and the outcome come back to this global.
     fn run_op(
         id: String,
+        kind: OpKind,
         cx: &mut App,
         op: impl FnOnce(&Store, &dyn Fn(InstallProgress), &CancelToken) -> OpResult + Send + 'static,
     ) {
@@ -615,8 +704,10 @@ impl ExtensionService {
             return;
         }
         let cancel = CancelToken::default();
-        service.running.insert(id.clone(), cancel.clone());
-        service.errors.remove(&id);
+        service.running.insert(id.clone(), (cancel.clone(), kind));
+        if kind != OpKind::Describe {
+            service.errors.remove(&id);
+        }
         let store = service.store.clone();
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<InstallProgress>();
         let work = cx.background_executor().spawn(async move {
@@ -654,14 +745,21 @@ impl ExtensionService {
 
     fn finish_op(id: String, result: Result<OpResult, String>, cx: &mut App) {
         let service = cx.global_mut::<ExtensionService>();
-        service.running.remove(&id);
+        let kind = service.running.remove(&id).map(|(_, kind)| kind);
         service.progress.remove(&id);
         if service.updating.as_ref() == Some(&id) {
             service.updating = None;
         }
         match result {
             Ok(Ok(warnings)) => {
+                if kind == Some(OpKind::Install { fresh: true }) {
+                    service.fresh_installs.push(id.clone());
+                }
                 service.warnings.insert(id, warnings);
+            }
+            Ok(Err(err)) if kind == Some(OpKind::Describe) => {
+                // Not the outcome of an install: the row keeps its state.
+                tracing::warn!(id, %err, "could not describe the extension");
             }
             Ok(Err(err)) => {
                 tracing::warn!(id, %err, "extension operation failed");
@@ -674,6 +772,10 @@ impl ExtensionService {
             }
         }
         Self::drain_events(cx);
+        if kind == Some(OpKind::Describe) {
+            // It wrote the name and description into `registry.json`.
+            reload_registry(cx);
+        }
         Self::start_queued(cx);
         cx.refresh_windows();
     }
@@ -704,6 +806,24 @@ impl ExtensionService {
             Self::handle_event(event, cx);
         }
     }
+}
+
+/// Reads `registry.json` again off the main thread.
+fn reload_registry(cx: &mut App) {
+    let store = cx.global::<ExtensionService>().store.clone();
+    let work = cx
+        .background_executor()
+        .spawn(async move { catch_panic("read registry", || store.registry()) });
+    cx.spawn(async move |cx| {
+        let registry = work.await.ok().flatten().map(Arc::new);
+        cx.update(|cx| {
+            let service = cx.global_mut::<ExtensionService>();
+            service.registry = registry;
+            service.registry_loaded = true;
+            cx.refresh_windows();
+        });
+    })
+    .detach();
 }
 
 /// Recomputes the available updates off the main thread (it reads

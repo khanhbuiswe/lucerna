@@ -1,5 +1,5 @@
 //! The resizable sidebar: the active view's slot (under a one-row header
-//! for Search; the Explorer draws its own root row),
+//! for Search and Extensions; the Explorer draws its own root row),
 //! with a drag sash on its right edge.
 
 use gpui::{
@@ -38,6 +38,7 @@ pub(crate) fn render(
     let title = match active {
         SidebarView::Explorer => None,
         SidebarView::Search => Some("SEARCH"),
+        SidebarView::Extensions => Some("EXTENSIONS"),
     };
     div()
         .id("sidebar")

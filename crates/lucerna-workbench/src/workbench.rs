@@ -22,6 +22,7 @@ use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::documents::{DocumentStatusItem, Documents};
 use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode};
 use crate::explorer::ExplorerView;
+use crate::extensions::{ExtensionService, ExtensionsPanel, Toast};
 use crate::layout::sidebar::SidebarSash;
 use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
@@ -41,6 +42,26 @@ use crate::{AppState, CommandRegistry, find_widget, keys, search_panel};
 pub enum SidebarView {
     Explorer,
     Search,
+    Extensions,
+}
+
+impl SidebarView {
+    /// The name the workspace state file uses.
+    fn state_name(self) -> &'static str {
+        match self {
+            SidebarView::Explorer => "explorer",
+            SidebarView::Search => "search",
+            SidebarView::Extensions => "extensions",
+        }
+    }
+
+    fn from_state_name(name: &str) -> SidebarView {
+        match name {
+            "search" => SidebarView::Search,
+            "extensions" => SidebarView::Extensions,
+            _ => SidebarView::Explorer,
+        }
+    }
 }
 
 /// How long after a layout change the workspace state is written.
@@ -80,6 +101,8 @@ pub struct Workbench {
     explorer: Entity<ExplorerView>,
     /// The Search panel, installed in the Search sidebar slot.
     search_panel: Entity<SearchPanel>,
+    /// The Extensions panel, installed in the Extensions sidebar slot.
+    extensions_panel: Entity<ExtensionsPanel>,
     /// Every open file; tab bodies are its code views.
     documents: Entity<Documents>,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
@@ -111,6 +134,7 @@ pub struct Workbench {
     sidebar_width: Pixels,
     explorer_view: Option<AnyView>,
     search_view: Option<AnyView>,
+    extensions_view: Option<AnyView>,
     editor_groups: Entity<EditorGroupsView>,
     editor_area: Option<AnyView>,
     status_left: Vec<AnyView>,
@@ -128,6 +152,13 @@ pub struct Workbench {
     pub(crate) recent_files: RecentFiles,
     /// The shown theme picker.
     pub(crate) theme_picker: Option<ShownThemePicker>,
+    /// The notification at the bottom right.
+    pub(crate) toast: Option<Toast>,
+    /// Toasts shown so far; tells a toast's timer whether it is current.
+    pub(crate) toast_count: u64,
+    /// How many of [`ExtensionService::fresh_installs`] were looked at for
+    /// a theme to offer.
+    pub(crate) fresh_installs_seen: usize,
     persistence: Option<Persistence>,
 }
 
@@ -200,6 +231,7 @@ impl Workbench {
         search_panel::register_commands(&mut commands);
         config_files::register_commands(&mut commands);
         theme_picker::register_commands(&mut commands);
+        crate::extensions::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let workbench = cx.weak_entity();
         let editor_groups = cx.new(|cx| {
@@ -270,14 +302,28 @@ impl Workbench {
             let (root, workbench) = (root.clone(), cx.weak_entity());
             cx.new(|cx| SearchPanel::new(root, workbench, scanning, cx))
         };
+        let extensions_panel = {
+            let workbench = cx.weak_entity();
+            cx.new(|cx| ExtensionsPanel::new(workbench, cx))
+        };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.observe(&editor_groups, |wb, _, cx| {
                 wb.refresh_watched_open_files(cx)
             }),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
         ];
+        if cx.has_global::<ExtensionService>() {
+            subscriptions.push(cx.observe_global::<ExtensionService>(|wb, cx| {
+                wb.offer_installed_themes(cx);
+                // The status bar button's badge and spinner.
+                cx.notify();
+            }));
+        }
+        let fresh_installs_seen = cx
+            .try_global::<ExtensionService>()
+            .map_or(0, |s| s.fresh_installs().len());
         let config_error = {
             let workbench = cx.weak_entity();
             cx.new(|cx| ConfigErrorItem::new(workbench, cx))
@@ -313,10 +359,9 @@ impl Workbench {
             sidebar_focus: cx.focus_handle(),
             editor_focus,
             sidebar_visible: restored.as_ref().is_none_or(|s| s.sidebar_visible),
-            active_sidebar: match restored.as_ref().map(|s| s.sidebar_view.as_str()) {
-                Some("search") => SidebarView::Search,
-                _ => SidebarView::Explorer,
-            },
+            active_sidebar: restored.as_ref().map_or(SidebarView::Explorer, |s| {
+                SidebarView::from_state_name(&s.sidebar_view)
+            }),
             sidebar_width: restored.as_ref().map_or(SIDEBAR_DEFAULT_WIDTH, |s| {
                 px(s.sidebar_width).clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
             }),
@@ -325,6 +370,8 @@ impl Workbench {
             documents,
             search_view: Some(search_panel.clone().into()),
             search_panel,
+            extensions_view: Some(extensions_panel.clone().into()),
+            extensions_panel,
             editor_area: Some(editor_groups.clone().into()),
             editor_groups,
             status_left: Vec::new(),
@@ -335,6 +382,9 @@ impl Workbench {
             focus_before_quick_open: None,
             recent_files: RecentFiles::default(),
             theme_picker: None,
+            toast: None,
+            toast_count: 0,
+            fresh_installs_seen,
             persistence: None,
         };
         if let Some(store) = store {
@@ -344,6 +394,11 @@ impl Workbench {
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
+        if workbench.sidebar_visible && workbench.active_sidebar == SidebarView::Extensions {
+            workbench
+                .extensions_panel
+                .update(cx, |panel, cx| panel.shown(cx));
+        }
         workbench
     }
 
@@ -405,11 +460,7 @@ impl Workbench {
             version: crate::workspace_state::STATE_VERSION,
             sidebar_visible: self.sidebar_visible,
             sidebar_width: f32::from(self.sidebar_width),
-            sidebar_view: match self.active_sidebar {
-                SidebarView::Explorer => "explorer",
-                SidebarView::Search => "search",
-            }
-            .into(),
+            sidebar_view: self.active_sidebar.state_name().into(),
             groups: groups.model().state(),
             scroll,
             group_widths: groups.group_widths().to_vec(),
@@ -648,6 +699,18 @@ impl Workbench {
         &self.search_panel
     }
 
+    /// The Extensions panel in the sidebar.
+    pub fn extensions_panel(&self) -> &Entity<ExtensionsPanel> {
+        &self.extensions_panel
+    }
+
+    /// The number on the Extensions button: the available updates, when
+    /// there are any.
+    pub fn extension_badge(&self, cx: &App) -> Option<String> {
+        let updates = cx.try_global::<ExtensionService>()?.updates().len();
+        (updates > 0).then(|| updates.to_string())
+    }
+
     /// Every open file, shown by the code views in the tabs.
     pub fn documents(&self) -> &Entity<Documents> {
         &self.documents
@@ -755,6 +818,10 @@ impl Workbench {
             "searchViewletFocus",
             sidebar_focus && self.active_sidebar == SidebarView::Search,
         );
+        flag(
+            "extensionsViewletFocus",
+            sidebar_focus && self.active_sidebar == SidebarView::Extensions,
+        );
         // The theme picker is a quick pick too: Escape closes it.
         flag(
             "inQuickOpen",
@@ -834,6 +901,10 @@ impl Workbench {
         self.active_sidebar = view;
         self.layout_changed(cx);
         self.focus_sidebar(window, cx);
+        if view == SidebarView::Extensions {
+            self.extensions_panel
+                .update(cx, |panel, cx| panel.shown(cx));
+        }
         cx.notify();
     }
 
@@ -852,6 +923,7 @@ impl Workbench {
             match view {
                 SidebarView::Explorer => "workbench.view.explorer",
                 SidebarView::Search => "workbench.view.search",
+                SidebarView::Extensions => "workbench.view.extensions",
             }
         };
         self.run_command(command, None, window, cx);
@@ -872,6 +944,7 @@ impl Workbench {
         match kind {
             SidebarView::Explorer => self.explorer_view = Some(view),
             SidebarView::Search => self.search_view = Some(view),
+            SidebarView::Extensions => self.extensions_view = Some(view),
         }
         cx.notify();
     }
@@ -887,6 +960,7 @@ impl Workbench {
         match kind {
             SidebarView::Explorer => self.explorer_view.as_ref(),
             SidebarView::Search => self.search_view.as_ref(),
+            SidebarView::Extensions => self.extensions_view.as_ref(),
         }
     }
 
@@ -1104,6 +1178,7 @@ impl Render for Workbench {
         let sidebar_slot = match self.active_sidebar {
             SidebarView::Explorer => self.explorer_view.clone(),
             SidebarView::Search => self.search_view.clone(),
+            SidebarView::Extensions => self.extensions_view.clone(),
         };
         let editor_area = div()
             .id("editor-area")
@@ -1162,7 +1237,12 @@ impl Render for Workbench {
                     .child(editor_area),
             )
             .child(status_bar::render(
-                panel_toggles::render(self.active_sidebar, self.sidebar_visible, cx),
+                panel_toggles::render(
+                    self.active_sidebar,
+                    self.sidebar_visible,
+                    self.extension_badge(cx),
+                    cx,
+                ),
                 &self.status_left,
                 self.pending_chord_label(),
                 &self.status_right,
@@ -1176,6 +1256,11 @@ impl Render for Workbench {
             .children(
                 self.theme_picker()
                     .map(|picker| popover_overlay(picker.clone())),
+            )
+            .children(
+                self.toast
+                    .as_ref()
+                    .map(|toast| crate::extensions::toast_element(toast, cx)),
             )
     }
 }
