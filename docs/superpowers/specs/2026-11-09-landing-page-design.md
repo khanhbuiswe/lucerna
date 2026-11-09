@@ -30,7 +30,7 @@ Người xem là dev viết code chủ yếu qua agent trong terminal (Claude Co
 | Ngôn ngữ | Chỉ tiếng Anh |
 | Ảnh editor trong hero | Dựng bằng HTML/CSS theo màu One Dark, không dùng ảnh chụp |
 | Số liệu hiệu năng | Chỉ dùng số đã đo trong `docs/perf-checklist.md`; số chưa đo ghi là mục tiêu; không so sánh với VS Code hay Zed |
-| Giao diện | Chỉ có giao diện tối (Lucerna mặc định One Dark); màu nhấn là vàng hổ phách, lấy từ ý "ngọn đèn" |
+| Giao diện | Chỉ có giao diện tối (Lucerna mặc định One Dark), palette **Cobalt**: nền xanh đen `#080b12`, màu nhấn xanh điện `#4f8cff`, chữ trắng ngả xanh. Toàn bộ token màu nằm ở `:root` của mockup. Đã chọn Cobalt thay cho vàng hổ phách vì palette đó trông chưa đủ "tech" |
 
 **Ngoài phạm vi:** trang docs, blog, bản tiếng Việt, analytics, form đăng ký nhận tin, trang changelog, script `install.sh` thật.
 
