@@ -444,3 +444,31 @@ fn escape_in_search_panel_keeps_find_widget(cx: &mut TestAppContext) {
     assert!(shown(cx));
     assert!(holds(&wb, "searchViewletFocus && textInputFocus", cx));
 }
+
+/// R29: in single-file mode the folder is never walked, so Find in Files
+/// sends no search and says so.
+#[gpui::test]
+fn search_is_unavailable_in_single_file_mode(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "needle\n"), ("b.txt", "needle\n")]);
+    let (root, file) = (dir.path().to_path_buf(), dir.path().join("a.txt"));
+    let (wb, cx) =
+        cx.add_window_view(move |window, cx| Workbench::single_file(root, &file, None, window, cx));
+    draw(cx);
+    keys("cmd-shift-f", cx);
+    wb.read_with(cx, |wb, _| {
+        assert!(wb.sidebar_visible());
+        assert_eq!(wb.active_sidebar(), SidebarView::Search);
+    });
+    let panel = panel(&wb, cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    keys("enter", cx);
+    settle_search(cx);
+    assert!(files(&panel, cx).is_empty(), "no search ran");
+    assert_eq!(
+        summary(&panel, cx).as_deref(),
+        Some("Search is unavailable when a single file is opened")
+    );
+    assert!(cx.debug_bounds("search-summary").is_some());
+}

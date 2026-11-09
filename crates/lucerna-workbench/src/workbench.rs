@@ -260,7 +260,7 @@ impl Workbench {
         };
         let search_panel = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
-            cx.new(|cx| SearchPanel::new(root, workbench, cx))
+            cx.new(|cx| SearchPanel::new(root, workbench, scanning, cx))
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);

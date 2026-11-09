@@ -81,12 +81,18 @@ pub struct SearchPanel {
     /// Highlights a clicked match once its file has loaded.
     _highlight: Option<Subscription>,
     scroll: UniformListScrollHandle,
+    /// `false` in single-file mode (R29): the folder is never walked.
+    searchable: bool,
 }
+
+/// Shown instead of results when the panel is not [`searchable`](SearchPanel).
+const UNAVAILABLE: &str = "Search is unavailable when a single file is opened";
 
 impl SearchPanel {
     pub(crate) fn new(
         root: PathBuf,
         workbench: WeakEntity<Workbench>,
+        searchable: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let input = |placeholder: &'static str, cx: &mut Context<Self>| {
@@ -123,6 +129,7 @@ impl SearchPanel {
             _search: Task::ready(()),
             _highlight: None,
             scroll: UniformListScrollHandle::new(),
+            searchable,
         }
     }
 
@@ -158,8 +165,12 @@ impl SearchPanel {
     }
 
     /// `"N results in M files"`, with `" (truncated at 20,000)"` when the
-    /// search hit [`MAX_RESULTS`]; `None` before any search.
+    /// search hit [`MAX_RESULTS`]; `None` before any search. In single-file mode it is
+    /// the "unavailable" message instead.
     pub fn summary(&self) -> Option<String> {
+        if !self.searchable {
+            return Some(UNAVAILABLE.into());
+        }
         if !self.searched || self.error.is_some() {
             return None;
         }
@@ -235,6 +246,9 @@ impl SearchPanel {
     /// Clears the results and starts searching for the current inputs now,
     /// cancelling any search still running (`Enter` in the query input).
     pub fn run_search(&mut self, cx: &mut Context<Self>) {
+        if !self.searchable {
+            return;
+        }
         self._debounce = Task::ready(());
         self.cancel_search();
         self.files.clear();
