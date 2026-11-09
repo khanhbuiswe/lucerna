@@ -37,6 +37,17 @@ All are MIT licensed.
 | `tree-sitter-html` | 0.23.2 | MIT | https://github.com/tree-sitter/tree-sitter-html |
 | `tree-sitter-css` | 0.25.0 | MIT | https://github.com/tree-sitter/tree-sitter-css |
 
+## Website fonts
+
+The landing page in `site/` self-hosts these fonts. Each file is the latin
+variable `woff2` build from Fontsource. License texts ship next to the files in `site/fonts/`.
+
+| Font | License | Upstream |
+|---|---|---|
+| Bricolage Grotesque | OFL-1.1 | https://github.com/ateliertriay/bricolage |
+| Instrument Sans | OFL-1.1 | https://github.com/Instrument/instrument-sans |
+| JetBrains Mono | OFL-1.1 | https://github.com/JetBrains/JetBrainsMono |
+
 ## Additional licenses
 
 Licenses outside the base list that were added to `deny.toml` are recorded

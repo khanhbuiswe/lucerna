@@ -1,4 +1,22 @@
-/* @font-face: Task 3 */
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("fonts/BricolageGrotesque-latin-wght.woff2") format("woff2");
+  font-weight: 200 800;
+  font-display: swap;
+  font-optical-sizing: auto;
+}
+@font-face {
+  font-family: "Instrument Sans";
+  src: url("fonts/InstrumentSans-latin-wght.woff2") format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-latin-wght.woff2") format("woff2");
+  font-weight: 100 800;
+  font-display: swap;
+}
 
 /* Layout: one centered 1120px column; the cobalt glow sits only behind the hero, everything below is quiet. Single dark look by choice (it is an editor that ships One Dark). */
 :root {
