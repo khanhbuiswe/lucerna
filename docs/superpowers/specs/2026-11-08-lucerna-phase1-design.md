@@ -336,3 +336,53 @@ Người dùng đã quyết định dùng **bố cục và phong cách hiện đ
 - **Hover:** khi rê chuột, nền chuyển sang `ghost_element.hover`.
 - **Panel không có header nặng.** Explorer chỉ có một dòng tên thư mục gốc, chữ nhỏ, màu nhạt.
 - **Màu mới cần đọc từ theme Zed**, đều có giá trị dự phòng: `title_bar.background`, `elevated_surface.background`, `ghost_element.hover`, `border.variant`, `icon`, `icon.muted`.
+
+## 13. Thay đổi 2026-11-09: tinh chỉnh giao diện cho gọn như Zed
+
+Người dùng đã duyệt mục này sau khi so ảnh chụp Lucerna với Zed. Nó thay thế các điểm tương ứng ở mục 2.1, 5.2 và 12.
+
+**Font**
+- Lucerna đóng gói sẵn font **Lilex** (Regular, Bold, Italic, BoldItalic) và **IBM Plex Sans** (Regular, Medium). Font lấy từ repo gốc, kèm giấy phép OFL-1.1, và được ghi vào `THIRD_PARTY_NOTICES.md`.
+- Font được đăng ký với GPUI lúc khởi động.
+- Giá trị mặc định mới:
+  - `editor.fontFamily` = `"Lilex"`, `editor.fontSize` = 14, `editor.lineHeight` = 1.6.
+  - Font giao diện là IBM Plex Sans cỡ 14. Tab, status bar và header dùng cỡ 13.
+
+**Icon**
+- Mọi icon dùng bộ **Lucide** (giấy phép ISC). Các file SVG được chép vào `crates/lucerna-workbench/assets/icons/` và nhúng vào binary bằng `include_bytes!`.
+- Có icon thư mục mở và đóng.
+- Icon file chọn theo phần mở rộng hoặc tên file:
+
+  | Icon | Áp dụng cho |
+  |---|---|
+  | file-code | file mã nguồn |
+  | braces | json |
+  | book-open | md |
+  | settings | toml, yaml |
+  | lock | `*.lock` |
+  | git-branch | `.gitignore`, `.gitattributes` |
+  | scale | `LICENSE*` |
+  | terminal | sh, bash, zsh |
+  | image | ảnh |
+  | file | mặc định |
+
+- Màu icon là `icon.muted`.
+
+**Cây file**
+- Dòng đầu là dòng gốc gồm icon thư mục và tên project viết thường. Dòng này thay cho header chữ hoa ở mục 12.
+- Mỗi cấp thụt lề có đường kẻ dọc 1 px màu `border.variant`.
+- Có thanh cuộn mảnh.
+
+**Editor**
+- `editor.minimap.enabled` mặc định là `false`.
+- Mũi tên gập ở gutter chỉ hiện khi rê chuột vào gutter. Dòng đang gập thì luôn hiện mũi tên.
+- Có thanh cuộn dọc mảnh (khoảng 6 px) ở bên phải.
+- Ngay dưới thanh tab có thanh đường dẫn mỏng, hiện đường dẫn tương đối của file đang mở bằng màu `text.muted`.
+
+**Tab và title bar**
+- Chữ trên tab cỡ 13, padding gọn hơn. Tab không được chọn dùng màu `text.muted`.
+- Title bar hiện tên nhánh git cạnh tên project (`lucerna ⎇ main`). Tên nhánh đọc từ `.git/HEAD` và hỗ trợ cả trường hợp `.git` là file. Tên tự cập nhật khi đổi nhánh và không thêm thư viện git nào. Ở detached HEAD thì hiện SHA rút gọn.
+
+**Chưa làm**
+- Hiện file bị gitignore ở dạng mờ, vì cần đổi cách quét.
+- Nút back/forward, vì cần lịch sử điều hướng.
