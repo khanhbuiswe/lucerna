@@ -723,3 +723,24 @@ fn clear_build_cache_skips_busy_ids() {
     assert!(env.store.clear_build_cache().unwrap().is_empty());
     assert!(!env.root.join("work").exists());
 }
+
+#[test]
+fn install_removes_stale_git_locks_in_the_source_checkout() {
+    let (repo, entry) = theme_ext("x");
+    let env = Env::new(&[entry]);
+    env.install("x").0.unwrap();
+    let git = env.root.join("work/x/src/.git");
+    for l in ["shallow.lock", "index.lock"] {
+        std::fs::write(git.join(l), "").unwrap();
+    }
+    add_commit(&repo, &as_refs(&theme_files("x", "0.2.0")));
+    registry_update(&env.registry, "x", "0.2.0");
+    env.store.refresh_registry(&CancelToken::default()).unwrap();
+    env.install("x").0.unwrap();
+    assert_eq!(env.store.index().extensions["x"].info.version, "0.2.0");
+    assert!(!git.join("shallow.lock").exists());
+    assert!(!git.join("index.lock").exists());
+    // The locks were cleared, not worked around by re-fetching from scratch.
+    let log = std::fs::read_to_string(env.root.join("logs/x.log")).unwrap();
+    assert!(!log.contains("retrying from scratch"), "{log}");
+}

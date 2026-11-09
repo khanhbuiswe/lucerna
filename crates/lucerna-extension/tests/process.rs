@@ -257,3 +257,17 @@ fn fetch_commit_rejects_file_url_without_opt_in() {
         assert!(!dest.join("f.txt").exists(), "{url}");
     }
 }
+
+#[test]
+fn fetch_commit_uppercase_commit_is_idempotent() {
+    let (repo, commit) = fake_repo(&[("f.txt", "f")]);
+    let url = format!("file://{}", repo.display());
+    let dest = tempfile::tempdir().unwrap().keep().join("src");
+    let upper = commit.to_ascii_uppercase();
+    let cancel = CancelToken::default();
+    fetch_commit(&url, &upper, &dest, true, &cancel, &mut Vec::new()).unwrap();
+    // Already there: no fetch, so it works with the remote gone.
+    std::fs::remove_dir_all(&repo).unwrap();
+    fetch_commit(&url, &upper, &dest, true, &cancel, &mut Vec::new()).unwrap();
+    assert!(dest.join("f.txt").exists());
+}

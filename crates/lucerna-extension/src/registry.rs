@@ -1,7 +1,7 @@
 //! The extension registry: a shallow clone of zed-industries/extensions
 //! joined into a flat, cached list.
 
-use crate::git::{check_url, normalize_url, run_git};
+use crate::git::{check_url, is_lock_error, normalize_url, remove_stale_locks, run_git};
 use crate::process::{CancelToken, ProcessError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -318,6 +318,11 @@ pub fn refresh(
     // Held until the sources are read: one refresh at a time touches the clone.
     let clone_lock = lock_registry_clone(root)?;
     let mut incremental = repo.join(".git").exists();
+    if incremental {
+        // Under the clone lock no Lucerna git runs here: any lock file is
+        // left by a killed one (Ctrl-C, timeout) and would fail every fetch.
+        remove_stale_locks(&repo);
+    }
     let (toml, gitmodules, ls) = loop {
         let attempt = if incremental {
             update_clone(&repo, allow_file_urls, cancel, log)
@@ -328,8 +333,9 @@ pub fn refresh(
             Ok(v) => break v,
             // A broken clone (e.g. a half-killed one) heals by re-cloning
             // once; a healthy one is kept (the remote is unreachable).
-            Err(ProcessError::Failed { .. })
-                if incremental && !clone_is_healthy(&repo, cancel, log) =>
+            // A lock-file error that survives the cleanup also re-clones.
+            Err(ref e @ ProcessError::Failed { .. })
+                if incremental && (is_lock_error(e) || !clone_is_healthy(&repo, cancel, log)) =>
             {
                 let _ = writeln!(log, "registry clone looks broken; re-cloning");
                 incremental = false;

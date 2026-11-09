@@ -114,6 +114,41 @@ pub fn normalize_url(url: &str) -> String {
     }
 }
 
+/// Removes `*.lock` files that a killed git left in `repo/.git` (top level,
+/// e.g. `shallow.lock`, `index.lock`, `HEAD.lock`, and under `refs/`).
+/// Call it only while holding the lock that proves no other Lucerna git
+/// runs in `repo` (the registry clone lock, or the id lock for `work/<id>`).
+pub fn remove_stale_locks(repo: &Path) {
+    fn sweep(dir: &Path, recurse: bool) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let Ok(ty) = e.file_type() else { continue };
+            let path = e.path();
+            if ty.is_dir() {
+                if recurse {
+                    sweep(&path, true);
+                }
+            } else if path.extension().is_some_and(|x| x == "lock") {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => tracing::warn!("removed stale git lock {}", path.display()),
+                    Err(e) => tracing::warn!("cannot remove {}: {e}", path.display()),
+                }
+            }
+        }
+    }
+    let git = repo.join(".git");
+    sweep(&git, false);
+    sweep(&git.join("refs"), true);
+}
+
+/// Whether a git failure is "a lock file exists" (left by a killed git).
+pub fn is_lock_error(e: &ProcessError) -> bool {
+    matches!(e, ProcessError::Failed { stderr, .. }
+        if stderr.contains("Unable to create") && stderr.contains(".lock"))
+}
+
 fn head_is(dest: &Path, commit: &str, cancel: &CancelToken) -> bool {
     if !dest.join(".git").exists() {
         return false;
@@ -132,7 +167,8 @@ fn head_is(dest: &Path, commit: &str, cancel: &CancelToken) -> bool {
 /// Shallow-fetches `commit` of `url` into `dest` and checks it out.
 /// No-op when `dest` is already at `commit`. A broken `dest` is wiped and
 /// retried once from scratch. `commit` must be a full hash and `url` must
-/// pass [`check_url`]; otherwise nothing runs.
+/// pass [`check_url`]; otherwise nothing runs. The caller holds the id lock
+/// of the checkout, so stale git lock files in `dest` are removed first.
 pub fn fetch_commit(
     url: &str,
     commit: &str,
@@ -146,7 +182,10 @@ pub fn fetch_commit(
             "`{commit}` is not a full commit hash"
         )));
     }
+    // git prints and matches object names in lowercase.
+    let commit = &commit.to_ascii_lowercase();
     let url = check_url(url, allow_file_urls).map_err(ProcessError::Rejected)?;
+    remove_stale_locks(dest);
     if head_is(dest, commit, cancel) {
         let _ = writeln!(log, "{} already at {commit}", dest.display());
         return Ok(());

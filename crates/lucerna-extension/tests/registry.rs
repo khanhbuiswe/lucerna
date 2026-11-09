@@ -247,3 +247,30 @@ fn unreachable_remote_keeps_a_healthy_clone() {
     let (r, _) = refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
     assert_eq!(r.entries.len(), 2);
 }
+
+#[test]
+fn refresh_removes_stale_git_locks_of_a_killed_fetch() {
+    let (reg, r1, _r2) = two_extensions();
+    let root = tempfile::tempdir().unwrap();
+    let remote = format!("file://{}", reg.display());
+    let cancel = CancelToken::default();
+    refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
+    let git = root.path().join("registry/.git");
+    let locks = [
+        git.join("shallow.lock"),
+        git.join("index.lock"),
+        git.join("HEAD.lock"),
+        git.join("refs/heads/main.lock"),
+    ];
+    for l in &locks {
+        std::fs::create_dir_all(l.parent().unwrap()).unwrap();
+        std::fs::write(l, "").unwrap();
+    }
+    lucerna_extension::test_support::add_commit(&r1, &[("extra.txt", "x")]);
+    registry_update(&reg, "one", "0.1.1");
+    let (r, _) = refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
+    assert_eq!(r.entries[0].version, "0.1.1");
+    for l in &locks {
+        assert!(!l.exists(), "{}", l.display());
+    }
+}
