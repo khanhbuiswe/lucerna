@@ -1,24 +1,37 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use lucerna::ext_cli;
 use lucerna::{Target, logging, resolve_target};
 use lucerna_workbench::app::{self, Launch};
 
 /// Lucerna: a read-only code viewer.
 #[derive(Debug, Parser)]
-#[command(name = "luc", version)]
+#[command(name = "luc", version, args_conflicts_with_subcommands = true)]
 struct Cli {
-    /// File or directory to open.
+    #[command(subcommand)]
+    command: Option<Command>,
+    /// File or directory to open. A folder literally named `ext` must be
+    /// opened as `luc ./ext`.
     path: Option<PathBuf>,
     /// Print `startup_ms=<n>` to stderr once the first frame is painted.
     #[arg(long)]
     trace_startup: bool,
 }
 
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Search, install, update and remove extensions.
+    Ext(ext_cli::ExtArgs),
+}
+
 fn main() {
     let start = Instant::now();
     let cli = Cli::parse();
+    if let Some(Command::Ext(args)) = cli.command {
+        std::process::exit(ext_cli::run(args));
+    }
     let guard = logging::init();
     let Target {
         root,

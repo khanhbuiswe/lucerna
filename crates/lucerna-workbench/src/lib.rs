@@ -9,6 +9,7 @@ mod config_files;
 mod documents;
 mod editor_groups;
 mod explorer;
+pub mod extensions;
 mod find_widget;
 pub mod fonts;
 pub mod git_branch;

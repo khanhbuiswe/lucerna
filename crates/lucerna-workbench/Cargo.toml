@@ -12,6 +12,7 @@ futures.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 jsonc-parser.workspace = true
+lucerna-extension.workspace = true
 lucerna-project.workspace = true
 lucerna-settings.workspace = true
 lucerna-syntax.workspace = true
