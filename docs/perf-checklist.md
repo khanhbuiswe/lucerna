@@ -39,6 +39,8 @@ scripts/bench-gate.sh target/criterion 15        # needs jq; exit 1 if any bench
 | Highlight a viewport of a 10 MB file | `highlight_10mb_viewport` (60 rows, tree pre-parsed) | informational | 96 us |
 | Reload a 10 MB buffer | `reload_10mb` (tail changed) | informational | 51 ms |
 
+`site/index.html` quotes the four numbers above and the date they were measured. When you re-measure, update the Speed section of the landing page in the same PR.
+
 The benches build the 10 MB text in memory; `big.rs` from the generator is
 for manual opening in `luc`.
 
