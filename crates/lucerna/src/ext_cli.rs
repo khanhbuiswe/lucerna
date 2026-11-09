@@ -8,6 +8,7 @@ use std::time::SystemTime;
 
 use clap::{Args, Subcommand};
 use lucerna_extension::builder::Stage;
+use lucerna_extension::index::Source;
 use lucerna_extension::process::CancelToken;
 use lucerna_extension::registry::{RegistryEntry, is_stale};
 use lucerna_extension::store::{InstallProgress, Store, StoreError};
@@ -343,19 +344,22 @@ impl Cli {
             self.fail("registry", &e);
             return 1;
         }
+        let outdated = self.store.updates();
         let targets = if ids.is_empty() {
-            self.store.updates()
+            outdated.clone()
         } else {
             ids.to_vec()
         };
         let index = self.store.index();
-        let outdated = self.store.updates();
         exit_code(targets.iter().map(|id| {
-            if !index.extensions.contains_key(id) {
+            let Some(ext) = index.extensions.get(id) else {
                 eprintln!("error: {id}: not installed");
                 return false;
-            }
-            if !outdated.contains(id) {
+            };
+            // Broken and dev installs are never listed as outdated; updating
+            // them explicitly reinstalls from the registry.
+            let healthy_registry = ext.broken.is_none() && ext.info.source == Source::Registry;
+            if healthy_registry && !outdated.contains(id) {
                 eprintln!("{id}: already up to date");
                 return true;
             }

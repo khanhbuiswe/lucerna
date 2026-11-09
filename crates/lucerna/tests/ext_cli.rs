@@ -227,6 +227,7 @@ fn ext_list_survives_closed_pipe() {
     let out = child.wait_with_output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains("panicked"), "{err}");
+    assert!(out.status.success(), "{:?} {err}", out.status);
 }
 
 fn pid_alive(pid: i32) -> bool {
@@ -313,4 +314,56 @@ fn sigint_cancels_build_and_kills_children() {
     // Nothing half-installed.
     let list = stdout(e.luc().args(["ext", "list", "--installed"]));
     assert_eq!(list, "");
+}
+
+fn registry_env(e: &Env) -> (String, impl Fn(&[&str]) -> Command + '_) {
+    let (repo, _) = fake_repo(&[
+        ("extension.toml", &manifest("sunset", "1.0.0")),
+        ("themes/x.json", THEME),
+    ]);
+    let registry = fake_registry(&[FakeEntry::new("sunset", "1.0.0", &repo)]);
+    let url = file_url(&registry);
+    let u = url.clone();
+    (url, move |args: &[&str]| {
+        let mut c = e.luc();
+        c.args(["ext", "--registry-url", &u]).args(args);
+        c
+    })
+}
+
+#[test]
+fn ext_update_reinstalls_broken_extension() {
+    let e = env();
+    let (_, run) = registry_env(&e);
+    run(&["install", "sunset"]).assert().success();
+    std::fs::write(e.root.join("installed/sunset/extension.toml"), "not toml [").unwrap();
+    let _ = std::fs::remove_file(e.root.join("index.json"));
+    let list = stdout(&mut run(&["list", "--installed"]));
+    assert!(list.contains("broken"), "{list}");
+    let err = run(&["update", "sunset"])
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let err = String::from_utf8(err).unwrap();
+    assert!(err.contains("installing"), "{err}");
+    let list = stdout(&mut run(&["list", "--installed"]));
+    assert!(!list.contains("broken"), "{list}");
+}
+
+#[test]
+fn ext_update_replaces_dev_install_with_registry_version() {
+    let e = env();
+    let (_, run) = registry_env(&e);
+    let dev = theme_ext("sunset", "9.9.9");
+    e.luc()
+        .args(["ext", "install", "--dev"])
+        .arg(dev.path())
+        .assert()
+        .success();
+    assert!(stdout(&mut run(&["list", "--installed"])).contains("9.9.9"));
+    run(&["update", "sunset"]).assert().success();
+    let list = stdout(&mut run(&["list", "--installed"]));
+    assert!(list.contains("sunset 1.0.0"), "{list}");
 }
