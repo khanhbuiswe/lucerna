@@ -78,6 +78,7 @@ mod tests {
             (event("e", None, cmd_shift()), "cmd+shift+e"),
             (event("\\", None, cmd()), "cmd+\\"),
             (event("w", None, cmd()), "cmd+w"),
+            (event("q", None, cmd()), "cmd+q"),
             (event("tab", Some("\t"), ctrl()), "ctrl+tab"),
             (event("k", None, cmd()), "cmd+k"),
             (event("t", None, cmd()), "cmd+t"),
