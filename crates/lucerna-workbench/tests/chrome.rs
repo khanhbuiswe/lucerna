@@ -125,6 +125,48 @@ fn title_bar_shows_root_name(cx: &mut TestAppContext) {
     );
 }
 
+/// The title bar shows the checked-out branch after the root name, and
+/// follows `HEAD` when it changes; outside a repository it shows none.
+#[gpui::test]
+fn title_bar_shows_git_branch(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = tempfile::TempDir::new().unwrap();
+    let git = dir.path().join(".git");
+    std::fs::create_dir(&git).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    assert_eq!(
+        wb.read_with(cx, |wb, _| wb.git_branch().map(str::to_owned))
+            .as_deref(),
+        Some("main")
+    );
+    draw(cx);
+    let name = bounds("title-bar-root", cx);
+    let branch = bounds("title-bar-branch", cx);
+    assert!(branch.left() > name.right());
+
+    // A checkout rewrites HEAD; the open-file watcher reports it.
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/feat/x\n").unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.on_open_file_changes(&[git.join("HEAD")], cx)
+    });
+    assert_eq!(
+        wb.read_with(cx, |wb, _| wb.git_branch().map(str::to_owned))
+            .as_deref(),
+        Some("feat/x")
+    );
+}
+
+#[gpui::test]
+fn title_bar_has_no_branch_outside_a_repository(cx: &mut TestAppContext) {
+    init(cx);
+    let (wb, cx) = open(cx);
+    assert_eq!(wb.read_with(cx, |wb, _| wb.git_branch().is_none()), true);
+    draw(cx);
+    assert!(cx.debug_bounds("title-bar-branch").is_none());
+}
+
 #[gpui::test]
 fn tab_close_button_only_on_hover_or_active(cx: &mut TestAppContext) {
     init(cx);

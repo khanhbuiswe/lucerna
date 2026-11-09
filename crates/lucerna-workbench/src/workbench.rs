@@ -92,6 +92,11 @@ pub struct Workbench {
     watched_open_files: Vec<PathBuf>,
     /// Forwards its batches to [`Workbench::on_open_file_changes`].
     _open_file_events: Task<()>,
+    /// The repository's `HEAD` file, also followed by the open-file
+    /// watcher so a checkout updates the title bar.
+    git_head: Option<PathBuf>,
+    /// What `HEAD` names: the branch, or a short SHA when detached.
+    git_branch: Option<String>,
     /// The [`ConfigState`] batch last forwarded to the documents.
     config_batch: u64,
     _subscriptions: Vec<Subscription>,
@@ -275,6 +280,11 @@ impl Workbench {
             let workbench = cx.weak_entity();
             cx.new(|cx| ConfigErrorItem::new(workbench, cx))
         };
+        let git_head = crate::git_branch::head_path(&root);
+        let git_branch = crate::git_branch::read_branch(&root);
+        if let (Some(watcher), Some(head)) = (&open_file_watcher, &git_head) {
+            watcher.set_files(vec![head.clone()]);
+        }
         let mut workbench = Workbench {
             root,
             worktree,
@@ -289,6 +299,8 @@ impl Workbench {
             open_file_watcher,
             watched_open_files: Vec::new(),
             _open_file_events: open_file_events,
+            git_head,
+            git_branch,
             config_batch: cx
                 .try_global::<ConfigState>()
                 .map_or(0, |state| state.last_changed().0),
@@ -460,6 +472,12 @@ impl Workbench {
             .into_owned()
     }
 
+    /// The branch checked out in the repository holding the root (a
+    /// short SHA when detached); `None` outside a repository.
+    pub fn git_branch(&self) -> Option<&str> {
+        self.git_branch.as_deref()
+    }
+
     /// The background scan of the opened folder.
     pub fn worktree(&self) -> &Worktree {
         &self.worktree
@@ -546,7 +564,7 @@ impl Workbench {
         files.dedup();
         if files != self.watched_open_files {
             if let Some(watcher) = &self.open_file_watcher {
-                watcher.set_files(files.clone());
+                watcher.set_files(files.iter().chain(&self.git_head).cloned().collect());
             }
             self.watched_open_files = files;
         }
@@ -573,6 +591,12 @@ impl Workbench {
     /// real paths) reload, or are marked deleted when gone. Tests call it
     /// directly.
     pub fn on_open_file_changes(&mut self, changed: &[PathBuf], cx: &mut Context<Self>) {
+        if let Some(head) = &self.git_head
+            && !matching_files(std::slice::from_ref(head), changed).is_empty()
+        {
+            self.git_branch = crate::git_branch::read_branch(&self.root);
+            cx.notify();
+        }
         let open = self.open_tab_paths(cx);
         let changes: Vec<Change> = matching_files(&open, changed)
             .into_iter()
@@ -1090,7 +1114,12 @@ impl Render for Workbench {
             .text_color(color(ui.text))
             .font_family(UI_FONT_FAMILY)
             .text_size(px(UI_FONT_SIZE))
-            .child(title_bar::render(root_name.clone(), ui, cx))
+            .child(title_bar::render(
+                root_name.clone(),
+                self.git_branch.clone(),
+                ui,
+                cx,
+            ))
             .child(
                 div()
                     .flex()
