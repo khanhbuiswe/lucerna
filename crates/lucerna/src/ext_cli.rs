@@ -1,7 +1,9 @@
 //! `luc ext`: manage extensions from the command line. Never starts GPUI.
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use clap::{Args, Subcommand};
@@ -57,6 +59,54 @@ pub enum ExtCommand {
     Update { ids: Vec<String> },
 }
 
+/// Prints a line to stdout; a closed pipe (`luc ext list | head`) ends the
+/// process quietly instead of panicking.
+macro_rules! out {
+    ($($arg:tt)*) => {
+        emit(format_args!($($arg)*))
+    };
+}
+
+fn emit(args: std::fmt::Arguments<'_>) {
+    let mut stdout = std::io::stdout().lock();
+    if let Err(e) = stdout
+        .write_fmt(args)
+        .and_then(|()| stdout.write_all(b"\n"))
+    {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        eprintln!("error: cannot write output: {e}");
+        std::process::exit(1);
+    }
+}
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
+/// Cancels `cancel` when SIGINT or SIGTERM arrives, so running git/clang
+/// process groups are killed and staging is cleaned up.
+fn cancel_on_signal(cancel: &CancelToken) {
+    // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as usize;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut());
+        libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut());
+    }
+    let cancel = cancel.clone();
+    std::thread::spawn(move || {
+        while !INTERRUPTED.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        cancel.cancel();
+    });
+}
+
 /// Runs the command and returns the process exit code.
 pub fn run(args: ExtArgs) -> i32 {
     let mut store = Store::open(extensions_root(), Arc::new(WasmGrammarValidator));
@@ -70,16 +120,29 @@ pub fn run(args: ExtArgs) -> i32 {
         store,
         cancel: CancelToken::default(),
     };
-    match args.action {
-        ExtCommand::Search { query } => cli.search(&query),
-        ExtCommand::List { installed, updates } => cli.list(installed, updates),
-        ExtCommand::Install {
-            dev: Some(dir),
-            ids: _,
-        } => cli.install_dev(&dir),
-        ExtCommand::Install { ids, dev: None } => cli.install_all(&ids),
-        ExtCommand::Remove { ids } => cli.remove(&ids),
-        ExtCommand::Update { ids } => cli.update(&ids),
+    cancel_on_signal(&cli.cancel);
+    let code = cli.dispatch(args.action);
+    if INTERRUPTED.load(Ordering::SeqCst) {
+        eprintln!("interrupted");
+        return 130;
+    }
+    code
+}
+
+impl Cli {
+    fn dispatch(&self, action: ExtCommand) -> i32 {
+        let cli = self;
+        match action {
+            ExtCommand::Search { query } => cli.search(&query),
+            ExtCommand::List { installed, updates } => cli.list(installed, updates),
+            ExtCommand::Install {
+                dev: Some(dir),
+                ids: _,
+            } => cli.install_dev(&dir),
+            ExtCommand::Install { ids, dev: None } => cli.install_all(&ids),
+            ExtCommand::Remove { ids } => cli.remove(&ids),
+            ExtCommand::Update { ids } => cli.update(&ids),
+        }
     }
 }
 
@@ -182,7 +245,7 @@ impl Cli {
             .collect();
         hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
         for (_, e) in hits {
-            println!("{}", line(&e.id, &e.version, e.description.as_deref()));
+            out!("{}", line(&e.id, &e.version, e.description.as_deref()));
         }
         0
     }
@@ -212,9 +275,9 @@ impl Cli {
                     continue;
                 }
                 if let Some(why) = &ext.broken {
-                    println!("{id} {}  (broken: {why})", ext.info.version);
+                    out!("{id} {}  (broken: {why})", ext.info.version);
                 } else {
-                    println!(
+                    out!(
                         "{}",
                         line(id, &ext.info.version, ext.manifest.description.as_deref())
                     );
@@ -225,7 +288,7 @@ impl Cli {
                 if updates && !update_ids.contains(&e.id) {
                     continue;
                 }
-                println!("{}", line(&e.id, &e.version, e.description.as_deref()));
+                out!("{}", line(&e.id, &e.version, e.description.as_deref()));
             }
         }
         0
@@ -286,10 +349,15 @@ impl Cli {
             ids.to_vec()
         };
         let index = self.store.index();
+        let outdated = self.store.updates();
         exit_code(targets.iter().map(|id| {
             if !index.extensions.contains_key(id) {
                 eprintln!("error: {id}: not installed");
                 return false;
+            }
+            if !outdated.contains(id) {
+                eprintln!("{id}: already up to date");
+                return true;
             }
             self.install_one(id)
         }))

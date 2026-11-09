@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+libc.workspace = true
 lucerna-extension.workspace = true
 lucerna-workbench.workspace = true
 nucleo-matcher.workspace = true
@@ -24,5 +25,6 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
+libc.workspace = true
 tempfile.workspace = true
 lucerna-extension = { workspace = true, features = ["test-support"] }

@@ -185,3 +185,132 @@ fn fails_mentioning(cmd: &mut Command, needle: &str) {
     let err = String::from_utf8(out).unwrap();
     assert!(err.contains(needle), "{err}");
 }
+
+#[test]
+fn ext_update_up_to_date_does_not_rebuild() {
+    let e = env();
+    let (repo, _) = fake_repo(&[
+        ("extension.toml", &manifest("sunset", "1.0.0")),
+        ("themes/x.json", THEME),
+    ]);
+    let registry = fake_registry(&[FakeEntry::new("sunset", "1.0.0", &repo)]);
+    let url = file_url(&registry);
+    let run = |args: &[&str]| {
+        let mut c = e.luc();
+        c.args(["ext", "--registry-url", &url]).args(args);
+        c.assert().success().get_output().stderr.clone()
+    };
+    run(&["install", "sunset"]);
+    let err = String::from_utf8(run(&["update", "sunset"])).unwrap();
+    assert!(err.contains("sunset: already up to date"), "{err}");
+    assert!(!err.contains("installing"), "{err}");
+}
+
+#[test]
+fn ext_list_survives_closed_pipe() {
+    let e = env();
+    let ext = theme_ext("sunset", "1.0.0");
+    e.luc()
+        .args(["ext", "install", "--dev"])
+        .arg(ext.path())
+        .assert()
+        .success();
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("luc"))
+        .args(["ext", "list", "--installed"])
+        .env("HOME", &e.home)
+        .env("LUCERNA_EXTENSIONS_DIR", &e.root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("panicked"), "{err}");
+}
+
+fn pid_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+#[test]
+fn sigint_cancels_build_and_kills_children() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    let e = env();
+    // A fake wasi-sdk whose clang records its pid and sleeps.
+    let sdk = e._tmp.path().join("sdk");
+    std::fs::create_dir_all(sdk.join("bin")).unwrap();
+    std::fs::write(sdk.join("VERSION"), "34.0\n").unwrap();
+    let pid_file = sdk.join("clang.pid");
+    let clang = sdk.join("bin/clang");
+    std::fs::write(
+        &clang,
+        format!(
+            "#!/bin/sh\necho $$ > '{}.tmp'\nmv '{0}.tmp' '{0}'\nexec sleep 30\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&clang, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (grammar_repo, rev) = fake_repo(&[("src/parser.c", "/* parser */")]);
+    let ext = tempfile::tempdir().unwrap();
+    std::fs::write(
+        ext.path().join("extension.toml"),
+        format!(
+            "{}[grammars.json]\nrepository = \"{}\"\nrev = \"{rev}\"\n",
+            manifest("lang", "0.1.0"),
+            file_url(&grammar_repo)
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(ext.path().join("languages/json")).unwrap();
+    std::fs::write(
+        ext.path().join("languages/json/config.toml"),
+        "name = \"JSON\"\ngrammar = \"json\"\npath_suffixes = [\"json\"]\n",
+    )
+    .unwrap();
+
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("luc"))
+        .args(["ext", "--wasi-sdk"])
+        .arg(&sdk)
+        .args(["install", "--dev"])
+        .arg(ext.path())
+        .env("HOME", &e.home)
+        .env("LUCERNA_EXTENSIONS_DIR", &e.root)
+        .env_remove("WASI_SDK_PATH")
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let clang_pid = loop {
+        if let Ok(text) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = text.trim().parse::<i32>()
+        {
+            break pid;
+        }
+        assert!(Instant::now() < deadline, "clang never started");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(pid_alive(clang_pid));
+
+    let sent = Instant::now();
+    // SAFETY: signalling our own child.
+    unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(130));
+    assert!(sent.elapsed() < Duration::from_secs(10), "exit was slow");
+
+    let gone = Instant::now() + Duration::from_secs(3);
+    while pid_alive(clang_pid) && Instant::now() < gone {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!pid_alive(clang_pid), "clang survived luc");
+    // Nothing half-installed.
+    let list = stdout(e.luc().args(["ext", "list", "--installed"]));
+    assert_eq!(list, "");
+}

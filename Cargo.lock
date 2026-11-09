@@ -3254,6 +3254,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "libc",
  "lucerna-extension",
  "lucerna-workbench",
  "nucleo-matcher",
