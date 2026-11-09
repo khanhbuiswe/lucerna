@@ -37,7 +37,7 @@ Spec này **chỉ** mô tả giai đoạn 1. Mỗi giai đoạn sau có spec ri�
 
 Vim mode là tính năng có sẵn trong lõi editor, không phải extension, giống cách Zed làm. Xem phần nghiên cứu ở `docs/research/2026-11-09-vim-mode.md`.
 
-**Nguyên tắc cho mọi giai đoạn:** trước khi thiết kế một tính năng, luôn tham khảo cách **VS Code** và **Zed** đã làm, bằng cách đọc tài liệu và mã nguồn của cả hai. Ghi lại kết quả tham khảo vào `docs/research/` hoặc vào spec của giai đoạn đó. Code của Zed theo giấy phép GPL nên chỉ được học thiết kế, không được chép. Code theo giấy phép MIT của VS Code và các extension của nó (ví dụ VSCodeVim) được phép tham khảo, nhưng phải ghi nguồn.
+**Nguyên tắc cho mọi giai đoạn:** trước khi lên plan cho bất kỳ tính năng nào, luôn tham khảo cách VS Code và Zed đã triển khai. Chi tiết xem `docs/design-principles.md`.
 
 ### 1.4 Tiêu chí thành công của giai đoạn 1
 
