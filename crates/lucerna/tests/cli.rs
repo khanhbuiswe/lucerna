@@ -6,8 +6,10 @@ use lucerna::resolve_target;
 
 #[test]
 fn version_flag_prints_name_and_version() {
+    let home = tempfile::tempdir().unwrap();
     Command::cargo_bin("luc")
         .unwrap()
+        .env("HOME", home.path())
         .arg("--version")
         .assert()
         .success()
@@ -50,6 +52,26 @@ fn resolve_file_in_git_repo_uses_repo_root() {
 }
 
 #[test]
+fn resolve_file_in_git_worktree_uses_dir_with_git_file() {
+    let outer = tempfile::tempdir().unwrap();
+    fs::create_dir(outer.path().join(".git")).unwrap();
+    let worktree = outer.path().join("worktree");
+    let nested = worktree.join("src");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(
+        worktree.join(".git"),
+        "gitdir: ../.git/worktrees/worktree\n",
+    )
+    .unwrap();
+    let file = nested.join("lib.rs");
+    fs::write(&file, "\n").unwrap();
+    assert_eq!(
+        resolve_target(Some(file.clone())),
+        Ok((canonical(&worktree), Some(canonical(file))))
+    );
+}
+
+#[test]
 fn resolve_file_outside_git_uses_parent() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("notes.txt");
@@ -74,8 +96,10 @@ fn resolve_missing_errors() {
 fn missing_path_exits_1() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("nope");
+    let home = tempfile::tempdir().unwrap();
     let output = Command::cargo_bin("luc")
         .unwrap()
+        .env("HOME", home.path())
         .arg(&missing)
         .output()
         .unwrap();

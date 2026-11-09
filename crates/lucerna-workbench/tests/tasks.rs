@@ -1,4 +1,4 @@
-use lucerna_workbench::tasks::{guarded, spawn_guarded};
+use lucerna_workbench::tasks::{guarded, spawn_guarded, try_spawn_guarded};
 
 #[test]
 fn spawn_guarded_returns_value() {
@@ -9,6 +9,12 @@ fn spawn_guarded_returns_value() {
 fn spawn_guarded_catches_panic_returns_none() {
     let handle = spawn_guarded("boom", || -> u32 { panic!("boom") });
     assert_eq!(handle.join().unwrap(), None);
+}
+
+#[test]
+fn try_spawn_guarded_returns_ok_and_the_value() {
+    let handle = try_spawn_guarded("try-value", || 11).expect("thread spawns");
+    assert_eq!(handle.join().unwrap(), Some(11));
 }
 
 #[test]

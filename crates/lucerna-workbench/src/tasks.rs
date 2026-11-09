@@ -9,15 +9,27 @@ use std::thread::{self, JoinHandle};
 /// `tracing::error!(task = name, …)` and the thread yields `None`.
 ///
 /// # Panics
-/// If the OS cannot create a thread, as [`std::thread::spawn`] does.
+/// If the OS cannot create a thread, as [`std::thread::spawn`] does; use
+/// [`try_spawn_guarded`] to handle that.
 pub fn spawn_guarded<T: Send + 'static>(
     name: &'static str,
     f: impl FnOnce() -> T + Send + 'static,
 ) -> JoinHandle<Option<T>> {
+    try_spawn_guarded(name, f).unwrap_or_else(|err| panic!("failed to spawn thread {name}: {err}"))
+}
+
+/// Like [`spawn_guarded`], returning the error when the OS cannot create
+/// the thread.
+///
+/// # Errors
+/// When the thread cannot be created.
+pub fn try_spawn_guarded<T: Send + 'static>(
+    name: &'static str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> std::io::Result<JoinHandle<Option<T>>> {
     thread::Builder::new()
         .name(name.into())
         .spawn(move || guarded(name, f))
-        .unwrap_or_else(|err| panic!("failed to spawn thread {name}: {err}"))
 }
 
 /// Runs `f` here, for closures on the GPUI background executor: a panic is

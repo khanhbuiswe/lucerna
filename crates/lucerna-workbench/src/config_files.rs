@@ -21,7 +21,7 @@ use lucerna_theme::ThemeRegistry;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::layout::color;
-use crate::tasks::spawn_guarded;
+use crate::tasks::{spawn_guarded, try_spawn_guarded};
 use crate::{AppState, CommandRegistry, OpenMode, Workbench};
 
 /// A batch of changes ends once no event arrived for this long...
@@ -406,9 +406,10 @@ impl ConfigWatcher {
         }));
         lock(&state).rearm();
         let weak = Arc::downgrade(&state);
-        spawn_guarded("lucerna-config-watch", move || {
+        try_spawn_guarded("lucerna-config-watch", move || {
             debounce_loop(&rx, &weak, &on_batch);
-        });
+        })
+        .map_err(notify::Error::io)?;
         Ok(ConfigWatcher { state })
     }
 

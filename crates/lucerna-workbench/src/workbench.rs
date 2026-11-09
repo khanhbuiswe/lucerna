@@ -29,7 +29,7 @@ use crate::layout::{
 };
 use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::search_panel::SearchPanel;
-use crate::tasks::spawn_guarded;
+use crate::tasks::try_spawn_guarded;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
@@ -787,13 +787,16 @@ fn pump_worktree_events(worktree: &Worktree, cx: &mut Context<Workbench>) -> Tas
     }
     let events = worktree.events();
     let (tx, mut rx) = futures::channel::mpsc::unbounded();
-    spawn_guarded("lucerna-worktree-events", move || {
+    let spawned = try_spawn_guarded("lucerna-worktree-events", move || {
         while let Ok(ev) = events.recv() {
             if tx.unbounded_send(ev).is_err() {
                 break;
             }
         }
     });
+    if let Err(err) = spawned {
+        tracing::error!(%err, "could not start the worktree event pump");
+    }
     cx.spawn(async move |workbench, cx| {
         while let Some(ev) = rx.next().await {
             if workbench
