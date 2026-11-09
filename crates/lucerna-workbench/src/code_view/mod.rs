@@ -162,6 +162,9 @@ pub struct CodeView {
     /// The find widget, kept while hidden so it remembers its query.
     find: Option<Entity<FindWidget>>,
     find_visible: bool,
+    /// Whether the mouse is over the gutter: fold chevrons show only then
+    /// (and always on folded rows).
+    gutter_hovered: bool,
 }
 
 impl CodeView {
@@ -210,6 +213,7 @@ impl CodeView {
             active_match: None,
             find: None,
             find_visible: false,
+            gutter_hovered: false,
         }
     }
 
@@ -465,6 +469,28 @@ impl CodeView {
     /// Whether the fold starting at `header_row` is closed.
     pub fn is_folded(&self, header_row: u32) -> bool {
         self.folds.is_folded(header_row)
+    }
+
+    /// Whether the mouse is over the gutter.
+    pub fn gutter_hovered(&self) -> bool {
+        self.gutter_hovered
+    }
+
+    pub(crate) fn set_gutter_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        if self.gutter_hovered != hovered {
+            self.gutter_hovered = hovered;
+            cx.notify();
+        }
+    }
+
+    /// Whether `row` shows a fold chevron: it must start a fold, and the
+    /// mouse must be over the gutter unless the fold is closed.
+    pub fn fold_chevron_visible(&self, row: u32) -> bool {
+        let header = self
+            .fold_ranges
+            .binary_search_by_key(&row, |f| f.start)
+            .is_ok();
+        header && (self.gutter_hovered || self.folds.is_folded(row))
     }
 
     /// Folds or unfolds the fold starting at `header_row`.

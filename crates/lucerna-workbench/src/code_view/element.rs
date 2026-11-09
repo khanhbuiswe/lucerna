@@ -135,8 +135,10 @@ pub(crate) struct Frame {
     pub wrap_chars: Option<u32>,
     rows: Vec<FrameRow>,
     numbers: Vec<(Pixels, ShapedLine)>,
-    /// Fold chevrons: (top, header row, chevron).
-    chevrons: Vec<(Pixels, u32, ShapedLine)>,
+    /// Fold chevrons of every fold header on screen: (top, header row,
+    /// chevron, painted). All of them take clicks; only those shown while
+    /// the gutter is hovered, or folded, are painted.
+    chevrons: Vec<(Pixels, u32, ShapedLine, bool)>,
     selection: Option<Selection>,
     /// Search matches touching the rows on screen; `true` for the active one.
     matches: Vec<(std::ops::Range<Point>, bool)>,
@@ -406,7 +408,8 @@ impl CodeView {
                     "▾"
                 };
                 let shaped = shape(window, glyph, font_size, self.base_font(), number_color);
-                chevrons.push((r.top, r.buffer_row, shaped));
+                let shown = self.fold_chevron_visible(r.buffer_row);
+                chevrons.push((r.top, r.buffer_row, shaped, shown));
             }
         }
         let whitespace = self.config.render_whitespace.then(|| {
@@ -592,7 +595,7 @@ impl CodeView {
             let Some(row) = frame.row_at(ev.position.y) else {
                 return;
             };
-            let on_chevron = frame.chevrons.iter().any(|(_, r, _)| *r == row.buffer_row)
+            let on_chevron = frame.chevrons.iter().any(|(_, r, ..)| *r == row.buffer_row)
                 && ev.position.x >= frame.text_bounds.left() - frame.char_width * 2.;
             if on_chevron {
                 self.toggle_fold(row.buffer_row, cx);
@@ -725,6 +728,19 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
             }
             if view.read(cx).drag == Some(Drag::Text) {
                 view.update(cx, |v, cx| v.mouse_drag(ev.position, cx));
+            }
+        }
+    });
+    window.on_mouse_event({
+        let (view, hitbox) = (view.clone(), hitbox.clone());
+        let gutter_right = frame.text_bounds.left();
+        move |ev: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let over_gutter = hitbox.is_hovered(window) && ev.position.x < gutter_right;
+            if view.read(cx).gutter_hovered() != over_gutter {
+                view.update(cx, |v, cx| v.set_gutter_hovered(over_gutter, cx));
             }
         }
     });

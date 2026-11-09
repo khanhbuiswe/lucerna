@@ -84,7 +84,7 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
         line.paint(origin, lh, TextAlign::Left, None, window, cx)
             .ok();
     }
-    for (top, _, chevron) in &frame.chevrons {
+    for (top, _, chevron, _) in frame.chevrons.iter().filter(|c| c.3) {
         let origin = point(text.left() - frame.char_width * 1.5, *top);
         chevron
             .paint(origin, lh, TextAlign::Left, None, window, cx)

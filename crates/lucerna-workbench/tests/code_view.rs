@@ -359,6 +359,41 @@ fn gutter_chevron_folds(cx: &mut TestAppContext) {
     assert_eq!(view.read_with(cx, |v, _| v.cursor()), pt(1, 0));
 }
 
+/// Fold chevrons show while the mouse is over the gutter, and always on a
+/// folded row.
+#[gpui::test]
+fn fold_chevrons_follow_gutter_hover(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (view, cx) = code_view("fn a() {\n    x\n}\nlast\n", cx);
+    cx.run_until_parked();
+    draw(cx);
+    let state = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| {
+            (
+                v.gutter_hovered(),
+                v.fold_chevron_visible(0),
+                v.fold_chevron_visible(3),
+            )
+        })
+    };
+    let none = gpui::Modifiers::none();
+    // Hover off: no chevron.
+    assert_eq!(state(cx), (false, false, false));
+
+    // Over the gutter: the fold header shows one; a plain row never does.
+    cx.simulate_mouse_move(gpui::point(gpui::px(CHAR), gpui::px(LINE * 0.5)), None, none);
+    assert_eq!(state(cx), (true, true, false));
+
+    // Over the text: hidden again.
+    cx.simulate_mouse_move(at(0, 2), None, none);
+    assert_eq!(state(cx), (false, false, false));
+
+    // A folded row keeps its chevron with the mouse away.
+    view.update(cx, |v, cx| v.toggle_fold(0, cx));
+    draw(cx);
+    assert_eq!(state(cx), (false, true, false));
+}
+
 #[gpui::test]
 fn wheel_scrolls_by_pixels(cx: &mut TestAppContext) {
     init(cx, None);
