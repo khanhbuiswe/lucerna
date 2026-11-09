@@ -58,13 +58,26 @@ impl IdLock {
 /// returned file is open. Serialises index rebuild + write across
 /// processes (ids cannot start with `.`, so it never clashes with an id).
 pub(crate) fn lock_index(root: &Path) -> std::io::Result<File> {
+    lock_named(root, ".index.lock")
+}
+
+/// Blocking `flock(LOCK_EX)` on `<root>/locks/.registry.lock`, held while
+/// the returned file is open: every read-modify-write of `registry.json`
+/// (refresh, describe) runs under it, in this process and across processes.
+/// `flock` locks belong to an open file description, so two threads of one
+/// process exclude each other too.
+pub(crate) fn lock_registry(root: &Path) -> std::io::Result<File> {
+    lock_named(root, ".registry.lock")
+}
+
+fn lock_named(root: &Path, name: &str) -> std::io::Result<File> {
     let dir = root.join("locks");
     std::fs::create_dir_all(&dir)?;
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(dir.join(".index.lock"))?;
+        .open(dir.join(name))?;
     loop {
         // SAFETY: `file` is an open descriptor for the duration of the call.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {

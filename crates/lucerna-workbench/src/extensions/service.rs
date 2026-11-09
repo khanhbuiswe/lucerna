@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures::StreamExt;
 use gpui::{App, Task};
@@ -19,6 +19,14 @@ use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 use crate::AppState;
 use crate::config_files::{ConfigState, icon_previewing, reapply_configured_theme};
 use crate::tasks::{catch_panic, try_spawn_guarded};
+
+/// At most this many describes run at once; the rest wait in
+/// [`ExtensionService::want_descriptions`]'s queue.
+pub const MAX_DESCRIBES: usize = 3;
+
+/// After a describe that did not bring a description, how long before the
+/// same id may be described again.
+pub const DESCRIBE_RETRY: Duration = Duration::from_secs(60);
 
 /// How long after the first frame the registry is refreshed, when it is
 /// stale and `extensions.autoCheckUpdates` is on.
@@ -390,6 +398,11 @@ pub struct ExtensionService {
     /// Installs asked for while a describe of the same id ran; each starts
     /// when that describe ends.
     after_describe: Vec<String>,
+    /// Describes waiting for a slot (at most [`MAX_DESCRIBES`] run), in
+    /// the order they start.
+    describe_queue: VecDeque<String>,
+    /// When a describe of each id last started (executor clock).
+    describe_started: HashMap<String, Instant>,
     updates: Vec<String>,
     refreshing: Option<CancelToken>,
     registry_error: Option<String>,
@@ -448,6 +461,8 @@ impl ExtensionService {
             queue: VecDeque::new(),
             updating: None,
             after_describe: Vec::new(),
+            describe_queue: VecDeque::new(),
+            describe_started: HashMap::new(),
             updates: Vec::new(),
             refreshing: None,
             registry_error: None,
@@ -513,6 +528,35 @@ impl ExtensionService {
         matches!(self.running.get(id), Some((_, OpKind::Describe)))
     }
 
+    /// How many describes run.
+    pub fn describes_running(&self) -> usize {
+        self.running
+            .values()
+            .filter(|(_, kind)| *kind == OpKind::Describe)
+            .count()
+    }
+
+    /// The describes waiting for a slot, next first.
+    pub fn queued_describes(&self) -> impl Iterator<Item = &str> {
+        self.describe_queue.iter().map(String::as_str)
+    }
+
+    /// When a describe of `id` last started, if one did.
+    pub fn describe_started(&self, id: &str) -> Option<Instant> {
+        self.describe_started.get(id).copied()
+    }
+
+    /// Whether a describe of `id` may start at `now`: none runs or waits,
+    /// no other operation runs on it, and the last one started at least
+    /// [`DESCRIBE_RETRY`] ago.
+    fn may_describe(&self, id: &str, now: Instant) -> bool {
+        !self.is_busy(id)
+            && self
+                .describe_started
+                .get(id)
+                .is_none_or(|t| now.duration_since(*t) >= DESCRIBE_RETRY)
+    }
+
     /// Extensions installed (not updated) successfully since the service
     /// started, oldest first.
     pub fn fresh_installs(&self) -> &[String] {
@@ -574,6 +618,8 @@ impl ExtensionService {
     /// shows as installing meanwhile.
     pub fn install(id: String, cx: &mut App) {
         let service = cx.global_mut::<ExtensionService>();
+        // The install fetches the source itself.
+        service.describe_queue.retain(|q| *q != id);
         if service.is_describing(&id) {
             if !service.after_describe.contains(&id) {
                 service.errors.remove(&id);
@@ -604,7 +650,59 @@ impl ExtensionService {
     }
 
     /// Fetches `id` to read its name and description into `registry.json`.
+    /// Waits at the back of the describe queue when [`MAX_DESCRIBES`] run.
     pub fn describe(id: String, cx: &mut App) {
+        let service = cx.global_mut::<ExtensionService>();
+        if service.describes_running() >= MAX_DESCRIBES {
+            if !service.describe_queue.contains(&id) && !service.running.contains_key(&id) {
+                service.describe_queue.push_back(id);
+            }
+            return;
+        }
+        Self::start_describe(id, cx);
+    }
+
+    /// The ids whose descriptions are wanted now (the Extensions page's
+    /// cards on screen, top first). They replace the describe queue, so
+    /// requests for cards that scrolled away are dropped; running describes
+    /// go on. Ids that may not be described yet (see `may_describe`) are
+    /// left out. Free slots start at once. Does nothing, and notifies
+    /// nobody, when the queue would not change.
+    pub fn want_descriptions(ids: &[String], cx: &mut App) {
+        let service = cx.global::<ExtensionService>();
+        let now = cx.background_executor().now();
+        let wanted: VecDeque<String> = ids
+            .iter()
+            .filter(|id| service.describe_queue.contains(id) || service.may_describe(id, now))
+            .cloned()
+            .collect();
+        let free = MAX_DESCRIBES.saturating_sub(service.describes_running());
+        if wanted == service.describe_queue && (free == 0 || wanted.is_empty()) {
+            return;
+        }
+        cx.global_mut::<ExtensionService>().describe_queue = wanted;
+        Self::start_queued_describes(cx);
+        cx.refresh_windows();
+    }
+
+    fn start_queued_describes(cx: &mut App) {
+        loop {
+            let service = cx.global_mut::<ExtensionService>();
+            if service.describes_running() >= MAX_DESCRIBES {
+                return;
+            }
+            let Some(id) = service.describe_queue.pop_front() else {
+                return;
+            };
+            Self::start_describe(id, cx);
+        }
+    }
+
+    fn start_describe(id: String, cx: &mut App) {
+        let now = cx.background_executor().now();
+        cx.global_mut::<ExtensionService>()
+            .describe_started
+            .insert(id.clone(), now);
         let op_id = id.clone();
         Self::run_op(id, OpKind::Describe, cx, move |store, _, cancel| {
             store.describe(&op_id, cancel).map(|_| Vec::new())
@@ -623,10 +721,16 @@ impl ExtensionService {
     }
 
     /// Cancels the operation on `id`, or drops it from the queue.
+    /// An install waiting for a describe is dropped; the describe goes on.
     pub fn cancel(id: String, cx: &mut App) {
         let service = cx.global_mut::<ExtensionService>();
         service.queue.retain(|q| *q != id);
+        let waiting = service.after_describe.len();
         service.after_describe.retain(|a| *a != id);
+        if service.after_describe.len() != waiting {
+            cx.refresh_windows();
+            return;
+        }
         if let Some((token, _)) = service.running.get(&id) {
             token.cancel();
         }
@@ -671,13 +775,13 @@ impl ExtensionService {
     }
 
     /// Deletes the fetched sources and cached grammar builds, in the
-    /// background. Refuses (returns `false`) while any operation runs or
-    /// waits, since it would pull the sources from under it.
+    /// background. Refuses (returns `false`) while an install or update
+    /// runs or waits, since it would pull the sources from under it. Running
+    /// describes are not waited for: one that loses its sources fails, and
+    /// the page asks again after [`DESCRIBE_RETRY`].
     pub fn clear_build_cache(cx: &mut App) -> bool {
         let service = cx.global::<ExtensionService>();
-        let busy = !service.running.is_empty()
-            || !service.queue.is_empty()
-            || !service.after_describe.is_empty();
+        let busy = service.any_installing() || !service.queue.is_empty();
         if busy {
             return false;
         }
@@ -820,6 +924,9 @@ impl ExtensionService {
         }
         if let Some(id) = install_next {
             Self::install(id, cx);
+        }
+        if kind == Some(OpKind::Describe) {
+            Self::start_queued_describes(cx);
         }
         Self::start_queued(cx);
         cx.refresh_windows();

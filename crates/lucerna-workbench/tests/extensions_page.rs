@@ -18,7 +18,7 @@ use lucerna_extension::test_support::{
 use lucerna_project::QUICK_OPEN_LIMIT;
 use lucerna_settings::parse_when;
 use lucerna_workbench::extensions::panel_model::RowState;
-use lucerna_workbench::extensions::{ExtensionService, FILTER_LABELS};
+use lucerna_workbench::extensions::{ExtensionService, FILTER_LABELS, MAX_DESCRIBES};
 use lucerna_workbench::{
     AppState, ConfigPaths, GroupState, GroupsState, OpenMode, SidebarView, TabItem, Workbench,
     WorkspaceState, save_state, state_path, watch_config,
@@ -741,4 +741,197 @@ fn failed_describe_is_retried_after_a_minute(cx: &mut TestAppContext) {
     draw(cx);
     assert!(describing(cx), "asked again after a minute");
     settle(cx);
+}
+
+/// A registry of `n` uninstalled extensions `e00`, `e01`, … sharing one
+/// repository.
+fn many(n: usize) -> Env {
+    let repo = theme_repo("x", "0.1.0");
+    let entries: Vec<FakeEntry> = (0..n)
+        .map(|i| FakeEntry::new(&format!("e{i:02}"), "0.1.0", &repo))
+        .collect();
+    Env::new(&entries)
+}
+
+/// The ids of the cards whose list items (card and spacing) are drawn
+/// inside the list's bounds, top first.
+fn cards_on_screen(n: usize, cx: &mut VisualTestContext) -> Vec<String> {
+    let list = cx
+        .debug_bounds("extensions-list")
+        .expect("the list is drawn");
+    (0..n)
+        .map(|i| format!("e{i:02}"))
+        .filter(|id| {
+            let selector: &'static str = Box::leak(format!("extension-item-{id}").into_boxed_str());
+            cx.debug_bounds(selector)
+                .is_some_and(|b| b.top() < list.bottom() && b.bottom() > list.top())
+        })
+        .collect()
+}
+
+/// `(running, queued)` describes.
+fn describes(cx: &mut VisualTestContext, n: usize) -> (Vec<String>, Vec<String>) {
+    cx.update(|_, cx| {
+        let service = ExtensionService::global(cx);
+        let running = (0..n)
+            .map(|i| format!("e{i:02}"))
+            .filter(|id| service.is_describing(id))
+            .collect();
+        let queued = service.queued_describes().map(String::from).collect();
+        (running, queued)
+    })
+}
+
+/// Opens the page in a 1000×600 window without letting background work
+/// run, and draws it.
+fn open_small<'a>(
+    env: &Env,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+    init(env, cx);
+    let (wb, cx) = workbench(env, cx);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(600.)));
+    settle(cx);
+    wb.update_in(cx, |wb, window, cx| wb.open_extensions(window, cx));
+    draw(cx);
+    (wb, cx)
+}
+
+#[gpui::test]
+fn describes_are_capped_to_cards_on_screen(cx: &mut TestAppContext) {
+    const N: usize = 40;
+    let env = many(N);
+    let (_wb, cx) = open_small(&env, cx);
+    let on_screen = cards_on_screen(N, cx);
+    assert!(
+        on_screen.len() > MAX_DESCRIBES && on_screen.len() < N,
+        "{on_screen:?}"
+    );
+    let (running, queued) = describes(cx, N);
+    assert_eq!(
+        running.len(),
+        MAX_DESCRIBES,
+        "at most {MAX_DESCRIBES} at once"
+    );
+    let wanted: Vec<String> = running.iter().chain(&queued).cloned().collect();
+    assert_eq!(wanted, on_screen, "the cards on screen, top first");
+    // The card just below the screen is laid out as overdraw, not asked for.
+    let below = format!("e{:02}", on_screen.len());
+    assert!(!wanted.contains(&below), "{below} is off screen");
+
+    settle(cx);
+    let (running, queued) = describes(cx, N);
+    assert!(running.is_empty() && queued.is_empty());
+    let described = cx.update(|_, cx| {
+        let registry = ExtensionService::global(cx).registry().cloned().unwrap();
+        registry
+            .entries
+            .iter()
+            .filter(|e| e.description.is_some())
+            .map(|e| e.id.clone())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(described, on_screen, "every card on screen was described");
+}
+
+#[gpui::test]
+fn describe_requests_for_cards_scrolled_away_are_dropped(cx: &mut TestAppContext) {
+    const N: usize = 40;
+    let env = many(N);
+    let (_wb, cx) = open_small(&env, cx);
+    let (running, queued) = describes(cx, N);
+    assert_eq!(running.len(), MAX_DESCRIBES);
+    assert!(!queued.is_empty());
+
+    // Scroll to the bottom without letting the describes finish.
+    let list = cx.debug_bounds("extensions-list").unwrap();
+    // The list only scrolls as far as it has measured, so in steps.
+    for _ in 0..40 {
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::Scroll(gpui::ScrollEvent {
+                    position: list.center(),
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-400.))),
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        draw(cx);
+    }
+    let on_screen = cards_on_screen(N, cx);
+    assert!(
+        on_screen.contains(&format!("e{:02}", N - 1)),
+        "{on_screen:?}"
+    );
+    let (still_running, now_queued) = describes(cx, N);
+    assert_eq!(still_running, running, "running describes go on");
+    assert!(
+        queued.iter().all(|id| !now_queued.contains(id)),
+        "requests for cards that scrolled away are dropped: {now_queued:?}"
+    );
+    assert_eq!(
+        now_queued, on_screen,
+        "the cards now on screen wait instead"
+    );
+    settle(cx);
+}
+
+#[gpui::test]
+fn cancelling_install_queued_behind_describe_keeps_the_describe(cx: &mut TestAppContext) {
+    let repo = theme_repo("x", "0.1.0");
+    let env = Env::new(&[FakeEntry::new("x", "0.1.0", &repo)]);
+    init(&env, cx);
+    let (wb, cx) = workbench(&env, cx);
+    settle(cx);
+    cx.update(|_, cx| {
+        ExtensionService::describe("x".into(), cx);
+        ExtensionService::install("x".into(), cx);
+        ExtensionService::cancel("x".into(), cx);
+    });
+    let (describing, installing) = cx.update(|_, cx| {
+        let s = ExtensionService::global(cx);
+        (s.is_describing("x"), s.is_installing("x"))
+    });
+    assert!(describing && !installing);
+    settle(cx);
+    assert!(!env.root().join("installed/x").exists(), "not installed");
+    let description = cx.update(|_, cx| {
+        let registry = ExtensionService::global(cx).registry().cloned().unwrap();
+        registry.entries[0].description.clone()
+    });
+    assert_eq!(
+        description.as_deref(),
+        Some("About x"),
+        "the describe finished"
+    );
+    assert!(wb.read_with(cx, |wb, _| wb.toast().is_none()));
+}
+
+#[gpui::test]
+fn registry_failure_offers_retry_and_keeps_installed_cards(cx: &mut TestAppContext) {
+    let env = Env::basic();
+    env.store()
+        .install("x", &|_| {}, &CancelToken::default())
+        .unwrap();
+    // No registry (neither registry.json nor the clone, whose origin would
+    // still work), and a remote that cannot be fetched.
+    std::fs::remove_file(env.root().join("registry.json")).unwrap();
+    std::fs::remove_dir_all(env.root().join("registry")).unwrap();
+    let store = Store::open(env.root(), Arc::new(FakeValidator))
+        .with_remote(file_url(&env.tmp.path().join("missing")));
+    cx.update(|cx| lucerna_workbench::app::set_app_state_with_store(store, cx));
+    let (wb, cx) = workbench(&env, cx);
+    cx.simulate_keystrokes("cmd-shift-x");
+    settle(cx);
+    assert!(shown("extensions-registry-error", cx));
+    assert!(wb.read_with(cx, |_, cx| {
+        ExtensionService::global(cx).registry_error().is_some()
+    }));
+    assert_eq!(installed_ids(&wb, cx), ["x"]);
+    assert!(shown("extension-card-x", cx), "installed cards still show");
+    click("extensions-retry", cx);
+    settle(cx);
+    assert!(shown("extensions-registry-error", cx), "it fails again");
+    assert!(shown("extension-card-x", cx));
 }

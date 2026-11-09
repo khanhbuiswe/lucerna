@@ -12,7 +12,8 @@ use std::path::PathBuf;
 pub(crate) use commands::{installable_ids, register_commands};
 pub use page::{ExtensionsPage, FILTER_LABELS};
 pub use service::{
-    ExtensionService, Registries, STARTUP_REFRESH_DELAY, extension_languages, rebuild_registries,
+    DESCRIBE_RETRY, ExtensionService, MAX_DESCRIBES, Registries, STARTUP_REFRESH_DELAY,
+    extension_languages, rebuild_registries,
 };
 pub(crate) use toast::render as toast_element;
 pub use toast::{TOAST_DURATION, Toast};

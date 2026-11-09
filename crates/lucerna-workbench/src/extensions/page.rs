@@ -6,10 +6,8 @@
 //! buttons; and while installing, the stage, after a failure, the error
 //! with "Show Log", and the last install's warnings.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, Context, Div, Entity, FocusHandle, Focusable, IntoElement, ListAlignment,
@@ -57,10 +55,6 @@ pub const FILTER_LABELS: [&str; 6] = [
     FILTERS[5].0,
 ];
 
-/// After a describe that did not bring a description, how long before a
-/// card laid out again asks again.
-const DESCRIBE_RETRY: Duration = Duration::from_secs(60);
-
 /// Rendered beyond the visible cards, so scrolling does not pop them in.
 const LIST_OVERDRAW: f32 = 50. * GRID;
 
@@ -84,8 +78,9 @@ pub struct ExtensionsPage {
     /// The cards in list order: installed, then available.
     cards: Vec<Card>,
     list: ListState,
-    /// When a describe was last asked for, by id.
-    described: HashMap<String, Instant>,
+    /// The uninstalled cards without a description laid out this frame:
+    /// `(list index, id)`.
+    laid_out: Vec<(usize, String)>,
     /// The page was shown before `registry.json` was read: fetch the
     /// registry if it turns out to be missing.
     fetch_when_loaded: bool,
@@ -115,7 +110,7 @@ impl ExtensionsPage {
             rows: PanelRows::default(),
             cards: Vec::new(),
             list: ListState::new(0, ListAlignment::Top, px(LIST_OVERDRAW)),
-            described: HashMap::new(),
+            laid_out: Vec::new(),
             fetch_when_loaded: false,
             _service: service,
         };
@@ -236,31 +231,26 @@ impl ExtensionsPage {
         self.refresh_for(text, cx);
     }
 
-    /// Asks for the description of uninstalled `id` the first time its
-    /// card is laid out, and again after [`DESCRIBE_RETRY`] when that
-    /// brought none. Deferred: it runs while the list is laid out.
-    fn describe_when_laid_out(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(service) = cx.try_global::<ExtensionService>() else {
-            return;
-        };
-        if service.is_busy(id) {
-            return;
-        }
-        let now = cx.background_executor().now();
-        if self
-            .described
-            .get(id)
-            .is_some_and(|asked| now.duration_since(*asked) < DESCRIBE_RETRY)
-        {
+    /// After a frame: asks the service for the descriptions of the cards
+    /// laid out without one that are on screen (not in the overdraw), top
+    /// first. That replaces the service's describe queue, so cards that
+    /// scrolled away are dropped from it (see
+    /// [`ExtensionService::want_descriptions`]).
+    fn request_descriptions(&mut self, cx: &mut Context<Self>) {
+        if !cx.has_global::<ExtensionService>() {
             return;
         }
-        self.described.insert(id.to_string(), now);
-        let id = id.to_string();
-        cx.defer(move |cx| {
-            if cx.has_global::<ExtensionService>() {
-                ExtensionService::describe(id, cx);
-            }
-        });
+        let mut visible: Vec<(usize, String)> = std::mem::take(&mut self.laid_out)
+            .into_iter()
+            .filter(|(ix, _)| {
+                self.list.item_is_above_viewport(*ix) != Some(true)
+                    && self.list.item_is_below_viewport(*ix) != Some(true)
+            })
+            .collect();
+        visible.sort();
+        visible.dedup();
+        let ids: Vec<String> = visible.into_iter().map(|(_, id)| id).collect();
+        ExtensionService::want_descriptions(&ids, cx);
     }
 
     fn show_log(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -287,11 +277,17 @@ impl ExtensionsPage {
         };
         let installed = matches!(card, Card::Installed(_));
         if !installed && row.description.is_none() && row.state == RowState::NotInstalled {
-            self.describe_when_laid_out(&row.id, cx);
+            self.laid_out.push((ix, row.id.clone()));
         }
         let ui = cx.global::<AppState>().theme.ui.clone();
         let service = cx.try_global::<ExtensionService>();
-        let describing = service.is_some_and(|s| s.is_describing(&row.id));
+        // A describe ran and brought nothing (or failed), and none runs or
+        // waits now.
+        let described_nothing = service.is_some_and(|s| {
+            s.describe_started(&row.id).is_some()
+                && !s.is_describing(&row.id)
+                && !s.queued_describes().any(|q| q == row.id)
+        });
         let has_update = service.is_some_and(|s| s.updates().contains(&row.id));
         let warnings: Vec<String> = service.map_or_else(Vec::new, |s| s.warnings(&row.id).to_vec());
         let (muted, error) = (color(ui.text_muted), color(ui.error));
@@ -323,10 +319,8 @@ impl ExtensionsPage {
         let description = match &row.description {
             Some(text) => text.clone(),
             None if installed => NO_DESCRIPTION.into(),
-            None if describing || !self.described.contains_key(&row.id) => {
-                LOADING_DESCRIPTION.into()
-            }
-            None => NO_DESCRIPTION.into(),
+            None if described_nothing => NO_DESCRIPTION.into(),
+            None => LOADING_DESCRIPTION.into(),
         };
         let details = if installed {
             let mut parts: Vec<String> = Vec::new();
@@ -425,7 +419,9 @@ impl ExtensionsPage {
 
         let hover = color(ui.ghost_element_hover);
         let selector = format!("extension-card-{id}");
+        let item_selector = format!("extension-item-{id}");
         div()
+            .debug_selector(move || item_selector)
             .px(px(4. * GRID))
             .pb(px(2. * GRID))
             .child(
@@ -618,6 +614,14 @@ impl Focusable for ExtensionsPage {
 
 impl Render for ExtensionsPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The list lays its cards out after this; once the frame is done,
+        // the visible ones without a description are asked for.
+        self.laid_out.clear();
+        let page = cx.weak_entity();
+        cx.defer(move |cx| {
+            page.update(cx, |page, cx| page.request_descriptions(cx))
+                .ok();
+        });
         let ui = cx.global::<AppState>().theme.ui.clone();
         let search = div()
             .debug_selector(|| "extensions-search".into())
@@ -658,6 +662,12 @@ impl Render for ExtensionsPage {
             .bg(color(ui.editor_background))
             .child(header)
             .children(message)
-            .child(div().flex_1().min_h_0().child(cards))
+            .child(
+                div()
+                    .debug_selector(|| "extensions-list".into())
+                    .flex_1()
+                    .min_h_0()
+                    .child(cards),
+            )
     }
 }

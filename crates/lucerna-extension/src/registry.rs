@@ -8,7 +8,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
+
+use crate::lock::lock_registry;
 
 pub const REGISTRY_URL: &str = "https://github.com/zed-industries/extensions";
 pub const REGISTRY_BRANCH: &str = "main";
@@ -293,6 +296,9 @@ pub fn refresh(
     };
     let (mut entries, warnings) = parse_parts(&toml, &gitmodules, &ls);
 
+    // From reading the descriptions to keep until the write: a describe
+    // must not write between them.
+    let _lock = lock_registry(root)?;
     if let Some(prev) = load_cached(root) {
         let known: HashMap<_, _> = prev
             .entries
@@ -315,9 +321,30 @@ pub fn refresh(
     Ok((registry, warnings))
 }
 
+/// Reads `registry.json`, lets `edit` change it, and writes it back, all
+/// under the registry lock (see [`crate::lock`]), so concurrent describes
+/// and refreshes never lose each other's changes. `None` (nothing written)
+/// when there is no registry.
+pub fn update_cached<T>(
+    root: &Path,
+    edit: impl FnOnce(&mut Registry) -> T,
+) -> std::io::Result<Option<T>> {
+    let _lock = lock_registry(root)?;
+    let Some(mut registry) = load_cached(root) else {
+        return Ok(None);
+    };
+    let out = edit(&mut registry);
+    write_atomic(root, &registry)?;
+    Ok(Some(out))
+}
+
 /// Writes `registry.json` via a temp file in the same directory plus rename.
+/// The temp name is unique per call, so concurrent writers never rename
+/// each other's file.
 pub fn write_atomic(root: &Path, registry: &Registry) -> std::io::Result<()> {
-    let tmp = root.join(format!("registry.json.tmp{}", std::process::id()));
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let tmp = root.join(format!("registry.json.tmp{}-{n}", std::process::id()));
     let json = serde_json::to_vec_pretty(registry)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(&tmp, json)?;

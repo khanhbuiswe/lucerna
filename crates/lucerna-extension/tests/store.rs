@@ -425,6 +425,42 @@ fn concurrent_installs_of_different_ids_all_indexed() {
 }
 
 #[test]
+fn concurrent_describes_of_different_ids_all_persist() {
+    let ids = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    let entries: Vec<FakeEntry> = ids.iter().map(|id| theme_ext(id).1).collect();
+    let env = Env::new(&entries);
+    // A second open store stands in for another process.
+    let other = env.reopen();
+    std::thread::scope(|s| {
+        for (i, id) in ids.iter().enumerate() {
+            let store = if i % 2 == 0 {
+                env.store.clone()
+            } else {
+                other.clone()
+            };
+            s.spawn(move || {
+                store.describe(id, &CancelToken::default()).unwrap();
+            });
+        }
+    });
+    let reg = env.store.registry().unwrap();
+    for id in ids {
+        let e = reg.entries.iter().find(|e| e.id == id).unwrap();
+        assert_eq!(
+            e.description.as_deref(),
+            Some(format!("About {id}").as_str()),
+            "{id} lost its description"
+        );
+    }
+    let leftovers: Vec<String> = std::fs::read_dir(&env.root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("registry.json.tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
 fn describe_persists_name_and_description() {
     let (_repo, entry) = theme_ext("x");
     let env = Env::new(&[entry]);

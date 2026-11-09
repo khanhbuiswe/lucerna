@@ -328,14 +328,13 @@ impl Store {
             let manifest = load_manifest(&source).map_err(BuildError::from)?;
             entry.name = Some(manifest.name);
             entry.description = manifest.description;
-            if let Some(mut reg) = self.registry()
-                && let Some(e) = reg.entries.iter_mut().find(|e| e.id == id)
-            {
-                e.name = entry.name.clone();
-                e.description = entry.description.clone();
-                registry::write_atomic(&self.root, &reg)
-                    .map_err(|e| io_err("cannot write", &self.root.join("registry.json"), e))?;
-            }
+            registry::update_cached(&self.root, |reg| {
+                if let Some(e) = reg.entries.iter_mut().find(|e| e.id == id) {
+                    e.name = entry.name.clone();
+                    e.description = entry.description.clone();
+                }
+            })
+            .map_err(|e| io_err("cannot write", &self.root.join("registry.json"), e))?;
             Ok(entry)
         })
     }
