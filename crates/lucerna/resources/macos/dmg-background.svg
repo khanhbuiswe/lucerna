@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="380" viewBox="0 0 540 380">
+  <!-- Lucerna.dmg window background. Icons sit at (140, 170) and (400, 170);
+       scripts/make-dmg.sh sets the window to the same 540x380 size. Light,
+       because Finder draws the icon labels in black on a background picture,
+       even in dark mode. -->
+  <rect width="540" height="380" fill="#f5f7fb"/>
+  <g fill="none" stroke="#4f8cff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M222 170H312"/>
+    <path d="M296 154L314 170L296 186"/>
+  </g>
+  <text x="270" y="330" text-anchor="middle" fill="#5b6478"
+        font-family="-apple-system, Helvetica Neue, Helvetica, sans-serif" font-size="14">Drag Lucerna to Applications to install</text>
+</svg>

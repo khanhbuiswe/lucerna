@@ -28,3 +28,14 @@ Vấn đề: chạy `luc` như một file thực thi trần thì menu bar hiện
 - **Lệch khỏi cả hai:** chưa có app một instance qua IPC. Mỗi `luc` vẫn là một tiến trình như trước. Đây là việc làm sau.
 - **Mở từ Finder hoặc Dock** (không có đường dẫn, cwd là `/`): hiện hộp thoại chọn thư mục, giống "Open Folder" của VS Code; bấm Hủy thì thoát. Không mở `/`, vì quét cả ổ đĩa vừa chậm vừa vô ích.
 - **`cargo run`** giữ như cũ: không có bundle, menu bar hiện "luc".
+
+## DMG cài đặt kiểu kéo-thả
+
+- **VS Code** ([`build/darwin/create-dmg.ts`](https://github.com/microsoft/vscode/blob/main/build/darwin/create-dmg.ts), `dmg-settings.py.template`) dùng `dmgbuild` (Python, MIT) trong một venv riêng. `dmgbuild` ghi thẳng `.DS_Store`, không cần Finder. Cửa sổ 480×352, icon 80 px, app ở (120, 160), symlink `Applications` ở (360, 160), ảnh nền `.tiff`, ẩn toolbar, sidebar, status bar và path bar.
+- **Zed** (`script/bundle-mac`) làm tối giản: thư mục chứa `Zed.app` và symlink `/Applications`, rồi `hdiutil create -format UDZO`. Không có ảnh nền hay bố cục; DMG được ký và notarize.
+- **Lucerna chọn `scripts/make-dmg.sh`**: `hdiutil` cộng AppleScript cho Finder, giống công cụ `create-dmg`, nhưng không thêm Python hay Node.
+  - Bố cục theo kiểu VS Code: cửa sổ 540×380, icon 96 px, app ở (140, 170), Applications ở (400, 170).
+  - Ảnh nền vẽ từ `crates/lucerna/resources/macos/dmg-background.svg`, có bản 1x và 2x gộp bằng `tiffutil`.
+  - Nền sáng, vì Finder vẽ nhãn icon màu đen trên ảnh nền, kể cả ở dark mode.
+  - Lần chạy đầu, macOS hỏi quyền cho terminal điều khiển Finder. Nếu bước bố cục lỗi, DMG vẫn dùng được, giống DMG của Zed.
+  - Nếu sau này cần build trên CI không có màn hình, chuyển sang `dmgbuild` như VS Code.

@@ -22,6 +22,8 @@ luc .                               # opens the current folder in Lucerna.app
 
 Started from Finder or the Dock, Lucerna asks for a folder to open.
 
+To make a drag-to-install disk image, `target/release/Lucerna.dmg`, run `scripts/make-dmg.sh` after `scripts/bundle-app.sh`. The first run asks to let your terminal control Finder, which lays out the window.
+
 ## Extensions
 
 Lucerna installs extensions from the Zed registry
