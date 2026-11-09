@@ -1,6 +1,8 @@
 # Lucerna — instructions for Claude
 
-Lucerna is a Rust/GPUI code viewer for macOS: a slimmer VS Code with Zed-style UI, built for people who write code through CLI agents. Talk to the user in Vietnamese.
+Lucerna is a Rust/GPUI code editor with a minimal UI: a slimmer VS Code for people who let AI agents write the code, whether the agent runs in a CLI (Claude Code, Codex) or a desktop app (Claude, Codex). It ships on macOS first, and Linux and Windows are planned, so don't add macOS-only assumptions outside platform-specific code. Talk to the user in Vietnamese.
+
+In public-facing text (README, site), mention Zed only for GPUI and the extension ecosystem. Don't describe the UI as "Zed-style"; call it a minimal UI.
 
 ## Before planning any feature
 Read `docs/design-principles.md` first. It requires that before you brainstorm, spec or plan any feature, you **research how VS Code and Zed implement it** (docs and source) and write the findings to `docs/research/` or to the spec's "Tham khảo" section.

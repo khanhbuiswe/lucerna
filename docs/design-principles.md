@@ -4,7 +4,7 @@ Các nguyên tắc dưới đây áp dụng cho mọi tính năng và mọi giai
 
 ## 1. Luôn tham khảo VS Code và Zed trước khi lên plan
 
-Lucerna muốn là một bản VS Code gọn hơn, với giao diện theo kiểu Zed. Vì vậy, **trước khi brainstorm, viết spec hay lập plan cho bất kỳ tính năng nào**, phải xem cả hai đã làm tính năng đó ra sao.
+Lucerna muốn là một bản VS Code gọn hơn với giao diện tối giản. Nó nhắm tới người để AI agent viết code, dù agent chạy dưới dạng CLI hay app desktop. Lucerna chạy trên macOS trước, rồi tới Linux và Windows. Vì vậy, **trước khi brainstorm, viết spec hay lập plan cho bất kỳ tính năng nào**, phải xem cả hai đã làm tính năng đó ra sao.
 
 1. **VS Code.** Đọc tài liệu người dùng, tài liệu API hoặc contribution points, và mã nguồn ở `microsoft/vscode`. Nếu tính năng nằm trong một extension phổ biến (ví dụ VSCodeVim), đọc luôn extension đó. Cần nắm được:
    - người dùng thấy tính năng thế nào;

@@ -5,22 +5,24 @@
 <h1 align="center">Lucerna</h1>
 
 <p align="center">
-  A fast, read-first code viewer for macOS.<br>
-  A slimmer VS Code with a Zed-style UI, built for people who write code through CLI agents.
+  A fast, read-first code editor with a minimal UI.<br>
+  A slimmer VS Code for people who let AI agents write the code.
 </p>
 
 ---
 
-When Claude Code, Codex or another agent writes the code, you mostly *read* it: you browse
-the project, jump between files, and watch what the agent just changed. Lucerna is built
-for that. It opens instantly, follows changes on disk as they happen, and keeps VS Code's
-keyboard shortcuts and `settings.json`, so there is nothing new to learn.
+When an AI agent writes the code, you mostly *read* it: you browse the project, jump between
+files, and watch what the agent just changed. Lucerna is built for that, whether the agent runs
+in your terminal (Claude Code, Codex CLI) or in a desktop app (Claude, Codex). It opens instantly,
+follows changes on disk as they happen, and keeps VS Code's keyboard shortcuts and
+`settings.json`, so there is nothing new to learn.
 
-Lucerna is written in Rust on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)
-(the GPU UI framework behind Zed). It has no AI features and no telemetry.
+Lucerna is written in Rust on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui),
+the GPU-accelerated UI framework from the Zed project. It has no AI features and no telemetry.
 
-> **Status:** Phase 2 of the roadmap is complete. Lucerna is a **viewer**, so editing comes later.
-> See [Roadmap](#roadmap).
+> **Status:** Phase 2 of the roadmap is complete. Lucerna is a **viewer** for now, and editing
+> comes later. It runs on **macOS** today. **Linux and Windows** are planned, and GPUI already
+> supports both. See [Roadmap](#roadmap).
 
 ## Features
 
@@ -36,21 +38,24 @@ Lucerna is written in Rust on [GPUI](https://github.com/zed-industries/zed/tree/
   - Cmd+Shift+F searches the project, Cmd+F finds in the file, Cmd+\ splits the editor.
   - Settings and keys live in `settings.json` and `keybindings.json`, with `when` clauses and per-language overrides.
   - Changes apply as soon as you save them.
-- **Zed-style UI.**
-  - A compact chrome with the traffic lights inside the window and the git branch in the title bar.
+- **Minimal UI.**
+  - Compact chrome: an integrated title bar that shows the git branch, and panel toggles in the status bar.
   - Flat tabs with preview tabs, a path bar, indent guides and thin scrollbars.
   - Lilex and IBM Plex Sans fonts, Lucide icons, and the One Dark and One Light themes.
 - **Syntax highlighting** with tree-sitter for Rust, TypeScript/TSX, JavaScript, Python, Go, JSON,
   Markdown, TOML, YAML, Bash, HTML and CSS. More languages come from extensions.
-- **Zed extensions.** Install themes, icon themes and languages from the Zed extension registry.
-  They are built locally, with no call to `api.zed.dev`.
+- **Extensions from the Zed registry.** Install themes, icon themes and languages from the existing
+  Zed extension ecosystem. Extensions are built locally, with no call to `api.zed.dev`.
 - **Large-file safe.** Files over 20 MB or 300k lines skip highlighting. A 5 MB minified line
   renders without freezing. Binary files and files in other encodings (UTF-16, Latin-1, …) are detected.
 - **Vietnamese / IME input** works in every text field (Telex, VNI).
 
 ## Install
 
-### From the disk image
+Builds are macOS-only for now. Linux and Windows packages will come with cross-platform support
+(see [Roadmap](#roadmap)).
+
+### From the disk image (macOS)
 
 ```sh
 scripts/bundle-app.sh            # builds Lucerna.app (release)
@@ -214,6 +219,7 @@ and Zed do things are in [`docs/research/`](docs/research/). Before designing a 
 | 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | Planned |
 | 5 | Git gutter and diff view, integrated terminal, settings UI | Planned |
 | V1 / V2 | Vim mode: motions first (after phase 2), then editing (after phase 4) | Planned |
+| — | Linux and Windows support, using GPUI's Wayland/X11 and DirectX backends | Planned |
 
 ## License
 
