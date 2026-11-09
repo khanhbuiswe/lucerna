@@ -41,7 +41,7 @@ site/
   index.html          # toàn bộ nội dung, HTML có ngữ nghĩa
   styles.css          # token màu/chữ ở :root, rồi từng section
   main.js             # chỉ có nút Copy (~20 dòng), trang vẫn dùng được khi tắt JS
-  favicon.svg         # logo ngọn đèn, giống logo trên thanh nav
+  favicon.svg         # logo J2 bản cỡ nhỏ, giống logo trên thanh nav
   og.png              # ảnh 1200×630 để chia sẻ link (chụp từ phần hero)
   fonts/              # woff2 tự host, kèm file license OFL
     BricolageGrotesque-*.woff2

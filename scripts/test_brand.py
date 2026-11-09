@@ -130,6 +130,39 @@ class BrandTest(unittest.TestCase):
             self.assertGreaterEqual(vy + vh - (ty + 47 * s), margin, name)
             self.assertGreaterEqual(vx + vw - (tx + 62.5 * s), margin, name)
 
+    # Task 3: the site uses the new logo
+
+    SITE = ROOT / "site"
+
+    def test_favicon_adapts_to_scheme(self):
+        f = self.SITE / "favicon.svg"
+        root = load(f)
+        ps = paths(root)
+        self.assertEqual([p.get("d") for p in ps], SMALL_D)
+        self.assertEqual((ps[2].get("class"), ps[2].get("stroke")), ("line", "#080b12"))
+        text = "".join(f.read_text().split())
+        self.assertIn("prefers-color-scheme:dark", text)
+        self.assertIn(".line{stroke:#e6eaf2}", text)
+
+    def test_nav_logo(self):
+        import re
+
+        html = (self.SITE / "index.html").read_text()
+        m = re.search(r'class="brand"[^>]*>\s*(<svg\b.*?</svg>)', html, re.S)
+        self.assertIsNotNone(m)
+        root = load(m.group(1).replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" ', 1)
+                    if "xmlns" not in m.group(1) else m.group(1))
+        self.assertEqual(root.get("viewBox"), "1 18 62 29")
+        ps = paths(root)
+        self.assertEqual([p.get("d") for p in ps], SMALL_D)
+        self.assertEqual({p.get("fill") for p in ps[:2]}, {"var(--accent)"})
+        self.assertEqual(ps[2].get("stroke"), "var(--ink)")
+
+    def test_no_old_lamp_in_site(self):
+        for f in self.SITE.rglob("*"):
+            if f.suffix in (".html", ".css", ".js", ".svg"):
+                self.assertNotIn("M12 2.5c2.6 3", f.read_text(), str(f))
+
 
 if __name__ == "__main__":
     unittest.main()

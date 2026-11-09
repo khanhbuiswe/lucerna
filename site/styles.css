@@ -63,8 +63,8 @@ p { margin: 0; }
 body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--ground); }
 nav { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: color-mix(in srgb, var(--ground) 82%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
 nav .wrap { display: flex; align-items: center; gap: 24px; padding-block: 14px; }
-.brand { display: flex; align-items: center; gap: 10px; font: 650 18px/1 var(--display); text-decoration: none; }
-.brand svg { width: 22px; height: 22px; }
+.brand { display: flex; align-items: baseline; gap: 5px; font: 650 18px/1 var(--display); text-decoration: none; }
+.brand svg { width: 34px; height: 16px; }
 .nav-links { display: flex; gap: 22px; margin-left: auto; font-size: 14px; color: var(--ink-2); }
 .nav-links a { text-decoration: none; }
 .nav-links a:hover { color: var(--ink); }
