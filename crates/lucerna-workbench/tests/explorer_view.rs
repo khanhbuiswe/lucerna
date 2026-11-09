@@ -329,3 +329,80 @@ fn scrollbar_thumb_only_when_list_overflows(cx: &mut TestAppContext) {
     assert_eq!(thumb.top(), list.top());
     assert!(thumb.size.height < list.size.height);
 }
+
+fn ext_icon_theme(dir: &Path) -> (lucerna_theme::IconThemeRegistry, PathBuf) {
+    let root = dir.canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("icons")).unwrap();
+    std::fs::write(root.join("icons/json.svg"), "<svg/>").unwrap();
+    std::fs::write(root.join("icons/dir.svg"), "<svg/>").unwrap();
+    std::fs::write(
+        root.join("icons.json"),
+        r#"{"name":"Ext","author":"t","themes":[{"name":"Ext Icons","appearance":"dark",
+        "directory_icons":{"collapsed":"./icons/dir.svg","expanded":"./icons/dir.svg"},
+        "file_suffixes":{"json":"json"},"file_icons":{"json":{"path":"./icons/json.svg"}}}]}"#,
+    )
+    .unwrap();
+    let (registry, warnings) = lucerna_theme::IconThemeRegistry::build(&[(
+        "ext".to_string(),
+        root.join("icons.json"),
+        root.clone(),
+    )]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    (registry, root)
+}
+
+fn row_icon(
+    wb: &Entity<Workbench>,
+    path: &str,
+    cx: &mut VisualTestContext,
+) -> lucerna_theme::IconSource {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .explorer()
+            .read(cx)
+            .row_icon(Path::new(path), cx)
+            .unwrap_or_else(|| panic!("no row {path}"))
+    })
+}
+
+#[gpui::test]
+fn explorer_uses_extension_icon(cx: &mut TestAppContext) {
+    init(cx, None);
+    let themes = tempfile::tempdir().unwrap();
+    let (registry, root) = ext_icon_theme(themes.path());
+    cx.update(|cx| {
+        let state = cx.global_mut::<AppState>();
+        state.icons = registry.resolve("Ext Icons");
+        state.icon_themes = registry;
+    });
+    let dir = project();
+    std::fs::write(dir.path().join("a.json"), "{}").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    assert_eq!(
+        row_icon(&wb, "a.json", cx),
+        lucerna_theme::IconSource::File(root.join("icons/json.svg"))
+    );
+    assert_eq!(
+        row_icon(&wb, "src", cx),
+        lucerna_theme::IconSource::File(root.join("icons/dir.svg"))
+    );
+    // No mapping for .rs and none in Lucide's way: the theme falls back.
+    assert!(matches!(
+        row_icon(&wb, "a.rs", cx),
+        lucerna_theme::IconSource::Builtin(_)
+    ));
+    // The extension icon is drawn with an `img`; it stays in its slot.
+    assert!(cx.debug_bounds("explorer-row-a.json").is_some());
+}
+
+#[gpui::test]
+fn explorer_falls_back_to_lucide(cx: &mut TestAppContext) {
+    use lucerna_theme::IconSource::Builtin;
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    assert_eq!(row_icon(&wb, "a.rs", cx), Builtin("file-code"));
+    assert_eq!(row_icon(&wb, "src", cx), Builtin("folder"));
+    click("explorer-row-src", cx);
+    assert_eq!(row_icon(&wb, "src", cx), Builtin("folder-open"));
+}

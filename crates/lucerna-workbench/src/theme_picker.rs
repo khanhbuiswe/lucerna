@@ -1,7 +1,8 @@
 //! The theme picker (`⌘K ⌘T`): Quick Open's list over the theme names.
 //! Moving the selection previews a theme, Escape puts the previous one
 //! back, and Enter writes `workbench.colorTheme` into the user
-//! `settings.json`, keeping its comments.
+//! `settings.json`, keeping its comments. The same widget picks the icon
+//! theme (`workbench.action.selectIconTheme`, `workbench.iconTheme`).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,12 +16,13 @@ use jsonc_parser::common::Ranged;
 use jsonc_parser::tokens::Token;
 use jsonc_parser::{CollectOptions, CommentCollectionStrategy, ParseOptions, ast, parse_to_ast};
 use lucerna_settings::{Layer, SettingsError, SettingsStore};
-use lucerna_theme::Theme;
+use lucerna_theme::{ResolvedIcons, Theme};
 
 use crate::config_files::{
     ConfigFile, ConfigState, USER_SETTINGS_TEMPLATE, apply_configured_theme, record_error,
-    reload_config, set_theme_preview,
+    reload_config, set_icon_preview, set_theme_preview,
 };
+use crate::extensions::service::resolve_icons;
 use crate::quick_open::picker::{
     fuzzy_filter, highlighted, picker_input_row, picker_list, picker_row, wrap_index,
 };
@@ -28,8 +30,9 @@ use crate::text_input::TextInput;
 use crate::ui::popover;
 use crate::{AppState, CommandRegistry, Workbench};
 
-/// The setting Enter writes.
+/// The settings Enter writes.
 const COLOR_THEME_KEY: &str = "workbench.colorTheme";
+const ICON_THEME_KEY: &str = "workbench.iconTheme";
 
 /// What the workbench does as the picker is used.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,11 +57,16 @@ impl EventEmitter<ThemePickerEvent> for ThemePicker {}
 
 impl ThemePicker {
     /// Lists `names` with `current` selected.
-    fn new(names: Vec<String>, current: &str, cx: &mut Context<Self>) -> Self {
+    fn new(
+        names: Vec<String>,
+        current: &str,
+        placeholder: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let this = cx.weak_entity();
         let input = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder("Select Color Theme");
+            input.set_placeholder(placeholder);
             input.on_change(move |text, _, cx| {
                 this.update(cx, |picker, cx| picker.query_changed(text, cx))
                     .ok();
@@ -167,13 +175,20 @@ impl Render for ThemePicker {
     }
 }
 
+/// What a shown picker chooses, with what was active before it opened.
+/// Escape restores that when no configuration files are loaded (no
+/// [`ConfigState`]).
+#[derive(Clone)]
+enum Picking {
+    ColorTheme(Arc<Theme>),
+    IconTheme(ResolvedIcons),
+}
+
 /// The shown picker and what closing it restores.
 pub(crate) struct ShownThemePicker {
     picker: Entity<ThemePicker>,
     _events: Subscription,
-    /// The theme before the picker opened. Escape restores it when no
-    /// configuration files are loaded (no [`ConfigState`]).
-    original: Arc<Theme>,
+    picking: Picking,
     focus_before: Option<FocusHandle>,
 }
 
@@ -182,6 +197,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "workbench.action.selectTheme",
         "Preferences: Color Theme",
         |wb, _, window, cx| wb.show_theme_picker(window, cx),
+    );
+    commands.register(
+        "workbench.action.selectIconTheme",
+        "Preferences: File Icon Theme",
+        |wb, _, window, cx| wb.show_icon_theme_picker(window, cx),
     );
 }
 
@@ -197,27 +217,66 @@ impl Workbench {
         if self.theme_picker.is_some() {
             return;
         }
-        self.close_quick_open(window, cx);
         let state = cx.global::<AppState>();
         let (names, original) = (state.themes.names(), state.theme.clone());
-        let picker = cx.new(|cx| ThemePicker::new(names, &original.name, cx));
+        let current = original.name.clone();
+        self.show_picker(
+            names,
+            &current,
+            "Select Color Theme",
+            Picking::ColorTheme(original),
+            window,
+            cx,
+        );
+        set_theme_preview(true, cx);
+    }
+
+    /// Shows the picker over the icon themes with the active one selected.
+    pub fn show_icon_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.theme_picker.is_some() {
+            return;
+        }
+        let state = cx.global::<AppState>();
+        let (names, original) = (state.icon_themes.names(), state.icons.clone());
+        let current = original.name().to_string();
+        self.show_picker(
+            names,
+            &current,
+            "Select File Icon Theme",
+            Picking::IconTheme(original),
+            window,
+            cx,
+        );
+        set_icon_preview(true, cx);
+    }
+
+    fn show_picker(
+        &mut self,
+        names: Vec<String>,
+        current: &str,
+        placeholder: &'static str,
+        picking: Picking,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_quick_open(window, cx);
+        let picker = cx.new(|cx| ThemePicker::new(names, current, placeholder, cx));
         let events = cx.subscribe_in(&picker, window, Self::on_theme_picker_event);
         let focus_before = window.focused(cx);
         window.focus(&picker.focus_handle(cx), cx);
-        set_theme_preview(true, cx);
         self.theme_picker = Some(ShownThemePicker {
             picker,
             _events: events,
-            original,
+            picking,
             focus_before,
         });
         cx.notify();
     }
 
     /// Closes the theme picker. `revert` makes the configured theme
-    /// (`workbench.colorTheme` as last loaded, so a reload during the
-    /// preview counts) active again; without configuration files, the
-    /// theme from before the picker opened.
+    /// (`workbench.colorTheme` or `workbench.iconTheme` as last loaded, so a
+    /// reload during the preview counts) active again; without
+    /// configuration files, the one from before the picker opened.
     pub(crate) fn close_theme_picker(
         &mut self,
         revert: bool,
@@ -228,8 +287,9 @@ impl Workbench {
             return;
         };
         set_theme_preview(false, cx);
+        set_icon_preview(false, cx);
         if revert {
-            revert_preview(shown.original, cx);
+            revert_preview(shown.picking, cx);
         }
         let focused = window.focused(cx);
         if focused.is_none() || shown.picker.focus_handle(cx).contains_focused(window, cx) {
@@ -248,64 +308,95 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let is_icons = matches!(
+            self.theme_picker.as_ref().map(|shown| &shown.picking),
+            Some(Picking::IconTheme(_))
+        );
         match event {
-            ThemePickerEvent::Preview(name) => {
-                if let Some(theme) = cx.global::<AppState>().themes.get(name) {
-                    cx.global_mut::<AppState>().set_theme(theme);
+            ThemePickerEvent::Preview(name) => preview(name, is_icons, cx),
+            ThemePickerEvent::Confirm(name) => {
+                let key = if is_icons {
+                    ICON_THEME_KEY
+                } else {
+                    COLOR_THEME_KEY
+                };
+                match save_setting(key, name, cx) {
+                    Ok(()) => {
+                        preview(name, is_icons, cx);
+                        self.close_theme_picker(false, window, cx);
+                        if let Some(path) = cx
+                            .try_global::<ConfigState>()
+                            .map(|s| s.paths().user_settings())
+                        {
+                            reload_config(&[path], cx);
+                        }
+                    }
+                    // The picker stays open; the status bar shows why.
+                    Err(()) => {
+                        if let Some(shown) = &self.theme_picker {
+                            revert_preview(shown.picking.clone(), cx);
+                        }
+                    }
                 }
             }
-            ThemePickerEvent::Confirm(name) => match save_color_theme(name, cx) {
-                Ok(()) => {
-                    if let Some(theme) = cx.global::<AppState>().themes.get(name) {
-                        cx.global_mut::<AppState>().set_theme(theme);
-                    }
-                    self.close_theme_picker(false, window, cx);
-                    if let Some(path) = cx
-                        .try_global::<ConfigState>()
-                        .map(|s| s.paths().user_settings())
-                    {
-                        reload_config(&[path], cx);
-                    }
-                }
-                // The picker stays open; the status bar shows why.
-                Err(()) => {
-                    if let Some(shown) = &self.theme_picker {
-                        revert_preview(shown.original.clone(), cx);
-                    }
-                }
-            },
             ThemePickerEvent::Dismiss => self.close_theme_picker(true, window, cx),
         }
     }
 }
 
-/// Makes the configured theme active again, or `original` when no
-/// configuration files are loaded.
-fn revert_preview(original: Arc<Theme>, cx: &mut App) {
-    if cx.has_global::<ConfigState>() {
-        apply_configured_theme(cx);
-    } else {
-        cx.global_mut::<AppState>().set_theme(original);
+/// Makes the named theme (colors or icons) active without saving it.
+fn preview(name: &str, icons: bool, cx: &mut App) {
+    if icons {
+        let state = cx.global_mut::<AppState>();
+        state.icons = state.icon_themes.resolve(name);
+        cx.refresh_windows();
+    } else if let Some(theme) = cx.global::<AppState>().themes.get(name) {
+        cx.global_mut::<AppState>().set_theme(theme);
     }
 }
 
-/// Writes `name` as `workbench.colorTheme` into the user `settings.json`.
+/// Makes the configured theme active again, or the one from before the
+/// picker opened when no configuration files are loaded.
+fn revert_preview(picking: Picking, cx: &mut App) {
+    let has_config = cx.has_global::<ConfigState>();
+    match picking {
+        Picking::ColorTheme(original) => {
+            if has_config {
+                apply_configured_theme(cx);
+            } else {
+                cx.global_mut::<AppState>().set_theme(original);
+            }
+        }
+        Picking::IconTheme(original) => {
+            if has_config {
+                set_icon_preview(false, cx);
+                resolve_icons(cx);
+                set_icon_preview(true, cx);
+            } else {
+                cx.global_mut::<AppState>().icons = original;
+            }
+            cx.refresh_windows();
+        }
+    }
+}
+
+/// Writes `name` as the setting `key` into the user `settings.json`.
 /// A file that cannot be read or does not parse is left alone and the
 /// failure is shown as its configuration error. Without configuration
 /// files (no [`ConfigState`]) there is nothing to write.
-fn save_color_theme(name: &str, cx: &mut App) -> Result<(), ()> {
+fn save_setting(key: &str, name: &str, cx: &mut App) -> Result<(), ()> {
     let Some(state) = cx.try_global::<ConfigState>() else {
-        tracing::warn!("watch_config was not called: the theme is not saved");
+        tracing::warn!(key, "watch_config was not called: the theme is not saved");
         return Ok(());
     };
     let path = state.paths().user_settings();
-    write_color_theme(&path, name).map_err(|error| {
+    write_string_setting(&path, key, name).map_err(|error| {
         tracing::error!(path = %path.display(), %error, "could not save the theme");
         record_error(ConfigFile::UserSettings, path, error, cx);
     })
 }
 
-fn write_color_theme(path: &Path, name: &str) -> Result<(), SettingsError> {
+fn write_string_setting(path: &Path, key: &str, name: &str) -> Result<(), SettingsError> {
     let io_error = |e: io::Error| SettingsError {
         message: e.to_string(),
         line: None,
@@ -315,7 +406,7 @@ fn write_color_theme(path: &Path, name: &str) -> Result<(), SettingsError> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => USER_SETTINGS_TEMPLATE.to_string(),
         Err(err) => return Err(io_error(err)),
     };
-    let updated = set_string_setting(&text, COLOR_THEME_KEY, name)?;
+    let updated = set_string_setting(&text, key, name)?;
     write_atomically(path, &updated).map_err(io_error)
 }
 
@@ -495,7 +586,7 @@ mod tests {
     fn atomic_write_leaves_no_temp_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        write_color_theme(&path, "One Light").unwrap();
+        write_string_setting(&path, COLOR_THEME_KEY, "One Light").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
             text.contains("\"workbench.colorTheme\": \"One Light\""),

@@ -1,14 +1,10 @@
-//! The bundled Lucide icons (ISC, see `assets/icons/LICENSE-lucide`) and
-//! the file-type icon of each Explorer row.
+//! The bundled Lucide icons (ISC, see `assets/icons/LICENSE-lucide`). Which
+//! icon a file gets is the icon theme's business (`lucerna_theme`).
 //!
 //! The SVGs are upstream files, unmodified. They draw with
 //! `stroke="currentColor"`, which resvg resolves to opaque black when no
 //! `color` is set; GPUI uses the rendered alpha as a mask and fills it with
 //! the element's `text_color`, so the stroke takes the theme's icon color.
-
-use std::path::Path;
-
-use lucerna_theme::{IconSource, IconTheme, lucide_icon_theme};
 
 macro_rules! lucide {
     ($name:literal) => {
@@ -67,42 +63,9 @@ pub fn lucide_svg(name: &str) -> Option<&'static [u8]> {
     ALL.iter().find(|(n, _)| *n == name).map(|(_, svg)| *svg)
 }
 
-/// The icon for a tree entry, through the built-in Lucide theme. Temporary:
-/// the Explorer moves to the active icon theme later.
-pub fn icon_for_path(path: &Path, is_dir: bool, expanded: bool) -> &'static [u8] {
-    static LUCIDE: std::sync::OnceLock<IconTheme> = std::sync::OnceLock::new();
-    let theme = LUCIDE.get_or_init(lucide_icon_theme);
-    let icon = if is_dir {
-        let name = path.file_name().map(|n| n.to_string_lossy());
-        theme.directory_icon(name.as_deref().unwrap_or(""), expanded)
-    } else {
-        theme.file_icon(path)
-    };
-    match icon {
-        Some(IconSource::Builtin(name)) => lucide_svg(name).unwrap_or(FILE),
-        _ => FILE,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn directories_use_folder_icons() {
-        assert_eq!(icon_for_path(Path::new("src"), true, false), FOLDER);
-        assert_eq!(icon_for_path(Path::new("src"), true, true), FOLDER_OPEN);
-        // A directory named like a file is still a folder.
-        assert_eq!(icon_for_path(Path::new("x.json"), true, false), FOLDER);
-    }
-
-    #[test]
-    fn wrapper_maps_through_the_lucide_theme() {
-        let file = |n: &str| icon_for_path(Path::new(n), false, false);
-        assert!(file("Cargo.lock") == LOCK);
-        assert!(file("src/main.rs") == FILE_CODE);
-        assert!(file("Makefile") == FILE);
-    }
 
     #[test]
     fn lucide_svg_resolves_every_bundled_name() {

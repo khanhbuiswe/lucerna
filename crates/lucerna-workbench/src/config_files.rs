@@ -126,6 +126,8 @@ pub struct ConfigState {
     _pump: Task<()>,
     /// A theme picker is previewing: reloads leave the active theme alone.
     theme_preview: bool,
+    /// An icon theme picker is previewing: reloads leave the icons alone.
+    icon_preview: bool,
     /// Bumped by every keymap load.
     keymap_generation: u64,
     /// The paths of the last batch [`reload_config`] was given, and a
@@ -186,6 +188,7 @@ pub fn watch_config(paths: ConfigPaths, cx: &mut App) {
         watcher,
         _pump: pump,
         theme_preview: false,
+        icon_preview: false,
         keymap_generation: 0,
         changed: (0, Arc::from([])),
     });
@@ -314,6 +317,20 @@ pub(crate) fn set_theme_preview(previewing: bool, cx: &mut App) {
     if cx.has_global::<ConfigState>() {
         cx.global_mut::<ConfigState>().theme_preview = previewing;
     }
+}
+
+/// While `previewing`, reloads and registry swaps keep the icon theme a
+/// picker shows. Does nothing without configuration files.
+pub(crate) fn set_icon_preview(previewing: bool, cx: &mut App) {
+    if cx.has_global::<ConfigState>() {
+        cx.global_mut::<ConfigState>().icon_preview = previewing;
+    }
+}
+
+/// Whether an icon theme picker is previewing.
+pub(crate) fn icon_previewing(cx: &App) -> bool {
+    cx.try_global::<ConfigState>()
+        .is_some_and(|state| state.icon_preview)
 }
 
 /// Shows `error` for `file` in the status bar until the file next loads.

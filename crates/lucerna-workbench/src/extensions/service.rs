@@ -17,7 +17,7 @@ use lucerna_syntax::{Associations, ExtensionLanguage, LanguageRegistry};
 use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 
 use crate::AppState;
-use crate::config_files::{ConfigState, reapply_configured_theme};
+use crate::config_files::{ConfigState, icon_previewing, reapply_configured_theme};
 use crate::tasks::{catch_panic, try_spawn_guarded};
 
 /// How long after the first frame the registry is refreshed, when it is
@@ -209,8 +209,16 @@ fn configured_associations(cx: &App) -> BTreeMap<String, String> {
 }
 
 /// Makes the icon theme named by `workbench.iconTheme` active (Lucide when
-/// it is not installed; the setting is kept).
-fn resolve_icons(cx: &mut App) {
+/// it is not installed; the setting is kept). While an icon theme picker
+/// previews, the previewed theme stays (it is looked up again by name in
+/// the registry, so a swapped registry cannot leave it stale).
+pub(crate) fn resolve_icons(cx: &mut App) {
+    if icon_previewing(cx) {
+        let state = cx.global_mut::<AppState>();
+        let shown = state.icons.name().to_string();
+        state.icons = state.icon_themes.resolve(&shown);
+        return;
+    }
     let name = configured_icon_theme(cx);
     let state = cx.global_mut::<AppState>();
     state.icons = state.icon_themes.resolve(&name);

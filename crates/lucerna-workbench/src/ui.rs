@@ -2,12 +2,13 @@
 //! draws chrome takes its sizes and popover/icon-button styling from here.
 
 use gpui::{
-    App, Div, ElementId, MouseButton, ParentElement, Stateful, Styled, div, prelude::*, px, svg,
+    AnyElement, App, Div, ElementId, Hsla, MouseButton, ParentElement, Pixels, Stateful, Styled,
+    div, img, prelude::*, px, svg,
 };
+use lucerna_theme::IconSource;
 
 use crate::AppState;
 use crate::icons;
-pub use crate::icons::icon_for_path;
 use crate::layout::color;
 
 /// Spacing unit: paddings and gaps are multiples of it.
@@ -59,6 +60,33 @@ pub const CHEVRON_UP_ICON: &[u8] = icons::CHEVRON_UP;
 
 /// A single page with a folded corner.
 pub const FILE_ICON: &[u8] = icons::FILE;
+
+/// Size of a file or folder icon in a tree row.
+pub const FILE_ICON_SIZE: f32 = 14.0;
+
+/// An icon from an icon theme at [`FILE_ICON_SIZE`]; see
+/// [`file_icon_sized`].
+pub fn file_icon(source: &IconSource, color: Hsla) -> AnyElement {
+    file_icon_sized(source, px(FILE_ICON_SIZE), color)
+}
+
+/// An icon from an icon theme, `size` square. A bundled Lucide icon is an
+/// `svg` filled with `color`; an extension's icon is an `img` of its file,
+/// which keeps the colors it was drawn with. GPUI's `img` loads SVG files
+/// itself (rasterised at 1x by its SVG renderer, then scaled to `size`).
+pub fn file_icon_sized(source: &IconSource, size: Pixels, color: Hsla) -> AnyElement {
+    match source {
+        IconSource::Builtin(name) => match icons::lucide_svg(name) {
+            Some(data) => svg()
+                .data(data)
+                .size(size)
+                .text_color(color)
+                .into_any_element(),
+            None => div().size(size).into_any_element(),
+        },
+        IconSource::File(path) => img(path.clone()).size(size).into_any_element(),
+    }
+}
 
 /// The floating container for Quick Open, the theme picker and the find
 /// widget: up to [`POPOVER_MAX_WIDTH`] wide, rounded, bordered, shadowed,

@@ -9,17 +9,16 @@ use std::time::Instant;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, Div, Entity, FontWeight, IntoElement,
     ParentElement, Pixels, Point, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
-    UniformListDecoration, UniformListScrollHandle, WeakEntity, Window, div, prelude::*, px, svg,
+    UniformListDecoration, UniformListScrollHandle, WeakEntity, Window, div, prelude::*, px,
     uniform_list,
 };
 use lucerna_project::{ChangeKind, EntryKind, WorktreeEvent, WorktreeSnapshot};
+use lucerna_theme::{IconSource, ResolvedIcons};
 
-use super::model::ExplorerModel;
-use crate::icons;
+use super::model::{ExplorerModel, Row};
 use crate::layout::color;
 use crate::ui::{
-    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE,
-    icon_for_path, thumb_geometry,
+    GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE, file_icon_sized, thumb_geometry,
 };
 use crate::{AppState, EditorGroupsView, OpenMode, Workbench};
 
@@ -81,6 +80,17 @@ impl ExplorerView {
 
     pub fn model(&self) -> &ExplorerModel {
         &self.model
+    }
+
+    /// The icon the active icon theme gives the visible row at `path`
+    /// (root-relative); `None` when no such row is shown.
+    pub fn row_icon(&self, path: &Path, cx: &App) -> Option<IconSource> {
+        let row = self
+            .model
+            .visible_rows()
+            .iter()
+            .find(|r| &*r.path == path)?;
+        Some(row_icon(&cx.global::<AppState>().icons, row))
     }
 
     /// Takes the worktree's latest `snapshot` and, when `decorate` is set,
@@ -199,6 +209,7 @@ impl ExplorerView {
 
     fn render_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
         let ui = cx.global::<AppState>().theme.ui.clone();
+        let icons = cx.global::<AppState>().icons.clone();
         let now = Instant::now();
         let hover = color(ui.ghost_element_hover);
         let rows = self.model.visible_rows();
@@ -217,7 +228,7 @@ impl ExplorerView {
                     .to_string_lossy()
                     .into_owned();
                 let is_dir = kind == EntryKind::Dir;
-                let type_icon = icon_for_path(&row.path, is_dir, row.expanded);
+                let type_icon = row_icon(&icons, row);
                 // Selectors are formatted lazily: GPUI only calls these
                 // closures in test builds, so release frames skip the
                 // per-row and per-guide `format!`.
@@ -255,14 +266,10 @@ impl ExplorerView {
                     // Directories: chevron, then folder. Files: their type
                     // icon alone, in the chevron's slot.
                     .when(is_dir, |d| {
-                        let chevron = if row.expanded {
-                            CHEVRON_DOWN_ICON
-                        } else {
-                            CHEVRON_RIGHT_ICON
-                        };
-                        d.child(icon_slot(chevron, CHEVRON_SIZE, ui.icon_muted))
+                        let chevron = icons.chevron(row.expanded);
+                        d.child(icon_slot(&chevron, CHEVRON_SIZE, ui.icon_muted))
                     })
-                    .child(icon_slot(type_icon, TYPE_ICON_SIZE, ui.icon_muted))
+                    .child(icon_slot(&type_icon, TYPE_ICON_SIZE, ui.icon_muted))
                     .child(
                         div()
                             .flex_1()
@@ -293,7 +300,9 @@ impl ExplorerView {
     /// The always-expanded root: an open folder and the project's name.
     /// Clicking it does nothing.
     fn render_root(&self, cx: &App) -> impl IntoElement {
-        let ui = &cx.global::<AppState>().theme.ui;
+        let state = cx.global::<AppState>();
+        let ui = &state.theme.ui;
+        let root_icon = state.icons.directory(&self.root_label, true);
         div()
             .debug_selector(|| "explorer-root".into())
             .flex()
@@ -307,7 +316,7 @@ impl ExplorerView {
             .text_size(px(UI_FONT_SIZE))
             .text_color(color(ui.text))
             .child(
-                icon_slot(icons::FOLDER_OPEN, TYPE_ICON_SIZE, ui.icon_muted)
+                icon_slot(&root_icon, TYPE_ICON_SIZE, ui.icon_muted)
                     .debug_selector(|| "explorer-root-icon".into()),
             )
             .child(
@@ -322,15 +331,26 @@ impl ExplorerView {
     }
 }
 
-/// A fixed-size slot holding a centred `svg` in `tint`.
-fn icon_slot(data: &'static [u8], size: f32, tint: lucerna_theme::Rgba) -> Div {
+/// The icon of a tree row, through the active icon theme.
+fn row_icon(icons: &ResolvedIcons, row: &Row) -> IconSource {
+    if row.kind == EntryKind::Dir {
+        let name = row.path.file_name().map(|n| n.to_string_lossy());
+        icons.directory(name.as_deref().unwrap_or(""), row.expanded)
+    } else {
+        icons.file(&row.path)
+    }
+}
+
+/// A fixed-size slot holding a centred icon in `tint` (Lucide icons only;
+/// extension icons keep their colors).
+fn icon_slot(source: &IconSource, size: f32, tint: lucerna_theme::Rgba) -> Div {
     div()
         .flex()
         .flex_none()
         .justify_center()
         .items_center()
         .size(px(ICON_SLOT))
-        .child(svg().data(data).size(px(size)).text_color(color(tint)))
+        .child(file_icon_sized(source, px(size), color(tint).into()))
 }
 
 /// A thin overlay scrollbar for a uniform list: a thumb only, drawn at the
