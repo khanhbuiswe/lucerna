@@ -47,11 +47,42 @@ for manual opening in `luc`.
 | Target | How to measure | Result |
 |---|---|---|
 | First frame | `target/release/luc --trace-startup /tmp/lucerna-bench` prints `startup_ms=<n>` on stderr (also logged as `first frame painted`). Run once cold (after `sudo purge`) and a few times warm. | pending |
-| Tree usable, scan done | `luc /tmp/lucerna-bench`, then `grep -hE 'first scan progress\|scan complete' ~/Library/Logs/Lucerna/lucerna.*.log \| tail -2`. Each line ends in `scan_ms=<n>`, the milliseconds since the worktree started: first progress is when the tree is usable, `scan complete` is scan done. (Default `info` level is enough.) | pending |
+| Tree usable, scan done | See "Commands" below: `first scan progress` is the tree usable, `scan complete` is scan done; both carry `scan_ms`, the ms since the worktree started (first scan only). | pending |
 | Quick Open | `fuzzy_80k` bench, per call. | see table above |
 | Scrolling 120 fps | Open `/tmp/lucerna-bench/big.rs`, then Instruments > Core Animation (FPS), attach to `luc` and hold a trackpad scroll or Page Down. Expect a steady 120 fps on a ProMotion display. | pending |
 | Idle RAM | Open 10 tabs from `/tmp/lucerna-bench`, wait 60 s idle, read the "Memory" column for `luc` in Activity Monitor. | pending |
-| Disk to screen | `LUCERNA_LOG=debug target/release/luc /tmp/lucerna-bench`, open `/tmp/lucerna-bench/pkg00/mod0000/item00.rs`, then in a shell `date +%H:%M:%S.%N; echo x >> /tmp/lucerna-bench/pkg00/mod0000/item00.rs`. Read the two log lines with `grep -hE 'document reloaded\|first render of revision' ~/Library/Logs/Lucerna/lucerna.*.log \| tail -2` (both carry timestamps; `first render of revision` is the first frame built for the reloaded text). Disk to screen is that render timestamp minus the write time. | pending |
+| Disk to screen | See "Commands" below: the time from the `document reloaded` log line to the next `first render of revision` line for the same file, both stamped by the same clock. | pending |
+
+### Commands
+
+Tree usable / scan done (default `info` level; prints `scan_ms=<n>`):
+
+```sh
+target/release/luc /tmp/lucerna-bench
+grep -hE 'first scan progress|scan complete' ~/Library/Logs/Lucerna/lucerna.*.log | tail -2
+```
+
+Disk to screen. Use a reload-only flow: `first render of revision` also fires
+for the first load and other revision bumps, so open the file first, let it
+render, then write to it once:
+
+```sh
+LUCERNA_LOG=debug target/release/luc /tmp/lucerna-bench
+# in luc: open pkg00/mod0000/item00.rs; then in another shell:
+echo '// x' >> /tmp/lucerna-bench/pkg00/mod0000/item00.rs
+grep -hE 'document reloaded|first render of revision' ~/Library/Logs/Lucerna/lucerna.*.log | tail -2
+```
+
+The two lines carry RFC 3339 UTC timestamps with microseconds. Disk to screen
+is the second timestamp minus the first (reload finished to first frame). To
+include the watcher latency, take the write time from the same clock:
+
+```sh
+python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).isoformat())'
+```
+
+Run it immediately before the `echo` and subtract it from the
+`first render of revision` timestamp.
 
 ### Debug-build smoke numbers (Task 20, for reference only)
 

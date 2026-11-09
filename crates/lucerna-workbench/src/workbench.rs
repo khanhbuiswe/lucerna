@@ -67,6 +67,7 @@ pub struct Workbench {
     /// When the scan started, and whether its first progress was logged.
     scan_started: std::time::Instant,
     scan_progress_logged: bool,
+    scan_complete_logged: bool,
     /// The options of the scan, from `files.exclude`.
     scan_options: ScanOptions,
     /// Re-themes and rescans when [`AppState`] changes.
@@ -228,6 +229,7 @@ impl Workbench {
             worktree,
             scan_started,
             scan_progress_logged: false,
+            scan_complete_logged: false,
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
@@ -439,7 +441,10 @@ impl Workbench {
                 self.scan_progress_logged = true;
                 tracing::info!(scan_ms, "first scan progress");
             }
-            WorktreeEvent::ScanComplete => tracing::info!(scan_ms, "scan complete"),
+            WorktreeEvent::ScanComplete if !self.scan_complete_logged => {
+                self.scan_complete_logged = true;
+                tracing::info!(scan_ms, "scan complete");
+            }
             _ => {}
         }
         let snapshot = self.worktree.snapshot();
