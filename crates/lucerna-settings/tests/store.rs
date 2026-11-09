@@ -15,7 +15,7 @@ fn defaults_present() {
         Some("Lilex")
     );
     assert_eq!(s.get::<f32>("editor.lineHeight", None), Some(1.6));
-    assert_eq!(s.get::<bool>("editor.minimap.enabled", None), Some(true));
+    assert_eq!(s.get::<bool>("editor.minimap.enabled", None), Some(false));
     assert_eq!(
         s.get::<u64>("lucerna.largeFile.maxBytes", None),
         Some(20971520)

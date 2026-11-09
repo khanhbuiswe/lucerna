@@ -72,7 +72,7 @@ impl Config {
             line_height: settings.get("editor.lineHeight", language).unwrap_or(1.6),
             minimap: settings
                 .get("editor.minimap.enabled", language)
-                .unwrap_or(true),
+                .unwrap_or(false),
             render_whitespace: settings
                 .get::<String>("editor.renderWhitespace", language)
                 .is_some_and(|w| w == "all"),

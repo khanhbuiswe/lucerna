@@ -175,7 +175,10 @@ fn go_to_centers_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn large_file_disables_highlight(cx: &mut TestAppContext) {
-    init(cx, Some(r#"{ "lucerna.largeFile.maxLines": 10 }"#));
+    init(
+        cx,
+        Some(r#"{ "lucerna.largeFile.maxLines": 10, "editor.minimap.enabled": true }"#),
+    );
     let (wb, cx) = workbench(cx);
     let source: String = (0..20)
         .map(|i| format!("fn f{i}() {{\n    {i}\n}}\n"))
@@ -220,6 +223,13 @@ fn large_file_disables_highlight(cx: &mut TestAppContext) {
     });
     assert!(cx.debug_bounds("code-view-minimap").is_some());
     assert!(cx.debug_bounds("large-file-status").is_none());
+}
+
+#[gpui::test]
+fn minimap_is_off_by_default(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_view, cx) = code_view("fn main() {}\n", cx);
+    assert!(cx.debug_bounds("code-view-minimap").is_none());
 }
 
 #[gpui::test]
