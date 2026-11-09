@@ -82,6 +82,54 @@ class BrandTest(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(ds(groups[0]), MARK_D)
 
+    # Task 2: lockups
+
+    LOCKUPS = {"lockup-dark.svg": "#e6eaf2", "lockup-light.svg": "#080b12"}
+
+    def _mark_group(self, root):
+        groups = [g for g in root.iter("g") if (g.get("transform") or "").startswith("translate(")]
+        self.assertEqual(len(groups), 1)
+        return groups[0]
+
+    def test_lockups_have_no_text(self):
+        for name in self.LOCKUPS:
+            root = load(BRAND / name)
+            self.assertEqual(list(root.iter("text")) + list(root.iter("tspan")), [], name)
+
+    def test_lockup_contains_mark(self):
+        for name in self.LOCKUPS:
+            g = self._mark_group(load(BRAND / name))
+            self.assertEqual(ds(g), MARK_D, name)
+
+    def test_lockup_colours(self):
+        for name, ink in self.LOCKUPS.items():
+            root = load(BRAND / name)
+            g = self._mark_group(root)
+            mark = paths(g)
+            self.assertEqual({p.get("fill") for p in mark[:3]}, {"#4f8cff"}, name)
+            self.assertEqual(mark[3].get("stroke"), ink, name)
+            glyphs = [p for p in paths(root) if p not in mark]
+            self.assertEqual(len(glyphs), len("Lucerna"), name)
+            self.assertEqual({p.get("fill") for p in glyphs}, {ink}, name)
+
+    def test_lockup_viewbox_contains_mark(self):
+        import re
+
+        for name in self.LOCKUPS:
+            root = load(BRAND / name)
+            vx, vy, vw, vh = map(float, root.get("viewBox").split())
+            self.assertGreater(vw, 0)
+            self.assertGreater(vh, 0)
+            m = re.fullmatch(r"translate\(([-\d.]+) ([-\d.]+)\) scale\(([\d.]+)\)",
+                             self._mark_group(root).get("transform"))
+            self.assertIsNotNone(m, name)
+            tx, ty, s = map(float, m.groups())
+            margin = 7 * s - 0.01
+            self.assertGreaterEqual(tx + 1.5 * s - vx, margin, name)
+            self.assertGreaterEqual(ty + 18 * s - vy, margin, name)
+            self.assertGreaterEqual(vy + vh - (ty + 47 * s), margin, name)
+            self.assertGreaterEqual(vx + vw - (tx + 62.5 * s), margin, name)
+
 
 if __name__ == "__main__":
     unittest.main()
