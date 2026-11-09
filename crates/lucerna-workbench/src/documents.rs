@@ -185,7 +185,8 @@ impl Documents {
                 });
             }
             None => {
-                let language = cx.global::<AppState>().languages.language_for_path(&key);
+                // The first line is not known yet; the load looks again.
+                let language = language_for(&self.root, &key, None, cx);
                 view.update(cx, |v, cx| v.set_doc_state(DocState::Loading, cx));
                 self.docs.insert(
                     key.clone(),
@@ -212,6 +213,29 @@ impl Documents {
         }
         cx.notify();
         view
+    }
+
+    /// The language registry was replaced: every open document looks its
+    /// language up again and is parsed afresh, since its syntax resolves
+    /// injected languages through the old registry.
+    pub fn languages_changed(&mut self, cx: &mut Context<Self>) {
+        self.collect_closed();
+        let keys: Vec<Arc<Path>> = self.docs.keys().cloned().collect();
+        for key in keys {
+            let doc = self.docs.get_mut(&key).expect("key from the map");
+            // Even an unchanged root language is parsed again: the new
+            // registry may add or drop the languages it injects.
+            doc.language = language_for(&self.root, &key, doc.snapshot.as_ref(), cx);
+            if doc.language.is_none() {
+                // Cancels a parse in flight with the old language.
+                doc.parse = None;
+                clear_syntax(doc, cx);
+            } else {
+                // The old syntax stays shown until the new parse lands.
+                self.parse(&key, cx);
+            }
+        }
+        cx.notify();
     }
 
     /// The state of the document at `path`, if it is open.
@@ -412,6 +436,8 @@ impl Documents {
             Ok(JobOutput::Loaded(Ok((buffer, stamp)))) => {
                 let snapshot = buffer.snapshot();
                 take_buffer(doc, buffer, stamp);
+                // Now with the first line, for `first_line_pattern`.
+                doc.language = language_for(&self.root, key, Some(&snapshot), cx);
                 for view in doc.views() {
                     let snapshot = snapshot.clone();
                     view.update(cx, |v, cx| v.set_buffer(snapshot, cx));
@@ -622,6 +648,46 @@ fn set_syntax(doc: &mut Document, syntax: Arc<SyntaxState>, cx: &mut App) {
         view.update(cx, |v, cx| v.set_syntax(Some(syntax), cx));
     }
     doc.syntax = Some(syntax);
+}
+
+/// The language of the file at `key`: by `files.associations` against its
+/// path relative to `root`, its name, and the first line of `snapshot`.
+fn language_for(
+    root: &Path,
+    key: &Path,
+    snapshot: Option<&BufferSnapshot>,
+    cx: &App,
+) -> Option<Arc<Language>> {
+    let path = key.strip_prefix(root).unwrap_or(key);
+    let first_line = snapshot.map(first_line).unwrap_or_default();
+    cx.global::<AppState>()
+        .languages
+        .language_for_file(path, &first_line)
+}
+
+/// Most bytes of the first line handed to language detection.
+const FIRST_LINE_BYTES: usize = 256;
+
+/// The first line of `snapshot`, cut to [`FIRST_LINE_BYTES`] (on a char
+/// boundary) without copying the rest of a long line.
+fn first_line(snapshot: &BufferSnapshot) -> String {
+    let mut end = snapshot.len_bytes().min(FIRST_LINE_BYTES);
+    // Back off continuation bytes so the cut lands on a char boundary.
+    while end > 0 && end < snapshot.len_bytes() && snapshot.byte_at(end) & 0xC0 == 0x80 {
+        end -= 1;
+    }
+    let mut line = String::new();
+    for chunk in snapshot.chunks_in_range(0..end) {
+        match chunk.find('\n') {
+            Some(i) => {
+                line.push_str(&chunk[..i]);
+                break;
+            }
+            None => line.push_str(chunk),
+        }
+    }
+    line.truncate(line.trim_end_matches('\r').len());
+    line
 }
 
 /// Reads `path` whole, refusing files over the size limit.

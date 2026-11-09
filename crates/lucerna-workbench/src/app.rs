@@ -6,10 +6,14 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, actions, px, size};
 use gpui_platform::application;
+use lucerna_extension::store::Store;
 use lucerna_settings::{Keymap, SettingsStore};
-use lucerna_syntax::LanguageRegistry;
-use lucerna_theme::ThemeRegistry;
+use lucerna_syntax::{Associations, LanguageRegistry};
+use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 
+use crate::extensions::{
+    ExtensionService, WasmGrammarValidator, extension_languages, extensions_root,
+};
 use crate::{
     AppState, ConfigPaths, OpenMode, Workbench, default_data_dir, watch_config, window_options,
 };
@@ -37,7 +41,7 @@ pub fn run(launch: Launch) {
             on_first_frame,
         } = launch;
         crate::fonts::register(cx);
-        set_app_state(cx);
+        set_app_state(extensions_root(), cx);
         install_app_menu(cx);
         watch_config(ConfigPaths::for_root(&root), cx);
         cx.on_window_closed(|cx, _| {
@@ -59,13 +63,16 @@ pub fn run(launch: Launch) {
                 let path: Arc<Path> = file.into();
                 workbench.update(cx, |wb, cx| wb.open_path(path, OpenMode::Pinned, cx));
             }
-            if let Some(callback) = on_first_frame {
-                // Next-frame callbacks run before that frame draws, so the
-                // second one runs once the first frame has been presented.
-                window.on_next_frame(move |window, _| {
-                    window.on_next_frame(move |_, _| callback());
+            // Next-frame callbacks run before that frame draws, so the
+            // second one runs once the first frame has been presented.
+            window.on_next_frame(move |window, _| {
+                window.on_next_frame(move |_, cx| {
+                    ExtensionService::schedule_startup_refresh(cx);
+                    if let Some(callback) = on_first_frame {
+                        callback();
+                    }
                 });
-            }
+            });
             workbench
         });
         if let Err(err) = opened {
@@ -109,10 +116,20 @@ fn install_app_menu(cx: &mut App) {
     ]);
 }
 
-/// The built-in defaults; [`watch_config`] then applies the user's files.
-fn set_app_state(cx: &mut App) {
+/// The built-in defaults plus the installed extensions, read from the
+/// store's `index.json` without loading any grammar; [`watch_config`] then
+/// applies the user's files. Starts the [`ExtensionService`] on the store
+/// at `extensions_root`.
+pub fn set_app_state(extensions_root: PathBuf, cx: &mut App) {
+    let store = Store::open(extensions_root, Arc::new(WasmGrammarValidator));
+    let languages = LanguageRegistry::build(
+        &extension_languages(&store.index()),
+        Associations::default(),
+    );
     let themes = ThemeRegistry::builtin();
     let theme = themes.get_or_default("One Dark");
+    let (icon_themes, _) = IconThemeRegistry::build(&[]);
+    let icons = icon_themes.resolve("Lucide");
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     if let Some(error) = error {
         tracing::error!(message = error.message, "default keymap");
@@ -123,6 +140,10 @@ fn set_app_state(cx: &mut App) {
         themes,
         theme,
         theme_generation: 0,
-        languages: Arc::new(LanguageRegistry::bundled()),
+        languages: Arc::new(languages),
+        languages_generation: 0,
+        icon_themes,
+        icons,
     });
+    ExtensionService::start(store, cx);
 }

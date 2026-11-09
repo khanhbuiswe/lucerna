@@ -1,9 +1,13 @@
 //! Extension support shared by the app and the `luc ext` CLI.
 
+pub(crate) mod service;
 mod validator;
 
 use std::path::PathBuf;
 
+pub use service::{
+    ExtensionService, Registries, STARTUP_REFRESH_DELAY, extension_languages, rebuild_registries,
+};
 pub use validator::WasmGrammarValidator;
 
 /// Environment variable that overrides the extensions directory (tests).

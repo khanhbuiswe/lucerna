@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
-use lucerna_theme::{Theme, ThemeRegistry};
+use lucerna_theme::{IconThemeRegistry, ResolvedIcons, Theme, ThemeRegistry};
 
 pub struct AppState {
     pub settings: SettingsStore,
@@ -16,8 +16,18 @@ pub struct AppState {
     /// Bumped by every theme change. Caches of themed output (shaped
     /// rows, minimap rows) key on it rather than on the theme's address.
     pub theme_generation: u64,
-    /// Built once at startup; maps file paths to languages.
+    /// Maps file paths to languages. Replaced when extensions or
+    /// `files.associations` change; [`AppState::languages_generation`]
+    /// counts the replacements.
     pub languages: Arc<LanguageRegistry>,
+    /// Bumped each time [`AppState::languages`] is replaced, so open
+    /// documents look their language up again.
+    pub languages_generation: u64,
+    /// Lucide plus the icon themes of installed extensions.
+    pub icon_themes: IconThemeRegistry,
+    /// The icon theme named by `workbench.iconTheme` (Lucide when it names
+    /// none that is installed).
+    pub icons: ResolvedIcons,
 }
 
 impl AppState {

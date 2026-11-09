@@ -53,6 +53,11 @@ fn init(dirs: &Dirs, cx: &mut TestAppContext) {
         theme,
         theme_generation: 0,
         languages: Arc::new(LanguageRegistry::bundled()),
+        languages_generation: 0,
+        icon_themes: lucerna_theme::IconThemeRegistry::build(&[]).0,
+        icons: lucerna_theme::IconThemeRegistry::build(&[])
+            .0
+            .resolve("Lucide"),
     });
     let paths = ConfigPaths::with_user_dir(dirs.user.path(), dirs.root.path());
     cx.update(|cx| watch_config(paths, cx));

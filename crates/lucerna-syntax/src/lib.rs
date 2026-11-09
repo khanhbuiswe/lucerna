@@ -25,4 +25,4 @@ pub(crate) fn row_start(snapshot: &BufferSnapshot, row: u32) -> usize {
         snapshot.point_to_offset(Point { row, column: 0 })
     }
 }
-pub use wasm::{engine, validate_query, validate_wasm_grammar};
+pub use wasm::{engine, validate_query, validate_wasm_grammar, wasm_cache_len};

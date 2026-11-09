@@ -75,6 +75,8 @@ pub struct Workbench {
     _settings: Subscription,
     /// [`ConfigState::keymap_generation`] as last seen.
     keymap_generation: u64,
+    /// [`AppState::languages_generation`] as last seen.
+    languages_generation: u64,
     explorer: Entity<ExplorerView>,
     /// The Search panel, installed in the Search sidebar slot.
     search_panel: Entity<SearchPanel>,
@@ -294,6 +296,7 @@ impl Workbench {
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
+            languages_generation: cx.global::<AppState>().languages_generation,
             _worktree_events: worktree_events,
             scanning,
             open_file_watcher,
@@ -502,6 +505,13 @@ impl Workbench {
         if generation != self.keymap_generation {
             self.keymap_generation = generation;
             self.pending_chord.clear();
+        }
+        // A new language registry: open documents look theirs up again.
+        let generation = cx.global::<AppState>().languages_generation;
+        if generation != self.languages_generation {
+            self.languages_generation = generation;
+            self.documents
+                .update(cx, |documents, cx| documents.languages_changed(cx));
         }
         cx.notify();
     }

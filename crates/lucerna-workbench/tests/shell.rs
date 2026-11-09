@@ -25,6 +25,11 @@ fn init(cx: &mut TestAppContext, user_keymap: Option<&str>) {
         theme,
         theme_generation: 0,
         languages: Arc::new(LanguageRegistry::bundled()),
+        languages_generation: 0,
+        icon_themes: lucerna_theme::IconThemeRegistry::build(&[]).0,
+        icons: lucerna_theme::IconThemeRegistry::build(&[])
+            .0
+            .resolve("Lucide"),
     });
 }
 

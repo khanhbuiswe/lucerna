@@ -20,6 +20,7 @@ use lucerna_text::Point;
 use lucerna_theme::ThemeRegistry;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
+use crate::extensions::service;
 use crate::layout::color;
 use crate::tasks::{spawn_guarded, try_spawn_guarded};
 use crate::{AppState, CommandRegistry, OpenMode, Workbench};
@@ -188,13 +189,15 @@ pub fn watch_config(paths: ConfigPaths, cx: &mut App) {
         keymap_generation: 0,
         changed: (0, Arc::from([])),
     });
+    // Settings first: the theme files read depend on `workbench.colorTheme`.
     load(
         [
-            ConfigFile::Themes,
             ConfigFile::UserSettings,
             ConfigFile::WorkspaceSettings,
+            ConfigFile::Themes,
             ConfigFile::Keybindings,
         ],
+        true,
         cx,
     );
 }
@@ -211,7 +214,7 @@ pub fn reload_config(changed: &[PathBuf], cx: &mut App) {
     let state = cx.global::<ConfigState>();
     let files = classify(&state.paths, changed);
     if !files.is_empty() {
-        load(files, cx);
+        load(files, false, cx);
     }
 }
 
@@ -236,10 +239,17 @@ fn start_watching(paths: &ConfigPaths, cx: &mut App) -> (Option<ConfigWatcher>, 
     }
 }
 
-/// Loads `files` and makes the configured theme active.
-fn load(files: impl IntoIterator<Item = ConfigFile>, cx: &mut App) {
+/// Loads `files` and makes the configured theme active. The `initial`
+/// load reads only the extension theme files holding the configured theme;
+/// the rest load in the background (see `extensions::service`).
+fn load(files: impl IntoIterator<Item = ConfigFile>, initial: bool, cx: &mut App) {
     let paths = cx.global::<ConfigState>().paths.clone();
+    let mut settings_loaded = false;
     for file in files {
+        settings_loaded |= matches!(
+            file,
+            ConfigFile::UserSettings | ConfigFile::WorkspaceSettings
+        );
         match file {
             ConfigFile::UserSettings => load_settings(file, Layer::User, paths.user_settings(), cx),
             ConfigFile::WorkspaceSettings => {
@@ -262,9 +272,17 @@ fn load(files: impl IntoIterator<Item = ConfigFile>, cx: &mut App) {
             }
             ConfigFile::Themes => {
                 let dir = paths.themes_dir();
-                // Extension themes arrive with the extensions store (later task).
                 let user_dir = dir.is_dir().then_some(dir.as_path());
-                let (themes, errors) = ThemeRegistry::build(&[], user_dir);
+                let configured: Option<String> = initial
+                    .then(|| {
+                        cx.global::<AppState>()
+                            .settings
+                            .get("workbench.colorTheme", None)
+                    })
+                    .flatten();
+                let initial_only = initial.then(|| configured.as_deref().unwrap_or_default());
+                let extension_files = service::extension_theme_files(cx, initial_only);
+                let (themes, errors) = ThemeRegistry::build(&extension_files, user_dir);
                 for (path, err) in errors {
                     tracing::warn!(path = %path.display(), %err, "could not load theme");
                 }
@@ -272,7 +290,20 @@ fn load(files: impl IntoIterator<Item = ConfigFile>, cx: &mut App) {
             }
         }
     }
-    if !cx.global::<ConfigState>().theme_preview {
+    if initial {
+        service::config_loaded(cx);
+    } else if settings_loaded {
+        service::settings_changed(cx);
+    }
+    reapply_configured_theme(cx);
+}
+
+/// [`apply_configured_theme`], unless a theme picker is previewing.
+pub(crate) fn reapply_configured_theme(cx: &mut App) {
+    if !cx
+        .try_global::<ConfigState>()
+        .is_some_and(|state| state.theme_preview)
+    {
         apply_configured_theme(cx);
     }
 }

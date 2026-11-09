@@ -90,6 +90,13 @@ fn lock() -> std::sync::MutexGuard<'static, Cache> {
     cache().lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// How many grammar files the process-wide cache holds (loaded, loading or
+/// failed), for tests that check a grammar was not loaded.
+#[doc(hidden)]
+pub fn wasm_cache_len() -> usize {
+    lock().slots.len()
+}
+
 /// Whether [`load_wasm_grammar`] would answer without reading the file.
 pub(crate) fn is_loaded(key: &GrammarKey, path: &Path) -> bool {
     let key = CacheKey::new(key, path);

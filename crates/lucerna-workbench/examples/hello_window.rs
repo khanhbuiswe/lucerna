@@ -29,6 +29,11 @@ fn main() {
             theme,
             theme_generation: 0,
             languages: Arc::new(LanguageRegistry::bundled()),
+            languages_generation: 0,
+            icon_themes: lucerna_theme::IconThemeRegistry::build(&[]).0,
+            icons: lucerna_theme::IconThemeRegistry::build(&[])
+                .0
+                .resolve("Lucide"),
         });
         let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);
         cx.open_window(window_options(bounds), |window, cx| {
