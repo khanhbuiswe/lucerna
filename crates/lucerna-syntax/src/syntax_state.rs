@@ -121,21 +121,7 @@ impl SyntaxState {
     ) -> SyntaxState {
         let mut edited = SyntaxState::new(self.language.clone());
         edited.tree = self.tree.clone().map(|mut tree| {
-            let start = row_start(old, reload.start_row);
-            let old_end = row_start(old, reload.old_end_row);
-            let new_end = row_start(new, reload.new_end_row);
-            let point = |snapshot: &BufferSnapshot, offset: usize| {
-                let p = snapshot.offset_to_point(offset);
-                tree_sitter::Point::new(p.row as usize, p.column as usize)
-            };
-            tree.edit(&InputEdit {
-                start_byte: start,
-                old_end_byte: old_end,
-                new_end_byte: new_end,
-                start_position: point(old, start),
-                old_end_position: point(old, old_end),
-                new_end_position: point(new, new_end),
-            });
+            tree.edit(&input_edit(old, new, reload));
             tree
         });
         edited
@@ -335,4 +321,71 @@ fn long_line_cap(snapshot: &BufferSnapshot, line: Range<usize>) -> Option<usize>
         pos += chunk.len();
     }
     None
+}
+
+/// The tree-sitter edit for `reload`. Its byte offsets and points are
+/// consistent: the start never lies past either end (R30).
+fn input_edit(old: &BufferSnapshot, new: &BufferSnapshot, reload: &Reload) -> InputEdit {
+    let mut start = row_start(old, reload.start_row);
+    let old_end = row_start(old, reload.old_end_row);
+    let new_end = row_start(new, reload.new_end_row);
+    // Rows that compare equal can still differ in bytes (CRLF to LF, a
+    // removed final newline), leaving `start` past an end. Fall back to
+    // a whole-file edit then.
+    let whole_file = start > old_end || start > new_end;
+    if whole_file {
+        start = 0;
+    }
+    let (old_end, new_end) = if whole_file {
+        (old.len_bytes(), new.len_bytes())
+    } else {
+        (old_end, new_end)
+    };
+    let point = |snapshot: &BufferSnapshot, offset: usize| {
+        let p = snapshot.offset_to_point(offset);
+        tree_sitter::Point::new(p.row as usize, p.column as usize)
+    };
+    InputEdit {
+        start_byte: start,
+        old_end_byte: old_end,
+        new_end_byte: new_end,
+        start_position: point(old, start),
+        old_end_position: point(old, old_end),
+        new_end_position: point(new, new_end),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucerna_text::Buffer;
+
+    fn edit_for(old_text: &str, new_text: &str) -> InputEdit {
+        let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
+        let old = buffer.snapshot();
+        let reload = buffer.reload(new_text.as_bytes()).unwrap();
+        input_edit(&old, &buffer.snapshot(), &reload)
+    }
+
+    #[test]
+    fn edits_never_start_past_their_ends() {
+        let lf = "fn a() {}\nfn b() {}\n";
+        let crlf = lf.replace('\n', "\r\n");
+        for (old, new) in [
+            (crlf.as_str(), lf),
+            (lf, crlf.as_str()),
+            (lf, "fn a() {}\nfn b() {}"),
+            ("fn a() {}\nfn b() {}", lf),
+            (lf, "fn a() {}\n"),
+            ("", lf),
+        ] {
+            let e = edit_for(old, new);
+            assert!(e.start_byte <= e.old_end_byte, "{old:?} -> {new:?}: {e:?}");
+            assert!(e.start_byte <= e.new_end_byte, "{old:?} -> {new:?}: {e:?}");
+            assert!(e.start_position <= e.old_end_position, "{e:?}");
+            assert!(e.start_position <= e.new_end_position, "{e:?}");
+            assert!(e.old_end_byte <= old.len(), "{e:?}");
+            assert!(e.new_end_byte <= new.len(), "{e:?}");
+        }
+    }
 }

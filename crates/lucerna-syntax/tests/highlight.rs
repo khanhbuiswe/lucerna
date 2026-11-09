@@ -257,3 +257,34 @@ fn edited_state_highlights_the_new_text_until_reparsed() {
         assert!(at <= new.len_bytes());
     }
 }
+
+/// Reloads `old_text` as `new_text` and highlights the edited state.
+fn highlights_after_reload(old_text: &str, new_text: &str) -> (Vec<HighlightSpan>, usize) {
+    let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
+    let old = buffer.snapshot();
+    let mut state = SyntaxState::new(language("a.rs"));
+    assert_eq!(state.parse(&old, None), ParseOutcome::Done);
+    let reload = buffer.reload(new_text.as_bytes()).unwrap();
+    let new = buffer.snapshot();
+    let edited = state.edited(&old, &new, &reload);
+    let spans = edited.highlights(&new, 0..new.line_count());
+    (spans, new.len_bytes())
+}
+
+/// R30: a reload with no changed rows but another byte length (CRLF to LF,
+/// a removed final newline) must still give tree-sitter a valid edit.
+#[test]
+fn eol_only_reload_keeps_the_tree_usable() {
+    let lf = "fn a() {}\nfn b() {}\n";
+    let crlf = lf.replace('\n', "\r\n");
+    for (old_text, new_text) in [
+        (crlf.as_str(), lf),
+        (lf, crlf.as_str()),
+        (lf, "fn a() {}\nfn b() {}"),
+        ("fn a() {}\nfn b() {}", lf),
+    ] {
+        let (spans, len) = highlights_after_reload(old_text, new_text);
+        assert!(!spans.is_empty(), "{old_text:?} -> {new_text:?}");
+        assert!(spans.iter().all(|s| s.range.end <= len));
+    }
+}
