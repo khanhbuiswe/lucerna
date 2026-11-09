@@ -7,4 +7,4 @@ languages = ["languages/bogus"]
 
 [grammars.bogus]
 repository = "https://example.com/x"
-rev = "abc"
+rev = "abcabcabcabcabcabcabcabcabcabcabcabcabca"

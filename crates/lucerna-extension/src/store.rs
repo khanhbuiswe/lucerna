@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -79,6 +80,9 @@ struct Shared {
     /// never replace a newer one (across processes, `index.rs` adds a
     /// flock around the disk part).
     reload: Mutex<()>,
+    /// Set by [`Store::open_deferred`]: the sweep and index check still
+    /// have to run ([`Store::start_maintenance`]).
+    maintenance_pending: AtomicBool,
 }
 
 impl Shared {
@@ -120,6 +124,8 @@ pub struct Store {
     validator: Arc<dyn GrammarValidator>,
     wasi_sdk: Option<PathBuf>,
     git_program: OsString,
+    /// Test opt-in: accept local (`file://`) repositories.
+    allow_file_urls: bool,
     shared: Arc<Shared>,
 }
 
@@ -180,21 +186,72 @@ impl Drop for StagingGuard {
 impl Store {
     /// Opens the store at `root`: sweeps leftovers of interrupted
     /// operations (skipping ids another process is working on) and loads
-    /// the index.
+    /// the index, rebuilding it when needed. For the CLI and tests; the app
+    /// uses [`Store::open_deferred`].
     pub fn open(root: PathBuf, validator: Arc<dyn GrammarValidator>) -> Store {
         sweep_leftovers(&root);
         let index = index::load_or_rebuild(&root);
+        Self::with_index(root, validator, index, false)
+    }
+
+    /// Opens the store at `root` reading only `index.json` (an empty index
+    /// when it is missing or corrupt): no sweep, no lock, no rebuild, so it
+    /// is cheap enough for the UI thread at startup (spec §8). The rest of
+    /// [`Store::open`] runs in the background on [`Store::start_maintenance`].
+    pub fn open_deferred(root: PathBuf, validator: Arc<dyn GrammarValidator>) -> Store {
+        let index = index::read(&root).unwrap_or_default();
+        Self::with_index(root, validator, index, true)
+    }
+
+    /// After [`Store::open_deferred`], sweeps leftovers and reloads (or
+    /// rebuilds) the index on a background thread, emitting `Changed` when
+    /// the index differs. Call it after subscribing. Runs once; a no-op on a
+    /// store from [`Store::open`].
+    pub fn start_maintenance(&self) {
+        if !self
+            .shared
+            .maintenance_pending
+            .swap(false, Ordering::SeqCst)
+        {
+            return;
+        }
+        let shared = self.shared.clone();
+        let root = self.root.clone();
+        let spawned = std::thread::Builder::new()
+            .name("lucerna-extensions-maintenance".into())
+            .spawn(move || {
+                let r = catch_unwind(AssertUnwindSafe(|| {
+                    sweep_leftovers(&root);
+                    shared.reload(|| index::load_or_rebuild(&root));
+                }));
+                if r.is_err() {
+                    tracing::error!("panic during extension store maintenance");
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::error!("cannot start extension store maintenance: {e}");
+        }
+    }
+
+    fn with_index(
+        root: PathBuf,
+        validator: Arc<dyn GrammarValidator>,
+        index: ExtensionIndex,
+        maintenance_pending: bool,
+    ) -> Store {
         Store {
             root,
             remote: REGISTRY_URL.to_string(),
             validator,
             wasi_sdk: None,
             git_program: OsString::from("git"),
+            allow_file_urls: false,
             shared: Arc::new(Shared {
                 index: Mutex::new(Arc::new(index)),
                 subscribers: Mutex::new(Vec::new()),
                 watcher: Mutex::new(None),
                 reload: Mutex::new(()),
+                maintenance_pending: AtomicBool::new(maintenance_pending),
             }),
         }
     }
@@ -216,6 +273,14 @@ impl Store {
     #[doc(hidden)]
     pub fn with_git_program(mut self, path: impl Into<OsString>) -> Store {
         self.git_program = path.into();
+        self
+    }
+
+    /// Test hook: accept local `file://` (and plain path) repositories for
+    /// the registry and grammars. Production only accepts `https://`.
+    #[doc(hidden)]
+    pub fn allow_file_urls(mut self) -> Store {
+        self.allow_file_urls = true;
         self
     }
 
@@ -308,8 +373,14 @@ impl Store {
         self.guarded("registry refresh", || {
             self.check_git()?;
             let mut log = self.log_file(".registry", true)?;
-            let (_, warnings) = registry::refresh(&self.root, &self.remote, cancel, &mut log)
-                .map_err(|e| StoreError::Registry(e.to_string()))?;
+            let (_, warnings) = registry::refresh(
+                &self.root,
+                &self.remote,
+                self.allow_file_urls,
+                cancel,
+                &mut log,
+            )
+            .map_err(|e| StoreError::Registry(e.to_string()))?;
             self.shared.emit(StoreEvent::RegistryRefreshed);
             Ok(warnings)
         })
@@ -347,8 +418,15 @@ impl Store {
         log: &mut dyn Write,
     ) -> Result<PathBuf, StoreError> {
         let checkout = self.root.join("work").join(&entry.id).join("src");
-        fetch_commit(&entry.url, &entry.commit, &checkout, cancel, log)
-            .map_err(BuildError::from)?;
+        fetch_commit(
+            &entry.url,
+            &entry.commit,
+            &checkout,
+            self.allow_file_urls,
+            cancel,
+            log,
+        )
+        .map_err(BuildError::from)?;
         resolve_subdir(&checkout, entry.path.as_deref()).map_err(|e| BuildError::Io(e).into())
     }
 
@@ -394,6 +472,7 @@ impl Store {
             Some(&entry.version),
             self.validator.as_ref(),
             self.wasi_sdk.as_deref(),
+            self.allow_file_urls,
             cancel,
             log,
             &|stage| {
@@ -440,6 +519,7 @@ impl Store {
                 None,
                 self.validator.as_ref(),
                 self.wasi_sdk.as_deref(),
+                self.allow_file_urls,
                 cancel,
                 &mut log,
                 &|stage| {
@@ -507,7 +587,9 @@ impl Store {
         self.shared.reload(|| index::reindex(&self.root));
     }
 
-    /// Removes `installed/<id>`; `work/<id>` stays as a cache.
+    /// Removes `installed/<id>`; `work/<id>` stays as a cache. Old copies
+    /// an update left in `trash/` become `removed-…` too, so a later
+    /// startup can never restore the uninstalled extension from them.
     pub fn uninstall(&self, id: &str) -> Result<(), StoreError> {
         self.guarded("uninstall", || {
             if !valid_id(id) {
@@ -522,12 +604,35 @@ impl Store {
             let trash_parent = trash_dir(&self.root);
             std::fs::create_dir_all(&trash_parent)
                 .map_err(|e| io_err("cannot create", &trash_parent, e))?;
+            self.doom_old_copies(id, &trash_parent);
             let trash = trash_parent.join(format!("removed-{id}-{}", unique_suffix()));
             std::fs::rename(&target, &trash).map_err(|e| io_err("cannot move", &target, e))?;
             self.reindex();
             remove_in_background(trash);
             Ok(())
         })
+    }
+
+    /// Renames every `trash/old-<id>-…` to `removed-<id>-…` and deletes it
+    /// in the background (the caller holds the id lock). One that cannot be
+    /// renamed is deleted now.
+    fn doom_old_copies(&self, id: &str, trash: &Path) {
+        let Ok(rd) = std::fs::read_dir(trash) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if leftover(&name, "old-").is_none_or(|(owner, _)| owner != id) {
+                continue;
+            }
+            let doomed = trash.join(format!("removed-{id}-{}", unique_suffix()));
+            match std::fs::rename(e.path(), &doomed) {
+                Ok(()) => remove_in_background(doomed),
+                // The update's background removal got there first.
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => remove_path(&e.path()),
+            }
+        }
     }
 
     /// Registry-installed ids whose registry version or commit differs from
@@ -550,14 +655,44 @@ impl Store {
             .collect()
     }
 
-    /// Deletes `work/` (fetched sources and cached grammar builds).
-    pub fn clear_build_cache(&self) -> Result<(), StoreError> {
+    /// Deletes `work/<id>` (fetched sources and cached grammar builds) of
+    /// every id, each under its id lock. Ids an operation holds (in any
+    /// process) are skipped and returned.
+    pub fn clear_build_cache(&self) -> Result<Vec<String>, StoreError> {
         let work = self.root.join("work");
-        match std::fs::remove_dir_all(&work) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(io_err("cannot remove", &work, e)),
+        let rd = match std::fs::read_dir(&work) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(io_err("cannot read", &work, e)),
+        };
+        let mut busy = Vec::new();
+        for e in rd.flatten() {
+            let id = e.file_name().to_string_lossy().into_owned();
+            let path = e.path();
+            if !valid_id(&id) {
+                remove_path(&path);
+                continue;
+            }
+            let _lock = match IdLock::try_acquire(&self.root, &id) {
+                Ok(lock) => lock,
+                Err(StoreError::Busy(id)) => {
+                    busy.push(id);
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_err("cannot remove", &path, e)),
+            }
         }
+        if busy.is_empty() {
+            // Fails harmlessly when an operation created a new entry meanwhile.
+            let _ = std::fs::remove_dir(&work);
+        }
+        busy.sort();
+        Ok(busy)
     }
 
     /// Watches `installed/` (200 ms debounce) so changes made by another
@@ -664,8 +799,9 @@ fn sweep_leftovers(root: &Path) {
             doomed.iter().for_each(|p| remove_path(p));
             continue;
         }
-        // Holding the lock proves no live operation owns these leftovers.
-        let Ok(_lock) = IdLock::try_acquire(root, &id) else {
+        // Holding the lock proves no live operation owns these leftovers;
+        // a busy id is skipped at once (startup must not wait on it).
+        let Ok(_lock) = IdLock::try_acquire_now(root, &id) else {
             continue;
         };
         let target = root.join("installed").join(&id);

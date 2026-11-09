@@ -67,12 +67,12 @@ fn fetch_commit_wipes_stale_files_on_version_change() {
     let url = format!("file://{}", repo.display());
     let dest = tempfile::tempdir().unwrap().keep().join("src");
     let cancel = CancelToken::default();
-    fetch_commit(&url, &a, &dest, &cancel, &mut Vec::new()).unwrap();
+    fetch_commit(&url, &a, &dest, true, &cancel, &mut Vec::new()).unwrap();
     std::fs::write(dest.join("untracked.bin"), "u").unwrap();
     std::fs::remove_file(repo.join("x.txt")).unwrap();
     let b = lucerna_extension::test_support::add_commit(&repo, &[("new.txt", "n")]);
     // add_commit uses `add -A`, so x.txt is removed in commit b.
-    fetch_commit(&url, &b, &dest, &cancel, &mut Vec::new()).unwrap();
+    fetch_commit(&url, &b, &dest, true, &cancel, &mut Vec::new()).unwrap();
     assert!(!dest.join("x.txt").exists());
     assert!(!dest.join("untracked.bin").exists());
     assert!(dest.join("new.txt").exists());
@@ -85,7 +85,15 @@ fn fetch_commit_heals_broken_git_dir() {
     let dest = tempfile::tempdir().unwrap().keep().join("src");
     std::fs::create_dir_all(dest.join(".git")).unwrap();
     std::fs::write(dest.join(".git/HEAD"), "").unwrap();
-    fetch_commit(&url, &c, &dest, &CancelToken::default(), &mut Vec::new()).unwrap();
+    fetch_commit(
+        &url,
+        &c,
+        &dest,
+        true,
+        &CancelToken::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
     assert!(dest.join("f.txt").exists());
 }
 
@@ -165,11 +173,11 @@ fn fetch_commit_idempotent() {
     let dest = tempfile::tempdir().unwrap().keep().join("src");
     let cancel = CancelToken::default();
     let mut log = Vec::new();
-    fetch_commit(&url, &commit, &dest, &cancel, &mut log).unwrap();
+    fetch_commit(&url, &commit, &dest, true, &cancel, &mut log).unwrap();
     assert_eq!(std::fs::read_to_string(dest.join("a/b.txt")).unwrap(), "hi");
     // Second call is a no-op: works even when the remote is gone.
     std::fs::remove_dir_all(&repo).unwrap();
-    fetch_commit(&url, &commit, &dest, &cancel, &mut log).unwrap();
+    fetch_commit(&url, &commit, &dest, true, &cancel, &mut log).unwrap();
     assert!(dest.join("extension.toml").exists());
 }
 
@@ -181,6 +189,7 @@ fn fetch_nonexistent_url_fails_fast_without_prompt() {
         "https://127.0.0.1:9/none.git",
         "0123456789012345678901234567890123456789",
         &dest.path().join("src"),
+        false,
         &CancelToken::default(),
         &mut Vec::new(),
     )
@@ -190,4 +199,61 @@ fn fetch_nonexistent_url_fails_fast_without_prompt() {
         "{err:?}"
     );
     assert!(started.elapsed() < Duration::from_secs(30));
+}
+
+#[test]
+fn fetch_commit_rejects_option_like_commit() {
+    let (repo, _) = fake_repo(&[("f.txt", "f")]);
+    let url = format!("file://{}", repo.display());
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("PWNED");
+    let commit = format!("--upload-pack=touch {}; git-upload-pack", marker.display());
+    let r = fetch_commit(
+        &url,
+        &commit,
+        &tmp.path().join("src"),
+        true,
+        &CancelToken::default(),
+        &mut Vec::new(),
+    );
+    assert!(r.is_err(), "{r:?}");
+    assert!(!marker.exists(), "the injected command ran");
+}
+
+#[test]
+fn fetch_commit_rejects_option_like_url() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("PWNED");
+    let url = format!("--upload-pack=touch {}; git-upload-pack", marker.display());
+    let r = fetch_commit(
+        &url,
+        "0123456789012345678901234567890123456789",
+        &tmp.path().join("src"),
+        true,
+        &CancelToken::default(),
+        &mut Vec::new(),
+    );
+    assert!(r.is_err(), "{r:?}");
+    assert!(!marker.exists(), "the injected command ran");
+}
+
+#[test]
+fn fetch_commit_rejects_file_url_without_opt_in() {
+    let (repo, commit) = fake_repo(&[("f.txt", "f")]);
+    let dest = tempfile::tempdir().unwrap().keep().join("src");
+    for url in [
+        format!("file://{}", repo.display()),
+        repo.display().to_string(),
+    ] {
+        let r = fetch_commit(
+            &url,
+            &commit,
+            &dest,
+            false,
+            &CancelToken::default(),
+            &mut Vec::new(),
+        );
+        assert!(r.is_err(), "{url}: {r:?}");
+        assert!(!dest.join("f.txt").exists(), "{url}");
+    }
 }

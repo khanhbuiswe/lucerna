@@ -245,6 +245,14 @@ fn mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
+/// Reads `<root>/index.json` as it is: no lock, no staleness check, no
+/// rebuild (the fast startup path, spec §8). `None` when it is missing or
+/// corrupt. Writers replace it with a rename, so a plain read is atomic.
+pub fn read(root: &Path) -> Option<ExtensionIndex> {
+    let bytes = std::fs::read(root.join(INDEX_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 /// Reads `<root>/index.json`. It is rebuilt (and written back) when it is
 /// missing or corrupt, or when `installed/` changed after it was written.
 /// Holds the cross-process index lock while it reads, rebuilds or writes.

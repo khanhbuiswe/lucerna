@@ -26,6 +26,16 @@ impl IdLock {
     /// Takes the lock without blocking (beyond [`BUSY_GRACE`]);
     /// `StoreError::Busy(id)` when another operation on `id` holds it.
     pub fn try_acquire(root: &Path, id: &str) -> Result<IdLock, StoreError> {
+        Self::acquire_within(root, id, BUSY_GRACE)
+    }
+
+    /// [`IdLock::try_acquire`] without the grace period: fails with `Busy`
+    /// at once. For housekeeping that simply skips busy ids.
+    pub fn try_acquire_now(root: &Path, id: &str) -> Result<IdLock, StoreError> {
+        Self::acquire_within(root, id, Duration::ZERO)
+    }
+
+    fn acquire_within(root: &Path, id: &str, grace: Duration) -> Result<IdLock, StoreError> {
         let dir = root.join("locks");
         let io = |e: std::io::Error| StoreError::Io(format!("lock for `{id}`: {e}"));
         std::fs::create_dir_all(&dir).map_err(io)?;
@@ -35,7 +45,7 @@ impl IdLock {
             .write(true)
             .open(dir.join(format!("{id}.lock")))
             .map_err(io)?;
-        let deadline = Instant::now() + BUSY_GRACE;
+        let deadline = Instant::now() + grace;
         loop {
             // SAFETY: `file` is an open descriptor for the duration of the call.
             let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
@@ -68,6 +78,15 @@ pub(crate) fn lock_index(root: &Path) -> std::io::Result<File> {
 /// process exclude each other too.
 pub(crate) fn lock_registry(root: &Path) -> std::io::Result<File> {
     lock_named(root, ".registry.lock")
+}
+
+/// Blocking `flock(LOCK_EX)` on `<root>/locks/.registry-clone.lock`, held
+/// for a whole refresh of the `registry/` clone (clone or fetch, update-ref,
+/// reads), so two refreshes (app and CLI, or two threads) never run git in
+/// it at once nor delete it under each other. Separate from
+/// [`lock_registry`], which stays short.
+pub(crate) fn lock_registry_clone(root: &Path) -> std::io::Result<File> {
+    lock_named(root, ".registry-clone.lock")
 }
 
 fn lock_named(root: &Path, name: &str) -> std::io::Result<File> {

@@ -6,6 +6,8 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::git::is_commit_sha;
+
 /// Highest `schema_version` this crate accepts.
 const MAX_SCHEMA_VERSION: u32 = 1;
 
@@ -277,6 +279,13 @@ pub fn load_manifest(dir: &Path) -> Result<ExtensionManifest, ManifestError> {
     if let Some(bad) = m.grammars.keys().find(|n| !valid_grammar_name(n)) {
         return Err(ManifestError::Invalid(format!(
             "invalid grammar name `{bad}` (expected [a-z0-9_]+)"
+        )));
+    }
+    // The rev is passed to `git fetch`; anything but a full hash is refused.
+    if let Some((name, g)) = m.grammars.iter().find(|(_, g)| !is_commit_sha(&g.rev)) {
+        return Err(ManifestError::Invalid(format!(
+            "grammar `{name}`: rev `{}` is not a full commit hash (40 or 64 hex digits)",
+            g.rev
         )));
     }
     Ok(m)

@@ -71,6 +71,7 @@ impl Env {
             expected,
             &FakeValidator,
             self.sdk_override.as_deref(),
+            true,
             &CancelToken::default(),
             &mut std::io::sink(),
             &|s| stages.borrow_mut().push(s),
@@ -441,6 +442,7 @@ fn cancel_during_grammar_build_cleans_staging() {
         None,
         &FakeValidator,
         Some(&env.sdk()),
+        true,
         &cancel,
         &mut std::io::sink(),
         &|s| {

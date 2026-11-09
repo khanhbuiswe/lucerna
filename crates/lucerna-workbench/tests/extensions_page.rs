@@ -90,6 +90,7 @@ impl Env {
 
     fn store(&self) -> Store {
         Store::open(self.root(), Arc::new(FakeValidator))
+            .allow_file_urls()
             .with_remote(file_url(&self.registry))
             .with_wasi_sdk(self.tmp.path().join("sdk"))
     }
@@ -919,6 +920,7 @@ fn registry_failure_offers_retry_and_keeps_installed_cards(cx: &mut TestAppConte
     std::fs::remove_file(env.root().join("registry.json")).unwrap();
     std::fs::remove_dir_all(env.root().join("registry")).unwrap();
     let store = Store::open(env.root(), Arc::new(FakeValidator))
+        .allow_file_urls()
         .with_remote(file_url(&env.tmp.path().join("missing")));
     cx.update(|cx| lucerna_workbench::app::set_app_state_with_store(store, cx));
     let (wb, cx) = workbench(&env, cx);

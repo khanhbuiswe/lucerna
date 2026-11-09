@@ -119,9 +119,10 @@ fn install_app_menu(cx: &mut App) {
 /// The built-in defaults plus the installed extensions, read from the
 /// store's `index.json` without loading any grammar; [`watch_config`] then
 /// applies the user's files. Starts the [`ExtensionService`] on the store
-/// at `extensions_root`.
+/// at `extensions_root`. Only `index.json` is read here (spec §8); the
+/// store's leftover sweep and index check run in the background.
 pub fn set_app_state(extensions_root: PathBuf, cx: &mut App) {
-    let store = Store::open(extensions_root, Arc::new(WasmGrammarValidator));
+    let store = Store::open_deferred(extensions_root, Arc::new(WasmGrammarValidator));
     set_app_state_with_store(store, cx);
 }
 

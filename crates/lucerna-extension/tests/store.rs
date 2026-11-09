@@ -57,6 +57,7 @@ impl Env {
         let sdk = tmp.path().join("sdk");
         fake_wasi_sdk(&sdk, &wasm_fixture());
         let store = Store::open(root.clone(), Arc::new(FakeValidator))
+            .allow_file_urls()
             .with_remote(file_url(&registry))
             .with_wasi_sdk(sdk);
         store.refresh_registry(&CancelToken::default()).unwrap();
@@ -70,6 +71,7 @@ impl Env {
 
     fn reopen(&self) -> Store {
         Store::open(self.root.clone(), Arc::new(FakeValidator))
+            .allow_file_urls()
             .with_remote(file_url(&self.registry))
             .with_wasi_sdk(self.tmp.path().join("sdk"))
     }
@@ -578,4 +580,146 @@ fn watcher_sees_external_uninstall() {
         }
     }
     assert!(!env.store.index().extensions.contains_key("x"));
+}
+
+#[test]
+fn install_refuses_option_like_grammar_rev_and_never_runs_it() {
+    let marker = tempfile::tempdir().unwrap().keep().join("PWNED");
+    let (grammar_repo, _) = fake_repo(&[("src/parser.c", "/* parser */")]);
+    let extra = format!(
+        "[grammars.json]\nrepository = \"{}\"\nrev = \"--upload-pack=touch {}; git-upload-pack\"\n",
+        file_url(&grammar_repo),
+        marker.display()
+    );
+    let (repo, _) = fake_repo(&[
+        ("extension.toml", &manifest("evil", "0.1.0", &extra)),
+        (
+            "languages/json/config.toml",
+            "name = \"JSON\"\ngrammar = \"json\"\npath_suffixes = [\"json\"]\n",
+        ),
+    ]);
+    let env = Env::new(&[FakeEntry::new("evil", "0.1.0", &repo)]);
+    let err = env.install("evil").0.unwrap_err();
+    assert!(err.to_string().contains("rev"), "{err}");
+    assert!(!marker.exists(), "the injected command ran");
+    assert!(!env.installed("evil").exists());
+}
+
+#[test]
+fn file_urls_refused_without_the_opt_in() {
+    let (_, entry) = theme_ext("x");
+    let registry = fake_registry(&[entry]);
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path().join("extensions"), Arc::new(FakeValidator))
+        .with_remote(file_url(&registry));
+    let err = store.refresh_registry(&CancelToken::default()).unwrap_err();
+    assert!(err.to_string().contains("https://"), "{err}");
+    assert!(!tmp.path().join("extensions/registry").exists());
+
+    // A registry entry pointing at a local repository is refused as well.
+    let env = Env::new(&[theme_ext("y").1]);
+    let plain = Store::open(env.root.clone(), Arc::new(FakeValidator));
+    let err = plain
+        .install("y", &|_| {}, &CancelToken::default())
+        .unwrap_err();
+    assert!(err.to_string().contains("https://"), "{err}");
+    assert!(!env.installed("y").exists());
+}
+
+#[test]
+fn startup_skips_busy_ids_without_waiting() {
+    let (_repo, entry) = theme_ext("x");
+    let env = Env::new(&[entry]);
+    env.install("x").0.unwrap();
+    std::fs::create_dir_all(env.root.join("staging/busy-1-2-3")).unwrap();
+    let _lock = IdLock::try_acquire(&env.root, "busy").unwrap();
+    let started = std::time::Instant::now();
+    let _store = env.reopen();
+    let took = started.elapsed();
+    assert!(took < Duration::from_millis(150), "open took {took:?}");
+    assert_eq!(env.entries("staging"), ["busy-1-2-3"]);
+}
+
+#[test]
+fn deferred_open_reads_only_the_index_and_sweeps_in_background() {
+    let (_repo, entry) = theme_ext("x");
+    let env = Env::new(&[entry]);
+    env.install("x").0.unwrap();
+    for d in [
+        "trash/removed-x-1-2-3/themes",
+        "staging/x-1-2-3/themes",
+        "staging/busy-1-2-3",
+    ] {
+        std::fs::create_dir_all(env.root.join(d)).unwrap();
+    }
+    std::fs::write(env.root.join("index.json.tmp-1-2-3"), "{").unwrap();
+    let busy = IdLock::try_acquire(&env.root, "busy").unwrap();
+    // A missing index is rebuilt in the background, not on open.
+    std::fs::remove_file(env.root.join("index.json")).unwrap();
+
+    let started = std::time::Instant::now();
+    let store = Store::open_deferred(env.root.clone(), Arc::new(FakeValidator));
+    let took = started.elapsed();
+    assert!(took < Duration::from_millis(50), "open took {took:?}");
+    assert!(store.index().extensions.is_empty());
+    // Nothing was swept yet.
+    assert_eq!(env.entries("trash"), ["removed-x-1-2-3"]);
+    assert!(env.root.join("index.json.tmp-1-2-3").exists());
+
+    let rx = store.subscribe();
+    store.start_maintenance();
+    let idx = rx
+        .recv_timeout(Duration::from_secs(10))
+        .ok()
+        .and_then(|e| match e {
+            StoreEvent::Changed(i) => Some(i),
+            _ => None,
+        })
+        .expect("Changed after the background rebuild");
+    assert!(idx.extensions.contains_key("x"));
+    assert!(store.index().extensions.contains_key("x"));
+    assert!(env.entries("trash").is_empty());
+    assert_eq!(env.entries("staging"), ["busy-1-2-3"]);
+    assert!(!env.root.join("index.json.tmp-1-2-3").exists());
+    assert!(env.root.join("index.json").is_file());
+    drop(busy);
+}
+
+#[test]
+fn uninstall_after_update_is_never_undone() {
+    let (repo, entry) = theme_ext("x");
+    let env = Env::new(&[entry]);
+    env.install("x").0.unwrap();
+    add_commit(&repo, &as_refs(&theme_files("x", "0.2.0")));
+    registry_update(&env.registry, "x", "0.2.0");
+    env.store.refresh_registry(&CancelToken::default()).unwrap();
+    env.install("x").0.unwrap();
+    // The update's background removal of the old copy has not run yet.
+    let old = env.root.join("trash/old-x-1-2-3");
+    std::fs::create_dir_all(old.join("themes")).unwrap();
+    for f in ["extension.toml", "themes/x.json", "lucerna.json"] {
+        std::fs::copy(env.installed("x").join(f), old.join(f)).unwrap();
+    }
+    env.store.uninstall("x").unwrap();
+    let store = env.reopen();
+    assert!(!env.installed("x").exists());
+    assert!(!store.index().extensions.contains_key("x"));
+    assert!(env.entries("trash").is_empty());
+}
+
+#[test]
+fn clear_build_cache_skips_busy_ids() {
+    let (_r1, e1) = theme_ext("x");
+    let (_r2, e2) = theme_ext("y");
+    let env = Env::new(&[e1, e2]);
+    env.install("x").0.unwrap();
+    env.install("y").0.unwrap();
+    let lock = IdLock::try_acquire(&env.root, "x").unwrap();
+    let busy = env.store.clear_build_cache().unwrap();
+    assert_eq!(busy, ["x"]);
+    assert!(env.root.join("work/x/src").is_dir());
+    assert!(!env.root.join("work/y").exists());
+    drop(lock);
+    assert!(env.store.clear_build_cache().unwrap().is_empty());
+    assert!(!env.root.join("work").exists());
 }

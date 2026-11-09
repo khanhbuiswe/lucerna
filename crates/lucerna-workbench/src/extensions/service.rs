@@ -448,6 +448,8 @@ impl ExtensionService {
         } else {
             (None, start_pump(&store, events, cx))
         };
+        // Subscribed first, so the background sweep's `Changed` is not lost.
+        store.start_maintenance();
         let index = store.index();
         cx.default_global::<RegistryInputs>().languages_index = index.clone();
         cx.set_global(ExtensionService {
@@ -776,9 +778,9 @@ impl ExtensionService {
 
     /// Deletes the fetched sources and cached grammar builds, in the
     /// background. Refuses (returns `false`) while an install or update
-    /// runs or waits, since it would pull the sources from under it. Running
-    /// describes are not waited for: one that loses its sources fails, and
-    /// the page asks again after [`DESCRIBE_RETRY`].
+    /// runs or waits, since it would pull the sources from under it. Ids
+    /// whose lock is held (a running describe, or `luc ext` in another
+    /// process) keep their cache.
     pub fn clear_build_cache(cx: &mut App) -> bool {
         let service = cx.global::<ExtensionService>();
         let busy = service.any_installing() || !service.queue.is_empty();
@@ -789,9 +791,12 @@ impl ExtensionService {
         cx.background_executor()
             .spawn(async move {
                 // A panic is logged by `catch_panic`.
-                if let Ok(Err(err)) = catch_panic("clear build cache", || store.clear_build_cache())
-                {
-                    tracing::warn!(%err, "could not clear the build cache");
+                match catch_panic("clear build cache", || store.clear_build_cache()) {
+                    Ok(Err(err)) => tracing::warn!(%err, "could not clear the build cache"),
+                    Ok(Ok(busy)) if !busy.is_empty() => {
+                        tracing::info!(?busy, "build cache kept for busy extensions")
+                    }
+                    _ => {}
                 }
             })
             .detach();

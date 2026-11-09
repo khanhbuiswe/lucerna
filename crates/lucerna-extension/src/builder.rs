@@ -197,7 +197,8 @@ struct KeptLanguage {
 /// Builds the extension in `source_dir` into `<root>/staging/<id>-<random>/`.
 /// `expected_version` is the registry version (`None` for dev installs).
 /// `wasi_sdk` overrides the toolchain; `None` resolves it with
-/// [`ensure_wasi_sdk`] (which honours `WASI_SDK_PATH`).
+/// [`ensure_wasi_sdk`] (which honours `WASI_SDK_PATH`). Grammar repositories
+/// must be `https://` unless `allow_file_urls` (a test opt-in) is set.
 /// On error (including cancellation) the staging directory is removed.
 #[allow(clippy::too_many_arguments)]
 pub fn build(
@@ -207,6 +208,7 @@ pub fn build(
     expected_version: Option<&str>,
     validator: &dyn GrammarValidator,
     wasi_sdk: Option<&Path>,
+    allow_file_urls: bool,
     cancel: &CancelToken,
     log: &mut dyn Write,
     progress: &dyn Fn(Stage),
@@ -257,7 +259,17 @@ pub fn build(
                 total,
             });
             check_cancel(cancel)?;
-            match build_grammar(&sdk, root, id, name, g, &staging, cancel, log) {
+            match build_grammar(
+                &sdk,
+                root,
+                id,
+                name,
+                g,
+                &staging,
+                allow_file_urls,
+                cancel,
+                log,
+            ) {
                 Ok(()) => built.push(name.clone()),
                 Err(BuildError::Cancelled) => return Err(BuildError::Cancelled),
                 Err(e @ (BuildError::CppScanner(_) | BuildError::NoParser(_))) => {
@@ -493,12 +505,20 @@ fn build_grammar(
     name: &str,
     g: &GrammarManifest,
     staging: &Path,
+    allow_file_urls: bool,
     cancel: &CancelToken,
     log: &mut dyn Write,
 ) -> Result<(), BuildError> {
     let gdir = root.join("work").join(id).join("grammars");
     let checkout = gdir.join(name);
-    fetch_commit(&g.repository, &g.rev, &checkout, cancel, log)?;
+    fetch_commit(
+        &g.repository,
+        &g.rev,
+        &checkout,
+        allow_file_urls,
+        cancel,
+        log,
+    )?;
     let checkout = checkout
         .canonicalize()
         .map_err(|e| io("cannot read", &checkout, e))?;

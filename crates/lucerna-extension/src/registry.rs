@@ -1,7 +1,7 @@
 //! The extension registry: a shallow clone of zed-industries/extensions
 //! joined into a flat, cached list.
 
-use crate::git::{normalize_url, run_git};
+use crate::git::{check_url, normalize_url, run_git};
 use crate::process::{CancelToken, ProcessError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-use crate::lock::lock_registry;
+use crate::lock::{lock_registry, lock_registry_clone};
 
 pub const REGISTRY_URL: &str = "https://github.com/zed-industries/extensions";
 pub const REGISTRY_BRANCH: &str = "main";
@@ -197,7 +197,7 @@ fn git_show(
     cancel: &CancelToken,
     log: &mut dyn Write,
 ) -> Result<String, ProcessError> {
-    let o = run_git(Some(repo), &["show", spec], cancel, log)?;
+    let o = run_git(Some(repo), &["show", spec], false, cancel, log)?;
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
@@ -210,7 +210,13 @@ fn read_sources(
 ) -> Result<Sources, ProcessError> {
     let toml = git_show(repo, "HEAD:extensions.toml", cancel, log)?;
     let gitmodules = git_show(repo, "HEAD:.gitmodules", cancel, log)?;
-    let ls = run_git(Some(repo), &["ls-tree", "HEAD", "extensions/"], cancel, log)?;
+    let ls = run_git(
+        Some(repo),
+        &["ls-tree", "HEAD", "--", "extensions/"],
+        false,
+        cancel,
+        log,
+    )?;
     Ok((
         toml,
         gitmodules,
@@ -220,27 +226,53 @@ fn read_sources(
 
 fn update_clone(
     repo: &Path,
+    allow_file_urls: bool,
     cancel: &CancelToken,
     log: &mut dyn Write,
 ) -> Result<Sources, ProcessError> {
     run_git(
         Some(repo),
-        &["fetch", "--depth", "1", "origin", REGISTRY_BRANCH],
+        &["fetch", "--depth", "1", "--", "origin", REGISTRY_BRANCH],
+        allow_file_urls,
         cancel,
         log,
     )?;
     run_git(
         Some(repo),
         &["update-ref", "HEAD", "FETCH_HEAD"],
+        false,
         cancel,
         log,
     )?;
     read_sources(repo, cancel, log)
 }
 
+/// Whether `repo` is a usable clone: its git dir opens and `HEAD` names a
+/// commit that is present. A failed fetch of a healthy clone is a network
+/// or remote problem, not a reason to delete it.
+fn clone_is_healthy(repo: &Path, cancel: &CancelToken, log: &mut dyn Write) -> bool {
+    let git_dir = format!("--git-dir={}", repo.join(".git").display());
+    run_git(
+        None,
+        &[
+            &git_dir,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "HEAD^{commit}",
+        ],
+        false,
+        cancel,
+        log,
+    )
+    .is_ok()
+}
+
+/// `remote` is already checked with [`check_url`].
 fn fresh_clone(
     repo: &Path,
     remote: &str,
+    allow_file_urls: bool,
     cancel: &CancelToken,
     log: &mut dyn Write,
 ) -> Result<Sources, ProcessError> {
@@ -258,9 +290,11 @@ fn fresh_clone(
             "--no-checkout",
             "--branch",
             REGISTRY_BRANCH,
+            "--",
             remote,
             &repo_s,
         ],
+        allow_file_urls,
         cancel,
         log,
     )?;
@@ -268,32 +302,42 @@ fn fresh_clone(
 }
 
 /// Clones or updates `root/registry` from `remote`, joins its three sources
-/// and atomically writes `root/registry.json`.
+/// and atomically writes `root/registry.json`. `remote` must pass
+/// [`check_url`] (`allow_file_urls` is a test opt-in).
 pub fn refresh(
     root: &Path,
     remote: &str,
+    allow_file_urls: bool,
     cancel: &CancelToken,
     log: &mut dyn Write,
 ) -> Result<(Registry, Vec<String>), RegistryError> {
+    let remote = check_url(remote, allow_file_urls)
+        .map_err(|e| RegistryError::Process(ProcessError::Rejected(e)))?;
     std::fs::create_dir_all(root)?;
     let repo = root.join("registry");
+    // Held until the sources are read: one refresh at a time touches the clone.
+    let clone_lock = lock_registry_clone(root)?;
     let mut incremental = repo.join(".git").exists();
     let (toml, gitmodules, ls) = loop {
         let attempt = if incremental {
-            update_clone(&repo, cancel, log)
+            update_clone(&repo, allow_file_urls, cancel, log)
         } else {
-            fresh_clone(&repo, remote, cancel, log)
+            fresh_clone(&repo, &remote, allow_file_urls, cancel, log)
         };
         match attempt {
             Ok(v) => break v,
-            // A broken clone (e.g. a half-killed one) heals by re-cloning once.
-            Err(ProcessError::Failed { .. }) if incremental => {
+            // A broken clone (e.g. a half-killed one) heals by re-cloning
+            // once; a healthy one is kept (the remote is unreachable).
+            Err(ProcessError::Failed { .. })
+                if incremental && !clone_is_healthy(&repo, cancel, log) =>
+            {
                 let _ = writeln!(log, "registry clone looks broken; re-cloning");
                 incremental = false;
             }
             Err(e) => return Err(e.into()),
         }
     };
+    drop(clone_lock);
     let (mut entries, warnings) = parse_parts(&toml, &gitmodules, &ls);
 
     // From reading the descriptions to keep until the write: a describe

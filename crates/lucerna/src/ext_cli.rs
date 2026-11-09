@@ -111,6 +111,11 @@ fn cancel_on_signal(cancel: &CancelToken) {
 /// Runs the command and returns the process exit code.
 pub fn run(args: ExtArgs) -> i32 {
     let mut store = Store::open(extensions_root(), Arc::new(WasmGrammarValidator));
+    // The hidden test flags point at local fixtures; production accepts
+    // only https:// repositories.
+    if args.registry_url.is_some() || args.wasi_sdk.is_some() {
+        store = store.allow_file_urls();
+    }
     if let Some(url) = args.registry_url {
         store = store.with_remote(url);
     }

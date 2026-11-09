@@ -55,7 +55,7 @@ fn schema0_reads_grammars_toml_and_discovers_dirs() {
     assert_eq!(m.grammars.len(), 1);
     let g = &m.grammars["bar"];
     assert_eq!(g.repository, "https://github.com/example/tree-sitter-bar");
-    assert_eq!(g.rev, "deadbeef");
+    assert_eq!(g.rev, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     assert_eq!(g.path.as_deref(), Some("sub"));
 }
 
@@ -113,9 +113,12 @@ fn missing_required_field_is_error() {
 #[test]
 fn commit_alias_for_rev() {
     let d = write_manifest(
-        "id='a'\nname='A'\nversion='1'\nschema_version=1\n[grammars.x]\nrepository='r'\ncommit='c0ffee'\n",
+        "id='a'\nname='A'\nversion='1'\nschema_version=1\n[grammars.x]\nrepository='r'\ncommit='c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff'\n",
     );
-    assert_eq!(load_manifest(d.path()).unwrap().grammars["x"].rev, "c0ffee");
+    assert_eq!(
+        load_manifest(d.path()).unwrap().grammars["x"].rev,
+        "c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff"
+    );
 }
 
 #[test]
@@ -229,4 +232,37 @@ fn json_nulls_are_dropped() {
     assert_eq!(m.description, None);
     assert!(m.other.contains_key("extra"));
     assert!(!m.other.contains_key("z"));
+}
+
+#[test]
+fn option_like_or_short_rev_rejected() {
+    for rev in [
+        "--upload-pack=touch /tmp/lucerna-pwned; git-upload-pack",
+        "-c",
+        "abc",
+        "main",
+        "0123456789abcdef0123456789abcdef0123456",
+        "0123456789abcdef0123456789abcdef012345678",
+        "0123456789abcdef0123456789abcdef0123456g",
+    ] {
+        let d = write_manifest(&format!(
+            "id='a'\nname='A'\nversion='1'\nschema_version=1\n[grammars.x]\nrepository='https://github.com/o/r'\nrev='{rev}'\n"
+        ));
+        let e = load_manifest(d.path()).unwrap_err();
+        assert!(e.to_string().contains("rev"), "{rev}: {e}");
+    }
+}
+
+#[test]
+fn full_sha1_and_sha256_revs_accepted() {
+    for rev in [
+        "0123456789abcdef0123456789abcdef01234567",
+        "0123456789ABCDEF0123456789ABCDEF01234567",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    ] {
+        let d = write_manifest(&format!(
+            "id='a'\nname='A'\nversion='1'\nschema_version=1\n[grammars.x]\nrepository='https://github.com/o/r'\nrev='{rev}'\n"
+        ));
+        assert_eq!(load_manifest(d.path()).unwrap().grammars["x"].rev, rev);
+    }
 }

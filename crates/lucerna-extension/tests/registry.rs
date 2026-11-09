@@ -71,6 +71,7 @@ fn refresh_from_file_registry() {
     let (registry, warnings) = refresh(
         root.path(),
         &remote,
+        true,
         &CancelToken::default(),
         &mut Vec::new(),
     )
@@ -94,13 +95,13 @@ fn refresh_twice_fetches_updates() {
     let root = tempfile::tempdir().unwrap();
     let remote = format!("file://{}", reg.display());
     let cancel = CancelToken::default();
-    let (first, _) = refresh(root.path(), &remote, &cancel, &mut Vec::new()).unwrap();
+    let (first, _) = refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
     let old_commit = first.entries[0].commit.clone();
 
     lucerna_extension::test_support::add_commit(&r1, &[("extra.txt", "x")]);
     registry_update(&reg, "one", "0.1.1");
 
-    let (second, _) = refresh(root.path(), &remote, &cancel, &mut Vec::new()).unwrap();
+    let (second, _) = refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
     assert_eq!(second.entries[0].version, "0.1.1");
     assert_ne!(second.entries[0].commit, old_commit);
 }
@@ -111,7 +112,7 @@ fn refresh_keeps_name_and_description_when_commit_unchanged() {
     let root = tempfile::tempdir().unwrap();
     let remote = format!("file://{}", reg.display());
     let cancel = CancelToken::default();
-    let (mut first, _) = refresh(root.path(), &remote, &cancel, &mut Vec::new()).unwrap();
+    let (mut first, _) = refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
     first.entries[0].name = Some("One".into());
     first.entries[0].description = Some("desc".into());
     std::fs::write(
@@ -119,7 +120,7 @@ fn refresh_keeps_name_and_description_when_commit_unchanged() {
         serde_json::to_vec(&first).unwrap(),
     )
     .unwrap();
-    let (second, _) = refresh(root.path(), &remote, &cancel, &mut Vec::new()).unwrap();
+    let (second, _) = refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
     assert_eq!(second.entries[0].name.as_deref(), Some("One"));
     assert_eq!(second.entries[0].description.as_deref(), Some("desc"));
     assert_eq!(second.entries[1].name, None);
@@ -159,8 +160,90 @@ fn refresh_heals_corrupt_registry_clone() {
     let root = tempfile::tempdir().unwrap();
     let remote = format!("file://{}", reg.display());
     let cancel = CancelToken::default();
-    refresh(root.path(), &remote, &cancel, &mut Vec::new()).unwrap();
+    refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
     std::fs::write(root.path().join("registry/.git/HEAD"), "").unwrap();
-    let (r, _) = refresh(root.path(), &remote, &cancel, &mut Vec::new()).unwrap();
+    let (r, _) = refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
+    assert_eq!(r.entries.len(), 2);
+}
+
+#[test]
+fn refresh_rejects_option_like_and_local_remotes() {
+    let (reg, _, _) = two_extensions();
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("PWNED");
+    let cancel = CancelToken::default();
+    for (remote, allow) in [
+        (
+            format!("--upload-pack=touch {}; git-upload-pack", marker.display()),
+            true,
+        ),
+        (format!("file://{}", reg.display()), false),
+        (reg.display().to_string(), false),
+        ("http://example.com/r".to_string(), true),
+    ] {
+        let r = refresh(root.path(), &remote, allow, &cancel, &mut Vec::new());
+        assert!(r.is_err(), "{remote}");
+    }
+    assert!(!marker.exists(), "the injected command ran");
+    assert!(!root.path().join("registry").exists());
+}
+
+#[test]
+fn concurrent_refreshes_all_succeed_and_keep_the_clone() {
+    let (reg, _r1, _r2) = two_extensions();
+    let remote = format!("file://{}", reg.display());
+    for round in 0..3 {
+        let root = tempfile::tempdir().unwrap();
+        if round > 0 {
+            // Also race incremental updates of an existing clone.
+            refresh(
+                root.path(),
+                &remote,
+                true,
+                &CancelToken::default(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+        }
+        let results: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    s.spawn(|| {
+                        refresh(
+                            root.path(),
+                            &remote,
+                            true,
+                            &CancelToken::default(),
+                            &mut Vec::new(),
+                        )
+                        .map(|(r, _)| r.entries.len())
+                        .map_err(|e| e.to_string())
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for r in &results {
+            assert_eq!(r.as_ref().ok(), Some(&2), "round {round}: {results:?}");
+        }
+        assert!(root.path().join("registry/.git").is_dir());
+    }
+}
+
+#[test]
+fn unreachable_remote_keeps_a_healthy_clone() {
+    let (reg, _r1, _r2) = two_extensions();
+    let root = tempfile::tempdir().unwrap();
+    let remote = format!("file://{}", reg.display());
+    let cancel = CancelToken::default();
+    refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
+    // The remote goes away (a network failure, as far as git can tell).
+    let moved = reg.with_file_name("registry-gone");
+    std::fs::rename(&reg, &moved).unwrap();
+    assert!(refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).is_err());
+    assert!(root.path().join("registry/.git").is_dir());
+    // It is still usable once the remote is back.
+    std::fs::rename(&moved, &reg).unwrap();
+    let (r, _) = refresh(root.path(), &remote, true, &cancel, &mut Vec::new()).unwrap();
     assert_eq!(r.entries.len(), 2);
 }

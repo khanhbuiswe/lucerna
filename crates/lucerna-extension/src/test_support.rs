@@ -1,5 +1,7 @@
 //! Helpers for tests (also used by the workbench's tests): real git
-//! repositories and registries in temp dirs, reachable through `file://` URLs.
+//! repositories and registries in temp dirs, reachable through `file://` URLs
+//! (a store must opt in with `Store::allow_file_urls`, a `fetch_commit` or
+//! `registry::refresh` call with its `allow_file_urls` argument).
 //! Directories are intentionally leaked into the OS temp dir.
 
 use std::path::{Path, PathBuf};

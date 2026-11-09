@@ -33,6 +33,8 @@ pub enum ProcessError {
     },
     TimedOut(String),
     Cancelled,
+    /// Refused before running anything (an unsafe argument).
+    Rejected(String),
 }
 
 impl fmt::Display for ProcessError {
@@ -46,6 +48,7 @@ impl fmt::Display for ProcessError {
             } => write!(f, "`{cmd}` failed (exit {status}): {}", stderr.trim()),
             Self::TimedOut(cmd) => write!(f, "`{cmd}` timed out"),
             Self::Cancelled => write!(f, "cancelled"),
+            Self::Rejected(e) => write!(f, "{e}"),
         }
     }
 }
