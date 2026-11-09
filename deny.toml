@@ -20,6 +20,7 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "MPL-2.0",
+    "Apache-2.0 WITH LLVM-exception",
 ]
 confidence-threshold = 0.9
 # CC0-1.0 is a public-domain dedication; allowed for `notify` only (file watching).

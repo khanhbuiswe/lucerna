@@ -105,6 +105,9 @@ fn every_bundled_language_parses_fixture() {
     let mut covered = Vec::new();
     for entry in std::fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
+        if path.is_dir() {
+            continue; // e.g. `wasm/`: grammar fixtures, not sample sources
+        }
         let lang = registry
             .language_for_path(&path)
             .unwrap_or_else(|| panic!("no language for fixture {}", path.display()));

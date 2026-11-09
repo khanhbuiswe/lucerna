@@ -47,9 +47,12 @@ futures = "0.3"
 nucleo-matcher = "0.3"
 tempfile = "3"
 sha2 = "0.10"
+toml = "0.8"
+globset = "0.4"
+libc = "0.2"
 
 # Syntax: one tree-sitter core; every grammar exposes `LANGUAGE: LanguageFn`.
-tree-sitter = "0.27"
+tree-sitter = { version = "0.27", features = ["wasm"] }
 streaming-iterator = "0.1"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"
