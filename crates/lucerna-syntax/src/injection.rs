@@ -2,23 +2,25 @@
 //! (one tree per injected region) that [`crate::SyntaxState`] keeps under
 //! its root tree.
 
+use std::cell::Cell;
 use std::collections::HashMap;
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 use std::sync::Arc;
 use std::time::Instant;
 
 use lucerna_text::BufferSnapshot;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
+use tree_sitter::{Node, Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, Tree};
 
-use crate::registry::{Language, LanguageRegistry};
+use crate::registry::{Language, LanguageOrigin, LanguageRegistry, Predicates};
 use crate::syntax_state::{ParseOutcome, parse_snapshot};
 use crate::wasm;
 
 /// The deepest a layer may be; the root is depth 0.
 pub(crate) const MAX_DEPTH: usize = 4;
 
-/// Most child layers in one document.
+/// Most child layers in one document. Markdown's own inline layers do not
+/// count (see [`uncapped`]).
 pub(crate) const MAX_LAYERS: usize = 1000;
 
 /// Longest injected language name read from the text, in bytes.
@@ -34,6 +36,8 @@ pub(crate) struct InjectionQuery {
     language: Vec<u32>,
     /// Per pattern.
     patterns: Vec<PatternSettings>,
+    /// Unknown general predicates disable their pattern, as in highlights.
+    predicates: Predicates,
 }
 
 #[derive(Default)]
@@ -47,7 +51,7 @@ struct PatternSettings {
 impl InjectionQuery {
     /// `injection.include-children` and every other property are ignored:
     /// the content is always the whole node.
-    pub(crate) fn new(query: Query) -> InjectionQuery {
+    pub(crate) fn new(query: Query, language_id: &str) -> InjectionQuery {
         let indices = |names: [&str; 2]| {
             names
                 .iter()
@@ -69,11 +73,13 @@ impl InjectionQuery {
                 settings
             })
             .collect();
+        let predicates = Predicates::new(&query, language_id);
         InjectionQuery {
             query,
             content,
             language,
             patterns,
+            predicates,
         }
     }
 }
@@ -84,15 +90,21 @@ struct Injection {
     ranges: Vec<tree_sitter::Range>,
 }
 
+/// Whether `deadline` has passed.
+fn passed(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|d| Instant::now() >= d)
+}
+
 /// The injections `query` finds in `root`'s tree, in document order.
 /// `parent_ranges` (the parent layer's included ranges, if it is not the
-/// root) bound every range.
+/// root) bound every range. `None` once `deadline` passes.
 fn find_injections(
     query: &InjectionQuery,
     root: Node,
     snapshot: &BufferSnapshot,
     parent_ranges: Option<&[tree_sitter::Range]>,
-) -> Vec<Injection> {
+    deadline: Option<Instant>,
+) -> Option<Vec<Injection>> {
     let len = snapshot.len_bytes();
     let text = |node: Node| {
         let range = node.byte_range();
@@ -103,9 +115,29 @@ fn find_injections(
     let mut out: Vec<Injection> = Vec::new();
     // Combined injections: (pattern, language) to their index in `out`.
     let mut combined: HashMap<(usize, String), usize> = HashMap::new();
+    let cancelled = Cell::new(false);
+    let mut progress = |_: &QueryCursorState| {
+        if passed(deadline) {
+            cancelled.set(true);
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let options = match deadline {
+        Some(_) => QueryCursorOptions::new().progress_callback(&mut progress),
+        None => QueryCursorOptions::new(),
+    };
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query.query, root, text);
+    let mut matches = cursor.matches_with_options(&query.query, root, text, options);
     while let Some(m) = matches.next() {
+        // The callback runs only now and then; small trees never reach it.
+        if passed(deadline) {
+            return None;
+        }
+        if !query.predicates.accepts(m) {
+            continue;
+        }
         let settings = &query.patterns[m.pattern_index];
         let from_text = m
             .captures()
@@ -113,11 +145,13 @@ fn find_injections(
             .find(|c| query.language.contains(&c.index))
             .map(|c| {
                 let range = c.node.byte_range();
-                let end = range.end.min(range.start + MAX_NAME_LEN).min(len);
-                snapshot
-                    .text_for_range(range.start.min(end)..end)
-                    .trim()
-                    .to_string()
+                let start = range.start.min(len);
+                let mut end = range.end.min(start + MAX_NAME_LEN).min(len);
+                // Never cut a multi-byte char.
+                while end > start && end < len && snapshot.byte_at(end) & 0xC0 == 0x80 {
+                    end -= 1;
+                }
+                snapshot.text_for_range(start..end).trim().to_string()
             });
         let Some(language) = from_text.or_else(|| settings.language.as_deref().map(String::from))
         else {
@@ -149,6 +183,9 @@ fn find_injections(
             });
         }
     }
+    if cancelled.get() {
+        return None;
+    }
     for injection in &mut out {
         let ranges = normalize(std::mem::take(&mut injection.ranges));
         injection.ranges = match parent_ranges {
@@ -157,7 +194,7 @@ fn find_injections(
         };
     }
     out.retain(|i| !i.ranges.is_empty());
-    out
+    Some(out)
 }
 
 /// Sorted, without empty ranges or ranges nested in an earlier one (nodes
@@ -226,12 +263,74 @@ pub(crate) struct Layer {
 
 impl Layer {
     /// Whether the layer has text in `bytes`.
-    pub fn intersects(&self, bytes: &Range<usize>) -> bool {
+    fn intersects(&self, bytes: &Range<usize>) -> bool {
         let first = self.ranges.partition_point(|r| r.end_byte <= bytes.start);
         self.ranges
             .get(first)
             .is_some_and(|r| r.start_byte < bytes.end)
     }
+
+    fn start(&self) -> usize {
+        self.ranges.first().map_or(0, |r| r.start_byte)
+    }
+
+    fn end(&self) -> usize {
+        self.ranges.last().map_or(0, |r| r.end_byte)
+    }
+}
+
+/// The child layers of a document, sorted by start so a viewport finds its
+/// layers without visiting all of them (Markdown's inline layers are not
+/// capped, so there can be many).
+#[derive(Default)]
+pub(crate) struct Layers {
+    list: Vec<Layer>,
+    /// `max_end[i]`: the largest end among `list[..=i]`.
+    max_end: Vec<usize>,
+}
+
+impl Layers {
+    fn new(mut list: Vec<Layer>) -> Layers {
+        list.sort_by_key(Layer::start);
+        let max_end = list
+            .iter()
+            .scan(0, |max, layer| {
+                *max = layer.end().max(*max);
+                Some(*max)
+            })
+            .collect();
+        Layers { list, max_end }
+    }
+
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Layer> {
+        self.list.iter()
+    }
+
+    /// The layers with text in `bytes`.
+    pub fn intersecting(&self, bytes: &Range<usize>) -> impl Iterator<Item = &Layer> {
+        let before = self.list.partition_point(|l| l.start() < bytes.end);
+        (0..before)
+            .rev()
+            .take_while(|&i| self.max_end[i] > bytes.start)
+            .map(|i| &self.list[i])
+            .filter(|l| l.intersects(bytes))
+    }
+}
+
+/// Markdown's inline text, injected by the bundled Markdown into the
+/// bundled `markdown_inline`, is part of Markdown itself (Phase 1 drew it
+/// without layers): those layers do not count toward [`MAX_LAYERS`], so a
+/// long file keeps its inline colours.
+fn uncapped(parent: &Language, child: &Language) -> bool {
+    is_bundled(parent, "markdown") && is_bundled(child, "markdown_inline")
+}
+
+fn is_bundled(language: &Language, id: &str) -> bool {
+    *language.origin() == LanguageOrigin::Bundled && &*language.id == id
 }
 
 /// One parser per injected language, kept across parses. Layers keep only
@@ -282,15 +381,39 @@ impl LayerParsers {
     }
 }
 
-/// Builds the child layers of `root_tree` (parsed as `root_language`) into
-/// `layers`, breadth first, up to [`MAX_DEPTH`] and [`MAX_LAYERS`].
+/// Builds the child layers of `root_tree` (parsed as `root_language`),
+/// breadth first, up to [`MAX_DEPTH`] and [`MAX_LAYERS`].
+///
+/// `deadline` bounds the whole build: it is checked before each injections
+/// query (and while it runs) and before each child parse. Past it, the
+/// layers built so far are kept and the result is `TimedOut`.
 ///
 /// With a `deadline` (the synchronous attempt on the UI thread), a WASM
 /// grammar not loaded yet is not loaded here: its region is skipped and the
 /// result is `TimedOut`, so the caller finishes the parse in the background,
-/// where the grammar loads. A child parse past the deadline keeps the
-/// layers built so far and returns `TimedOut` too.
+/// where the grammar loads.
 pub(crate) fn build_layers(
+    root_language: &Arc<Language>,
+    root_tree: &Tree,
+    snapshot: &BufferSnapshot,
+    registry: &LanguageRegistry,
+    parsers: &mut LayerParsers,
+    deadline: Option<Instant>,
+) -> (Layers, ParseOutcome) {
+    let mut layers: Vec<Layer> = Vec::new();
+    let outcome = build(
+        root_language,
+        root_tree,
+        snapshot,
+        registry,
+        parsers,
+        deadline,
+        &mut layers,
+    );
+    (Layers::new(layers), outcome)
+}
+
+fn build(
     root_language: &Arc<Language>,
     root_tree: &Tree,
     snapshot: &BufferSnapshot,
@@ -300,13 +423,15 @@ pub(crate) fn build_layers(
     layers: &mut Vec<Layer>,
 ) -> ParseOutcome {
     let mut outcome = ParseOutcome::Done;
-    // `None` is the root; `Some(i)` is `layers[i]`.
-    let mut parent: Option<usize> = None;
-    loop {
-        let (language, tree, depth, ranges) = match parent {
-            None => (root_language, root_tree, 0, None),
-            Some(i) => {
-                let Some(layer) = layers.get(i) else {
+    // Layers that count toward the cap.
+    let mut counted = 0;
+    let mut reported = false;
+    // 0 is the root; `i > 0` is `layers[i - 1]`.
+    for parent in 0.. {
+        let (parent_language, tree, depth, ranges) = match parent {
+            0 => (root_language, root_tree, 0, None),
+            i => {
+                let Some(layer) = layers.get(i - 1) else {
                     break;
                 };
                 (
@@ -317,23 +442,42 @@ pub(crate) fn build_layers(
                 )
             }
         };
-        let injections = match language.queries().and_then(|q| q.injections.as_ref()) {
-            Some(query) if depth < MAX_DEPTH => {
-                find_injections(query, tree.root_node(), snapshot, ranges)
-            }
-            _ => Vec::new(),
+        if depth >= MAX_DEPTH {
+            continue;
+        }
+        let Some(query) = parent_language
+            .queries()
+            .and_then(|q| q.injections.as_ref())
+        else {
+            continue;
         };
-        let child_depth = depth + 1;
+        // Past the cap, only Markdown can still add (uncapped) layers.
+        let may_be_uncapped = is_bundled(parent_language, "markdown");
+        if counted >= MAX_LAYERS && !may_be_uncapped {
+            continue;
+        }
+        if passed(deadline) {
+            return ParseOutcome::TimedOut;
+        }
+        let Some(injections) = find_injections(query, tree.root_node(), snapshot, ranges, deadline)
+        else {
+            return ParseOutcome::TimedOut;
+        };
+        let parent_language = parent_language.clone();
         for injection in injections {
-            if layers.len() >= MAX_LAYERS {
-                tracing::debug!(
-                    "more than {MAX_LAYERS} injected layers; the rest are not highlighted"
-                );
-                return outcome;
-            }
             let Some(language) = registry.language_by_name(&injection.language) else {
                 continue;
             };
+            let exempt = uncapped(&parent_language, &language);
+            if !exempt && counted >= MAX_LAYERS {
+                if !reported {
+                    reported = true;
+                    tracing::debug!(
+                        "more than {MAX_LAYERS} injected layers; the rest are not highlighted"
+                    );
+                }
+                continue;
+            }
             if language.is_failed() {
                 continue;
             }
@@ -350,17 +494,23 @@ pub(crate) fn build_layers(
             if parser.set_included_ranges(&injection.ranges).is_err() {
                 continue;
             }
-            match parse_snapshot(parser, snapshot, deadline) {
-                Some(tree) => layers.push(Layer {
-                    language,
-                    depth: child_depth,
-                    ranges: injection.ranges,
-                    tree,
-                }),
-                None => return ParseOutcome::TimedOut,
+            // Small parses never reach tree-sitter's progress callback.
+            if passed(deadline) {
+                return ParseOutcome::TimedOut;
             }
+            let Some(tree) = parse_snapshot(parser, snapshot, deadline) else {
+                return ParseOutcome::TimedOut;
+            };
+            if !exempt {
+                counted += 1;
+            }
+            layers.push(Layer {
+                language,
+                depth: depth + 1,
+                ranges: injection.ranges,
+                tree,
+            });
         }
-        parent = Some(parent.map_or(0, |i| i + 1));
     }
     outcome
 }

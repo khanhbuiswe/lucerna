@@ -85,7 +85,13 @@ pub(crate) struct HighlightQuery {
     pub query: Query,
     pub names: Vec<Arc<str>>,
     pub precedence: Precedence,
-    /// Per pattern: the checks beyond what tree-sitter applies itself.
+    predicates: Predicates,
+}
+
+/// Per pattern of a query: the checks beyond what tree-sitter applies
+/// itself (`#has-parent?`, `#not-has-parent?`; any other general
+/// predicate disables its pattern).
+pub(crate) struct Predicates {
     patterns: Vec<PatternChecks>,
 }
 
@@ -103,20 +109,10 @@ struct ParentCheck {
     negate: bool,
 }
 
-impl HighlightQuery {
-    fn new(
-        grammar: &tree_sitter::Language,
-        sources: &[&str],
-        precedence: Precedence,
-        language_id: &str,
-    ) -> Result<HighlightQuery, String> {
-        let source = sources.concat();
-        let query = Query::new(grammar, &source).map_err(|e| e.to_string())?;
-        let names = query
-            .capture_names()
-            .iter()
-            .map(|&n| Arc::from(n))
-            .collect();
+impl Predicates {
+    /// Reads the general predicates of `query`, warning once per unknown
+    /// one.
+    pub(crate) fn new(query: &Query, language_id: &str) -> Predicates {
         let mut warned = HashSet::new();
         let patterns = (0..query.pattern_count())
             .map(|pattern| {
@@ -156,16 +152,11 @@ impl HighlightQuery {
                 checks
             })
             .collect();
-        Ok(HighlightQuery {
-            query,
-            names,
-            precedence,
-            patterns,
-        })
+        Predicates { patterns }
     }
 
     /// Whether the checks tree-sitter leaves to us pass for `m`.
-    pub fn accepts(&self, m: &tree_sitter::QueryMatch) -> bool {
+    pub(crate) fn accepts(&self, m: &tree_sitter::QueryMatch) -> bool {
         let Some(checks) = self.patterns.get(m.pattern_index) else {
             return true;
         };
@@ -180,6 +171,35 @@ impl HighlightQuery {
                 in_list != check.negate
             })
         })
+    }
+}
+
+impl HighlightQuery {
+    fn new(
+        grammar: &tree_sitter::Language,
+        sources: &[&str],
+        precedence: Precedence,
+        language_id: &str,
+    ) -> Result<HighlightQuery, String> {
+        let source = sources.concat();
+        let query = Query::new(grammar, &source).map_err(|e| e.to_string())?;
+        let names = query
+            .capture_names()
+            .iter()
+            .map(|&n| Arc::from(n))
+            .collect();
+        let predicates = Predicates::new(&query, language_id);
+        Ok(HighlightQuery {
+            query,
+            names,
+            precedence,
+            predicates,
+        })
+    }
+
+    /// Whether the checks tree-sitter leaves to us pass for `m`.
+    pub fn accepts(&self, m: &tree_sitter::QueryMatch) -> bool {
+        self.predicates.accepts(m)
     }
 }
 
@@ -416,7 +436,8 @@ impl Language {
         };
         Ok(LanguageQueries {
             highlights,
-            injections: optional("injections", &self.injections).map(InjectionQuery::new),
+            injections: optional("injections", &self.injections)
+                .map(|query| InjectionQuery::new(query, &self.id)),
             brackets: optional("brackets", &self.brackets),
         })
     }

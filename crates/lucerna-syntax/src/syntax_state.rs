@@ -10,7 +10,7 @@ use tree_sitter::{
 };
 
 use crate::brackets;
-use crate::injection::{self, Layer, LayerParsers};
+use crate::injection::{self, LayerParsers, Layers};
 use crate::registry::{GrammarError, HighlightQuery, Language, LanguageRegistry, Precedence};
 use crate::row_start;
 use crate::wasm;
@@ -48,8 +48,8 @@ pub struct SyntaxState {
     registry: Arc<LanguageRegistry>,
     parser: Parser,
     tree: Option<Tree>,
-    /// Child layers, parents before children; empty until a parse.
-    layers: Vec<Layer>,
+    /// Child layers; empty until a parse.
+    layers: Layers,
     layer_parsers: LayerParsers,
 }
 
@@ -89,9 +89,18 @@ impl SyntaxState {
             registry,
             parser,
             tree: None,
-            layers: Vec::new(),
+            layers: Layers::default(),
             layer_parsers: LayerParsers::default(),
         })
+    }
+
+    /// The byte ranges of each child layer, for tests.
+    #[doc(hidden)]
+    pub fn layer_ranges(&self) -> Vec<Vec<Range<usize>>> {
+        self.layers
+            .iter()
+            .map(|l| l.ranges.iter().map(|r| r.start_byte..r.end_byte).collect())
+            .collect()
     }
 
     /// How many child layers (the root excluded) the last parse built.
@@ -119,16 +128,15 @@ impl SyntaxState {
         let Some(tree) = parse_snapshot(&mut self.parser, snapshot, deadline) else {
             return ParseOutcome::TimedOut;
         };
-        self.layers.clear();
-        let outcome = injection::build_layers(
+        let (layers, outcome) = injection::build_layers(
             &self.language,
             &tree,
             snapshot,
             &self.registry,
             &mut self.layer_parsers,
             deadline,
-            &mut self.layers,
         );
+        self.layers = layers;
         self.tree = Some(tree);
         outcome
     }
@@ -200,10 +208,7 @@ impl SyntaxState {
                 styled,
                 &mut spans,
             );
-            for layer in &self.layers {
-                if !layer.intersects(&segment) {
-                    continue;
-                }
+            for layer in self.layers.intersecting(&segment) {
                 let Some(queries) = layer.language.queries() else {
                     continue;
                 };
