@@ -28,7 +28,12 @@ class _Page(HTMLParser):
         self.anchors = []  # every <a href>
         self.srcs = []  # src attributes
         self.metrics = []  # text of class="v" elements
+        self.inline_css = []  # <style> blocks and style="" attributes
+        self.inline_scripts = 0  # <script> elements without src
+        self.unlabelled_roles = []  # div/span with aria-label but no role
         self._in_title = False
+        self._in_style = False
+        self._in_script = False
         self._metric_depth = 0
         self._metric_text = ""
 
@@ -48,8 +53,21 @@ class _Page(HTMLParser):
             self.links.append((a.get("rel", ""), a.get("href", "")))
         elif tag == "a" and "href" in a:
             self.anchors.append(a["href"])
-        if "src" in a:
-            self.srcs.append(a["src"])
+        for attr in ("src", "poster", "data"):
+            if a.get(attr):
+                self.srcs.append(a[attr])
+        for attr in ("srcset", "imagesrcset"):
+            for candidate in (a.get(attr) or "").split(","):
+                if candidate.strip():
+                    self.srcs.append(candidate.split()[0])
+        if a.get("style"):
+            self.inline_css.append(a["style"])
+        if tag in ("div", "span") and "aria-label" in a and not a.get("role"):
+            self.unlabelled_roles.append(f'<{tag} aria-label="{a["aria-label"]}">')
+        if tag == "style":
+            self._in_style = True
+        elif tag == "script" and not a.get("src"):
+            self._in_script = True
         if self._metric_depth:
             self._metric_depth += 1
         elif "v" in a.get("class", "").split():
@@ -59,6 +77,10 @@ class _Page(HTMLParser):
     def handle_endtag(self, tag):
         if tag == "title":
             self._in_title = False
+        elif tag == "style":
+            self._in_style = False
+        elif tag == "script":
+            self._in_script = False
         if self._metric_depth:
             self._metric_depth -= 1
             if not self._metric_depth:
@@ -67,6 +89,10 @@ class _Page(HTMLParser):
     def handle_data(self, data):
         if self._in_title:
             self.title += data
+        if self._in_style:
+            self.inline_css.append(data)
+        if self._in_script and data.strip():
+            self.inline_scripts += 1
         if self._metric_depth:
             self._metric_text += data
 
@@ -152,6 +178,14 @@ def check_site(root):
         _check_local(root, root, href, f"index.html <link rel={rel}>", failures)
     for src in page.srcs:
         _check_local(root, root, src, "index.html src", failures)
+
+    for el in page.unlabelled_roles:
+        failures.append(f"index.html: aria-label needs a role on a plain element: {el}")
+    if page.inline_scripts:
+        failures.append("index.html: inline <script> not allowed; put code in main.js")
+    for text in page.inline_css:
+        for url in CSS_URL.findall(text) + CSS_IMPORT.findall(text):
+            _check_local(root, root, url.strip(), "index.html inline style", failures)
 
     for css in sorted(root.rglob("*.css")):
         text = css.read_text(encoding="utf-8")

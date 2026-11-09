@@ -106,6 +106,46 @@ class CheckSiteTest(unittest.TestCase):
         )
         self.assertEqual(check_site(self.write(html)), [])
 
+    def test_inline_style_import_fails(self):
+        html = VALID_HTML.replace(
+            "</head>", "<style>@import url(https://fonts.googleapis.com/css2);</style></head>"
+        )
+        self.assertFailureMentions(check_site(self.write(html)), "fonts.googleapis.com")
+
+    def test_style_attribute_url_fails(self):
+        html = VALID_HTML.replace(
+            "</body>", '<div style="background:url(https://cdn.example/a.png)"></div></body>'
+        )
+        self.assertFailureMentions(check_site(self.write(html)), "cdn.example")
+
+    def test_srcset_external_fails(self):
+        html = VALID_HTML.replace(
+            "</body>", '<img src="og.png" srcset="og.png 1x, https://cdn.example/b.png 2x" alt=""></body>'
+        )
+        self.assertFailureMentions(check_site(self.write(html)), "cdn.example")
+
+    def test_poster_external_fails(self):
+        html = VALID_HTML.replace(
+            "</body>", '<video poster="https://cdn.example/p.png"></video></body>'
+        )
+        self.assertFailureMentions(check_site(self.write(html)), "cdn.example")
+
+    def test_inline_script_fails(self):
+        html = VALID_HTML.replace(
+            "</body>", '<script>import("https://cdn.example/x.js")</script></body>'
+        )
+        self.assertFailureMentions(check_site(self.write(html)), "inline <script>")
+
+    def test_aria_label_on_plain_div_fails(self):
+        html = VALID_HTML.replace("</body>", '<div aria-label="Shortcuts"></div></body>')
+        self.assertFailureMentions(check_site(self.write(html)), "aria-label")
+
+    def test_aria_label_on_div_with_role_passes(self):
+        html = VALID_HTML.replace(
+            "</body>", '<div role="group" aria-label="Shortcuts"></div></body>'
+        )
+        self.assertEqual(check_site(self.write(html)), [])
+
     def test_missing_metric_fails(self):
         html = VALID_HTML.replace("2.04<small>", "2.40<small>")
         self.assertFailureMentions(check_site(self.write(html)), "2.04")
