@@ -227,7 +227,7 @@ fn sorted_json(dir: impl AsRef<Path>) -> Vec<PathBuf> {
 }
 
 fn read_grammars_dir(dir: &Path, out: &mut BTreeMap<String, GrammarManifest>) {
-    for f in sorted_entries(&dir.join("grammars")) {
+    for f in sorted_entries(dir.join("grammars")) {
         if !f.is_file() || f.extension().is_none_or(|e| e != "toml") {
             continue;
         }
