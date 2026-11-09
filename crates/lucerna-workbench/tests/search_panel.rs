@@ -273,7 +273,11 @@ fn click_result_opens_and_positions(cx: &mut TestAppContext) {
             .map(|t| (t.path.to_path_buf(), t.pinned))
             .collect()
     });
-    assert_eq!(tabs, vec![(p("a.rs"), false)], "opened as a preview");
+    assert_eq!(
+        tabs,
+        vec![(dir.path().join("a.rs"), false)],
+        "opened as a preview"
+    );
     let view = active_view(&wb, cx);
     let (cursor, highlights, active) = view.read_with(cx, |v, _| {
         (v.cursor(), v.match_highlights().to_vec(), v.active_match())

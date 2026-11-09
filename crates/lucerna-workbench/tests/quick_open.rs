@@ -160,13 +160,12 @@ fn cmd_p_opens_and_enter_opens_preview(cx: &mut TestAppContext) {
     keys("enter", cx);
 
     assert!(quick_open(&wb, cx).is_none(), "Enter closes the picker");
-    assert_eq!(
-        tabs(&wb, cx),
-        vec![(0, PathBuf::from("src/main.rs"), false)]
-    );
+    let main = dir.path().join("src/main.rs");
+    assert_eq!(tabs(&wb, cx), vec![(0, main.clone(), false)]);
     assert_eq!(
         cx.update(|_, cx| wb.read(cx).recent_files().to_vec()),
-        vec![Arc::<Path>::from(Path::new("src/main.rs"))]
+        vec![Arc::<Path>::from(main)],
+        "recent files are absolute"
     );
 
     // The recently opened file now comes first for an empty query.
@@ -225,8 +224,8 @@ fn cmd_enter_opens_to_side(cx: &mut TestAppContext) {
     assert_eq!(
         tabs(&wb, cx),
         vec![
-            (0, PathBuf::from("README.md"), true),
-            (1, PathBuf::from("src/lib.rs"), true),
+            (0, dir.path().join("README.md"), true),
+            (1, dir.path().join("src/lib.rs"), true),
         ]
     );
 }
@@ -400,4 +399,18 @@ fn click_elsewhere_keeps_the_clicked_focus(cx: &mut TestAppContext) {
     });
     draw(cx);
     assert!(holds(&context(&wb, cx), "sideBarFocus && !editorFocus"));
+}
+
+/// Files opened by absolute path (`luc file`, search results) rank first
+/// too: recents are absolute, the tree is root-relative.
+#[gpui::test]
+fn files_opened_by_absolute_path_are_recent(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let lib: Arc<Path> = Arc::from(dir.path().join("src/lib.rs").as_path());
+    wb.update(cx, |wb, cx| wb.open_path(lib, OpenMode::Pinned, cx));
+    draw(cx);
+    keys("cmd-p", cx);
+    assert_eq!(rows(&wb, cx)[0], "lib.rs src");
 }

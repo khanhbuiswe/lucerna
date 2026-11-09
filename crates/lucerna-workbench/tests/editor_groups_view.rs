@@ -33,6 +33,14 @@ fn open(cx: &mut TestAppContext) -> (Entity<Workbench>, &mut VisualTestContext) 
     cx.add_window_view(|window, cx| Workbench::new(PathBuf::from("/tmp/project"), window, cx))
 }
 
+/// A tab path relative to the project: tabs hold absolute paths.
+fn rel(path: &Path) -> String {
+    path.strip_prefix("/tmp/project")
+        .expect("tab paths are absolute")
+        .display()
+        .to_string()
+}
+
 fn p(name: &str) -> Arc<Path> {
     Arc::from(Path::new(name))
 }
@@ -56,12 +64,7 @@ fn layout(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> (usize, Vec<Vec
         let paths = groups
             .groups()
             .iter()
-            .map(|g| {
-                g.tabs
-                    .iter()
-                    .map(|t| t.path.display().to_string())
-                    .collect()
-            })
+            .map(|g| g.tabs.iter().map(|t| rel(&t.path)).collect())
             .collect();
         (groups.active_group(), paths)
     })
@@ -103,9 +106,7 @@ fn ctrl_tab_cycles_mru(cx: &mut TestAppContext) {
     let active = |cx: &mut VisualTestContext| {
         cx.update(|_, cx| {
             let view = wb.read(cx).editor_groups().read(cx);
-            view.model()
-                .active_tab()
-                .map(|t| t.path.display().to_string())
+            view.model().active_tab().map(|t| rel(&t.path))
         })
     };
     cx.simulate_keystrokes("ctrl-tab");
@@ -194,9 +195,7 @@ fn tab_bar_mouse_activates_and_closes(cx: &mut TestAppContext) {
     let active = |cx: &mut VisualTestContext| {
         cx.update(|_, cx| {
             let view = wb.read(cx).editor_groups().read(cx);
-            view.model()
-                .active_tab()
-                .map(|t| t.path.display().to_string())
+            view.model().active_tab().map(|t| rel(&t.path))
         })
     };
     assert_eq!(active(cx).as_deref(), Some("a.rs"));

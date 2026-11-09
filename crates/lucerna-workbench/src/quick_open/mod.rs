@@ -84,6 +84,18 @@ impl Workbench {
         self.recent_files.paths()
     }
 
+    /// Recent files as Quick Open matches them: relative to the root, like
+    /// the worktree snapshot. Recent files are absolute (see
+    /// [`Workbench::open_path`]); those outside the root are left out.
+    fn recent_relative_to_root(&self) -> Arc<[Arc<Path>]> {
+        self.recent_files
+            .paths()
+            .iter()
+            .filter_map(|p| p.strip_prefix(self.root()).ok())
+            .map(Arc::from)
+            .collect()
+    }
+
     /// Shows Quick Open with `prefix` typed, or replaces the text of the
     /// one already shown, and focuses its input.
     pub fn show_quick_open(&mut self, prefix: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -108,7 +120,7 @@ impl Workbench {
         let sources = Sources {
             workbench: cx.weak_entity(),
             snapshot: self.worktree().snapshot(),
-            recent: self.recent_files.paths().into(),
+            recent: self.recent_relative_to_root(),
             commands,
             has_editor: self.active_code_view(cx).is_some(),
         };

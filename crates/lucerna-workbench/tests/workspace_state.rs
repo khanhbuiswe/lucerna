@@ -116,7 +116,7 @@ fn missing_files_dropped_on_restore() {
     let mut state = sample(&[&a, &b, &c]);
     // The right group's active tab is `b`, which is gone.
     state.groups.groups[1].active = Some(0);
-    let state = state.without_missing_files();
+    let state = state.without_missing_files(dir.path());
     assert_eq!(
         state.groups.groups[1].tabs,
         vec![(c.clone(), false)],
@@ -338,4 +338,88 @@ fn saves_when_the_window_closes(cx: &mut TestAppContext) {
     // Closing runs the window's should-close hook.
     assert!(cx.simulate_close());
     assert!(load_state(&project.state_file()).is_some());
+}
+
+fn tab_paths(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<PathBuf> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| g.tabs.iter().map(|t| t.path.to_path_buf()))
+            .collect()
+    })
+}
+
+/// The test's working directory is the crate, not the project, so a
+/// relative path resolved against it would not exist.
+#[gpui::test]
+fn relative_tab_paths_are_saved_absolute_and_restored(cx: &mut TestAppContext) {
+    init(cx);
+    let project = Project::new();
+    assert!(!Path::new("a.txt").exists(), "cwd must not be the project");
+    {
+        let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
+        let rel: Arc<Path> = Arc::from(Path::new("a.txt"));
+        wb.update(cx, |wb, cx| wb.open_path(rel, OpenMode::Pinned, cx));
+        settle(cx);
+        assert_eq!(tab_paths(&wb, cx), vec![project.file("a.txt")]);
+        wb.update(cx, |wb, cx| wb.save_workspace_state(cx));
+    }
+    let saved = load_state(&project.state_file()).expect("saved");
+    assert_eq!(
+        saved.groups.groups[0].tabs,
+        vec![(project.file("a.txt"), true)]
+    );
+    let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
+    assert_eq!(tab_paths(&wb, cx), vec![project.file("a.txt")]);
+}
+
+/// A state file written before paths were normalised may hold relative
+/// paths; they resolve against the root, not the working directory.
+#[gpui::test]
+fn relative_paths_in_an_old_state_file_restore(cx: &mut TestAppContext) {
+    init(cx);
+    let project = Project::new();
+    let mut saved = sample(&[Path::new("a.txt"), Path::new("b.txt")]);
+    saved.groups.groups[1].active = Some(0);
+    save_state(&project.state_file(), &saved).unwrap();
+    let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
+    assert_eq!(
+        tab_paths(&wb, cx),
+        vec![project.file("a.txt"), project.file("b.txt")]
+    );
+    // Any change saves; the restored rows go back out keyed by absolute
+    // path.
+    let c: Arc<Path> = Arc::from(project.file("c.txt").as_path());
+    wb.update(cx, |wb, cx| wb.open_path(c, OpenMode::Pinned, cx));
+    wb.update(cx, |wb, cx| wb.save_workspace_state(cx));
+    let resaved = load_state(&project.state_file()).unwrap();
+    for name in ["a.txt", "b.txt"] {
+        assert_eq!(
+            resaved.scroll.get(&project.file(name)),
+            Some(&7),
+            "restored scroll rows are keyed by absolute path: {:?}",
+            resaved.scroll
+        );
+    }
+}
+
+#[gpui::test]
+fn relative_and_absolute_open_the_same_tab(cx: &mut TestAppContext) {
+    init(cx);
+    let project = Project::new();
+    let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
+    let rel: Arc<Path> = Arc::from(Path::new("a.txt"));
+    let abs: Arc<Path> = Arc::from(project.file("a.txt").as_path());
+    wb.update(cx, |wb, cx| wb.open_path(rel, OpenMode::Pinned, cx));
+    wb.update(cx, |wb, cx| wb.open_path(abs, OpenMode::Pinned, cx));
+    settle(cx);
+    assert_eq!(tab_paths(&wb, cx), vec![project.file("a.txt")]);
+    assert_eq!(
+        cx.update(|_, cx| wb.read(cx).recent_files().to_vec()),
+        vec![Arc::<Path>::from(project.file("a.txt").as_path())]
+    );
 }

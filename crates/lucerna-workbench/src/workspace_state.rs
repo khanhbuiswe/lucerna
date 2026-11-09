@@ -28,11 +28,16 @@ pub struct WorkspaceState {
 }
 
 impl WorkspaceState {
-    /// Drops tabs (and scroll rows) of files that no longer exist, keeping
-    /// each group's active tab where it still exists. Empty groups are
-    /// left for [`crate::EditorGroups::restore`] to normalise.
-    pub fn without_missing_files(mut self) -> Self {
+    /// Makes every path absolute (relative ones, from files written before
+    /// tab paths were normalised, are joined onto `root`), then drops tabs
+    /// (and scroll rows) of files that no longer exist, keeping each
+    /// group's active tab where it still exists. Empty groups are left for
+    /// [`crate::EditorGroups::restore`] to normalise.
+    pub fn without_missing_files(mut self, root: &Path) -> Self {
         for group in &mut self.groups.groups {
+            for (path, _) in &mut group.tabs {
+                *path = absolute_path(root, path);
+            }
             let active_path = group
                 .active
                 .and_then(|i| group.tabs.get(i))
@@ -40,8 +45,23 @@ impl WorkspaceState {
             group.tabs.retain(|(path, _)| path.exists());
             group.active = active_path.and_then(|a| group.tabs.iter().position(|(p, _)| *p == a));
         }
-        self.scroll.retain(|path, _| path.exists());
+        self.scroll = std::mem::take(&mut self.scroll)
+            .into_iter()
+            .map(|(path, row)| (absolute_path(root, &path), row))
+            .filter(|(path, _)| path.exists())
+            .collect();
         self
+    }
+}
+
+/// `path` as given when absolute, else joined onto `root`. Every tab path,
+/// recent file and saved path goes through this, so one file has one name
+/// whatever the working directory.
+pub(crate) fn absolute_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
     }
 }
 

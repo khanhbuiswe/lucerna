@@ -26,6 +26,7 @@ use crate::code_view::CodeView;
 use crate::editor_groups::EditorGroupsView;
 use crate::tasks::catch_panic;
 use crate::ui::GRID;
+use crate::workspace_state::absolute_path;
 
 /// Where a document is in its life.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,11 +146,7 @@ impl Documents {
     /// The key for `path`: as given when absolute, else joined onto the
     /// root.
     fn key(&self, path: &Path) -> Arc<Path> {
-        if path.is_absolute() {
-            Arc::from(path)
-        } else {
-            Arc::from(self.root.join(path))
-        }
+        Arc::from(absolute_path(&self.root, path))
     }
 
     /// A new view of `path`. The document is loaded once per path: the

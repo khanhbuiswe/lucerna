@@ -109,11 +109,13 @@ fn double_click(selector: &'static str, cx: &mut VisualTestContext) {
 /// `(path, pinned)` of each tab in the active group.
 fn tabs(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<(PathBuf, bool)> {
     cx.update(|_, cx| {
+        // Tabs hold absolute paths; compare them relative to the root.
+        let root = wb.read(cx).root().to_path_buf();
         let model = wb.read(cx).editor_groups().read(cx).model();
         model.groups()[model.active_group()]
             .tabs
             .iter()
-            .map(|t| (t.path.to_path_buf(), t.pinned))
+            .map(|t| (t.path.strip_prefix(&root).unwrap().to_path_buf(), t.pinned))
             .collect()
     })
 }

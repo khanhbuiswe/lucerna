@@ -33,7 +33,7 @@ use crate::tasks::try_spawn_guarded;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
-use crate::workspace_state::{WorkspaceState, WorkspaceStateStore};
+use crate::workspace_state::{WorkspaceState, WorkspaceStateStore, absolute_path};
 use crate::{AppState, CommandRegistry, find_widget, keys, search_panel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +194,7 @@ impl Workbench {
         let restored = store
             .as_ref()
             .and_then(WorkspaceStateStore::load)
-            .map(WorkspaceState::without_missing_files);
+            .map(|state| state.without_missing_files(&root));
         if let Some(state) = &restored {
             editor_groups.update(cx, |view, cx| view.restore(&state.groups, cx));
             let open: Vec<PathBuf> = editor_groups
@@ -507,10 +507,19 @@ impl Workbench {
             .update(cx, |view, cx| view.update_model(cx, f))
     }
 
+    /// `path` as the workbench names it: absolute, a relative path joined
+    /// onto the root.
+    pub fn absolute_path(&self, path: &Path) -> Arc<Path> {
+        Arc::from(absolute_path(&self.root, path))
+    }
+
     /// Opens `path` in the editor area. `Preview` honours the
     /// `workbench.editor.enablePreview` setting. Records `path` in
-    /// [`Workbench::recent_files`].
+    /// [`Workbench::recent_files`]. A relative path is resolved against the
+    /// root first, so tabs, recent files and the saved state only ever
+    /// hold absolute paths.
     pub fn open_path(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
+        let path = self.absolute_path(&path);
         self.recent_files.record(path.clone());
         let preview_enabled = cx
             .global::<AppState>()
@@ -530,6 +539,7 @@ impl Workbench {
         point: Point,
         cx: &mut Context<Self>,
     ) {
+        let path = self.absolute_path(&path);
         self.open_path(path.clone(), mode, cx);
         // An already-drawn tab has its view; a new one gets it on draw.
         let view = self
