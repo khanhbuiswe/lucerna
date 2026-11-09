@@ -392,6 +392,10 @@ impl LayerParsers {
 /// grammar not loaded yet is not loaded here: its region is skipped and the
 /// result is `TimedOut`, so the caller finishes the parse in the background,
 /// where the grammar loads.
+///
+/// `max_children` (tests only) stops the build the same way once that many
+/// layers are built, so the partial outcome can be tested without timing.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_layers(
     root_language: &Arc<Language>,
     root_tree: &Tree,
@@ -399,6 +403,7 @@ pub(crate) fn build_layers(
     registry: &LanguageRegistry,
     parsers: &mut LayerParsers,
     deadline: Option<Instant>,
+    max_children: Option<usize>,
 ) -> (Layers, ParseOutcome) {
     let mut layers: Vec<Layer> = Vec::new();
     let outcome = build(
@@ -408,11 +413,13 @@ pub(crate) fn build_layers(
         registry,
         parsers,
         deadline,
+        max_children,
         &mut layers,
     );
     (Layers::new(layers), outcome)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build(
     root_language: &Arc<Language>,
     root_tree: &Tree,
@@ -420,8 +427,11 @@ fn build(
     registry: &LanguageRegistry,
     parsers: &mut LayerParsers,
     deadline: Option<Instant>,
+    max_children: Option<usize>,
     layers: &mut Vec<Layer>,
 ) -> ParseOutcome {
+    let out_of_budget =
+        |built: usize| passed(deadline) || max_children.is_some_and(|max| built >= max);
     let mut outcome = ParseOutcome::Done;
     // Layers that count toward the cap.
     let mut counted = 0;
@@ -456,7 +466,7 @@ fn build(
         if counted >= MAX_LAYERS && !may_be_uncapped {
             continue;
         }
-        if passed(deadline) {
+        if out_of_budget(layers.len()) {
             return ParseOutcome::TimedOut;
         }
         let Some(injections) = find_injections(query, tree.root_node(), snapshot, ranges, deadline)
@@ -495,7 +505,7 @@ fn build(
                 continue;
             }
             // Small parses never reach tree-sitter's progress callback.
-            if passed(deadline) {
+            if out_of_budget(layers.len()) {
                 return ParseOutcome::TimedOut;
             }
             let Some(tree) = parse_snapshot(parser, snapshot, deadline) else {

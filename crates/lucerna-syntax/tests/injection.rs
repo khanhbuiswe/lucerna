@@ -308,9 +308,9 @@ fn multibyte_text_highlights_on_char_boundaries() {
     );
 }
 
-/// The sync budget covers child layers too: with a budget that fits the
-/// root parse but not every child, the parse stops with some layers built,
-/// and a parse without a budget then builds them all.
+/// A layer build that runs out of budget keeps the layers built so far and
+/// returns `TimedOut`; a parse without a budget then builds them all. The
+/// child limit stands in for the clock, so this does not depend on timing.
 #[test]
 fn budget_bounds_child_layers() {
     let text = "```rust\nfn main() {}\n```\n\nsome *inline* text\n\n".repeat(400);
@@ -319,22 +319,15 @@ fn budget_bounds_child_layers() {
     assert_eq!(all, 800);
     let registry = Arc::new(LanguageRegistry::bundled());
     let markdown = registry.language_by_name("markdown").unwrap();
-    let mut partial = None;
-    let mut budget = std::time::Duration::from_micros(20);
-    while budget < std::time::Duration::from_secs(10) {
-        let mut state = SyntaxState::new(markdown.clone(), registry.clone()).unwrap();
-        let outcome = state.parse(&snap, Some(budget));
-        if outcome == ParseOutcome::Done {
-            break;
-        }
-        if state.tree().is_some() && state.layer_count() < all {
-            partial = Some(state);
-            break;
-        }
-        budget = budget * 3 / 2;
-    }
-    let mut state = partial.expect("some budget parses the root but not every child");
+    let mut state = SyntaxState::new(markdown, registry).unwrap();
+    assert_eq!(
+        state.parse_with_child_limit(&snap, 300),
+        ParseOutcome::TimedOut
+    );
+    assert!(state.tree().is_some());
+    assert!(state.layer_count() > 0);
     assert!(state.layer_count() < all);
+    assert_eq!(state.layer_count(), 300);
     assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
     assert_eq!(state.layer_count(), all);
 }

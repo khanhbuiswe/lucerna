@@ -125,6 +125,27 @@ impl SyntaxState {
     /// that runs out keeps the new root and the layers built so far.
     pub fn parse(&mut self, snapshot: &BufferSnapshot, budget: Option<Duration>) -> ParseOutcome {
         let deadline = budget.map(|budget| Instant::now() + budget);
+        self.parse_bounded(snapshot, deadline, None)
+    }
+
+    /// Like an unbudgeted [`SyntaxState::parse`], but the layer build stops
+    /// as if out of time once `max_children` layers are built: a
+    /// deterministic stand-in for the time budget, for tests.
+    #[doc(hidden)]
+    pub fn parse_with_child_limit(
+        &mut self,
+        snapshot: &BufferSnapshot,
+        max_children: usize,
+    ) -> ParseOutcome {
+        self.parse_bounded(snapshot, None, Some(max_children))
+    }
+
+    fn parse_bounded(
+        &mut self,
+        snapshot: &BufferSnapshot,
+        deadline: Option<Instant>,
+        max_children: Option<usize>,
+    ) -> ParseOutcome {
         let Some(tree) = parse_snapshot(&mut self.parser, snapshot, deadline) else {
             return ParseOutcome::TimedOut;
         };
@@ -135,6 +156,7 @@ impl SyntaxState {
             &self.registry,
             &mut self.layer_parsers,
             deadline,
+            max_children,
         );
         self.layers = layers;
         self.tree = Some(tree);
