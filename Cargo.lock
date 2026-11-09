@@ -3292,8 +3292,10 @@ name = "lucerna-syntax"
 version = "0.1.0"
 dependencies = [
  "criterion 0.5.1",
+ "globset",
  "insta",
  "lucerna-text",
+ "regex",
  "streaming-iterator",
  "tracing",
  "tree-sitter",

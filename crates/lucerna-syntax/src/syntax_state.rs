@@ -240,8 +240,15 @@ impl SyntaxState {
     pub fn matching_bracket(&self, snapshot: &BufferSnapshot, offset: usize) -> Option<usize> {
         match &self.tree {
             // An edited tree may name an offset past a shorter text.
-            Some(tree) => brackets::matching_bracket_in_tree(tree, offset)
-                .filter(|&at| at < snapshot.len_bytes()),
+            Some(tree) => match self
+                .language
+                .queries()
+                .and_then(|queries| queries.brackets.as_ref())
+            {
+                Some(query) => brackets::matching_bracket_by_query(tree, query, snapshot, offset),
+                None => brackets::matching_bracket_in_tree(tree, offset),
+            }
+            .filter(|&at| at < snapshot.len_bytes()),
             None => brackets::matching_bracket(snapshot, offset),
         }
     }
@@ -278,6 +285,9 @@ fn collect<I: AsRef<[u8]>>(
     cursor.set_byte_range(range.clone());
     let mut captures = cursor.captures(&hq.query, node, text);
     while let Some((m, index)) = captures.next() {
+        if !hq.accepts(m) {
+            continue;
+        }
         let capture = m.captures()[*index];
         let name = &hq.names[capture.index as usize];
         // Captures starting with `_` only feed predicates.

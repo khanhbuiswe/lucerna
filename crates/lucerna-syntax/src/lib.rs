@@ -1,6 +1,7 @@
 //! Bundled tree-sitter languages, viewport highlights, indent folds and
 //! bracket matching for Lucerna's read-only code view.
 
+mod associations;
 mod brackets;
 mod folds;
 mod registry;
@@ -9,9 +10,10 @@ mod wasm;
 
 use lucerna_text::{BufferSnapshot, Point};
 
+pub use associations::Associations;
 pub use brackets::matching_bracket;
 pub use folds::indent_folds;
-pub use registry::{GrammarError, Language, LanguageOrigin, LanguageRegistry};
+pub use registry::{ExtensionLanguage, GrammarError, Language, LanguageOrigin, LanguageRegistry};
 pub use syntax_state::{HighlightSpan, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 
 /// The byte offset where `row` starts; rows past the end give the length.

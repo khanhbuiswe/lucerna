@@ -1,7 +1,8 @@
 use std::ops::Range;
 
 use lucerna_text::{BufferSnapshot, Point};
-use tree_sitter::{Node, Tree};
+use streaming_iterator::StreamingIterator;
+use tree_sitter::{Node, Query, QueryCursor, Tree};
 
 /// How far the text scan looks for a partner before giving up.
 const SCAN_LIMIT: usize = 1 << 20;
@@ -78,6 +79,43 @@ pub(crate) fn matching_bracket_in_tree(tree: &Tree, offset: usize) -> Option<usi
                 return Some(node.start_byte());
             }
             depth -= 1;
+        }
+    }
+    None
+}
+
+/// The bracket paired with the one at `offset` (or just before it), by the
+/// language's `brackets.scm`: each match holds an `@open` and a `@close`.
+pub(crate) fn matching_bracket_by_query(
+    tree: &Tree,
+    query: &Query,
+    snapshot: &BufferSnapshot,
+    offset: usize,
+) -> Option<usize> {
+    let open = query.capture_index_for_name("open")?;
+    let close = query.capture_index_for_name("close")?;
+    let len = snapshot.len_bytes();
+    let text = move |node: Node| {
+        let range = node.byte_range();
+        snapshot
+            .chunks_in_range(range.start.min(len)..range.end.min(len))
+            .map(str::as_bytes)
+    };
+    for at in [Some(offset), offset.checked_sub(1)].into_iter().flatten() {
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(at..at + 1);
+        let mut matches = cursor.matches(query, tree.root_node(), text);
+        while let Some(m) = matches.next() {
+            let node = |index| m.nodes_for_capture_index(index).next();
+            let (Some(o), Some(c)) = (node(open), node(close)) else {
+                continue;
+            };
+            if o.start_byte() == at {
+                return Some(c.start_byte());
+            }
+            if c.start_byte() == at {
+                return Some(o.start_byte());
+            }
         }
     }
     None
