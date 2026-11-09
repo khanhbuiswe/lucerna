@@ -9,8 +9,8 @@ use std::sync::Arc;
 use gpui::{
     App, Bounds, CursorStyle, DispatchPhase, Element, ElementId, Font, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent, ShapedLine, SharedString, Style, TextRun,
-    Window, font, point, px, relative, size,
+    MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent, ShapedLine, SharedString,
+    Style, TextRun, Window, font, point, px, relative, size,
 };
 use lucerna_text::Point;
 use lucerna_theme::Theme;
@@ -441,20 +441,28 @@ impl CodeView {
             .collect();
 
         // The thumb follows buffer rows (folded ones left out), not
-        // wrapped display lines: one row's height each.
+        // wrapped display lines: one row's height each. It shows while the
+        // rows overflow, and its range is the real scroll range, which
+        // ends with the last row at the top.
+        let lh = f32::from(line_height);
+        let viewport = f32::from(bounds.size.height);
         let shown_rows = line_count - self.folds.hidden_before(line_count);
         let rows_above = self.scroll.top_row - self.folds.hidden_before(self.scroll.top_row);
-        let thumb = thumb_geometry(
-            f32::from(bounds.size.height),
-            shown_rows as f32 * f32::from(line_height),
-            rows_above as f32 * f32::from(line_height) + self.scroll.offset,
-        )
-        .map(|(top, height)| {
-            Bounds::new(
-                point(bounds.right() - px(SCROLLBAR_WIDTH), bounds.top() + px(top)),
-                size(px(SCROLLBAR_WIDTH), px(height)),
-            )
-        });
+        let thumb = (shown_rows as f32 * lh > viewport)
+            .then(|| {
+                thumb_geometry(
+                    viewport,
+                    shown_rows.saturating_sub(1) as f32 * lh + viewport,
+                    rows_above as f32 * lh + self.scroll.offset,
+                )
+            })
+            .flatten()
+            .map(|(top, height)| {
+                Bounds::new(
+                    point(bounds.right() - px(SCROLLBAR_WIDTH), bounds.top() + px(top)),
+                    size(px(SCROLLBAR_WIDTH), px(height)),
+                )
+            });
 
         let frame = Arc::new(Frame {
             bounds,
@@ -767,6 +775,16 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
             let over_gutter = hitbox.is_hovered(window) && ev.position.x < gutter_right;
             if view.read(cx).gutter_hovered() != over_gutter {
                 view.update(cx, |v, cx| v.set_gutter_hovered(over_gutter, cx));
+            }
+        }
+    });
+    // The mouse can leave the window straight from the gutter, with no
+    // move outside it to clear the hover.
+    window.on_mouse_event({
+        let view = view.clone();
+        move |_: &MouseExitEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble && view.read(cx).gutter_hovered() {
+                view.update(cx, |v, cx| v.set_gutter_hovered(false, cx));
             }
         }
     });

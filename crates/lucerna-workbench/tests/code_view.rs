@@ -392,6 +392,17 @@ fn fold_chevrons_follow_gutter_hover(cx: &mut TestAppContext) {
     cx.simulate_mouse_move(at(0, 2), None, none);
     assert_eq!(state(cx), (false, false, false));
 
+    // Leaving the window straight from the gutter hides them too.
+    let gutter = gpui::point(gpui::px(CHAR), gpui::px(LINE * 0.5));
+    cx.simulate_mouse_move(gutter, None, none);
+    assert_eq!(state(cx), (true, true, false));
+    cx.simulate_event(gpui::MouseExitEvent {
+        position: gutter,
+        pressed_button: None,
+        modifiers: none,
+    });
+    assert_eq!(state(cx), (false, false, false));
+
     // A folded row keeps its chevron with the mouse away.
     view.update(cx, |v, cx| v.toggle_fold(0, cx));
     draw(cx);
@@ -421,10 +432,24 @@ fn scrollbar_thumb_tracks_scroll(cx: &mut TestAppContext) {
     );
     assert_eq!(thumb.right(), viewport.width);
 
-    short.update(cx, |v, cx| v.set_scroll_top_row(499, cx));
-    draw(cx);
-    let thumb = short.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
-    assert!((thumb.bottom() - viewport.height).abs() < gpui::px(0.01));
+    let height = thumb.size.height;
+    let thumb_at = |row: u32, cx: &mut VisualTestContext| {
+        short.update(cx, |v, cx| v.set_scroll_top_row(row, cx));
+        draw(cx);
+        short.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap()
+    };
+    // The scroll range ends with the last row at the top: with the last
+    // page on screen the thumb has not reached the bottom yet...
+    let visible = short.read_with(cx, |v, _| v.visible_rows());
+    let last_page = thumb_at(500 - visible, cx);
+    assert!(last_page.bottom() < viewport.height - gpui::px(1.));
+    // ...halfway it is halfway down the track...
+    let half = thumb_at(499 / 2, cx);
+    let expected = (viewport.height - height) * (249. / 499.);
+    assert!((half.top() - expected).abs() < gpui::px(0.5));
+    // ...and with the last row at the top it is at the bottom.
+    let end = thumb_at(499, cx);
+    assert!((end.bottom() - viewport.height).abs() < gpui::px(0.01));
 }
 
 /// With the minimap on, the thumb sits left of it.
