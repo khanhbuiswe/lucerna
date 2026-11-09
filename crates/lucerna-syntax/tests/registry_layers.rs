@@ -246,7 +246,7 @@ fn extension_id_replaces_bundled() {
 fn captured(language: &Arc<Language>, text: &str) -> Vec<(String, String)> {
     let buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
     let snap = buffer.snapshot();
-    let mut state = SyntaxState::new(language.clone()).expect("grammar loads");
+    let mut state = SyntaxState::new(language.clone(), bundled()).expect("grammar loads");
     assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
     state
         .highlights(&snap, 0..snap.line_count(), &|_| true)
@@ -312,4 +312,9 @@ fn injections_query_is_stored() {
     );
     let registry = LanguageRegistry::build(&[spec], Associations::default());
     assert!(registry.language_by_name("Inj").unwrap().has_injections());
+}
+
+/// The registry injected language names resolve in.
+fn bundled() -> std::sync::Arc<LanguageRegistry> {
+    std::sync::Arc::new(LanguageRegistry::bundled())
 }

@@ -1,0 +1,223 @@
+---
+source: crates/lucerna-syntax/tests/injection.rs
+expression: spans
+---
+[
+    (
+        HighlightSpan {
+            range: 0..1,
+            capture: "punctuation.special",
+        },
+        "#",
+    ),
+    (
+        HighlightSpan {
+            range: 2..7,
+            capture: "text.title",
+        },
+        "Title",
+    ),
+    (
+        HighlightSpan {
+            range: 14..24,
+            capture: "text.emphasis",
+        },
+        "*emphasis*",
+    ),
+    (
+        HighlightSpan {
+            range: 14..15,
+            capture: "punctuation.delimiter",
+        },
+        "*",
+    ),
+    (
+        HighlightSpan {
+            range: 23..24,
+            capture: "punctuation.delimiter",
+        },
+        "*",
+    ),
+    (
+        HighlightSpan {
+            range: 29..39,
+            capture: "text.strong",
+        },
+        "**strong**",
+    ),
+    (
+        HighlightSpan {
+            range: 29..30,
+            capture: "punctuation.delimiter",
+        },
+        "*",
+    ),
+    (
+        HighlightSpan {
+            range: 30..31,
+            capture: "punctuation.delimiter",
+        },
+        "*",
+    ),
+    (
+        HighlightSpan {
+            range: 37..38,
+            capture: "punctuation.delimiter",
+        },
+        "*",
+    ),
+    (
+        HighlightSpan {
+            range: 38..39,
+            capture: "punctuation.delimiter",
+        },
+        "*",
+    ),
+    (
+        HighlightSpan {
+            range: 50..56,
+            capture: "text.literal",
+        },
+        "`code`",
+    ),
+    (
+        HighlightSpan {
+            range: 50..51,
+            capture: "punctuation.delimiter",
+        },
+        "`",
+    ),
+    (
+        HighlightSpan {
+            range: 55..56,
+            capture: "punctuation.delimiter",
+        },
+        "`",
+    ),
+    (
+        HighlightSpan {
+            range: 59..61,
+            capture: "punctuation.special",
+        },
+        "- ",
+    ),
+    (
+        HighlightSpan {
+            range: 70..72,
+            capture: "punctuation.special",
+        },
+        "- ",
+    ),
+    (
+        HighlightSpan {
+            range: 77..78,
+            capture: "punctuation.delimiter",
+        },
+        "[",
+    ),
+    (
+        HighlightSpan {
+            range: 78..81,
+            capture: "text.reference",
+        },
+        "two",
+    ),
+    (
+        HighlightSpan {
+            range: 81..82,
+            capture: "punctuation.delimiter",
+        },
+        "]",
+    ),
+    (
+        HighlightSpan {
+            range: 82..83,
+            capture: "punctuation.delimiter",
+        },
+        "(",
+    ),
+    (
+        HighlightSpan {
+            range: 83..102,
+            capture: "text.uri",
+        },
+        "https://example.com",
+    ),
+    (
+        HighlightSpan {
+            range: 102..103,
+            capture: "punctuation.delimiter",
+        },
+        ")",
+    ),
+    (
+        HighlightSpan {
+            range: 105..130,
+            capture: "text.literal",
+        },
+        "```rust\nfn main() {}\n```\n",
+    ),
+    (
+        HighlightSpan {
+            range: 105..108,
+            capture: "punctuation.delimiter",
+        },
+        "```",
+    ),
+    (
+        HighlightSpan {
+            range: 113..126,
+            capture: "none",
+        },
+        "fn main() {}\n",
+    ),
+    (
+        HighlightSpan {
+            range: 113..115,
+            capture: "keyword",
+        },
+        "fn",
+    ),
+    (
+        HighlightSpan {
+            range: 116..120,
+            capture: "function",
+        },
+        "main",
+    ),
+    (
+        HighlightSpan {
+            range: 120..121,
+            capture: "punctuation.bracket",
+        },
+        "(",
+    ),
+    (
+        HighlightSpan {
+            range: 121..122,
+            capture: "punctuation.bracket",
+        },
+        ")",
+    ),
+    (
+        HighlightSpan {
+            range: 123..124,
+            capture: "punctuation.bracket",
+        },
+        "{",
+    ),
+    (
+        HighlightSpan {
+            range: 124..125,
+            capture: "punctuation.bracket",
+        },
+        "}",
+    ),
+    (
+        HighlightSpan {
+            range: 126..129,
+            capture: "punctuation.delimiter",
+        },
+        "```",
+    ),
+]

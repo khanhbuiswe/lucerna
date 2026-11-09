@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lucerna_syntax::{Language, ParseOutcome, SyntaxState, validate_query, validate_wasm_grammar};
+use lucerna_syntax::{
+    Language, LanguageRegistry, ParseOutcome, SyntaxState, validate_query, validate_wasm_grammar,
+};
 use lucerna_text::Buffer;
 
 fn json_wasm() -> PathBuf {
@@ -15,7 +17,7 @@ fn highlight(
 ) -> Vec<(String, String)> {
     let buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
     let snap = buffer.snapshot();
-    let mut state = SyntaxState::new(language).expect("grammar loads");
+    let mut state = SyntaxState::new(language, bundled()).expect("grammar loads");
     assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
     state
         .highlights(&snap, 0..snap.line_count(), styled)
@@ -42,7 +44,7 @@ fn missing_wasm_file_is_grammar_error() {
     let language =
         Language::from_wasm_for_test("t-missing", &PathBuf::from("/nope/x.wasm"), "(string) @s");
     assert!(!language.is_failed());
-    assert!(SyntaxState::new(language.clone()).is_err());
+    assert!(SyntaxState::new(language.clone(), bundled()).is_err());
     assert!(language.is_failed());
 }
 
@@ -54,16 +56,16 @@ fn failure_is_cached_and_file_change_recovers() {
     std::fs::write(&path, b"garbage").unwrap();
     let language = Language::from_wasm_for_test("t-cached", &path, "(string) @s");
     assert!(!language.grammar_ready());
-    assert!(SyntaxState::new(language.clone()).is_err());
-    assert!(SyntaxState::new(language.clone()).is_err());
+    assert!(SyntaxState::new(language.clone(), bundled()).is_err());
+    assert!(SyntaxState::new(language.clone(), bundled()).is_err());
     assert!(language.is_failed());
     // The extension is updated in place: the new file (a different
     // length) loads rather than the cached failure.
     std::fs::copy(json_wasm(), &path).unwrap();
-    assert!(SyntaxState::new(language.clone()).is_ok());
+    assert!(SyntaxState::new(language.clone(), bundled()).is_ok());
     assert!(language.grammar_ready());
     let fresh = Language::from_wasm_for_test("t-cached-fresh", &path, "(string) @s");
-    assert!(SyntaxState::new(fresh).is_ok());
+    assert!(SyntaxState::new(fresh, bundled()).is_ok());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -72,7 +74,7 @@ fn bad_highlights_query_marks_extension_language_failed() {
     let language = Language::from_wasm_for_test("t-badquery", &json_wasm(), "(no_such_node) @x");
     let buffer = Buffer::from_bytes(br#"{"a": 1}"#, false).unwrap();
     let snap = buffer.snapshot();
-    let mut state = SyntaxState::new(language.clone()).expect("grammar loads");
+    let mut state = SyntaxState::new(language.clone(), bundled()).expect("grammar loads");
     state.parse(&snap, None);
     assert!(
         state
@@ -86,7 +88,7 @@ fn bad_highlights_query_marks_extension_language_failed() {
 fn states_are_created_and_dropped_repeatedly() {
     let language = Language::from_wasm_for_test("t-pool", &json_wasm(), "(string) @string");
     for _ in 0..20 {
-        let state = SyntaxState::new(language.clone()).unwrap();
+        let state = SyntaxState::new(language.clone(), bundled()).unwrap();
         drop(state);
     }
 }
@@ -114,4 +116,9 @@ fn validate_query_reports_bad_node() {
     assert!(validate_query("json", &bytes, "(string) @s").is_ok());
     let err = validate_query("json", &bytes, "(no_such_node) @x").unwrap_err();
     assert!(err.contains("no_such_node"), "{err}");
+}
+
+/// The registry injected language names resolve in.
+fn bundled() -> std::sync::Arc<LanguageRegistry> {
+    std::sync::Arc::new(LanguageRegistry::bundled())
 }

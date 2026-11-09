@@ -14,7 +14,7 @@ fn parsed(path: &str, text: &str) -> (SyntaxState, BufferSnapshot) {
         .language_for_path(Path::new(path))
         .unwrap();
     let snap = snapshot(text);
-    let mut state = SyntaxState::new(lang).unwrap();
+    let mut state = SyntaxState::new(lang, bundled()).unwrap();
     assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
     (state, snap)
 }
@@ -90,7 +90,7 @@ fn brackets_scm_pairs_used_when_present() {
     let lang = registry.language_by_name("Br").unwrap();
     let text = r#"{"a": [1, 2], "b": 3}"#;
     let snap = snapshot(text);
-    let mut state = SyntaxState::new(lang).unwrap();
+    let mut state = SyntaxState::new(lang, bundled()).unwrap();
     assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
     let open = text.find('[').unwrap();
     let close = text.find(']').unwrap();
@@ -101,4 +101,9 @@ fn brackets_scm_pairs_used_when_present() {
     // `{}` is not a pair for this language.
     assert_eq!(state.matching_bracket(&snap, 0), None);
     assert_eq!(state.matching_bracket(&snap, text.len() - 1), None);
+}
+
+/// The registry injected language names resolve in.
+fn bundled() -> std::sync::Arc<LanguageRegistry> {
+    std::sync::Arc::new(LanguageRegistry::bundled())
 }

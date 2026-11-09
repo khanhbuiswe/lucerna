@@ -19,7 +19,7 @@ fn language(path: &str) -> Arc<Language> {
 
 fn parsed(path: &str, text: &str) -> (SyntaxState, BufferSnapshot) {
     let snap = snapshot(text);
-    let mut state = SyntaxState::new(language(path)).unwrap();
+    let mut state = SyntaxState::new(language(path), bundled()).unwrap();
     assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
     (state, snap)
 }
@@ -96,7 +96,7 @@ fn rust_keyword_highlighted() {
 #[test]
 fn highlights_empty_without_tree() {
     let snap = snapshot("fn main() {}");
-    let state = SyntaxState::new(language("main.rs")).unwrap();
+    let state = SyntaxState::new(language("main.rs"), bundled()).unwrap();
     assert!(state.highlights(&snap, 0..1, &|_| true).is_empty());
 }
 
@@ -115,7 +115,7 @@ fn every_bundled_language_parses_fixture() {
             .unwrap_or_else(|| panic!("no language for fixture {}", path.display()));
         let text = std::fs::read_to_string(&path).unwrap();
         let snap = snapshot(&text);
-        let mut state = SyntaxState::new(lang.clone()).unwrap();
+        let mut state = SyntaxState::new(lang.clone(), bundled()).unwrap();
         assert_eq!(state.parse(&snap, None), ParseOutcome::Done, "{}", lang.id);
         let root = state.tree().expect("tree after Done").root_node();
         assert!(
@@ -129,7 +129,13 @@ fn every_bundled_language_parses_fixture() {
         covered.push(lang.id.clone());
     }
     covered.sort_unstable();
-    let mut all: Vec<_> = registry.languages().iter().map(|l| l.id.clone()).collect();
+    // Hidden languages (e.g. `markdown_inline`) are only injected.
+    let mut all: Vec<_> = registry
+        .languages()
+        .iter()
+        .filter(|l| !l.hidden())
+        .map(|l| l.id.clone())
+        .collect();
     all.sort_unstable();
     assert_eq!(
         covered, all,
@@ -242,7 +248,7 @@ fn edited_state_highlights_the_new_text_until_reparsed() {
     let new_text = "fn a() {}\n";
     let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
     let old = buffer.snapshot();
-    let mut state = SyntaxState::new(language("a.rs")).unwrap();
+    let mut state = SyntaxState::new(language("a.rs"), bundled()).unwrap();
     assert_eq!(state.parse(&old, None), ParseOutcome::Done);
     let reload = buffer.reload(new_text.as_bytes()).unwrap();
     let new = buffer.snapshot();
@@ -267,7 +273,7 @@ fn edited_state_highlights_the_new_text_until_reparsed() {
 fn highlights_after_reload(old_text: &str, new_text: &str) -> (Vec<HighlightSpan>, usize) {
     let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
     let old = buffer.snapshot();
-    let mut state = SyntaxState::new(language("a.rs")).unwrap();
+    let mut state = SyntaxState::new(language("a.rs"), bundled()).unwrap();
     assert_eq!(state.parse(&old, None), ParseOutcome::Done);
     let reload = buffer.reload(new_text.as_bytes()).unwrap();
     let new = buffer.snapshot();
@@ -332,4 +338,9 @@ fn mass_eol_conversion_drops_the_tree() {
     let lf = "fn a() {}\n".repeat(1200);
     let (spans, _) = highlights_after_reload(&lf, &lf.replace('\n', "\r\n"));
     assert!(spans.is_empty());
+}
+
+/// The registry injected language names resolve in.
+fn bundled() -> std::sync::Arc<LanguageRegistry> {
+    std::sync::Arc::new(LanguageRegistry::bundled())
 }

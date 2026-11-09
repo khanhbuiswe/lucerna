@@ -4,6 +4,7 @@
 mod associations;
 mod brackets;
 mod folds;
+mod injection;
 mod registry;
 mod syntax_state;
 mod wasm;

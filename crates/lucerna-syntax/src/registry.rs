@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tree_sitter::{Query, QueryPredicateArg};
 
 use crate::associations::Associations;
+use crate::injection::InjectionQuery;
 use crate::wasm;
 
 /// Why a grammar could not be loaded.
@@ -63,8 +64,6 @@ pub struct Language {
     /// queries disagree: some list generic patterns first (`(identifier)
     /// @variable` then refinements), others list them last.
     precedence: Precedence,
-    /// Markdown only: the inline grammar injected into `inline` nodes.
-    inline: Option<InlineGrammar>,
     /// Source of the injections query (run by the layer machinery).
     injections: Option<String>,
     /// Source of the brackets query, which replaces the built-in pairs.
@@ -78,11 +77,6 @@ pub struct Language {
 pub(crate) enum Precedence {
     FirstPatternWins,
     LastPatternWins,
-}
-
-struct InlineGrammar {
-    grammar: tree_sitter::Language,
-    highlights: &'static str,
 }
 
 /// A compiled highlights query with its capture names interned once, so
@@ -191,18 +185,8 @@ impl HighlightQuery {
 
 pub(crate) struct LanguageQueries {
     pub highlights: HighlightQuery,
-    pub inline: Option<InlineQueries>,
-    /// Compiled for storage; the injection layers (Task 4) run it.
-    #[allow(dead_code)]
-    pub injections: Option<Query>,
+    pub injections: Option<InjectionQuery>,
     pub brackets: Option<Query>,
-}
-
-pub(crate) struct InlineQueries {
-    pub grammar: tree_sitter::Language,
-    pub highlights: HighlightQuery,
-    /// `(inline) @inline` over the block tree.
-    pub inline_nodes: Query,
 }
 
 /// An extension's language as the workbench hands it over.
@@ -325,7 +309,6 @@ impl Language {
             failed: AtomicBool::new(false),
             highlights,
             precedence,
-            inline: None,
             injections: None,
             brackets: None,
             first_line: None,
@@ -417,20 +400,6 @@ impl Language {
         let grammar = self.grammar().map_err(|e| e.to_string())?;
         let sources: Vec<&str> = self.highlights.iter().map(String::as_str).collect();
         let highlights = HighlightQuery::new(&grammar, &sources, self.precedence, &self.id)?;
-        let inline = match &self.inline {
-            None => None,
-            Some(inline) => Some(InlineQueries {
-                grammar: inline.grammar.clone(),
-                highlights: HighlightQuery::new(
-                    &inline.grammar,
-                    &[inline.highlights],
-                    Precedence::FirstPatternWins,
-                    &self.id,
-                )?,
-                inline_nodes: Query::new(&grammar, "(inline) @inline")
-                    .map_err(|e| e.to_string())?,
-            }),
-        };
         let optional = |kind: &str, source: &Option<String>| {
             let source = source.as_deref()?;
             match Query::new(&grammar, source) {
@@ -447,8 +416,7 @@ impl Language {
         };
         Ok(LanguageQueries {
             highlights,
-            inline,
-            injections: optional("injections", &self.injections),
+            injections: optional("injections", &self.injections).map(InjectionQuery::new),
             brackets: optional("brackets", &self.brackets),
         })
     }
@@ -593,18 +561,25 @@ impl LanguageRegistry {
                 &[tree_sitter_json::HIGHLIGHTS_QUERY],
                 First,
             ),
+            lang(
+                "markdown",
+                "Markdown",
+                &["md", "markdown"],
+                &[],
+                tree_sitter_md::LANGUAGE.into(),
+                &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
+                First,
+            ),
+            // Injected into Markdown's `inline` nodes; never picked by path.
             Language {
-                inline: Some(InlineGrammar {
-                    grammar: tree_sitter_md::INLINE_LANGUAGE.into(),
-                    highlights: tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
-                }),
+                hidden: true,
                 ..lang(
-                    "markdown",
-                    "Markdown",
-                    &["md", "markdown"],
+                    "markdown_inline",
+                    "Markdown Inline",
                     &[],
-                    tree_sitter_md::LANGUAGE.into(),
-                    &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
+                    &[],
+                    tree_sitter_md::INLINE_LANGUAGE.into(),
+                    &[tree_sitter_md::HIGHLIGHT_QUERY_INLINE],
                     First,
                 )
             },
@@ -808,6 +783,7 @@ fn lang(
         filenames: filenames.iter().map(|s| s.to_string()).collect(),
         injections: match id {
             "markdown" => Some(tree_sitter_md::INJECTION_QUERY_BLOCK.to_string()),
+            "markdown_inline" => Some(tree_sitter_md::INJECTION_QUERY_INLINE.to_string()),
             "html" => Some(tree_sitter_html::INJECTIONS_QUERY.to_string()),
             _ => None,
         },

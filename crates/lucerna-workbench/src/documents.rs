@@ -491,6 +491,7 @@ impl Documents {
             return;
         };
         let settings = &cx.global::<AppState>().settings;
+        let registry = cx.global::<AppState>().languages.clone();
         let language = doc.language.as_ref().map(|l| l.id.clone());
         let max_bytes = settings
             .get::<u64>("lucerna.largeFile.maxBytes", language.as_deref())
@@ -513,11 +514,13 @@ impl Documents {
         // A WASM grammar's first load compiles a module, far over the sync
         // budget: it happens in the background job. Otherwise, on the UI
         // thread, a panic in the grammar must not take the app down (spec
-        // §7); it is logged and the file shows as plain text.
+        // §7); it is logged and the file shows as plain text. An injected
+        // language whose WASM grammar is not loaded yet makes the sync parse
+        // time out, so it loads here too.
         let mut started = None;
         if language.grammar_ready() {
             let sync = catch_panic("parse", || {
-                let mut syntax = SyntaxState::new(language.clone())?;
+                let mut syntax = SyntaxState::new(language.clone(), registry.clone())?;
                 let outcome = syntax.parse(&snapshot, Some(SYNC_PARSE_BUDGET));
                 Ok::<_, GrammarError>((syntax, outcome))
             });
@@ -541,7 +544,7 @@ impl Documents {
         let work = spawn_contained(cx, move || {
             let mut syntax = match started {
                 Some(syntax) => syntax,
-                None => SyntaxState::new(language)?,
+                None => SyntaxState::new(language, registry)?,
             };
             syntax.parse(&snapshot, None);
             Ok::<_, GrammarError>(syntax)

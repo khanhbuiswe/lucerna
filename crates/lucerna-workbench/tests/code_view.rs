@@ -183,15 +183,16 @@ fn large_file_disables_highlight(cx: &mut TestAppContext) {
     let source: String = (0..20)
         .map(|i| format!("fn f{i}() {{\n    {i}\n}}\n"))
         .collect();
-    let rust = cx.update(|_, cx| {
-        cx.global::<AppState>()
-            .languages
-            .language_for_path(Path::new("big.rs"))
-            .unwrap()
+    let (rust, registry) = cx.update(|_, cx| {
+        let languages = cx.global::<AppState>().languages.clone();
+        (
+            languages.language_for_path(Path::new("big.rs")).unwrap(),
+            languages,
+        )
     });
 
     let big = open(&wb, "big.rs", &source, cx);
-    let mut syntax = SyntaxState::new(rust.clone()).unwrap();
+    let mut syntax = SyntaxState::new(rust.clone(), registry.clone()).unwrap();
     syntax.parse(&snapshot(&source), None);
     big.update(cx, |v, cx| v.set_syntax(Some(Arc::new(syntax)), cx));
     cx.run_until_parked();
@@ -210,7 +211,7 @@ fn large_file_disables_highlight(cx: &mut TestAppContext) {
     // A small file gets highlights, folds and a minimap, and no notice.
     let small_source = "fn main() {\n    let x = 1;\n}\n";
     let small = open(&wb, "small.rs", small_source, cx);
-    let mut syntax = SyntaxState::new(rust).unwrap();
+    let mut syntax = SyntaxState::new(rust, registry).unwrap();
     syntax.parse(&snapshot(small_source), None);
     small.update(cx, |v, cx| v.set_syntax(Some(Arc::new(syntax)), cx));
     cx.run_until_parked();

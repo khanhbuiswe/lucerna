@@ -10,7 +10,8 @@ use tree_sitter::{
 };
 
 use crate::brackets;
-use crate::registry::{GrammarError, HighlightQuery, Language, Precedence};
+use crate::injection::{self, Layer, LayerParsers};
+use crate::registry::{GrammarError, HighlightQuery, Language, LanguageRegistry, Precedence};
 use crate::row_start;
 use crate::wasm;
 
@@ -36,14 +37,20 @@ pub enum ParseOutcome {
     TimedOut,
 }
 
-/// The parse tree of one document plus the parser that produced it.
+/// The parse tree of one document plus the parser that produced it, and
+/// the layers injected into it (`injections.scm`).
 ///
 /// `Send` and `Sync`: the pipeline moves it to a background thread to parse,
 /// and `parse` takes `&mut self`, so shared references only read the tree.
 pub struct SyntaxState {
     language: Arc<Language>,
+    /// Resolves the names of injected languages.
+    registry: Arc<LanguageRegistry>,
     parser: Parser,
     tree: Option<Tree>,
+    /// Child layers, parents before children; empty until a parse.
+    layers: Vec<Layer>,
+    layer_parsers: LayerParsers,
 }
 
 impl Drop for SyntaxState {
@@ -62,7 +69,10 @@ const _: fn() = || {
 impl SyntaxState {
     /// Fails when the language's grammar cannot be loaded; callers then show
     /// the text unhighlighted.
-    pub fn new(language: Arc<Language>) -> Result<SyntaxState, GrammarError> {
+    pub fn new(
+        language: Arc<Language>,
+        registry: Arc<LanguageRegistry>,
+    ) -> Result<SyntaxState, GrammarError> {
         let grammar = language.grammar()?;
         let mut parser = Parser::new();
         if language.is_wasm() {
@@ -76,9 +86,23 @@ impl SyntaxState {
         })?;
         Ok(SyntaxState {
             language,
+            registry,
             parser,
             tree: None,
+            layers: Vec::new(),
+            layer_parsers: LayerParsers::default(),
         })
+    }
+
+    /// How many child layers (the root excluded) the last parse built.
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+
+    /// The depth of the deepest layer; the root is 0.
+    #[doc(hidden)]
+    pub fn max_layer_depth(&self) -> usize {
+        self.layers.iter().map(|l| l.depth).max().unwrap_or(0)
     }
 
     /// The current tree, if a parse has completed.
@@ -86,58 +110,42 @@ impl SyntaxState {
         self.tree.as_ref()
     }
 
-    /// Fully reparses `snapshot`. With `budget`, gives up once that much
-    /// time has passed and keeps the previous tree.
+    /// Fully reparses `snapshot`, then rebuilds the injected layers. With
+    /// `budget`, gives up once that much time has passed in all: a root
+    /// parse that runs out keeps the previous tree and layers; a child parse
+    /// that runs out keeps the new root and the layers built so far.
     pub fn parse(&mut self, snapshot: &BufferSnapshot, budget: Option<Duration>) -> ParseOutcome {
-        let len = snapshot.len_bytes();
-        let mut read = |offset: usize, _: tree_sitter::Point| -> &str {
-            if offset >= len {
-                ""
-            } else {
-                snapshot.chunks_in_range(offset..len).next().unwrap_or("")
-            }
+        let deadline = budget.map(|budget| Instant::now() + budget);
+        let Some(tree) = parse_snapshot(&mut self.parser, snapshot, deadline) else {
+            return ParseOutcome::TimedOut;
         };
-        let tree = match budget {
-            None => self.parser.parse_with_options(&mut read, None, None),
-            Some(budget) => {
-                let started = Instant::now();
-                let mut progress = |_: &ParseState| {
-                    if started.elapsed() >= budget {
-                        ControlFlow::Break(())
-                    } else {
-                        ControlFlow::Continue(())
-                    }
-                };
-                let options = ParseOptions::new().progress_callback(&mut progress);
-                self.parser
-                    .parse_with_options(&mut read, None, Some(options))
-            }
-        };
-        match tree {
-            Some(tree) => {
-                self.tree = Some(tree);
-                ParseOutcome::Done
-            }
-            None => {
-                // A cancelled parse would otherwise resume on the next call.
-                self.parser.reset();
-                ParseOutcome::TimedOut
-            }
-        }
+        self.layers.clear();
+        let outcome = injection::build_layers(
+            &self.language,
+            &tree,
+            snapshot,
+            &self.registry,
+            &mut self.layer_parsers,
+            deadline,
+            &mut self.layers,
+        );
+        self.tree = Some(tree);
+        outcome
     }
 
     /// A copy for the reloaded text `new`, with the tree edited by
     /// `reload` (the change from `old`). Until `new` is parsed, it keeps
     /// the old colours on screen: ranges after the change shift, and those
     /// inside it stretch over the new text. Without a tree, the copy has
-    /// none either.
+    /// none either. Injected layers are dropped; the next parse rebuilds
+    /// them.
     pub fn edited(
         &self,
         old: &BufferSnapshot,
         new: &BufferSnapshot,
         reload: &Reload,
     ) -> SyntaxState {
-        let mut edited = SyntaxState::new(self.language.clone())
+        let mut edited = SyntaxState::new(self.language.clone(), self.registry.clone())
             .expect("the language of an existing state loaded already");
         edited.tree = self.tree.clone().and_then(|mut tree| {
             // Too many changed line endings: show plain text until parsed.
@@ -151,8 +159,9 @@ impl SyntaxState {
     }
 
     /// Spans for `rows` (end exclusive), clipped to those rows and sorted by
-    /// start, outer spans before inner ones. Where several patterns capture
-    /// the same range, only the one the language's query intends survives.
+    /// start, outer spans before inner ones. Every layer with text in the
+    /// rows contributes. Where several patterns capture the same range, only
+    /// one survives: the deepest layer's, then the one its query intends.
     ///
     /// Captures for which `styled` is false are dropped before ranking, so
     /// a less specific capture the theme styles can show through.
@@ -180,53 +189,31 @@ impl SyntaxState {
         };
         let mut cursor = QueryCursor::new();
         let mut spans = Vec::new();
-        let mut inline_parser = None;
         for segment in segments(snapshot, rows) {
             collect(
                 &mut cursor,
                 &queries.highlights,
                 root,
-                Layer::Main,
-                &segment,
                 0,
+                &segment,
                 snapshot_text,
                 styled,
                 &mut spans,
             );
-            let Some(inline) = &queries.inline else {
-                continue;
-            };
-            let mut inline_ranges = Vec::new();
-            cursor.set_byte_range(segment.clone());
-            let mut matches = cursor.matches(&inline.inline_nodes, root, snapshot_text);
-            while let Some(m) = matches.next() {
-                for capture in m.captures() {
-                    let range = clip(capture.node.byte_range(), &segment);
-                    if !range.is_empty() {
-                        inline_ranges.push(range);
-                    }
+            for layer in &self.layers {
+                if !layer.intersects(&segment) {
+                    continue;
                 }
-            }
-            for range in inline_ranges {
-                let text = snapshot.text_for_range(range.clone());
-                let parser = inline_parser.get_or_insert_with(|| {
-                    let mut parser = Parser::new();
-                    parser
-                        .set_language(&inline.grammar)
-                        .expect("bundled inline grammar is ABI-compatible");
-                    parser
-                });
-                let Some(inline_tree) = parser.parse(&text, None) else {
+                let Some(queries) = layer.language.queries() else {
                     continue;
                 };
                 collect(
                     &mut cursor,
-                    &inline.highlights,
-                    inline_tree.root_node(),
-                    Layer::MarkdownInline,
-                    &(0..text.len()),
-                    range.start,
-                    text.as_bytes(),
+                    &queries.highlights,
+                    layer.tree.root_node(),
+                    layer.depth,
+                    &segment,
+                    snapshot_text,
                     styled,
                     &mut spans,
                 );
@@ -254,30 +241,24 @@ impl SyntaxState {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Layer {
-    Main,
-    MarkdownInline,
-}
-
 struct RankedSpan {
     range: Range<usize>,
-    layer: Layer,
-    /// Lower wins among spans with the same range and layer.
+    /// The layer depth; the root is 0.
+    depth: usize,
+    /// Lower wins among spans with the same range and depth.
     rank: usize,
     capture: Arc<str>,
 }
 
-/// Runs `hq` over `range` of `node`'s tree (whose byte 0 is `offset` in the
-/// document) and pushes the captures, clipped to `range`.
+/// Runs `hq` over `range` of `node`'s tree (a layer at `depth`) and pushes
+/// the captures, clipped to `range`.
 #[allow(clippy::too_many_arguments)]
 fn collect<I: AsRef<[u8]>>(
     cursor: &mut QueryCursor,
     hq: &HighlightQuery,
     node: Node,
-    layer: Layer,
+    depth: usize,
     range: &Range<usize>,
-    offset: usize,
     text: impl TextProvider<I>,
     styled: &dyn Fn(&str) -> bool,
     out: &mut Vec<RankedSpan>,
@@ -303,17 +284,26 @@ fn collect<I: AsRef<[u8]>>(
             Precedence::LastPatternWins => usize::MAX - m.pattern_index,
         };
         out.push(RankedSpan {
-            range: clipped.start + offset..clipped.end + offset,
-            layer,
+            range: clipped,
+            depth,
             rank,
             capture: name.clone(),
         });
     }
 }
 
+/// Sorts by start, outer spans first; of spans with the same range, the
+/// deepest layer's best-ranked one survives.
 fn resolve(mut spans: Vec<RankedSpan>) -> Vec<HighlightSpan> {
-    spans.sort_by_key(|s| (s.range.start, Reverse(s.range.end), s.layer, s.rank));
-    spans.dedup_by(|later, kept| later.range == kept.range && later.layer == kept.layer);
+    spans.sort_by_key(|s| {
+        (
+            s.range.start,
+            Reverse(s.range.end),
+            Reverse(s.depth),
+            s.rank,
+        )
+    });
+    spans.dedup_by(|later, kept| later.range == kept.range);
     spans
         .into_iter()
         .map(|s| HighlightSpan {
@@ -321,6 +311,42 @@ fn resolve(mut spans: Vec<RankedSpan>) -> Vec<HighlightSpan> {
             capture: s.capture,
         })
         .collect()
+}
+
+/// Parses all of `snapshot` (within the parser's included ranges). `None`
+/// once `deadline` passes; the parser is then reset, so the next call
+/// starts afresh rather than resuming.
+pub(crate) fn parse_snapshot(
+    parser: &mut Parser,
+    snapshot: &BufferSnapshot,
+    deadline: Option<Instant>,
+) -> Option<Tree> {
+    let len = snapshot.len_bytes();
+    let mut read = |offset: usize, _: tree_sitter::Point| -> &str {
+        if offset >= len {
+            ""
+        } else {
+            snapshot.chunks_in_range(offset..len).next().unwrap_or("")
+        }
+    };
+    let tree = match deadline {
+        None => parser.parse_with_options(&mut read, None, None),
+        Some(deadline) => {
+            let mut progress = |_: &ParseState| {
+                if Instant::now() >= deadline {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            };
+            let options = ParseOptions::new().progress_callback(&mut progress);
+            parser.parse_with_options(&mut read, None, Some(options))
+        }
+    };
+    if tree.is_none() {
+        parser.reset();
+    }
+    tree
 }
 
 fn clip(range: Range<usize>, to: &Range<usize>) -> Range<usize> {
