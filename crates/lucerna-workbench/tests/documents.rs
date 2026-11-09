@@ -512,3 +512,20 @@ fn slow_parse_finishes_in_background(cx: &mut TestAppContext) {
         assert!(!spans.is_empty(), "the end of the file is highlighted");
     });
 }
+
+/// The status reads the column from the rope; a 1 MB line is not copied
+/// per frame (no timing asserted, only the column).
+#[gpui::test]
+fn status_column_on_a_one_megabyte_line(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    let line = format!("{}x\n", "é".repeat(500_000));
+    fs::write(dir.path().join("wide.txt"), line).unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "wide.txt", cx);
+    view.update(cx, |v, cx| v.go_to(pt(0, 1_000_000), cx));
+    settle(cx);
+    let docs = documents(&wb, cx);
+    let status = cx.update(|_, cx| docs.read(cx).status(view.read(cx)));
+    assert_eq!(status.expect("loaded").cursor, "Ln 1, Col 500001");
+}

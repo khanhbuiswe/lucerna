@@ -122,6 +122,27 @@ impl BufferSnapshot {
         }
     }
 
+    /// The number of chars before `p` on its line: the column the status
+    /// bar shows, 0-based. A byte column inside a char counts that char's
+    /// start; past the end of the line it clamps to the line's length
+    /// (without the line break). Out-of-range rows give 0. O(log n): the
+    /// line is not copied.
+    pub fn char_column(&self, p: Point) -> u32 {
+        let row = p.row as usize;
+        if row >= self.line_count() as usize {
+            return 0;
+        }
+        let line = self.rope.line(row);
+        let mut len = line.len_bytes();
+        for eol in *b"\n\r" {
+            if len > 0 && line.byte(len - 1) == eol {
+                len -= 1;
+            }
+        }
+        // `byte_to_char` names the char containing the byte: rounds down.
+        line.byte_to_char((p.column as usize).min(len)) as u32
+    }
+
     pub fn len_bytes(&self) -> usize {
         self.rope.len_bytes()
     }

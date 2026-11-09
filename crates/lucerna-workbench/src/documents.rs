@@ -347,12 +347,8 @@ impl Documents {
         let doc = self.docs.get(&self.key(view.path()))?;
         doc.snapshot.as_ref()?;
         let cursor = view.cursor();
-        let line = view.snapshot().line(cursor.row);
-        let mut byte = (cursor.column as usize).min(line.len());
-        while !line.is_char_boundary(byte) {
-            byte -= 1;
-        }
-        let col = line[..byte].chars().count();
+        // Runs every frame: never copy the line, which may be megabytes.
+        let col = view.snapshot().char_column(cursor);
         Some(DocumentStatus {
             cursor: format!("Ln {}, Col {}", cursor.row + 1, col + 1),
             encoding: doc.encoding,

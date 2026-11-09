@@ -177,3 +177,21 @@ fn reload_with_crlf_content() {
     assert_eq!((r.start_row, r.old_end_row, r.new_end_row), (2, 3, 4));
     assert_eq!(b.line_ending(), LineEnding::CrLf);
 }
+
+#[test]
+fn char_column_counts_chars_before_the_byte_column() {
+    // `é` is 2 bytes, `😀` is 4.
+    let b = Buffer::from_bytes("x\naé😀b\r\nlast".as_bytes(), false).unwrap();
+    let s = b.snapshot();
+    let col = |row, column| s.char_column(Point { row, column });
+    assert_eq!(col(1, 0), 0);
+    assert_eq!(col(1, 1), 1, "after `a`");
+    assert_eq!(col(1, 3), 2, "after `é`");
+    assert_eq!(col(1, 2), 1, "inside `é` rounds down");
+    assert_eq!(col(1, 7), 3, "after `😀`");
+    assert_eq!(col(1, 5), 2, "inside `😀` rounds down");
+    assert_eq!(col(1, 8), 4, "end of line");
+    assert_eq!(col(1, 99), 4, "past the end clamps before the CRLF");
+    assert_eq!(col(2, 4), 4, "last line without newline");
+    assert_eq!(col(9, 3), 0, "out-of-range row");
+}
