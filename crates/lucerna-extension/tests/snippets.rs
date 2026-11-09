@@ -74,3 +74,11 @@ fn snippets_bad_file_is_err() {
     assert!(check_snippets(&f).is_err());
     assert!(check_snippets(&d.path().join("none.json")).is_err());
 }
+
+#[test]
+fn snippet_body_nesting_is_capped() {
+    let deep = "${1:".repeat(200_000);
+    assert!(check_snippet_body(&deep).is_err());
+    let ok = format!("{}x{}", "${1:".repeat(10), "}".repeat(10));
+    assert!(check_snippet_body(&ok).is_ok());
+}

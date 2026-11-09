@@ -4,6 +4,9 @@ use std::path::Path;
 
 use serde_json::Value;
 
+/// Maximum `${n:...}` nesting accepted.
+const MAX_DEPTH: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnippetFile {
     /// `None` for the global `snippets` file.
@@ -70,12 +73,12 @@ fn check_entry(entry: &Value) -> Result<(), String> {
 pub fn check_snippet_body(body: &str) -> Result<(), String> {
     let chars: Vec<char> = body.chars().collect();
     let mut i = 0;
-    parse_text(&chars, &mut i, false)
+    parse_text(&chars, &mut i, false, 0)
 }
 
 /// Parse until end of input, or (when `nested`) until the closing `}`,
 /// which is consumed.
-fn parse_text(c: &[char], i: &mut usize, nested: bool) -> Result<(), String> {
+fn parse_text(c: &[char], i: &mut usize, nested: bool, depth: usize) -> Result<(), String> {
     while *i < c.len() {
         match c[*i] {
             '\\' => *i += 2,
@@ -85,7 +88,7 @@ fn parse_text(c: &[char], i: &mut usize, nested: bool) -> Result<(), String> {
             }
             '$' => {
                 *i += 1;
-                parse_dollar(c, i)?;
+                parse_dollar(c, i, depth)?;
             }
             _ => *i += 1,
         }
@@ -109,7 +112,7 @@ fn is_ident_start(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '_'
 }
 
-fn parse_dollar(c: &[char], i: &mut usize) -> Result<(), String> {
+fn parse_dollar(c: &[char], i: &mut usize, depth: usize) -> Result<(), String> {
     match c.get(*i) {
         Some(ch) if ch.is_ascii_digit() => {
             take_while(c, i, |x| x.is_ascii_digit());
@@ -121,14 +124,17 @@ fn parse_dollar(c: &[char], i: &mut usize) -> Result<(), String> {
         }
         Some('{') => {
             *i += 1;
-            parse_braced(c, i)
+            parse_braced(c, i, depth)
         }
         // A lone `$` is literal text.
         _ => Ok(()),
     }
 }
 
-fn parse_braced(c: &[char], i: &mut usize) -> Result<(), String> {
+fn parse_braced(c: &[char], i: &mut usize, depth: usize) -> Result<(), String> {
+    if depth >= MAX_DEPTH {
+        return Err("snippet nesting too deep".into());
+    }
     let is_tabstop = c.get(*i).is_some_and(|ch| ch.is_ascii_digit());
     if is_tabstop {
         take_while(c, i, |x| x.is_ascii_digit());
@@ -144,7 +150,7 @@ fn parse_braced(c: &[char], i: &mut usize) -> Result<(), String> {
         }
         Some(':') => {
             *i += 1;
-            parse_text(c, i, true)
+            parse_text(c, i, true, depth + 1)
         }
         Some('|') if is_tabstop => {
             *i += 1;

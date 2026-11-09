@@ -163,3 +163,70 @@ fn query_files_warn_on_folds_scm() {
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("folds.scm"));
 }
+
+fn mk(extra: &str) -> tempfile::TempDir {
+    write_manifest(&format!(
+        "id='a'\nname='A'\nversion='1'\nschema_version=1\n{extra}"
+    ))
+}
+
+#[test]
+fn absolute_and_escaping_paths_rejected() {
+    for extra in [
+        "themes=['/etc/passwd']",
+        "themes=['../../secret.json']",
+        "themes=['a/../../b.json']",
+        "languages=['']",
+        "snippets='/x.json'",
+        "icon_themes=['..']",
+        "[grammars.x]\nrepository='r'\nrev='c'\npath='../x'\n",
+    ] {
+        let d = mk(extra);
+        assert!(load_manifest(d.path()).is_err(), "{extra}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_discovery_entries_skipped() {
+    let d = mk("");
+    let out = tempfile::tempdir().unwrap();
+    std::fs::write(out.path().join("secret.json"), "{}").unwrap();
+    std::fs::create_dir(d.path().join("themes")).unwrap();
+    std::os::unix::fs::symlink(
+        out.path().join("secret.json"),
+        d.path().join("themes/x.json"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        out.path().join("secret.json"),
+        d.path().join("snippets.json"),
+    )
+    .unwrap();
+    let m = load_manifest(d.path()).unwrap();
+    assert!(m.themes.is_empty());
+    assert!(m.snippets.is_empty());
+}
+
+#[test]
+fn dot_prefixed_entries_normalised_and_deduplicated() {
+    let d = mk("themes=['./themes/a.json','themes/a.json']\n");
+    std::fs::create_dir(d.path().join("themes")).unwrap();
+    std::fs::write(d.path().join("themes/a.json"), "{}").unwrap();
+    let m = load_manifest(d.path()).unwrap();
+    assert_eq!(m.themes, vec![p("themes/a.json")]);
+}
+
+#[test]
+fn json_nulls_are_dropped() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(
+        d.path().join("extension.json"),
+        r#"{"name":"N","version":"1","description":null,"extra":{"a":null,"b":[null,1]},"z":null}"#,
+    )
+    .unwrap();
+    let m = load_manifest(d.path()).unwrap();
+    assert_eq!(m.description, None);
+    assert!(m.other.contains_key("extra"));
+    assert!(!m.other.contains_key("z"));
+}
