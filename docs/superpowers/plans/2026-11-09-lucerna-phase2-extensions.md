@@ -755,6 +755,61 @@ This task proves the riskiest assumption in the spec (§11). **If any step fails
 - [ ] **Step 5: Run the app** (`cargo run -p lucerna -- .`) and check that the panel opens, the list loads from the real registry, and the layout matches the other panels. Take a screenshot for the review.
 - [ ] **Step 6: Commit** with message `feat(workbench): Extensions panel, status bar button and commands`.
 
+### Task 15b: Extensions as an editor-tab page (replaces the sidebar panel view)
+
+The user chose (2026-11-09) a Zed-style dedicated page in an editor tab instead of the sidebar panel. Spec §5.1–§5.2 were rewritten accordingly; read them. Task 15's `ExtensionService` additions, `panel_model`, the Quick Open install provider, the toast and the commands stay; only the view and how it is opened change. Task 15's review findings are folded in here.
+
+**Files:**
+- Create: `crates/lucerna-workbench/src/extensions/page.rs` (the page view), and move command registration out of `panel.rs` into `extensions/commands.rs`
+- Delete: `crates/lucerna-workbench/src/extensions/panel.rs` once nothing uses it; remove `SidebarView::Extensions` (workspace state that says `"extensions"` for the sidebar now restores to Explorer)
+- Modify: `crates/lucerna-workbench/src/editor_groups/` so a group can hold a non-file tab kind (`TabItem::Extensions` or equivalent), with tab title "Extensions", the `blocks` icon, never preview, closable with Cmd+W
+- Modify: `crates/lucerna-workbench/src/workspace_state.rs` (persist and restore the Extensions tab in its group and position)
+- Modify: `layout/panel_toggles.rs` (the `blocks` button opens/focuses the tab; badge and spinner unchanged), `workbench.rs` (`extensionsViewletFocus` = the Extensions tab is focused)
+- Modify: `crates/lucerna-workbench/src/extensions/service.rs` (fix 1 below), `quick_open/` (fix 2 below)
+- Test: replace `tests/extensions_panel.rs` with `tests/extensions_page.rs`; keep `panel_model` unit tests
+
+**Interfaces:**
+- Consumes: `ExtensionService` and `panel_model::rows` (Task 15).
+- Produces: `Workbench::open_extensions(&mut self, window, cx)`, which focuses the existing Extensions tab in any group or opens one in the active group, then focuses the search input.
+
+**Behaviour (from spec §5.2):**
+- Header: a search input plus filter buttons `All`, `Installed`, `Updates`, `Themes`, `Icon Themes`, `Languages`. A button sets the matching `@` token; typed `@` tokens still work.
+- Cards: a virtualised GPUI `list` (variable heights), with installed extensions first and then available ones.
+  - Card lines and buttons as in spec §5.2.
+  - The description of an uninstalled card is fetched with `ExtensionService::describe` the first time the card is laid out. Show `"Loading description…"` while it loads. A failed describe may be retried the next time the card appears after 60 s.
+  - Card style: 1 px `border.variant`, 6 px radius, `ghost_element.hover` on hover, a 4 px grid.
+- Copy strings are unchanged from Task 15, plus `"Loading description…"`. Filter button labels are exactly as above.
+
+**Fixes carried from Task 15's review:**
+1. **Install while describe runs:** an Install (or Update) requested while a describe runs for the same id is queued and starts as soon as the describe ends. The card shows the installing state immediately. Never drop it silently.
+2. **Install Quick Open:** cap the rows at `QUICK_OPEN_LIMIT`, or render that mode with `uniform_list`. When the registry is not loaded yet, show `"Loading extension list…"` and fill the list when it arrives.
+3. **Search focus:** opening or focusing the tab (Cmd+Shift+X, the status bar button, the command) focuses the search input.
+4. **Card clicks capture the extension id,** not a row index.
+5. **Clear Build Cache** refuses with a visible message (toast `"Can't clear the build cache while an extension is installing."`) while any operation runs.
+6. **`offer_installed_themes`** skips (rather than `break`s on) a fresh install whose index entry is missing.
+
+- [ ] **Step 1: Write failing tests** in `tests/extensions_page.rs`:
+  - `cmd_shift_x_opens_single_tab_and_focuses_search`: pressing it twice leaves one Extensions tab. Typed text goes into the search.
+  - `status_bar_button_focuses_existing_tab_in_other_group`
+  - `filter_buttons_set_query_tokens`
+  - `install_button_runs_and_shows_progress`
+  - `install_during_describe_is_queued`
+  - `failed_install_shows_error_and_log_button`
+  - `theme_install_offers_set_theme_toast`
+  - `update_badge_count`
+  - `extensions_tab_restored_from_workspace_state`
+  - `old_sidebar_state_extensions_restores_explorer`
+  - `extensions_viewlet_focus_when_tab_focused`
+  - `install_quick_open_is_capped_and_shows_loading`
+  - `clear_build_cache_refused_while_installing`
+
+  Reuse the fake store setup from Task 15's tests.
+- [ ] **Step 2: Run** `cargo test -p lucerna-workbench --test extensions_page`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** `cargo test --workspace`. Expected: PASS.
+- [ ] **Step 5: Run the app** (debug build) if a screenshot is possible; otherwise say so. Never edit the user's workspace state or settings files outside the repo.
+- [ ] **Step 6: Commit** with message `feat(workbench): Extensions page in an editor tab (Zed-style)`.
+
 ### Task 16: Benchmarks, notices, manual acceptance
 
 **Files:**

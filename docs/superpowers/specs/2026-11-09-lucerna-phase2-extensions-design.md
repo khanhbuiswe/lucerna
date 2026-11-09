@@ -390,34 +390,35 @@ Các trường khác được bỏ qua.
 
 ### 5.1 Status bar
 
-- Thêm nút thứ ba ở góc trái, icon Lucide `blocks`, ngay sau Explorer và Search. Bấm vào thì mở hoặc ẩn panel Extensions theo cùng quy tắc ở §12 của spec Phase 1.
+> Thay đổi 2026-11-09: người dùng chọn để Extensions là **trang riêng trong tab editor** giống Zed, thay cho panel ở sidebar. Mục 5.1 và 5.2 dưới đây là bản đã sửa.
+
+- Thêm nút thứ ba ở góc trái, icon Lucide `blocks`, ngay sau Explorer và Search. Bấm vào thì mở (hoặc focus) tab Extensions. Nút này không bật/tắt sidebar.
 - Nút có badge số khi có bản cập nhật, và có spinner khi đang cài.
 - Phím tắt: Cmd+Shift+X, lệnh `workbench.view.extensions`.
 
-### 5.2 Panel Extensions
+### 5.2 Trang Extensions
 
-Phong cách giống Zed như các panel khác: không có header nặng, lưới 4 px, nền hover là `ghost_element.hover`.
-
-- **Ô tìm kiếm:**
-  - Fuzzy match bằng `nucleo-matcher` trên id, cùng tên và mô tả nếu đã có.
-  - Bộ lọc: `@installed`, `@updates`, `@themes`, `@icons`, `@languages`. Ba bộ lọc cuối chỉ áp dụng cho extension đã cài, vì registry không có thông tin về những gì extension cung cấp.
-- **Nhóm Installed**, thu gọn được. Mỗi dòng gồm:
-  - tên, version;
-  - một dòng tóm tắt, ví dụ "2 themes · 1 language · 14 snippets (Phase 4)";
-  - "Language server: Phase 3" nếu manifest có `language_servers`;
-  - nút Update (nếu có bản mới) và Uninstall;
-  - nếu `broken`: lý do và nút Reinstall.
-- **Nhóm Available:** danh sách ảo hóa bằng `uniform_list`, gồm các mục chưa cài. Mỗi dòng có id, version và nút Install.
-- **Bấm vào một dòng** sẽ mở rộng dòng đó tại chỗ, hiện:
-  - mô tả (lấy theo §3.4 nếu chưa có), repository, commit rút gọn;
-  - khi đang cài: bước hiện tại, ví dụ "Building grammar 2/3: zig", kèm nút Cancel;
+- **Một tab duy nhất** tên "Extensions", mở trong nhóm editor đang active. Nếu tab đã mở ở bất kỳ nhóm nào thì chỉ focus nó. Tab không phải preview tab. Tab được lưu trong trạng thái workspace và mở lại khi khôi phục.
+- Khi mở hoặc focus tab, con trỏ nằm trong ô tìm kiếm.
+- Context key `extensionsViewletFocus` đúng khi tab Extensions có focus.
+- **Đầu trang:**
+  - Ô tìm kiếm lớn. Fuzzy match bằng `nucleo-matcher` trên id, cùng tên và mô tả nếu đã có.
+  - Hàng nút lọc: **All · Installed · Updates · Themes · Icon Themes · Languages**. Vẫn gõ được `@installed`, `@updates`, `@themes`, `@icons`, `@languages`. Ba bộ lọc cuối chỉ áp dụng cho extension đã cài, vì registry không có thông tin về những gì extension cung cấp.
+- **Danh sách thẻ**, ảo hóa (GPUI `list`, chiều cao thay đổi được). Extension đã cài đứng trước, rồi tới các mục chưa cài. Mỗi thẻ gồm:
+  - dòng 1: tên (hoặc id nếu chưa biết tên), version, id bằng chữ mờ;
+  - dòng 2: mô tả. Với mục chưa cài, mô tả được lấy theo §3.4 khi thẻ hiện lên màn hình lần đầu; trong lúc lấy hiện "Loading description…";
+  - dòng 3: những gì extension cung cấp, ví dụ "2 themes · 1 language · 14 snippets (Phase 4)", kèm "Language server: Phase 3" nếu có; với mục chưa cài là repository và commit rút gọn;
+  - bên phải: nút Install / Update / Uninstall / Reinstall, hoặc Cancel khi đang cài;
+  - khi đang cài: bước hiện tại, ví dụ "Building grammar 2/3: zig";
   - khi xong mà có cảnh báo: danh sách cảnh báo;
-  - khi lỗi: lỗi ngắn gọn bằng màu `status.error` và nút "Show Log", mở `logs/<id>.log` trong một tab.
+  - khi lỗi: lỗi ngắn gọn bằng màu `status.error` và nút "Show Log", mở `logs/<id>.log` trong một preview tab.
+- Bấm Install trong lúc đang lấy mô tả của cùng id: việc cài được xếp hàng chạy ngay sau khi lấy mô tả xong, nút chuyển sang trạng thái đang cài.
 - **Trạng thái rỗng và lỗi chung:**
   - chưa có registry: "Đang tải danh sách…";
   - thiếu `git`: hướng dẫn chạy `xcode-select --install`;
-  - fetch registry lỗi: thông báo kèm nút Retry, và vẫn hiện nhóm Installed.
+  - fetch registry lỗi: thông báo kèm nút Retry, và vẫn hiện các extension đã cài.
 - **Khi cài xong một extension có theme hoặc icon theme:** một thông báo nhỏ ở góc dưới phải hỏi "Dùng theme X?" kèm nút "Set Theme". Nút này ghi vào user settings.
+- Phong cách giống Zed: lưới 4 px, nền hover là `ghost_element.hover`, thẻ có viền 1 px `border.variant`, bo góc 6 px.
 
 ### 5.3 Lệnh
 
