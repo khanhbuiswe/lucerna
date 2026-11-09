@@ -282,3 +282,44 @@ fn registers_editor_group_commands(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("cmd-1 cmd-8");
     assert_eq!(layout(&wb, cx).0, 7);
 }
+
+/// Double-clicking an italic preview tab pins it: the next preview opens
+/// beside it instead of replacing it.
+#[gpui::test]
+fn double_click_pins_a_preview_tab(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (wb, cx) = open(cx);
+    open_path(&wb, "a.rs", OpenMode::Preview, cx);
+    draw(cx);
+    let position = cx.debug_bounds("tab-0-0").expect("tab drawn").center();
+    for click_count in [1, 2] {
+        cx.simulate_event(gpui::MouseDownEvent {
+            position,
+            modifiers: Modifiers::none(),
+            button: MouseButton::Left,
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            position,
+            modifiers: Modifiers::none(),
+            button: MouseButton::Left,
+            click_count,
+        });
+    }
+    let pinned = cx.update(|_, cx| {
+        let model = wb.read(cx).editor_groups().read(cx).model();
+        model.groups()[0]
+            .tabs
+            .iter()
+            .map(|t| t.pinned)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(pinned, [true]);
+    open_path(&wb, "b.rs", OpenMode::Preview, cx);
+    assert_eq!(
+        layout(&wb, cx).1,
+        vec![vec!["a.rs".to_string(), "b.rs".to_string()]],
+        "no longer replaced by a preview"
+    );
+}

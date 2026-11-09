@@ -7,8 +7,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, Context, DragMoveEvent, Entity, IntoElement, MouseButton, ParentElement, Pixels,
-    Render, Styled, Window, div, prelude::*, px, relative, svg,
+    AnyView, App, ClickEvent, Context, DragMoveEvent, Entity, IntoElement, MouseButton,
+    ParentElement, Pixels, Render, Styled, Window, div, prelude::*, px, relative, svg,
 };
 use lucerna_theme::UiColors;
 
@@ -318,8 +318,14 @@ impl Render for EditorGroupsView {
                     .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
                         view.set_hovered(id, *hovered, cx);
                     }))
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.update_model(cx, |m| m.activate(id));
+                    .on_click(cx.listener(move |view, ev: &ClickEvent, _, cx| {
+                        view.update_model(cx, |m| {
+                            m.activate(id);
+                            // VS Code: a double click keeps a preview open.
+                            if ev.click_count() >= 2 {
+                                m.pin(id);
+                            }
+                        });
                     }))
                     .on_mouse_up(
                         MouseButton::Middle,
