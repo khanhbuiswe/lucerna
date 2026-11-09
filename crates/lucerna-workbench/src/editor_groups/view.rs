@@ -70,7 +70,8 @@ pub struct EditorGroupsView {
     documents: Option<Entity<Documents>>,
     /// The workspace root: path bars show paths relative to it.
     root: Option<PathBuf>,
-    /// The user's home folder, shown as `~` in path bars; read once.
+    /// The user's home folder, shown as `~` in path bars; read when the
+    /// view is made and again when its root is set.
     home: Option<PathBuf>,
 }
 
@@ -185,6 +186,7 @@ impl EditorGroupsView {
     /// Path bars show paths relative to `root`.
     pub(crate) fn set_root(&mut self, root: PathBuf) {
         self.root = Some(root);
+        self.home = std::env::home_dir();
     }
 
     /// What the path bar of group `group` shows: its active tab's path
@@ -197,6 +199,15 @@ impl EditorGroupsView {
             self.root.as_deref(),
             self.home.as_deref(),
         ))
+    }
+
+    /// The title colour of tab `tab` in group `group` under `ui` (see
+    /// [`title_color`]).
+    pub fn tab_title_color_in(&self, group: usize, tab: usize, ui: &UiColors) -> Option<Rgba> {
+        let g = self.model.groups().get(group)?;
+        let t = g.tabs.get(tab)?;
+        let active = g.active == Some(t.id);
+        Some(title_color(active, group == self.model.active_group(), ui))
     }
 
     /// Moves the divider right of group `index` to `fraction` of the area,
@@ -271,6 +282,7 @@ impl Render for EditorGroupsView {
             })
             .collect();
         let count = self.model.groups().len();
+        let focused_group = self.model.active_group();
         let mut row = div()
             .id("editor-groups")
             .debug_selector(|| "editor-groups".into())
@@ -288,7 +300,7 @@ impl Render for EditorGroupsView {
             let tabs = group.tabs.iter().enumerate().map(|(ti, tab)| {
                 let id = tab.id;
                 let active = group.active == Some(id);
-                let fg = tab_title_color(active, ui);
+                let fg = title_color(active, gi == focused_group, ui);
                 let title = tab
                     .path
                     .file_name()
@@ -457,9 +469,26 @@ impl Render for EditorGroupsView {
     }
 }
 
-/// A tab title's colour: `text` on the active tab, `text.muted` on others.
-fn tab_title_color(active: bool, ui: &UiColors) -> Rgba {
-    if active { ui.text } else { ui.text_muted }
+/// A tab title's colour: `text` on the focused group's active tab, halfway
+/// between `text` and `text.muted` on another group's active tab, and
+/// `text.muted` on inactive tabs.
+fn title_color(active: bool, focused_group: bool, ui: &UiColors) -> Rgba {
+    match (active, focused_group) {
+        (true, true) => ui.text,
+        (true, false) => mix(ui.text, ui.text_muted, 0.5),
+        (false, _) => ui.text_muted,
+    }
+}
+
+/// `a` moved `t` of the way towards `b`.
+fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let lerp = |x: f32, y: f32| x + (y - x) * t;
+    Rgba {
+        r: lerp(a.r, b.r),
+        g: lerp(a.g, b.g),
+        b: lerp(a.b, b.b),
+        a: lerp(a.a, b.a),
+    }
 }
 
 /// `path` as a path bar shows it: relative to `root` inside it, otherwise
@@ -576,7 +605,12 @@ mod tests {
     fn inactive_tab_titles_are_muted() {
         let ui = UiColors::fallback(Appearance::Dark);
         assert_ne!(ui.text, ui.text_muted);
-        assert_eq!(tab_title_color(true, &ui), ui.text);
-        assert_eq!(tab_title_color(false, &ui), ui.text_muted);
+        assert_eq!(title_color(true, true, &ui), ui.text);
+        assert_eq!(title_color(false, true, &ui), ui.text_muted);
+        assert_eq!(title_color(false, false, &ui), ui.text_muted);
+        assert_eq!(
+            title_color(true, false, &ui),
+            mix(ui.text, ui.text_muted, 0.5)
+        );
     }
 }

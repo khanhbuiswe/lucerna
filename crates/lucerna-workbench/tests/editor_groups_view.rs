@@ -348,3 +348,49 @@ fn path_bar_under_each_tab_bar(cx: &mut TestAppContext) {
     draw(cx);
     assert_eq!(text(cx).as_deref(), Some("/etc/hosts"));
 }
+
+/// The focused group's active tab title uses `text`; the active tab of an
+/// unfocused group is dimmer but brighter than inactive tabs, which use
+/// `text.muted`. The colors swap when focus moves.
+#[gpui::test]
+fn unfocused_group_active_tab_is_dimmed(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (wb, cx) = open(cx);
+    open_path(&wb, "a.rs", OpenMode::Pinned, cx);
+    open_path(&wb, "b.rs", OpenMode::Pinned, cx);
+    cx.simulate_keystrokes("cmd-\\");
+    draw(cx);
+    let ui = cx.update(|_, cx| cx.global::<AppState>().theme.ui.clone());
+    let theme_ui = ui.clone();
+    // (group 0 active tab, group 0 inactive tab, group 1 active tab)
+    let colors = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let view = wb.read(cx).editor_groups().read(cx);
+            let color = |g, t| view.tab_title_color_in(g, t, &theme_ui).unwrap();
+            (color(0, 1), color(0, 0), color(1, 0))
+        })
+    };
+    let luminance = |c: lucerna_theme::Rgba| c.r + c.g + c.b;
+    assert_eq!(layout(&wb, cx).0, 1);
+    let (unfocused, inactive, focused) = colors(cx);
+    assert_eq!(focused, ui.text);
+    assert_eq!(inactive, ui.text_muted);
+    assert_ne!(unfocused, ui.text);
+    assert_ne!(unfocused, ui.text_muted);
+    let (text, muted, dim) = (
+        luminance(ui.text),
+        luminance(ui.text_muted),
+        luminance(unfocused),
+    );
+    assert!(
+        dim < text.max(muted) && dim > text.min(muted),
+        "between text and muted"
+    );
+
+    cx.simulate_keystrokes("cmd-1");
+    draw(cx);
+    let (focused, inactive, unfocused2) = colors(cx);
+    assert_eq!(focused, ui.text);
+    assert_eq!(inactive, ui.text_muted);
+    assert_eq!(unfocused2, unfocused);
+}
