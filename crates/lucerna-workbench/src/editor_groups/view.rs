@@ -2,7 +2,7 @@
 //! active tab's body, separated by draggable dividers.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -10,14 +10,16 @@ use gpui::{
     AnyView, App, ClickEvent, Context, DragMoveEvent, Entity, IntoElement, MouseButton,
     ParentElement, Pixels, Render, Styled, Window, div, prelude::*, px, relative, svg,
 };
-use lucerna_theme::UiColors;
+use lucerna_theme::{Rgba, UiColors};
 
 use super::model::{EditorGroups, GroupsState, Tab, TabId};
 use crate::AppState;
 use crate::documents::{DocState, Documents};
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
-use crate::ui::{CLOSE_ICON, GRID, TAB_HEIGHT, UI_FONT_SIZE_SMALL};
+use crate::ui::{
+    CLOSE_ICON, GRID, PATH_BAR_HEIGHT, TAB_HEIGHT, TAB_PADDING_X, UI_FONT_SIZE_SMALL,
+};
 
 /// Square slot that holds a tab's close button, kept even while the
 /// button is hidden so tabs do not change width on hover.
@@ -68,6 +70,8 @@ pub struct EditorGroupsView {
     hovered_tab: Option<TabId>,
     /// Consulted for each tab's title: deleted files are struck through.
     documents: Option<Entity<Documents>>,
+    /// The workspace root: path bars show paths relative to it.
+    root: Option<PathBuf>,
 }
 
 impl Default for EditorGroupsView {
@@ -79,6 +83,7 @@ impl Default for EditorGroupsView {
             make_body: Rc::new(placeholder_body),
             hovered_tab: None,
             documents: None,
+            root: None,
         }
     }
 }
@@ -176,6 +181,20 @@ impl EditorGroupsView {
         self.documents = Some(documents);
     }
 
+    /// Path bars show paths relative to `root`.
+    pub(crate) fn set_root(&mut self, root: PathBuf) {
+        self.root = Some(root);
+    }
+
+    /// What the path bar of group `group` shows: its active tab's path
+    /// (see [`path_bar_text`]); `None` when the group has no tab.
+    pub fn path_bar_text(&self, group: usize) -> Option<String> {
+        let group = self.model.groups().get(group)?;
+        let tab = group.tabs.iter().find(|t| Some(t.id) == group.active)?;
+        let root = self.root.as_deref().unwrap_or(Path::new("/"));
+        Some(path_bar_text(&tab.path, root, std::env::home_dir().as_deref()))
+    }
+
     /// Moves the divider right of group `index` to `fraction` of the area,
     /// keeping both neighbours at least `min` wide.
     fn resize(&mut self, index: usize, fraction: f32, min: f32, cx: &mut Context<Self>) {
@@ -248,7 +267,6 @@ impl Render for EditorGroupsView {
             })
             .collect();
         let count = self.model.groups().len();
-        let focused_group = self.model.active_group();
         let mut row = div()
             .id("editor-groups")
             .debug_selector(|| "editor-groups".into())
@@ -266,11 +284,7 @@ impl Render for EditorGroupsView {
             let tabs = group.tabs.iter().enumerate().map(|(ti, tab)| {
                 let id = tab.id;
                 let active = group.active == Some(id);
-                let fg = if active && gi == focused_group {
-                    ui.text
-                } else {
-                    ui.text_muted
-                };
+                let fg = tab_title_color(active, ui);
                 let title = tab
                     .path
                     .file_name()
@@ -309,7 +323,7 @@ impl Render for EditorGroupsView {
                     .flex_none()
                     .items_center()
                     .gap(px(1.5 * GRID))
-                    .px(px(3. * GRID))
+                    .px(px(TAB_PADDING_X))
                     .h_full()
                     .border_r_1()
                     .border_color(color(ui.border_variant))
@@ -371,6 +385,29 @@ impl Render for EditorGroupsView {
                         .border_b_1()
                         .border_color(color(ui.border_variant)),
                 );
+            let path_bar = self.path_bar_text(gi).map(|text| {
+                div()
+                    .debug_selector(move || format!("path-bar-{gi}"))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .w_full()
+                    .h(px(PATH_BAR_HEIGHT))
+                    .px(px(TAB_PADDING_X))
+                    .bg(color(ui.editor_background))
+                    .border_b_1()
+                    .border_color(color(ui.border_variant))
+                    .text_size(px(UI_FONT_SIZE_SMALL))
+                    .text_color(color(ui.text_muted))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(text),
+                    )
+            });
             let body = match body {
                 Some(body) => body.into_any_element(),
                 None => empty_hint(ui, cx).into_any_element(),
@@ -407,12 +444,32 @@ impl Render for EditorGroupsView {
                         }),
                     )
                     .child(tab_bar)
+                    .children(path_bar)
                     .child(div().flex_1().min_h_0().overflow_hidden().child(body))
                     .children(sash),
             );
         }
         row
     }
+}
+
+/// A tab title's colour: `text` on the active tab, `text.muted` on others.
+fn tab_title_color(active: bool, ui: &UiColors) -> Rgba {
+    if active { ui.text } else { ui.text_muted }
+}
+
+/// `path` as a path bar shows it: relative to `root` inside it, otherwise
+/// absolute, with `~` for the `home` folder.
+pub(crate) fn path_bar_text(path: &Path, root: &Path, home: Option<&Path>) -> String {
+    if let Ok(rel) = path.strip_prefix(root)
+        && !rel.as_os_str().is_empty()
+    {
+        return rel.display().to_string();
+    }
+    if let Some(rel) = home.and_then(|home| path.strip_prefix(home).ok()) {
+        return Path::new("~").join(rel).display().to_string();
+    }
+    path.display().to_string()
 }
 
 /// Shown in a group with no tabs: the app name and the shortcuts to find
@@ -446,4 +503,56 @@ fn empty_hint(ui: &UiColors, cx: &App) -> impl IntoElement + use<> {
         .text_color(color(ui.text_muted))
         .child(div().mb(px(2. * GRID)).text_size(px(20.)).child("Lucerna"))
         .children(lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucerna_theme::Appearance;
+
+    #[test]
+    fn path_bar_shows_paths_relative_to_the_root() {
+        let root = Path::new("/work/lucerna");
+        let home = Some(Path::new("/Users/me"));
+        assert_eq!(
+            path_bar_text(Path::new("/work/lucerna/crates/ui/src/lib.rs"), root, home),
+            "crates/ui/src/lib.rs"
+        );
+        assert_eq!(
+            path_bar_text(Path::new("/work/lucerna/README.md"), root, home),
+            "README.md"
+        );
+    }
+
+    #[test]
+    fn path_bar_shows_outside_paths_absolute_with_tilde_for_home() {
+        let root = Path::new("/work/lucerna");
+        let home = Some(Path::new("/Users/me"));
+        assert_eq!(
+            path_bar_text(Path::new("/etc/hosts"), root, home),
+            "/etc/hosts"
+        );
+        assert_eq!(
+            path_bar_text(
+                Path::new("/Users/me/.config/lucerna/settings.json"),
+                root,
+                home
+            ),
+            "~/.config/lucerna/settings.json"
+        );
+        // A sibling whose name only starts with the home folder's.
+        assert_eq!(
+            path_bar_text(Path::new("/Users/meg/a.txt"), root, home),
+            "/Users/meg/a.txt"
+        );
+        assert_eq!(path_bar_text(Path::new("/etc/hosts"), root, None), "/etc/hosts");
+    }
+
+    #[test]
+    fn inactive_tab_titles_are_muted() {
+        let ui = UiColors::fallback(Appearance::Dark);
+        assert_ne!(ui.text, ui.text_muted);
+        assert_eq!(tab_title_color(true, &ui), ui.text);
+        assert_eq!(tab_title_color(false, &ui), ui.text_muted);
+    }
 }

@@ -15,6 +15,10 @@ pub const GRID: f32 = 4.0;
 pub const TITLE_BAR_HEIGHT: f32 = 34.0;
 pub const STATUS_BAR_HEIGHT: f32 = 26.0;
 pub const TAB_HEIGHT: f32 = 32.0;
+/// Horizontal padding inside a tab.
+pub const TAB_PADDING_X: f32 = 2.5 * GRID;
+/// The bar under each tab bar showing the active file's path.
+pub const PATH_BAR_HEIGHT: f32 = TAB_HEIGHT - 2. * GRID;
 /// Height of a file tree row, and of the Explorer root row.
 pub const TREE_ROW_HEIGHT: f32 = 24.0;
 /// Width of the thin overlay scrollbar thumb.

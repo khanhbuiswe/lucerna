@@ -213,6 +213,7 @@ impl Workbench {
                 cx,
             );
             groups.set_documents(documents.clone());
+            groups.set_root(root.clone());
             groups
         });
         let large_file_status = {

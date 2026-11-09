@@ -323,3 +323,28 @@ fn double_click_pins_a_preview_tab(cx: &mut TestAppContext) {
         "no longer replaced by a preview"
     );
 }
+
+/// Each group shows its active tab's path under the tab bar, relative to
+/// the root, or absolute outside it; a group without tabs has no path bar.
+#[gpui::test]
+fn path_bar_under_each_tab_bar(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (wb, cx) = open(cx);
+    draw(cx);
+    assert!(cx.debug_bounds("path-bar-0").is_none());
+
+    open_path(&wb, "src/deep/main.rs", OpenMode::Pinned, cx);
+    draw(cx);
+    let bar = cx.debug_bounds("path-bar-0").expect("a path bar");
+    let tab = cx.debug_bounds("tab-0-0").expect("a tab");
+    assert_eq!(bar.top(), tab.bottom());
+    assert_eq!(bar.size.height, px(24.));
+    let text = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).path_bar_text(0))
+    };
+    assert_eq!(text(cx).as_deref(), Some("src/deep/main.rs"));
+
+    open_path(&wb, "/etc/hosts", OpenMode::Pinned, cx);
+    draw(cx);
+    assert_eq!(text(cx).as_deref(), Some("/etc/hosts"));
+}
