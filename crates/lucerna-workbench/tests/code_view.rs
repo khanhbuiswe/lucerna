@@ -381,7 +381,11 @@ fn fold_chevrons_follow_gutter_hover(cx: &mut TestAppContext) {
     assert_eq!(state(cx), (false, false, false));
 
     // Over the gutter: the fold header shows one; a plain row never does.
-    cx.simulate_mouse_move(gpui::point(gpui::px(CHAR), gpui::px(LINE * 0.5)), None, none);
+    cx.simulate_mouse_move(
+        gpui::point(gpui::px(CHAR), gpui::px(LINE * 0.5)),
+        None,
+        none,
+    );
     assert_eq!(state(cx), (true, true, false));
 
     // Over the text: hidden again.
@@ -411,7 +415,10 @@ fn scrollbar_thumb_tracks_scroll(cx: &mut TestAppContext) {
         .expect("500 lines overflow");
     assert_eq!(thumb.top(), gpui::px(0.));
     assert!(thumb.size.height > gpui::px(0.) && thumb.size.height < viewport.height);
-    assert_eq!(thumb.size.width, gpui::px(lucerna_workbench::ui::SCROLLBAR_WIDTH));
+    assert_eq!(
+        thumb.size.width,
+        gpui::px(lucerna_workbench::ui::SCROLLBAR_WIDTH)
+    );
     assert_eq!(thumb.right(), viewport.width);
 
     short.update(cx, |v, cx| v.set_scroll_top_row(499, cx));

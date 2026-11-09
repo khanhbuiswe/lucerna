@@ -18,8 +18,8 @@ use super::model::ExplorerModel;
 use crate::icons;
 use crate::layout::color;
 use crate::ui::{
-    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, thumb_geometry, UI_FONT_SIZE,
-    icon_for_path,
+    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE,
+    icon_for_path, thumb_geometry,
 };
 use crate::{AppState, EditorGroupsView, OpenMode, Workbench};
 

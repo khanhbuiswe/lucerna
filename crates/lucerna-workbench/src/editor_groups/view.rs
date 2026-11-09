@@ -17,9 +17,7 @@ use crate::AppState;
 use crate::documents::{DocState, Documents};
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
-use crate::ui::{
-    CLOSE_ICON, GRID, PATH_BAR_HEIGHT, TAB_HEIGHT, TAB_PADDING_X, UI_FONT_SIZE_SMALL,
-};
+use crate::ui::{CLOSE_ICON, GRID, PATH_BAR_HEIGHT, TAB_HEIGHT, TAB_PADDING_X, UI_FONT_SIZE_SMALL};
 
 /// Square slot that holds a tab's close button, kept even while the
 /// button is hidden so tabs do not change width on hover.
@@ -192,7 +190,11 @@ impl EditorGroupsView {
         let group = self.model.groups().get(group)?;
         let tab = group.tabs.iter().find(|t| Some(t.id) == group.active)?;
         let root = self.root.as_deref().unwrap_or(Path::new("/"));
-        Some(path_bar_text(&tab.path, root, std::env::home_dir().as_deref()))
+        Some(path_bar_text(
+            &tab.path,
+            root,
+            std::env::home_dir().as_deref(),
+        ))
     }
 
     /// Moves the divider right of group `index` to `fraction` of the area,
@@ -545,7 +547,10 @@ mod tests {
             path_bar_text(Path::new("/Users/meg/a.txt"), root, home),
             "/Users/meg/a.txt"
         );
-        assert_eq!(path_bar_text(Path::new("/etc/hosts"), root, None), "/etc/hosts");
+        assert_eq!(
+            path_bar_text(Path::new("/etc/hosts"), root, None),
+            "/etc/hosts"
+        );
     }
 
     #[test]
