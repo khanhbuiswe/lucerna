@@ -236,16 +236,8 @@ fn update_detected_and_applied() {
     assert_eq!(info.version, "0.2.0");
     assert_eq!(info.commit, commit);
     assert!(env.store.updates().is_empty());
-    // The old copy is moved aside and removed in the background.
-    assert_eq!(env.entries("installed").len(), 1 + leftovers(&env));
-}
-
-/// `.old-*` directories not yet removed by the background thread.
-fn leftovers(env: &Env) -> usize {
-    env.entries("installed")
-        .iter()
-        .filter(|n| n.starts_with(".old-"))
-        .count()
+    // The old copy is held in trash/, never in installed/.
+    assert_eq!(env.entries("installed"), ["x"]);
 }
 
 #[test]
@@ -265,6 +257,14 @@ fn uninstall_removes_and_emits() {
         env.store.uninstall("x"),
         Err(StoreError::UnknownId(_))
     ));
+    assert_eq!(env.entries("installed"), Vec::<String>::new());
+    // A reopen (even before the background removal ran) never restores an
+    // uninstalled extension.
+    std::fs::create_dir_all(env.root.join("trash/removed-x-1-2-3/themes")).unwrap();
+    let store = env.reopen();
+    assert!(!env.installed("x").exists());
+    assert!(!store.index().extensions.contains_key("x"));
+    assert!(env.entries("trash").is_empty());
 }
 
 #[test]
@@ -293,16 +293,40 @@ fn startup_cleans_leftovers() {
     let env = Env::new(&[entry]);
     env.install("x").0.unwrap();
     for d in [
-        "installed/.old-x-1-2-3",
-        "installed/.trash-x-1-2-3",
+        "trash/old-x-1-2-3",
+        "trash/removed-x-1-2-3",
+        "trash/junk",
         "staging/x-1-2-3/themes",
     ] {
         std::fs::create_dir_all(env.root.join(d)).unwrap();
     }
+    std::fs::write(env.root.join("index.json.tmp-1-2-3"), "{").unwrap();
     let store = env.reopen();
     assert_eq!(env.entries("installed"), ["x"]);
     assert!(env.entries("staging").is_empty());
+    assert!(env.entries("trash").is_empty());
+    assert!(!env.root.join("index.json.tmp-1-2-3").exists());
     assert!(store.index().extensions.contains_key("x"));
+}
+
+#[test]
+fn startup_restores_old_copy_after_crash_mid_swap() {
+    let (_repo, entry) = theme_ext("x");
+    let env = Env::new(&[entry]);
+    env.install("x").0.unwrap();
+    // Crash between "installed/x -> trash/old-x-..." and "staging -> installed/x".
+    let trash = env.root.join("trash");
+    std::fs::create_dir_all(&trash).unwrap();
+    std::fs::rename(env.installed("x"), trash.join("old-x-ff-1-2")).unwrap();
+    std::fs::create_dir_all(trash.join("old-x-a-1-2/themes")).unwrap();
+    std::fs::create_dir_all(env.root.join("staging/x-ff-1-3")).unwrap();
+    let store = env.reopen();
+    assert!(env.installed("x").join("themes/x.json").is_file());
+    assert!(env.entries("trash").is_empty());
+    assert!(env.entries("staging").is_empty());
+    let ext = &store.index().extensions["x"];
+    assert!(ext.broken.is_none(), "{:?}", ext.broken);
+    assert_eq!(ext.themes.len(), 1);
 }
 
 #[test]
@@ -363,6 +387,41 @@ fn index_rebuilt_when_installed_is_newer() {
     // Another process removed it without updating index.json.
     std::fs::rename(env.installed("x"), env.tmp.path().join("gone")).unwrap();
     assert!(!load_or_rebuild(&env.root).extensions.contains_key("x"));
+    // An index is not trusted once installed/ itself is gone.
+    env.install("x").0.unwrap();
+    std::fs::rename(env.root.join("installed"), env.tmp.path().join("gone2")).unwrap();
+    assert!(load_or_rebuild(&env.root).extensions.is_empty());
+}
+
+#[test]
+fn concurrent_installs_of_different_ids_all_indexed() {
+    let ids = ["a", "b", "c", "d"];
+    let entries: Vec<FakeEntry> = ids.iter().map(|id| theme_ext(id).1).collect();
+    let env = Env::new(&entries);
+    // Two clones share one store; a second open store stands in for
+    // another process.
+    let other = env.reopen();
+    std::thread::scope(|s| {
+        for (i, id) in ids.iter().enumerate() {
+            let store = if i % 2 == 0 {
+                env.store.clone()
+            } else {
+                other.clone()
+            };
+            s.spawn(move || {
+                store.install(id, &|_| {}, &CancelToken::default()).unwrap();
+            });
+        }
+    });
+    let on_disk: ExtensionIndex =
+        serde_json::from_slice(&std::fs::read(env.root.join("index.json")).unwrap()).unwrap();
+    for id in ids {
+        assert!(on_disk.extensions.contains_key(id), "{id} missing on disk");
+    }
+    let mem = env.store.index();
+    assert!(mem.extensions.contains_key("a") && mem.extensions.contains_key("c"));
+    let mem = other.index();
+    assert!(mem.extensions.contains_key("b") && mem.extensions.contains_key("d"));
 }
 
 #[test]

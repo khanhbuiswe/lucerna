@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::builder::unique_suffix;
 use crate::language_config::{load_language_config, query_files};
+use crate::lock::lock_index;
 use crate::manifest::{ExtensionManifest, load_manifest};
 use crate::snippets::check_snippets;
 use crate::validate::{check_icon_theme_json, check_theme_json};
@@ -246,12 +247,14 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 
 /// Reads `<root>/index.json`. It is rebuilt (and written back) when it is
 /// missing or corrupt, or when `installed/` changed after it was written.
+/// Holds the cross-process index lock while it reads, rebuilds or writes.
 pub fn load_or_rebuild(root: &Path) -> ExtensionIndex {
+    let _lock =
+        lock_index(root).inspect_err(|e| tracing::warn!("cannot lock the extension index: {e}"));
     let path = root.join(INDEX_FILE);
     let installed = root.join("installed");
     let fresh = match (mtime(&path), mtime(&installed)) {
         (Some(i), Some(d)) => d <= i,
-        (Some(_), None) => true,
         _ => false,
     };
     if fresh && let Ok(bytes) = std::fs::read(&path) {
@@ -260,11 +263,40 @@ pub fn load_or_rebuild(root: &Path) -> ExtensionIndex {
             Err(e) => tracing::warn!("rebuilding corrupt {}: {e}", path.display()),
         }
     }
-    let index = rebuild(&installed);
+    rebuild_and_write(root)
+}
+
+/// Rebuilds the index from `installed/` and writes it. The caller holds
+/// the index lock.
+fn rebuild_and_write(root: &Path) -> ExtensionIndex {
+    let index = rebuild(&root.join("installed"));
     if let Err(e) = write(root, &index) {
-        tracing::warn!("cannot write {}: {e}", path.display());
+        tracing::warn!("cannot write {}: {e}", root.join(INDEX_FILE).display());
     }
     index
+}
+
+/// [`rebuild`] plus [`write`] under the cross-process index lock, so a
+/// snapshot never overwrites a newer one written by another process.
+pub fn reindex(root: &Path) -> ExtensionIndex {
+    let _lock =
+        lock_index(root).inspect_err(|e| tracing::warn!("cannot lock the extension index: {e}"));
+    rebuild_and_write(root)
+}
+
+/// Removes `index.json.tmp-*` files left by an interrupted write.
+pub fn sweep_temp_files(root: &Path) {
+    // Under the lock, no other process is between its write and rename.
+    let _lock = lock_index(root);
+    let prefix = format!("{INDEX_FILE}.tmp-");
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return;
+    };
+    for e in rd.flatten() {
+        if e.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Atomically writes `<root>/index.json` (temp file plus rename).

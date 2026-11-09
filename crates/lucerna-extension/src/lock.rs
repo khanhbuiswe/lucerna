@@ -53,3 +53,26 @@ impl IdLock {
         }
     }
 }
+
+/// Blocking `flock(LOCK_EX)` on `<root>/locks/.index.lock`, held while the
+/// returned file is open. Serialises index rebuild + write across
+/// processes (ids cannot start with `.`, so it never clashes with an id).
+pub(crate) fn lock_index(root: &Path) -> std::io::Result<File> {
+    let dir = root.join("locks");
+    std::fs::create_dir_all(&dir)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".index.lock"))?;
+    loop {
+        // SAFETY: `file` is an open descriptor for the duration of the call.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(file);
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}

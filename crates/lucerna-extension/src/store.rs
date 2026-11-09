@@ -1,6 +1,7 @@
 //! The extension store: install, update and uninstall with atomic swaps,
 //! the index and change events (spec §3.5–§3.7).
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::File;
@@ -74,11 +75,22 @@ struct Shared {
     index: Mutex<Arc<ExtensionIndex>>,
     subscribers: Mutex<Vec<Sender<StoreEvent>>>,
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// Serialises "rebuild/load index -> publish" so an older snapshot can
+    /// never replace a newer one (across processes, `index.rs` adds a
+    /// flock around the disk part).
+    reload: Mutex<()>,
 }
 
 impl Shared {
     fn emit(&self, event: StoreEvent) {
         lock(&self.subscribers).retain(|tx| tx.send(event.clone()).is_ok());
+    }
+
+    /// Runs `load` (which reads or rebuilds the index) and publishes the
+    /// result, serialised with every other reload of this store.
+    fn reload(&self, load: impl FnOnce() -> ExtensionIndex) {
+        let _g = lock(&self.reload);
+        self.set_index(load());
     }
 
     /// Replaces the index and emits `Changed` when it differs.
@@ -120,15 +132,28 @@ fn valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-/// The id in a `<prefix><id>-<unique_suffix>` leftover name.
-fn leftover_id<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
+/// The id and creation time (the first `unique_suffix` part) in a
+/// `<prefix><id>-<unique_suffix>` leftover name.
+fn leftover<'a>(name: &'a str, prefix: &str) -> Option<(&'a str, u128)> {
     let rest = name.strip_prefix(prefix)?;
     // `unique_suffix` is three dash-separated parts.
     let mut cut = rest.len();
     for _ in 0..3 {
         cut = rest[..cut].rfind('-')?;
     }
-    Some(&rest[..cut])
+    let nanos = rest[cut + 1..]
+        .split('-')
+        .next()
+        .and_then(|n| u128::from_str_radix(n, 16).ok())
+        .unwrap_or(0);
+    Some((&rest[..cut], nanos))
+}
+
+/// Holding directory for replaced (`old-…`) and uninstalled (`removed-…`)
+/// copies: outside `installed/`, so deleting them does not touch its mtime,
+/// and on the same filesystem, so the renames stay atomic.
+fn trash_dir(root: &Path) -> PathBuf {
+    root.join("trash")
 }
 
 fn io_err(what: &str, path: &Path, e: impl fmt::Display) -> StoreError {
@@ -169,6 +194,7 @@ impl Store {
                 index: Mutex::new(Arc::new(index)),
                 subscribers: Mutex::new(Vec::new()),
                 watcher: Mutex::new(None),
+                reload: Mutex::new(()),
             }),
         }
     }
@@ -451,14 +477,21 @@ impl Store {
         let installed = self.installed_dir();
         std::fs::create_dir_all(&installed).map_err(|e| io_err("cannot create", &installed, e))?;
         let target = installed.join(id);
-        let old = installed.join(format!(".old-{id}-{}", unique_suffix()));
+        let trash = trash_dir(&self.root);
+        std::fs::create_dir_all(&trash).map_err(|e| io_err("cannot create", &trash, e))?;
+        let old = trash.join(format!("old-{id}-{}", unique_suffix()));
         let had_old = target.exists();
         if had_old {
             std::fs::rename(&target, &old).map_err(|e| io_err("cannot move", &target, e))?;
         }
         if let Err(e) = std::fs::rename(&out.staging, &target) {
-            if had_old {
-                let _ = std::fs::rename(&old, &target);
+            if had_old && let Err(re) = std::fs::rename(&old, &target) {
+                // The next Store::open restores it from trash/.
+                tracing::error!(
+                    "cannot restore {} to {}: {re}",
+                    old.display(),
+                    target.display()
+                );
             }
             return Err(io_err("cannot install into", &target, e));
         }
@@ -472,11 +505,7 @@ impl Store {
 
     /// Rebuilds and writes `index.json`, then emits `Changed`.
     fn reindex(&self) {
-        let index = index::rebuild(&self.installed_dir());
-        if let Err(e) = index::write(&self.root, &index) {
-            tracing::warn!("cannot write index.json: {e}");
-        }
-        self.shared.set_index(index);
+        self.shared.reload(|| index::reindex(&self.root));
     }
 
     /// Removes `installed/<id>`; `work/<id>` stays as a cache.
@@ -491,7 +520,10 @@ impl Store {
             if !target.is_dir() {
                 return Err(StoreError::UnknownId(id.to_string()));
             }
-            let trash = installed.join(format!(".trash-{id}-{}", unique_suffix()));
+            let trash_parent = trash_dir(&self.root);
+            std::fs::create_dir_all(&trash_parent)
+                .map_err(|e| io_err("cannot create", &trash_parent, e))?;
+            let trash = trash_parent.join(format!("removed-{id}-{}", unique_suffix()));
             std::fs::rename(&target, &trash).map_err(|e| io_err("cannot move", &target, e))?;
             self.reindex();
             remove_in_background(trash);
@@ -571,55 +603,88 @@ fn watch_loop(rx: Receiver<()>, shared: Weak<Shared>, root: PathBuf) {
         let Some(shared) = shared.upgrade() else {
             return;
         };
-        let reloaded = catch_unwind(AssertUnwindSafe(|| index::load_or_rebuild(&root)));
-        match reloaded {
-            Ok(index) => shared.set_index(index),
-            Err(_) => tracing::error!("panic while reloading the extension index"),
+        let reloaded = catch_unwind(AssertUnwindSafe(|| {
+            shared.reload(|| index::load_or_rebuild(&root))
+        }));
+        if reloaded.is_err() {
+            tracing::error!("panic while reloading the extension index");
         }
     }
 }
 
-/// Removes `installed/.old-*`, `installed/.trash-*` and `staging/*` left by
-/// interrupted operations, except those of an id whose lock is held (an
-/// operation running in another process).
+fn remove_path(path: &Path) {
+    let r = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    if let Err(e) = r {
+        tracing::warn!("cannot remove leftover {}: {e}", path.display());
+    }
+}
+
+/// Cleans up after interrupted operations: `index.json.tmp-*`, `staging/*`
+/// and `trash/*`. When `installed/<id>` is missing but an `old-<id>-…` copy
+/// exists (a crash between the two renames of an update), the newest copy
+/// is moved back instead of deleted. Leftovers of an id whose lock is held
+/// (an operation running in another process) are left alone.
 fn sweep_leftovers(root: &Path) {
-    let mut doomed = Vec::new();
-    let installed = root.join("installed");
-    if let Ok(rd) = std::fs::read_dir(&installed) {
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if let Some(id) = leftover_id(&name, ".old-").or_else(|| leftover_id(&name, ".trash-"))
-            {
-                doomed.push((id.to_string(), e.path()));
-            } else if name.starts_with(".old-") || name.starts_with(".trash-") {
-                doomed.push((String::new(), e.path()));
-            }
+    index::sweep_temp_files(root);
+    // id -> (doomed paths, old copies with their creation time)
+    type Found = (Vec<PathBuf>, Vec<(u128, PathBuf)>);
+    let mut by_id: BTreeMap<String, Found> = BTreeMap::new();
+    let mut unowned = Vec::new();
+    let names = |dir: PathBuf| {
+        std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    for (name, path) in names(root.join("staging")) {
+        match leftover(&name, "") {
+            Some((id, _)) => by_id.entry(id.into()).or_default().0.push(path),
+            None => unowned.push(path),
         }
     }
-    if let Ok(rd) = std::fs::read_dir(root.join("staging")) {
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let id = leftover_id(&name, "").unwrap_or_default().to_string();
-            doomed.push((id, e.path()));
+    for (name, path) in names(trash_dir(root)) {
+        if let Some((id, nanos)) = leftover(&name, "old-") {
+            by_id.entry(id.into()).or_default().1.push((nanos, path));
+        } else if let Some((id, _)) = leftover(&name, "removed-") {
+            by_id.entry(id.into()).or_default().0.push(path);
+        } else {
+            unowned.push(path);
         }
     }
-    for (id, path) in doomed {
-        // Holding the lock proves no live operation owns this leftover.
-        let _lock = if valid_id(&id) {
-            match IdLock::try_acquire(root, &id) {
-                Ok(l) => Some(l),
-                Err(_) => continue,
-            }
-        } else {
-            None
-        };
-        let r = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        if let Err(e) = r {
-            tracing::warn!("cannot remove leftover {}: {e}", path.display());
+    unowned.iter().for_each(|p| remove_path(p));
+    for (id, (mut doomed, mut olds)) in by_id {
+        if !valid_id(&id) {
+            doomed.extend(olds.into_iter().map(|(_, p)| p));
+            doomed.iter().for_each(|p| remove_path(p));
+            continue;
         }
+        // Holding the lock proves no live operation owns these leftovers.
+        let Ok(_lock) = IdLock::try_acquire(root, &id) else {
+            continue;
+        };
+        let target = root.join("installed").join(&id);
+        olds.sort();
+        if !target.exists()
+            && let Some((_, newest)) = olds.pop()
+        {
+            let _ = std::fs::create_dir_all(root.join("installed"));
+            match std::fs::rename(&newest, &target) {
+                Ok(()) => tracing::warn!("restored {id} from an interrupted update"),
+                Err(e) => tracing::error!(
+                    "cannot restore {} to {}: {e}",
+                    newest.display(),
+                    target.display()
+                ),
+            }
+        }
+        doomed.extend(olds.into_iter().map(|(_, p)| p));
+        doomed.iter().for_each(|p| remove_path(p));
     }
 }
