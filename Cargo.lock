@@ -3266,6 +3266,8 @@ name = "lucerna-extension"
 version = "0.1.0"
 dependencies = [
  "jsonc-parser",
+ "libc",
+ "lucerna-extension",
  "regex",
  "serde",
  "serde_json",

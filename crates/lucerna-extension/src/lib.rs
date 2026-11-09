@@ -2,9 +2,15 @@
 //!
 //! Pure data parsing: no dependency on syntax, theme or UI crates.
 
+pub mod disk;
+pub mod git;
 pub mod language_config;
 pub mod manifest;
+pub mod process;
+pub mod registry;
 pub mod snippets;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 pub use language_config::{LanguageConfig, QUERY_KINDS, load_language_config, query_files};
 pub use manifest::{ExtensionManifest, GrammarManifest, ManifestError, load_manifest};

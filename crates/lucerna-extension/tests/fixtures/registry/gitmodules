@@ -1,0 +1,20 @@
+[submodule "extensions/0x96f"]
+	path = extensions/0x96f
+	url = https://github.com/0x96f-org/0x96f-zed-theme.git
+
+[submodule "extensions/0xtz"]
+	path = extensions/0xtz
+	url = https://github.com/0xtz/0xtz-theme.git
+
+[submodule "extensions/1984-theme"]
+	path = extensions/1984-theme
+	url = https://github.com/chenmijiang/zed-1984.git
+
+[submodule "extensions/42nd-theme"]
+	path = extensions/42nd-theme
+	url = https://github.com/fawkes42/42nd.git
+
+[submodule "extensions/8008-theme"]
+	path = extensions/8008-theme
+	url = https://github.com/Paulo-Camacho/zed-8008.git
+

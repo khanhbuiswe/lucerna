@@ -13,6 +13,12 @@ toml.workspace = true
 jsonc-parser.workspace = true
 regex.workspace = true
 tracing.workspace = true
+libc.workspace = true
+tempfile = { workspace = true, optional = true }
+
+[features]
+test-support = ["dep:tempfile"]
 
 [dev-dependencies]
 tempfile.workspace = true
+lucerna-extension = { path = ".", features = ["test-support"] }
