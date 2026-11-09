@@ -19,6 +19,7 @@
   { "key": "cmd+7", "command": "workbench.action.focusSeventhEditorGroup" },
   { "key": "cmd+8", "command": "workbench.action.focusEighthEditorGroup" },
   { "key": "cmd+w", "command": "workbench.action.closeActiveEditor" },
+  { "key": "cmd+q", "command": "workbench.action.quit" },
   { "key": "ctrl+tab", "command": "workbench.action.quickOpenPreviousRecentlyUsedEditorInGroup" },
   { "key": "cmd+k cmd+t", "command": "workbench.action.selectTheme" },
   { "key": "cmd+,", "command": "workbench.action.openSettingsJson" },

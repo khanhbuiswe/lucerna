@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{App, AppContext as _, Bounds, px, size};
+use gpui::{App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, actions, px, size};
 use gpui_platform::application;
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
@@ -37,6 +37,7 @@ pub fn run(launch: Launch) {
             on_first_frame,
         } = launch;
         set_app_state(cx);
+        install_app_menu(cx);
         watch_config(ConfigPaths::for_root(&root), cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -73,6 +74,38 @@ pub fn run(launch: Launch) {
         }
         cx.activate(true);
     });
+}
+
+actions!(lucerna, [Quit, Hide, Minimize]);
+
+/// The macOS app menu: Lucerna → Hide (⌘H), Quit (⌘Q), and Window →
+/// Minimize (⌘M). The menu shows the shortcuts GPUI's keymap binds to its
+/// actions; ⌘Q also resolves through the user keymap to
+/// `workbench.action.quit`. Both quit the same way, so the layout is saved
+/// by the workbench's `on_app_quit` hook.
+fn install_app_menu(cx: &mut App) {
+    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Hide, cx| cx.hide());
+    cx.on_action(|_: &Minimize, cx| {
+        if let Some(window) = cx.active_window() {
+            window
+                .update(cx, |_, window, _| window.minimize_window())
+                .ok();
+        }
+    });
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-h", Hide, None),
+        KeyBinding::new("cmd-m", Minimize, None),
+    ]);
+    cx.set_menus([
+        Menu::new("Lucerna").items([
+            MenuItem::action("Hide Lucerna", Hide),
+            MenuItem::separator(),
+            MenuItem::action("Quit Lucerna", Quit),
+        ]),
+        Menu::new("Window").items([MenuItem::action("Minimize", Minimize)]),
+    ]);
 }
 
 /// The built-in defaults; [`watch_config`] then applies the user's files.

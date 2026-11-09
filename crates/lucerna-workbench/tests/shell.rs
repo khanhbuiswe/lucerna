@@ -352,3 +352,29 @@ fn slots_show_views_and_track_focus(cx: &mut TestAppContext) {
     let ctx = context(&wb, cx);
     assert!(holds(&ctx, "editorFocus && !sideBarFocus"));
 }
+
+/// ⌘Q quits: the binding names `workbench.action.quit` and the command is
+/// registered. (Quitting itself is not exercised.)
+#[gpui::test]
+fn cmd_q_is_bound_to_the_registered_quit_command(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (wb, cx) = open(cx);
+    let ctx = context(&wb, cx);
+    let resolution = cx.update(|_, cx| {
+        let keys = lucerna_settings::parse_keys("cmd+q").unwrap();
+        cx.global::<AppState>().keymap.resolve(&keys, &ctx)
+    });
+    assert_eq!(
+        resolution,
+        lucerna_settings::Resolution::Command {
+            command: "workbench.action.quit".into(),
+            args: None
+        }
+    );
+    let registered = wb.read_with(cx, |wb, _| {
+        wb.commands()
+            .all()
+            .any(|(id, title)| id == "workbench.action.quit" && !title.is_empty())
+    });
+    assert!(registered);
+}

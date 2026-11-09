@@ -1018,6 +1018,10 @@ fn pump_open_file_changes(cx: &mut Context<Workbench>) -> (Option<OpenFileWatche
 }
 
 fn register_shell_commands(commands: &mut CommandRegistry) {
+    // Quitting runs the `on_app_quit` hooks, which save the layout.
+    commands.register("workbench.action.quit", "File: Quit", |_, _, _, cx| {
+        cx.quit()
+    });
     commands.register(
         "workbench.action.toggleSidebarVisibility",
         "View: Toggle Primary Side Bar Visibility",
