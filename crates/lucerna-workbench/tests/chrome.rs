@@ -142,9 +142,13 @@ fn title_bar_shows_git_branch(cx: &mut TestAppContext) {
         Some("main")
     );
     draw(cx);
+    // Root name, then the Lucide git-branch icon, then the branch name.
     let name = bounds("title-bar-root", cx);
+    let icon = bounds("title-bar-branch-icon", cx);
     let branch = bounds("title-bar-branch", cx);
-    assert!(branch.left() > name.right());
+    assert!(icon.left() > name.right());
+    assert!(branch.left() >= icon.right());
+    assert_eq!(icon.size.width, px(ui::UI_FONT_SIZE_SMALL));
 
     // A checkout rewrites HEAD; the open-file watcher reports it.
     std::fs::write(git.join("HEAD"), "ref: refs/heads/feat/x\n").unwrap();
@@ -165,6 +169,7 @@ fn title_bar_has_no_branch_outside_a_repository(cx: &mut TestAppContext) {
     assert!(wb.read_with(cx, |wb, _| wb.git_branch().is_none()));
     draw(cx);
     assert!(cx.debug_bounds("title-bar-branch").is_none());
+    assert!(cx.debug_bounds("title-bar-branch-icon").is_none());
 }
 
 #[gpui::test]

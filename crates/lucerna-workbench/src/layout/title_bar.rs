@@ -4,13 +4,14 @@
 
 use gpui::{
     Bounds, Context, IntoElement, MouseButton, MouseMoveEvent, ParentElement, Pixels, Styled,
-    TitlebarOptions, WindowBounds, WindowOptions, div, point, prelude::*, px,
+    TitlebarOptions, WindowBounds, WindowOptions, div, point, prelude::*, px, svg,
 };
 use lucerna_theme::UiColors;
 
 use super::color;
 use crate::Workbench;
-use crate::ui::{GRID, TITLE_BAR_HEIGHT};
+use crate::icons;
+use crate::ui::{GRID, TITLE_BAR_HEIGHT, UI_FONT_SIZE_SMALL};
 
 /// Room left of the root name for the traffic lights.
 const TRAFFIC_LIGHTS_INSET: Pixels = px(80.);
@@ -82,8 +83,32 @@ pub(crate) fn render(
         )
         .children(branch.map(|branch| {
             div()
-                .debug_selector(|| "title-bar-branch".into())
-                .text_color(color(ui.text_muted))
-                .child(format!("⎇ {branch}"))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(GRID))
+                .min_w_0()
+                .child(
+                    div()
+                        .debug_selector(|| "title-bar-branch-icon".into())
+                        .flex_none()
+                        .size(px(UI_FONT_SIZE_SMALL))
+                        .child(
+                            svg()
+                                .data(icons::GIT_BRANCH)
+                                .size(px(UI_FONT_SIZE_SMALL))
+                                .text_color(color(ui.icon_muted)),
+                        ),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "title-bar-branch".into())
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(color(ui.text_muted))
+                        .child(branch),
+                )
         }))
 }
