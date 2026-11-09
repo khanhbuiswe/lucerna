@@ -65,7 +65,7 @@ Các nửa hình tròn đều lấy đáy tại y = 42. Đường kẻ dày 5 ph
 ## 5. Icon app macOS
 
 - Canvas 1024×1024, ô bo góc rx ≈ 230 (tỷ lệ 22.5% như các icon macOS), nền `#0f1420`, viền 1.5% màu `#1b2232`.
-- Đặt bản logo gốc vào giữa, chiều ngang vầng sáng chiếm khoảng 65% canvas, trọng tâm hình nằm ở giữa ô.
+- Đặt bản logo gốc vào giữa, đúng tỷ lệ trong mockup đã duyệt: toàn bộ logo (đường kẻ tính cả đầu bo tròn) rộng khoảng 60% canvas, tức scale 10 đơn vị lưới. Phần hình (x 1.5–62.5, y 20–46.5) được canh vào giữa ô: `translate(192 179.5) scale(10)`.
 - Chỉ làm file gốc `app-icon.svg`. Việc xuất `.icns` để sang lúc đóng gói bản phát hành.
 
 ## 6. File thay đổi
