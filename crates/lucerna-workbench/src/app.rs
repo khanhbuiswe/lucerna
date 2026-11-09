@@ -21,6 +21,8 @@ pub struct Launch {
     pub root: PathBuf,
     /// A file to open as a pinned tab.
     pub file: Option<PathBuf>,
+    /// Open `file` alone: `root` is not scanned or watched (R27).
+    pub single_file: bool,
     /// Called once the first frame of the window is painted.
     pub on_first_frame: Option<Box<dyn FnOnce()>>,
 }
@@ -31,6 +33,7 @@ pub fn run(launch: Launch) {
         let Launch {
             root,
             file,
+            single_file,
             on_first_frame,
         } = launch;
         set_app_state(cx);
@@ -43,9 +46,12 @@ pub fn run(launch: Launch) {
         .detach();
         let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);
         let opened = cx.open_window(window_options(bounds), |window, cx| {
-            let workbench = cx.new(|cx| match default_data_dir() {
-                Some(data_dir) => Workbench::with_data_dir(root, data_dir, window, cx),
-                None => Workbench::new(root, window, cx),
+            let workbench = cx.new(|cx| match (&file, default_data_dir()) {
+                (Some(file), data_dir) if single_file => {
+                    Workbench::single_file(root, file, data_dir, window, cx)
+                }
+                (_, Some(data_dir)) => Workbench::with_data_dir(root, data_dir, window, cx),
+                (_, None) => Workbench::new(root, window, cx),
             });
             if let Some(file) = file {
                 let path: Arc<Path> = file.into();

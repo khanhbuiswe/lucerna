@@ -191,3 +191,39 @@ fn open_file_watcher_reports_writes_to_watched_files_only() {
         }
     }
 }
+
+/// R27: a file opened alone shows in the tree by itself; its folder is
+/// never scanned, and the file is followed by the open-file watcher.
+#[gpui::test]
+fn single_file_mode_never_scans(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, cx);
+    let root = dirs.root.path().to_path_buf();
+    let file = root.join("a.txt");
+    let (wb, cx) = {
+        let (root, file) = (root.clone(), file.clone());
+        cx.add_window_view(move |window, cx| Workbench::single_file(root, &file, None, window, cx))
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    let entries = |cx: &mut VisualTestContext| {
+        wb.read_with(cx, |wb, _| {
+            let snapshot = wb.worktree().snapshot();
+            assert!(snapshot.scan_complete());
+            snapshot
+                .entries()
+                .iter()
+                .map(|e| e.path.to_path_buf())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        entries(cx),
+        [PathBuf::from("a.txt")],
+        "only the file, no scan"
+    );
+    open_file(&wb, &file, cx);
+    assert_eq!(
+        wb.read_with(cx, |wb, _| wb.watched_open_files().to_vec()),
+        [file]
+    );
+}

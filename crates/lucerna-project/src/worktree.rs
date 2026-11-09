@@ -130,6 +130,36 @@ impl Worktree {
         }
     }
 
+    /// A worktree that never scans or watches `root`: its snapshot is
+    /// complete from the start and lists only `files` (root-relative). For
+    /// a file opened alone, whose folder (say `$HOME`) is not a project.
+    /// [`Worktree::events`] never yields; [`Worktree::set_options`] does
+    /// nothing.
+    pub fn without_scan(root: PathBuf, files: Vec<Arc<Path>>) -> Worktree {
+        let entries = files
+            .into_iter()
+            .map(|path| Entry {
+                path,
+                kind: EntryKind::File,
+            })
+            .collect();
+        let (_, events) = unbounded();
+        let (commands, _) = unbounded();
+        Worktree {
+            root,
+            snapshot: Arc::new(Mutex::new(WorktreeSnapshot::build(entries, true))),
+            events,
+            commands,
+            stop: Arc::new(AtomicBool::new(true)),
+            generation: Arc::new(AtomicU64::new(0)),
+            thread: None,
+            #[cfg(test)]
+            fail_next_scan: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            fail_next_apply: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

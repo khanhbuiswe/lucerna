@@ -190,3 +190,23 @@ fn git_dir_always_skipped() {
     wait_complete(&wt);
     assert_eq!(paths(&wt), ["sub", "a.rs"]);
 }
+
+/// A worktree for one loose file: complete at once, lists only that file,
+/// and never scans or watches the folder.
+#[test]
+fn without_scan_lists_only_the_given_files() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    touch(r, "notes.md");
+    touch(r, "other.txt");
+    touch(r, "sub/deep.rs");
+    let wt = Worktree::without_scan(r.to_path_buf(), vec![Path::new("notes.md").into()]);
+    let snapshot = wt.snapshot();
+    assert!(snapshot.scan_complete());
+    assert_eq!(paths(&wt), ["notes.md"]);
+    assert_eq!(snapshot.entries()[0].kind, EntryKind::File);
+    touch(r, "new.txt");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(paths(&wt), ["notes.md"], "no watcher adds files");
+    assert!(wt.events().try_recv().is_err(), "no scan events");
+}

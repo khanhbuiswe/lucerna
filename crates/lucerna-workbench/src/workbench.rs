@@ -82,6 +82,9 @@ pub struct Workbench {
     documents: Entity<Documents>,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
     _worktree_events: Task<()>,
+    /// `false` in single-file mode: the worktree neither scans nor
+    /// watches, so every open file is followed by the open-file watcher.
+    scanning: bool,
     /// Follows open files the worktree does not; `None` on the test
     /// scheduler or when it could not start.
     open_file_watcher: Option<OpenFileWatcher>,
@@ -129,7 +132,7 @@ impl Workbench {
     /// If the [`AppState`] global is not set: rendering and key dispatch
     /// read the theme and keymap from it.
     pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::build(root, None, window, cx)
+        Self::build(root, None, None, window, cx)
     }
 
     /// Like [`Workbench::new`], and keeps the layout of `root` in
@@ -142,11 +145,34 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> Self {
         let store = WorkspaceStateStore::new(data_dir, root.clone());
-        Self::build(root, Some(store), window, cx)
+        Self::build(root, None, Some(store), window, cx)
     }
 
+    /// Single-file mode (R27), for a loose file whose folder `root` (its
+    /// parent, such as `$HOME`) is not a project: `root` is never scanned
+    /// or watched, the tree and Quick Open list only `file`, and open
+    /// files are followed one by one. Keeps the layout in `data_dir` when
+    /// given, as [`Workbench::with_data_dir`] does. Does not open `file`.
+    pub fn single_file(
+        root: PathBuf,
+        file: &Path,
+        data_dir: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let rel: Arc<Path> = match file.strip_prefix(&root) {
+            Ok(rel) => Arc::from(rel),
+            Err(_) => Arc::from(Path::new(file.file_name().unwrap_or(file.as_os_str()))),
+        };
+        let store = data_dir.map(|dir| WorkspaceStateStore::new(dir, root.clone()));
+        Self::build(root, Some(rel), store, window, cx)
+    }
+
+    /// `single_file`: the root-relative file of single-file mode; the
+    /// folder is scanned when it is `None`.
     fn build(
         root: PathBuf,
+        single_file: Option<Arc<Path>>,
         store: Option<WorkspaceStateStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -201,7 +227,11 @@ impl Workbench {
             exclude: enabled_globs(cx, "files.exclude"),
         };
         let scan_started = std::time::Instant::now();
-        let worktree = Worktree::start(root.clone(), scan_options.clone());
+        let scanning = single_file.is_none();
+        let worktree = match single_file {
+            Some(file) => Worktree::without_scan(root.clone(), vec![file]),
+            None => Worktree::start(root.clone(), scan_options.clone()),
+        };
         let restored = store
             .as_ref()
             .and_then(WorkspaceStateStore::load)
@@ -252,6 +282,7 @@ impl Workbench {
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
             _worktree_events: worktree_events,
+            scanning,
             open_file_watcher,
             watched_open_files: Vec::new(),
             _open_file_events: open_file_events,
@@ -489,7 +520,8 @@ impl Workbench {
     }
 
     /// Open files the worktree does not follow (outside the root, or not
-    /// in the tree, e.g. ignored), which the open-file watcher follows.
+    /// in the tree, e.g. ignored; all of them in single-file mode), which
+    /// the open-file watcher follows.
     pub fn watched_open_files(&self) -> &[PathBuf] {
         &self.watched_open_files
     }
@@ -502,7 +534,7 @@ impl Workbench {
             .open_tab_paths(cx)
             .into_iter()
             .filter(|path| match path.strip_prefix(&self.root) {
-                Ok(rel) => !snapshot.contains(rel),
+                Ok(rel) => !self.scanning || !snapshot.contains(rel),
                 Err(_) => true,
             })
             .collect();

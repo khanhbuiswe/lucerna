@@ -3,4 +3,4 @@
 pub mod logging;
 mod target;
 
-pub use target::resolve_target;
+pub use target::{Target, resolve_target, resolve_target_with_home};
