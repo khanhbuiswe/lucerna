@@ -29,8 +29,10 @@ pub const POPOVER_MAX_WIDTH: f32 = 600.0;
 pub const POPOVER_RADIUS: f32 = 8.0;
 /// UI text size; the UI uses IBM Plex Sans, the editor its own font.
 pub const UI_FONT_SIZE: f32 = 14.0;
-/// Smaller UI text: tab titles, the status bar and small headers.
+/// Smaller UI text: tab titles, the path bar and small headers.
 pub const UI_FONT_SIZE_SMALL: f32 = 13.0;
+/// Status bar text: one step below [`UI_FONT_SIZE_SMALL`], as in Zed.
+pub const UI_FONT_SIZE_STATUS: f32 = 12.0;
 /// Captions smaller than [`UI_FONT_SIZE_SMALL`]: the search panel's field
 /// labels, folder hints and match counts, and toggle labels like `Aa`.
 pub const UI_FONT_SIZE_CAPTION: f32 = 11.0;
