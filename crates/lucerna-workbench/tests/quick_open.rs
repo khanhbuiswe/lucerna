@@ -119,7 +119,7 @@ fn tabs(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<(usize, PathB
                 group
                     .tabs
                     .iter()
-                    .map(move |t| (g, t.path.to_path_buf(), t.pinned))
+                    .map(move |t| (g, t.path().unwrap().to_path_buf(), t.pinned))
             })
             .collect()
     })

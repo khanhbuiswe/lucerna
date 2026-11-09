@@ -217,10 +217,16 @@ impl CodeView {
         }
     }
 
-    /// A [`crate::TabBodyFactory`] that gives each tab an empty code view.
-    pub fn tab_body(tab: &Tab, _: &mut Window, cx: &mut App) -> AnyView {
-        let path = tab.path.clone();
-        cx.new(|cx| CodeView::new(path, cx)).into()
+    /// A [`crate::TabBodyFactory`] that gives each file tab an empty code
+    /// view (other tabs get [`crate::placeholder_body`]).
+    pub fn tab_body(tab: &Tab, window: &mut Window, cx: &mut App) -> AnyView {
+        match tab.path() {
+            Some(path) => {
+                let path = path.clone();
+                cx.new(|cx| CodeView::new(path, cx)).into()
+            }
+            None => crate::placeholder_body(tab, window, cx),
+        }
     }
 
     pub fn path(&self) -> &Arc<Path> {

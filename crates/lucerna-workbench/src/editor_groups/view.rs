@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use gpui::{
     AnyView, App, ClickEvent, Context, DragMoveEvent, Entity, IntoElement, MouseButton,
@@ -12,12 +11,14 @@ use gpui::{
 };
 use lucerna_theme::{Rgba, UiColors};
 
-use super::model::{EditorGroups, GroupsState, Tab, TabId};
+use super::model::{EditorGroups, GroupsState, Tab, TabId, TabItem};
 use crate::AppState;
 use crate::documents::{DocState, Documents};
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
-use crate::ui::{CLOSE_ICON, GRID, PATH_BAR_HEIGHT, TAB_HEIGHT, TAB_PADDING_X, UI_FONT_SIZE_SMALL};
+use crate::ui::{
+    BLOCKS_ICON, CLOSE_ICON, GRID, PATH_BAR_HEIGHT, TAB_HEIGHT, TAB_PADDING_X, UI_FONT_SIZE_SMALL,
+};
 
 /// Square slot that holds a tab's close button, kept even while the
 /// button is hidden so tabs do not change width on hover.
@@ -29,14 +30,18 @@ const MIN_GROUP_WIDTH: Pixels = px(120.);
 /// per tab; the view is kept until the tab closes.
 pub type TabBodyFactory = Rc<dyn Fn(&Tab, &mut Window, &mut App) -> AnyView>;
 
-/// The default tab body until the code view exists: the file's path.
+/// The default tab body until the code view exists: the file's path (the
+/// tab title for the Extensions page).
 pub fn placeholder_body(tab: &Tab, _: &mut Window, cx: &mut App) -> AnyView {
-    let path = tab.path.clone();
-    cx.new(|_| PathPlaceholder { path }).into()
+    let text = match tab.path() {
+        Some(path) => path.display().to_string(),
+        None => tab.title(),
+    };
+    cx.new(|_| PathPlaceholder { text }).into()
 }
 
 struct PathPlaceholder {
-    path: Arc<Path>,
+    text: String,
 }
 
 impl Render for PathPlaceholder {
@@ -48,7 +53,7 @@ impl Render for PathPlaceholder {
             .justify_center()
             .items_center()
             .text_color(color(ui.text_muted))
-            .child(self.path.display().to_string())
+            .child(self.text.clone())
     }
 }
 
@@ -190,12 +195,13 @@ impl EditorGroupsView {
     }
 
     /// What the path bar of group `group` shows: its active tab's path
-    /// (see [`path_bar_text`]); `None` when the group has no tab.
+    /// (see [`path_bar_text`]); `None` when the group has no tab or shows
+    /// the Extensions page.
     pub fn path_bar_text(&self, group: usize) -> Option<String> {
         let group = self.model.groups().get(group)?;
         let tab = group.tabs.iter().find(|t| Some(t.id) == group.active)?;
         Some(path_bar_text(
-            &tab.path,
+            tab.path()?,
             self.root.as_deref(),
             self.home.as_deref(),
         ))
@@ -274,9 +280,10 @@ impl Render for EditorGroupsView {
                 g.tabs
                     .iter()
                     .map(|t| {
-                        self.documents
-                            .as_ref()
-                            .is_some_and(|d| d.read(cx).state(&t.path) == Some(&DocState::Deleted))
+                        let docs = self.documents.as_ref();
+                        t.path().zip(docs).is_some_and(|(path, d)| {
+                            d.read(cx).state(path) == Some(&DocState::Deleted)
+                        })
                     })
                     .collect()
             })
@@ -301,12 +308,15 @@ impl Render for EditorGroupsView {
                 let id = tab.id;
                 let active = group.active == Some(id);
                 let fg = title_color(active, gi == focused_group, ui);
-                let title = tab
-                    .path
-                    .file_name()
-                    .unwrap_or(tab.path.as_os_str())
-                    .to_string_lossy()
-                    .into_owned();
+                let title = tab.title();
+                let icon = (tab.item == TabItem::Extensions).then(|| {
+                    svg()
+                        .debug_selector(move || format!("tab-icon-{gi}-{ti}"))
+                        .data(BLOCKS_ICON)
+                        .flex_none()
+                        .size(px(14.))
+                        .text_color(color(ui.icon_muted))
+                });
                 let show_close = active || self.hovered_tab == Some(id);
                 let deleted = deleted[gi][ti];
                 let hover = color(ui.ghost_element_hover);
@@ -373,6 +383,7 @@ impl Render for EditorGroupsView {
                             view.update_model(cx, |m| m.close(id));
                         }),
                     )
+                    .children(icon)
                     .child(
                         div()
                             .when(!tab.pinned, |d| d.italic())

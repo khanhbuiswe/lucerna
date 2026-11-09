@@ -1,5 +1,6 @@
-//! The pure editor-groups model: which files are open in which group, which
-//! tab is a preview, and the most-recently-used order per group.
+//! The pure editor-groups model: which files (and the Extensions page) are
+//! open in which group, which tab is a preview, and the most-recently-used
+//! order per group.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,12 +22,51 @@ pub enum OpenMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(u64);
 
+/// What a tab shows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TabItem {
+    File(Arc<Path>),
+    /// The Extensions page (spec §5.2). At most one in all groups; never a
+    /// preview.
+    Extensions,
+}
+
+/// How the Extensions tab is saved in [`GroupState::tabs`], in place of a
+/// path. It is relative, so it never names a file a tab opened (those are
+/// absolute).
+pub const EXTENSIONS_TAB_STATE: &str = "lucerna:extensions";
+
+/// The title of the Extensions tab.
+pub const EXTENSIONS_TAB_TITLE: &str = "Extensions";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tab {
     pub id: TabId,
-    pub path: Arc<Path>,
+    pub item: TabItem,
     /// Unpinned tabs are previews: the next preview open replaces them.
     pub pinned: bool,
+}
+
+impl Tab {
+    /// The file the tab shows; `None` for the Extensions page.
+    pub fn path(&self) -> Option<&Arc<Path>> {
+        match &self.item {
+            TabItem::File(path) => Some(path),
+            TabItem::Extensions => None,
+        }
+    }
+
+    /// The tab bar's label: the file name, or "Extensions".
+    pub fn title(&self) -> String {
+        match &self.item {
+            TabItem::File(path) => path
+                .file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .into_owned(),
+            TabItem::Extensions => EXTENSIONS_TAB_TITLE.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -58,7 +98,8 @@ pub struct GroupsState {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GroupState {
-    /// `(path, pinned)` in tab order.
+    /// `(path, pinned)` in tab order; the Extensions tab is saved as
+    /// [`EXTENSIONS_TAB_STATE`].
     pub tabs: Vec<(PathBuf, bool)>,
     /// Index into `tabs`.
     pub active: Option<usize>,
@@ -105,7 +146,8 @@ impl EditorGroups {
         let id = self.new_id();
         let group = &mut self.groups[self.active_group];
 
-        if let Some(tab) = group.tabs.iter_mut().find(|t| t.path == path) {
+        let item = TabItem::File(path);
+        if let Some(tab) = group.tabs.iter_mut().find(|t| t.item == item) {
             let existing = tab.id;
             if mode != OpenMode::Preview {
                 tab.pinned = true;
@@ -116,7 +158,7 @@ impl EditorGroups {
 
         let tab = Tab {
             id,
-            path,
+            item,
             pinned: !preview,
         };
         match group
@@ -133,6 +175,33 @@ impl EditorGroups {
         }
         group.activate(id);
         id
+    }
+
+    /// Activates the Extensions tab wherever it is, or opens it (pinned) at
+    /// the end of the active group. Returns its tab.
+    pub fn open_extensions(&mut self) -> TabId {
+        if let Some(id) = self.extensions_tab() {
+            self.activate(id);
+            return id;
+        }
+        let id = self.new_id();
+        let group = &mut self.groups[self.active_group];
+        group.tabs.push(Tab {
+            id,
+            item: TabItem::Extensions,
+            pinned: true,
+        });
+        group.activate(id);
+        id
+    }
+
+    /// The Extensions tab, if open in any group.
+    pub fn extensions_tab(&self) -> Option<TabId> {
+        self.groups
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .find(|t| t.item == TabItem::Extensions)
+            .map(|t| t.id)
     }
 
     /// Pins tab `id` so preview opens no longer replace it.
@@ -183,9 +252,13 @@ impl EditorGroups {
 
     /// Opens a copy of the active tab in a new group directly to the right
     /// and focuses it. Returns the active group index (unchanged when no tab
-    /// is active).
+    /// is active, or when it is the Extensions page, which is never copied).
     pub fn split_active(&mut self) -> usize {
-        let Some(tab) = self.active_tab().cloned() else {
+        let Some(tab) = self
+            .active_tab()
+            .filter(|t| t.item != TabItem::Extensions)
+            .cloned()
+        else {
             return self.active_group;
         };
         let copy = Tab {
@@ -237,6 +310,7 @@ impl EditorGroups {
     /// Rebuilds groups from persisted state with fresh tab ids, repairing
     /// what a stale or hand-edited file may contain:
     /// - duplicate paths in a group keep their first entry;
+    /// - only the first Extensions tab of all groups is kept, pinned;
     /// - of several unpinned tabs only the last stays a preview;
     /// - a missing or out-of-range active tab becomes the group's last tab;
     /// - empty groups other than the first are dropped, and an active group
@@ -249,18 +323,28 @@ impl EditorGroups {
         };
         // Restored index of each saved group; `None` when it was dropped.
         let mut restored_index = Vec::with_capacity(state.groups.len());
+        let mut has_extensions = false;
         for saved in &state.groups {
             let mut group = Group::default();
             for (path, pinned) in &saved.tabs {
-                if group.tabs.iter().any(|t| *t.path == **path) {
+                let item = saved_item(path);
+                let seen = match item {
+                    TabItem::Extensions => {
+                        has_extensions || group.tabs.iter().any(|t| t.item == item)
+                    }
+                    TabItem::File(_) => group.tabs.iter().any(|t| t.item == item),
+                };
+                if seen {
                     continue;
                 }
+                let pinned = *pinned || item == TabItem::Extensions;
                 group.tabs.push(Tab {
                     id: model.new_id(),
-                    path: Arc::from(path.as_path()),
-                    pinned: *pinned,
+                    item,
+                    pinned,
                 });
             }
+            has_extensions |= group.tabs.iter().any(|t| t.item == TabItem::Extensions);
             if let Some(preview) = group.tabs.iter().rposition(|t| !t.pinned) {
                 for tab in &mut group.tabs[..preview] {
                     tab.pinned = true;
@@ -271,7 +355,8 @@ impl EditorGroups {
             let saved_active = saved
                 .active
                 .and_then(|i| saved.tabs.get(i))
-                .and_then(|(path, _)| group.tabs.iter().find(|t| *t.path == **path));
+                .map(|(path, _)| saved_item(path))
+                .and_then(|item| group.tabs.iter().find(|t| t.item == item));
             if let Some(id) = saved_active.or(group.tabs.last()).map(|t| t.id) {
                 group.activate(id);
             }
@@ -309,7 +394,7 @@ impl EditorGroups {
                     tabs: g
                         .tabs
                         .iter()
-                        .map(|t| (t.path.to_path_buf(), t.pinned))
+                        .map(|t| (saved_path(&t.item), t.pinned))
                         .collect(),
                     active: g.active.and_then(|id| g.position(id)),
                 })
@@ -325,5 +410,22 @@ impl EditorGroups {
     fn new_id(&mut self) -> TabId {
         self.next_id += 1;
         TabId(self.next_id)
+    }
+}
+
+/// What a saved tab path stands for.
+fn saved_item(path: &Path) -> TabItem {
+    if path == Path::new(EXTENSIONS_TAB_STATE) {
+        TabItem::Extensions
+    } else {
+        TabItem::File(Arc::from(path))
+    }
+}
+
+/// How a tab is saved: its path, or [`EXTENSIONS_TAB_STATE`].
+fn saved_path(item: &TabItem) -> PathBuf {
+    match item {
+        TabItem::File(path) => path.to_path_buf(),
+        TabItem::Extensions => PathBuf::from(EXTENSIONS_TAB_STATE),
     }
 }

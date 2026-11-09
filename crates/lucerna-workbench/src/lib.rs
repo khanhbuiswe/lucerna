@@ -34,8 +34,8 @@ pub use config_files::{
 };
 pub use documents::{DocState, DocumentStatus, Documents};
 pub use editor_groups::{
-    EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode, Tab, TabBodyFactory,
-    TabId, placeholder_body,
+    EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode,
+    Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
 };
 pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, find_in_snapshot};

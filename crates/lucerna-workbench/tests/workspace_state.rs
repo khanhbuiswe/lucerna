@@ -354,7 +354,7 @@ fn tab_paths(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<PathBuf>
             .model()
             .groups()
             .iter()
-            .flat_map(|g| g.tabs.iter().map(|t| t.path.to_path_buf()))
+            .flat_map(|g| g.tabs.iter().map(|t| t.path().unwrap().to_path_buf()))
             .collect()
     })
 }

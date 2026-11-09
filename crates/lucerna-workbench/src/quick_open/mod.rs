@@ -19,7 +19,7 @@ use lucerna_text::Point;
 use crate::code_view::CodeView;
 use crate::extensions::ExtensionService;
 use crate::{AppState, CommandRegistry, Workbench};
-use view::{CommandItem, Sources};
+use view::{CommandItem, ExtensionIds, Sources};
 
 /// How many recently opened files are remembered.
 pub const RECENT_FILES_LIMIT: usize = 50;
@@ -131,11 +131,12 @@ impl Workbench {
         self.open_quick_open(prefix, sources, window, cx);
     }
 
-    /// Shows Quick Open listing `ids` (the install command); Enter installs
-    /// the selected one. Replaces a Quick Open already shown.
+    /// Shows Quick Open listing `ids` (the install command), or the message
+    /// in `Err` until [`Workbench::update_extension_ids`] brings them; Enter
+    /// installs the selected one. Replaces a Quick Open already shown.
     pub(crate) fn show_extension_ids(
         &mut self,
-        ids: Vec<String>,
+        ids: ExtensionIds,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -151,6 +152,23 @@ impl Workbench {
             extension_ids: Some(ids),
         };
         self.open_quick_open("", sources, window, cx);
+    }
+
+    /// Fills a shown install Quick Open that waits for the extension list
+    /// with `ids()`.
+    pub(crate) fn update_extension_ids(
+        &mut self,
+        ids: impl FnOnce(&gpui::App) -> ExtensionIds,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((qo, _)) = &self.quick_open else {
+            return;
+        };
+        if !qo.read(cx).awaits_extension_ids() {
+            return;
+        }
+        let (qo, ids) = (qo.clone(), ids(cx));
+        qo.update(cx, |qo, cx| qo.set_extension_ids(ids, cx));
     }
 
     fn open_quick_open(

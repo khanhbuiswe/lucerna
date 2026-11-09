@@ -20,9 +20,9 @@ use serde_json::Value;
 use crate::code_view::{self, CodeView, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::documents::{DocumentStatusItem, Documents};
-use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode};
+use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode, TabItem};
 use crate::explorer::ExplorerView;
-use crate::extensions::{ExtensionService, ExtensionsPanel, Toast};
+use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
 use crate::layout::sidebar::SidebarSash;
 use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
@@ -42,7 +42,6 @@ use crate::{AppState, CommandRegistry, find_widget, keys, search_panel};
 pub enum SidebarView {
     Explorer,
     Search,
-    Extensions,
 }
 
 impl SidebarView {
@@ -51,14 +50,14 @@ impl SidebarView {
         match self {
             SidebarView::Explorer => "explorer",
             SidebarView::Search => "search",
-            SidebarView::Extensions => "extensions",
         }
     }
 
+    /// Anything unknown, such as `"extensions"` saved before the
+    /// Extensions page moved into an editor tab, is the Explorer.
     fn from_state_name(name: &str) -> SidebarView {
         match name {
             "search" => SidebarView::Search,
-            "extensions" => SidebarView::Extensions,
             _ => SidebarView::Explorer,
         }
     }
@@ -101,8 +100,9 @@ pub struct Workbench {
     explorer: Entity<ExplorerView>,
     /// The Search panel, installed in the Search sidebar slot.
     search_panel: Entity<SearchPanel>,
-    /// The Extensions panel, installed in the Extensions sidebar slot.
-    extensions_panel: Entity<ExtensionsPanel>,
+    /// The Extensions page, the body of the Extensions tab when it is
+    /// open. Kept while the tab is closed, so it reopens as it was.
+    extensions_page: Entity<ExtensionsPage>,
     /// Every open file; tab bodies are its code views.
     documents: Entity<Documents>,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
@@ -134,7 +134,6 @@ pub struct Workbench {
     sidebar_width: Pixels,
     explorer_view: Option<AnyView>,
     search_view: Option<AnyView>,
-    extensions_view: Option<AnyView>,
     editor_groups: Entity<EditorGroupsView>,
     editor_area: Option<AnyView>,
     status_left: Vec<AnyView>,
@@ -159,6 +158,8 @@ pub struct Workbench {
     /// How many of [`ExtensionService::fresh_installs`] were looked at for
     /// a theme to offer.
     pub(crate) fresh_installs_seen: usize,
+    /// Fresh installs whose index entry had not arrived when looked at.
+    pub(crate) fresh_installs_waiting: Vec<String>,
     persistence: Option<Persistence>,
 }
 
@@ -233,13 +234,24 @@ impl Workbench {
         theme_picker::register_commands(&mut commands);
         crate::extensions::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
+        let extensions_page = {
+            let workbench = cx.weak_entity();
+            cx.new(|cx| ExtensionsPage::new(workbench, cx))
+        };
         let workbench = cx.weak_entity();
         let editor_groups = cx.new(|cx| {
             let mut groups = EditorGroupsView::default();
             let docs = documents.clone();
+            let page = extensions_page.clone();
             groups.set_tab_body_factory(
                 Rc::new(move |tab, _, cx| {
-                    let path = tab.path.clone();
+                    let path = match &tab.item {
+                        TabItem::File(path) => path.clone(),
+                        TabItem::Extensions => {
+                            page.update(cx, |page, cx| page.shown(cx));
+                            return page.clone().into();
+                        }
+                    };
                     let view = docs.update(cx, |docs, cx| docs.open(path, cx));
                     // A scroll settles into a save.
                     let workbench = workbench.clone();
@@ -285,7 +297,8 @@ impl Workbench {
                 .model()
                 .groups()
                 .iter()
-                .flat_map(|g| g.tabs.iter().map(|t| t.path.to_path_buf()))
+                .flat_map(|g| g.tabs.iter().filter_map(|t| t.path()))
+                .map(|p| p.to_path_buf())
                 .collect();
             documents.update(cx, |docs, _| {
                 for (path, row) in state.scroll.iter().filter(|(p, _)| open.contains(p)) {
@@ -302,21 +315,19 @@ impl Workbench {
             let (root, workbench) = (root.clone(), cx.weak_entity());
             cx.new(|cx| SearchPanel::new(root, workbench, scanning, cx))
         };
-        let extensions_panel = {
-            let workbench = cx.weak_entity();
-            cx.new(|cx| ExtensionsPanel::new(workbench, cx))
-        };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
         let mut subscriptions = vec![
             cx.observe(&editor_groups, |wb, _, cx| {
                 wb.refresh_watched_open_files(cx)
             }),
+            cx.observe_in(&editor_groups, window, Self::extensions_tab_closed),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
         ];
         if cx.has_global::<ExtensionService>() {
             subscriptions.push(cx.observe_global::<ExtensionService>(|wb, cx| {
                 wb.offer_installed_themes(cx);
+                wb.update_extension_ids(installable_ids, cx);
                 // The status bar button's badge and spinner.
                 cx.notify();
             }));
@@ -370,8 +381,7 @@ impl Workbench {
             documents,
             search_view: Some(search_panel.clone().into()),
             search_panel,
-            extensions_view: Some(extensions_panel.clone().into()),
-            extensions_panel,
+            extensions_page,
             editor_area: Some(editor_groups.clone().into()),
             editor_groups,
             status_left: Vec::new(),
@@ -385,6 +395,7 @@ impl Workbench {
             toast: None,
             toast_count: 0,
             fresh_installs_seen,
+            fresh_installs_waiting: Vec::new(),
             persistence: None,
         };
         if let Some(store) = store {
@@ -394,11 +405,6 @@ impl Workbench {
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
-        if workbench.sidebar_visible && workbench.active_sidebar == SidebarView::Extensions {
-            workbench
-                .extensions_panel
-                .update(cx, |panel, cx| panel.shown(cx));
-        }
         workbench
     }
 
@@ -443,17 +449,20 @@ impl Workbench {
         let groups = self.editor_groups.read(cx);
         let mut scroll = HashMap::new();
         for tab in groups.model().groups().iter().flat_map(|g| &g.tabs) {
+            let Some(path) = tab.path() else {
+                continue;
+            };
             let live = groups
                 .body_of(tab.id)
                 .and_then(|b| b.downcast::<CodeView>().ok())
-                .filter(|_| !self.documents.read(cx).has_pending_scroll(&tab.path))
+                .filter(|_| !self.documents.read(cx).has_pending_scroll(path))
                 .map(|v| v.read(cx).scroll_top_row());
             let cached = self
                 .persistence
                 .as_ref()
-                .and_then(|p| p.scroll_rows.get(&*tab.path).copied());
+                .and_then(|p| p.scroll_rows.get(&**path).copied());
             if let Some(row) = live.or(cached) {
-                scroll.insert(tab.path.to_path_buf(), row);
+                scroll.insert(path.to_path_buf(), row);
             }
         }
         let state = WorkspaceState {
@@ -639,7 +648,8 @@ impl Workbench {
             .model()
             .groups()
             .iter()
-            .flat_map(|g| g.tabs.iter().map(|t| t.path.to_path_buf()))
+            .flat_map(|g| g.tabs.iter().filter_map(|t| t.path()))
+            .map(|p| p.to_path_buf())
             .collect();
         paths.sort();
         paths.dedup();
@@ -699,9 +709,53 @@ impl Workbench {
         &self.search_panel
     }
 
-    /// The Extensions panel in the sidebar.
-    pub fn extensions_panel(&self) -> &Entity<ExtensionsPanel> {
-        &self.extensions_panel
+    /// The Extensions page, shown in the Extensions tab.
+    pub fn extensions_page(&self) -> &Entity<ExtensionsPage> {
+        &self.extensions_page
+    }
+
+    /// Focuses the Extensions tab in whichever group holds it, or opens it
+    /// in the active group, then puts the cursor in its search input.
+    pub fn open_extensions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor_groups(cx, EditorGroups::open_extensions);
+        self.extensions_page.update(cx, |page, cx| {
+            page.shown(cx);
+            page.focus_search(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Whether keyboard focus is in the open Extensions tab.
+    fn extensions_focused(&self, window: &Window, cx: &App) -> bool {
+        self.editor_groups
+            .read(cx)
+            .model()
+            .extensions_tab()
+            .is_some()
+            && self
+                .extensions_page
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+    }
+
+    /// After the tabs changed: when the Extensions tab closed while it had
+    /// focus, focus goes to the editor area, so keys keep working.
+    fn extensions_tab_closed(
+        &mut self,
+        groups: Entity<EditorGroupsView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let closed = groups.read(cx).model().extensions_tab().is_none();
+        let had_focus = self
+            .extensions_page
+            .read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx);
+        if closed && had_focus {
+            self.focus_editor_area(window, cx);
+        }
     }
 
     /// The number on the Extensions button: the available updates, when
@@ -820,7 +874,7 @@ impl Workbench {
         );
         flag(
             "extensionsViewletFocus",
-            sidebar_focus && self.active_sidebar == SidebarView::Extensions,
+            self.extensions_focused(window, cx),
         );
         // The theme picker is a quick pick too: Escape closes it.
         flag(
@@ -837,7 +891,7 @@ impl Workbench {
         );
         flag("findWidgetVisible", self.find_widget_visible(cx));
         let active = self.editor_groups.read(cx).model().active_tab();
-        let path = active.map(|tab| &tab.path);
+        let path = active.and_then(|tab| tab.path());
         let extname = path.map(|p| extname(p)).unwrap_or_default();
         // The language the document resolved (`files.associations`
         // included); before its view exists, the same lookup by path.
@@ -901,10 +955,6 @@ impl Workbench {
         self.active_sidebar = view;
         self.layout_changed(cx);
         self.focus_sidebar(window, cx);
-        if view == SidebarView::Extensions {
-            self.extensions_panel
-                .update(cx, |panel, cx| panel.shown(cx));
-        }
         cx.notify();
     }
 
@@ -923,7 +973,6 @@ impl Workbench {
             match view {
                 SidebarView::Explorer => "workbench.view.explorer",
                 SidebarView::Search => "workbench.view.search",
-                SidebarView::Extensions => "workbench.view.extensions",
             }
         };
         self.run_command(command, None, window, cx);
@@ -944,7 +993,6 @@ impl Workbench {
         match kind {
             SidebarView::Explorer => self.explorer_view = Some(view),
             SidebarView::Search => self.search_view = Some(view),
-            SidebarView::Extensions => self.extensions_view = Some(view),
         }
         cx.notify();
     }
@@ -960,7 +1008,6 @@ impl Workbench {
         match kind {
             SidebarView::Explorer => self.explorer_view.as_ref(),
             SidebarView::Search => self.search_view.as_ref(),
-            SidebarView::Extensions => self.extensions_view.as_ref(),
         }
     }
 
@@ -1175,10 +1222,15 @@ impl Render for Workbench {
         let theme = cx.global::<AppState>().theme.clone();
         let ui = &theme.ui;
         let root_name = self.root_name();
+        let extensions_open = self
+            .editor_groups
+            .read(cx)
+            .model()
+            .extensions_tab()
+            .is_some();
         let sidebar_slot = match self.active_sidebar {
             SidebarView::Explorer => self.explorer_view.clone(),
             SidebarView::Search => self.search_view.clone(),
-            SidebarView::Extensions => self.extensions_view.clone(),
         };
         let editor_area = div()
             .id("editor-area")
@@ -1240,6 +1292,7 @@ impl Render for Workbench {
                 panel_toggles::render(
                     self.active_sidebar,
                     self.sidebar_visible,
+                    extensions_open,
                     self.extension_badge(cx),
                     cx,
                 ),

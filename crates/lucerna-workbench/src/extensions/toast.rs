@@ -1,7 +1,7 @@
 //! A minimal notification at the bottom right of the window: a message,
-//! one action button and a close button. It closes after
+//! at most one action button and a close button. It closes after
 //! [`TOAST_DURATION`]. Used to offer an installed extension's theme
-//! (spec §5.2).
+//! (spec §5.2) and to say why Clear Build Cache did nothing.
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -25,8 +25,7 @@ type ToastAction = Rc<dyn Fn(&mut Workbench, &mut Window, &mut Context<Workbench
 
 pub struct Toast {
     message: SharedString,
-    action_label: SharedString,
-    action: ToastAction,
+    action: Option<(SharedString, ToastAction)>,
     /// Tells this toast's timer from a later toast's.
     id: u64,
 }
@@ -36,8 +35,8 @@ impl Toast {
         &self.message
     }
 
-    pub fn action_label(&self) -> &str {
-        &self.action_label
+    pub fn action_label(&self) -> Option<&str> {
+        self.action.as_ref().map(|(label, _)| label.as_ref())
     }
 }
 
@@ -47,8 +46,8 @@ impl Workbench {
         self.toast.as_ref()
     }
 
-    /// Shows a toast, replacing any shown one; it closes after
-    /// [`TOAST_DURATION`].
+    /// Shows a toast with an action button labelled `action_label`,
+    /// replacing any shown one; it closes after [`TOAST_DURATION`].
     pub(crate) fn show_toast(
         &mut self,
         message: impl Into<SharedString>,
@@ -56,11 +55,28 @@ impl Workbench {
         action: ToastAction,
         cx: &mut Context<Self>,
     ) {
+        self.set_toast(message.into(), Some((action_label.into(), action)), cx);
+    }
+
+    /// Shows a toast with only a message (see [`Workbench::show_toast`]).
+    pub(crate) fn show_message_toast(
+        &mut self,
+        message: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_toast(message.into(), None, cx);
+    }
+
+    fn set_toast(
+        &mut self,
+        message: SharedString,
+        action: Option<(SharedString, ToastAction)>,
+        cx: &mut Context<Self>,
+    ) {
         self.toast_count += 1;
         let id = self.toast_count;
         self.toast = Some(Toast {
-            message: message.into(),
-            action_label: action_label.into(),
+            message,
             action,
             id,
         });
@@ -84,32 +100,36 @@ impl Workbench {
     }
 
     fn run_toast_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(toast) = self.toast.take() {
-            (toast.action)(self, window, cx);
-            cx.notify();
+        if let Some((_, action)) = self.toast.take().and_then(|t| t.action) {
+            action(self, window, cx);
         }
+        cx.notify();
     }
 
     /// After the extension service changed: offers the theme of each
-    /// extension installed since last time, once the index lists it.
+    /// extension installed since last time, once the index lists it. One
+    /// whose index entry has not arrived yet waits without holding back
+    /// the others.
     pub(crate) fn offer_installed_themes(&mut self, cx: &mut Context<Self>) {
         let Some(service) = cx.try_global::<ExtensionService>() else {
             return;
         };
         let installs = service.fresh_installs();
+        let new = installs.get(self.fresh_installs_seen..).unwrap_or_default();
+        self.fresh_installs_seen = installs.len();
+        self.fresh_installs_waiting.extend(new.iter().cloned());
         let mut offer = None;
-        while let Some(id) = installs.get(self.fresh_installs_seen) {
+        self.fresh_installs_waiting.retain(|id| {
             let Some(ext) = service.index().extensions.get(id) else {
-                // Its index has not arrived yet.
-                break;
+                return true;
             };
-            self.fresh_installs_seen += 1;
             if let Some(theme) = ext.themes.first() {
                 offer = Some((theme.name.clone(), false));
             } else if let Some(theme) = ext.icon_themes.first() {
                 offer = Some((theme.name.clone(), true));
             }
-        }
+            false
+        });
         if let Some((name, icons)) = offer {
             let action_name = name.clone();
             self.show_toast(
@@ -130,19 +150,21 @@ impl Workbench {
 pub(crate) fn render(toast: &Toast, cx: &mut Context<Workbench>) -> impl IntoElement + use<> {
     let ui = &cx.global::<AppState>().theme.ui;
     let hover = color(ui.ghost_element_hover);
-    let button = div()
-        .id("toast-action")
-        .debug_selector(|| "toast-action".into())
-        .flex_none()
-        .px(px(2. * GRID))
-        .py(px(GRID / 2.))
-        .rounded(px(GRID))
-        .border_1()
-        .border_color(color(ui.border_variant))
-        .cursor_pointer()
-        .hover(move |s| s.bg(hover))
-        .on_click(cx.listener(|wb, _, window, cx| wb.run_toast_action(window, cx)))
-        .child(toast.action_label.clone());
+    let button = toast.action.as_ref().map(|(label, _)| {
+        div()
+            .id("toast-action")
+            .debug_selector(|| "toast-action".into())
+            .flex_none()
+            .px(px(2. * GRID))
+            .py(px(GRID / 2.))
+            .rounded(px(GRID))
+            .border_1()
+            .border_color(color(ui.border_variant))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .on_click(cx.listener(|wb, _, window, cx| wb.run_toast_action(window, cx)))
+            .child(label.clone())
+    });
     let close = div()
         .id("toast-close")
         .debug_selector(|| "toast-close".into())
@@ -183,7 +205,7 @@ pub(crate) fn render(toast: &Toast, cx: &mut Context<Workbench>) -> impl IntoEle
                 .text_size(px(UI_FONT_SIZE_SMALL))
                 .shadow_lg()
                 .child(div().flex_1().min_w_0().child(toast.message.clone()))
-                .child(button)
+                .children(button)
                 .child(close),
         )
 }

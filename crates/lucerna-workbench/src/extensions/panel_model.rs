@@ -1,6 +1,6 @@
-//! What the Extensions panel lists (spec §5.2), without a window: the
+//! What the Extensions page lists (spec §5.2), without a window: the
 //! query's filters and fuzzy text, the Installed and Available rows, and
-//! the text each row shows.
+//! the text each card shows.
 
 use lucerna_extension::builder::Stage;
 use lucerna_extension::index::{ExtensionIndex, IndexedExtension};
@@ -19,6 +19,17 @@ pub enum Filter {
 }
 
 impl Filter {
+    /// The `@` token typed for this filter.
+    pub fn token(self) -> &'static str {
+        match self {
+            Filter::Installed => "@installed",
+            Filter::Updates => "@updates",
+            Filter::Themes => "@themes",
+            Filter::Icons => "@icons",
+            Filter::Languages => "@languages",
+        }
+    }
+
     fn parse(token: &str) -> Option<Filter> {
         Some(match token {
             "@installed" => Filter::Installed,
@@ -63,6 +74,28 @@ pub fn parse_query(query: &str) -> Query {
     }
     parsed.text = text.join(" ");
     parsed
+}
+
+/// `query` with its filter tokens replaced by `filter`'s (none for
+/// `None`, "All"), placed before the free text, which is kept.
+pub fn with_filter(query: &str, filter: Option<Filter>) -> String {
+    let text = parse_query(query).text;
+    match filter {
+        Some(filter) if text.is_empty() => filter.token().to_string(),
+        Some(filter) => format!("{} {text}", filter.token()),
+        None => text,
+    }
+}
+
+/// The filter button `query` selects: `Some(None)` ("All") without
+/// filters, `Some(Some(f))` with exactly `f`, `None` when it combines
+/// several.
+pub fn selected_filter(query: &str) -> Option<Option<Filter>> {
+    match parse_query(query).filters.as_slice() {
+        [] => Some(None),
+        [filter] => Some(Some(*filter)),
+        _ => None,
+    }
 }
 
 /// What a row's extension is doing, or why it cannot be used.
@@ -479,6 +512,32 @@ mod tests {
             rows(None, &idx, &["a".into()], "").installed[0].state,
             RowState::Broken("extension.toml is missing".into())
         );
+    }
+
+    #[test]
+    fn filter_buttons_replace_tokens_and_keep_text() {
+        assert_eq!(with_filter("", Some(Filter::Installed)), "@installed");
+        assert_eq!(
+            with_filter("@themes foo  bar", Some(Filter::Icons)),
+            "@icons foo bar"
+        );
+        assert_eq!(with_filter("foo @updates", None), "foo");
+        assert_eq!(with_filter("@installed @themes", None), "");
+        assert_eq!(selected_filter("foo"), Some(None));
+        assert_eq!(
+            selected_filter("@languages foo"),
+            Some(Some(Filter::Languages))
+        );
+        assert_eq!(selected_filter("@installed @themes"), None);
+        for filter in [
+            Filter::Installed,
+            Filter::Updates,
+            Filter::Themes,
+            Filter::Icons,
+            Filter::Languages,
+        ] {
+            assert_eq!(Filter::parse(filter.token()), Some(filter));
+        }
     }
 
     #[test]

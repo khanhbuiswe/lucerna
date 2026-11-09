@@ -1,7 +1,8 @@
 //! The Explorer, Search and Extensions buttons at the status bar's left
 //! end. They replace the activity bar: the active panel's button hides the
-//! sidebar, another one switches to its panel. The Extensions button shows
-//! the number of available updates and spins while an install runs.
+//! sidebar, another one switches to its panel. The Extensions button opens
+//! (or focuses) the Extensions tab instead, shows the number of available
+//! updates and spins while an install runs.
 
 use std::time::Duration;
 
@@ -16,9 +17,12 @@ use crate::layout::color;
 use crate::ui::{BLOCKS_ICON, FILES_ICON, GRID, SEARCH_ICON, icon_button};
 use crate::{AppState, SidebarView, Workbench};
 
+/// `extensions_open`: the Extensions tab is open (its button shows
+/// active).
 pub(crate) fn render(
     active: SidebarView,
     sidebar_visible: bool,
+    extensions_open: bool,
     badge: Option<String>,
     cx: &mut Context<Workbench>,
 ) -> impl IntoElement {
@@ -26,7 +30,6 @@ pub(crate) fn render(
         let (id, icon) = match view {
             SidebarView::Explorer => ("panel-toggle-explorer", FILES_ICON),
             SidebarView::Search => ("panel-toggle-search", SEARCH_ICON),
-            SidebarView::Extensions => ("panel-toggle-extensions", BLOCKS_ICON),
         };
         icon_button(id, icon, sidebar_visible && view == active, cx)
             .debug_selector(move || id.into())
@@ -34,6 +37,11 @@ pub(crate) fn render(
                 cx.listener(move |wb, _, window, cx| wb.panel_toggle_clicked(view, window, cx)),
             )
     };
+    let extensions = icon_button("panel-toggle-extensions", BLOCKS_ICON, extensions_open, cx)
+        .debug_selector(|| "panel-toggle-extensions".into())
+        .on_click(cx.listener(|wb, _, window, cx| {
+            wb.run_command("workbench.view.extensions", None, window, cx);
+        }));
     let ui = &cx.global::<AppState>().theme.ui;
     let (badge_bg, badge_fg, icon_muted) = (
         color(ui.element_selected),
@@ -92,7 +100,7 @@ pub(crate) fn render(
         .child(
             div()
                 .relative()
-                .child(toggle(SidebarView::Extensions, cx))
+                .child(extensions)
                 .children(badge)
                 .children(spinner),
         )

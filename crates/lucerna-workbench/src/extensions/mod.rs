@@ -1,6 +1,7 @@
 //! Extension support shared by the app and the `luc ext` CLI.
 
-mod panel;
+mod commands;
+mod page;
 pub mod panel_model;
 pub(crate) mod service;
 mod toast;
@@ -8,8 +9,8 @@ mod validator;
 
 use std::path::PathBuf;
 
-pub use panel::ExtensionsPanel;
-pub(crate) use panel::register_commands;
+pub(crate) use commands::{installable_ids, register_commands};
+pub use page::{ExtensionsPage, FILTER_LABELS};
 pub use service::{
     ExtensionService, Registries, STARTUP_REFRESH_DELAY, extension_languages, rebuild_registries,
 };

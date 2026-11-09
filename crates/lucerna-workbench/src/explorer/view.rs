@@ -129,7 +129,8 @@ impl ExplorerView {
             .read(cx)
             .model()
             .active_tab()
-            .map(|tab| self.relative(&tab.path));
+            .and_then(|tab| tab.path())
+            .map(|path| self.relative(path));
         if active == self.active {
             return;
         }

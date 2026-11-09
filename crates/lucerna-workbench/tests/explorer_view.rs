@@ -121,7 +121,12 @@ fn tabs(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<(PathBuf, boo
         model.groups()[model.active_group()]
             .tabs
             .iter()
-            .map(|t| (t.path.strip_prefix(&root).unwrap().to_path_buf(), t.pinned))
+            .map(|t| {
+                (
+                    t.path().unwrap().strip_prefix(&root).unwrap().to_path_buf(),
+                    t.pinned,
+                )
+            })
             .collect()
     })
 }

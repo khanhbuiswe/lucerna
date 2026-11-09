@@ -44,9 +44,13 @@ pub(crate) struct Sources {
     /// Whether a code view is active, so go-to-line has a target.
     pub has_editor: bool,
     /// Lists these extension ids instead (the install command): Enter
-    /// installs the selected one.
-    pub extension_ids: Option<Vec<String>>,
+    /// installs the selected one. `Err` holds the message shown while
+    /// there are none yet, such as "Loading extension list…".
+    pub extension_ids: Option<ExtensionIds>,
 }
+
+/// The ids the install command lists, or the message shown instead.
+pub(crate) type ExtensionIds = Result<Vec<String>, &'static str>;
 
 /// What the workbench does when a row is activated.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +96,7 @@ pub struct QuickOpen {
     recent: Arc<[Arc<Path>]>,
     commands: Rc<[CommandItem]>,
     has_editor: bool,
-    extension_ids: Option<Rc<[String]>>,
+    extension_ids: Option<Result<Rc<[String]>, &'static str>>,
     rows: Vec<Row>,
     selected: usize,
     scroll: ScrollHandle,
@@ -136,7 +140,7 @@ impl QuickOpen {
             recent: sources.recent,
             commands: sources.commands.into(),
             has_editor: sources.has_editor,
-            extension_ids: sources.extension_ids.map(Into::into),
+            extension_ids: sources.extension_ids.map(|ids| ids.map(Into::into)),
             rows: Vec::new(),
             selected: 0,
             scroll: ScrollHandle::new(),
@@ -149,6 +153,26 @@ impl QuickOpen {
     /// Whether it lists extension ids (the install command).
     pub(crate) fn lists_extensions(&self) -> bool {
         self.extension_ids.is_some()
+    }
+
+    /// Whether it lists extension ids that have not arrived yet.
+    pub(crate) fn awaits_extension_ids(&self) -> bool {
+        matches!(self.extension_ids, Some(Err(_)))
+    }
+
+    /// Lists `ids` (or shows the message) in place of what it showed,
+    /// keeping the typed text.
+    pub(crate) fn set_extension_ids(&mut self, ids: ExtensionIds, cx: &mut Context<Self>) {
+        self.extension_ids = Some(ids.map(Into::into));
+        let text = self.input.read(cx).text().to_string();
+        self.query_changed(&text, cx);
+    }
+
+    fn extension_id(&self, index: usize) -> &str {
+        match &self.extension_ids {
+            Some(Ok(ids)) => &ids[index],
+            _ => "",
+        }
     }
 
     pub fn input(&self) -> &Entity<TextInput> {
@@ -191,10 +215,7 @@ impl QuickOpen {
                 (c.title.clone().into(), c.keybinding.clone().map(Into::into))
             }
             Row::GoToLine { line, column } => (go_to_line_label(*line, *column).into(), None),
-            Row::Extension { index, .. } => {
-                let ids = self.extension_ids.as_deref().unwrap_or_default();
-                (ids[*index].clone().into(), None)
-            }
+            Row::Extension { index, .. } => (self.extension_id(*index).to_string().into(), None),
             Row::Message(text) => ((*text).into(), None),
         }
     }
@@ -202,13 +223,22 @@ impl QuickOpen {
     fn query_changed(&mut self, text: &str, cx: &mut Context<Self>) {
         self.generation += 1;
         self.cancel.store(true, Ordering::Relaxed);
-        if let Some(ids) = &self.extension_ids {
-            let rows = fuzzy_filter(ids.iter().map(String::as_str), text.trim())
-                .into_iter()
-                .map(|(index, positions)| Row::Extension { index, positions })
-                .collect();
-            self.set_rows(rows, cx);
-            return;
+        match &self.extension_ids {
+            Some(Ok(ids)) => {
+                // Hundreds of ids: only the best ones are drawn.
+                let rows = fuzzy_filter(ids.iter().map(String::as_str), text.trim())
+                    .into_iter()
+                    .take(QUICK_OPEN_LIMIT)
+                    .map(|(index, positions)| Row::Extension { index, positions })
+                    .collect();
+                self.set_rows(rows, cx);
+                return;
+            }
+            Some(Err(message)) => {
+                self.set_rows(vec![Row::Message(message)], cx);
+                return;
+            }
+            None => {}
         }
         match parse_query(text) {
             QuickOpenQuery::Files(query) => self.match_files(query, cx),
@@ -283,8 +313,7 @@ impl QuickOpen {
             }
             Some(&Row::GoToLine { line, column }) => QuickOpenEvent::GoToLine { line, column },
             Some(Row::Extension { index, .. }) => {
-                let ids = self.extension_ids.as_deref().unwrap_or_default();
-                QuickOpenEvent::InstallExtension(ids[*index].clone())
+                QuickOpenEvent::InstallExtension(self.extension_id(*index).to_string())
             }
             Some(Row::Message(_)) | None => return,
         };

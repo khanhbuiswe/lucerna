@@ -387,6 +387,9 @@ pub struct ExtensionService {
     queue: VecDeque<String>,
     /// The queued install that runs.
     updating: Option<String>,
+    /// Installs asked for while a describe of the same id ran; each starts
+    /// when that describe ends.
+    after_describe: Vec<String>,
     updates: Vec<String>,
     refreshing: Option<CancelToken>,
     registry_error: Option<String>,
@@ -444,6 +447,7 @@ impl ExtensionService {
             warnings: HashMap::new(),
             queue: VecDeque::new(),
             updating: None,
+            after_describe: Vec::new(),
             updates: Vec::new(),
             refreshing: None,
             registry_error: None,
@@ -488,16 +492,25 @@ impl ExtensionService {
         self.git_missing
     }
 
-    /// Whether an install of `id` runs.
+    /// Whether an install of `id` runs, or waits for a describe of `id`
+    /// to end.
     pub fn is_installing(&self, id: &str) -> bool {
         matches!(self.running.get(id), Some((_, OpKind::Install { .. })))
+            || self.after_describe.iter().any(|a| a == id)
     }
 
-    /// Whether any install runs.
+    /// Whether any install runs or waits for a describe.
     pub fn any_installing(&self) -> bool {
-        self.running
-            .values()
-            .any(|(_, kind)| matches!(kind, OpKind::Install { .. }))
+        !self.after_describe.is_empty()
+            || self
+                .running
+                .values()
+                .any(|(_, kind)| matches!(kind, OpKind::Install { .. }))
+    }
+
+    /// Whether a describe of `id` runs.
+    pub fn is_describing(&self, id: &str) -> bool {
+        matches!(self.running.get(id), Some((_, OpKind::Describe)))
     }
 
     /// Extensions installed (not updated) successfully since the service
@@ -513,7 +526,9 @@ impl ExtensionService {
 
     /// Whether an operation on `id` runs or waits.
     pub fn is_busy(&self, id: &str) -> bool {
-        self.running.contains_key(id) || self.queue.iter().any(|q| q == id)
+        self.running.contains_key(id)
+            || self.queue.iter().any(|q| q == id)
+            || self.after_describe.iter().any(|a| a == id)
     }
 
     /// Why the last operation on `id` failed.
@@ -554,8 +569,19 @@ impl ExtensionService {
         refresh_updates(cx);
     }
 
-    /// Installs or updates `id` from the registry.
+    /// Installs or updates `id` from the registry. While a describe of `id`
+    /// runs (it holds the id's lock), the install waits for it to end and
+    /// shows as installing meanwhile.
     pub fn install(id: String, cx: &mut App) {
+        let service = cx.global_mut::<ExtensionService>();
+        if service.is_describing(&id) {
+            if !service.after_describe.contains(&id) {
+                service.errors.remove(&id);
+                service.after_describe.push(id);
+            }
+            cx.refresh_windows();
+            return;
+        }
         let op_id = id.clone();
         let fresh = !cx
             .global::<ExtensionService>()
@@ -600,6 +626,7 @@ impl ExtensionService {
     pub fn cancel(id: String, cx: &mut App) {
         let service = cx.global_mut::<ExtensionService>();
         service.queue.retain(|q| *q != id);
+        service.after_describe.retain(|a| *a != id);
         if let Some((token, _)) = service.running.get(&id) {
             token.cancel();
         }
@@ -644,9 +671,17 @@ impl ExtensionService {
     }
 
     /// Deletes the fetched sources and cached grammar builds, in the
-    /// background.
-    pub fn clear_build_cache(cx: &mut App) {
-        let store = cx.global::<ExtensionService>().store.clone();
+    /// background. Refuses (returns `false`) while any operation runs or
+    /// waits, since it would pull the sources from under it.
+    pub fn clear_build_cache(cx: &mut App) -> bool {
+        let service = cx.global::<ExtensionService>();
+        let busy = !service.running.is_empty()
+            || !service.queue.is_empty()
+            || !service.after_describe.is_empty();
+        if busy {
+            return false;
+        }
+        let store = service.store.clone();
         cx.background_executor()
             .spawn(async move {
                 // A panic is logged by `catch_panic`.
@@ -656,6 +691,7 @@ impl ExtensionService {
                 }
             })
             .detach();
+        true
     }
 
     /// Refreshes the registry [`STARTUP_REFRESH_DELAY`] from now when it is
@@ -747,9 +783,15 @@ impl ExtensionService {
         let service = cx.global_mut::<ExtensionService>();
         let kind = service.running.remove(&id).map(|(_, kind)| kind);
         service.progress.remove(&id);
-        if service.updating.as_ref() == Some(&id) {
+        let installed = matches!(kind, Some(OpKind::Install { .. }));
+        if installed && service.updating.as_ref() == Some(&id) {
             service.updating = None;
         }
+        // An install asked for while this describe ran starts now.
+        let install_next = match service.after_describe.iter().position(|a| *a == id) {
+            Some(i) if kind == Some(OpKind::Describe) => Some(service.after_describe.remove(i)),
+            _ => None,
+        };
         match result {
             Ok(Ok(warnings)) => {
                 if kind == Some(OpKind::Install { fresh: true }) {
@@ -775,6 +817,9 @@ impl ExtensionService {
         if kind == Some(OpKind::Describe) {
             // It wrote the name and description into `registry.json`.
             reload_registry(cx);
+        }
+        if let Some(id) = install_next {
+            Self::install(id, cx);
         }
         Self::start_queued(cx);
         cx.refresh_windows();

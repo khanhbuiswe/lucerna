@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lucerna_workbench::{EditorGroups, GroupState, GroupsState, OpenMode};
+use lucerna_workbench::{
+    EXTENSIONS_TAB_STATE, EditorGroups, GroupState, GroupsState, OpenMode, TabItem,
+};
 
 fn p(name: &str) -> Arc<Path> {
     Arc::from(Path::new(name))
@@ -14,12 +16,14 @@ fn tabs(groups: &EditorGroups, g: usize) -> Vec<(String, bool)> {
     groups.groups()[g]
         .tabs
         .iter()
-        .map(|t| (t.path.display().to_string(), t.pinned))
+        .map(|t| (t.path().unwrap().display().to_string(), t.pinned))
         .collect()
 }
 
 fn active_path(groups: &EditorGroups) -> Option<String> {
-    groups.active_tab().map(|t| t.path.display().to_string())
+    groups
+        .active_tab()
+        .map(|t| t.path().unwrap().display().to_string())
 }
 
 fn owned(v: &[(&str, bool)]) -> Vec<(String, bool)> {
@@ -350,4 +354,72 @@ fn to_side_pins_already_open_tab() {
     assert_eq!(tabs(&g, 1), owned(&[("b.rs", true), ("c.rs", true)]));
     assert_eq!(g.groups()[1].mru, vec![c, b]);
     assert_eq!(tabs(&g, 0), owned(&[("a.rs", true)]));
+}
+
+#[test]
+fn extensions_tab_is_single_pinned_and_not_split() {
+    let mut g = EditorGroups::default();
+    g.open(p("a.rs"), OpenMode::Preview, true);
+    let ext = g.open_extensions();
+    assert_eq!(g.extensions_tab(), Some(ext));
+    let tab = g.active_tab().unwrap();
+    assert_eq!(tab.item, TabItem::Extensions);
+    assert!(tab.pinned);
+    assert_eq!(tab.path(), None);
+    assert_eq!(tab.title(), "Extensions");
+    // A preview open replaces the preview a.rs, not the page.
+    g.open(p("b.rs"), OpenMode::Preview, true);
+    let items: Vec<&TabItem> = g.groups()[0].tabs.iter().map(|t| &t.item).collect();
+    assert_eq!(items, [&TabItem::File(p("b.rs")), &TabItem::Extensions]);
+
+    // From another group, the existing tab is focused, not copied.
+    g.open(p("c.rs"), OpenMode::ToSide, true);
+    assert_eq!(g.active_group(), 1);
+    assert_eq!(g.open_extensions(), ext);
+    assert_eq!(g.active_group(), 0);
+    assert_eq!(g.active_tab().map(|t| t.id), Some(ext));
+    assert_eq!(g.split_active(), 0, "the page is never split");
+    assert_eq!(g.groups().len(), 2);
+    g.close(ext);
+    assert_eq!(g.extensions_tab(), None);
+}
+
+#[test]
+fn extensions_tab_saved_and_restored_once() {
+    let mut g = EditorGroups::default();
+    g.open(p("/w/a.rs"), OpenMode::Pinned, true);
+    g.open_extensions();
+    let state = g.state();
+    assert_eq!(
+        state.groups[0].tabs,
+        [
+            (PathBuf::from("/w/a.rs"), true),
+            (PathBuf::from(EXTENSIONS_TAB_STATE), true)
+        ]
+    );
+    let restored = EditorGroups::restore(&state);
+    assert_eq!(restored.state(), state);
+
+    // A hand-edited file with two (one unpinned) keeps the first, pinned.
+    let state = GroupsState {
+        groups: vec![
+            saved(&[(EXTENSIONS_TAB_STATE, false)], Some(0)),
+            saved(&[("b.rs", true), (EXTENSIONS_TAB_STATE, true)], Some(1)),
+        ],
+        active_group: 1,
+    };
+    let restored = EditorGroups::restore(&state);
+    let ext: Vec<(usize, bool)> = restored
+        .groups()
+        .iter()
+        .enumerate()
+        .flat_map(|(i, g)| {
+            g.tabs
+                .iter()
+                .filter(|t| t.item == TabItem::Extensions)
+                .map(move |t| (i, t.pinned))
+        })
+        .collect();
+    assert_eq!(ext, [(0, true)]);
+    assert_eq!(active_path(&restored).as_deref(), Some("b.rs"));
 }

@@ -275,7 +275,7 @@ fn click_result_opens_and_positions(cx: &mut TestAppContext) {
         model.groups()[0]
             .tabs
             .iter()
-            .map(|t| (t.path.to_path_buf(), t.pinned))
+            .map(|t| (t.path().unwrap().to_path_buf(), t.pinned))
             .collect()
     });
     assert_eq!(

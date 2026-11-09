@@ -3,7 +3,10 @@
 mod model;
 mod view;
 
-pub use model::{EditorGroups, Group, GroupState, GroupsState, OpenMode, Tab, TabId};
+pub use model::{
+    EXTENSIONS_TAB_STATE, EditorGroups, Group, GroupState, GroupsState, OpenMode, Tab, TabId,
+    TabItem,
+};
 pub use view::{EditorGroupsView, TabBodyFactory, placeholder_body};
 
 use crate::{CommandHandler, CommandRegistry, Workbench};

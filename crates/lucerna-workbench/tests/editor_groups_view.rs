@@ -69,7 +69,7 @@ fn layout(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> (usize, Vec<Vec
         let paths = groups
             .groups()
             .iter()
-            .map(|g| g.tabs.iter().map(|t| rel(&t.path)).collect())
+            .map(|g| g.tabs.iter().map(|t| rel(t.path().unwrap())).collect())
             .collect();
         (groups.active_group(), paths)
     })
@@ -111,7 +111,7 @@ fn ctrl_tab_cycles_mru(cx: &mut TestAppContext) {
     let active = |cx: &mut VisualTestContext| {
         cx.update(|_, cx| {
             let view = wb.read(cx).editor_groups().read(cx);
-            view.model().active_tab().map(|t| rel(&t.path))
+            view.model().active_tab().map(|t| rel(t.path().unwrap()))
         })
     };
     cx.simulate_keystrokes("ctrl-tab");
@@ -200,7 +200,7 @@ fn tab_bar_mouse_activates_and_closes(cx: &mut TestAppContext) {
     let active = |cx: &mut VisualTestContext| {
         cx.update(|_, cx| {
             let view = wb.read(cx).editor_groups().read(cx);
-            view.model().active_tab().map(|t| rel(&t.path))
+            view.model().active_tab().map(|t| rel(t.path().unwrap()))
         })
     };
     assert_eq!(active(cx).as_deref(), Some("a.rs"));

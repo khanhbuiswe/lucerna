@@ -153,7 +153,7 @@ fn active_view(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<Cod
 fn active_tab_path(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<PathBuf> {
     cx.update(|_, cx| {
         let model = wb.read(cx).editor_groups().read(cx).model();
-        model.active_tab().map(|t| t.path.to_path_buf())
+        model.active_tab().map(|t| t.path().unwrap().to_path_buf())
     })
 }
 
