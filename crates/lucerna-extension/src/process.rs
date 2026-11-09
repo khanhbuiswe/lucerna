@@ -4,8 +4,8 @@ use std::fmt;
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Output, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 /// Shared cancellation flag.
@@ -61,12 +61,23 @@ fn describe(cmd: &Command) -> String {
     s
 }
 
-fn drain<R: Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<Vec<u8>> {
+/// Grace period for collecting output once the child (group) is gone.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+fn drain<R: Read + Send + 'static>(mut r: R) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = r.read_to_end(&mut buf);
-        buf
-    })
+        let _ = tx.send(buf);
+    });
+    rx
+}
+
+/// Bounded wait: a stray grandchild holding the pipe open cannot hang us.
+fn collect(rx: Option<mpsc::Receiver<Vec<u8>>>) -> Vec<u8> {
+    rx.and_then(|r| r.recv_timeout(DRAIN_GRACE).ok())
+        .unwrap_or_default()
 }
 
 /// Runs `cmd` to completion. Polls every 50 ms; on timeout or cancellation the
@@ -95,7 +106,15 @@ pub fn run(
 
     let outcome = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
+            Ok(Some(status)) => {
+                // Reap stragglers (daemons, background jobs) in the group so
+                // they cannot hold our pipes open.
+                // SAFETY: signalling the group we created for this child.
+                unsafe {
+                    libc::killpg(pid, libc::SIGKILL);
+                }
+                break Ok(status);
+            }
             Ok(None) => {}
             Err(_) => break Err(ProcessError::NotFound(line.clone())),
         }
@@ -118,8 +137,8 @@ pub fn run(
         std::thread::sleep(Duration::from_millis(50));
     };
 
-    let stdout = out_t.and_then(|t| t.join().ok()).unwrap_or_default();
-    let stderr = err_t.and_then(|t| t.join().ok()).unwrap_or_default();
+    let stdout = collect(out_t);
+    let stderr = collect(err_t);
     let _ = log.write_all(&stdout);
     let _ = log.write_all(&stderr);
     match outcome {

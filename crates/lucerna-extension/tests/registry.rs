@@ -49,8 +49,8 @@ fn parse_parts_skips_entry_without_commit_with_warning() {
     assert_eq!(entries[0].id, "a");
     assert_eq!(entries[0].url, "https://github.com/o/a");
     assert_eq!(warnings.len(), 2, "{warnings:?}");
-    assert!(warnings.iter().any(|w| w.contains('b')));
-    assert!(warnings.iter().any(|w| w.contains('c')));
+    assert!(warnings.contains(&"b: no commit in tree, skipped".to_string()));
+    assert!(warnings.contains(&"c: no url in .gitmodules, skipped".to_string()));
 }
 
 fn two_extensions() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
@@ -151,4 +151,16 @@ fn free_bytes_reports_something() {
     let d = tempfile::tempdir().unwrap();
     assert!(free_bytes(d.path()).unwrap() > 0);
     assert_eq!(MIN_FREE_BYTES, 1_288_490_189);
+}
+
+#[test]
+fn refresh_heals_corrupt_registry_clone() {
+    let (reg, _r1, _r2) = two_extensions();
+    let root = tempfile::tempdir().unwrap();
+    let remote = format!("file://{}", reg.display());
+    let cancel = CancelToken::default();
+    refresh(root.path(), &remote, &cancel, &mut Vec::new()).unwrap();
+    std::fs::write(root.path().join("registry/.git/HEAD"), "").unwrap();
+    let (r, _) = refresh(root.path(), &remote, &cancel, &mut Vec::new()).unwrap();
+    assert_eq!(r.entries.len(), 2);
 }

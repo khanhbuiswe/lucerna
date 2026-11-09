@@ -13,8 +13,12 @@ fn run_times_out_and_kills() {
     let dir = tempfile::tempdir().unwrap();
     let pidfile = dir.path().join("pid");
     let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(format!("echo $$ > {}; sleep 5", pidfile.display()));
+    let sleeppid = dir.path().join("sleeppid");
+    cmd.arg("-c").arg(format!(
+        "echo $$ > {}; sleep 5 & echo $! > {}; wait",
+        pidfile.display(),
+        sleeppid.display()
+    ));
     let started = Instant::now();
     let mut log = Vec::new();
     let err = run(
@@ -32,6 +36,57 @@ fn run_times_out_and_kills() {
         .parse()
         .unwrap();
     assert!(!pid_alive(pid));
+    let sp: i32 = std::fs::read_to_string(&sleeppid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!pid_alive(sp), "grandchild survived");
+}
+
+#[test]
+fn run_returns_promptly_despite_background_grandchild() {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg("sleep 30 & echo hi");
+    let started = Instant::now();
+    let out = run(
+        cmd,
+        Duration::from_secs(60),
+        &CancelToken::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+}
+
+#[test]
+fn fetch_commit_wipes_stale_files_on_version_change() {
+    let (repo, a) = fake_repo(&[("x.txt", "x"), ("keep.txt", "k")]);
+    let url = format!("file://{}", repo.display());
+    let dest = tempfile::tempdir().unwrap().keep().join("src");
+    let cancel = CancelToken::default();
+    fetch_commit(&url, &a, &dest, &cancel, &mut Vec::new()).unwrap();
+    std::fs::write(dest.join("untracked.bin"), "u").unwrap();
+    std::fs::remove_file(repo.join("x.txt")).unwrap();
+    let b = lucerna_extension::test_support::add_commit(&repo, &[("new.txt", "n")]);
+    // add_commit uses `add -A`, so x.txt is removed in commit b.
+    fetch_commit(&url, &b, &dest, &cancel, &mut Vec::new()).unwrap();
+    assert!(!dest.join("x.txt").exists());
+    assert!(!dest.join("untracked.bin").exists());
+    assert!(dest.join("new.txt").exists());
+}
+
+#[test]
+fn fetch_commit_heals_broken_git_dir() {
+    let (repo, c) = fake_repo(&[("f.txt", "f")]);
+    let url = format!("file://{}", repo.display());
+    let dest = tempfile::tempdir().unwrap().keep().join("src");
+    std::fs::create_dir_all(dest.join(".git")).unwrap();
+    std::fs::write(dest.join(".git/HEAD"), "").unwrap();
+    fetch_commit(&url, &c, &dest, &CancelToken::default(), &mut Vec::new()).unwrap();
+    assert!(dest.join("f.txt").exists());
 }
 
 #[test]

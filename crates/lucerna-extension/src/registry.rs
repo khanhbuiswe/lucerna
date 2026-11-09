@@ -198,6 +198,72 @@ fn git_show(
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
+type Sources = (String, String, String);
+
+fn read_sources(
+    repo: &Path,
+    cancel: &CancelToken,
+    log: &mut dyn Write,
+) -> Result<Sources, ProcessError> {
+    let toml = git_show(repo, "HEAD:extensions.toml", cancel, log)?;
+    let gitmodules = git_show(repo, "HEAD:.gitmodules", cancel, log)?;
+    let ls = run_git(Some(repo), &["ls-tree", "HEAD", "extensions/"], cancel, log)?;
+    Ok((
+        toml,
+        gitmodules,
+        String::from_utf8_lossy(&ls.stdout).into_owned(),
+    ))
+}
+
+fn update_clone(
+    repo: &Path,
+    cancel: &CancelToken,
+    log: &mut dyn Write,
+) -> Result<Sources, ProcessError> {
+    run_git(
+        Some(repo),
+        &["fetch", "--depth", "1", "origin", REGISTRY_BRANCH],
+        cancel,
+        log,
+    )?;
+    run_git(
+        Some(repo),
+        &["update-ref", "HEAD", "FETCH_HEAD"],
+        cancel,
+        log,
+    )?;
+    read_sources(repo, cancel, log)
+}
+
+fn fresh_clone(
+    repo: &Path,
+    remote: &str,
+    cancel: &CancelToken,
+    log: &mut dyn Write,
+) -> Result<Sources, ProcessError> {
+    if repo.exists() {
+        let _ = std::fs::remove_dir_all(repo);
+    }
+    let repo_s = repo.to_string_lossy();
+    run_git(
+        None,
+        &[
+            "clone",
+            "--depth",
+            "1",
+            "--filter=blob:none",
+            "--no-checkout",
+            "--branch",
+            REGISTRY_BRANCH,
+            remote,
+            &repo_s,
+        ],
+        cancel,
+        log,
+    )?;
+    read_sources(repo, cancel, log)
+}
+
 /// Clones or updates `root/registry` from `remote`, joins its three sources
 /// and atomically writes `root/registry.json`.
 pub fn refresh(
@@ -208,51 +274,24 @@ pub fn refresh(
 ) -> Result<(Registry, Vec<String>), RegistryError> {
     std::fs::create_dir_all(root)?;
     let repo = root.join("registry");
-    if repo.join(".git").exists() {
-        run_git(
-            Some(&repo),
-            &["fetch", "--depth", "1", "origin", REGISTRY_BRANCH],
-            cancel,
-            log,
-        )?;
-        run_git(
-            Some(&repo),
-            &["update-ref", "HEAD", "FETCH_HEAD"],
-            cancel,
-            log,
-        )?;
-    } else {
-        if repo.exists() {
-            std::fs::remove_dir_all(&repo)?;
+    let mut incremental = repo.join(".git").exists();
+    let (toml, gitmodules, ls) = loop {
+        let attempt = if incremental {
+            update_clone(&repo, cancel, log)
+        } else {
+            fresh_clone(&repo, remote, cancel, log)
+        };
+        match attempt {
+            Ok(v) => break v,
+            // A broken clone (e.g. a half-killed one) heals by re-cloning once.
+            Err(ProcessError::Failed { .. }) if incremental => {
+                let _ = writeln!(log, "registry clone looks broken; re-cloning");
+                incremental = false;
+            }
+            Err(e) => return Err(e.into()),
         }
-        let repo_s = repo.to_string_lossy();
-        run_git(
-            None,
-            &[
-                "clone",
-                "--depth",
-                "1",
-                "--filter=blob:none",
-                "--no-checkout",
-                "--branch",
-                REGISTRY_BRANCH,
-                remote,
-                &repo_s,
-            ],
-            cancel,
-            log,
-        )?;
-    }
-    let toml = git_show(&repo, "HEAD:extensions.toml", cancel, log)?;
-    let gitmodules = git_show(&repo, "HEAD:.gitmodules", cancel, log)?;
-    let ls = run_git(
-        Some(&repo),
-        &["ls-tree", "HEAD", "extensions/"],
-        cancel,
-        log,
-    )?;
-    let (mut entries, warnings) =
-        parse_parts(&toml, &gitmodules, &String::from_utf8_lossy(&ls.stdout));
+    };
+    let (mut entries, warnings) = parse_parts(&toml, &gitmodules, &ls);
 
     if let Some(prev) = load_cached(root) {
         let known: HashMap<_, _> = prev
