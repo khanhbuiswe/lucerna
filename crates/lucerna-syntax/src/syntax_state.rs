@@ -121,7 +121,9 @@ impl SyntaxState {
     ) -> SyntaxState {
         let mut edited = SyntaxState::new(self.language.clone());
         edited.tree = self.tree.clone().map(|mut tree| {
-            tree.edit(&input_edit(old, new, reload));
+            for edit in input_edits(old, new, reload) {
+                tree.edit(&edit);
+            }
             tree
         });
         edited
@@ -323,36 +325,66 @@ fn long_line_cap(snapshot: &BufferSnapshot, line: Range<usize>) -> Option<usize>
     None
 }
 
-/// The tree-sitter edit for `reload`. Its byte offsets and points are
-/// consistent: the start never lies past either end (R30).
-fn input_edit(old: &BufferSnapshot, new: &BufferSnapshot, reload: &Reload) -> InputEdit {
-    let mut start = row_start(old, reload.start_row);
-    let old_end = row_start(old, reload.old_end_row);
-    let new_end = row_start(new, reload.new_end_row);
-    // Rows that compare equal can still differ in bytes (CRLF to LF, a
-    // removed final newline), leaving `start` past an end. Fall back to
-    // a whole-file edit then.
-    let whole_file = start > old_end || start > new_end;
-    if whole_file {
-        start = 0;
-    }
-    let (old_end, new_end) = if whole_file {
-        (old.len_bytes(), new.len_bytes())
-    } else {
-        (old_end, new_end)
-    };
+/// The tree-sitter edits for `reload`, to apply in order. Each is valid
+/// (its start lies within both ends) and they run from the end of the
+/// text to the start, so each is expressed in the old text's offsets.
+///
+/// Rows compare equal whatever their line ending, so besides the changed
+/// rows (R30: the start is clamped when only line endings or the final
+/// newline differ) there is one small edit per unchanged row whose line
+/// ending changed length (LF to CRLF, R31): that keeps the offsets of
+/// the unchanged head and tail right until the text is parsed again.
+fn input_edits(old: &BufferSnapshot, new: &BufferSnapshot, reload: &Reload) -> Vec<InputEdit> {
     let point = |snapshot: &BufferSnapshot, offset: usize| {
         let p = snapshot.offset_to_point(offset);
         tree_sitter::Point::new(p.row as usize, p.column as usize)
     };
-    InputEdit {
-        start_byte: start,
-        old_end_byte: old_end,
-        new_end_byte: new_end,
-        start_position: point(old, start),
-        old_end_position: point(old, old_end),
-        new_end_position: point(new, new_end),
+    // The edit of the line ending of old row `old_row` / new row `new_row`.
+    let eol_edit = |old_row: u32, new_row: u32| {
+        let row_len = |snapshot: &BufferSnapshot, row: u32| {
+            let total = row_start(snapshot, row + 1) - row_start(snapshot, row);
+            (snapshot.line(row).len(), total - snapshot.line(row).len())
+        };
+        let ((content, old_eol), (_, new_eol)) = (row_len(old, old_row), row_len(new, new_row));
+        if old_eol == new_eol {
+            return None;
+        }
+        let start = row_start(old, old_row) + content;
+        let start_position = point(old, start);
+        Some(InputEdit {
+            start_byte: start,
+            old_end_byte: start + old_eol,
+            new_end_byte: start + new_eol,
+            start_position,
+            old_end_position: point(old, start + old_eol),
+            new_end_position: if new_eol > 0 {
+                tree_sitter::Point::new(start_position.row + 1, 0)
+            } else {
+                start_position
+            },
+        })
+    };
+    let mut edits = Vec::new();
+    for row in (reload.old_end_row..old.line_count()).rev() {
+        edits.extend(eol_edit(row, row - reload.old_end_row + reload.new_end_row));
     }
+    if reload.start_row != reload.old_end_row || reload.start_row != reload.new_end_row {
+        let old_end = row_start(old, reload.old_end_row);
+        let new_end = row_start(new, reload.new_end_row);
+        let start = row_start(old, reload.start_row).min(old_end).min(new_end);
+        edits.push(InputEdit {
+            start_byte: start,
+            old_end_byte: old_end,
+            new_end_byte: new_end,
+            start_position: point(old, start),
+            old_end_position: point(old, old_end),
+            new_end_position: point(new, new_end),
+        });
+    }
+    for row in (0..reload.start_row).rev() {
+        edits.extend(eol_edit(row, row));
+    }
+    edits
 }
 
 #[cfg(test)]
@@ -360,15 +392,15 @@ mod tests {
     use super::*;
     use lucerna_text::Buffer;
 
-    fn edit_for(old_text: &str, new_text: &str) -> InputEdit {
+    fn edits_for(old_text: &str, new_text: &str) -> Vec<InputEdit> {
         let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
         let old = buffer.snapshot();
         let reload = buffer.reload(new_text.as_bytes()).unwrap();
-        input_edit(&old, &buffer.snapshot(), &reload)
+        input_edits(&old, &buffer.snapshot(), &reload)
     }
 
     #[test]
-    fn edits_never_start_past_their_ends() {
+    fn edits_are_valid_and_account_for_every_byte() {
         let lf = "fn a() {}\nfn b() {}\n";
         let crlf = lf.replace('\n', "\r\n");
         for (old, new) in [
@@ -378,14 +410,30 @@ mod tests {
             ("fn a() {}\nfn b() {}", lf),
             (lf, "fn a() {}\n"),
             ("", lf),
+            ("fn a() {}\r\nfn b() {}\n", "fn a() {}\nfn b() {}\r\n"),
         ] {
-            let e = edit_for(old, new);
-            assert!(e.start_byte <= e.old_end_byte, "{old:?} -> {new:?}: {e:?}");
-            assert!(e.start_byte <= e.new_end_byte, "{old:?} -> {new:?}: {e:?}");
-            assert!(e.start_position <= e.old_end_position, "{e:?}");
-            assert!(e.start_position <= e.new_end_position, "{e:?}");
-            assert!(e.old_end_byte <= old.len(), "{e:?}");
-            assert!(e.new_end_byte <= new.len(), "{e:?}");
+            let edits = edits_for(old, new);
+            let mut delta = 0isize;
+            let mut previous_start = usize::MAX;
+            for e in &edits {
+                let ctx = format!("{old:?} -> {new:?}: {e:?}");
+                assert!(e.start_byte <= e.old_end_byte, "{ctx}");
+                assert!(e.start_byte <= e.new_end_byte, "{ctx}");
+                assert!(e.start_position <= e.old_end_position, "{ctx}");
+                assert!(e.start_position <= e.new_end_position, "{ctx}");
+                assert!(e.old_end_byte <= old.len(), "{ctx}");
+                assert!(
+                    e.start_byte <= previous_start,
+                    "applied end to start: {ctx}"
+                );
+                previous_start = e.start_byte;
+                delta += e.new_end_byte as isize - e.old_end_byte as isize;
+            }
+            assert_eq!(
+                old.len() as isize + delta,
+                new.len() as isize,
+                "{old:?} -> {new:?}: {edits:?}"
+            );
         }
     }
 }

@@ -288,3 +288,18 @@ fn eol_only_reload_keeps_the_tree_usable() {
         assert!(spans.iter().all(|s| s.range.end <= len));
     }
 }
+
+/// R31: LF to CRLF changes no row, yet moves the second function; the
+/// edited tree must already place it at its new byte offset.
+#[test]
+fn eol_conversion_shifts_unchanged_rows_before_reparse() {
+    let lf = "fn a() {}\nfn b() {}\n";
+    let crlf = lf.replace('\n', "\r\n");
+    let (spans, _) = highlights_after_reload(lf, &crlf);
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.range == (11..13) && &*s.capture == "keyword"),
+        "`fn` of row 1 starts at byte 11: {spans:?}"
+    );
+}
