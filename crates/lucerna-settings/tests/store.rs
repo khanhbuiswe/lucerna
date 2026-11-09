@@ -104,14 +104,72 @@ fn precedence_is_language_layers_then_plain_layers() {
     }
 }
 
+/// R26: object settings merge across layers, the higher layer winning
+/// per key (this used to be `objects_replace_not_merge`).
 #[test]
-fn objects_replace_not_merge() {
+fn objects_merge_across_layers() {
     let mut s = SettingsStore::with_defaults();
     s.set_layer(Layer::User, r#"{"files.exclude": {"**/dist": true}}"#)
         .unwrap();
     let m: BTreeMap<String, bool> = s.get("files.exclude", None).unwrap();
-    assert_eq!(m.len(), 1);
-    assert!(m["**/dist"]);
+    assert_eq!(
+        m,
+        BTreeMap::from([
+            ("**/.DS_Store".into(), true),
+            ("**/.git".into(), true),
+            ("**/dist".into(), true),
+        ])
+    );
+}
+
+#[test]
+fn user_exclude_keeps_the_default_git_exclude() {
+    let mut s = SettingsStore::with_defaults();
+    s.set_layer(
+        Layer::User,
+        r#"{"files.exclude": {"**/node_modules": true}}"#,
+    )
+    .unwrap();
+    let m: BTreeMap<String, bool> = s.get("files.exclude", None).unwrap();
+    assert_eq!(m.get("**/.git"), Some(&true));
+    assert_eq!(m.get("**/node_modules"), Some(&true));
+}
+
+#[test]
+fn false_in_a_higher_layer_turns_a_lower_glob_off() {
+    let mut s = SettingsStore::with_defaults();
+    s.set_layer(Layer::User, r#"{"files.exclude": {"**/.DS_Store": false}}"#)
+        .unwrap();
+    s.set_layer(
+        Layer::Workspace,
+        r#"{"search.exclude": {"**/target": false, "**/out": true}}"#,
+    )
+    .unwrap();
+    let files: BTreeMap<String, bool> = s.get("files.exclude", None).unwrap();
+    assert_eq!(files.get("**/.DS_Store"), Some(&false));
+    assert_eq!(files.get("**/.git"), Some(&true));
+    let search: BTreeMap<String, bool> = s.get("search.exclude", None).unwrap();
+    assert_eq!(
+        search,
+        BTreeMap::from([
+            ("**/node_modules".into(), true),
+            ("**/out".into(), true),
+            ("**/target".into(), false),
+        ])
+    );
+}
+
+#[test]
+fn objects_merge_deeply_and_a_non_object_replaces() {
+    let mut s = SettingsStore::default();
+    s.set_layer(Layer::Default, r#"{"a": {"x": {"p": 1, "q": 2}, "y": 1}}"#)
+        .unwrap();
+    s.set_layer(Layer::User, r#"{"a": {"x": {"q": 3}}}"#)
+        .unwrap();
+    let v: serde_json::Value = s.get("a", None).unwrap();
+    assert_eq!(v, serde_json::json!({"x": {"p": 1, "q": 3}, "y": 1}));
+    s.set_layer(Layer::Workspace, r#"{"a": 7}"#).unwrap();
+    assert_eq!(s.get::<u32>("a", None), Some(7));
 }
 
 #[test]

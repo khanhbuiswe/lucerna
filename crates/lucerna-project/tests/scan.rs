@@ -176,3 +176,17 @@ fn rapid_set_options_coalesce_to_latest() {
         .count();
     assert_eq!(extra, 0);
 }
+
+/// `.git` is never scanned, even when `files.exclude` does not list it
+/// (a user `"**/.git": false` leaves it out of the enabled globs).
+#[test]
+fn git_dir_always_skipped() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    touch(r, ".git/config");
+    touch(r, "sub/.git/HEAD");
+    touch(r, "a.rs");
+    let wt = Worktree::start(r.to_path_buf(), ScanOptions::default());
+    wait_complete(&wt);
+    assert_eq!(paths(&wt), ["sub", "a.rs"]);
+}

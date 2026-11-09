@@ -162,12 +162,17 @@ impl Drop for Worktree {
     }
 }
 
+/// Never scanned, watched or searched, whatever `files.exclude` says: a
+/// user `"**/.git": false` does not bring the repository's internals in.
+pub(crate) const GIT_DIR: &str = ".git";
+
 /// The one walker configuration shared by the scan and by content search.
 ///
 /// Ignore-source policy: hidden files are shown; project-level sources apply
 /// (`.gitignore` including parent directories, `.git/info/exclude`, `.ignore`,
 /// even without a `.git` directory); the user's global gitignore does not, so
 /// results do not depend on the machine. `files.exclude` globs are overrides.
+/// Entries named [`GIT_DIR`] are always skipped.
 pub(crate) fn walk_builder(root: &Path, opts: &ScanOptions) -> WalkBuilder {
     walk_builder_with_includes(root, opts, &[])
 }
@@ -190,7 +195,8 @@ pub(crate) fn walk_builder_with_includes(
         .ignore(true)
         .parents(true)
         .require_git(false)
-        .follow_links(false);
+        .follow_links(false)
+        .filter_entry(|entry| entry.file_name() != GIT_DIR);
     let mut overrides = OverrideBuilder::new(root);
     for glob in include {
         if let Err(err) = overrides.add(glob) {

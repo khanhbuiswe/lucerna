@@ -47,12 +47,26 @@ impl SettingsStore {
 
     /// Looks up `key`, preferring (highest first) VS Code's order:
     /// Workspace `[lang]`, User `[lang]`, Default `[lang]`, then Workspace,
-    /// User, Default. The first value found replaces lower ones wholesale
-    /// (no object merging). A value that does not deserialize into `T`
-    /// yields `None`.
+    /// User, Default. Object values merge across these (R26): the higher
+    /// one wins per key, recursively, so a user `files.exclude` adds to the
+    /// default globs and `"glob": false` turns a lower one off. Any other
+    /// value replaces lower ones. A value that does not deserialize into
+    /// `T` yields `None`.
     pub fn get<T: DeserializeOwned>(&self, key: &str, language: Option<&str>) -> Option<T> {
-        let value = self.candidates(key, language).next()?;
-        T::deserialize(value).ok()
+        let mut candidates = self.candidates(key, language);
+        let first = candidates.next()?;
+        if !first.is_object() {
+            return T::deserialize(first).ok();
+        }
+        // Objects below the first one merge in, up to the first non-object.
+        let objects: Vec<&Value> = std::iter::once(first)
+            .chain(candidates.take_while(|v| v.is_object()))
+            .collect();
+        let mut merged = Value::Object(Map::new());
+        for value in objects.into_iter().rev() {
+            merge(&mut merged, value);
+        }
+        T::deserialize(merged).ok()
     }
 
     /// Every value of `key`, highest precedence first.
@@ -74,6 +88,24 @@ impl SettingsStore {
                 .into_iter()
                 .filter_map(move |layer| lookup(layer, key)),
         )
+    }
+}
+
+/// Merges `over` into `base`: objects key by key, recursively; anything
+/// else replaces.
+fn merge(base: &mut Value, over: &Value) {
+    match (base, over) {
+        (Value::Object(base), Value::Object(over)) => {
+            for (key, value) in over {
+                match base.get_mut(key) {
+                    Some(slot) => merge(slot, value),
+                    None => {
+                        base.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (base, over) => *base = over.clone(),
     }
 }
 

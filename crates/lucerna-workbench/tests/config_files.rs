@@ -321,9 +321,10 @@ fn files_exclude_change_rescans(cx: &mut TestAppContext) {
         cx,
     );
 
+    // R26: the user's globs merge with the defaults.
     assert_eq!(
         wb.read_with(cx, |wb, _| wb.scan_options().exclude.clone()),
-        vec!["**/*.log".to_string()]
+        ["**/.git", "**/.DS_Store", "**/*.log"]
     );
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

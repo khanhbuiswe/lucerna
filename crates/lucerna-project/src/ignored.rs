@@ -16,7 +16,7 @@ use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::overrides::{Override, OverrideBuilder};
 
-use crate::worktree::ScanOptions;
+use crate::worktree::{GIT_DIR, ScanOptions};
 
 /// Per-directory matchers in the walker's precedence order.
 struct DirRules(Vec<Gitignore>);
@@ -43,7 +43,12 @@ impl IgnoreChecker {
     }
 
     /// Whether the root-relative `rel` is excluded from the worktree.
+    /// Anything named `.git`, and everything below it, always is (see
+    /// [`crate::worktree::walk_builder`]).
     pub(crate) fn is_ignored(&mut self, rel: &Path, is_dir: bool) -> bool {
+        if rel.components().any(|c| c.as_os_str() == GIT_DIR) {
+            return true;
+        }
         let total = rel.components().count();
         let mut prefix = PathBuf::new();
         for (i, component) in rel.components().enumerate() {
@@ -187,6 +192,18 @@ mod tests {
                 rel.display()
             );
         }
+    }
+
+    /// `.git` is out of the tree whatever the exclude globs say.
+    #[test]
+    fn git_dir_always_ignored() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut checker = IgnoreChecker::new(tmp.path(), &ScanOptions::default());
+        assert!(checker.is_ignored(Path::new(".git"), true));
+        assert!(checker.is_ignored(Path::new(".git/config"), false));
+        assert!(checker.is_ignored(Path::new("sub/.git/HEAD"), false));
+        assert!(!checker.is_ignored(Path::new("a.git"), false));
+        assert!(!checker.is_ignored(Path::new("src/main.rs"), false));
     }
 
     #[test]
