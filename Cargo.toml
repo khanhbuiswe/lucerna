@@ -17,6 +17,7 @@ lucerna-text = { path = "crates/lucerna-text" }
 lucerna-project = { path = "crates/lucerna-project" }
 lucerna-syntax = { path = "crates/lucerna-syntax" }
 lucerna-theme = { path = "crates/lucerna-theme" }
+lucerna-extension = { path = "crates/lucerna-extension" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

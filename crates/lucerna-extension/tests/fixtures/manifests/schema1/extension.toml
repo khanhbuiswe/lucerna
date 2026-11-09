@@ -1,0 +1,30 @@
+id = "full-ext"
+name = "Full Extension"
+version = "1.2.3"
+schema_version = 1
+description = "Everything at once"
+repository = "https://github.com/example/full-ext"
+authors = ["A <a@example.com>", "B"]
+themes = ["themes/night.json"]
+icon_themes = ["icon_themes/icons.json"]
+languages = ["languages/foo"]
+snippets = ["snippets/foo.json"]
+
+[lib]
+kind = "Rust"
+version = "0.1.0"
+
+[grammars.foo]
+repository = "https://github.com/example/tree-sitter-foo"
+rev = "0123456789abcdef0123456789abcdef01234567"
+path = "grammars/foo"
+
+[language_servers.foo-ls]
+name = "Foo LS"
+languages = ["Foo"]
+
+[context_servers.foo-ctx]
+name = "Foo ctx"
+
+[capabilities.x]
+y = 1

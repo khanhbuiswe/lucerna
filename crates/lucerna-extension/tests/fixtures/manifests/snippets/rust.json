@@ -1,0 +1,7 @@
+// comment allowed
+{
+  "fn": { "prefix": "fn", "body": ["fn ${1:name}($2) {", "\t$0", "}"], "description": "function" },
+  "pr": { "prefix": ["pr", "println"], "body": "println!(\"${1|a,b|}\");" },
+  "bad": { "prefix": "x", "body": "${1:oops" },
+  "nobody": { "prefix": "y" }
+}

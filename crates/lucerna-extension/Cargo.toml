@@ -1,0 +1,18 @@
+[package]
+name = "lucerna-extension"
+description = "Lucerna: Zed extension manifests, language configs and snippets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+jsonc-parser.workspace = true
+regex.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,6 @@
+id = "defs"
+name = "Defaults"
+version = "1.0.0"
+schema_version = 1
+themes = ["themes/b.json"]
+languages = ["languages/b"]

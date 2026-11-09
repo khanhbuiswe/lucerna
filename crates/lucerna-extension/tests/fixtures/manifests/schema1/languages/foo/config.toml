@@ -1,0 +1,4 @@
+name = "Foo"
+grammar = "foo"
+path_suffixes = ["foo", "Foofile"]
+line_comments = ["// "]
