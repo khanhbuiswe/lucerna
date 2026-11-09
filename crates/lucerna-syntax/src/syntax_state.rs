@@ -3,9 +3,11 @@ use std::ops::{ControlFlow, Range};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use lucerna_text::BufferSnapshot;
+use lucerna_text::{BufferSnapshot, Reload};
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Node, ParseOptions, ParseState, Parser, QueryCursor, TextProvider, Tree};
+use tree_sitter::{
+    InputEdit, Node, ParseOptions, ParseState, Parser, QueryCursor, TextProvider, Tree,
+};
 
 use crate::brackets;
 use crate::registry::{HighlightQuery, Language, Precedence};
@@ -106,6 +108,39 @@ impl SyntaxState {
         }
     }
 
+    /// A copy for the reloaded text `new`, with the tree edited by
+    /// `reload` (the change from `old`). Until `new` is parsed, it keeps
+    /// the old colours on screen: ranges after the change shift, and those
+    /// inside it stretch over the new text. Without a tree, the copy has
+    /// none either.
+    pub fn edited(
+        &self,
+        old: &BufferSnapshot,
+        new: &BufferSnapshot,
+        reload: &Reload,
+    ) -> SyntaxState {
+        let mut edited = SyntaxState::new(self.language.clone());
+        edited.tree = self.tree.clone().map(|mut tree| {
+            let start = row_start(old, reload.start_row);
+            let old_end = row_start(old, reload.old_end_row);
+            let new_end = row_start(new, reload.new_end_row);
+            let point = |snapshot: &BufferSnapshot, offset: usize| {
+                let p = snapshot.offset_to_point(offset);
+                tree_sitter::Point::new(p.row as usize, p.column as usize)
+            };
+            tree.edit(&InputEdit {
+                start_byte: start,
+                old_end_byte: old_end,
+                new_end_byte: new_end,
+                start_position: point(old, start),
+                old_end_position: point(old, old_end),
+                new_end_position: point(new, new_end),
+            });
+            tree
+        });
+        edited
+    }
+
     /// Spans for `rows` (end exclusive), clipped to those rows and sorted by
     /// start, outer spans before inner ones. Where several patterns capture
     /// the same range, only the one the language's query intends survives.
@@ -115,9 +150,13 @@ impl SyntaxState {
         };
         let queries = self.language.queries();
         let root = tree.root_node();
-        let snapshot_text = |node: Node| {
+        // An edited tree (see `edited`) may still hold a range past the
+        // end of a shorter text; clamp rather than panic.
+        let len = snapshot.len_bytes();
+        let snapshot_text = move |node: Node| {
+            let range = node.byte_range();
             snapshot
-                .chunks_in_range(node.byte_range())
+                .chunks_in_range(range.start.min(len)..range.end.min(len))
                 .map(str::as_bytes)
         };
         let mut cursor = QueryCursor::new();
@@ -179,7 +218,9 @@ impl SyntaxState {
     /// so brackets inside strings and comments are ignored.
     pub fn matching_bracket(&self, snapshot: &BufferSnapshot, offset: usize) -> Option<usize> {
         match &self.tree {
-            Some(tree) => brackets::matching_bracket_in_tree(tree, offset),
+            // An edited tree may name an offset past a shorter text.
+            Some(tree) => brackets::matching_bracket_in_tree(tree, offset)
+                .filter(|&at| at < snapshot.len_bytes()),
             None => brackets::matching_bracket(snapshot, offset),
         }
     }

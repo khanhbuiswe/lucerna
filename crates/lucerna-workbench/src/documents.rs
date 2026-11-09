@@ -425,10 +425,28 @@ impl Documents {
                 doc.set_state(DocState::Ready, cx);
                 parse = true;
             }
+            Ok(JobOutput::Reloaded(buffer, Ok((reload, stamp))))
+                if unchanged(doc, &buffer, &reload) =>
+            {
+                // `touch` or a rewrite with the same text: nothing to show,
+                // and no new revision for the views to redo.
+                doc.buffer = Some(buffer);
+                doc.stamp = Some(stamp);
+                doc.set_state(DocState::Ready, cx);
+            }
             Ok(JobOutput::Reloaded(buffer, Ok((reload, stamp)))) => {
                 tracing::debug!(path = %key.display(), "document reloaded");
                 let snapshot = buffer.snapshot();
+                let old = doc.snapshot.clone();
                 take_buffer(doc, buffer, stamp);
+                // The old tree, edited to the new text, keeps the colours
+                // until the new parse lands; views edit their own copy.
+                doc.syntax = match (doc.syntax.take(), old) {
+                    (Some(syntax), Some(old)) => {
+                        Some(Arc::new(syntax.edited(&old, &snapshot, &reload)))
+                    }
+                    _ => None,
+                };
                 for view in doc.views() {
                     let snapshot = snapshot.clone();
                     view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
@@ -474,12 +492,18 @@ impl Documents {
         let Some(doc) = self.docs.get_mut(key) else {
             return;
         };
-        doc.syntax = None;
+        // A parse of older text is cancelled; its syntax stays shown (see
+        // `finish_job`) until this one lands.
         doc.parse = None;
         let (Some(language), Some(buffer)) = (doc.language.clone(), doc.buffer.as_ref()) else {
             return;
         };
         if buffer.is_large(max_bytes, max_lines) {
+            if doc.syntax.take().is_some() {
+                for view in doc.views() {
+                    view.update(cx, |v, cx| v.set_syntax(None, cx));
+                }
+            }
             return;
         }
         let snapshot = buffer.snapshot();
@@ -513,6 +537,19 @@ impl Documents {
             .ok();
         }));
     }
+}
+
+/// Whether a reload left the text exactly as shown: no changed lines, the
+/// same length, encoding and line ending.
+fn unchanged(doc: &Document, buffer: &Buffer, reload: &Reload) -> bool {
+    reload.start_row == reload.old_end_row
+        && reload.old_end_row == reload.new_end_row
+        && doc
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| s.len_bytes() == buffer.snapshot().len_bytes())
+        && buffer.encoding().name() == doc.encoding
+        && buffer.line_ending() == doc.line_ending
 }
 
 fn take_buffer(doc: &mut Document, buffer: Buffer, stamp: Stamp) {

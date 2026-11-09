@@ -401,3 +401,44 @@ fn reload_keeps_scroll_and_selection(cx: &mut TestAppContext) {
         Some("ine 60\nli")
     );
 }
+
+/// A reload keeps closed folds on the lines they were on; only a fold
+/// whose header line changed is dropped.
+#[gpui::test]
+fn reload_remaps_folds(cx: &mut TestAppContext) {
+    init(cx, None);
+    let old = "a {\n  1\n}\nb {\n  2\n}\nc\n";
+    let mut buffer = Buffer::from_bytes(old.as_bytes(), false).unwrap();
+    let (view, cx) = code_view(old, cx);
+    cx.run_until_parked();
+    let headers: Vec<u32> =
+        view.read_with(cx, |v, _| v.fold_ranges().iter().map(|r| r.start).collect());
+    assert_eq!(headers, [0, 3]);
+    view.update(cx, |v, cx| {
+        v.toggle_fold(0, cx);
+        v.toggle_fold(3, cx);
+    });
+
+    // The second header changes; the first fold is above the change.
+    let reload = buffer.reload(b"a {\n  1\n}\nB {\n  2\n}\nc\n").unwrap();
+    let snapshot = buffer.snapshot();
+    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    cx.run_until_parked();
+    draw(cx);
+    view.read_with(cx, |v, _| {
+        assert!(v.is_folded(0), "the fold above the change survives");
+        assert!(!v.is_folded(3), "the fold whose header changed is dropped");
+    });
+
+    // Lines inserted above shift a closed fold down with its header.
+    let reload = buffer
+        .reload(b"new\nnew\na {\n  1\n}\nB {\n  2\n}\nc\n")
+        .unwrap();
+    let snapshot = buffer.snapshot();
+    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert!(v.is_folded(2), "the fold moved down two lines");
+        assert!(!v.is_folded(0));
+    });
+}

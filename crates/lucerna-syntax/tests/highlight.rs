@@ -227,3 +227,33 @@ fn rust_fixture_spans() {
         .collect();
     insta::assert_debug_snapshot!(spans);
 }
+
+/// Until a reload is parsed again, the old tree is edited to the new text:
+/// rows above the change keep their colours, and a shorter text never
+/// sends the old tree's ranges past its end.
+#[test]
+fn edited_state_highlights_the_new_text_until_reparsed() {
+    let old_text = "fn a() {}\nfn b() { let x = \"long string here\"; }\n";
+    let new_text = "fn a() {}\n";
+    let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
+    let old = buffer.snapshot();
+    let mut state = SyntaxState::new(language("a.rs"));
+    assert_eq!(state.parse(&old, None), ParseOutcome::Done);
+    let reload = buffer.reload(new_text.as_bytes()).unwrap();
+    let new = buffer.snapshot();
+
+    let edited = state.edited(&old, &new, &reload);
+    assert!(edited.tree().is_some());
+    let spans = edited.highlights(&new, 0..new.line_count());
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.range == (0..2) && &*s.capture == "keyword"),
+        "row 0 keeps its colours: {spans:?}"
+    );
+    assert!(spans.iter().all(|s| s.range.end <= new.len_bytes()));
+    // Brackets of the edited tree stay inside the new text too.
+    if let Some(at) = edited.matching_bracket(&new, 7) {
+        assert!(at <= new.len_bytes());
+    }
+}

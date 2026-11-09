@@ -251,10 +251,11 @@ impl CodeView {
         cx.notify();
     }
 
-    /// Shows a reloaded version of the file, keeping the scroll position
-    /// and selection on the same lines; a selection touching a changed
-    /// row is cleared. The syntax is dropped until the next
-    /// [`CodeView::set_syntax`].
+    /// Shows a reloaded version of the file, keeping the scroll position,
+    /// selection and closed folds on the same lines; a selection touching
+    /// a changed row is cleared, as is a fold whose header changed. The
+    /// syntax tree is edited to the new text and stays until the next
+    /// [`CodeView::set_syntax`], so colours do not flicker off.
     pub fn apply_reload(
         &mut self,
         snapshot: BufferSnapshot,
@@ -281,9 +282,14 @@ impl CodeView {
                 anchor: adjust(s.anchor),
                 head: adjust(s.head),
             });
+        let old = std::mem::replace(&mut self.snapshot, snapshot.clone());
+        self.syntax = self
+            .syntax
+            .as_ref()
+            .map(|syntax| Arc::new(syntax.edited(&old, &snapshot, &reload)));
         self.replace_snapshot(snapshot, cx);
-        self.syntax = None;
-        self.folds.clear();
+        self.folds.remap(&reload, rows);
+        self.scroll.top_row = self.folds.prev_visible(self.scroll.top_row);
         self.update_brackets();
         cx.notify();
     }
@@ -373,6 +379,7 @@ impl CodeView {
             let folds = folds.await;
             this.update(cx, |view, cx| {
                 if view.revision == revision {
+                    view.folds.retain_available(&folds);
                     view.fold_ranges = folds;
                     cx.notify();
                 }
@@ -439,6 +446,11 @@ impl CodeView {
     /// until they have been computed.
     pub fn fold_ranges(&self) -> &[Range<u32>] {
         &self.fold_ranges
+    }
+
+    /// Whether the fold starting at `header_row` is closed.
+    pub fn is_folded(&self, header_row: u32) -> bool {
+        self.folds.is_folded(header_row)
     }
 
     /// Folds or unfolds the fold starting at `header_row`.

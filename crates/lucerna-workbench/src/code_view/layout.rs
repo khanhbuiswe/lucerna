@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use lucerna_text::{BufferSnapshot, Point};
+use lucerna_text::{BufferSnapshot, Point, Reload};
 use unicode_width::UnicodeWidthChar;
 
 /// Chars of a line that are drawn; the rest is replaced by `…`.
@@ -57,6 +57,41 @@ impl FoldState {
     /// Forgets every closed fold.
     pub fn clear(&mut self) {
         self.folded.clear();
+    }
+
+    /// Moves closed folds to their lines in the reloaded text. A fold
+    /// whose header line is in the changed region is dropped; an end inside
+    /// it stretches over the new lines. [`FoldState::retain_available`]
+    /// settles the ends once the new fold ranges are known.
+    pub fn remap(&mut self, reload: &Reload, new_line_count: u32) {
+        let changed = reload.start_row..reload.old_end_row;
+        let end = |row: u32| {
+            if row <= reload.start_row {
+                row
+            } else if row >= reload.old_end_row {
+                row - reload.old_end_row + reload.new_end_row
+            } else {
+                reload.new_end_row
+            }
+        };
+        self.folded = std::mem::take(&mut self.folded)
+            .into_iter()
+            .filter(|(header, _)| !changed.contains(header))
+            .map(|(header, e)| (reload.adjust_row(header, new_line_count), end(e)))
+            .filter(|&(header, e)| header < new_line_count && e > header)
+            .collect();
+    }
+
+    /// Keeps only the closed folds whose header still starts one of
+    /// `available`, taking that range's end.
+    pub fn retain_available(&mut self, available: &[Range<u32>]) {
+        self.folded = std::mem::take(&mut self.folded)
+            .into_keys()
+            .filter_map(|header| {
+                let range = available.iter().find(|r| r.start == header)?;
+                Some((header, range.end))
+            })
+            .collect();
     }
 
     /// The header of the outermost closed fold that hides `row`.

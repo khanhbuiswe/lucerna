@@ -529,3 +529,69 @@ fn status_column_on_a_one_megabyte_line(cx: &mut TestAppContext) {
     let status = cx.update(|_, cx| docs.read(cx).status(view.read(cx)));
     assert_eq!(status.expect("loaded").cursor, "Ln 1, Col 500001");
 }
+
+/// While a reloaded file is parsed in the background, the old tree
+/// (edited to the new text) keeps the colours on screen.
+#[gpui::test]
+fn reload_keeps_highlights_until_the_background_parse_lands(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    // Far more than the 1 ms foreground budget can parse.
+    let source: String = (0..20_000)
+        .map(|i| format!("fn f{i}() {{ let x = {i}; }}\n"))
+        .collect();
+    fs::write(dir.path().join("big.rs"), &source).unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "big.rs", cx);
+    let before = view.read_with(cx, |v, _| v.revision());
+    let parsed = view
+        .read_with(cx, |v, _| v.syntax().cloned())
+        .expect("parsed");
+
+    fs::write(dir.path().join("big.rs"), format!("// edited\n{source}")).unwrap();
+    wb.update(cx, |wb, cx| {
+        let change = Change {
+            path: p("big.rs"),
+            kind: ChangeKind::Modified,
+        };
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    // Step until the reload reaches the view, not further: the parse of
+    // the new text is still queued.
+    while view.read_with(cx, |v, _| v.revision()) == before {
+        assert!(cx.executor().tick(), "the reload finishes");
+    }
+    view.read_with(cx, |v, _| {
+        let syntax = v
+            .syntax()
+            .expect("the old syntax stays until the parse lands");
+        assert!(!Arc::ptr_eq(syntax, &parsed), "edited to the new text");
+        let spans = syntax.highlights(v.snapshot(), 100..110);
+        assert!(!spans.is_empty(), "rows keep their colours");
+    });
+    settle(cx);
+    view.read_with(cx, |v, _| {
+        let syntax = v.syntax().expect("the new parse landed");
+        assert!(!syntax.highlights(v.snapshot(), 0..1).is_empty());
+    });
+}
+
+/// `touch` or a rewrite with the same text changes nothing on screen.
+#[gpui::test]
+fn same_content_rewrite_does_not_bump_the_revision(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("f.rs"), "fn a() {}\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "f.rs", cx);
+    let before = view.read_with(cx, |v, _| (v.revision(), v.syntax().cloned()));
+    fs::write(dir.path().join("f.rs"), "fn a() {}\n").unwrap();
+    changed(&wb, "f.rs", ChangeKind::Modified, cx);
+    let after = view.read_with(cx, |v, _| (v.revision(), v.syntax().cloned()));
+    assert_eq!(after.0, before.0, "the revision stays");
+    assert!(
+        Arc::ptr_eq(after.1.as_ref().unwrap(), before.1.as_ref().unwrap()),
+        "and so does the syntax"
+    );
+    assert_eq!(state(&wb, Path::new("f.rs"), cx), Some(DocState::Ready));
+}
