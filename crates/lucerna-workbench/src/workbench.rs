@@ -64,6 +64,9 @@ pub struct Workbench {
     root: PathBuf,
     /// The one background scan of `root`; every view reads the tree from it.
     worktree: Worktree,
+    /// When the scan started, and whether its first progress was logged.
+    scan_started: std::time::Instant,
+    scan_progress_logged: bool,
     /// The options of the scan, from `files.exclude`.
     scan_options: ScanOptions,
     /// Re-themes and rescans when [`AppState`] changes.
@@ -185,6 +188,7 @@ impl Workbench {
         let scan_options = ScanOptions {
             exclude: enabled_globs(cx, "files.exclude"),
         };
+        let scan_started = std::time::Instant::now();
         let worktree = Worktree::start(root.clone(), scan_options.clone());
         let restored = store
             .as_ref()
@@ -222,6 +226,8 @@ impl Workbench {
         let mut workbench = Workbench {
             root,
             worktree,
+            scan_started,
+            scan_progress_logged: false,
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
@@ -427,6 +433,15 @@ impl Workbench {
     /// Hands a worktree event to every view that follows the tree. Called
     /// for each event the worktree sends; tests call it directly.
     pub fn on_worktree_event(&mut self, ev: &WorktreeEvent, cx: &mut Context<Self>) {
+        let scan_ms = self.scan_started.elapsed().as_millis();
+        match ev {
+            WorktreeEvent::ScanProgress if !self.scan_progress_logged => {
+                self.scan_progress_logged = true;
+                tracing::info!(scan_ms, "first scan progress");
+            }
+            WorktreeEvent::ScanComplete => tracing::info!(scan_ms, "scan complete"),
+            _ => {}
+        }
         let snapshot = self.worktree.snapshot();
         let decorate = cx
             .global::<AppState>()

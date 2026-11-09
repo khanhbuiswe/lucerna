@@ -10,11 +10,14 @@ threshold=${2:-15}
 status=0
 checked=0
 
-for base in $(find "$dir" -path '*/main/estimates.json' | sort); do
-  bench_dir=$(dirname "$(dirname "$base")")
-  new="$bench_dir/new/estimates.json"
-  [ -f "$new" ] || continue
+for new in $(find "$dir" -path '*/new/estimates.json' | sort); do
+  bench_dir=$(dirname "$(dirname "$new")")
+  base="$bench_dir/main/estimates.json"
   name=${bench_dir#"$dir"/}
+  if [ ! -f "$base" ]; then
+    echo "NEW (no baseline): $name"
+    continue
+  fi
   old_ns=$(jq '.median.point_estimate' "$base")
   new_ns=$(jq '.median.point_estimate' "$new")
   checked=$((checked + 1))

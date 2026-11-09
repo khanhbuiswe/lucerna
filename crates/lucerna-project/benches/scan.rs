@@ -21,12 +21,18 @@ fn scan_80k(c: &mut Criterion) {
                 let start = Instant::now();
                 let worktree = Worktree::start(root.clone(), ScanOptions::default());
                 let events = worktree.events();
-                while let Ok(event) = events.recv() {
-                    if event == WorktreeEvent::ScanComplete {
-                        break;
+                loop {
+                    match events.recv() {
+                        Ok(WorktreeEvent::ScanComplete) => break,
+                        Ok(_) => {}
+                        Err(_) => panic!("worktree ended before ScanComplete"),
                     }
                 }
                 total += start.elapsed();
+                assert!(
+                    worktree.snapshot().entries().len() >= 80_001,
+                    "scan found too few entries: is LUCERNA_BENCH_REPO the generated repo?"
+                );
                 drop(worktree);
             }
             total

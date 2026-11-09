@@ -9,11 +9,16 @@ dir=$1
 mkdir -p "$dir"
 
 # Content depends only on the dir/file indices: no randomness, no clock.
-awk -v root="$dir" 'BEGIN {
-  for (d = 0; d < 4000; d++) {
-    sub_dir = sprintf("%s/pkg%02d/mod%04d", root, int(d / 100), d)
-    system("mkdir -p \"" sub_dir "\"")
-  }
+# Create all directories with one `mkdir -p` (names come from awk on stdin,
+# NUL-separated, so no path character needs escaping).
+BENCH_ROOT=$dir awk 'BEGIN {
+  root = ENVIRON["BENCH_ROOT"]
+  for (d = 0; d < 4000; d++)
+    printf "%s/pkg%02d/mod%04d%c", root, int(d / 100), d, 0
+}' | xargs -0 mkdir -p
+
+BENCH_ROOT=$dir awk 'BEGIN {
+  root = ENVIRON["BENCH_ROOT"]
   for (d = 0; d < 4000; d++) {
     sub_dir = sprintf("%s/pkg%02d/mod%04d", root, int(d / 100), d)
     for (f = 0; f < 20; f++) {

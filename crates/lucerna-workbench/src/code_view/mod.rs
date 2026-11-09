@@ -114,6 +114,8 @@ pub struct CodeView {
     snapshot: BufferSnapshot,
     /// Bumped by every new snapshot; keys every cache.
     revision: u64,
+    /// The last revision a frame was built for.
+    painted_revision: u64,
     syntax: Option<Arc<SyntaxState>>,
     large: bool,
     config: Config,
@@ -168,6 +170,7 @@ impl CodeView {
             focus: cx.focus_handle(),
             snapshot,
             revision: 0,
+            painted_revision: 0,
             syntax: None,
             large: false,
             config,
@@ -687,6 +690,14 @@ impl Focusable for CodeView {
 
 impl Render for CodeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.painted_revision != self.revision {
+            self.painted_revision = self.revision;
+            tracing::debug!(
+                path = %self.path.display(),
+                revision = self.revision,
+                "first render of revision"
+            );
+        }
         let ui = &cx.global::<AppState>().theme.ui;
         match &self.doc_state {
             DocState::Ready | DocState::Deleted => {}

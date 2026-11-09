@@ -2,7 +2,7 @@
 //! The full parse is set up outside the measured loop.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use lucerna_syntax::{LanguageRegistry, SyntaxState};
+use lucerna_syntax::{LanguageRegistry, ParseOutcome, SyntaxState};
 use lucerna_text::Buffer;
 use std::path::Path;
 use std::time::Duration;
@@ -28,8 +28,15 @@ fn highlight_10mb_viewport(c: &mut Criterion) {
         .language_for_path(Path::new("big.rs"))
         .unwrap();
     let mut state = SyntaxState::new(language);
-    state.parse(&snapshot, None);
+    assert!(
+        matches!(state.parse(&snapshot, None), ParseOutcome::Done),
+        "parse of the 10 MB file did not finish"
+    );
     let middle = snapshot.line_count() / 2;
+    assert!(
+        !state.highlights(&snapshot, middle..middle + 60).is_empty(),
+        "viewport highlights are empty: the bench would time a no-op"
+    );
 
     let mut group = c.benchmark_group("highlight_10mb_viewport");
     group.sample_size(20);
