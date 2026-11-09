@@ -84,6 +84,12 @@ luc src/main.rs           # open a file (its git repo becomes the workspace)
 If you open Lucerna from Finder or the Dock, it asks which folder to open. A loose file in your home
 folder opens on its own, without scanning the whole home folder.
 
+Lucerna also appears in Finder's "Open With" menu for folders, text files and source files. A file
+inside the folder that is already open opens as a tab; anything else opens in a new window. To make
+Lucerna the default app for a file type, select a file in Finder, then choose File → Get Info →
+Open with → Lucerna → Change All. Apps that open files in your default app then use Lucerna, for
+example "Open in → Default app" in Claude Desktop.
+
 ### Keyboard shortcuts
 
 | Keys | Action |

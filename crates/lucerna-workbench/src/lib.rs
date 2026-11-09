@@ -17,6 +17,7 @@ pub mod icons;
 pub mod keys;
 mod layout;
 mod open_files;
+pub mod open_requests;
 mod quick_open;
 mod search_panel;
 pub mod tasks;

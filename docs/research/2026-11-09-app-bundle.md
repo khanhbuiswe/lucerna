@@ -39,3 +39,24 @@ Vấn đề: chạy `luc` như một file thực thi trần thì menu bar hiện
   - Nền sáng, vì Finder vẽ nhãn icon màu đen trên ảnh nền, kể cả ở dark mode.
   - Lần chạy đầu, macOS hỏi quyền cho terminal điều khiển Finder. Nếu bước bố cục lỗi, DMG vẫn dùng được, giống DMG của Zed.
   - Nếu sau này cần build trên CI không có màn hình, chuyển sang `dmgbuild` như VS Code.
+
+## Mở file từ Finder và app khác ("Open With", app mặc định)
+
+Khi macOS mở một file bằng app (Finder "Open With", app mặc định, "Default app" trong menu "Open in" của Claude Desktop), đường dẫn không nằm trong `argv`. Nó đến dưới dạng sự kiện "open URLs" (Apple Event `odoc`). Nếu app đang chạy, sự kiện được gửi cho tiến trình đó.
+
+- **VS Code.**
+  - `Info.plist` có 65 mục `CFBundleDocumentTypes`, mỗi mục cho một nhóm đuôi file, vai trò `Editor`.
+  - Electron nhận sự kiện `open-file`. Các sự kiện đến trước lúc app sẵn sàng được gom lại rồi xử lý một lượt.
+  - File thuộc thư mục đang mở trong một cửa sổ thì mở thành tab ở cửa sổ đó; nếu không thì mở cửa sổ mới.
+- **Zed.**
+  - `CFBundleDocumentTypes` có hai mục. Mục thứ nhất là `public.folder`, `public.text`, `public.plain-text`, `public.utf8-plain-text`, vai trò `Editor`, hạng `Alternate`. Mục thứ hai là "Zed Text Document" cho 28 đuôi file, hạng `Default`.
+  - `on_open_urls` của GPUI đẩy URL qua một channel; vòng xử lý chuyển `file://` thành đường dẫn. Đường dẫn nằm trong workspace đang mở thì mở ở đó, nếu không thì mở cửa sổ mới.
+- **Menu "Open in" của Claude Desktop** lấy từ danh sách bundle ID cố định trong Claude.app (`com.microsoft.VSCode`, `dev.zed.Zed`…). App khác không tự thêm vào được. Mục "Default app" của menu mở file bằng app mặc định của macOS.
+
+**Lucerna chọn:**
+- Khai báo một mục `CFBundleDocumentTypes` như mục đầu của Zed, với vai trò `Editor` và hạng `Alternate`, cho thư mục, text và source code. Lucerna hiện trong "Open With" và chọn được làm app mặc định, nhưng không tự giành quyền mặc định của app khác.
+- Mỗi tiến trình Lucerna vẫn có một cửa sổ, vì cấu hình workspace (`watch_config`) là một global gắn với một thư mục gốc. Khi nhận yêu cầu mở:
+  - chưa có cửa sổ thì mở cửa sổ theo cùng quy tắc với `luc <path>`;
+  - file nằm trong thư mục gốc của cửa sổ đang mở thì mở thành tab ở đó, theo cách của VS Code;
+  - còn lại thì chạy một tiến trình `luc <path>` mới, giống như gõ `luc` lần nữa.
+- Khi app khởi động mà không có đường dẫn, nó chờ sự kiện mở file trong 300 ms rồi mới hiện hộp thoại chọn thư mục.

@@ -1,12 +1,21 @@
 //! Starts the app for `luc`: the configuration, themes and keymap, then
 //! one workbench window on a folder, asking for the folder when the app
-//! bundle is started from Finder or the Dock.
+//! bundle is started from Finder or the Dock, and opening the paths the
+//! platform sends ([`open_requests`]).
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::pin::pin;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
+use futures::StreamExt as _;
+use futures::channel::mpsc;
+use futures::future::{self, Either};
 use gpui::{
-    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, PathPromptOptions, actions, px, size,
+    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, PathPromptOptions, WindowHandle,
+    actions, px, size,
 };
 use gpui_platform::application;
 use lucerna_extension::store::Store;
@@ -17,6 +26,7 @@ use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 use crate::extensions::{
     ExtensionService, WasmGrammarValidator, extension_languages, extensions_root,
 };
+use crate::open_requests::{self, OpenWindow, Route};
 use crate::{
     AppState, ConfigPaths, OpenMode, Workbench, default_data_dir, watch_config, window_options,
 };
@@ -34,53 +44,146 @@ pub struct Launch {
     pub on_first_frame: Option<Box<dyn FnOnce()>>,
 }
 
-/// Runs the app until it quits; it quits when its last window closes.
-pub fn run(launch: Launch) {
-    application().run(move |cx: &mut App| {
-        start(cx);
-        open_workbench(launch, cx);
-    });
-}
+/// Turns a path the platform asked to open into what [`run`] opens, as
+/// `luc <path>` would.
+pub type Resolve = Box<dyn Fn(PathBuf) -> Result<Launch, String>>;
 
-/// Runs the app after asking for a folder to open, as when Finder or the
-/// Dock starts the bundle with no path. Quits if the user cancels.
-pub fn run_picking_folder(on_first_frame: Option<Box<dyn FnOnce()>>) {
-    application().run(move |cx: &mut App| {
+/// How long a launch without a path waits for the platform to ask for a
+/// path (Finder's "Open With") before it shows the folder picker.
+const OPEN_REQUEST_GRACE: Duration = Duration::from_millis(300);
+
+/// Runs the app until it quits; it quits when its last window closes.
+///
+/// With `launch`, the window opens on it. Without, as when Finder or the
+/// Dock starts the app bundle, the app waits briefly for a path to open and
+/// otherwise asks for a folder; Cancel quits. Paths the platform asks to
+/// open later go through [`open_requests::route`], resolved by `resolve`.
+pub fn run(launch: Option<Launch>, resolve: Resolve) {
+    let (requests_tx, mut requests) = mpsc::unbounded::<Vec<String>>();
+    let app = application();
+    app.on_open_urls(move |urls| {
+        requests_tx.unbounded_send(urls).ok();
+    });
+    app.run(move |cx: &mut App| {
         start(cx);
-        cx.activate(true);
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Open".into()),
-        });
+        let router = Rc::new(RefCell::new(Router {
+            window: None,
+            resolve,
+        }));
+        let waiting = launch.is_none();
+        if let Some(launch) = launch {
+            Router::open_first(&router, launch, cx);
+        } else {
+            cx.activate(true);
+        }
         cx.spawn(async move |cx| {
-            let root = match picked.await {
-                Ok(Ok(Some(paths))) => paths
-                    .into_iter()
-                    .next()
-                    .and_then(|path| std::fs::canonicalize(path).ok()),
-                Ok(Err(err)) => {
-                    tracing::error!(%err, "could not show the folder picker");
-                    None
+            if waiting {
+                let grace = cx.background_executor().timer(OPEN_REQUEST_GRACE);
+                match future::select(requests.next(), pin!(grace)).await {
+                    Either::Left((Some(urls), _)) => {
+                        cx.update(|cx| Router::open_urls(&router, &urls, cx));
+                    }
+                    Either::Left((None, _)) => return,
+                    Either::Right(_) => cx.update(|cx| pick_folder(&router, cx)),
                 }
-                _ => None,
-            };
-            cx.update(|cx| match root {
-                Some(root) => open_workbench(
-                    Launch {
-                        root,
-                        file: None,
-                        single_file: false,
-                        on_first_frame,
-                    },
-                    cx,
-                ),
-                None => cx.quit(),
-            });
+            }
+            while let Some(urls) = requests.next().await {
+                cx.update(|cx| Router::open_urls(&router, &urls, cx));
+            }
         })
         .detach();
     });
+}
+
+/// The process's one window, and how to open paths the platform sends.
+struct Router {
+    window: Option<(OpenWindow, WindowHandle<Workbench>)>,
+    resolve: Resolve,
+}
+
+impl Router {
+    fn open_first(this: &Rc<RefCell<Router>>, launch: Launch, cx: &mut App) {
+        let shown = match (&launch.file, launch.single_file) {
+            (Some(file), true) => OpenWindow::single_file(file.clone()),
+            _ => OpenWindow::folder(launch.root.clone()),
+        };
+        if let Some(handle) = open_workbench(launch, cx) {
+            this.borrow_mut().window = Some((shown, handle));
+        }
+    }
+
+    fn open_urls(this: &Rc<RefCell<Router>>, urls: &[String], cx: &mut App) {
+        for path in open_requests::file_paths(urls) {
+            Router::open_path(this, &path, cx);
+        }
+    }
+
+    fn open_path(this: &Rc<RefCell<Router>>, path: &Path, cx: &mut App) {
+        let path = match std::fs::canonicalize(path) {
+            Ok(path) => path,
+            Err(err) => {
+                tracing::warn!(%err, path = %path.display(), "cannot open");
+                return;
+            }
+        };
+        let (route, handle) = {
+            let router = this.borrow();
+            let shown = router.window.as_ref().map(|(shown, _)| shown);
+            let handle = router.window.as_ref().map(|(_, handle)| *handle);
+            (open_requests::route(&path, shown), handle)
+        };
+        tracing::info!(path = %path.display(), ?route, "open request");
+        match (route, handle) {
+            (Route::ThisWindow, Some(handle)) => {
+                let file = path.is_file().then(|| Arc::<Path>::from(path));
+                handle
+                    .update(cx, |workbench, window, cx| {
+                        if let Some(file) = file {
+                            workbench.open_path(file, OpenMode::Pinned, cx);
+                        }
+                        window.activate_window();
+                    })
+                    .ok();
+                cx.activate(true);
+            }
+            (Route::NewProcess, _) => open_requests::spawn_process(&path),
+            _ => {
+                let resolved = (this.borrow().resolve)(path);
+                match resolved {
+                    Ok(launch) => Router::open_first(this, launch, cx),
+                    Err(err) => tracing::error!(err, "could not open"),
+                }
+            }
+        }
+    }
+}
+
+/// Asks for a folder to open; quits on Cancel unless a window opened
+/// meanwhile.
+fn pick_folder(router: &Rc<RefCell<Router>>, cx: &mut App) {
+    let picked = cx.prompt_for_paths(PathPromptOptions {
+        files: false,
+        directories: true,
+        multiple: false,
+        prompt: Some("Open".into()),
+    });
+    let router = router.clone();
+    cx.spawn(async move |cx| {
+        let folder = match picked.await {
+            Ok(Ok(Some(paths))) => paths.into_iter().next(),
+            Ok(Err(err)) => {
+                tracing::error!(%err, "could not show the folder picker");
+                None
+            }
+            _ => None,
+        };
+        cx.update(|cx| match folder {
+            Some(folder) => Router::open_path(&router, &folder, cx),
+            None if cx.windows().is_empty() => cx.quit(),
+            None => {}
+        });
+    })
+    .detach();
 }
 
 /// What every launch sets up before its first window.
@@ -97,7 +200,7 @@ fn start(cx: &mut App) {
 }
 
 /// Opens the workbench window on `launch`; quits if it cannot.
-fn open_workbench(launch: Launch, cx: &mut App) {
+fn open_workbench(launch: Launch, cx: &mut App) -> Option<WindowHandle<Workbench>> {
     let Launch {
         root,
         file,
@@ -130,12 +233,17 @@ fn open_workbench(launch: Launch, cx: &mut App) {
         });
         workbench
     });
-    if let Err(err) = opened {
-        tracing::error!(%err, "could not open the window");
-        cx.quit();
-        return;
+    match opened {
+        Ok(handle) => {
+            cx.activate(true);
+            Some(handle)
+        }
+        Err(err) => {
+            tracing::error!(%err, "could not open the window");
+            cx.quit();
+            None
+        }
     }
-    cx.activate(true);
 }
 
 actions!(lucerna, [Quit, Hide, Minimize]);

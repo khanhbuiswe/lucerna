@@ -25,6 +25,111 @@
 	<string>@VERSION@</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
+	<!-- Folders, text and source code, so Lucerna shows in Finder's "Open
+	     With" and can be picked as the default app. Alternate: it never
+	     takes over as default on its own. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+				<string>public.text</string>
+				<string>public.plain-text</string>
+				<string>public.utf8-plain-text</string>
+				<string>public.source-code</string>
+				<string>public.script</string>
+				<string>public.shell-script</string>
+				<string>public.json</string>
+				<string>public.xml</string>
+				<string>public.yaml</string>
+				<string>net.daringfireball.markdown</string>
+			</array>
+		</dict>
+		<!-- Extensions with no system type (macOS gives .rs, .toml and the
+		     like a dynamic type that is not public.text). -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Source Code</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>rs</string>
+				<string>toml</string>
+				<string>lock</string>
+				<string>go</string>
+				<string>mod</string>
+				<string>py</string>
+				<string>pyi</string>
+				<string>rb</string>
+				<string>js</string>
+				<string>mjs</string>
+				<string>cjs</string>
+				<string>jsx</string>
+				<string>ts</string>
+				<string>mts</string>
+				<string>cts</string>
+				<string>tsx</string>
+				<string>json</string>
+				<string>jsonc</string>
+				<string>md</string>
+				<string>mdx</string>
+				<string>yaml</string>
+				<string>yml</string>
+				<string>c</string>
+				<string>h</string>
+				<string>cc</string>
+				<string>cpp</string>
+				<string>cxx</string>
+				<string>hh</string>
+				<string>hpp</string>
+				<string>m</string>
+				<string>mm</string>
+				<string>swift</string>
+				<string>java</string>
+				<string>kt</string>
+				<string>kts</string>
+				<string>scala</string>
+				<string>cs</string>
+				<string>php</string>
+				<string>lua</string>
+				<string>zig</string>
+				<string>ex</string>
+				<string>exs</string>
+				<string>erl</string>
+				<string>hs</string>
+				<string>ml</string>
+				<string>dart</string>
+				<string>sh</string>
+				<string>bash</string>
+				<string>zsh</string>
+				<string>fish</string>
+				<string>sql</string>
+				<string>html</string>
+				<string>css</string>
+				<string>scss</string>
+				<string>vue</string>
+				<string>svelte</string>
+				<string>graphql</string>
+				<string>proto</string>
+				<string>nix</string>
+				<string>tf</string>
+				<string>ini</string>
+				<string>cfg</string>
+				<string>conf</string>
+				<string>env</string>
+				<string>txt</string>
+				<string>log</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<!-- Without it, AppKit's text input logs "getApplicationProperty:
