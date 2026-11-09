@@ -1,6 +1,7 @@
 //! Non-interactive git helpers.
 
 use crate::process::{CancelToken, ProcessError, run};
+use std::ffi::OsStr;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -11,7 +12,12 @@ pub const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A `git` command that can never prompt and may use `file://` remotes.
 pub fn git_command() -> Command {
-    let mut cmd = Command::new("git");
+    git_command_with(OsStr::new("git"))
+}
+
+/// [`git_command`] running `program` instead of `git` from `PATH`.
+pub fn git_command_with(program: &OsStr) -> Command {
+    let mut cmd = Command::new(program);
     // The user's gitconfig is kept (proxy settings matter) but credential
     // helpers and hooks are disabled. GIT_SSH_COMMAND is always overridden
     // (even if the user set one) so ssh can never prompt.
@@ -46,7 +52,12 @@ pub fn run_git(
 }
 
 pub fn git_available() -> bool {
-    let mut cmd = git_command();
+    git_available_with(OsStr::new("git"))
+}
+
+/// Whether `program --version` runs (see [`git_command_with`]).
+pub fn git_available_with(program: &OsStr) -> bool {
+    let mut cmd = git_command_with(program);
     cmd.arg("--version");
     run(
         cmd,

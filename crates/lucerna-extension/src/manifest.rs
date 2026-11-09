@@ -37,7 +37,7 @@ pub struct GrammarManifest {
     pub path: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionManifest {
     #[serde(default)]
     pub id: String,

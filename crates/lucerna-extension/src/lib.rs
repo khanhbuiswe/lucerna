@@ -5,11 +5,14 @@
 pub mod builder;
 pub mod disk;
 pub mod git;
+pub mod index;
 pub mod language_config;
+pub mod lock;
 pub mod manifest;
 pub mod process;
 pub mod registry;
 pub mod snippets;
+pub mod store;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod toolchain;

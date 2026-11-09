@@ -3265,9 +3265,11 @@ dependencies = [
 name = "lucerna-extension"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "jsonc-parser",
  "libc",
  "lucerna-extension",
+ "notify",
  "regex",
  "serde",
  "serde_json",
