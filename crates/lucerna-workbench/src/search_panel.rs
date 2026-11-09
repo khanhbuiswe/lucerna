@@ -25,6 +25,7 @@ use lucerna_text::Point;
 use crate::code_view::CodeView;
 use crate::find_widget::{build_regex, single_line_selection};
 use crate::layout::color;
+use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, GRID, TREE_ROW_HEIGHT, toggle_button};
 use crate::workbench::enabled_globs;
@@ -265,14 +266,16 @@ impl SearchPanel {
         // `search` blocks: it runs on its own thread while this background
         // task forwards its events to the foreground as they come.
         let job = cx.background_spawn(async move {
-            std::thread::scope(|scope| {
-                let (root, query, exclude) = (&root, &query, &settings_exclude);
-                scope.spawn(move || search(root, query, exclude, sink, cancel));
-                for event in events {
-                    if forward.unbounded_send(event).is_err() {
-                        break;
+            guarded("search", || {
+                std::thread::scope(|scope| {
+                    let (root, query, exclude) = (&root, &query, &settings_exclude);
+                    scope.spawn(move || search(root, query, exclude, sink, cancel));
+                    for event in events {
+                        if forward.unbounded_send(event).is_err() {
+                            break;
+                        }
                     }
-                }
+                });
             });
         });
         self._search = cx.spawn(async move |this, cx| {

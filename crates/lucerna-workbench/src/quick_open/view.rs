@@ -18,6 +18,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use super::picker::{highlighted, picker_input_row, picker_list, picker_row, wrap_index};
 use super::query::{QuickOpenQuery, parse_query};
 use crate::layout::color;
+use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{GRID, popover};
 use crate::{AppState, OpenMode, Workbench};
@@ -202,7 +203,10 @@ impl QuickOpen {
         let (snapshot, recent) = (self.snapshot.clone(), self.recent.clone());
         let generation = self.generation;
         let matching = cx.background_spawn(async move {
-            match_files(&snapshot, &query, &recent, QUICK_OPEN_LIMIT, &cancel)
+            guarded("quick-open", || {
+                match_files(&snapshot, &query, &recent, QUICK_OPEN_LIMIT, &cancel)
+            })
+            .unwrap_or_default()
         });
         self._matching = cx.spawn(async move |this, cx| {
             let matches = matching.await;

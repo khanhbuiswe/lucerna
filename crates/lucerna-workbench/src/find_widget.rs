@@ -20,6 +20,7 @@ use regex::{Regex, RegexBuilder};
 use crate::code_view::CodeView;
 use crate::layout::color;
 use crate::quick_open::picker::wrap_index;
+use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
     CHEVRON_DOWN_ICON, CHEVRON_UP_ICON, CLOSE_ICON, GRID, icon_button, popover, toggle_button,
@@ -230,10 +231,12 @@ impl FindWidget {
             return;
         }
         let generation = self.generation;
-        let result =
-            cx.background_spawn(
-                async move { find_in_snapshot(&snapshot, &pattern, regex, case, word) },
-            );
+        let result = cx.background_spawn(async move {
+            guarded("find", || {
+                find_in_snapshot(&snapshot, &pattern, regex, case, word)
+            })
+            .unwrap_or_else(|| Err("internal error".into()))
+        });
         self._search = cx.spawn(async move |this, cx| {
             let result = result.await;
             this.update(cx, |find, cx| {

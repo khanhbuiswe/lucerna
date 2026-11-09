@@ -7,10 +7,8 @@
 //! absolute paths as given, relative ones joined onto the workbench root,
 //! so a tab's path and a worktree change's root-relative path meet.
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fs;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -26,6 +24,7 @@ use lucerna_text::{Buffer, BufferSnapshot, LineEnding, LoadError, Point, Reload,
 use crate::AppState;
 use crate::code_view::CodeView;
 use crate::editor_groups::EditorGroupsView;
+use crate::tasks::catch_panic;
 use crate::ui::GRID;
 
 /// Where a document is in its life.
@@ -434,6 +433,7 @@ impl Documents {
                 parse = true;
             }
             Ok(JobOutput::Reloaded(buffer, Ok((reload, stamp)))) => {
+                tracing::debug!(path = %key.display(), "document reloaded");
                 let snapshot = buffer.snapshot();
                 take_buffer(doc, buffer, stamp);
                 for view in doc.views() {
@@ -572,7 +572,6 @@ fn run_job(path: &Path, job: Job) -> JobOutput {
 
 /// Runs `f` on the background executor; a panic becomes
 /// [`LoadError::Io`] instead of taking the app down.
-// Task 20 replaces this with `spawn_guarded`.
 fn spawn_contained<T: Send + 'static>(
     cx: &App,
     f: impl FnOnce() -> T + Send + 'static,
@@ -581,19 +580,8 @@ fn spawn_contained<T: Send + 'static>(
 }
 
 fn contain<T>(f: impl FnOnce() -> T) -> Result<T, LoadError> {
-    catch_unwind(AssertUnwindSafe(f)).map_err(|panic| {
-        let message = panic_message(panic.as_ref());
-        tracing::error!(message, "background document work panicked");
-        LoadError::Io(format!("internal error: {message}"))
-    })
-}
-
-fn panic_message(panic: &(dyn Any + Send)) -> &str {
-    panic
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("unknown panic")
+    catch_panic("documents", f)
+        .map_err(|message| LoadError::Io(format!("internal error: {message}")))
 }
 
 /// The status-bar segments of the active document: cursor, encoding, line

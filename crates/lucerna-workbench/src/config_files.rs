@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, unbounded};
@@ -22,6 +21,7 @@ use lucerna_theme::ThemeRegistry;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::layout::color;
+use crate::tasks::spawn_guarded;
 use crate::{AppState, CommandRegistry, OpenMode, Workbench};
 
 /// A batch of changes ends once no event arrived for this long...
@@ -406,10 +406,9 @@ impl ConfigWatcher {
         }));
         lock(&state).rearm();
         let weak = Arc::downgrade(&state);
-        thread::Builder::new()
-            .name("lucerna-config-watch".into())
-            .spawn(move || debounce_loop(&rx, &weak, &on_batch))
-            .map_err(notify::Error::io)?;
+        spawn_guarded("lucerna-config-watch", move || {
+            debounce_loop(&rx, &weak, &on_batch);
+        });
         Ok(ConfigWatcher { state })
     }
 
@@ -620,7 +619,7 @@ fn open_logs_folder() {
     }
     match std::process::Command::new("open").arg(&dir).spawn() {
         // Reap it off the main thread.
-        Ok(mut child) => drop(thread::spawn(move || child.wait())),
+        Ok(mut child) => drop(spawn_guarded("lucerna-open-logs", move || child.wait())),
         Err(err) => tracing::error!(%err, "could not open the logs folder"),
     }
 }

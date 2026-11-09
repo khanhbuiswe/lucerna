@@ -35,6 +35,7 @@ use crate::documents::{DocState, Documents};
 use crate::editor_groups::{EditorGroupsView, Tab};
 use crate::find_widget::FindWidget;
 use crate::layout::color;
+use crate::tasks::guarded;
 use crate::ui::GRID;
 use crate::{AppState, CommandRegistry, Workbench};
 
@@ -359,9 +360,12 @@ impl CodeView {
     fn compute_folds(&self, cx: &mut Context<Self>) -> Task<()> {
         let snapshot = self.snapshot.clone();
         let (revision, tab_size) = (self.revision, self.config.tab_size);
-        let folds = cx
-            .background_executor()
-            .spawn(async move { indent_folds(&snapshot, tab_size, 0..snapshot.line_count()) });
+        let folds = cx.background_executor().spawn(async move {
+            guarded("folds", || {
+                indent_folds(&snapshot, tab_size, 0..snapshot.line_count())
+            })
+            .unwrap_or_default()
+        });
         cx.spawn(async move |this, cx| {
             let folds = folds.await;
             this.update(cx, |view, cx| {
