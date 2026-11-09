@@ -74,10 +74,13 @@ def main():
     ty = round(-LINE_BOTTOM * s, 2)  # line bottom on the baseline (y = 0)
     text_x = (CROP_X1 - CROP_X0) * s + 0.3 * (CROP_Y1 - CROP_Y0) * s
 
-    glyphs, x = [], text_x
+    infos, poss = hb_buf.glyph_infos, hb_buf.glyph_positions
+    # The 0.3 gap is to the first glyph's ink, not its origin: remove its left side bearing.
+    first = BoundsPen(gs)
+    gs[order[infos[0].codepoint]].draw(TransformPen(first, (sc, 0, 0, -sc, poss[0].x_offset * sc, 0)))
+    glyphs, x = [], text_x - first.bounds[0]
     tx0 = ty0 = math.inf
     tx1 = ty1 = -math.inf
-    infos, poss = hb_buf.glyph_infos, hb_buf.glyph_positions
     for i, (info, pos) in enumerate(zip(infos, poss)):
         name = order[info.codepoint]
         gx, gy = x + pos.x_offset * sc, -pos.y_offset * sc

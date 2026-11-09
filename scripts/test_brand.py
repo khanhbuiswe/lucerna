@@ -130,6 +130,23 @@ class BrandTest(unittest.TestCase):
             self.assertGreaterEqual(vy + vh - (ty + 47 * s), margin, name)
             self.assertGreaterEqual(vx + vw - (tx + 62.5 * s), margin, name)
 
+    def test_lockup_gap_is_0_3_of_mark_height(self):
+        import re
+
+        for name in self.LOCKUPS:
+            root = load(BRAND / name)
+            g = self._mark_group(root)
+            tx, ty, s = map(float, re.findall(r"[-\d.]+", g.get("transform")))
+            mark = paths(g)
+            first = [p for p in paths(root) if p not in mark][0]
+            xs = []  # SVGPathPen emits absolute M/L/Q/C pairs, H (x only), V (y only), Z
+            for cmd, args in re.findall(r"([MLHVQCZ])([^MLHVQCZ]*)", first.get("d")):
+                nums = [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", args)]
+                xs += nums if cmd == "H" else [] if cmd in "VZ" else nums[0::2]
+            ink_left = min(xs)
+            gap = ink_left - (tx + 62.5 * s)
+            self.assertAlmostEqual(gap, 0.3 * 29 * s, delta=0.05, msg=name)
+
     # Task 3: the site uses the new logo
 
     SITE = ROOT / "site"
