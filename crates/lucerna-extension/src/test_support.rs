@@ -132,3 +132,62 @@ pub fn registry_update(registry: &Path, id: &str, version: &str) {
     git(registry, &["add", "-A"]);
     git(registry, &["commit", "-q", "-m", "bump"]);
 }
+
+/// A validator that accepts everything, except a grammar named `bad` and
+/// any query whose grammar is `bad` or whose source is exactly `bad`.
+pub struct FakeValidator;
+
+impl crate::validate::GrammarValidator for FakeValidator {
+    fn load(&self, name: &str, _wasm: &[u8]) -> Result<(), String> {
+        if name == "bad" {
+            Err(format!("grammar `{name}` rejected"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_query(
+        &self,
+        name: &str,
+        _wasm: &[u8],
+        kind: &str,
+        source: &str,
+    ) -> Result<(), String> {
+        if name == "bad" || kind == "bad" || source.trim() == "bad" {
+            Err(format!("query {kind} for `{name}` rejected"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// A fake wasi-sdk in `dir`: `bin/clang` copies `wasm_fixture` to its `-o`
+/// path and appends its arguments to `dir/calls` (one line per call), and
+/// `VERSION` reads `34.0`.
+pub fn fake_wasi_sdk(dir: &Path, wasm_fixture: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(dir.join("VERSION"), "34.0\n").unwrap();
+    let script = format!(
+        "#!/bin/sh\n\
+         echo \"$@\" >> '{calls}'\n\
+         out=''\n\
+         while [ $# -gt 0 ]; do\n\
+         \x20 if [ \"$1\" = -o ]; then out=\"$2\"; shift; fi\n\
+         \x20 shift\n\
+         done\n\
+         cp '{fixture}' \"$out\"\n",
+        calls = dir.join("calls").display(),
+        fixture = wasm_fixture.display(),
+    );
+    let clang = dir.join("bin/clang");
+    std::fs::write(&clang, script).unwrap();
+    std::fs::set_permissions(&clang, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Number of times the fake clang in `dir` has run.
+pub fn fake_clang_calls(dir: &Path) -> usize {
+    std::fs::read_to_string(dir.join("calls"))
+        .map(|s| s.lines().count())
+        .unwrap_or(0)
+}
