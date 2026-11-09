@@ -12,6 +12,7 @@ mod explorer;
 mod find_widget;
 pub mod keys;
 mod layout;
+mod open_files;
 mod quick_open;
 mod search_panel;
 pub mod tasks;
@@ -36,6 +37,7 @@ pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, find_in_snapshot};
 pub use layout::StatusBarSide;
 pub use layout::title_bar::window_options;
+pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
 };

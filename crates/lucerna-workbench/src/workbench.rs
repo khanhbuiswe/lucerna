@@ -12,7 +12,7 @@ use gpui::{
     KeyDownEvent, ParentElement, Pixels, Render, Styled, Subscription, Task, Window, div,
     prelude::*, px,
 };
-use lucerna_project::{ScanOptions, Worktree, WorktreeEvent};
+use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
 use lucerna_text::Point;
 use serde_json::Value;
@@ -27,6 +27,7 @@ use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
     panel_toggles, sidebar, status_bar, title_bar,
 };
+use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::search_panel::SearchPanel;
 use crate::tasks::try_spawn_guarded;
@@ -81,6 +82,16 @@ pub struct Workbench {
     documents: Entity<Documents>,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
     _worktree_events: Task<()>,
+    /// Follows open files the worktree does not; `None` on the test
+    /// scheduler or when it could not start.
+    open_file_watcher: Option<OpenFileWatcher>,
+    /// What it follows: open files outside the root or not in the tree.
+    watched_open_files: Vec<PathBuf>,
+    /// Forwards its batches to [`Workbench::on_open_file_changes`].
+    _open_file_events: Task<()>,
+    /// The [`ConfigState`] batch last forwarded to the documents.
+    config_batch: u64,
+    _subscriptions: Vec<Subscription>,
     commands: Rc<CommandRegistry>,
     focus: FocusHandle,
     sidebar_focus: FocusHandle,
@@ -220,6 +231,13 @@ impl Workbench {
             cx.new(|cx| SearchPanel::new(root, workbench, cx))
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
+        let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
+        let subscriptions = vec![
+            cx.observe(&editor_groups, |wb, _, cx| {
+                wb.refresh_watched_open_files(cx)
+            }),
+            cx.observe_global::<ConfigState>(Self::config_files_changed),
+        ];
         let config_error = {
             let workbench = cx.weak_entity();
             cx.new(|cx| ConfigErrorItem::new(workbench, cx))
@@ -234,6 +252,13 @@ impl Workbench {
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
             _worktree_events: worktree_events,
+            open_file_watcher,
+            watched_open_files: Vec::new(),
+            _open_file_events: open_file_events,
+            config_batch: cx
+                .try_global::<ConfigState>()
+                .map_or(0, |state| state.last_changed().0),
+            _subscriptions: subscriptions,
             commands: Rc::new(commands),
             focus,
             sidebar_focus: cx.focus_handle(),
@@ -266,6 +291,7 @@ impl Workbench {
         if let Some(store) = store {
             workbench.start_persistence(store, restored.as_ref(), window, cx);
         }
+        workbench.refresh_watched_open_files(cx);
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
@@ -458,6 +484,93 @@ impl Workbench {
         });
         self.documents
             .update(cx, |documents, cx| documents.on_worktree_event(ev, cx));
+        // The tree changed: some open files may have joined or left it.
+        self.refresh_watched_open_files(cx);
+    }
+
+    /// Open files the worktree does not follow (outside the root, or not
+    /// in the tree, e.g. ignored), which the open-file watcher follows.
+    pub fn watched_open_files(&self) -> &[PathBuf] {
+        &self.watched_open_files
+    }
+
+    /// Re-picks [`Workbench::watched_open_files`] after the tabs or the
+    /// tree changed.
+    fn refresh_watched_open_files(&mut self, cx: &App) {
+        let snapshot = self.worktree.snapshot();
+        let mut files: Vec<PathBuf> = self
+            .open_tab_paths(cx)
+            .into_iter()
+            .filter(|path| match path.strip_prefix(&self.root) {
+                Ok(rel) => !snapshot.contains(rel),
+                Err(_) => true,
+            })
+            .collect();
+        files.sort();
+        files.dedup();
+        if files != self.watched_open_files {
+            if let Some(watcher) = &self.open_file_watcher {
+                watcher.set_files(files.clone());
+            }
+            self.watched_open_files = files;
+        }
+    }
+
+    /// Every open tab's path, once per path.
+    fn open_tab_paths(&self, cx: &App) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self
+            .editor_groups
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| g.tabs.iter().map(|t| t.path.to_path_buf()))
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    /// Changes to files on disk that the worktree does not report: from
+    /// the open-file watcher and the config watcher. Open documents among
+    /// `changed` (compared with symlinks resolved, as watchers report
+    /// real paths) reload, or are marked deleted when gone. Tests call it
+    /// directly.
+    pub fn on_open_file_changes(&mut self, changed: &[PathBuf], cx: &mut Context<Self>) {
+        let open = self.open_tab_paths(cx);
+        let changes: Vec<Change> = matching_files(&open, changed)
+            .into_iter()
+            .map(|path| Change {
+                kind: if path.exists() {
+                    ChangeKind::Modified
+                } else {
+                    ChangeKind::Removed
+                },
+                path: Arc::from(path),
+            })
+            .collect();
+        if changes.is_empty() {
+            return;
+        }
+        let ev = WorktreeEvent::Changed(changes);
+        self.documents
+            .update(cx, |documents, cx| documents.on_worktree_event(&ev, cx));
+    }
+
+    /// A configuration batch arrived: an open `settings.json` (or other
+    /// configuration file) among it reloads.
+    fn config_files_changed(&mut self, cx: &mut Context<Self>) {
+        let Some((batch, changed)) = cx
+            .try_global::<ConfigState>()
+            .map(|state| state.last_changed())
+            .map(|(batch, changed)| (batch, changed.to_vec()))
+        else {
+            return;
+        };
+        if batch != self.config_batch {
+            self.config_batch = batch;
+            self.on_open_file_changes(&changed, cx);
+        }
     }
 
     /// The Search panel in the sidebar.
@@ -837,6 +950,39 @@ fn pump_worktree_events(worktree: &Worktree, cx: &mut Context<Workbench>) -> Tas
             }
         }
     })
+}
+
+/// Starts the [`OpenFileWatcher`] and delivers its batches to
+/// [`Workbench::on_open_file_changes`]. Not started on GPUI's test
+/// scheduler (see [`pump_worktree_events`]): tests deliver batches
+/// themselves.
+fn pump_open_file_changes(cx: &mut Context<Workbench>) -> (Option<OpenFileWatcher>, Task<()>) {
+    if cx.background_executor().is_test() {
+        return (None, Task::ready(()));
+    }
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    let watcher = OpenFileWatcher::start(move |batch| {
+        let _ = tx.unbounded_send(batch);
+    });
+    match watcher {
+        Ok(watcher) => {
+            let task = cx.spawn(async move |workbench, cx| {
+                while let Some(batch) = rx.next().await {
+                    if workbench
+                        .update(cx, |wb, cx| wb.on_open_file_changes(&batch, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            (Some(watcher), task)
+        }
+        Err(err) => {
+            tracing::error!(%err, "could not watch open files");
+            (None, Task::ready(()))
+        }
+    }
 }
 
 fn register_shell_commands(commands: &mut CommandRegistry) {

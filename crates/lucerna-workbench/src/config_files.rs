@@ -127,6 +127,9 @@ pub struct ConfigState {
     theme_preview: bool,
     /// Bumped by every keymap load.
     keymap_generation: u64,
+    /// The paths of the last batch [`reload_config`] was given, and a
+    /// count of batches: the workbench reloads open files among them.
+    changed: (u64, Arc<[PathBuf]>),
 }
 
 impl gpui::Global for ConfigState {}
@@ -140,6 +143,12 @@ impl ConfigState {
     /// workbench can drop a chord typed against the old keymap.
     pub fn keymap_generation(&self) -> u64 {
         self.keymap_generation
+    }
+
+    /// The paths of the last batch of changes, and how many batches there
+    /// have been. Open documents among them are reloaded.
+    pub fn last_changed(&self) -> (u64, &[PathBuf]) {
+        (self.changed.0, &self.changed.1)
     }
 
     /// Files that failed to load, user settings first.
@@ -177,6 +186,7 @@ pub fn watch_config(paths: ConfigPaths, cx: &mut App) {
         _pump: pump,
         theme_preview: false,
         keymap_generation: 0,
+        changed: (0, Arc::from([])),
     });
     load(
         [
@@ -192,9 +202,13 @@ pub fn watch_config(paths: ConfigPaths, cx: &mut App) {
 /// Re-reads the configuration files that `changed` paths touch and
 /// applies them. What the watcher calls for each debounced batch.
 pub fn reload_config(changed: &[PathBuf], cx: &mut App) {
-    let Some(state) = cx.try_global::<ConfigState>() else {
+    if !cx.has_global::<ConfigState>() {
         return;
-    };
+    }
+    // An open `settings.json` reloads too (the workbench observes this).
+    let state = cx.global_mut::<ConfigState>();
+    state.changed = (state.changed.0 + 1, Arc::from(changed));
+    let state = cx.global::<ConfigState>();
     let files = classify(&state.paths, changed);
     if !files.is_empty() {
         load(files, cx);
@@ -359,7 +373,7 @@ fn classify(paths: &ConfigPaths, changed: &[PathBuf]) -> BTreeSet<ConfigFile> {
 /// `path` with symlinks resolved, as FSEvents reports it (`/private/var`
 /// for `/var`). Missing components are resolved through the deepest
 /// ancestor that exists.
-fn real_path(path: &Path) -> PathBuf {
+pub(crate) fn real_path(path: &Path) -> PathBuf {
     for ancestor in path.ancestors() {
         if let Ok(real) = std::fs::canonicalize(ancestor) {
             let rest = path
