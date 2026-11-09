@@ -88,10 +88,6 @@ pub fn icon_for_path(path: &Path, is_dir: bool, expanded: bool) -> &'static [u8]
 mod tests {
     use super::*;
 
-    fn file(name: &str) -> &'static [u8] {
-        icon_for_path(Path::new(name), false, false)
-    }
-
     #[test]
     fn directories_use_folder_icons() {
         assert_eq!(icon_for_path(Path::new("src"), true, false), FOLDER);
@@ -101,41 +97,11 @@ mod tests {
     }
 
     #[test]
-    fn files_map_by_name_then_extension() {
-        let cases: &[(&str, &[u8])] = &[
-            ("Cargo.lock", LOCK),
-            ("pnpm-lock.lock", LOCK),
-            ("LICENSE", SCALE),
-            ("LICENSE-MIT", SCALE),
-            ("LICENSE.md", SCALE),
-            ("COPYING", SCALE),
-            (".gitignore", GIT_BRANCH),
-            (".gitattributes", GIT_BRANCH),
-            ("sub/.gitmodules", GIT_BRANCH),
-            ("package.json", BRACES),
-            ("tsconfig.jsonc", BRACES),
-            ("README.md", BOOK_OPEN),
-            ("notes.markdown", BOOK_OPEN),
-            ("Cargo.toml", SETTINGS),
-            ("ci.yaml", SETTINGS),
-            ("ci.YML", SETTINGS),
-            ("build.sh", TERMINAL),
-            ("x.bash", TERMINAL),
-            ("x.zsh", TERMINAL),
-            ("logo.png", IMAGE),
-            ("a.jpg", IMAGE),
-            ("a.jpeg", IMAGE),
-            ("a.gif", IMAGE),
-            ("icon.svg", IMAGE),
-            ("a.webp", IMAGE),
-            ("favicon.ico", IMAGE),
-            ("Makefile", FILE),
-            ("notes.txt", FILE),
-            ("", FILE),
-        ];
-        for (name, icon) in cases {
-            assert!(file(name) == *icon, "{name}");
-        }
+    fn wrapper_maps_through_the_lucide_theme() {
+        let file = |n: &str| icon_for_path(Path::new(n), false, false);
+        assert!(file("Cargo.lock") == LOCK);
+        assert!(file("src/main.rs") == FILE_CODE);
+        assert!(file("Makefile") == FILE);
     }
 
     #[test]
@@ -144,7 +110,6 @@ mod tests {
             assert!(lucide_svg(name) == Some(*svg), "{name}");
         }
         assert!(lucide_svg("nope").is_none());
-        assert!(file("src/main.RS") == FILE_CODE);
     }
 
     #[test]

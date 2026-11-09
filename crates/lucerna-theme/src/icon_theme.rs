@@ -46,6 +46,10 @@ pub struct IconTheme {
     /// Lower-cased file-name prefixes checked before stems and suffixes.
     /// Only the built-in theme uses them (`LICENSE-MIT`, `COPYING`).
     name_prefixes: Vec<(&'static str, String)>,
+    /// Built-in Lucide only: its suffix keys are extensions, so they apply
+    /// only after a real extension dot (never to a whole name, a leading
+    /// dot or the part before the first dot), as in Phase 1.
+    extensions_only: bool,
     icons: HashMap<String, IconSource>,
 }
 
@@ -86,8 +90,13 @@ impl IconTheme {
     }
 
     /// Stem lookup, then suffix lookup, for one key.
-    fn typed(&self, key: &str) -> Option<IconSource> {
-        let ty = self.stems.get(key).or_else(|| self.suffixes.get(key))?;
+    fn typed(&self, key: &str, suffix_step: bool) -> Option<IconSource> {
+        let suffix = if suffix_step || !self.extensions_only {
+            self.suffixes.get(key)
+        } else {
+            None
+        };
+        let ty = self.stems.get(key).or(suffix)?;
         self.type_icon(ty)
     }
 
@@ -104,24 +113,28 @@ impl IconTheme {
                 return Some(icon);
             }
         }
-        if let Some(icon) = self.typed(&name) {
+        if let Some(icon) = self.typed(&name, false) {
             return Some(icon);
         }
         if let Some(first_dot) = name.find('.') {
             let mut rest = &name[first_dot + 1..];
+            // A name like `.json` has no extension.
+            let mut skip = self.extensions_only && first_dot == 0;
             loop {
-                if !rest.is_empty()
-                    && let Some(icon) = self.typed(rest)
+                if !skip
+                    && !rest.is_empty()
+                    && let Some(icon) = self.typed(rest, true)
                 {
                     return Some(icon);
                 }
+                skip = false;
                 match rest.split_once('.') {
                     Some((_, tail)) => rest = tail,
                     None => break,
                 }
             }
             if first_dot > 0
-                && let Some(icon) = self.typed(&name[..first_dot])
+                && let Some(icon) = self.typed(&name[..first_dot], false)
             {
                 return Some(icon);
             }
@@ -186,6 +199,7 @@ pub fn lucide_icon_theme() -> IconTheme {
         },
         stems: Keys::new(stems),
         suffixes: Keys::new(suffixes),
+        extensions_only: true,
         name_prefixes: vec![
             ("license", "license".to_string()),
             ("copying", "license".to_string()),
@@ -246,7 +260,7 @@ fn confine(root: &Path, canonical_root: &Path, rel: &str) -> Result<PathBuf, Str
     if rel_path.is_absolute()
         || rel_path
             .components()
-            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+            .any(|c| matches!(c, Component::Prefix(_)))
     {
         return Err(format!("icon path {rel:?} is outside the extension"));
     }
@@ -328,6 +342,7 @@ fn parse_file(json: &Path, root: &Path) -> Result<(Vec<IconTheme>, Vec<String>),
             stems: Keys::new(def.file_stems),
             suffixes: Keys::new(def.file_suffixes),
             name_prefixes: Vec::new(),
+            extensions_only: false,
             icons,
         });
     }

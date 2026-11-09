@@ -47,6 +47,13 @@ fn lucide_matches_phase1_table() {
         ("notes.txt", "file"),
         ("", "file"),
         ("src/main.RS", "file-code"),
+        (".json", "file"),
+        ("lock", "file"),
+        ("lock.txt", "file"),
+        ("md.orig", "file"),
+        ("json", "file"),
+        ("rs", "file"),
+        (".foo.json", "braces"),
     ];
     for (name, icon) in cases {
         assert_eq!(t.file_icon(Path::new(name)), b(icon), "{name}");
@@ -66,6 +73,7 @@ fn lucide_matches_phase1_table() {
 fn write_theme(dir: &Path, json: &str) -> (String, PathBuf, PathBuf) {
     let icons = dir.join("icons");
     fs::create_dir_all(&icons).unwrap();
+    fs::create_dir_all(icons.join("sub")).unwrap();
     for n in ["docker", "tsdef", "ts", "dir", "dir-open", "named", "def"] {
         fs::write(icons.join(format!("{n}.svg")), "<svg/>").unwrap();
     }
@@ -165,4 +173,20 @@ fn unknown_theme_name_resolves_to_lucide() {
     let t = reg.resolve("Nope");
     assert_eq!(t.name(), "Lucide");
     assert_eq!(t.file(Path::new("a.json")), IconSource::Builtin("braces"));
+}
+
+#[test]
+fn inner_parent_dir_allowed_escape_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = r#"{ "name": "T", "themes": [{ "name": "P", "appearance": "dark",
+      "file_stems": {"a": "ok", "b": "bad"},
+      "file_icons": {
+        "ok": {"path": "sub/../docker.svg"},
+        "bad": {"path": "../theme.json"} } }] }"#;
+    let (id, f, root) = write_theme(dir.path(), json);
+    let (reg, warnings) = IconThemeRegistry::build(&[(id, f, root)]);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let t = reg.resolve("P");
+    assert_eq!(file_name(Some(t.file(Path::new("a")))), "docker.svg");
+    assert_eq!(t.file(Path::new("b")), IconSource::Builtin("file"));
 }
