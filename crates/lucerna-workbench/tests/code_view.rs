@@ -394,6 +394,45 @@ fn fold_chevrons_follow_gutter_hover(cx: &mut TestAppContext) {
     assert_eq!(state(cx), (false, true, false));
 }
 
+/// The overlay scrollbar thumb: only when the text overflows, at the top
+/// of the track when scrolled to the top and at its bottom at the end.
+#[gpui::test]
+fn scrollbar_thumb_tracks_scroll(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (short, cx) = code_view("one\ntwo\nthree\n", cx);
+    assert_eq!(short.read_with(cx, |v, _| v.scrollbar_thumb()), None);
+
+    let text: String = (0..500).map(|i| format!("line {i}\n")).collect();
+    short.update(cx, |v, cx| v.set_buffer(snapshot(&text), cx));
+    draw(cx);
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let thumb = short
+        .read_with(cx, |v, _| v.scrollbar_thumb())
+        .expect("500 lines overflow");
+    assert_eq!(thumb.top(), gpui::px(0.));
+    assert!(thumb.size.height > gpui::px(0.) && thumb.size.height < viewport.height);
+    assert_eq!(thumb.size.width, gpui::px(lucerna_workbench::ui::SCROLLBAR_WIDTH));
+    assert_eq!(thumb.right(), viewport.width);
+
+    short.update(cx, |v, cx| v.set_scroll_top_row(499, cx));
+    draw(cx);
+    let thumb = short.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+    assert!((thumb.bottom() - viewport.height).abs() < gpui::px(0.01));
+}
+
+/// With the minimap on, the thumb sits left of it.
+#[gpui::test]
+fn scrollbar_thumb_is_left_of_the_minimap(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.minimap.enabled": true }"#));
+    let text: String = (0..500).map(|i| format!("line {i}\n")).collect();
+    let (view, cx) = code_view(&text, cx);
+    draw(cx);
+    let minimap = cx.debug_bounds("code-view-minimap").expect("minimap on");
+    let thumb = view.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+    assert!(thumb.right() <= minimap.left());
+    assert!(thumb.right() > minimap.left() - gpui::px(1.));
+}
+
 #[gpui::test]
 fn wheel_scrolls_by_pixels(cx: &mut TestAppContext) {
     init(cx, None);

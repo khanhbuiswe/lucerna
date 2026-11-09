@@ -18,7 +18,7 @@ use super::model::ExplorerModel;
 use crate::icons;
 use crate::layout::color;
 use crate::ui::{
-    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE,
+    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, thumb_geometry, UI_FONT_SIZE,
     icon_for_path,
 };
 use crate::{AppState, EditorGroupsView, OpenMode, Workbench};
@@ -31,8 +31,6 @@ const ICON_SLOT: f32 = 4. * GRID;
 const ROW_PADDING: f32 = 2. * GRID;
 const CHEVRON_SIZE: f32 = 12.;
 const TYPE_ICON_SIZE: f32 = 14.;
-/// The scrollbar thumb never gets shorter than this.
-const MIN_THUMB_HEIGHT: f32 = 6. * GRID;
 
 /// The file tree in the sidebar's Explorer slot.
 pub struct ExplorerView {
@@ -339,20 +337,6 @@ struct ScrollbarThumb {
     selector: &'static str,
 }
 
-/// Top and height of the thumb inside a `viewport` tall list scrolled
-/// `scroll_top` into `content`, or `None` when nothing overflows.
-fn thumb_geometry(viewport: f32, content: f32, scroll_top: f32) -> Option<(f32, f32)> {
-    if content <= viewport || viewport <= 0. {
-        return None;
-    }
-    let height = (viewport * viewport / content)
-        .max(MIN_THUMB_HEIGHT)
-        .min(viewport);
-    let max_scroll = content - viewport;
-    let top = (viewport - height) * (scroll_top / max_scroll).clamp(0., 1.);
-    Some((top, height))
-}
-
 impl UniformListDecoration for ScrollbarThumb {
     fn compute(
         &self,
@@ -419,26 +403,5 @@ impl Render for ExplorerView {
                         .track_scroll(&self.scroll),
                     ),
             )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn no_thumb_without_overflow() {
-        assert_eq!(thumb_geometry(100., 100., 0.), None);
-        assert_eq!(thumb_geometry(100., 40., 0.), None);
-    }
-
-    #[test]
-    fn thumb_tracks_scroll_and_keeps_a_minimum() {
-        // Half the content visible: half-height thumb.
-        assert_eq!(thumb_geometry(200., 400., 0.), Some((0., 100.)));
-        assert_eq!(thumb_geometry(200., 400., 200.), Some((100., 100.)));
-        let (top, height) = thumb_geometry(100., 100_000., 99_900.).unwrap();
-        assert_eq!(height, MIN_THUMB_HEIGHT);
-        assert_eq!(top + height, 100.);
     }
 }

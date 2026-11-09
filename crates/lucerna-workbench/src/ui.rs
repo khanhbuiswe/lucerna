@@ -15,10 +15,12 @@ pub const GRID: f32 = 4.0;
 pub const TITLE_BAR_HEIGHT: f32 = 34.0;
 pub const STATUS_BAR_HEIGHT: f32 = 26.0;
 pub const TAB_HEIGHT: f32 = 32.0;
-/// Height of a file tree row, and of the Explorer header.
+/// Height of a file tree row, and of the Explorer root row.
 pub const TREE_ROW_HEIGHT: f32 = 24.0;
 /// Width of the thin overlay scrollbar thumb.
 pub const SCROLLBAR_WIDTH: f32 = 6.0;
+/// The scrollbar thumb never gets shorter than this.
+pub const MIN_THUMB_HEIGHT: f32 = 6. * GRID;
 pub const POPOVER_MAX_WIDTH: f32 = 600.0;
 pub const POPOVER_RADIUS: f32 = 8.0;
 /// UI text size; the UI uses IBM Plex Sans, the editor its own font.
@@ -150,4 +152,40 @@ pub fn toggle_button(
                 .hover(move |s| s.bg(hover))
         })
         .child(label)
+}
+
+/// Top and height of a scrollbar thumb inside a `viewport` tall track
+/// scrolled `scroll_top` into `content` (all in the same unit), or `None`
+/// when nothing overflows. The thumb is at least [`MIN_THUMB_HEIGHT`].
+pub(crate) fn thumb_geometry(viewport: f32, content: f32, scroll_top: f32) -> Option<(f32, f32)> {
+    if content <= viewport || viewport <= 0. {
+        return None;
+    }
+    let height = (viewport * viewport / content)
+        .max(MIN_THUMB_HEIGHT)
+        .min(viewport);
+    let max_scroll = content - viewport;
+    let top = (viewport - height) * (scroll_top / max_scroll).clamp(0., 1.);
+    Some((top, height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_thumb_without_overflow() {
+        assert_eq!(thumb_geometry(100., 100., 0.), None);
+        assert_eq!(thumb_geometry(100., 40., 0.), None);
+    }
+
+    #[test]
+    fn thumb_tracks_scroll_and_keeps_a_minimum() {
+        // Half the content visible: half-height thumb.
+        assert_eq!(thumb_geometry(200., 400., 0.), Some((0., 100.)));
+        assert_eq!(thumb_geometry(200., 400., 200.), Some((100., 100.)));
+        let (top, height) = thumb_geometry(100., 100_000., 99_900.).unwrap();
+        assert_eq!(height, MIN_THUMB_HEIGHT);
+        assert_eq!(top + height, 100.);
+    }
 }

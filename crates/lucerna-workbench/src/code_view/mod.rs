@@ -521,6 +521,12 @@ impl CodeView {
         cx.notify();
     }
 
+    /// The overlay scrollbar thumb as last painted, in window coordinates;
+    /// `None` while the rows fit (or before the first paint).
+    pub fn scrollbar_thumb(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.frame.as_ref().and_then(|f| f.thumb())
+    }
+
     /// How many whole rows fit in the viewport; 0 before the first paint.
     pub fn visible_rows(&self) -> u32 {
         self.frame.as_ref().map_or(0, |f| f.visible_rows())

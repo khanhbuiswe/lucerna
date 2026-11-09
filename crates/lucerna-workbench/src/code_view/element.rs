@@ -20,6 +20,7 @@ use super::layout::{FoldState, char_columns, display_lines_with_tab_size, row_st
 use super::selection::{self, Selection};
 use super::{CodeView, Drag, hsla};
 use crate::AppState;
+use crate::ui::{SCROLLBAR_WIDTH, thumb_geometry};
 
 /// Rows shaped below the viewport so the next scroll step is ready.
 const OVERSCAN_ROWS: u32 = 3;
@@ -147,6 +148,8 @@ pub(crate) struct Frame {
     /// `·` and `→`, when whitespace is rendered.
     whitespace: Option<(ShapedLine, ShapedLine)>,
     hitbox: Option<Hitbox>,
+    /// The overlay scrollbar thumb, while the rows overflow.
+    thumb: Option<Bounds<Pixels>>,
     colors: FrameColors,
 }
 
@@ -159,9 +162,14 @@ struct FrameColors {
     bracket: Hsla,
     search_match: Hsla,
     active_match: Hsla,
+    scrollbar_thumb: Hsla,
 }
 
 impl Frame {
+    pub fn thumb(&self) -> Option<Bounds<Pixels>> {
+        self.thumb
+    }
+
     pub fn visible_rows(&self) -> u32 {
         (self.bounds.size.height / self.line_height).floor().max(0.) as u32
     }
@@ -432,6 +440,22 @@ impl CodeView {
             .map(|&offset| self.snapshot.offset_to_point(offset))
             .collect();
 
+        // The thumb follows buffer rows (folded ones left out), not
+        // wrapped display lines: one row's height each.
+        let shown_rows = line_count - self.folds.hidden_before(line_count);
+        let rows_above = self.scroll.top_row - self.folds.hidden_before(self.scroll.top_row);
+        let thumb = thumb_geometry(
+            f32::from(bounds.size.height),
+            shown_rows as f32 * f32::from(line_height),
+            rows_above as f32 * f32::from(line_height) + self.scroll.offset,
+        )
+        .map(|(top, height)| {
+            Bounds::new(
+                point(bounds.right() - px(SCROLLBAR_WIDTH), bounds.top() + px(top)),
+                size(px(SCROLLBAR_WIDTH), px(height)),
+            )
+        });
+
         let frame = Arc::new(Frame {
             bounds,
             text_bounds,
@@ -448,6 +472,7 @@ impl CodeView {
             brackets,
             whitespace,
             hitbox: Some(hitbox),
+            thumb,
             colors: FrameColors {
                 background: hsla(ui.editor_background),
                 gutter: hsla(ui.editor_background),
@@ -456,6 +481,7 @@ impl CodeView {
                 bracket: hsla(ui.editor_foreground).opacity(BRACKET_BOX_ALPHA),
                 search_match: hsla(ui.search_match_background),
                 active_match: hsla(ui.editor_foreground).opacity(ACTIVE_MATCH_ALPHA),
+                scrollbar_thumb: hsla(ui.scrollbar_thumb),
             },
         });
         self.frame = Some(frame.clone());
