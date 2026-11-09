@@ -772,10 +772,23 @@ impl Workbench {
         let active = self.editor_groups.read(cx).model().active_tab();
         let path = active.map(|tab| &tab.path);
         let extname = path.map(|p| extname(p)).unwrap_or_default();
-        let lang_id = path
-            .and_then(|p| cx.global::<AppState>().languages.language_for_path(p))
-            .map(|lang| lang.id.to_string())
-            .unwrap_or_default();
+        // The language the document resolved (`files.associations`
+        // included); before its view exists, the same lookup by path.
+        let view = self
+            .editor_groups
+            .read(cx)
+            .active_body()
+            .and_then(|body| body.downcast::<CodeView>().ok());
+        let lang_id = match view {
+            Some(view) => view.read(cx).language_id().unwrap_or_default().to_string(),
+            None => path
+                .and_then(|p| {
+                    let rel = p.strip_prefix(&self.root).unwrap_or(p);
+                    cx.global::<AppState>().languages.language_for_file(rel, "")
+                })
+                .map(|lang| lang.id.to_string())
+                .unwrap_or_default(),
+        };
         ctx.set("resourceExtname", ContextValue::Str(extname));
         ctx.set("editorLangId", ContextValue::Str(lang_id));
         ctx

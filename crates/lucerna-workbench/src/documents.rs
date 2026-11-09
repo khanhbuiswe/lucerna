@@ -166,11 +166,13 @@ impl Documents {
                 doc.views.push(view.downgrade());
                 let state = doc.state.clone();
                 let (snapshot, syntax) = (doc.snapshot.clone(), doc.syntax.clone());
+                let language_id = doc.language.as_ref().map(|l| l.id.clone());
                 let go_to = snapshot.as_ref().and(doc.pending_go_to.take());
                 let scroll = snapshot
                     .as_ref()
                     .and_then(|_| self.pending_scroll.remove(&key));
                 view.update(cx, |v, cx| {
+                    v.set_language_id(language_id, cx);
                     if let Some(snapshot) = snapshot {
                         v.set_buffer(snapshot, cx);
                         v.set_syntax(syntax, cx);
@@ -187,7 +189,11 @@ impl Documents {
             None => {
                 // The first line is not known yet; the load looks again.
                 let language = language_for(&self.root, &key, None, cx);
-                view.update(cx, |v, cx| v.set_doc_state(DocState::Loading, cx));
+                let language_id = language.as_ref().map(|l| l.id.clone());
+                view.update(cx, |v, cx| {
+                    v.set_language_id(language_id, cx);
+                    v.set_doc_state(DocState::Loading, cx);
+                });
                 self.docs.insert(
                     key.clone(),
                     Document {
@@ -226,13 +232,15 @@ impl Documents {
             // Even an unchanged root language is parsed again: the new
             // registry may add or drop the languages it injects.
             doc.language = language_for(&self.root, &key, doc.snapshot.as_ref(), cx);
+            sync_language_id(doc, cx);
             if doc.language.is_none() {
                 // Cancels a parse in flight with the old language.
                 doc.parse = None;
                 clear_syntax(doc, cx);
             } else {
-                // The old syntax stays shown until the new parse lands.
-                self.parse(&key, cx);
+                // In the background: a swap must not parse every open file
+                // on the UI thread. The old syntax stays shown meanwhile.
+                self.parse(&key, false, cx);
             }
         }
         cx.notify();
@@ -438,6 +446,7 @@ impl Documents {
                 take_buffer(doc, buffer, stamp);
                 // Now with the first line, for `first_line_pattern`.
                 doc.language = language_for(&self.root, key, Some(&snapshot), cx);
+                sync_language_id(doc, cx);
                 for view in doc.views() {
                     let snapshot = snapshot.clone();
                     view.update(cx, |v, cx| v.set_buffer(snapshot, cx));
@@ -502,7 +511,7 @@ impl Documents {
         }
         let again = std::mem::take(&mut doc.dirty);
         if parse {
-            self.parse(key, cx);
+            self.parse(key, true, cx);
         }
         if again {
             self.start_job(key, cx);
@@ -510,9 +519,10 @@ impl Documents {
         cx.notify();
     }
 
-    /// Parses the current text: within [`SYNC_PARSE_BUDGET`] here, else to
-    /// completion on a background thread. Large files are not parsed.
-    fn parse(&mut self, key: &Arc<Path>, cx: &mut Context<Self>) {
+    /// Parses the current text: within [`SYNC_PARSE_BUDGET`] here when
+    /// `try_sync`, else (or when that times out) to completion on a
+    /// background thread. Large files are not parsed.
+    fn parse(&mut self, key: &Arc<Path>, try_sync: bool, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.get_mut(key) else {
             return;
         };
@@ -544,7 +554,7 @@ impl Documents {
         // language whose WASM grammar is not loaded yet makes the sync parse
         // time out, so it loads here too.
         let mut started = None;
-        if language.grammar_ready() {
+        if try_sync && language.grammar_ready() {
             let sync = catch_panic("parse", || {
                 let mut syntax = SyntaxState::new(language.clone(), registry.clone())?;
                 let outcome = syntax.parse(&snapshot, Some(SYNC_PARSE_BUDGET));
@@ -648,6 +658,15 @@ fn set_syntax(doc: &mut Document, syntax: Arc<SyntaxState>, cx: &mut App) {
         view.update(cx, |v, cx| v.set_syntax(Some(syntax), cx));
     }
     doc.syntax = Some(syntax);
+}
+
+/// Gives every view of `doc` its language's id.
+fn sync_language_id(doc: &Document, cx: &mut App) {
+    let id = doc.language.as_ref().map(|l| l.id.clone());
+    for view in doc.views() {
+        let id = id.clone();
+        view.update(cx, |v, cx| v.set_language_id(id, cx));
+    }
 }
 
 /// The language of the file at `key`: by `files.associations` against its

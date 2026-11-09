@@ -122,3 +122,45 @@ fn validate_query_reports_bad_node() {
 fn bundled() -> std::sync::Arc<LanguageRegistry> {
     std::sync::Arc::new(LanguageRegistry::bundled())
 }
+
+#[test]
+fn extension_query_files_are_read_on_first_use() {
+    use lucerna_syntax::{Associations, ExtensionLanguage};
+    let dir = std::env::temp_dir().join(format!("lucerna-lazy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let spec = ExtensionLanguage {
+        extension_id: "lazy".into(),
+        name: "Lazy".into(),
+        dir: dir.clone(),
+        grammar: Some(("json".into(), json_wasm())),
+        path_suffixes: vec!["lazy".into()],
+        first_line_pattern: None,
+        hidden: false,
+    };
+    let registry = Arc::new(LanguageRegistry::build(&[spec], Associations::default()));
+    let language = registry.language_by_name("Lazy").unwrap();
+    assert!(!language.has_injections());
+    // Written after the registry was built: building read no query file.
+    std::fs::write(dir.join("highlights.scm"), "(string) @string\n").unwrap();
+    std::fs::write(dir.join("injections.scm"), "").unwrap();
+    assert!(language.has_injections());
+    let buffer = Buffer::from_bytes(br#"{"a": 1}"#, false).unwrap();
+    let snap = buffer.snapshot();
+    let mut state = SyntaxState::new(language, registry).unwrap();
+    state.parse(&snap, None);
+    let spans = state.highlights(&snap, 0..1, &|_| true);
+    assert!(spans.iter().any(|s| &*s.capture == "string"), "{spans:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bundled_languages_are_shared_across_registries() {
+    use lucerna_syntax::Associations;
+    let a = LanguageRegistry::bundled();
+    let b = LanguageRegistry::build(&[], Associations::default());
+    let rust = |r: &LanguageRegistry| r.language_by_name("rust").unwrap();
+    assert!(Arc::ptr_eq(&rust(&a), &rust(&b)));
+    let c = a.with_associations(Associations::default());
+    assert!(Arc::ptr_eq(&rust(&a), &rust(&c)));
+}

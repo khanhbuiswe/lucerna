@@ -1,7 +1,7 @@
 //! WASM grammars: one shared engine, a process-wide grammar cache, and the
 //! validation helpers an installer uses before accepting a grammar.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
@@ -55,15 +55,18 @@ struct CacheKey {
     stamp: Option<(SystemTime, u64)>,
 }
 
+fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| Some((m.modified().ok()?, m.len())))
+}
+
 impl CacheKey {
     fn new(grammar: &GrammarKey, path: &Path) -> CacheKey {
-        let stamp = std::fs::metadata(path)
-            .ok()
-            .and_then(|m| Some((m.modified().ok()?, m.len())));
         CacheKey {
             grammar: grammar.clone(),
             path: path.to_path_buf(),
-            stamp,
+            stamp: stamp(path),
         }
     }
 }
@@ -72,8 +75,8 @@ type Slot = Arc<OnceLock<Result<tree_sitter::Language, GrammarError>>>;
 
 struct Cache {
     slots: HashMap<CacheKey, Slot>,
-    /// The stores that loaded the languages, kept alive with them.
-    stores: Vec<WasmStore>,
+    /// The store that loaded each language, kept with its slot.
+    stores: HashMap<CacheKey, WasmStore>,
 }
 
 fn cache() -> &'static Mutex<Cache> {
@@ -81,7 +84,7 @@ fn cache() -> &'static Mutex<Cache> {
     CACHE.get_or_init(|| {
         Mutex::new(Cache {
             slots: HashMap::new(),
-            stores: Vec::new(),
+            stores: HashMap::new(),
         })
     })
 }
@@ -111,13 +114,27 @@ pub(crate) fn load_wasm_grammar(
     path: &Path,
 ) -> Result<tree_sitter::Language, GrammarError> {
     let cache_key = CacheKey::new(key, path);
-    let slot = lock().slots.entry(cache_key).or_default().clone();
+    let slot = lock().slots.entry(cache_key.clone()).or_default().clone();
     slot.get_or_init(|| {
         let (store, language) = load(&key.name, path)?;
-        lock().stores.push(store);
+        lock().stores.insert(cache_key, store);
         Ok(language)
     })
     .clone()
+}
+
+/// Drops the cached grammars that are not in `live`, and those whose file
+/// changed since they loaded (an extension updated in place), with the
+/// stores that loaded them; and empties the pool of idle stores, which may
+/// hold instances of them. A parser that uses a dropped grammar keeps
+/// working: the grammar and its own store live until it is dropped.
+pub fn retain_grammars(live: &HashSet<GrammarKey>) {
+    let mut cache = lock();
+    let keep = |key: &CacheKey| live.contains(&key.grammar) && stamp(&key.path) == key.stamp;
+    cache.slots.retain(|key, _| keep(key));
+    cache.stores.retain(|key, _| keep(key));
+    drop(cache);
+    pool().lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 fn load(name: &str, path: &Path) -> Result<(WasmStore, tree_sitter::Language), GrammarError> {

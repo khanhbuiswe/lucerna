@@ -170,11 +170,11 @@ pub struct CodeView {
 impl CodeView {
     /// An empty view of `path`; [`CodeView::set_buffer`] gives it text.
     pub fn new(path: Arc<Path>, cx: &mut Context<Self>) -> Self {
-        // The same lookup `Documents` makes for the file's syntax.
+        // A first guess; `Documents` sets the language it resolves.
         let language_id = cx
             .global::<AppState>()
             .languages
-            .language_for_path(&path)
+            .language_for_file(&path, "")
             .map(|lang| lang.id.clone());
         let (config, font_size, word_wrap) = Config::read(language_id.as_deref(), cx);
         let snapshot = Buffer::from_bytes(b"", false)
@@ -229,6 +229,22 @@ impl CodeView {
 
     pub fn snapshot(&self) -> &BufferSnapshot {
         &self.snapshot
+    }
+
+    /// The id of the file's language: `editorLangId` and the `"[id]"`
+    /// settings override key.
+    pub fn language_id(&self) -> Option<&str> {
+        self.language_id.as_deref()
+    }
+
+    /// Sets the file's language id (as its document resolved it) and
+    /// re-reads the settings that may be overridden per language.
+    pub fn set_language_id(&mut self, id: Option<Arc<str>>, cx: &mut Context<Self>) {
+        if self.language_id != id {
+            self.language_id = id;
+            self.reload_config(cx);
+            cx.notify();
+        }
     }
 
     /// The parsed syntax shown, if any.

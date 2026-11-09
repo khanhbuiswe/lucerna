@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use gpui::{Entity, TestAppContext, VisualTestContext};
 use lucerna_extension::index::reindex;
 use lucerna_extension::store::StoreEvent;
+use lucerna_settings::parse_when;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::extensions::ExtensionService;
 use lucerna_workbench::{
@@ -186,6 +187,17 @@ fn captures(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> Vec<String> 
     })
 }
 
+fn languages_generation(cx: &mut VisualTestContext) -> u64 {
+    cx.update(|_, cx| cx.global::<AppState>().languages_generation)
+}
+
+fn editor_lang_id_is(wb: &Entity<Workbench>, id: &str, cx: &mut VisualTestContext) -> bool {
+    let ctx = cx.update(|window, cx| wb.read(cx).context_keys(window, cx));
+    parse_when(&format!("editorLangId == '{id}'"))
+        .unwrap()
+        .eval(&ctx)
+}
+
 fn theme_name(cx: &mut VisualTestContext) -> String {
     cx.update(|_, cx| cx.global::<AppState>().theme.name.clone())
 }
@@ -226,10 +238,13 @@ fn install_event_recolors_open_tab(cx: &mut TestAppContext) {
     assert_eq!(language(&wb, &view, cx), "Plain Text");
     assert!(captures(&view, cx).is_empty());
 
+    let generation = languages_generation(cx);
     install_language_ext(&dirs, "zz", &[("ZZ", "zz", "string")]);
     index_changed(&dirs, cx);
 
+    assert_eq!(languages_generation(cx), generation + 1);
     assert_eq!(language(&wb, &view, cx), "ZZ");
+    assert!(editor_lang_id_is(&wb, "zz", cx));
     assert!(
         captures(&view, cx).iter().any(|c| c == "string"),
         "the string is highlighted: {:?}",
@@ -253,8 +268,16 @@ fn uninstall_falls_back_without_crash(cx: &mut TestAppContext) {
         captures(&view, cx)
     );
 
+    let cached = lucerna_syntax::wasm_cache_len();
+    assert!(cached > 0);
+
     cx.update(|_, cx| ExtensionService::uninstall("extjson".into(), cx));
     settle(cx);
+
+    assert!(
+        lucerna_syntax::wasm_cache_len() < cached,
+        "the uninstalled grammar is dropped from the cache"
+    );
 
     assert!(!dirs.installed("extjson").exists());
     let docs = documents(&wb, cx);
@@ -315,10 +338,16 @@ fn color_theme_applied_when_extension_appears(cx: &mut TestAppContext) {
     });
     assert_eq!(setting.as_deref(), Some("Ext Dark"), "the setting is kept");
 
+    let generation = languages_generation(cx);
     install_theme_ext(&dirs, "exttheme", "Ext Dark");
     index_changed(&dirs, cx);
 
     assert_eq!(theme_name(cx), "Ext Dark");
+    assert_eq!(
+        languages_generation(cx),
+        generation,
+        "a theme-only change keeps the language registry"
+    );
 }
 
 #[gpui::test]
@@ -346,6 +375,7 @@ fn files_associations_change_rebuilds(cx: &mut TestAppContext) {
     let (wb, cx) = workbench(&dirs, cx);
     let view = open(&wb, "a.qq", cx);
     assert_eq!(language(&wb, &view, cx), "Plain Text");
+    assert!(editor_lang_id_is(&wb, "", cx));
 
     write(
         &dirs.settings(),
@@ -356,6 +386,12 @@ fn files_associations_change_rebuilds(cx: &mut TestAppContext) {
     settle(cx);
 
     assert_eq!(language(&wb, &view, cx), "JSON");
+    assert!(editor_lang_id_is(&wb, "json", cx));
+    assert_eq!(
+        view.read_with(cx, |v, _| v.language_id().map(str::to_string)),
+        Some("json".to_string()),
+        "the `[json]` settings override applies to the view"
+    );
     assert!(
         captures(&view, cx).iter().any(|c| c.starts_with("string")),
         "bundled JSON colours it: {:?}",

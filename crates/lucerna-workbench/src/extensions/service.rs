@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use futures::StreamExt;
 use gpui::{App, Task};
-use lucerna_extension::index::{ExtensionIndex, IndexedExtension};
+use lucerna_extension::index::{ExtensionIndex, IndexedExtension, LanguageEntry};
 use lucerna_extension::process::CancelToken;
 use lucerna_extension::registry::is_stale;
 use lucerna_extension::store::{InstallProgress, Store, StoreError, StoreEvent};
@@ -140,19 +140,49 @@ fn build_themes(
 /// Swaps the registries into [`AppState`], bumps `languages_generation`
 /// (each open workbench then has its documents look their language up
 /// again, see `Documents::languages_changed`), re-applies
-/// `workbench.colorTheme` and `workbench.iconTheme`, and redraws.
+/// `workbench.colorTheme` and `workbench.iconTheme`, and redraws. When
+/// `r.languages` is the registry in use, nothing language-related changes
+/// and open documents are not parsed again.
 pub(crate) fn apply_registries(r: Registries, cx: &mut App) {
     for warning in &r.warnings {
         tracing::warn!(%warning, "extension registries");
     }
+    if !Arc::ptr_eq(&r.languages, &cx.global::<AppState>().languages) {
+        // Associations changed meanwhile apply too; the languages are shared.
+        let associations = Associations::new(&cx.default_global::<RegistryInputs>().associations);
+        let languages = r.languages.with_associations(associations);
+        // Grammars of uninstalled or replaced extensions are dropped; open
+        // documents keep theirs until they are parsed again.
+        lucerna_syntax::retain_grammars(&languages.grammar_keys());
+        set_languages(languages, cx);
+    }
     let state = cx.global_mut::<AppState>();
-    state.languages = r.languages;
-    state.languages_generation += 1;
     state.themes = r.themes;
     state.icon_themes = r.icon_themes;
     resolve_icons(cx);
     reapply_configured_theme(cx);
     cx.refresh_windows();
+}
+
+fn set_languages(languages: LanguageRegistry, cx: &mut App) {
+    let state = cx.global_mut::<AppState>();
+    state.languages = Arc::new(languages);
+    state.languages_generation += 1;
+}
+
+/// What an index says about languages: a change here needs a new language
+/// registry. Install info is included since an update keeps the paths.
+fn language_inputs(
+    index: &ExtensionIndex,
+) -> Vec<(
+    &String,
+    &lucerna_extension::index::InstallInfo,
+    &[LanguageEntry],
+)> {
+    usable(index)
+        .filter(|(_, ext)| !ext.languages.is_empty())
+        .map(|(id, ext)| (id, &ext.info, ext.languages.as_slice()))
+        .collect()
 }
 
 fn apply_themes(themes: ThemeRegistry, icon_themes: IconThemeRegistry, cx: &mut App) {
@@ -203,7 +233,10 @@ fn user_themes_dir(cx: &App) -> PathBuf {
 /// rebuild in flight.
 #[derive(Default)]
 struct RegistryInputs {
+    /// `files.associations` of the language registry in use.
     associations: BTreeMap<String, String>,
+    /// The index the language registry in use was built from.
+    languages_index: Arc<ExtensionIndex>,
     /// Bumped per scheduled build; an older build's result is dropped.
     generation: u64,
     task: Option<Task<()>>,
@@ -212,15 +245,16 @@ struct RegistryInputs {
 impl gpui::Global for RegistryInputs {}
 
 /// Rebuilds every registry on the background executor, then swaps them in.
-/// A later call supersedes one still running.
+/// The language registry is swapped only when the index changed what it
+/// says about languages. A later call supersedes one still running.
 fn schedule_rebuild(cx: &mut App) {
     let index = current_index(cx);
-    let associations = configured_associations(cx);
     let user_themes = user_themes_dir(cx);
     let inputs = cx.default_global::<RegistryInputs>();
-    inputs.associations = associations.clone();
+    let associations = inputs.associations.clone();
     inputs.generation += 1;
     let generation = inputs.generation;
+    let built_from = index.clone();
     let work = cx.background_executor().spawn(async move {
         catch_panic("rebuild extension registries", || {
             rebuild_registries(&index, &associations, &user_themes)
@@ -231,43 +265,54 @@ fn schedule_rebuild(cx: &mut App) {
             return;
         };
         cx.update(|cx| {
-            if cx.global::<RegistryInputs>().generation == generation {
-                apply_registries(registries, cx);
+            let inputs = cx.global_mut::<RegistryInputs>();
+            if inputs.generation != generation {
+                return;
             }
+            let mut registries = registries;
+            if language_inputs(&inputs.languages_index) == language_inputs(&built_from) {
+                // No language changed: keep the registry in use.
+                registries.languages = cx.global::<AppState>().languages.clone();
+            } else {
+                inputs.languages_index = built_from;
+            }
+            apply_registries(registries, cx);
         });
     });
     cx.global_mut::<RegistryInputs>().task = Some(task);
 }
 
-/// After settings changed: a new `files.associations` rebuilds the
-/// registries, and `workbench.iconTheme` is resolved again.
-pub(crate) fn settings_changed(cx: &mut App) {
+/// Applies `files.associations` when it changed. The languages are shared
+/// with the registry in use, so nothing is rebuilt or recompiled.
+fn apply_associations(cx: &mut App) {
     let associations = configured_associations(cx);
-    if cx.default_global::<RegistryInputs>().associations != associations {
-        schedule_rebuild(cx);
+    let inputs = cx.default_global::<RegistryInputs>();
+    if inputs.associations == associations {
+        return;
     }
+    inputs.associations = associations.clone();
+    let languages = cx
+        .global::<AppState>()
+        .languages
+        .with_associations(Associations::new(&associations));
+    set_languages(languages, cx);
+}
+
+/// After settings changed: applies `files.associations` and resolves
+/// `workbench.iconTheme` again.
+pub(crate) fn settings_changed(cx: &mut App) {
+    apply_associations(cx);
     resolve_icons(cx);
 }
 
 /// After the first load of the configuration files: applies
-/// `files.associations` (synchronously, so restored tabs open with the
-/// right language), resolves `workbench.iconTheme` reading only the icon
-/// theme file it names, then loads every extension theme and icon theme in
-/// the background.
+/// `files.associations` (so restored tabs open with the right language),
+/// resolves `workbench.iconTheme` reading only the icon theme file it
+/// names, then loads every extension theme and icon theme in the
+/// background.
 pub(crate) fn config_loaded(cx: &mut App) {
-    let associations = configured_associations(cx);
+    apply_associations(cx);
     let index = current_index(cx);
-    let inputs = cx.default_global::<RegistryInputs>();
-    if inputs.associations != associations {
-        inputs.associations = associations.clone();
-        let languages = LanguageRegistry::build(
-            &extension_languages(&index),
-            Associations::new(&associations),
-        );
-        let state = cx.global_mut::<AppState>();
-        state.languages = Arc::new(languages);
-        state.languages_generation += 1;
-    }
     let icon_theme = configured_icon_theme(cx);
     let files = icon_theme_files(&index, Some(&icon_theme));
     if !files.is_empty() {
@@ -323,7 +368,8 @@ pub struct ExtensionService {
     store: Store,
     /// The index the registries follow.
     index: Arc<ExtensionIndex>,
-    events: crossbeam_channel::Receiver<StoreEvent>,
+    /// The store's events, when no pump forwards them (tests).
+    events: Option<crossbeam_channel::Receiver<StoreEvent>>,
     /// Running operations, by extension id.
     running: HashMap<String, CancelToken>,
     progress: HashMap<String, InstallProgress>,
@@ -349,15 +395,20 @@ impl ExtensionService {
     /// watches `installed/` and forwards the store's events.
     pub fn start(store: Store, cx: &mut App) {
         let events = store.subscribe();
-        let pump = if cx.background_executor().is_test() {
+        // Each event has exactly one consumer, so they are handled in the
+        // order the store emitted them (it emits under its reload lock): an
+        // older index never replaces a newer one.
+        let (events, pump) = if cx.background_executor().is_test() {
             // The test scheduler rejects wake-ups from other threads; tests
             // deliver events with `handle_event`, and operations drain them.
-            Task::ready(())
+            (Some(events), Task::ready(()))
         } else {
-            start_pump(&store, events.clone(), cx)
+            (None, start_pump(&store, events, cx))
         };
+        let index = store.index();
+        cx.default_global::<RegistryInputs>().languages_index = index.clone();
         cx.set_global(ExtensionService {
-            index: store.index(),
+            index,
             store,
             events,
             running: HashMap::new(),
@@ -634,9 +685,13 @@ impl ExtensionService {
         }
     }
 
-    /// Handles the events the store emitted, without waiting for the pump.
+    /// Handles the events the store emitted, when no pump does.
     fn drain_events(cx: &mut App) {
-        let events: Vec<StoreEvent> = cx.global::<ExtensionService>().events.try_iter().collect();
+        let events: Vec<StoreEvent> = cx
+            .global::<ExtensionService>()
+            .events
+            .as_ref()
+            .map_or_else(Vec::new, |rx| rx.try_iter().collect());
         for event in events {
             Self::handle_event(event, cx);
         }

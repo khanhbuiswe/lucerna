@@ -70,6 +70,11 @@ pub struct Language {
     brackets: Option<String>,
     /// Extension languages only: matched against the first line of a file.
     first_line: Option<regex::Regex>,
+    /// Extension languages only: the directory whose `highlights.scm`,
+    /// `injections.scm` and `brackets.scm` are read when the queries first
+    /// compile (instead of `highlights`, `injections` and `brackets`), so
+    /// building a registry opens no query file.
+    query_dir: Option<PathBuf>,
     queries: OnceLock<Option<LanguageQueries>>,
 }
 
@@ -332,14 +337,14 @@ impl Language {
             injections: None,
             brackets: None,
             first_line: None,
+            query_dir: None,
             queries: OnceLock::new(),
         }
     }
 
-    /// An extension's language. Its query files are read now (they are
-    /// small); they compile on first use.
+    /// An extension's language. Its query files are read, and compiled, on
+    /// first use: building a registry opens none of its files.
     fn from_extension(spec: &ExtensionLanguage) -> Language {
-        let read = |file: &str| std::fs::read_to_string(spec.dir.join(file)).ok();
         let id = spec.name.to_lowercase().replace(' ', "-");
         let source = match &spec.grammar {
             Some((name, path)) => GrammarSource::Wasm {
@@ -366,9 +371,8 @@ impl Language {
             // Every path suffix is both an exact file name and an extension.
             extensions: spec.path_suffixes.clone(),
             filenames: spec.path_suffixes.clone(),
-            injections: read("injections.scm"),
-            brackets: read("brackets.scm"),
             first_line,
+            query_dir: Some(spec.dir.clone()),
             ..Language::new(
                 &id,
                 &spec.name,
@@ -376,7 +380,7 @@ impl Language {
                     extension_id: Arc::from(spec.extension_id.as_str()),
                 },
                 source,
-                vec![read("highlights.scm").unwrap_or_default()],
+                Vec::new(),
                 Precedence::LastPatternWins,
             )
         }
@@ -385,7 +389,10 @@ impl Language {
     /// Whether the language has an injections query.
     #[doc(hidden)]
     pub fn has_injections(&self) -> bool {
-        self.injections.is_some()
+        match &self.query_dir {
+            Some(dir) => dir.join("injections.scm").is_file(),
+            None => self.injections.is_some(),
+        }
     }
 
     pub(crate) fn mark_failed(&self) {
@@ -416,9 +423,30 @@ impl Language {
             .as_ref()
     }
 
+    /// The highlights, injections and brackets sources: as given, or read
+    /// from [`Language::query_dir`] now.
+    fn query_sources(&self) -> (Vec<String>, Option<String>, Option<String>) {
+        match &self.query_dir {
+            Some(dir) => {
+                let read = |file: &str| std::fs::read_to_string(dir.join(file)).ok();
+                (
+                    vec![read("highlights.scm").unwrap_or_default()],
+                    read("injections.scm"),
+                    read("brackets.scm"),
+                )
+            }
+            None => (
+                self.highlights.clone(),
+                self.injections.clone(),
+                self.brackets.clone(),
+            ),
+        }
+    }
+
     fn compile_queries(&self) -> Result<LanguageQueries, String> {
         let grammar = self.grammar().map_err(|e| e.to_string())?;
-        let sources: Vec<&str> = self.highlights.iter().map(String::as_str).collect();
+        let (highlights, injections, brackets) = self.query_sources();
+        let sources: Vec<&str> = highlights.iter().map(String::as_str).collect();
         let highlights = HighlightQuery::new(&grammar, &sources, self.precedence, &self.id)?;
         let optional = |kind: &str, source: &Option<String>| {
             let source = source.as_deref()?;
@@ -436,9 +464,9 @@ impl Language {
         };
         Ok(LanguageQueries {
             highlights,
-            injections: optional("injections", &self.injections)
+            injections: optional("injections", &injections)
                 .map(|query| InjectionQuery::new(query, &self.id)),
-            brackets: optional("brackets", &self.brackets),
+            brackets: optional("brackets", &brackets),
         })
     }
 
@@ -498,7 +526,7 @@ impl LanguageRegistry {
     /// The bundled languages, then `extensions` (an extension language
     /// replaces the bundled one with the same id), and `associations` on top.
     pub fn build(extensions: &[ExtensionLanguage], associations: Associations) -> LanguageRegistry {
-        let mut languages: Vec<Arc<Language>> = Self::bundled_languages();
+        let mut languages: Vec<Arc<Language>> = Self::bundled_languages().to_vec();
         for spec in extensions {
             let language = Language::from_extension(spec);
             languages.retain(|l| l.is_extension_language() || l.id != language.id);
@@ -511,7 +539,14 @@ impl LanguageRegistry {
         }
     }
 
-    fn bundled_languages() -> Vec<Arc<Language>> {
+    /// The bundled languages, made once per process: every registry shares
+    /// them, so their compiled queries survive a rebuild.
+    fn bundled_languages() -> &'static [Arc<Language>] {
+        static BUNDLED: OnceLock<Vec<Arc<Language>>> = OnceLock::new();
+        BUNDLED.get_or_init(Self::make_bundled_languages)
+    }
+
+    fn make_bundled_languages() -> Vec<Arc<Language>> {
         use Precedence::{FirstPatternWins as First, LastPatternWins as Last};
         const JS: &str = tree_sitter_javascript::HIGHLIGHT_QUERY;
         const JSX: &str = tree_sitter_javascript::JSX_HIGHLIGHT_QUERY;
@@ -659,6 +694,27 @@ impl LanguageRegistry {
         let mut registry = LanguageRegistry::bundled();
         registry.languages.push(extra);
         registry
+    }
+
+    /// The same languages with other `files.associations`; nothing is
+    /// rebuilt, so compiled queries and loaded grammars carry over.
+    pub fn with_associations(&self, associations: Associations) -> LanguageRegistry {
+        LanguageRegistry {
+            languages: self.languages.clone(),
+            associations,
+            warned: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// The WASM grammars the languages use.
+    pub fn grammar_keys(&self) -> HashSet<GrammarKey> {
+        self.languages
+            .iter()
+            .filter_map(|l| match &l.source {
+                GrammarSource::Wasm { key, .. } => Some(key.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn languages(&self) -> &[Arc<Language>] {
