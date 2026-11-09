@@ -151,7 +151,7 @@ fn opens_and_highlights(cx: &mut TestAppContext) {
     view.read_with(cx, |v, _| {
         let syntax = v.syntax().expect("a Rust file gets syntax");
         assert!(syntax.tree().is_some(), "the tree is parsed");
-        let spans = syntax.highlights(v.snapshot(), 0..3);
+        let spans = syntax.highlights(v.snapshot(), 0..3, &|_| true);
         assert!(
             spans.iter().any(|s| s.capture.starts_with("keyword")),
             "`fn` is highlighted: {spans:?}"
@@ -450,7 +450,7 @@ fn status_shows_cursor_encoding_eol_and_language(cx: &mut TestAppContext) {
     assert_eq!(status.cursor, "Ln 2, Col 6");
     assert_eq!(status.encoding, "UTF-8");
     assert_eq!(status.line_ending, "CRLF");
-    assert_eq!(status.language, "Rust");
+    assert_eq!(&*status.language, "Rust");
     assert!(cx.debug_bounds("status-cursor").is_some());
 }
 
@@ -508,7 +508,7 @@ fn slow_parse_finishes_in_background(cx: &mut TestAppContext) {
     view.read_with(cx, |v, _| {
         assert!(!v.is_large());
         let syntax = v.syntax().expect("the background parse delivered syntax");
-        let spans = syntax.highlights(v.snapshot(), 19_990..20_000);
+        let spans = syntax.highlights(v.snapshot(), 19_990..20_000, &|_| true);
         assert!(!spans.is_empty(), "the end of the file is highlighted");
     });
 }
@@ -566,13 +566,13 @@ fn reload_keeps_highlights_until_the_background_parse_lands(cx: &mut TestAppCont
             .syntax()
             .expect("the old syntax stays until the parse lands");
         assert!(!Arc::ptr_eq(syntax, &parsed), "edited to the new text");
-        let spans = syntax.highlights(v.snapshot(), 100..110);
+        let spans = syntax.highlights(v.snapshot(), 100..110, &|_| true);
         assert!(!spans.is_empty(), "rows keep their colours");
     });
     settle(cx);
     view.read_with(cx, |v, _| {
         let syntax = v.syntax().expect("the new parse landed");
-        assert!(!syntax.highlights(v.snapshot(), 0..1).is_empty());
+        assert!(!syntax.highlights(v.snapshot(), 0..1, &|_| true).is_empty());
     });
 }
 

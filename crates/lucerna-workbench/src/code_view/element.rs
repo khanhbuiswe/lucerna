@@ -351,8 +351,15 @@ impl CodeView {
             && syntax.tree().is_some()
         {
             let syntax = syntax.clone();
-            self.caches
-                .ensure_highlights(&self.snapshot, self.revision, &syntax, first..end + 1);
+            let app = cx.global::<AppState>();
+            self.caches.ensure_highlights(
+                &self.snapshot,
+                self.revision,
+                &syntax,
+                &app.theme,
+                app.theme_generation,
+                first..end + 1,
+            );
         }
 
         let key = ShapeKey {

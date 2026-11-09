@@ -18,7 +18,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use lucerna_project::{ChangeKind, WorktreeEvent};
-use lucerna_syntax::{Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
+use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{Buffer, BufferSnapshot, LineEnding, LoadError, Point, Reload, check_size};
 
 use crate::AppState;
@@ -49,7 +49,7 @@ pub struct DocumentStatus {
     /// `LF` or `CRLF`.
     pub line_ending: &'static str,
     /// The language's display name, or `Plain Text`.
-    pub language: &'static str,
+    pub language: Arc<str>,
 }
 
 /// Size and modification time, to tell whether a file changed on disk.
@@ -356,7 +356,10 @@ impl Documents {
                 LineEnding::Lf => "LF",
                 LineEnding::CrLf => "CRLF",
             },
-            language: doc.language.as_ref().map_or("Plain Text", |l| l.name),
+            language: doc
+                .language
+                .as_ref()
+                .map_or_else(|| Arc::from("Plain Text"), |l| l.name.clone()),
         })
     }
 
@@ -488,12 +491,12 @@ impl Documents {
             return;
         };
         let settings = &cx.global::<AppState>().settings;
-        let language = doc.language.as_ref().map(|l| l.id);
+        let language = doc.language.as_ref().map(|l| l.id.clone());
         let max_bytes = settings
-            .get::<u64>("lucerna.largeFile.maxBytes", language)
+            .get::<u64>("lucerna.largeFile.maxBytes", language.as_deref())
             .unwrap_or(20 * 1024 * 1024);
         let max_lines = settings
-            .get::<u32>("lucerna.largeFile.maxLines", language)
+            .get::<u32>("lucerna.largeFile.maxLines", language.as_deref())
             .unwrap_or(300_000);
         // A parse of older text is cancelled; its syntax stays shown (see
         // `finish_job`) until this one lands.
@@ -509,16 +512,22 @@ impl Documents {
         // On the UI thread: a panic in the grammar must not take the app
         // down (spec §7). It is logged; the file shows as plain text.
         let sync = catch_panic("parse", || {
-            let mut syntax = SyntaxState::new(language);
+            let mut syntax = SyntaxState::new(language)?;
             let outcome = syntax.parse(&snapshot, Some(SYNC_PARSE_BUDGET));
-            (syntax, outcome)
+            Ok::<_, GrammarError>((syntax, outcome))
         });
         let mut syntax = match sync {
-            Ok((syntax, ParseOutcome::Done)) => {
+            Ok(Ok((syntax, ParseOutcome::Done))) => {
                 set_syntax(doc, Arc::new(syntax), cx);
                 return;
             }
-            Ok((syntax, ParseOutcome::TimedOut)) => syntax,
+            Ok(Ok((syntax, ParseOutcome::TimedOut))) => syntax,
+            Ok(Err(err)) => {
+                // The grammar did not load: show the text unhighlighted.
+                tracing::warn!(path = %key.display(), %err, "grammar failed to load");
+                clear_syntax(doc, cx);
+                return;
+            }
             Err(_) => {
                 clear_syntax(doc, cx);
                 return;
@@ -669,7 +678,7 @@ impl Render for DocumentStatusItem {
                 )
                 .child(status.encoding)
                 .child(status.line_ending)
-                .child(status.language)
+                .child(status.language.to_string())
             })
     }
 }

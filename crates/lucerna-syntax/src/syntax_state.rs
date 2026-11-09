@@ -10,8 +10,9 @@ use tree_sitter::{
 };
 
 use crate::brackets;
-use crate::registry::{HighlightQuery, Language, Precedence};
+use crate::registry::{GrammarError, HighlightQuery, Language, Precedence};
 use crate::row_start;
+use crate::wasm;
 
 /// How long the document pipeline parses synchronously before handing the
 /// parse to a background thread.
@@ -51,16 +52,25 @@ const _: fn() = || {
 };
 
 impl SyntaxState {
-    pub fn new(language: Arc<Language>) -> SyntaxState {
+    /// Fails when the language's grammar cannot be loaded; callers then show
+    /// the text unhighlighted.
+    pub fn new(language: Arc<Language>) -> Result<SyntaxState, GrammarError> {
+        let grammar = language.grammar()?;
         let mut parser = Parser::new();
-        parser
-            .set_language(language.grammar())
-            .unwrap_or_else(|e| panic!("bundled grammar {} is ABI-compatible: {e}", language.id));
-        SyntaxState {
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(wasm::new_store()?)
+                .map_err(|e| GrammarError(format!("wasm store: {e}")))?;
+        }
+        parser.set_language(&grammar).map_err(|e| {
+            language.mark_failed();
+            GrammarError(format!("grammar for {} is incompatible: {e}", language.id))
+        })?;
+        Ok(SyntaxState {
             language,
             parser,
             tree: None,
-        }
+        })
     }
 
     /// The current tree, if a parse has completed.
@@ -119,7 +129,8 @@ impl SyntaxState {
         new: &BufferSnapshot,
         reload: &Reload,
     ) -> SyntaxState {
-        let mut edited = SyntaxState::new(self.language.clone());
+        let mut edited = SyntaxState::new(self.language.clone())
+            .expect("the language of an existing state loaded already");
         edited.tree = self.tree.clone().and_then(|mut tree| {
             // Too many changed line endings: show plain text until parsed.
             let edits = input_edits(old, new, reload)?;
@@ -134,11 +145,21 @@ impl SyntaxState {
     /// Spans for `rows` (end exclusive), clipped to those rows and sorted by
     /// start, outer spans before inner ones. Where several patterns capture
     /// the same range, only the one the language's query intends survives.
-    pub fn highlights(&self, snapshot: &BufferSnapshot, rows: Range<u32>) -> Vec<HighlightSpan> {
+    ///
+    /// Captures for which `styled` is false are dropped before ranking, so
+    /// a less specific capture the theme styles can show through.
+    pub fn highlights(
+        &self,
+        snapshot: &BufferSnapshot,
+        rows: Range<u32>,
+        styled: &dyn Fn(&str) -> bool,
+    ) -> Vec<HighlightSpan> {
         let Some(tree) = &self.tree else {
             return Vec::new();
         };
-        let queries = self.language.queries();
+        let Some(queries) = self.language.queries() else {
+            return Vec::new();
+        };
         let root = tree.root_node();
         // An edited tree (see `edited`) may still hold a range past the
         // end of a shorter text; clamp rather than panic.
@@ -161,6 +182,7 @@ impl SyntaxState {
                 &segment,
                 0,
                 snapshot_text,
+                styled,
                 &mut spans,
             );
             let Some(inline) = &queries.inline else {
@@ -197,6 +219,7 @@ impl SyntaxState {
                     &(0..text.len()),
                     range.start,
                     text.as_bytes(),
+                    styled,
                     &mut spans,
                 );
             }
@@ -241,6 +264,7 @@ fn collect<I: AsRef<[u8]>>(
     range: &Range<usize>,
     offset: usize,
     text: impl TextProvider<I>,
+    styled: &dyn Fn(&str) -> bool,
     out: &mut Vec<RankedSpan>,
 ) {
     cursor.set_byte_range(range.clone());
@@ -249,7 +273,7 @@ fn collect<I: AsRef<[u8]>>(
         let capture = m.captures()[*index];
         let name = &hq.names[capture.index as usize];
         // Captures starting with `_` only feed predicates.
-        if name.starts_with('_') {
+        if name.starts_with('_') || !styled(name) {
             continue;
         }
         let clipped = clip(capture.node.byte_range(), range);

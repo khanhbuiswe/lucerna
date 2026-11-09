@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use lucerna_syntax::SyntaxState;
 use lucerna_text::BufferSnapshot;
+use lucerna_theme::Theme;
 
 use super::element::ShapedRow;
 use super::layout::wrap_count;
@@ -40,6 +41,9 @@ pub(crate) struct ShapeKey {
 pub(crate) struct Caches {
     /// Revision the highlights were fetched for, and the rows fetched.
     highlight_rows: Option<(u64, Range<u32>)>,
+    /// Theme generation the highlights were filtered for: captures the
+    /// theme does not style are dropped before ranking.
+    highlight_theme: u64,
     highlights: HashMap<u32, Vec<RowSpan>>,
     shape_key: Option<ShapeKey>,
     shaped: HashMap<u32, Arc<ShapedRow>>,
@@ -88,10 +92,13 @@ impl Caches {
         snapshot: &BufferSnapshot,
         revision: u64,
         syntax: &SyntaxState,
+        theme: &Theme,
+        theme_generation: u64,
         visible: Range<u32>,
     ) {
         if let Some((rev, rows)) = &self.highlight_rows
             && *rev == revision
+            && self.highlight_theme == theme_generation
             && rows.start <= visible.start
             && rows.end >= visible.end
         {
@@ -104,8 +111,10 @@ impl Caches {
         // Runs while painting, on the UI thread: a panic in a query is
         // logged and these rows are drawn plain (and not fetched again
         // until they scroll out of the cached range).
-        let spans = catch_panic("highlights", || syntax.highlights(snapshot, rows.clone()))
-            .unwrap_or_default();
+        let spans = catch_panic("highlights", || {
+            syntax.highlights(snapshot, rows.clone(), &|c| theme.style_for(c).is_some())
+        })
+        .unwrap_or_default();
         for span in spans {
             if span.range.is_empty() {
                 continue;
@@ -120,6 +129,7 @@ impl Caches {
             }
         }
         self.highlight_rows = Some((revision, rows));
+        self.highlight_theme = theme_generation;
     }
 
     /// Spans touching `row`, outer before inner; `None` when the row's

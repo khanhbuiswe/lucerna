@@ -1,0 +1,85 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use lucerna_syntax::{Language, ParseOutcome, SyntaxState, validate_query, validate_wasm_grammar};
+use lucerna_text::Buffer;
+
+fn json_wasm() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wasm/json.wasm")
+}
+
+fn highlight(
+    language: Arc<Language>,
+    text: &str,
+    styled: &dyn Fn(&str) -> bool,
+) -> Vec<(String, String)> {
+    let buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
+    let snap = buffer.snapshot();
+    let mut state = SyntaxState::new(language).expect("grammar loads");
+    assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
+    state
+        .highlights(&snap, 0..snap.line_count(), styled)
+        .into_iter()
+        .map(|s| (text[s.range].to_string(), s.capture.to_string()))
+        .collect()
+}
+
+#[test]
+fn extension_language_from_wasm_highlights_json() {
+    let language =
+        Language::from_wasm_for_test("t-json", &json_wasm(), "(string) @string\n(number) @number");
+    let spans = highlight(language, r#"{"a": 1}"#, &|_| true);
+    assert!(
+        spans
+            .iter()
+            .any(|(t, c)| t == "\"a\"" && c.starts_with("string")),
+        "{spans:?}"
+    );
+}
+
+#[test]
+fn missing_wasm_file_is_grammar_error() {
+    let language =
+        Language::from_wasm_for_test("t-missing", &PathBuf::from("/nope/x.wasm"), "(string) @s");
+    assert!(!language.is_failed());
+    assert!(SyntaxState::new(language.clone()).is_err());
+    assert!(language.is_failed());
+}
+
+#[test]
+fn failure_is_cached() {
+    let dir = std::env::temp_dir().join(format!("lucerna-cache-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("json.wasm");
+    let _ = std::fs::remove_file(&path);
+    let language = Language::from_wasm_for_test("t-cached", &path, "(string) @s");
+    assert!(SyntaxState::new(language.clone()).is_err());
+    std::fs::copy(json_wasm(), &path).unwrap();
+    assert!(SyntaxState::new(language).is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn styled_filter_drops_unstyled_captures() {
+    let query = "(pair key: (_) @a)\n(pair key: (_) @b)";
+    let language = Language::from_wasm_for_test_with("t-styled", &json_wasm(), query, true);
+    let only_a = highlight(language.clone(), r#"{"a": 1}"#, &|c| c == "a");
+    assert_eq!(only_a, vec![("\"a\"".to_string(), "a".to_string())]);
+    let all = highlight(language, r#"{"a": 1}"#, &|_| true);
+    assert_eq!(all, vec![("\"a\"".to_string(), "b".to_string())]);
+}
+
+#[test]
+fn validate_wasm_grammar_rejects_garbage() {
+    let bytes = std::fs::read(json_wasm()).unwrap();
+    assert!(validate_wasm_grammar("json", &bytes).is_ok());
+    assert!(validate_wasm_grammar("json", b"not wasm").is_err());
+}
+
+#[test]
+fn validate_query_reports_bad_node() {
+    let bytes = std::fs::read(json_wasm()).unwrap();
+    assert!(validate_query("json", &bytes, "(string) @s").is_ok());
+    let err = validate_query("json", &bytes, "(no_such_node) @x").unwrap_err();
+    assert!(err.contains("no_such_node"), "{err}");
+}

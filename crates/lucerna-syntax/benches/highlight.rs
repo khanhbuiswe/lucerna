@@ -27,14 +27,16 @@ fn highlight_10mb_viewport(c: &mut Criterion) {
     let language = LanguageRegistry::bundled()
         .language_for_path(Path::new("big.rs"))
         .unwrap();
-    let mut state = SyntaxState::new(language);
+    let mut state = SyntaxState::new(language).unwrap();
     assert!(
         matches!(state.parse(&snapshot, None), ParseOutcome::Done),
         "parse of the 10 MB file did not finish"
     );
     let middle = snapshot.line_count() / 2;
     assert!(
-        !state.highlights(&snapshot, middle..middle + 60).is_empty(),
+        !state
+            .highlights(&snapshot, middle..middle + 60, &|_| true)
+            .is_empty(),
         "viewport highlights are empty: the bench would time a no-op"
     );
 
@@ -42,7 +44,7 @@ fn highlight_10mb_viewport(c: &mut Criterion) {
     group.sample_size(20);
     group.measurement_time(Duration::from_secs(10));
     group.bench_function("rows_60", |b| {
-        b.iter(|| black_box(state.highlights(&snapshot, middle..middle + 60)));
+        b.iter(|| black_box(state.highlights(&snapshot, middle..middle + 60, &|_| true)));
     });
     group.finish();
 }

@@ -14,7 +14,7 @@ fn parsed(path: &str, text: &str) -> (SyntaxState, BufferSnapshot) {
         .language_for_path(Path::new(path))
         .unwrap();
     let snap = snapshot(text);
-    let mut state = SyntaxState::new(lang);
+    let mut state = SyntaxState::new(lang).unwrap();
     assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
     (state, snap)
 }

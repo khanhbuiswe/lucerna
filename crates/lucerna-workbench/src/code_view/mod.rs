@@ -115,7 +115,7 @@ enum Drag {
 pub struct CodeView {
     path: Arc<Path>,
     /// The id of the file's language, for `"[lang]"` settings overrides.
-    language_id: Option<&'static str>,
+    language_id: Option<Arc<str>>,
     focus: FocusHandle,
     snapshot: BufferSnapshot,
     /// Bumped by every new snapshot; keys every cache.
@@ -175,8 +175,8 @@ impl CodeView {
             .global::<AppState>()
             .languages
             .language_for_path(&path)
-            .map(|lang| lang.id);
-        let (config, font_size, word_wrap) = Config::read(language_id, cx);
+            .map(|lang| lang.id.clone());
+        let (config, font_size, word_wrap) = Config::read(language_id.as_deref(), cx);
         let snapshot = Buffer::from_bytes(b"", false)
             .expect("empty text decodes")
             .snapshot();
@@ -339,7 +339,7 @@ impl CodeView {
     /// large-file limits. Font-size zoom and the wrap toggle survive
     /// unless their setting changed, and the top visible row stays. Called on every [`AppState`] change.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
-        let (config, font_size, word_wrap) = Config::read(self.language_id, cx);
+        let (config, font_size, word_wrap) = Config::read(self.language_id.as_deref(), cx);
         let old_line_height = self.line_height();
         let mut changed = false;
         let mut wrap_changed = false;

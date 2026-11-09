@@ -19,13 +19,15 @@ fn language(path: &str) -> Arc<Language> {
 
 fn parsed(path: &str, text: &str) -> (SyntaxState, BufferSnapshot) {
     let snap = snapshot(text);
-    let mut state = SyntaxState::new(language(path));
+    let mut state = SyntaxState::new(language(path)).unwrap();
     assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
     (state, snap)
 }
 
-fn id_for(registry: &LanguageRegistry, path: &str) -> Option<&'static str> {
-    registry.language_for_path(Path::new(path)).map(|l| l.id)
+fn id_for(registry: &LanguageRegistry, path: &str) -> Option<std::sync::Arc<str>> {
+    registry
+        .language_for_path(Path::new(path))
+        .map(|l| l.id.clone())
 }
 
 #[test]
@@ -65,10 +67,10 @@ fn detects_by_extension_and_filename() {
         ("UPPER.RS", "rust"),
     ];
     for (path, id) in cases {
-        assert_eq!(id_for(&registry, path), Some(id), "{path}");
+        assert_eq!(id_for(&registry, path), Some(id.into()), "{path}");
     }
     let rust = registry.language_for_path(Path::new("x.rs")).unwrap();
-    assert_eq!(rust.name, "Rust");
+    assert_eq!(&*rust.name, "Rust");
 }
 
 #[test]
@@ -82,7 +84,7 @@ fn unknown_extension_none() {
 #[test]
 fn rust_keyword_highlighted() {
     let (state, snap) = parsed("main.rs", "fn main() {}");
-    let spans = state.highlights(&snap, 0..1);
+    let spans = state.highlights(&snap, 0..1, &|_| true);
     assert!(
         spans
             .iter()
@@ -94,8 +96,8 @@ fn rust_keyword_highlighted() {
 #[test]
 fn highlights_empty_without_tree() {
     let snap = snapshot("fn main() {}");
-    let state = SyntaxState::new(language("main.rs"));
-    assert!(state.highlights(&snap, 0..1).is_empty());
+    let state = SyntaxState::new(language("main.rs")).unwrap();
+    assert!(state.highlights(&snap, 0..1, &|_| true).is_empty());
 }
 
 #[test]
@@ -113,7 +115,7 @@ fn every_bundled_language_parses_fixture() {
             .unwrap_or_else(|| panic!("no language for fixture {}", path.display()));
         let text = std::fs::read_to_string(&path).unwrap();
         let snap = snapshot(&text);
-        let mut state = SyntaxState::new(lang.clone());
+        let mut state = SyntaxState::new(lang.clone()).unwrap();
         assert_eq!(state.parse(&snap, None), ParseOutcome::Done, "{}", lang.id);
         let root = state.tree().expect("tree after Done").root_node();
         assert!(
@@ -122,12 +124,12 @@ fn every_bundled_language_parses_fixture() {
             lang.id,
             root.to_sexp()
         );
-        let spans = state.highlights(&snap, 0..snap.line_count());
+        let spans = state.highlights(&snap, 0..snap.line_count(), &|_| true);
         assert!(!spans.is_empty(), "{} gave no spans", lang.id);
-        covered.push(lang.id);
+        covered.push(lang.id.clone());
     }
     covered.sort_unstable();
-    let mut all: Vec<_> = registry.languages().iter().map(|l| l.id).collect();
+    let mut all: Vec<_> = registry.languages().iter().map(|l| l.id.clone()).collect();
     all.sort_unstable();
     assert_eq!(
         covered, all,
@@ -141,7 +143,7 @@ fn markdown_inline_emphasis_highlighted() {
     let (state, snap) = parsed("a.md", text);
     let strong = text.find("**bold**").unwrap()..text.len();
     let bold = strong.start + 2..strong.end - 2;
-    let spans = state.highlights(&snap, 0..snap.line_count());
+    let spans = state.highlights(&snap, 0..snap.line_count(), &|_| true);
     // Only the inline layer highlights inside the paragraph `**bold**`.
     assert!(
         spans.iter().any(|s| s.range.start < bold.end
@@ -160,7 +162,7 @@ fn highlights_limited_to_rows() {
     .unwrap();
     let (state, snap) = parsed("sample.rs", &text);
     let rows = 5..9;
-    let spans = state.highlights(&snap, rows.clone());
+    let spans = state.highlights(&snap, rows.clone(), &|_| true);
     assert!(!spans.is_empty());
     let first = snap.point_to_offset(lucerna_text::Point {
         row: rows.start,
@@ -189,7 +191,7 @@ fn minified_line_spans_capped() {
     let text = unit.repeat(5 * 1024 * 1024 / unit.len());
     assert!(text.len() > 5_000_000 && !text.contains('\n'));
     let (state, snap) = parsed("min.js", &text);
-    let spans = state.highlights(&snap, 0..1);
+    let spans = state.highlights(&snap, 0..1, &|_| true);
     assert!(!spans.is_empty());
     assert!(
         spans.iter().all(|s| s.range.end <= 10_000),
@@ -202,13 +204,13 @@ fn timeout_keeps_old_tree() {
     let unit = "fn f(x: u32) -> u32 { let y = x * 2; if y > 3 { y } else { x } }\n";
     let text = unit.repeat(40_000);
     let (mut state, snap) = parsed("big.rs", &text);
-    let before = state.highlights(&snap, 0..10);
+    let before = state.highlights(&snap, 0..10, &|_| true);
     assert!(!before.is_empty());
     assert_eq!(
         state.parse(&snap, Some(Duration::ZERO)),
         ParseOutcome::TimedOut
     );
-    assert_eq!(state.highlights(&snap, 0..10), before);
+    assert_eq!(state.highlights(&snap, 0..10, &|_| true), before);
     // The parser is usable again after a cancelled parse.
     assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
 }
@@ -221,7 +223,7 @@ fn rust_fixture_spans() {
     .unwrap();
     let (state, snap) = parsed("sample.rs", &text);
     let spans: Vec<(HighlightSpan, &str)> = state
-        .highlights(&snap, 0..snap.line_count())
+        .highlights(&snap, 0..snap.line_count(), &|_| true)
         .into_iter()
         .map(|s| {
             let t = &text[s.range.clone()];
@@ -240,14 +242,14 @@ fn edited_state_highlights_the_new_text_until_reparsed() {
     let new_text = "fn a() {}\n";
     let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
     let old = buffer.snapshot();
-    let mut state = SyntaxState::new(language("a.rs"));
+    let mut state = SyntaxState::new(language("a.rs")).unwrap();
     assert_eq!(state.parse(&old, None), ParseOutcome::Done);
     let reload = buffer.reload(new_text.as_bytes()).unwrap();
     let new = buffer.snapshot();
 
     let edited = state.edited(&old, &new, &reload);
     assert!(edited.tree().is_some());
-    let spans = edited.highlights(&new, 0..new.line_count());
+    let spans = edited.highlights(&new, 0..new.line_count(), &|_| true);
     assert!(
         spans
             .iter()
@@ -265,12 +267,12 @@ fn edited_state_highlights_the_new_text_until_reparsed() {
 fn highlights_after_reload(old_text: &str, new_text: &str) -> (Vec<HighlightSpan>, usize) {
     let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
     let old = buffer.snapshot();
-    let mut state = SyntaxState::new(language("a.rs"));
+    let mut state = SyntaxState::new(language("a.rs")).unwrap();
     assert_eq!(state.parse(&old, None), ParseOutcome::Done);
     let reload = buffer.reload(new_text.as_bytes()).unwrap();
     let new = buffer.snapshot();
     let edited = state.edited(&old, &new, &reload);
-    let spans = edited.highlights(&new, 0..new.line_count());
+    let spans = edited.highlights(&new, 0..new.line_count(), &|_| true);
     (spans, new.len_bytes())
 }
 
