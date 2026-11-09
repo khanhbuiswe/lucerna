@@ -1100,7 +1100,6 @@ impl Render for Workbench {
                     .when(self.sidebar_visible, |row| {
                         row.child(sidebar::render(
                             self.sidebar_width,
-                            &root_name,
                             self.active_sidebar,
                             sidebar_slot,
                             &self.sidebar_focus,

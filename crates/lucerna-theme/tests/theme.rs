@@ -212,3 +212,30 @@ fn error_color_from_theme_or_red_fallback() {
         "red: {fallback:?}"
     );
 }
+
+#[test]
+fn scrollbar_thumb_from_theme_or_fallback() {
+    let dark = ThemeRegistry::builtin().get("One Dark").unwrap();
+    assert_eq!(
+        dark.ui.scrollbar_thumb,
+        Rgba::parse_hex("#c8ccd44c").unwrap()
+    );
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "plain.json",
+        r#"{"name":"P","themes":[
+            {"name":"Plain","appearance":"dark","style":{}},
+            {"name":"Plain Light","appearance":"light","style":{}}
+        ]}"#,
+    );
+    let mut reg = ThemeRegistry::builtin();
+    assert!(reg.load_dir(dir.path()).is_empty());
+    let fb_dark = UiColors::fallback(Appearance::Dark).scrollbar_thumb;
+    let fb_light = UiColors::fallback(Appearance::Light).scrollbar_thumb;
+    assert_eq!(reg.get("Plain").unwrap().ui.scrollbar_thumb, fb_dark);
+    assert_eq!(reg.get("Plain Light").unwrap().ui.scrollbar_thumb, fb_light);
+    assert_ne!(fb_dark, fb_light);
+    // Translucent, so it never hides the rows under it.
+    assert!(fb_dark.a < 1.0 && fb_light.a < 1.0);
+}

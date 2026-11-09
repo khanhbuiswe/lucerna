@@ -11,6 +11,7 @@ mod editor_groups;
 mod explorer;
 mod find_widget;
 pub mod fonts;
+pub mod icons;
 pub mod keys;
 mod layout;
 mod open_files;

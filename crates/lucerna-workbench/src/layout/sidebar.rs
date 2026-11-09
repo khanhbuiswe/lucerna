@@ -1,4 +1,5 @@
-//! The resizable sidebar: a one-row header over the active view's slot,
+//! The resizable sidebar: the active view's slot (under a one-row header
+//! for Search; the Explorer draws its own root row),
 //! with a drag sash on its right edge.
 
 use gpui::{
@@ -28,15 +29,15 @@ impl Render for SashGhost {
 
 pub(crate) fn render(
     width: Pixels,
-    root_name: &str,
     active: SidebarView,
     slot: Option<AnyView>,
     focus: &FocusHandle,
     ui: &UiColors,
 ) -> impl IntoElement {
+    // The Explorer draws its own root row in place of a header.
     let title = match active {
-        SidebarView::Explorer => root_name.to_uppercase(),
-        SidebarView::Search => "SEARCH".to_string(),
+        SidebarView::Explorer => None,
+        SidebarView::Search => Some("SEARCH"),
     };
     div()
         .id("sidebar")
@@ -51,7 +52,7 @@ pub(crate) fn render(
         .bg(color(ui.panel_background))
         .border_r_1()
         .border_color(color(ui.border))
-        .child(
+        .children(title.map(|title| {
             // One light row, no heavy panel header.
             div()
                 .debug_selector(|| "sidebar-header".into())
@@ -63,8 +64,8 @@ pub(crate) fn render(
                 .text_size(px(UI_FONT_SIZE_SMALL))
                 .text_color(color(ui.text_muted))
                 .overflow_hidden()
-                .child(title),
-        )
+                .child(title)
+        }))
         .child(div().flex_1().min_h_0().overflow_hidden().children(slot))
         .child(
             div()

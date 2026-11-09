@@ -112,9 +112,9 @@ fn title_bar_shows_root_name(cx: &mut TestAppContext) {
     // Clear of the traffic lights.
     assert_eq!(name.left(), px(80.));
     assert!(title.contains(&name.center()));
-    // The Explorer header is a single 24 px row.
-    let header = bounds("sidebar-header", cx);
-    assert_eq!(header.size.height, px(ui::TREE_ROW_HEIGHT));
+    // The Explorer's root row is a single 24 px row.
+    let root = bounds("explorer-root", cx);
+    assert_eq!(root.size.height, px(ui::TREE_ROW_HEIGHT));
 
     let opts = window_options(Bounds::new(point(px(0.), px(0.)), size(px(800.), px(600.))));
     let titlebar = opts.titlebar.expect("custom titlebar");
@@ -292,4 +292,22 @@ fn ui_font_constants() {
     assert_eq!(ui::UI_FONT_FAMILY, "IBM Plex Sans");
     assert_eq!(ui::UI_FONT_SIZE, 14.0);
     assert_eq!(ui::UI_FONT_SIZE_SMALL, 13.0);
+}
+
+/// GPUI draws an SVG as an alpha mask filled with `text_color`, so each
+/// vendored Lucide icon (stroked with `currentColor`) must rasterize to
+/// visible pixels.
+#[gpui::test]
+fn lucide_icons_rasterize_with_visible_strokes(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let renderer = cx.svg_renderer();
+        for (name, bytes) in lucerna_workbench::icons::ALL {
+            let image = renderer
+                .render_single_frame(bytes, 1.0)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let pixels = image.as_bytes(0).unwrap();
+            let opaque = pixels.chunks(4).filter(|px| px[3] > 0x80).count();
+            assert!(opaque > 10, "{name} has {opaque} visible pixels");
+        }
+    });
 }

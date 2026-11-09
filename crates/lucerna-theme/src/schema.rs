@@ -85,6 +85,7 @@ impl ThemeDef {
                 .or_else(|| color("panel.background"))
                 .unwrap_or(fb.tab_bar_background),
             error: color("error").unwrap_or(fb.error),
+            scrollbar_thumb: color("scrollbar.thumb.background").unwrap_or(fb.scrollbar_thumb),
         };
 
         let mut syntax = HashMap::new();

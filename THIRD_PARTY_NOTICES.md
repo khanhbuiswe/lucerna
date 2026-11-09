@@ -77,3 +77,16 @@ each license text is copied verbatim into `crates/lucerna-workbench/assets/fonts
 |---|---|---|---|
 | Lilex (editor) | Regular, Bold, Italic, BoldItalic (`.ttf`), from release asset `Lilex.zip` | OFL-1.1 (`LICENSE-Lilex`) | https://github.com/mishamyrt/Lilex, tag `2.700` |
 | IBM Plex Sans (UI) | Regular, Medium (`.ttf`), from release asset `ibm-plex-sans.zip` | OFL-1.1 (`LICENSE-IBM-Plex`) | https://github.com/IBM/plex, tag `@ibm/plex-sans@1.1.0` |
+
+## Icons
+
+`lucerna-workbench` embeds icons from Lucide (https://github.com/lucide-icons/lucide),
+tag `1.70.0`, with `include_bytes!`. Each file is the upstream `icons/<name>.svg`,
+unmodified, in `crates/lucerna-workbench/assets/icons/`. Lucide is licensed under
+ISC; the icons it lists as derived from Feather are also under MIT (Copyright (c)
+2013-present Cole Bemis). The license text is copied verbatim to
+`crates/lucerna-workbench/assets/icons/LICENSE-lucide`.
+
+Icons: `folder`, `folder-open`, `file`, `file-code`, `braces`, `book-open`,
+`settings`, `lock`, `git-branch`, `scale`, `terminal`, `image`, `search`, `files`,
+`x`, `chevron-right`, `chevron-down`, `chevron-up`.

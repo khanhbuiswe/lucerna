@@ -6,6 +6,8 @@ use gpui::{
 };
 
 use crate::AppState;
+use crate::icons;
+pub use crate::icons::icon_for_path;
 use crate::layout::color;
 
 /// Spacing unit: paddings and gaps are multiples of it.
@@ -15,6 +17,8 @@ pub const STATUS_BAR_HEIGHT: f32 = 26.0;
 pub const TAB_HEIGHT: f32 = 32.0;
 /// Height of a file tree row, and of the Explorer header.
 pub const TREE_ROW_HEIGHT: f32 = 24.0;
+/// Width of the thin overlay scrollbar thumb.
+pub const SCROLLBAR_WIDTH: f32 = 6.0;
 pub const POPOVER_MAX_WIDTH: f32 = 600.0;
 pub const POPOVER_RADIUS: f32 = 8.0;
 /// UI text size; the UI uses IBM Plex Sans, the editor its own font.
@@ -24,26 +28,26 @@ pub const UI_FONT_SIZE_SMALL: f32 = 13.0;
 /// The bundled UI font (see [`crate::fonts`]).
 pub const UI_FONT_FAMILY: &str = crate::fonts::UI_FONT_FAMILY;
 
-/// Two overlapping pages.
-pub const FILES_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.25" stroke-linejoin="round"><path d="M5.5 4V1.5H10L13.5 5v7h-3"/><path d="M2.5 4.5H7L10.5 8v6.5h-8Z"/></svg>"#;
+/// Two overlapping pages: the Explorer toggle.
+pub const FILES_ICON: &[u8] = icons::FILES;
 
 /// A magnifying glass.
-pub const SEARCH_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.25" stroke-linecap="round"><circle cx="6.75" cy="6.75" r="4.5"/><path d="M10.25 10.25 14 14"/></svg>"#;
+pub const SEARCH_ICON: &[u8] = icons::SEARCH;
 
 /// A thin ×, for closing tabs.
-pub const CLOSE_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>"#;
+pub const CLOSE_ICON: &[u8] = icons::X;
 
 /// A chevron pointing right: a collapsed directory.
-pub const CHEVRON_RIGHT_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg>"#;
+pub const CHEVRON_RIGHT_ICON: &[u8] = icons::CHEVRON_RIGHT;
 
 /// A chevron pointing down: an expanded directory.
-pub const CHEVRON_DOWN_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6 8 10.5 12.5 6"/></svg>"#;
+pub const CHEVRON_DOWN_ICON: &[u8] = icons::CHEVRON_DOWN;
 
 /// A chevron pointing up: previous match.
-pub const CHEVRON_UP_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 10 8 5.5 12.5 10"/></svg>"#;
+pub const CHEVRON_UP_ICON: &[u8] = icons::CHEVRON_UP;
 
 /// A single page with a folded corner.
-pub const FILE_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.25" stroke-linejoin="round"><path d="M3.5 1.5H9L12.5 5v9.5h-9Z"/><path d="M9 1.5V5h3.5"/></svg>"#;
+pub const FILE_ICON: &[u8] = icons::FILE;
 
 /// The floating container for Quick Open, the theme picker and the find
 /// widget: up to [`POPOVER_MAX_WIDTH`] wide, rounded, bordered, shadowed,
