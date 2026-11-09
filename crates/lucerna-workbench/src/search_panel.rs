@@ -27,7 +27,10 @@ use crate::find_widget::{build_regex, single_line_selection};
 use crate::layout::color;
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
-use crate::ui::{CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, GRID, TREE_ROW_HEIGHT, toggle_button};
+use crate::ui::{
+    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, GRID, TREE_ROW_HEIGHT, UI_FONT_SIZE_CAPTION,
+    UI_FONT_SIZE_SMALL, toggle_button,
+};
 use crate::workbench::enabled_globs;
 use crate::{AppState, CommandRegistry, DocState, OpenMode, SidebarView, Workbench};
 
@@ -487,7 +490,7 @@ impl SearchPanel {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text_size(px(11.))
+                    .text_size(px(UI_FONT_SIZE_CAPTION))
                     .text_color(color(ui.text_muted))
                     .child(dir),
             )
@@ -497,7 +500,7 @@ impl SearchPanel {
                     .px(px(1.5 * GRID))
                     .rounded_full()
                     .bg(color(ui.element_selected))
-                    .text_size(px(11.))
+                    .text_size(px(UI_FONT_SIZE_CAPTION))
                     .child(file.matches.len().to_string()),
             )
             .into_any_element()
@@ -621,7 +624,7 @@ fn input_box(input: &Entity<TextInput>, cx: &App) -> Div {
 
 fn label(text: &'static str, cx: &App) -> Div {
     div()
-        .text_size(px(11.))
+        .text_size(px(UI_FONT_SIZE_CAPTION))
         .text_color(color(cx.global::<AppState>().theme.ui.text_muted))
         .child(text)
 }
@@ -673,7 +676,7 @@ impl Render for SearchPanel {
                     .children(self.error.clone().map(|error| {
                         div()
                             .debug_selector(|| "search-error".into())
-                            .text_size(px(12.))
+                            .text_size(px(UI_FONT_SIZE_SMALL))
                             .text_color(muted)
                             .child(error)
                     }))
@@ -685,7 +688,7 @@ impl Render for SearchPanel {
                         div()
                             .debug_selector(|| "search-summary".into())
                             .pt(px(GRID))
-                            .text_size(px(11.))
+                            .text_size(px(UI_FONT_SIZE_SMALL))
                             .text_color(muted)
                             .child(summary)
                     })),

@@ -1,16 +1,17 @@
 //! The 34 px integrated title bar: macOS traffic lights inset into the
-//! window, then the root folder's name. Dragging it moves the window and a
+//! window, then the root folder's name and its git branch. Dragging it moves the window and a
 //! double-click zooms it.
 
 use gpui::{
     Bounds, Context, IntoElement, MouseButton, MouseMoveEvent, ParentElement, Pixels, Styled,
-    TitlebarOptions, WindowBounds, WindowOptions, div, point, prelude::*, px,
+    TitlebarOptions, WindowBounds, WindowOptions, div, point, prelude::*, px, svg,
 };
 use lucerna_theme::UiColors;
 
 use super::color;
 use crate::Workbench;
-use crate::ui::TITLE_BAR_HEIGHT;
+use crate::icons;
+use crate::ui::{GRID, TITLE_BAR_HEIGHT, UI_FONT_SIZE_SMALL};
 
 /// Room left of the root name for the traffic lights.
 const TRAFFIC_LIGHTS_INSET: Pixels = px(80.);
@@ -33,6 +34,7 @@ pub fn window_options(bounds: Bounds<Pixels>) -> WindowOptions {
 
 pub(crate) fn render(
     root_name: String,
+    branch: Option<String>,
     ui: &UiColors,
     cx: &mut Context<Workbench>,
 ) -> impl IntoElement {
@@ -45,6 +47,7 @@ pub(crate) fn render(
         .items_center()
         .w_full()
         .h(px(TITLE_BAR_HEIGHT))
+        .gap(px(2. * GRID))
         .pl(TRAFFIC_LIGHTS_INSET)
         .bg(color(ui.title_bar_background))
         .border_b_1()
@@ -78,4 +81,34 @@ pub(crate) fn render(
                 .text_color(color(ui.text))
                 .child(root_name),
         )
+        .children(branch.map(|branch| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(GRID))
+                .min_w_0()
+                .child(
+                    div()
+                        .debug_selector(|| "title-bar-branch-icon".into())
+                        .flex_none()
+                        .size(px(UI_FONT_SIZE_SMALL))
+                        .child(
+                            svg()
+                                .data(icons::GIT_BRANCH)
+                                .size(px(UI_FONT_SIZE_SMALL))
+                                .text_color(color(ui.icon_muted)),
+                        ),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "title-bar-branch".into())
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(color(ui.text_muted))
+                        .child(branch),
+                )
+        }))
 }

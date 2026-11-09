@@ -5,7 +5,7 @@ use gpui::{AnyView, IntoElement, ParentElement, Styled, div, prelude::*, px};
 use lucerna_theme::UiColors;
 
 use super::color;
-use crate::ui::{GRID, STATUS_BAR_HEIGHT};
+use crate::ui::{GRID, STATUS_BAR_HEIGHT, UI_FONT_SIZE_SMALL};
 
 pub(crate) fn render(
     toggles: impl IntoElement,
@@ -32,7 +32,7 @@ pub(crate) fn render(
         .bg(color(ui.status_bar_background))
         .border_t_1()
         .border_color(color(ui.border))
-        .text_xs()
+        .text_size(px(UI_FONT_SIZE_SMALL))
         .text_color(color(ui.text_muted))
         .child(
             div()

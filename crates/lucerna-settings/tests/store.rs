@@ -9,8 +9,13 @@ fn fs(s: &SettingsStore, lang: Option<&str>, key: &str) -> Option<u32> {
 #[test]
 fn defaults_present() {
     let s = SettingsStore::with_defaults();
-    assert_eq!(fs(&s, None, "editor.fontSize"), Some(13));
-    assert_eq!(s.get::<bool>("editor.minimap.enabled", None), Some(true));
+    assert_eq!(fs(&s, None, "editor.fontSize"), Some(14));
+    assert_eq!(
+        s.get::<String>("editor.fontFamily", None).as_deref(),
+        Some("Lilex")
+    );
+    assert_eq!(s.get::<f32>("editor.lineHeight", None), Some(1.6));
+    assert_eq!(s.get::<bool>("editor.minimap.enabled", None), Some(false));
     assert_eq!(
         s.get::<u64>("lucerna.largeFile.maxBytes", None),
         Some(20971520)

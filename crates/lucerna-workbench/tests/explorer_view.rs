@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use gpui::px;
 use gpui::{
     Entity, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, TestAppContext,
     VisualTestContext,
@@ -13,7 +14,7 @@ use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
-use lucerna_workbench::{AppState, OpenMode, Workbench};
+use lucerna_workbench::{AppState, OpenMode, Workbench, ui};
 use tempfile::TempDir;
 
 fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
@@ -228,4 +229,98 @@ fn auto_reveal_off_leaves_tree_alone(cx: &mut TestAppContext) {
     });
     draw(cx);
     assert_eq!(visible(&wb, cx), ["src", "a.rs", "b.rs"]);
+}
+
+fn leak(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+#[gpui::test]
+fn root_row_replaces_uppercase_header(cx: &mut TestAppContext) {
+    init(cx, None);
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("lucerna");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("a.rs"), "").unwrap();
+    let (wb, cx) = open(&root, cx);
+    // The old uppercase header row is gone.
+    assert!(cx.debug_bounds("sidebar-header").is_none());
+    let row = cx.debug_bounds("explorer-root").expect("root row is drawn");
+    assert_eq!(row.size.height, px(ui::TREE_ROW_HEIGHT));
+    assert!(cx.debug_bounds("explorer-root-icon").is_some());
+    let label = cx.update(|_, cx| wb.read(cx).explorer().read(cx).root_label().to_string());
+    assert_eq!(label, "lucerna");
+    // The root row sits above the first entry.
+    let first = cx.debug_bounds("explorer-row-a.rs").unwrap();
+    assert_eq!(first.top(), row.bottom());
+    // Clicking it toggles nothing.
+    click("explorer-root", cx);
+    assert_eq!(visible(&wb, cx), ["a.rs"]);
+}
+
+#[gpui::test]
+fn indent_guides_match_depth(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    std::fs::create_dir(dir.path().join("src/nested")).unwrap();
+    std::fs::write(dir.path().join("src/nested/deep.rs"), "").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-src", cx);
+    click("explorer-row-src/nested", cx);
+    let rows: Vec<(String, u16)> = cx.update(|_, cx| {
+        wb.read(cx)
+            .explorer()
+            .read(cx)
+            .model()
+            .visible_rows()
+            .iter()
+            .map(|r| (r.path.display().to_string(), r.depth))
+            .collect()
+    });
+    assert!(rows.iter().any(|(_, d)| *d == 2), "{rows:?}");
+    for (path, depth) in rows {
+        let count = (0..8)
+            .take_while(|k| {
+                cx.debug_bounds(leak(format!("explorer-guide-{path}-{k}")))
+                    .is_some()
+            })
+            .count();
+        assert_eq!(count, usize::from(depth), "{path}");
+        let row = cx
+            .debug_bounds(leak(format!("explorer-row-{path}")))
+            .unwrap();
+        for k in 0..usize::from(depth) {
+            let guide = cx
+                .debug_bounds(leak(format!("explorer-guide-{path}-{k}")))
+                .unwrap();
+            assert_eq!(guide.size.width, px(1.));
+            assert_eq!(guide.top(), row.top());
+            assert_eq!(guide.size.height, row.size.height);
+        }
+    }
+}
+
+#[gpui::test]
+fn scrollbar_thumb_only_when_list_overflows(cx: &mut TestAppContext) {
+    init(cx, None);
+    let small = project();
+    {
+        let (_, cx) = open(small.path(), cx);
+        assert!(cx.debug_bounds("explorer-list").is_some());
+        assert!(cx.debug_bounds("explorer-scrollbar-thumb").is_none());
+    }
+
+    let big = tempfile::tempdir().unwrap();
+    for i in 0..300 {
+        std::fs::write(big.path().join(format!("f{i:03}.rs")), "").unwrap();
+    }
+    let (_, cx) = open(big.path(), cx);
+    let thumb = cx
+        .debug_bounds("explorer-scrollbar-thumb")
+        .expect("thumb is drawn when the list overflows");
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    assert_eq!(thumb.size.width, px(ui::SCROLLBAR_WIDTH));
+    assert_eq!(thumb.right(), list.right());
+    assert_eq!(thumb.top(), list.top());
+    assert!(thumb.size.height < list.size.height);
 }

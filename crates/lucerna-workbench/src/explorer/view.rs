@@ -7,24 +7,35 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    ClickEvent, Context, Div, Entity, FontWeight, IntoElement, ParentElement, Render,
-    ScrollStrategy, Stateful, Styled, Subscription, Task, UniformListScrollHandle, WeakEntity,
-    Window, div, prelude::*, px, svg, uniform_list,
+    AnyElement, App, Bounds, ClickEvent, Context, Div, Entity, FontWeight, IntoElement,
+    ParentElement, Pixels, Point, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
+    UniformListDecoration, UniformListScrollHandle, WeakEntity, Window, div, prelude::*, px, svg,
+    uniform_list,
 };
 use lucerna_project::{ChangeKind, EntryKind, WorktreeEvent, WorktreeSnapshot};
 
 use super::model::ExplorerModel;
+use crate::icons;
 use crate::layout::color;
-use crate::ui::{CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, FILE_ICON, GRID, TREE_ROW_HEIGHT};
+use crate::ui::{
+    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE,
+    icon_for_path, thumb_geometry,
+};
 use crate::{AppState, EditorGroupsView, OpenMode, Workbench};
 
-/// Indentation per tree level.
-const INDENT: f32 = 3. * GRID;
+/// Indentation per tree level: one icon slot, so each level's indent
+/// guide runs under its parent's chevron.
+const INDENT: f32 = 4. * GRID;
 const ICON_SLOT: f32 = 4. * GRID;
+/// Left padding of every row, before indentation.
+const ROW_PADDING: f32 = 2. * GRID;
+const CHEVRON_SIZE: f32 = 12.;
+const TYPE_ICON_SIZE: f32 = 14.;
 
 /// The file tree in the sidebar's Explorer slot.
 pub struct ExplorerView {
     model: ExplorerModel,
+    root_label: String,
     /// Tab paths may be absolute; the tree is relative to this.
     root: PathBuf,
     workbench: WeakEntity<Workbench>,
@@ -47,6 +58,11 @@ impl ExplorerView {
     ) -> Self {
         ExplorerView {
             model: ExplorerModel::new(snapshot),
+            root_label: root
+                .file_name()
+                .unwrap_or(root.as_os_str())
+                .to_string_lossy()
+                .into_owned(),
             root,
             workbench,
             scroll: UniformListScrollHandle::new(),
@@ -56,6 +72,11 @@ impl ExplorerView {
                 this.sync_active_tab(&groups, cx)
             }),
         }
+    }
+
+    /// The root row's label: the project folder's name, as on disk.
+    pub fn root_label(&self) -> &str {
+        &self.root_label
     }
 
     pub fn model(&self) -> &ExplorerModel {
@@ -195,22 +216,34 @@ impl ExplorerView {
                     .unwrap_or(row.path.as_os_str())
                     .to_string_lossy()
                     .into_owned();
-                let icon = match (row.kind, row.expanded) {
-                    (EntryKind::Dir, true) => CHEVRON_DOWN_ICON,
-                    (EntryKind::Dir, false) => CHEVRON_RIGHT_ICON,
-                    _ => FILE_ICON,
-                };
-                let selector = format!("explorer-row-{}", row.path.display());
+                let is_dir = kind == EntryKind::Dir;
+                let type_icon = icon_for_path(&row.path, is_dir, row.expanded);
+                // Selectors are formatted lazily: GPUI only calls these
+                // closures in test builds, so release frames skip the
+                // per-row and per-guide `format!`.
+                let selector_path = row.path.clone();
+                let guides = (0..row.depth).map(|k| {
+                    let path = row.path.clone();
+                    div()
+                        .debug_selector(move || format!("explorer-guide-{}-{k}", path.display()))
+                        .absolute()
+                        .top_0()
+                        .left(px(ROW_PADDING + INDENT * f32::from(k) + ICON_SLOT / 2.))
+                        .w(px(1.))
+                        .h_full()
+                        .bg(color(ui.border_variant))
+                });
                 div()
                     .id(row.path.clone())
-                    .debug_selector(move || selector)
+                    .debug_selector(move || format!("explorer-row-{}", selector_path.display()))
+                    .relative()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(px(GRID))
                     .h(px(TREE_ROW_HEIGHT))
                     .w_full()
-                    .pl(px(2. * GRID + INDENT * f32::from(row.depth)))
+                    .pl(px(ROW_PADDING + INDENT * f32::from(row.depth)))
                     .pr(px(2. * GRID))
                     .cursor_pointer()
                     .when(selected, |d| d.bg(color(ui.element_selected)))
@@ -218,20 +251,18 @@ impl ExplorerView {
                     .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
                         this.row_clicked(path.clone(), kind, ev, cx)
                     }))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .justify_center()
-                            .items_center()
-                            .size(px(ICON_SLOT))
-                            .child(
-                                svg()
-                                    .data(icon)
-                                    .size(px(if kind == EntryKind::Dir { 12. } else { 14. }))
-                                    .text_color(color(ui.icon_muted)),
-                            ),
-                    )
+                    .children(guides)
+                    // Directories: chevron, then folder. Files: their type
+                    // icon alone, in the chevron's slot.
+                    .when(is_dir, |d| {
+                        let chevron = if row.expanded {
+                            CHEVRON_DOWN_ICON
+                        } else {
+                            CHEVRON_RIGHT_ICON
+                        };
+                        d.child(icon_slot(chevron, CHEVRON_SIZE, ui.icon_muted))
+                    })
+                    .child(icon_slot(type_icon, TYPE_ICON_SIZE, ui.icon_muted))
                     .child(
                         div()
                             .flex_1()
@@ -258,19 +289,122 @@ impl ExplorerView {
     }
 }
 
+impl ExplorerView {
+    /// The always-expanded root: an open folder and the project's name.
+    /// Clicking it does nothing.
+    fn render_root(&self, cx: &App) -> impl IntoElement {
+        let ui = &cx.global::<AppState>().theme.ui;
+        div()
+            .debug_selector(|| "explorer-root".into())
+            .flex()
+            .flex_none()
+            .flex_row()
+            .items_center()
+            .gap(px(GRID))
+            .h(px(TREE_ROW_HEIGHT))
+            .pl(px(ROW_PADDING))
+            .pr(px(2. * GRID))
+            .text_size(px(UI_FONT_SIZE))
+            .text_color(color(ui.text))
+            .child(
+                icon_slot(icons::FOLDER_OPEN, TYPE_ICON_SIZE, ui.icon_muted)
+                    .debug_selector(|| "explorer-root-icon".into()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(self.root_label.clone()),
+            )
+    }
+}
+
+/// A fixed-size slot holding a centred `svg` in `tint`.
+fn icon_slot(data: &'static [u8], size: f32, tint: lucerna_theme::Rgba) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .justify_center()
+        .items_center()
+        .size(px(ICON_SLOT))
+        .child(svg().data(data).size(px(size)).text_color(color(tint)))
+}
+
+/// A thin overlay scrollbar for a uniform list: a thumb only, drawn at the
+/// right edge while the rows overflow the list.
+struct ScrollbarThumb {
+    color: gpui::Rgba,
+    selector: &'static str,
+}
+
+impl UniformListDecoration for ScrollbarThumb {
+    fn compute(
+        &self,
+        _visible_range: Range<usize>,
+        bounds: Bounds<Pixels>,
+        scroll_offset: Point<Pixels>,
+        item_height: Pixels,
+        item_count: usize,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> AnyElement {
+        let viewport = f32::from(bounds.size.height);
+        let content = f32::from(item_height) * item_count as f32;
+        let scroll_top = -f32::from(scroll_offset.y);
+        let Some((top, height)) = thumb_geometry(viewport, content, scroll_top) else {
+            return gpui::Empty.into_any_element();
+        };
+        let selector = self.selector;
+        // Decorations are placed in content coordinates, which scroll; the
+        // visible top of the list is at `scroll_top`.
+        div()
+            .w(bounds.size.width)
+            .h(bounds.size.height)
+            .child(
+                div()
+                    .debug_selector(move || selector.into())
+                    .absolute()
+                    .top(px(scroll_top + top))
+                    .right_0()
+                    .w(px(SCROLLBAR_WIDTH))
+                    .h(px(height))
+                    .rounded(px(SCROLLBAR_WIDTH / 2.))
+                    .bg(self.color),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for ExplorerView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let thumb = color(cx.global::<AppState>().theme.ui.scrollbar_thumb);
         div()
             .debug_selector(|| "explorer".into())
             .size_full()
+            .flex()
+            .flex_col()
+            .child(self.render_root(cx))
             .child(
-                uniform_list(
-                    "explorer-rows",
-                    self.model.visible_rows().len(),
-                    cx.processor(|this, range, _, cx| this.render_rows(range, cx)),
-                )
-                .size_full()
-                .track_scroll(&self.scroll),
+                div()
+                    .debug_selector(|| "explorer-list".into())
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        uniform_list(
+                            "explorer-rows",
+                            self.model.visible_rows().len(),
+                            cx.processor(|this, range, _, cx| this.render_rows(range, cx)),
+                        )
+                        .size_full()
+                        .with_decoration(ScrollbarThumb {
+                            color: thumb,
+                            selector: "explorer-scrollbar-thumb",
+                        })
+                        .track_scroll(&self.scroll),
+                    ),
             )
     }
 }

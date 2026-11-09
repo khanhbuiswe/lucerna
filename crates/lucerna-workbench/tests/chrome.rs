@@ -112,9 +112,9 @@ fn title_bar_shows_root_name(cx: &mut TestAppContext) {
     // Clear of the traffic lights.
     assert_eq!(name.left(), px(80.));
     assert!(title.contains(&name.center()));
-    // The Explorer header is a single 24 px row.
-    let header = bounds("sidebar-header", cx);
-    assert_eq!(header.size.height, px(ui::TREE_ROW_HEIGHT));
+    // The Explorer's root row is a single 24 px row.
+    let root = bounds("explorer-root", cx);
+    assert_eq!(root.size.height, px(ui::TREE_ROW_HEIGHT));
 
     let opts = window_options(Bounds::new(point(px(0.), px(0.)), size(px(800.), px(600.))));
     let titlebar = opts.titlebar.expect("custom titlebar");
@@ -123,6 +123,53 @@ fn title_bar_shows_root_name(cx: &mut TestAppContext) {
         titlebar.traffic_light_position,
         Some(point(px(12.), px(11.)))
     );
+}
+
+/// The title bar shows the checked-out branch after the root name, and
+/// follows `HEAD` when it changes; outside a repository it shows none.
+#[gpui::test]
+fn title_bar_shows_git_branch(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = tempfile::TempDir::new().unwrap();
+    let git = dir.path().join(".git");
+    std::fs::create_dir(&git).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    assert_eq!(
+        wb.read_with(cx, |wb, _| wb.git_branch().map(str::to_owned))
+            .as_deref(),
+        Some("main")
+    );
+    draw(cx);
+    // Root name, then the Lucide git-branch icon, then the branch name.
+    let name = bounds("title-bar-root", cx);
+    let icon = bounds("title-bar-branch-icon", cx);
+    let branch = bounds("title-bar-branch", cx);
+    assert!(icon.left() > name.right());
+    assert!(branch.left() >= icon.right());
+    assert_eq!(icon.size.width, px(ui::UI_FONT_SIZE_SMALL));
+
+    // A checkout rewrites HEAD; the open-file watcher reports it.
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/feat/x\n").unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.on_open_file_changes(&[git.join("HEAD")], cx)
+    });
+    assert_eq!(
+        wb.read_with(cx, |wb, _| wb.git_branch().map(str::to_owned))
+            .as_deref(),
+        Some("feat/x")
+    );
+}
+
+#[gpui::test]
+fn title_bar_has_no_branch_outside_a_repository(cx: &mut TestAppContext) {
+    init(cx);
+    let (wb, cx) = open(cx);
+    assert!(wb.read_with(cx, |wb, _| wb.git_branch().is_none()));
+    draw(cx);
+    assert!(cx.debug_bounds("title-bar-branch").is_none());
+    assert!(cx.debug_bounds("title-bar-branch-icon").is_none());
 }
 
 #[gpui::test]
@@ -285,4 +332,30 @@ fn title_bar_release_outside_does_not_move_window_later(cx: &mut TestAppContext)
     // move (the test platform panics if one starts).
     cx.simulate_mouse_move(spot, None, Modifiers::none());
     cx.simulate_mouse_move(spot + point(px(5.), px(0.)), None, Modifiers::none());
+}
+
+#[test]
+fn ui_font_constants() {
+    assert_eq!(ui::UI_FONT_FAMILY, "IBM Plex Sans");
+    assert_eq!(ui::UI_FONT_SIZE, 14.0);
+    assert_eq!(ui::UI_FONT_SIZE_SMALL, 13.0);
+    assert_eq!(ui::UI_FONT_SIZE_CAPTION, 11.0);
+}
+
+/// GPUI draws an SVG as an alpha mask filled with `text_color`, so each
+/// vendored Lucide icon (stroked with `currentColor`) must rasterize to
+/// visible pixels.
+#[gpui::test]
+fn lucide_icons_rasterize_with_visible_strokes(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let renderer = cx.svg_renderer();
+        for (name, bytes) in lucerna_workbench::icons::ALL {
+            let image = renderer
+                .render_single_frame(bytes, 1.0)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let pixels = image.as_bytes(0).unwrap();
+            let opaque = pixels.chunks(4).filter(|px| px[3] > 0x80).count();
+            assert!(opaque > 10, "{name} has {opaque} visible pixels");
+        }
+    });
 }

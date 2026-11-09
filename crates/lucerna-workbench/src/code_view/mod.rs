@@ -67,12 +67,12 @@ impl Config {
         let config = Config {
             font_family: settings
                 .get::<String>("editor.fontFamily", language)
-                .unwrap_or_else(|| "Menlo".into())
+                .unwrap_or_else(|| crate::fonts::EDITOR_FONT_FAMILY.into())
                 .into(),
-            line_height: settings.get("editor.lineHeight", language).unwrap_or(1.5),
+            line_height: settings.get("editor.lineHeight", language).unwrap_or(1.6),
             minimap: settings
                 .get("editor.minimap.enabled", language)
-                .unwrap_or(true),
+                .unwrap_or(false),
             render_whitespace: settings
                 .get::<String>("editor.renderWhitespace", language)
                 .is_some_and(|w| w == "all"),
@@ -89,7 +89,7 @@ impl Config {
         };
         let font_size = settings
             .get::<f32>("editor.fontSize", language)
-            .unwrap_or(13.)
+            .unwrap_or(14.)
             .clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let wrap = settings
             .get::<String>("editor.wordWrap", language)
@@ -162,6 +162,9 @@ pub struct CodeView {
     /// The find widget, kept while hidden so it remembers its query.
     find: Option<Entity<FindWidget>>,
     find_visible: bool,
+    /// Whether the mouse is over the gutter: fold chevrons show only then
+    /// (and always on folded rows).
+    gutter_hovered: bool,
 }
 
 impl CodeView {
@@ -210,6 +213,7 @@ impl CodeView {
             active_match: None,
             find: None,
             find_visible: false,
+            gutter_hovered: false,
         }
     }
 
@@ -467,6 +471,28 @@ impl CodeView {
         self.folds.is_folded(header_row)
     }
 
+    /// Whether the mouse is over the gutter.
+    pub fn gutter_hovered(&self) -> bool {
+        self.gutter_hovered
+    }
+
+    pub(crate) fn set_gutter_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        if self.gutter_hovered != hovered {
+            self.gutter_hovered = hovered;
+            cx.notify();
+        }
+    }
+
+    /// Whether `row` shows a fold chevron: it must start a fold, and the
+    /// mouse must be over the gutter unless the fold is closed.
+    pub fn fold_chevron_visible(&self, row: u32) -> bool {
+        let header = self
+            .fold_ranges
+            .binary_search_by_key(&row, |f| f.start)
+            .is_ok();
+        header && (self.gutter_hovered || self.folds.is_folded(row))
+    }
+
     /// Folds or unfolds the fold starting at `header_row`.
     pub fn toggle_fold(&mut self, header_row: u32, cx: &mut Context<Self>) {
         self.folds.toggle(header_row, &self.fold_ranges);
@@ -493,6 +519,12 @@ impl CodeView {
         };
         self.pending_center = None;
         cx.notify();
+    }
+
+    /// The overlay scrollbar thumb as last painted, in window coordinates;
+    /// `None` while the rows fit (or before the first paint).
+    pub fn scrollbar_thumb(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.frame.as_ref().and_then(|f| f.thumb())
     }
 
     /// How many whole rows fit in the viewport; 0 before the first paint.

@@ -118,6 +118,18 @@ impl FoldState {
     pub fn prev_visible(&self, row: u32) -> u32 {
         self.hiding_header(row).unwrap_or(row)
     }
+
+    /// How many rows before `row` closed folds hide.
+    pub fn hidden_before(&self, row: u32) -> u32 {
+        let mut hidden = 0;
+        let mut covered = 0;
+        for (&header, &end) in &self.folded {
+            let start = (header + 1).max(covered);
+            hidden += end.min(row).saturating_sub(start);
+            covered = covered.max(end);
+        }
+        hidden
+    }
 }
 
 /// The display lines of the visible rows in `rows`, clamped to the buffer.
@@ -289,5 +301,20 @@ mod tests {
                 "row {row}"
             );
         }
+    }
+
+    #[test]
+    fn hidden_before_counts_nested_folds_once() {
+        let available = [1..6, 2..4, 8..10];
+        let mut folds = FoldState::default();
+        assert_eq!(folds.hidden_before(20), 0);
+        folds.toggle(2, &available);
+        folds.toggle(1, &available);
+        folds.toggle(8, &available);
+        // Rows 2..6 (the outer fold covers the inner) and 9..10.
+        assert_eq!(folds.hidden_before(2), 0);
+        assert_eq!(folds.hidden_before(4), 2);
+        assert_eq!(folds.hidden_before(6), 4);
+        assert_eq!(folds.hidden_before(20), 5);
     }
 }

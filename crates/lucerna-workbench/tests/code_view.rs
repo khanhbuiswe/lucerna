@@ -175,7 +175,10 @@ fn go_to_centers_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn large_file_disables_highlight(cx: &mut TestAppContext) {
-    init(cx, Some(r#"{ "lucerna.largeFile.maxLines": 10 }"#));
+    init(
+        cx,
+        Some(r#"{ "lucerna.largeFile.maxLines": 10, "editor.minimap.enabled": true }"#),
+    );
     let (wb, cx) = workbench(cx);
     let source: String = (0..20)
         .map(|i| format!("fn f{i}() {{\n    {i}\n}}\n"))
@@ -223,10 +226,17 @@ fn large_file_disables_highlight(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn minimap_is_off_by_default(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_view, cx) = code_view("fn main() {}\n", cx);
+    assert!(cx.debug_bounds("code-view-minimap").is_none());
+}
+
+#[gpui::test]
 fn zoom_clamps(cx: &mut TestAppContext) {
     init(cx, None);
     let (view, cx) = code_view("text\n", cx);
-    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 13.);
+    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 14.);
     view.update(cx, |v, cx| v.zoom(100., cx));
     assert_eq!(view.read_with(cx, |v, _| v.font_size()), 40.);
     view.update(cx, |v, cx| v.zoom(-100., cx));
@@ -253,11 +263,11 @@ fn zoom_and_wrap_commands(cx: &mut TestAppContext) {
     assert!(!view.read_with(cx, |v, _| v.word_wrap()));
 }
 
-// Geometry on the test platform's text system: 13 px font, 1.5 line
-// height, every char 7.8 px wide. With under 100 lines the gutter is
+// Geometry on the test platform's text system: 14 px font, 1.6 line
+// height, every char 8.4 px wide. With under 100 lines the gutter is
 // six chars wide and the text starts half a char after it.
-const LINE: f32 = 19.5;
-const CHAR: f32 = 7.8;
+const LINE: f32 = 22.4;
+const CHAR: f32 = 8.4;
 const TEXT_X: f32 = 6.5 * CHAR;
 
 /// The middle of `row`, slightly right of the boundary before `column`.
@@ -347,6 +357,112 @@ fn gutter_chevron_folds(cx: &mut TestAppContext) {
     draw(cx);
     mouse_down(at(1, 0), 1, false, cx);
     assert_eq!(view.read_with(cx, |v, _| v.cursor()), pt(1, 0));
+}
+
+/// Fold chevrons show while the mouse is over the gutter, and always on a
+/// folded row.
+#[gpui::test]
+fn fold_chevrons_follow_gutter_hover(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (view, cx) = code_view("fn a() {\n    x\n}\nlast\n", cx);
+    cx.run_until_parked();
+    draw(cx);
+    let state = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| {
+            (
+                v.gutter_hovered(),
+                v.fold_chevron_visible(0),
+                v.fold_chevron_visible(3),
+            )
+        })
+    };
+    let none = gpui::Modifiers::none();
+    // Hover off: no chevron.
+    assert_eq!(state(cx), (false, false, false));
+
+    // Over the gutter: the fold header shows one; a plain row never does.
+    cx.simulate_mouse_move(
+        gpui::point(gpui::px(CHAR), gpui::px(LINE * 0.5)),
+        None,
+        none,
+    );
+    assert_eq!(state(cx), (true, true, false));
+
+    // Over the text: hidden again.
+    cx.simulate_mouse_move(at(0, 2), None, none);
+    assert_eq!(state(cx), (false, false, false));
+
+    // Leaving the window straight from the gutter hides them too.
+    let gutter = gpui::point(gpui::px(CHAR), gpui::px(LINE * 0.5));
+    cx.simulate_mouse_move(gutter, None, none);
+    assert_eq!(state(cx), (true, true, false));
+    cx.simulate_event(gpui::MouseExitEvent {
+        position: gutter,
+        pressed_button: None,
+        modifiers: none,
+    });
+    assert_eq!(state(cx), (false, false, false));
+
+    // A folded row keeps its chevron with the mouse away.
+    view.update(cx, |v, cx| v.toggle_fold(0, cx));
+    draw(cx);
+    assert_eq!(state(cx), (false, true, false));
+}
+
+/// The overlay scrollbar thumb: only when the text overflows, at the top
+/// of the track when scrolled to the top and at its bottom at the end.
+#[gpui::test]
+fn scrollbar_thumb_tracks_scroll(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (short, cx) = code_view("one\ntwo\nthree\n", cx);
+    assert_eq!(short.read_with(cx, |v, _| v.scrollbar_thumb()), None);
+
+    let text: String = (0..500).map(|i| format!("line {i}\n")).collect();
+    short.update(cx, |v, cx| v.set_buffer(snapshot(&text), cx));
+    draw(cx);
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let thumb = short
+        .read_with(cx, |v, _| v.scrollbar_thumb())
+        .expect("500 lines overflow");
+    assert_eq!(thumb.top(), gpui::px(0.));
+    assert!(thumb.size.height > gpui::px(0.) && thumb.size.height < viewport.height);
+    assert_eq!(
+        thumb.size.width,
+        gpui::px(lucerna_workbench::ui::SCROLLBAR_WIDTH)
+    );
+    assert_eq!(thumb.right(), viewport.width);
+
+    let height = thumb.size.height;
+    let thumb_at = |row: u32, cx: &mut VisualTestContext| {
+        short.update(cx, |v, cx| v.set_scroll_top_row(row, cx));
+        draw(cx);
+        short.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap()
+    };
+    // The scroll range ends with the last row at the top: with the last
+    // page on screen the thumb has not reached the bottom yet...
+    let visible = short.read_with(cx, |v, _| v.visible_rows());
+    let last_page = thumb_at(500 - visible, cx);
+    assert!(last_page.bottom() < viewport.height - gpui::px(1.));
+    // ...halfway it is halfway down the track...
+    let half = thumb_at(499 / 2, cx);
+    let expected = (viewport.height - height) * (249. / 499.);
+    assert!((half.top() - expected).abs() < gpui::px(0.5));
+    // ...and with the last row at the top it is at the bottom.
+    let end = thumb_at(499, cx);
+    assert!((end.bottom() - viewport.height).abs() < gpui::px(0.01));
+}
+
+/// With the minimap on, the thumb sits left of it.
+#[gpui::test]
+fn scrollbar_thumb_is_left_of_the_minimap(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.minimap.enabled": true }"#));
+    let text: String = (0..500).map(|i| format!("line {i}\n")).collect();
+    let (view, cx) = code_view(&text, cx);
+    draw(cx);
+    let minimap = cx.debug_bounds("code-view-minimap").expect("minimap on");
+    let thumb = view.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+    assert!(thumb.right() <= minimap.left());
+    assert!(thumb.right() > minimap.left() - gpui::px(1.));
 }
 
 #[gpui::test]

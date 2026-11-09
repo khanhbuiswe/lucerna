@@ -80,6 +80,8 @@ pub struct UiColors {
     pub tab_bar_background: Rgba,
     /// Error text, such as a broken settings file in the status bar.
     pub error: Rgba,
+    /// `scrollbar.thumb.background`: the thin overlay scrollbar's thumb.
+    pub scrollbar_thumb: Rgba,
 }
 
 const fn gray(v: u8, a: u8) -> Rgba {
@@ -124,18 +126,20 @@ impl UiColors {
                 gray(0x33, 255),
             ),
         };
-        let (title_bar, elevated, hover, border_variant) = match appearance {
+        let (title_bar, elevated, hover, border_variant, scrollbar_thumb) = match appearance {
             Appearance::Dark => (
                 gray(0x2b, 255),
                 gray(0x2c, 255),
                 gray(0x33, 255),
                 gray(0x30, 255),
+                gray(0xc8, 0x4c),
             ),
             Appearance::Light => (
                 gray(0xe8, 255),
                 gray(0xfa, 255),
                 gray(0xe4, 255),
                 gray(0xe2, 255),
+                gray(0x38, 0x4c),
             ),
         };
         UiColors {
@@ -163,6 +167,7 @@ impl UiColors {
             icon_muted: muted,
             tab_bar_background: panel,
             error: ERROR_RED,
+            scrollbar_thumb,
         }
     }
 }

@@ -36,6 +36,7 @@ pub fn run(launch: Launch) {
             single_file,
             on_first_frame,
         } = launch;
+        crate::fonts::register(cx);
         set_app_state(cx);
         install_app_menu(cx);
         watch_config(ConfigPaths::for_root(&root), cx);

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use gpui::{
     App, Bounds, CursorStyle, DispatchPhase, Element, ElementId, Font, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent, ShapedLine, SharedString, Style, TextRun,
-    Window, font, point, px, relative, size,
+    MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent, ShapedLine, SharedString,
+    Style, TextRun, Window, font, point, px, relative, size,
 };
 use lucerna_text::Point;
 use lucerna_theme::Theme;
@@ -20,6 +20,7 @@ use super::layout::{FoldState, char_columns, display_lines_with_tab_size, row_st
 use super::selection::{self, Selection};
 use super::{CodeView, Drag, hsla};
 use crate::AppState;
+use crate::ui::{SCROLLBAR_WIDTH, thumb_geometry};
 
 /// Rows shaped below the viewport so the next scroll step is ready.
 const OVERSCAN_ROWS: u32 = 3;
@@ -135,8 +136,10 @@ pub(crate) struct Frame {
     pub wrap_chars: Option<u32>,
     rows: Vec<FrameRow>,
     numbers: Vec<(Pixels, ShapedLine)>,
-    /// Fold chevrons: (top, header row, chevron).
-    chevrons: Vec<(Pixels, u32, ShapedLine)>,
+    /// Fold chevrons of every fold header on screen: (top, header row,
+    /// chevron, painted). All of them take clicks; only those shown while
+    /// the gutter is hovered, or folded, are painted.
+    chevrons: Vec<(Pixels, u32, ShapedLine, bool)>,
     selection: Option<Selection>,
     /// Search matches touching the rows on screen; `true` for the active one.
     matches: Vec<(std::ops::Range<Point>, bool)>,
@@ -145,6 +148,8 @@ pub(crate) struct Frame {
     /// `·` and `→`, when whitespace is rendered.
     whitespace: Option<(ShapedLine, ShapedLine)>,
     hitbox: Option<Hitbox>,
+    /// The overlay scrollbar thumb, while the rows overflow.
+    thumb: Option<Bounds<Pixels>>,
     colors: FrameColors,
 }
 
@@ -157,9 +162,14 @@ struct FrameColors {
     bracket: Hsla,
     search_match: Hsla,
     active_match: Hsla,
+    scrollbar_thumb: Hsla,
 }
 
 impl Frame {
+    pub fn thumb(&self) -> Option<Bounds<Pixels>> {
+        self.thumb
+    }
+
     pub fn visible_rows(&self) -> u32 {
         (self.bounds.size.height / self.line_height).floor().max(0.) as u32
     }
@@ -406,7 +416,8 @@ impl CodeView {
                     "▾"
                 };
                 let shaped = shape(window, glyph, font_size, self.base_font(), number_color);
-                chevrons.push((r.top, r.buffer_row, shaped));
+                let shown = self.fold_chevron_visible(r.buffer_row);
+                chevrons.push((r.top, r.buffer_row, shaped, shown));
             }
         }
         let whitespace = self.config.render_whitespace.then(|| {
@@ -429,6 +440,30 @@ impl CodeView {
             .map(|&offset| self.snapshot.offset_to_point(offset))
             .collect();
 
+        // The thumb follows buffer rows (folded ones left out), not
+        // wrapped display lines: one row's height each. It shows while the
+        // rows overflow, and its range is the real scroll range, which
+        // ends with the last row at the top.
+        let lh = f32::from(line_height);
+        let viewport = f32::from(bounds.size.height);
+        let shown_rows = line_count - self.folds.hidden_before(line_count);
+        let rows_above = self.scroll.top_row - self.folds.hidden_before(self.scroll.top_row);
+        let thumb = (shown_rows as f32 * lh > viewport)
+            .then(|| {
+                thumb_geometry(
+                    viewport,
+                    shown_rows.saturating_sub(1) as f32 * lh + viewport,
+                    rows_above as f32 * lh + self.scroll.offset,
+                )
+            })
+            .flatten()
+            .map(|(top, height)| {
+                Bounds::new(
+                    point(bounds.right() - px(SCROLLBAR_WIDTH), bounds.top() + px(top)),
+                    size(px(SCROLLBAR_WIDTH), px(height)),
+                )
+            });
+
         let frame = Arc::new(Frame {
             bounds,
             text_bounds,
@@ -445,6 +480,7 @@ impl CodeView {
             brackets,
             whitespace,
             hitbox: Some(hitbox),
+            thumb,
             colors: FrameColors {
                 background: hsla(ui.editor_background),
                 gutter: hsla(ui.editor_background),
@@ -453,6 +489,7 @@ impl CodeView {
                 bracket: hsla(ui.editor_foreground).opacity(BRACKET_BOX_ALPHA),
                 search_match: hsla(ui.search_match_background),
                 active_match: hsla(ui.editor_foreground).opacity(ACTIVE_MATCH_ALPHA),
+                scrollbar_thumb: hsla(ui.scrollbar_thumb),
             },
         });
         self.frame = Some(frame.clone());
@@ -592,7 +629,7 @@ impl CodeView {
             let Some(row) = frame.row_at(ev.position.y) else {
                 return;
             };
-            let on_chevron = frame.chevrons.iter().any(|(_, r, _)| *r == row.buffer_row)
+            let on_chevron = frame.chevrons.iter().any(|(_, r, ..)| *r == row.buffer_row)
                 && ev.position.x >= frame.text_bounds.left() - frame.char_width * 2.;
             if on_chevron {
                 self.toggle_fold(row.buffer_row, cx);
@@ -725,6 +762,29 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
             }
             if view.read(cx).drag == Some(Drag::Text) {
                 view.update(cx, |v, cx| v.mouse_drag(ev.position, cx));
+            }
+        }
+    });
+    window.on_mouse_event({
+        let (view, hitbox) = (view.clone(), hitbox.clone());
+        let gutter_right = frame.text_bounds.left();
+        move |ev: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let over_gutter = hitbox.is_hovered(window) && ev.position.x < gutter_right;
+            if view.read(cx).gutter_hovered() != over_gutter {
+                view.update(cx, |v, cx| v.set_gutter_hovered(over_gutter, cx));
+            }
+        }
+    });
+    // The mouse can leave the window straight from the gutter, with no
+    // move outside it to clear the hover.
+    window.on_mouse_event({
+        let view = view.clone();
+        move |_: &MouseExitEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble && view.read(cx).gutter_hovered() {
+                view.update(cx, |v, cx| v.set_gutter_hovered(false, cx));
             }
         }
     });

@@ -30,3 +30,9 @@ unicode-width.workspace = true
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
+
+# The platform text system can only be created on the main thread, so this
+# test supplies its own `main` instead of the libtest harness.
+[[test]]
+name = "fonts"
+harness = false

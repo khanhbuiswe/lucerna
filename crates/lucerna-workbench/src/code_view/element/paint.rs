@@ -4,11 +4,12 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ContentMask, Pixels, ShapedLine, TextAlign, Window, fill, outline, point, size,
+    App, Bounds, ContentMask, Pixels, ShapedLine, TextAlign, Window, fill, outline, point, px, size,
 };
 use lucerna_text::Point;
 
 use super::Frame;
+use crate::ui::SCROLLBAR_WIDTH;
 
 pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
     let lh = frame.line_height;
@@ -84,11 +85,15 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
         line.paint(origin, lh, TextAlign::Left, None, window, cx)
             .ok();
     }
-    for (top, _, chevron) in &frame.chevrons {
+    for (top, _, chevron, _) in frame.chevrons.iter().filter(|c| c.3) {
         let origin = point(text.left() - frame.char_width * 1.5, *top);
         chevron
             .paint(origin, lh, TextAlign::Left, None, window, cx)
             .ok();
+    }
+    if let Some(thumb) = frame.thumb {
+        window
+            .paint_quad(fill(thumb, colors.scrollbar_thumb).corner_radii(px(SCROLLBAR_WIDTH / 2.)));
     }
 }
 

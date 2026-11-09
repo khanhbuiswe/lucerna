@@ -6,6 +6,8 @@ use gpui::{
 };
 
 use crate::AppState;
+use crate::icons;
+pub use crate::icons::icon_for_path;
 use crate::layout::color;
 
 /// Spacing unit: paddings and gaps are multiples of it.
@@ -13,35 +15,48 @@ pub const GRID: f32 = 4.0;
 pub const TITLE_BAR_HEIGHT: f32 = 34.0;
 pub const STATUS_BAR_HEIGHT: f32 = 26.0;
 pub const TAB_HEIGHT: f32 = 32.0;
-/// Height of a file tree row, and of the Explorer header.
+/// Horizontal padding inside a tab.
+pub const TAB_PADDING_X: f32 = 2.5 * GRID;
+/// The bar under each tab bar showing the active file's path.
+pub const PATH_BAR_HEIGHT: f32 = TAB_HEIGHT - 2. * GRID;
+/// Height of a file tree row, and of the Explorer root row.
 pub const TREE_ROW_HEIGHT: f32 = 24.0;
+/// Width of the thin overlay scrollbar thumb.
+pub const SCROLLBAR_WIDTH: f32 = 6.0;
+/// The scrollbar thumb never gets shorter than this.
+pub const MIN_THUMB_HEIGHT: f32 = 6. * GRID;
 pub const POPOVER_MAX_WIDTH: f32 = 600.0;
 pub const POPOVER_RADIUS: f32 = 8.0;
-/// UI text size; the UI uses the system font, the editor its own.
-pub const UI_FONT_SIZE: f32 = 13.0;
-/// The system UI font in GPUI.
-pub const UI_FONT_FAMILY: &str = ".SystemUIFont";
+/// UI text size; the UI uses IBM Plex Sans, the editor its own font.
+pub const UI_FONT_SIZE: f32 = 14.0;
+/// Smaller UI text: tab titles, the status bar and small headers.
+pub const UI_FONT_SIZE_SMALL: f32 = 13.0;
+/// Captions smaller than [`UI_FONT_SIZE_SMALL`]: the search panel's field
+/// labels, folder hints and match counts, and toggle labels like `Aa`.
+pub const UI_FONT_SIZE_CAPTION: f32 = 11.0;
+/// The bundled UI font (see [`crate::fonts`]).
+pub const UI_FONT_FAMILY: &str = crate::fonts::UI_FONT_FAMILY;
 
-/// Two overlapping pages.
-pub const FILES_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.25" stroke-linejoin="round"><path d="M5.5 4V1.5H10L13.5 5v7h-3"/><path d="M2.5 4.5H7L10.5 8v6.5h-8Z"/></svg>"#;
+/// Two overlapping pages: the Explorer toggle.
+pub const FILES_ICON: &[u8] = icons::FILES;
 
 /// A magnifying glass.
-pub const SEARCH_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.25" stroke-linecap="round"><circle cx="6.75" cy="6.75" r="4.5"/><path d="M10.25 10.25 14 14"/></svg>"#;
+pub const SEARCH_ICON: &[u8] = icons::SEARCH;
 
 /// A thin ×, for closing tabs.
-pub const CLOSE_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>"#;
+pub const CLOSE_ICON: &[u8] = icons::X;
 
 /// A chevron pointing right: a collapsed directory.
-pub const CHEVRON_RIGHT_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg>"#;
+pub const CHEVRON_RIGHT_ICON: &[u8] = icons::CHEVRON_RIGHT;
 
 /// A chevron pointing down: an expanded directory.
-pub const CHEVRON_DOWN_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6 8 10.5 12.5 6"/></svg>"#;
+pub const CHEVRON_DOWN_ICON: &[u8] = icons::CHEVRON_DOWN;
 
 /// A chevron pointing up: previous match.
-pub const CHEVRON_UP_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 10 8 5.5 12.5 10"/></svg>"#;
+pub const CHEVRON_UP_ICON: &[u8] = icons::CHEVRON_UP;
 
 /// A single page with a folded corner.
-pub const FILE_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.25" stroke-linejoin="round"><path d="M3.5 1.5H9L12.5 5v9.5h-9Z"/><path d="M9 1.5V5h3.5"/></svg>"#;
+pub const FILE_ICON: &[u8] = icons::FILE;
 
 /// The floating container for Quick Open, the theme picker and the find
 /// widget: up to [`POPOVER_MAX_WIDTH`] wide, rounded, bordered, shadowed,
@@ -135,7 +150,7 @@ pub fn toggle_button(
         .cursor_pointer()
         // Keeps a focusable ancestor (the sidebar) from taking focus.
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-        .text_size(px(11.))
+        .text_size(px(UI_FONT_SIZE_CAPTION))
         .when(active, |d| {
             d.bg(color(ui.element_selected)).text_color(color(ui.icon))
         })
@@ -144,4 +159,40 @@ pub fn toggle_button(
                 .hover(move |s| s.bg(hover))
         })
         .child(label)
+}
+
+/// Top and height of a scrollbar thumb inside a `viewport` tall track
+/// scrolled `scroll_top` into `content` (all in the same unit), or `None`
+/// when nothing overflows. The thumb is at least [`MIN_THUMB_HEIGHT`].
+pub(crate) fn thumb_geometry(viewport: f32, content: f32, scroll_top: f32) -> Option<(f32, f32)> {
+    if content <= viewport || viewport <= 0. {
+        return None;
+    }
+    let height = (viewport * viewport / content)
+        .max(MIN_THUMB_HEIGHT)
+        .min(viewport);
+    let max_scroll = content - viewport;
+    let top = (viewport - height) * (scroll_top / max_scroll).clamp(0., 1.);
+    Some((top, height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_thumb_without_overflow() {
+        assert_eq!(thumb_geometry(100., 100., 0.), None);
+        assert_eq!(thumb_geometry(100., 40., 0.), None);
+    }
+
+    #[test]
+    fn thumb_tracks_scroll_and_keeps_a_minimum() {
+        // Half the content visible: half-height thumb.
+        assert_eq!(thumb_geometry(200., 400., 0.), Some((0., 100.)));
+        assert_eq!(thumb_geometry(200., 400., 200.), Some((100., 100.)));
+        let (top, height) = thumb_geometry(100., 100_000., 99_900.).unwrap();
+        assert_eq!(height, MIN_THUMB_HEIGHT);
+        assert_eq!(top + height, 100.);
+    }
 }
