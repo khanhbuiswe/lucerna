@@ -1,10 +1,13 @@
 //! Starts the app for `luc`: the configuration, themes and keymap, then
-//! one workbench window on a folder.
+//! one workbench window on a folder, asking for the folder when the app
+//! bundle is started from Finder or the Dock.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, actions, px, size};
+use gpui::{
+    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, PathPromptOptions, actions, px, size,
+};
 use gpui_platform::application;
 use lucerna_extension::store::Store;
 use lucerna_settings::{Keymap, SettingsStore};
@@ -34,54 +37,105 @@ pub struct Launch {
 /// Runs the app until it quits; it quits when its last window closes.
 pub fn run(launch: Launch) {
     application().run(move |cx: &mut App| {
-        let Launch {
-            root,
-            file,
-            single_file,
-            on_first_frame,
-        } = launch;
-        crate::fonts::register(cx);
-        set_app_state(extensions_root(), cx);
-        install_app_menu(cx);
-        watch_config(ConfigPaths::for_root(&root), cx);
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
+        start(cx);
+        open_workbench(launch, cx);
+    });
+}
+
+/// Runs the app after asking for a folder to open, as when Finder or the
+/// Dock starts the bundle with no path. Quits if the user cancels.
+pub fn run_picking_folder(on_first_frame: Option<Box<dyn FnOnce()>>) {
+    application().run(move |cx: &mut App| {
+        start(cx);
+        cx.activate(true);
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open".into()),
+        });
+        cx.spawn(async move |cx| {
+            let root = match picked.await {
+                Ok(Ok(Some(paths))) => paths
+                    .into_iter()
+                    .next()
+                    .and_then(|path| std::fs::canonicalize(path).ok()),
+                Ok(Err(err)) => {
+                    tracing::error!(%err, "could not show the folder picker");
+                    None
+                }
+                _ => None,
+            };
+            cx.update(|cx| match root {
+                Some(root) => open_workbench(
+                    Launch {
+                        root,
+                        file: None,
+                        single_file: false,
+                        on_first_frame,
+                    },
+                    cx,
+                ),
+                None => cx.quit(),
+            });
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);
-        let opened = cx.open_window(window_options(bounds), |window, cx| {
-            let workbench = cx.new(|cx| match (&file, default_data_dir()) {
-                (Some(file), data_dir) if single_file => {
-                    Workbench::single_file(root, file, data_dir, window, cx)
-                }
-                (_, Some(data_dir)) => Workbench::with_data_dir(root, data_dir, window, cx),
-                (_, None) => Workbench::new(root, window, cx),
-            });
-            if let Some(file) = file {
-                let path: Arc<Path> = file.into();
-                workbench.update(cx, |wb, cx| wb.open_path(path, OpenMode::Pinned, cx));
-            }
-            // Next-frame callbacks run before that frame draws, so the
-            // second one runs once the first frame has been presented.
-            window.on_next_frame(move |window, _| {
-                window.on_next_frame(move |_, cx| {
-                    ExtensionService::schedule_startup_refresh(cx);
-                    if let Some(callback) = on_first_frame {
-                        callback();
-                    }
-                });
-            });
-            workbench
-        });
-        if let Err(err) = opened {
-            tracing::error!(%err, "could not open the window");
-            cx.quit();
-            return;
-        }
-        cx.activate(true);
     });
+}
+
+/// What every launch sets up before its first window.
+fn start(cx: &mut App) {
+    crate::fonts::register(cx);
+    set_app_state(extensions_root(), cx);
+    install_app_menu(cx);
+    cx.on_window_closed(|cx, _| {
+        if cx.windows().is_empty() {
+            cx.quit();
+        }
+    })
+    .detach();
+}
+
+/// Opens the workbench window on `launch`; quits if it cannot.
+fn open_workbench(launch: Launch, cx: &mut App) {
+    let Launch {
+        root,
+        file,
+        single_file,
+        on_first_frame,
+    } = launch;
+    watch_config(ConfigPaths::for_root(&root), cx);
+    let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);
+    let opened = cx.open_window(window_options(bounds), |window, cx| {
+        let workbench = cx.new(|cx| match (&file, default_data_dir()) {
+            (Some(file), data_dir) if single_file => {
+                Workbench::single_file(root, file, data_dir, window, cx)
+            }
+            (_, Some(data_dir)) => Workbench::with_data_dir(root, data_dir, window, cx),
+            (_, None) => Workbench::new(root, window, cx),
+        });
+        if let Some(file) = file {
+            let path: Arc<Path> = file.into();
+            workbench.update(cx, |wb, cx| wb.open_path(path, OpenMode::Pinned, cx));
+        }
+        // Next-frame callbacks run before that frame draws, so the
+        // second one runs once the first frame has been presented.
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |_, cx| {
+                ExtensionService::schedule_startup_refresh(cx);
+                if let Some(callback) = on_first_frame {
+                    callback();
+                }
+            });
+        });
+        workbench
+    });
+    if let Err(err) = opened {
+        tracing::error!(%err, "could not open the window");
+        cx.quit();
+        return;
+    }
+    cx.activate(true);
 }
 
 actions!(lucerna, [Quit, Hide, Minimize]);

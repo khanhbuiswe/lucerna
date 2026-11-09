@@ -4,4 +4,4 @@ pub mod ext_cli;
 pub mod logging;
 mod target;
 
-pub use target::{Target, resolve_target, resolve_target_with_home};
+pub use target::{Target, prompts_for_folder, resolve_target, resolve_target_with_home};

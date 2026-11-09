@@ -13,6 +13,15 @@ cargo build -p lucerna
 target/debug/luc .
 ```
 
+`target/debug/luc` runs without an app bundle, so macOS shows "luc" in the menu bar. To build `Lucerna.app` (name and icon in the menu bar and Dock), install it in `/Applications` and put a `luc` command in `~/.local/bin` (or `$LUC_BIN_DIR`):
+
+```
+scripts/bundle-app.sh --install     # --debug bundles the dev build
+luc .                               # opens the current folder in Lucerna.app
+```
+
+Started from Finder or the Dock, Lucerna asks for a folder to open.
+
 ## Extensions
 
 Lucerna installs extensions from the Zed registry

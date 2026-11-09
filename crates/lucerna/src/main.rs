@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 use lucerna::ext_cli;
-use lucerna::{Target, logging, resolve_target};
+use lucerna::{Target, logging, prompts_for_folder, resolve_target};
 use lucerna_workbench::app::{self, Launch};
 
 /// Lucerna: a read-only code viewer.
@@ -33,6 +33,20 @@ fn main() {
         std::process::exit(ext_cli::run(args));
     }
     let guard = logging::init();
+    let on_first_frame = cli.trace_startup.then(|| -> Box<dyn FnOnce()> {
+        Box::new(move || {
+            let startup_ms = start.elapsed().as_millis();
+            tracing::info!(startup_ms, "first frame painted");
+            eprintln!("startup_ms={startup_ms}");
+        })
+    });
+    let cwd = std::env::current_dir().ok();
+    if cwd.is_some_and(|cwd| prompts_for_folder(cli.path.as_deref(), &cwd)) {
+        tracing::info!("starting with a folder picker");
+        app::run_picking_folder(on_first_frame);
+        drop(guard);
+        return;
+    }
     let Target {
         root,
         file,
@@ -47,13 +61,6 @@ fn main() {
         }
     };
     tracing::info!(root = %root.display(), file = ?file, single_file, "starting");
-    let on_first_frame = cli.trace_startup.then(|| -> Box<dyn FnOnce()> {
-        Box::new(move || {
-            let startup_ms = start.elapsed().as_millis();
-            tracing::info!(startup_ms, "first frame painted");
-            eprintln!("startup_ms={startup_ms}");
-        })
-    });
     app::run(Launch {
         root,
         file,

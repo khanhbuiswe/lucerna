@@ -34,6 +34,14 @@ impl Target {
     }
 }
 
+/// Whether `luc` should ask for a folder instead of opening the current
+/// directory: no path was given and the process runs in `/`, which is how
+/// Finder and the Dock start the app bundle. Opening `/` would scan the
+/// whole disk.
+pub fn prompts_for_folder(path: Option<&Path>, cwd: &Path) -> bool {
+    path.is_none() && cwd == Path::new("/")
+}
+
 /// Resolves the command-line path, with `$HOME` from the environment
 /// (see [`resolve_target_with_home`]).
 ///

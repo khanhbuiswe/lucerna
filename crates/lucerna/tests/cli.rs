@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use assert_cmd::Command;
-use lucerna::{Target, resolve_target, resolve_target_with_home};
+use lucerna::{Target, prompts_for_folder, resolve_target, resolve_target_with_home};
 
 #[test]
 fn version_flag_prints_name_and_version() {
@@ -139,4 +139,15 @@ fn missing_path_exits_1() {
         stderr.contains(&format!("path not found: {}", missing.display())),
         "stderr: {stderr}"
     );
+}
+
+#[test]
+fn prompts_for_folder_only_without_path_at_filesystem_root() {
+    use std::path::Path;
+    // Finder and the Dock start the app with no arguments in `/`.
+    assert!(prompts_for_folder(None, Path::new("/")));
+    // A terminal `luc` with no path opens the current directory.
+    assert!(!prompts_for_folder(None, Path::new("/Users/me/project")));
+    // An explicit path always wins, even `/`.
+    assert!(!prompts_for_folder(Some(Path::new("/")), Path::new("/")));
 }

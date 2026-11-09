@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template for Lucerna.app; scripts/bundle-app.sh replaces @VERSION@. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleName</key>
+	<string>Lucerna</string>
+	<key>CFBundleDisplayName</key>
+	<string>Lucerna</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.lucerna.Lucerna</string>
+	<key>CFBundleExecutable</key>
+	<string>luc</string>
+	<key>CFBundleIconFile</key>
+	<string>Lucerna</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<!-- Without it, AppKit's text input logs "getApplicationProperty:
+	     called with invalid property" at startup. -->
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+</dict>
+</plist>
