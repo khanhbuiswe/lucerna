@@ -126,6 +126,9 @@ pub struct Documents {
     docs: HashMap<Arc<Path>, Document>,
     /// Jumps requested for paths whose document does not exist yet.
     pending_go_to: HashMap<Arc<Path>, Point>,
+    /// Scroll rows restored for paths whose text is not loaded yet; the
+    /// first view to have the text takes its row.
+    pending_scroll: HashMap<Arc<Path>, u32>,
 }
 
 impl Documents {
@@ -136,6 +139,7 @@ impl Documents {
             root,
             docs: HashMap::new(),
             pending_go_to: HashMap::new(),
+            pending_scroll: HashMap::new(),
         }
     }
 
@@ -167,10 +171,16 @@ impl Documents {
                 let state = doc.state.clone();
                 let (snapshot, syntax) = (doc.snapshot.clone(), doc.syntax.clone());
                 let go_to = snapshot.as_ref().and(doc.pending_go_to.take());
+                let scroll = snapshot
+                    .as_ref()
+                    .and_then(|_| self.pending_scroll.remove(&key));
                 view.update(cx, |v, cx| {
                     if let Some(snapshot) = snapshot {
                         v.set_buffer(snapshot, cx);
                         v.set_syntax(syntax, cx);
+                    }
+                    if let Some(row) = scroll {
+                        v.set_scroll_top_row(row, cx);
                     }
                     if let Some(p) = go_to {
                         v.go_to(p, cx);
@@ -233,6 +243,18 @@ impl Documents {
                 self.pending_go_to.insert(key, point);
             }
         }
+    }
+
+    /// Remembers a scroll row for `path`: its next view shows that row as
+    /// soon as the text is loaded.
+    pub(crate) fn scroll_when_opened(&mut self, path: &Path, row: u32) {
+        let key = self.key(path);
+        self.pending_scroll.insert(key, row);
+    }
+
+    /// Whether a restored scroll row for `path` still waits for its text.
+    pub(crate) fn has_pending_scroll(&self, path: &Path) -> bool {
+        self.pending_scroll.contains_key(&self.key(path))
     }
 
     /// Loads `path` again after an error.
@@ -398,6 +420,11 @@ impl Documents {
                 for view in doc.views() {
                     let snapshot = snapshot.clone();
                     view.update(cx, |v, cx| v.set_buffer(snapshot, cx));
+                }
+                if let Some(row) = self.pending_scroll.remove(key) {
+                    for view in doc.views() {
+                        view.update(cx, |v, cx| v.set_scroll_top_row(row, cx));
+                    }
                 }
                 // A requested jump moves the newest view only.
                 if let (Some(p), Some(view)) = (doc.pending_go_to.take(), doc.views().last()) {

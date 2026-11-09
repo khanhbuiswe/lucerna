@@ -12,7 +12,7 @@ use gpui::{
 };
 use lucerna_theme::UiColors;
 
-use super::model::{EditorGroups, Tab, TabId};
+use super::model::{EditorGroups, GroupsState, Tab, TabId};
 use crate::AppState;
 use crate::documents::{DocState, Documents};
 use crate::layout::color;
@@ -113,6 +113,23 @@ impl EditorGroupsView {
         }
         cx.notify();
         result
+    }
+
+    /// Replaces the layout with the one saved in `state` (see
+    /// [`EditorGroups::restore`]). Tab bodies are made again, through the
+    /// factory, as they are drawn.
+    pub fn restore(&mut self, state: &GroupsState, cx: &mut Context<Self>) {
+        self.model = EditorGroups::restore(state);
+        self.bodies.clear();
+        self.hovered_tab = None;
+        let n = self.model.groups().len();
+        self.widths = vec![1.0 / n as f32; n];
+        cx.notify();
+    }
+
+    /// The body of tab `id`, if it has been drawn.
+    pub(crate) fn body_of(&self, id: TabId) -> Option<AnyView> {
+        self.bodies.get(&id).cloned()
     }
 
     /// Fraction of the editor area's width each group takes, left to right.

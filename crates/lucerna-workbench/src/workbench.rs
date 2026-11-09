@@ -1,8 +1,10 @@
 //! The root view: shell layout, view slots and VS Code–style key dispatch.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use gpui::{
@@ -30,12 +32,31 @@ use crate::search_panel::SearchPanel;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
+use crate::workspace_state::{WorkspaceState, WorkspaceStateStore};
 use crate::{AppState, CommandRegistry, find_widget, keys, search_panel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarView {
     Explorer,
     Search,
+}
+
+/// How long after a layout change the workspace state is written.
+const SAVE_DELAY: Duration = Duration::from_secs(2);
+
+/// Saving and restoring the layout; present only when a state store is
+/// configured.
+struct Persistence {
+    store: WorkspaceStateStore,
+    /// What the file holds (or would after a restore), so unchanged state
+    /// is not written again.
+    last_saved: Option<WorkspaceState>,
+    /// A save is scheduled.
+    save_pending: bool,
+    /// Scroll rows of open tabs that have no live view to ask, from the
+    /// last restore or save.
+    scroll_rows: HashMap<PathBuf, u32>,
+    _subscriptions: Vec<Subscription>,
 }
 
 pub struct Workbench {
@@ -81,6 +102,7 @@ pub struct Workbench {
     pub(crate) recent_files: RecentFiles,
     /// The shown theme picker.
     pub(crate) theme_picker: Option<ShownThemePicker>,
+    persistence: Option<Persistence>,
 }
 
 impl Workbench {
@@ -91,6 +113,28 @@ impl Workbench {
     /// If the [`AppState`] global is not set: rendering and key dispatch
     /// read the theme and keymap from it.
     pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::build(root, None, window, cx)
+    }
+
+    /// Like [`Workbench::new`], and keeps the layout of `root` in
+    /// `data_dir` (the app's is [`crate::default_data_dir`]): restores it
+    /// now, saves it after layout changes and when the window closes.
+    pub fn with_data_dir(
+        root: PathBuf,
+        data_dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let store = WorkspaceStateStore::new(data_dir, root.clone());
+        Self::build(root, Some(store), window, cx)
+    }
+
+    fn build(
+        root: PathBuf,
+        store: Option<WorkspaceStateStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         assert!(
             cx.has_global::<AppState>(),
             "set the AppState global before creating the Workbench"
@@ -108,13 +152,21 @@ impl Workbench {
         config_files::register_commands(&mut commands);
         theme_picker::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
+        let workbench = cx.weak_entity();
         let editor_groups = cx.new(|cx| {
             let mut groups = EditorGroupsView::default();
             let docs = documents.clone();
             groups.set_tab_body_factory(
                 Rc::new(move |tab, _, cx| {
                     let path = tab.path.clone();
-                    docs.update(cx, |docs, cx| docs.open(path, cx)).into()
+                    let view = docs.update(cx, |docs, cx| docs.open(path, cx));
+                    // A scroll settles into a save.
+                    let workbench = workbench.clone();
+                    cx.observe(&view, move |_, cx| {
+                        workbench.update(cx, |wb, cx| wb.layout_changed(cx)).ok();
+                    })
+                    .detach();
+                    view.into()
                 }),
                 cx,
             );
@@ -133,6 +185,25 @@ impl Workbench {
             exclude: enabled_globs(cx, "files.exclude"),
         };
         let worktree = Worktree::start(root.clone(), scan_options.clone());
+        let restored = store
+            .as_ref()
+            .and_then(WorkspaceStateStore::load)
+            .map(WorkspaceState::without_missing_files);
+        if let Some(state) = &restored {
+            editor_groups.update(cx, |view, cx| view.restore(&state.groups, cx));
+            let open: Vec<PathBuf> = editor_groups
+                .read(cx)
+                .model()
+                .groups()
+                .iter()
+                .flat_map(|g| g.tabs.iter().map(|t| t.path.to_path_buf()))
+                .collect();
+            documents.update(cx, |docs, _| {
+                for (path, row) in state.scroll.iter().filter(|(p, _)| open.contains(p)) {
+                    docs.scroll_when_opened(path, *row);
+                }
+            });
+        }
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
@@ -158,9 +229,14 @@ impl Workbench {
             focus,
             sidebar_focus: cx.focus_handle(),
             editor_focus,
-            sidebar_visible: true,
-            active_sidebar: SidebarView::Explorer,
-            sidebar_width: SIDEBAR_DEFAULT_WIDTH,
+            sidebar_visible: restored.as_ref().is_none_or(|s| s.sidebar_visible),
+            active_sidebar: match restored.as_ref().map(|s| s.sidebar_view.as_str()) {
+                Some("search") => SidebarView::Search,
+                _ => SidebarView::Explorer,
+            },
+            sidebar_width: restored.as_ref().map_or(SIDEBAR_DEFAULT_WIDTH, |s| {
+                px(s.sidebar_width).clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+            }),
             explorer_view: Some(explorer.clone().into()),
             explorer,
             documents,
@@ -176,11 +252,128 @@ impl Workbench {
             focus_before_quick_open: None,
             recent_files: RecentFiles::default(),
             theme_picker: None,
+            persistence: None,
         };
+        if let Some(store) = store {
+            workbench.start_persistence(store, restored.as_ref(), window, cx);
+        }
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
         workbench
+    }
+
+    /// Starts following layout changes. Runs after the restore, so the
+    /// restore itself is not seen as a change.
+    fn start_persistence(
+        &mut self,
+        store: WorkspaceStateStore,
+        restored: Option<&WorkspaceState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let groups = self.editor_groups.clone();
+        let weak = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            weak.update(cx, |wb, cx| wb.save_workspace_state(cx)).ok();
+            true
+        });
+        self.persistence = Some(Persistence {
+            store,
+            last_saved: None,
+            save_pending: false,
+            scroll_rows: restored.map(|s| s.scroll.clone()).unwrap_or_default(),
+            _subscriptions: vec![
+                cx.observe(&groups, |wb, _, cx| wb.layout_changed(cx)),
+                cx.on_app_quit(|wb, cx| {
+                    wb.save_workspace_state(cx);
+                    async {}
+                }),
+            ],
+        });
+        let current = self.workspace_state(cx);
+        if let Some(p) = &mut self.persistence {
+            p.last_saved = Some(current);
+        }
+    }
+
+    /// The layout as it is now. Scroll rows come from the live views, but
+    /// for tabs without a view, or whose text has not loaded, from the
+    /// restored rows. Only open tabs keep a row.
+    fn workspace_state(&mut self, cx: &mut Context<Self>) -> WorkspaceState {
+        let groups = self.editor_groups.read(cx);
+        let mut scroll = HashMap::new();
+        for tab in groups.model().groups().iter().flat_map(|g| &g.tabs) {
+            let live = groups
+                .body_of(tab.id)
+                .and_then(|b| b.downcast::<CodeView>().ok())
+                .filter(|_| !self.documents.read(cx).has_pending_scroll(&tab.path))
+                .map(|v| v.read(cx).scroll_top_row());
+            let cached = self
+                .persistence
+                .as_ref()
+                .and_then(|p| p.scroll_rows.get(&*tab.path).copied());
+            if let Some(row) = live.or(cached) {
+                scroll.insert(tab.path.to_path_buf(), row);
+            }
+        }
+        let state = WorkspaceState {
+            version: crate::workspace_state::STATE_VERSION,
+            sidebar_visible: self.sidebar_visible,
+            sidebar_width: f32::from(self.sidebar_width),
+            sidebar_view: match self.active_sidebar {
+                SidebarView::Explorer => "explorer",
+                SidebarView::Search => "search",
+            }
+            .into(),
+            groups: groups.model().state(),
+            scroll,
+        };
+        if let Some(p) = &mut self.persistence {
+            p.scroll_rows = state.scroll.clone();
+        }
+        state
+    }
+
+    /// Writes the layout now, unless it is what was last written. Does
+    /// nothing without a state store.
+    pub fn save_workspace_state(&mut self, cx: &mut Context<Self>) {
+        if self.persistence.is_none() {
+            return;
+        }
+        let state = self.workspace_state(cx);
+        let Some(p) = &mut self.persistence else {
+            return;
+        };
+        if p.last_saved.as_ref() == Some(&state) {
+            return;
+        }
+        match p.store.save(&state) {
+            Ok(()) => p.last_saved = Some(state),
+            Err(err) => tracing::warn!(%err, "could not save the workspace state"),
+        }
+    }
+
+    /// Something that belongs in the saved layout changed: saves it after
+    /// [`SAVE_DELAY`], at most once per delay.
+    fn layout_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = &mut self.persistence else {
+            return;
+        };
+        if std::mem::replace(&mut p.save_pending, true) {
+            return;
+        }
+        cx.spawn(async move |wb, cx| {
+            cx.background_executor().timer(SAVE_DELAY).await;
+            wb.update(cx, |wb, cx| {
+                if let Some(p) = &mut wb.persistence {
+                    p.save_pending = false;
+                }
+                wb.save_workspace_state(cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The opened folder.
@@ -389,6 +582,7 @@ impl Workbench {
     /// Sets the sidebar width, clamped to 160–600 px.
     pub fn set_sidebar_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
         self.sidebar_width = width.clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+        self.layout_changed(cx);
         cx.notify();
     }
 
@@ -398,6 +592,7 @@ impl Workbench {
             self.focus_editor_area(window, cx);
         }
         self.sidebar_visible = !self.sidebar_visible;
+        self.layout_changed(cx);
         cx.notify();
     }
 
@@ -410,6 +605,7 @@ impl Workbench {
     ) {
         self.sidebar_visible = true;
         self.active_sidebar = view;
+        self.layout_changed(cx);
         self.focus_sidebar(window, cx);
         cx.notify();
     }

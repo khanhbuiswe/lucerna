@@ -44,6 +44,7 @@ tracing = "0.1"
 futures = "0.3"
 nucleo-matcher = "0.3"
 tempfile = "3"
+sha2 = "0.10"
 
 # Syntax: one tree-sitter core; every grammar exposes `LANGUAGE: LanguageFn`.
 tree-sitter = "0.27"

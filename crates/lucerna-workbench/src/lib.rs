@@ -17,6 +17,7 @@ mod text_input;
 mod theme_picker;
 pub mod ui;
 mod workbench;
+mod workspace_state;
 
 pub use app_state::AppState;
 pub use commands::{CommandHandler, CommandRegistry};
@@ -40,3 +41,6 @@ pub use search_panel::{SEARCH_DEBOUNCE, SearchPanel};
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};
 pub use workbench::{SidebarView, Workbench};
+pub use workspace_state::{
+    WorkspaceState, WorkspaceStateStore, default_data_dir, load_state, save_state, state_path,
+};
