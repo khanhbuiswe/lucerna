@@ -147,6 +147,11 @@ impl BufferSnapshot {
         self.rope.len_bytes()
     }
 
+    /// The byte at `offset`, which must be below [`Self::len_bytes`].
+    pub fn byte_at(&self, offset: usize) -> u8 {
+        self.rope.byte(offset)
+    }
+
     pub fn point_to_offset(&self, p: Point) -> usize {
         let row = (p.row as usize).min(self.rope.len_lines() - 1);
         (self.rope.line_to_byte(row) + p.column as usize).min(self.rope.len_bytes())

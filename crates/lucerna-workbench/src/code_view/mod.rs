@@ -296,10 +296,11 @@ impl CodeView {
                 head: adjust(s.head),
             });
         let old = std::mem::replace(&mut self.snapshot, snapshot.clone());
-        self.syntax = self
-            .syntax
-            .as_ref()
-            .map(|syntax| Arc::new(syntax.edited(&old, &snapshot, &reload)));
+        self.syntax = self.syntax.as_ref().and_then(|syntax| {
+            catch_panic("edit syntax", || syntax.edited(&old, &snapshot, &reload))
+                .ok()
+                .map(Arc::new)
+        });
         self.replace_snapshot(snapshot, cx);
         self.folds.remap(&reload, rows);
         self.scroll.top_row = self.folds.prev_visible(self.scroll.top_row);

@@ -303,3 +303,28 @@ fn eol_conversion_shifts_unchanged_rows_before_reparse() {
         "`fn` of row 1 starts at byte 11: {spans:?}"
     );
 }
+
+/// R32: a changed middle row plus a head line-ending change must put the
+/// token after them at its true offset, not shifted twice.
+#[test]
+fn changed_row_and_head_eol_place_the_suffix_correctly() {
+    let old_text = "fn a() {}\nfn b() {}\nfn c() {}\n";
+    let new_text = "fn a() {}\r\nfn bb() {}\nfn c() {}\n";
+    let (spans, _) = highlights_after_reload(old_text, new_text);
+    let c = new_text.rfind("fn c").unwrap();
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.range == (c..c + 2) && &*s.capture == "keyword"),
+        "`fn` of row 2 starts at byte {c}: {spans:?}"
+    );
+}
+
+/// R32: past the cap the edited state shows plain text rather than
+/// editing thousands of times.
+#[test]
+fn mass_eol_conversion_drops_the_tree() {
+    let lf = "fn a() {}\n".repeat(1200);
+    let (spans, _) = highlights_after_reload(&lf, &lf.replace('\n', "\r\n"));
+    assert!(spans.is_empty());
+}

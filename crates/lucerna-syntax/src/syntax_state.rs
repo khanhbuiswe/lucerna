@@ -120,11 +120,13 @@ impl SyntaxState {
         reload: &Reload,
     ) -> SyntaxState {
         let mut edited = SyntaxState::new(self.language.clone());
-        edited.tree = self.tree.clone().map(|mut tree| {
-            for edit in input_edits(old, new, reload) {
-                tree.edit(&edit);
+        edited.tree = self.tree.clone().and_then(|mut tree| {
+            // Too many changed line endings: show plain text until parsed.
+            let edits = input_edits(old, new, reload)?;
+            for edit in &edits {
+                tree.edit(edit);
             }
-            tree
+            Some(tree)
         });
         edited
     }
@@ -325,31 +327,49 @@ fn long_line_cap(snapshot: &BufferSnapshot, line: Range<usize>) -> Option<usize>
     None
 }
 
-/// The tree-sitter edits for `reload`, to apply in order. Each is valid
-/// (its start lies within both ends) and they run from the end of the
-/// text to the start, so each is expressed in the old text's offsets.
+/// Most line-ending edits [`input_edits`] makes before giving up.
+const MAX_EOL_EDITS: usize = 1000;
+
+/// The byte length of the line ending of `row`.
+fn eol_len(snapshot: &BufferSnapshot, row: u32) -> usize {
+    let (start, end) = (row_start(snapshot, row), row_start(snapshot, row + 1));
+    if end > start && snapshot.byte_at(end - 1) == b'\n' {
+        if end - 1 > start && snapshot.byte_at(end - 2) == b'\r' {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    }
+}
+
+/// The tree-sitter edits for `reload`, to apply in order, or `None` when
+/// too many line endings changed to be worth editing (the caller drops
+/// the tree). Each edit is valid (its start lies within both ends), and
+/// they run from the end of the text to the start, so each is expressed
+/// in the offsets of the text the earlier ones left alone.
 ///
 /// Rows compare equal whatever their line ending, so besides the changed
-/// rows (R30: the start is clamped when only line endings or the final
-/// newline differ) there is one small edit per unchanged row whose line
-/// ending changed length (LF to CRLF, R31): that keeps the offsets of
-/// the unchanged head and tail right until the text is parsed again.
-fn input_edits(old: &BufferSnapshot, new: &BufferSnapshot, reload: &Reload) -> Vec<InputEdit> {
+/// rows there is one small edit per unchanged row whose line ending
+/// changed length (LF to CRLF, R31), keeping the offsets of the head and
+/// tail right until the text is parsed again.
+fn input_edits(
+    old: &BufferSnapshot,
+    new: &BufferSnapshot,
+    reload: &Reload,
+) -> Option<Vec<InputEdit>> {
     let point = |snapshot: &BufferSnapshot, offset: usize| {
         let p = snapshot.offset_to_point(offset);
         tree_sitter::Point::new(p.row as usize, p.column as usize)
     };
     // The edit of the line ending of old row `old_row` / new row `new_row`.
     let eol_edit = |old_row: u32, new_row: u32| {
-        let row_len = |snapshot: &BufferSnapshot, row: u32| {
-            let total = row_start(snapshot, row + 1) - row_start(snapshot, row);
-            (snapshot.line(row).len(), total - snapshot.line(row).len())
-        };
-        let ((content, old_eol), (_, new_eol)) = (row_len(old, old_row), row_len(new, new_row));
+        let (old_eol, new_eol) = (eol_len(old, old_row), eol_len(new, new_row));
         if old_eol == new_eol {
             return None;
         }
-        let start = row_start(old, old_row) + content;
+        let start = row_start(old, old_row + 1) - old_eol;
         let start_position = point(old, start);
         Some(InputEdit {
             start_byte: start,
@@ -364,27 +384,59 @@ fn input_edits(old: &BufferSnapshot, new: &BufferSnapshot, reload: &Reload) -> V
             },
         })
     };
+    let (sr, oe, ne) = (reload.start_row, reload.old_end_row, reload.new_end_row);
+    let (main_start, new_main_start) = (row_start(old, sr), row_start(new, sr));
+    let main_old = row_start(old, oe) - main_start;
+    let main_new = row_start(new, ne) - new_main_start;
+    // Same head length and same total outside the changed rows: no line
+    // ending outside them changed length.
+    let outside_unchanged =
+        main_start == new_main_start && old.len_bytes() - main_old == new.len_bytes() - main_new;
     let mut edits = Vec::new();
-    for row in (reload.old_end_row..old.line_count()).rev() {
-        edits.extend(eol_edit(row, row - reload.old_end_row + reload.new_end_row));
+    let mut eol_edits = Vec::new();
+    if !outside_unchanged {
+        for row in (oe..old.line_count()).rev() {
+            eol_edits.extend(eol_edit(row, row - oe + ne));
+            if eol_edits.len() > MAX_EOL_EDITS {
+                return None;
+            }
+        }
     }
-    if reload.start_row != reload.old_end_row || reload.start_row != reload.new_end_row {
-        let old_end = row_start(old, reload.old_end_row);
-        let new_end = row_start(new, reload.new_end_row);
-        let start = row_start(old, reload.start_row).min(old_end).min(new_end);
+    edits.append(&mut eol_edits);
+    if sr != oe || sr != ne {
+        // Relative to the start, as the head still has its old endings.
+        let (from, to) = (
+            point(new, new_main_start),
+            point(new, new_main_start + main_new),
+        );
+        let start_position = point(old, main_start);
+        let new_end_position = if to.row == from.row {
+            tree_sitter::Point::new(
+                start_position.row,
+                start_position.column + to.column - from.column,
+            )
+        } else {
+            tree_sitter::Point::new(start_position.row + to.row - from.row, to.column)
+        };
         edits.push(InputEdit {
-            start_byte: start,
-            old_end_byte: old_end,
-            new_end_byte: new_end,
-            start_position: point(old, start),
-            old_end_position: point(old, old_end),
-            new_end_position: point(new, new_end),
+            start_byte: main_start,
+            old_end_byte: main_start + main_old,
+            new_end_byte: main_start + main_new,
+            start_position,
+            old_end_position: point(old, main_start + main_old),
+            new_end_position,
         });
     }
-    for row in (0..reload.start_row).rev() {
-        edits.extend(eol_edit(row, row));
+    if !outside_unchanged {
+        for row in (0..sr).rev() {
+            eol_edits.extend(eol_edit(row, row));
+            if edits.len() + eol_edits.len() > MAX_EOL_EDITS {
+                return None;
+            }
+        }
     }
-    edits
+    edits.append(&mut eol_edits);
+    Some(edits)
 }
 
 #[cfg(test)]
@@ -396,7 +448,7 @@ mod tests {
         let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
         let old = buffer.snapshot();
         let reload = buffer.reload(new_text.as_bytes()).unwrap();
-        input_edits(&old, &buffer.snapshot(), &reload)
+        input_edits(&old, &buffer.snapshot(), &reload).expect("below the cap")
     }
 
     #[test]
@@ -411,6 +463,9 @@ mod tests {
             (lf, "fn a() {}\n"),
             ("", lf),
             ("fn a() {}\r\nfn b() {}\n", "fn a() {}\nfn b() {}\r\n"),
+            ("a\nb\nc\n", "a\r\nX\nc\n"),
+            ("a", "a\nb"),
+            ("a\r\nb\nc", "a\nX\nY\r\nc\r\n"),
         ] {
             let edits = edits_for(old, new);
             let mut delta = 0isize;
@@ -435,5 +490,20 @@ mod tests {
                 "{old:?} -> {new:?}: {edits:?}"
             );
         }
+    }
+
+    #[test]
+    fn too_many_changed_line_endings_give_up() {
+        let lf = "x\n".repeat(MAX_EOL_EDITS + 1);
+        let mut buffer = Buffer::from_bytes(lf.as_bytes(), false).unwrap();
+        let old = buffer.snapshot();
+        let reload = buffer.reload(lf.replace('\n', "\r\n").as_bytes()).unwrap();
+        assert!(input_edits(&old, &buffer.snapshot(), &reload).is_none());
+        let few = "x\n".repeat(MAX_EOL_EDITS);
+        let mut buffer = Buffer::from_bytes(few.as_bytes(), false).unwrap();
+        let old = buffer.snapshot();
+        let reload = buffer.reload(few.replace('\n', "\r\n").as_bytes()).unwrap();
+        let edits = input_edits(&old, &buffer.snapshot(), &reload).unwrap();
+        assert_eq!(edits.len(), MAX_EOL_EDITS);
     }
 }

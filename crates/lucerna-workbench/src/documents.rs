@@ -443,7 +443,9 @@ impl Documents {
                 // until the new parse lands; views edit their own copy.
                 doc.syntax = match (doc.syntax.take(), old) {
                     (Some(syntax), Some(old)) => {
-                        Some(Arc::new(syntax.edited(&old, &snapshot, &reload)))
+                        catch_panic("edit syntax", || syntax.edited(&old, &snapshot, &reload))
+                            .ok()
+                            .map(Arc::new)
                     }
                     _ => None,
                 };
