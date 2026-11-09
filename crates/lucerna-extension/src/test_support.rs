@@ -165,11 +165,16 @@ impl crate::validate::GrammarValidator for FakeValidator {
 
 /// A fake wasi-sdk in `dir`: `bin/clang` copies `wasm_fixture` to its `-o`
 /// path and appends its arguments to `dir/calls` (one line per call), and
-/// `VERSION` reads `34.0`.
+/// `VERSION` has the real release's shape: `34.0` on the first line, then
+/// component versions.
 pub fn fake_wasi_sdk(dir: &Path, wasm_fixture: &Path) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir.join("bin")).unwrap();
-    std::fs::write(dir.join("VERSION"), "34.0\n").unwrap();
+    std::fs::write(
+        dir.join("VERSION"),
+        "34.0\nwasi-libc: 2e6fb9d8ee0c\nllvm: 895aa2c896ad\nllvm-version: 23.1.0\nconfig: f992bcc08219\n",
+    )
+    .unwrap();
     let script = format!(
         "#!/bin/sh\n\
          echo \"$@\" >> '{calls}'\n\

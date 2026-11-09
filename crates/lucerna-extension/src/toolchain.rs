@@ -59,9 +59,14 @@ pub fn ensure_wasi_sdk(
     ensure_wasi_sdk_from(root, &url, sha, cancel, log, progress)
 }
 
+/// A wasi-sdk is installed in `dir` when it has `bin/clang` and its
+/// `VERSION` names [`WASI_SDK_VERSION`]. The release's `VERSION` puts the
+/// version on the first line and component versions (`wasi-libc: …`,
+/// `llvm: …`) after it, so only the first line counts.
 fn is_installed(dir: &Path) -> bool {
     dir.join("bin/clang").is_file()
-        && std::fs::read_to_string(dir.join("VERSION")).is_ok_and(|v| v.trim() == WASI_SDK_VERSION)
+        && std::fs::read_to_string(dir.join("VERSION"))
+            .is_ok_and(|v| v.lines().next().map(str::trim) == Some(WASI_SDK_VERSION))
 }
 
 fn io_err(what: &str, path: &Path, e: impl std::fmt::Display) -> BuildError {

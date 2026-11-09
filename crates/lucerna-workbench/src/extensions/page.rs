@@ -371,6 +371,16 @@ impl ExtensionsPage {
             }
         }
 
+        // "Show Log" goes under the action buttons, flush right with them.
+        let show_log = matches!(row.state, RowState::Failed(_)).then(|| {
+            let log_id = id.clone();
+            text_button(format!("extension-show-log-{id}"), "Show Log", cx).on_click(cx.listener(
+                move |page, _, _, cx| {
+                    cx.stop_propagation();
+                    page.show_log(&log_id, cx);
+                },
+            ))
+        });
         let status: Option<AnyElement> = match &row.state {
             RowState::Installing(stage) => Some(
                 line(format!("extension-progress-{id}"))
@@ -378,21 +388,11 @@ impl ExtensionsPage {
                     .child(text_cell(stage_label(stage)))
                     .into_any_element(),
             ),
-            RowState::Failed(message) => {
-                let log_id = id.clone();
-                Some(
-                    line(format!("extension-error-{id}"))
-                        .child(text_cell(message.clone()).text_color(error))
-                        .child(
-                            text_button(format!("extension-show-log-{id}"), "Show Log", cx)
-                                .on_click(cx.listener(move |page, _, _, cx| {
-                                    cx.stop_propagation();
-                                    page.show_log(&log_id, cx);
-                                })),
-                        )
-                        .into_any_element(),
-                )
-            }
+            RowState::Failed(message) => Some(
+                line(format!("extension-error-{id}"))
+                    .child(text_cell(message.clone()).text_color(error))
+                    .into_any_element(),
+            ),
             RowState::Broken(reason) => Some(
                 line(format!("extension-broken-{id}"))
                     .child(text_cell(reason.clone()).text_color(error))
@@ -461,10 +461,12 @@ impl ExtensionsPage {
                     .child(
                         div()
                             .flex()
+                            .flex_col()
                             .flex_none()
-                            .items_start()
+                            .items_end()
                             .gap(px(GRID))
-                            .children(buttons),
+                            .child(div().flex().gap(px(GRID)).children(buttons))
+                            .children(show_log),
                     ),
             )
             .into_any_element()

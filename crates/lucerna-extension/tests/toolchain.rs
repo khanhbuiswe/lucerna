@@ -92,7 +92,11 @@ fn ensure_wasi_sdk_downloads_verifies_and_extracts() {
     .unwrap();
     assert_eq!(got, root.path().join("toolchain/wasi-sdk-34"));
     assert_eq!(
-        std::fs::read_to_string(got.join("VERSION")).unwrap().trim(),
+        std::fs::read_to_string(got.join("VERSION"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
         WASI_SDK_VERSION
     );
     assert!(got.join("bin/clang").is_file());
@@ -134,7 +138,11 @@ fn ensure_wasi_sdk_sweeps_stale_temp_files_and_replaces_wrong_version() {
     )
     .unwrap();
     assert_eq!(
-        std::fs::read_to_string(got.join("VERSION")).unwrap().trim(),
+        std::fs::read_to_string(got.join("VERSION"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
         WASI_SDK_VERSION
     );
     assert_eq!(toolchain_entries(root.path()), ["wasi-sdk-34"]);

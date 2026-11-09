@@ -434,6 +434,18 @@ fn failed_install_shows_error_and_log_button(cx: &mut TestAppContext) {
     assert!(shown("extension-error-x", cx));
     assert!(shown("extension-install-x", cx), "it can be tried again");
 
+    // "Show Log" sits under "Install", flush with its right edge.
+    draw(cx);
+    let install = cx.debug_bounds("extension-install-x").unwrap();
+    let show_log = cx.debug_bounds("extension-show-log-x").unwrap();
+    assert!(
+        (install.right() - show_log.right()).abs() < gpui::px(1.),
+        "Show Log right edge {:?} should match Install right edge {:?}",
+        show_log.right(),
+        install.right()
+    );
+    assert!(show_log.top() >= install.bottom(), "below Install");
+
     click("extension-show-log-x", cx);
     settle(cx);
     let tab = cx.update(|_, cx| {
