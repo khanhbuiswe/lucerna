@@ -25,3 +25,8 @@ tree-sitter-css.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "highlight"
+harness = false

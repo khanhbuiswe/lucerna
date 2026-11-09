@@ -28,3 +28,43 @@ jobs:
           tool: cargo-deny
       - name: License and source gate
         run: cargo deny check
+
+  bench:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate bench repo
+        run: |
+          scripts/gen-bench-repo.sh "$RUNNER_TEMP/lucerna-bench"
+          echo "LUCERNA_BENCH_REPO=$RUNNER_TEMP/lucerna-bench" >> "$GITHUB_ENV"
+      # Pull requests compare against the baseline saved by the last push to main.
+      - name: Restore main baseline
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: target/criterion
+          key: criterion-main-${{ github.sha }}
+          restore-keys: criterion-main-
+      # Benches are listed per crate so gpui-dependent crates are never built.
+      - name: Save main baseline
+        if: github.event_name == 'push'
+        run: |
+          cargo bench -p lucerna-project --bench scan --bench fuzzy -- --save-baseline main
+          cargo bench -p lucerna-syntax --bench highlight -- --save-baseline main
+          cargo bench -p lucerna-text --bench reload -- --save-baseline main
+      - name: Cache main baseline
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: target/criterion
+          key: criterion-main-${{ github.sha }}
+      - name: Compare with main baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          cargo bench -p lucerna-project --bench scan --bench fuzzy -- --baseline main
+          cargo bench -p lucerna-syntax --bench highlight -- --baseline main
+          cargo bench -p lucerna-text --bench reload -- --baseline main
+          scripts/bench-gate.sh target/criterion 15

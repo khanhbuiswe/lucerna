@@ -10,3 +10,10 @@ repository.workspace = true
 ropey.workspace = true
 encoding_rs.workspace = true
 chardetng.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "reload"
+harness = false
