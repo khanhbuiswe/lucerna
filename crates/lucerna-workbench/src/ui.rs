@@ -17,10 +17,12 @@ pub const TAB_HEIGHT: f32 = 32.0;
 pub const TREE_ROW_HEIGHT: f32 = 24.0;
 pub const POPOVER_MAX_WIDTH: f32 = 600.0;
 pub const POPOVER_RADIUS: f32 = 8.0;
-/// UI text size; the UI uses the system font, the editor its own.
-pub const UI_FONT_SIZE: f32 = 13.0;
-/// The system UI font in GPUI.
-pub const UI_FONT_FAMILY: &str = ".SystemUIFont";
+/// UI text size; the UI uses IBM Plex Sans, the editor its own font.
+pub const UI_FONT_SIZE: f32 = 14.0;
+/// Smaller UI text: tab titles, the status bar and small headers.
+pub const UI_FONT_SIZE_SMALL: f32 = 13.0;
+/// The bundled UI font (see [`crate::fonts`]).
+pub const UI_FONT_FAMILY: &str = crate::fonts::UI_FONT_FAMILY;
 
 /// Two overlapping pages.
 pub const FILES_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.25" stroke-linejoin="round"><path d="M5.5 4V1.5H10L13.5 5v7h-3"/><path d="M2.5 4.5H7L10.5 8v6.5h-8Z"/></svg>"#;

@@ -286,3 +286,10 @@ fn title_bar_release_outside_does_not_move_window_later(cx: &mut TestAppContext)
     cx.simulate_mouse_move(spot, None, Modifiers::none());
     cx.simulate_mouse_move(spot + point(px(5.), px(0.)), None, Modifiers::none());
 }
+
+#[test]
+fn ui_font_constants() {
+    assert_eq!(ui::UI_FONT_FAMILY, "IBM Plex Sans");
+    assert_eq!(ui::UI_FONT_SIZE, 14.0);
+    assert_eq!(ui::UI_FONT_SIZE_SMALL, 13.0);
+}

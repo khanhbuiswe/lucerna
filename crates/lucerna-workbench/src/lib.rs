@@ -10,6 +10,7 @@ mod documents;
 mod editor_groups;
 mod explorer;
 mod find_widget;
+pub mod fonts;
 pub mod keys;
 mod layout;
 mod open_files;

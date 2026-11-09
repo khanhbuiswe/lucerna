@@ -9,7 +9,7 @@ use lucerna_theme::UiColors;
 
 use super::color;
 use crate::SidebarView;
-use crate::ui::{GRID, TREE_ROW_HEIGHT};
+use crate::ui::{GRID, TREE_ROW_HEIGHT, UI_FONT_SIZE_SMALL};
 
 const SASH_WIDTH: Pixels = px(4.);
 
@@ -60,7 +60,7 @@ pub(crate) fn render(
                 .items_center()
                 .h(px(TREE_ROW_HEIGHT))
                 .px(px(3. * GRID))
-                .text_size(px(11.))
+                .text_size(px(UI_FONT_SIZE_SMALL))
                 .text_color(color(ui.text_muted))
                 .overflow_hidden()
                 .child(title),

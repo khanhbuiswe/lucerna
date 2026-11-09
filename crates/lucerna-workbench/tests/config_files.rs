@@ -166,7 +166,7 @@ fn user_settings_change_applies(cx: &mut TestAppContext) {
     });
     draw(cx);
     let view = active_view(&wb, cx);
-    assert_eq!(cx.update(|_, cx| view.read(cx).font_size()), 13.);
+    assert_eq!(cx.update(|_, cx| view.read(cx).font_size()), 14.);
     let generation = cx.update(|_, cx| cx.global::<AppState>().theme_generation);
 
     write(

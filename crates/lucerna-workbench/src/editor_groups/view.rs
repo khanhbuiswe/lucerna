@@ -17,7 +17,7 @@ use crate::AppState;
 use crate::documents::{DocState, Documents};
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
-use crate::ui::{CLOSE_ICON, GRID, TAB_HEIGHT};
+use crate::ui::{CLOSE_ICON, GRID, TAB_HEIGHT, UI_FONT_SIZE_SMALL};
 
 /// Square slot that holds a tab's close button, kept even while the
 /// button is hidden so tabs do not change width on hover.
@@ -323,6 +323,7 @@ impl Render for EditorGroupsView {
                     }))
                     .when(!active, |d| d.hover(move |s| s.bg(hover)))
                     .text_color(color(fg))
+                    .text_size(px(UI_FONT_SIZE_SMALL))
                     .cursor_pointer()
                     .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
                         view.set_hovered(id, *hovered, cx);

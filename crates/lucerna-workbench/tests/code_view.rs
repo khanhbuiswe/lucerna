@@ -226,7 +226,7 @@ fn large_file_disables_highlight(cx: &mut TestAppContext) {
 fn zoom_clamps(cx: &mut TestAppContext) {
     init(cx, None);
     let (view, cx) = code_view("text\n", cx);
-    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 13.);
+    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 14.);
     view.update(cx, |v, cx| v.zoom(100., cx));
     assert_eq!(view.read_with(cx, |v, _| v.font_size()), 40.);
     view.update(cx, |v, cx| v.zoom(-100., cx));
@@ -253,11 +253,11 @@ fn zoom_and_wrap_commands(cx: &mut TestAppContext) {
     assert!(!view.read_with(cx, |v, _| v.word_wrap()));
 }
 
-// Geometry on the test platform's text system: 13 px font, 1.5 line
-// height, every char 7.8 px wide. With under 100 lines the gutter is
+// Geometry on the test platform's text system: 14 px font, 1.6 line
+// height, every char 8.4 px wide. With under 100 lines the gutter is
 // six chars wide and the text starts half a char after it.
-const LINE: f32 = 19.5;
-const CHAR: f32 = 7.8;
+const LINE: f32 = 22.4;
+const CHAR: f32 = 8.4;
 const TEXT_X: f32 = 6.5 * CHAR;
 
 /// The middle of `row`, slightly right of the boundary before `column`.

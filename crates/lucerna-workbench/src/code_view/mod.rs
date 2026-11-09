@@ -67,9 +67,9 @@ impl Config {
         let config = Config {
             font_family: settings
                 .get::<String>("editor.fontFamily", language)
-                .unwrap_or_else(|| "Menlo".into())
+                .unwrap_or_else(|| crate::fonts::EDITOR_FONT_FAMILY.into())
                 .into(),
-            line_height: settings.get("editor.lineHeight", language).unwrap_or(1.5),
+            line_height: settings.get("editor.lineHeight", language).unwrap_or(1.6),
             minimap: settings
                 .get("editor.minimap.enabled", language)
                 .unwrap_or(true),
@@ -89,7 +89,7 @@ impl Config {
         };
         let font_size = settings
             .get::<f32>("editor.fontSize", language)
-            .unwrap_or(13.)
+            .unwrap_or(14.)
             .clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         let wrap = settings
             .get::<String>("editor.wordWrap", language)
