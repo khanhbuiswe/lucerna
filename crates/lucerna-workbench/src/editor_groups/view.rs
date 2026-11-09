@@ -70,6 +70,8 @@ pub struct EditorGroupsView {
     documents: Option<Entity<Documents>>,
     /// The workspace root: path bars show paths relative to it.
     root: Option<PathBuf>,
+    /// The user's home folder, shown as `~` in path bars; read once.
+    home: Option<PathBuf>,
 }
 
 impl Default for EditorGroupsView {
@@ -82,6 +84,7 @@ impl Default for EditorGroupsView {
             hovered_tab: None,
             documents: None,
             root: None,
+            home: std::env::home_dir(),
         }
     }
 }
@@ -189,11 +192,10 @@ impl EditorGroupsView {
     pub fn path_bar_text(&self, group: usize) -> Option<String> {
         let group = self.model.groups().get(group)?;
         let tab = group.tabs.iter().find(|t| Some(t.id) == group.active)?;
-        let root = self.root.as_deref().unwrap_or(Path::new("/"));
         Some(path_bar_text(
             &tab.path,
-            root,
-            std::env::home_dir().as_deref(),
+            self.root.as_deref(),
+            self.home.as_deref(),
         ))
     }
 
@@ -461,9 +463,9 @@ fn tab_title_color(active: bool, ui: &UiColors) -> Rgba {
 }
 
 /// `path` as a path bar shows it: relative to `root` inside it, otherwise
-/// absolute, with `~` for the `home` folder.
-pub(crate) fn path_bar_text(path: &Path, root: &Path, home: Option<&Path>) -> String {
-    if let Ok(rel) = path.strip_prefix(root)
+/// (or with no root) absolute, with `~` for the `home` folder.
+pub(crate) fn path_bar_text(path: &Path, root: Option<&Path>, home: Option<&Path>) -> String {
+    if let Some(rel) = root.and_then(|root| path.strip_prefix(root).ok())
         && !rel.as_os_str().is_empty()
     {
         return rel.display().to_string();
@@ -517,11 +519,15 @@ mod tests {
         let root = Path::new("/work/lucerna");
         let home = Some(Path::new("/Users/me"));
         assert_eq!(
-            path_bar_text(Path::new("/work/lucerna/crates/ui/src/lib.rs"), root, home),
+            path_bar_text(
+                Path::new("/work/lucerna/crates/ui/src/lib.rs"),
+                Some(root),
+                home
+            ),
             "crates/ui/src/lib.rs"
         );
         assert_eq!(
-            path_bar_text(Path::new("/work/lucerna/README.md"), root, home),
+            path_bar_text(Path::new("/work/lucerna/README.md"), Some(root), home),
             "README.md"
         );
     }
@@ -531,25 +537,38 @@ mod tests {
         let root = Path::new("/work/lucerna");
         let home = Some(Path::new("/Users/me"));
         assert_eq!(
-            path_bar_text(Path::new("/etc/hosts"), root, home),
+            path_bar_text(Path::new("/etc/hosts"), Some(root), home),
             "/etc/hosts"
         );
         assert_eq!(
             path_bar_text(
                 Path::new("/Users/me/.config/lucerna/settings.json"),
-                root,
+                Some(root),
                 home
             ),
             "~/.config/lucerna/settings.json"
         );
         // A sibling whose name only starts with the home folder's.
         assert_eq!(
-            path_bar_text(Path::new("/Users/meg/a.txt"), root, home),
+            path_bar_text(Path::new("/Users/meg/a.txt"), Some(root), home),
             "/Users/meg/a.txt"
         );
         assert_eq!(
-            path_bar_text(Path::new("/etc/hosts"), root, None),
+            path_bar_text(Path::new("/etc/hosts"), Some(root), None),
             "/etc/hosts"
+        );
+    }
+
+    #[test]
+    fn path_bar_without_a_root_strips_nothing() {
+        let home = Some(Path::new("/Users/me"));
+        assert_eq!(
+            path_bar_text(Path::new("/work/lucerna/src/main.rs"), None, home),
+            "/work/lucerna/src/main.rs"
+        );
+        assert_eq!(
+            path_bar_text(Path::new("/Users/me/notes.md"), None, home),
+            "~/notes.md"
         );
     }
 
