@@ -1,7 +1,7 @@
 # Lucerna — Giai đoạn 2: Host extension Zed
 
 - **Ngày:** 2026-11-09
-- **Trạng thái:** Bản nháp chờ duyệt
+- **Trạng thái:** Đã triển khai (còn các kiểm tra bằng mắt ở mục Kết quả đo chờ người dùng xác nhận)
 - **Spec trước:** `2026-11-08-lucerna-phase1-design.md` (lộ trình ở §1.3, giao diện ở §12–§13)
 - **Nghiên cứu nền:** `docs/research/2026-11-09-extensions.md` (so sánh Zed và VS Code)
 
@@ -551,3 +551,61 @@ Context key mới cho `when` clause: `extensionsViewletFocus`.
 5. `lucerna`: lệnh `luc ext`.
 6. `lucerna-workbench`: hoán đổi registry, vẽ icon theme, panel Extensions, lệnh và settings.
 7. Benchmark, kiểm thử thủ công theo §1.2.
+
+## 13. Kết quả đo
+
+Đo ngày 2026-11-09 trên máy phát triển (macOS, arm64). Benchmark chạy bằng `cargo bench -p lucerna-syntax` (profile bench, tối ưu hóa); khởi động đo bằng bản debug.
+
+### 13.1 Benchmark
+
+Số liệu là khoảng giữa của criterion (`[thấp  giữa  cao]`).
+
+| Benchmark | Kết quả | Ghi chú |
+|---|---|---|
+| `highlight_10mb_viewport/rows_60` | 96,5 µs | Pha 1 (commit `8bd8467`): 97,4 µs. Chênh −0,9%, trong ngưỡng 15%. |
+| `highlight_markdown_viewport/rows_60` | 82,8 µs | Bench có từ Task 4, không có bản Pha 1 để so (xem dưới). |
+| `markdown_many_fences/rows_60` | 59,5 µs | 800 code fence (rust và json), 1 viewport 60 dòng ở giữa. |
+| `html_large_script_injection/rows_60` | 472,6 µs | `<script>` 8000 dòng trong HTML, viewport ở giữa. |
+| `wasm_json_vs_native/native` | 21,5 ms | Parse + highlight 60 dòng đầu của JSON 4000 mục, grammar bundled. |
+| `wasm_json_vs_native/wasm` | 31,6 ms | Cùng dữ liệu, grammar WASM (`json.wasm`). Chậm hơn khoảng 1,47 lần. Chỉ ghi nhận, không có ngưỡng. |
+
+Về ngưỡng hồi quy 15%: ở Pha 1 `SyntaxState::new` chưa nhận registry nên chưa có injection, vì vậy ba bench Markdown/HTML không so được với commit trước Pha 2. Chỉ `highlight_10mb_viewport` (đường không injection) so được, và đạt. Ba bench injection đặt mốc cho các lần sau.
+
+### 13.2 Khởi động (bản debug, `luc --trace-startup .`)
+
+| Bản | `startup_ms` |
+|---|---|
+| Trước Pha 2 (`8bd8467`), lần chạy nguội đầu tiên | 553 |
+| Trước Pha 2, 5 lần ấm | 154, 160, 166, 180, 184 (trung vị 166) |
+| Pha 2 (main), lần nguội đầu tiên | 236 |
+| Pha 2, 8 lần ấm | 157, 158, 161, 166, 166, 170, 170, 171, 175 (trung vị 166) |
+
+Trung vị ấm bằng nhau (166 ms), không hồi quy. Mục tiêu bản release (dưới 200 ms) do người dùng tự kiểm.
+
+### 13.3 Nghiệm thu theo §1.2 bằng CLI
+
+Chạy trên registry thật, nhưng trong thư mục cách ly (`LUCERNA_EXTENSIONS_DIR` trỏ vào thư mục tạm, `WASI_SDK_PATH` trỏ vào wasi-sdk 34 đã tải sẵn), nên thư mục extension thật của người dùng không bị đụng tới.
+
+| Extension | Phiên bản | Kết quả | Nội dung trong `index.json` |
+|---|---|---|---|
+| `catppuccin` | 0.2.27 | Cài được, không cảnh báo (khoảng 2 s) | 8 theme (4 sáng/tối cho mỗi file, gồm bản "No Italics") |
+| `material-icon-theme` | 1.3.2 | Cài được, không cảnh báo (khoảng 5 s) | 1 icon theme "Material Icon Theme", `icons_root` đúng |
+| `zig` | 0.4.2 | Cài được, không cảnh báo (khoảng 6 s) | ngôn ngữ Zig, hậu tố `zig` và `zon`, `grammars/zig.wasm` (695 KB), 8 query gồm `injections` |
+| `vue` | 0.4.1 | Cài được, không cảnh báo (khoảng 5 s) | ngôn ngữ Vue.js, hậu tố `vue`, `grammars/vue.wasm` (26 KB), 6 query gồm `injections` |
+
+- Cả bốn: `luc ext install` thoát với mã 0, `luc ext list --installed` liệt kê đủ bốn, `broken` là `null`, log trong `logs/<id>.log` không có dòng lỗi hay cảnh báo.
+- Thư mục `installed/<id>/` có đủ `themes/`, `icon_themes/`, `languages/<tên>/*.scm` và `grammars/*.wasm` như §3.1.
+- `luc ext remove` cho từng id: xong, `index.json` về `{"extensions": {}}`, `installed/`, `staging/` và `trash/` đều rỗng.
+- Không có extension nào lỗi, nên không có lỗi nào do Lucerna cần ghi lại.
+
+### 13.4 Còn chờ người dùng kiểm bằng mắt
+
+Phiên làm việc này không điều khiển được GUI (không có quyền ghi màn hình), nên các điểm sau chưa kiểm:
+
+- chọn "Set Theme" từ toast sau khi cài Catppuccin và thấy giao diện đổi màu;
+- chọn Material Icon Theme bằng *Preferences: File Icon Theme* và thấy icon trong cây file;
+- mở file `.zig` và thấy có màu;
+- mở file `.vue` và thấy cả `<script>` lẫn `<style>` có màu;
+- gỡ từng extension ngay trong cửa sổ đang mở, không cần khởi động lại.
+
+Mới kiểm bằng CLI rằng grammar `.wasm` build ra, `languages/*/injections.scm` và index đúng. Việc nạp chúng thành màu trên màn hình do các test tích hợp ở Task 2–13 bao phủ bằng fixture `json.wasm`, chưa chạy với `zig.wasm` hay `vue.wasm` thật.

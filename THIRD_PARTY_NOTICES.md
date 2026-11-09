@@ -2,7 +2,8 @@
 
 Lucerna is licensed under MIT OR Apache-2.0. It depends on third-party crates,
 whose licenses are restricted by `deny.toml` to: MIT, Apache-2.0,
-BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, MPL-2.0.
+BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, MPL-2.0, and
+`Apache-2.0 WITH LLVM-exception` (see Wasmtime and Cranelift below).
 
 ## GPUI
 
@@ -36,6 +37,37 @@ All are MIT licensed.
 | `tree-sitter-bash` | 0.25.1 | MIT | https://github.com/tree-sitter/tree-sitter-bash |
 | `tree-sitter-html` | 0.23.2 | MIT | https://github.com/tree-sitter/tree-sitter-html |
 | `tree-sitter-css` | 0.25.0 | MIT | https://github.com/tree-sitter/tree-sitter-css |
+
+## Wasmtime and Cranelift
+
+`lucerna-syntax` runs extension grammars (tree-sitter compiled to WASM) through
+`tree-sitter`'s `wasm` feature, which embeds Wasmtime
+(https://github.com/bytecodealliance/wasmtime) and its code generator
+Cranelift. They and their related crates are licensed `Apache-2.0 WITH
+LLVM-exception`, which `deny.toml` allows; no other license change was made.
+Building `wasmtime-c-api-impl` needs `cmake` on the build machine.
+
+wasi-sdk (https://github.com/WebAssembly/wasi-sdk, version 34) is not shipped:
+Lucerna downloads it on the user's machine the first time an extension grammar
+is built, and uses it only to compile the grammar's C sources. Lucerna does not
+distribute any extension either; each user builds them locally from the
+`zed-industries/extensions` registry.
+
+## Test fixture: `json.wasm`
+
+`crates/lucerna-syntax/tests/fixtures/wasm/json.wasm` is `tree-sitter-json`
+0.24.8 (MIT) compiled with wasi-sdk 34.0, used only by tests and benchmarks.
+The upstream license text is `crates/lucerna-syntax/tests/fixtures/wasm/LICENSE-tree-sitter-json`;
+the build command is recorded in the README next to it.
+
+## Injection queries
+
+The injection queries of the bundled grammars are the ones their crates ship,
+never vendored copies: `tree_sitter_md::INJECTION_QUERY_BLOCK` and
+`INJECTION_QUERY_INLINE` (`tree-sitter-md`, MIT) for Markdown, and
+`tree_sitter_html::INJECTIONS_QUERY` (`tree-sitter-html`, MIT) for HTML.
+Injection queries of extension languages are read from the installed
+extension's own `languages/<name>/injections.scm`.
 
 ## Website fonts
 
