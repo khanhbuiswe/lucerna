@@ -218,11 +218,14 @@ impl ExplorerView {
                     .into_owned();
                 let is_dir = kind == EntryKind::Dir;
                 let type_icon = icon_for_path(&row.path, is_dir, row.expanded);
-                let selector = format!("explorer-row-{}", row.path.display());
+                // Selectors are formatted lazily: GPUI only calls these
+                // closures in test builds, so release frames skip the
+                // per-row and per-guide `format!`.
+                let selector_path = row.path.clone();
                 let guides = (0..row.depth).map(|k| {
-                    let selector = format!("explorer-guide-{}-{k}", row.path.display());
+                    let path = row.path.clone();
                     div()
-                        .debug_selector(move || selector)
+                        .debug_selector(move || format!("explorer-guide-{}-{k}", path.display()))
                         .absolute()
                         .top_0()
                         .left(px(ROW_PADDING + INDENT * f32::from(k) + ICON_SLOT / 2.))
@@ -232,7 +235,7 @@ impl ExplorerView {
                 });
                 div()
                     .id(row.path.clone())
-                    .debug_selector(move || selector)
+                    .debug_selector(move || format!("explorer-row-{}", selector_path.display()))
                     .relative()
                     .flex()
                     .flex_row()

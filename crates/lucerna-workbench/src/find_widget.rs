@@ -23,7 +23,8 @@ use crate::quick_open::picker::wrap_index;
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
-    CHEVRON_DOWN_ICON, CHEVRON_UP_ICON, CLOSE_ICON, GRID, icon_button, popover, toggle_button,
+    CHEVRON_DOWN_ICON, CHEVRON_UP_ICON, CLOSE_ICON, GRID, UI_FONT_SIZE_SMALL, icon_button, popover,
+    toggle_button,
 };
 use crate::{AppState, CommandRegistry, Workbench};
 
@@ -374,7 +375,7 @@ impl Render for FindWidget {
                             .flex_none()
                             .min_w(px(18. * GRID))
                             .px(px(GRID))
-                            .text_size(px(12.))
+                            .text_size(px(UI_FONT_SIZE_SMALL))
                             .text_color(muted)
                             .child(self.counter()),
                     )
@@ -399,7 +400,7 @@ impl Render for FindWidget {
                     .debug_selector(|| "find-error".into())
                     .px(px(2. * GRID))
                     .pb(px(2. * GRID))
-                    .text_size(px(12.))
+                    .text_size(px(UI_FONT_SIZE_SMALL))
                     .text_color(muted)
                     .child(error)
             }))

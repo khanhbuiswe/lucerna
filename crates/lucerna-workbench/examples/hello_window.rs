@@ -15,6 +15,7 @@ fn main() {
     let theme_name = std::env::args().nth(1).unwrap_or_else(|| "One Dark".into());
     let root = std::env::current_dir().expect("current directory");
     application().run(move |cx: &mut App| {
+        lucerna_workbench::fonts::register(cx);
         let themes = ThemeRegistry::builtin();
         let theme = themes.get_or_default(&theme_name);
         let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);

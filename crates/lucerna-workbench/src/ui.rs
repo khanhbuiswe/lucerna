@@ -31,6 +31,9 @@ pub const POPOVER_RADIUS: f32 = 8.0;
 pub const UI_FONT_SIZE: f32 = 14.0;
 /// Smaller UI text: tab titles, the status bar and small headers.
 pub const UI_FONT_SIZE_SMALL: f32 = 13.0;
+/// Captions smaller than [`UI_FONT_SIZE_SMALL`]: the search panel's field
+/// labels, folder hints and match counts, and toggle labels like `Aa`.
+pub const UI_FONT_SIZE_CAPTION: f32 = 11.0;
 /// The bundled UI font (see [`crate::fonts`]).
 pub const UI_FONT_FAMILY: &str = crate::fonts::UI_FONT_FAMILY;
 
@@ -147,7 +150,7 @@ pub fn toggle_button(
         .cursor_pointer()
         // Keeps a focusable ancestor (the sidebar) from taking focus.
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-        .text_size(px(11.))
+        .text_size(px(UI_FONT_SIZE_CAPTION))
         .when(active, |d| {
             d.bg(color(ui.element_selected)).text_color(color(ui.icon))
         })

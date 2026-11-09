@@ -162,7 +162,7 @@ fn title_bar_shows_git_branch(cx: &mut TestAppContext) {
 fn title_bar_has_no_branch_outside_a_repository(cx: &mut TestAppContext) {
     init(cx);
     let (wb, cx) = open(cx);
-    assert_eq!(wb.read_with(cx, |wb, _| wb.git_branch().is_none()), true);
+    assert!(wb.read_with(cx, |wb, _| wb.git_branch().is_none()));
     draw(cx);
     assert!(cx.debug_bounds("title-bar-branch").is_none());
 }
@@ -334,6 +334,7 @@ fn ui_font_constants() {
     assert_eq!(ui::UI_FONT_FAMILY, "IBM Plex Sans");
     assert_eq!(ui::UI_FONT_SIZE, 14.0);
     assert_eq!(ui::UI_FONT_SIZE_SMALL, 13.0);
+    assert_eq!(ui::UI_FONT_SIZE_CAPTION, 11.0);
 }
 
 /// GPUI draws an SVG as an alpha mask filled with `text_color`, so each

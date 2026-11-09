@@ -4,7 +4,9 @@
 //! real one; macOS only creates it on the main thread, hence no libtest
 //! harness (see `Cargo.toml`).
 
-use gpui::{TextSystem, font};
+use std::collections::HashSet;
+
+use gpui::{FontWeight, TextSystem, font};
 use lucerna_workbench::fonts;
 
 fn main() {
@@ -17,5 +19,28 @@ fn main() {
         let resolved = system.get_font_for_id(id).expect("resolved font");
         assert_eq!(resolved.family.as_ref(), family, "{family} fell back");
     }
+
+    // Each bundled Lilex style is its own face.
+    let lilex = font(fonts::EDITOR_FONT_FAMILY);
+    let styles = [
+        lilex.clone(),
+        lilex.clone().bold(),
+        lilex.clone().italic(),
+        lilex.bold().italic(),
+    ];
+    let ids: HashSet<_> = styles.iter().map(|f| system.resolve_font(f)).collect();
+    assert_eq!(ids.len(), 4, "Lilex styles share a face: {ids:?}");
+
+    // IBM Plex Sans Medium is not Regular.
+    let regular = font(fonts::UI_FONT_FAMILY);
+    let medium = gpui::Font {
+        weight: FontWeight::MEDIUM,
+        ..regular.clone()
+    };
+    assert_ne!(
+        system.resolve_font(&regular),
+        system.resolve_font(&medium),
+        "IBM Plex Sans Medium resolves to Regular"
+    );
     println!("bundled fonts register and resolve: ok");
 }
