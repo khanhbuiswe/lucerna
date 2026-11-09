@@ -578,7 +578,7 @@ Về ngưỡng hồi quy 15%: ở Pha 1 `SyntaxState::new` chưa nhận registry
 | Trước Pha 2 (`8bd8467`), lần chạy nguội đầu tiên | 553 |
 | Trước Pha 2, 5 lần ấm | 154, 160, 166, 180, 184 (trung vị 166) |
 | Pha 2 (main), lần nguội đầu tiên | 236 |
-| Pha 2, 8 lần ấm | 157, 158, 161, 166, 166, 170, 170, 171, 175 (trung vị 166) |
+| Pha 2, 9 lần ấm | 157, 158, 161, 166, 166, 170, 170, 171, 175 (trung vị 166) |
 
 Trung vị ấm bằng nhau (166 ms), không hồi quy. Mục tiêu bản release (dưới 200 ms) do người dùng tự kiểm.
 
