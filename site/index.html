@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lucerna · A fast, native code viewer</title>
+<meta name="description" content="Lucerna is a fast, native code viewer for people who work with Claude Code, Codex and other terminal agents. Open a repo, follow every change as it lands on disk, and keep the VS Code keys you already know.">
+<meta name="theme-color" content="#080b12">
+<link rel="canonical" href="https://lucerna.dev/">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Lucerna · A fast, native code viewer">
+<meta property="og:description" content="Lucerna is a fast, native code viewer for people who work with Claude Code, Codex and other terminal agents. Open a repo, follow every change as it lands on disk, and keep the VS Code keys you already know.">
+<meta property="og:url" content="https://lucerna.dev/">
+<meta property="og:image" content="https://lucerna.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="styles.css">
+<script src="main.js" defer></script>
+</head>
+<body>
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Lucerna home">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2.5c2.6 3 4 5.3 4 7.6a4 4 0 0 1-8 0c0-2.3 1.4-4.6 4-7.6Z" fill="var(--accent)"/><path d="M5 15.5h14l-1.6 5H6.6L5 15.5Z" stroke="var(--ink)" stroke-width="1.6" stroke-linejoin="round"/></svg>
+      Lucerna
+    </a>
+    <div class="nav-links">
+      <a href="#speed">Speed</a>
+      <a href="#features">Features</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="https://github.com/lucerna-dev/lucerna">GitHub</a>
+    </div>
+    <a class="btn primary" href="#download">Download <span class="soon">Soon</span></a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <span class="eyebrow">Open source · Written in Rust · macOS</span>
+    <h1>A quiet place to <em>read</em> the code your agents write.</h1>
+    <p class="lede">Lucerna is a fast, native code viewer for people who work with Claude Code, Codex and other terminal agents. Open a repo, follow every change as it lands on disk, and keep the VS Code keys you already know.</p>
+    <div class="install">
+      <div class="cmd"><span class="p">$</span><code>curl -fsSL https://lucerna.dev/install.sh | sh</code><button class="copy" id="copy-hero" type="button">Copy</button></div>
+      <span class="soon">First release coming soon</span>
+      <span class="alt">Until then, <a href="https://github.com/lucerna-dev/lucerna">build from source</a>.</span>
+    </div>
+
+    <div class="stage">
+      <div class="editor" role="img" aria-label="Lucerna window showing buffer.rs with lines just changed by an agent highlighted">
+        <div class="titlebar"><span class="lights"><i></i><i></i><i></i></span><b>lucerna</b></div>
+        <div class="ed-body">
+          <div class="explorer">
+            <div class="h">LUCERNA</div>
+            <div class="row" style="padding-left:10px"><span class="c">▸</span>.github</div>
+            <div class="row" style="padding-left:10px"><span class="c">▾</span>crates</div>
+            <div class="row" style="padding-left:24px"><span class="c">▸</span>lucerna-project</div>
+            <div class="row" style="padding-left:24px"><span class="c">▸</span>lucerna-syntax</div>
+            <div class="row" style="padding-left:24px"><span class="c">▾</span>lucerna-text</div>
+            <div class="row" style="padding-left:38px"><span class="c">▾</span>src</div>
+            <div class="row sel chg" style="padding-left:52px"><span class="c"></span><span class="n">buffer.rs</span><span class="dot" title="Changed on disk"></span></div>
+            <div class="row" style="padding-left:52px"><span class="c"></span>load.rs</div>
+            <div class="row chg" style="padding-left:52px"><span class="c"></span><span class="n">reload.rs</span><span class="dot"></span></div>
+            <div class="row" style="padding-left:52px"><span class="c"></span>lib.rs</div>
+            <div class="row" style="padding-left:24px"><span class="c">▸</span>lucerna-theme</div>
+            <div class="row" style="padding-left:24px"><span class="c">▸</span>lucerna-workbench</div>
+            <div class="row" style="padding-left:10px"><span class="c">▸</span>docs</div>
+            <div class="row" style="padding-left:10px"><span class="c"></span>Cargo.toml</div>
+            <div class="row" style="padding-left:10px"><span class="c"></span>LICENSE-MIT</div>
+          </div>
+          <div class="pane">
+            <div class="tabs"><span class="tab on">buffer.rs</span><span class="tab preview">reload.rs</span><span class="tab">Cargo.toml</span></div>
+            <div class="code">
+              <div class="lines">
+<div class="ln"><span class="no">59</span><span class="g"></span><span class="t">    <span class="k">pub fn</span> <span class="f">snapshot</span>(&amp;<span class="s">self</span>) -&gt; <span class="y">BufferSnapshot</span> {</span></div>
+<div class="ln"><span class="no">60</span><span class="g"></span><span class="t">        <span class="y">BufferSnapshot</span> {</span></div>
+<div class="ln"><span class="no">61</span><span class="g"></span><span class="t">            rope: <span class="s">self</span>.rope.<span class="f">clone</span>(),</span></div>
+<div class="ln"><span class="no">62</span><span class="g"></span><span class="t">        }</span></div>
+<div class="ln"><span class="no">63</span><span class="g"></span><span class="t">    }</span></div>
+<div class="ln"><span class="no">64</span><span class="g"></span><span class="t"></span></div>
+<div class="ln add"><span class="no">65</span><span class="g"></span><span class="t">    <span class="m">/// Replaces the contents with `bytes` and describes what changed.</span></span></div>
+<div class="ln add"><span class="no">66</span><span class="g"></span><span class="t">    <span class="m">/// On error the buffer is left untouched.</span></span></div>
+<div class="ln add cur"><span class="no">67</span><span class="g"></span><span class="t">    <span class="k">pub fn</span> <span class="f">reload</span>(&amp;<span class="k">mut</span> <span class="s">self</span>, bytes: &amp;[<span class="y">u8</span>]) -&gt; <span class="y">Result</span>&lt;<span class="y">Reload</span>, <span class="y">LoadError</span>&gt; {</span></div>
+<div class="ln add"><span class="no">68</span><span class="g"></span><span class="t">        <span class="k">let</span> (text, encoding) = <span class="f">decode</span>(bytes, <span class="s">self</span>.force_text)?;</span></div>
+<div class="ln add"><span class="no">69</span><span class="g"></span><span class="t">        <span class="k">let</span> new = <span class="y">BufferSnapshot</span> {</span></div>
+<div class="ln add"><span class="no">70</span><span class="g"></span><span class="t">            rope: <span class="y">Rope</span>::<span class="f">from_str</span>(&amp;text),</span></div>
+<div class="ln add"><span class="no">71</span><span class="g"></span><span class="t">        };</span></div>
+<div class="ln add"><span class="no">72</span><span class="g"></span><span class="t">        <span class="k">let</span> reload = <span class="y">Reload</span>::<span class="f">diff</span>(&amp;<span class="s">self</span>.<span class="f">snapshot</span>(), &amp;new);</span></div>
+<div class="ln add"><span class="no">73</span><span class="g"></span><span class="t">        <span class="s">self</span>.line_ending = <span class="f">dominant_line_ending</span>(&amp;text);</span></div>
+<div class="ln add"><span class="no">74</span><span class="g"></span><span class="t">        <span class="s">self</span>.encoding = encoding;</span></div>
+<div class="ln add"><span class="no">75</span><span class="g"></span><span class="t">        <span class="s">self</span>.rope = new.rope;</span></div>
+<div class="ln add"><span class="no">76</span><span class="g"></span><span class="t">        <span class="y">Ok</span>(reload)</span></div>
+<div class="ln add"><span class="no">77</span><span class="g"></span><span class="t">    }</span></div>
+<div class="ln"><span class="no">78</span><span class="g"></span><span class="t"></span></div>
+<div class="ln"><span class="no">79</span><span class="g"></span><span class="t">    <span class="k">pub fn</span> <span class="f">is_large</span>(&amp;<span class="s">self</span>, max_bytes: <span class="y">u64</span>, max_lines: <span class="y">u32</span>) -&gt; <span class="y">bool</span> {</span></div>
+<div class="ln"><span class="no">80</span><span class="g"></span><span class="t">        <span class="s">self</span>.rope.<span class="f">len_bytes</span>() <span class="k">as</span> <span class="y">u64</span> &gt; max_bytes</span></div>
+<div class="ln"><span class="no">81</span><span class="g"></span><span class="t">            || <span class="s">self</span>.<span class="f">snapshot</span>().<span class="f">line_count</span>() &gt; max_lines</span></div>
+<div class="ln"><span class="no">82</span><span class="g"></span><span class="t">    }</span></div>
+              </div>
+              <div class="minimap" aria-hidden="true">
+                <i style="width:60%"></i><i style="width:40%"></i><i style="width:75%"></i><i style="width:30%"></i><i style="width:55%"></i><i style="width:20%"></i>
+                <i class="a" style="width:80%"></i><i class="a" style="width:50%"></i><i class="a" style="width:90%"></i><i class="a" style="width:70%"></i><i class="a" style="width:45%"></i><i class="a" style="width:62%"></i><i class="a" style="width:35%"></i>
+                <i style="width:70%"></i><i style="width:58%"></i><i style="width:40%"></i><i style="width:66%"></i><i style="width:25%"></i><i style="width:50%"></i><i style="width:72%"></i><i style="width:38%"></i><i style="width:60%"></i><i style="width:44%"></i>
+              </div>
+            </div>
+            <div class="status"><span>main</span><span class="live">● Reloaded from disk</span><span class="r"><span>Ln 67, Col 12</span><span>UTF-8</span><span>LF</span><span>Rust</span></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="term" aria-hidden="true">
+        <div class="bar">~/lucerna — claude</div>
+<pre><span class="amb">●</span> Update(crates/lucerna-text/src/buffer.rs)
+  <span class="ok">+13</span> <span class="dim">lines, reload() returns a diff</span>
+<span class="amb">●</span> Update(crates/lucerna-text/src/reload.rs)
+  <span class="ok">+4</span> <span class="dim">-1</span>
+<span class="dim">› Run the text crate tests</span></pre>
+      </div>
+    </div>
+  </div>
+  <div class="fade"></div>
+</header>
+
+<main>
+  <section id="speed">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">Measured, not promised</span>
+        <h2>Big repositories open before you finish reaching for the mouse.</h2>
+        <p>Every number below comes from the benchmarks that run in CI on each pull request. A change that makes any of them more than 15% slower fails the build.</p>
+      </div>
+      <div class="bench">
+        <div class="metric">
+          <div class="v">887<small>ms</small></div>
+          <p class="what">Scan a repository of 80,000 files, from launch to a complete tree</p>
+          <div class="budget"><div class="track"><b style="width:17.7%"></b></div>Budget 5 s · uses 18%</div>
+        </div>
+        <div class="metric">
+          <div class="v">2.04<small>ms</small></div>
+          <p class="what">Quick Open match across all 80,000 paths, per keystroke</p>
+          <div class="budget"><div class="track"><b style="width:12.75%"></b></div>Budget one 60 Hz frame, 16 ms · uses 13%</div>
+        </div>
+        <div class="metric">
+          <div class="v">96<small>µs</small></div>
+          <p class="what">Syntax highlight one screen of a 10 MB Rust file</p>
+          <div class="budget">60 visible rows, tree-sitter</div>
+        </div>
+        <div class="metric">
+          <div class="v">51<small>ms</small></div>
+          <p class="what">Reload a 10 MB file after an agent rewrites its tail</p>
+          <div class="budget">Folds, selection and scroll position are kept</div>
+        </div>
+      </div>
+      <p class="foot"><strong>How we measured:</strong> criterion benches on an Apple Silicon dev machine, 9 November 2026, against a generated repository of 80,000 files plus a 10 MB source file. Still being measured on release builds: first frame under 200 ms, idle memory under 150 MB with 10 tabs open, and 120 fps scrolling.</p>
+    </div>
+  </section>
+
+  <section id="features" style="padding-top:0">
+    <div class="wrap split">
+      <div>
+        <div class="sec-head" style="margin-bottom:32px">
+          <span class="eyebrow">Built for watching code change</span>
+          <h2>Everything you need to follow along. Nothing that talks back.</h2>
+        </div>
+        <div class="keys" aria-label="Default shortcuts">
+          <div class="key"><span>Open any file</span><span class="kbd"><kbd>⌘</kbd><kbd>P</kbd></span></div>
+          <div class="key"><span>Run a command</span><span class="kbd"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span></div>
+          <div class="key"><span>Search the project</span><span class="kbd"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd></span></div>
+          <div class="key"><span>Split the editor</span><span class="kbd"><kbd>⌘</kbd><kbd>\</kbd></span></div>
+          <div class="key"><span>Go to line</span><span class="kbd"><kbd>⌃</kbd><kbd>G</kbd></span></div>
+          <div class="key"><span>Toggle the sidebar</span><span class="kbd"><kbd>⌘</kbd><kbd>B</kbd></span></div>
+        </div>
+      </div>
+      <div class="feats">
+        <div class="feat"><h3>Live from disk</h3><p>Files reload the moment an agent saves them. The explorer marks what changed outside Lucerna, and open tabs keep your scroll position and folds.</p></div>
+        <div class="feat"><h3>Quick Open</h3><p>One box for files, commands with <code>&gt;</code> and line numbers with <code>:</code>. Results show up within a frame, even on very large repos.</p></div>
+        <div class="feat"><h3>Project search</h3><p>Ripgrep's engine with case, whole word, regex and include or exclude globs. Results stream into the sidebar, grouped by file.</p></div>
+        <div class="feat"><h3>Tabs and splits</h3><p>Preview tabs in italics that you pin with a double-click, editor groups that remember their widths, and Ctrl+Tab through recent files.</p></div>
+        <div class="feat"><h3>A real code view</h3><p>Tree-sitter highlighting, minimap, indent folding, bracket matching, word wrap and find in file. Read-only for now, so nothing changes by accident.</p></div>
+        <div class="feat"><h3>Your settings</h3><p><code>settings.json</code> and <code>keybindings.json</code> with VS Code semantics, hot reloaded. Themes use Zed's JSON format; One Dark and One Light are built in.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding-top:0">
+    <div class="wrap principles">
+      <div class="pr"><span class="eyebrow">No AI inside</span><h3>Your agent already lives in the terminal.</h3><p class="muted">Lucerna has no chat panel, no ghost text and no MCP server. It shows you what changed and gets out of the way.</p></div>
+      <div class="pr"><span class="eyebrow">Native</span><h3>Rust and GPUI, drawn on the GPU.</h3><p class="muted">No Electron, no web view. One window per <code>luc</code> call, a few crates you can read in an afternoon.</p></div>
+      <div class="pr"><span class="eyebrow">Open source</span><h3>MIT or Apache 2.0, your choice.</h3><p class="muted">No GPL dependencies, checked by <code>cargo deny</code> in CI. Fork it, ship it, embed it.</p></div>
+    </div>
+  </section>
+
+  <section id="roadmap" style="padding-top:0">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">Roadmap</span>
+        <h2>Reading first. Editing when it is ready.</h2>
+      </div>
+      <div class="road">
+        <div class="ph now"><span class="no">Phase 1 · now</span><h3>Core viewer</h3><p>Explorer, tabs, Quick Open, search, live reload, themes.</p></div>
+        <div class="ph"><span class="no">Phase 2</span><h3>Zed extensions</h3><p>Themes, icon themes, languages, grammars and snippets.</p></div>
+        <div class="ph"><span class="no">Phase 3</span><h3>Code intelligence</h3><p>Go to definition, references, hover and diagnostics over LSP.</p></div>
+        <div class="ph"><span class="no">Phase 4</span><h3>Full editing</h3><p>Multi-cursor, undo, completion, and safe edits beside your agent.</p></div>
+        <div class="ph"><span class="no">Phase 5</span><h3>The rest</h3><p>Git gutter, diff view, built-in terminal, settings UI.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="download" style="padding-top:0">
+    <div class="wrap">
+      <div class="dl">
+        <div style="display:grid;gap:12px">
+          <span class="eyebrow">Download</span>
+          <h2>Lucerna is free. The first release is almost here.</h2>
+          <p class="muted" style="max-width:60ch">Signed builds for macOS 13 and later will land on GitHub Releases. Until then you can build it with the Rust toolchain in a few minutes.</p>
+        </div>
+        <div class="cmd"><span class="p">$</span><code>git clone https://github.com/lucerna-dev/lucerna &amp;&amp; cd lucerna &amp;&amp; cargo build --release</code><button class="copy" id="copy-src" type="button">Copy</button></div>
+        <div class="plats">
+          <span class="plat">macOS · Apple Silicon <span class="soon">Soon</span></span>
+          <span class="plat">macOS · Intel <span class="soon">Soon</span></span>
+          <span class="plat later">Linux · after Phase 1</span>
+          <span class="plat later">Windows · after Phase 1</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding-top:0">
+    <div class="wrap">
+      <div class="sec-head"><span class="eyebrow">FAQ</span><h2>Questions people ask</h2></div>
+      <div class="faq">
+        <details open><summary>Can I edit code in Lucerna?</summary><p>Not yet. Phase 1 is a read-only viewer so nothing changes behind your agent's back. You can select and copy text. Full editing arrives in Phase 4.</p></details>
+        <details><summary>Why no AI features?</summary><p>The people Lucerna is for already run Claude Code, Codex or another agent in a terminal. A second assistant inside the editor would only compete for attention.</p></details>
+        <details><summary>Will my VS Code settings work?</summary><p>Lucerna reads <code>settings.json</code> and <code>keybindings.json</code> with the same layering and semantics as VS Code, and ships VS Code's default macOS shortcuts.</p></details>
+        <details><summary>Is it related to Zed?</summary><p>Lucerna uses GPUI, Zed's Apache-licensed UI framework, and reads Zed's theme format. Everything else is written from scratch, with no GPL code from Zed.</p></details>
+        <details><summary>Does Lucerna collect any data?</summary><p>No. There is no telemetry and no account. Logs stay on your machine in <code>~/Library/Logs/Lucerna</code>.</p></details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Lucerna · Latin for “lamp”</span>
+    <span>MIT OR Apache-2.0</span>
+    <span class="r"><a href="https://github.com/lucerna-dev/lucerna">GitHub</a><a href="#roadmap">Roadmap</a><a href="https://github.com/lucerna-dev/lucerna/issues">Report a problem</a></span>
+  </div>
+</footer>
+</body>
+</html>
