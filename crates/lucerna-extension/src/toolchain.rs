@@ -83,8 +83,15 @@ pub fn ensure_wasi_sdk_from(
     if is_installed(&dest) {
         return Ok(dest);
     }
-    progress();
     std::fs::create_dir_all(&toolchain).map_err(|e| io_err("cannot create", &toolchain, e))?;
+    // Serialise preparation across builds and processes; whoever gets the
+    // lock second finds the toolchain installed.
+    let _lock = lock_toolchain(&toolchain, cancel)?;
+    if is_installed(&dest) {
+        return Ok(dest);
+    }
+    sweep_temp_files(&toolchain);
+    progress();
     let free = free_bytes(&toolchain).map_err(|e| io_err("cannot stat", &toolchain, e))?;
     if free < MIN_FREE_BYTES {
         return Err(BuildError::DiskFull(free));
@@ -94,6 +101,52 @@ pub fn ensure_wasi_sdk_from(
     let result = download_and_extract(url, sha256, &tarball, &dest, cancel, log, progress);
     let _ = std::fs::remove_file(&tarball);
     result.map(|()| dest)
+}
+
+/// Name of the lock file held while the toolchain is being prepared.
+const LOCK_NAME: &str = ".lock";
+
+/// Takes an exclusive `flock` on `<toolchain>/.lock`, polling so that
+/// cancellation is honoured while waiting. Released when the file drops.
+fn lock_toolchain(toolchain: &Path, cancel: &CancelToken) -> Result<std::fs::File, BuildError> {
+    use std::os::fd::AsRawFd;
+    let path = toolchain.join(LOCK_NAME);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| io_err("cannot open", &path, e))?;
+    loop {
+        // SAFETY: `file` owns a valid descriptor for the duration of the call.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EWOULDBLOCK) {
+            return Err(io_err("cannot lock", &path, err));
+        }
+        if cancel.is_cancelled() {
+            return Err(BuildError::Cancelled);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Removes `.download-*` / `.extract-*` left by an interrupted preparation.
+/// Only called while holding the toolchain lock.
+fn sweep_temp_files(toolchain: &Path) {
+    let Ok(rd) = std::fs::read_dir(toolchain) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(".download-") || name.starts_with(".extract-") {
+            let p = e.path();
+            let _ = std::fs::remove_dir_all(&p).or_else(|_| std::fs::remove_file(&p));
+        }
+    }
 }
 
 fn download_and_extract(
@@ -159,10 +212,20 @@ fn extract_into(
             "the wasi-sdk archive is not version {WASI_SDK_VERSION}"
         )));
     }
+    if is_installed(dest) {
+        // Installed meanwhile (e.g. a lock-less writer): never replace a
+        // toolchain that may be in use; discard our copy.
+        return Ok(());
+    }
     if dest.exists() {
+        // Wrong version or partial: nothing can be using it.
         std::fs::remove_dir_all(dest).map_err(|e| io_err("cannot remove", dest, e))?;
     }
-    std::fs::rename(&top, dest).map_err(|e| io_err("cannot install", dest, e))
+    match std::fs::rename(&top, dest) {
+        Ok(()) => Ok(()),
+        Err(_) if is_installed(dest) => Ok(()),
+        Err(e) => Err(io_err("cannot install", dest, e)),
+    }
 }
 
 fn file_sha256(path: &Path) -> std::io::Result<String> {

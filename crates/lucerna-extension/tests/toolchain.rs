@@ -98,11 +98,75 @@ fn ensure_wasi_sdk_downloads_verifies_and_extracts() {
     assert!(got.join("bin/clang").is_file());
     assert!(called.get() > 0);
     // Only the toolchain is left behind: no tarball, no temp dir.
-    let names: Vec<_> = std::fs::read_dir(root.path().join("toolchain"))
-        .unwrap()
-        .map(|e| e.unwrap().file_name().into_string().unwrap())
-        .collect();
-    assert_eq!(names, ["wasi-sdk-34"]);
+    assert_eq!(toolchain_entries(root.path()), ["wasi-sdk-34"]);
+}
+
+/// Entries of `<root>/toolchain`, without the lock file.
+fn toolchain_entries(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root.join("toolchain"))
+        .map(|rd| {
+            rd.map(|e| e.unwrap().file_name().into_string().unwrap())
+                .filter(|n| n != ".lock")
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[test]
+fn ensure_wasi_sdk_sweeps_stale_temp_files_and_replaces_wrong_version() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tarball = fake_tarball(tmp.path());
+    let root = tempfile::tempdir().unwrap();
+    let tc = root.path().join("toolchain");
+    std::fs::create_dir_all(tc.join(".extract-old/x")).unwrap();
+    std::fs::write(tc.join(".download-old.tar.gz"), "junk").unwrap();
+    fake_wasi_sdk(&tc.join("wasi-sdk-34"), &wasm_fixture());
+    std::fs::write(tc.join("wasi-sdk-34/VERSION"), "33.0").unwrap();
+    let got = ensure_wasi_sdk_from(
+        root.path(),
+        &file_url(&tarball),
+        &sha256_hex(&tarball),
+        &CancelToken::default(),
+        &mut std::io::sink(),
+        &|| {},
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(got.join("VERSION")).unwrap().trim(),
+        WASI_SDK_VERSION
+    );
+    assert_eq!(toolchain_entries(root.path()), ["wasi-sdk-34"]);
+}
+
+/// Another process holds the toolchain lock and installs the toolchain;
+/// the waiting caller then uses it instead of downloading.
+#[test]
+fn ensure_wasi_sdk_waits_for_concurrent_install() {
+    use std::os::fd::AsRawFd;
+    let root = tempfile::tempdir().unwrap();
+    let tc = root.path().join("toolchain");
+    std::fs::create_dir_all(&tc).unwrap();
+    let lock = std::fs::File::create(tc.join(".lock")).unwrap();
+    // SAFETY: valid fd owned by `lock`.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let root_path = root.path().to_path_buf();
+    let waiter = std::thread::spawn(move || {
+        ensure_wasi_sdk_from(
+            &root_path,
+            "file:///nonexistent/lucerna/sdk.tar.gz",
+            &"0".repeat(64),
+            &CancelToken::default(),
+            &mut std::io::sink(),
+            &|| {},
+        )
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!waiter.is_finished(), "did not wait for the lock");
+    fake_wasi_sdk(&tc.join("wasi-sdk-34"), &wasm_fixture());
+    drop(lock);
+    assert_eq!(waiter.join().unwrap().unwrap(), tc.join("wasi-sdk-34"));
 }
 
 #[test]
@@ -121,9 +185,7 @@ fn ensure_wasi_sdk_rejects_bad_checksum() {
     .unwrap_err();
     assert!(matches!(err, BuildError::Checksum), "{err:?}");
     assert!(!root.path().join("toolchain/wasi-sdk-34").exists());
-    let left: Vec<_> = std::fs::read_dir(root.path().join("toolchain"))
-        .map(|rd| rd.map(|e| e.unwrap().file_name()).collect())
-        .unwrap_or_default();
+    let left = toolchain_entries(root.path());
     assert!(left.is_empty(), "downloaded file not deleted: {left:?}");
 }
 

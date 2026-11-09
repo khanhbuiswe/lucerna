@@ -30,6 +30,8 @@ struct Env {
     _tmp: tempfile::TempDir,
     root: PathBuf,
     src: PathBuf,
+    /// Passed to `build`; `None` resolves through `ensure_wasi_sdk`.
+    sdk_override: Option<PathBuf>,
 }
 
 impl Env {
@@ -40,10 +42,14 @@ impl Env {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&src).unwrap();
         write_tree(&src, files);
+        // Outside the store root, so `toolchain/` stays untouched, and
+        // always explicit, so WASI_SDK_PATH is never consulted.
+        let sdk_override = Some(tmp.path().join("sdk"));
         Self {
             _tmp: tmp,
             root,
             src,
+            sdk_override,
         }
     }
 
@@ -53,7 +59,7 @@ impl Env {
     }
 
     fn sdk(&self) -> PathBuf {
-        self.root.join("toolchain/wasi-sdk-34")
+        self._tmp.path().join("sdk")
     }
 
     fn build(&self, expected: Option<&str>) -> (Result<BuildOutput, BuildError>, Vec<Stage>) {
@@ -64,6 +70,7 @@ impl Env {
             "ext",
             expected,
             &FakeValidator,
+            self.sdk_override.as_deref(),
             &CancelToken::default(),
             &mut std::io::sink(),
             &|s| stages.borrow_mut().push(s),
@@ -183,6 +190,108 @@ fn grammar_cache_reused_on_second_build() {
     assert_ne!(first.staging, second.staging);
     assert!(env.root.join("work/ext/grammars/json.wasm").is_file());
     assert!(env.root.join("work/ext/grammars/json.rev").is_file());
+}
+
+fn set_rev(env: &Env, repo_manifest: &str) {
+    std::fs::write(env.src.join("extension.toml"), manifest(repo_manifest)).unwrap();
+}
+
+#[test]
+fn grammar_cache_invalidated_by_new_rev() {
+    let (repo, c1) = fake_repo(&[PARSER]);
+    let entry = |c: &str| {
+        format!(
+            "[grammars.json]\nrepository = \"{}\"\nrev = \"{c}\"\n",
+            file_url(&repo)
+        )
+    };
+    let env = Env::new(&[
+        ("extension.toml", &manifest(&entry(&c1))),
+        ("languages/json/config.toml", &lang_config("JSON", "json")),
+    ])
+    .with_sdk();
+    env.build(None).0.unwrap();
+    let c2 = add_commit(&repo, &[("src/parser.c", "/* parser v2 */")]);
+    set_rev(&env, &entry(&c2));
+    env.build(None).0.unwrap();
+    assert_eq!(fake_clang_calls(&env.sdk()), 2);
+}
+
+#[test]
+fn grammar_cache_invalidated_by_newer_source() {
+    let env = Env::new(&[
+        ("extension.toml", &manifest(&grammar("json", &[PARSER]))),
+        ("languages/json/config.toml", &lang_config("JSON", "json")),
+    ])
+    .with_sdk();
+    env.build(None).0.unwrap();
+    let parser = env.root.join("work/ext/grammars/json/src/parser.c");
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+    std::fs::File::options()
+        .write(true)
+        .open(&parser)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    env.build(None).0.unwrap();
+    assert_eq!(fake_clang_calls(&env.sdk()), 2);
+}
+
+#[test]
+fn grammar_cache_invalidated_by_new_path_at_same_rev() {
+    let (repo, commit) = fake_repo(&[("a/src/parser.c", "/* a */"), ("b/src/parser.c", "/* b */")]);
+    let entry = |p: &str| {
+        format!(
+            "[grammars.json]\nrepository = \"{}\"\nrev = \"{commit}\"\npath = \"{p}\"\n",
+            file_url(&repo)
+        )
+    };
+    let env = Env::new(&[
+        ("extension.toml", &manifest(&entry("a"))),
+        ("languages/json/config.toml", &lang_config("JSON", "json")),
+    ])
+    .with_sdk();
+    env.build(None).0.unwrap();
+    set_rev(&env, &entry("b"));
+    env.build(None).0.unwrap();
+    assert_eq!(fake_clang_calls(&env.sdk()), 2);
+    let calls = std::fs::read_to_string(env.sdk().join("calls")).unwrap();
+    assert!(
+        calls.lines().nth(1).unwrap().contains("/b/src/parser.c"),
+        "{calls}"
+    );
+}
+
+#[test]
+fn grammar_subdir_with_c_scanner_compiles_both() {
+    let (repo, commit) = fake_repo(&[
+        ("sub/src/parser.c", "/* p */"),
+        ("sub/src/scanner.c", "/* s */"),
+    ]);
+    let g = format!(
+        "[grammars.json]\nrepository = \"{}\"\nrev = \"{commit}\"\npath = \"sub\"\n",
+        file_url(&repo)
+    );
+    let env = Env::new(&[
+        ("extension.toml", &manifest(&g)),
+        ("languages/json/config.toml", &lang_config("JSON", "json")),
+    ])
+    .with_sdk();
+    let out = env.build(None).0.unwrap();
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    let src = env
+        .root
+        .join("work/ext/grammars/json/sub/src")
+        .canonicalize()
+        .unwrap();
+    let calls = std::fs::read_to_string(env.sdk().join("calls")).unwrap();
+    let s = src.display();
+    assert!(
+        calls
+            .trim()
+            .ends_with(&format!("-I {s} {s}/parser.c {s}/scanner.c")),
+        "{calls}"
+    );
 }
 
 #[test]
@@ -331,6 +440,7 @@ fn cancel_during_grammar_build_cleans_staging() {
         "ext",
         None,
         &FakeValidator,
+        Some(&env.sdk()),
         &cancel,
         &mut std::io::sink(),
         &|s| {
@@ -505,10 +615,12 @@ fn real_clang_builds_json_grammar() {
         .iter()
         .map(|(a, b)| (a.as_str(), b.as_str()))
         .collect();
-    let env = Env::new(&[
+    let mut env = Env::new(&[
         ("extension.toml", &manifest(&grammar("json", &refs))),
         ("languages/json/config.toml", &lang_config("JSON", "json")),
     ]);
+    // Production resolution: WASI_SDK_PATH.
+    env.sdk_override = None;
     let out = env.build(None).0.unwrap();
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
     let wasm = std::fs::read(out.staging.join("grammars/json.wasm")).unwrap();

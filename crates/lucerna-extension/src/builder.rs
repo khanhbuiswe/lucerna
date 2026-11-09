@@ -196,6 +196,8 @@ struct KeptLanguage {
 
 /// Builds the extension in `source_dir` into `<root>/staging/<id>-<random>/`.
 /// `expected_version` is the registry version (`None` for dev installs).
+/// `wasi_sdk` overrides the toolchain; `None` resolves it with
+/// [`ensure_wasi_sdk`] (which honours `WASI_SDK_PATH`).
 /// On error (including cancellation) the staging directory is removed.
 #[allow(clippy::too_many_arguments)]
 pub fn build(
@@ -204,6 +206,7 @@ pub fn build(
     id: &str,
     expected_version: Option<&str>,
     validator: &dyn GrammarValidator,
+    wasi_sdk: Option<&Path>,
     cancel: &CancelToken,
     log: &mut dyn Write,
     progress: &dyn Fn(Stage),
@@ -242,7 +245,10 @@ pub fn build(
     let mut built = Vec::new();
     if !manifest.grammars.is_empty() {
         progress(Stage::PreparingToolchain);
-        let sdk = ensure_wasi_sdk(root, cancel, log, &|| {})?;
+        let sdk = match wasi_sdk {
+            Some(p) => p.to_path_buf(),
+            None => ensure_wasi_sdk(root, cancel, log, &|| {})?,
+        };
         let total = manifest.grammars.len();
         for (index, (name, g)) in manifest.grammars.iter().enumerate() {
             progress(Stage::BuildingGrammar {
@@ -525,7 +531,10 @@ fn build_grammar(
 
     let cache = gdir.join(format!("{name}.wasm"));
     let rev_file = gdir.join(format!("{name}.rev"));
-    let fresh = std::fs::read_to_string(&rev_file).is_ok_and(|r| r.trim() == g.rev)
+    // Cache key: the rev and the source subdirectory inside the checkout.
+    let sub = base.strip_prefix(&checkout).unwrap_or(Path::new(""));
+    let key = format!("{}\n{}\n", g.rev, sub.display());
+    let fresh = std::fs::read_to_string(&rev_file).is_ok_and(|r| r == key)
         && mtime(&cache).is_some_and(|w| inputs.iter().all(|i| mtime(i).is_some_and(|t| w > t)));
     if fresh {
         let _ = writeln!(log, "reusing cached {}", cache.display());
@@ -548,7 +557,7 @@ fn build_grammar(
             let _ = std::fs::remove_file(&cache);
             return Err(e.into());
         }
-        std::fs::write(&rev_file, &g.rev).map_err(|e| io("cannot write", &rev_file, e))?;
+        std::fs::write(&rev_file, &key).map_err(|e| io("cannot write", &rev_file, e))?;
     }
     copy_into(
         &cache,
