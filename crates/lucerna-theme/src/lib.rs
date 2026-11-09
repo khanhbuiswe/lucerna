@@ -3,7 +3,7 @@
 mod registry;
 mod schema;
 
-pub use registry::ThemeRegistry;
+pub use registry::{ThemeFile, ThemeRegistry, ThemeSource};
 
 use std::collections::HashMap;
 

@@ -3327,9 +3327,11 @@ dependencies = [
 name = "lucerna-theme"
 version = "0.1.0"
 dependencies = [
+ "jsonc-parser",
  "serde",
  "serde_json",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

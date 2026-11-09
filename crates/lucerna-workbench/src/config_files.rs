@@ -159,7 +159,7 @@ impl ConfigState {
 
 /// Loads every configuration file into [`AppState`], then follows changes
 /// to them: settings go through `set_layer`, keybindings through
-/// `Keymap::load`, user themes through `load_dir`, and the theme named by
+/// `Keymap::load`, user themes through `ThemeRegistry::build`, and the theme named by
 /// `workbench.colorTheme` is made active. Replaces an earlier call's
 /// paths and watcher.
 ///
@@ -262,11 +262,11 @@ fn load(files: impl IntoIterator<Item = ConfigFile>, cx: &mut App) {
             }
             ConfigFile::Themes => {
                 let dir = paths.themes_dir();
-                let mut themes = ThemeRegistry::builtin();
-                if dir.is_dir() {
-                    for (path, err) in themes.load_dir(&dir) {
-                        tracing::warn!(path = %path.display(), %err, "could not load theme");
-                    }
+                // Extension themes arrive with the extensions store (later task).
+                let user_dir = dir.is_dir().then_some(dir.as_path());
+                let (themes, errors) = ThemeRegistry::build(&[], user_dir);
+                for (path, err) in errors {
+                    tracing::warn!(path = %path.display(), %err, "could not load theme");
                 }
                 cx.global_mut::<AppState>().themes = themes;
             }

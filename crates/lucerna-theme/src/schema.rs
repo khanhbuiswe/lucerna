@@ -33,7 +33,7 @@ struct SyntaxDef {
 impl ThemeDef {
     pub(crate) fn into_theme(self) -> Result<Theme, String> {
         let appearance = match self.appearance.as_str() {
-            "dark" => Appearance::Dark,
+            "dark" | "" => Appearance::Dark,
             "light" => Appearance::Light,
             other => {
                 return Err(format!(

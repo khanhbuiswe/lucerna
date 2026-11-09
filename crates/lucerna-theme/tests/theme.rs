@@ -70,8 +70,8 @@ fn italic_and_bold_mapping() {
               "d":{"font_weight":600}
             }}}]}"##,
     );
-    let mut reg = ThemeRegistry::builtin();
-    assert!(reg.load_dir(dir.path()).is_empty());
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
     let t = reg.get("Styled").unwrap();
     let a = t.style_for("a").unwrap();
     assert!(a.italic && !a.bold && a.color.is_some());
@@ -85,7 +85,7 @@ fn italic_and_bold_mapping() {
 }
 
 #[test]
-fn load_dir_reports_bad_file_and_keeps_good() {
+fn user_dir_reports_bad_file_and_keeps_good() {
     let dir = tempfile::tempdir().unwrap();
     write_theme(dir.path(), "bad.json", "{ not json");
     write_theme(
@@ -94,14 +94,18 @@ fn load_dir_reports_bad_file_and_keeps_good() {
         r#"{"name":"F","themes":[{"name":"Good","appearance":"dark","style":{}}]}"#,
     );
     write_theme(dir.path(), "notes.txt", "ignored");
-    let mut reg = ThemeRegistry::builtin();
-    let errors = reg.load_dir(dir.path());
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].0, dir.path().join("bad.json"));
     assert!(!errors[0].1.is_empty());
     assert!(reg.get("Good").is_some());
     assert!(reg.get("One Dark").is_some());
-    assert_eq!(reg.load_dir(&dir.path().join("missing")).len(), 1);
+    assert_eq!(
+        ThemeRegistry::build(&[], Some(&dir.path().join("missing")))
+            .1
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -167,8 +171,8 @@ fn new_ui_colors_fall_back_when_missing() {
             {"name":"Panel Only","appearance":"dark","style":{"panel.background":"#123456ff"}}
         ]}"##,
     );
-    let mut reg = ThemeRegistry::builtin();
-    assert!(reg.load_dir(dir.path()).is_empty());
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
     for (name, appearance) in [
         ("Bare Dark", Appearance::Dark),
         ("Bare Light", Appearance::Light),
@@ -203,8 +207,8 @@ fn error_color_from_theme_or_red_fallback() {
         "plain.json",
         r#"{"name":"P","themes":[{"name":"Plain","appearance":"dark","style":{}}]}"#,
     );
-    let mut reg = ThemeRegistry::builtin();
-    assert!(reg.load_dir(dir.path()).is_empty());
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
     let fallback = reg.get("Plain").unwrap().ui.error;
     assert_eq!(fallback, UiColors::fallback(Appearance::Dark).error);
     assert!(
@@ -229,8 +233,8 @@ fn scrollbar_thumb_from_theme_or_fallback() {
             {"name":"Plain Light","appearance":"light","style":{}}
         ]}"#,
     );
-    let mut reg = ThemeRegistry::builtin();
-    assert!(reg.load_dir(dir.path()).is_empty());
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
     let fb_dark = UiColors::fallback(Appearance::Dark).scrollbar_thumb;
     let fb_light = UiColors::fallback(Appearance::Light).scrollbar_thumb;
     assert_eq!(reg.get("Plain").unwrap().ui.scrollbar_thumb, fb_dark);
