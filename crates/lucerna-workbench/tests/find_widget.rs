@@ -313,3 +313,30 @@ fn find_large_file_searches_off_the_main_thread(cx: &mut TestAppContext) {
     let start = 64 * 20_000 + 4;
     assert_eq!(highlights(&view, cx).0, vec![start..start + 6]);
 }
+
+#[gpui::test]
+fn find_widget_is_a_full_width_bar_above_the_text(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, _view, cx) = open_file("a.txt", "foo\nbar foo\n", cx);
+    let text_before = cx.debug_bounds("code-text-area").expect("text area");
+    assert!(cx.debug_bounds("find-widget").is_none());
+
+    keys("cmd-f", cx);
+    let code = cx.debug_bounds("code-view").expect("code view");
+    let bar = cx.debug_bounds("find-widget").expect("find widget");
+    let text = cx.debug_bounds("code-text-area").expect("text area");
+    assert!(
+        (bar.size.width - code.size.width).abs() < gpui::px(1.),
+        "the bar spans the code view: {bar:?} vs {code:?}"
+    );
+    assert!((bar.origin.x - code.origin.x).abs() < gpui::px(1.));
+    assert!(
+        (bar.origin.y - code.origin.y).abs() < gpui::px(1.),
+        "the bar is at the top: {bar:?} vs {code:?}"
+    );
+    assert!(
+        text.origin.y >= bar.bottom() - gpui::px(1.),
+        "the text starts below the bar: {text:?} vs {bar:?}"
+    );
+    assert!(text.origin.y > text_before.origin.y, "the bar pushes down");
+}

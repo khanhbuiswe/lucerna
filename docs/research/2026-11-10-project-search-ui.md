@@ -44,3 +44,9 @@ Tính năng mới của Zed (`crates/search/src/text_finder*`). Docs mô tả: t
 ## 4. Lucerna chọn gì
 
 Chờ người dùng chọn (xem spec). Theo nguyên tắc: giao diện theo Zed, lệnh/phím tắt theo VS Code (`workbench.action.findInFiles` = `cmd-shift-f`, `workbench.action.quickTextSearch`).
+
+## 5. Tìm trong file (find widget)
+
+- **VS Code**: find widget (`actions.find`, `cmd-f`) là một overlay nổi ở góc trên bên phải editor, không đẩy nội dung xuống mà che một phần text. Có ô nhập với toggle case / whole word / regex, bộ đếm "3 of 19", nút trước/sau, "find in selection", nút đóng, và vùng replace gập được.
+- **Zed**: `BufferSearchBar` là một toolbar item của pane: một hàng full-width nằm dưới breadcrumb, đẩy nội dung editor xuống. Trong hàng có ô query với các toggle Aa / wd / .* nằm trong ô, nút select-all và replace, nút trước/sau, bộ đếm "3/19" và nút đóng. Lỗi regex hiện ngay trên thanh.
+- **Lucerna chọn**: giao diện theo Zed (thanh full-width dưới breadcrumb, đẩy nội dung xuống, phủ cả minimap), phím tắt và hành vi theo VS Code (`cmd-f`, `enter` / `shift-enter`, `escape`, các toggle). Chỉ học thiết kế, không chép code Zed (GPL).

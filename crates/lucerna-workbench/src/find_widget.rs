@@ -23,15 +23,13 @@ use crate::quick_open::picker::wrap_index;
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
-    CHEVRON_DOWN_ICON, CHEVRON_UP_ICON, CLOSE_ICON, GRID, UI_FONT_SIZE_SMALL, icon_button, popover,
-    toggle_button,
+    CHEVRON_DOWN_ICON, CHEVRON_UP_ICON, CLOSE_ICON, GRID, TAB_HEIGHT, UI_FONT_SIZE_SMALL,
+    icon_button, input_box, toggle_button,
 };
 use crate::{AppState, CommandRegistry, Workbench};
 
 /// Snapshots larger than this are searched off the main thread.
 pub const BACKGROUND_SEARCH_BYTES: usize = 1024 * 1024;
-
-const FIND_WIDGET_WIDTH: f32 = 420.;
 
 /// The byte ranges of every non-empty match of `pattern` in `snapshot`, in
 /// order. The regex is built like the project search's
@@ -358,7 +356,7 @@ impl Focusable for FindWidget {
 
 impl Render for FindWidget {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui = &cx.global::<AppState>().theme.ui;
+        let ui = cx.global::<AppState>().theme.ui.clone();
         let muted = color(ui.text_muted);
         let view = self.view.clone();
         let toggle =
@@ -366,10 +364,40 @@ impl Render for FindWidget {
                 toggle_button(id, label, on, cx)
                     .on_click(cx.listener(move |find, _, _, cx| f(find, cx)))
             };
-        popover(cx)
+        let field = input_box(&self.input, cx)
+            .flex_1()
+            .min_w_0()
+            .child(toggle(
+                "find-toggle-case",
+                "Aa",
+                self.case_sensitive,
+                Self::toggle_case_sensitive,
+                cx,
+            ))
+            .child(toggle(
+                "find-toggle-word",
+                "ab",
+                self.whole_word,
+                Self::toggle_whole_word,
+                cx,
+            ))
+            .child(toggle(
+                "find-toggle-regex",
+                ".*",
+                self.is_regex,
+                Self::toggle_regex,
+                cx,
+            ));
+        div()
             .id("find-widget")
             .debug_selector(|| "find-widget".into())
-            .w(px(FIND_WIDGET_WIDTH))
+            .flex()
+            .flex_none()
+            .flex_col()
+            .w_full()
+            .bg(color(ui.tab_bar_background))
+            .border_b_1()
+            .border_color(color(ui.border_variant))
             .occlude()
             .on_key_down(cx.listener(Self::key_down))
             .child(
@@ -377,35 +405,13 @@ impl Render for FindWidget {
                     .flex()
                     .items_center()
                     .gap(px(GRID))
-                    .h(px(8. * GRID))
-                    .pl(px(2. * GRID))
-                    .pr(px(GRID))
-                    .child(div().flex_1().min_w_0().child(self.input.clone()))
-                    .child(toggle(
-                        "find-toggle-case",
-                        "Aa",
-                        self.case_sensitive,
-                        Self::toggle_case_sensitive,
-                        cx,
-                    ))
-                    .child(toggle(
-                        "find-toggle-word",
-                        "ab",
-                        self.whole_word,
-                        Self::toggle_whole_word,
-                        cx,
-                    ))
-                    .child(toggle(
-                        "find-toggle-regex",
-                        ".*",
-                        self.is_regex,
-                        Self::toggle_regex,
-                        cx,
-                    ))
+                    .h(px(TAB_HEIGHT))
+                    .px(px(2. * GRID))
+                    .child(field)
                     .child(
                         div()
                             .flex_none()
-                            .min_w(px(18. * GRID))
+                            .min_w(px(14. * GRID))
                             .px(px(GRID))
                             .text_size(px(UI_FONT_SIZE_SMALL))
                             .text_color(muted)
@@ -431,7 +437,7 @@ impl Render for FindWidget {
                 div()
                     .debug_selector(|| "find-error".into())
                     .px(px(2. * GRID))
-                    .pb(px(2. * GRID))
+                    .pb(px(GRID))
                     .text_size(px(UI_FONT_SIZE_SMALL))
                     .text_color(muted)
                     .child(error)

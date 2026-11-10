@@ -34,7 +34,7 @@ use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
     CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, FILE_ICON_SIZE, GRID, TAB_HEIGHT, UI_FONT_SIZE_SMALL,
-    file_icon_sized, icon_button, toggle_button,
+    file_icon_sized, icon_button, input_box, toggle_button,
 };
 use crate::workbench::enabled_globs;
 use crate::workspace_state::SearchState;
@@ -1123,23 +1123,6 @@ fn gutter(style: &RowStyle, muted: gpui::Rgba) -> Div {
         .font_family(style.font_family.clone())
         .text_size(style.font_size)
         .text_color(muted)
-}
-
-/// A bordered box holding `input`; add any controls after it.
-fn input_box(input: &Entity<TextInput>, cx: &App) -> Div {
-    let ui = &cx.global::<AppState>().theme.ui;
-    div()
-        .flex()
-        .items_center()
-        .gap(px(GRID / 2.))
-        .h(px(7. * GRID))
-        .pl(px(2. * GRID))
-        .pr(px(GRID))
-        .rounded(px(GRID))
-        .border_1()
-        .border_color(color(ui.border_variant))
-        .bg(color(ui.editor_background))
-        .child(div().flex_1().min_w_0().child(input.clone()))
 }
 
 /// An [`icon_button`] that leaves focus where it was.

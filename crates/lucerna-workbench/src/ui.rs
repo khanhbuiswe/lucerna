@@ -2,14 +2,15 @@
 //! draws chrome takes its sizes and popover/icon-button styling from here.
 
 use gpui::{
-    AnyElement, App, Div, ElementId, Hsla, MouseButton, ParentElement, Pixels, Stateful, Styled,
-    div, img, prelude::*, px, svg,
+    AnyElement, App, Div, ElementId, Entity, Hsla, MouseButton, ParentElement, Pixels, Stateful,
+    Styled, div, img, prelude::*, px, svg,
 };
 use lucerna_theme::IconSource;
 
 use crate::AppState;
 use crate::icons;
 use crate::layout::color;
+use crate::text_input::TextInput;
 
 /// Spacing unit: paddings and gaps are multiples of it.
 pub const GRID: f32 = 4.0;
@@ -156,6 +157,23 @@ pub fn icon_button(
                 .size(px(14.))
                 .text_color(color(if active { ui.icon } else { ui.icon_muted })),
         )
+}
+
+/// A bordered box holding `input`; add any controls after it.
+pub(crate) fn input_box(input: &Entity<TextInput>, cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .flex()
+        .items_center()
+        .gap(px(GRID / 2.))
+        .h(px(7. * GRID))
+        .pl(px(2. * GRID))
+        .pr(px(GRID))
+        .rounded(px(GRID))
+        .border_1()
+        .border_color(color(ui.border_variant))
+        .bg(color(ui.editor_background))
+        .child(div().flex_1().min_w_0().child(input.clone()))
 }
 
 /// A 24×20 text toggle such as `Aa`, `ab` or `.*`, styled like

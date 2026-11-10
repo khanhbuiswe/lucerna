@@ -1056,29 +1056,34 @@ impl Render for CodeView {
         }
         let show_minimap = self.config.minimap && !self.large;
         let view = cx.entity();
+        // The find bar is a full-width row above the code and the minimap,
+        // like Zed's buffer search bar: it pushes the text down.
         div()
             .id("code-view")
+            .debug_selector(|| "code-view".into())
             .track_focus(&self.focus)
             .flex()
-            .flex_row()
+            .flex_col()
             .size_full()
             .bg(color(ui.editor_background))
+            .children(self.find_widget().cloned())
             .child(
                 div()
-                    .relative()
+                    .flex()
+                    .flex_row()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .child(CodeElement::new(view.clone()))
-                    .children(self.find_widget().cloned().map(|find| {
+                    .min_h_0()
+                    .child(
                         div()
-                            .absolute()
-                            .top(px(GRID))
-                            .right(px(4. * GRID))
-                            .child(find)
-                    })),
+                            .debug_selector(|| "code-text-area".into())
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(CodeElement::new(view.clone())),
+                    )
+                    .when(show_minimap, |d| d.child(minimap::render(view))),
             )
-            .when(show_minimap, |d| d.child(minimap::render(view)))
     }
 }
 
