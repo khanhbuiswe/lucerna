@@ -124,8 +124,7 @@ mod tests {
         view.marked(vim.cursor())
     }
 
-    // Adapted from VSCodeVim test/mode/normalModeTests.ts and motions.test.ts.
-    // Adapted from VSCodeVim motions.test.ts: "Can run a * search"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can run a * search"
     #[test]
     fn star_jumps_to_next_whole_word() {
         assert_keys(
@@ -135,13 +134,13 @@ mod tests {
         );
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "* ignores smartcase"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "* ignores smartcase"
     #[test]
     fn star_ignores_smartcase() {
         assert_keys("|test TEST test", "*", "test |TEST test");
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "* does not go over line boundaries"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "* does not go over line boundaries"
     #[test]
     fn star_stays_within_the_line() {
         assert_keys(
@@ -151,13 +150,13 @@ mod tests {
         );
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "Can handle # on whitespace"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can handle # on whitespace"
     #[test]
     fn hash_on_whitespace_uses_next_word() {
         assert_keys("abc abcdef| abc", "#", "|abc abcdef abc");
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "Can handle # already on the word"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can handle # already on the word"
     #[test]
     fn hash_inside_word_starts_from_word_start() {
         assert_keys("one o|ne", "#", "|one one");
@@ -269,7 +268,7 @@ mod tests {
         assert_eq!(view.marked(vim.cursor()), "a a a |a a");
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "Can run a search with count exceeding max number of matches and wrapscan"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can run a search with count exceeding max number of matches and wrapscan"
     #[test]
     fn submitted_count_exceeding_matches_wraps() {
         let view = TestView::new("|one two two two");
@@ -279,7 +278,7 @@ mod tests {
         assert_eq!(at(&view, &vim), "one two |two two");
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "Can run a reverse and find next search"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can run a reverse and find next search"
     #[test]
     fn submitted_backward_then_n() {
         let view = TestView::new("one two two thre|e");

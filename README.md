@@ -158,6 +158,9 @@ there is no insert mode or editing yet.
 | Visual | `v`, `V`, `Ctrl+v`, `o`, `y` to copy, `Esc` |
 | Folds | `za zc zo` |
 
+In Normal and Visual mode the arrow keys act as `h j k l`, and Enter moves to the first
+non-blank character of the next line.
+
 | Setting | Default | Meaning |
 |---|---|---|
 | `vim.enabled` | `false` | Turn Vim navigation on. `vim_mode` is read as an alias when this is unset |

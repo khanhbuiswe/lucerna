@@ -125,23 +125,22 @@ Icons: `folder`, `folder-open`, `file`, `file-code`, `braces`, `book-open`,
 
 ## VSCodeVim test cases
 
-Some unit tests in `lucerna-vim` and `lucerna-workbench` are adapted from the
-test suite of VSCodeVim (https://github.com/VSCodeVim/Vim), which is MIT
-licensed. Only test cases are adapted: no VSCodeVim source code is included.
+Some unit tests in `lucerna-vim` are adapted from the test suite of VSCodeVim
+(https://github.com/VSCodeVim/Vim), which is MIT licensed. Only test cases are
+adapted: no VSCodeVim source code is included.
 Each adapted test carries a comment of the form
 `// Adapted from VSCodeVim <file>: "<test title>"`. The cases came from these
 VSCodeVim test files:
 
 - `test/motion.test.ts`
-- `test/motions.test.ts`
 - `test/marks.test.ts`
 - `test/search/search.test.ts`
 - `test/mode/modeNormal.test.ts`
 - `test/mode/modeVisualLine.test.ts`
 - `test/mode/normalModeTests/commands.test.ts`
 - `test/mode/normalModeTests/motions.test.ts`
-- `matchingBracket.test.ts`
-- `repeatableMovement.test.ts`
+- `test/mode/normalModeTests/matchingBracket.test.ts`
+- `test/register/repeatableMovement.test.ts`
 
 ```
 MIT License

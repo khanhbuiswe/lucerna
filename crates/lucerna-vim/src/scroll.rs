@@ -148,7 +148,7 @@ mod tests {
         );
     }
 
-    // Adapted from VSCodeVim test/motions.test.ts:
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts:
     // "Preserves desired cursor position when pressing zz"
     #[test]
     fn zz_preserves_goal_column() {
