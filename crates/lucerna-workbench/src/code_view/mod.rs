@@ -366,11 +366,21 @@ impl CodeView {
                 anchor: adjust(s.anchor),
                 head: adjust(s.head),
             });
-        if let Some(block) = &mut self.block_selection {
-            for range in block.iter_mut() {
-                *range = adjust(range.start)..adjust(range.end);
-            }
-        }
+        // Like the selection: dropped if any of its rows changed.
+        self.block_selection = self
+            .block_selection
+            .take()
+            .filter(|block| {
+                block
+                    .iter()
+                    .all(|r| r.end.row < changed.start || r.start.row >= changed.end)
+            })
+            .map(|block| {
+                block
+                    .into_iter()
+                    .map(|r| adjust(r.start)..adjust(r.end))
+                    .collect()
+            });
         self.selection_generation += 1;
         let old = std::mem::replace(&mut self.snapshot, snapshot.clone());
         self.syntax = self.syntax.as_ref().and_then(|syntax| {
@@ -675,14 +685,14 @@ impl CodeView {
     }
 
     /// Selects a rectangle given as one range per row, dropping the
-    /// normal selection; `None` clears it.
+    /// normal selection; `None` or no ranges clears it.
     pub fn set_block_selection(
         &mut self,
         ranges: Option<Vec<Range<Point>>>,
         cx: &mut Context<Self>,
     ) {
         self.selection = None;
-        self.block_selection = ranges;
+        self.block_selection = ranges.filter(|r| !r.is_empty());
         self.selection_generation += 1;
         self.update_brackets();
         cx.notify();
@@ -825,22 +835,29 @@ impl CodeView {
     }
 
     /// Scrolls minimally so `row` sits between the top and bottom
-    /// margins (`editor.cursorSurroundingLines`, at most half the view).
-    /// Rows are counted as visible buffer rows, skipping folds.
+    /// margins (`editor.cursorSurroundingLines`, at most half the view),
+    /// never past the top that shows the last row at the bottom. Counts
+    /// display lines, so wrapped rows and folds are taken into account.
     fn scroll_into_view(&mut self, row: u32, visible_rows: u32) {
         let margin = self
             .config
             .cursor_surrounding_lines
             .min(visible_rows.saturating_sub(1) / 2);
         let top = self.scroll.top_row;
-        let highest = self.rows_back(row, margin);
-        let lowest = self.rows_back(row, visible_rows.saturating_sub(1 + margin));
-        let new_top = if highest < top || (highest == top && self.scroll.offset > 0.) {
+        let highest = self.top_with_lines_above(row, margin);
+        let new_top = if row < top || highest < top || (highest == top && self.scroll.offset > 0.) {
             highest
-        } else if lowest > top {
-            lowest
         } else {
-            return;
+            let lowest = self.top_fitting(row, visible_rows.saturating_sub(margin));
+            let last = self
+                .folds
+                .prev_visible(self.snapshot.line_count().saturating_sub(1));
+            let lowest = lowest.min(self.top_fitting(last, visible_rows));
+            if lowest > top {
+                lowest
+            } else {
+                return;
+            }
         };
         self.scroll = Scroll {
             top_row: new_top,
@@ -849,16 +866,34 @@ impl CodeView {
         self.pending_center = None;
     }
 
-    /// The visible row `n` visible rows above `row`, stopping at row 0.
-    fn rows_back(&self, row: u32, n: u32) -> u32 {
-        let mut row = self.folds.prev_visible(row);
-        for _ in 0..n {
-            if row == 0 {
+    /// The highest visible row with at least `lines` display lines between
+    /// it and `row` (stopping at row 0).
+    fn top_with_lines_above(&mut self, row: u32, lines: u32) -> u32 {
+        let mut top = self.folds.prev_visible(row);
+        let mut used = 0;
+        while used < lines && top > 0 {
+            top = self.folds.prev_visible(top - 1);
+            used += self.wrap_count(top);
+        }
+        top
+    }
+
+    /// The highest top row from which all of `row`'s display lines fit in
+    /// the first `lines` lines of the view (`row` itself if it alone does
+    /// not fit).
+    fn top_fitting(&mut self, row: u32, lines: u32) -> u32 {
+        let mut top = self.folds.prev_visible(row);
+        let mut used = self.wrap_count(top);
+        while top > 0 {
+            let prev = self.folds.prev_visible(top - 1);
+            let count = self.wrap_count(prev);
+            if used + count > lines {
                 break;
             }
-            row = self.folds.prev_visible(row - 1);
+            used += count;
+            top = prev;
         }
-        row
+        top
     }
 
     fn center(&mut self, row: u32, visible_rows: u32) {

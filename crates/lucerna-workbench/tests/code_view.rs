@@ -806,3 +806,105 @@ fn matching_bracket_finds_partner(cx: &mut TestAppContext) {
         assert_eq!(v.matching_bracket(0), None);
     });
 }
+
+/// With word wrap on, rows take several display lines; `set_cursor`
+/// still brings the cursor row on screen.
+#[gpui::test]
+fn set_cursor_reveals_wrapped_rows(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.wordWrap": "on" }"#));
+    let text: String = (0..60)
+        .map(|i| format!("{i:02}{}\n", "x".repeat(400)))
+        .collect();
+    let (view, cx) = code_view(&text, cx);
+    let visible = view.read_with(cx, |v, _| v.visible_rows());
+    // `visible` buffer rows take several times as many display lines.
+    let target = visible;
+    view.update(cx, |v, cx| v.set_cursor(pt(target, 0), cx));
+    draw(cx);
+    let top = view.read_with(cx, |v, _| v.scroll_top_row());
+    assert!(top <= target && top > 0, "top {top}, target {target}");
+    // The row under the bottom whole line is at or below the cursor row.
+    mouse_down(
+        gpui::point(gpui::px(TEXT_X + 1.), gpui::px(visible as f32 * LINE - 1.)),
+        1,
+        false,
+        cx,
+    );
+    assert!(view.read_with(cx, |v, _| v.cursor()).row >= target);
+}
+
+/// Before the first paint `set_cursor` centers its row, like `go_to`.
+#[gpui::test]
+fn set_cursor_before_first_paint_centers(cx: &mut TestAppContext) {
+    init(cx, None);
+    // Called while the view is built, before the window first draws.
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut v = CodeView::new(p("src/main.rs"), cx);
+        v.set_buffer(snapshot(&numbered(1000)), cx);
+        assert_eq!(v.visible_rows(), 0);
+        v.set_cursor(pt(500, 0), cx);
+        v
+    });
+    draw(cx);
+    let visible = view.read_with(cx, |v, _| v.visible_rows());
+    assert_eq!(
+        view.read_with(cx, |v, _| v.scroll_top_row()),
+        500 - visible / 2
+    );
+}
+
+/// The bottom margin never scrolls past the last row.
+#[gpui::test]
+fn set_cursor_margin_stops_at_end_of_file(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.cursorSurroundingLines": 3 }"#));
+    let (view, cx) = code_view(&numbered(200), cx);
+    let visible = view.read_with(cx, |v, _| v.visible_rows());
+    view.update(cx, |v, cx| v.set_cursor(pt(199, 0), cx));
+    assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 200 - visible);
+}
+
+/// Rows hidden by a fold between the top and the cursor take no space.
+#[gpui::test]
+fn set_cursor_counts_folded_rows_as_hidden(cx: &mut TestAppContext) {
+    init(cx, None);
+    let body: String = (0..20).map(|i| format!("    {i}\n")).collect();
+    let text = format!("a {{\n{body}}}\n{}", numbered(200));
+    let (view, cx) = code_view(&text, cx);
+    cx.run_until_parked();
+    view.update(cx, |v, cx| v.toggle_fold(0, cx));
+    draw(cx);
+    assert!(view.read_with(cx, |v, _| v.is_row_hidden(20)));
+    let visible = view.read_with(cx, |v, _| v.visible_rows());
+    // On screen: row 0, then rows 21.. — the last one is 21 + visible - 2.
+    view.update(cx, |v, cx| v.set_cursor(pt(21 + visible - 2, 0), cx));
+    assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 0);
+    view.update(cx, |v, cx| v.set_cursor(pt(21 + visible - 1, 0), cx));
+    assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 21);
+    assert!(view.read_with(cx, |v, _| v.is_folded(0)));
+}
+
+#[gpui::test]
+fn block_selection_reload_and_empty(cx: &mut TestAppContext) {
+    init(cx, None);
+    let old = "abcd\nefgh\nijkl\n";
+    let mut buffer = Buffer::from_bytes(old.as_bytes(), false).unwrap();
+    let (view, cx) = code_view(old, cx);
+    view.update(cx, |v, cx| v.set_block_selection(Some(Vec::new()), cx));
+    assert_eq!(view.read_with(cx, |v, _| v.copy_selection()), None);
+
+    // A change on another row keeps the block; one on its rows drops it.
+    view.update(cx, |v, cx| {
+        v.set_block_selection(Some(vec![pt(0, 1)..pt(0, 3), pt(1, 1)..pt(1, 3)]), cx)
+    });
+    let reload = buffer.reload(b"abcd\nefgh\nIJKL\n").unwrap();
+    let snapshot = buffer.snapshot();
+    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    assert_eq!(
+        view.read_with(cx, |v, _| v.copy_selection()).as_deref(),
+        Some("bc\nfg")
+    );
+    let reload = buffer.reload(b"abcd\nEFGH\nIJKL\n").unwrap();
+    let snapshot = buffer.snapshot();
+    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    assert_eq!(view.read_with(cx, |v, _| v.copy_selection()), None);
+}
