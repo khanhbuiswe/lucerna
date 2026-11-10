@@ -2,8 +2,8 @@
 //! draws chrome takes its sizes and popover/icon-button styling from here.
 
 use gpui::{
-    AnyElement, App, Div, ElementId, Entity, Hsla, MouseButton, ParentElement, Pixels, Stateful,
-    Styled, div, img, prelude::*, px, svg,
+    AnyElement, App, ClickEvent, Div, ElementId, Entity, Hsla, MouseButton, ParentElement, Pixels,
+    Stateful, Styled, Window, div, img, prelude::*, px, relative, svg,
 };
 use lucerna_theme::IconSource;
 
@@ -59,8 +59,11 @@ pub const CHEVRON_RIGHT_ICON: &[u8] = icons::CHEVRON_RIGHT;
 /// A chevron pointing down: an expanded directory.
 pub const CHEVRON_DOWN_ICON: &[u8] = icons::CHEVRON_DOWN;
 
-/// A chevron pointing up: previous match.
+/// A chevron pointing up.
 pub const CHEVRON_UP_ICON: &[u8] = icons::CHEVRON_UP;
+
+/// A chevron pointing left: previous match.
+pub const CHEVRON_LEFT_ICON: &[u8] = icons::CHEVRON_LEFT;
 
 /// A single page with a folded corner.
 pub const FILE_ICON: &[u8] = icons::FILE;
@@ -159,6 +162,15 @@ pub fn icon_button(
         )
 }
 
+/// Height of a search bar row: the find bar and the Search tab's toolbar.
+pub const SEARCH_BAR_HEIGHT: f32 = 10. * GRID;
+/// Height of the bordered input box in a search bar row.
+pub const SEARCH_INPUT_HEIGHT: f32 = 7. * GRID;
+/// The query box never gets narrower than this (Zed's `min_w_32`).
+pub const SEARCH_QUERY_MIN_WIDTH: f32 = 32. * GRID;
+/// The share of a search bar row the query box asks for, as in Zed.
+pub const SEARCH_QUERY_BASIS: f32 = 0.667;
+
 /// A bordered box holding `input`; add any controls after it.
 pub(crate) fn input_box(input: &Entity<TextInput>, cx: &App) -> Div {
     let ui = &cx.global::<AppState>().theme.ui;
@@ -166,7 +178,7 @@ pub(crate) fn input_box(input: &Entity<TextInput>, cx: &App) -> Div {
         .flex()
         .items_center()
         .gap(px(GRID / 2.))
-        .h(px(7. * GRID))
+        .h(px(SEARCH_INPUT_HEIGHT))
         .pl(px(2. * GRID))
         .pr(px(GRID))
         .rounded(px(GRID))
@@ -174,6 +186,94 @@ pub(crate) fn input_box(input: &Entity<TextInput>, cx: &App) -> Div {
         .border_color(color(ui.border_variant))
         .bg(color(ui.editor_background))
         .child(div().flex_1().min_w_0().child(input.clone()))
+}
+
+/// The search toolbar: a full-width column on `editor.background` with a
+/// 1px `border.variant` line under it. Holds [`search_bar_row`]s, as the
+/// find bar and the Search tab's toolbar do.
+pub fn search_toolbar(cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .flex()
+        .flex_none()
+        .flex_col()
+        .w_full()
+        .bg(color(ui.editor_background))
+        .border_b_1()
+        .border_color(color(ui.border_variant))
+}
+
+/// One row of a [`search_toolbar`]: [`SEARCH_BAR_HEIGHT`] tall, its
+/// groups a [`GRID`] apart, 2×[`GRID`] in from the sides.
+pub fn search_bar_row() -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(GRID))
+        .h(px(SEARCH_BAR_HEIGHT))
+        .px(px(2. * GRID))
+        .w_full()
+}
+
+/// The query box of a search bar: an [`input_box`] asking for about two
+/// thirds of the row (shrinking down to [`SEARCH_QUERY_MIN_WIDTH`]), its
+/// border in the theme's `error` color while `invalid` (no match or a bad
+/// regex). Add the `Aa` `ab` `.*` toggles as children.
+pub(crate) fn search_query_box(input: &Entity<TextInput>, invalid: bool, cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    input_box(input, cx)
+        .flex_grow_0()
+        .flex_shrink_1()
+        .flex_basis(relative(SEARCH_QUERY_BASIS))
+        .min_w(px(SEARCH_QUERY_MIN_WIDTH))
+        .when(invalid, |d| d.border_color(color(ui.error)))
+}
+
+/// A 1px `border.variant` line between groups of a search bar row.
+pub fn bar_separator(cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .flex_none()
+        .w(px(1.))
+        .h(px(5. * GRID))
+        .bg(color(ui.border_variant))
+}
+
+pub type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+
+/// The match navigation of a search bar: `‹` (`prev_id`) and `›`
+/// (`next_id`) icon buttons, then `label` such as `"3/19"` or `"0/0"`,
+/// small and muted. Clicking a button leaves focus where it was.
+pub fn match_nav(
+    (prev_id, on_prev): (&'static str, ClickHandler),
+    (next_id, on_next): (&'static str, ClickHandler),
+    label: String,
+    cx: &App,
+) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let button = |id: &'static str, icon, handler: ClickHandler| {
+        icon_button(id, icon, false, cx)
+            .debug_selector(move || id.into())
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_click(handler)
+    };
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(GRID / 2.))
+        .child(button(prev_id, CHEVRON_LEFT_ICON, on_prev))
+        .child(button(next_id, CHEVRON_RIGHT_ICON, on_next))
+        .child(
+            div()
+                .flex_none()
+                .min_w(px(10. * GRID))
+                .pl(px(GRID))
+                .whitespace_nowrap()
+                .text_size(px(UI_FONT_SIZE_SMALL))
+                .text_color(color(ui.text_muted))
+                .child(label),
+        )
 }
 
 /// A 24×20 text toggle such as `Aa`, `ab` or `.*`, styled like

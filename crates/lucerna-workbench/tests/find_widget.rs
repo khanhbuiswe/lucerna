@@ -340,3 +340,64 @@ fn find_widget_is_a_full_width_bar_above_the_text(cx: &mut TestAppContext) {
     );
     assert!(text.origin.y > text_before.origin.y, "the bar pushes down");
 }
+
+fn match_label(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> String {
+    let find = widget(view, cx).expect("the find widget is shown");
+    cx.update(|_, cx| find.read(cx).match_label())
+}
+
+#[gpui::test]
+fn find_bar_counter_and_error_border(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo\nbar foo\n", cx);
+    keys("cmd-f", cx);
+    assert_eq!(match_label(&view, cx), "0/0", "no query");
+    assert!(cx.debug_bounds("find-query").is_some());
+    assert!(cx.debug_bounds("find-query-invalid").is_none());
+
+    type_text("foo", cx);
+    assert_eq!(match_label(&view, cx), "1/2");
+    click("find-next", cx);
+    assert_eq!(match_label(&view, cx), "2/2", "› selects the next match");
+    click("find-previous", cx);
+    assert_eq!(
+        match_label(&view, cx),
+        "1/2",
+        "‹ selects the previous match"
+    );
+
+    type_text("x", cx);
+    assert_eq!(match_label(&view, cx), "0/0", "no match");
+    assert!(
+        cx.debug_bounds("find-query-invalid").is_some(),
+        "no match: the box border shows the error color"
+    );
+    assert!(cx.debug_bounds("find-query").is_none());
+}
+
+#[gpui::test]
+fn find_bar_matches_search_bar_metrics(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, _view, cx) = open_file("a.txt", "foo\n", cx);
+    keys("cmd-f", cx);
+    let bar = cx.debug_bounds("find-widget").expect("find bar");
+    let query = cx.debug_bounds("find-query").expect("query box");
+    let close = cx.debug_bounds("find-close").expect("close");
+    let next = cx.debug_bounds("find-next").expect("next");
+    // 40px row plus the 1px bottom border.
+    assert!(
+        (bar.size.height - gpui::px(41.)).abs() < gpui::px(1.),
+        "{bar:?}"
+    );
+    assert!(
+        (query.size.height - gpui::px(28.)).abs() < gpui::px(1.),
+        "{query:?}"
+    );
+    assert!(
+        query.size.width < bar.size.width * 0.75 && query.size.width > bar.size.width * 0.5,
+        "the box takes about two thirds: {query:?} in {bar:?}"
+    );
+    assert!(next.origin.x > query.right(), "‹ › after the box");
+    assert!(close.origin.x > next.right(), "× at the far right");
+    assert!(bar.right() - close.right() < gpui::px(12.));
+}

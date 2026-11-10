@@ -10,8 +10,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext, Context, Entity, EventEmitter, Focusable, IntoElement, KeyDownEvent,
-    ParentElement, Render, Styled, Task, WeakEntity, Window, div, prelude::*, px,
+    App, AppContext, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
+    KeyDownEvent, ParentElement, Render, Styled, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use lucerna_project::build_pattern;
 use lucerna_text::BufferSnapshot;
@@ -23,8 +23,8 @@ use crate::quick_open::picker::wrap_index;
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
-    CHEVRON_DOWN_ICON, CHEVRON_UP_ICON, CLOSE_ICON, GRID, TAB_HEIGHT, UI_FONT_SIZE_SMALL,
-    icon_button, input_box, toggle_button,
+    CLOSE_ICON, ClickHandler, GRID, UI_FONT_SIZE_SMALL, bar_separator, icon_button, match_nav,
+    search_bar_row, search_query_box, search_toolbar, toggle_button,
 };
 use crate::{AppState, CommandRegistry, Workbench};
 
@@ -196,6 +196,23 @@ impl FindWidget {
         }
     }
 
+    /// The bar's match counter, as in Zed: `"3/19"` (1-based), or `"0/0"`
+    /// with no query, no match or no active match.
+    pub fn match_label(&self) -> String {
+        match (self.active, self.matches.len()) {
+            (Some(i), total) if total > 0 && !self.query.is_empty() => {
+                format!("{}/{total}", i + 1)
+            }
+            _ => "0/0".into(),
+        }
+    }
+
+    /// The query box shows the error color: a regex error, or a non-empty
+    /// query without matches.
+    pub fn is_invalid(&self) -> bool {
+        self.error.is_some() || (!self.query.is_empty() && self.matches.is_empty())
+    }
+
     pub fn toggle_case_sensitive(&mut self, cx: &mut Context<Self>) {
         self.case_sensitive = !self.case_sensitive;
         self.search(Pick::Nearest, cx);
@@ -357,16 +374,21 @@ impl Focusable for FindWidget {
 impl Render for FindWidget {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<AppState>().theme.ui.clone();
-        let muted = color(ui.text_muted);
         let view = self.view.clone();
         let toggle =
             |id, label, on, f: fn(&mut Self, &mut Context<Self>), cx: &mut Context<Self>| {
                 toggle_button(id, label, on, cx)
                     .on_click(cx.listener(move |find, _, _, cx| f(find, cx)))
             };
-        let field = input_box(&self.input, cx)
-            .flex_1()
-            .min_w_0()
+        let invalid = self.is_invalid();
+        let field = search_query_box(&self.input, invalid, cx)
+            .debug_selector(move || {
+                if invalid {
+                    "find-query-invalid".into()
+                } else {
+                    "find-query".into()
+                }
+            })
             .child(toggle(
                 "find-toggle-case",
                 "Aa",
@@ -388,50 +410,46 @@ impl Render for FindWidget {
                 Self::toggle_regex,
                 cx,
             ));
-        div()
+        let this = cx.weak_entity();
+        let step = move |forward: bool| -> ClickHandler {
+            let this = this.clone();
+            Box::new(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                this.update(cx, |find, cx| {
+                    if forward {
+                        find.next(cx)
+                    } else {
+                        find.previous(cx)
+                    }
+                })
+                .ok();
+            })
+        };
+        let nav = match_nav(
+            ("find-previous", step(false)),
+            ("find-next", step(true)),
+            self.match_label(),
+            cx,
+        );
+        let close_button = icon_button("find-close", CLOSE_ICON, false, cx)
+            .debug_selector(|| "find-close".into())
+            .on_click(move |_, window, cx| {
+                if let Some(view) = view.upgrade() {
+                    close(&view, window, cx);
+                }
+            });
+        search_toolbar(cx)
             .id("find-widget")
             .debug_selector(|| "find-widget".into())
-            .flex()
-            .flex_none()
-            .flex_col()
-            .w_full()
-            .bg(color(ui.tab_bar_background))
-            .border_b_1()
-            .border_color(color(ui.border_variant))
             .occlude()
             .on_key_down(cx.listener(Self::key_down))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(GRID))
-                    .h(px(TAB_HEIGHT))
-                    .px(px(2. * GRID))
+                search_bar_row()
                     .child(field)
-                    .child(
-                        div()
-                            .flex_none()
-                            .min_w(px(14. * GRID))
-                            .px(px(GRID))
-                            .text_size(px(UI_FONT_SIZE_SMALL))
-                            .text_color(muted)
-                            .child(self.counter()),
-                    )
-                    .child(
-                        icon_button("find-previous", CHEVRON_UP_ICON, false, cx)
-                            .on_click(cx.listener(|find, _, _, cx| find.previous(cx))),
-                    )
-                    .child(
-                        icon_button("find-next", CHEVRON_DOWN_ICON, false, cx)
-                            .on_click(cx.listener(|find, _, _, cx| find.next(cx))),
-                    )
-                    .child(icon_button("find-close", CLOSE_ICON, false, cx).on_click(
-                        move |_, window, cx| {
-                            if let Some(view) = view.upgrade() {
-                                close(&view, window, cx);
-                            }
-                        },
-                    )),
+                    .child(bar_separator(cx))
+                    .child(nav)
+                    .child(div().flex_1())
+                    .child(bar_separator(cx))
+                    .child(close_button),
             )
             .children(self.error.clone().map(|error| {
                 div()
@@ -439,7 +457,7 @@ impl Render for FindWidget {
                     .px(px(2. * GRID))
                     .pb(px(GRID))
                     .text_size(px(UI_FONT_SIZE_SMALL))
-                    .text_color(muted)
+                    .text_color(color(ui.error))
                     .child(error)
             }))
     }
