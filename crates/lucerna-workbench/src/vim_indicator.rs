@@ -8,12 +8,11 @@ use gpui::{
 
 use crate::AppState;
 use crate::code_view::CodeView;
-use crate::documents::DocState;
 use crate::editor_groups::EditorGroupsView;
 use crate::fonts::EDITOR_FONT_FAMILY;
 use crate::layout::color;
 use crate::ui::{GRID, UI_FONT_FAMILY};
-use crate::vim::VimLayer;
+use crate::vim::{VimLayer, takes_keys};
 
 pub(crate) struct ModeIndicator {
     vim: Entity<VimLayer>,
@@ -47,7 +46,7 @@ impl Render for ModeIndicator {
             .read(cx)
             .active_body()
             .and_then(|body| body.downcast::<CodeView>().ok())
-            .filter(|v| matches!(v.read(cx).doc_state(), DocState::Ready | DocState::Deleted));
+            .filter(|v| takes_keys(v.read(cx)));
         let vim = self.vim.read(cx);
         let parts = view.and_then(|v| vim.indicator_parts(v.entity_id()));
         let muted = color(cx.global::<AppState>().theme.ui.text_muted);

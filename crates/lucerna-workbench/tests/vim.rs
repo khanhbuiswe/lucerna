@@ -333,7 +333,7 @@ fn ime_key_without_char_is_ignored(cx: &mut TestAppContext) {
     });
     draw(cx);
     assert_eq!(cursor(&view, cx), pt(0, 0));
-    assert_eq!(overlay(&view, cx), None);
+    assert_eq!(overlay(&view, cx), Some(pt(0, 0)));
 }
 
 #[gpui::test]
@@ -467,4 +467,92 @@ fn visual_block_selects_rows(cx: &mut TestAppContext) {
     keys("escape", cx);
     assert_eq!(view.read_with(cx, |v, _| v.copy_selection()), None);
     assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+}
+
+#[gpui::test]
+fn block_cursor_shows_before_first_key(cx: &mut TestAppContext) {
+    let (wb, view, cx) = vim_file("abc\ndef\n", cx);
+    assert_eq!(overlay(&view, cx), Some(pt(0, 0)));
+    assert_eq!(indicator(&wb, &view, cx).as_deref(), Some("-- NORMAL --"));
+}
+
+#[gpui::test]
+fn enabling_vim_at_runtime_draws_cursor(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (wb, cx) = workbench(cx);
+    let view = open(&wb, "a.rs", "abc\ndef\n", cx);
+    assert_eq!(overlay(&view, cx), None);
+    set_user_settings(VIM_ON, cx);
+    assert_eq!(overlay(&view, cx), Some(pt(0, 0)));
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    keys("j", cx);
+    assert_eq!(cursor(&view, cx), pt(1, 0));
+}
+
+#[gpui::test]
+fn modified_keys_go_to_keymap(cx: &mut TestAppContext) {
+    init_with_keymap(
+        cx,
+        Some(VIM_ON),
+        Some(r#"[{ "key": "alt+up", "command": "editor.action.toggleWordWrap" }]"#),
+    );
+    let (wb, cx) = workbench(cx);
+    let view = open(&wb, "a.rs", "a\nb\nc\nd\n", cx);
+    let wrap = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.word_wrap());
+    keys("j", cx);
+    keys("alt-down shift-down ctrl-down", cx);
+    assert_eq!(cursor(&view, cx), pt(1, 0), "modified arrows are not vim's");
+    keys("alt-up", cx);
+    assert!(wrap(cx), "the user binding on alt+up ran");
+    keys("alt-z", cx);
+    assert!(!wrap(cx), "alt+z toggles wrap back");
+    keys("down", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 0), "a plain arrow is vim's j");
+}
+
+#[gpui::test]
+fn escape_in_normal_mode_reaches_keymap(cx: &mut TestAppContext) {
+    init_with_keymap(
+        cx,
+        Some(VIM_ON),
+        Some(
+            r#"[{ "key": "escape", "command": "editor.action.toggleWordWrap", "when": "editorFocus && vim.mode == 'Normal'" }]"#,
+        ),
+    );
+    let (wb, cx) = workbench(cx);
+    let view = open(&wb, "a.rs", "abc\n", cx);
+    let wrap = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.word_wrap());
+    // With a count pending, Escape only clears it.
+    keys("2 escape", cx);
+    assert!(!wrap(cx));
+    assert_eq!(indicator(&wb, &view, cx).as_deref(), Some("-- NORMAL --"));
+    keys("escape", cx);
+    assert!(wrap(cx));
+}
+
+#[gpui::test]
+fn pending_keymap_chord_is_not_vims(cx: &mut TestAppContext) {
+    init_with_keymap(
+        cx,
+        Some(VIM_ON),
+        Some(r#"[{ "key": "cmd+k j", "command": "editor.action.toggleWordWrap" }]"#),
+    );
+    let (wb, cx) = workbench(cx);
+    let view = open(&wb, "a.rs", "a\nb\n", cx);
+    keys("cmd-k j", cx);
+    assert!(view.read_with(cx, |v, _| v.word_wrap()));
+    assert_eq!(cursor(&view, cx), pt(0, 0));
+}
+
+#[gpui::test]
+fn reload_before_any_key_moves_marks(cx: &mut TestAppContext) {
+    let text = "a\nb\nc\nd\n";
+    let (wb, _view, cx) = vim_file(text, cx);
+    keys("j j m a", cx);
+    keys("cmd-w", cx);
+    let view = open(&wb, "a.rs", text, cx);
+    // An agent edits the file before the user presses a key.
+    reload(&view, text, &format!("new\nnew\n{text}"), cx);
+    keys("` a", cx);
+    assert_eq!(cursor(&view, cx), pt(4, 0));
 }

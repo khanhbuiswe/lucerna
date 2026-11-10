@@ -344,6 +344,7 @@ impl Workbench {
             cx.new(|cx| ConfigErrorItem::new(workbench, cx))
         };
         let vim = cx.new(VimLayer::new);
+        vim.update(cx, |vim, cx| vim.attach(&editor_groups, cx));
         let mode_indicator = {
             let (vim, groups) = (vim.clone(), editor_groups.clone());
             cx.new(|cx| ModeIndicator::new(vim, groups, cx))
@@ -914,6 +915,7 @@ impl Workbench {
         let vim = self.vim.read(cx);
         let vim_mode = view
             .as_ref()
+            .filter(|v| vim::takes_keys(v.read(cx)))
             .and_then(|v| vim.mode_for(v.entity_id()))
             .map_or("", |m| m.context_value());
         ctx.set("vim.active", ContextValue::Bool(vim.enabled()));

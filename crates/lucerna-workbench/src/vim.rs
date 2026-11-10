@@ -75,6 +75,10 @@ pub struct VimLayer {
     /// while no other key arrived.
     key_generation: u64,
     _retry: Option<Task<()>>,
+    /// The editor groups whose code views vim follows, set by
+    /// [`VimLayer::attach`].
+    groups: Option<WeakEntity<EditorGroupsView>>,
+    _new_views: Option<Subscription>,
     _settings: Subscription,
 }
 
@@ -91,6 +95,8 @@ impl VimLayer {
             last_remap: HashMap::new(),
             key_generation: 0,
             _retry: None,
+            groups: None,
+            _new_views: None,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
         }
     }
@@ -147,6 +153,60 @@ impl VimLayer {
         self.feed(key, view, true, cx)
     }
 
+    /// Follows the code views of `groups`: each gets its vim state (and
+    /// its block cursor) as soon as it is made, so marks follow reloads
+    /// and the cursor shows before the first key.
+    pub(crate) fn attach(&mut self, groups: &Entity<EditorGroupsView>, cx: &mut Context<Self>) {
+        self.groups = Some(groups.downgrade());
+        let this = cx.weak_entity();
+        self._new_views = Some(cx.observe_new::<CodeView>(move |_, _, cx| {
+            let (this, view) = (this.clone(), cx.entity());
+            // The view is being made (inside the groups' render) and
+            // cannot be read yet.
+            cx.defer(move |cx| {
+                this.update(cx, |this, cx| {
+                    if this.enabled && this.is_ours(&view, cx) {
+                        this.ensure_state(&view, cx);
+                    }
+                })
+                .ok();
+            });
+        }));
+        self.adopt_all(cx);
+    }
+
+    /// The code views of every drawn tab of the attached groups.
+    fn group_views(&self, cx: &App) -> Vec<Entity<CodeView>> {
+        let Some(groups) = self.groups.as_ref().and_then(WeakEntity::upgrade) else {
+            return Vec::new();
+        };
+        let groups = groups.read(cx);
+        groups
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| g.tabs.iter())
+            .filter_map(|tab| groups.body_of(tab.id))
+            .filter_map(|body| body.downcast::<CodeView>().ok())
+            .collect()
+    }
+
+    /// Whether `view` is a tab body of the attached groups (not, say, a
+    /// view of another window).
+    fn is_ours(&self, view: &Entity<CodeView>, cx: &App) -> bool {
+        self.group_views(cx).iter().any(|v| v == view)
+    }
+
+    /// Gives every code view of the attached groups its state.
+    fn adopt_all(&mut self, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
+        for view in self.group_views(cx) {
+            self.ensure_state(&view, cx);
+        }
+    }
+
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
         let (enabled, settings) = read_settings(cx);
         self.settings = settings;
@@ -158,6 +218,8 @@ impl VimLayer {
             self._retry = None;
             self.match_cache.clear();
             self.last_remap.clear();
+            // Marks are not kept up to date while off.
+            self.globals = VimGlobals::default();
             for (_, state) in self.views.drain() {
                 let Some(view) = state.view.upgrade() else {
                     continue;
@@ -167,11 +229,15 @@ impl VimLayer {
                     v.set_block_selection(None, cx);
                 });
             }
+        } else {
+            // Every view starts in Normal mode with its block cursor.
+            self.adopt_all(cx);
         }
         cx.notify();
     }
 
-    /// Creates the state of `view` on its first key.
+    /// Creates the state of `view` (when it is made, when vim is switched
+    /// on, or at its first key) and draws its cursor.
     fn ensure_state(&mut self, view: &Entity<CodeView>, cx: &mut Context<Self>) {
         let id = view.entity_id();
         if self.views.contains_key(&id) {
@@ -191,6 +257,10 @@ impl VimLayer {
         ];
         let mut vim = Vim::new(cursor);
         vim.clamp(view.read(cx).snapshot());
+        let at = vim.cursor();
+        if takes_keys(view.read(cx)) {
+            view.update(cx, |v, cx| v.set_cursor_overlay(Some(block_cursor(at)), cx));
+        }
         self.views.insert(
             id,
             ViewState {
@@ -204,6 +274,11 @@ impl VimLayer {
 
     /// A reload: marks follow the moved lines, the cursor is kept on the
     /// text and the selection is drawn again.
+    ///
+    /// `CodeView::apply_reload` bumps the selection generation and emits
+    /// `Reloaded` before it notifies, so this runs (and stores the new
+    /// generation) before [`VimLayer::view_changed`] would take the bump
+    /// for an outside change and drop the visual mode.
     fn view_event(
         &mut self,
         view: Entity<CodeView>,
@@ -232,7 +307,15 @@ impl VimLayer {
             });
         }
         state.vim.clamp(snapshot);
-        self.sync_view(&view, Reveal::None, cx);
+        if state.vim.mode() == Mode::Normal {
+            // The view moved its own selection the same way; a selection
+            // made with the mouse stays.
+            state.generation = v.selection_generation();
+            let at = state.vim.cursor();
+            view.update(cx, |v, cx| v.set_cursor_overlay(Some(block_cursor(at)), cx));
+        } else {
+            self.sync_view(&view, Reveal::None, cx);
+        }
         cx.notify();
     }
 
@@ -243,15 +326,20 @@ impl VimLayer {
             return;
         };
         let v = view.read(cx);
-        if v.selection_generation() == state.generation {
+        let ready = takes_keys(v);
+        if v.selection_generation() != state.generation {
+            state.vim.reset(v.cursor());
+            state.vim.clamp(v.snapshot());
+            state.generation = v.selection_generation();
+        } else if !ready || v.cursor_overlay().is_some() {
             return;
         }
-        state.vim.reset(v.cursor());
-        state.vim.clamp(v.snapshot());
-        state.generation = v.selection_generation();
-        let at = state.vim.cursor();
-        // The selection the user made stays; only the cursor is drawn.
-        view.update(cx, |v, cx| v.set_cursor_overlay(Some(block_cursor(at)), cx));
+        // Drawn once the document is loaded. The selection the user made
+        // stays; only the cursor is drawn.
+        if ready {
+            let at = state.vim.cursor();
+            view.update(cx, |v, cx| v.set_cursor_overlay(Some(block_cursor(at)), cx));
+        }
         cx.notify();
     }
 
@@ -523,10 +611,7 @@ pub(crate) fn dispatch(
     else {
         return false;
     };
-    if !matches!(
-        view.read(cx).doc_state(),
-        DocState::Ready | DocState::Deleted
-    ) {
+    if !takes_keys(view.read(cx)) {
         return false;
     }
     vim.update(cx, |vim, cx| vim.handle_key(ev, &view, window, cx))
@@ -536,30 +621,44 @@ pub(crate) fn dispatch(
 pub(crate) fn to_vim_key(ev: &KeyDownEvent) -> Option<Key> {
     let stroke = &ev.keystroke;
     let mods = stroke.modifiers;
-    match stroke.key.as_str() {
-        "escape" => return Some(Key::Escape),
-        "enter" => return Some(Key::Enter),
-        "left" => return Some(Key::Char('h')),
-        "down" => return Some(Key::Char('j')),
-        "up" => return Some(Key::Char('k')),
-        "right" => return Some(Key::Char('l')),
-        _ => {}
+    // cmd and alt combinations (alt+z, alt+arrows...) are the keymap's.
+    if mods.platform || mods.alt || mods.function {
+        return None;
+    }
+    let plain = !mods.control && !mods.shift;
+    let named = match stroke.key.as_str() {
+        "escape" => Some(Key::Escape),
+        "enter" => Some(Key::Enter),
+        "left" => Some(Key::Char('h')),
+        "down" => Some(Key::Char('j')),
+        "up" => Some(Key::Char('k')),
+        "right" => Some(Key::Char('l')),
+        _ => None,
+    };
+    if named.is_some() {
+        return named.filter(|_| plain);
     }
     if mods.control {
+        if mods.shift {
+            return None;
+        }
         let mut chars = stroke.key.chars();
         return match (chars.next(), chars.next()) {
             (Some(c), None) if c.is_ascii_alphabetic() => Some(Key::Ctrl(c.to_ascii_lowercase())),
             _ => None,
         };
     }
-    if mods.alt {
-        return None;
-    }
     let mut chars = stroke.key_char.as_deref()?.chars();
     match (chars.next(), chars.next()) {
         (Some(c), None) => Some(Key::Char(c)),
         _ => None,
     }
+}
+
+/// Whether vim takes keys in `view`: its document is loaded (or gone from
+/// disk with its text still shown).
+pub(crate) fn takes_keys(view: &CodeView) -> bool {
+    matches!(view.doc_state(), DocState::Ready | DocState::Deleted)
 }
 
 fn read_settings(cx: &App) -> (bool, Settings) {
