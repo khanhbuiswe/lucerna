@@ -332,6 +332,7 @@ Người dùng đã quyết định dùng **bố cục và phong cách hiện đ
 **Bố cục**
 - **Không có activity bar.** Sidebar (dock trái) bật/tắt bằng Cmd+B.
 - **Nút đổi panel ở status bar.** Hai nút icon Explorer và Search nằm ở góc trái status bar. Bấm vào nút của panel đang mở thì ẩn sidebar, bấm nút còn lại thì đổi panel. Cmd+Shift+E và Cmd+Shift+F vẫn hoạt động như cũ.
+  - *Thay đổi 2026-11-10:* Search không còn là panel ở sidebar mà là một tab trong editor. Nút kính lúp mở tab đó. Xem `2026-11-10-project-search-tab-design.md`.
 - **Title bar tích hợp:** cao 34 px, nền trong suốt, ba nút đèn giao thông của macOS nằm trong cửa sổ. Bên phải ba nút là tên thư mục gốc của project. Kéo title bar để di chuyển cửa sổ, double-click để phóng to.
 - **Status bar** cao 26 px. Bên trái là các nút đổi panel, bên phải là các mục thông tin (dòng/cột, ngôn ngữ, encoding, LF/CRLF).
 
