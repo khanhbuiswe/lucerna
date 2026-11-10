@@ -888,8 +888,10 @@ impl SearchView {
         };
         let icon = state.icons.file(&file.path);
         let path = file.path.clone();
-        row(ix, format!("search-file-{index}"), style, cx)
+        let hover = color(ui.ghost_element_hover);
+        row(ix, format!("search-file-{index}"), style)
             .bg(color(ui.element_background))
+            .hover(move |s| s.bg(hover))
             .px(px(2. * GRID))
             .on_click(cx.listener(move |view, _, _, cx| view.toggle_path(&path, cx)))
             .child(
@@ -972,18 +974,23 @@ impl SearchView {
         let selector = format!("search-line-{}-{}-{}", r.file, r.excerpt, r.line);
         let anchor = self.results.anchor_of(r);
         let selected = self.selected() == Some(r);
-        let el = row(ix, selector, style, cx);
-        let el = if selected {
-            el.bg(color(ui.element_selected))
+        // Code lines read like editor lines (as in Zed's multibuffer): no
+        // hover; the selected line gets the editor's active-line colors.
+        let el = row(ix, selector, style);
+        let (el, number) = if selected {
+            (
+                el.bg(color(ui.editor_active_line_background)),
+                color(ui.editor_active_line_number),
+            )
         } else {
-            el
+            (el, color(ui.text_muted))
         };
         el.on_click(cx.listener(move |view, _, window, cx| {
             if let Some(anchor) = &anchor {
                 view.open_anchor(anchor, window, cx);
             }
         }))
-        .child(gutter(style, color(ui.text_muted)).child(line.line_number.to_string()))
+        .child(gutter(style, number).child(line.line_number.to_string()))
         .child(
             div()
                 .flex_1()
@@ -1095,10 +1102,9 @@ impl Drop for SearchView {
     }
 }
 
-/// A clickable results row, one editor line tall, with hover; add
-/// `on_click` and the content.
-fn row(ix: usize, selector: String, style: &RowStyle, cx: &App) -> Stateful<Div> {
-    let hover = color(cx.global::<AppState>().theme.ui.ghost_element_hover);
+/// A clickable results row, one editor line tall; add `on_click` and the
+/// content.
+fn row(ix: usize, selector: String, style: &RowStyle) -> Stateful<Div> {
     div()
         .id(("search-row", ix))
         .debug_selector(move || selector)
@@ -1109,7 +1115,6 @@ fn row(ix: usize, selector: String, style: &RowStyle, cx: &App) -> Stateful<Div>
         .w_full()
         .pr(px(2. * GRID))
         .cursor_pointer()
-        .hover(move |s| s.bg(hover))
 }
 
 /// The line-number column: right-aligned, in the editor font.
