@@ -574,11 +574,10 @@ impl Vim {
             case_sensitive: !settings.ignorecase,
             whole_word: true,
         };
-        let start = snapshot.point_to_offset(Point {
+        let from = Point {
             row: self.cursor.row,
             column: word.start as u32,
-        });
-        let from = snapshot.offset_to_point(start);
+        };
         match self.jump_to_match(view, query.clone(), from, backward, n, settings) {
             Ok(out) => {
                 globals.last_search = Some((query, backward));

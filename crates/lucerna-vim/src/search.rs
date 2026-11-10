@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use crate::classify::{CharClass, class};
 
-/// Escapes the regex metacharacters of `word` with a backslash.
+/// Escapes the regex metacharacters (defensive: Word-class runs are alphanumeric or `_`) of `word` with a backslash.
 pub(crate) fn escape_regex(word: &str) -> String {
     let mut out = String::with_capacity(word.len());
     for c in word.chars() {
@@ -78,7 +78,7 @@ mod tests {
 
     use super::{escape_regex, nth_match, word_at};
     use crate::test_util::{TestView, assert_keys, assert_keys_with, feed_keys_with, run_keys};
-    use crate::{Action, Mode, Outcome, SearchQuery, Settings, ViewInfo, Vim, VimGlobals};
+    use crate::{Action, Key, Mode, Outcome, SearchQuery, Settings, ViewInfo, Vim, VimGlobals};
 
     fn query(pattern: &str) -> SearchQuery {
         SearchQuery {
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn star_escapes_nothing_alphanumeric_and_hash_n_goes_backward() {
+    fn hash_then_n_keeps_going_backward() {
         // `#` from the last `a` goes to the middle one; `n` continues back.
         assert_keys("a a |a", "#n", "|a a a");
     }
@@ -230,25 +230,43 @@ mod tests {
 
     #[test]
     fn n_with_pending_matches_retries_and_keeps_state() {
-        let mut view = TestView::new("|a b a");
+        let mut view = TestView::new("|a a a a a");
         let mut vim = Vim::new(view.cursor);
         let mut globals = VimGlobals::default();
         let s = Settings::default();
-        vim.feed(Key('*'), &view, &mut globals, &s);
-        vim.feed(Key('g'), &view, &mut globals, &s);
-        vim.feed(Key('2'), &view, &mut globals, &s);
-        let before = vim.clone();
+        for c in ['*', '3'] {
+            vim.feed(Key::Char(c), &view, &mut globals, &s);
+        }
         let cursor = vim.cursor();
+        assert_eq!(vim.pending(), "3");
         view.searching = true;
-        let out = vim.feed(Key('n'), &view, &mut globals, &s);
+        let out = vim.feed(Key::Char('n'), &view, &mut globals, &s);
         assert!(matches!(out, Outcome::Retry(_)), "{out:?}");
         assert_eq!(vim.cursor(), cursor);
-        assert_eq!(vim.pending(), before.pending());
+        assert_eq!(vim.pending(), "3");
+        // Feeding the same key again once the matches are ready keeps the count.
+        view.searching = false;
+        vim.feed(Key::Char('n'), &view, &mut globals, &s);
+        assert_eq!(view.marked(vim.cursor()), "a a a a |a");
     }
 
-    #[allow(non_snake_case)]
-    fn Key(c: char) -> crate::Key {
-        crate::Key::Char(c)
+    #[test]
+    fn submitted_with_pending_matches_retries_and_keeps_count() {
+        let mut view = TestView::new("|a a a a a");
+        let mut vim = Vim::new(view.cursor);
+        let mut g = VimGlobals::default();
+        let s = Settings::default();
+        for c in ['3', '/'] {
+            vim.feed(Key::Char(c), &view, &mut g, &s);
+        }
+        view.searching = true;
+        let out = vim.search_submitted(query("a"), false, vim.cursor(), &view, &mut g, &s);
+        assert!(matches!(out, Outcome::Retry(_)), "{out:?}");
+        assert_eq!(view.marked(vim.cursor()), "|a a a a a");
+        assert!(g.last_search.is_none());
+        view.searching = false;
+        vim.search_submitted(query("a"), false, vim.cursor(), &view, &mut g, &s);
+        assert_eq!(view.marked(vim.cursor()), "a a a |a a");
     }
 
     // Adapted from VSCodeVim motions.test.ts: "Can run a search with count exceeding max number of matches and wrapscan"
