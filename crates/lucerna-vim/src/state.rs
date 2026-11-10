@@ -10,8 +10,9 @@ use crate::classify::{self, display_col, last_char_col, line};
 use crate::marks::FileMarks;
 use crate::motion::{self, FindChar, Goal, WordMotion};
 use crate::scroll::{self, Screen, ScrollKind};
+use crate::search;
 use crate::visual::{self, VimSelection};
-use crate::{Action, FoldAction, Key, Mode, Outcome, Settings, ViewInfo};
+use crate::{Action, FoldAction, Key, Mode, Outcome, SearchQuery, Settings, ViewInfo};
 
 /// The largest count; more digits are ignored.
 const MAX_COUNT: u32 = 99_999;
@@ -26,6 +27,8 @@ pub struct VimGlobals {
     pub(crate) scroll: u32,
     /// Marks per file path.
     pub(crate) marks: HashMap<Arc<Path>, FileMarks>,
+    /// The last search and whether it went backward, for `n` and `N`.
+    pub(crate) last_search: Option<(SearchQuery, bool)>,
 }
 
 /// The vim state of one view.
@@ -42,6 +45,8 @@ pub struct Vim {
     count: Option<u32>,
     /// The first key of a two-key command, e.g. `g`.
     prefix: Option<char>,
+    /// The count typed before `/` or `?`, used when the search is submitted.
+    search_count: Option<u32>,
 }
 
 impl Vim {
@@ -54,6 +59,7 @@ impl Vim {
             pending: String::new(),
             count: None,
             prefix: None,
+            search_count: None,
         }
     }
 
@@ -68,23 +74,68 @@ impl Vim {
         self.clamp(view.snapshot());
         let saved = self.clone();
         let outcome = self.step(key, view, globals, settings);
+        self.finish(&saved, saved.cursor, &outcome, view, globals);
+        outcome
+    }
+
+    /// After a command: syncs the anchor, restores `saved` on a retry, and
+    /// records `from` as the `''` mark when the cursor jumped.
+    fn finish(
+        &mut self,
+        saved: &Vim,
+        from: Point,
+        outcome: &Outcome,
+        view: &dyn ViewInfo,
+        globals: &mut VimGlobals,
+    ) {
         if self.mode == Mode::Normal {
             self.anchor = self.cursor;
         }
-        match &outcome {
-            Outcome::Retry(_) => *self = saved,
+        match outcome {
+            Outcome::Retry(_) => *self = saved.clone(),
             Outcome::Handled(actions)
-                if self.cursor != saved.cursor
-                    && actions.contains(&Action::CursorMoved { jump: true }) =>
+                if self.cursor != from && actions.contains(&Action::CursorMoved { jump: true }) =>
             {
                 globals
                     .marks
                     .entry(view.path().clone())
                     .or_default()
-                    .last_jump = Some(saved.cursor);
+                    .last_jump = Some(from);
             }
             _ => {}
         }
+    }
+
+    /// Runs a search the user typed after `/` or `?`: jumps to the first
+    /// match after (before, when `backward`) `origin`, the count typed before
+    /// `/` picking a later one. The match is highlighted and remembered for
+    /// `n` and `N`. On [`Outcome::Retry`] the state is as it was before.
+    pub fn search_submitted(
+        &mut self,
+        query: SearchQuery,
+        backward: bool,
+        origin: Point,
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+        s: &Settings,
+    ) -> Outcome {
+        self.clamp(view.snapshot());
+        let saved = self.clone();
+        let origin = self.clamp_in_mode(view.snapshot(), origin);
+        self.cursor = origin;
+        let n = self.search_count.take().unwrap_or(1);
+        let outcome = if query.pattern.is_empty() {
+            Outcome::Handled(vec![])
+        } else {
+            match self.jump_to_match(view, query.clone(), origin, backward, n, s) {
+                Ok(out) => {
+                    g.last_search = Some((query, backward));
+                    out
+                }
+                Err(retry) => retry,
+            }
+        };
+        self.finish(&saved, origin, &outcome, view, g);
         outcome
     }
 
@@ -483,6 +534,12 @@ impl Vim {
                 let row = scroll::screen_row(view, which, n, settings.scrolloff);
                 self.go_to_row(view, row, settings.startofline, true)
             }
+            '/' | '?' => {
+                self.search_count = explicit;
+                Outcome::Handled(vec![Action::OpenSearch { backward: c == '?' }])
+            }
+            '*' | '#' => self.search_word(view, globals, c == '#', n, settings),
+            'n' | 'N' => self.repeat_search(view, globals, c == 'N', n, settings),
             ';' | ',' => {
                 let Some(mut find) = globals.last_find else {
                     return Outcome::Handled(vec![]);
@@ -494,6 +551,86 @@ impl Vim {
             }
             _ => Outcome::Handled(vec![]),
         }
+    }
+
+    /// `*` and `#`: searches for the word under the cursor, or the next one
+    /// on the line.
+    fn search_word(
+        &mut self,
+        view: &dyn ViewInfo,
+        globals: &mut VimGlobals,
+        backward: bool,
+        n: u32,
+        settings: &Settings,
+    ) -> Outcome {
+        let snapshot = view.snapshot();
+        let text = line(snapshot, self.cursor.row);
+        let Some(word) = search::word_at(&text, self.cursor.column) else {
+            return Outcome::Handled(vec![]);
+        };
+        let query = SearchQuery {
+            pattern: search::escape_regex(&text[word.clone()]),
+            is_regex: true,
+            case_sensitive: !settings.ignorecase,
+            whole_word: true,
+        };
+        let start = snapshot.point_to_offset(Point {
+            row: self.cursor.row,
+            column: word.start as u32,
+        });
+        let from = snapshot.offset_to_point(start);
+        match self.jump_to_match(view, query.clone(), from, backward, n, settings) {
+            Ok(out) => {
+                globals.last_search = Some((query, backward));
+                out
+            }
+            Err(retry) => retry,
+        }
+    }
+
+    /// `n` and `N`: the next match of the last search, in its direction or
+    /// the opposite one.
+    fn repeat_search(
+        &mut self,
+        view: &dyn ViewInfo,
+        globals: &mut VimGlobals,
+        reverse: bool,
+        n: u32,
+        settings: &Settings,
+    ) -> Outcome {
+        let Some((query, backward)) = globals.last_search.clone() else {
+            return Outcome::Handled(vec![]);
+        };
+        let from = self.cursor;
+        self.jump_to_match(view, query, from, backward != reverse, n, settings)
+            .unwrap_or_else(|retry| retry)
+    }
+
+    /// Moves to the `n`th match of `query` from `from`, highlighting it.
+    /// `Err` is the retry outcome while the view is still searching.
+    fn jump_to_match(
+        &mut self,
+        view: &dyn ViewInfo,
+        query: SearchQuery,
+        from: Point,
+        backward: bool,
+        n: u32,
+        settings: &Settings,
+    ) -> Result<Outcome, Outcome> {
+        let Some(matches) = view.matches(&query) else {
+            return Err(Outcome::Retry(query));
+        };
+        let snapshot = view.snapshot();
+        let at = snapshot.point_to_offset(from);
+        let mut actions = Vec::new();
+        if let Some(start) = search::nth_match(&matches, at, backward, n, settings.wrapscan) {
+            let to = self.clamp_in_mode(snapshot, snapshot.offset_to_point(start));
+            if let Outcome::Handled(moved) = self.move_to_jump(to, None, true) {
+                actions = moved;
+            }
+        }
+        actions.push(Action::Highlight(query));
+        Ok(Outcome::Handled(actions))
     }
 
     /// `Ctrl+d/u/f/b`: moves the top row, then the cursor.

@@ -18,6 +18,8 @@ pub(crate) struct TestView {
     /// Rows inside closed folds.
     pub hidden: Vec<Range<u32>>,
     pub tab_size: u32,
+    /// Makes `matches` return `None`, like a search still running.
+    pub searching: bool,
 }
 
 impl TestView {
@@ -38,6 +40,7 @@ impl TestView {
             visible_rows: 30,
             hidden: Vec::new(),
             tab_size: 4,
+            searching: false,
         }
     }
 
@@ -115,6 +118,9 @@ impl ViewInfo for TestView {
     /// A literal search: ASCII case folded unless `case_sensitive`, and
     /// bounded by a change of char class when `whole_word`.
     fn matches(&self, query: &SearchQuery) -> Option<Arc<[Range<usize>]>> {
+        if self.searching {
+            return None;
+        }
         let text = self.snapshot.text_for_range(0..self.snapshot.len_bytes());
         let (hay, needle) = if query.case_sensitive {
             (text.clone(), query.pattern.clone())

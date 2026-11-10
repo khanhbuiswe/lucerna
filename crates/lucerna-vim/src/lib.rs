@@ -6,6 +6,7 @@ mod classify;
 mod marks;
 mod motion;
 mod scroll;
+mod search;
 mod state;
 #[cfg(test)]
 mod test_util;
