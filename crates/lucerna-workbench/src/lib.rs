@@ -20,6 +20,7 @@ mod open_files;
 pub mod open_requests;
 mod quick_open;
 mod search_panel;
+mod search_view;
 pub mod tasks;
 mod text_input;
 mod theme_picker;
