@@ -150,7 +150,7 @@ impl ViewInfo for TestView {
     }
 }
 
-/// Parses `keys`: plain chars, `<C-x>`, `<Esc>`, `<CR>`.
+/// Parses `keys`: plain chars, `<C-x>`, `<Esc>`, `<CR>`, `<lt>`.
 pub(crate) fn parse_keys(keys: &str) -> Vec<Key> {
     let mut out = Vec::new();
     let mut chars = keys.chars();
@@ -163,6 +163,7 @@ pub(crate) fn parse_keys(keys: &str) -> Vec<Key> {
         out.push(match name.as_str() {
             "Esc" => Key::Escape,
             "CR" => Key::Enter,
+            "lt" => Key::Char('<'),
             _ => match name.strip_prefix("C-") {
                 Some(rest) if rest.chars().count() == 1 => Key::Ctrl(rest.chars().next().unwrap()),
                 _ => panic!("unknown key <{name}>"),
@@ -179,6 +180,30 @@ pub(crate) fn feed_keys(vim: &mut Vim, view: &TestView, keys: &str) -> Vec<Outco
     parse_keys(keys)
         .into_iter()
         .map(|k| vim.feed(k, view, &mut globals, &settings))
+        .collect()
+}
+
+/// Feeds `keys` with caller-owned globals, applying `ScrollTopRow`.
+pub(crate) fn feed_keys_with(
+    vim: &mut Vim,
+    view: &mut TestView,
+    globals: &mut VimGlobals,
+    keys: &str,
+) -> Vec<Outcome> {
+    let settings = Settings::default();
+    parse_keys(keys)
+        .into_iter()
+        .map(|k| {
+            let out = vim.feed(k, view, globals, &settings);
+            if let Outcome::Handled(actions) = &out {
+                for a in actions {
+                    if let Action::ScrollTopRow(r) = a {
+                        view.top_row = *r;
+                    }
+                }
+            }
+            out
+        })
         .collect()
 }
 

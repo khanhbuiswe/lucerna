@@ -1,8 +1,13 @@
 //! The per-view state machine: mode, cursor, goal column, pending keys.
 
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
 use lucerna_text::{BufferSnapshot, Point};
 
 use crate::classify::{display_col, last_char_col, line};
+use crate::marks::FileMarks;
 use crate::motion::{self, FindChar, Goal, WordMotion};
 use crate::scroll::{self, Screen, ScrollKind};
 use crate::{Action, FoldAction, Key, Mode, Outcome, Settings, ViewInfo};
@@ -18,6 +23,8 @@ pub struct VimGlobals {
     /// Rows for `Ctrl+d`/`Ctrl+u` set by a count; 0 means use
     /// `Settings::scroll`, else half the visible rows.
     pub(crate) scroll: u32,
+    /// Marks per file path.
+    pub(crate) marks: HashMap<Arc<Path>, FileMarks>,
 }
 
 /// The vim state of one view.
@@ -60,8 +67,19 @@ impl Vim {
         self.clamp(view.snapshot());
         let saved = self.clone();
         let outcome = self.step(key, view, globals, settings);
-        if matches!(outcome, Outcome::Retry(_)) {
-            *self = saved;
+        match &outcome {
+            Outcome::Retry(_) => *self = saved,
+            Outcome::Handled(actions)
+                if self.cursor != saved.cursor
+                    && actions.contains(&Action::CursorMoved { jump: true }) =>
+            {
+                globals
+                    .marks
+                    .entry(view.path().clone())
+                    .or_default()
+                    .last_jump = Some(saved.cursor);
+            }
+            _ => {}
         }
         outcome
     }
@@ -114,7 +132,13 @@ impl Vim {
                 let explicit = self.count;
                 let n = self.take_count();
                 if cancelled {
-                    return Outcome::Handled(vec![]);
+                    // Keys the workbench binds (ctrl+g, ctrl+tab...) still
+                    // reach it; only vim's own scroll keys are swallowed.
+                    return if matches!(c, 'd' | 'u' | 'f' | 'b') {
+                        Outcome::Handled(vec![])
+                    } else {
+                        Outcome::Unhandled
+                    };
                 }
                 match c {
                     'd' | 'u' => {
@@ -176,7 +200,9 @@ impl Vim {
             self.pending = self.count.unwrap_or_default().to_string();
             return Outcome::Handled(vec![]);
         }
-        if self.prefix.is_none() && matches!(c, 'g' | 'z' | 'f' | 'F' | 't' | 'T') {
+        if self.prefix.is_none()
+            && matches!(c, 'g' | 'z' | 'f' | 'F' | 't' | 'T' | 'm' | '\'' | '`')
+        {
             self.prefix = Some(c);
             self.pending = format!("{}{c}", self.count.map_or(String::new(), |n| n.to_string()));
             return Outcome::Handled(vec![]);
@@ -192,6 +218,28 @@ impl Vim {
             };
             globals.last_find = Some(find);
             return self.find(view, find, n, false);
+        }
+        if prefix == Some('m') {
+            if c.is_ascii_lowercase() {
+                globals
+                    .marks
+                    .entry(view.path().clone())
+                    .or_default()
+                    .letters[c as usize - 'a' as usize] = Some(self.cursor);
+            }
+            return Outcome::Handled(vec![]);
+        }
+        if let Some(p @ ('\'' | '`')) = prefix {
+            let to = globals
+                .marks
+                .get(view.path())
+                .and_then(|m| m.get(c))
+                .map(|to| clamp_point(view.snapshot(), to));
+            return match to {
+                Some(to) if p == '`' => self.move_to_jump(to, None, true),
+                Some(to) => self.go_to_row(view, to.row, true, true),
+                None => Outcome::Handled(vec![]),
+            };
         }
         if prefix == Some('g') {
             return match c {

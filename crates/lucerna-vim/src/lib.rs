@@ -3,6 +3,7 @@
 //! It knows nothing about the UI; the view is reached through [`ViewInfo`].
 
 mod classify;
+mod marks;
 mod motion;
 mod scroll;
 mod state;
