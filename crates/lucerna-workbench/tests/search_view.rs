@@ -1634,3 +1634,62 @@ fn file_matching_both_queries_never_leaves_the_rows(cx: &mut TestAppContext) {
         "a.rs and sub/c.rs go at the end"
     );
 }
+
+#[gpui::test]
+fn query_border_keeps_its_state_mid_search(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = searched(cx);
+    let invalid = |view: &Entity<SearchView>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| v.is_invalid())
+    };
+    let research = |text: &str, view: &Entity<SearchView>, cx: &mut VisualTestContext| {
+        let text = text.to_owned();
+        cx.update(|window, cx| {
+            let input = view.read(cx).query_input().clone();
+            input.update(cx, |input, cx| input.set_text(&text, window, cx));
+            view.update(cx, |v, cx| v.run_search(cx));
+        });
+        frame(cx);
+    };
+    assert!(!invalid(&view, cx));
+    research("zzz", &view, cx);
+    assert!(!invalid(&view, cx), "unchanged while searching");
+    settle_search(cx);
+    assert!(invalid(&view, cx), "no results, once done");
+    research("needle", &view, cx);
+    assert!(invalid(&view, cx), "unchanged while searching");
+    assert!(cx.debug_bounds("search-query-invalid").is_some());
+    settle_search(cx);
+    assert!(!invalid(&view, cx));
+}
+
+#[gpui::test]
+fn gutter_width_holds_through_a_re_search(cx: &mut TestAppContext) {
+    init(cx);
+    let long: String = (1..=1200)
+        .map(|i| {
+            if i == 1100 {
+                "needle far\n".to_owned()
+            } else {
+                "x\n".to_owned()
+            }
+        })
+        .collect();
+    let dir = project(&[("long.txt", &long), ("short.txt", "x\nneedle near\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    let digits = |view: &Entity<SearchView>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| v.gutter_digits())
+    };
+    assert_eq!(digits(&view, cx), 4);
+    // Only short.txt matches: the largest line number drops to 3 digits.
+    type_text(" near", cx);
+    view.update(cx, |v, cx| v.run_search(cx));
+    frame(cx);
+    let mid = digits(&view, cx);
+    settle_search(cx);
+    assert_eq!(files(&view, cx), vec![(p("short.txt"), 1)]);
+    assert_eq!(digits(&view, cx), mid, "the code never shifts sideways");
+}

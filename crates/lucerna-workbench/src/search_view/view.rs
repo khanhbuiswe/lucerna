@@ -65,6 +65,9 @@ const CONTEXT_LINES_SETTING: &str = "search.searchEditor.defaultNumberOfContextL
 /// The most context lines a search keeps, whatever the setting says.
 const MAX_CONTEXT_LINES: u32 = 5;
 
+/// The gutter always has room for this many digits.
+pub const MIN_GUTTER_DIGITS: u32 = 4;
+
 /// Pixels of rows rendered above and below the visible ones.
 const LIST_OVERDRAW: f32 = 200.;
 
@@ -92,7 +95,9 @@ pub struct SearchView {
     /// The include / exclude row is shown.
     filters_shown: bool,
     results: Results,
-    /// The largest line number among the results: sizes the gutter.
+    /// The largest line number shown since the query was last emptied:
+    /// sizes the gutter. It never shrinks while a query stays, so a
+    /// re-search never shifts the code sideways.
     max_line_number: u32,
     /// A search for a non-empty query was started.
     searched: bool,
@@ -102,6 +107,10 @@ pub struct SearchView {
     /// `error` is the query's own fault (a bad pattern), not an I/O or
     /// root failure: only then does the query box turn red.
     pattern_error: bool,
+    /// The query box shows the error color. Kept from the last finished
+    /// search while the next one runs (Zed's `previous_completion`), so
+    /// the border never flickers.
+    invalid: bool,
     /// The window's scale factor at the last frame: row heights are
     /// rounded to its device pixels.
     scale_factor: f32,
@@ -192,6 +201,7 @@ impl SearchView {
             done: None,
             error: None,
             pattern_error: false,
+            invalid: false,
             scale_factor: 1.,
             last_query: None,
             stale: false,
@@ -320,6 +330,12 @@ impl SearchView {
     /// The most highlight jobs that ran at once since this view was made.
     pub fn peak_highlight_jobs(&self) -> usize {
         self.peak_highlight_jobs
+    }
+
+    /// The digits the line-number gutter is sized for: at least
+    /// [`MIN_GUTTER_DIGITS`], growing with the largest line number shown.
+    pub fn gutter_digits(&self) -> u32 {
+        (self.max_line_number.max(1).ilog10() + 1).max(MIN_GUTTER_DIGITS)
     }
 
     /// Highlight jobs started since this view was made.
@@ -589,7 +605,14 @@ impl SearchView {
 
     /// The query box shows the error color: a bad pattern, or a finished
     /// search without matches. Other errors (I/O, the root) leave it alone.
+    /// While a search runs this is still the last finished search's state.
     pub fn is_invalid(&self) -> bool {
+        self.invalid
+    }
+
+    /// [`is_invalid`](Self::is_invalid) from the current state; taken when
+    /// a search finishes or reports an error.
+    fn compute_invalid(&self) -> bool {
         (self.error.is_some() && self.pattern_error)
             || (self.error.is_none()
                 && self.searched
@@ -789,6 +812,7 @@ impl SearchView {
             self.sync_list(cx);
             self.selected = None;
             self.max_line_number = 0;
+            self.invalid = false;
             return;
         }
         self.results.begin_update();
@@ -963,6 +987,7 @@ impl SearchView {
         }
         let mut batch = Vec::new();
         let mut finished = None;
+        let mut failed = false;
         for event in events {
             match event {
                 SearchEvent::File { path, excerpts } => {
@@ -981,6 +1006,7 @@ impl SearchView {
                         build_regex(&q.pattern, q.is_regex, q.case_sensitive, q.whole_word).is_err()
                     });
                     self.error = Some(err);
+                    failed = true;
                 }
             }
         }
@@ -989,7 +1015,10 @@ impl SearchView {
             self.done = Some(truncated);
             self.results.prune();
         }
-        self.max_line_number = self.results.max_line_number();
+        if finished.is_some() || failed {
+            self.invalid = self.compute_invalid();
+        }
+        self.max_line_number = self.max_line_number.max(self.results.max_line_number());
         if self
             .selected
             .as_ref()
@@ -1118,7 +1147,7 @@ impl SearchView {
             .ok()
             .filter(|w| *w > px(0.))
             .unwrap_or(font_size * 0.6);
-        let digits = self.max_line_number.max(1).ilog10() + 1;
+        let digits = self.gutter_digits();
         RowStyle {
             font_family,
             font_size,
