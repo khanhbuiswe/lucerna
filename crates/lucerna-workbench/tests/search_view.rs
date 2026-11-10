@@ -1216,25 +1216,35 @@ fn scroll_list(pixels: f32, cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
-fn nav_buttons_step_like_f4(cx: &mut TestAppContext) {
-    let (dir, wb, view, cx) = searched(cx);
+fn nav_buttons_step_inside_the_tab(cx: &mut TestAppContext) {
+    // `‹` / `›` move the selection over the matches and keep the Search
+    // tab in front (as in Zed); they do not open the file.
+    let (_dir, wb, view, cx) = searched(cx);
     assert_eq!(match_label(&view, cx), "4 results", "nothing selected yet");
     click("search-next", cx);
-    assert_eq!(active_path(&dir, &wb, cx), Some(p("a.rs")));
-    assert_eq!(cursor_row(&wb, cx), 0);
+    assert_eq!(active_item(&wb, cx), Some(TabItem::Search));
     assert_eq!(match_label(&view, cx), "1/4");
-    keys("cmd-shift-f", cx);
     click("search-next", cx);
-    assert_eq!(active_path(&dir, &wb, cx), Some(p("b.rs")));
+    assert_eq!(active_item(&wb, cx), Some(TabItem::Search));
     assert_eq!(match_label(&view, cx), "2/4");
-    keys("cmd-shift-f", cx);
     click("search-previous", cx);
-    assert_eq!(active_path(&dir, &wb, cx), Some(p("a.rs")));
-    assert_eq!(match_label(&view, cx), "1/4");
-    keys("cmd-shift-f", cx);
     click("search-previous", cx);
-    assert_eq!(active_path(&dir, &wb, cx), Some(p("sub/c.rs")), "wraps");
-    assert_eq!(match_label(&view, cx), "4/4");
+    assert_eq!(match_label(&view, cx), "4/4", "wraps");
+    assert_eq!(active_item(&wb, cx), Some(TabItem::Search));
+}
+
+#[gpui::test]
+fn enter_after_nav_opens_the_selected_match(cx: &mut TestAppContext) {
+    let (dir, wb, view, cx) = searched(cx);
+    click("search-next", cx);
+    click("search-next", cx);
+    assert_eq!(match_label(&view, cx), "2/4");
+    view.update_in(cx, |v, window, cx| {
+        let r = v.selected().expect("a match is selected");
+        v.open_line(r, window, cx);
+    });
+    draw(cx);
+    assert_eq!(active_path(&dir, &wb, cx), Some(p("b.rs")));
 }
 
 #[gpui::test]

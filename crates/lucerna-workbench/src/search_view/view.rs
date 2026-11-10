@@ -625,13 +625,21 @@ impl SearchView {
     /// `F4` / `Shift+F4`: selects the next / previous match line (from the
     /// selection, wrapping), unfolds its file and opens it as a preview.
     pub fn focus_match(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(r) = self.results.next_match(self.selected(), forward) else {
-            return;
-        };
+        if let Some(r) = self.step_match(forward, cx) {
+            self.open_line(r, window, cx);
+        }
+    }
+
+    /// The `‹` / `›` bar buttons: selects the next or previous match line
+    /// and scrolls it into view inside the tab, wrapping, without opening
+    /// it, so the Search tab stays in front (as in Zed). `Enter` or a
+    /// click opens the selected line.
+    pub fn step_match(&mut self, forward: bool, cx: &mut Context<Self>) -> Option<LineRef> {
+        let r = self.results.next_match(self.selected(), forward)?;
         self.results.expand(r.file);
         self.sync_list(cx);
         self.select(r, cx);
-        self.open_line(r, window, cx);
+        Some(r)
     }
 
     /// `↑` / `↓` in the list: moves over the lines, skipping headers and
@@ -1673,8 +1681,8 @@ impl Render for SearchView {
         let this = cx.weak_entity();
         let step = move |forward: bool| -> ClickHandler {
             let this = this.clone();
-            Box::new(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                this.update(cx, |view, cx| view.focus_match(forward, window, cx))
+            Box::new(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                this.update(cx, |view, cx| view.step_match(forward, cx))
                     .ok();
             })
         };
