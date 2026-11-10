@@ -16,6 +16,14 @@ pub struct LineRef {
     pub line: usize,
 }
 
+/// A result line named by path and line number: unlike a [`LineRef`] it
+/// stays valid while streamed results insert files before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineAnchor {
+    pub path: Arc<Path>,
+    pub line_number: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Header(usize),
@@ -80,6 +88,42 @@ impl Results {
             .get(r.excerpt)?
             .lines
             .get(r.line)
+    }
+
+    /// The index of the file `path` among [`files`](Self::files).
+    pub fn file_index(&self, path: &Path) -> Option<usize> {
+        self.files
+            .binary_search_by(|f| f.path.as_ref().cmp(path))
+            .ok()
+    }
+
+    /// Names line `r` by its file and line number, which stay put when
+    /// streamed results shift file indices.
+    pub fn anchor_of(&self, r: LineRef) -> Option<LineAnchor> {
+        Some(LineAnchor {
+            path: self.files.get(r.file)?.path.clone(),
+            line_number: self.line(r)?.line_number,
+        })
+    }
+
+    /// The current position of the line `anchor` names.
+    pub fn resolve(&self, anchor: &LineAnchor) -> Option<LineRef> {
+        let file = self.file_index(&anchor.path)?;
+        self.files[file]
+            .excerpts
+            .iter()
+            .enumerate()
+            .find_map(|(excerpt, e)| {
+                let line = e
+                    .lines
+                    .iter()
+                    .position(|l| l.line_number == anchor.line_number)?;
+                Some(LineRef {
+                    file,
+                    excerpt,
+                    line,
+                })
+            })
     }
 
     pub fn toggle_collapsed(&mut self, file: usize) {
@@ -313,6 +357,26 @@ mod tests {
         let names: Vec<_> = r.files().iter().map(|f| f.path.to_path_buf()).collect();
         assert_eq!(names, [Path::new("a"), Path::new("b")]);
         assert_eq!(r.files()[1].excerpts.len(), 2);
+    }
+
+    #[test]
+    fn anchor_survives_files_inserted_before_it() {
+        let mut r = Results::default();
+        r.add_file(path("b"), vec![excerpt(1)]);
+        let at = LineRef {
+            file: 0,
+            excerpt: 0,
+            line: 1,
+        };
+        let anchor = r.anchor_of(at).unwrap();
+        assert_eq!(r.resolve(&anchor), Some(at));
+        r.add_file(path("a"), vec![excerpt(5)]);
+        let moved = LineRef { file: 1, ..at };
+        assert_eq!(r.resolve(&anchor), Some(moved));
+        assert_eq!(r.line(moved).unwrap().line_number, 2);
+        assert_eq!(r.file_index(Path::new("b")), Some(1));
+        r.clear();
+        assert_eq!(r.resolve(&anchor), None);
     }
 
     #[test]

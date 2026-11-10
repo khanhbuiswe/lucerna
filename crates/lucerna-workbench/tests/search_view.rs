@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
-use lucerna_project::WorktreeEvent;
+use gpui::{Entity, Focusable, Modifiers, TestAppContext, VisualTestContext};
+use lucerna_project::{Excerpt, LineMatch, SearchEvent, WorktreeEvent};
 use lucerna_settings::{Keymap, SettingsStore, parse_when};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::Point;
@@ -589,7 +589,8 @@ fn escape_in_search_tab_keeps_find_widget(cx: &mut TestAppContext) {
         shown(cx),
         "Esc in the Search tab leaves the find widget open"
     );
-    assert!(holds(&wb, "searchViewletFocus && textInputFocus", cx));
+    // Esc moved focus from the query to the results list.
+    assert!(holds(&wb, "searchViewletFocus && !textInputFocus", cx));
 
     // The command alone, run with focus outside the editor, does nothing.
     cx.update(|window, cx| {
@@ -599,7 +600,7 @@ fn escape_in_search_tab_keeps_find_widget(cx: &mut TestAppContext) {
     });
     draw(cx);
     assert!(shown(cx));
-    assert!(holds(&wb, "searchViewletFocus && textInputFocus", cx));
+    assert!(holds(&wb, "searchViewletFocus && !textInputFocus", cx));
 }
 
 #[gpui::test]
@@ -797,4 +798,210 @@ fn at_most_three_highlight_jobs_run(cx: &mut TestAppContext) {
     for i in 0..10 {
         assert!(highlights_of(&view, &format!("f{i}.rs"), cx).is_some());
     }
+}
+
+/// The active tab's file, relative to the project `dir`.
+fn active_path(
+    dir: &TempDir,
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+) -> Option<PathBuf> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .active_tab()
+            .and_then(|t| {
+                t.path()
+                    .map(|p| p.strip_prefix(dir.path()).unwrap_or(p).to_path_buf())
+            })
+    })
+}
+
+fn cursor_row(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> u32 {
+    active_view(wb, cx).read_with(cx, |v, _| v.cursor().row)
+}
+
+/// Searches `needle` in [`needles`] and returns the Search tab's view.
+fn searched(
+    cx: &mut TestAppContext,
+) -> (
+    TempDir,
+    Entity<Workbench>,
+    Entity<SearchView>,
+    &mut VisualTestContext,
+) {
+    init(cx);
+    let dir = needles();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(move |window, cx| Workbench::new(root, window, cx));
+    finish_scan(&wb, cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    (dir, wb, view, cx)
+}
+
+#[gpui::test]
+fn alt_cmd_c_toggles_case_in_search_tab(cx: &mut TestAppContext) {
+    let (dir, wb, view, cx) = searched(cx);
+    assert_eq!(files(&view, cx).len(), 3);
+    keys("alt-cmd-c", cx);
+    settle_search(cx);
+    assert!(view.read_with(cx, |v, _| v.case_sensitive()));
+    assert_eq!(files(&view, cx), vec![(p("a.rs"), 1), (p("b.rs"), 2)]);
+    keys("alt-cmd-w", cx);
+    keys("alt-cmd-r", cx);
+    assert!(view.read_with(cx, |v, _| v.whole_word() && v.is_regex()));
+
+    // The same keys in an editor leave the search alone.
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("a.rs")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    assert!(holds(&wb, "editorFocus && !searchViewletFocus", cx));
+    keys("alt-cmd-c", cx);
+    keys("alt-cmd-w", cx);
+    keys("alt-cmd-r", cx);
+    assert!(view.read_with(cx, |v, _| v.case_sensitive()
+        && v.whole_word()
+        && v.is_regex()));
+    drop(dir);
+}
+
+#[gpui::test]
+fn shift_cmd_j_shows_filter_row(cx: &mut TestAppContext) {
+    let (_dir, _wb, _view, cx) = searched(cx);
+    assert!(cx.debug_bounds("search-include").is_none());
+    keys("shift-cmd-j", cx);
+    assert!(cx.debug_bounds("search-include").is_some());
+    keys("shift-cmd-j", cx);
+    assert!(cx.debug_bounds("search-include").is_none());
+}
+
+#[gpui::test]
+fn f4_walks_matches_across_files_and_wraps(cx: &mut TestAppContext) {
+    let (dir, wb, _view, cx) = searched(cx);
+    // Match lines: a.rs:0, b.rs:0, b.rs:2, sub/c.rs:0.
+    let expect = [
+        ("a.rs", 0),
+        ("b.rs", 0),
+        ("b.rs", 2),
+        ("sub/c.rs", 0),
+        ("a.rs", 0),
+    ];
+    for (file, row) in expect {
+        keys("f4", cx);
+        assert_eq!(active_path(&dir, &wb, cx), Some(p(file)));
+        assert_eq!(cursor_row(&wb, cx), row, "{file}");
+    }
+    keys("shift-f4", cx);
+    assert_eq!(active_path(&dir, &wb, cx), Some(p("sub/c.rs")));
+}
+
+#[gpui::test]
+fn f4_expands_collapsed_file(cx: &mut TestAppContext) {
+    let (dir, wb, view, cx) = searched(cx);
+    click("search-collapse-all", cx);
+    assert_eq!(row_count(&view, cx), 3);
+    keys("f4", cx);
+    assert_eq!(active_path(&dir, &wb, cx), Some(p("a.rs")));
+    assert_eq!(row_count(&view, cx), 4, "a.rs expanded, the others not");
+    assert!(view.read_with(cx, |v, _| v.selected().is_some()));
+}
+
+#[gpui::test]
+fn arrows_and_enter_open_selected_line(cx: &mut TestAppContext) {
+    let (dir, wb, view, cx) = searched(cx);
+    keys("escape", cx);
+    assert_eq!(view.read_with(cx, |v, _| v.selected()), None);
+    keys("down", cx);
+    let sel = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.selected().unwrap());
+    let at = |file, line| (file, 0, line);
+    let key = |r: lucerna_workbench::SearchLineRef| (r.file, r.excerpt, r.line);
+    assert_eq!(key(sel(cx)), at(0, 0), "a.rs line, header skipped");
+    keys("down", cx);
+    assert_eq!(key(sel(cx)), at(1, 0), "b.rs, header skipped");
+    keys("down", cx);
+    assert_eq!(key(sel(cx)), at(1, 1), "context lines can be selected");
+    keys("up", cx);
+    keys("up", cx);
+    assert_eq!(key(sel(cx)), at(0, 0));
+    keys("up", cx);
+    assert_eq!(key(sel(cx)), at(0, 0), "stops at the first line");
+    keys("down down", cx);
+    keys("enter", cx);
+    assert_eq!(active_path(&dir, &wb, cx), Some(p("b.rs")));
+    assert_eq!(cursor_row(&wb, cx), 1);
+}
+
+#[gpui::test]
+fn escape_swaps_focus_between_query_and_list(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = searched(cx);
+    let query_focused = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            view.read(cx)
+                .query_input()
+                .focus_handle(cx)
+                .is_focused(window)
+        })
+    };
+    let list_focused = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| view.read(cx).list_focus_handle().is_focused(window))
+    };
+    assert!(query_focused(cx));
+    keys("escape", cx);
+    assert!(list_focused(cx) && !query_focused(cx));
+    assert!(holds(&wb, "searchViewletFocus", cx));
+    keys("escape", cx);
+    assert!(query_focused(cx) && !list_focused(cx));
+}
+
+#[gpui::test]
+fn collapse_all_then_expand_all(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = searched(cx);
+    assert_eq!(row_count(&view, cx), 8);
+    run(&wb, "search.action.collapseSearchResults", cx);
+    assert_eq!(row_count(&view, cx), 3);
+    click("search-collapse-all", cx);
+    assert_eq!(
+        row_count(&view, cx),
+        8,
+        "the button expands when all are folded"
+    );
+    run(&wb, "search.action.refreshSearchResults", cx);
+    assert_eq!(files(&view, cx).len(), 3);
+}
+
+fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| wb.update(cx, |wb, cx| wb.run_command(command, None, window, cx)));
+    draw(cx);
+}
+
+#[gpui::test]
+fn selection_follows_its_line_when_files_arrive_before_it(cx: &mut TestAppContext) {
+    let (dir, _wb, view, cx) = searched(cx);
+    keys("escape down down", cx);
+    let sel = view.read_with(cx, |v, _| v.selected().unwrap());
+    assert_eq!((sel.file, sel.line), (1, 0));
+    // A new file sorting first, as streaming would insert it.
+    let line = LineMatch {
+        line_number: 1,
+        line_text: "needle".into(),
+        ranges: std::iter::once(0..6).collect(),
+    };
+    view.update(cx, |v, cx| {
+        v.apply_event(
+            SearchEvent::File {
+                path: Arc::from(Path::new("0.rs")),
+                excerpts: vec![Excerpt { lines: vec![line] }],
+            },
+            cx,
+        )
+    });
+    let sel = view.read_with(cx, |v, _| v.selected().unwrap());
+    assert_eq!((sel.file, sel.line), (2, 0), "still b.rs's first line");
+    drop(dir);
 }

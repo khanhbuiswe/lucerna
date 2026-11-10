@@ -57,6 +57,14 @@ mod tests {
         Modifiers::command_shift()
     }
 
+    fn alt_cmd() -> Modifiers {
+        Modifiers {
+            alt: true,
+            platform: true,
+            ..Modifiers::none()
+        }
+    }
+
     fn ctrl() -> Modifiers {
         Modifiers::control()
     }
@@ -88,6 +96,12 @@ mod tests {
             (event("=", None, cmd()), "cmd+="),
             (event("-", None, cmd()), "cmd+-"),
             (event("c", None, cmd()), "cmd+c"),
+            (event("c", None, alt_cmd()), "alt+cmd+c"),
+            (event("w", None, alt_cmd()), "alt+cmd+w"),
+            (event("r", None, alt_cmd()), "alt+cmd+r"),
+            (event("j", None, cmd_shift()), "shift+cmd+j"),
+            (event("f4", None, Modifiers::none()), "f4"),
+            (event("f4", None, Modifiers::shift()), "shift+f4"),
         ];
         for (digit, binding) in [
             ("1", "cmd+1"),

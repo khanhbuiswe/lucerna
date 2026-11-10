@@ -18,14 +18,14 @@ use futures::StreamExt;
 use gpui::{
     AnyElement, App, Context, Div, Entity, FocusHandle, Focusable, FontStyle, FontWeight,
     HighlightStyle, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render,
-    SharedString, Stateful, Styled, StyledText, Subscription, Task, UniformListScrollHandle,
-    WeakEntity, Window, div, font, prelude::*, px, svg, uniform_list,
+    ScrollStrategy, SharedString, Stateful, Styled, StyledText, Subscription, Task,
+    UniformListScrollHandle, WeakEntity, Window, div, font, prelude::*, px, svg, uniform_list,
 };
 use lucerna_project::{SearchEvent, SearchQuery, search};
 use lucerna_text::Point;
 
 use super::highlight::{FileHighlights, LineSpans, highlight_file};
-use super::model::{LineRef, Results, Row, first_match, globs, summary};
+use super::model::{LineAnchor, LineRef, Results, Row, first_match, globs, summary};
 use crate::code_view::CodeView;
 use crate::find_widget::single_line_selection;
 use crate::icons::{CHEVRONS_DOWN_UP, LIST_FILTER, REFRESH_CW};
@@ -59,6 +59,11 @@ pub struct SearchView {
     workbench: WeakEntity<Workbench>,
     root: PathBuf,
     focus: FocusHandle,
+    /// Focus of the results list: arrows, Enter and Esc work here.
+    list_focus: FocusHandle,
+    /// The keyboard / last clicked line, named by path and line number so
+    /// streamed results inserting files before it do not move it.
+    selected: Option<LineAnchor>,
     query: Entity<TextInput>,
     include: Entity<TextInput>,
     exclude: Entity<TextInput>,
@@ -133,6 +138,8 @@ impl SearchView {
             workbench,
             root,
             focus: cx.focus_handle(),
+            list_focus: cx.focus_handle(),
+            selected: None,
             query: input("Search", cx),
             include: input("e.g. src/**, *.rs", cx),
             exclude: input("e.g. target, *.min.js", cx),
@@ -175,6 +182,28 @@ impl SearchView {
     /// "files to exclude": comma-separated globs.
     pub fn exclude_input(&self) -> &Entity<TextInput> {
         &self.exclude
+    }
+
+    pub fn case_sensitive(&self) -> bool {
+        self.case_sensitive
+    }
+
+    pub fn whole_word(&self) -> bool {
+        self.whole_word
+    }
+
+    pub fn is_regex(&self) -> bool {
+        self.is_regex
+    }
+
+    /// The focus handle of the results list.
+    pub fn list_focus_handle(&self) -> &FocusHandle {
+        &self.list_focus
+    }
+
+    /// The selected result line, at its current position.
+    pub fn selected(&self) -> Option<LineRef> {
+        self.results.resolve(self.selected.as_ref()?)
     }
 
     /// The files with results, sorted by path, and the rows shown.
@@ -230,8 +259,130 @@ impl SearchView {
     /// Folds every file, or unfolds them all when all are folded.
     fn toggle_all_collapsed(&mut self, cx: &mut Context<Self>) {
         let all = self.results.files().iter().all(|f| f.collapsed);
-        self.results.set_all_collapsed(!all);
+        self.set_all_collapsed(!all, cx);
+    }
+
+    /// `search.action.collapseSearchResults` and the button's two states.
+    fn set_all_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        self.results.set_all_collapsed(collapsed);
         cx.notify();
+    }
+
+    /// Folds or unfolds the file `path`; the click handlers name files by
+    /// path because indices shift while results stream in.
+    fn toggle_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Some(file) = self.results.file_index(path) {
+            self.toggle_collapsed(file, cx);
+        }
+    }
+
+    pub fn toggle_case_sensitive(&mut self, cx: &mut Context<Self>) {
+        self.toggle(|v| &mut v.case_sensitive, cx);
+    }
+
+    pub fn toggle_whole_word(&mut self, cx: &mut Context<Self>) {
+        self.toggle(|v| &mut v.whole_word, cx);
+    }
+
+    pub fn toggle_regex(&mut self, cx: &mut Context<Self>) {
+        self.toggle(|v| &mut v.is_regex, cx);
+    }
+
+    /// Shows or hides the include / exclude row; showing it focuses
+    /// "files to include" (as VS Code does).
+    pub fn toggle_query_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filters_shown = !self.filters_shown;
+        if self.filters_shown {
+            let focus = self.include.focus_handle(cx);
+            window.focus(&focus, cx);
+        } else if self.include.focus_handle(cx).contains_focused(window, cx)
+            || self.exclude.focus_handle(cx).contains_focused(window, cx)
+        {
+            self.focus_query(None, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Selects line `r`, scrolling it into view.
+    fn select(&mut self, r: LineRef, cx: &mut Context<Self>) {
+        self.selected = self.results.anchor_of(r);
+        if let Some(ix) = self.results.row_of(r) {
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        }
+        cx.notify();
+    }
+
+    /// Selects the line `anchor` names and opens it (a click).
+    fn open_anchor(&mut self, anchor: &LineAnchor, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(r) = self.results.resolve(anchor) else {
+            return;
+        };
+        self.select(r, cx);
+        self.open_line(r, window, cx);
+    }
+
+    /// `F4` / `Shift+F4`: selects the next / previous match line (from the
+    /// selection, wrapping), unfolds its file and opens it as a preview.
+    pub fn focus_match(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(r) = self.results.next_match(self.selected(), forward) else {
+            return;
+        };
+        self.results.expand(r.file);
+        self.select(r, cx);
+        self.open_line(r, window, cx);
+    }
+
+    /// `↑` / `↓` in the list: moves over the lines, skipping headers and
+    /// separators and stopping at the ends.
+    fn move_selection(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let lines: Vec<(usize, LineRef)> = self
+            .results
+            .rows()
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, row)| match row {
+                Row::Line(r) => Some((ix, *r)),
+                _ => None,
+            })
+            .collect();
+        let current = self
+            .selected()
+            .and_then(|r| lines.iter().position(|(_, l)| *l == r));
+        let next = match (current, forward) {
+            (None, true) => 0,
+            (None, false) => lines.len().saturating_sub(1),
+            (Some(i), true) => (i + 1).min(lines.len().saturating_sub(1)),
+            (Some(i), false) => i.saturating_sub(1),
+        };
+        if let Some((_, r)) = lines.get(next) {
+            self.select(*r, cx);
+        }
+    }
+
+    fn list_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let m = &ev.keystroke.modifiers;
+        if m.platform || m.control || m.alt || m.shift {
+            return;
+        }
+        match ev.keystroke.key.as_str() {
+            "down" => self.move_selection(true, cx),
+            "up" => self.move_selection(false, cx),
+            "enter" => {
+                if let Some(r) = self.selected() {
+                    self.open_line(r, window, cx);
+                }
+            }
+            "escape" => self.focus_query(None, window, cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// Applies one event of the current search. For tests, which stand in
+    /// for the stream.
+    #[doc(hidden)]
+    pub fn apply_event(&mut self, event: SearchEvent, cx: &mut Context<Self>) {
+        self.apply_events(self.generation, vec![event], cx);
     }
 
     /// Focuses the query input, first replacing its text with `text`.
@@ -282,6 +433,7 @@ impl SearchView {
         self._debounce = Task::ready(());
         self.cancel_search();
         self.results.clear();
+        self.selected = None;
         self.reset_highlights();
         self.max_line_number = 0;
         self.done = None;
@@ -533,12 +685,19 @@ impl SearchView {
         }
     }
 
-    fn query_key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn query_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let m = &ev.keystroke.modifiers;
-        if ev.keystroke.key == "enter" && !(m.platform || m.control || m.alt || m.shift) {
-            self.run_search(cx);
-            cx.stop_propagation();
+        if m.platform || m.control || m.alt || m.shift {
+            return;
         }
+        match ev.keystroke.key.as_str() {
+            "enter" => self.run_search(cx),
+            "escape" => {
+                window.focus(&self.list_focus.clone(), cx);
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
     }
 
     /// Fonts and sizes of the result rows: the editor's font, every row one
@@ -638,10 +797,11 @@ impl SearchView {
             CHEVRON_DOWN_ICON
         };
         let icon = state.icons.file(&file.path);
+        let path = file.path.clone();
         row(ix, format!("search-file-{index}"), style, cx)
             .bg(color(ui.element_background))
             .px(px(2. * GRID))
-            .on_click(cx.listener(move |view, _, _, cx| view.toggle_collapsed(index, cx)))
+            .on_click(cx.listener(move |view, _, _, cx| view.toggle_path(&path, cx)))
             .child(
                 svg()
                     .data(chevron)
@@ -700,21 +860,32 @@ impl SearchView {
         let highlights = line_highlights(text, &line.ranges, spans, theme, mark);
         let styled = StyledText::new(text.clone()).with_highlights(highlights);
         let selector = format!("search-line-{}-{}-{}", r.file, r.excerpt, r.line);
-        row(ix, selector, style, cx)
-            .on_click(cx.listener(move |view, _, window, cx| view.open_line(r, window, cx)))
-            .child(gutter(style, color(ui.text_muted)).child(line.line_number.to_string()))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .font_family(style.font_family.clone())
-                    .text_size(style.font_size)
-                    .text_color(color(ui.editor_foreground))
-                    .child(styled),
-            )
-            .into_any_element()
+        let anchor = self.results.anchor_of(r);
+        let selected = self.selected() == Some(r);
+        let el = row(ix, selector, style, cx);
+        let el = if selected {
+            el.bg(color(ui.element_selected))
+        } else {
+            el
+        };
+        el.on_click(cx.listener(move |view, _, window, cx| {
+            if let Some(anchor) = &anchor {
+                view.open_anchor(anchor, window, cx);
+            }
+        }))
+        .child(gutter(style, color(ui.text_muted)).child(line.line_number.to_string()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .font_family(style.font_family.clone())
+                .text_size(style.font_size)
+                .text_color(color(ui.editor_foreground))
+                .child(styled),
+        )
+        .into_any_element()
     }
 
     fn render_separator(
@@ -924,10 +1095,7 @@ impl Render for SearchView {
             )
             .child(
                 bar_button("search-filters", LIST_FILTER, self.filters_shown, cx).on_click(
-                    cx.listener(|view, _, _, cx| {
-                        view.filters_shown = !view.filters_shown;
-                        cx.notify();
-                    }),
+                    cx.listener(|view, _, window, cx| view.toggle_query_details(window, cx)),
                 ),
             )
             .child(
@@ -946,7 +1114,12 @@ impl Render for SearchView {
                 .gap(px(GRID))
                 .px(px(2. * GRID))
                 .pb(px(GRID))
-                .child(input_box(&self.include, cx).flex_1().min_w_0())
+                .child(
+                    input_box(&self.include, cx)
+                        .debug_selector(|| "search-include".into())
+                        .flex_1()
+                        .min_w_0(),
+                )
                 .child(input_box(&self.exclude, cx).flex_1().min_w_0())
         });
         let status = match (&self.error, self.summary()) {
@@ -977,15 +1150,23 @@ impl Render for SearchView {
             .children(filters)
             .children(status)
             .child(
-                div().flex_1().min_h_0().child(
-                    uniform_list(
-                        "search-results",
-                        self.results.rows().len(),
-                        cx.processor(move |view, range, _, cx| view.render_rows(range, &style, cx)),
-                    )
-                    .size_full()
-                    .track_scroll(&self.scroll),
-                ),
+                div()
+                    .id("search-list")
+                    .track_focus(&self.list_focus)
+                    .on_key_down(cx.listener(Self::list_key_down))
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        uniform_list(
+                            "search-results",
+                            self.results.rows().len(),
+                            cx.processor(move |view, range, _, cx| {
+                                view.render_rows(range, &style, cx)
+                            }),
+                        )
+                        .size_full()
+                        .track_scroll(&self.scroll),
+                    ),
             )
     }
 }
@@ -1001,11 +1182,73 @@ fn find_in_files(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workb
     view.update(cx, |view, cx| view.focus_query(selection, window, cx));
 }
 
+/// Opens the next / previous match. Deferred: opening a file updates the
+/// workbench, which a command handler already holds.
+fn focus_match(
+    wb: &mut Workbench,
+    forward: bool,
+    window: &mut Window,
+    cx: &mut Context<Workbench>,
+) {
+    let view = wb.search_view().clone();
+    window.defer(cx, move |window, cx| {
+        view.update(cx, |view, cx| view.focus_match(forward, window, cx))
+    });
+}
+
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "workbench.action.findInFiles",
         "Search: Find in Files",
         |wb, _, window, cx| find_in_files(wb, window, cx),
+    );
+    // Command handlers are plain `fn`s: a macro stamps one per command.
+    macro_rules! on_view {
+        ($id:expr, $title:expr, |$view:ident, $window:ident, $cx:ident| $body:expr) => {
+            commands.register($id, $title, |wb, _, $window, cx| {
+                wb.search_view().clone().update(cx, |$view, $cx| $body)
+            });
+        };
+    }
+    on_view!(
+        "toggleSearchCaseSensitive",
+        "Search: Toggle Match Case",
+        |v, _w, cx| v.toggle_case_sensitive(cx)
+    );
+    on_view!(
+        "toggleSearchWholeWord",
+        "Search: Toggle Match Whole Word",
+        |v, _w, cx| v.toggle_whole_word(cx)
+    );
+    on_view!(
+        "toggleSearchRegex",
+        "Search: Toggle Use Regular Expression",
+        |v, _w, cx| v.toggle_regex(cx)
+    );
+    on_view!(
+        "workbench.action.search.toggleQueryDetails",
+        "Search: Toggle Search Details",
+        |v, window, cx| v.toggle_query_details(window, cx)
+    );
+    commands.register(
+        "search.action.focusNextSearchResult",
+        "Search: Focus Next Search Result",
+        |wb, _, window, cx| focus_match(wb, true, window, cx),
+    );
+    commands.register(
+        "search.action.focusPreviousSearchResult",
+        "Search: Focus Previous Search Result",
+        |wb, _, window, cx| focus_match(wb, false, window, cx),
+    );
+    on_view!(
+        "search.action.refreshSearchResults",
+        "Search: Refresh",
+        |v, _w, cx| v.run_search(cx)
+    );
+    on_view!(
+        "search.action.collapseSearchResults",
+        "Search: Collapse All",
+        |v, _w, cx| v.set_all_collapsed(true, cx)
     );
     commands.register(
         "workbench.view.search",
