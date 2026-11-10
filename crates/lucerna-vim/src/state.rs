@@ -4,8 +4,8 @@ use lucerna_text::{BufferSnapshot, Point};
 
 use crate::classify::{display_col, last_char_col, line};
 use crate::motion::{self, FindChar, Goal, WordMotion};
-use crate::scroll::{self, Screen};
-use crate::{Action, Key, Mode, Outcome, Settings, ViewInfo};
+use crate::scroll::{self, Screen, ScrollKind};
+use crate::{Action, FoldAction, Key, Mode, Outcome, Settings, ViewInfo};
 
 /// The largest count; more digits are ignored.
 const MAX_COUNT: u32 = 99_999;
@@ -15,6 +15,9 @@ const MAX_COUNT: u32 = 99_999;
 pub struct VimGlobals {
     /// The last `f`/`F`/`t`/`T`, for `;` and `,`.
     pub(crate) last_find: Option<FindChar>,
+    /// Rows for `Ctrl+d`/`Ctrl+u` set by a count; 0 means use
+    /// `Settings::scroll`, else half the visible rows.
+    pub(crate) scroll: u32,
 }
 
 /// The vim state of one view.
@@ -106,11 +109,38 @@ impl Vim {
     ) -> Outcome {
         match key {
             Key::Escape => self.escape(),
-            Key::Ctrl(_) => {
-                self.clear_pending();
-                Outcome::Unhandled
+            Key::Ctrl(c) => {
+                let cancelled = self.prefix.is_some();
+                let explicit = self.count;
+                let n = self.take_count();
+                if cancelled {
+                    return Outcome::Handled(vec![]);
+                }
+                match c {
+                    'd' | 'u' => {
+                        if let Some(count) = explicit {
+                            globals.scroll = count;
+                        }
+                        let rows = match (globals.scroll, settings.scroll) {
+                            (0, 0) => (scroll::capacity(view) / 2).max(1),
+                            (0, s) => s,
+                            (g, _) => g,
+                        };
+                        self.scroll(view, ScrollKind::Rows(rows), c == 'd', settings)
+                    }
+                    'f' | 'b' => {
+                        let page = scroll::capacity(view).saturating_sub(2).max(1);
+                        let rows = page.saturating_mul(n);
+                        self.scroll(view, ScrollKind::Page(rows), c == 'f', settings)
+                    }
+                    _ => Outcome::Unhandled,
+                }
             }
             Key::Enter => {
+                if self.prefix.is_some() {
+                    self.clear_pending();
+                    return Outcome::Handled(vec![]);
+                }
                 let n = self.take_count();
                 self.next_line_start(view, n)
             }
@@ -146,7 +176,7 @@ impl Vim {
             self.pending = self.count.unwrap_or_default().to_string();
             return Outcome::Handled(vec![]);
         }
-        if self.prefix.is_none() && matches!(c, 'g' | 'f' | 'F' | 't' | 'T') {
+        if self.prefix.is_none() && matches!(c, 'g' | 'z' | 'f' | 'F' | 't' | 'T') {
             self.prefix = Some(c);
             self.pending = format!("{}{c}", self.count.map_or(String::new(), |n| n.to_string()));
             return Outcome::Handled(vec![]);
@@ -171,6 +201,24 @@ impl Vim {
                 }
                 'e' => self.word(view, WordMotion::PrevEnd, false, n),
                 'E' => self.word(view, WordMotion::PrevEnd, true, n),
+                _ => Outcome::Handled(vec![]),
+            };
+        }
+        if prefix == Some('z') {
+            let row = self.cursor.row;
+            let fold = |action| Outcome::Handled(vec![Action::Fold { row, action }]);
+            let top = |at| {
+                Outcome::Handled(vec![Action::ScrollTopRow(scroll::top_for_cursor(
+                    view, row, at,
+                ))])
+            };
+            return match c {
+                't' => top(Screen::Top),
+                'z' => top(Screen::Middle),
+                'b' => top(Screen::Bottom),
+                'a' => fold(FoldAction::Toggle),
+                'c' => fold(FoldAction::Close),
+                'o' => fold(FoldAction::Open),
                 _ => Outcome::Handled(vec![]),
             };
         }
@@ -253,6 +301,38 @@ impl Vim {
             }
             _ => Outcome::Handled(vec![]),
         }
+    }
+
+    /// `Ctrl+d/u/f/b`: moves the top row, then the cursor.
+    fn scroll(
+        &mut self,
+        view: &dyn ViewInfo,
+        kind: ScrollKind,
+        down: bool,
+        settings: &Settings,
+    ) -> Outcome {
+        let mut actions = Vec::new();
+        let (rows, page) = match kind {
+            ScrollKind::Rows(n) => (n, false),
+            ScrollKind::Page(n) => (n, true),
+        };
+        let top = scroll::scrolled_top(view, rows, down, page);
+        if top != view.top_row() {
+            actions.push(Action::ScrollTopRow(top));
+        }
+        let mut row = if page {
+            self.cursor.row
+        } else {
+            motion::step_rows(view, self.cursor.row, rows, down)
+        };
+        if page {
+            let (first, bottom) = scroll::view_span(view, top);
+            row = row.clamp(first, bottom.max(first));
+        }
+        if let Outcome::Handled(more) = self.go_to_row(view, row, settings.startofline, false) {
+            actions.extend(more);
+        }
+        Outcome::Handled(actions)
     }
 
     fn find(&mut self, view: &dyn ViewInfo, find: FindChar, n: u32, repeat: bool) -> Outcome {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use lucerna_text::{Buffer, BufferSnapshot, Point};
 
 use crate::classify::{CharClass, class};
-use crate::{Key, Outcome, SearchQuery, Settings, ViewInfo, Vim, VimGlobals};
+use crate::{Action, Key, Outcome, SearchQuery, Settings, ViewInfo, Vim, VimGlobals};
 
 pub(crate) struct TestView {
     pub path: Arc<Path>,
@@ -195,16 +195,37 @@ pub(crate) fn assert_keys_with(
     keys: &str,
     end: &str,
 ) {
-    let mut view = TestView::new(start);
-    view_setup(&mut view);
-    let mut vim = Vim::new(view.cursor);
-    let mut globals = VimGlobals::default();
-    for key in parse_keys(keys) {
-        vim.feed(key, &view, &mut globals, &settings);
-    }
+    let (view, vim, _) = run_keys(settings, view_setup, start, keys);
     assert_eq!(
         view.marked(vim.cursor()),
         end,
         "keys {keys:?} from {start:?}"
     );
+}
+
+/// Feeds `keys` and returns the view, the vim and every emitted action.
+/// Like the workbench, applies each `ScrollTopRow` to the view at once so
+/// the next key sees the new top.
+pub(crate) fn run_keys(
+    settings: Settings,
+    view_setup: impl FnOnce(&mut TestView),
+    start: &str,
+    keys: &str,
+) -> (TestView, Vim, Vec<Action>) {
+    let mut view = TestView::new(start);
+    view_setup(&mut view);
+    let mut vim = Vim::new(view.cursor);
+    let mut globals = VimGlobals::default();
+    let mut actions = Vec::new();
+    for key in parse_keys(keys) {
+        if let Outcome::Handled(done) = vim.feed(key, &view, &mut globals, &settings) {
+            for action in done {
+                if let Action::ScrollTopRow(row) = action {
+                    view.top_row = row;
+                }
+                actions.push(action);
+            }
+        }
+    }
+    (view, vim, actions)
 }
