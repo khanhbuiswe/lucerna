@@ -59,8 +59,12 @@ pub fn exclusive_range(sel: &VimSelection, s: &BufferSnapshot) -> Option<Range<P
 }
 
 /// One range per row of a block, in row order. A row's range covers every
-/// char whose display span meets the block's columns; a row shorter than
-/// the block's left edge gives an empty range at its end.
+/// char whose display span meets the block's columns, so a tab cut by the
+/// block's left edge is included whole (Vim pads it with spaces instead);
+/// a row shorter than the block's left edge gives an empty range at its
+/// end. With `to_eol` each range runs to the row's real end, past the
+/// [`MAX_LINE_CHARS`](crate::classify::MAX_LINE_CHARS) cap of horizontal
+/// reads.
 pub fn block_ranges(sel: &VimSelection, s: &BufferSnapshot, tab: u32) -> Vec<Range<Point>> {
     let VimSelection::Block {
         rows,
@@ -76,7 +80,11 @@ pub fn block_ranges(sel: &VimSelection, s: &BufferSnapshot, tab: u32) -> Vec<Ran
         .map(|row| {
             let text = line(s, row);
             let mut first = None;
-            let mut last = text.len();
+            let mut last = if *to_eol {
+                line_len(s, row) as usize
+            } else {
+                text.len()
+            };
             let mut col = 0;
             for (i, c) in text.char_indices() {
                 let next = advance(col, c, tab);
@@ -308,7 +316,7 @@ mod tests {
     fn block_selection_columns() {
         let (view, vim, _) = run_keys(Settings::default(), |_| {}, "ab|cd\nef\nghij", "<C-v>jjl");
         assert_eq!(
-            vim.selection(&view.snapshot),
+            vim.selection(&view.snapshot, 4),
             Some(VimSelection::Block {
                 rows: 0..3,
                 display_cols: 2..4,
@@ -317,7 +325,7 @@ mod tests {
         );
         assert_eq!(
             block_ranges(
-                vim.selection(&view.snapshot).as_ref().unwrap(),
+                vim.selection(&view.snapshot, 4).as_ref().unwrap(),
                 &view.snapshot,
                 4
             ),
@@ -328,12 +336,12 @@ mod tests {
     #[test]
     fn block_dollar_runs_to_each_line_end() {
         let (view, vim, _) = run_keys(Settings::default(), |_| {}, "a|b\nefgh\nxyz", "<C-v>j$j");
-        let sel = vim.selection(&view.snapshot).unwrap();
+        let sel = vim.selection(&view.snapshot, 4).unwrap();
         assert!(matches!(sel, VimSelection::Block { to_eol: true, .. }));
         assert_eq!(yank_text(&sel, &view.snapshot, 4), "b\nfgh\nyz");
         // A horizontal motion ends it.
         let (view, vim, _) = run_keys(Settings::default(), |_| {}, "a|b\nefgh\nx", "<C-v>j$h");
-        let sel = vim.selection(&view.snapshot).unwrap();
+        let sel = vim.selection(&view.snapshot, 4).unwrap();
         assert!(matches!(sel, VimSelection::Block { to_eol: false, .. }));
     }
 
@@ -369,14 +377,14 @@ mod tests {
     #[test]
     fn no_selection_in_normal() {
         let view = TestView::new("a|bc");
-        assert_eq!(Vim::new(view.cursor).selection(&view.snapshot), None);
+        assert_eq!(Vim::new(view.cursor).selection(&view.snapshot, 4), None);
     }
 
     #[test]
     fn char_selection_is_ordered() {
         let (view, vim, _) = run_keys(Settings::default(), |_| {}, "abc\nd|ef", "vkh");
         assert_eq!(
-            vim.selection(&view.snapshot),
+            vim.selection(&view.snapshot, 4),
             Some(VimSelection::Char {
                 start: p(0, 0),
                 end_inclusive: p(1, 1),
@@ -384,7 +392,7 @@ mod tests {
         );
         let (view, vim, _) = run_keys(Settings::default(), |_| {}, "abc\nd|ef", "Vk");
         assert_eq!(
-            vim.selection(&view.snapshot),
+            vim.selection(&view.snapshot, 4),
             Some(VimSelection::Line {
                 start_row: 0,
                 end_row: 1,
@@ -401,7 +409,7 @@ mod tests {
         };
         assert_eq!(exclusive_range(&sel, &s), Some(p(0, 0)..p(0, 3)));
         let (view, vim, _) = run_keys(Settings::default(), |_| {}, "|abc\n", "v$");
-        let sel = vim.selection(&view.snapshot).unwrap();
+        let sel = vim.selection(&view.snapshot, 4).unwrap();
         assert_eq!(
             exclusive_range(&sel, &view.snapshot),
             Some(p(0, 0)..p(1, 0))
@@ -454,7 +462,7 @@ mod tests {
     fn dollar_in_visual_then_vertical_keeps_line_break() {
         let (view, vim, _) = run_keys(Settings::default(), |_| {}, "|ab\ncde\nf", "v$j");
         assert_eq!(vim.cursor(), p(1, 3));
-        let sel = vim.selection(&view.snapshot).unwrap();
+        let sel = vim.selection(&view.snapshot, 4).unwrap();
         assert_eq!(yank_text(&sel, &view.snapshot, 4), "ab\ncde\n");
         // Esc puts the cursor back on the last char, keeping the goal.
         let (_, vim, _) = run_keys(
@@ -471,7 +479,7 @@ mod tests {
         let (view, vim, _) = run_keys(Settings::default(), |_| {}, "a|bcd", "vllo");
         assert_eq!(vim.cursor(), p(0, 1));
         assert_eq!(
-            vim.selection(&view.snapshot),
+            vim.selection(&view.snapshot, 4),
             Some(VimSelection::Char {
                 start: p(0, 1),
                 end_inclusive: p(0, 3),
@@ -501,10 +509,10 @@ mod tests {
         crate::test_util::feed_keys(&mut vim, &view, "vl");
         vim.set_cursor(p(1, 1));
         assert_eq!(vim.mode(), Mode::Normal);
-        assert_eq!(vim.selection(&view.snapshot), None);
+        assert_eq!(vim.selection(&view.snapshot, 4), None);
         crate::test_util::feed_keys(&mut vim, &view, "v");
         assert_eq!(
-            vim.selection(&view.snapshot),
+            vim.selection(&view.snapshot, 4),
             Some(VimSelection::Char {
                 start: p(1, 1),
                 end_inclusive: p(1, 1),
@@ -527,5 +535,14 @@ mod tests {
     fn h_from_the_line_break_steps_onto_the_last_char() {
         let (_, vim, _) = run_keys(Settings::default(), |_| {}, "|abé\nx", "v$h");
         assert_eq!(vim.cursor(), p(0, 2));
+    }
+
+    #[test]
+    fn block_to_eol_takes_lines_past_the_cap() {
+        let long = "x".repeat(12_000);
+        let start = format!("|ab\n{long}\ncd");
+        let (view, vim, _) = run_keys(Settings::default(), |_| {}, &start, "<C-v>j$");
+        let sel = vim.selection(&view.snapshot, 4).unwrap();
+        assert_eq!(yank_text(&sel, &view.snapshot, 4), format!("ab\n{long}"));
     }
 }

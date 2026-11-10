@@ -42,9 +42,6 @@ pub struct Vim {
     count: Option<u32>,
     /// The first key of a two-key command, e.g. `g`.
     prefix: Option<char>,
-    /// The view's tab size at the last [`Vim::feed`], for the display
-    /// columns of a block selection.
-    tab: u32,
 }
 
 impl Vim {
@@ -57,7 +54,6 @@ impl Vim {
             pending: String::new(),
             count: None,
             prefix: None,
-            tab: 4,
         }
     }
 
@@ -69,7 +65,6 @@ impl Vim {
         globals: &mut VimGlobals,
         settings: &Settings,
     ) -> Outcome {
-        self.tab = view.tab_size();
         self.clamp(view.snapshot());
         let saved = self.clone();
         let outcome = self.step(key, view, globals, settings);
@@ -102,8 +97,9 @@ impl Vim {
     }
 
     /// The visual selection between the anchor and the cursor (the head);
-    /// `None` in Normal mode.
-    pub fn selection(&self, s: &BufferSnapshot) -> Option<VimSelection> {
+    /// `None` in Normal mode. `tab` is the view's tab size, for the display
+    /// columns of a block.
+    pub fn selection(&self, s: &BufferSnapshot, tab: u32) -> Option<VimSelection> {
         let (a, h) = (self.anchor, self.cursor);
         let (start, end) = if (a.row, a.column) <= (h.row, h.column) {
             (a, h)
@@ -123,11 +119,11 @@ impl Vim {
             Mode::VisualBlock => {
                 let span = |p: Point| {
                     let text = line(s, p.row);
-                    let left = display_col(&text, p.column, self.tab);
+                    let left = display_col(&text, p.column, tab);
                     let right = text[(p.column as usize).min(text.len())..]
                         .chars()
                         .next()
-                        .map_or(left + 1, |c| classify::advance(left, c, self.tab.max(1)));
+                        .map_or(left + 1, |c| classify::advance(left, c, tab.max(1)));
                     (left, right)
                 };
                 let (a, h) = (span(a), span(h));
@@ -184,7 +180,8 @@ impl Vim {
     }
 
     /// The column `$` and the end-of-line goal reach on `row`: the last
-    /// char, or the line break in Visual (char) mode.
+    /// char, or the line break in Visual (char) mode. The latter is the
+    /// real line length and deliberately exceeds the `MAX_LINE_CHARS` cap.
     fn eol_col(&self, snapshot: &BufferSnapshot, row: u32) -> u32 {
         if self.mode == Mode::Visual {
             visual::line_len(snapshot, row)
@@ -295,8 +292,8 @@ impl Vim {
         let Some(sel) = self.end_visual(view, globals) else {
             return Outcome::Handled(vec![]);
         };
-        let text = visual::yank_text(&sel, snapshot, self.tab);
-        self.cursor = clamp_point(snapshot, visual::bounds(&sel, snapshot, self.tab).0);
+        let text = visual::yank_text(&sel, snapshot, view.tab_size());
+        self.cursor = clamp_point(snapshot, visual::bounds(&sel, snapshot, view.tab_size()).0);
         self.anchor = self.cursor;
         self.goal = None;
         Outcome::Handled(vec![
@@ -314,9 +311,9 @@ impl Vim {
         globals: &mut VimGlobals,
     ) -> Option<VimSelection> {
         let snapshot = view.snapshot();
-        let sel = self.selection(snapshot)?;
+        let sel = self.selection(snapshot, view.tab_size())?;
         globals.marks.entry(view.path().clone()).or_default().visual =
-            Some(visual::bounds(&sel, snapshot, self.tab));
+            Some(visual::bounds(&sel, snapshot, view.tab_size()));
         self.mode = Mode::Normal;
         self.clamp(snapshot);
         self.anchor = self.cursor;
