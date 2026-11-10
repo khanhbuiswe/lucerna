@@ -17,9 +17,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement,
-    ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
-    prelude::*, px,
+    AnyView, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
+    Window, div, prelude::*, px,
 };
 use lucerna_syntax::{SyntaxState, indent_folds};
 use lucerna_text::{Buffer, BufferSnapshot, LoadError, Point, Reload};
@@ -57,6 +57,9 @@ struct Config {
     tab_size: u32,
     max_bytes: u64,
     max_lines: u32,
+    /// `editor.cursorSurroundingLines`: rows kept between the cursor and
+    /// the viewport edges by [`CodeView::set_cursor`].
+    cursor_surrounding_lines: u32,
 }
 
 impl Config {
@@ -86,6 +89,9 @@ impl Config {
             max_lines: settings
                 .get("lucerna.largeFile.maxLines", language)
                 .unwrap_or(300_000),
+            cursor_surrounding_lines: settings
+                .get("editor.cursorSurroundingLines", language)
+                .unwrap_or(0),
         };
         let font_size = settings
             .get::<f32>("editor.fontSize", language)
@@ -104,6 +110,34 @@ impl Config {
 struct Scroll {
     top_row: u32,
     offset: f32,
+}
+
+/// What [`CodeView::fold_at`] does to the fold it finds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldOp {
+    Toggle,
+    Close,
+    Open,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorShape {
+    /// Fills the cell of the char under the cursor.
+    Block,
+}
+
+/// A cursor painted over the text (vim's normal-mode cursor); the view
+/// paints none by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorOverlay {
+    pub at: Point,
+    pub shape: CursorShape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeViewEvent {
+    /// Emitted by [`CodeView::apply_reload`] once the new text is shown.
+    Reloaded { reload: Reload },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +172,12 @@ pub struct CodeView {
     /// Widest line laid out since the text, wrap or font last changed.
     max_line_width: f32,
     selection: Option<Selection>,
+    /// A rectangular selection, one range per row; replaces `selection`
+    /// while set.
+    block_selection: Option<Vec<Range<Point>>>,
+    /// Bumped by every selection change, whatever made it.
+    selection_generation: u64,
+    cursor_overlay: Option<CursorOverlay>,
     /// Both brackets of the pair next to the cursor, as byte offsets.
     brackets: Option<[usize; 2]>,
     drag: Option<Drag>,
@@ -199,6 +239,9 @@ impl CodeView {
             scroll_x: 0.,
             max_line_width: 0.,
             selection: None,
+            block_selection: None,
+            selection_generation: 0,
+            cursor_overlay: None,
             brackets: None,
             drag: None,
             folds: FoldState::default(),
@@ -284,6 +327,8 @@ impl CodeView {
         self.scroll = Scroll::default();
         self.scroll_x = 0.;
         self.selection = None;
+        self.block_selection = None;
+        self.selection_generation += 1;
         self.brackets = None;
         self.folds.clear();
         self.pending_center = None;
@@ -321,6 +366,12 @@ impl CodeView {
                 anchor: adjust(s.anchor),
                 head: adjust(s.head),
             });
+        if let Some(block) = &mut self.block_selection {
+            for range in block.iter_mut() {
+                *range = adjust(range.start)..adjust(range.end);
+            }
+        }
+        self.selection_generation += 1;
         let old = std::mem::replace(&mut self.snapshot, snapshot.clone());
         self.syntax = self.syntax.as_ref().and_then(|syntax| {
             catch_panic("edit syntax", || syntax.edited(&old, &snapshot, &reload))
@@ -331,6 +382,7 @@ impl CodeView {
         self.folds.remap(&reload, rows);
         self.scroll.top_row = self.folds.prev_visible(self.scroll.top_row);
         self.update_brackets();
+        cx.emit(CodeViewEvent::Reloaded { reload });
         cx.notify();
     }
 
@@ -522,6 +574,32 @@ impl CodeView {
         cx.notify();
     }
 
+    /// Toggles, closes or opens the innermost fold containing `row` (its
+    /// header included); returns that fold's header row, or `None` when
+    /// no fold contains `row`.
+    pub fn fold_at(&mut self, row: u32, op: FoldOp, cx: &mut Context<Self>) -> Option<u32> {
+        let header = self
+            .fold_ranges
+            .iter()
+            .filter(|f| f.contains(&row))
+            .min_by_key(|f| f.end - f.start)?
+            .start;
+        let act = match op {
+            FoldOp::Toggle => true,
+            FoldOp::Close => !self.folds.is_folded(header),
+            FoldOp::Open => self.folds.is_folded(header),
+        };
+        if act {
+            self.toggle_fold(header, cx);
+        }
+        Some(header)
+    }
+
+    /// Whether `row` is inside a closed fold (its header is not).
+    pub fn is_row_hidden(&self, row: u32) -> bool {
+        self.folds.is_hidden(row)
+    }
+
     /// The rows whose highlights are cached, if any were requested.
     pub fn cached_highlight_rows(&self) -> Option<Range<u32>> {
         self.caches.highlight_rows()
@@ -577,14 +655,63 @@ impl CodeView {
         );
     }
 
+    /// Sets the selection, dropping any block selection.
     fn set_selection(&mut self, selection: Selection, cx: &mut Context<Self>) {
         self.selection = Some(selection);
+        self.block_selection = None;
+        self.selection_generation += 1;
         self.update_brackets();
         cx.notify();
     }
 
-    /// The selected text, with ends snapped to char boundaries.
+    /// Drops the selection and block selection; the cursor stays where it
+    /// was.
+    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        self.selection = self.selection.map(|s| Selection::cursor(s.head));
+        self.block_selection = None;
+        self.selection_generation += 1;
+        self.update_brackets();
+        cx.notify();
+    }
+
+    /// Selects a rectangle given as one range per row, dropping the
+    /// normal selection; `None` clears it.
+    pub fn set_block_selection(
+        &mut self,
+        ranges: Option<Vec<Range<Point>>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.selection = None;
+        self.block_selection = ranges;
+        self.selection_generation += 1;
+        self.update_brackets();
+        cx.notify();
+    }
+
+    /// Counts selection changes from any source (API, mouse, new text), so
+    /// a caller can tell whether someone else changed the selection.
+    pub fn selection_generation(&self) -> u64 {
+        self.selection_generation
+    }
+
+    /// Paints `overlay` as the cursor; `None` paints no cursor.
+    pub fn set_cursor_overlay(&mut self, overlay: Option<CursorOverlay>, cx: &mut Context<Self>) {
+        if self.cursor_overlay != overlay {
+            self.cursor_overlay = overlay;
+            cx.notify();
+        }
+    }
+
+    /// The selected text, with ends snapped to char boundaries; a block
+    /// selection gives its rows joined with `\n`.
     pub fn copy_selection(&self) -> Option<String> {
+        if let Some(block) = &self.block_selection {
+            let rows: Vec<String> = block
+                .iter()
+                .map(|r| selection::text_for(&self.snapshot, r.clone()))
+                .collect();
+            return Some(rows.join("\n"));
+        }
         let range = self.selection()?;
         Some(selection::text_for(&self.snapshot, range))
     }
@@ -594,21 +721,25 @@ impl CodeView {
     fn update_brackets(&mut self) {
         self.brackets = self.selection.and_then(|s| {
             let at = selection::boundary_offset(&self.snapshot, s.head);
-            // On the UI thread: a panic is logged and shows no pair.
-            let matching = |offset| {
-                catch_panic("brackets", || match &self.syntax {
-                    Some(syntax) if syntax.tree().is_some() => {
-                        syntax.matching_bracket(&self.snapshot, offset)
-                    }
-                    _ => lucerna_syntax::matching_bracket(&self.snapshot, offset),
-                })
-                .ok()
-                .flatten()
-                .filter(|&at| at < self.snapshot.len_bytes())
-            };
-            let partner = matching(at)?;
-            Some([matching(partner)?, partner])
+            let partner = self.matching_bracket(at)?;
+            Some([self.matching_bracket(partner)?, partner])
         });
+    }
+
+    /// The offset of the bracket paired with the one at (or just before)
+    /// `offset`; uses the syntax tree when there is one, so brackets in
+    /// strings are skipped.
+    pub fn matching_bracket(&self, offset: usize) -> Option<usize> {
+        // On the UI thread: a panic is logged and gives no pair.
+        catch_panic("brackets", || match &self.syntax {
+            Some(syntax) if syntax.tree().is_some() => {
+                syntax.matching_bracket(&self.snapshot, offset)
+            }
+            _ => lucerna_syntax::matching_bracket(&self.snapshot, offset),
+        })
+        .ok()
+        .flatten()
+        .filter(|&at| at < self.snapshot.len_bytes())
     }
 
     /// `editor.tabSize` for this view's language.
@@ -643,6 +774,36 @@ impl CodeView {
     /// Puts the cursor at `p` and scrolls its row to the middle of the
     /// viewport, opening any fold that hides it.
     pub fn go_to(&mut self, p: Point, cx: &mut Context<Self>) {
+        self.reveal_centered(p, cx);
+    }
+
+    /// Puts the cursor at `p` and scrolls its row to the middle of the
+    /// viewport, opening any fold that hides it.
+    pub fn reveal_centered(&mut self, p: Point, cx: &mut Context<Self>) {
+        let p = self.place_cursor(p, cx);
+        match self.visible_rows() {
+            0 => self.center_after_layout(p.row),
+            visible => self.center(p.row, visible),
+        }
+        cx.notify();
+    }
+
+    /// Puts the cursor at `p`, opening any fold that hides it, and
+    /// scrolls only as far as needed to keep its row
+    /// `editor.cursorSurroundingLines` rows inside the viewport. Before
+    /// the first paint it centers the row, like [`CodeView::go_to`].
+    pub fn set_cursor(&mut self, p: Point, cx: &mut Context<Self>) {
+        let p = self.place_cursor(p, cx);
+        match self.visible_rows() {
+            0 => self.center_after_layout(p.row),
+            visible => self.scroll_into_view(p.row, visible),
+        }
+        cx.notify();
+    }
+
+    /// Clamps `p` to the last row, unfolds it and collapses the selection
+    /// there.
+    fn place_cursor(&mut self, p: Point, cx: &mut Context<Self>) -> Point {
         let last = self.snapshot.line_count().saturating_sub(1);
         let p = Point {
             row: p.row.min(last),
@@ -652,17 +813,52 @@ impl CodeView {
             self.folds.toggle(header, &self.fold_ranges);
         }
         self.set_selection(Selection::cursor(p), cx);
-        match self.visible_rows() {
-            0 => {
-                self.scroll = Scroll {
-                    top_row: p.row,
-                    offset: 0.,
-                };
-                self.pending_center = Some(p.row);
+        p
+    }
+
+    fn center_after_layout(&mut self, row: u32) {
+        self.scroll = Scroll {
+            top_row: row,
+            offset: 0.,
+        };
+        self.pending_center = Some(row);
+    }
+
+    /// Scrolls minimally so `row` sits between the top and bottom
+    /// margins (`editor.cursorSurroundingLines`, at most half the view).
+    /// Rows are counted as visible buffer rows, skipping folds.
+    fn scroll_into_view(&mut self, row: u32, visible_rows: u32) {
+        let margin = self
+            .config
+            .cursor_surrounding_lines
+            .min(visible_rows.saturating_sub(1) / 2);
+        let top = self.scroll.top_row;
+        let highest = self.rows_back(row, margin);
+        let lowest = self.rows_back(row, visible_rows.saturating_sub(1 + margin));
+        let new_top = if highest < top || (highest == top && self.scroll.offset > 0.) {
+            highest
+        } else if lowest > top {
+            lowest
+        } else {
+            return;
+        };
+        self.scroll = Scroll {
+            top_row: new_top,
+            offset: 0.,
+        };
+        self.pending_center = None;
+    }
+
+    /// The visible row `n` visible rows above `row`, stopping at row 0.
+    fn rows_back(&self, row: u32, n: u32) -> u32 {
+        let mut row = self.folds.prev_visible(row);
+        for _ in 0..n {
+            if row == 0 {
+                break;
             }
-            visible => self.center(p.row, visible),
+            row = self.folds.prev_visible(row - 1);
         }
-        cx.notify();
+        row
     }
 
     fn center(&mut self, row: u32, visible_rows: u32) {
@@ -772,6 +968,8 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         },
     );
 }
+
+impl EventEmitter<CodeViewEvent> for CodeView {}
 
 impl Focusable for CodeView {
     fn focus_handle(&self, _: &App) -> FocusHandle {

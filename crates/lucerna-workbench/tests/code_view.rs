@@ -583,3 +583,226 @@ fn language_overrides_apply_to_their_language(cx: &mut TestAppContext) {
         assert!(v.word_wrap());
     });
 }
+
+fn numbered(lines: u32) -> String {
+    (0..lines).map(|i| format!("line {i}\n")).collect()
+}
+
+/// A cursor below the view scrolls just far enough to sit on the last
+/// visible row.
+#[gpui::test]
+fn set_cursor_scrolls_minimally(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (view, cx) = code_view(&numbered(200), cx);
+    let visible = view.read_with(cx, |v, _| v.visible_rows());
+    assert!(visible > 4, "the window shows several rows, got {visible}");
+    view.update(cx, |v, cx| v.set_cursor(pt(150, 0), cx));
+    draw(cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.scroll_top_row()),
+        150 - visible + 1
+    );
+    assert_eq!(view.read_with(cx, |v, _| v.cursor()), pt(150, 0));
+    assert_eq!(view.read_with(cx, |v, _| v.selection()), None);
+
+    // Back above the view: the cursor row becomes the top row.
+    view.update(cx, |v, cx| v.set_cursor(pt(20, 0), cx));
+    assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 20);
+}
+
+/// `editor.cursorSurroundingLines` keeps that many rows below the cursor.
+#[gpui::test]
+fn set_cursor_respects_surrounding_lines(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.cursorSurroundingLines": 3 }"#));
+    let (view, cx) = code_view(&numbered(200), cx);
+    let visible = view.read_with(cx, |v, _| v.visible_rows());
+    view.update(cx, |v, cx| v.set_cursor(pt(150, 0), cx));
+    // Three rows further than with no margin (150 - visible + 1).
+    assert_eq!(
+        view.read_with(cx, |v, _| v.scroll_top_row()),
+        150 - visible + 1 + 3
+    );
+    // Going up, three rows stay above the cursor.
+    view.update(cx, |v, cx| v.set_cursor(pt(100, 0), cx));
+    assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 97);
+}
+
+#[gpui::test]
+fn set_cursor_inside_view_does_not_scroll(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (view, cx) = code_view(&numbered(200), cx);
+    view.update(cx, |v, cx| v.set_scroll_top_row(40, cx));
+    draw(cx);
+    let visible = view.read_with(cx, |v, _| v.visible_rows());
+    for row in [40, 41, 40 + visible - 1] {
+        view.update(cx, |v, cx| v.set_cursor(pt(row, 2), cx));
+        assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 40);
+    }
+}
+
+#[gpui::test]
+fn block_selection_copies_rows(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (view, cx) = code_view("abcd\nefgh", cx);
+    view.update(cx, |v, cx| {
+        v.select(pt(0, 0)..pt(1, 1), cx);
+        v.set_block_selection(Some(vec![pt(0, 1)..pt(0, 3), pt(1, 1)..pt(1, 3)]), cx);
+    });
+    draw(cx);
+    assert_eq!(view.read_with(cx, |v, _| v.selection()), None);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.copy_selection()).as_deref(),
+        Some("bc\nfg")
+    );
+    view.update(cx, |v, cx| v.set_block_selection(None, cx));
+    assert_eq!(view.read_with(cx, |v, _| v.copy_selection()), None);
+}
+
+#[gpui::test]
+fn fold_at_toggles_innermost(cx: &mut TestAppContext) {
+    use lucerna_workbench::code_view::FoldOp;
+    init(cx, None);
+    let text = "fn a() {\n    if x {\n        y();\n        z();\n    }\n}\nlast\n";
+    let (view, cx) = code_view(text, cx);
+    cx.run_until_parked();
+    let folds = view.read_with(cx, |v, _| v.fold_ranges().to_vec());
+    assert!(
+        folds.contains(&(0..5)) && folds.contains(&(1..4)),
+        "{folds:?}"
+    );
+
+    // Row 2 is in both folds; the inner one closes.
+    let header = view.update(cx, |v, cx| v.fold_at(2, FoldOp::Close, cx));
+    assert_eq!(header, Some(1));
+    view.read_with(cx, |v, _| {
+        assert!(v.is_folded(1) && !v.is_folded(0));
+        assert!(v.is_row_hidden(2) && !v.is_row_hidden(1));
+    });
+    // Closing again is a no-op; opening and toggling act on the same fold.
+    let header = view.update(cx, |v, cx| v.fold_at(1, FoldOp::Close, cx));
+    assert_eq!(header, Some(1));
+    assert!(view.read_with(cx, |v, _| v.is_folded(1)));
+    view.update(cx, |v, cx| v.fold_at(1, FoldOp::Open, cx));
+    assert!(view.read_with(cx, |v, _| !v.is_folded(1) && !v.is_row_hidden(2)));
+    view.update(cx, |v, cx| v.fold_at(1, FoldOp::Toggle, cx));
+    assert!(view.read_with(cx, |v, _| v.is_folded(1)));
+    // A row in no fold.
+    assert_eq!(
+        view.update(cx, |v, cx| v.fold_at(6, FoldOp::Toggle, cx)),
+        None
+    );
+
+    // set_cursor opens the folds hiding its row.
+    view.update(cx, |v, cx| v.set_cursor(pt(2, 0), cx));
+    assert!(view.read_with(cx, |v, _| !v.is_row_hidden(2)));
+}
+
+#[gpui::test]
+fn selection_generation_bumps_on_mouse_select(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (view, cx) = code_view("alpha beta\nsecond line\nthird\n", cx);
+    let generation =
+        |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.selection_generation());
+    let before = generation(cx);
+    let left = gpui::MouseButton::Left;
+    let none = gpui::Modifiers::none();
+    cx.simulate_mouse_down(at(0, 2), left, none);
+    cx.simulate_mouse_move(at(1, 4), left, none);
+    cx.simulate_mouse_up(at(1, 4), left, none);
+    let after_mouse = generation(cx);
+    assert!(after_mouse > before);
+
+    // Every other source bumps it too.
+    let mut last = after_mouse;
+    let mut bumped = |cx: &mut VisualTestContext, what: &str| {
+        let now = generation(cx);
+        assert!(now > last, "{what} bumps the generation");
+        last = now;
+    };
+    view.update(cx, |v, cx| v.clear_selection(cx));
+    bumped(cx, "clear_selection");
+    view.update(cx, |v, cx| v.set_cursor(pt(1, 0), cx));
+    bumped(cx, "set_cursor");
+    view.update(cx, |v, cx| {
+        v.set_block_selection(Some(vec![pt(0, 0)..pt(0, 1)]), cx)
+    });
+    bumped(cx, "set_block_selection");
+    view.update(cx, |v, cx| v.set_buffer(snapshot("x\n"), cx));
+    bumped(cx, "set_buffer");
+}
+
+#[gpui::test]
+fn reload_emits_event(cx: &mut TestAppContext) {
+    use lucerna_workbench::code_view::CodeViewEvent;
+    use std::cell::RefCell;
+    init(cx, None);
+    let old = "a\nb\n";
+    let mut buffer = Buffer::from_bytes(old.as_bytes(), false).unwrap();
+    let (view, cx) = code_view(old, cx);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|_, cx| {
+        let events = events.clone();
+        cx.subscribe(&view, move |_, event: &CodeViewEvent, _| {
+            let CodeViewEvent::Reloaded { reload } = event;
+            events.borrow_mut().push(*reload);
+        })
+        .detach();
+    });
+    let before = view.read_with(cx, |v, _| v.selection_generation());
+    let reload = buffer.reload(b"a\nB\nc\n").unwrap();
+    let snapshot = buffer.snapshot();
+    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    cx.run_until_parked();
+    assert_eq!(*events.borrow(), vec![reload]);
+    assert!(view.read_with(cx, |v, _| v.selection_generation()) > before);
+}
+
+#[gpui::test]
+fn cursor_overlay_paints_without_panic(cx: &mut TestAppContext) {
+    use lucerna_workbench::code_view::{CursorOverlay, CursorShape};
+    init(cx, Some(r#"{ "editor.renderWhitespace": "all" }"#));
+    let (view, cx) = code_view("abc\n\n😀x\tz\n日本\n", cx);
+    let positions = [
+        pt(0, 3),  // end of line
+        pt(0, 99), // past the end
+        pt(1, 0),  // empty line
+        pt(2, 0),  // emoji
+        pt(2, 2),  // inside the emoji
+        pt(2, 5),  // tab
+        pt(3, 3),  // CJK
+        pt(40, 0), // past the last row
+    ];
+    for at in positions {
+        view.update(cx, |v, cx| {
+            v.set_cursor_overlay(
+                Some(CursorOverlay {
+                    at,
+                    shape: CursorShape::Block,
+                }),
+                cx,
+            )
+        });
+        draw(cx);
+    }
+    // With a block selection and wrapping too.
+    view.update(cx, |v, cx| {
+        v.set_block_selection(Some(vec![pt(2, 0)..pt(2, 9), pt(3, 0)..pt(3, 6)]), cx);
+        v.toggle_word_wrap(cx);
+    });
+    draw(cx);
+    view.update(cx, |v, cx| v.set_cursor_overlay(None, cx));
+    draw(cx);
+}
+
+/// `matching_bracket` finds the partner of the bracket at an offset.
+#[gpui::test]
+fn matching_bracket_finds_partner(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (view, cx) = code_view("f(a[1])\n", cx);
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.matching_bracket(1), Some(6));
+        assert_eq!(v.matching_bracket(6), Some(1));
+        assert_eq!(v.matching_bracket(3), Some(5));
+        assert_eq!(v.matching_bracket(0), None);
+    });
+}

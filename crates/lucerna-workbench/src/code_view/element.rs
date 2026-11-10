@@ -16,7 +16,7 @@ use lucerna_text::Point;
 use lucerna_theme::Theme;
 
 use super::cache::ShapeKey;
-use super::layout::{FoldState, char_columns, display_lines_with_tab_size, row_start};
+use super::layout::{FoldState, char_columns, display_lines_with_tab_size, row_range, row_start};
 use super::selection::{self, Selection};
 use super::{CodeView, Drag, hsla};
 use crate::AppState;
@@ -30,6 +30,7 @@ const GUTTER_EXTRA_CHARS: f32 = 4.;
 const TEXT_PADDING_CHARS: f32 = 0.5;
 const BRACKET_BOX_ALPHA: f32 = 0.4;
 const ACTIVE_MATCH_ALPHA: f32 = 0.6;
+const CURSOR_ALPHA: f32 = 0.4;
 /// Most search matches painted in one frame (a minified line can hold
 /// thousands).
 const MAX_PAINTED_MATCHES: usize = 2_000;
@@ -141,6 +142,11 @@ pub(crate) struct Frame {
     /// the gutter is hovered, or folded, are painted.
     chevrons: Vec<(Pixels, u32, ShapedLine, bool)>,
     selection: Option<Selection>,
+    /// The block selection's ranges, one per row.
+    block_selection: Vec<std::ops::Range<Point>>,
+    /// The cell of the cursor overlay: the char under it on one row, empty
+    /// at the line end or on an empty line.
+    cursor_overlay: Option<std::ops::Range<Point>>,
     /// Search matches touching the rows on screen; `true` for the active one.
     matches: Vec<(std::ops::Range<Point>, bool)>,
     cursor_row: Option<u32>,
@@ -162,6 +168,7 @@ struct FrameColors {
     bracket: Hsla,
     search_match: Hsla,
     active_match: Hsla,
+    cursor: Hsla,
     scrollbar_thumb: Hsla,
 }
 
@@ -398,7 +405,11 @@ impl CodeView {
         };
         let text_x = text_bounds.left() + padding - px(self.scroll_x);
 
-        let cursor_row = self.selection.map(|s| s.head.row);
+        let cursor_overlay = self.cursor_overlay_cell();
+        let cursor_row = match &cursor_overlay {
+            Some(cell) => Some(cell.start.row),
+            None => self.selection.map(|s| s.head.row),
+        };
         let number_color = hsla(ui.editor_line_number);
         let active_color = hsla(ui.editor_active_line_number);
         let mut numbers = Vec::new();
@@ -482,6 +493,8 @@ impl CodeView {
             numbers,
             chevrons,
             selection: self.selection,
+            block_selection: self.block_selection.clone().unwrap_or_default(),
+            cursor_overlay,
             matches,
             cursor_row,
             brackets,
@@ -496,11 +509,39 @@ impl CodeView {
                 bracket: hsla(ui.editor_foreground).opacity(BRACKET_BOX_ALPHA),
                 search_match: hsla(ui.search_match_background),
                 active_match: hsla(ui.editor_foreground).opacity(ACTIVE_MATCH_ALPHA),
+                cursor: hsla(ui.editor_foreground).opacity(CURSOR_ALPHA),
                 scrollbar_thumb: hsla(ui.scrollbar_thumb),
             },
         });
         self.frame = Some(frame.clone());
         frame
+    }
+
+    /// The cell the cursor overlay covers: from its column, moved back to
+    /// a char boundary within the line, to the end of the char there.
+    fn cursor_overlay_cell(&self) -> Option<std::ops::Range<Point>> {
+        let at = self.cursor_overlay?.at;
+        if at.row >= self.snapshot.line_count() {
+            return None;
+        }
+        let start = selection::boundary_offset(&self.snapshot, at);
+        let line_end = row_range(&self.snapshot, at.row).end;
+        let len = self
+            .snapshot
+            .chunks_in_range(start..line_end)
+            .find_map(|chunk| chunk.chars().next())
+            .filter(|&c| c != '\n' && c != '\r')
+            .map_or(0, char::len_utf8);
+        let column = (start - row_start(&self.snapshot, at.row)) as u32;
+        Some(
+            Point {
+                row: at.row,
+                column,
+            }..Point {
+                row: at.row,
+                column: column + len as u32,
+            },
+        )
     }
 
     /// The search matches overlapping buffer `rows`, as points, with

@@ -43,6 +43,20 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
                 window.paint_quad(fill(bounds, colors.selection));
             }
         }
+        for range in &frame.block_selection {
+            for bounds in range_bounds(frame, range.clone()) {
+                window.paint_quad(fill(bounds, colors.selection));
+            }
+        }
+        // Over the selection and under the text, so the glyph stays
+        // readable.
+        if let Some(bounds) = frame
+            .cursor_overlay
+            .clone()
+            .and_then(|c| cell_bounds(frame, c))
+        {
+            window.paint_quad(fill(bounds, colors.cursor));
+        }
         // Rows do not overlap: one draw order for all their glyphs.
         window.paint_layer(text, |window| {
             for row in &frame.rows {
@@ -95,6 +109,29 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
         window
             .paint_quad(fill(thumb, colors.scrollbar_thumb).corner_radii(px(SCROLLBAR_WIDTH / 2.)));
     }
+}
+
+/// The box of a one-row `cell` on the display line showing its start;
+/// an empty cell (line end, empty line) is half a char wide.
+fn cell_bounds(frame: &Frame, cell: Range<Point>) -> Option<Bounds<Pixels>> {
+    let column = cell.start.column;
+    let row = frame.rows.iter().find(|r| {
+        let map = &r.piece().map;
+        r.buffer_row == cell.start.row
+            && column >= map.buf_start
+            && (column < map.buf_start + map.buf_len || r.is_last_piece())
+    })?;
+    let x1 = row.x_for(column);
+    let x2 = row.x_for(cell.end.column);
+    let width = if x2 > x1 {
+        x2 - x1
+    } else {
+        frame.char_width * 0.5
+    };
+    Some(Bounds::new(
+        point(frame.text_x + x1, row.top),
+        size(width, frame.line_height),
+    ))
 }
 
 /// The boxes covering `range` on the display lines on screen; a covered
