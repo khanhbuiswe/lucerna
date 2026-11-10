@@ -7,7 +7,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyView, App, ClickEvent, Context, DragMoveEvent, Entity, IntoElement, MouseButton,
-    ParentElement, Pixels, Render, Styled, Window, div, prelude::*, px, relative, svg,
+    ParentElement, Pixels, Render, SharedString, Styled, Window, div, prelude::*, px, relative,
+    svg,
 };
 use lucerna_theme::{Rgba, UiColors};
 
@@ -17,7 +18,8 @@ use crate::documents::{DocState, Documents};
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
 use crate::ui::{
-    BLOCKS_ICON, CLOSE_ICON, GRID, PATH_BAR_HEIGHT, TAB_HEIGHT, TAB_PADDING_X, UI_FONT_SIZE_SMALL,
+    BLOCKS_ICON, CLOSE_ICON, GRID, PATH_BAR_HEIGHT, SEARCH_ICON, TAB_HEIGHT, TAB_PADDING_X,
+    UI_FONT_SIZE_SMALL,
 };
 
 /// Square slot that holds a tab's close button, kept even while the
@@ -78,6 +80,8 @@ pub struct EditorGroupsView {
     /// The user's home folder, shown as `~` in path bars; read when the
     /// view is made and again when its root is set.
     home: Option<PathBuf>,
+    /// Shown as the Search tab's title in place of "Search".
+    search_title: Option<SharedString>,
 }
 
 impl Default for EditorGroupsView {
@@ -91,6 +95,7 @@ impl Default for EditorGroupsView {
             documents: None,
             root: None,
             home: std::env::home_dir(),
+            search_title: None,
         }
     }
 }
@@ -186,6 +191,14 @@ impl EditorGroupsView {
     /// deleted.
     pub(crate) fn set_documents(&mut self, documents: Entity<Documents>) {
         self.documents = Some(documents);
+    }
+
+    /// The Search tab's title: `title` when `Some`, else "Search".
+    pub fn set_search_title(&mut self, title: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.search_title != title {
+            self.search_title = title;
+            cx.notify();
+        }
     }
 
     /// Path bars show paths relative to `root`.
@@ -308,11 +321,19 @@ impl Render for EditorGroupsView {
                 let id = tab.id;
                 let active = group.active == Some(id);
                 let fg = title_color(active, gi == focused_group, ui);
-                let title = tab.title();
-                let icon = (tab.item == TabItem::Extensions).then(|| {
+                let title = match (&tab.item, &self.search_title) {
+                    (TabItem::Search, Some(title)) => title.to_string(),
+                    _ => tab.title(),
+                };
+                let icon = match tab.item {
+                    TabItem::Extensions => Some(BLOCKS_ICON),
+                    TabItem::Search => Some(SEARCH_ICON),
+                    TabItem::File(_) => None,
+                };
+                let icon = icon.map(|icon| {
                     svg()
                         .debug_selector(move || format!("tab-icon-{gi}-{ti}"))
-                        .data(BLOCKS_ICON)
+                        .data(icon)
                         .flex_none()
                         .size(px(14.))
                         .text_color(color(ui.icon_muted))

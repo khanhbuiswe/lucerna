@@ -9,6 +9,7 @@
   "editor.cursorSurroundingLines": 0,
   "files.exclude": { "**/.git": true, "**/.DS_Store": true },
   "search.exclude": { "**/node_modules": true, "**/target": true },
+  "search.searchEditor.defaultNumberOfContextLines": 1,
   "workbench.colorTheme": "One Dark",
   "workbench.iconTheme": "Lucide",
   "files.associations": {},

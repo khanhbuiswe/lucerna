@@ -37,6 +37,9 @@ pub const CHEVRON_DOWN: &[u8] = lucide!("chevron-down");
 pub const CHEVRON_UP: &[u8] = lucide!("chevron-up");
 pub const BLOCKS: &[u8] = lucide!("blocks");
 pub const LOADER_CIRCLE: &[u8] = lucide!("loader-circle");
+pub const LIST_FILTER: &[u8] = lucide!("list-filter");
+pub const REFRESH_CW: &[u8] = lucide!("refresh-cw");
+pub const CHEVRONS_DOWN_UP: &[u8] = lucide!("chevrons-down-up");
 
 /// Every bundled icon with its upstream name.
 pub const ALL: &[(&str, &[u8])] = &[
@@ -60,6 +63,9 @@ pub const ALL: &[(&str, &[u8])] = &[
     ("chevron-up", CHEVRON_UP),
     ("blocks", BLOCKS),
     ("loader-circle", LOADER_CIRCLE),
+    ("list-filter", LIST_FILTER),
+    ("refresh-cw", REFRESH_CW),
+    ("chevrons-down-up", CHEVRONS_DOWN_UP),
 ];
 
 /// The bundled SVG for a Lucide icon name.

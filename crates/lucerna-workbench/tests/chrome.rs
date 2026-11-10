@@ -11,7 +11,7 @@ use gpui::{
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
-use lucerna_workbench::{AppState, OpenMode, SidebarView, Workbench, ui, window_options};
+use lucerna_workbench::{AppState, OpenMode, SidebarView, TabItem, Workbench, ui, window_options};
 
 fn init(cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
@@ -92,13 +92,21 @@ fn status_toggle_switches_panel(cx: &mut TestAppContext) {
         cx.simulate_click(b.center(), Modifiers::none());
     };
 
-    click("panel-toggle-search", cx);
-    assert_eq!(state(cx), (true, SidebarView::Search));
-    // Clicking the active panel's toggle hides the sidebar.
-    click("panel-toggle-search", cx);
+    // The Explorer toggle hides and shows the sidebar.
+    click("panel-toggle-explorer", cx);
     assert!(!state(cx).0);
     click("panel-toggle-explorer", cx);
     assert_eq!(state(cx), (true, SidebarView::Explorer));
+    // The Search toggle opens the Search tab and leaves the sidebar be.
+    click("panel-toggle-search", cx);
+    assert_eq!(state(cx), (true, SidebarView::Explorer));
+    let search_tab = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let groups = wb.read(cx).editor_groups().read(cx);
+            groups.model().active_tab().map(|t| t.item.clone())
+        })
+    };
+    assert_eq!(search_tab(cx), Some(TabItem::Search));
     // The keybinding still switches panels.
     cx.simulate_keystrokes("cmd-b");
     assert!(!state(cx).0);

@@ -1,7 +1,5 @@
 //! The Search tab's results: files with excerpts, flattened into rows for the
 //! list, plus match navigation. Pure data, no gpui.
-// Consumed by the view in a later task.
-#![allow(dead_code)]
 
 use std::ops::Range;
 use std::path::Path;

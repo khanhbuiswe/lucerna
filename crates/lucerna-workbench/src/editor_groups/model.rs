@@ -1,5 +1,5 @@
-//! The pure editor-groups model: which files (and the Extensions page) are
-//! open in which group, which tab is a preview, and the most-recently-used
+//! The pure editor-groups model: which files (and the Extensions page and
+//! the Search tab) are open in which group, which tab is a preview, and the most-recently-used
 //! order per group.
 
 use std::path::{Path, PathBuf};
@@ -29,6 +29,16 @@ pub enum TabItem {
     /// The Extensions page (spec §5.2). At most one in all groups; never a
     /// preview.
     Extensions,
+    /// Project search. At most one in all groups; never a preview.
+    Search,
+}
+
+impl TabItem {
+    /// The Extensions page or the Search tab: at most one in all groups,
+    /// never a preview and never split.
+    pub fn is_singleton(&self) -> bool {
+        matches!(self, TabItem::Extensions | TabItem::Search)
+    }
 }
 
 /// How the Extensions tab is saved in [`GroupState::tabs`], in place of a
@@ -39,6 +49,13 @@ pub const EXTENSIONS_TAB_STATE: &str = "lucerna:extensions";
 /// The title of the Extensions tab.
 pub const EXTENSIONS_TAB_TITLE: &str = "Extensions";
 
+/// How the Search tab is saved in [`GroupState::tabs`]; relative, like
+/// [`EXTENSIONS_TAB_STATE`].
+pub const SEARCH_TAB_STATE: &str = "lucerna:search";
+
+/// The title of the Search tab (the view may show its query instead).
+pub const SEARCH_TAB_TITLE: &str = "Search";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tab {
     pub id: TabId,
@@ -48,15 +65,16 @@ pub struct Tab {
 }
 
 impl Tab {
-    /// The file the tab shows; `None` for the Extensions page.
+    /// The file the tab shows; `None` for the Extensions page and the
+    /// Search tab.
     pub fn path(&self) -> Option<&Arc<Path>> {
         match &self.item {
             TabItem::File(path) => Some(path),
-            TabItem::Extensions => None,
+            TabItem::Extensions | TabItem::Search => None,
         }
     }
 
-    /// The tab bar's label: the file name, or "Extensions".
+    /// The tab bar's label: the file name, "Extensions" or "Search".
     pub fn title(&self) -> String {
         match &self.item {
             TabItem::File(path) => path
@@ -65,6 +83,7 @@ impl Tab {
                 .to_string_lossy()
                 .into_owned(),
             TabItem::Extensions => EXTENSIONS_TAB_TITLE.to_string(),
+            TabItem::Search => SEARCH_TAB_TITLE.to_string(),
         }
     }
 }
@@ -99,7 +118,7 @@ pub struct GroupsState {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GroupState {
     /// `(path, pinned)` in tab order; the Extensions tab is saved as
-    /// [`EXTENSIONS_TAB_STATE`].
+    /// [`EXTENSIONS_TAB_STATE`], the Search tab as [`SEARCH_TAB_STATE`].
     pub tabs: Vec<(PathBuf, bool)>,
     /// Index into `tabs`.
     pub active: Option<usize>,
@@ -180,7 +199,27 @@ impl EditorGroups {
     /// Activates the Extensions tab wherever it is, or opens it (pinned) at
     /// the end of the active group. Returns its tab.
     pub fn open_extensions(&mut self) -> TabId {
-        if let Some(id) = self.extensions_tab() {
+        self.open_singleton(TabItem::Extensions)
+    }
+
+    /// The Extensions tab, if open in any group.
+    pub fn extensions_tab(&self) -> Option<TabId> {
+        self.find_item(&TabItem::Extensions)
+    }
+
+    /// Activates the Search tab wherever it is, or opens it (pinned) at the
+    /// end of the active group. Returns its tab.
+    pub fn open_search(&mut self) -> TabId {
+        self.open_singleton(TabItem::Search)
+    }
+
+    /// The Search tab, if open in any group.
+    pub fn search_tab(&self) -> Option<TabId> {
+        self.find_item(&TabItem::Search)
+    }
+
+    fn open_singleton(&mut self, item: TabItem) -> TabId {
+        if let Some(id) = self.find_item(&item) {
             self.activate(id);
             return id;
         }
@@ -188,19 +227,18 @@ impl EditorGroups {
         let group = &mut self.groups[self.active_group];
         group.tabs.push(Tab {
             id,
-            item: TabItem::Extensions,
+            item,
             pinned: true,
         });
         group.activate(id);
         id
     }
 
-    /// The Extensions tab, if open in any group.
-    pub fn extensions_tab(&self) -> Option<TabId> {
+    fn find_item(&self, item: &TabItem) -> Option<TabId> {
         self.groups
             .iter()
             .flat_map(|g| &g.tabs)
-            .find(|t| t.item == TabItem::Extensions)
+            .find(|t| t.item == *item)
             .map(|t| t.id)
     }
 
@@ -252,11 +290,12 @@ impl EditorGroups {
 
     /// Opens a copy of the active tab in a new group directly to the right
     /// and focuses it. Returns the active group index (unchanged when no tab
-    /// is active, or when it is the Extensions page, which is never copied).
+    /// is active, or when it is the Extensions page or the Search tab,
+    /// which are never copied).
     pub fn split_active(&mut self) -> usize {
         let Some(tab) = self
             .active_tab()
-            .filter(|t| t.item != TabItem::Extensions)
+            .filter(|t| !t.item.is_singleton())
             .cloned()
         else {
             return self.active_group;
@@ -310,7 +349,8 @@ impl EditorGroups {
     /// Rebuilds groups from persisted state with fresh tab ids, repairing
     /// what a stale or hand-edited file may contain:
     /// - duplicate paths in a group keep their first entry;
-    /// - only the first Extensions tab of all groups is kept, pinned;
+    /// - only the first Extensions tab and the first Search tab of all
+    ///   groups are kept, pinned;
     /// - of several unpinned tabs only the last stays a preview;
     /// - a missing or out-of-range active tab becomes the group's last tab;
     /// - empty groups other than the first are dropped, and an active group
@@ -323,28 +363,30 @@ impl EditorGroups {
         };
         // Restored index of each saved group; `None` when it was dropped.
         let mut restored_index = Vec::with_capacity(state.groups.len());
-        let mut has_extensions = false;
+        // Singletons already restored in earlier groups.
+        let mut singletons: Vec<TabItem> = Vec::new();
         for saved in &state.groups {
             let mut group = Group::default();
             for (path, pinned) in &saved.tabs {
                 let item = saved_item(path);
-                let seen = match item {
-                    TabItem::Extensions => {
-                        has_extensions || group.tabs.iter().any(|t| t.item == item)
-                    }
-                    TabItem::File(_) => group.tabs.iter().any(|t| t.item == item),
-                };
+                let seen = singletons.contains(&item) || group.tabs.iter().any(|t| t.item == item);
                 if seen {
                     continue;
                 }
-                let pinned = *pinned || item == TabItem::Extensions;
+                let pinned = *pinned || item.is_singleton();
                 group.tabs.push(Tab {
                     id: model.new_id(),
                     item,
                     pinned,
                 });
             }
-            has_extensions |= group.tabs.iter().any(|t| t.item == TabItem::Extensions);
+            singletons.extend(
+                group
+                    .tabs
+                    .iter()
+                    .filter(|t| t.item.is_singleton())
+                    .map(|t| t.item.clone()),
+            );
             if let Some(preview) = group.tabs.iter().rposition(|t| !t.pinned) {
                 for tab in &mut group.tabs[..preview] {
                     tab.pinned = true;
@@ -417,15 +459,19 @@ impl EditorGroups {
 fn saved_item(path: &Path) -> TabItem {
     if path == Path::new(EXTENSIONS_TAB_STATE) {
         TabItem::Extensions
+    } else if path == Path::new(SEARCH_TAB_STATE) {
+        TabItem::Search
     } else {
         TabItem::File(Arc::from(path))
     }
 }
 
-/// How a tab is saved: its path, or [`EXTENSIONS_TAB_STATE`].
+/// How a tab is saved: its path, [`EXTENSIONS_TAB_STATE`] or
+/// [`SEARCH_TAB_STATE`].
 fn saved_path(item: &TabItem) -> PathBuf {
     match item {
         TabItem::File(path) => path.to_path_buf(),
         TabItem::Extensions => PathBuf::from(EXTENSIONS_TAB_STATE),
+        TabItem::Search => PathBuf::from(SEARCH_TAB_STATE),
     }
 }

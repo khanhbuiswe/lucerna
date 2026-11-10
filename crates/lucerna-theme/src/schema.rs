@@ -57,6 +57,7 @@ impl ThemeDef {
             text: color("text").unwrap_or(fb.text),
             text_muted: color("text.muted").unwrap_or(fb.text_muted),
             element_selected: color("element.selected").unwrap_or(fb.element_selected),
+            element_background: color("element.background").unwrap_or(fb.element_background),
             panel_background: color("panel.background").unwrap_or(fb.panel_background),
             status_bar_background: color("status_bar.background")
                 .unwrap_or(fb.status_bar_background),

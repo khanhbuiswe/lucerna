@@ -15,7 +15,7 @@ use lucerna_text::{Buffer, BufferSnapshot, Point};
 use lucerna_theme::ThemeRegistry;
 use lucerna_vim::Mode;
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::{AppState, FindWidgetEvent, OpenMode, Workbench};
+use lucerna_workbench::{AppState, FindWidgetEvent, OpenMode, TabItem, Workbench};
 
 const VIM_ON: &str = r#"{ "vim.enabled": true }"#;
 
@@ -782,11 +782,28 @@ fn key_in_editor_during_slash_ends_search(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn keys_go_to_search_panel_input(cx: &mut TestAppContext) {
-    let (wb, view, cx) = vim_file("a\nb\nc", cx);
+    init(cx, Some(VIM_ON));
+    let (wb, cx) = workbench(cx);
+    // The Search tab shows the workbench's search view; files code views.
+    wb.update(cx, |wb, cx| {
+        let search = wb.search_view().clone();
+        wb.editor_groups().update(cx, |groups, cx| {
+            let body = move |tab: &lucerna_workbench::Tab,
+                             window: &mut gpui::Window,
+                             cx: &mut gpui::App| {
+                match tab.item {
+                    TabItem::Search => search.clone().into(),
+                    _ => CodeView::tab_body(tab, window, cx),
+                }
+            };
+            groups.set_tab_body_factory(Rc::new(body), cx)
+        })
+    });
+    let view = open(&wb, "a.rs", "a\nb\nc", cx);
     keys("cmd-shift-f", cx);
     keys("j k", cx);
     let query = cx.update(|_, cx| {
-        let panel = wb.read(cx).search_panel().clone();
+        let panel = wb.read(cx).search_view().clone();
         panel.read(cx).query_input().read(cx).text().to_owned()
     });
     assert_eq!(query, "jk");

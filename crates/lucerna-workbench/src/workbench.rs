@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::code_view::{self, CodeView, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::documents::{DocumentStatusItem, Documents};
-use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode, TabItem};
+use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode, TabId, TabItem};
 use crate::explorer::ExplorerView;
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
 use crate::layout::sidebar::SidebarSash;
@@ -30,7 +30,7 @@ use crate::layout::{
 };
 use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
-use crate::search_panel::SearchPanel;
+use crate::search_view::{self, SearchView};
 use crate::tasks::try_spawn_guarded;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
@@ -38,12 +38,13 @@ use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
 use crate::vim::{self, VimLayer};
 use crate::vim_indicator::ModeIndicator;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateStore, absolute_path};
-use crate::{AppState, CommandRegistry, find_widget, keys, search_panel};
+use crate::{AppState, CommandRegistry, find_widget, keys};
 
+/// What the sidebar shows. Only the Explorer: Search and Extensions are
+/// editor tabs. A saved `"search"` or `"extensions"` restores the Explorer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarView {
     Explorer,
-    Search,
 }
 
 impl SidebarView {
@@ -51,16 +52,6 @@ impl SidebarView {
     fn state_name(self) -> &'static str {
         match self {
             SidebarView::Explorer => "explorer",
-            SidebarView::Search => "search",
-        }
-    }
-
-    /// Anything unknown, such as `"extensions"` saved before the
-    /// Extensions page moved into an editor tab, is the Explorer.
-    fn from_state_name(name: &str) -> SidebarView {
-        match name {
-            "search" => SidebarView::Search,
-            _ => SidebarView::Explorer,
         }
     }
 }
@@ -100,8 +91,9 @@ pub struct Workbench {
     /// [`AppState::languages_generation`] as last seen.
     languages_generation: u64,
     explorer: Entity<ExplorerView>,
-    /// The Search panel, installed in the Search sidebar slot.
-    search_panel: Entity<SearchPanel>,
+    /// The body of the Search tab when it is open. Kept while the tab is
+    /// closed, so it reopens with its query and results.
+    search_view: Entity<SearchView>,
     /// The Extensions page, the body of the Extensions tab when it is
     /// open. Kept while the tab is closed, so it reopens as it was.
     extensions_page: Entity<ExtensionsPage>,
@@ -132,10 +124,8 @@ pub struct Workbench {
     sidebar_focus: FocusHandle,
     editor_focus: FocusHandle,
     sidebar_visible: bool,
-    active_sidebar: SidebarView,
     sidebar_width: Pixels,
     explorer_view: Option<AnyView>,
-    search_view: Option<AnyView>,
     editor_groups: Entity<EditorGroupsView>,
     editor_area: Option<AnyView>,
     status_left: Vec<AnyView>,
@@ -233,7 +223,7 @@ impl Workbench {
         code_view::register_commands(&mut commands);
         quick_open::register_commands(&mut commands);
         find_widget::register_commands(&mut commands);
-        search_panel::register_commands(&mut commands);
+        search_view::register_commands(&mut commands);
         config_files::register_commands(&mut commands);
         theme_picker::register_commands(&mut commands);
         crate::extensions::register_commands(&mut commands);
@@ -242,11 +232,17 @@ impl Workbench {
             let workbench = cx.weak_entity();
             cx.new(|cx| ExtensionsPage::new(workbench, cx))
         };
+        let search_view = {
+            let (root, workbench) = (root.clone(), cx.weak_entity());
+            let searchable = single_file.is_none();
+            cx.new(|cx| SearchView::new(root, workbench, searchable, cx))
+        };
         let workbench = cx.weak_entity();
         let editor_groups = cx.new(|cx| {
             let mut groups = EditorGroupsView::default();
             let docs = documents.clone();
             let page = extensions_page.clone();
+            let search = search_view.clone();
             groups.set_tab_body_factory(
                 Rc::new(move |tab, _, cx| {
                     let path = match &tab.item {
@@ -255,6 +251,7 @@ impl Workbench {
                             page.update(cx, |page, cx| page.shown(cx));
                             return page.clone().into();
                         }
+                        TabItem::Search => return search.clone().into(),
                     };
                     let view = docs.update(cx, |docs, cx| docs.open(path, cx));
                     // A scroll settles into a save.
@@ -315,17 +312,13 @@ impl Workbench {
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
             cx.new(|cx| ExplorerView::new(root, snapshot, workbench, &groups, cx))
         };
-        let search_panel = {
-            let (root, workbench) = (root.clone(), cx.weak_entity());
-            cx.new(|cx| SearchPanel::new(root, workbench, scanning, cx))
-        };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
         let mut subscriptions = vec![
             cx.observe(&editor_groups, |wb, _, cx| {
                 wb.refresh_watched_open_files(cx)
             }),
-            cx.observe_in(&editor_groups, window, Self::extensions_tab_closed),
+            cx.observe_in(&editor_groups, window, Self::singleton_tab_hidden),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
         ];
         if cx.has_global::<ExtensionService>() {
@@ -380,17 +373,13 @@ impl Workbench {
             sidebar_focus: cx.focus_handle(),
             editor_focus,
             sidebar_visible: restored.as_ref().is_none_or(|s| s.sidebar_visible),
-            active_sidebar: restored.as_ref().map_or(SidebarView::Explorer, |s| {
-                SidebarView::from_state_name(&s.sidebar_view)
-            }),
             sidebar_width: restored.as_ref().map_or(SIDEBAR_DEFAULT_WIDTH, |s| {
                 px(s.sidebar_width).clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
             }),
             explorer_view: Some(explorer.clone().into()),
             explorer,
             documents,
-            search_view: Some(search_panel.clone().into()),
-            search_panel,
+            search_view,
             extensions_page,
             editor_area: Some(editor_groups.clone().into()),
             editor_groups,
@@ -481,7 +470,7 @@ impl Workbench {
             version: crate::workspace_state::STATE_VERSION,
             sidebar_visible: self.sidebar_visible,
             sidebar_width: f32::from(self.sidebar_width),
-            sidebar_view: self.active_sidebar.state_name().into(),
+            sidebar_view: SidebarView::Explorer.state_name().into(),
             groups: groups.model().state(),
             scroll,
             group_widths: groups.group_widths().to_vec(),
@@ -716,9 +705,28 @@ impl Workbench {
         }
     }
 
-    /// The Search panel in the sidebar.
-    pub fn search_panel(&self) -> &Entity<SearchPanel> {
-        &self.search_panel
+    /// The Search tab's body.
+    pub fn search_view(&self) -> &Entity<SearchView> {
+        &self.search_view
+    }
+
+    /// Focuses the Search tab in whichever group holds it, or opens it in
+    /// the active group, then puts the cursor in its query.
+    pub fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor_groups(cx, EditorGroups::open_search);
+        self.search_view
+            .update(cx, |view, cx| view.focus_query(None, window, cx));
+        cx.notify();
+    }
+
+    /// Whether keyboard focus is in the open Search tab.
+    fn search_focused(&self, window: &Window, cx: &App) -> bool {
+        self.editor_groups.read(cx).model().search_tab().is_some()
+            && self
+                .search_view
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
     }
 
     /// The Extensions page, shown in the Extensions tab.
@@ -751,21 +759,26 @@ impl Workbench {
                 .contains_focused(window, cx)
     }
 
-    /// After the tabs changed: when the Extensions tab closed while it had
-    /// focus, focus goes to the editor area, so keys keep working.
-    fn extensions_tab_closed(
+    /// After the tabs changed: when the Extensions or Search tab closed, or
+    /// stopped being its group's active tab (say a search result opened in
+    /// its place), while it had focus, focus goes to the editor area, so
+    /// keys keep working.
+    fn singleton_tab_hidden(
         &mut self,
         groups: Entity<EditorGroupsView>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let closed = groups.read(cx).model().extensions_tab().is_none();
-        let had_focus = self
-            .extensions_page
-            .read(cx)
-            .focus_handle(cx)
-            .contains_focused(window, cx);
-        if closed && had_focus {
+        let model = groups.read(cx).model();
+        let hidden = |tab: Option<TabId>| {
+            tab.is_none_or(|id| !model.groups().iter().any(|g| g.active == Some(id)))
+        };
+        let (extensions_hidden, search_hidden) =
+            (hidden(model.extensions_tab()), hidden(model.search_tab()));
+        let had_focus = |handle: FocusHandle| handle.contains_focused(window, cx);
+        let lost = (extensions_hidden && had_focus(self.extensions_page.read(cx).focus_handle(cx)))
+            || (search_hidden && had_focus(self.search_view.read(cx).focus_handle(cx)));
+        if lost {
             self.focus_editor_area(window, cx);
         }
     }
@@ -876,14 +889,8 @@ impl Workbench {
         );
         flag("sideBarVisible", self.sidebar_visible);
         flag("sideBarFocus", sidebar_focus);
-        flag(
-            "explorerViewletFocus",
-            sidebar_focus && self.active_sidebar == SidebarView::Explorer,
-        );
-        flag(
-            "searchViewletFocus",
-            sidebar_focus && self.active_sidebar == SidebarView::Search,
-        );
+        flag("explorerViewletFocus", sidebar_focus);
+        flag("searchViewletFocus", self.search_focused(window, cx));
         flag(
             "extensionsViewletFocus",
             self.extensions_focused(window, cx),
@@ -939,8 +946,9 @@ impl Workbench {
         self.sidebar_visible
     }
 
+    /// The sidebar's view: always the Explorer.
     pub fn active_sidebar(&self) -> SidebarView {
-        self.active_sidebar
+        SidebarView::Explorer
     }
 
     pub fn sidebar_width(&self) -> Pixels {
@@ -971,29 +979,20 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let SidebarView::Explorer = view;
         self.sidebar_visible = true;
-        self.active_sidebar = view;
         self.layout_changed(cx);
         self.focus_sidebar(window, cx);
         cx.notify();
     }
 
-    /// Status-bar panel toggle click: the active panel's button hides the
-    /// sidebar, the other one switches to its panel. Runs the same commands
-    /// as the keybindings.
-    pub(crate) fn panel_toggle_clicked(
-        &mut self,
-        view: SidebarView,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let command = if self.sidebar_visible && self.active_sidebar == view {
+    /// Status-bar Explorer toggle click: hides the shown sidebar, or shows
+    /// the Explorer. Runs the same commands as the keybindings.
+    pub(crate) fn explorer_toggle_clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let command = if self.sidebar_visible {
             "workbench.action.toggleSidebarVisibility"
         } else {
-            match view {
-                SidebarView::Explorer => "workbench.view.explorer",
-                SidebarView::Search => "workbench.view.search",
-            }
+            "workbench.view.explorer"
         };
         self.run_command(command, None, window, cx);
     }
@@ -1012,7 +1011,6 @@ impl Workbench {
     pub fn set_sidebar_view(&mut self, kind: SidebarView, view: AnyView, cx: &mut Context<Self>) {
         match kind {
             SidebarView::Explorer => self.explorer_view = Some(view),
-            SidebarView::Search => self.search_view = Some(view),
         }
         cx.notify();
     }
@@ -1027,7 +1025,6 @@ impl Workbench {
     pub fn sidebar_view(&self, kind: SidebarView) -> Option<&AnyView> {
         match kind {
             SidebarView::Explorer => self.explorer_view.as_ref(),
-            SidebarView::Search => self.search_view.as_ref(),
         }
     }
 
@@ -1242,11 +1239,6 @@ fn register_shell_commands(commands: &mut CommandRegistry) {
         "View: Show Explorer",
         |wb, _, window, cx| wb.show_sidebar_view(SidebarView::Explorer, window, cx),
     );
-    commands.register(
-        "workbench.view.search",
-        "View: Show Search",
-        |wb, _, window, cx| wb.show_sidebar_view(SidebarView::Search, window, cx),
-    );
 }
 
 impl Focusable for Workbench {
@@ -1260,16 +1252,12 @@ impl Render for Workbench {
         let theme = cx.global::<AppState>().theme.clone();
         let ui = &theme.ui;
         let root_name = self.root_name();
-        let extensions_open = self
-            .editor_groups
-            .read(cx)
-            .model()
-            .extensions_tab()
-            .is_some();
-        let sidebar_slot = match self.active_sidebar {
-            SidebarView::Explorer => self.explorer_view.clone(),
-            SidebarView::Search => self.search_view.clone(),
-        };
+        let model = self.editor_groups.read(cx).model();
+        let extensions_open = model.extensions_tab().is_some();
+        let search_active = model
+            .active_tab()
+            .is_some_and(|t| t.item == TabItem::Search);
+        let sidebar_slot = self.explorer_view.clone();
         let editor_area = div()
             .id("editor-area")
             .track_focus(&self.editor_focus)
@@ -1318,7 +1306,6 @@ impl Render for Workbench {
                     .when(self.sidebar_visible, |row| {
                         row.child(sidebar::render(
                             self.sidebar_width,
-                            self.active_sidebar,
                             sidebar_slot,
                             &self.sidebar_focus,
                             ui,
@@ -1328,8 +1315,8 @@ impl Render for Workbench {
             )
             .child(status_bar::render(
                 panel_toggles::render(
-                    self.active_sidebar,
                     self.sidebar_visible,
+                    search_active,
                     extensions_open,
                     self.extension_badge(cx),
                     cx,

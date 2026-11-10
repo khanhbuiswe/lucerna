@@ -19,7 +19,6 @@ mod layout;
 mod open_files;
 pub mod open_requests;
 mod quick_open;
-mod search_panel;
 mod search_view;
 pub mod tasks;
 mod text_input;
@@ -39,7 +38,7 @@ pub use config_files::{
 pub use documents::{DocState, DocumentStatus, Documents};
 pub use editor_groups::{
     EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode,
-    Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
+    SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
 };
 pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
@@ -49,7 +48,11 @@ pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
 };
-pub use search_panel::{SEARCH_DEBOUNCE, SearchPanel};
+pub use search_view::model::{
+    FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
+    Row as SearchRow,
+};
+pub use search_view::{SEARCH_DEBOUNCE, SearchView};
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};
 pub use vim::VimLayer;

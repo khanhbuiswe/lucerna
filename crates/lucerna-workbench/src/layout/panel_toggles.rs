@@ -1,8 +1,8 @@
 //! The Explorer, Search and Extensions buttons at the status bar's left
-//! end. They replace the activity bar: the active panel's button hides the
-//! sidebar, another one switches to its panel. The Extensions button opens
-//! (or focuses) the Extensions tab instead, shows the number of available
-//! updates and spins while an install runs.
+//! end. They replace the activity bar: the Explorer button shows or hides
+//! the sidebar. The Search button opens (or focuses) the Search tab. The
+//! Extensions button opens (or focuses) the Extensions tab, shows the
+//! number of available updates and spins while an install runs.
 
 use std::time::Duration;
 
@@ -15,28 +15,26 @@ use crate::extensions::ExtensionService;
 use crate::icons::LOADER_CIRCLE;
 use crate::layout::color;
 use crate::ui::{BLOCKS_ICON, FILES_ICON, GRID, SEARCH_ICON, icon_button};
-use crate::{AppState, SidebarView, Workbench};
+use crate::{AppState, Workbench};
 
-/// `extensions_open`: the Extensions tab is open (its button shows
+/// `search_active`: the Search tab is the focused group's active tab;
+/// `extensions_open`: the Extensions tab is open (each button shows
 /// active).
 pub(crate) fn render(
-    active: SidebarView,
     sidebar_visible: bool,
+    search_active: bool,
     extensions_open: bool,
     badge: Option<String>,
     cx: &mut Context<Workbench>,
 ) -> impl IntoElement {
-    let toggle = |view: SidebarView, cx: &mut Context<Workbench>| {
-        let (id, icon) = match view {
-            SidebarView::Explorer => ("panel-toggle-explorer", FILES_ICON),
-            SidebarView::Search => ("panel-toggle-search", SEARCH_ICON),
-        };
-        icon_button(id, icon, sidebar_visible && view == active, cx)
-            .debug_selector(move || id.into())
-            .on_click(
-                cx.listener(move |wb, _, window, cx| wb.panel_toggle_clicked(view, window, cx)),
-            )
-    };
+    let explorer = icon_button("panel-toggle-explorer", FILES_ICON, sidebar_visible, cx)
+        .debug_selector(|| "panel-toggle-explorer".into())
+        .on_click(cx.listener(|wb, _, window, cx| wb.explorer_toggle_clicked(window, cx)));
+    let search = icon_button("panel-toggle-search", SEARCH_ICON, search_active, cx)
+        .debug_selector(|| "panel-toggle-search".into())
+        .on_click(cx.listener(|wb, _, window, cx| {
+            wb.run_command("workbench.action.findInFiles", None, window, cx);
+        }));
     let extensions = icon_button("panel-toggle-extensions", BLOCKS_ICON, extensions_open, cx)
         .debug_selector(|| "panel-toggle-extensions".into())
         .on_click(cx.listener(|wb, _, window, cx| {
@@ -95,8 +93,8 @@ pub(crate) fn render(
         .flex_none()
         .items_center()
         .gap_0p5()
-        .child(toggle(SidebarView::Explorer, cx))
-        .child(toggle(SidebarView::Search, cx))
+        .child(explorer)
+        .child(search)
         .child(
             div()
                 .relative()

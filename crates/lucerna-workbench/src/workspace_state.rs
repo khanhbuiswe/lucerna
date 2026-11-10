@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::editor_groups::{EXTENSIONS_TAB_STATE, GroupsState};
+use crate::editor_groups::{EXTENSIONS_TAB_STATE, GroupsState, SEARCH_TAB_STATE};
 
 /// The file format version; a file of any other version is set aside.
 pub(crate) const STATE_VERSION: u32 = 1;
@@ -20,9 +20,8 @@ pub struct WorkspaceState {
     pub version: u32,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
-    /// `"explorer"` or `"search"`; anything else (such as `"extensions"`
-    /// from before the Extensions page moved into a tab) restores the
-    /// Explorer.
+    /// `"explorer"`; anything else (such as `"extensions"` or `"search"`
+    /// from before those panels moved into tabs) restores the Explorer.
     pub sidebar_view: String,
     pub groups: GroupsState,
     /// Top visible row of each open tab's file, by absolute path.
@@ -38,14 +37,17 @@ impl WorkspaceState {
     /// Makes every path absolute (relative ones, from files written before
     /// tab paths were normalised, are joined onto `root`), then drops tabs
     /// (and scroll rows) of files that no longer exist, keeping each
-    /// group's active tab where it still exists. The Extensions tab
-    /// ([`EXTENSIONS_TAB_STATE`]) is kept as it is. Empty groups are left
+    /// group's active tab where it still exists. The Extensions and Search
+    /// tabs ([`EXTENSIONS_TAB_STATE`], [`SEARCH_TAB_STATE`]) are kept as
+    /// they are. Empty groups are left
     /// for [`crate::EditorGroups::restore`] to normalise.
     pub fn without_missing_files(mut self, root: &Path) -> Self {
-        let extensions = Path::new(EXTENSIONS_TAB_STATE);
+        let special = |path: &Path| {
+            path == Path::new(EXTENSIONS_TAB_STATE) || path == Path::new(SEARCH_TAB_STATE)
+        };
         for group in &mut self.groups.groups {
             for (path, _) in &mut group.tabs {
-                if path != extensions {
+                if !special(path) {
                     *path = absolute_path(root, path);
                 }
             }
@@ -55,7 +57,7 @@ impl WorkspaceState {
                 .map(|(path, _)| path.clone());
             group
                 .tabs
-                .retain(|(path, _)| path == extensions || path.exists());
+                .retain(|(path, _)| special(path) || path.exists());
             group.active = active_path.and_then(|a| group.tabs.iter().position(|(p, _)| *p == a));
         }
         self.scroll = std::mem::take(&mut self.scroll)

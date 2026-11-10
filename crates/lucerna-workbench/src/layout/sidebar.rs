@@ -1,6 +1,5 @@
-//! The resizable sidebar: the active view's slot (under a one-row header
-//! for Search; the Explorer draws its own root row),
-//! with a drag sash on its right edge.
+//! The resizable sidebar: the Explorer's slot (it draws its own root row,
+//! so there is no header), with a drag sash on its right edge.
 
 use gpui::{
     AnyView, App, Context, FocusHandle, IntoElement, ParentElement, Pixels, Render, Styled, Window,
@@ -9,8 +8,6 @@ use gpui::{
 use lucerna_theme::UiColors;
 
 use super::color;
-use crate::SidebarView;
-use crate::ui::{GRID, TREE_ROW_HEIGHT, UI_FONT_SIZE_SMALL};
 
 const SASH_WIDTH: Pixels = px(4.);
 
@@ -29,16 +26,10 @@ impl Render for SashGhost {
 
 pub(crate) fn render(
     width: Pixels,
-    active: SidebarView,
     slot: Option<AnyView>,
     focus: &FocusHandle,
     ui: &UiColors,
 ) -> impl IntoElement {
-    // The Explorer draws its own root row in place of a header.
-    let title = match active {
-        SidebarView::Explorer => None,
-        SidebarView::Search => Some("SEARCH"),
-    };
     div()
         .id("sidebar")
         .debug_selector(|| "sidebar".into())
@@ -52,20 +43,6 @@ pub(crate) fn render(
         .bg(color(ui.panel_background))
         .border_r_1()
         .border_color(color(ui.border))
-        .children(title.map(|title| {
-            // One light row, no heavy panel header.
-            div()
-                .debug_selector(|| "sidebar-header".into())
-                .flex()
-                .flex_none()
-                .items_center()
-                .h(px(TREE_ROW_HEIGHT))
-                .px(px(3. * GRID))
-                .text_size(px(UI_FONT_SIZE_SMALL))
-                .text_color(color(ui.text_muted))
-                .overflow_hidden()
-                .child(title)
-        }))
         .child(div().flex_1().min_h_0().overflow_hidden().children(slot))
         .child(
             div()

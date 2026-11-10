@@ -119,14 +119,14 @@ fn context_keys_reflect_focus(cx: &mut TestAppContext) {
     assert!(holds(&ctx, "sideBarFocus && explorerViewletFocus"));
     assert!(!holds(&ctx, "searchViewletFocus || editorFocus"));
 
-    // Bound to a command no task has registered yet: a harmless no-op.
-    cx.simulate_keystrokes("cmd-shift-f");
+    // Search is an editor tab: its focus is not the sidebar's.
     wb.update_in(cx, |wb, window, cx| {
         wb.run_command("workbench.view.search", None, window, cx)
     });
+    draw(cx);
     let ctx = context(&wb, cx);
-    assert!(holds(&ctx, "sideBarFocus && searchViewletFocus"));
-    assert!(!holds(&ctx, "explorerViewletFocus"));
+    assert!(holds(&ctx, "searchViewletFocus && editorFocus"));
+    assert!(!holds(&ctx, "sideBarFocus || explorerViewletFocus"));
 
     wb.update_in(cx, |wb, window, cx| wb.focus_editor_area(window, cx));
     let ctx = context(&wb, cx);
@@ -148,19 +148,18 @@ fn view_commands_show_and_switch_sidebar(cx: &mut TestAppContext) {
     init(cx, None);
     let (wb, cx) = open(cx);
     cx.simulate_keystrokes("cmd-b");
+    assert!(!wb.read_with(cx, |wb, _| wb.sidebar_visible()));
+    // Search is an editor tab: the sidebar stays hidden.
     let ran = wb.update_in(cx, |wb, window, cx| {
         wb.run_command("workbench.view.search", None, window, cx)
     });
     assert!(ran);
+    assert!(!wb.read_with(cx, |wb, _| wb.sidebar_visible()));
+    cx.simulate_keystrokes("cmd-shift-e");
     wb.read_with(cx, |wb, _| {
         assert!(wb.sidebar_visible());
-        assert_eq!(wb.active_sidebar(), SidebarView::Search);
+        assert_eq!(wb.active_sidebar(), SidebarView::Explorer);
     });
-    cx.simulate_keystrokes("cmd-shift-e");
-    assert_eq!(
-        wb.read_with(cx, |wb, _| wb.active_sidebar()),
-        SidebarView::Explorer
-    );
     let ran = wb.update_in(cx, |wb, window, cx| {
         wb.run_command("no.such.command", None, window, cx)
     });
@@ -301,25 +300,21 @@ fn unregistered_command_key_propagates_to_children(cx: &mut TestAppContext) {
 #[gpui::test]
 fn slots_show_views_and_track_focus(cx: &mut TestAppContext) {
     init(cx, None);
-    let search = Probe::new(cx);
+    let sidebar = Probe::new(cx);
     let editor = Probe::new(cx);
     let left = Probe::new(cx);
     let right = Probe::new(cx);
     let (wb, cx) = open(cx);
+    // Hidden, the sidebar's slot is not drawn.
+    cx.simulate_keystrokes("cmd-b");
     wb.update(cx, |wb, cx| {
-        wb.set_sidebar_view(SidebarView::Search, search.clone().into(), cx);
+        wb.set_sidebar_view(SidebarView::Explorer, sidebar.clone().into(), cx);
         wb.set_editor_area(editor.clone().into(), cx);
         wb.add_status_item(StatusBarSide::Left, left.clone().into(), cx);
         wb.add_status_item(StatusBarSide::Right, right.clone().into(), cx);
     });
     wb.read_with(cx, |wb, _| {
-        assert!(same(wb.sidebar_view(SidebarView::Search), &search));
-        // The built-in Explorer fills its own slot.
-        assert_eq!(
-            wb.sidebar_view(SidebarView::Explorer)
-                .map(|v| v.entity_id()),
-            Some(wb.explorer().entity_id())
-        );
+        assert!(same(wb.sidebar_view(SidebarView::Explorer), &sidebar));
         assert!(same(wb.editor_area(), &editor));
         // The built-in configuration error item and vim mode indicator
         // come first.
@@ -334,24 +329,23 @@ fn slots_show_views_and_track_focus(cx: &mut TestAppContext) {
         assert_eq!(r.entity_id(), right.entity_id());
     });
 
-    // Explorer is active: the Search slot is not drawn.
     draw(cx);
-    assert_eq!(search.read_with(cx, |p, _| p.renders), 0);
+    assert_eq!(sidebar.read_with(cx, |p, _| p.renders), 0);
     for probe in [&editor, &left, &right] {
         assert!(probe.read_with(cx, |p, _| p.renders) > 0);
     }
 
     wb.update_in(cx, |wb, window, cx| {
-        wb.show_sidebar_view(SidebarView::Search, window, cx)
+        wb.show_sidebar_view(SidebarView::Explorer, window, cx)
     });
     draw(cx);
-    assert!(search.read_with(cx, |p, _| p.renders) > 0);
+    assert!(sidebar.read_with(cx, |p, _| p.renders) > 0);
 
-    focus(&search, cx);
+    focus(&sidebar, cx);
     let ctx = context(&wb, cx);
     assert!(holds(
         &ctx,
-        "sideBarFocus && searchViewletFocus && !editorFocus"
+        "sideBarFocus && explorerViewletFocus && !searchViewletFocus && !editorFocus"
     ));
 
     focus(&editor, cx);

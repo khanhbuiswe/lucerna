@@ -58,6 +58,9 @@ pub struct UiColors {
     pub text: Rgba,
     pub text_muted: Rgba,
     pub element_selected: Rgba,
+    /// `element.background`: the resting background of a control or a
+    /// header row, such as a search result's file header.
+    pub element_background: Rgba,
     pub panel_background: Rgba,
     pub status_bar_background: Rgba,
     pub tab_active_background: Rgba,
@@ -150,6 +153,7 @@ impl UiColors {
             text: fg,
             text_muted: muted,
             element_selected: sel,
+            element_background: title_bar,
             panel_background: panel,
             status_bar_background: panel,
             tab_active_background: bg,

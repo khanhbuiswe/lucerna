@@ -4,8 +4,8 @@ mod model;
 mod view;
 
 pub use model::{
-    EXTENSIONS_TAB_STATE, EditorGroups, Group, GroupState, GroupsState, OpenMode, Tab, TabId,
-    TabItem,
+    EXTENSIONS_TAB_STATE, EditorGroups, Group, GroupState, GroupsState, OpenMode, SEARCH_TAB_STATE,
+    Tab, TabId, TabItem,
 };
 pub use view::{EditorGroupsView, TabBodyFactory, placeholder_body};
 

@@ -13,8 +13,8 @@ use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, GroupState, GroupsState, OpenMode, SidebarView, Workbench, WorkspaceState,
-    load_state, save_state, state_path,
+    AppState, EXTENSIONS_TAB_STATE, GroupState, GroupsState, OpenMode, SEARCH_TAB_STATE,
+    SidebarView, Workbench, WorkspaceState, load_state, save_state, state_path,
 };
 use tempfile::TempDir;
 
@@ -127,6 +127,30 @@ fn missing_files_dropped_on_restore() {
     assert_eq!(state.scroll, HashMap::from([(a, 7), (c, 7)]));
 }
 
+#[test]
+fn search_tab_survives_without_missing_files() {
+    let dir = TempDir::new().unwrap();
+    let a = dir.path().join("a");
+    fs::write(&a, "x").unwrap();
+    let mut state = sample(&[&a, &a]);
+    state.groups.groups[1].tabs = vec![
+        (PathBuf::from(SEARCH_TAB_STATE), true),
+        (PathBuf::from(EXTENSIONS_TAB_STATE), true),
+        (dir.path().join("gone"), true),
+    ];
+    state.groups.groups[1].active = Some(0);
+    let state = state.without_missing_files(dir.path());
+    assert_eq!(
+        state.groups.groups[1].tabs,
+        vec![
+            (PathBuf::from(SEARCH_TAB_STATE), true),
+            (PathBuf::from(EXTENSIONS_TAB_STATE), true),
+        ],
+        "the Search and Extensions tabs are not files"
+    );
+    assert_eq!(state.groups.groups[1].active, Some(0));
+}
+
 fn init(cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     assert!(error.is_none(), "keymap error: {error:?}");
@@ -226,7 +250,8 @@ fn restore_applies_scroll_and_sidebar(cx: &mut TestAppContext) {
     let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
     wb.read_with(cx, |wb, _| {
         assert!(!wb.sidebar_visible());
-        assert_eq!(wb.active_sidebar(), SidebarView::Search);
+        // `"search"` is from before the Search panel became a tab.
+        assert_eq!(wb.active_sidebar(), SidebarView::Explorer);
         assert_eq!(wb.sidebar_width(), px(333.));
     });
     let restored = cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).model().state());

@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lucerna_workbench::{
-    EXTENSIONS_TAB_STATE, EditorGroups, GroupState, GroupsState, OpenMode, TabItem,
+    EXTENSIONS_TAB_STATE, EditorGroups, GroupState, GroupsState, OpenMode, SEARCH_TAB_STATE,
+    TabItem,
 };
 
 fn p(name: &str) -> Arc<Path> {
@@ -421,5 +422,85 @@ fn extensions_tab_saved_and_restored_once() {
         })
         .collect();
     assert_eq!(ext, [(0, true)]);
+    assert_eq!(active_path(&restored).as_deref(), Some("b.rs"));
+}
+
+#[test]
+fn open_search_is_singleton_and_pinned() {
+    let mut g = EditorGroups::default();
+    assert_eq!(g.search_tab(), None);
+    g.open(p("a.rs"), OpenMode::Preview, true);
+    let search = g.open_search();
+    assert_eq!(g.search_tab(), Some(search));
+    let tab = g.active_tab().unwrap();
+    assert_eq!(tab.item, TabItem::Search);
+    assert!(tab.pinned);
+    assert_eq!(tab.path(), None);
+    assert_eq!(tab.title(), "Search");
+    // A preview open replaces the preview a.rs, not the Search tab.
+    g.open(p("b.rs"), OpenMode::Preview, true);
+    let items: Vec<&TabItem> = g.groups()[0].tabs.iter().map(|t| &t.item).collect();
+    assert_eq!(items, [&TabItem::File(p("b.rs")), &TabItem::Search]);
+
+    // From another group, the existing tab is focused, not copied.
+    g.open(p("c.rs"), OpenMode::ToSide, true);
+    assert_eq!(g.active_group(), 1);
+    assert_eq!(g.open_search(), search);
+    assert_eq!(g.active_group(), 0);
+    assert_eq!(g.active_tab().map(|t| t.id), Some(search));
+    assert_eq!(g.split_active(), 0, "the Search tab is never split");
+    assert_eq!(g.groups().len(), 2);
+    // The Extensions tab is another singleton.
+    g.open_extensions();
+    assert_eq!(g.search_tab(), Some(search));
+    g.close(search);
+    assert_eq!(g.search_tab(), None);
+}
+
+#[test]
+fn restore_keeps_first_search_tab() {
+    let mut g = EditorGroups::default();
+    g.open(p("/w/a.rs"), OpenMode::Pinned, true);
+    g.open_search();
+    let state = g.state();
+    assert_eq!(
+        state.groups[0].tabs,
+        [
+            (PathBuf::from("/w/a.rs"), true),
+            (PathBuf::from(SEARCH_TAB_STATE), true)
+        ]
+    );
+    let restored = EditorGroups::restore(&state);
+    assert_eq!(restored.state(), state);
+
+    // A hand-edited file with two (one unpinned) keeps the first, pinned.
+    let state = GroupsState {
+        groups: vec![
+            saved(&[(SEARCH_TAB_STATE, false)], Some(0)),
+            saved(
+                &[
+                    ("b.rs", true),
+                    (SEARCH_TAB_STATE, true),
+                    (EXTENSIONS_TAB_STATE, true),
+                ],
+                Some(0),
+            ),
+        ],
+        active_group: 1,
+    };
+    let restored = EditorGroups::restore(&state);
+    let search: Vec<(usize, bool)> = restored
+        .groups()
+        .iter()
+        .enumerate()
+        .flat_map(|(i, g)| {
+            g.tabs
+                .iter()
+                .filter(|t| t.item == TabItem::Search)
+                .map(move |t| (i, t.pinned))
+        })
+        .collect();
+    assert_eq!(search, [(0, true)]);
+    assert!(restored.extensions_tab().is_some());
     assert_eq!(active_path(&restored).as_deref(), Some("b.rs"));
 }
