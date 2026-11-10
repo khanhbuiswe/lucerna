@@ -365,7 +365,24 @@ pub(crate) fn find_char(
 /// is a boundary.
 pub(crate) fn paragraph(s: &BufferSnapshot, row: u32, count: u32, down: bool) -> (u32, bool) {
     let last = s.line_count().saturating_sub(1);
-    let empty = |r: u32| s.line(r).is_empty();
+    // Without copying the line: an empty row holds only its line break.
+    let empty = |r: u32| {
+        let start = s.point_to_offset(Point { row: r, column: 0 });
+        let end = if r + 1 < s.line_count() {
+            s.point_to_offset(Point {
+                row: r + 1,
+                column: 0,
+            })
+        } else {
+            s.len_bytes()
+        };
+        match end - start {
+            0 => true,
+            1 => matches!(s.byte_at(start), b'\n' | b'\r'),
+            2 => s.byte_at(start) == b'\r' && s.byte_at(start + 1) == b'\n',
+            _ => false,
+        }
+    };
     let mut row = row.min(last);
     for _ in 0..count {
         // Leave the run of empty rows we are in.
@@ -675,7 +692,7 @@ mod tests {
         s
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "[count]gg (startofline=true), count greater than last line"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "[count]gg (startofline=true), count greater than last line"
     #[test]
     fn count_gg_clamps_to_last_row_at_first_non_blank() {
         assert_keys(
@@ -693,7 +710,7 @@ mod tests {
         assert_keys("|a\nb\nc", "2G", "a\n|b\nc");
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "[count]G (startofline=false)"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "[count]G (startofline=false)"
     #[test]
     fn count_g_keeps_goal_without_startofline() {
         assert_keys_with(
@@ -726,26 +743,26 @@ mod tests {
         assert_keys(&start, "1%", &want.join("\n"));
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "Can handle 'f' then ','"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can handle 'f' then ','"
     #[test]
     fn find_and_reverse_repeat() {
         assert_keys("text tex|t", "fe,", "text t|ext");
         assert_keys("|a a a a a", "fa;;;,,,", "a |a a a a");
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "Can handle 't' twice"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can handle 't' twice"
     #[test]
     fn till_twice_does_not_jump() {
         assert_keys("text tex|t", "^tttt", "te|xt text");
     }
 
-    // Adapted from VSCodeVim motions.test.ts: "Can handle 'T' twice"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can handle 'T' twice"
     #[test]
     fn till_backward_twice_does_not_jump() {
         assert_keys("text tex|t", "$TtTt", "text t|ext");
     }
 
-    // Adapted from VSCodeVim repeatableMovement.test.ts: "repeat t"
+    // Adapted from VSCodeVim test/register/repeatableMovement.test.ts: "repeat t"
     #[test]
     fn semicolon_after_till_skips_adjacent_match() {
         assert_keys("|abc abc abc", "tc;", "abc a|bc abc");
@@ -797,7 +814,7 @@ mod tests {
         );
     }
 
-    // Adapted from VSCodeVim matchingBracket.test.ts: "% matches the nearest bracket"
+    // Adapted from VSCodeVim test/mode/normalModeTests/matchingBracket.test.ts: "% matches the nearest bracket"
     #[test]
     fn percent_matches_brackets() {
         assert_keys("|one (two)", "%", "one (two|)");
@@ -807,7 +824,7 @@ mod tests {
         assert_keys("|foo (bar", "%", "|foo (bar");
     }
 
-    // Adapted from VSCodeVim motion.test.ts: "paragraph motion"
+    // Adapted from VSCodeVim test/motion.test.ts: "paragraph motion"
     #[test]
     fn paragraph_motion() {
         assert_keys(&para_at(2, 0), "}", &para_at(4, 0));
@@ -818,6 +835,18 @@ mod tests {
         assert_keys(&para_at(1, 0), "{", &para_at(0, 0));
         assert_keys(&para_at(8, 1), "2{", &para_at(5, 0));
         assert_keys(&para_at(0, 3), "2}", &para_at(4, 0));
+    }
+
+    #[test]
+    fn paragraph_motion_with_crlf_and_lone_cr() {
+        let s = lucerna_text::Buffer::from_bytes(b"a\r\n\r\nb\r\nc\r\n\r\nd\r\n", false)
+            .unwrap()
+            .snapshot();
+        assert_eq!(super::paragraph(&s, 0, 1, true), (1, true));
+        assert_eq!(super::paragraph(&s, 2, 1, true), (4, true));
+        assert_eq!(super::paragraph(&s, 4, 1, true), (5, false));
+        assert_eq!(super::paragraph(&s, 5, 1, false), (4, true));
+        assert_eq!(super::paragraph(&s, 3, 2, false), (0, false));
     }
 
     #[test]

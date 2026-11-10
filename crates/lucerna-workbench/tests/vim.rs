@@ -635,8 +635,9 @@ fn escape_in_vim_search_restores_cursor(cx: &mut TestAppContext) {
     keys("l", cx);
     keys("/", cx);
     type_text("bar", cx);
-    // The incremental search moved the view to the match.
-    assert_eq!(cursor(&view, cx).row, 1);
+    // The incremental search selected the match; vim's cursor stays.
+    let selected = view.read_with(cx, |v, _| v.selection());
+    assert_eq!(selected.map(|r| r.start.row), Some(1));
     keys("escape", cx);
     assert!(!find_visible(&view, cx));
     assert_eq!(cursor(&view, cx), pt(0, 1));
@@ -777,4 +778,114 @@ fn key_in_editor_during_slash_ends_search(cx: &mut TestAppContext) {
     keys("enter", cx);
     assert!(find_visible(&view, cx));
     assert_ne!(find.read_with(cx, |f, _| f.active_index()), before);
+}
+
+#[gpui::test]
+fn keys_go_to_search_panel_input(cx: &mut TestAppContext) {
+    let (wb, view, cx) = vim_file("a\nb\nc", cx);
+    keys("cmd-shift-f", cx);
+    keys("j k", cx);
+    let query = cx.update(|_, cx| {
+        let panel = wb.read(cx).search_panel().clone();
+        panel.read(cx).query_input().read(cx).text().to_owned()
+    });
+    assert_eq!(query, "jk");
+    assert_eq!(cursor(&view, cx), pt(0, 0));
+}
+
+#[gpui::test]
+fn keys_go_to_extensions_page_input(cx: &mut TestAppContext) {
+    init(cx, Some(VIM_ON));
+    // The workbench's own tab bodies, so the Extensions tab shows its page.
+    let (wb, cx) =
+        cx.add_window_view(|window, cx| Workbench::new(PathBuf::from("/tmp/project"), window, cx));
+    draw(cx);
+    keys("cmd-shift-x", cx);
+    keys("j k", cx);
+    let query = cx.update(|_, cx| {
+        let page = wb.read(cx).extensions_page().clone();
+        page.read(cx).query_input().read(cx).text().to_owned()
+    });
+    assert_eq!(query, "jk");
+    assert!(cx.update(|_, cx| wb.read(cx).vim().read(cx).enabled()));
+}
+
+#[gpui::test]
+fn reload_in_visual_line_follows_moved_rows(cx: &mut TestAppContext) {
+    let text = "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\n";
+    let (wb, view, cx) = vim_file(text, cx);
+    keys("5 j shift-v j", cx);
+    let copied = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.copy_selection());
+    assert_eq!(copied(cx).as_deref(), Some("line 5\nline 6\n"));
+    reload(&view, text, &format!("new a\nnew b\n{text}"), cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::VisualLine));
+    assert_eq!(copied(cx).as_deref(), Some("line 5\nline 6\n"));
+    assert_eq!(overlay(&view, cx), Some(pt(8, 0)));
+}
+
+#[gpui::test]
+fn reload_in_visual_block_follows_moved_rows(cx: &mut TestAppContext) {
+    let text = "abcd\nefgh\nijkl\n";
+    let (_wb, view, cx) = vim_file(text, cx);
+    keys("j l ctrl-v j l", cx);
+    reload(&view, text, &format!("new\n{text}"), cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.copy_selection()).as_deref(),
+        Some("fg\njk")
+    );
+    assert_eq!(overlay(&view, cx), Some(pt(3, 2)));
+}
+
+#[gpui::test]
+fn view_cursor_is_vim_cursor_in_visual_modes(cx: &mut TestAppContext) {
+    let (_wb, view, cx) = vim_file("abcd\nefgh\nijkl\n", cx);
+    keys("ctrl-v j j", cx);
+    assert_eq!(overlay(&view, cx), Some(pt(2, 0)));
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+    keys("escape j l v k", cx);
+    assert_eq!(overlay(&view, cx), Some(pt(1, 1)));
+    assert_eq!(cursor(&view, cx), pt(1, 1));
+    keys("escape shift-v j", cx);
+    assert_eq!(cursor(&view, cx), overlay(&view, cx).unwrap());
+}
+
+#[gpui::test]
+fn disabling_vim_keeps_the_cursor(cx: &mut TestAppContext) {
+    let (_wb, view, cx) = vim_file("abc\ndef\nghi\n", cx);
+    keys("j l", cx);
+    set_user_settings(r#"{ "vim.enabled": false }"#, cx);
+    assert_eq!(cursor(&view, cx), pt(1, 1));
+    // A visual block goes; the cursor stays on vim's.
+    set_user_settings(VIM_ON, cx);
+    keys("ctrl-v j l", cx);
+    set_user_settings(r#"{ "vim.enabled": false }"#, cx);
+    assert_eq!(view.read_with(cx, |v, _| v.copy_selection()), None);
+    assert_eq!(cursor(&view, cx), pt(2, 2));
+    // A selection made in Normal mode (with the mouse) is kept.
+    set_user_settings(VIM_ON, cx);
+    view.update(cx, |v, cx| v.select(pt(0, 0)..pt(0, 2), cx));
+    draw(cx);
+    set_user_settings(r#"{ "vim.enabled": false }"#, cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.selection()),
+        Some(pt(0, 0)..pt(0, 2))
+    );
+}
+
+/// With vim off the mode indicator takes no room: the pending chord sits
+/// one status-bar gap after the panel toggles, as before vim existed.
+#[gpui::test]
+fn mode_indicator_takes_no_room_when_off(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_wb, cx) = workbench(cx);
+    draw(cx);
+    keys("cmd-k", cx);
+    let toggles = cx
+        .debug_bounds("panel-toggle-extensions")
+        .expect("the extensions toggle is drawn");
+    let chord = cx
+        .debug_bounds("pending-chord")
+        .expect("the pending chord is drawn");
+    // The status bar's gap is 3 * GRID (4 px).
+    assert_eq!(chord.left() - toggles.right(), gpui::px(12.));
 }

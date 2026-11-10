@@ -15,9 +15,12 @@ pub(crate) fn render(
     ui: &UiColors,
 ) -> impl IntoElement {
     let pending = pending_chord.map(|keys| {
-        div().id("pending-chord").child(format!(
-            "({keys}) was pressed. Waiting for second key of chord..."
-        ))
+        div()
+            .id("pending-chord")
+            .debug_selector(|| "pending-chord".into())
+            .child(format!(
+                "({keys}) was pressed. Waiting for second key of chord..."
+            ))
     });
     div()
         .debug_selector(|| "status-bar".into())

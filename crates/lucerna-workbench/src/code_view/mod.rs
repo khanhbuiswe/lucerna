@@ -648,10 +648,23 @@ impl CodeView {
         self.selection.filter(|s| !s.is_empty()).map(|s| s.range())
     }
 
-    /// The cursor: the moving end of the selection.
+    /// The cursor: the painted cursor overlay (vim's) when there is one,
+    /// else the moving end of the selection. The status bar, find and the
+    /// bracket highlight follow it.
     pub fn cursor(&self) -> Point {
+        self.cursor_overlay
+            .map_or_else(|| self.selection_head(), |o| o.at)
+    }
+
+    /// The moving end of the selection, whatever the overlay shows.
+    pub fn selection_head(&self) -> Point {
         self.selection
             .map_or(Point { row: 0, column: 0 }, |s| s.head)
+    }
+
+    /// Whether a rectangular selection is shown.
+    pub fn has_block_selection(&self) -> bool {
+        self.block_selection.is_some()
     }
 
     /// Selects `range`; its end becomes the cursor.
@@ -684,14 +697,14 @@ impl CodeView {
         cx.notify();
     }
 
-    /// Selects a rectangle given as one range per row, dropping the
-    /// normal selection; `None` or no ranges clears it.
+    /// Selects a rectangle given as one range per row, collapsing the
+    /// normal selection to its head; `None` or no ranges clears it.
     pub fn set_block_selection(
         &mut self,
         ranges: Option<Vec<Range<Point>>>,
         cx: &mut Context<Self>,
     ) {
-        self.selection = None;
+        self.selection = self.selection.map(|s| Selection::cursor(s.head));
         self.block_selection = ranges.filter(|r| !r.is_empty());
         self.selection_generation += 1;
         self.update_brackets();
@@ -713,6 +726,7 @@ impl CodeView {
     pub fn set_cursor_overlay(&mut self, overlay: Option<CursorOverlay>, cx: &mut Context<Self>) {
         if self.cursor_overlay != overlay {
             self.cursor_overlay = overlay;
+            self.update_brackets();
             cx.notify();
         }
     }
@@ -734,8 +748,9 @@ impl CodeView {
     /// Finds the pair of the bracket next to the cursor; uses the syntax
     /// tree when there is one, so brackets in strings are skipped.
     fn update_brackets(&mut self) {
-        self.brackets = self.selection.and_then(|s| {
-            let at = selection::boundary_offset(&self.snapshot, s.head);
+        let shown = self.selection.is_some() || self.cursor_overlay.is_some();
+        self.brackets = shown.then(|| self.cursor()).and_then(|cursor| {
+            let at = selection::boundary_offset(&self.snapshot, cursor);
             let partner = self.matching_bracket(at)?;
             Some([self.matching_bracket(partner)?, partner])
         });

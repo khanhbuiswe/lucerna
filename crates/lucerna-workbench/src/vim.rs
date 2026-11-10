@@ -349,9 +349,15 @@ impl VimLayer {
                 let Some(view) = state.view.upgrade() else {
                     continue;
                 };
+                // The cursor stays where vim had it; a visual selection
+                // goes, one made in Normal mode (with the mouse) stays.
+                let at = state.vim.cursor();
+                let visual = state.vim.mode() != Mode::Normal;
                 view.update(cx, |v, cx| {
                     v.set_cursor_overlay(None, cx);
-                    v.set_block_selection(None, cx);
+                    if visual || v.has_block_selection() {
+                        v.select(at..at, cx);
+                    }
                 });
             }
         } else {
@@ -370,7 +376,7 @@ impl VimLayer {
         }
         let (cursor, generation) = {
             let v = view.read(cx);
-            (v.cursor(), v.selection_generation())
+            (v.selection_head(), v.selection_generation())
         };
         let subscriptions = [
             cx.subscribe(view, Self::view_event),
@@ -430,14 +436,10 @@ impl VimLayer {
         let Some(state) = self.views.get_mut(&id) else {
             return;
         };
-        if state.vim.mode() == Mode::Normal {
-            // Like the view's own cursor, it stays on its line.
-            let at = state.vim.cursor();
-            state.vim.set_cursor(Point {
-                row: reload.adjust_row(at.row, snapshot.line_count()),
-                column: at.column,
-            });
-        }
+        // Like the view's own cursor and selection, both ends stay on
+        // their lines.
+        let lines = snapshot.line_count();
+        state.vim.remap_rows(|row| reload.adjust_row(row, lines));
         state.vim.clamp(snapshot);
         if state.vim.mode() == Mode::Normal {
             // A selection the view kept (its rows did not change) moved
@@ -472,7 +474,7 @@ impl VimLayer {
         let v = view.read(cx);
         let ready = takes_keys(v);
         if v.selection_generation() != state.generation {
-            state.vim.reset(v.cursor());
+            state.vim.reset(v.selection_head());
             state.vim.clamp(v.snapshot());
             state.generation = v.selection_generation();
         } else if !ready || v.cursor_overlay().is_some() {
@@ -521,7 +523,7 @@ impl VimLayer {
                 return false;
             };
             if v.selection_generation() != state.generation {
-                state.vim.reset(v.cursor());
+                state.vim.reset(v.selection_head());
                 state.generation = v.selection_generation();
             }
             let info = Info {
@@ -554,7 +556,7 @@ impl VimLayer {
             Err(_) => {
                 if let Some(state) = self.views.get_mut(&id) {
                     let v = view.read(cx);
-                    state.vim.reset(v.cursor());
+                    state.vim.reset(v.selection_head());
                     state.vim.clamp(v.snapshot());
                 }
                 self.sync_view(view, Reveal::None, cx);

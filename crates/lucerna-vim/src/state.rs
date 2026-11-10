@@ -199,6 +199,14 @@ impl Vim {
         self.goal = None;
     }
 
+    /// Moves the cursor and the anchor to the rows `f` gives (a reload
+    /// moved the lines), keeping the mode, the columns and the goal. The
+    /// points are clamped on the next [`Vim::feed`] or [`Vim::clamp`].
+    pub fn remap_rows(&mut self, f: impl Fn(u32) -> u32) {
+        self.cursor.row = f(self.cursor.row);
+        self.anchor.row = f(self.anchor.row);
+    }
+
     /// The pending keys for the indicator, e.g. "5", "g", "2f".
     pub fn pending(&self) -> &str {
         &self.pending
@@ -681,7 +689,11 @@ impl Vim {
         let snapshot = view.snapshot();
         let text = line(snapshot, self.cursor.row);
         let from = self.cursor.column as usize;
-        let Some(at) = text[from..].find(['(', ')', '[', ']', '{', '}']) else {
+        // The cursor may be past the end of the truncated line.
+        let Some(at) = text
+            .get(from..)
+            .and_then(|rest| rest.find(['(', ')', '[', ']', '{', '}']))
+        else {
             return Outcome::Handled(vec![]);
         };
         let offset = snapshot.point_to_offset(Point {
@@ -918,6 +930,32 @@ mod tests {
         let mut vim = Vim::new(Point { row: 0, column: 4 });
         vim.clamp(&view.snapshot);
         assert_eq!(vim.cursor(), Point { row: 0, column: 2 });
+    }
+
+    #[test]
+    fn remap_rows_moves_both_ends_and_keeps_the_mode() {
+        let view = TestView::new("|0\n1\n2\n3\n4\n5\n6\n7\n8");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "5jVj");
+        vim.remap_rows(|r| r + 2);
+        assert_eq!(vim.mode(), Mode::VisualLine);
+        assert_eq!(vim.cursor(), Point { row: 8, column: 0 });
+        assert_eq!(
+            vim.selection(&view.snapshot, 4),
+            Some(crate::VimSelection::Line {
+                start_row: 7,
+                end_row: 8
+            })
+        );
+    }
+
+    #[test]
+    fn percent_after_visual_dollar_on_a_huge_line_does_not_panic() {
+        let long = format!("|({})", "x".repeat(20_000));
+        let view = TestView::new(&long);
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "v$%");
+        assert_eq!(vim.mode(), Mode::Visual);
     }
 
     #[test]
