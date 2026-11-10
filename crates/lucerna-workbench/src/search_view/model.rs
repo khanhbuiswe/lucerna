@@ -59,16 +59,39 @@ impl Results {
     /// Adds a file's excerpts, keeping files sorted by path. An existing
     /// path gets the excerpts appended.
     pub fn add_file(&mut self, path: Arc<Path>, excerpts: Vec<Excerpt>) {
-        match self.files.binary_search_by(|f| f.path.cmp(&path)) {
-            Ok(i) => self.files[i].excerpts.extend(excerpts),
-            Err(i) => self.files.insert(
-                i,
-                FileResult {
+        self.add_files(std::iter::once((path, excerpts)));
+    }
+
+    /// Adds a batch of files like repeated [`add_file`](Self::add_file)
+    /// calls (sorted by path, same paths merged in batch order) but sorts
+    /// and rebuilds the rows once.
+    pub fn add_files(&mut self, batch: impl IntoIterator<Item = (Arc<Path>, Vec<Excerpt>)>) {
+        let mut fresh: Vec<FileResult> = Vec::new();
+        for (path, excerpts) in batch {
+            match self.files.binary_search_by(|f| f.path.cmp(&path)) {
+                Ok(i) => self.files[i].excerpts.extend(excerpts),
+                Err(_) => fresh.push(FileResult {
                     path,
                     excerpts,
                     collapsed: false,
-                },
-            ),
+                }),
+            }
+        }
+        if fresh.is_empty() && self.files.is_empty() {
+            return;
+        }
+        // Stable sort keeps batch order among equal paths; merge them.
+        fresh.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut merged: Vec<FileResult> = Vec::with_capacity(fresh.len());
+        for f in fresh {
+            match merged.last_mut() {
+                Some(last) if last.path == f.path => last.excerpts.extend(f.excerpts),
+                _ => merged.push(f),
+            }
+        }
+        if !merged.is_empty() {
+            self.files.extend(merged);
+            self.files.sort_by(|a, b| a.path.cmp(&b.path));
         }
         self.rebuild();
     }
@@ -221,6 +244,47 @@ impl Results {
     }
 }
 
+/// A line with every tab replaced by spaces up to the next multiple of the
+/// tab size, plus the mapping of byte offsets into the original line.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ExpandedLine {
+    pub text: String,
+    /// `offsets[i]` is the expanded offset of original byte `i`; one entry
+    /// per original byte plus the end.
+    offsets: Vec<usize>,
+}
+
+impl ExpandedLine {
+    /// The expanded offset of original byte `offset` (clamped to the end).
+    pub fn map(&self, offset: usize) -> usize {
+        self.offsets[offset.min(self.offsets.len() - 1)]
+    }
+}
+
+/// Expands tabs of `line` to `tab_size` columns (at least 1), counting
+/// columns in chars.
+pub fn expand_tabs(line: &str, tab_size: u32) -> ExpandedLine {
+    let tab_size = tab_size.max(1) as usize;
+    let mut text = String::with_capacity(line.len());
+    let mut offsets = Vec::with_capacity(line.len() + 1);
+    let mut column = 0;
+    for c in line.chars() {
+        for _ in 0..c.len_utf8() {
+            offsets.push(text.len());
+        }
+        if c == '\t' {
+            let n = tab_size - column % tab_size;
+            text.extend(std::iter::repeat_n(' ', n));
+            column += n;
+        } else {
+            text.push(c);
+            column += 1;
+        }
+    }
+    offsets.push(text.len());
+    ExpandedLine { text, offsets }
+}
+
 /// The first non-empty match of `query` in `line`.
 pub fn first_match(query: &SearchQuery, line: &str) -> Option<Range<usize>> {
     let regex = build_regex(
@@ -357,6 +421,60 @@ mod tests {
         let names: Vec<_> = r.files().iter().map(|f| f.path.to_path_buf()).collect();
         assert_eq!(names, [Path::new("a"), Path::new("b")]);
         assert_eq!(r.files()[1].excerpts.len(), 2);
+    }
+
+    #[test]
+    fn add_files_matches_repeated_add_file() {
+        let batch = || {
+            vec![
+                (path("c"), vec![excerpt(1)]),
+                (path("a"), vec![excerpt(5)]),
+                (path("b"), vec![excerpt(1)]),
+                (path("a"), vec![excerpt(50)]),
+                (path("c"), vec![excerpt(9)]),
+            ]
+        };
+        let mut one = Results::default();
+        one.add_file(path("b"), vec![excerpt(30)]);
+        let mut many = Results::default();
+        many.add_file(path("b"), vec![excerpt(30)]);
+        for (p, e) in batch() {
+            one.add_file(p, e);
+        }
+        many.add_files(batch());
+        let shape = |r: &Results| {
+            r.files()
+                .iter()
+                .map(|f| {
+                    let starts: Vec<u32> =
+                        f.excerpts.iter().map(|e| e.lines[0].line_number).collect();
+                    (f.path.to_path_buf(), starts)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape(&one), shape(&many));
+        assert_eq!(one.rows(), many.rows());
+        assert_eq!(many.files().len(), 3);
+        assert_eq!(many.files()[0].excerpts.len(), 2);
+    }
+
+    #[test]
+    fn expand_tabs_maps_offsets_on_mixed_line() {
+        // "\té\tab\tx": tab(4) é(1) tab(to 8: 3) a b tab(to 12: 2)...
+        let line = "\té\tab\tx";
+        let e = expand_tabs(line, 4);
+        assert_eq!(e.text, "    é   ab  x");
+        // Original offsets: \t=0, é=1..3, \t=3, a=4, b=5, \t=6, x=7, end=8.
+        assert_eq!(e.map(0), 0);
+        assert_eq!(e.map(1), 4);
+        assert_eq!(e.map(3), 4 + "é".len());
+        assert_eq!(e.map(4), 4 + "é".len() + 3);
+        assert_eq!(e.map(7), e.text.len() - 1);
+        assert_eq!(e.map(8), e.text.len());
+        assert_eq!(&e.text[e.map(4)..e.map(6)], "ab");
+        assert!(e.text.is_char_boundary(e.map(2)));
+        assert_eq!(expand_tabs("plain", 4).text, "plain");
+        assert_eq!(expand_tabs("\t", 0).text, " ");
     }
 
     #[test]

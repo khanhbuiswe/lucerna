@@ -25,7 +25,7 @@ use lucerna_project::{SearchEvent, SearchQuery, search};
 use lucerna_text::Point;
 
 use super::highlight::{FileHighlights, LineSpans, highlight_file};
-use super::model::{LineAnchor, LineRef, Results, Row, first_match, globs, summary};
+use super::model::{LineAnchor, LineRef, Results, Row, expand_tabs, first_match, globs, summary};
 use crate::code_view::CodeView;
 use crate::find_widget::single_line_selection;
 use crate::icons::{CHEVRONS_DOWN_UP, LIST_FILTER, REFRESH_CW};
@@ -118,6 +118,7 @@ struct RowStyle {
     font_size: Pixels,
     line_height: Pixels,
     gutter: Pixels,
+    tab_size: u32,
 }
 
 /// The most query characters the tab title shows.
@@ -450,9 +451,14 @@ impl SearchView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(text) = text {
-            self.query
-                .update(cx, |input, cx| input.set_text(&text, window, cx));
+        match text {
+            Some(text) => self
+                .query
+                .update(cx, |input, cx| input.set_text(&text, window, cx)),
+            // Typing replaces the old query, as in VS Code.
+            None => self
+                .query
+                .update(cx, |input, cx| input.select_all(window, cx)),
         }
         let focus = self.query.focus_handle(cx);
         window.focus(&focus, cx);
@@ -577,6 +583,20 @@ impl SearchView {
             self.highlight_theme = theme;
             self.reset_highlights();
         }
+        let visible: HashSet<Arc<Path>> = files
+            .iter()
+            .filter_map(|&f| self.results.files().get(f))
+            .map(|f| f.path.clone())
+            .collect();
+        // Files scrolled past must not hold up the ones on screen.
+        let pending = &mut self.highlight_pending;
+        self.highlight_queue.retain(|path| {
+            let keep = visible.contains(path);
+            if !keep {
+                pending.remove(path);
+            }
+            keep
+        });
         for file in files {
             let Some(result) = self.results.files().get(file) else {
                 continue;
@@ -645,12 +665,13 @@ impl SearchView {
     }
 
     /// Adds a batch of events of search `generation`; stale ones are
-    /// dropped. Runs once per batch, never per frame: each file added
-    /// rebuilds the rows.
+    /// dropped. Runs once per batch, never per frame: the batch's
+    /// files are added and the rows rebuilt once.
     fn apply_events(&mut self, generation: u64, events: Vec<SearchEvent>, cx: &mut Context<Self>) {
         if generation != self.generation {
             return;
         }
+        let mut batch = Vec::new();
         for event in events {
             match event {
                 SearchEvent::File { path, excerpts } => {
@@ -665,12 +686,13 @@ impl SearchView {
                         .max()
                         .unwrap_or(0);
                     self.max_line_number = self.max_line_number.max(last);
-                    self.results.add_file(path, excerpts);
+                    batch.push((path, excerpts));
                 }
                 SearchEvent::Done { truncated, .. } => self.done = Some(truncated),
                 SearchEvent::Error(err) => self.error = Some(err),
             }
         }
+        self.results.add_files(batch);
         cx.notify();
     }
 
@@ -795,6 +817,10 @@ impl SearchView {
             font_size,
             line_height: px(line_height),
             gutter: char_width * digits as f32 + px(4. * GRID),
+            tab_size: settings
+                .get::<u32>("editor.tabSize", None)
+                .unwrap_or(4)
+                .max(1),
         }
     }
 
@@ -878,7 +904,15 @@ impl SearchView {
                 px(FILE_ICON_SIZE),
                 color(ui.icon_muted).into(),
             ))
-            .child(div().flex_none().text_color(color(ui.text)).child(name))
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(color(ui.text))
+                    .child(name),
+            )
             .child(
                 div()
                     .flex_1()
@@ -921,8 +955,20 @@ impl SearchView {
             .get(r.file)
             .and_then(|f| self.highlights.get(&f.path))
             .and_then(|h| h.get(&line.line_number));
-        let highlights = line_highlights(text, &line.ranges, spans, theme, mark);
-        let styled = StyledText::new(text.clone()).with_highlights(highlights);
+        // `CodeView` expands tabs itself; gpui would draw them raw.
+        let expanded = expand_tabs(text, style.tab_size);
+        let ranges: Vec<Range<usize>> = line
+            .ranges
+            .iter()
+            .map(|r| expanded.map(r.start)..expanded.map(r.end))
+            .collect();
+        let spans: Option<LineSpans> = spans.map(|s| {
+            s.iter()
+                .map(|(r, c)| (expanded.map(r.start)..expanded.map(r.end), c.clone()))
+                .collect()
+        });
+        let highlights = line_highlights(&expanded.text, &ranges, spans.as_ref(), theme, mark);
+        let styled = StyledText::new(expanded.text.clone()).with_highlights(highlights);
         let selector = format!("search-line-{}-{}-{}", r.file, r.excerpt, r.line);
         let anchor = self.results.anchor_of(r);
         let selected = self.selected() == Some(r);
@@ -1012,7 +1058,7 @@ fn line_highlights(
         .windows(2)
         .filter_map(|w| {
             let seg = w[0]..w[1];
-            // The narrowest span covering the segment wins; later on a tie.
+            // The narrowest span covering the segment wins; the first on a tie.
             let style = syntax
                 .iter()
                 .filter(|(r, _)| r.start <= seg.start && seg.end <= r.end)
@@ -1113,6 +1159,23 @@ impl Render for SearchView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<AppState>().theme.ui.clone();
         let muted = color(ui.text_muted);
+        if !self.searchable {
+            return div()
+                .id("search-view")
+                .debug_selector(|| "search-view".into())
+                .track_focus(&self.focus)
+                .size_full()
+                .bg(color(ui.editor_background))
+                .child(
+                    div()
+                        .debug_selector(|| "search-summary".into())
+                        .px(px(3. * GRID))
+                        .py(px(2. * GRID))
+                        .text_size(px(UI_FONT_SIZE_SMALL))
+                        .text_color(muted)
+                        .child(UNAVAILABLE),
+                );
+        }
         let toggle = |id, text, on, flag: fn(&mut Self) -> &mut bool, cx: &mut Context<Self>| {
             toggle_button(id, text, on, cx)
                 .on_click(cx.listener(move |view, _, _, cx| view.toggle(flag, cx)))

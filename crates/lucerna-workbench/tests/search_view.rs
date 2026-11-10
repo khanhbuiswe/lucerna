@@ -192,6 +192,20 @@ fn needles() -> TempDir {
 }
 
 #[gpui::test]
+fn find_in_files_again_selects_the_query(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = needles();
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    type_text("needle", cx);
+    assert_eq!(query(&view, cx), "needle");
+    keys("cmd-shift-f", cx);
+    type_text("nothing", cx);
+    assert_eq!(query(&view, cx), "nothing");
+}
+
+#[gpui::test]
 fn find_in_files_opens_search_tab(cx: &mut TestAppContext) {
     init(cx);
     let dir = needles();
@@ -712,6 +726,9 @@ fn search_is_unavailable_in_single_file_mode(cx: &mut TestAppContext) {
         Some("Search is unavailable when a single file is opened")
     );
     assert!(cx.debug_bounds("search-summary").is_some());
+    assert!(cx.debug_bounds("search-filters").is_none());
+    assert!(cx.debug_bounds("search-refresh").is_none());
+    assert!(cx.debug_bounds("search-filter-row").is_none());
 }
 
 fn highlights_of(

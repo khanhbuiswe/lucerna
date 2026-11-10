@@ -95,6 +95,14 @@ impl TextInput {
         self.selected.clone()
     }
 
+    /// Selects the whole text.
+    pub fn select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected = 0..self.text.len();
+        self.reversed = false;
+        window.notify_text_selection_changed(&self.focus);
+        cx.notify();
+    }
+
     fn cursor(&self) -> usize {
         if self.reversed {
             self.selected.start
