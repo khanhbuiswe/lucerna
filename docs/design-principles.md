@@ -23,6 +23,15 @@ Lucerna muốn là một bản VS Code gọn hơn với giao diện tối giản
    - Giao diện và hiệu năng: theo **Zed**.
    - Nếu lệch khỏi cả hai thì phải ghi rõ lý do trong spec.
 
+### 1.1 Giao diện theo Zed ngay từ thiết kế đầu tiên
+
+Bài học từ Search: Lucerna làm Search panel ở sidebar theo kiểu VS Code, rồi phải làm lại thành tab và thanh tìm kiếm theo Zed. Để không lặp lại:
+
+- **Bố cục và component lấy theo Zed ngay từ spec đầu tiên.** Tính năng gì cũng bắt đầu bằng câu hỏi "màn này Zed trông thế nào": nó là tab, panel, toolbar hay modal; nó dùng những component nào. Không làm bản giao diện kiểu VS Code trước rồi chỉnh sau. Chỉ lệnh, phím, settings và hành vi là theo VS Code.
+- **Dùng chung component giữa các tính năng**, như Zed làm. Mọi ô nhập tìm kiếm (thanh tìm trong file, tab Search, sau này là picker hay filter) đều dùng cùng một khung ô query: viền 1 px, bo góc, các toggle `Aa` `ab` `.*` nằm trong ô. Chúng cũng dùng cùng chiều cao thanh, cùng cụm nút `‹ ›` và bộ đếm, cùng màu nền. Thêm tính năng mới thì tìm component có sẵn trong `ui.rs` trước; chưa có thì tạo ở đó để các tính năng sau dùng lại.
+- **Spec phải có ảnh hoặc mô tả màn tương ứng của Zed** (đọc mã nguồn ở revision đang pin, hoặc chụp màn hình Zed). Spec cũng ghi rõ chỗ nào Lucerna khác Zed và vì sao, chẳng hạn bỏ Replace vì Lucerna chỉ để xem code.
+- **Review giao diện so với Zed** trước khi coi tính năng là xong: chạy app, đặt cạnh Zed, kiểm tra khoảng cách, chiều cao, màu nền, viền, hover và trạng thái trống.
+
 ## 2. Giấy phép khi tham khảo
 
 | Nguồn | Giấy phép | Được làm gì |

@@ -11,6 +11,8 @@ When the two differ:
 - Behaviour, settings, commands and keys follow VS Code.
 - UI and performance follow Zed.
 
+Design the UI after Zed from the first spec, not as a VS Code-style layout fixed later. Reuse shared components from `ui.rs`, such as the search input box and the bar layout, so features look consistent. See `docs/design-principles.md` §1.1.
+
 Zed's crates are mostly GPL. Learn their design, but never copy their code.
 
 ## Project facts
