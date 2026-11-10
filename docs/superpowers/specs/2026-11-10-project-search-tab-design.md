@@ -1,6 +1,6 @@
 # Project Search dạng tab (thay Search panel ở sidebar)
 
-Ngày 2026-11-10. Trạng thái: chờ duyệt spec.
+Ngày 2026-11-10. Trạng thái: đã triển khai (commit 641094c..c6fdba9).
 
 ## 1. Mục tiêu
 
