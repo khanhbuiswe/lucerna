@@ -1190,3 +1190,232 @@ fn long_query_is_cut_in_the_tab_title(cx: &mut TestAppContext) {
     type_text(&exact, cx);
     assert_eq!(tab_title(&wb, cx), Some(exact), "30 characters are not cut");
 }
+
+fn match_label(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> String {
+    view.read_with(cx, |v, _| v.match_label())
+}
+
+fn bounds(selector: &'static str, cx: &mut VisualTestContext) -> gpui::Bounds<gpui::Pixels> {
+    cx.debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"))
+}
+
+/// Scrolls the results list down by `pixels`.
+fn scroll_list(pixels: f32, cx: &mut VisualTestContext) {
+    let list = bounds("search-list", cx);
+    cx.simulate_event(gpui::ScrollEvent {
+        position: list.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-pixels))),
+        ..Default::default()
+    });
+    draw(cx);
+}
+
+#[gpui::test]
+fn nav_buttons_step_like_f4(cx: &mut TestAppContext) {
+    let (dir, wb, view, cx) = searched(cx);
+    assert_eq!(match_label(&view, cx), "4 results", "nothing selected yet");
+    click("search-next", cx);
+    assert_eq!(active_path(&dir, &wb, cx), Some(p("a.rs")));
+    assert_eq!(cursor_row(&wb, cx), 0);
+    assert_eq!(match_label(&view, cx), "1/4");
+    keys("cmd-shift-f", cx);
+    click("search-next", cx);
+    assert_eq!(active_path(&dir, &wb, cx), Some(p("b.rs")));
+    assert_eq!(match_label(&view, cx), "2/4");
+    keys("cmd-shift-f", cx);
+    click("search-previous", cx);
+    assert_eq!(active_path(&dir, &wb, cx), Some(p("a.rs")));
+    assert_eq!(match_label(&view, cx), "1/4");
+    keys("cmd-shift-f", cx);
+    click("search-previous", cx);
+    assert_eq!(active_path(&dir, &wb, cx), Some(p("sub/c.rs")), "wraps");
+    assert_eq!(match_label(&view, cx), "4/4");
+}
+
+#[gpui::test]
+fn counter_and_border_without_matches(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = needles();
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    assert_eq!(match_label(&view, cx), "0/0");
+    assert!(cx.debug_bounds("search-query").is_some());
+    type_text("zzz", cx);
+    settle_search(cx);
+    assert_eq!(match_label(&view, cx), "0/0");
+    assert!(
+        cx.debug_bounds("search-query-invalid").is_some(),
+        "no match: the box border shows the error color"
+    );
+    assert!(
+        cx.debug_bounds("search-summary").is_some(),
+        "\"No results found\" stays under the bar"
+    );
+}
+
+#[gpui::test]
+fn finished_search_drops_the_summary_line(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = searched(cx);
+    assert_eq!(summary(&view, cx).as_deref(), Some("4 results in 3 files"));
+    assert!(
+        cx.debug_bounds("search-summary").is_none(),
+        "the counter shows the count"
+    );
+    assert!(cx.debug_bounds("search-query").is_some());
+}
+
+#[gpui::test]
+fn empty_state_lists_options(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = needles();
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    assert!(cx.debug_bounds("search-empty-state").is_some());
+    for row in [
+        "search-empty-filters",
+        "search-empty-case",
+        "search-empty-word",
+        "search-empty-regex",
+    ] {
+        assert!(cx.debug_bounds(row).is_some(), "{row}");
+    }
+    click("search-empty-case", cx);
+    assert!(view.read_with(cx, |v, _| v.case_sensitive()));
+    click("search-empty-filters", cx);
+    assert!(cx.debug_bounds("search-include").is_some());
+
+    // The filter row took focus: back to the query.
+    keys("cmd-shift-f", cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    assert!(cx.debug_bounds("search-empty-state").is_none());
+}
+
+#[gpui::test]
+fn header_open_file_button_opens_first_match(cx: &mut TestAppContext) {
+    let (dir, wb, view, cx) = searched(cx);
+    click("search-open-file-1", cx);
+    assert_eq!(active_path(&dir, &wb, cx), Some(p("b.rs")));
+    assert_eq!(cursor_row(&wb, cx), 0);
+    let sel = view.read_with(cx, |v, _| v.selected().unwrap());
+    assert_eq!((sel.file, sel.excerpt, sel.line), (1, 0, 0));
+    assert_eq!(row_count(&view, cx), 8, "the button does not fold the file");
+}
+
+#[gpui::test]
+fn file_header_is_two_lines_tall_and_bar_is_40px(cx: &mut TestAppContext) {
+    let (_dir, _wb, _view, cx) = searched(cx);
+    let header = bounds("search-file-0", cx);
+    let line = bounds("search-line-0-0-0", cx);
+    // The card is the header minus its 4px padding on each side.
+    let expected = line.size.height * 2. - gpui::px(8.);
+    assert!(
+        (header.size.height - expected).abs() < gpui::px(1.),
+        "{header:?} vs line {line:?}"
+    );
+    let query = bounds("search-query", cx);
+    assert!((query.size.height - gpui::px(28.)).abs() < gpui::px(1.));
+    let view = bounds("search-view", cx);
+    assert!(
+        query.size.width < view.size.width * 0.75,
+        "the box takes about two thirds"
+    );
+    assert!(bounds("search-next", cx).origin.x > query.right());
+}
+
+/// A project whose `big.rs` has `n` matching lines, then `z.rs` one.
+fn tall(n: usize) -> TempDir {
+    let big: String = (0..n).map(|i| format!("needle {i}\n")).collect();
+    project(&[("big.rs", big.as_str()), ("z.rs", "needle\n")])
+}
+
+#[gpui::test]
+fn sticky_header_pins_while_scrolling(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = tall(300);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    assert!(
+        cx.debug_bounds("search-sticky-header").is_none(),
+        "the header itself is at the top"
+    );
+    scroll_list(600., cx);
+    let list = bounds("search-list", cx);
+    let sticky = bounds("search-sticky-header", cx);
+    assert!(
+        (sticky.origin.y - list.origin.y).abs() < gpui::px(6.),
+        "pinned at the top: {sticky:?} in {list:?}"
+    );
+    assert!(cx.debug_bounds("search-file-0").is_none(), "scrolled away");
+
+    click("search-sticky-header", cx);
+    let collapsed = view.read_with(cx, |v, _| v.results().files()[0].collapsed);
+    assert!(collapsed, "clicking the sticky header folds its file");
+    assert!(
+        cx.debug_bounds("search-file-0").is_some(),
+        "its header shows"
+    );
+    assert!(cx.debug_bounds("search-sticky-header").is_none());
+}
+
+#[gpui::test]
+fn reveal_reaches_unmeasured_rows(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = tall(500);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    // Back from none: the last match, far below anything drawn so far.
+    keys("escape up", cx);
+    let last = view.read_with(cx, |v, _| v.selected().unwrap());
+    assert_eq!((last.file, last.line), (1, 0));
+    let line = bounds("search-line-1-0-0", cx);
+    let list = bounds("search-list", cx);
+    assert!(
+        line.origin.y >= list.origin.y && line.bottom() <= list.bottom() + gpui::px(1.),
+        "the selected line is on screen: {line:?} in {list:?}"
+    );
+    keys("up", cx);
+    let line = bounds("search-line-0-0-499", cx);
+    assert!(line.bottom() <= list.bottom() + gpui::px(1.));
+    let sticky = bounds("search-sticky-header", cx);
+    assert!(
+        line.origin.y >= sticky.bottom() - gpui::px(1.),
+        "not under the sticky header: {line:?} vs {sticky:?}"
+    );
+}
+
+#[gpui::test]
+fn streaming_twenty_thousand_results(cx: &mut TestAppContext) {
+    init(cx);
+    // 200 files of 100 matching lines: MAX_RESULTS in all.
+    let body: String = (0..100).map(|i| format!("needle {i}\n")).collect();
+    let names: Vec<String> = (0..200).map(|i| format!("f{i:03}.txt")).collect();
+    let files: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), body.as_str())).collect();
+    let dir = project(&files);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    type_text("needle", cx);
+    let start = Instant::now();
+    settle_search(cx);
+    let applied = start.elapsed();
+    let matches = view.read_with(cx, |v, _| v.results().match_count());
+    assert_eq!(matches, 20_000);
+    let start = Instant::now();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let frame = start.elapsed();
+    scroll_list(50_000., cx);
+    keys("escape up", cx);
+    assert!(cx.debug_bounds("search-sticky-header").is_some());
+    eprintln!("20,000 results: search and apply {applied:?}, one frame {frame:?}");
+    assert!(frame < Duration::from_millis(500), "a frame took {frame:?}");
+}

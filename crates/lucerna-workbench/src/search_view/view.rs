@@ -16,25 +16,32 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use gpui::{
-    AnyElement, App, Context, Div, Entity, FocusHandle, Focusable, FontStyle, FontWeight,
-    HighlightStyle, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render,
-    ScrollStrategy, SharedString, Stateful, Styled, StyledText, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, font, prelude::*, px, svg, uniform_list,
+    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, FocusHandle, Focusable,
+    FontStyle, FontWeight, HighlightStyle, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
+    ListState, MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled,
+    StyledText, Subscription, Task, WeakEntity, Window, div, font, list, prelude::*, px, relative,
+    svg,
 };
 use lucerna_project::{SearchEvent, SearchQuery, search};
 use lucerna_text::Point;
 
 use super::highlight::{FileHighlights, LineSpans, highlight_file};
-use super::model::{LineAnchor, LineRef, Results, Row, expand_tabs, first_match, globs, summary};
+use super::model::{
+    LineAnchor, LineRef, Results, Row, expand_tabs, first_match, globs, summary, thousands,
+};
 use crate::code_view::CodeView;
 use crate::find_widget::single_line_selection;
-use crate::icons::{CHEVRONS_DOWN_UP, LIST_FILTER, REFRESH_CW};
+use crate::icons::{
+    ARROW_UP_RIGHT, CASE_SENSITIVE, CHEVRONS_DOWN_UP, CHEVRONS_UP_DOWN, LIST_FILTER, REFRESH_CW,
+    REGEX, WHOLE_WORD,
+};
 use crate::layout::color;
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
-    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, FILE_ICON_SIZE, GRID, TAB_HEIGHT, UI_FONT_SIZE_SMALL,
-    file_icon_sized, icon_button, input_box, toggle_button,
+    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, ClickHandler, FILE_ICON_SIZE, GRID, UI_FONT_SIZE,
+    UI_FONT_SIZE_SMALL, bar_separator, file_icon_sized, icon_button, input_box, match_nav,
+    search_bar_row, search_query_box, search_toolbar, toggle_button,
 };
 use crate::workbench::enabled_globs;
 use crate::workspace_state::SearchState;
@@ -55,6 +62,15 @@ const CONTEXT_LINES_SETTING: &str = "search.searchEditor.defaultNumberOfContextL
 
 /// The most context lines a search keeps, whatever the setting says.
 const MAX_CONTEXT_LINES: u32 = 5;
+
+/// Pixels of rows rendered above and below the visible ones.
+const LIST_OVERDRAW: f32 = 200.;
+
+/// A file header is this many editor lines tall, as in Zed.
+const FILE_HEADER_LINES: f32 = 2.;
+
+/// Padding around a file header's card (Zed's `BUFFER_HEADER_PADDING`).
+const FILE_HEADER_PADDING: f32 = GRID;
 
 pub struct SearchView {
     workbench: WeakEntity<Workbench>,
@@ -90,7 +106,11 @@ pub struct SearchView {
     _search: Task<()>,
     /// Highlights a clicked match once its file has loaded.
     _highlight: Option<Subscription>,
-    scroll: UniformListScrollHandle,
+    /// The results list: rows of different heights (headers are two lines
+    /// tall), only the visible ones rendered.
+    list: ListState,
+    /// The rows `list` was last told about, to splice only what changed.
+    list_rows: Vec<Row>,
     /// Syntax colors per result file (path relative to the root).
     highlights: HashMap<Arc<Path>, FileHighlights>,
     /// Files queued or running; a file in here or in `highlights` is never
@@ -166,7 +186,8 @@ impl SearchView {
             _debounce: Task::ready(()),
             _search: Task::ready(()),
             _highlight: None,
-            scroll: UniformListScrollHandle::new(),
+            list: ListState::new(0, ListAlignment::Top, px(LIST_OVERDRAW)),
+            list_rows: Vec::new(),
             highlights: HashMap::new(),
             highlight_pending: HashSet::new(),
             highlight_queue: VecDeque::new(),
@@ -312,6 +333,7 @@ impl SearchView {
     /// Folds or unfolds the excerpts of file `file`.
     pub fn toggle_collapsed(&mut self, file: usize, cx: &mut Context<Self>) {
         self.results.toggle_collapsed(file);
+        self.sync_list(cx);
         cx.notify();
     }
 
@@ -324,6 +346,7 @@ impl SearchView {
     /// `search.action.collapseSearchResults` and the button's two states.
     fn set_all_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
         self.results.set_all_collapsed(collapsed);
+        self.sync_list(cx);
         cx.notify();
     }
 
@@ -366,9 +389,217 @@ impl SearchView {
     fn select(&mut self, r: LineRef, cx: &mut Context<Self>) {
         self.selected = self.results.anchor_of(r);
         if let Some(ix) = self.results.row_of(r) {
-            self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+            self.reveal_row(ix, cx);
         }
         cx.notify();
+    }
+
+    /// Tells the list which rows changed since it was last told. Row heights
+    /// depend only on the row's kind, so the longest common prefix and suffix
+    /// of kinds keep their measured heights; only the middle is spliced.
+    /// The scroll position stays at the same pixel offset, as a uniform list
+    /// keeps it (a splice at the scroll top would push it down). Runs once
+    /// per change (an event batch, a fold), never per frame.
+    fn sync_list(&mut self, cx: &App) {
+        let new = self.results.rows();
+        let old = &self.list_rows;
+        let same = |(a, b): &(&Row, &Row)| a.same_kind(b);
+        let prefix = old.iter().zip(new).take_while(same).count();
+        if prefix == old.len() && prefix == new.len() {
+            self.list_rows = new.to_vec();
+            return;
+        }
+        let room = old.len().min(new.len()) - prefix;
+        let suffix = old
+            .iter()
+            .rev()
+            .zip(new.iter().rev())
+            .take(room)
+            .take_while(same)
+            .count();
+        let lh = editor_line_height(cx);
+        let top = self.list.logical_scroll_top();
+        let scrolled: Pixels = old[..top.item_ix.min(old.len())]
+            .iter()
+            .map(|row| row_height(row, lh))
+            .fold(top.offset_in_item, |a, b| a + b);
+        self.list
+            .splice(prefix..old.len() - suffix, new.len() - prefix - suffix);
+        self.list_rows = new.to_vec();
+        self.list.scroll_to(self.offset_at(scrolled, lh));
+    }
+
+    /// The scroll top `y` pixels below the top of the rows.
+    fn offset_at(&self, y: Pixels, lh: Pixels) -> ListOffset {
+        let mut top = px(0.);
+        for (item_ix, row) in self.results.rows().iter().enumerate() {
+            let height = row_height(row, lh);
+            if top + height > y {
+                return ListOffset {
+                    item_ix,
+                    offset_in_item: y - top,
+                };
+            }
+            top += height;
+        }
+        ListOffset {
+            item_ix: self.results.rows().len(),
+            offset_in_item: px(0.),
+        }
+    }
+
+    /// The scroll top that puts row `ix`'s top `distance` below the top of
+    /// the list (or the list's start, when there is not enough above).
+    fn scroll_top_above(&self, ix: usize, distance: Pixels, lh: Pixels) -> ListOffset {
+        let rows = self.results.rows();
+        let (mut remaining, mut i) = (distance, ix);
+        while remaining > px(0.) && i > 0 {
+            i -= 1;
+            remaining -= row_height(&rows[i], lh);
+        }
+        if remaining > px(0.) {
+            ListOffset::default()
+        } else {
+            ListOffset {
+                item_ix: i,
+                offset_in_item: -remaining,
+            }
+        }
+    }
+
+    /// Scrolls the least that shows row `ix` whole, below the sticky header
+    /// for a line. Row heights are known exactly, so this holds for rows
+    /// the list has not measured yet.
+    fn reveal_row(&mut self, ix: usize, cx: &App) {
+        let lh = editor_line_height(cx);
+        let rows = self.results.rows();
+        let Some(row) = rows.get(ix) else {
+            return;
+        };
+        let height = row_height(row, lh);
+        let margin = match row {
+            Row::Header(_) => px(0.),
+            _ => header_height(lh),
+        };
+        let viewport = self.list.viewport_bounds().size.height;
+        let top = self.list.logical_scroll_top();
+        let target = if ix < top.item_ix {
+            Some(margin)
+        } else {
+            let mut y = -top.offset_in_item;
+            for row in &rows[top.item_ix.min(ix)..ix] {
+                y += row_height(row, lh);
+                if y > viewport {
+                    break;
+                }
+            }
+            if y < margin {
+                Some(margin)
+            } else if y + height > viewport {
+                Some((viewport - height).max(margin))
+            } else {
+                None
+            }
+        };
+        if let Some(distance) = target {
+            self.list.scroll_to(self.scroll_top_above(ix, distance, lh));
+        }
+    }
+
+    /// The rows inside a `viewport` tall list at its scroll position.
+    fn visible_rows(&self, viewport: Pixels, lh: Pixels) -> Range<usize> {
+        let rows = self.results.rows();
+        let top = self.list.logical_scroll_top();
+        let start = top.item_ix.min(rows.len());
+        let mut y = -top.offset_in_item;
+        let mut end = start;
+        while end < rows.len() && y < viewport {
+            y += row_height(&rows[end], lh);
+            end += 1;
+        }
+        start..end
+    }
+
+    /// The file whose header sticks to the top of the list, and how far up
+    /// the next file's header pushes it: `None` while a header is at the
+    /// very top.
+    fn sticky_header(&self, lh: Pixels) -> Option<(usize, Pixels)> {
+        let rows = self.results.rows();
+        let top = self.list.logical_scroll_top();
+        let first = rows.get(top.item_ix)?;
+        if matches!(first, Row::Header(_)) && top.offset_in_item <= px(0.) {
+            return None;
+        }
+        let file = first.file();
+        let header = header_height(lh);
+        let mut y = -top.offset_in_item;
+        for row in &rows[top.item_ix..] {
+            if y >= header {
+                break;
+            }
+            if matches!(row, Row::Header(f) if *f != file) {
+                return Some((file, (y - header).min(px(0.))));
+            }
+            y += row_height(row, lh);
+        }
+        Some((file, px(0.)))
+    }
+
+    /// The bar's match counter, as in Zed: `"3/19"` for the selected match
+    /// line among all match lines, `"19 results"` with no match selected,
+    /// `"0/0"` without matches.
+    pub fn match_label(&self) -> String {
+        let total = self.results.match_count();
+        if total == 0 {
+            return "0/0".into();
+        }
+        match self.selected().and_then(|r| self.results.match_index(r)) {
+            Some(i) => format!("{}/{}", thousands(i + 1), thousands(total)),
+            None if total == 1 => "1 result".into(),
+            None => format!("{} results", thousands(total)),
+        }
+    }
+
+    /// The query box shows the error color: a regex error, or a finished
+    /// search without matches.
+    pub fn is_invalid(&self) -> bool {
+        self.error.is_some()
+            || (self.searched && self.done.is_some() && self.results.match_count() == 0)
+    }
+
+    /// Selects the first match of the file `path` and opens it (the
+    /// header's "open file" button).
+    fn open_file_at_first_match(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(r) = self
+            .results
+            .file_index(path)
+            .and_then(|file| self.results.first_match_of(file))
+        else {
+            return;
+        };
+        self.select(r, cx);
+        self.open_line(r, window, cx);
+    }
+
+    /// Folds or unfolds the file of the sticky header, then shows its
+    /// header at the top.
+    fn toggle_sticky(&mut self, path: &Path, cx: &mut Context<Self>) {
+        self.toggle_path(path, cx);
+        if let Some(row) = self
+            .results
+            .file_index(path)
+            .and_then(|file| self.results.header_row(file))
+        {
+            self.list.scroll_to(ListOffset {
+                item_ix: row,
+                offset_in_item: px(0.),
+            });
+        }
     }
 
     /// Selects the line `anchor` names and opens it (a click).
@@ -387,6 +618,7 @@ impl SearchView {
             return;
         };
         self.results.expand(r.file);
+        self.sync_list(cx);
         self.select(r, cx);
         self.open_line(r, window, cx);
     }
@@ -503,6 +735,7 @@ impl SearchView {
         self._debounce = Task::ready(());
         self.cancel_search();
         self.results.clear();
+        self.sync_list(cx);
         self.selected = None;
         self.reset_highlights();
         self.max_line_number = 0;
@@ -693,6 +926,7 @@ impl SearchView {
             }
         }
         self.results.add_files(batch);
+        self.sync_list(cx);
         cx.notify();
     }
 
@@ -795,15 +1029,7 @@ impl SearchView {
             .get::<String>("editor.fontFamily", None)
             .unwrap_or_else(|| crate::fonts::EDITOR_FONT_FAMILY.into())
             .into();
-        let size = settings
-            .get::<f32>("editor.fontSize", None)
-            .unwrap_or(14.)
-            .clamp(6., 40.);
-        let lh = settings
-            .get::<f32>("editor.lineHeight", None)
-            .unwrap_or(1.6);
-        let line_height = if lh < 8. { lh * size } else { lh }.max(1.);
-        let font_size = px(size);
+        let font_size = px(editor_font_size(cx));
         let text_system = window.text_system();
         let font_id = text_system.resolve_font(&font(font_family.clone()));
         let char_width = text_system
@@ -815,7 +1041,7 @@ impl SearchView {
         RowStyle {
             font_family,
             font_size,
-            line_height: px(line_height),
+            line_height: editor_line_height(cx),
             gutter: char_width * digits as f32 + px(4. * GRID),
             tab_size: settings
                 .get::<u32>("editor.tabSize", None)
@@ -824,46 +1050,34 @@ impl SearchView {
         }
     }
 
-    fn render_rows(
-        &mut self,
-        range: Range<usize>,
-        style: &RowStyle,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let mut visible: Vec<usize> = Vec::new();
-        for row in self.results.rows().get(range.clone()).unwrap_or_default() {
-            let file = match row {
-                Row::Header(file) | Row::Separator { file } => *file,
-                Row::Line(r) => r.file,
-            };
-            if visible.last() != Some(&file) {
-                visible.push(file);
+    /// Row `ix` of the results list.
+    fn render_row(&mut self, ix: usize, style: &RowStyle, cx: &mut Context<Self>) -> AnyElement {
+        let Some(row) = self.results.rows().get(ix).copied() else {
+            return div().into_any_element();
+        };
+        match row {
+            Row::Header(file) => self.render_header(file, false, style, cx),
+            Row::Line(r) => self.render_line(ix, r, style, cx),
+            Row::Separator { file } => {
+                // The excerpt it comes before.
+                let excerpt = match self.results.rows().get(ix + 1) {
+                    Some(Row::Line(r)) => r.excerpt,
+                    _ => 0,
+                };
+                self.render_separator(ix, file, excerpt, style, cx)
             }
         }
-        self.request_highlights(visible, cx);
-        range
-            .filter_map(|ix| {
-                let row = *self.results.rows().get(ix)?;
-                Some(match row {
-                    Row::Header(file) => self.render_header(ix, file, style, cx),
-                    Row::Line(r) => self.render_line(ix, r, style, cx),
-                    Row::Separator { file } => {
-                        // The excerpt it comes before.
-                        let excerpt = match self.results.rows().get(ix + 1) {
-                            Some(Row::Line(r)) => r.excerpt,
-                            _ => 0,
-                        };
-                        self.render_separator(ix, file, excerpt, style, cx)
-                    }
-                })
-            })
-            .collect()
     }
 
+    /// A file header, two editor lines tall as in Zed: a card with a 1px
+    /// border on `editor.subheader.background` holding the fold chevron,
+    /// the file icon, the name, the folder (muted, cut with "…"), the
+    /// match count and an "open file" button. Clicking the card folds or
+    /// unfolds the file. `sticky` is the copy pinned over the list.
     fn render_header(
         &self,
-        ix: usize,
         index: usize,
+        sticky: bool,
         style: &RowStyle,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -889,17 +1103,89 @@ impl SearchView {
         let icon = state.icons.file(&file.path);
         let path = file.path.clone();
         let hover = color(ui.ghost_element_hover);
-        row(ix, format!("search-file-{index}"), style)
-            .bg(color(ui.element_background))
+        let (card_id, selector, open_id, open_selector): (ElementId, String, ElementId, String) =
+            if sticky {
+                (
+                    "search-sticky-header".into(),
+                    "search-sticky-header".into(),
+                    "search-sticky-open-file".into(),
+                    "search-sticky-open-file".into(),
+                )
+            } else {
+                (
+                    ("search-file", index).into(),
+                    format!("search-file-{index}"),
+                    ("search-open-file", index).into(),
+                    format!("search-open-file-{index}"),
+                )
+            };
+        let group: SharedString = format!("{selector}-group").into();
+        let selected_here = self.selected().is_some_and(|r| r.file == index);
+        let open_path = path.clone();
+        let open = div()
+            .id(open_id)
+            .debug_selector(move || open_selector)
+            .flex()
+            .flex_none()
+            .justify_center()
+            .items_center()
+            .w(px(6. * GRID))
+            .h(px(5. * GRID))
+            .rounded(px(GRID))
+            .cursor_pointer()
+            .when(!selected_here, |d| {
+                d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
+            })
             .hover(move |s| s.bg(hover))
-            .px(px(2. * GRID))
-            .on_click(cx.listener(move |view, _, _, cx| view.toggle_path(&path, cx)))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_click(cx.listener(move |view, _, window, cx| {
+                cx.stop_propagation();
+                view.open_file_at_first_match(&open_path, window, cx);
+            }))
             .child(
                 svg()
-                    .data(chevron)
-                    .flex_none()
-                    .size(px(12.))
+                    .data(ARROW_UP_RIGHT)
+                    .size(px(14.))
                     .text_color(color(ui.icon_muted)),
+            );
+        let card = div()
+            .id(card_id)
+            .debug_selector(move || selector)
+            .group(group)
+            .flex()
+            .items_center()
+            .gap(px(1.5 * GRID))
+            .size_full()
+            .pl(px(GRID))
+            .pr(px(GRID))
+            .rounded_sm()
+            .border_1()
+            .border_color(color(ui.border))
+            .bg(color(ui.editor_subheader_background))
+            .hover(move |s| s.bg(hover))
+            .when(sticky, |d| d.shadow_md())
+            .cursor_pointer()
+            .text_size(px(UI_FONT_SIZE_SMALL))
+            .on_click(cx.listener(move |view, _, _, cx| {
+                if sticky {
+                    view.toggle_sticky(&path, cx);
+                } else {
+                    view.toggle_path(&path, cx);
+                }
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .justify_center()
+                    .items_center()
+                    .w(px(5. * GRID))
+                    .child(
+                        svg()
+                            .data(chevron)
+                            .size(px(12.))
+                            .text_color(color(ui.icon_muted)),
+                    ),
             )
             .child(file_icon_sized(
                 &icon,
@@ -908,7 +1194,8 @@ impl SearchView {
             ))
             .child(
                 div()
-                    .min_w_0()
+                    .flex_none()
+                    .max_w(relative(0.6))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
@@ -929,8 +1216,14 @@ impl SearchView {
                 div()
                     .flex_none()
                     .text_color(color(ui.text_muted))
-                    .child(file.match_count().to_string()),
+                    .child(thousands(file.match_count())),
             )
+            .child(open);
+        div()
+            .w_full()
+            .h(header_height(style.line_height))
+            .p(px(FILE_HEADER_PADDING))
+            .child(card)
             .into_any_element()
     }
 
@@ -1005,6 +1298,9 @@ impl SearchView {
         .into_any_element()
     }
 
+    /// The gap between two excerpts of a file: one editor line with a thin
+    /// `border.variant` rule across the code (Zed draws excerpt
+    /// boundaries as a line, not a glyph in the gutter).
     fn render_separator(
         &self,
         ix: usize,
@@ -1013,7 +1309,7 @@ impl SearchView {
         style: &RowStyle,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let muted = color(cx.global::<AppState>().theme.ui.text_muted);
+        let rule = color(cx.global::<AppState>().theme.ui.border_variant);
         let selector = format!("search-separator-{file}-{excerpt}");
         div()
             .id(("search-row", ix))
@@ -1022,8 +1318,160 @@ impl SearchView {
             .items_center()
             .h(style.line_height)
             .w_full()
-            .child(gutter(style, muted).child("┈"))
+            .pr(px(2. * GRID))
+            .child(div().flex_none().w(style.gutter))
+            .child(div().flex_1().h(px(1.)).bg(rule))
             .into_any_element()
+    }
+
+    /// The landing block of an empty Search tab, after Zed's "Search All
+    /// Files": a title, a hint, and one row per option with its key.
+    fn render_empty_state(&self, cx: &mut Context<Self>) -> Div {
+        let state = cx.global::<AppState>();
+        let ui = state.theme.ui.clone();
+        let key = |command: &str, fallback: &str| {
+            state
+                .keymap
+                .label_for(command)
+                .unwrap_or_else(|| fallback.into())
+        };
+        let options: [(
+            &'static str,
+            &'static [u8],
+            &'static str,
+            String,
+            EmptyAction,
+        ); 4] = [
+            (
+                "search-empty-filters",
+                LIST_FILTER,
+                "Include/exclude paths",
+                key("workbench.action.search.toggleQueryDetails", "⇧⌘J"),
+                |v, window, cx| v.toggle_query_details(window, cx),
+            ),
+            (
+                "search-empty-case",
+                CASE_SENSITIVE,
+                "Match case",
+                key("toggleSearchCaseSensitive", "⌥⌘C"),
+                |v, _, cx| v.toggle_case_sensitive(cx),
+            ),
+            (
+                "search-empty-word",
+                WHOLE_WORD,
+                "Match whole words",
+                key("toggleSearchWholeWord", "⌥⌘W"),
+                |v, _, cx| v.toggle_whole_word(cx),
+            ),
+            (
+                "search-empty-regex",
+                REGEX,
+                "Match with regex",
+                key("toggleSearchRegex", "⌥⌘R"),
+                |v, _, cx| v.toggle_regex(cx),
+            ),
+        ];
+        let hover = color(ui.ghost_element_hover);
+        let rows = options.map(|(id, icon, label, keys, action)| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .flex()
+                .items_center()
+                .gap(px(2. * GRID))
+                .h(px(7. * GRID))
+                .px(px(2. * GRID))
+                .rounded(px(GRID))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                .on_click(cx.listener(move |view, _, window, cx| action(view, window, cx)))
+                .child(
+                    svg()
+                        .data(icon)
+                        .flex_none()
+                        .size(px(14.))
+                        .text_color(color(ui.icon_muted)),
+                )
+                .child(div().flex_1().text_color(color(ui.text)).child(label))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(UI_FONT_SIZE_SMALL))
+                        .text_color(color(ui.text_muted))
+                        .child(keys),
+                )
+        });
+        div()
+            .debug_selector(|| "search-empty-state".into())
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(GRID))
+                    .w(px(80. * GRID))
+                    .max_w_full()
+                    .text_size(px(UI_FONT_SIZE))
+                    .child(
+                        div()
+                            .px(px(2. * GRID))
+                            .text_size(px(UI_FONT_SIZE + 2.))
+                            .text_color(color(ui.text))
+                            .child("Search all files"),
+                    )
+                    .child(
+                        div()
+                            .px(px(2. * GRID))
+                            .pb(px(2. * GRID))
+                            .text_color(color(ui.text_muted))
+                            .child("Start typing to search. For more options:"),
+                    )
+                    .children(rows),
+            )
+    }
+}
+
+/// What a row of the empty state does.
+type EmptyAction = fn(&mut SearchView, &mut Window, &mut Context<SearchView>);
+
+/// The editor font size in pixels, from `editor.fontSize`.
+fn editor_font_size(cx: &App) -> f32 {
+    cx.global::<AppState>()
+        .settings
+        .get::<f32>("editor.fontSize", None)
+        .unwrap_or(14.)
+        .clamp(6., 40.)
+}
+
+/// One editor line, as `CodeView` computes it from `editor.lineHeight`
+/// (a factor of the font size below 8, else pixels), rounded to whole
+/// pixels: layout snaps row heights to the pixel grid, and scrolling to a
+/// row sums these heights, so they must match what the list measures.
+fn editor_line_height(cx: &App) -> Pixels {
+    let size = editor_font_size(cx);
+    let lh = cx
+        .global::<AppState>()
+        .settings
+        .get::<f32>("editor.lineHeight", None)
+        .unwrap_or(1.6);
+    let lh = if lh < 8. { lh * size } else { lh };
+    px(lh.max(1.).round())
+}
+
+/// A file header's height: [`FILE_HEADER_LINES`] editor lines.
+fn header_height(lh: Pixels) -> Pixels {
+    lh * FILE_HEADER_LINES
+}
+
+/// The drawn height of `row`: every row but a header is one line.
+fn row_height(row: &Row, lh: Pixels) -> Pixels {
+    match row {
+        Row::Header(_) => header_height(lh),
+        Row::Line(_) | Row::Separator { .. } => lh,
     }
 }
 
@@ -1168,9 +1616,15 @@ impl Render for SearchView {
             toggle_button(id, text, on, cx)
                 .on_click(cx.listener(move |view, _, _, cx| view.toggle(flag, cx)))
         };
-        let query = input_box(&self.query, cx)
-            .flex_1()
-            .min_w_0()
+        let invalid = self.is_invalid();
+        let query = search_query_box(&self.query, invalid, cx)
+            .debug_selector(move || {
+                if invalid {
+                    "search-query-invalid".into()
+                } else {
+                    "search-query".into()
+                }
+            })
             .on_key_down(cx.listener(Self::query_key_down))
             .child(toggle(
                 "search-toggle-case",
@@ -1193,21 +1647,27 @@ impl Render for SearchView {
                 |v| &mut v.is_regex,
                 cx,
             ));
-        let bar = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(GRID))
-            .h(px(TAB_HEIGHT))
-            .px(px(2. * GRID))
-            .child(query)
+        let all_collapsed =
+            !self.results.files().is_empty() && self.results.files().iter().all(|f| f.collapsed);
+        let collapse_icon = if all_collapsed {
+            CHEVRONS_UP_DOWN
+        } else {
+            CHEVRONS_DOWN_UP
+        };
+        let this = cx.weak_entity();
+        let step = move |forward: bool| -> ClickHandler {
+            let this = this.clone();
+            Box::new(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                this.update(cx, |view, cx| view.focus_match(forward, window, cx))
+                    .ok();
+            })
+        };
+        let bar = search_bar_row()
             .child(
-                div()
-                    .flex_none()
-                    .w(px(1.))
-                    .h(px(5. * GRID))
-                    .bg(color(ui.border_variant)),
+                bar_button("search-collapse-all", collapse_icon, false, cx)
+                    .on_click(cx.listener(|view, _, _, cx| view.toggle_all_collapsed(cx))),
             )
+            .child(query)
             .child(
                 bar_button("search-filters", LIST_FILTER, self.filters_shown, cx).on_click(
                     cx.listener(|view, _, window, cx| view.toggle_query_details(window, cx)),
@@ -1217,42 +1677,102 @@ impl Render for SearchView {
                 bar_button("search-refresh", REFRESH_CW, false, cx)
                     .on_click(cx.listener(|view, _, _, cx| view.run_search(cx))),
             )
-            .child(
-                bar_button("search-collapse-all", CHEVRONS_DOWN_UP, false, cx)
-                    .on_click(cx.listener(|view, _, _, cx| view.toggle_all_collapsed(cx))),
-            );
+            .child(bar_separator(cx))
+            .child(match_nav(
+                ("search-previous", step(false)),
+                ("search-next", step(true)),
+                self.match_label(),
+                cx,
+            ));
+        // The filter inputs line up under the query box, as in Zed.
         let filters = self.filters_shown.then(|| {
-            div()
+            search_bar_row()
                 .debug_selector(|| "search-filter-row".into())
-                .flex()
-                .flex_none()
-                .gap(px(GRID))
-                .px(px(2. * GRID))
-                .pb(px(GRID))
+                .child(div().flex_none().w(px(6. * GRID)))
                 .child(
-                    input_box(&self.include, cx)
-                        .debug_selector(|| "search-include".into())
-                        .flex_1()
-                        .min_w_0(),
+                    div()
+                        .flex()
+                        .gap(px(GRID))
+                        .flex_grow_0()
+                        .flex_shrink_1()
+                        .flex_basis(relative(crate::ui::SEARCH_QUERY_BASIS))
+                        .min_w(px(crate::ui::SEARCH_QUERY_MIN_WIDTH))
+                        .child(
+                            input_box(&self.include, cx)
+                                .debug_selector(|| "search-include".into())
+                                .flex_1()
+                                .min_w_0(),
+                        )
+                        .child(input_box(&self.exclude, cx).flex_1().min_w_0()),
                 )
-                .child(input_box(&self.exclude, cx).flex_1().min_w_0())
         });
+        let toolbar = search_toolbar(cx).child(bar).children(filters);
+        // Done with results: the counter says it all. Searching, nothing
+        // found, cut short or failed: say so under the bar.
+        let finished_with_results = self.done == Some(false) && self.results.match_count() > 0;
         let status = match (&self.error, self.summary()) {
-            (Some(error), _) => Some(("search-error", error.clone())),
-            (None, Some(summary)) => Some(("search-summary", summary)),
-            (None, None) => None,
+            (Some(error), _) => Some(("search-error", error.clone(), color(ui.error))),
+            (None, Some(summary)) if !finished_with_results => {
+                Some(("search-summary", summary, muted))
+            }
+            _ => None,
         };
-        let status = status.map(|(selector, text)| {
+        let status = status.map(|(selector, text, text_color)| {
             div()
                 .debug_selector(move || selector.into())
                 .flex_none()
                 .px(px(3. * GRID))
-                .pb(px(GRID))
+                .py(px(GRID))
                 .text_size(px(UI_FONT_SIZE_SMALL))
-                .text_color(muted)
+                .text_color(text_color)
                 .child(text)
         });
         let style = self.row_style(window, cx);
+        let lh = style.line_height;
+        // The rows on screen get their syntax colors first.
+        let viewport = match self.list.viewport_bounds().size.height {
+            h if h > px(0.) => h,
+            _ => window.viewport_size().height,
+        };
+        let mut visible: Vec<usize> = Vec::new();
+        for ix in self.visible_rows(viewport, lh) {
+            let file = self.results.rows()[ix].file();
+            if visible.last() != Some(&file) {
+                visible.push(file);
+            }
+        }
+        self.request_highlights(visible, cx);
+        let empty = self.results.rows().is_empty() && self.query.read(cx).text().is_empty();
+        let body = if empty {
+            self.render_empty_state(cx).into_any_element()
+        } else {
+            let sticky = self.sticky_header(lh).map(|(file, top)| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(top)
+                    .bg(color(ui.editor_background))
+                    // Clicks on the pinned header never reach the rows under it.
+                    .occlude()
+                    .child(self.render_header(file, true, &style, cx))
+            });
+            let row_style = style.clone();
+            div()
+                .relative()
+                .size_full()
+                .child(
+                    list(
+                        self.list.clone(),
+                        cx.processor(move |view, ix: usize, _, cx| {
+                            view.render_row(ix, &row_style, cx)
+                        }),
+                    )
+                    .size_full(),
+                )
+                .children(sticky)
+                .into_any_element()
+        };
         div()
             .id("search-view")
             .debug_selector(|| "search-view".into())
@@ -1261,27 +1781,17 @@ impl Render for SearchView {
             .flex_col()
             .size_full()
             .bg(color(ui.editor_background))
-            .child(bar)
-            .children(filters)
+            .child(toolbar)
             .children(status)
             .child(
                 div()
                     .id("search-list")
+                    .debug_selector(|| "search-list".into())
                     .track_focus(&self.list_focus)
                     .on_key_down(cx.listener(Self::list_key_down))
                     .flex_1()
                     .min_h_0()
-                    .child(
-                        uniform_list(
-                            "search-results",
-                            self.results.rows().len(),
-                            cx.processor(move |view, range, _, cx| {
-                                view.render_rows(range, &style, cx)
-                            }),
-                        )
-                        .size_full()
-                        .track_scroll(&self.scroll),
-                    ),
+                    .child(body),
             )
     }
 }

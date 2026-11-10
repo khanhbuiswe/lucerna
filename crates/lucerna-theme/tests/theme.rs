@@ -243,3 +243,33 @@ fn scrollbar_thumb_from_theme_or_fallback() {
     // Translucent, so it never hides the rows under it.
     assert!(fb_dark.a < 1.0 && fb_light.a < 1.0);
 }
+
+#[test]
+fn editor_subheader_background_from_theme_or_fallback() {
+    let dark = ThemeRegistry::builtin().get("One Dark").unwrap();
+    assert_eq!(
+        dark.ui.editor_subheader_background,
+        Rgba::parse_hex("#2f343eff").unwrap()
+    );
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "plain.json",
+        r#"{"name":"P","themes":[
+            {"name":"Plain","appearance":"dark","style":{}},
+            {"name":"Plain Light","appearance":"light","style":{}}
+        ]}"#,
+    );
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
+    for (name, appearance) in [
+        ("Plain", Appearance::Dark),
+        ("Plain Light", Appearance::Light),
+    ] {
+        assert_eq!(
+            reg.get(name).unwrap().ui.editor_subheader_background,
+            UiColors::fallback(appearance).editor_subheader_background,
+            "{name}"
+        );
+    }
+}

@@ -31,6 +31,21 @@ pub enum Row {
     Separator { file: usize },
 }
 
+impl Row {
+    /// The index of the file the row belongs to.
+    pub fn file(&self) -> usize {
+        match *self {
+            Row::Header(file) | Row::Separator { file } => file,
+            Row::Line(r) => r.file,
+        }
+    }
+
+    /// Whether two rows are of the same kind, so are drawn the same height.
+    pub fn same_kind(&self, other: &Row) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FileResult {
     pub path: Arc<Path>,
@@ -176,6 +191,46 @@ impl Results {
 
     pub fn match_count(&self) -> usize {
         self.files.iter().map(FileResult::match_count).sum()
+    }
+
+    /// The 0-based position of the match line `r` among all match lines,
+    /// or `None` when `r` is a context line or gone.
+    pub fn match_index(&self, r: LineRef) -> Option<usize> {
+        if self.line(r)?.ranges.is_empty() {
+            return None;
+        }
+        let before: usize = self.files[..r.file]
+            .iter()
+            .map(FileResult::match_count)
+            .sum();
+        let file = &self.files[r.file];
+        let in_excerpts: usize = file.excerpts[..r.excerpt]
+            .iter()
+            .map(Excerpt::match_count)
+            .sum();
+        let in_lines = file.excerpts[r.excerpt].lines[..r.line]
+            .iter()
+            .filter(|l| !l.ranges.is_empty())
+            .count();
+        Some(before + in_excerpts + in_lines)
+    }
+
+    /// The first match line of file `file`.
+    pub fn first_match_of(&self, file: usize) -> Option<LineRef> {
+        let f = self.files.get(file)?;
+        f.excerpts.iter().enumerate().find_map(|(excerpt, e)| {
+            let line = e.lines.iter().position(|l| !l.ranges.is_empty())?;
+            Some(LineRef {
+                file,
+                excerpt,
+                line,
+            })
+        })
+    }
+
+    /// The row of file `file`'s header.
+    pub fn header_row(&self, file: usize) -> Option<usize> {
+        self.rows.iter().position(|row| *row == Row::Header(file))
     }
 
     /// The next (or previous) match line, wrapping around and skipping
@@ -400,6 +455,28 @@ mod tests {
             ]
         );
         assert_eq!(r.match_count(), 2);
+    }
+
+    #[test]
+    fn match_index_counts_match_lines_across_files() {
+        let mut r = Results::default();
+        r.add_file(path("a"), vec![excerpt(1), excerpt(10)]);
+        r.add_file(path("b"), vec![excerpt(1)]);
+        let at = |file, excerpt, line| LineRef {
+            file,
+            excerpt,
+            line,
+        };
+        assert_eq!(r.match_index(at(0, 0, 1)), Some(0));
+        assert_eq!(r.match_index(at(0, 1, 1)), Some(1));
+        assert_eq!(r.match_index(at(1, 0, 1)), Some(2));
+        assert_eq!(r.match_index(at(0, 0, 0)), None, "a context line");
+        assert_eq!(r.match_index(at(5, 0, 0)), None, "gone");
+        assert_eq!(r.first_match_of(1), Some(at(1, 0, 1)));
+        assert_eq!(r.header_row(1), Some(8));
+        assert!(Row::Header(0).same_kind(&Row::Header(3)));
+        assert!(!Row::Header(0).same_kind(&Row::Separator { file: 0 }));
+        assert_eq!(Row::Line(at(1, 0, 1)).file(), 1);
     }
 
     #[test]
