@@ -24,7 +24,9 @@ use crate::AppState;
 use crate::code_view::{CodeView, CodeViewEvent, CursorOverlay, CursorShape, FoldOp};
 use crate::documents::DocState;
 use crate::editor_groups::EditorGroupsView;
-use crate::find_widget::{BACKGROUND_SEARCH_BYTES, find_in_snapshot};
+use crate::find_widget::{
+    self, BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot,
+};
 use crate::tasks::{catch_panic, guarded};
 
 /// Where keys may reach vim: the editor has focus, and neither a text
@@ -51,6 +53,28 @@ struct MatchCache {
     matches: Arc<[Range<usize>]>,
 }
 
+/// A `/` or `?` whose find widget is open.
+struct VimSearch {
+    view: WeakEntity<CodeView>,
+    find: WeakEntity<FindWidget>,
+    backward: bool,
+    /// Vim's cursor when the widget opened: the search starts there, and
+    /// the cursor goes back there when the widget is dismissed.
+    origin: Point,
+    _sub: Subscription,
+}
+
+/// What to run again once a background search has found the matches vim
+/// asked for.
+enum Redo {
+    Key(Key),
+    Search {
+        query: SearchQuery,
+        backward: bool,
+        origin: Point,
+    },
+}
+
 /// How [`VimLayer::sync_view`] brings the cursor into view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reveal {
@@ -75,6 +99,11 @@ pub struct VimLayer {
     /// while no other key arrived.
     key_generation: u64,
     _retry: Option<Task<()>>,
+    /// The open `/` or `?`, if any.
+    search: Option<VimSearch>,
+    /// Set by [`Action::OpenSearch`]: the widget needs the window, which
+    /// [`VimLayer::handle_key`] has.
+    open_search: Option<bool>,
     /// The editor groups whose code views vim follows, set by
     /// [`VimLayer::attach`].
     groups: Option<WeakEntity<EditorGroupsView>>,
@@ -95,6 +124,8 @@ impl VimLayer {
             last_remap: HashMap::new(),
             key_generation: 0,
             _retry: None,
+            search: None,
+            open_search: None,
             groups: None,
             _new_views: None,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
@@ -139,7 +170,7 @@ impl VimLayer {
         &mut self,
         ev: &KeyDownEvent,
         view: &Entity<CodeView>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         if !self.enabled {
@@ -150,7 +181,98 @@ impl VimLayer {
         };
         self.key_generation += 1;
         self._retry = None;
-        self.feed(key, view, true, cx)
+        self.open_search = None;
+        let consumed = self.feed(key, view, true, cx);
+        if let Some(backward) = self.open_search.take() {
+            self.start_search(view, backward, window, cx);
+        }
+        consumed
+    }
+
+    /// `/` or `?`: opens the find widget of `view` for vim.
+    fn start_search(
+        &mut self,
+        view: &Entity<CodeView>,
+        backward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.end_search(cx);
+        let Some(origin) = self.views.get(&view.entity_id()).map(|s| s.vim.cursor()) else {
+            return;
+        };
+        let find = find_widget::open_for_vim(view, window, cx);
+        let sub = cx.subscribe_in(&find, window, Self::search_event);
+        self.search = Some(VimSearch {
+            view: view.downgrade(),
+            find: find.downgrade(),
+            backward,
+            origin,
+            _sub: sub,
+        });
+    }
+
+    /// Forgets the open search; its widget, if still shown, becomes a
+    /// plain find widget.
+    fn end_search(&mut self, cx: &mut App) {
+        if let Some(find) = self.search.take().and_then(|s| s.find.upgrade()) {
+            find.update(cx, |find, _| find.set_vim(false));
+        }
+    }
+
+    /// Whether a `/` or `?` is open over `view`.
+    fn searching(&self, view: EntityId) -> bool {
+        self.search
+            .as_ref()
+            .is_some_and(|s| s.view.entity_id() == view)
+    }
+
+    /// Enter or Esc in the widget of the open search.
+    fn search_event(
+        &mut self,
+        find: &Entity<FindWidget>,
+        event: &FindWidgetEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.search.as_ref().map(|s| s.find.entity_id()) != Some(find.entity_id()) {
+            return;
+        }
+        let Some(search) = self.search.take() else {
+            return;
+        };
+        let Some(view) = search.view.upgrade() else {
+            return;
+        };
+        let id = view.entity_id();
+        // The incremental search moved the view's selection; that was not
+        // a change from outside.
+        if let Some(state) = self.views.get_mut(&id) {
+            state.generation = view.read(cx).selection_generation();
+        }
+        match event {
+            FindWidgetEvent::Submitted => {
+                let query = find.read(cx).query();
+                // No `Dismissed` from this close.
+                find.update(cx, |find, _| find.set_vim(false));
+                find_widget::close(&view, window, cx);
+                self.key_generation += 1;
+                self._retry = None;
+                let redo = Redo::Search {
+                    query,
+                    backward: search.backward,
+                    origin: search.origin,
+                };
+                self.run(redo, &view, true, cx);
+            }
+            FindWidgetEvent::Dismissed => {
+                if let Some(state) = self.views.get_mut(&id) {
+                    state.vim.set_cursor(search.origin);
+                }
+                self.sync_view(&view, Reveal::Scroll, cx);
+                cx.notify();
+            }
+        }
     }
 
     /// Follows the code views of `groups`: each gets its vim state (and
@@ -216,6 +338,7 @@ impl VimLayer {
         self.enabled = enabled;
         if !enabled {
             self._retry = None;
+            self.end_search(cx);
             self.match_cache.clear();
             self.last_remap.clear();
             // Marks are not kept up to date while off.
@@ -330,6 +453,10 @@ impl VimLayer {
     /// The selection was changed outside vim (a click, go to): back to
     /// Normal mode at the view's cursor.
     fn view_changed(&mut self, view: Entity<CodeView>, cx: &mut Context<Self>) {
+        // The find widget of `/` moves the selection while the user types.
+        if self.searching(view.entity_id()) {
+            return;
+        }
         let Some(state) = self.views.get_mut(&view.entity_id()) else {
             return;
         };
@@ -359,8 +486,26 @@ impl VimLayer {
         may_retry: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.run(Redo::Key(key), view, may_retry, cx)
+    }
+
+    /// Feeds a key or runs a submitted search; `may_retry` allows one
+    /// search for a [`Outcome::Retry`].
+    fn run(
+        &mut self,
+        redo: Redo,
+        view: &Entity<CodeView>,
+        may_retry: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let id = view.entity_id();
         self.ensure_state(view, cx);
+        if matches!(redo, Redo::Key(_)) && self.searching(id) {
+            // A key reached the view while its `/` widget is open: the
+            // user left the widget, so the search is over and the
+            // selection the view has now is the user's.
+            self.end_search(cx);
+        }
         let outcome = {
             let v = view.read(cx);
             let Some(state) = self.views.get_mut(&id) else {
@@ -375,8 +520,27 @@ impl VimLayer {
                 cache: self.match_cache.get(&id),
             };
             let (vim, globals, settings) = (&mut state.vim, &mut self.globals, &self.settings);
-            catch_panic("vim key", || vim.feed(key, &info, globals, settings))
+            match &redo {
+                Redo::Key(key) => {
+                    catch_panic("vim key", || vim.feed(*key, &info, globals, settings))
+                }
+                Redo::Search {
+                    query,
+                    backward,
+                    origin,
+                } => catch_panic("vim search", || {
+                    vim.search_submitted(
+                        query.clone(),
+                        *backward,
+                        *origin,
+                        &info,
+                        globals,
+                        settings,
+                    )
+                }),
+            }
         };
+        let submitted = matches!(redo, Redo::Search { .. });
         match outcome {
             Err(_) => {
                 if let Some(state) = self.views.get_mut(&id) {
@@ -395,7 +559,7 @@ impl VimLayer {
             }
             Ok(Outcome::Retry(query)) => {
                 if may_retry {
-                    self.search_then_feed(key, view, query, cx);
+                    self.search_then_run(redo, view, query, cx);
                 } else {
                     tracing::warn!("vim: matches still missing after a search");
                 }
@@ -403,17 +567,22 @@ impl VimLayer {
             }
             Ok(Outcome::Handled(actions)) => {
                 self.apply(view, actions, cx);
+                if submitted {
+                    // Also without a match: the view's selection is where
+                    // the incremental search left it.
+                    self.sync_view(view, Reveal::Scroll, cx);
+                }
                 true
             }
         }
     }
 
-    /// Finds the matches of `query` vim asked for, then feeds `key` again:
+    /// Finds the matches of `query` vim asked for, then runs `redo` again:
     /// at once for a small file, after a background search for a large
     /// one (unless another key came first).
-    fn search_then_feed(
+    fn search_then_run(
         &mut self,
-        key: Key,
+        redo: Redo,
         view: &Entity<CodeView>,
         query: SearchQuery,
         cx: &mut Context<Self>,
@@ -433,7 +602,7 @@ impl VimLayer {
                     matches,
                 },
             );
-            self.feed(key, view, false, cx);
+            self.run(redo, view, false, cx);
             return;
         }
         let generation = self.key_generation;
@@ -459,7 +628,7 @@ impl VimLayer {
                         matches,
                     },
                 );
-                this.feed(key, &view, false, cx);
+                this.run(redo, &view, false, cx);
             })
             .ok();
         }));
@@ -506,10 +675,7 @@ impl VimLayer {
                     redraw = true;
                 }
                 Action::ModeChanged(_) => redraw = true,
-                // `/` and `?` open the find widget in a later change.
-                Action::OpenSearch { backward } => {
-                    tracing::debug!(backward, "vim: search prompt not available yet");
-                }
+                Action::OpenSearch { backward } => self.open_search = Some(backward),
             }
         }
         match (reveal, redraw) {

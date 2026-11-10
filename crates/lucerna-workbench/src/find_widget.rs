@@ -10,8 +10,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext, Context, Entity, Focusable, IntoElement, KeyDownEvent, ParentElement, Render,
-    Styled, Task, WeakEntity, Window, div, prelude::*, px,
+    App, AppContext, Context, Entity, EventEmitter, Focusable, IntoElement, KeyDownEvent,
+    ParentElement, Render, Styled, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use lucerna_project::build_pattern;
 use lucerna_text::BufferSnapshot;
@@ -82,6 +82,15 @@ enum Pick {
     Keep,
 }
 
+/// What a find widget opened for vim's `/` or `?` reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindWidgetEvent {
+    /// Enter: vim jumps to the match.
+    Submitted,
+    /// Closed without Enter: vim's cursor goes back.
+    Dismissed,
+}
+
 pub struct FindWidget {
     view: WeakEntity<CodeView>,
     input: Entity<TextInput>,
@@ -98,6 +107,9 @@ pub struct FindWidget {
     /// Bumped by every search; a background result applies only while
     /// its generation is still the latest.
     generation: u64,
+    /// Opened for vim's `/` or `?`: Enter emits
+    /// [`FindWidgetEvent::Submitted`] instead of stepping.
+    vim: bool,
     _search: Task<()>,
     _view_changed: gpui::Subscription,
 }
@@ -130,6 +142,7 @@ impl FindWidget {
             error: None,
             revision: view.read(cx).revision(),
             generation: 0,
+            vim: false,
             _search: Task::ready(()),
             _view_changed: cx.observe(view, |find, view, cx| {
                 let view = view.read(cx);
@@ -151,6 +164,21 @@ impl FindWidget {
     /// Index of the active match.
     pub fn active_index(&self) -> Option<usize> {
         self.active
+    }
+
+    /// The query and its toggles, for vim.
+    pub(crate) fn query(&self) -> lucerna_vim::SearchQuery {
+        lucerna_vim::SearchQuery {
+            pattern: self.query.clone(),
+            is_regex: self.is_regex,
+            case_sensitive: self.case_sensitive,
+            whole_word: self.whole_word,
+        }
+    }
+
+    /// Ends vim's use of the widget; Enter steps again.
+    pub(crate) fn set_vim(&mut self, vim: bool) {
+        self.vim = vim;
     }
 
     /// The regex error of the current query, if any.
@@ -309,7 +337,9 @@ impl FindWidget {
         if ev.keystroke.key != "enter" || m.platform || m.control || m.alt {
             return;
         }
-        if m.shift {
+        if self.vim {
+            cx.emit(FindWidgetEvent::Submitted);
+        } else if m.shift {
             self.previous(cx);
         } else {
             self.next(cx);
@@ -317,6 +347,8 @@ impl FindWidget {
         cx.stop_propagation();
     }
 }
+
+impl EventEmitter<FindWidgetEvent> for FindWidget {}
 
 impl Focusable for FindWidget {
     fn focus_handle(&self, cx: &App) -> gpui::FocusHandle {
@@ -420,11 +452,7 @@ pub(crate) fn single_line_selection(view: &CodeView) -> Option<String> {
 /// selection, and focuses its input.
 fn open(view: &Entity<CodeView>, window: &mut Window, cx: &mut App) {
     let prefill = single_line_selection(view.read(cx));
-    let find = match view.read(cx).find_widget_any().cloned() {
-        Some(find) => find,
-        None => cx.new(|cx| FindWidget::new(view, cx)),
-    };
-    view.update(cx, |v, cx| v.show_find_widget(find.clone(), cx));
+    let find = show(view, cx);
     match prefill {
         Some(text) => find.update(cx, |find, cx| {
             find.input
@@ -436,11 +464,52 @@ fn open(view: &Entity<CodeView>, window: &mut Window, cx: &mut App) {
     window.focus(&focus, cx);
 }
 
+/// Shows the find widget over `view`, made on first use. A widget still
+/// open for vim is dismissed first.
+fn show(view: &Entity<CodeView>, cx: &mut App) -> Entity<FindWidget> {
+    let find = match view.read(cx).find_widget_any().cloned() {
+        Some(find) => find,
+        None => cx.new(|cx| FindWidget::new(view, cx)),
+    };
+    find.update(cx, end_vim);
+    view.update(cx, |v, cx| v.show_find_widget(find.clone(), cx));
+    find
+}
+
+/// Shows the find widget over `view` for vim's `/` or `?`: empty, with
+/// Enter reported as [`FindWidgetEvent::Submitted`].
+pub(crate) fn open_for_vim(
+    view: &Entity<CodeView>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<FindWidget> {
+    let find = show(view, cx);
+    find.update(cx, |find, cx| {
+        find.vim = true;
+        find.input
+            .update(cx, |input, cx| input.set_text("", window, cx));
+    });
+    let focus = find.focus_handle(cx);
+    window.focus(&focus, cx);
+    find
+}
+
+/// A widget open for vim reports [`FindWidgetEvent::Dismissed`] and
+/// becomes a plain one.
+fn end_vim(find: &mut FindWidget, cx: &mut Context<FindWidget>) {
+    if std::mem::take(&mut find.vim) {
+        cx.emit(FindWidgetEvent::Dismissed);
+    }
+}
+
 /// Hides the find widget over `view`, clears its highlights and gives the
 /// view focus.
-fn close(view: &Entity<CodeView>, window: &mut Window, cx: &mut App) {
+pub(crate) fn close(view: &Entity<CodeView>, window: &mut Window, cx: &mut App) {
     if let Some(find) = view.read(cx).find_widget_any().cloned() {
-        find.update(cx, |find, _| find.cancel());
+        find.update(cx, |find, cx| {
+            end_vim(find, cx);
+            find.cancel();
+        });
     }
     view.update(cx, |v, cx| v.hide_find_widget(cx));
     let focus = view.focus_handle(cx);

@@ -14,7 +14,7 @@ use lucerna_text::{Buffer, BufferSnapshot, Point};
 use lucerna_theme::ThemeRegistry;
 use lucerna_vim::Mode;
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::{AppState, OpenMode, Workbench};
+use lucerna_workbench::{AppState, FindWidgetEvent, OpenMode, Workbench};
 
 const VIM_ON: &str = r#"{ "vim.enabled": true }"#;
 
@@ -124,6 +124,16 @@ fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
 fn keys(keystrokes: &str, cx: &mut VisualTestContext) {
     cx.simulate_keystrokes(keystrokes);
     draw(cx);
+}
+
+/// Types `text` into the focused text input (the find widget's).
+fn type_text(text: &str, cx: &mut VisualTestContext) {
+    cx.simulate_input(text);
+    draw(cx);
+}
+
+fn find_visible(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> bool {
+    view.read_with(cx, |v, _| v.find_widget().is_some())
 }
 
 /// A workbench with vim on and one file open.
@@ -587,4 +597,97 @@ fn reload_keeps_a_mouse_selection_on_unchanged_rows(cx: &mut TestAppContext) {
         Some(pt(1, 1)..pt(2, 2))
     );
     assert_eq!(overlay(&view, cx), Some(pt(2, 2)));
+}
+
+#[gpui::test]
+fn slash_search_jumps_and_n_continues(cx: &mut TestAppContext) {
+    let (wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
+    keys("/", cx);
+    assert!(find_visible(&view, cx));
+    type_text("foo", cx);
+    keys("enter", cx);
+    assert_eq!(cursor(&view, cx), pt(1, 4));
+    assert_eq!(overlay(&view, cx), Some(pt(1, 4)));
+    assert!(!find_visible(&view, cx));
+    assert!(!view.read_with(cx, |v, _| v.match_highlights().is_empty()));
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    keys("n", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+}
+
+#[gpui::test]
+fn question_search_goes_backward(cx: &mut TestAppContext) {
+    let (_wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
+    keys("shift-g", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+    keys("?", cx);
+    type_text("foo", cx);
+    keys("enter", cx);
+    assert_eq!(cursor(&view, cx), pt(1, 4));
+    keys("n", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 0));
+}
+
+#[gpui::test]
+fn escape_in_vim_search_restores_cursor(cx: &mut TestAppContext) {
+    let (wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
+    keys("l", cx);
+    keys("/", cx);
+    type_text("bar", cx);
+    // The incremental search moved the view to the match.
+    assert_eq!(cursor(&view, cx).row, 1);
+    keys("escape", cx);
+    assert!(!find_visible(&view, cx));
+    assert_eq!(cursor(&view, cx), pt(0, 1));
+    assert_eq!(overlay(&view, cx), Some(pt(0, 1)));
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    keys("j", cx);
+    assert_eq!(cursor(&view, cx), pt(1, 1));
+}
+
+#[gpui::test]
+fn count_slash(cx: &mut TestAppContext) {
+    let (_wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
+    keys("2 /", cx);
+    type_text("foo", cx);
+    keys("enter", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+}
+
+#[gpui::test]
+fn slash_search_in_large_file_searches_in_background(cx: &mut TestAppContext) {
+    let filler = "x".repeat(99) + "\n";
+    let text = format!("needle\n{}needle\n", filler.repeat(11_000));
+    assert!(text.len() > lucerna_workbench::BACKGROUND_SEARCH_BYTES);
+    let (_wb, view, cx) = vim_file(&text, cx);
+    keys("/", cx);
+    type_text("needle", cx);
+    keys("enter", cx);
+    assert_eq!(cursor(&view, cx), pt(11_001, 0));
+    assert_eq!(view.read_with(cx, |v, _| v.match_highlights().len()), 2);
+}
+
+#[gpui::test]
+fn plain_find_widget_unchanged(cx: &mut TestAppContext) {
+    let (_wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
+    keys("cmd-f", cx);
+    let find = view.read_with(cx, |v, _| v.find_widget().cloned().expect("find is shown"));
+    let events = Rc::new(std::cell::Cell::new(0));
+    let seen = events.clone();
+    let _sub = cx.update(|_, cx| {
+        cx.subscribe(&find, move |_, _: &FindWidgetEvent, _| {
+            seen.set(seen.get() + 1)
+        })
+    });
+    type_text("foo", cx);
+    assert_eq!(find.read_with(cx, |f, _| f.active_index()), Some(0));
+    keys("enter", cx);
+    assert_eq!(find.read_with(cx, |f, _| f.active_index()), Some(1));
+    assert!(find_visible(&view, cx));
+    assert_eq!(
+        view.read_with(cx, |v, _| v.selection()),
+        Some(pt(1, 4)..pt(1, 7))
+    );
+    keys("escape", cx);
+    assert_eq!(events.get(), 0, "plain find emits no vim event");
 }

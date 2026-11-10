@@ -41,7 +41,7 @@ pub use editor_groups::{
     Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
 };
 pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
-pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, find_in_snapshot};
+pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
 pub use layout::StatusBarSide;
 pub use layout::title_bar::window_options;
 pub use open_files::OpenFileWatcher;
