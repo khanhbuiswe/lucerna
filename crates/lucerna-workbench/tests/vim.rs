@@ -6,7 +6,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    BorrowAppContext as _, Entity, KeyDownEvent, Modifiers, TestAppContext, VisualTestContext,
+    BorrowAppContext as _, Entity, Focusable as _, KeyDownEvent, Modifiers, TestAppContext,
+    VisualTestContext,
 };
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
@@ -690,4 +691,90 @@ fn plain_find_widget_unchanged(cx: &mut TestAppContext) {
     );
     keys("escape", cx);
     assert_eq!(events.get(), 0, "plain find emits no vim event");
+}
+
+#[gpui::test]
+fn reload_during_slash_then_escape_keeps_cursor_on_text(cx: &mut TestAppContext) {
+    let text = "abc\nabc\nabc\nabcd";
+    let (_wb, view, cx) = vim_file(text, cx);
+    keys("j j j $", cx);
+    assert_eq!(cursor(&view, cx), pt(3, 3));
+    keys("/", cx);
+    type_text("b", cx);
+    // An agent shortens the file while the prompt is open.
+    reload(&view, text, "ab\n", cx);
+    keys("escape", cx);
+    assert!(!find_visible(&view, cx));
+    let at = overlay(&view, cx).expect("the cursor is drawn");
+    assert_eq!(at, pt(0, 1), "clamped to the last char of the only line");
+    assert_eq!(cursor(&view, cx), at);
+}
+
+#[gpui::test]
+fn reload_during_slash_shifts_search_origin(cx: &mut TestAppContext) {
+    let text = "foo\nbar\nfoo\nbar\n";
+    let (_wb, view, cx) = vim_file(text, cx);
+    keys("j", cx);
+    keys("/", cx);
+    // Two lines inserted above: the origin (1,0) moves to (3,0).
+    reload(&view, text, &format!("new\nnew\n{text}"), cx);
+    type_text("foo", cx);
+    keys("enter", cx);
+    assert_eq!(cursor(&view, cx), pt(4, 0));
+}
+
+#[gpui::test]
+fn cmd_f_over_vim_search_makes_plain_widget(cx: &mut TestAppContext) {
+    let (wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
+    keys("/", cx);
+    type_text("foo", cx);
+    keys("cmd-f", cx);
+    let find = view.read_with(cx, |v, _| v.find_widget().cloned().expect("find is shown"));
+    let before = find.read_with(cx, |f, _| f.active_index());
+    keys("enter", cx);
+    // Plain find: Enter steps and the widget stays.
+    assert!(find_visible(&view, cx));
+    assert_ne!(find.read_with(cx, |f, _| f.active_index()), before);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+}
+
+#[gpui::test]
+fn disabling_vim_during_slash_makes_plain_widget(cx: &mut TestAppContext) {
+    let (_wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
+    keys("/", cx);
+    type_text("foo", cx);
+    set_user_settings(r#"{ "vim.enabled": false }"#, cx);
+    let find = view.read_with(cx, |v, _| v.find_widget().cloned().expect("find is shown"));
+    assert_eq!(find.read_with(cx, |f, _| f.active_index()), Some(0));
+    keys("enter", cx);
+    assert!(find_visible(&view, cx));
+    assert_eq!(find.read_with(cx, |f, _| f.active_index()), Some(1));
+}
+
+#[gpui::test]
+fn key_in_editor_during_slash_ends_search(cx: &mut TestAppContext) {
+    let (wb, view, cx) = vim_file("abc\ndef\nghi\nfoo foo\n", cx);
+    keys("/", cx);
+    type_text("foo", cx);
+    // The user clicks back into the editor at (1,1): focus and selection.
+    cx.update(|window, cx| {
+        let focus = view.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    view.update(cx, |v, cx| v.select(pt(1, 1)..pt(1, 1), cx));
+    draw(cx);
+    keys("j", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 1), "vim took the clicked position");
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    // The widget, still shown, is a plain one now: Enter steps.
+    let find = view.read_with(cx, |v, _| v.find_widget().cloned().expect("find is shown"));
+    cx.update(|window, cx| {
+        let focus = find.read(cx).input().read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    let before = find.read_with(cx, |f, _| f.active_index());
+    keys("enter", cx);
+    assert!(find_visible(&view, cx));
+    assert_ne!(find.read_with(cx, |f, _| f.active_index()), before);
 }

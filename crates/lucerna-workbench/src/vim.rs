@@ -268,6 +268,8 @@ impl VimLayer {
             FindWidgetEvent::Dismissed => {
                 if let Some(state) = self.views.get_mut(&id) {
                     state.vim.set_cursor(search.origin);
+                    // The origin may be past the text after a reload.
+                    state.vim.clamp(view.read(cx).snapshot());
                 }
                 self.sync_view(&view, Reveal::Scroll, cx);
                 cx.notify();
@@ -418,6 +420,13 @@ impl VimLayer {
             self.globals.remap_marks(v.path(), &reload, snapshot);
             self.last_remap.insert(v.path().clone(), key);
         }
+        // The open `/` starts from (or goes back to) its origin on the
+        // same line; the column is clamped where the origin is used.
+        if let Some(search) = self.search.as_mut()
+            && search.view.entity_id() == id
+        {
+            search.origin.row = reload.adjust_row(search.origin.row, snapshot.line_count());
+        }
         let Some(state) = self.views.get_mut(&id) else {
             return;
         };
@@ -566,10 +575,10 @@ impl VimLayer {
                 true
             }
             Ok(Outcome::Handled(actions)) => {
-                self.apply(view, actions, cx);
-                if submitted {
-                    // Also without a match: the view's selection is where
-                    // the incremental search left it.
+                let synced = self.apply(view, actions, cx);
+                if submitted && !synced {
+                    // No match: the view's selection is where the
+                    // incremental search left it.
                     self.sync_view(view, Reveal::Scroll, cx);
                 }
                 true
@@ -635,8 +644,14 @@ impl VimLayer {
     }
 
     /// Carries out vim's actions on `view`, then draws vim's cursor and
-    /// selection.
-    fn apply(&mut self, view: &Entity<CodeView>, actions: Vec<Action>, cx: &mut Context<Self>) {
+    /// selection. Returns false when only the cursor was drawn and the
+    /// view's selection was left as it was.
+    fn apply(
+        &mut self,
+        view: &Entity<CodeView>,
+        actions: Vec<Action>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let id = view.entity_id();
         let mut reveal = None;
         let mut redraw = false;
@@ -678,18 +693,26 @@ impl VimLayer {
                 Action::OpenSearch { backward } => self.open_search = Some(backward),
             }
         }
-        match (reveal, redraw) {
-            (Some(reveal), _) => self.sync_view(view, reveal, cx),
-            (None, true) => self.sync_view(view, Reveal::Scroll, cx),
+        let synced = match (reveal, redraw) {
+            (Some(reveal), _) => {
+                self.sync_view(view, reveal, cx);
+                true
+            }
+            (None, true) => {
+                self.sync_view(view, Reveal::Scroll, cx);
+                true
+            }
             // A count or a prefix: the selection stays, the cursor is drawn.
             (None, false) => {
                 if let Some(state) = self.views.get(&id) {
                     let at = state.vim.cursor();
                     view.update(cx, |v, cx| v.set_cursor_overlay(Some(block_cursor(at)), cx));
                 }
+                false
             }
-        }
+        };
         cx.notify();
+        synced
     }
 
     /// The matches of `query` in `view`: cached, or found now when the
