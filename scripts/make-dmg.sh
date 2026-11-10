@@ -3,8 +3,10 @@
 # fixed-size Finder window with the app, an arrow and an Applications link.
 #
 # Usage: scripts/make-dmg.sh [--debug]
-#   --debug  pack target/debug/Lucerna.app (default: target/release)
-# Run scripts/bundle-app.sh (with the same profile) first.
+#   --debug  pack the dev build (default: release)
+# Builds Lucerna.app first (scripts/bundle-app.sh), so the image always holds
+# the current build, and ejects a Lucerna volume left mounted from an
+# earlier image.
 #
 # Uses only tools that ship with macOS: hdiutil builds the image, Finder
 # (through osascript) lays out the window, sips and tiffutil render the
@@ -17,7 +19,7 @@ profile=release
 for arg in "$@"; do
   case $arg in
     --debug) profile=debug ;;
-    -h | --help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "make-dmg: unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -28,13 +30,31 @@ cd "$root"
 app="target/$profile/Lucerna.app"
 dmg="target/$profile/Lucerna.dmg"
 volume=Lucerna
-[ -d "$app" ] || {
-  echo "make-dmg: $app not found; run scripts/bundle-app.sh first" >&2
-  exit 1
+lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+
+# Finder registers the app on any mounted Lucerna volume with LaunchServices,
+# and the entry can outlive the volume. Stale copies make "Open With" and the
+# default app pick an old build, so drop the entry before and after ejecting.
+forget_volume_app() {
+  "$lsregister" -u "/Volumes/$volume/Lucerna.app" 2>/dev/null || true
 }
+
+if [ "$profile" = debug ]; then
+  scripts/bundle-app.sh --debug
+else
+  scripts/bundle-app.sh
+fi
+
+# An earlier image still mounted: its old app would stay registered with
+# LaunchServices, and its volume name would clash with the new one.
 if [ -e "/Volumes/$volume" ]; then
-  echo "make-dmg: /Volumes/$volume is already mounted; eject it first" >&2
-  exit 1
+  forget_volume_app
+  hdiutil detach "/Volumes/$volume" -quiet || {
+    echo "make-dmg: could not eject /Volumes/$volume; close what uses it and retry" >&2
+    exit 1
+  }
+  forget_volume_app
+  echo "make-dmg: ejected the earlier /Volumes/$volume"
 fi
 
 # Window content size, matching dmg-background.svg, and icon centres.
@@ -112,12 +132,10 @@ fi
 
 chmod -Rf go-w "$mount" || true
 sync
-# Finder registered the app on the temporary volume with LaunchServices.
-# Drop it, so "Open With" and the default app never pick that stale copy.
-lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-"$lsregister" -u "$mount/Lucerna.app" 2>/dev/null || true
+forget_volume_app
 hdiutil detach "$device" -quiet
 device=
+forget_volume_app
 
 rm -f "$dmg"
 hdiutil convert "$work/rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$dmg" -quiet

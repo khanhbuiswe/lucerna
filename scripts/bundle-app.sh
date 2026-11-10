@@ -40,7 +40,11 @@ contents="$app/Contents"
 rm -rf "$app"
 mkdir -p "$contents/MacOS" "$contents/Resources"
 
-sed "s/@VERSION@/$version/g" crates/lucerna/resources/macos/Info.plist \
+# CFBundleVersion is the build time, as Zed does: LaunchServices and Finder
+# then treat the latest build as the newest copy.
+build=$(date +%Y%m%d.%H%M%S)
+sed -e "s/@VERSION@/$version/g" -e "s/@BUILD@/$build/g" \
+  crates/lucerna/resources/macos/Info.plist \
   > "$contents/Info.plist"
 plutil -lint -s "$contents/Info.plist"
 printf 'APPL????' > "$contents/PkgInfo"
@@ -62,7 +66,7 @@ done
 iconutil -c icns "$iconset" -o "$contents/Resources/Lucerna.icns"
 
 codesign --force --sign - "$app"
-echo "bundle-app: built $app ($version, $profile)"
+echo "bundle-app: built $app ($version, build $build, $profile)"
 
 if [ "$install" -eq 1 ]; then
   dest=/Applications/Lucerna.app

@@ -58,10 +58,12 @@ Builds are macOS-only for now. Linux and Windows packages will come with cross-p
 ### From the disk image (macOS)
 
 ```sh
-scripts/bundle-app.sh            # builds Lucerna.app (release)
-scripts/make-dmg.sh              # target/release/Lucerna.dmg
-open target/release/Lucerna.dmg  # drag Lucerna into Applications
+scripts/make-dmg.sh              # builds Lucerna.app, then target/release/Lucerna.dmg
+open target/release/Lucerna.dmg  # drag Lucerna into Applications, choose Replace
 ```
+
+`make-dmg.sh` always packs the build it just made, and ejects a Lucerna disk image left mounted
+from an earlier run. Eject the image after you install, so macOS doesn't keep the copy on it.
 
 The app is ad-hoc signed and not notarized. The first time you open it, right-click it and choose **Open**.
 

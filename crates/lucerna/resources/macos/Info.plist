@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Template for Lucerna.app; scripts/bundle-app.sh replaces @VERSION@. -->
+<!-- Template for Lucerna.app; scripts/bundle-app.sh replaces @VERSION@ with
+     the Cargo version and @BUILD@ with the build time (YYYYMMDD.HHMMSS), so
+     the newest of several installed copies has the highest CFBundleVersion. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
@@ -22,7 +24,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>@VERSION@</string>
 	<key>CFBundleVersion</key>
-	<string>@VERSION@</string>
+	<string>@BUILD@</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<!-- Folders, text and source code, so Lucerna shows in Finder's "Open
