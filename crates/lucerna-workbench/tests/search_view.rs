@@ -711,3 +711,90 @@ fn search_is_unavailable_in_single_file_mode(cx: &mut TestAppContext) {
     );
     assert!(cx.debug_bounds("search-summary").is_some());
 }
+
+fn highlights_of(
+    view: &Entity<SearchView>,
+    path: &str,
+    cx: &mut VisualTestContext,
+) -> Option<Vec<(u32, usize)>> {
+    cx.update(|_, cx| {
+        view.read(cx).highlights(Path::new(path)).map(|h| {
+            let mut lines: Vec<_> = h.iter().map(|(n, s)| (*n, s.len())).collect();
+            lines.sort();
+            lines
+        })
+    })
+}
+
+#[gpui::test]
+fn visible_rust_result_gets_highlights(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("main.rs", "fn main() {}\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    type_text("main", cx);
+    settle_search(cx);
+    draw(cx);
+    let lines = highlights_of(&view, "main.rs", cx).expect("the visible file was highlighted");
+    assert!(
+        lines.iter().any(|(n, spans)| *n == 1 && *spans > 0),
+        "{lines:?}"
+    );
+}
+
+#[gpui::test]
+fn new_search_drops_old_highlights(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.rs", "fn alpha() {}\n"), ("b.rs", "fn beta() {}\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    type_text("alpha", cx);
+    settle_search(cx);
+    draw(cx);
+    assert!(highlights_of(&view, "a.rs", cx).is_some());
+
+    // Typing again clears the results and the colors with them; the
+    // highlights of the first search never show up for the second.
+    keys("backspace", cx);
+    keys("backspace", cx);
+    keys("backspace", cx);
+    keys("backspace", cx);
+    keys("backspace", cx);
+    type_text("beta", cx);
+    cx.executor().advance_clock(DEBOUNCE);
+    cx.update(|_, _| {});
+    // Before the frame that draws the new rows: nothing for a.rs.
+    assert!(highlights_of(&view, "a.rs", cx).is_none());
+    draw(cx);
+    assert!(highlights_of(&view, "a.rs", cx).is_none());
+    assert!(highlights_of(&view, "b.rs", cx).is_some());
+}
+
+#[gpui::test]
+fn at_most_three_highlight_jobs_run(cx: &mut TestAppContext) {
+    init(cx);
+    let files: Vec<(String, String)> = (0..10)
+        .map(|i| (format!("f{i}.rs"), format!("fn needle{i}() {{}}\n")))
+        .collect();
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let dir = project(&refs);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let view = search(&wb, cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    draw(cx);
+    let (peak, now) = view.read_with(cx, |v, _| {
+        (v.peak_highlight_jobs(), v.highlight_jobs_in_flight())
+    });
+    assert_eq!(peak, 3, "three at once, never more");
+    assert_eq!(now, 0, "all done once settled");
+    for i in 0..10 {
+        assert!(highlights_of(&view, &format!("f{i}.rs"), cx).is_some());
+    }
+}

@@ -1,8 +1,6 @@
 //! Syntax colors for search-result excerpts. Pure and blocking: it parses
 //! the result file with tree-sitter, so it runs on a background thread and
 //! never touches gpui.
-// Consumed by the view in a later task.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::ops::Range;

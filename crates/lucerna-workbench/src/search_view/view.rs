@@ -7,6 +7,7 @@
 //! channel and a generation; events of a superseded search are dropped
 //! (ruling R17).
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,14 +16,15 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use gpui::{
-    AnyElement, App, Context, Div, Entity, FocusHandle, Focusable, HighlightStyle, IntoElement,
-    KeyDownEvent, MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled,
-    StyledText, Subscription, Task, UniformListScrollHandle, WeakEntity, Window, div, font,
-    prelude::*, px, svg, uniform_list,
+    AnyElement, App, Context, Div, Entity, FocusHandle, Focusable, FontStyle, FontWeight,
+    HighlightStyle, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render,
+    SharedString, Stateful, Styled, StyledText, Subscription, Task, UniformListScrollHandle,
+    WeakEntity, Window, div, font, prelude::*, px, svg, uniform_list,
 };
 use lucerna_project::{SearchEvent, SearchQuery, search};
 use lucerna_text::Point;
 
+use super::highlight::{FileHighlights, LineSpans, highlight_file};
 use super::model::{LineRef, Results, Row, first_match, globs, summary};
 use crate::code_view::CodeView;
 use crate::find_widget::single_line_selection;
@@ -39,6 +41,10 @@ use crate::{AppState, CommandRegistry, DocState, OpenMode, Workbench};
 
 /// How long the inputs must stay unchanged before a search starts.
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
+
+/// The most files highlighted at once, so a long list never starves the
+/// background executor.
+pub const MAX_HIGHLIGHT_JOBS: usize = 3;
 
 /// Shown instead of results when the view is not [`searchable`](SearchView).
 const UNAVAILABLE: &str = "Search is unavailable when a single file is opened";
@@ -79,6 +85,19 @@ pub struct SearchView {
     /// Highlights a clicked match once its file has loaded.
     _highlight: Option<Subscription>,
     scroll: UniformListScrollHandle,
+    /// Syntax colors per result file (path relative to the root).
+    highlights: HashMap<Arc<Path>, FileHighlights>,
+    /// Files queued or running; a file in here or in `highlights` is never
+    /// queued again.
+    highlight_pending: HashSet<Arc<Path>>,
+    highlight_queue: VecDeque<Arc<Path>>,
+    highlight_tasks: HashMap<Arc<Path>, Task<()>>,
+    /// Bumped by a new search and by a theme change: results of an older
+    /// epoch are dropped.
+    highlight_epoch: u64,
+    /// The `theme_generation` the highlights were computed for.
+    highlight_theme: u64,
+    peak_highlight_jobs: usize,
     /// `false` in single-file mode (R29): the folder is never walked.
     searchable: bool,
 }
@@ -133,6 +152,13 @@ impl SearchView {
             _search: Task::ready(()),
             _highlight: None,
             scroll: UniformListScrollHandle::new(),
+            highlights: HashMap::new(),
+            highlight_pending: HashSet::new(),
+            highlight_queue: VecDeque::new(),
+            highlight_tasks: HashMap::new(),
+            highlight_epoch: 0,
+            highlight_theme: cx.global::<AppState>().theme_generation,
+            peak_highlight_jobs: 0,
             searchable,
         }
     }
@@ -154,6 +180,22 @@ impl SearchView {
     /// The files with results, sorted by path, and the rows shown.
     pub fn results(&self) -> &Results {
         &self.results
+    }
+
+    /// The syntax colors of the result file `path` (relative to the root),
+    /// once computed.
+    pub fn highlights(&self, path: &Path) -> Option<&FileHighlights> {
+        self.highlights.get(path)
+    }
+
+    /// Highlight jobs running now; never above [`MAX_HIGHLIGHT_JOBS`].
+    pub fn highlight_jobs_in_flight(&self) -> usize {
+        self.highlight_tasks.len()
+    }
+
+    /// The most highlight jobs that ran at once since this view was made.
+    pub fn peak_highlight_jobs(&self) -> usize {
+        self.peak_highlight_jobs
     }
 
     /// The regex error of the last search, if any.
@@ -240,6 +282,7 @@ impl SearchView {
         self._debounce = Task::ready(());
         self.cancel_search();
         self.results.clear();
+        self.reset_highlights();
         self.max_line_number = 0;
         self.done = None;
         self.error = None;
@@ -299,6 +342,90 @@ impl SearchView {
                 }
             }
         });
+    }
+
+    /// Forgets every color and drops the queued and running jobs.
+    fn reset_highlights(&mut self) {
+        self.highlight_epoch += 1;
+        self.highlights.clear();
+        self.highlight_pending.clear();
+        self.highlight_queue.clear();
+        self.highlight_tasks.clear();
+    }
+
+    /// Queues the files of the visible rows that have no colors yet and
+    /// starts jobs up to [`MAX_HIGHLIGHT_JOBS`].
+    fn request_highlights(&mut self, files: Vec<usize>, cx: &mut Context<Self>) {
+        let theme = cx.global::<AppState>().theme_generation;
+        if theme != self.highlight_theme {
+            self.highlight_theme = theme;
+            self.reset_highlights();
+        }
+        for file in files {
+            let Some(result) = self.results.files().get(file) else {
+                continue;
+            };
+            let path = result.path.clone();
+            if self.highlights.contains_key(&path) || !self.highlight_pending.insert(path.clone()) {
+                continue;
+            }
+            self.highlight_queue.push_back(path);
+        }
+        self.start_highlight_jobs(cx);
+    }
+
+    fn start_highlight_jobs(&mut self, cx: &mut Context<Self>) {
+        while self.highlight_tasks.len() < MAX_HIGHLIGHT_JOBS {
+            let Some(path) = self.highlight_queue.pop_front() else {
+                break;
+            };
+            let Some(excerpts) = self
+                .results
+                .files()
+                .iter()
+                .find(|f| f.path == path)
+                .map(|f| f.excerpts.clone())
+            else {
+                self.highlight_pending.remove(&path);
+                continue;
+            };
+            let state = cx.global::<AppState>();
+            let (languages, theme) = (state.languages.clone(), state.theme.clone());
+            let (abs, rel, epoch) = (self.root.join(&path), path.clone(), self.highlight_epoch);
+            let job = cx.background_spawn(async move {
+                guarded("search highlight", || {
+                    highlight_file(&abs, &rel, &excerpts, &languages, &|c| {
+                        theme.style_for(c).is_some()
+                    })
+                })
+            });
+            let key = path.clone();
+            let task = cx.spawn(async move |this, cx| {
+                let highlights = job.await.unwrap_or_default();
+                this.update(cx, |view, cx| {
+                    view.highlights_done(epoch, key, highlights, cx)
+                })
+                .ok();
+            });
+            self.highlight_tasks.insert(path, task);
+            self.peak_highlight_jobs = self.peak_highlight_jobs.max(self.highlight_tasks.len());
+        }
+    }
+
+    fn highlights_done(
+        &mut self,
+        epoch: u64,
+        path: Arc<Path>,
+        highlights: FileHighlights,
+        cx: &mut Context<Self>,
+    ) {
+        if epoch != self.highlight_epoch {
+            return;
+        }
+        self.highlight_tasks.remove(&path);
+        self.highlights.insert(path, highlights);
+        self.start_highlight_jobs(cx);
+        cx.notify();
     }
 
     /// Adds a batch of events of search `generation`; stale ones are
@@ -454,6 +581,17 @@ impl SearchView {
         style: &RowStyle,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        let mut visible: Vec<usize> = Vec::new();
+        for row in self.results.rows().get(range.clone()).unwrap_or_default() {
+            let file = match row {
+                Row::Header(file) | Row::Separator { file } => *file,
+                Row::Line(r) => r.file,
+            };
+            if visible.last() != Some(&file) {
+                visible.push(file);
+            }
+        }
+        self.request_highlights(visible, cx);
         range
             .filter_map(|ix| {
                 let row = *self.results.rows().get(ix)?;
@@ -543,7 +681,8 @@ impl SearchView {
         style: &RowStyle,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let ui = &cx.global::<AppState>().theme.ui;
+        let state = cx.global::<AppState>();
+        let (ui, theme) = (&state.theme.ui, &state.theme);
         let Some(line) = self.results.line(r) else {
             return div().into_any_element();
         };
@@ -552,16 +691,13 @@ impl SearchView {
             background_color: Some(color(ui.search_match_background).into()),
             ..Default::default()
         };
-        // An empty range (a match past the 1,000-char cut) draws nothing.
-        let highlights: Vec<(Range<usize>, HighlightStyle)> = line
-            .ranges
-            .iter()
-            .map(|r| r.start..r.end.min(text.len()))
-            .filter(|r| {
-                r.start < r.end && text.is_char_boundary(r.start) && text.is_char_boundary(r.end)
-            })
-            .map(|r| (r, mark))
-            .collect();
+        let spans = self
+            .results
+            .files()
+            .get(r.file)
+            .and_then(|f| self.highlights.get(&f.path))
+            .and_then(|h| h.get(&line.line_number));
+        let highlights = line_highlights(text, &line.ranges, spans, theme, mark);
         let styled = StyledText::new(text.clone()).with_highlights(highlights);
         let selector = format!("search-line-{}-{}-{}", r.file, r.excerpt, r.line);
         row(ix, selector, style, cx)
@@ -601,6 +737,75 @@ impl SearchView {
             .child(gutter(style, muted).child("┈"))
             .into_any_element()
     }
+}
+
+/// The runs of one result line: syntax colors from `spans` with `mark`
+/// laid over the match `ranges`. Runs never overlap; where a match and a
+/// syntax span meet, the run takes the syntax style plus the match
+/// background. Ranges are clamped and anything off a char boundary or
+/// empty (a match past the 1,000-char cut) is dropped.
+fn line_highlights(
+    text: &str,
+    ranges: &[Range<usize>],
+    spans: Option<&LineSpans>,
+    theme: &lucerna_theme::Theme,
+    mark: HighlightStyle,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    let valid = |r: &Range<usize>| {
+        r.start < r.end && text.is_char_boundary(r.start) && text.is_char_boundary(r.end)
+    };
+    let matches: Vec<Range<usize>> = ranges
+        .iter()
+        .map(|r| r.start..r.end.min(text.len()))
+        .filter(valid)
+        .collect();
+    let syntax: Vec<(Range<usize>, &lucerna_theme::HighlightStyle)> = spans
+        .into_iter()
+        .flatten()
+        .filter(|(r, _)| valid(r) && r.end <= text.len())
+        .filter_map(|(r, capture)| Some((r.clone(), theme.style_for(capture)?)))
+        .collect();
+    let mut edges: Vec<usize> = matches
+        .iter()
+        .map(|r| r.start)
+        .chain(matches.iter().map(|r| r.end))
+        .chain(syntax.iter().flat_map(|(r, _)| [r.start, r.end]))
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+        .windows(2)
+        .filter_map(|w| {
+            let seg = w[0]..w[1];
+            // The narrowest span covering the segment wins; later on a tie.
+            let style = syntax
+                .iter()
+                .filter(|(r, _)| r.start <= seg.start && seg.end <= r.end)
+                .min_by_key(|(r, _)| r.len())
+                .map(|(_, s)| *s);
+            let marked = matches
+                .iter()
+                .any(|r| r.start <= seg.start && seg.end <= r.end);
+            if style.is_none() && !marked {
+                return None;
+            }
+            let mut run = if marked {
+                mark
+            } else {
+                HighlightStyle::default()
+            };
+            if let Some(s) = style {
+                run.color = s.color.map(|c| color(c).into());
+                if s.bold {
+                    run.font_weight = Some(FontWeight::BOLD);
+                }
+                if s.italic {
+                    run.font_style = Some(FontStyle::Italic);
+                }
+            }
+            Some((seg, run))
+        })
+        .collect()
 }
 
 impl Drop for SearchView {
@@ -807,4 +1012,53 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "View: Show Search",
         |wb, _, window, cx| find_in_files(wb, window, cx),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucerna_theme::ThemeRegistry;
+
+    #[test]
+    fn match_background_wins_over_syntax_and_runs_do_not_overlap() {
+        let theme = ThemeRegistry::builtin().get_or_default("One Dark");
+        let mark = HighlightStyle {
+            background_color: Some(gpui::red()),
+            ..Default::default()
+        };
+        // "fn main": keyword over 0..2, function over 3..7, match on 1..5.
+        let spans: LineSpans = vec![(0..2, "keyword".into()), (3..7, "function".into())];
+        let ranges = [1..3, 3..5];
+        let runs = line_highlights("fn main", &ranges, Some(&spans), &theme, mark);
+        assert!(runs.windows(2).all(|w| w[0].0.end <= w[1].0.start));
+        let covered: Vec<_> = runs
+            .iter()
+            .filter(|(r, _)| r.start >= 1 && r.end <= 5)
+            .collect();
+        assert!(!covered.is_empty());
+        assert!(covered.iter().all(|(_, s)| s.background_color.is_some()));
+        assert!(
+            runs.iter()
+                .filter(|(r, _)| r.end <= 1 || r.start >= 5)
+                .all(|(_, s)| s.background_color.is_none())
+        );
+        assert!(
+            runs.iter().any(|(_, s)| s.color.is_some()),
+            "syntax color kept"
+        );
+    }
+
+    #[test]
+    fn bad_ranges_are_dropped() {
+        let theme = ThemeRegistry::builtin().get_or_default("One Dark");
+        let spans: LineSpans = vec![(0..1, "keyword".into()), (0..99, "keyword".into())];
+        let runs = line_highlights(
+            "é",
+            &[1..2, 5..9, 0..0],
+            Some(&spans),
+            &theme,
+            Default::default(),
+        );
+        assert!(runs.is_empty(), "{runs:?}");
+    }
 }
