@@ -1,0 +1,655 @@
+//! The bridge between the gpui-free vim state machine (`lucerna-vim`) and
+//! the workbench: it routes keys to the [`Vim`] of the active
+//! [`CodeView`], carries out the resulting [`Action`]s on the view and
+//! keeps both in step when the view changes on its own (mouse, go to,
+//! reload).
+
+use std::collections::HashMap;
+use std::ops::Range;
+use std::path::Path;
+use std::sync::{Arc, LazyLock};
+
+use gpui::{
+    App, AppContext as _, ClipboardItem, Context, Entity, EntityId, KeyDownEvent, Subscription,
+    Task, WeakEntity, Window,
+};
+use lucerna_settings::{Context as WhenContext, WhenExpr, parse_when};
+use lucerna_text::{BufferSnapshot, Point, Reload};
+use lucerna_vim::{
+    Action, FoldAction, Key, Mode, Outcome, SearchQuery, Settings, ViewInfo, Vim, VimGlobals,
+    VimSelection, block_ranges, exclusive_range,
+};
+
+use crate::AppState;
+use crate::code_view::{CodeView, CodeViewEvent, CursorOverlay, CursorShape, FoldOp};
+use crate::documents::DocState;
+use crate::editor_groups::EditorGroupsView;
+use crate::find_widget::{BACKGROUND_SEARCH_BYTES, find_in_snapshot};
+use crate::tasks::{catch_panic, guarded};
+
+/// Where keys may reach vim: the editor has focus, and neither a text
+/// input (find widget) nor Quick Open does.
+static KEY_GATE: LazyLock<WhenExpr> = LazyLock::new(|| {
+    parse_when("editorFocus && !textInputFocus && !inQuickOpen").expect("a valid when clause")
+});
+
+/// The vim state of one code view.
+struct ViewState {
+    vim: Vim,
+    /// To clear vim's cursor and selection when vim is switched off.
+    view: WeakEntity<CodeView>,
+    /// The view's `selection_generation` after vim last wrote to it; any
+    /// other value means someone else moved the selection.
+    generation: u64,
+    _subscriptions: [Subscription; 3],
+}
+
+/// The matches of one query in one revision of a view's text.
+struct MatchCache {
+    revision: u64,
+    query: SearchQuery,
+    matches: Arc<[Range<usize>]>,
+}
+
+/// How [`VimLayer::sync_view`] brings the cursor into view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reveal {
+    /// Leave the scroll position alone.
+    None,
+    /// Scroll just enough (`editor.cursorSurroundingLines` included).
+    Scroll,
+    /// Centre the cursor when it is off-screen, else as `Scroll`.
+    Jump,
+}
+
+pub struct VimLayer {
+    enabled: bool,
+    settings: Settings,
+    globals: VimGlobals,
+    views: HashMap<EntityId, ViewState>,
+    match_cache: HashMap<EntityId, MatchCache>,
+    /// The last reload whose marks were remapped, per file: every view of
+    /// a file reports the same reload, but the marks move only once.
+    last_remap: HashMap<Arc<Path>, (Reload, u32)>,
+    /// Bumped by every key; a background search re-feeds its key only
+    /// while no other key arrived.
+    key_generation: u64,
+    _retry: Option<Task<()>>,
+    _settings: Subscription,
+}
+
+impl VimLayer {
+    /// Reads the settings from [`AppState`] and follows their changes.
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let (enabled, settings) = read_settings(cx);
+        VimLayer {
+            enabled,
+            settings,
+            globals: VimGlobals::default(),
+            views: HashMap::new(),
+            match_cache: HashMap::new(),
+            last_remap: HashMap::new(),
+            key_generation: 0,
+            _retry: None,
+            _settings: cx.observe_global::<AppState>(Self::settings_changed),
+        }
+    }
+
+    /// `vim.enabled`, or the `vim_mode` alias when that is unset.
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// The mode of the code view `view`: Normal until it got a key;
+    /// `None` while vim is off.
+    pub fn mode_for(&self, view: EntityId) -> Option<Mode> {
+        if !self.enabled {
+            return None;
+        }
+        Some(self.views.get(&view).map_or(Mode::Normal, |s| s.vim.mode()))
+    }
+
+    /// The mode indicator for the code view `view`, e.g. `-- NORMAL --`
+    /// or, with keys pending, `-- NORMAL --  2f`; `None` while vim is off.
+    pub fn indicator_text(&self, view: EntityId) -> Option<String> {
+        let (label, pending) = self.indicator_parts(view)?;
+        Some(if pending.is_empty() {
+            label.to_string()
+        } else {
+            format!("{label}  {pending}")
+        })
+    }
+
+    /// The mode label and the pending keys of the indicator.
+    pub(crate) fn indicator_parts(&self, view: EntityId) -> Option<(&'static str, &str)> {
+        let mode = self.mode_for(view)?;
+        let pending = self.views.get(&view).map_or("", |s| s.vim.pending());
+        Some((mode.label(), pending))
+    }
+
+    /// Feeds `ev` to the vim of `view`. Returns true when the key was
+    /// consumed.
+    pub(crate) fn handle_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        view: &Entity<CodeView>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let Some(key) = to_vim_key(ev) else {
+            return false;
+        };
+        self.key_generation += 1;
+        self._retry = None;
+        self.feed(key, view, true, cx)
+    }
+
+    fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        let (enabled, settings) = read_settings(cx);
+        self.settings = settings;
+        if enabled == self.enabled {
+            return;
+        }
+        self.enabled = enabled;
+        if !enabled {
+            self._retry = None;
+            self.match_cache.clear();
+            self.last_remap.clear();
+            for (_, state) in self.views.drain() {
+                let Some(view) = state.view.upgrade() else {
+                    continue;
+                };
+                view.update(cx, |v, cx| {
+                    v.set_cursor_overlay(None, cx);
+                    v.set_block_selection(None, cx);
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    /// Creates the state of `view` on its first key.
+    fn ensure_state(&mut self, view: &Entity<CodeView>, cx: &mut Context<Self>) {
+        let id = view.entity_id();
+        if self.views.contains_key(&id) {
+            return;
+        }
+        let (cursor, generation) = {
+            let v = view.read(cx);
+            (v.cursor(), v.selection_generation())
+        };
+        let subscriptions = [
+            cx.subscribe(view, Self::view_event),
+            cx.observe(view, Self::view_changed),
+            cx.observe_release(view, move |this, _, _| {
+                this.views.remove(&id);
+                this.match_cache.remove(&id);
+            }),
+        ];
+        let mut vim = Vim::new(cursor);
+        vim.clamp(view.read(cx).snapshot());
+        self.views.insert(
+            id,
+            ViewState {
+                vim,
+                view: view.downgrade(),
+                generation,
+                _subscriptions: subscriptions,
+            },
+        );
+    }
+
+    /// A reload: marks follow the moved lines, the cursor is kept on the
+    /// text and the selection is drawn again.
+    fn view_event(
+        &mut self,
+        view: Entity<CodeView>,
+        event: &CodeViewEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let CodeViewEvent::Reloaded { reload } = *event;
+        let id = view.entity_id();
+        self.match_cache.remove(&id);
+        let v = view.read(cx);
+        let snapshot = v.snapshot();
+        let key = (reload, snapshot.line_count());
+        if self.last_remap.get(v.path()) != Some(&key) {
+            self.globals.remap_marks(v.path(), &reload, snapshot);
+            self.last_remap.insert(v.path().clone(), key);
+        }
+        let Some(state) = self.views.get_mut(&id) else {
+            return;
+        };
+        if state.vim.mode() == Mode::Normal {
+            // Like the view's own cursor, it stays on its line.
+            let at = state.vim.cursor();
+            state.vim.set_cursor(Point {
+                row: reload.adjust_row(at.row, snapshot.line_count()),
+                column: at.column,
+            });
+        }
+        state.vim.clamp(snapshot);
+        self.sync_view(&view, Reveal::None, cx);
+        cx.notify();
+    }
+
+    /// The selection was changed outside vim (a click, go to): back to
+    /// Normal mode at the view's cursor.
+    fn view_changed(&mut self, view: Entity<CodeView>, cx: &mut Context<Self>) {
+        let Some(state) = self.views.get_mut(&view.entity_id()) else {
+            return;
+        };
+        let v = view.read(cx);
+        if v.selection_generation() == state.generation {
+            return;
+        }
+        state.vim.reset(v.cursor());
+        state.vim.clamp(v.snapshot());
+        state.generation = v.selection_generation();
+        let at = state.vim.cursor();
+        // The selection the user made stays; only the cursor is drawn.
+        view.update(cx, |v, cx| v.set_cursor_overlay(Some(block_cursor(at)), cx));
+        cx.notify();
+    }
+
+    /// Feeds `key`; `may_retry` allows one search for a [`Outcome::Retry`].
+    fn feed(
+        &mut self,
+        key: Key,
+        view: &Entity<CodeView>,
+        may_retry: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let id = view.entity_id();
+        self.ensure_state(view, cx);
+        let outcome = {
+            let v = view.read(cx);
+            let Some(state) = self.views.get_mut(&id) else {
+                return false;
+            };
+            if v.selection_generation() != state.generation {
+                state.vim.reset(v.cursor());
+                state.generation = v.selection_generation();
+            }
+            let info = Info {
+                view: v,
+                cache: self.match_cache.get(&id),
+            };
+            let (vim, globals, settings) = (&mut state.vim, &mut self.globals, &self.settings);
+            catch_panic("vim key", || vim.feed(key, &info, globals, settings))
+        };
+        match outcome {
+            Err(_) => {
+                if let Some(state) = self.views.get_mut(&id) {
+                    let v = view.read(cx);
+                    state.vim.reset(v.cursor());
+                    state.vim.clamp(v.snapshot());
+                }
+                self.sync_view(view, Reveal::None, cx);
+                cx.notify();
+                true
+            }
+            Ok(Outcome::Unhandled) => {
+                // A pending prefix may have been dropped.
+                cx.notify();
+                false
+            }
+            Ok(Outcome::Retry(query)) => {
+                if may_retry {
+                    self.search_then_feed(key, view, query, cx);
+                } else {
+                    tracing::warn!("vim: matches still missing after a search");
+                }
+                true
+            }
+            Ok(Outcome::Handled(actions)) => {
+                self.apply(view, actions, cx);
+                true
+            }
+        }
+    }
+
+    /// Finds the matches of `query` vim asked for, then feeds `key` again:
+    /// at once for a small file, after a background search for a large
+    /// one (unless another key came first).
+    fn search_then_feed(
+        &mut self,
+        key: Key,
+        view: &Entity<CodeView>,
+        query: SearchQuery,
+        cx: &mut Context<Self>,
+    ) {
+        let id = view.entity_id();
+        let (snapshot, revision) = {
+            let v = view.read(cx);
+            (v.snapshot().clone(), v.revision())
+        };
+        if snapshot.len_bytes() <= BACKGROUND_SEARCH_BYTES {
+            let matches = search(&snapshot, &query);
+            self.match_cache.insert(
+                id,
+                MatchCache {
+                    revision,
+                    query,
+                    matches,
+                },
+            );
+            self.feed(key, view, false, cx);
+            return;
+        }
+        let generation = self.key_generation;
+        let pattern = query.clone();
+        let result = cx.background_spawn(async move {
+            guarded("vim search", || search(&snapshot, &pattern)).unwrap_or_else(|| Arc::from([]))
+        });
+        let view = view.downgrade();
+        self._retry = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let matches = result.await;
+            this.update(cx, |this, cx| {
+                let Some(view) = view.upgrade() else {
+                    return;
+                };
+                if this.key_generation != generation || !this.enabled {
+                    return;
+                }
+                this.match_cache.insert(
+                    id,
+                    MatchCache {
+                        revision,
+                        query,
+                        matches,
+                    },
+                );
+                this.feed(key, &view, false, cx);
+            })
+            .ok();
+        }));
+    }
+
+    /// Carries out vim's actions on `view`, then draws vim's cursor and
+    /// selection.
+    fn apply(&mut self, view: &Entity<CodeView>, actions: Vec<Action>, cx: &mut Context<Self>) {
+        let id = view.entity_id();
+        let mut reveal = None;
+        let mut redraw = false;
+        for action in actions {
+            match action {
+                Action::ScrollTopRow(row) => {
+                    view.update(cx, |v, cx| v.set_scroll_top_row(row, cx));
+                }
+                Action::CursorMoved { jump } => {
+                    let this = if jump { Reveal::Jump } else { Reveal::Scroll };
+                    reveal = Some(reveal.map_or(this, |r: Reveal| if jump { this } else { r }));
+                }
+                Action::Yank(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+                Action::Highlight(query) => {
+                    if let Some(matches) = self.matches_for(view, &query, cx) {
+                        view.update(cx, |v, cx| v.set_match_highlights(matches, None, cx));
+                    }
+                }
+                Action::Fold { row, action } => {
+                    let op = match action {
+                        FoldAction::Toggle => FoldOp::Toggle,
+                        FoldAction::Close => FoldOp::Close,
+                        FoldAction::Open => FoldOp::Open,
+                    };
+                    let header = view.update(cx, |v, cx| v.fold_at(row, op, cx));
+                    let v = view.read(cx);
+                    if let (Some(header), Some(state)) = (header, self.views.get_mut(&id))
+                        && v.is_row_hidden(state.vim.cursor().row)
+                    {
+                        state.vim.set_cursor(Point {
+                            row: header,
+                            column: 0,
+                        });
+                        state.vim.clamp(v.snapshot());
+                    }
+                    redraw = true;
+                }
+                Action::ModeChanged(_) => redraw = true,
+                // `/` and `?` open the find widget in a later change.
+                Action::OpenSearch { backward } => {
+                    tracing::debug!(backward, "vim: search prompt not available yet");
+                }
+            }
+        }
+        match (reveal, redraw) {
+            (Some(reveal), _) => self.sync_view(view, reveal, cx),
+            (None, true) => self.sync_view(view, Reveal::Scroll, cx),
+            // A count or a prefix: the selection stays, the cursor is drawn.
+            (None, false) => {
+                if let Some(state) = self.views.get(&id) {
+                    let at = state.vim.cursor();
+                    view.update(cx, |v, cx| v.set_cursor_overlay(Some(block_cursor(at)), cx));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// The matches of `query` in `view`: cached, or found now when the
+    /// file is small enough.
+    fn matches_for(
+        &mut self,
+        view: &Entity<CodeView>,
+        query: &SearchQuery,
+        cx: &App,
+    ) -> Option<Arc<[Range<usize>]>> {
+        let v = view.read(cx);
+        let id = view.entity_id();
+        if let Some(cache) = self.match_cache.get(&id)
+            && cache.revision == v.revision()
+            && cache.query == *query
+        {
+            return Some(cache.matches.clone());
+        }
+        if v.snapshot().len_bytes() > BACKGROUND_SEARCH_BYTES {
+            return None;
+        }
+        let matches = search(v.snapshot(), query);
+        self.match_cache.insert(
+            id,
+            MatchCache {
+                revision: v.revision(),
+                query: query.clone(),
+                matches: matches.clone(),
+            },
+        );
+        Some(matches)
+    }
+
+    /// Draws vim's cursor and selection in `view` and remembers the
+    /// selection generation that results.
+    fn sync_view(&mut self, view: &Entity<CodeView>, reveal: Reveal, cx: &mut Context<Self>) {
+        let Some(state) = self.views.get_mut(&view.entity_id()) else {
+            return;
+        };
+        let vim = &state.vim;
+        let at = vim.cursor();
+        state.generation = view.update(cx, |v, cx| {
+            let selection = vim.selection(v.snapshot(), v.tab_size());
+            // Every selection change drops a block selection, so the
+            // cursor goes first.
+            match reveal {
+                Reveal::Jump if !row_on_screen(v, at.row) => v.reveal_centered(at, cx),
+                Reveal::Jump | Reveal::Scroll => v.set_cursor(at, cx),
+                Reveal::None => v.select(at..at, cx),
+            }
+            match selection {
+                None => {}
+                Some(sel @ VimSelection::Block { .. }) => {
+                    let ranges = block_ranges(&sel, v.snapshot(), v.tab_size());
+                    v.set_block_selection(Some(ranges), cx);
+                }
+                Some(sel) => {
+                    if let Some(range) = exclusive_range(&sel, v.snapshot()) {
+                        v.select(range, cx);
+                    }
+                }
+            }
+            v.set_cursor_overlay(Some(block_cursor(at)), cx);
+            v.selection_generation()
+        });
+    }
+}
+
+/// Feeds `ev` to vim when vim is on, the editor has focus (not a text
+/// input or Quick Open), no keymap chord is pending, the key has no cmd
+/// and the active tab is a loaded code view. Returns true when vim
+/// consumed the key.
+pub(crate) fn dispatch(
+    vim: &Entity<VimLayer>,
+    groups: &Entity<EditorGroupsView>,
+    ev: &KeyDownEvent,
+    ctx: &WhenContext,
+    chord_pending: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    if chord_pending
+        || ev.keystroke.modifiers.platform
+        || !vim.read(cx).enabled()
+        || !KEY_GATE.eval(ctx)
+    {
+        return false;
+    }
+    let Some(view) = groups
+        .read(cx)
+        .active_body()
+        .and_then(|body| body.downcast::<CodeView>().ok())
+    else {
+        return false;
+    };
+    if !matches!(
+        view.read(cx).doc_state(),
+        DocState::Ready | DocState::Deleted
+    ) {
+        return false;
+    }
+    vim.update(cx, |vim, cx| vim.handle_key(ev, &view, window, cx))
+}
+
+/// The key as vim sees it; `None` for keys vim never takes.
+pub(crate) fn to_vim_key(ev: &KeyDownEvent) -> Option<Key> {
+    let stroke = &ev.keystroke;
+    let mods = stroke.modifiers;
+    match stroke.key.as_str() {
+        "escape" => return Some(Key::Escape),
+        "enter" => return Some(Key::Enter),
+        "left" => return Some(Key::Char('h')),
+        "down" => return Some(Key::Char('j')),
+        "up" => return Some(Key::Char('k')),
+        "right" => return Some(Key::Char('l')),
+        _ => {}
+    }
+    if mods.control {
+        let mut chars = stroke.key.chars();
+        return match (chars.next(), chars.next()) {
+            (Some(c), None) if c.is_ascii_alphabetic() => Some(Key::Ctrl(c.to_ascii_lowercase())),
+            _ => None,
+        };
+    }
+    if mods.alt {
+        return None;
+    }
+    let mut chars = stroke.key_char.as_deref()?.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(Key::Char(c)),
+        _ => None,
+    }
+}
+
+fn read_settings(cx: &App) -> (bool, Settings) {
+    let store = &cx.global::<AppState>().settings;
+    let enabled = store
+        .get::<bool>("vim.enabled", None)
+        .or_else(|| store.get::<bool>("vim_mode", None))
+        .unwrap_or(false);
+    let defaults = Settings::default();
+    let settings = Settings {
+        ignorecase: store
+            .get("vim.ignorecase", None)
+            .unwrap_or(defaults.ignorecase),
+        wrapscan: store.get("vim.wrapscan", None).unwrap_or(defaults.wrapscan),
+        startofline: store
+            .get("vim.startofline", None)
+            .unwrap_or(defaults.startofline),
+        scroll: store.get("vim.scroll", None).unwrap_or(defaults.scroll),
+        scrolloff: store
+            .get("editor.cursorSurroundingLines", None)
+            .unwrap_or(defaults.scrolloff),
+    };
+    (enabled, settings)
+}
+
+/// Every match of `query`; an invalid regex finds nothing.
+fn search(snapshot: &BufferSnapshot, query: &SearchQuery) -> Arc<[Range<usize>]> {
+    find_in_snapshot(
+        snapshot,
+        &query.pattern,
+        query.is_regex,
+        query.case_sensitive,
+        query.whole_word,
+    )
+    .unwrap_or_default()
+    .into()
+}
+
+fn block_cursor(at: Point) -> CursorOverlay {
+    CursorOverlay {
+        at,
+        shape: CursorShape::Block,
+    }
+}
+
+/// Whether `row` is among the rows on screen; false before the first
+/// paint.
+fn row_on_screen(v: &CodeView, row: u32) -> bool {
+    let (top, rows) = (v.scroll_top_row(), v.visible_rows());
+    rows > 0 && row >= top && row < top.saturating_add(rows)
+}
+
+/// What vim may read from a code view, with the match cache.
+struct Info<'a> {
+    view: &'a CodeView,
+    cache: Option<&'a MatchCache>,
+}
+
+impl ViewInfo for Info<'_> {
+    fn path(&self) -> &Arc<Path> {
+        self.view.path()
+    }
+
+    fn snapshot(&self) -> &BufferSnapshot {
+        self.view.snapshot()
+    }
+
+    fn top_row(&self) -> u32 {
+        self.view.scroll_top_row()
+    }
+
+    fn visible_rows(&self) -> u32 {
+        self.view.visible_rows()
+    }
+
+    fn is_row_hidden(&self, row: u32) -> bool {
+        self.view.is_row_hidden(row)
+    }
+
+    fn tab_size(&self) -> u32 {
+        self.view.tab_size()
+    }
+
+    fn matching_bracket(&self, offset: usize) -> Option<usize> {
+        self.view.matching_bracket(offset)
+    }
+
+    fn matches(&self, query: &SearchQuery) -> Option<Arc<[Range<usize>]>> {
+        self.cache
+            .filter(|c| c.revision == self.view.revision() && c.query == *query)
+            .map(|c| c.matches.clone())
+    }
+}

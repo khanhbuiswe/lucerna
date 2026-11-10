@@ -6,6 +6,7 @@
   "editor.minimap.enabled": false,
   "editor.renderWhitespace": "none",
   "editor.tabSize": 4,
+  "editor.cursorSurroundingLines": 0,
   "files.exclude": { "**/.git": true, "**/.DS_Store": true },
   "search.exclude": { "**/node_modules": true, "**/target": true },
   "workbench.colorTheme": "One Dark",
@@ -16,5 +17,9 @@
   "explorer.autoReveal": true,
   "explorer.decorations.externalChanges": true,
   "lucerna.largeFile.maxBytes": 20971520,
-  "lucerna.largeFile.maxLines": 300000
+  "lucerna.largeFile.maxLines": 300000,
+  "vim.ignorecase": true,
+  "vim.wrapscan": true,
+  "vim.startofline": true,
+  "vim.scroll": 0
 }

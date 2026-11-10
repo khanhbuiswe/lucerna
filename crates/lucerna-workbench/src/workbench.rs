@@ -35,6 +35,8 @@ use crate::tasks::try_spawn_guarded;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
+use crate::vim::{self, VimLayer};
+use crate::vim_indicator::ModeIndicator;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateStore, absolute_path};
 use crate::{AppState, CommandRegistry, find_widget, keys, search_panel};
 
@@ -140,6 +142,8 @@ pub struct Workbench {
     status_right: Vec<AnyView>,
     /// Keystrokes of a chord in progress, e.g. `[cmd+k]`.
     pending_chord: Vec<Keystroke>,
+    /// Vim navigation in code views; sees keys before the keymap.
+    vim: Entity<VimLayer>,
     /// The left button went down on the title bar and the window has not
     /// started moving yet. Only acted on while the button is still held.
     pub(crate) title_bar_pressed: bool,
@@ -339,6 +343,11 @@ impl Workbench {
             let workbench = cx.weak_entity();
             cx.new(|cx| ConfigErrorItem::new(workbench, cx))
         };
+        let vim = cx.new(VimLayer::new);
+        let mode_indicator = {
+            let (vim, groups) = (vim.clone(), editor_groups.clone());
+            cx.new(|cx| ModeIndicator::new(vim, groups, cx))
+        };
         let git_head = crate::git_branch::head_path(&root);
         let git_branch = crate::git_branch::read_branch(&root);
         if let (Some(watcher), Some(head)) = (&open_file_watcher, &git_head) {
@@ -387,6 +396,7 @@ impl Workbench {
             status_left: Vec::new(),
             status_right: Vec::new(),
             pending_chord: Vec::new(),
+            vim,
             title_bar_pressed: false,
             quick_open: None,
             focus_before_quick_open: None,
@@ -403,6 +413,7 @@ impl Workbench {
         }
         workbench.refresh_watched_open_files(cx);
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
+        workbench.add_status_item(StatusBarSide::Left, mode_indicator.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
         workbench
@@ -900,6 +911,13 @@ impl Workbench {
             .read(cx)
             .active_body()
             .and_then(|body| body.downcast::<CodeView>().ok());
+        let vim = self.vim.read(cx);
+        let vim_mode = view
+            .as_ref()
+            .and_then(|v| vim.mode_for(v.entity_id()))
+            .map_or("", |m| m.context_value());
+        ctx.set("vim.active", ContextValue::Bool(vim.enabled()));
+        ctx.set("vim.mode", ContextValue::Str(vim_mode.into()));
         let lang_id = match view {
             Some(view) => view.read(cx).language_id().unwrap_or_default().to_string(),
             None => path
@@ -1033,6 +1051,11 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Vim navigation: its settings, per-view modes and mode indicator.
+    pub fn vim(&self) -> &Entity<VimLayer> {
+        &self.vim
+    }
+
     /// The chord typed so far, e.g. `"⌘K"`, while waiting for its next key.
     pub fn pending_chord_label(&self) -> Option<String> {
         if self.pending_chord.is_empty() {
@@ -1058,6 +1081,19 @@ impl Workbench {
     fn dispatch_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let stroke = keys::to_keystroke(ev);
         let ctx = self.context_keys(window, cx);
+        let chord_pending = !self.pending_chord.is_empty();
+        if vim::dispatch(
+            &self.vim,
+            &self.editor_groups,
+            ev,
+            &ctx,
+            chord_pending,
+            window,
+            cx,
+        ) {
+            cx.stop_propagation();
+            return;
+        }
         let had_pending = !self.pending_chord.is_empty();
         let mut chord = std::mem::take(&mut self.pending_chord);
         chord.push(stroke.clone());

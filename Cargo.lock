@@ -3377,6 +3377,7 @@ dependencies = [
  "lucerna-syntax",
  "lucerna-text",
  "lucerna-theme",
+ "lucerna-vim",
  "notify",
  "nucleo-matcher",
  "regex",

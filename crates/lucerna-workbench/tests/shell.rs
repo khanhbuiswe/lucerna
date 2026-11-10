@@ -321,9 +321,10 @@ fn slots_show_views_and_track_focus(cx: &mut TestAppContext) {
             Some(wb.explorer().entity_id())
         );
         assert!(same(wb.editor_area(), &editor));
-        // The built-in configuration error item comes first.
-        let [_, l] = wb.status_items(StatusBarSide::Left) else {
-            panic!("one left item after the built-in one")
+        // The built-in configuration error item and vim mode indicator
+        // come first.
+        let [_, _, l] = wb.status_items(StatusBarSide::Left) else {
+            panic!("one left item after the built-in ones")
         };
         // The built-in large-file notice and document status come first.
         let [_, _, r] = wb.status_items(StatusBarSide::Right) else {

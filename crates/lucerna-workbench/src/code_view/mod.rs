@@ -704,6 +704,11 @@ impl CodeView {
         self.selection_generation
     }
 
+    /// The cursor painted over the text, if any.
+    pub fn cursor_overlay(&self) -> Option<CursorOverlay> {
+        self.cursor_overlay
+    }
+
     /// Paints `overlay` as the cursor; `None` paints no cursor.
     pub fn set_cursor_overlay(&mut self, overlay: Option<CursorOverlay>, cx: &mut Context<Self>) {
         if self.cursor_overlay != overlay {
