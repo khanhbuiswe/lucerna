@@ -14,7 +14,7 @@ use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
     AppState, EXTENSIONS_TAB_STATE, GroupState, GroupsState, OpenMode, SEARCH_TAB_STATE,
-    SidebarView, Workbench, WorkspaceState, load_state, save_state, state_path,
+    SearchState, SidebarView, Workbench, WorkspaceState, load_state, save_state, state_path,
 };
 use tempfile::TempDir;
 
@@ -42,6 +42,7 @@ fn sample(paths: &[&Path]) -> WorkspaceState {
         },
         scroll: paths.iter().map(|p| (p.to_path_buf(), 7)).collect(),
         group_widths: vec![0.25, 0.75],
+        search: Default::default(),
     }
 }
 
@@ -522,4 +523,17 @@ fn mismatched_group_widths_are_normalised(cx: &mut TestAppContext) {
     assert_eq!(restored_widths(&project, &state, cx), [0.25, 0.75]);
     state.group_widths = vec![-1.0, 1.0];
     assert_eq!(restored_widths(&project, &state, cx), [0.5, 0.5]);
+}
+
+#[test]
+fn old_state_without_search_field_loads() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("state.json");
+    save_state(&path, &sample(&[Path::new("/a"), Path::new("/b")])).unwrap();
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(value.as_object_mut().unwrap().remove("search").is_some());
+    fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+    let state = load_state(&path).expect("a file without `search` still loads");
+    assert_eq!(state.search, SearchState::default());
 }

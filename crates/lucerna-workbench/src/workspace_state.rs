@@ -31,6 +31,23 @@ pub struct WorkspaceState {
     /// restored groups are replaced by equal ones.
     #[serde(default)]
     pub group_widths: Vec<f32>,
+    /// The Search tab's inputs and toggles; the default in files from
+    /// before they were saved.
+    #[serde(default)]
+    pub search: SearchState,
+}
+
+/// What the Search tab keeps across restarts: the query, its toggles, the
+/// include / exclude globs and whether their row is shown.
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
+pub struct SearchState {
+    pub query: String,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub is_regex: bool,
+    pub include: String,
+    pub exclude: String,
+    pub filters_visible: bool,
 }
 
 impl WorkspaceState {

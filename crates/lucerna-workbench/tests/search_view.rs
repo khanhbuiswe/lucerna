@@ -14,8 +14,8 @@ use lucerna_text::Point;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, GroupState, GroupsState, OpenMode, SearchView, SidebarView, TabItem, Workbench,
-    WorkspaceState, save_state, state_path,
+    AppState, GroupState, GroupsState, OpenMode, SEARCH_TAB_STATE, SearchState, SearchView,
+    SidebarView, TabItem, Workbench, WorkspaceState, save_state, state_path,
 };
 use tempfile::TempDir;
 
@@ -653,6 +653,7 @@ fn sidebar_has_only_explorer(cx: &mut TestAppContext) {
         },
         scroll: Default::default(),
         group_widths: Vec::new(),
+        search: Default::default(),
     };
     save_state(&state_path(data.path(), dir.path()), &state).unwrap();
     let (root, data_dir) = (dir.path().to_path_buf(), data.path().to_path_buf());
@@ -1004,4 +1005,150 @@ fn selection_follows_its_line_when_files_arrive_before_it(cx: &mut TestAppContex
     let sel = view.read_with(cx, |v, _| v.selected().unwrap());
     assert_eq!((sel.file, sel.line), (2, 0), "still b.rs's first line");
     drop(dir);
+}
+
+fn tab_title(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<String> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .search_title()
+            .map(|t| t.to_string())
+    })
+}
+
+#[gpui::test]
+fn tab_title_follows_query(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = needles();
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    assert_eq!(tab_title(&wb, cx), None, "an empty query says \"Search\"");
+    type_text("needle", cx);
+    assert_eq!(tab_title(&wb, cx).as_deref(), Some("needle"));
+    keys("cmd-a backspace", cx);
+    assert_eq!(tab_title(&wb, cx), None);
+}
+
+/// A state file with a Search tab and the given search inputs.
+fn saved_search(root: &Path, data: &Path, search: SearchState, with_tab: bool) {
+    let tabs = if with_tab {
+        vec![(PathBuf::from(SEARCH_TAB_STATE), true)]
+    } else {
+        Vec::new()
+    };
+    let state = WorkspaceState {
+        version: 1,
+        sidebar_visible: true,
+        sidebar_width: 300.,
+        sidebar_view: "explorer".into(),
+        groups: GroupsState {
+            groups: vec![GroupState {
+                active: with_tab.then_some(0),
+                tabs,
+            }],
+            active_group: 0,
+        },
+        scroll: Default::default(),
+        group_widths: Vec::new(),
+        search,
+    };
+    save_state(&state_path(data, root), &state).unwrap();
+}
+
+fn needle_state(query: &str) -> SearchState {
+    SearchState {
+        query: query.into(),
+        is_regex: true,
+        include: "*.rs".into(),
+        filters_visible: true,
+        ..Default::default()
+    }
+}
+
+#[gpui::test]
+fn search_state_round_trips_and_reruns(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.rs", "needle\n"), ("b.txt", "needle\n")]);
+    let data = TempDir::new().unwrap();
+    let (root, data_dir) = (dir.path().to_path_buf(), data.path().to_path_buf());
+    let (wb, vcx) = cx.add_window_view({
+        let (root, data_dir) = (root.clone(), data_dir.clone());
+        move |window, cx| Workbench::with_data_dir(root, data_dir, window, cx)
+    });
+    finish_scan(&wb, vcx);
+    keys("cmd-shift-f", vcx);
+    type_text("nee.le", vcx);
+    keys("alt-cmd-r", vcx);
+    keys("shift-cmd-j", vcx);
+    type_text("*.rs", vcx);
+    settle_search(vcx);
+    vcx.update(|_, cx| wb.update(cx, |wb, cx| wb.save_workspace_state(cx)));
+    let saved = wb.read_with(vcx, |wb, cx| wb.search_view().read(cx).state(cx));
+    assert_eq!(saved, needle_state("nee.le"));
+    let on_disk = lucerna_workbench::load_state(&state_path(&data_dir, &root)).unwrap();
+    assert_eq!(on_disk.search, saved);
+
+    let (wb, vcx) =
+        cx.add_window_view(move |window, cx| Workbench::with_data_dir(root, data_dir, window, cx));
+    finish_scan(&wb, vcx);
+    settle_search(vcx);
+    let view = search(&wb, vcx);
+    assert_eq!(view.read_with(vcx, |v, cx| v.state(cx)), saved);
+    assert_eq!(tab_title(&wb, vcx).as_deref(), Some("nee.le"));
+    let found = files(&view, vcx);
+    assert_eq!(found.len(), 1, "the include filter is back: {found:?}");
+    assert!(found[0].0.ends_with("a.rs"));
+}
+
+#[gpui::test]
+fn restored_search_in_single_file_mode_does_not_search(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "needle\n"), ("b.txt", "needle\n")]);
+    let data = TempDir::new().unwrap();
+    saved_search(dir.path(), data.path(), needle_state("needle"), true);
+    let (root, file) = (dir.path().to_path_buf(), dir.path().join("a.txt"));
+    let data_dir = data.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(move |window, cx| {
+        Workbench::single_file(root, &file, Some(data_dir), window, cx)
+    });
+    draw(cx);
+    settle_search(cx);
+    let view = search(&wb, cx);
+    assert!(files(&view, cx).is_empty(), "no search ran");
+    assert_eq!(query(&view, cx), "needle");
+}
+
+#[gpui::test]
+fn restored_empty_query_does_not_search(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = needles();
+    let data = TempDir::new().unwrap();
+    saved_search(dir.path(), data.path(), SearchState::default(), true);
+    let (root, data_dir) = (dir.path().to_path_buf(), data.path().to_path_buf());
+    let (wb, cx) =
+        cx.add_window_view(move |window, cx| Workbench::with_data_dir(root, data_dir, window, cx));
+    finish_scan(&wb, cx);
+    settle_search(cx);
+    assert_eq!(search_tabs(&wb, cx), 1);
+    let view = search(&wb, cx);
+    assert!(files(&view, cx).is_empty());
+    assert_eq!(summary(&view, cx), None);
+    assert_eq!(tab_title(&wb, cx), None);
+}
+
+#[gpui::test]
+fn restored_query_without_search_tab_does_not_search(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = needles();
+    let data = TempDir::new().unwrap();
+    saved_search(dir.path(), data.path(), needle_state("needle"), false);
+    let (root, data_dir) = (dir.path().to_path_buf(), data.path().to_path_buf());
+    let (wb, cx) =
+        cx.add_window_view(move |window, cx| Workbench::with_data_dir(root, data_dir, window, cx));
+    finish_scan(&wb, cx);
+    settle_search(cx);
+    let view = search(&wb, cx);
+    assert!(files(&view, cx).is_empty());
+    assert_eq!(query(&view, cx), "needle");
 }

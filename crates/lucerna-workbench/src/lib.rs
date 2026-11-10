@@ -58,5 +58,6 @@ pub use theme_picker::{ThemePicker, ThemePickerEvent};
 pub use vim::VimLayer;
 pub use workbench::{SidebarView, Workbench};
 pub use workspace_state::{
-    WorkspaceState, WorkspaceStateStore, default_data_dir, load_state, save_state, state_path,
+    SearchState, WorkspaceState, WorkspaceStateStore, default_data_dir, load_state, save_state,
+    state_path,
 };

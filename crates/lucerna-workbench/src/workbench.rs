@@ -307,6 +307,15 @@ impl Workbench {
                 }
             });
         }
+        if let Some(state) = &restored {
+            search_view.update(cx, |view, cx| {
+                view.restore(state.search.clone(), window, cx)
+            });
+            let has_tab = editor_groups.read(cx).model().search_tab().is_some();
+            if has_tab {
+                search_view.update(cx, |view, cx| view.run_search(cx));
+            }
+        }
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
@@ -320,6 +329,14 @@ impl Workbench {
             }),
             cx.observe_in(&editor_groups, window, Self::singleton_tab_hidden),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
+            // The Search tab's title is its query; any input change is a
+            // layout change too (the query is saved with the layout).
+            cx.observe(&search_view, |wb, view, cx| {
+                let title = view.read(cx).title(cx);
+                wb.editor_groups
+                    .update(cx, |groups, cx| groups.set_search_title(title, cx));
+                wb.layout_changed(cx);
+            }),
         ];
         if cx.has_global::<ExtensionService>() {
             subscriptions.push(cx.observe_global::<ExtensionService>(|wb, cx| {
@@ -474,6 +491,7 @@ impl Workbench {
             groups: groups.model().state(),
             scroll,
             group_widths: groups.group_widths().to_vec(),
+            search: self.search_view.read(cx).state(cx),
         };
         if let Some(p) = &mut self.persistence {
             p.scroll_rows = state.scroll.clone();

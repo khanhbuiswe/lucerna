@@ -201,6 +201,12 @@ impl EditorGroupsView {
         }
     }
 
+    /// The title [`EditorGroupsView::set_search_title`] set; `None` while the
+    /// Search tab says "Search".
+    pub fn search_title(&self) -> Option<&SharedString> {
+        self.search_title.as_ref()
+    }
+
     /// Path bars show paths relative to `root`.
     pub(crate) fn set_root(&mut self, root: PathBuf) {
         self.root = Some(root);

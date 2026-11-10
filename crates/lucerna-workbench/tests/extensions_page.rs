@@ -596,6 +596,7 @@ fn old_sidebar_state_extensions_restores_explorer(cx: &mut TestAppContext) {
             },
             scroll: Default::default(),
             group_widths: Vec::new(),
+            search: Default::default(),
         },
     )
     .unwrap();

@@ -37,6 +37,7 @@ use crate::ui::{
     file_icon_sized, icon_button, toggle_button,
 };
 use crate::workbench::enabled_globs;
+use crate::workspace_state::SearchState;
 use crate::{AppState, CommandRegistry, DocState, OpenMode, Workbench};
 
 /// How long the inputs must stay unchanged before a search starts.
@@ -105,6 +106,9 @@ pub struct SearchView {
     peak_highlight_jobs: usize,
     /// `false` in single-file mode (R29): the folder is never walked.
     searchable: bool,
+    /// Input changes still to come from [`SearchView::restore`] setting the
+    /// inputs, which must not start a search.
+    restore_changes: usize,
 }
 
 /// How result rows are drawn, read from the `editor.*` settings each frame.
@@ -167,7 +171,48 @@ impl SearchView {
             highlight_theme: cx.global::<AppState>().theme_generation,
             peak_highlight_jobs: 0,
             searchable,
+            restore_changes: 0,
         }
+    }
+
+    /// The Search tab's title: the query; `None` (the tab says "Search")
+    /// while it is empty.
+    pub fn title(&self, cx: &App) -> Option<SharedString> {
+        let query = self.query.read(cx).text();
+        (!query.trim().is_empty()).then(|| query.to_owned().into())
+    }
+
+    /// The inputs and toggles, as saved with the workspace.
+    pub fn state(&self, cx: &App) -> SearchState {
+        SearchState {
+            query: self.query.read(cx).text().to_owned(),
+            case_sensitive: self.case_sensitive,
+            whole_word: self.whole_word,
+            is_regex: self.is_regex,
+            include: self.include.read(cx).text().to_owned(),
+            exclude: self.exclude.read(cx).text().to_owned(),
+            filters_visible: self.filters_shown,
+        }
+    }
+
+    /// Puts saved inputs back. Searches nothing: the caller runs
+    /// [`SearchView::run_search`] when the tab is open.
+    pub fn restore(&mut self, state: SearchState, window: &mut Window, cx: &mut Context<Self>) {
+        self.case_sensitive = state.case_sensitive;
+        self.whole_word = state.whole_word;
+        self.is_regex = state.is_regex;
+        self.filters_shown = state.filters_visible;
+        for (input, text) in [
+            (&self.query, &state.query),
+            (&self.include, &state.include),
+            (&self.exclude, &state.exclude),
+        ] {
+            if input.read(cx).text() != text.as_str() {
+                self.restore_changes += 1;
+                input.update(cx, |input, cx| input.set_text(text, window, cx));
+            }
+        }
+        cx.notify();
     }
 
     pub fn query_input(&self) -> &Entity<TextInput> {
@@ -410,6 +455,11 @@ impl SearchView {
     /// Stops the running search and searches again once the inputs have
     /// been still for [`SEARCH_DEBOUNCE`].
     fn inputs_changed(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
+        if self.restore_changes > 0 {
+            self.restore_changes -= 1;
+            return;
+        }
         self.cancel_search();
         self._debounce = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SEARCH_DEBOUNCE).await;
