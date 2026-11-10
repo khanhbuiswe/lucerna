@@ -68,7 +68,8 @@ pub(crate) fn last_char_col(line: &str) -> u32 {
     line.char_indices().next_back().map_or(0, |(i, _)| i as u32)
 }
 
-fn advance(col: u32, c: char, tab: u32) -> u32 {
+/// The display column after `c` drawn at `col`.
+pub(crate) fn advance(col: u32, c: char, tab: u32) -> u32 {
     if c == '\t' {
         col + tab - col % tab
     } else {

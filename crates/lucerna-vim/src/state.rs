@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use lucerna_text::{BufferSnapshot, Point};
 
-use crate::classify::{display_col, last_char_col, line};
+use crate::classify::{self, display_col, last_char_col, line};
 use crate::marks::FileMarks;
 use crate::motion::{self, FindChar, Goal, WordMotion};
 use crate::scroll::{self, Screen, ScrollKind};
+use crate::visual::{self, VimSelection};
 use crate::{Action, FoldAction, Key, Mode, Outcome, Settings, ViewInfo};
 
 /// The largest count; more digits are ignored.
@@ -41,6 +42,9 @@ pub struct Vim {
     count: Option<u32>,
     /// The first key of a two-key command, e.g. `g`.
     prefix: Option<char>,
+    /// The view's tab size at the last [`Vim::feed`], for the display
+    /// columns of a block selection.
+    tab: u32,
 }
 
 impl Vim {
@@ -53,6 +57,7 @@ impl Vim {
             pending: String::new(),
             count: None,
             prefix: None,
+            tab: 4,
         }
     }
 
@@ -64,9 +69,13 @@ impl Vim {
         globals: &mut VimGlobals,
         settings: &Settings,
     ) -> Outcome {
+        self.tab = view.tab_size();
         self.clamp(view.snapshot());
         let saved = self.clone();
         let outcome = self.step(key, view, globals, settings);
+        if self.mode == Mode::Normal {
+            self.anchor = self.cursor;
+        }
         match &outcome {
             Outcome::Retry(_) => *self = saved,
             Outcome::Handled(actions)
@@ -92,11 +101,54 @@ impl Vim {
         self.cursor
     }
 
-    /// Moves the cursor from outside vim and forgets the goal column. The
-    /// point is clamped to the buffer on the next [`Vim::feed`] or
-    /// [`Vim::clamp`].
+    /// The visual selection between the anchor and the cursor (the head);
+    /// `None` in Normal mode.
+    pub fn selection(&self, s: &BufferSnapshot) -> Option<VimSelection> {
+        let (a, h) = (self.anchor, self.cursor);
+        let (start, end) = if (a.row, a.column) <= (h.row, h.column) {
+            (a, h)
+        } else {
+            (h, a)
+        };
+        match self.mode {
+            Mode::Normal => None,
+            Mode::Visual => Some(VimSelection::Char {
+                start,
+                end_inclusive: end,
+            }),
+            Mode::VisualLine => Some(VimSelection::Line {
+                start_row: start.row,
+                end_row: end.row,
+            }),
+            Mode::VisualBlock => {
+                let span = |p: Point| {
+                    let text = line(s, p.row);
+                    let left = display_col(&text, p.column, self.tab);
+                    let right = text[(p.column as usize).min(text.len())..]
+                        .chars()
+                        .next()
+                        .map_or(left + 1, |c| classify::advance(left, c, self.tab.max(1)));
+                    (left, right)
+                };
+                let (a, h) = (span(a), span(h));
+                Some(VimSelection::Block {
+                    rows: start.row..end.row + 1,
+                    display_cols: a.0.min(h.0)..a.1.max(h.1),
+                    to_eol: self.goal == Some(Goal::Eol),
+                })
+            }
+        }
+    }
+
+    /// Moves the cursor from outside vim and forgets the goal column. A
+    /// visual mode ends without a [`Action::ModeChanged`] (the caller made
+    /// the change) and without setting the `<` and `>` marks; the anchor
+    /// moves with the cursor. The point is clamped to the buffer on the
+    /// next [`Vim::feed`] or [`Vim::clamp`].
     pub fn set_cursor(&mut self, p: Point) {
+        self.mode = Mode::Normal;
         self.cursor = p;
+        self.anchor = p;
         self.goal = None;
     }
 
@@ -114,8 +166,31 @@ impl Vim {
     /// Keeps the cursor and anchor on a char of `snapshot`, e.g. after a
     /// reload.
     pub fn clamp(&mut self, snapshot: &BufferSnapshot) {
-        self.cursor = clamp_point(snapshot, self.cursor);
-        self.anchor = clamp_point(snapshot, self.anchor);
+        self.cursor = self.clamp_in_mode(snapshot, self.cursor);
+        self.anchor = self.clamp_in_mode(snapshot, self.anchor);
+    }
+
+    /// `p` clamped for the current mode: onto a char, except that Visual
+    /// (char) mode also allows the line break, where `$` puts the head.
+    fn clamp_in_mode(&self, snapshot: &BufferSnapshot, p: Point) -> Point {
+        if self.mode == Mode::Visual {
+            let row = p.row.min(snapshot.line_count().saturating_sub(1));
+            let len = visual::line_len(snapshot, row);
+            if p.column >= len {
+                return Point { row, column: len };
+            }
+        }
+        clamp_point(snapshot, p)
+    }
+
+    /// The column `$` and the end-of-line goal reach on `row`: the last
+    /// char, or the line break in Visual (char) mode.
+    fn eol_col(&self, snapshot: &BufferSnapshot, row: u32) -> u32 {
+        if self.mode == Mode::Visual {
+            visual::line_len(snapshot, row)
+        } else {
+            last_char_col(&line(snapshot, row))
+        }
     }
 
     fn step(
@@ -126,7 +201,7 @@ impl Vim {
         settings: &Settings,
     ) -> Outcome {
         match key {
-            Key::Escape => self.escape(),
+            Key::Escape => self.escape(view, globals),
             Key::Ctrl(c) => {
                 let cancelled = self.prefix.is_some();
                 let explicit = self.count;
@@ -134,7 +209,7 @@ impl Vim {
                 if cancelled {
                     // Keys the workbench binds (ctrl+g, ctrl+tab...) still
                     // reach it; only vim's own scroll keys are swallowed.
-                    return if matches!(c, 'd' | 'u' | 'f' | 'b') {
+                    return if matches!(c, 'd' | 'u' | 'f' | 'b' | 'v') {
                         Outcome::Handled(vec![])
                     } else {
                         Outcome::Unhandled
@@ -157,6 +232,7 @@ impl Vim {
                         let rows = page.saturating_mul(n);
                         self.scroll(view, ScrollKind::Page(rows), c == 'f', settings)
                     }
+                    'v' => self.switch_mode(Mode::VisualBlock, view, globals),
                     _ => Outcome::Unhandled,
                 }
             }
@@ -172,16 +248,79 @@ impl Vim {
         }
     }
 
-    fn escape(&mut self) -> Outcome {
+    fn escape(&mut self, view: &dyn ViewInfo, globals: &mut VimGlobals) -> Outcome {
         if !self.pending.is_empty() {
             self.clear_pending();
             Outcome::Handled(vec![])
         } else if self.mode != Mode::Normal {
-            self.mode = Mode::Normal;
-            Outcome::Handled(vec![Action::ModeChanged(Mode::Normal)])
+            Outcome::Handled(self.exit_visual(view, globals))
         } else {
             Outcome::Unhandled
         }
+    }
+
+    /// `v`, `V`, `Ctrl+v`: enters `mode`, leaves it when already in it, or
+    /// switches to it from another visual mode.
+    fn switch_mode(
+        &mut self,
+        mode: Mode,
+        view: &dyn ViewInfo,
+        globals: &mut VimGlobals,
+    ) -> Outcome {
+        if self.mode == mode {
+            return Outcome::Handled(self.exit_visual(view, globals));
+        }
+        if self.mode == Mode::Normal {
+            self.anchor = self.cursor;
+        }
+        self.mode = mode;
+        self.clamp(view.snapshot());
+        Outcome::Handled(vec![Action::ModeChanged(mode)])
+    }
+
+    /// Back to Normal with the cursor on the head, keeping the goal.
+    fn exit_visual(&mut self, view: &dyn ViewInfo, globals: &mut VimGlobals) -> Vec<Action> {
+        let head = self.cursor;
+        self.end_visual(view, globals);
+        let mut actions = vec![Action::ModeChanged(Mode::Normal)];
+        if self.cursor != head {
+            actions.push(Action::CursorMoved { jump: false });
+        }
+        actions
+    }
+
+    /// Visual `y`: copies the selection and returns to Normal at its start.
+    fn yank(&mut self, view: &dyn ViewInfo, globals: &mut VimGlobals) -> Outcome {
+        let snapshot = view.snapshot();
+        let Some(sel) = self.end_visual(view, globals) else {
+            return Outcome::Handled(vec![]);
+        };
+        let text = visual::yank_text(&sel, snapshot, self.tab);
+        self.cursor = clamp_point(snapshot, visual::bounds(&sel, snapshot, self.tab).0);
+        self.anchor = self.cursor;
+        self.goal = None;
+        Outcome::Handled(vec![
+            Action::Yank(text),
+            Action::ModeChanged(Mode::Normal),
+            Action::CursorMoved { jump: false },
+        ])
+    }
+
+    /// Leaves the visual mode: writes the `<` and `>` marks, puts the
+    /// cursor back on a char and returns the selection there was.
+    fn end_visual(
+        &mut self,
+        view: &dyn ViewInfo,
+        globals: &mut VimGlobals,
+    ) -> Option<VimSelection> {
+        let snapshot = view.snapshot();
+        let sel = self.selection(snapshot)?;
+        globals.marks.entry(view.path().clone()).or_default().visual =
+            Some(visual::bounds(&sel, snapshot, self.tab));
+        self.mode = Mode::Normal;
+        self.clamp(snapshot);
+        self.anchor = self.cursor;
+        Some(sel)
     }
 
     fn char(
@@ -274,7 +413,16 @@ impl Vim {
         let row = self.cursor.row;
         let text = line(snapshot, row);
         let col = self.cursor.column;
+        let visual = self.mode != Mode::Normal;
         match c {
+            'v' => self.switch_mode(Mode::Visual, view, globals),
+            'V' => self.switch_mode(Mode::VisualLine, view, globals),
+            'o' if visual => {
+                let to = self.anchor;
+                self.anchor = self.cursor;
+                self.move_to(to, None)
+            }
+            'y' if visual => self.yank(view, globals),
             'h' => self.move_horizontal(Point {
                 row,
                 column: motion::left(&text, col, n),
@@ -292,7 +440,7 @@ impl Vim {
             }),
             '$' => {
                 let row = motion::step_rows(view, row, n - 1, true);
-                let column = last_char_col(&line(snapshot, row));
+                let column = self.eol_col(snapshot, row);
                 self.move_to(Point { row, column }, Some(Goal::Eol))
             }
             'w' => self.word(view, WordMotion::NextStart, false, n),
@@ -468,7 +616,11 @@ impl Vim {
             let here = line(snapshot, self.cursor.row);
             Goal::Display(display_col(&here, self.cursor.column, tab))
         });
-        (motion::col_for_goal(&line(snapshot, row), goal, tab), goal)
+        let column = match goal {
+            Goal::Eol => self.eol_col(snapshot, row),
+            Goal::Display(_) => motion::col_for_goal(&line(snapshot, row), goal, tab),
+        };
+        (column, goal)
     }
 
     fn move_horizontal(&mut self, to: Point) -> Outcome {

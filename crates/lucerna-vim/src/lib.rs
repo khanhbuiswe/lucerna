@@ -9,6 +9,7 @@ mod scroll;
 mod state;
 #[cfg(test)]
 mod test_util;
+mod visual;
 
 use std::ops::Range;
 use std::path::Path;
@@ -17,6 +18,7 @@ use std::sync::Arc;
 use lucerna_text::BufferSnapshot;
 
 pub use state::{Vim, VimGlobals};
+pub use visual::{VimSelection, block_ranges, exclusive_range, yank_text};
 
 /// A key as the vim layer sees it, already translated by the workbench.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
