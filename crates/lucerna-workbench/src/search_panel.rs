@@ -272,6 +272,7 @@ impl SearchPanel {
             whole_word: self.whole_word,
             include: globs(self.include.read(cx).text()),
             exclude: globs(self.exclude.read(cx).text()),
+            context_lines: 0,
         };
         self.last_query = Some(query.clone());
         // VS Code: `search.exclude` inherits `files.exclude`.
@@ -318,7 +319,12 @@ impl SearchPanel {
         }
         for event in events {
             match event {
-                SearchEvent::File { path, matches } => {
+                SearchEvent::File { path, excerpts } => {
+                    let matches: Vec<LineMatch> = excerpts
+                        .into_iter()
+                        .flat_map(|e| e.lines)
+                        .filter(|l| !l.ranges.is_empty())
+                        .collect();
                     let path: Arc<Path> = match path.strip_prefix(&self.root) {
                         Ok(relative) => Arc::from(relative),
                         Err(_) => path,

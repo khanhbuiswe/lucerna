@@ -7,8 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crossbeam_channel::Sender;
 use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
-use grep_searcher::sinks::Lossy;
-use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder};
+use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ignore::{WalkParallel, WalkState};
 
 use crate::watch::panic_message;
@@ -22,6 +21,8 @@ pub struct SearchQuery {
     pub whole_word: bool,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
+    /// Lines of context kept before and after each matching line.
+    pub context_lines: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,11 +32,25 @@ pub struct LineMatch {
     pub ranges: Vec<Range<usize>>,
 }
 
+/// A run of consecutive lines around one or more matches. A line with empty
+/// `ranges` is context.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Excerpt {
+    pub lines: Vec<LineMatch>,
+}
+
+impl Excerpt {
+    /// Number of matching (non-context) lines.
+    pub fn match_count(&self) -> usize {
+        self.lines.iter().filter(|l| !l.ranges.is_empty()).count()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchEvent {
     File {
         path: Arc<Path>,
-        matches: Vec<LineMatch>,
+        excerpts: Vec<Excerpt>,
     },
     Done {
         total: usize,
@@ -112,7 +127,10 @@ pub fn search(
     let total = AtomicUsize::new(0);
     let truncated = AtomicBool::new(false);
     walker.run(|| {
+        let context = query.context_lines as usize;
         let mut searcher = SearcherBuilder::new()
+            .before_context(context)
+            .after_context(context)
             .binary_detection(BinaryDetection::quit(0))
             .build();
         let (matcher, sink, cancel) = (&matcher, &sink, &cancel);
@@ -131,8 +149,8 @@ pub fn search(
             let result = catch_unwind(AssertUnwindSafe(|| {
                 search_file(&mut searcher, matcher, path, cancel)
             }));
-            let mut matches = match result {
-                Ok(matches) => matches,
+            let mut excerpts = match result {
+                Ok(excerpts) => excerpts,
                 Err(payload) => {
                     let message = panic_message(payload.as_ref());
                     tracing::error!(path = %path.display(), %message, "searching a file panicked");
@@ -142,26 +160,28 @@ pub fn search(
             if cancel.load(Ordering::Relaxed) {
                 return WalkState::Quit;
             }
-            if matches.is_empty() {
+            let wanted: usize = excerpts.iter().map(Excerpt::match_count).sum();
+            if wanted == 0 {
                 return WalkState::Continue;
             }
             // Reserve room under the cap; the last file may be cut short.
-            let wanted = matches.len();
             let before = total
                 .try_update(Ordering::SeqCst, Ordering::SeqCst, |t| {
                     Some((t + wanted).min(MAX_RESULTS))
                 })
                 .unwrap_or(MAX_RESULTS);
             let allowed = wanted.min(MAX_RESULTS - before);
-            matches.truncate(allowed);
+            if allowed < wanted {
+                truncate_matches(&mut excerpts, allowed);
+            }
             let at_cap = before + allowed >= MAX_RESULTS;
             if at_cap {
                 truncated.store(true, Ordering::SeqCst);
             }
-            if !matches.is_empty() {
+            if !excerpts.is_empty() {
                 let event = SearchEvent::File {
                     path: Arc::from(path),
-                    matches,
+                    excerpts,
                 };
                 if sink.send(event).is_err() {
                     return WalkState::Quit;
@@ -184,35 +204,118 @@ pub fn search(
     });
 }
 
-/// The matching lines of one file. Unreadable files yield nothing.
+/// The excerpts of one file. Unreadable files yield nothing.
 fn search_file(
     searcher: &mut Searcher,
     matcher: &RegexMatcher,
     path: &Path,
     cancel: &AtomicBool,
-) -> Vec<LineMatch> {
-    let mut matches = Vec::new();
-    let result = searcher.search_path(
+) -> Vec<Excerpt> {
+    let mut sink = ExcerptSink {
         matcher,
-        path,
-        Lossy(|line_number, line| {
-            matches.push(line_match(matcher, line_number, line));
-            Ok(matches.len() < MAX_RESULTS && !cancel.load(Ordering::Relaxed))
-        }),
-    );
-    if let Err(err) = result {
+        cancel,
+        excerpts: Vec::new(),
+        match_count: 0,
+        new_excerpt: true,
+    };
+    if let Err(err) = searcher.search_path(matcher, path, &mut sink) {
         tracing::debug!(path = %path.display(), %err, "could not search file");
     }
-    matches
+    sink.excerpts
 }
 
-fn line_match(matcher: &RegexMatcher, line_number: u64, line: &str) -> LineMatch {
+/// Collects matching and context lines into excerpts.
+struct ExcerptSink<'a> {
+    matcher: &'a RegexMatcher,
+    cancel: &'a AtomicBool,
+    excerpts: Vec<Excerpt>,
+    match_count: usize,
+    /// The next line starts a new excerpt (set by a context break).
+    new_excerpt: bool,
+}
+
+impl ExcerptSink<'_> {
+    fn push(&mut self, line_number: Option<u64>, bytes: &[u8], is_match: bool) {
+        let line_number = line_number.unwrap_or(0);
+        let line = line_match(
+            self.matcher,
+            line_number,
+            &String::from_utf8_lossy(bytes),
+            is_match,
+        );
+        let contiguous = self
+            .excerpts
+            .last()
+            .and_then(|e| e.lines.last())
+            .is_some_and(|prev| u64::from(prev.line_number) + 1 == line_number);
+        if self.new_excerpt || !contiguous || self.excerpts.is_empty() {
+            self.excerpts.push(Excerpt::default());
+        }
+        self.new_excerpt = false;
+        if let Some(excerpt) = self.excerpts.last_mut() {
+            excerpt.lines.push(line);
+        }
+    }
+}
+
+impl Sink for ExcerptSink<'_> {
+    type Error = std::io::Error;
+
+    fn matched(&mut self, _: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+        self.push(mat.line_number(), mat.bytes(), true);
+        self.match_count += 1;
+        Ok(self.match_count < MAX_RESULTS && !self.cancel.load(Ordering::Relaxed))
+    }
+
+    fn context(&mut self, _: &Searcher, ctx: &SinkContext<'_>) -> Result<bool, Self::Error> {
+        self.push(ctx.line_number(), ctx.bytes(), false);
+        Ok(!self.cancel.load(Ordering::Relaxed))
+    }
+
+    fn context_break(&mut self, _: &Searcher) -> Result<bool, Self::Error> {
+        self.new_excerpt = true;
+        Ok(true)
+    }
+}
+
+/// Keeps everything up to and including the `allowed`-th match line and
+/// drops the rest (trailing context included) and any empty excerpts.
+fn truncate_matches(excerpts: &mut Vec<Excerpt>, allowed: usize) {
+    let mut seen = 0;
+    let mut keep = 0;
+    for excerpt in excerpts.iter_mut() {
+        if seen >= allowed {
+            break;
+        }
+        let mut cut = excerpt.lines.len();
+        for (i, line) in excerpt.lines.iter().enumerate() {
+            if !line.ranges.is_empty() {
+                seen += 1;
+                if seen == allowed {
+                    cut = i + 1;
+                    break;
+                }
+            }
+        }
+        excerpt.lines.truncate(cut);
+        keep += 1;
+    }
+    excerpts.truncate(keep);
+    excerpts.retain(|e| !e.lines.is_empty());
+}
+
+/// A reported line. A matching line always has a range, even when every match
+/// lies past the cut: then it is the empty range at the cut, so the line is
+/// not mistaken for context.
+fn line_match(matcher: &RegexMatcher, line_number: u64, line: &str, is_match: bool) -> LineMatch {
     let line = line.trim_end_matches(['\n', '\r']);
     let mut ranges = Vec::new();
-    let _ = matcher.find_iter(line.as_bytes(), |m| {
-        ranges.push(m.start()..m.end());
-        true
-    });
+    if is_match {
+        let _ = matcher.find_iter(line.as_bytes(), |m| {
+            ranges.push(m.start()..m.end());
+            true
+        });
+    }
     let keep = line
         .char_indices()
         .nth(MAX_LINE_CHARS)
@@ -220,6 +323,9 @@ fn line_match(matcher: &RegexMatcher, line_number: u64, line: &str) -> LineMatch
     ranges.retain(|r| r.start < keep);
     for r in &mut ranges {
         r.end = r.end.min(keep);
+    }
+    if is_match && ranges.is_empty() {
+        ranges.push(keep..keep);
     }
     LineMatch {
         line_number: u32::try_from(line_number).unwrap_or(u32::MAX),

@@ -10,7 +10,9 @@ mod worktree;
 
 pub use coalesce::{Coalesced, RESCAN_THRESHOLD, RawEvent, coalesce};
 pub use fuzzy::{FileMatch, QUICK_OPEN_LIMIT, match_files};
-pub use search::{LineMatch, MAX_RESULTS, SearchEvent, SearchQuery, build_pattern, search};
+pub use search::{
+    Excerpt, LineMatch, MAX_RESULTS, SearchEvent, SearchQuery, build_pattern, search,
+};
 pub use watch::DEBOUNCE;
 
 pub use snapshot::{Entry, EntryKind, WorktreeSnapshot};

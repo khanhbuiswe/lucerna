@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use lucerna_project::{LineMatch, MAX_RESULTS, SearchEvent, SearchQuery, search};
+use lucerna_project::{Excerpt, LineMatch, MAX_RESULTS, SearchEvent, SearchQuery, search};
 use tempfile::TempDir;
 
 fn write(root: &Path, rel: &str, content: impl AsRef<[u8]>) {
@@ -35,12 +35,39 @@ fn files(root: &Path, events: &[SearchEvent]) -> Vec<(String, Vec<LineMatch>)> {
     let mut out: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            SearchEvent::File { path, matches } => Some((
+            SearchEvent::File { path, excerpts } => Some((
                 path.strip_prefix(root)
                     .unwrap()
                     .to_string_lossy()
                     .into_owned(),
-                matches.clone(),
+                excerpts
+                    .iter()
+                    .flat_map(|e| &e.lines)
+                    .filter(|l| !l.ranges.is_empty())
+                    .cloned()
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Sorted (relative path, excerpts as line-number lists) pairs.
+fn excerpts(root: &Path, events: &[SearchEvent]) -> Vec<(String, Vec<Vec<u32>>)> {
+    let mut out: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            SearchEvent::File { path, excerpts } => Some((
+                path.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                excerpts
+                    .iter()
+                    .map(|e: &Excerpt| e.lines.iter().map(|l| l.line_number).collect())
+                    .collect(),
             )),
             _ => None,
         })
@@ -261,4 +288,120 @@ fn invalid_regex_with_cancel_sends_nothing() {
     q.is_regex = true;
     search(dir.path(), &q, &[], tx, Arc::new(AtomicBool::new(true)));
     assert!(rx.try_iter().next().is_none());
+}
+
+/// A file of `n` lines `l1..ln` where the lines in `hits` read `needle`.
+fn numbered(n: u32, hits: &[u32]) -> String {
+    (1..=n)
+        .map(|i| {
+            if hits.contains(&i) {
+                format!("needle {i}\n")
+            } else {
+                format!("l{i}\n")
+            }
+        })
+        .collect()
+}
+
+fn ctx_query(context_lines: u32) -> SearchQuery {
+    SearchQuery {
+        context_lines,
+        ..query("needle")
+    }
+}
+
+fn groups(n: u32, hits: &[u32], ctx: u32) -> Vec<Vec<u32>> {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.txt", numbered(n, hits));
+    let ev = run(dir.path(), &ctx_query(ctx));
+    excerpts(dir.path(), &ev).remove(0).1
+}
+
+#[test]
+fn context_zero_gives_one_line_excerpts() {
+    assert_eq!(groups(9, &[2, 5], 0), vec![vec![2], vec![5]]);
+}
+
+#[test]
+fn context_lines_surround_match() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.txt", numbered(9, &[5]));
+    let ev = run(dir.path(), &ctx_query(1));
+    assert_eq!(excerpts(dir.path(), &ev)[0].1, vec![vec![4, 5, 6]]);
+    let SearchEvent::File { excerpts, .. } = &ev[0] else {
+        panic!()
+    };
+    let lines = &excerpts[0].lines;
+    assert!(lines[0].ranges.is_empty() && lines[2].ranges.is_empty());
+    assert!(!lines[1].ranges.is_empty());
+    assert_eq!(excerpts[0].match_count(), 1);
+}
+
+#[test]
+fn context_clipped_at_file_edges() {
+    assert_eq!(groups(9, &[1, 9], 2), vec![vec![1, 2, 3], vec![7, 8, 9]]);
+}
+
+#[test]
+fn touching_context_merges() {
+    assert_eq!(groups(9, &[2, 4], 1), vec![vec![1, 2, 3, 4, 5]]);
+}
+
+#[test]
+fn adjacent_after_gap_merges() {
+    assert_eq!(groups(9, &[2, 5], 1), vec![vec![1, 2, 3, 4, 5, 6]]);
+}
+
+#[test]
+fn separate_groups_split() {
+    assert_eq!(groups(10, &[2, 8], 1), vec![vec![1, 2, 3], vec![7, 8, 9]]);
+}
+
+#[test]
+fn cap_counts_only_match_lines() {
+    let dir = TempDir::new().unwrap();
+    let hits: Vec<u32> = (1..=(MAX_RESULTS as u32 + 5)).map(|i| i * 3).collect();
+    write(
+        dir.path(),
+        "a.txt",
+        numbered(MAX_RESULTS as u32 * 3 + 30, &hits),
+    );
+    let ev = run(dir.path(), &ctx_query(1));
+    assert_eq!(dones(&ev), vec![(MAX_RESULTS, true)]);
+    let matches: usize = ev
+        .iter()
+        .map(|e| match e {
+            SearchEvent::File { excerpts, .. } => excerpts.iter().map(Excerpt::match_count).sum(),
+            _ => 0,
+        })
+        .sum();
+    assert_eq!(matches, MAX_RESULTS);
+}
+
+#[test]
+fn context_lines_are_cut_like_matches() {
+    let dir = TempDir::new().unwrap();
+    write(
+        dir.path(),
+        "a.txt",
+        format!("{}\nneedle\n", "x".repeat(1500)),
+    );
+    let ev = run(dir.path(), &ctx_query(1));
+    let SearchEvent::File { excerpts, .. } = &ev[0] else {
+        panic!()
+    };
+    assert_eq!(excerpts[0].lines[0].line_text.chars().count(), 1000);
+    assert!(excerpts[0].lines[0].ranges.is_empty());
+}
+
+#[test]
+fn match_past_the_cut_still_counts_as_match() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.txt", format!("{}needle\n", "-".repeat(1500)));
+    let ev = run(dir.path(), &ctx_query(1));
+    let SearchEvent::File { excerpts, .. } = &ev[0] else {
+        panic!()
+    };
+    assert_eq!(excerpts[0].match_count(), 1);
+    assert_eq!(dones(&ev), vec![(1, false)]);
 }
