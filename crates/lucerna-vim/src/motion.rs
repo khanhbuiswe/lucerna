@@ -520,7 +520,7 @@ mod tests {
         assert_keys("one two\nthr|ee", "ge", "one tw|o\nthree");
         assert_keys("a.b c|d", "gE", "a.|b cd");
         assert_keys("a.b c|d", "2ge", "a|.b cd");
-        assert_keys("one two\nthr|ee", "2ge", "one tw|o\nthree");
+        assert_keys("one two\nthr|ee", "2ge", "on|e two\nthree");
     }
 
     #[test]
