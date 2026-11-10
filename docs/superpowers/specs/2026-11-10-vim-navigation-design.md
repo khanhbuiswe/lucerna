@@ -1,7 +1,7 @@
 # Lucerna — V1: Vim di chuyển
 
 - **Ngày:** 2026-11-10
-- **Trạng thái:** Bản nháp, chờ người dùng duyệt
+- **Trạng thái:** Đã triển khai
 - **Lộ trình:** mục V1 trong §1.3 của `2026-11-08-lucerna-phase1-design.md`
 - **Nghiên cứu nền:** `docs/research/2026-11-09-vim-mode.md`. Mục 5 của ghi chú đã đối chiếu với mã nguồn Zed `crates/vim` tại `b5cd310` và VSCodeVim tại `28f0275`.
 

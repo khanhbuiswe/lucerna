@@ -48,6 +48,8 @@ the GPU-accelerated UI framework from the Zed project. It has no AI features and
   Zed extension ecosystem. Extensions are built locally, with no call to `api.zed.dev`.
 - **Large-file safe.** Files over 20 MB or 300k lines skip highlighting. A 5 MB minified line
   renders without freezing. Binary files and files in other encodings (UTF-16, Latin-1, …) are detected.
+- **Vim navigation (optional).** Set `"vim.enabled": true` for read-only Vim keys: motions, search,
+  scrolling, marks and visual selection to copy. It is off by default. See [Vim mode](#vim-mode).
 - **Vietnamese / IME input** works in every text field (Telex, VNI).
 
 ## Install
@@ -141,6 +143,30 @@ The settings use VS Code's names, for example:
 }
 ```
 
+### Vim mode
+
+Vim navigation is built in and off by default. It takes effect as soon as you save the setting.
+The status bar shows the mode, and the cursor becomes a block. Lucerna is still a viewer, so
+there is no insert mode or editing yet.
+
+| Group | Keys |
+|---|---|
+| Motions | `h j k l`, `w b e ge` (and `W B E gE`), `0 ^ $`, `gg G`, `{ }`, `%`, `H M L`, `f F t T` with `;` `,`, counts |
+| Search | `/` and `?` (open the find widget), `n N`, `* #` |
+| Scroll | `Ctrl+d` `Ctrl+u`, `Ctrl+f` `Ctrl+b`, `zz zt zb` |
+| Marks | `m{a-z}`, `` `x ``, `'x`, `` `` `` and `''` |
+| Visual | `v`, `V`, `Ctrl+v`, `o`, `y` to copy, `Esc` |
+| Folds | `za zc zo` |
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `vim.enabled` | `false` | Turn Vim navigation on. `vim_mode` is read as an alias when this is unset |
+| `vim.ignorecase` | `true` | Ignore case for `*` and `#` |
+| `vim.wrapscan` | `true` | Searches wrap around the end of the file |
+| `vim.startofline` | `true` | `gg`, `G`, `H`, `M`, `L` go to the first non-blank character |
+| `vim.scroll` | `0` | Lines for `Ctrl+d` / `Ctrl+u`; `0` means half a page |
+| `editor.cursorSurroundingLines` | `0` | Lines kept around the cursor when it moves |
+
 ## Extensions
 
 Lucerna installs extensions from the Zed registry
@@ -210,6 +236,7 @@ cargo deny check
 | `lucerna-project` | Directory scan, file watcher, fuzzy finder, project search |
 | `lucerna-settings` | Layered `settings.json`, keymap and `when` clauses |
 | `lucerna-theme` | Zed theme loading |
+| `lucerna-vim` | Vim navigation: motions, search, marks, visual mode. No GPUI |
 | `lucerna-workbench` | The whole UI. It is the only crate that depends on GPUI. |
 | `lucerna` | The `luc` binary |
 
@@ -226,7 +253,8 @@ and Zed do things are in [`docs/research/`](docs/research/). Before designing a 
 | 3 | Code intelligence over LSP: go to definition, references, hover, diagnostics, outline | Planned |
 | 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | Planned |
 | 5 | Git gutter and diff view, integrated terminal, settings UI | Planned |
-| V1 / V2 | Vim mode: motions first (after phase 2), then editing (after phase 4) | Planned |
+| V1 | Vim navigation: motions, search, scroll, marks, visual copy | ✅ Done |
+| V2 | Vim editing (after phase 4) | Planned |
 | — | Linux and Windows support, using GPUI's Wayland/X11 and DirectX backends | Planned |
 
 ## License

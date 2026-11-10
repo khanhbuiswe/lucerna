@@ -32,7 +32,7 @@ Spec này **chỉ** mô tả giai đoạn 1. Mỗi giai đoạn sau có spec ri�
 | 3 | Hiểu code qua LSP | Định nghĩa, tham chiếu, hover, diagnostics, outline, breadcrumbs, Quick Open `@` và `#` |
 | 4 | Sửa code đầy đủ | Multi-cursor, undo, xử lý xung đột với agent, completion, rename, format |
 | 5 | Mở rộng | Git gutter, xem diff, terminal tích hợp, giao diện settings |
-| V1 | Vim di chuyển (làm sau giai đoạn 2) | Bật bằng `vim.enabled` trong settings. Chỉ có các thao tác đọc: motion, tìm kiếm, cuộn, số đếm, mark, chọn bằng visual rồi copy |
+| V1 | Vim di chuyển (đã xong) | Bật bằng `vim.enabled` trong settings. Chỉ có các thao tác đọc: motion, tìm kiếm, cuộn, số đếm, mark, chọn bằng visual rồi copy |
 | V2 | Vim sửa (làm sau giai đoạn 4) | Insert mode, các toán tử `d`/`c`/`y`, text object, `.`, macro, register, một phần lệnh `:` |
 
 Vim mode là tính năng có sẵn trong lõi editor, không phải extension, giống cách Zed làm. Xem phần nghiên cứu ở `docs/research/2026-11-09-vim-mode.md`.

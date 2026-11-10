@@ -122,3 +122,47 @@ ISC; the icons it lists as derived from Feather are also under MIT (Copyright (c
 Icons: `folder`, `folder-open`, `file`, `file-code`, `braces`, `book-open`,
 `settings`, `lock`, `git-branch`, `scale`, `terminal`, `image`, `search`, `files`,
 `x`, `chevron-right`, `chevron-down`, `chevron-up`, `blocks`, `loader-circle`.
+
+## VSCodeVim test cases
+
+Some unit tests in `lucerna-vim` and `lucerna-workbench` are adapted from the
+test suite of VSCodeVim (https://github.com/VSCodeVim/Vim), which is MIT
+licensed. Only test cases are adapted: no VSCodeVim source code is included.
+Each adapted test carries a comment of the form
+`// Adapted from VSCodeVim <file>: "<test title>"`. The cases came from these
+VSCodeVim test files:
+
+- `test/motion.test.ts`
+- `test/motions.test.ts`
+- `test/marks.test.ts`
+- `test/search/search.test.ts`
+- `test/mode/modeNormal.test.ts`
+- `test/mode/modeVisualLine.test.ts`
+- `test/mode/normalModeTests/commands.test.ts`
+- `test/mode/normalModeTests/motions.test.ts`
+- `matchingBracket.test.ts`
+- `repeatableMovement.test.ts`
+
+```
+MIT License
+
+Copyright (c) 2015 VSCodeVim
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
