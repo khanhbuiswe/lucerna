@@ -62,14 +62,14 @@ pub enum Key { Char(char), Ctrl(char), Escape, Enter }
 
 pub enum Mode { Normal, Visual, VisualLine, VisualBlock }
 
-/// What the vim layer may read from the view.
+/// What the vim layer may read from the view. Vim keeps the cursor and the
+/// visual anchor itself; the view's selection is only an output.
 pub trait ViewInfo {
+    fn path(&self) -> &Arc<Path>;              // marks are kept per file
     fn snapshot(&self) -> &BufferSnapshot;
-    fn cursor(&self) -> Point;
-    /// First visible buffer row and how many rows fit.
-    fn top_row(&self) -> u32;
-    fn visible_rows(&self) -> u32;
-    fn is_row_hidden(&self, row: u32) -> bool;  // inside a closed fold
+    fn top_row(&self) -> u32;                  // first visible buffer row
+    fn visible_rows(&self) -> u32;             // 0 before the first paint
+    fn is_row_hidden(&self, row: u32) -> bool; // inside a closed fold
     fn tab_size(&self) -> u32;
     /// The partner bracket of the one at `offset`, syntax-aware when possible.
     fn matching_bracket(&self, offset: usize) -> Option<usize>;
@@ -79,45 +79,47 @@ pub trait ViewInfo {
     fn matches(&self, query: &SearchQuery) -> Option<Arc<[Range<usize>]>>;
 }
 
-pub struct SearchQuery {
-    pub pattern: String,
-    pub is_regex: bool,
-    pub case_sensitive: bool,
-    pub whole_word: bool,
-}
+pub struct SearchQuery { pub pattern: String, pub is_regex: bool,
+                         pub case_sensitive: bool, pub whole_word: bool }
 
 pub struct Settings {
     pub ignorecase: bool,      // vim.ignorecase, default true
     pub wrapscan: bool,        // vim.wrapscan, default true
     pub startofline: bool,     // vim.startofline, default true
+    pub scroll: u32,           // vim.scroll, default 0 (half page)
     pub scrolloff: u32,        // editor.cursorSurroundingLines, default 0
 }
 
+/// Side effects; the cursor and the visual selection are read back from
+/// `Vim::cursor()` and `Vim::selection()` after every key.
 pub enum Action {
-    MoveCursor { to: Point, jump: bool }, // jump: record for '' and ``
-    Select(VimSelection),                 // Visual / VisualLine / VisualBlock
-    ClearSelection,
+    CursorMoved { jump: bool },   // jump: centre if off-screen
     ScrollTopRow(u32),
     OpenSearch { backward: bool },
-    Highlight { pattern: String, whole_word: bool, case_sensitive: bool },
+    Highlight(SearchQuery),
     Yank(String),
-    Fold(FoldAction),                     // Toggle / Close / Open at a row
+    Fold { row: u32, action: FoldAction },  // Toggle / Close / Open
     ModeChanged(Mode),
 }
 
-pub enum Outcome { Handled(Vec<Action>), Unhandled }
+/// `Retry`: the matches for `query` are not ready; the state is unchanged
+/// and the workbench feeds the same key again once they are.
+pub enum Outcome { Handled(Vec<Action>), Unhandled, Retry(SearchQuery) }
 
 impl Vim {
     pub fn feed(&mut self, key: Key, view: &dyn ViewInfo,
                 globals: &mut VimGlobals, settings: &Settings) -> Outcome;
     pub fn mode(&self) -> Mode;
+    pub fn cursor(&self) -> Point;
+    pub fn selection(&self, snapshot: &BufferSnapshot) -> Option<VimSelection>;
     /// The pending keys for the indicator: "5", "g", "2f", "m"...
     pub fn pending(&self) -> &str;
     /// Called when the search started by `/` or `?` is submitted.
-    pub fn search_submitted(&mut self, query: SearchQuery, view: &dyn ViewInfo,
-                            globals: &mut VimGlobals, settings: &Settings) -> Vec<Action>;
-    /// A mouse click or selection made outside vim: back to Normal.
-    pub fn reset(&mut self);
+    pub fn search_submitted(&mut self, query: SearchQuery, backward: bool, origin: Point,
+                            view: &dyn ViewInfo, globals: &mut VimGlobals,
+                            settings: &Settings) -> Outcome;
+    /// A mouse click or a selection made outside vim: back to Normal.
+    pub fn reset(&mut self, cursor: Point);
 }
 ```
 
@@ -158,7 +160,7 @@ File mới `crates/lucerna-workbench/src/vim.rs`:
 ### 2.4 Thay đổi trong CodeView
 
 - **Vẽ con trỏ.** Hiện CodeView chưa vẽ con trỏ.
-  - Thêm trường `cursor_shape: Option<CursorShape>`, mặc định `None` để giữ nguyên hành vi cũ. `CursorShape` gồm `Block` và `Bar`.
+  - Thêm `set_cursor_overlay(Option<CursorOverlay>)`, mặc định `None` để giữ nguyên hành vi cũ. Ở V1, `CursorShape` chỉ có `Block`.
   - Ở normal mode, vẽ một ô block bằng màu `editor.foreground` có alpha khoảng 0.4, rộng đúng bằng ký tự dưới con trỏ: ký tự CJK hay emoji rộng gấp đôi, tab rộng bằng số cột của nó. Trên dòng rỗng, ô rộng nửa ký tự.
   - Ở visual mode, ô block vẽ đè lên selection.
   - Màu lấy từ theme: `editor.foreground`, hoặc `terminal.ansiBrightBlack` nếu theme có.
