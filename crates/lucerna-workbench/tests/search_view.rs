@@ -766,33 +766,45 @@ fn visible_rust_result_gets_highlights(cx: &mut TestAppContext) {
     );
 }
 
+/// Draws a frame without running anything: highlight jobs it starts
+/// stay in flight.
+fn frame(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
 #[gpui::test]
-fn new_search_drops_old_highlights(cx: &mut TestAppContext) {
+fn re_search_keeps_highlights_of_unchanged_lines(cx: &mut TestAppContext) {
     init(cx);
-    let dir = project(&[("a.rs", "fn alpha() {}\n"), ("b.rs", "fn beta() {}\n")]);
+    let dir = project(&[("main.rs", "fn main() {}\n")]);
     let (wb, cx) = workbench(dir.path(), cx);
     keys("cmd-shift-f", cx);
     let view = search(&wb, cx);
-    type_text("alpha", cx);
+    type_text("main", cx);
     settle_search(cx);
     draw(cx);
-    assert!(highlights_of(&view, "a.rs", cx).is_some());
+    assert!(highlights_of(&view, "main.rs", cx).is_some());
 
-    // Typing again clears the results and the colors with them; the
-    // highlights of the first search never show up for the second.
-    keys("backspace", cx);
-    keys("backspace", cx);
-    keys("backspace", cx);
-    keys("backspace", cx);
-    keys("backspace", cx);
-    type_text("beta", cx);
-    cx.executor().advance_clock(DEBOUNCE);
-    cx.update(|_, _| {});
-    // Before the frame that draws the new rows: nothing for a.rs.
-    assert!(highlights_of(&view, "a.rs", cx).is_none());
+    let started = |view: &Entity<SearchView>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| v.highlight_jobs_started())
+    };
+    assert_eq!(started(&view, cx), 1);
+
+    // The same query again on an unchanged file: its line keeps its
+    // colors from the cache, so no job is needed and nothing flashes.
+    view.update(cx, |v, cx| v.run_search(cx));
     draw(cx);
-    assert!(highlights_of(&view, "a.rs", cx).is_none());
-    assert!(highlights_of(&view, "b.rs", cx).is_some());
+    assert_eq!(started(&view, cx), 1, "no new job");
+    assert!(highlights_of(&view, "main.rs", cx).is_some());
+
+    // A changed line has other text: its cached colors are not used and
+    // the file is highlighted again.
+    fs::write(dir.path().join("main.rs"), "fn main() { let x = 1; }\n").unwrap();
+    view.update(cx, |v, cx| v.run_search(cx));
+    draw(cx);
+    assert_eq!(started(&view, cx), 2);
+    draw(cx);
+    let spans = highlights_of(&view, "main.rs", cx).unwrap();
+    assert!(spans.iter().any(|(n, s)| *n == 1 && *s > 2), "{spans:?}");
 }
 
 #[gpui::test]
@@ -1298,7 +1310,7 @@ fn counter_and_border_without_matches(cx: &mut TestAppContext) {
     );
     assert!(
         cx.debug_bounds("search-summary").is_some(),
-        "\"No results found\" stays under the bar"
+        "\"No results found\" shows in the list area"
     );
 }
 
@@ -1534,4 +1546,91 @@ fn non_pattern_error_keeps_the_box_border(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("search-error").is_some(), "still reported");
     assert!(!view.read_with(cx, |v, _| v.is_invalid()));
     assert!(cx.debug_bounds("search-query").is_some());
+}
+
+#[gpui::test]
+fn re_search_keeps_rows_and_layout_until_replaced(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = searched(cx);
+    let list = bounds("search-list", cx);
+    assert_eq!(files(&view, cx).len(), 3);
+    // A longer query, searched now but with nothing of it arrived yet.
+    type_text(" two", cx);
+    view.update(cx, |v, cx| v.run_search(cx));
+    frame(cx);
+    assert_eq!(match_label(&view, cx), "Searching…");
+    assert_eq!(files(&view, cx).len(), 3, "the old rows stay");
+    assert!(
+        cx.debug_bounds("search-line-1-0-0").is_some(),
+        "and are drawn"
+    );
+    assert!(cx.debug_bounds("search-summary").is_none());
+    assert_eq!(
+        bounds("search-list", cx),
+        list,
+        "nothing above the list moved"
+    );
+    settle_search(cx);
+    assert_eq!(files(&view, cx), vec![(p("b.rs"), 1)]);
+    assert_eq!(match_label(&view, cx), "1 result");
+    assert_eq!(bounds("search-list", cx), list, "nor once it finished");
+}
+
+#[gpui::test]
+fn file_matching_both_queries_never_leaves_the_rows(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = searched(cx);
+    keys("escape down down", cx);
+    let b_line = |view: &Entity<SearchView>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| {
+            v.results()
+                .files()
+                .iter()
+                .any(|f| f.path.as_ref() == Path::new("b.rs"))
+        })
+    };
+    cx.update(|window, cx| {
+        let input = view.read(cx).query_input().clone();
+        input.update(cx, |input, cx| input.set_text("needle two", window, cx));
+        view.update(cx, |v, cx| v.run_search(cx));
+    });
+    assert!(b_line(&view, cx));
+    // The new search streams a.rs's file (not b.rs) first...
+    let line = |n: u32, text: &str| LineMatch {
+        line_number: n,
+        line_text: text.into(),
+        ranges: std::iter::once(0..text.len()).collect(),
+    };
+    let file = |path: &str, line: LineMatch| SearchEvent::File {
+        path: Arc::from(Path::new(path)),
+        excerpts: vec![Excerpt { lines: vec![line] }],
+    };
+    view.update(cx, |v, cx| {
+        v.apply_event(file("x.rs", line(1, "needle two")), cx)
+    });
+    frame(cx);
+    assert!(b_line(&view, cx), "b.rs waits for its own report");
+    assert!(view.read_with(cx, |v, _| v.selected().is_some()));
+    // ...then b.rs, whose new excerpt replaces the old ones in place.
+    view.update(cx, |v, cx| {
+        v.apply_event(file("b.rs", line(3, "needle two needle")), cx)
+    });
+    frame(cx);
+    assert!(b_line(&view, cx));
+    assert!(
+        view.read_with(cx, |v, _| v.selected().is_none()),
+        "the selected line is gone from b.rs"
+    );
+    view.update(cx, |v, cx| {
+        v.apply_event(
+            SearchEvent::Done {
+                total: 2,
+                truncated: false,
+            },
+            cx,
+        )
+    });
+    assert_eq!(
+        files(&view, cx),
+        vec![(p("b.rs"), 1), (p("x.rs"), 1)],
+        "a.rs and sub/c.rs go at the end"
+    );
 }

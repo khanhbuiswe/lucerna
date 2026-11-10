@@ -1,12 +1,14 @@
 //! The Search tab's results: files with excerpts, flattened into rows for the
 //! list, plus match navigation. Pure data, no gpui.
 
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
 use lucerna_project::{Excerpt, LineMatch, MAX_RESULTS, SearchQuery};
 
+use super::highlight::{FileHighlights, LineSpans};
 use crate::find_widget::build_regex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +67,10 @@ pub struct Results {
     rows: Vec<Row>,
     /// Match lines in all files, counted once per change.
     match_count: usize,
+    /// The paths the running search has reported, as in Zed's reused
+    /// excerpts: the other files are its predecessor's, kept on screen
+    /// until [`prune`](Self::prune).
+    confirmed: HashSet<Arc<Path>>,
 }
 
 impl Results {
@@ -72,6 +78,79 @@ impl Results {
         self.files.clear();
         self.rows.clear();
         self.match_count = 0;
+        self.confirmed.clear();
+    }
+
+    /// A new search starts over the shown files: they stay until it
+    /// reports them again ([`update_files`](Self::update_files)) or
+    /// finishes without them ([`prune`](Self::prune)).
+    pub fn begin_update(&mut self) {
+        self.confirmed.clear();
+    }
+
+    /// Applies a batch of the running search: the first report of a path
+    /// replaces its excerpts in place (keeping its fold), a later one
+    /// appends to them, and a new path is inserted in sorted order. Sorts
+    /// and rebuilds the rows once.
+    pub fn update_files(&mut self, batch: impl IntoIterator<Item = (Arc<Path>, Vec<Excerpt>)>) {
+        let mut fresh: Vec<FileResult> = Vec::new();
+        let mut fresh_ix: HashMap<Arc<Path>, usize> = HashMap::new();
+        let mut changed = false;
+        for (path, excerpts) in batch {
+            changed = true;
+            match self.files.binary_search_by(|f| f.path.cmp(&path)) {
+                Ok(i) => {
+                    if self.confirmed.insert(path) {
+                        self.files[i].excerpts = excerpts;
+                    } else {
+                        self.files[i].excerpts.extend(excerpts);
+                    }
+                }
+                Err(_) => match fresh_ix.get(&path) {
+                    Some(&i) => fresh[i].excerpts.extend(excerpts),
+                    None => {
+                        self.confirmed.insert(path.clone());
+                        fresh_ix.insert(path.clone(), fresh.len());
+                        fresh.push(FileResult {
+                            path,
+                            excerpts,
+                            collapsed: false,
+                        });
+                    }
+                },
+            }
+        }
+        if !changed {
+            return;
+        }
+        if !fresh.is_empty() {
+            self.files.extend(fresh);
+            self.files.sort_by(|a, b| a.path.cmp(&b.path));
+        }
+        self.rebuild();
+    }
+
+    /// The running search finished: drops the files it did not report.
+    /// Our walk is parallel, not path-ordered, so this waits for the end
+    /// (Zed also prunes as its sorted stream passes a path).
+    pub fn prune(&mut self) {
+        let before = self.files.len();
+        let confirmed = &self.confirmed;
+        self.files.retain(|f| confirmed.contains(&f.path));
+        if self.files.len() != before {
+            self.rebuild();
+        }
+    }
+
+    /// The largest line number among the files: sizes the gutter.
+    pub fn max_line_number(&self) -> u32 {
+        self.files
+            .iter()
+            .flat_map(|f| &f.excerpts)
+            .filter_map(|e| e.lines.last())
+            .map(|l| l.line_number)
+            .max()
+            .unwrap_or(0)
     }
 
     /// Adds a file's excerpts, keeping files sorted by path. An existing
@@ -301,6 +380,103 @@ impl Results {
                 }
             }
         }
+    }
+}
+
+/// The most files [`HighlightCache`] keeps colors for.
+pub const MAX_CACHED_FILES: usize = 200;
+
+/// Syntax colors of result lines, kept across searches so a re-search
+/// does not flash its lines plain. Keyed by path, then line number; each
+/// line holds the text its spans were computed for, and is used only
+/// while the shown line has that same text. The least recently used files
+/// beyond [`MAX_CACHED_FILES`] are dropped.
+#[derive(Debug, Default)]
+pub struct HighlightCache {
+    files: HashMap<Arc<Path>, CachedFile>,
+    tick: u64,
+}
+
+#[derive(Debug, Default)]
+struct CachedFile {
+    lines: HashMap<u32, (String, LineSpans)>,
+    used: u64,
+}
+
+impl HighlightCache {
+    pub fn clear(&mut self) {
+        self.files.clear();
+    }
+
+    /// Files with cached colors.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    /// The spans of `line` in `path`, if computed for its current text.
+    pub fn get(&self, path: &Path, line: &LineMatch) -> Option<&LineSpans> {
+        let (text, spans) = self.files.get(path)?.lines.get(&line.line_number)?;
+        (*text == line.line_text).then_some(spans)
+    }
+
+    /// Whether some line of `excerpts` has no colors for its text yet.
+    pub fn missing(&self, path: &Path, excerpts: &[Excerpt]) -> bool {
+        excerpts
+            .iter()
+            .flat_map(|e| &e.lines)
+            .any(|l| self.get(path, l).is_none())
+    }
+
+    /// Marks `path` as just used, so it is the last to be dropped.
+    pub fn touch(&mut self, path: &Path) {
+        self.tick += 1;
+        if let Some(f) = self.files.get_mut(path) {
+            f.used = self.tick;
+        }
+    }
+
+    /// Stores the colors computed for `excerpts`. A line the job left out
+    /// (no language, a changed file) is stored plain, so it is not asked
+    /// for again while its text stays the same.
+    pub fn insert(
+        &mut self,
+        path: Arc<Path>,
+        excerpts: &[Excerpt],
+        mut highlights: FileHighlights,
+    ) {
+        self.tick += 1;
+        let tick = self.tick;
+        let file = self.files.entry(path.clone()).or_default();
+        file.used = tick;
+        for line in excerpts.iter().flat_map(|e| &e.lines) {
+            let spans = highlights.remove(&line.line_number).unwrap_or_default();
+            file.lines
+                .insert(line.line_number, (line.line_text.clone(), spans));
+        }
+        while self.files.len() > MAX_CACHED_FILES {
+            let Some(oldest) = self
+                .files
+                .iter()
+                .filter(|(p, _)| **p != path)
+                .min_by_key(|(_, f)| f.used)
+                .map(|(p, _)| p.clone())
+            else {
+                break;
+            };
+            self.files.remove(&oldest);
+        }
+    }
+
+    /// The colors of `path` by line number, for tests.
+    pub fn file(&self, path: &Path) -> Option<FileHighlights> {
+        let f = self.files.get(path)?;
+        Some(
+            f.lines
+                .iter()
+                .map(|(n, (_, spans))| (*n, spans.clone()))
+                .collect(),
+        )
     }
 }
 
@@ -691,5 +867,78 @@ mod tests {
         assert_eq!(thousands(20_000), "20,000");
         assert_eq!(thousands(999), "999");
         assert_eq!(thousands(1_234_567), "1,234,567");
+    }
+
+    fn paths(r: &Results) -> Vec<String> {
+        r.files()
+            .iter()
+            .map(|f| f.path.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn re_search_replaces_in_place_and_prunes_at_done() {
+        let mut r = Results::default();
+        r.update_files([(path("a"), vec![excerpt(1)]), (path("b"), vec![excerpt(1)])]);
+        r.toggle_collapsed(1);
+        r.begin_update();
+        // Nothing of the new search yet: the old files stay.
+        assert_eq!(paths(&r), ["a", "b"]);
+        r.update_files([
+            (path("b"), vec![excerpt(20), excerpt(30)]),
+            (path("c"), vec![excerpt(1)]),
+        ]);
+        assert_eq!(paths(&r), ["a", "b", "c"], "a waits for the end");
+        let b = &r.files()[1];
+        assert_eq!(b.excerpts.len(), 2, "b's excerpts replaced, not appended");
+        assert_eq!(b.excerpts[0].lines[0].line_number, 20);
+        assert!(b.collapsed, "the fold is kept");
+        // A second report of a path in the same search appends.
+        r.update_files([(path("b"), vec![excerpt(40)])]);
+        assert_eq!(r.files()[1].excerpts.len(), 3);
+        r.prune();
+        assert_eq!(paths(&r), ["b", "c"]);
+        assert_eq!(r.match_count(), 4);
+        assert_eq!(r.max_line_number(), 42);
+    }
+
+    #[test]
+    fn highlight_cache_needs_the_same_text() {
+        let mut cache = HighlightCache::default();
+        let ex = vec![excerpt(1)];
+        let spans: LineSpans = vec![(0..4, "keyword".into())];
+        cache.insert(path("a"), &ex, FileHighlights::from([(2, spans.clone())]));
+        assert_eq!(cache.get(Path::new("a"), &line(2, true)), Some(&spans));
+        assert_eq!(
+            cache.get(Path::new("a"), &line(1, false)),
+            Some(&LineSpans::new()),
+            "a line left out is cached plain"
+        );
+        assert!(!cache.missing(Path::new("a"), &ex));
+        let changed = LineMatch {
+            line_text: "changed".into(),
+            ..line(2, true)
+        };
+        assert_eq!(cache.get(Path::new("a"), &changed), None);
+        let changed_ex = vec![Excerpt {
+            lines: vec![changed],
+        }];
+        assert!(cache.missing(Path::new("a"), &changed_ex));
+        assert!(cache.missing(Path::new("b"), &ex));
+    }
+
+    #[test]
+    fn highlight_cache_drops_the_least_recently_used() {
+        let mut cache = HighlightCache::default();
+        let ex = vec![excerpt(1)];
+        for i in 0..MAX_CACHED_FILES {
+            cache.insert(path(&format!("f{i}")), &ex, FileHighlights::new());
+        }
+        cache.touch(Path::new("f0"));
+        cache.insert(path("new"), &ex, FileHighlights::new());
+        assert_eq!(cache.len(), MAX_CACHED_FILES);
+        assert!(cache.file(Path::new("f0")).is_some(), "touched, kept");
+        assert!(cache.file(Path::new("f1")).is_none(), "oldest, dropped");
+        assert!(cache.file(Path::new("new")).is_some());
     }
 }

@@ -27,7 +27,8 @@ use lucerna_text::Point;
 
 use super::highlight::{FileHighlights, LineSpans, highlight_file};
 use super::model::{
-    LineAnchor, LineRef, Results, Row, expand_tabs, first_match, globs, summary, thousands,
+    HighlightCache, LineAnchor, LineRef, Results, Row, expand_tabs, first_match, globs, summary,
+    thousands,
 };
 use crate::code_view::CodeView;
 use crate::find_widget::{build_regex, single_line_selection};
@@ -46,6 +47,7 @@ use crate::ui::{
 use crate::workbench::enabled_globs;
 use crate::workspace_state::SearchState;
 use crate::{AppState, CommandRegistry, DocState, OpenMode, Workbench};
+use lucerna_project::Excerpt;
 
 /// How long the inputs must stay unchanged before a search starts.
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -120,19 +122,19 @@ pub struct SearchView {
     list: ListState,
     /// The rows `list` was last told about, to splice only what changed.
     list_rows: Vec<Row>,
-    /// Syntax colors per result file (path relative to the root).
-    highlights: HashMap<Arc<Path>, FileHighlights>,
-    /// Files queued or running; a file in here or in `highlights` is never
-    /// queued again.
+    /// Syntax colors per result line, kept across searches (a line's
+    /// colors are used only while its text is unchanged).
+    highlight_cache: HighlightCache,
+    /// Files queued or running; a file in here is never queued again.
     highlight_pending: HashSet<Arc<Path>>,
     highlight_queue: VecDeque<Arc<Path>>,
     highlight_tasks: HashMap<Arc<Path>, Task<()>>,
-    /// Bumped by a new search and by a theme change: results of an older
-    /// epoch are dropped.
+    /// Bumped by a theme change: results of an older epoch are dropped.
     highlight_epoch: u64,
     /// The `theme_generation` the highlights were computed for.
     highlight_theme: u64,
     peak_highlight_jobs: usize,
+    highlight_jobs_started: usize,
     /// `false` in single-file mode (R29): the folder is never walked.
     searchable: bool,
     /// Input changes still to come from [`SearchView::restore`] setting the
@@ -200,13 +202,14 @@ impl SearchView {
             _highlight: None,
             list: ListState::new(0, ListAlignment::Top, px(LIST_OVERDRAW)),
             list_rows: Vec::new(),
-            highlights: HashMap::new(),
+            highlight_cache: HighlightCache::default(),
             highlight_pending: HashSet::new(),
             highlight_queue: VecDeque::new(),
             highlight_tasks: HashMap::new(),
             highlight_epoch: 0,
             highlight_theme: cx.global::<AppState>().theme_generation,
             peak_highlight_jobs: 0,
+            highlight_jobs_started: 0,
             searchable,
             restore_changes: 0,
         }
@@ -303,10 +306,10 @@ impl SearchView {
         &self.results
     }
 
-    /// The syntax colors of the result file `path` (relative to the root),
-    /// once computed.
-    pub fn highlights(&self, path: &Path) -> Option<&FileHighlights> {
-        self.highlights.get(path)
+    /// The cached syntax colors of the result file `path` (relative to the
+    /// root), by line number, once computed.
+    pub fn highlights(&self, path: &Path) -> Option<FileHighlights> {
+        self.highlight_cache.file(path)
     }
 
     /// Highlight jobs running now; never above [`MAX_HIGHLIGHT_JOBS`].
@@ -317,6 +320,11 @@ impl SearchView {
     /// The most highlight jobs that ran at once since this view was made.
     pub fn peak_highlight_jobs(&self) -> usize {
         self.peak_highlight_jobs
+    }
+
+    /// Highlight jobs started since this view was made.
+    pub fn highlight_jobs_started(&self) -> usize {
+        self.highlight_jobs_started
     }
 
     /// The regex error of the last search, if any.
@@ -557,18 +565,25 @@ impl SearchView {
         Some((file, px(0.)))
     }
 
-    /// The bar's match counter, as in Zed: `"3/19"` for the selected match
-    /// line among all match lines, `"19 results"` with no match selected,
-    /// `"0/0"` without matches.
+    /// The search status shown by the bar's counter, as in Zed:
+    /// `"Searching…"` while a search runs (the rows may still hold the
+    /// previous search's files), then `"3/19"` for the selected match line
+    /// among all match lines, `"19 results"` with no match selected, `"0/0"`
+    /// without matches. A search cut short says
+    /// `"20,000+"` (the cap is [`lucerna_project::MAX_RESULTS`]).
     pub fn match_label(&self) -> String {
+        if self.searched && self.done.is_none() && self.error.is_none() {
+            return "Searching…".into();
+        }
         let total = self.results.match_count();
         if total == 0 {
             return "0/0".into();
         }
+        let plus = if self.done == Some(true) { "+" } else { "" };
         match self.selected().and_then(|r| self.results.match_index(r)) {
-            Some(i) => format!("{}/{}", thousands(i + 1), thousands(total)),
+            Some(i) => format!("{}/{}{plus}", thousands(i + 1), thousands(total)),
             None if total == 1 => "1 result".into(),
-            None => format!("{} results", thousands(total)),
+            None => format!("{}{plus} results", thousands(total)),
         }
     }
 
@@ -750,8 +765,12 @@ impl SearchView {
         self._search = Task::ready(());
     }
 
-    /// Clears the results and starts searching for the current inputs now,
-    /// cancelling any search still running (`Enter` in the query input).
+    /// Starts searching for the current inputs now, cancelling any search
+    /// still running (`Enter` in the query input). As in Zed, the shown
+    /// files stay: each file the new search reports replaces its old
+    /// excerpts in place, and the files it does not report go when it
+    /// finishes, so rows never blank or jump between searches. An empty
+    /// query clears the results at once.
     pub fn run_search(&mut self, cx: &mut Context<Self>) {
         if !self.searchable {
             return;
@@ -759,11 +778,6 @@ impl SearchView {
         self._debounce = Task::ready(());
         self.stale = false;
         self.cancel_search();
-        self.results.clear();
-        self.sync_list(cx);
-        self.selected = None;
-        self.reset_highlights();
-        self.max_line_number = 0;
         self.done = None;
         self.error = None;
         self.pattern_error = false;
@@ -771,8 +785,13 @@ impl SearchView {
         let pattern = self.query.read(cx).text().to_owned();
         self.searched = !pattern.is_empty();
         if pattern.is_empty() {
+            self.results.clear();
+            self.sync_list(cx);
+            self.selected = None;
+            self.max_line_number = 0;
             return;
         }
+        self.results.begin_update();
         let context_lines = cx
             .global::<AppState>()
             .settings
@@ -828,14 +847,14 @@ impl SearchView {
     /// Forgets every color and drops the queued and running jobs.
     fn reset_highlights(&mut self) {
         self.highlight_epoch += 1;
-        self.highlights.clear();
+        self.highlight_cache.clear();
         self.highlight_pending.clear();
         self.highlight_queue.clear();
         self.highlight_tasks.clear();
     }
 
-    /// Queues the files of the visible rows that have no colors yet and
-    /// starts jobs up to [`MAX_HIGHLIGHT_JOBS`].
+    /// Queues the files of the visible rows with lines the cache has no
+    /// colors for and starts jobs up to [`MAX_HIGHLIGHT_JOBS`].
     fn request_highlights(&mut self, files: Vec<usize>, cx: &mut Context<Self>) {
         let theme = cx.global::<AppState>().theme_generation;
         if theme != self.highlight_theme {
@@ -861,7 +880,10 @@ impl SearchView {
                 continue;
             };
             let path = result.path.clone();
-            if self.highlights.contains_key(&path) || !self.highlight_pending.insert(path.clone()) {
+            self.highlight_cache.touch(&path);
+            if !self.highlight_cache.missing(&path, &result.excerpts)
+                || !self.highlight_pending.insert(path.clone())
+            {
                 continue;
             }
             self.highlight_queue.push_back(path);
@@ -888,21 +910,24 @@ impl SearchView {
             let (languages, theme) = (state.languages.clone(), state.theme.clone());
             let (abs, rel, epoch) = (self.root.join(&path), path.clone(), self.highlight_epoch);
             let job = cx.background_spawn(async move {
-                guarded("search highlight", || {
+                let highlights = guarded("search highlight", || {
                     highlight_file(&abs, &rel, &excerpts, &languages, &|c| {
                         theme.style_for(c).is_some()
                     })
                 })
+                .unwrap_or_default();
+                (excerpts, highlights)
             });
             let key = path.clone();
             let task = cx.spawn(async move |this, cx| {
-                let highlights = job.await.unwrap_or_default();
+                let (excerpts, highlights) = job.await;
                 this.update(cx, |view, cx| {
-                    view.highlights_done(epoch, key, highlights, cx)
+                    view.highlights_done(epoch, key, &excerpts, highlights, cx)
                 })
                 .ok();
             });
             self.highlight_tasks.insert(path, task);
+            self.highlight_jobs_started += 1;
             self.peak_highlight_jobs = self.peak_highlight_jobs.max(self.highlight_tasks.len());
         }
     }
@@ -911,6 +936,7 @@ impl SearchView {
         &mut self,
         epoch: u64,
         path: Arc<Path>,
+        excerpts: &[Excerpt],
         highlights: FileHighlights,
         cx: &mut Context<Self>,
     ) {
@@ -918,19 +944,25 @@ impl SearchView {
             return;
         }
         self.highlight_tasks.remove(&path);
-        self.highlights.insert(path, highlights);
+        // A file whose excerpts a re-search replaced meanwhile may be
+        // queued again for its new lines.
+        self.highlight_pending.remove(&path);
+        self.highlight_cache.insert(path, excerpts, highlights);
         self.start_highlight_jobs(cx);
         cx.notify();
     }
 
-    /// Adds a batch of events of search `generation`; stale ones are
-    /// dropped. Runs once per batch, never per frame: the batch's
-    /// files are added and the rows rebuilt once.
+    /// Applies a batch of events of search `generation`; stale ones are
+    /// dropped. Runs once per batch, never per frame: the batch's files
+    /// replace or join the shown ones, `Done` drops the files the search
+    /// did not report, and the list is told once. The selection stays
+    /// while its line is still there.
     fn apply_events(&mut self, generation: u64, events: Vec<SearchEvent>, cx: &mut Context<Self>) {
         if generation != self.generation {
             return;
         }
         let mut batch = Vec::new();
+        let mut finished = None;
         for event in events {
             match event {
                 SearchEvent::File { path, excerpts } => {
@@ -938,16 +970,9 @@ impl SearchView {
                         Ok(relative) => Arc::from(relative),
                         Err(_) => path,
                     };
-                    let last = excerpts
-                        .iter()
-                        .flat_map(|e| e.lines.last())
-                        .map(|l| l.line_number)
-                        .max()
-                        .unwrap_or(0);
-                    self.max_line_number = self.max_line_number.max(last);
                     batch.push((path, excerpts));
                 }
-                SearchEvent::Done { truncated, .. } => self.done = Some(truncated),
+                SearchEvent::Done { truncated, .. } => finished = Some(truncated),
                 SearchEvent::Error(err) => {
                     // `search` reports an error when the matcher cannot be
                     // built; tell that apart from any other failure by
@@ -959,7 +984,19 @@ impl SearchView {
                 }
             }
         }
-        self.results.add_files(batch);
+        self.results.update_files(batch);
+        if let Some(truncated) = finished {
+            self.done = Some(truncated);
+            self.results.prune();
+        }
+        self.max_line_number = self.results.max_line_number();
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|a| self.results.resolve(a).is_none())
+        {
+            self.selected = None;
+        }
         self.sync_list(cx);
         cx.notify();
     }
@@ -1292,8 +1329,7 @@ impl SearchView {
             .results
             .files()
             .get(r.file)
-            .and_then(|f| self.highlights.get(&f.path))
-            .and_then(|h| h.get(&line.line_number));
+            .and_then(|f| self.highlight_cache.get(&f.path, line));
         // `CodeView` expands tabs itself; gpui would draw them raw.
         let expanded = expand_tabs(text, style.tab_size);
         let ranges: Vec<Range<usize>> = line
@@ -1611,6 +1647,21 @@ fn row(ix: usize, selector: String, style: &RowStyle) -> Stateful<Div> {
         .cursor_pointer()
 }
 
+/// A message filling the list area, centered like the empty state: the
+/// search error, "Searching…" or "No results found".
+fn centered_message(selector: &'static str, text: String, text_color: gpui::Rgba) -> Div {
+    div()
+        .debug_selector(move || selector.into())
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(3. * GRID))
+        .text_size(px(UI_FONT_SIZE))
+        .text_color(text_color)
+        .child(text)
+}
+
 /// The line-number column: right-aligned, in the editor font.
 fn gutter(style: &RowStyle, muted: gpui::Rgba) -> Div {
     div()
@@ -1743,26 +1794,16 @@ impl Render for SearchView {
             .debug_selector(|| "search-toolbar".into())
             .child(bar)
             .children(filters);
-        // Done with results: the counter says it all. Searching, nothing
-        // found, cut short or failed: say so under the bar.
-        let finished_with_results = self.done == Some(false) && self.results.match_count() > 0;
-        let status = match (&self.error, self.summary()) {
+        // The status lives in the counter, and a message without results
+        // sits in the list area: nothing above the list ever comes or
+        // goes while searching, so the rows never jump (as in Zed).
+        let message = match (&self.error, self.summary()) {
             (Some(error), _) => Some(("search-error", error.clone(), color(ui.error))),
-            (None, Some(summary)) if !finished_with_results => {
+            (None, Some(summary)) if self.results.rows().is_empty() => {
                 Some(("search-summary", summary, muted))
             }
             _ => None,
         };
-        let status = status.map(|(selector, text, text_color)| {
-            div()
-                .debug_selector(move || selector.into())
-                .flex_none()
-                .px(px(3. * GRID))
-                .py(px(GRID))
-                .text_size(px(UI_FONT_SIZE_SMALL))
-                .text_color(text_color)
-                .child(text)
-        });
         let style = self.row_style(window, cx);
         let lh = style.line_height;
         // The rows on screen get their syntax colors first.
@@ -1779,7 +1820,9 @@ impl Render for SearchView {
         }
         self.request_highlights(visible, cx);
         let empty = self.results.rows().is_empty() && self.query.read(cx).text().is_empty();
-        let body = if empty {
+        let body = if let Some((selector, text, text_color)) = message {
+            centered_message(selector, text, text_color).into_any_element()
+        } else if empty {
             self.render_empty_state(cx).into_any_element()
         } else {
             // The pinned header: a clip at the list's top, as tall as the
@@ -1833,7 +1876,6 @@ impl Render for SearchView {
             .size_full()
             .bg(color(ui.editor_background))
             .child(toolbar)
-            .children(status)
             .child(
                 div()
                     .id("search-list")
