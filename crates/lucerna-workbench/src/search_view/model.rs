@@ -63,12 +63,15 @@ impl FileResult {
 pub struct Results {
     files: Vec<FileResult>,
     rows: Vec<Row>,
+    /// Match lines in all files, counted once per change.
+    match_count: usize,
 }
 
 impl Results {
     pub fn clear(&mut self) {
         self.files.clear();
         self.rows.clear();
+        self.match_count = 0;
     }
 
     /// Adds a file's excerpts, keeping files sorted by path. An existing
@@ -189,8 +192,9 @@ impl Results {
         self.rows.iter().position(|row| *row == Row::Line(r))
     }
 
+    /// Match lines in all files; kept up to date by every change.
     pub fn match_count(&self) -> usize {
-        self.files.iter().map(FileResult::match_count).sum()
+        self.match_count
     }
 
     /// The 0-based position of the match line `r` among all match lines,
@@ -277,6 +281,7 @@ impl Results {
     }
 
     fn rebuild(&mut self) {
+        self.match_count = self.files.iter().map(FileResult::match_count).sum();
         self.rows.clear();
         for (file, f) in self.files.iter().enumerate() {
             self.rows.push(Row::Header(file));

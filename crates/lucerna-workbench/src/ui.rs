@@ -221,12 +221,30 @@ pub fn search_bar_row() -> Div {
 /// regex). Add the `Aa` `ab` `.*` toggles as children.
 pub(crate) fn search_query_box(input: &Entity<TextInput>, invalid: bool, cx: &App) -> Div {
     let ui = &cx.global::<AppState>().theme.ui;
-    input_box(input, cx)
-        .flex_grow_0()
+    search_query_column(input_box(input, cx)).when(invalid, |d| d.border_color(color(ui.error)))
+}
+
+/// Sizes `el` like the query box of a search bar row: about two thirds
+/// of the row, never narrower than [`SEARCH_QUERY_MIN_WIDTH`]. Rows under
+/// the query (the Search tab's include / exclude) use it to line up.
+pub fn search_query_column<E: Styled>(el: E) -> E {
+    el.flex_grow_0()
         .flex_shrink_1()
         .flex_basis(relative(SEARCH_QUERY_BASIS))
         .min_w(px(SEARCH_QUERY_MIN_WIDTH))
-        .when(invalid, |d| d.border_color(color(ui.error)))
+}
+
+/// An [`icon_button`] for a bar: its debug selector is `id`, and pressing
+/// it leaves focus where it was (in the query input). Add `on_click`.
+pub fn bar_icon_button(
+    id: &'static str,
+    svg_data: &'static [u8],
+    active: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    icon_button(id, svg_data, active, cx)
+        .debug_selector(move || id.into())
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
 }
 
 /// A 1px `border.variant` line between groups of a search bar row.
@@ -252,10 +270,7 @@ pub fn match_nav(
 ) -> Div {
     let ui = &cx.global::<AppState>().theme.ui;
     let button = |id: &'static str, icon, handler: ClickHandler| {
-        icon_button(id, icon, false, cx)
-            .debug_selector(move || id.into())
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-            .on_click(handler)
+        bar_icon_button(id, icon, false, cx).on_click(handler)
     };
     div()
         .flex()

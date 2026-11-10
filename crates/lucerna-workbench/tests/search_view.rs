@@ -482,6 +482,10 @@ fn search_invalid_regex_shows_error(cx: &mut TestAppContext) {
     let error = view.read_with(cx, |v, _| v.error().map(str::to_owned));
     assert!(error.is_some(), "the regex error is reported");
     assert!(cx.debug_bounds("search-error").is_some());
+    assert!(
+        cx.debug_bounds("search-query-invalid").is_some(),
+        "a bad pattern turns the box red"
+    );
     assert_eq!(summary(&view, cx), None);
     assert!(files(&view, cx).is_empty());
 
@@ -1318,6 +1322,12 @@ fn file_header_is_two_lines_tall_and_bar_is_40px(cx: &mut TestAppContext) {
     );
     let query = bounds("search-query", cx);
     assert!((query.size.height - gpui::px(28.)).abs() < gpui::px(1.));
+    // One 40px row plus the 1px border under the toolbar.
+    let toolbar = bounds("search-toolbar", cx);
+    assert!(
+        (toolbar.size.height - gpui::px(41.)).abs() < gpui::px(0.5),
+        "{toolbar:?}"
+    );
     let view = bounds("search-view", cx);
     assert!(
         query.size.width < view.size.width * 0.75,
@@ -1335,7 +1345,15 @@ fn tall(n: usize) -> TempDir {
 #[gpui::test]
 fn sticky_header_pins_while_scrolling(cx: &mut TestAppContext) {
     init(cx);
-    let dir = tall(300);
+    // big.rs, then mid.rs, then enough below mid.rs for its header to
+    // reach the top of the list.
+    let big: String = (0..300).map(|i| format!("needle {i}\n")).collect();
+    let rest: String = (0..100).map(|i| format!("needle {i}\n")).collect();
+    let dir = project(&[
+        ("big.rs", big.as_str()),
+        ("mid.rs", "needle\n"),
+        ("zz.rs", rest.as_str()),
+    ]);
     let (wb, cx) = workbench(dir.path(), cx);
     keys("cmd-shift-f", cx);
     let view = search(&wb, cx);
@@ -1353,6 +1371,47 @@ fn sticky_header_pins_while_scrolling(cx: &mut TestAppContext) {
         "pinned at the top: {sticky:?} in {list:?}"
     );
     assert!(cx.debug_bounds("search-file-0").is_none(), "scrolled away");
+
+    // Bring z.rs's header up under the sticky one: it pushes it up, and
+    // the pushed header stays inside the list, under the toolbar.
+    let lh = bounds("search-line-0-0-40", cx).size.height;
+    let mut pushed = false;
+    for _ in 0..200 {
+        let z = cx.debug_bounds("search-file-1").map(|b| b.origin.y);
+        if let Some(z) = z
+            && z < list.origin.y + lh * 1.5
+        {
+            pushed = true;
+            break;
+        }
+        // Small steps: the list measures rows as they come into view.
+        let step = z.map_or(150., |z| {
+            ((z - list.origin.y - lh) / gpui::px(1.)).clamp(1., 150.)
+        });
+        scroll_list(step, cx);
+    }
+    assert!(pushed, "mid.rs's header reached the top");
+    let sticky = bounds("search-sticky-header", cx);
+    assert!(
+        sticky.origin.y >= list.origin.y - gpui::px(0.5),
+        "never above the list: {sticky:?} vs {list:?}"
+    );
+    assert!(
+        sticky.size.height < lh * 2.,
+        "pushed up, partly shown: {sticky:?}"
+    );
+    let z = bounds("search-file-1", cx);
+    assert!(
+        sticky.bottom() <= z.origin.y + gpui::px(5.),
+        "{sticky:?} vs {z:?}"
+    );
+    // The toolbar still takes clicks.
+    click("search-toggle-word", cx);
+    assert!(view.read_with(cx, |v, _| v.whole_word()));
+    click("search-toggle-word", cx);
+    settle_search(cx);
+    scroll_list(-100_000., cx);
+    scroll_list(600., cx);
 
     click("search-sticky-header", cx);
     let collapsed = view.read_with(cx, |v, _| v.results().files()[0].collapsed);
@@ -1418,4 +1477,18 @@ fn streaming_twenty_thousand_results(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("search-sticky-header").is_some());
     eprintln!("20,000 results: search and apply {applied:?}, one frame {frame:?}");
     assert!(frame < Duration::from_millis(500), "a frame took {frame:?}");
+}
+
+#[gpui::test]
+fn non_pattern_error_keeps_the_box_border(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = searched(cx);
+    // An I/O or root failure, not the query's fault.
+    view.update(cx, |v, cx| {
+        v.apply_event(SearchEvent::Error("permission denied".into()), cx)
+    });
+    draw(cx);
+    assert!(view.read_with(cx, |v, _| v.error().is_some()));
+    assert!(cx.debug_bounds("search-error").is_some(), "still reported");
+    assert!(!view.read_with(cx, |v, _| v.is_invalid()));
+    assert!(cx.debug_bounds("search-query").is_some());
 }

@@ -30,7 +30,7 @@ use super::model::{
     LineAnchor, LineRef, Results, Row, expand_tabs, first_match, globs, summary, thousands,
 };
 use crate::code_view::CodeView;
-use crate::find_widget::single_line_selection;
+use crate::find_widget::{build_regex, single_line_selection};
 use crate::icons::{
     ARROW_UP_RIGHT, CASE_SENSITIVE, CHEVRONS_DOWN_UP, CHEVRONS_UP_DOWN, LIST_FILTER, REFRESH_CW,
     REGEX, WHOLE_WORD,
@@ -40,8 +40,8 @@ use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
     CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, ClickHandler, FILE_ICON_SIZE, GRID, UI_FONT_SIZE,
-    UI_FONT_SIZE_SMALL, bar_separator, file_icon_sized, icon_button, input_box, match_nav,
-    search_bar_row, search_query_box, search_toolbar, toggle_button,
+    UI_FONT_SIZE_SMALL, bar_icon_button, bar_separator, file_icon_sized, input_box, match_nav,
+    search_bar_row, search_query_box, search_query_column, search_toolbar, toggle_button,
 };
 use crate::workbench::enabled_globs;
 use crate::workspace_state::SearchState;
@@ -97,6 +97,12 @@ pub struct SearchView {
     /// `Some(truncated)` once the search finished.
     done: Option<bool>,
     error: Option<String>,
+    /// `error` is the query's own fault (a bad pattern), not an I/O or
+    /// root failure: only then does the query box turn red.
+    pattern_error: bool,
+    /// The window's scale factor at the last frame: row heights are
+    /// rounded to its device pixels.
+    scale_factor: f32,
     /// The query the shown results came from.
     last_query: Option<SearchQuery>,
     /// Bumped by every change; events of older searches are dropped.
@@ -180,6 +186,8 @@ impl SearchView {
             searched: false,
             done: None,
             error: None,
+            pattern_error: false,
+            scale_factor: 1.,
             last_query: None,
             generation: 0,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -417,7 +425,7 @@ impl SearchView {
             .take(room)
             .take_while(same)
             .count();
-        let lh = editor_line_height(cx);
+        let lh = editor_line_height(self.scale_factor, cx);
         let top = self.list.logical_scroll_top();
         let scrolled: Pixels = old[..top.item_ix.min(old.len())]
             .iter()
@@ -471,7 +479,7 @@ impl SearchView {
     /// for a line. Row heights are known exactly, so this holds for rows
     /// the list has not measured yet.
     fn reveal_row(&mut self, ix: usize, cx: &App) {
-        let lh = editor_line_height(cx);
+        let lh = editor_line_height(self.scale_factor, cx);
         let rows = self.results.rows();
         let Some(row) = rows.get(ix) else {
             return;
@@ -560,11 +568,14 @@ impl SearchView {
         }
     }
 
-    /// The query box shows the error color: a regex error, or a finished
-    /// search without matches.
+    /// The query box shows the error color: a bad pattern, or a finished
+    /// search without matches. Other errors (I/O, the root) leave it alone.
     pub fn is_invalid(&self) -> bool {
-        self.error.is_some()
-            || (self.searched && self.done.is_some() && self.results.match_count() == 0)
+        (self.error.is_some() && self.pattern_error)
+            || (self.error.is_none()
+                && self.searched
+                && self.done.is_some()
+                && self.results.match_count() == 0)
     }
 
     /// Selects the first match of the file `path` and opens it (the
@@ -741,6 +752,7 @@ impl SearchView {
         self.max_line_number = 0;
         self.done = None;
         self.error = None;
+        self.pattern_error = false;
         cx.notify();
         let pattern = self.query.read(cx).text().to_owned();
         self.searched = !pattern.is_empty();
@@ -922,7 +934,15 @@ impl SearchView {
                     batch.push((path, excerpts));
                 }
                 SearchEvent::Done { truncated, .. } => self.done = Some(truncated),
-                SearchEvent::Error(err) => self.error = Some(err),
+                SearchEvent::Error(err) => {
+                    // `search` reports an error when the matcher cannot be
+                    // built; tell that apart from any other failure by
+                    // building the pattern here too.
+                    self.pattern_error = self.last_query.as_ref().is_some_and(|q| {
+                        build_regex(&q.pattern, q.is_regex, q.case_sensitive, q.whole_word).is_err()
+                    });
+                    self.error = Some(err);
+                }
             }
         }
         self.results.add_files(batch);
@@ -1023,7 +1043,8 @@ impl SearchView {
     /// Fonts and sizes of the result rows: the editor's font, every row one
     /// editor line tall (as `CodeView` computes it), and a gutter as wide as
     /// the largest line number.
-    fn row_style(&self, window: &Window, cx: &App) -> RowStyle {
+    fn row_style(&mut self, window: &Window, cx: &App) -> RowStyle {
+        self.scale_factor = window.scale_factor();
         let settings = &cx.global::<AppState>().settings;
         let font_family: SharedString = settings
             .get::<String>("editor.fontFamily", None)
@@ -1041,7 +1062,7 @@ impl SearchView {
         RowStyle {
             font_family,
             font_size,
-            line_height: editor_line_height(cx),
+            line_height: editor_line_height(self.scale_factor, cx),
             gutter: char_width * digits as f32 + px(4. * GRID),
             tab_size: settings
                 .get::<u32>("editor.tabSize", None)
@@ -1107,7 +1128,7 @@ impl SearchView {
             if sticky {
                 (
                     "search-sticky-header".into(),
-                    "search-sticky-header".into(),
+                    "search-sticky-card".into(),
                     "search-sticky-open-file".into(),
                     "search-sticky-open-file".into(),
                 )
@@ -1448,10 +1469,11 @@ fn editor_font_size(cx: &App) -> f32 {
 }
 
 /// One editor line, as `CodeView` computes it from `editor.lineHeight`
-/// (a factor of the font size below 8, else pixels), rounded to whole
-/// pixels: layout snaps row heights to the pixel grid, and scrolling to a
-/// row sums these heights, so they must match what the list measures.
-fn editor_line_height(cx: &App) -> Pixels {
+/// (a factor of the font size below 8, else pixels), rounded to the
+/// device pixels of `scale_factor`: layout snaps row heights to that grid,
+/// and scrolling to a row sums these heights, so they must match what the
+/// list measures.
+fn editor_line_height(scale_factor: f32, cx: &App) -> Pixels {
     let size = editor_font_size(cx);
     let lh = cx
         .global::<AppState>()
@@ -1459,7 +1481,8 @@ fn editor_line_height(cx: &App) -> Pixels {
         .get::<f32>("editor.lineHeight", None)
         .unwrap_or(1.6);
     let lh = if lh < 8. { lh * size } else { lh };
-    px(lh.max(1.).round())
+    let scale = if scale_factor > 0. { scale_factor } else { 1. };
+    px((lh.max(1.) * scale).round().max(1.) / scale)
 }
 
 /// A file header's height: [`FILE_HEADER_LINES`] editor lines.
@@ -1578,13 +1601,6 @@ fn gutter(style: &RowStyle, muted: gpui::Rgba) -> Div {
         .text_color(muted)
 }
 
-/// An [`icon_button`] that leaves focus where it was.
-fn bar_button(id: &'static str, icon: &'static [u8], active: bool, cx: &App) -> Stateful<Div> {
-    icon_button(id, icon, active, cx)
-        .debug_selector(move || id.into())
-        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-}
-
 impl Focusable for SearchView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -1664,17 +1680,17 @@ impl Render for SearchView {
         };
         let bar = search_bar_row()
             .child(
-                bar_button("search-collapse-all", collapse_icon, false, cx)
+                bar_icon_button("search-collapse-all", collapse_icon, false, cx)
                     .on_click(cx.listener(|view, _, _, cx| view.toggle_all_collapsed(cx))),
             )
             .child(query)
             .child(
-                bar_button("search-filters", LIST_FILTER, self.filters_shown, cx).on_click(
+                bar_icon_button("search-filters", LIST_FILTER, self.filters_shown, cx).on_click(
                     cx.listener(|view, _, window, cx| view.toggle_query_details(window, cx)),
                 ),
             )
             .child(
-                bar_button("search-refresh", REFRESH_CW, false, cx)
+                bar_icon_button("search-refresh", REFRESH_CW, false, cx)
                     .on_click(cx.listener(|view, _, _, cx| view.run_search(cx))),
             )
             .child(bar_separator(cx))
@@ -1690,13 +1706,7 @@ impl Render for SearchView {
                 .debug_selector(|| "search-filter-row".into())
                 .child(div().flex_none().w(px(6. * GRID)))
                 .child(
-                    div()
-                        .flex()
-                        .gap(px(GRID))
-                        .flex_grow_0()
-                        .flex_shrink_1()
-                        .flex_basis(relative(crate::ui::SEARCH_QUERY_BASIS))
-                        .min_w(px(crate::ui::SEARCH_QUERY_MIN_WIDTH))
+                    search_query_column(div().flex().gap(px(GRID)))
                         .child(
                             input_box(&self.include, cx)
                                 .debug_selector(|| "search-include".into())
@@ -1706,7 +1716,10 @@ impl Render for SearchView {
                         .child(input_box(&self.exclude, cx).flex_1().min_w_0()),
                 )
         });
-        let toolbar = search_toolbar(cx).child(bar).children(filters);
+        let toolbar = search_toolbar(cx)
+            .debug_selector(|| "search-toolbar".into())
+            .child(bar)
+            .children(filters);
         // Done with results: the counter says it all. Searching, nothing
         // found, cut short or failed: say so under the bar.
         let finished_with_results = self.done == Some(false) && self.results.match_count() > 0;
@@ -1746,21 +1759,36 @@ impl Render for SearchView {
         let body = if empty {
             self.render_empty_state(cx).into_any_element()
         } else {
-            let sticky = self.sticky_header(lh).map(|(file, top)| {
+            // The pinned header: a clip at the list's top, as tall as the
+            // part still shown while the next header pushes it up.
+            let sticky = self.sticky_header(lh).map(|(file, push)| {
                 div()
+                    .debug_selector(|| "search-sticky-header".into())
                     .absolute()
                     .left_0()
                     .right_0()
-                    .top(top)
-                    .bg(color(ui.editor_background))
+                    .top_0()
+                    .h(header_height(lh) + push)
+                    .overflow_hidden()
                     // Clicks on the pinned header never reach the rows under it.
                     .occlude()
-                    .child(self.render_header(file, true, &style, cx))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(push)
+                            .bg(color(ui.editor_background))
+                            .child(self.render_header(file, true, &style, cx)),
+                    )
             });
             let row_style = style.clone();
             div()
                 .relative()
                 .size_full()
+                // Nothing in here (the pushed-up sticky header) draws over
+                // the toolbar.
+                .overflow_hidden()
                 .child(
                     list(
                         self.list.clone(),

@@ -401,3 +401,27 @@ fn find_bar_matches_search_bar_metrics(cx: &mut TestAppContext) {
     assert!(close.origin.x > next.right(), "× at the far right");
     assert!(bar.right() - close.right() < gpui::px(12.));
 }
+
+#[gpui::test]
+fn find_bar_border_waits_for_background_search(cx: &mut TestAppContext) {
+    init(cx);
+    // Over 1 MB: searched on the background executor.
+    let text = ("x".repeat(63) + "\n").repeat(20_000) + "the needle\n";
+    let (_dir, _wb, view, cx) = open_file("big.txt", &text, cx);
+    keys("cmd-f", cx);
+    type_text("zzz", cx);
+    assert!(cx.debug_bounds("find-query-invalid").is_some(), "no match");
+    let find = widget(&view, cx).unwrap();
+    // Change the query without letting the background search finish.
+    cx.update(|window, cx| {
+        let input = find.read(cx).input().clone();
+        input.update(cx, |input, cx| input.set_text("needle", window, cx));
+    });
+    assert!(
+        !find.read_with(cx, |f, _| f.is_invalid()),
+        "the old query's empty result does not paint the new one red"
+    );
+    draw(cx);
+    assert!(!find.read_with(cx, |f, _| f.is_invalid()));
+    assert_eq!(match_label(&view, cx), "1/1");
+}

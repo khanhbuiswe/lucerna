@@ -23,7 +23,7 @@ use crate::quick_open::picker::wrap_index;
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
-    CLOSE_ICON, ClickHandler, GRID, UI_FONT_SIZE_SMALL, bar_separator, icon_button, match_nav,
+    CLOSE_ICON, ClickHandler, GRID, UI_FONT_SIZE_SMALL, bar_icon_button, bar_separator, match_nav,
     search_bar_row, search_query_box, search_toolbar, toggle_button,
 };
 use crate::{AppState, CommandRegistry, Workbench};
@@ -100,6 +100,9 @@ pub struct FindWidget {
     matches: Arc<[Range<usize>]>,
     active: Option<usize>,
     error: Option<String>,
+    /// A background search is running: `matches` and `error` are of the
+    /// previous query, so the box shows no error color yet.
+    pending: bool,
     /// The view revision the matches were computed for.
     revision: u64,
     /// Bumped by every search; a background result applies only while
@@ -138,6 +141,7 @@ impl FindWidget {
             matches: Arc::from([]),
             active: None,
             error: None,
+            pending: false,
             revision: view.read(cx).revision(),
             generation: 0,
             vim: false,
@@ -208,9 +212,10 @@ impl FindWidget {
     }
 
     /// The query box shows the error color: a regex error, or a non-empty
-    /// query without matches.
+    /// query without matches, once its search finished.
     pub fn is_invalid(&self) -> bool {
-        self.error.is_some() || (!self.query.is_empty() && self.matches.is_empty())
+        !self.pending
+            && (self.error.is_some() || (!self.query.is_empty() && self.matches.is_empty()))
     }
 
     pub fn toggle_case_sensitive(&mut self, cx: &mut Context<Self>) {
@@ -253,6 +258,7 @@ impl FindWidget {
     /// Drops the result of any search in flight.
     fn cancel(&mut self) {
         self.generation += 1;
+        self.pending = false;
         self._search = Task::ready(());
     }
 
@@ -275,6 +281,7 @@ impl FindWidget {
             return;
         }
         let generation = self.generation;
+        self.pending = true;
         let result = cx.background_spawn(async move {
             guarded("find", || {
                 find_in_snapshot(&snapshot, &pattern, regex, case, word)
@@ -304,6 +311,7 @@ impl FindWidget {
         };
         self.matches = matches.into();
         self.error = error;
+        self.pending = false;
         let last = self.matches.len().checked_sub(1);
         self.active = match (pick, self.active, last) {
             (_, _, None) => None,
@@ -430,9 +438,8 @@ impl Render for FindWidget {
             self.match_label(),
             cx,
         );
-        let close_button = icon_button("find-close", CLOSE_ICON, false, cx)
-            .debug_selector(|| "find-close".into())
-            .on_click(move |_, window, cx| {
+        let close_button =
+            bar_icon_button("find-close", CLOSE_ICON, false, cx).on_click(move |_, window, cx| {
                 if let Some(view) = view.upgrade() {
                     close(&view, window, cx);
                 }
