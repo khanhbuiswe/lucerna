@@ -4,6 +4,7 @@
 
 mod classify;
 mod motion;
+mod scroll;
 mod state;
 #[cfg(test)]
 mod test_util;

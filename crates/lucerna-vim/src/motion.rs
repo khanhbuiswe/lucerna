@@ -15,6 +15,16 @@ pub(crate) enum Goal {
     Eol,
 }
 
+/// `col` moved back onto a char boundary of `line` at or before its last
+/// char (0 for an empty line).
+pub(crate) fn clamp_to_char(line: &str, col: u32) -> usize {
+    let mut col = (col.min(last_char_col(line))) as usize;
+    while !line.is_char_boundary(col) {
+        col -= 1;
+    }
+    col
+}
+
 /// `count` chars left of `col`, stopping at column 0.
 pub(crate) fn left(line: &str, col: u32, count: u32) -> u32 {
     line[..(col as usize).min(line.len())]
@@ -101,13 +111,17 @@ type Cls = u8;
 
 impl<'a> Walker<'a> {
     fn new(s: &'a BufferSnapshot, from: Point, big: bool) -> Self {
+        let last_row = s.line_count().saturating_sub(1);
+        let row = from.row.min(last_row);
+        let text = line(s, row);
+        let col = clamp_to_char(&text, from.column);
         Walker {
             s,
-            last_row: s.line_count().saturating_sub(1),
+            last_row,
             big,
-            row: from.row,
-            col: from.column as usize,
-            text: line(s, from.row),
+            row,
+            col,
+            text,
         }
     }
 
@@ -294,12 +308,89 @@ pub(crate) fn word_motion(
     cur
 }
 
+/// One of the four find-char motions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FindChar {
+    pub ch: char,
+    pub forward: bool,
+    pub till: bool,
+}
+
+/// The column `count` matches of `find.ch` away on `line`, or `None` when
+/// there are not that many. `repeat` is `;`/`,`: a `till` that would not
+/// move looks one match further.
+pub(crate) fn find_char(
+    line: &str,
+    col: u32,
+    find: FindChar,
+    count: u32,
+    repeat: bool,
+) -> Option<u32> {
+    let col = clamp_to_char(line, col);
+    let search = |count: u32| -> Option<u32> {
+        let hit = if find.forward {
+            let after = col + line[col..].chars().next().map_or(0, char::len_utf8);
+            line[after..]
+                .char_indices()
+                .filter(|&(_, c)| c == find.ch)
+                .nth(count as usize - 1)
+                .map(|(i, _)| after + i)?
+        } else {
+            line[..col]
+                .char_indices()
+                .rev()
+                .filter(|&(_, c)| c == find.ch)
+                .nth(count as usize - 1)
+                .map(|(i, _)| i)?
+        };
+        if !find.till {
+            return Some(hit as u32);
+        }
+        Some(if find.forward {
+            line[..hit].char_indices().next_back().map_or(0, |(i, _)| i)
+        } else {
+            hit + find.ch.len_utf8()
+        } as u32)
+    };
+    let count = count.max(1);
+    let to = search(count)?;
+    if find.till && repeat && to as usize == col {
+        return search(count.saturating_add(1));
+    }
+    Some(to)
+}
+
+/// `count` paragraph boundaries (empty rows) down or up from `row`; the
+/// last or first row when there are fewer. Returns the row and whether it
+/// is a boundary.
+pub(crate) fn paragraph(s: &BufferSnapshot, row: u32, count: u32, down: bool) -> (u32, bool) {
+    let last = s.line_count().saturating_sub(1);
+    let empty = |r: u32| s.line(r).is_empty();
+    let mut row = row.min(last);
+    for _ in 0..count {
+        // Leave the run of empty rows we are in.
+        while empty(row) && if down { row < last } else { row > 0 } {
+            row = if down { row + 1 } else { row - 1 };
+        }
+        loop {
+            if empty(row) {
+                break;
+            }
+            if if down { row == last } else { row == 0 } {
+                return (row, false);
+            }
+            row = if down { row + 1 } else { row - 1 };
+        }
+    }
+    (row, true)
+}
+
 #[cfg(test)]
 mod tests {
     use lucerna_text::Point;
 
     use crate::test_util::{TestView, assert_keys, assert_keys_with, feed_keys};
-    use crate::{Settings, Vim};
+    use crate::{Action, Outcome, Settings, Vim};
 
     #[test]
     fn l_stops_at_last_char() {
@@ -548,5 +639,298 @@ mod tests {
     #[test]
     fn w_stays_put_at_end_of_file() {
         assert_keys("ab\nc|d", "w", "ab\nc|d");
+    }
+
+    /// `n` rows `x`, the cursor `|` at the start of row `at`.
+    fn rows(n: usize, at: usize) -> String {
+        (0..n)
+            .map(|r| if r == at { "|x" } else { "x" })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // The text of VSCodeVim's "paragraph motion" test.
+    const PARA: &str = "this text has\n\nmany\nparagraphs\n\n\nin it.\n\nWOW";
+
+    fn para_at(row: usize, col: usize) -> String {
+        let mut out = String::new();
+        for (r, l) in PARA.split('\n').enumerate() {
+            if r > 0 {
+                out.push('\n');
+            }
+            if r == row {
+                out.push_str(&l[..col]);
+                out.push('|');
+                out.push_str(&l[col..]);
+            } else {
+                out.push_str(l);
+            }
+        }
+        out
+    }
+
+    fn settings(f: impl FnOnce(&mut Settings)) -> Settings {
+        let mut s = Settings::default();
+        f(&mut s);
+        s
+    }
+
+    // Adapted from VSCodeVim motions.test.ts: "[count]gg (startofline=true), count greater than last line"
+    #[test]
+    fn count_gg_clamps_to_last_row_at_first_non_blank() {
+        assert_keys(
+            " 123456\n 123|456\n 123456",
+            "9gg",
+            " 123456\n 123456\n |123456",
+        );
+        assert_keys(
+            " 123456\n 123|456\n 123456",
+            "gg",
+            " |123456\n 123456\n 123456",
+        );
+        assert_keys("a\nb\n|c", "2gg", "a\n|b\nc");
+        assert_keys("|a\nb\n c", "G", "a\nb\n |c");
+        assert_keys("|a\nb\nc", "2G", "a\n|b\nc");
+    }
+
+    // Adapted from VSCodeVim motions.test.ts: "[count]G (startofline=false)"
+    #[test]
+    fn count_g_keeps_goal_without_startofline() {
+        assert_keys_with(
+            settings(|s| s.startofline = false),
+            |_| {},
+            " 123456\n 123|456\n 123456",
+            "1G",
+            " 123|456\n 123456\n 123456",
+        );
+        assert_keys_with(
+            settings(|s| s.startofline = false),
+            |_| {},
+            " 123|456\n 123456\n 123456",
+            "gg",
+            " 123|456\n 123456\n 123456",
+        );
+    }
+
+    #[test]
+    fn percent_with_count_goes_to_line_percentage() {
+        let start = format!("|{}", "x\n".repeat(9) + "x");
+        let mut want: Vec<String> = vec!["x".into(); 10];
+        want[4] = "|x".into();
+        assert_keys(&start, "50%", &want.join("\n"));
+        want[4] = "x".into();
+        want[9] = "|x".into();
+        assert_keys(&start, "100%", &want.join("\n"));
+        want[9] = "x".into();
+        want[0] = "|x".into();
+        assert_keys(&start, "1%", &want.join("\n"));
+    }
+
+    // Adapted from VSCodeVim motions.test.ts: "Can handle 'f' then ','"
+    #[test]
+    fn find_and_reverse_repeat() {
+        assert_keys("text tex|t", "fe,", "text t|ext");
+        assert_keys("|a a a a a", "fa;;;,,,", "a |a a a a");
+    }
+
+    // Adapted from VSCodeVim motions.test.ts: "Can handle 't' twice"
+    #[test]
+    fn till_twice_does_not_jump() {
+        assert_keys("text tex|t", "^tttt", "te|xt text");
+    }
+
+    // Adapted from VSCodeVim motions.test.ts: "Can handle 'T' twice"
+    #[test]
+    fn till_backward_twice_does_not_jump() {
+        assert_keys("text tex|t", "$TtTt", "text t|ext");
+    }
+
+    // Adapted from VSCodeVim repeatableMovement.test.ts: "repeat t"
+    #[test]
+    fn semicolon_after_till_skips_adjacent_match() {
+        assert_keys("|abc abc abc", "tc;", "abc a|bc abc");
+        assert_keys("abc abc ab|c", "Tc;", "abc| abc abc");
+    }
+
+    #[test]
+    fn find_with_count_and_no_match() {
+        assert_keys("|a-a-a-a", "2f-", "a-a|-a-a");
+        assert_keys("|abc", "fz", "|abc");
+        assert_keys("|abc", "5fc", "|abc");
+        assert_keys("a|bc", "Fa", "|abc");
+    }
+
+    #[test]
+    fn find_matches_whole_chars() {
+        assert_keys("|Xin chào thế", "fế", "Xin chào th|ế");
+        assert_keys("Xin chào |thế", "fế", "Xin chào th|ế");
+        assert_keys("Xin chào thế|", "Fà", "Xin ch|ào thế");
+    }
+
+    #[test]
+    fn find_reports_no_jump_and_pending() {
+        let view = TestView::new("|acbc");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "2f");
+        assert_eq!(vim.pending(), "2f");
+        let out = feed_keys(&mut vim, &view, "c");
+        assert_eq!(
+            out,
+            vec![Outcome::Handled(vec![Action::CursorMoved { jump: false }])]
+        );
+    }
+
+    #[test]
+    fn jumps_report_jump_true() {
+        let view = TestView::new("|a\nb\nc");
+        let mut vim = Vim::new(view.cursor);
+        assert_eq!(
+            feed_keys(&mut vim, &view, "G"),
+            vec![Outcome::Handled(vec![Action::CursorMoved { jump: true }])]
+        );
+        assert_eq!(
+            feed_keys(&mut vim, &view, "gg"),
+            vec![
+                Outcome::Handled(vec![]),
+                Outcome::Handled(vec![Action::CursorMoved { jump: true }])
+            ]
+        );
+    }
+
+    // Adapted from VSCodeVim matchingBracket.test.ts: "% matches the nearest bracket"
+    #[test]
+    fn percent_matches_brackets() {
+        assert_keys("|one (two)", "%", "one (two|)");
+        assert_keys("((( ))|)", "%", "|((( )))");
+        assert_keys("|foo->bar(baz);", "%", "foo->bar(baz|);");
+        assert_keys("|foo bar", "%", "|foo bar");
+        assert_keys("|foo (bar", "%", "|foo (bar");
+    }
+
+    // Adapted from VSCodeVim motion.test.ts: "paragraph motion"
+    #[test]
+    fn paragraph_motion() {
+        assert_keys(&para_at(2, 0), "}", &para_at(4, 0));
+        assert_keys(&para_at(4, 0), "}", &para_at(7, 0));
+        assert_keys(&para_at(7, 0), "}", &para_at(8, 2));
+        assert_keys(&para_at(5, 0), "{", &para_at(1, 0));
+        assert_keys(&para_at(2, 2), "{", &para_at(1, 0));
+        assert_keys(&para_at(1, 0), "{", &para_at(0, 0));
+        assert_keys(&para_at(8, 1), "2{", &para_at(5, 0));
+        assert_keys(&para_at(0, 3), "2}", &para_at(4, 0));
+    }
+
+    #[test]
+    fn paragraph_motion_treats_blank_rows_as_text() {
+        assert_keys("|a\n  \nb\n\nc", "}", "a\n  \nb\n|\nc");
+    }
+
+    #[test]
+    fn motions_survive_a_cursor_past_the_line() {
+        let view = TestView::new("é|b\nxy");
+        for column in [0, 1, 5, 99] {
+            let mut vim = Vim::new(Point { row: 0, column });
+            let mut globals = crate::VimGlobals::default();
+            for k in crate::test_util::parse_keys("wbegefxtxFx%{}HML") {
+                vim.feed(k, &view, &mut globals, &Settings::default());
+            }
+        }
+        let s = lucerna_text::Buffer::from_bytes("é a".as_bytes(), false)
+            .unwrap()
+            .snapshot();
+        let p = super::word_motion(
+            &s,
+            Point { row: 9, column: 1 },
+            super::WordMotion::NextStart,
+            false,
+            1,
+        );
+        assert_eq!(p.row, 0);
+    }
+
+    #[test]
+    fn screen_rows_in_view() {
+        let setup = |top: u32, vis: u32| {
+            move |v: &mut TestView| {
+                v.top_row = top;
+                v.visible_rows = vis;
+            }
+        };
+        assert_keys_with(
+            Settings::default(),
+            setup(10, 20),
+            &rows(40, 0),
+            "3H",
+            &rows(40, 12),
+        );
+        assert_keys_with(
+            settings(|s| s.scrolloff = 2),
+            setup(10, 20),
+            &rows(40, 0),
+            "L",
+            &rows(40, 27),
+        );
+        assert_keys_with(
+            settings(|s| s.scrolloff = 2),
+            setup(10, 20),
+            &rows(40, 0),
+            "H",
+            &rows(40, 12),
+        );
+        // No margin at the file top or bottom.
+        assert_keys_with(
+            settings(|s| s.scrolloff = 2),
+            setup(0, 20),
+            &rows(40, 30),
+            "H",
+            &rows(40, 0),
+        );
+        assert_keys_with(
+            settings(|s| s.scrolloff = 2),
+            setup(20, 20),
+            &rows(40, 0),
+            "L",
+            &rows(40, 39),
+        );
+        assert_keys_with(
+            Settings::default(),
+            setup(0, 0),
+            &rows(40, 39),
+            "L",
+            &rows(40, 29),
+        );
+        assert_keys_with(
+            Settings::default(),
+            setup(0, 30),
+            &rows(5, 0),
+            "M",
+            &rows(5, 2),
+        );
+        assert_keys_with(
+            Settings::default(),
+            setup(0, 30),
+            &rows(5, 0),
+            "L",
+            &rows(5, 4),
+        );
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn screen_rows_skip_folded_rows() {
+        let setup = |v: &mut TestView| v.hidden = vec![1..3];
+        assert_keys_with(Settings::default(), setup, &rows(6, 0), "2H", &rows(6, 3));
+    }
+
+    #[test]
+    fn screen_rows_honor_startofline() {
+        assert_keys_with(Settings::default(), |_| {}, "|a\n  b", "L", "a\n  |b");
+        assert_keys_with(
+            settings(|s| s.startofline = false),
+            |_| {},
+            "ab|c\n  def",
+            "L",
+            "abc\n  |def",
+        );
     }
 }

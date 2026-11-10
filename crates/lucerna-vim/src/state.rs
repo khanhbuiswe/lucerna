@@ -3,7 +3,8 @@
 use lucerna_text::{BufferSnapshot, Point};
 
 use crate::classify::{display_col, last_char_col, line};
-use crate::motion::{self, Goal, WordMotion};
+use crate::motion::{self, FindChar, Goal, WordMotion};
+use crate::scroll::{self, Screen};
 use crate::{Action, Key, Mode, Outcome, Settings, ViewInfo};
 
 /// The largest count; more digits are ignored.
@@ -11,7 +12,10 @@ const MAX_COUNT: u32 = 99_999;
 
 /// State shared by every view of one workbench.
 #[derive(Debug, Default)]
-pub struct VimGlobals {}
+pub struct VimGlobals {
+    /// The last `f`/`F`/`t`/`T`, for `;` and `,`.
+    pub(crate) last_find: Option<FindChar>,
+}
 
 /// The vim state of one view.
 #[derive(Debug, Clone)]
@@ -97,8 +101,8 @@ impl Vim {
         &mut self,
         key: Key,
         view: &dyn ViewInfo,
-        _globals: &mut VimGlobals,
-        _settings: &Settings,
+        globals: &mut VimGlobals,
+        settings: &Settings,
     ) -> Outcome {
         match key {
             Key::Escape => self.escape(),
@@ -110,7 +114,7 @@ impl Vim {
                 let n = self.take_count();
                 self.next_line_start(view, n)
             }
-            Key::Char(c) => self.char(c, view),
+            Key::Char(c) => self.char(c, view, globals, settings),
         }
     }
 
@@ -126,7 +130,13 @@ impl Vim {
         }
     }
 
-    fn char(&mut self, c: char, view: &dyn ViewInfo) -> Outcome {
+    fn char(
+        &mut self,
+        c: char,
+        view: &dyn ViewInfo,
+        globals: &mut VimGlobals,
+        settings: &Settings,
+    ) -> Outcome {
         if self.prefix.is_none()
             && let Some(d) = c.to_digit(10)
             && (d != 0 || self.count.is_some())
@@ -136,15 +146,29 @@ impl Vim {
             self.pending = self.count.unwrap_or_default().to_string();
             return Outcome::Handled(vec![]);
         }
-        if self.prefix.is_none() && c == 'g' {
-            self.prefix = Some('g');
-            self.pending = format!("{}g", self.count.map_or(String::new(), |n| n.to_string()));
+        if self.prefix.is_none() && matches!(c, 'g' | 'f' | 'F' | 't' | 'T') {
+            self.prefix = Some(c);
+            self.pending = format!("{}{c}", self.count.map_or(String::new(), |n| n.to_string()));
             return Outcome::Handled(vec![]);
         }
         let prefix = self.prefix;
+        let explicit = self.count;
         let n = self.take_count();
+        if let Some(p @ ('f' | 'F' | 't' | 'T')) = prefix {
+            let find = FindChar {
+                ch: c,
+                forward: matches!(p, 'f' | 't'),
+                till: matches!(p, 't' | 'T'),
+            };
+            globals.last_find = Some(find);
+            return self.find(view, find, n, false);
+        }
         if prefix == Some('g') {
             return match c {
+                'g' => {
+                    let row = explicit.map_or(0, |n| n - 1);
+                    self.go_to_row(view, row, settings.startofline, true)
+                }
                 'e' => self.word(view, WordMotion::PrevEnd, false, n),
                 'E' => self.word(view, WordMotion::PrevEnd, true, n),
                 _ => Outcome::Handled(vec![]),
@@ -181,7 +205,106 @@ impl Vim {
             'B' => self.word(view, WordMotion::PrevStart, true, n),
             'e' => self.word(view, WordMotion::NextEnd, false, n),
             'E' => self.word(view, WordMotion::NextEnd, true, n),
+            'G' => {
+                let row = explicit.map_or(u32::MAX, |n| n - 1);
+                self.go_to_row(view, row, settings.startofline, true)
+            }
+            '%' => match explicit {
+                Some(n) if n <= 100 => {
+                    let lines = u64::from(snapshot.line_count());
+                    let row = (u64::from(n) * lines).div_ceil(100).saturating_sub(1) as u32;
+                    self.go_to_row(view, row, true, true)
+                }
+                Some(_) => Outcome::Handled(vec![]),
+                None => self.matching_bracket(view),
+            },
+            '}' | '{' => {
+                let down = c == '}';
+                let (row, boundary) = motion::paragraph(snapshot, row, n, down);
+                let to = if boundary {
+                    Point { row, column: 0 }
+                } else if down {
+                    Point {
+                        row,
+                        column: last_char_col(&line(snapshot, row)),
+                    }
+                } else {
+                    Point { row: 0, column: 0 }
+                };
+                self.move_to_jump(to, None, true)
+            }
+            'H' | 'M' | 'L' => {
+                let which = match c {
+                    'H' => Screen::Top,
+                    'M' => Screen::Middle,
+                    _ => Screen::Bottom,
+                };
+                let row = scroll::screen_row(view, which, n, settings.scrolloff);
+                self.go_to_row(view, row, settings.startofline, true)
+            }
+            ';' | ',' => {
+                let Some(mut find) = globals.last_find else {
+                    return Outcome::Handled(vec![]);
+                };
+                if c == ',' {
+                    find.forward = !find.forward;
+                }
+                self.find(view, find, n, true)
+            }
             _ => Outcome::Handled(vec![]),
+        }
+    }
+
+    fn find(&mut self, view: &dyn ViewInfo, find: FindChar, n: u32, repeat: bool) -> Outcome {
+        let text = line(view.snapshot(), self.cursor.row);
+        match motion::find_char(&text, self.cursor.column, find, n, repeat) {
+            Some(column) => self.move_horizontal(Point {
+                row: self.cursor.row,
+                column,
+            }),
+            None => Outcome::Handled(vec![]),
+        }
+    }
+
+    /// `%` without a count: the bracket at or after the cursor, and its
+    /// partner.
+    fn matching_bracket(&mut self, view: &dyn ViewInfo) -> Outcome {
+        let snapshot = view.snapshot();
+        let text = line(snapshot, self.cursor.row);
+        let from = self.cursor.column as usize;
+        let Some(at) = text[from..].find(['(', ')', '[', ']', '{', '}']) else {
+            return Outcome::Handled(vec![]);
+        };
+        let offset = snapshot.point_to_offset(Point {
+            row: self.cursor.row,
+            column: (from + at) as u32,
+        });
+        match view.matching_bracket(offset) {
+            Some(partner) => {
+                let to = snapshot.offset_to_point(partner);
+                self.move_to_jump(to, None, true)
+            }
+            None => Outcome::Handled(vec![]),
+        }
+    }
+
+    /// Jumps to `row` (clamped): the first non-blank with `startofline`,
+    /// otherwise the goal column.
+    fn go_to_row(
+        &mut self,
+        view: &dyn ViewInfo,
+        row: u32,
+        startofline: bool,
+        jump: bool,
+    ) -> Outcome {
+        let snapshot = view.snapshot();
+        let row = row.min(snapshot.line_count().saturating_sub(1));
+        if startofline {
+            let column = motion::first_non_blank(&line(snapshot, row));
+            self.move_to_jump(Point { row, column }, None, jump)
+        } else {
+            let (column, goal) = self.goal_column(view, row);
+            self.move_to_jump(Point { row, column }, Some(goal), jump)
         }
     }
 
@@ -205,14 +328,19 @@ impl Vim {
         if row == self.cursor.row {
             return Outcome::Handled(vec![]);
         }
+        let (column, goal) = self.goal_column(view, row);
+        self.move_to(Point { row, column }, Some(goal))
+    }
+
+    /// The column on `row` that keeps the goal column, and that goal.
+    fn goal_column(&self, view: &dyn ViewInfo, row: u32) -> (u32, Goal) {
         let tab = view.tab_size();
         let snapshot = view.snapshot();
         let goal = self.goal.unwrap_or_else(|| {
             let here = line(snapshot, self.cursor.row);
             Goal::Display(display_col(&here, self.cursor.column, tab))
         });
-        let column = motion::col_for_goal(&line(snapshot, row), goal, tab);
-        self.move_to(Point { row, column }, Some(goal))
+        (motion::col_for_goal(&line(snapshot, row), goal, tab), goal)
     }
 
     fn move_horizontal(&mut self, to: Point) -> Outcome {
@@ -220,12 +348,16 @@ impl Vim {
     }
 
     fn move_to(&mut self, to: Point, goal: Option<Goal>) -> Outcome {
+        self.move_to_jump(to, goal, false)
+    }
+
+    fn move_to_jump(&mut self, to: Point, goal: Option<Goal>, jump: bool) -> Outcome {
         self.goal = goal;
         if to == self.cursor {
             return Outcome::Handled(vec![]);
         }
         self.cursor = to;
-        Outcome::Handled(vec![Action::CursorMoved { jump: false }])
+        Outcome::Handled(vec![Action::CursorMoved { jump }])
     }
 
     /// The count typed so far (1 if none), clearing the pending keys.
