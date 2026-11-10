@@ -120,6 +120,9 @@ struct RowStyle {
     gutter: Pixels,
 }
 
+/// The most query characters the tab title shows.
+const TITLE_MAX_CHARS: usize = 30;
+
 impl SearchView {
     pub fn new(
         root: PathBuf,
@@ -176,10 +179,20 @@ impl SearchView {
     }
 
     /// The Search tab's title: the query; `None` (the tab says "Search")
-    /// while it is empty.
+    /// while it is empty. Long queries are cut to [`TITLE_MAX_CHARS`]
+    /// characters plus "…" so one cannot widen the tab; the saved query
+    /// is untouched.
     pub fn title(&self, cx: &App) -> Option<SharedString> {
         let query = self.query.read(cx).text();
-        (!query.trim().is_empty()).then(|| query.to_owned().into())
+        if query.trim().is_empty() {
+            return None;
+        }
+        let mut chars = query.chars();
+        let mut title: String = chars.by_ref().take(TITLE_MAX_CHARS).collect();
+        if chars.next().is_some() {
+            title.push('…');
+        }
+        Some(title.into())
     }
 
     /// The inputs and toggles, as saved with the workspace.
@@ -455,6 +468,7 @@ impl SearchView {
     /// Stops the running search and searches again once the inputs have
     /// been still for [`SEARCH_DEBOUNCE`].
     fn inputs_changed(&mut self, cx: &mut Context<Self>) {
+        // The workbench observes this view to follow the query in the tab title.
         cx.notify();
         if self.restore_changes > 0 {
             self.restore_changes -= 1;

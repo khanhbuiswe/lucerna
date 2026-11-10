@@ -1152,3 +1152,24 @@ fn restored_query_without_search_tab_does_not_search(cx: &mut TestAppContext) {
     assert!(files(&view, cx).is_empty());
     assert_eq!(query(&view, cx), "needle");
 }
+
+#[gpui::test]
+fn long_query_is_cut_in_the_tab_title(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = needles();
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    let long = "é".repeat(45);
+    type_text(&long, cx);
+    let expected = format!("{}…", "é".repeat(30));
+    assert_eq!(tab_title(&wb, cx), Some(expected));
+    assert_eq!(
+        query(&search(&wb, cx), cx),
+        long,
+        "the query itself is whole"
+    );
+    let exact = "x".repeat(30);
+    keys("cmd-a backspace", cx);
+    type_text(&exact, cx);
+    assert_eq!(tab_title(&wb, cx), Some(exact), "30 characters are not cut");
+}
