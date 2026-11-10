@@ -14,8 +14,8 @@ use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::future::{self, Either};
 use gpui::{
-    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, PathPromptOptions, WindowHandle,
-    actions, px, size,
+    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, PathPromptOptions, WindowBounds,
+    WindowHandle, actions, px, size,
 };
 use gpui_platform::application;
 use lucerna_extension::store::Store;
@@ -208,8 +208,12 @@ fn open_workbench(launch: Launch, cx: &mut App) -> Option<WindowHandle<Workbench
         on_first_frame,
     } = launch;
     watch_config(ConfigPaths::for_root(&root), cx);
+    // Open zoomed to fill the screen (what double-clicking the title bar does
+    // on macOS). The windowed size is what un-zooming returns to.
     let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);
-    let opened = cx.open_window(window_options(bounds), |window, cx| {
+    let mut options = window_options(bounds);
+    options.window_bounds = Some(WindowBounds::Maximized(bounds));
+    let opened = cx.open_window(options, |window, cx| {
         let workbench = cx.new(|cx| match (&file, default_data_dir()) {
             (Some(file), data_dir) if single_file => {
                 Workbench::single_file(root, file, data_dir, window, cx)
