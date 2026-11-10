@@ -3356,6 +3356,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucerna-vim"
+version = "0.1.0"
+dependencies = [
+ "lucerna-text",
+]
+
+[[package]]
 name = "lucerna-workbench"
 version = "0.1.0"
 dependencies = [
