@@ -556,3 +556,35 @@ fn reload_before_any_key_moves_marks(cx: &mut TestAppContext) {
     keys("` a", cx);
     assert_eq!(cursor(&view, cx), pt(4, 0));
 }
+
+#[gpui::test]
+fn reload_of_cursor_row_keeps_view_cursor_on_vim_cursor(cx: &mut TestAppContext) {
+    let text = "a\nb\nc\nd\n";
+    let (wb, view, cx) = vim_file(text, cx);
+    keys("j j", cx);
+    // An agent edits the cursor's line: the view drops its selection
+    // there, and takes vim's cursor instead of falling back to (0,0).
+    reload(&view, text, "a\nb\nC!\nd\n", cx);
+    assert_eq!(overlay(&view, cx), Some(pt(2, 0)));
+    assert_eq!(Some(cursor(&view, cx)), overlay(&view, cx));
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    keys("k", cx);
+    assert_eq!(cursor(&view, cx), pt(1, 0));
+}
+
+#[gpui::test]
+fn reload_keeps_a_mouse_selection_on_unchanged_rows(cx: &mut TestAppContext) {
+    let text = "abc\ndef\nghi\n";
+    let (wb, view, cx) = vim_file(text, cx);
+    keys("j", cx);
+    // A selection made outside vim, as the mouse does.
+    view.update(cx, |v, cx| v.select(pt(0, 1)..pt(1, 2), cx));
+    draw(cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    reload(&view, text, "new\nabc\ndef\nghi\n", cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.selection()),
+        Some(pt(1, 1)..pt(2, 2))
+    );
+    assert_eq!(overlay(&view, cx), Some(pt(2, 2)));
+}

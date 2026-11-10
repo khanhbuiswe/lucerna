@@ -308,11 +308,19 @@ impl VimLayer {
         }
         state.vim.clamp(snapshot);
         if state.vim.mode() == Mode::Normal {
-            // The view moved its own selection the same way; a selection
-            // made with the mouse stays.
-            state.generation = v.selection_generation();
+            // A selection the view kept (its rows did not change) moved
+            // the same way as the cursor and stays: it may be one made with
+            // the mouse. A dropped one is replaced by vim's cursor, so the
+            // view's cursor (status bar, find) matches the block cursor.
             let at = state.vim.cursor();
-            view.update(cx, |v, cx| v.set_cursor_overlay(Some(block_cursor(at)), cx));
+            let kept = v.selection().is_some();
+            state.generation = view.update(cx, |v, cx| {
+                if !kept {
+                    v.select(at..at, cx);
+                }
+                v.set_cursor_overlay(Some(block_cursor(at)), cx);
+                v.selection_generation()
+            });
         } else {
             self.sync_view(&view, Reveal::None, cx);
         }
