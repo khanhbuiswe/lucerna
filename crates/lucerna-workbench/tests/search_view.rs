@@ -1234,6 +1234,39 @@ fn nav_buttons_step_inside_the_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn enter_in_query_steps_through_matches(cx: &mut TestAppContext) {
+    // As in Zed: once results are current, `Enter` / `Shift+Enter` in the
+    // query move to the next / previous match inside the tab.
+    let (_dir, wb, view, cx) = searched(cx);
+    assert_eq!(match_label(&view, cx), "4 results");
+    keys("enter", cx);
+    assert_eq!(match_label(&view, cx), "1/4");
+    keys("enter", cx);
+    assert_eq!(match_label(&view, cx), "2/4");
+    keys("shift-enter", cx);
+    assert_eq!(match_label(&view, cx), "1/4");
+    keys("shift-enter", cx);
+    assert_eq!(match_label(&view, cx), "4/4", "wraps");
+    assert_eq!(active_item(&wb, cx), Some(TabItem::Search));
+    assert_eq!(files(&view, cx).len(), 3, "results kept, no new search");
+}
+
+#[gpui::test]
+fn enter_with_a_pending_edit_searches_now(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = searched(cx);
+    keys("enter", cx);
+    assert_eq!(match_label(&view, cx), "1/4");
+    type_text("x", cx);
+    keys("enter", cx);
+    settle_search(cx);
+    assert!(
+        files(&view, cx).is_empty(),
+        "\"needlex\" was searched at once"
+    );
+    assert_eq!(view.read_with(cx, |v, _| v.selected()), None);
+}
+
+#[gpui::test]
 fn enter_after_nav_opens_the_selected_match(cx: &mut TestAppContext) {
     let (dir, wb, view, cx) = searched(cx);
     click("search-next", cx);

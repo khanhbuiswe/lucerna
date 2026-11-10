@@ -105,6 +105,9 @@ pub struct SearchView {
     scale_factor: f32,
     /// The query the shown results came from.
     last_query: Option<SearchQuery>,
+    /// The inputs changed since the last search started (a debounced
+    /// search is still waiting): `Enter` searches instead of stepping.
+    stale: bool,
     /// Bumped by every change; events of older searches are dropped.
     generation: u64,
     cancel: Arc<AtomicBool>,
@@ -189,6 +192,7 @@ impl SearchView {
             pattern_error: false,
             scale_factor: 1.,
             last_query: None,
+            stale: false,
             generation: 0,
             cancel: Arc::new(AtomicBool::new(false)),
             _debounce: Task::ready(()),
@@ -732,6 +736,7 @@ impl SearchView {
             return;
         }
         self.cancel_search();
+        self.stale = true;
         self._debounce = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SEARCH_DEBOUNCE).await;
             this.update(cx, |view, cx| view.run_search(cx)).ok();
@@ -752,6 +757,7 @@ impl SearchView {
             return;
         }
         self._debounce = Task::ready(());
+        self.stale = false;
         self.cancel_search();
         self.results.clear();
         self.sync_list(cx);
@@ -1035,12 +1041,21 @@ impl SearchView {
 
     fn query_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let m = &ev.keystroke.modifiers;
-        if m.platform || m.control || m.alt || m.shift {
+        if m.platform || m.control || m.alt {
             return;
         }
-        match ev.keystroke.key.as_str() {
-            "enter" => self.run_search(cx),
-            "escape" => {
+        match (ev.keystroke.key.as_str(), m.shift) {
+            // As in Zed: `Enter` / `Shift+Enter` step to the next or
+            // previous match inside the tab once the results are current;
+            // with a change still waiting, `Enter` searches now.
+            ("enter", shift) => {
+                if self.stale || !self.searched {
+                    self.run_search(cx);
+                } else {
+                    self.step_match(!shift, cx);
+                }
+            }
+            ("escape", false) => {
                 window.focus(&self.list_focus.clone(), cx);
             }
             _ => return,
