@@ -29,8 +29,8 @@ Chi tiết ở `docs/research/2026-11-10-project-search-ui.md`. Tóm tắt:
 ### 3.1 `lucerna-project::search`: trả về excerpt
 - `SearchQuery` thêm `context_lines: u32`.
 - `SearchEvent::File` đổi thành `{ path, excerpts: Vec<Excerpt> }`, trong đó:
-  - `Excerpt { lines: Vec<ExcerptLine> }`, các dòng liên tiếp;
-  - `ExcerptLine { line_number: u32, text: String, ranges: Vec<Range<usize>> }`; `ranges` rỗng nghĩa là dòng ngữ cảnh.
+  - `Excerpt { lines: Vec<LineMatch> }`, các dòng liên tiếp (dùng lại `LineMatch { line_number, line_text, ranges }` có sẵn);
+  - dòng có `ranges` rỗng là dòng ngữ cảnh.
 - Dùng `before_context`/`after_context` của `grep-searcher`. Hai cụm khớp có ngữ cảnh chồng hoặc kề nhau thì gộp thành một excerpt.
 - `MAX_RESULTS` (20.000) vẫn đếm **dòng khớp**, không đếm dòng ngữ cảnh. `MAX_LINE_CHARS` áp cho cả dòng ngữ cảnh.
 - `build_pattern`, hủy qua `AtomicBool`, stream theo file: giữ nguyên.
@@ -51,7 +51,7 @@ Module mới trong `lucerna-workbench`, chia nhỏ:
 - Khi `uniform_list` render một khoảng hàng, view biết những file nào đang hiện. File nào chưa có highlight và chưa được yêu cầu thì đưa vào hàng đợi.
 - Tối đa **3** tác vụ nền cùng lúc. Mỗi tác vụ: đọc file (bỏ qua nếu vượt `check_size` hoặc lớn hơn 2 MB), dựng `BufferSnapshot`, chọn ngôn ngữ (`language_for_file`), `SyntaxState::new` + `parse(None)`, rồi gọi `highlights` cho các khoảng dòng của excerpt.
 - Kết quả: với mỗi dòng excerpt, danh sách `(Range<usize> trong dòng, capture)`. Span được cắt theo biên dòng và theo `MAX_LINE_CHARS`.
-- **Chống lệch:** nếu text dòng trên đĩa khác `ExcerptLine::text` (file đã đổi) thì dòng đó không có highlight.
+- **Chống lệch:** nếu text dòng trên đĩa khác `LineMatch::line_text` (file đã đổi) thì dòng đó không có highlight.
 - Kết quả gắn với generation của search; search mới thì bỏ hàng đợi và các kết quả cũ. Lỗi đọc/parse hoặc không có ngôn ngữ: dòng hiện chữ trơn, không báo lỗi.
 - Nếu file đang mở trong `Documents` thì vẫn tự parse (đơn giản hơn; tối ưu để sau).
 
@@ -80,16 +80,16 @@ Module mới trong `lucerna-workbench`, chia nhỏ:
 |---|---|---|
 | `workbench.action.findInFiles` | `cmd+shift+f` | Mở/focus tab Search ở group đang active (đã có thì focus nó ở group đang chứa), focus ô query; nếu editor có chọn trên một dòng thì điền phần chọn. |
 | `workbench.view.search` | — | Như trên. |
-| `toggleSearchCaseSensitive` | `alt+cmd+c` (when `searchViewFocus`) | Đổi case. |
-| `toggleSearchWholeWord` | `alt+cmd+w` (when `searchViewFocus`) | Đổi whole word. |
-| `toggleSearchRegex` | `alt+cmd+r` (when `searchViewFocus`) | Đổi regex. |
-| `workbench.action.search.toggleQueryDetails` | `shift+cmd+j` (when `searchViewFocus`) | Ẩn/hiện hàng filter. |
+| `toggleSearchCaseSensitive` | `alt+cmd+c` (when `searchViewletFocus`) | Đổi case. |
+| `toggleSearchWholeWord` | `alt+cmd+w` (when `searchViewletFocus`) | Đổi whole word. |
+| `toggleSearchRegex` | `alt+cmd+r` (when `searchViewletFocus`) | Đổi regex. |
+| `workbench.action.search.toggleQueryDetails` | `shift+cmd+j` (when `searchViewletFocus`) | Ẩn/hiện hàng filter. |
 | `search.action.focusNextSearchResult` | `f4` | Chọn và mở dòng khớp kế tiếp (vòng lại đầu). |
 | `search.action.focusPreviousSearchResult` | `shift+f4` | Như trên, ngược lại. |
 | `search.action.refreshSearchResults` | — | Chạy lại search. |
 | `search.action.collapseSearchResults` | — | Gập tất cả file. |
 
-- Context key mới `searchViewFocus`: focus nằm trong tab Search.
+- Context key `searchViewletFocus` (tên VS Code, đã có) nay nghĩa là: focus nằm trong tab Search.
 - Trong tab: search chạy khi gõ (debounce 150 ms) và khi nhấn `Enter` ở ô query; `↑`/`↓` đổi dòng chọn; `Enter` ở danh sách mở dòng chọn; `Esc` đổi focus giữa ô query và danh sách.
 - Bấm một dòng: mở file kiểu preview (`OpenMode::Preview`), cuộn tới dòng, bôi chọn chỗ khớp đầu tiên của dòng (tính cột bằng cách khớp lại trên dòng đã giải mã, như panel cũ). Bấm dòng ngữ cảnh: mở ở dòng đó, không bôi chọn. Bấm header: gập/mở.
 - Setting mới: `search.searchEditor.defaultNumberOfContextLines` (số, mặc định 1, kẹp 0–5). `search.exclude` và `files.exclude` vẫn áp dụng như cũ.
