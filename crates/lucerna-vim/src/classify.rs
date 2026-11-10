@@ -11,8 +11,6 @@ pub(crate) enum CharClass {
 
 /// The class of `c`. With `big_word` (`W`, `B`, `E`), punctuation counts
 /// as part of a word.
-// Word motions arrive in a later task; until then only tests call this.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn class(c: char, big_word: bool) -> CharClass {
     if c.is_whitespace() {
         CharClass::Space

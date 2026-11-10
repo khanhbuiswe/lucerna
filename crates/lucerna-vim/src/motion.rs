@@ -2,7 +2,9 @@
 //! and every step is a whole char.
 
 use crate::ViewInfo;
-use crate::classify::{byte_col_for_display, last_char_col};
+use lucerna_text::{BufferSnapshot, Point};
+
+use crate::classify::{CharClass, byte_col_for_display, class, last_char_col, line};
 
 /// The goal column kept by vertical motions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +70,228 @@ pub(crate) fn col_for_goal(line: &str, goal: Goal, tab: u32) -> u32 {
         Goal::Display(d) => byte_col_for_display(line, d, tab),
         Goal::Eol => last_char_col(line),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WordMotion {
+    /// `w`, `W`
+    NextStart,
+    /// `e`, `E`
+    NextEnd,
+    /// `b`, `B`
+    PrevStart,
+    /// `ge`, `gE`
+    PrevEnd,
+}
+
+/// Walks the buffer one char at a time. Every non-empty line has a virtual
+/// position just past its last char (class blank) that stands for the line
+/// break; an empty line has only that position.
+struct Walker<'a> {
+    s: &'a BufferSnapshot,
+    last_row: u32,
+    big: bool,
+    row: u32,
+    col: usize,
+    text: String,
+}
+
+/// Class of a position: 0 blank, 1 punctuation, 2 word.
+type Cls = u8;
+
+impl<'a> Walker<'a> {
+    fn new(s: &'a BufferSnapshot, from: Point, big: bool) -> Self {
+        Walker {
+            s,
+            last_row: s.line_count().saturating_sub(1),
+            big,
+            row: from.row,
+            col: from.column as usize,
+            text: line(s, from.row),
+        }
+    }
+
+    fn point(&self) -> Point {
+        Point {
+            row: self.row,
+            column: self.col as u32,
+        }
+    }
+
+    fn cls(&self) -> Cls {
+        self.text[self.col..]
+            .chars()
+            .next()
+            .map_or(0, |c| match class(c, self.big) {
+                CharClass::Space => 0,
+                CharClass::Punct => 1,
+                CharClass::Word => 2,
+            })
+    }
+
+    fn on_empty_line(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// Steps forward: `Some(false)` within a line, `Some(true)` onto the
+    /// next line (or onto the line-break position), `None` at the end.
+    fn inc(&mut self) -> Option<bool> {
+        if let Some(c) = self.text[self.col..].chars().next() {
+            self.col += c.len_utf8();
+            return Some(self.col >= self.text.len());
+        }
+        if self.row < self.last_row {
+            self.row += 1;
+            self.text = line(self.s, self.row);
+            self.col = 0;
+            return Some(true);
+        }
+        None
+    }
+
+    /// Steps backward, like [`Walker::inc`].
+    fn dec(&mut self) -> Option<bool> {
+        if let Some(c) = self.text[..self.col].chars().next_back() {
+            self.col -= c.len_utf8();
+            return Some(false);
+        }
+        if self.row > 0 {
+            self.row -= 1;
+            self.text = line(self.s, self.row);
+            self.col = self.text.len();
+            return Some(true);
+        }
+        None
+    }
+
+    /// Moves forward while the class is `c`; `false` if the end was hit.
+    fn skip_forward(&mut self, c: Cls) -> bool {
+        while self.cls() == c {
+            if self.inc().is_none() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn next_start(&mut self) {
+        let sclass = self.cls();
+        let last_line = self.row == self.last_row;
+        let Some(_) = self.inc() else { return };
+        if sclass != 0 {
+            while self.cls() == sclass {
+                match self.inc() {
+                    None => return,
+                    Some(crossed) if crossed && last_line => return,
+                    Some(_) => {}
+                }
+            }
+        }
+        while self.cls() == 0 {
+            if self.col == 0 && self.on_empty_line() {
+                break;
+            }
+            match self.inc() {
+                None => return,
+                Some(crossed) if crossed && last_line => return,
+                Some(_) => {}
+            }
+        }
+    }
+
+    fn prev_start(&mut self) {
+        if self.dec().is_none() {
+            return;
+        }
+        while self.cls() == 0 {
+            if self.col == 0 && self.on_empty_line() {
+                return;
+            }
+            if self.dec().is_none() {
+                return;
+            }
+        }
+        let c = self.cls();
+        while self.cls() == c {
+            if self.dec().is_none() {
+                return;
+            }
+        }
+        self.inc();
+    }
+
+    fn next_end(&mut self) {
+        let sclass = self.cls();
+        if self.inc().is_none() {
+            return;
+        }
+        if sclass != 0 && self.cls() == sclass {
+            if !self.skip_forward(sclass) {
+                return;
+            }
+        } else {
+            while self.cls() == 0 {
+                if self.inc().is_none() {
+                    return;
+                }
+            }
+            let c = self.cls();
+            if !self.skip_forward(c) {
+                return;
+            }
+        }
+        self.dec();
+    }
+
+    fn prev_end(&mut self) {
+        let sclass = self.cls();
+        if self.dec().is_none() {
+            return;
+        }
+        if sclass != 0 {
+            while self.cls() == sclass {
+                if self.dec().is_none() {
+                    return;
+                }
+            }
+        }
+        while self.cls() == 0 {
+            if self.col == 0 && self.on_empty_line() {
+                break;
+            }
+            if self.dec().is_none() {
+                return;
+            }
+        }
+    }
+}
+
+/// `count` word motions from `from`. The result is clamped onto a char; a
+/// step that makes no progress ends the loop.
+pub(crate) fn word_motion(
+    s: &BufferSnapshot,
+    from: Point,
+    kind: WordMotion,
+    big: bool,
+    count: u32,
+) -> Point {
+    let mut cur = from;
+    for _ in 0..count {
+        let mut w = Walker::new(s, cur, big);
+        match kind {
+            WordMotion::NextStart => w.next_start(),
+            WordMotion::NextEnd => w.next_end(),
+            WordMotion::PrevStart => w.prev_start(),
+            WordMotion::PrevEnd => w.prev_end(),
+        }
+        let mut next = w.point();
+        next.column = next.column.min(last_char_col(&w.text));
+        if next == cur {
+            break;
+        }
+        cur = next;
+    }
+    cur
 }
 
 #[cfg(test)]
@@ -202,5 +426,127 @@ mod tests {
         assert_keys("a|bc\n  def\nx", "<CR>", "abc\n  |def\nx");
         assert_keys("|a\nb\n  c", "2<CR>", "a\nb\n  |c");
         assert_keys("a\n|b", "<CR>", "a\n|b");
+    }
+
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "w moves to next word"
+    #[test]
+    fn w_moves_to_next_word() {
+        assert_keys("one |two three four", "w", "one two |three four");
+    }
+
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "w stops at punctuation"
+    #[test]
+    fn w_stops_at_punctuation() {
+        assert_keys("one |two,.;/three four", "w", "one two|,.;/three four");
+    }
+
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "w on punctuation jumps over punctuation"
+    #[test]
+    fn w_on_punctuation_jumps_over_punctuation() {
+        assert_keys("one two|,.;/three four", "w", "one two,.;/|three four");
+    }
+
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "w goes over EOL"
+    #[test]
+    fn w_goes_over_eol() {
+        assert_keys("o|ne  \n two three", "w", "one  \n |two three");
+    }
+
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "[count]w"
+    #[test]
+    fn count_w() {
+        assert_keys("|one two three four", "2w", "one two |three four");
+    }
+
+    const CODE: &str = "if (true) {\n  return true;\n} else {\n\n  return false;\n  \n} // endif";
+
+    /// Runs `keys` on CODE from (row, col) and returns the end (row, col).
+    #[track_caller]
+    fn from_code(start: (u32, u32), keys: &str) -> (u32, u32) {
+        let view = TestView::new(&format!("|{CODE}"));
+        let mut vim = Vim::new(Point {
+            row: start.0,
+            column: start.1,
+        });
+        feed_keys(&mut vim, &view, keys);
+        (vim.cursor().row, vim.cursor().column)
+    }
+
+    // Adapted from VSCodeVim test/motion.test.ts: "last word should move to next line"
+    #[test]
+    fn w_last_word_moves_to_next_line() {
+        assert_eq!(from_code((0, 10), "w"), (1, 2));
+    }
+
+    // Adapted from VSCodeVim test/motion.test.ts: "stops on empty line"
+    #[test]
+    fn w_stops_on_empty_line() {
+        assert_eq!(from_code((2, 7), "w"), (3, 0));
+    }
+
+    // Adapted from VSCodeVim test/motion.test.ts: "skips whitespace only line"
+    #[test]
+    fn w_skips_whitespace_only_line() {
+        assert_eq!(from_code((4, 14), "w"), (6, 0));
+    }
+
+    // Adapted from VSCodeVim test/motion.test.ts: "last word on last line should go to end of document"
+    #[test]
+    fn w_last_word_clamps_to_last_char() {
+        assert_eq!(from_code((6, 6), "w"), (6, 9));
+        assert_eq!(from_code((6, 6), "5w"), (6, 9));
+    }
+
+    #[test]
+    fn b_e_big_word_on_code() {
+        assert_eq!(from_code((6, 0), "b"), (4, 14));
+        assert_eq!(from_code((2, 7), "e"), (4, 7));
+        assert_eq!(from_code((0, 3), "W"), (0, 10));
+        assert_eq!(from_code((0, 4), "E"), (0, 8));
+    }
+
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'ge' in multiple lines case2"
+    #[test]
+    fn ge_across_lines_reaches_start() {
+        assert_keys(
+            "one two\nthree\nfour fiv|e",
+            "gegegegege",
+            "|one two\nthree\nfour five",
+        );
+    }
+
+    #[test]
+    fn ge_and_big_ge() {
+        assert_keys("one two\nthr|ee", "ge", "one tw|o\nthree");
+        assert_keys("a.b c|d", "gE", "a.|b cd");
+        assert_keys("a.b c|d", "2ge", "a|.b cd");
+        assert_keys("one two\nthr|ee", "2ge", "one tw|o\nthree");
+    }
+
+    #[test]
+    fn ge_stops_on_empty_line() {
+        assert_keys("a\n\nb|c", "ge", "a\n|\nbc");
+    }
+
+    #[test]
+    fn vietnamese_words() {
+        assert_keys("|Xin chào thế giới", "w", "Xin |chào thế giới");
+        assert_keys("|Xin chào thế giới", "ww", "Xin chào |thế giới");
+        assert_keys("|Xin chào", "e", "Xi|n chào");
+    }
+
+    #[test]
+    fn emoji_is_punctuation() {
+        assert_keys("a|😀b c", "w", "a😀|b c");
+    }
+
+    #[test]
+    fn big_b_treats_punctuation_as_word() {
+        assert_keys("a.b |c", "B", "|a.b c");
+    }
+
+    #[test]
+    fn w_stays_put_at_end_of_file() {
+        assert_keys("ab\nc|d", "w", "ab\nc|d");
     }
 }

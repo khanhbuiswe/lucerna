@@ -3,7 +3,7 @@
 use lucerna_text::{BufferSnapshot, Point};
 
 use crate::classify::{display_col, last_char_col, line};
-use crate::motion::{self, Goal};
+use crate::motion::{self, Goal, WordMotion};
 use crate::{Action, Key, Mode, Outcome, Settings, ViewInfo};
 
 /// The largest count; more digits are ignored.
@@ -25,6 +25,8 @@ pub struct Vim {
     /// The pending keys, for the indicator.
     pending: String,
     count: Option<u32>,
+    /// The first key of a two-key command, e.g. `g`.
+    prefix: Option<char>,
 }
 
 impl Vim {
@@ -36,6 +38,7 @@ impl Vim {
             anchor: cursor,
             pending: String::new(),
             count: None,
+            prefix: None,
         }
     }
 
@@ -124,7 +127,8 @@ impl Vim {
     }
 
     fn char(&mut self, c: char, view: &dyn ViewInfo) -> Outcome {
-        if let Some(d) = c.to_digit(10)
+        if self.prefix.is_none()
+            && let Some(d) = c.to_digit(10)
             && (d != 0 || self.count.is_some())
         {
             let count = self.count.unwrap_or(0).saturating_mul(10).saturating_add(d);
@@ -132,7 +136,20 @@ impl Vim {
             self.pending = self.count.unwrap_or_default().to_string();
             return Outcome::Handled(vec![]);
         }
+        if self.prefix.is_none() && c == 'g' {
+            self.prefix = Some('g');
+            self.pending = format!("{}g", self.count.map_or(String::new(), |n| n.to_string()));
+            return Outcome::Handled(vec![]);
+        }
+        let prefix = self.prefix;
         let n = self.take_count();
+        if prefix == Some('g') {
+            return match c {
+                'e' => self.word(view, WordMotion::PrevEnd, false, n),
+                'E' => self.word(view, WordMotion::PrevEnd, true, n),
+                _ => Outcome::Handled(vec![]),
+            };
+        }
         let snapshot = view.snapshot();
         let row = self.cursor.row;
         let text = line(snapshot, row);
@@ -158,8 +175,19 @@ impl Vim {
                 let column = last_char_col(&line(snapshot, row));
                 self.move_to(Point { row, column }, Some(Goal::Eol))
             }
+            'w' => self.word(view, WordMotion::NextStart, false, n),
+            'W' => self.word(view, WordMotion::NextStart, true, n),
+            'b' => self.word(view, WordMotion::PrevStart, false, n),
+            'B' => self.word(view, WordMotion::PrevStart, true, n),
+            'e' => self.word(view, WordMotion::NextEnd, false, n),
+            'E' => self.word(view, WordMotion::NextEnd, true, n),
             _ => Outcome::Handled(vec![]),
         }
+    }
+
+    fn word(&mut self, view: &dyn ViewInfo, kind: WordMotion, big: bool, n: u32) -> Outcome {
+        let to = motion::word_motion(view.snapshot(), self.cursor, kind, big, n);
+        self.move_horizontal(to)
     }
 
     /// Vim's `+`: `n` rows down, to the first non-blank.
@@ -210,6 +238,7 @@ impl Vim {
     fn clear_pending(&mut self) {
         self.pending.clear();
         self.count = None;
+        self.prefix = None;
     }
 }
 
