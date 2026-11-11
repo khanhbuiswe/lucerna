@@ -6,6 +6,7 @@
 //! The check (`which`, the probe) runs in the background; its rows are
 //! kept until refresh or until the table changes.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use gpui::{
@@ -117,15 +118,18 @@ impl LspHealthView {
         self.task.is_some()
     }
 
-    /// "{found} of {total} servers found", counting (language, server)
-    /// rows; `None` before the first check finished.
+    /// "{found} of {total} servers found", counting each server once
+    /// however many languages it has; `None` before the first check
+    /// finished.
     pub fn summary(&self) -> Option<String> {
         let rows = self.rows.as_ref()?;
-        let found = rows
+        let total: BTreeSet<&str> = rows.iter().map(|r| &*r.server).collect();
+        let found: BTreeSet<&str> = rows
             .iter()
             .filter(|r| matches!(r.status, HealthStatus::Found(_)))
-            .count();
-        Some(format!("{found} of {} servers found", rows.len()))
+            .map(|r| &*r.server)
+            .collect();
+        Some(format!("{} of {} servers found", found.len(), total.len()))
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {

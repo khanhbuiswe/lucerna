@@ -134,11 +134,15 @@ fn summary_counts(cx: &mut TestAppContext) {
         .filter(|r| matches!(r.status, HealthStatus::Found(_)))
         .count();
     assert_eq!(found, 1, "only rust-analyzer is installed");
+    // Servers, not (language, server) rows: typescript-language-server
+    // has four rows and counts once.
+    let servers: BTreeSet<&str> = rows.iter().map(|r| &*r.server).collect();
+    assert!(servers.len() < rows.len());
     let view = health_view(&wb, cx);
     let summary = cx.update(|_, cx| view.read(cx).summary());
     assert_eq!(
         summary.as_deref(),
-        Some(format!("1 of {} servers found", rows.len()).as_str())
+        Some(format!("1 of {} servers found", servers.len()).as_str())
     );
     assert!(shown("lsp-health-summary", cx));
 }
