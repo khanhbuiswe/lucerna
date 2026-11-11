@@ -283,7 +283,7 @@ fn contains(range: &std::ops::Range<Point>, p: Point) -> bool {
 
 /// The identifier at `point` (or just before it); else the selected text;
 /// else nothing.
-fn message_word(view: &CodeView, point: Point) -> String {
+pub(crate) fn message_word(view: &CodeView, point: Point) -> String {
     let snapshot = view.snapshot();
     let line = snapshot.line(point.row);
     let before = point.column.checked_sub(1).map(|column| Point {
@@ -301,7 +301,7 @@ fn message_word(view: &CodeView, point: Point) -> String {
 }
 
 /// The message of an empty answer: "No definition found for 'word'".
-fn no_result_text(kind: GotoKind, word: &str) -> String {
+pub(crate) fn no_result_text(kind: GotoKind, word: &str) -> String {
     let noun = kind.noun();
     if word.is_empty() {
         format!("No {noun} found")

@@ -83,6 +83,8 @@ pub struct EditorGroupsView {
     home: Option<PathBuf>,
     /// Shown as the Search tab's title in place of "Search".
     search_title: Option<SharedString>,
+    /// Shown as the References tab's title in place of "References".
+    references_title: Option<SharedString>,
 }
 
 impl Default for EditorGroupsView {
@@ -97,6 +99,7 @@ impl Default for EditorGroupsView {
             root: None,
             home: std::env::home_dir(),
             search_title: None,
+            references_title: None,
         }
     }
 }
@@ -223,6 +226,19 @@ impl EditorGroupsView {
         self.search_title.as_ref()
     }
 
+    /// The References tab's title: `title` when `Some`, else "References".
+    pub fn set_references_title(&mut self, title: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.references_title != title {
+            self.references_title = title;
+            cx.notify();
+        }
+    }
+
+    /// The title [`EditorGroupsView::set_references_title`] set.
+    pub fn references_title(&self) -> Option<&SharedString> {
+        self.references_title.as_ref()
+    }
+
     /// Path bars show paths relative to `root`.
     pub(crate) fn set_root(&mut self, root: PathBuf) {
         self.root = Some(root);
@@ -343,14 +359,16 @@ impl Render for EditorGroupsView {
                 let id = tab.id;
                 let active = group.active == Some(id);
                 let fg = title_color(active, gi == focused_group, ui);
-                let title = match (&tab.item, &self.search_title) {
-                    (TabItem::Search, Some(title)) => title.to_string(),
+                let title = match (&tab.item, &self.search_title, &self.references_title) {
+                    (TabItem::Search, Some(title), _) => title.to_string(),
+                    (TabItem::References, _, Some(title)) => title.to_string(),
                     _ => tab.title(),
                 };
                 let icon = match tab.item {
                     TabItem::Extensions => Some(BLOCKS_ICON),
                     TabItem::Search => Some(SEARCH_ICON),
                     TabItem::LspLog(_) => Some(icons::ZAP),
+                    TabItem::References => Some(icons::FILE_CODE),
                     TabItem::File(_) => None,
                 };
                 let icon = icon.map(|icon| {

@@ -129,7 +129,7 @@ impl SearchView {
         };
         let list = {
             let root = root.clone();
-            cx.new(|cx| ExcerptList::new(root, cx))
+            cx.new(|cx| ExcerptList::new(root, "search", cx))
         };
         let list_focus = list.read(cx).focus_handle().clone();
         let list_events =
@@ -650,6 +650,8 @@ impl SearchView {
         // own decoded line once it is loaded (ruling R24).
         let point = Point { row, column: 0 };
         let view = workbench.update(cx, |wb, cx| {
+            // `F4` walks the Search tab's results again.
+            wb.references_used_last.set(false);
             wb.jump_to(path, point, OpenMode::Preview, cx);
             wb.editor_groups()
                 .update(cx, |groups, cx| groups.ensure_active_body(window, cx))

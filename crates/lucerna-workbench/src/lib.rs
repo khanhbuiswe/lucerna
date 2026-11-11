@@ -29,6 +29,7 @@ mod nav_history;
 mod open_files;
 pub mod open_requests;
 mod quick_open;
+mod references_view;
 mod search_view;
 pub mod tasks;
 mod text_input;
@@ -73,6 +74,7 @@ pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
 };
+pub use references_view::{ReferencesView, find_references_in_tab};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};

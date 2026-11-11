@@ -1,5 +1,6 @@
 //! The root view: shell layout, view slots and VS Code–style key dispatch.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -37,6 +38,7 @@ use crate::lsp_status::{self, LspStatusItem};
 use crate::nav_history::{NavEntry, NavHistory};
 use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
+use crate::references_view::{self, ReferencesView};
 use crate::search_view::{self, SearchView};
 use crate::tasks::try_spawn_guarded;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
@@ -102,6 +104,12 @@ pub struct Workbench {
     /// The body of the Search tab when it is open. Kept while the tab is
     /// closed, so it reopens with its query and results.
     search_view: Entity<SearchView>,
+    /// The body of the References tab, kept while the tab is closed.
+    references_view: Entity<ReferencesView>,
+    /// The References tab is the results tab used last: its list had the
+    /// focus at the last key press, or it opened a line since the Search
+    /// tab did. `F4` walks its references then (`referencesViewFocus`).
+    pub(crate) references_used_last: Cell<bool>,
     /// The Extensions page, the body of the Extensions tab when it is
     /// open. Kept while the tab is closed, so it reopens as it was.
     extensions_page: Entity<ExtensionsPage>,
@@ -252,6 +260,7 @@ impl Workbench {
         quick_open::register_commands(&mut commands);
         find_widget::register_commands(&mut commands);
         search_view::register_commands(&mut commands);
+        references_view::register_commands(&mut commands);
         config_files::register_commands(&mut commands);
         theme_picker::register_commands(&mut commands);
         trust::register_commands(&mut commands);
@@ -281,6 +290,11 @@ impl Workbench {
             let searchable = single_file.is_none();
             cx.new(|cx| SearchView::new(root, workbench, searchable, window, cx))
         };
+        let references_view = {
+            let (root, workbench) = (root.clone(), cx.weak_entity());
+            let servers = language_servers.clone();
+            cx.new(|cx| ReferencesView::new(root, workbench, servers, window, cx))
+        };
         let lsp_logs = LspLogs::default();
         let lsp_status = {
             let (workbench, servers) = (cx.weak_entity(), language_servers.clone());
@@ -292,6 +306,7 @@ impl Workbench {
             let docs = documents.clone();
             let page = extensions_page.clone();
             let search = search_view.clone();
+            let references = references_view.clone();
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
             groups.set_tab_body_factory(
                 Rc::new(move |tab, _, cx| {
@@ -302,6 +317,7 @@ impl Workbench {
                             return page.clone().into();
                         }
                         TabItem::Search => return search.clone().into(),
+                        TabItem::References => return references.clone().into(),
                         TabItem::LspLog(server) => return logs.view(server, &servers, cx).into(),
                     };
                     let view = docs.update(cx, |docs, cx| docs.open(path, cx));
@@ -408,6 +424,11 @@ impl Workbench {
                     .update(cx, |groups, cx| groups.set_search_title(title, cx));
                 wb.layout_changed(cx);
             }),
+            cx.observe(&references_view, |wb, view, cx| {
+                let title = view.read(cx).title();
+                wb.editor_groups
+                    .update(cx, |groups, cx| groups.set_references_title(title, cx));
+            }),
         ];
         if cx.has_global::<ExtensionService>() {
             subscriptions.push(cx.observe_global::<ExtensionService>(|wb, cx| {
@@ -480,6 +501,8 @@ impl Workbench {
             goto_task: None,
             lsp_logs,
             search_view,
+            references_view,
+            references_used_last: Cell::new(false),
             extensions_page,
             editor_area: Some(editor_groups.clone().into()),
             editor_groups,
@@ -835,6 +858,30 @@ impl Workbench {
         cx.notify();
     }
 
+    /// The References tab's body.
+    pub fn references_view(&self) -> &Entity<ReferencesView> {
+        &self.references_view
+    }
+
+    /// `referencesViewFocus`: the References tab is open and is the
+    /// results tab used last (see `references_used_last`), so `F4` walks
+    /// it even after a reference it opened took the focus.
+    fn references_view_focus(&self, window: &Window, cx: &App) -> bool {
+        let focused = |handle: FocusHandle| handle.contains_focused(window, cx);
+        if focused(self.references_view.read(cx).focus_handle(cx)) {
+            self.references_used_last.set(true);
+        } else if focused(self.search_view.read(cx).focus_handle(cx)) {
+            self.references_used_last.set(false);
+        }
+        self.references_used_last.get()
+            && self
+                .editor_groups
+                .read(cx)
+                .model()
+                .references_tab()
+                .is_some()
+    }
+
     /// Whether keyboard focus is in the open Search tab.
     fn search_focused(&self, window: &Window, cx: &App) -> bool {
         self.editor_groups.read(cx).model().search_tab().is_some()
@@ -875,8 +922,8 @@ impl Workbench {
                 .contains_focused(window, cx)
     }
 
-    /// After the tabs changed: when the Extensions or Search tab or a server
-    /// log closed, or
+    /// After the tabs changed: when the Extensions, Search or References
+    /// tab or a server log closed, or
     /// stopped being its group's active tab (say a search result opened in
     /// its place), while it had focus, focus goes to the editor area, so
     /// keys keep working.
@@ -890,11 +937,15 @@ impl Workbench {
         let hidden = |tab: Option<TabId>| {
             tab.is_none_or(|id| !model.groups().iter().any(|g| g.active == Some(id)))
         };
-        let (extensions_hidden, search_hidden) =
-            (hidden(model.extensions_tab()), hidden(model.search_tab()));
+        let (extensions_hidden, search_hidden, references_hidden) = (
+            hidden(model.extensions_tab()),
+            hidden(model.search_tab()),
+            hidden(model.references_tab()),
+        );
         let had_focus = |handle: FocusHandle| handle.contains_focused(window, cx);
         let lost = (extensions_hidden && had_focus(self.extensions_page.read(cx).focus_handle(cx)))
             || (search_hidden && had_focus(self.search_view.read(cx).focus_handle(cx)))
+            || (references_hidden && had_focus(self.references_view.read(cx).focus_handle(cx)))
             || self.lsp_logs.hidden_with_focus(model, window, cx);
         if lost {
             self.focus_editor_area(window, cx);
@@ -1095,6 +1146,10 @@ impl Workbench {
         flag("sideBarFocus", sidebar_focus);
         flag("explorerViewletFocus", sidebar_focus);
         flag("searchViewletFocus", self.search_focused(window, cx));
+        flag(
+            "referencesViewFocus",
+            self.references_view_focus(window, cx),
+        );
         flag(
             "extensionsViewletFocus",
             self.extensions_focused(window, cx),

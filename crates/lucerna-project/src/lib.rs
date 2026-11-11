@@ -11,7 +11,8 @@ mod worktree;
 pub use coalesce::{Coalesced, RESCAN_THRESHOLD, RawEvent, coalesce};
 pub use fuzzy::{FileMatch, QUICK_OPEN_LIMIT, match_files};
 pub use search::{
-    Excerpt, LineMatch, MAX_RESULTS, SearchEvent, SearchQuery, build_pattern, search,
+    Excerpt, LineMatch, MAX_LINE_CHARS, MAX_RESULTS, SearchEvent, SearchQuery, build_pattern,
+    search,
 };
 pub use watch::DEBOUNCE;
 

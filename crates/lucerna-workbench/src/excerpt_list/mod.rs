@@ -2,8 +2,8 @@
 //! per file, then its excerpts as editor-like lines with a line-number
 //! gutter, colored in the background. Files fold, the keyboard moves over
 //! the lines, and a click or `Enter` asks the host to open a line
-//! ([`ExcerptListEvent::Activate`]). The Search tab shows its results in
-//! one; the host keeps its own toolbar and status.
+//! ([`ExcerptListEvent::Activate`]). The Search and References tabs show
+//! their results in one; the host keeps its own toolbar and status.
 
 pub(crate) mod highlight;
 pub(crate) mod model;
@@ -40,6 +40,9 @@ pub enum ExcerptListEvent {
 pub struct ExcerptList {
     /// File paths are relative to this; highlight jobs read the files here.
     root: PathBuf,
+    /// Starts the debug selectors of the rows (`"search"` gives
+    /// `search-file-0`, `search-line-…`), so each host's are distinct.
+    id_prefix: &'static str,
     /// Focus of the list: the host tracks it on the list area and passes
     /// keys to [`ExcerptList::key_down`].
     focus: FocusHandle,
@@ -77,9 +80,12 @@ pub struct ExcerptList {
 impl EventEmitter<ExcerptListEvent> for ExcerptList {}
 
 impl ExcerptList {
-    pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
+    /// A list of the files under `root`; `id_prefix` starts its debug
+    /// selectors.
+    pub fn new(root: PathBuf, id_prefix: &'static str, cx: &mut Context<Self>) -> Self {
         ExcerptList {
             root,
+            id_prefix,
             focus: cx.focus_handle(),
             results: Results::default(),
             selected: None,
@@ -99,7 +105,6 @@ impl ExcerptList {
     }
 
     /// Replaces every file; the gutter is sized for the new ones.
-    #[allow(dead_code, reason = "the References tab replaces its files")]
     pub fn set_files(&mut self, files: Vec<(Arc<Path>, Vec<Excerpt>)>, cx: &mut Context<Self>) {
         self.max_line_number = 0;
         self.update_results(

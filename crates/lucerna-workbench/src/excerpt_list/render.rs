@@ -118,20 +118,21 @@ impl ExcerptList {
         let icon = state.icons.file(&file.path);
         let path = file.path.clone();
         let hover = color(ui.ghost_element_hover);
+        let prefix = self.id_prefix;
         let (card_id, selector, open_id, open_selector): (ElementId, String, ElementId, String) =
             if sticky {
                 (
-                    "search-sticky-header".into(),
-                    "search-sticky-card".into(),
-                    "search-sticky-open-file".into(),
-                    "search-sticky-open-file".into(),
+                    "sticky-header".into(),
+                    format!("{prefix}-sticky-card"),
+                    "sticky-open-file".into(),
+                    format!("{prefix}-sticky-open-file"),
                 )
             } else {
                 (
-                    ("search-file", index).into(),
-                    format!("search-file-{index}"),
-                    ("search-open-file", index).into(),
-                    format!("search-open-file-{index}"),
+                    ("file", index).into(),
+                    format!("{prefix}-file-{index}"),
+                    ("open-file", index).into(),
+                    format!("{prefix}-open-file-{index}"),
                 )
             };
         let group: SharedString = format!("{selector}-group").into();
@@ -278,7 +279,10 @@ impl ExcerptList {
         });
         let highlights = line_highlights(&expanded.text, &ranges, spans.as_ref(), theme, mark);
         let styled = StyledText::new(expanded.text.clone()).with_highlights(highlights);
-        let selector = format!("search-line-{}-{}-{}", r.file, r.excerpt, r.line);
+        let selector = format!(
+            "{}-line-{}-{}-{}",
+            self.id_prefix, r.file, r.excerpt, r.line
+        );
         let anchor = self.results.anchor_of(r);
         let selected = self.selected() == Some(r);
         // Code lines read like editor lines (as in Zed's multibuffer): no
@@ -324,9 +328,9 @@ impl ExcerptList {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let rule = color(cx.global::<AppState>().theme.ui.border_variant);
-        let selector = format!("search-separator-{file}-{excerpt}");
+        let selector = format!("{}-separator-{file}-{excerpt}", self.id_prefix);
         div()
-            .id(("search-row", ix))
+            .id(("row", ix))
             .debug_selector(move || selector)
             .flex()
             .items_center()
@@ -361,9 +365,10 @@ impl Render for ExcerptList {
         self.request_highlights(visible, cx);
         // The pinned header: a clip at the list's top, as tall as the part
         // still shown while the next header pushes it up.
+        let prefix = self.id_prefix;
         let sticky = self.sticky_header(lh).map(|(file, push)| {
             div()
-                .debug_selector(|| "search-sticky-header".into())
+                .debug_selector(move || format!("{prefix}-sticky-header"))
                 .absolute()
                 .left_0()
                 .right_0()
@@ -511,7 +516,7 @@ fn line_highlights(
 /// A clickable row, one editor line tall; add `on_click` and the content.
 fn row(ix: usize, selector: String, style: &RowStyle) -> Stateful<Div> {
     div()
-        .id(("search-row", ix))
+        .id(("row", ix))
         .debug_selector(move || selector)
         .flex()
         .items_center()

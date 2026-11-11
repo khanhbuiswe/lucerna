@@ -62,7 +62,7 @@ pub enum SearchEvent {
 pub const MAX_RESULTS: usize = 20_000;
 
 /// Most characters of a matching line that are reported.
-const MAX_LINE_CHARS: usize = 1000;
+pub const MAX_LINE_CHARS: usize = 1000;
 
 /// The regex source for a search pattern: escaped unless `is_regex`, and
 /// wrapped as `\b(?:…)\b` for whole-word. Case folding is left to the
