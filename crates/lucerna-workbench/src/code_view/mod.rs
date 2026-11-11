@@ -1015,7 +1015,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "editor.action.clipboardCopyAction",
         "Copy",
         |wb, _, _, cx| {
-            if crate::lsp_status::copy_from_log(wb, cx) {
+            if crate::lsp_log::copy_from_log(wb, cx) {
                 return;
             }
             with_active_view(wb, cx, |v, cx| {

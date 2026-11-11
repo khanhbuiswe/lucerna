@@ -2,6 +2,7 @@
 //! logs, watch registrations and exit.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
@@ -76,28 +77,11 @@ impl LanguageServers {
     /// `"Starting {server}…"` while one starts; cut at 60 characters, and
     /// `" +N"` when N more are under way. `None` when nothing is.
     pub fn progress_text(&self) -> Option<String> {
-        let mut items: Vec<(&'static str, &ProgressItem)> = self
-            .progress
-            .iter()
-            .flat_map(|(key, items)| items.iter().map(|item| (key.server, item)))
-            .collect();
-        items.sort_by_key(|(_, item)| std::cmp::Reverse(item.updated));
-        let mut starting: Vec<&ServerKey> = self
+        let starting = self
             .registry
             .keys()
-            .filter(|key| matches!(self.registry.slot(key), Some(Slot::Starting)))
-            .collect();
-        starting.sort_by(|a, b| (a.server, &a.root).cmp(&(b.server, &b.root)));
-        let first = match items.first() {
-            Some((server, item)) => format!("{server}: {}", item.text()),
-            None => format!("Starting {}…", starting.first()?.server),
-        };
-        let others = items.len() + starting.len() - 1;
-        let mut text = truncate(&first, PROGRESS_TEXT_MAX);
-        if others > 0 {
-            text.push_str(&format!(" +{others}"));
-        }
-        Some(text)
+            .filter(|key| matches!(self.registry.slot(key), Some(Slot::Starting)));
+        summarize_progress(&self.progress, starting)
     }
 
     /// Delivers a server's events on the UI thread until it is gone. Holds
@@ -291,6 +275,33 @@ impl LanguageServers {
     }
 }
 
+/// See [`LanguageServers::progress_text`]. A starting server that already
+/// reports progress is counted once, by its progress.
+fn summarize_progress<'a>(
+    progress: &'a HashMap<ServerKey, Vec<ProgressItem>>,
+    starting: impl Iterator<Item = &'a ServerKey>,
+) -> Option<String> {
+    let mut items: Vec<(&'static str, &ProgressItem)> = progress
+        .iter()
+        .flat_map(|(key, items)| items.iter().map(|item| (key.server, item)))
+        .collect();
+    items.sort_by_key(|(_, item)| std::cmp::Reverse(item.updated));
+    let mut starting: Vec<&ServerKey> = starting
+        .filter(|key| progress.get(*key).is_none_or(Vec::is_empty))
+        .collect();
+    starting.sort_by(|a, b| (a.server, &a.root).cmp(&(b.server, &b.root)));
+    let first = match items.first() {
+        Some((server, item)) => format!("{server}: {}", item.text()),
+        None => format!("Starting {}…", starting.first()?.server),
+    };
+    let others = items.len() + starting.len() - 1;
+    let mut text = truncate(&first, PROGRESS_TEXT_MAX);
+    if others > 0 {
+        text.push_str(&format!(" +{others}"));
+    }
+    Some(text)
+}
+
 /// `text`, or its first `max - 1` characters and `…` when longer.
 fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -315,6 +326,42 @@ mod tests {
             percentage: Some(45),
         };
         assert_eq!(item.text(), "Indexing 45% — crates/foo");
+    }
+
+    fn key(server: &'static str) -> ServerKey {
+        ServerKey {
+            root: Arc::from(Path::new("/p")),
+            server,
+        }
+    }
+
+    fn item(updated: u64, title: &str) -> ProgressItem {
+        ProgressItem {
+            updated,
+            token: title.into(),
+            title: Some(title.into()),
+            message: None,
+            percentage: None,
+        }
+    }
+
+    #[test]
+    fn progress_text_counts_a_starting_server_with_progress_once() {
+        let (a, b, c) = (key("a"), key("b"), key("c"));
+        let mut progress = HashMap::new();
+        progress.insert(a.clone(), vec![item(2, "Loading")]);
+        // `a` is still starting but reports progress; `b` and `c` start.
+        let text = summarize_progress(&progress, [&a, &b, &c].into_iter());
+        assert_eq!(text.as_deref(), Some("a: Loading +2"));
+
+        progress.insert(b.clone(), vec![item(3, "Indexing")]);
+        let text = summarize_progress(&progress, [&a, &b].into_iter());
+        assert_eq!(text.as_deref(), Some("b: Indexing +1"));
+
+        progress.clear();
+        let text = summarize_progress(&progress, [&c, &b].into_iter());
+        assert_eq!(text.as_deref(), Some("Starting b… +1"));
+        assert_eq!(summarize_progress(&progress, std::iter::empty()), None);
     }
 
     #[test]

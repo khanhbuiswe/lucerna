@@ -386,3 +386,59 @@ fn button_toggles_popover_and_outside_click_closes(cx: &mut TestAppContext) {
     click("lsp-button", cx);
     assert!(shown("lsp-popover", cx));
 }
+
+#[gpui::test]
+fn long_stderr_keeps_footer_in_window(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let (wb, cx) = lsp_workbench_with(dir.path(), rust_launcher(&fake), TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    for i in 0..50 {
+        fake.stderr(&format!("stderr line {i}: {}", "word ".repeat(40)));
+    }
+    settle(cx);
+    fake.crash(Some(101));
+    settle(cx);
+
+    click("lsp-button", cx);
+    let (window, footer, _) = popover_bounds(cx);
+    assert!(
+        footer.bottom() <= window.height && footer.top() >= gpui::px(0.),
+        "footer {footer:?} in a {window:?} window"
+    );
+    // In a short window the rows scroll and the footer stays visible.
+    cx.simulate_resize(gpui::size(gpui::px(800.), gpui::px(220.)));
+    let (window, footer, popover) = popover_bounds(cx);
+    assert!(
+        footer.bottom() <= window.height && footer.top() >= gpui::px(0.),
+        "footer {footer:?} in a {window:?} window"
+    );
+    assert!(popover.top() >= gpui::px(0.), "popover {popover:?}");
+    cx.simulate_resize(gpui::size(gpui::px(1920.), gpui::px(1080.)));
+
+    // The message and the last five stderr lines; the rest is in the log.
+    assert!(shown("lsp-row-message-0-5", cx));
+    assert!(!shown("lsp-row-message-0-6", cx));
+    click("lsp-row-more-0", cx);
+    assert!(shown("lsp-log", cx));
+}
+
+/// The window size and the bounds of the popover's footer and of the
+/// popover.
+fn popover_bounds(
+    cx: &mut VisualTestContext,
+) -> (
+    gpui::Size<gpui::Pixels>,
+    gpui::Bounds<gpui::Pixels>,
+    gpui::Bounds<gpui::Pixels>,
+) {
+    draw(cx);
+    let window = cx.update(|window, _| window.viewport_size());
+    let footer = cx
+        .debug_bounds("lsp-restart-all")
+        .expect("the footer is drawn");
+    let popover = cx
+        .debug_bounds("lsp-popover")
+        .expect("the popover is drawn");
+    (window, footer, popover)
+}

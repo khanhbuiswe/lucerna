@@ -29,7 +29,8 @@ use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
     panel_toggles, sidebar, status_bar, title_bar,
 };
-use crate::lsp_status::{self, LspLogs, LspStatusItem};
+use crate::lsp_log::LspLogs;
+use crate::lsp_status::{self, LspStatusItem};
 use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::search_view::{self, SearchView};

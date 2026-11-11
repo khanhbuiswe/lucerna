@@ -17,6 +17,7 @@ pub mod icons;
 pub mod keys;
 mod language_servers;
 mod layout;
+mod lsp_log;
 mod lsp_status;
 mod open_files;
 pub mod open_requests;
@@ -48,7 +49,8 @@ pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find
 pub use language_servers::{LanguageServers, LanguageServersEvent, ServerStatus, SlotState};
 pub use layout::StatusBarSide;
 pub use layout::title_bar::window_options;
-pub use lsp_status::{LspLogView, LspStatusItem, ServerRow, StatusDot};
+pub use lsp_log::LspLogView;
+pub use lsp_status::{LspStatusItem, ServerRow, StatusDot};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
