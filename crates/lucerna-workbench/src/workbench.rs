@@ -282,7 +282,8 @@ impl Workbench {
         };
         let symbols = SymbolSource::new(root.clone(), &documents, &language_servers, cx);
         // Servers end with the window (without waiting for them) or the
-        // app (waiting at most 5 s in all; see the `on_app_quit` below).
+        // app (waiting at most 5 s across all windows, then killed; see the
+        // `on_app_quit` below).
         cx.on_release(|wb, cx| {
             wb.language_servers
                 .update(cx, |servers, _| servers.shutdown_all_in_background())
@@ -436,9 +437,10 @@ impl Workbench {
                 wb.active_tabs_changed(window, cx)
             }),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
-            cx.on_app_quit(|wb, cx| {
-                wb.language_servers
-                    .update(cx, |servers, _| servers.shutdown_all());
+            // The first window's hook shuts every window's servers down
+            // against one 5 s deadline; the others find nothing left.
+            cx.on_app_quit(|_, cx| {
+                LanguageServers::shutdown_all_windows_on_quit(cx);
                 async {}
             }),
             // The Search tab's title is its query; any input change is a

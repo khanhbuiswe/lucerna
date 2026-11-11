@@ -472,12 +472,12 @@ fn shutdown_sends_shutdown_then_exit() {
     let fake = FakeServer::new();
     let (server, _events) = start(&fake, json!({}));
     init(&server);
-    server.shutdown().join().unwrap();
+    server.shutdown().unwrap().join().unwrap();
     let methods = methods(&fake);
     assert_eq!(methods[methods.len() - 2..], ["shutdown", "exit"]);
     assert!(server.is_closed());
     // Idempotent: a second call sends nothing more.
-    server.shutdown().join().unwrap();
+    server.shutdown().unwrap().join().unwrap();
     assert_eq!(fake.received().len(), methods.len());
 }
 
@@ -574,4 +574,21 @@ fn one_bad_diagnostic_does_not_drop_the_publish() {
         .map(|d| d.message.as_str())
         .collect();
     assert_eq!(messages, ["good"]);
+}
+
+#[test]
+fn kill_ends_a_hung_shutdown_at_once() {
+    let fake = FakeServer::new().hang_on("shutdown");
+    let (server, _events) = start(&fake, json!({}));
+    init(&server);
+    let handle = server.shutdown().unwrap();
+    let begun = Instant::now();
+    server.kill();
+    handle.join().unwrap();
+    assert!(server.is_closed());
+    assert!(
+        begun.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        begun.elapsed()
+    );
 }

@@ -170,6 +170,11 @@ impl FakeServer {
         }
     }
 
+    /// Whether the connection is closed (exit, crash or kill).
+    pub fn is_closed(&self) -> bool {
+        self.shared.closed.load(Ordering::Acquire)
+    }
+
     /// Ends the server as if the process exited with `code`.
     pub fn crash(&self, code: Option<i32>) {
         self.shared.close(code);

@@ -156,6 +156,7 @@ impl LanguageServers {
             .settings
             .get_trusted::<bool>("session.trustAllWorktrees", None)
             == Some(true);
+        lifecycle::QuitShutdown::register(cx);
         let mut registry = Registry::new(adapters.clone());
         if trusted {
             registry.set_settings(servers_settings(cx));

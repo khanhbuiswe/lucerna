@@ -288,11 +288,26 @@ impl LanguageServer {
 
     /// `shutdown` (5 s) → `exit` → wait 1 s → kill, on a background thread.
     /// Idempotent: later calls return a handle that waits for the first.
-    ///
-    /// # Panics
-    /// When the OS cannot start a thread.
-    pub fn shutdown(self: &Arc<Self>) -> JoinHandle<()> {
-        begin_shutdown(&self.inner).expect("spawn language server shutdown thread")
+    /// `None` when the OS cannot start a thread: the error is logged and
+    /// the process killed instead.
+    pub fn shutdown(self: &Arc<Self>) -> Option<JoinHandle<()>> {
+        match begin_shutdown(&self.inner) {
+            Ok(handle) => Some(handle),
+            Err(err) => {
+                tracing::error!(server = %self.inner.name, error = %err, "cannot start shutdown thread");
+                self.kill();
+                None
+            }
+        }
+    }
+
+    /// Kills the process (and what it spawned) now, without `shutdown`.
+    /// A pending shutdown then ends as soon as the transport reports it
+    /// closed.
+    pub fn kill(&self) {
+        if let Some(transport) = self.inner.transport.get() {
+            transport.kill();
+        }
     }
 }
 
@@ -304,9 +319,7 @@ impl Drop for LanguageServer {
         };
         if !idle && let Err(err) = begin_shutdown(&self.inner) {
             tracing::error!(server = %self.inner.name, error = %err, "cannot start shutdown thread");
-            if let Some(transport) = self.inner.transport.get() {
-                transport.kill();
-            }
+            self.kill();
         }
     }
 }

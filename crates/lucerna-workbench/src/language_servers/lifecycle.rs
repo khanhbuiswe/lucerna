@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use futures::FutureExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::future::BoxFuture;
-use gpui::{App, Context, Task};
+use gpui::{App, Context, Global, Task, WeakEntity};
 use lucerna_lsp::sync::{DocumentSync, WatchedFiles};
 use lucerna_lsp::transport::LaunchSpec;
 use lucerna_lsp::{
@@ -24,8 +24,52 @@ use serde_json::Value;
 use super::{LanguageServers, LanguageServersEvent, selection, servers_settings};
 use crate::tasks::{guarded, try_spawn_guarded};
 
-/// The most [`LanguageServers::shutdown_all`] waits, for all servers.
+/// The most [`LanguageServers::shutdown_all`] waits, for all servers (and,
+/// on quit, for every window's servers together).
 const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+
+/// A server whose shutdown has begun, and the thread running it (`None`
+/// when the thread could not start and the process was killed).
+type ShuttingDown = (Arc<LanguageServer>, Option<JoinHandle<()>>);
+
+/// Every window's [`LanguageServers`], so the first quit hook shuts them all
+/// down against one deadline instead of 5 s per window.
+#[derive(Default)]
+pub(super) struct QuitShutdown {
+    servers: Vec<WeakEntity<LanguageServers>>,
+    done: bool,
+}
+
+impl Global for QuitShutdown {}
+
+impl QuitShutdown {
+    pub(super) fn register(cx: &mut Context<LanguageServers>) {
+        let entity = cx.weak_entity();
+        let global = cx.default_global::<QuitShutdown>();
+        global.servers.retain(|s| s.upgrade().is_some());
+        global.servers.push(entity);
+    }
+}
+
+/// Waits for the shutdown threads until `deadline`, then kills the servers
+/// whose shutdown has not finished, so none outlives the app.
+fn finish_or_kill(pending: Vec<ShuttingDown>, deadline: Instant) {
+    for (server, handle) in pending {
+        let Some(handle) = handle else { continue };
+        while !handle.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        if !handle.is_finished() {
+            tracing::warn!(
+                server = server.name(),
+                "language server did not shut down in time; killing it"
+            );
+            server.kill();
+        }
+        // The kill closes the transport, which ends the shutdown thread.
+        let _ = handle.join();
+    }
+}
 
 type Initialize = BoxFuture<'static, Result<(), LspError>>;
 
@@ -88,29 +132,47 @@ impl LanguageServers {
     }
 
     /// Shuts every server (running or starting) down in parallel and waits
-    /// for them, at most 5 s in all. For app quit.
+    /// for them, at most 5 s in all; servers still running then are killed.
     pub fn shutdown_all(&mut self) {
         let deadline = Instant::now() + SHUTDOWN_BUDGET;
-        for handle in self.begin_shutdown_all() {
-            while !handle.is_finished() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(5));
-            }
-            if handle.is_finished() {
-                let _ = handle.join();
-            }
+        finish_or_kill(self.begin_shutdown_all(), deadline);
+    }
+
+    /// For app quit: shuts down the servers of every window at once and
+    /// waits at most 5 s in all, then kills the ones still running. Later
+    /// calls (one quit hook per window) do nothing.
+    pub fn shutdown_all_windows_on_quit(cx: &mut App) {
+        Self::shutdown_all_windows_within(SHUTDOWN_BUDGET, cx);
+    }
+
+    /// [`LanguageServers::shutdown_all_windows_on_quit`] with a custom
+    /// budget (tests).
+    pub fn shutdown_all_windows_within(budget: Duration, cx: &mut App) {
+        let deadline = Instant::now() + budget;
+        let global = cx.default_global::<QuitShutdown>();
+        if std::mem::replace(&mut global.done, true) {
+            return;
         }
+        let entities = std::mem::take(&mut global.servers);
+        let mut pending = Vec::new();
+        for entity in entities.iter().filter_map(WeakEntity::upgrade) {
+            pending.extend(entity.update(cx, |servers, _| servers.begin_shutdown_all()));
+        }
+        finish_or_kill(pending, deadline);
     }
 
     /// Like [`LanguageServers::shutdown_all`] without waiting: the
     /// shutdowns are joined on a background thread. For window close.
     pub fn shutdown_all_in_background(&mut self) {
-        let handles = self.begin_shutdown_all();
-        if handles.is_empty() {
+        let pending = self.begin_shutdown_all();
+        if pending.is_empty() {
             return;
         }
         let joined = try_spawn_guarded("lsp-shutdown-all", move || {
-            for handle in handles {
-                let _ = handle.join();
+            for (_, handle) in pending {
+                if let Some(handle) = handle {
+                    let _ = handle.join();
+                }
             }
         });
         if let Err(err) = joined {
@@ -119,17 +181,19 @@ impl LanguageServers {
     }
 
     /// Starts every server's shutdown; every slot ends `Stopped`.
-    fn begin_shutdown_all(&mut self) -> Vec<JoinHandle<()>> {
+    fn begin_shutdown_all(&mut self) -> Vec<ShuttingDown> {
         let keys: Vec<ServerKey> = self.registry.keys().cloned().collect();
         let mut handles = Vec::new();
         for key in keys {
             self.bump_generation(&key);
             self.pumps.remove(&key);
             if let Some(server) = self.take_starting(&key) {
-                handles.push(server.shutdown());
+                let handle = server.shutdown();
+                handles.push((server, handle));
             }
             if let Some(Slot::Running(server)) = self.registry.remove(&key) {
-                handles.push(server.shutdown());
+                let handle = server.shutdown();
+                handles.push((server, handle));
             }
             self.registry.set_slot(key, Slot::Stopped);
         }

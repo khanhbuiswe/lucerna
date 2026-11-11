@@ -520,6 +520,62 @@ fn shutdown_all_waits_for_running_and_starting_servers(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn quit_shares_one_deadline_across_windows_and_kills_hung_servers(cx: &mut TestAppContext) {
+    let (a, b) = (rust_project(), rust_project());
+    let (fa, fb) = (
+        FakeServer::new().hang_on("shutdown"),
+        FakeServer::new().hang_on("shutdown"),
+    );
+    let mut app = cx.clone();
+    let (wa, vcx) = lsp_workbench(
+        a.path(),
+        FakeLauncher::new().with_server("rust-analyzer", fa.clone()),
+        cx,
+    );
+    open(&wa, "src/main.rs", vcx);
+    let root_b = b.path().to_path_buf();
+    let (wb2, vcx2) = app.add_window_view(|window, cx| Workbench::new(root_b, window, cx));
+    let servers_b = language_servers(&wb2, vcx2);
+    servers_b.update(vcx2, |servers, _| {
+        servers.set_launcher(Arc::new(
+            FakeLauncher::new().with_server("rust-analyzer", fb.clone()),
+        ));
+    });
+    open(&wb2, "src/main.rs", vcx2);
+    assert!(fa.received().iter().any(|(m, _)| m == "initialize"));
+    assert!(fb.received().iter().any(|(m, _)| m == "initialize"));
+
+    let begun = std::time::Instant::now();
+    app.quit();
+    let took = begun.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(7),
+        "one shared 5 s deadline, not 5 s per window: {took:?}"
+    );
+    assert!(fa.is_closed() && fb.is_closed(), "hung servers killed");
+}
+
+#[gpui::test]
+fn quit_kills_servers_still_running_at_the_deadline(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new().hang_on("shutdown");
+    let launcher = FakeLauncher::new().with_server("rust-analyzer", fake.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+    open(&wb, "src/main.rs", cx);
+
+    let begun = std::time::Instant::now();
+    cx.update(|_, cx| {
+        lucerna_workbench::LanguageServers::shutdown_all_windows_within(
+            std::time::Duration::from_millis(200),
+            cx,
+        );
+    });
+    assert!(begun.elapsed() < std::time::Duration::from_secs(2));
+    assert!(fake.is_closed(), "killed at the deadline");
+    assert_eq!(count(&fake, "exit"), 0, "never reached exit");
+}
+
+#[gpui::test]
 fn closing_the_window_shuts_servers_down(cx: &mut TestAppContext) {
     let dir = rust_project();
     let fake = FakeServer::new();

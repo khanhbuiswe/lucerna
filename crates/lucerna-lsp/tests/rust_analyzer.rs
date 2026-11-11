@@ -101,7 +101,9 @@ fn rust_analyzer_definition_and_hover() {
         "hover shows the signature, got: {hover}"
     );
 
-    let _ = server.shutdown().join();
+    if let Some(handle) = server.shutdown() {
+        let _ = handle.join();
+    }
 }
 
 /// Waits for the end of rust-analyzer's indexing, or 60 s.
