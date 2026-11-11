@@ -1676,7 +1676,7 @@ impl Render for Workbench {
             .child(title_bar::render(
                 root_name.clone(),
                 self.git_branch.clone(),
-                self.is_restricted(cx),
+                self.language_servers.read(cx).shows_restricted_mode(),
                 ui,
                 cx,
             ))

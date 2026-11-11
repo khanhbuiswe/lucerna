@@ -124,7 +124,7 @@ impl LspStatusItem {
             .any(|s| matches!(s.state, SlotState::Failed { .. }))
         {
             Some(StatusDot::Error)
-        } else if !servers.is_trusted()
+        } else if servers.shows_restricted_mode()
             || statuses
                 .iter()
                 .any(|s| matches!(s.state, SlotState::NotFound { .. }))
@@ -220,7 +220,7 @@ impl LspStatusItem {
         let ui = cx.global::<AppState>().theme.ui.clone();
         let muted = color(ui.text_muted);
         let home = std::env::home_dir();
-        let restricted = !self.servers.read(cx).is_trusted();
+        let restricted = self.servers.read(cx).shows_restricted_mode();
         let rows = self.rows(cx);
         let has_rows = !rows.is_empty();
         let rows = rows.into_iter().enumerate().map(|(i, row)| {
@@ -415,7 +415,7 @@ fn dot(rgba: Rgba) -> gpui::Div {
 impl Render for LspStatusItem {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let servers = self.servers.read(cx);
-        let visible = !servers.statuses().is_empty() || !servers.is_trusted();
+        let visible = !servers.statuses().is_empty() || servers.shows_restricted_mode();
         let progress = servers.progress_text();
         if !visible {
             self.close(window, cx);

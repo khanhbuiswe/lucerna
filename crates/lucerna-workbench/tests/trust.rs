@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use gpui::{BorrowAppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
+use gpui::{AppContext, BorrowAppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
 use lucerna_settings::Layer;
 use lucerna_workbench::{AppState, TrustStore, Workbench};
@@ -470,4 +470,45 @@ fn trust_change_is_saved_when_the_window_closes_right_after(cx: &mut TestAppCont
         !TrustStore::load(data.path()).is_trusted(dir.path()),
         "the choice is saved"
     );
+}
+
+#[gpui::test]
+fn restricted_mode_waits_until_trust_is_known(cx: &mut TestAppContext) {
+    for trusted in [true, false] {
+        let (dir, data) = (rust_project(), TempDir::new().unwrap());
+        if trusted {
+            TrustStore::load(data.path())
+                .trust(dir.path(), false)
+                .unwrap();
+        }
+        init_with("{}", cx);
+        let (root, data_dir) = (dir.path().to_path_buf(), data.path().to_path_buf());
+        // Built and read in one update: `trusted.json` is not read yet, as
+        // at the window's first frame.
+        let (restricted, shown_at_start, window) = cx.update(|cx| {
+            let window = cx
+                .open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| Workbench::with_data_dir(root, data_dir, window, cx))
+                })
+                .unwrap();
+            let (restricted, shown) = window
+                .update(cx, |wb, _, cx| {
+                    let servers = wb.language_servers().read(cx);
+                    (wb.is_restricted(cx), servers.shows_restricted_mode())
+                })
+                .unwrap();
+            (restricted, shown, window)
+        });
+        assert!(restricted, "servers wait for the store");
+        assert!(!shown_at_start, "but Restricted Mode is not shown yet");
+        cx.run_until_parked();
+        let shown = cx
+            .update(|cx| {
+                window.update(cx, |wb, _, cx| {
+                    wb.language_servers().read(cx).shows_restricted_mode()
+                })
+            })
+            .unwrap();
+        assert_eq!(shown, !trusted, "trusted: {trusted}");
+    }
 }

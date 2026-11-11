@@ -118,6 +118,10 @@ pub struct LanguageServers {
     launcher: Arc<dyn Launcher>,
     adapters: Vec<Arc<dyn Adapter>>,
     trusted: bool,
+    /// Whether the folder's trust is known (the store is read, or
+    /// `session.trustAllWorktrees` is set). Until then Restricted Mode is
+    /// not shown, so a trusted folder does not flash it at startup.
+    trust_known: bool,
     registry: Registry,
     /// Bumped per start or stop of a key: results and events of an older
     /// process are dropped (its log lines are kept).
@@ -174,6 +178,7 @@ impl LanguageServers {
             launcher: Arc::new(ProcessLauncher::new()),
             adapters,
             trusted,
+            trust_known: trusted,
             registry,
             generations: HashMap::new(),
             starting: HashMap::new(),
@@ -236,6 +241,24 @@ impl LanguageServers {
 
     pub fn is_trusted(&self) -> bool {
         self.trusted
+    }
+
+    /// Whether the folder's trust is known yet (see the field).
+    pub fn trust_known(&self) -> bool {
+        self.trust_known
+    }
+
+    /// Whether the window shows Restricted Mode: untrusted, and known.
+    pub fn shows_restricted_mode(&self) -> bool {
+        self.trust_known && !self.trusted
+    }
+
+    pub fn set_trust_known(&mut self, known: bool, cx: &mut Context<Self>) {
+        if self.trust_known != known {
+            self.trust_known = known;
+            cx.emit(LanguageServersEvent::StatusChanged);
+            cx.notify();
+        }
     }
 
     /// Every slot, ordered by root then server name.

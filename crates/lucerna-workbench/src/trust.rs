@@ -389,6 +389,8 @@ impl Workbench {
                     .ok();
             }));
         }
+        // Without a store (`stored` is already known) nothing is read.
+        self.apply_trust(cx);
         cx.subscribe_in(documents, window, Self::trust_document_event)
     }
 
@@ -424,9 +426,14 @@ impl Workbench {
             .get_trusted::<bool>(TRUST_ALL_KEY, None)
             == Some(true);
         let trusted = all || self.trust.stored == Some(true);
+        let known = all || self.trust.stored.is_some();
         let servers = self.language_servers().clone();
         if servers.read(cx).is_trusted() != trusted {
             servers.update(cx, |servers, cx| servers.set_trusted(trusted, cx));
+            cx.notify();
+        }
+        if servers.read(cx).trust_known() != known {
+            servers.update(cx, |servers, cx| servers.set_trust_known(known, cx));
             cx.notify();
         }
     }
