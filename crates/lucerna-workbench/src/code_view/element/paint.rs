@@ -31,6 +31,11 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
                 ));
             }
         }
+        if let Some(range) = frame.hover_range.clone() {
+            for bounds in range_bounds(frame, range) {
+                window.paint_quad(fill(bounds, colors.hover));
+            }
+        }
         for (range, active) in &frame.matches {
             for bounds in range_bounds(frame, range.clone()) {
                 window.paint_quad(fill(bounds, colors.search_match));

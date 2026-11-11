@@ -10,6 +10,7 @@
 //! - `lifecycle`: starting, stopping and restarting servers; settings.
 //! - `pump`: server events, diagnostics batches, logs and progress.
 //! - `sync`: document events and file changes sent to the servers.
+//! - `requests`: requests the editor sends (hover).
 //!
 //! Paths are the keys of [`Documents`] (absolute, joined onto the root,
 //! not canonicalised). Servers echo the URIs they were sent, so a
@@ -17,6 +18,7 @@
 
 mod lifecycle;
 mod pump;
+mod requests;
 mod sync;
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -42,6 +44,8 @@ use crate::workspace_state::absolute_path;
 
 use lifecycle::Starting;
 use pump::{ProgressItem, Pump};
+
+pub use requests::HoverInfo;
 
 /// A server slot as the status UI shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]

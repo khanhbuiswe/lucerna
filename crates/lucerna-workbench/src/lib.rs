@@ -14,6 +14,7 @@ pub mod extensions;
 mod find_widget;
 pub mod fonts;
 pub mod git_branch;
+pub mod hover;
 pub mod icons;
 pub mod keys;
 mod language_servers;
@@ -50,7 +51,9 @@ pub use editor_groups::{
 };
 pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
-pub use language_servers::{LanguageServers, LanguageServersEvent, ServerStatus, SlotState};
+pub use language_servers::{
+    HoverInfo, LanguageServers, LanguageServersEvent, ServerStatus, SlotState,
+};
 pub use layout::StatusBarSide;
 pub use layout::title_bar::window_options;
 pub use lsp_log::LspLogView;

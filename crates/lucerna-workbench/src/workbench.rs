@@ -113,6 +113,8 @@ pub struct Workbench {
     pub(crate) diagnostics_status: Entity<DiagnosticsStatusItem>,
     /// The F8 lookup in flight.
     pub(crate) marker_task: Option<Task<()>>,
+    /// Where an F8 jump into a tab not drawn yet shows its hover.
+    pub(crate) marker_hover: Option<(Arc<Path>, Point)>,
     /// The bodies of the server log tabs.
     pub(crate) lsp_logs: LspLogs,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
@@ -249,6 +251,7 @@ impl Workbench {
         trust::register_commands(&mut commands);
         lsp_status::register_commands(&mut commands);
         diagnostics_status::register_commands(&mut commands);
+        crate::hover::register_commands(&mut commands);
         crate::extensions::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
@@ -295,6 +298,19 @@ impl Workbench {
                         TabItem::LspLog(server) => return logs.view(server, &servers, cx).into(),
                     };
                     let view = docs.update(cx, |docs, cx| docs.open(path, cx));
+                    view.update(cx, |v, _| {
+                        v.set_hover_sources(workbench.clone(), servers.downgrade())
+                    });
+                    // An F8 jump into this file shows its hover once the
+                    // view exists.
+                    cx.defer({
+                        let (workbench, view) = (workbench.clone(), view.clone());
+                        move |cx| {
+                            workbench
+                                .update(cx, |wb, cx| wb.show_marker_hover_in(&view, cx))
+                                .ok();
+                        }
+                    });
                     // A scroll settles into a save.
                     let workbench = workbench.clone();
                     cx.observe(&view, move |_, cx| {
@@ -452,6 +468,7 @@ impl Workbench {
             lsp_status: lsp_status.clone(),
             diagnostics_status: diagnostics_status.clone(),
             marker_task: None,
+            marker_hover: None,
             lsp_logs,
             search_view,
             extensions_page,
@@ -941,6 +958,8 @@ impl Workbench {
     /// hold absolute paths.
     pub fn open_path(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
         let path = self.absolute_path(&path);
+        // An F8 hover still waiting for its tab is for an earlier open.
+        self.marker_hover = None;
         self.recent_files.record(path.clone());
         let preview_enabled = cx
             .global::<AppState>()
@@ -1094,6 +1113,11 @@ impl Workbench {
             self.editor_focus.contains_focused(window, cx) && !text_input,
         );
         flag("findWidgetVisible", self.find_widget_visible(cx));
+        flag(
+            "lspHoverVisible",
+            self.active_code_view(cx)
+                .is_some_and(|v| v.read(cx).hover().is_visible()),
+        );
         let active = self.editor_groups.read(cx).model().active_tab();
         let path = active.and_then(|tab| tab.path());
         let extname = path.map(|p| extname(p)).unwrap_or_default();

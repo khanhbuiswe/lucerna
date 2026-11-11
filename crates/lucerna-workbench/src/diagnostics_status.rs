@@ -3,8 +3,6 @@
 //! cursor; and the F8 marker commands.
 
 use std::cmp::Reverse;
-use std::path::Path;
-use std::sync::Arc;
 
 use gpui::{
     AnyElement, Context, Entity, IntoElement, Render, Subscription, WeakEntity, Window, div,
@@ -229,13 +227,29 @@ impl Workbench {
         let Some((path, diagnostic)) = hit else {
             return;
         };
-        // Task 15 opens the diagnostic hover here, without delay.
-        self.jump_to(
-            Arc::from(Path::new(&path)),
-            diagnostic.range.start,
-            OpenMode::Preview,
-            cx,
-        );
+        let path = self.absolute_path(&path);
+        let point = diagnostic.range.start;
+        self.jump_to(path.clone(), point, OpenMode::Preview, cx);
+        // The hover at the marker, without delay; a tab not drawn yet gets
+        // it when its view is made.
+        self.marker_hover = Some((path, point));
+        if let Some(view) = self.active_code_view(cx) {
+            self.show_marker_hover_in(&view, cx);
+        }
+    }
+
+    /// Shows the hover an F8 jump asked for, if `view` shows its file.
+    pub(crate) fn show_marker_hover_in(&mut self, view: &Entity<CodeView>, cx: &mut Context<Self>) {
+        let Some((path, _)) = &self.marker_hover else {
+            return;
+        };
+        if self.absolute_path(view.read(cx).path()) != *path {
+            return;
+        }
+        let Some((_, point)) = self.marker_hover.take() else {
+            return;
+        };
+        view.update(cx, |v, cx| v.hover_mut().show_now(point, cx));
     }
 }
 

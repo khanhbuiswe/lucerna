@@ -22,6 +22,7 @@ use super::layout::{FoldState, char_columns, display_lines_with_tab_size, row_ra
 use super::selection::{self, Selection};
 use super::{CodeView, Drag, hsla};
 use crate::AppState;
+use crate::hover::PopoverAnchor;
 use crate::ui::{SCROLLBAR_WIDTH, thumb_geometry};
 
 /// Rows shaped below the viewport so the next scroll step is ready.
@@ -163,6 +164,8 @@ pub(crate) struct Frame {
     cursor_overlay: Option<std::ops::Range<Point>>,
     /// Search matches touching the rows on screen; `true` for the active one.
     matches: Vec<(std::ops::Range<Point>, bool)>,
+    /// The range of the hover shown, painted with `element.hover`.
+    hover_range: Option<std::ops::Range<Point>>,
     cursor_row: Option<u32>,
     brackets: Vec<Point>,
     /// `·` and `→`, when whitespace is rendered.
@@ -210,6 +213,7 @@ struct FrameColors {
     bracket: Hsla,
     search_match: Hsla,
     active_match: Hsla,
+    hover: Hsla,
     cursor: Hsla,
     scrollbar_thumb: Hsla,
     fade: Hsla,
@@ -291,6 +295,50 @@ impl Frame {
         })
     }
 
+    /// The char with text under `position`: over the text area, inside a
+    /// line's text, and not whitespace.
+    fn char_at(&self, position: gpui::Point<Pixels>) -> Option<Point> {
+        if position.x < self.text_bounds.left() || !self.text_bounds.contains(&position) {
+            return None;
+        }
+        let row = self.row_at(position.y)?;
+        let piece = row.piece();
+        let index = piece.line.index_for_x(position.x - self.text_x)?;
+        if piece.map.is_tab_fill(index) {
+            return None;
+        }
+        let column = piece.map.to_buffer(index);
+        if column >= piece.map.buf_start + piece.map.buf_len {
+            return None;
+        }
+        let text = piece.line.text.get(index..)?;
+        text.chars()
+            .next()
+            .filter(|c| !c.is_whitespace())
+            .map(|_| Point {
+                row: row.buffer_row,
+                column,
+            })
+    }
+
+    /// The left of the char at `p` and the top of its display line, when
+    /// on screen.
+    fn position_of(&self, p: Point) -> Option<(Pixels, Pixels)> {
+        let row = self.rows.iter().find(|r| {
+            let map = &r.piece().map;
+            r.buffer_row == p.row
+                && p.column >= map.buf_start
+                && (p.column < map.buf_start + map.buf_len || r.is_last_piece())
+        })?;
+        Some((self.text_x + row.x_for(p.column), row.top))
+    }
+
+    /// The middle of the char at `p`.
+    pub fn char_position(&self, p: Point) -> Option<gpui::Point<Pixels>> {
+        let (x, top) = self.position_of(p)?;
+        Some(point(x + self.char_width / 2., top + self.line_height / 2.))
+    }
+
     fn row_at(&self, y: Pixels) -> Option<&FrameRow> {
         self.rows
             .iter()
@@ -351,8 +399,21 @@ impl Element for CodeElement {
         cx: &mut App,
     ) -> Arc<Frame> {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        self.view
-            .update(cx, |view, cx| view.layout_frame(bounds, hitbox, window, cx))
+        let frame = self
+            .view
+            .update(cx, |view, cx| view.layout_frame(bounds, hitbox, window, cx));
+        let anchor = self.view.read(cx).hover().anchor().and_then(|p| {
+            let (x, line_top) = frame.position_of(p)?;
+            Some(PopoverAnchor {
+                editor: frame.bounds,
+                x,
+                line_top,
+                line_height: frame.line_height,
+                char_width: frame.char_width,
+            })
+        });
+        crate::hover::prepaint_popover(&self.view, anchor, window, cx);
+        frame
     }
 
     fn paint(
@@ -617,6 +678,7 @@ impl CodeView {
             block_selection: self.block_selection.clone().unwrap_or_default(),
             cursor_overlay,
             matches,
+            hover_range: self.hover.highlight_range(),
             cursor_row,
             brackets,
             whitespace,
@@ -631,6 +693,7 @@ impl CodeView {
                 bracket: hsla(ui.editor_foreground).opacity(BRACKET_BOX_ALPHA),
                 search_match: hsla(ui.search_match_background),
                 active_match: hsla(ui.editor_foreground).opacity(ACTIVE_MATCH_ALPHA),
+                hover: hsla(ui.element_hover),
                 cursor: hsla(ui.editor_foreground).opacity(CURSOR_ALPHA),
                 scrollbar_thumb: hsla(ui.scrollbar_thumb),
                 fade: hsla(ui.editor_background).opacity(FADE_ALPHA),
@@ -919,6 +982,7 @@ impl CodeView {
         cx: &mut gpui::Context<Self>,
     ) {
         window.focus(&self.focus, cx);
+        self.hover.hide(cx);
         let Some(frame) = self.frame.clone() else {
             return;
         };
@@ -983,6 +1047,7 @@ impl CodeView {
 
     fn scroll_wheel(&mut self, ev: &ScrollEvent, cx: &mut gpui::Context<Self>) {
         let delta = ev.delta.pixel_delta(px(self.line_height()));
+        self.hover.hide(cx);
         self.scroll_by(-f32::from(delta.y));
         if !self.word_wrap {
             self.scroll_x = (self.scroll_x - f32::from(delta.x)).max(0.);
@@ -1075,14 +1140,32 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
             }
         }
     });
+    // The LSP hover follows the char under the mouse; the button held
+    // (a selection drag) counts as no char.
+    window.on_mouse_event({
+        let (view, hitbox, frame) = (view.clone(), hitbox.clone(), frame.clone());
+        move |ev: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let point = (ev.pressed_button.is_none() && hitbox.is_hovered(window))
+                .then(|| frame.char_at(ev.position))
+                .flatten();
+            view.update(cx, |v, cx| v.hover.mouse_moved(point, ev.position, cx));
+        }
+    });
     // The mouse can leave the window straight from the gutter, with no
     // move outside it to clear the hover.
     window.on_mouse_event({
         let view = view.clone();
-        move |_: &MouseExitEvent, phase, _, cx| {
-            if phase == DispatchPhase::Bubble && view.read(cx).gutter_hovered() {
+        move |ev: &MouseExitEvent, phase, _, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            if view.read(cx).gutter_hovered() {
                 view.update(cx, |v, cx| v.set_gutter_hovered(false, cx));
             }
+            view.update(cx, |v, cx| v.hover.mouse_moved(None, ev.position, cx));
         }
     });
     window.on_mouse_event({

@@ -12,6 +12,7 @@
   { "key": "shift+f4", "command": "search.action.focusPreviousSearchResult" },
   { "key": "cmd+f", "command": "actions.find", "when": "editorFocus" },
   { "key": "escape", "command": "closeFindWidget", "when": "editorFocus && findWidgetVisible" },
+  { "key": "escape", "command": "editor.action.hideHover", "when": "editorFocus && lspHoverVisible" },
   { "key": "escape", "command": "workbench.action.closeQuickOpen", "when": "inQuickOpen" },
   { "key": "cmd+b", "command": "workbench.action.toggleSidebarVisibility" },
   { "key": "cmd+shift+e", "command": "workbench.view.explorer" },

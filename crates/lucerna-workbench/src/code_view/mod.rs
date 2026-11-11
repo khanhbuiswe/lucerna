@@ -30,6 +30,7 @@ pub use diagnostics::{DiagnosticRows, Mark, MarkStyle};
 pub use layout::{
     DisplayLine, FoldState, MAX_RENDERED_LINE_CHARS, display_lines, display_lines_with_tab_size,
 };
+pub(crate) use selection::word_at;
 
 use self::cache::Caches;
 use self::element::{CodeElement, Frame};
@@ -37,6 +38,8 @@ use self::selection::Selection;
 use crate::documents::{DocState, Documents};
 use crate::editor_groups::{EditorGroupsView, Tab};
 use crate::find_widget::FindWidget;
+use crate::hover::{HoverConfig, HoverController};
+use crate::language_servers::LanguageServers;
 use crate::layout::color;
 use crate::tasks::{catch_panic, guarded};
 use crate::ui::GRID;
@@ -67,6 +70,7 @@ struct Config {
     gutter_icons: bool,
     /// `lucerna.diagnostics.inline.enabled`.
     inline_diagnostics: bool,
+    hover: HoverConfig,
 }
 
 impl Config {
@@ -105,6 +109,7 @@ impl Config {
             inline_diagnostics: settings
                 .get("lucerna.diagnostics.inline.enabled", language)
                 .unwrap_or(false),
+            hover: HoverConfig::read(settings, language),
         };
         let font_size = settings
             .get::<f32>("editor.fontSize", language)
@@ -230,6 +235,10 @@ pub struct CodeView {
     /// The scrollbar marks last laid out, reused while nothing they
     /// depend on changed.
     scrollbar_marks: Option<element::ScrollbarMarks>,
+    /// The LSP hover of this view.
+    hover: HoverController,
+    /// Hides the hover when focus leaves the view; made on first render.
+    _focus_out: Option<Subscription>,
 }
 
 impl CodeView {
@@ -245,6 +254,7 @@ impl CodeView {
         let snapshot = Buffer::from_bytes(b"", false)
             .expect("empty text decodes")
             .snapshot();
+        let hover = HoverController::new(path.clone(), config.hover, snapshot.clone());
         CodeView {
             path,
             language_id,
@@ -287,6 +297,8 @@ impl CodeView {
             diagnostic_rows: DiagnosticRows::default(),
             diagnostic_rows_generation: 0,
             scrollbar_marks: None,
+            hover,
+            _focus_out: None,
         }
     }
 
@@ -386,6 +398,7 @@ impl CodeView {
             offset: 0.,
         };
         let changed = reload.start_row..reload.old_end_row;
+        self.hover.hide(cx);
         self.selection = self
             .selection
             .filter(|s| {
@@ -441,6 +454,7 @@ impl CodeView {
         self.large = snapshot.len_bytes() as u64 > self.config.max_bytes
             || snapshot.line_count() > self.config.max_lines;
         self.snapshot = snapshot;
+        self.hover.set_snapshot(self.snapshot.clone());
         self.revision += 1;
         self.max_line_width = 0.;
         self.caches.clear();
@@ -477,6 +491,7 @@ impl CodeView {
                 || config.max_bytes != self.config.max_bytes
                 || config.max_lines != self.config.max_lines;
             self.config = config;
+            self.hover.set_config(self.config.hover);
             if refold {
                 self.large = self.snapshot.len_bytes() as u64 > self.config.max_bytes
                     || self.snapshot.line_count() > self.config.max_lines;
@@ -529,6 +544,7 @@ impl CodeView {
     pub fn set_diagnostics(&mut self, diagnostics: Arc<[Diagnostic]>, cx: &mut Context<Self>) {
         self.diagnostic_rows = DiagnosticRows::build(&diagnostics, &self.snapshot);
         self.diagnostic_rows_generation += 1;
+        self.hover.set_diagnostics(diagnostics.clone());
         self.diagnostics = diagnostics;
         self.diagnostics_source = true;
         cx.notify();
@@ -539,11 +555,36 @@ impl CodeView {
     pub(crate) fn clear_diagnostics(&mut self, cx: &mut Context<Self>) {
         if self.diagnostics_source || !self.diagnostics.is_empty() {
             self.diagnostics = Arc::from([]);
+            self.hover.set_diagnostics(self.diagnostics.clone());
             self.diagnostics_source = false;
             self.diagnostic_rows = DiagnosticRows::default();
             self.diagnostic_rows_generation += 1;
             cx.notify();
         }
+    }
+
+    /// The LSP hover of this view.
+    pub fn hover(&self) -> &HoverController {
+        &self.hover
+    }
+
+    pub(crate) fn hover_mut(&mut self) -> &mut HoverController {
+        &mut self.hover
+    }
+
+    /// Where hover answers come from and where their links go.
+    pub(crate) fn set_hover_sources(
+        &mut self,
+        workbench: WeakEntity<Workbench>,
+        servers: WeakEntity<LanguageServers>,
+    ) {
+        self.hover.set_sources(workbench, servers);
+    }
+
+    /// The middle of the char at `p` in window coordinates, as last
+    /// painted; `None` when it is not on screen.
+    pub fn char_position(&self, p: Point) -> Option<gpui::Point<gpui::Pixels>> {
+        self.frame.as_ref()?.char_position(p)
     }
 
     /// The diagnostics last set, sorted by range start.
@@ -1123,7 +1164,13 @@ impl Focusable for CodeView {
 }
 
 impl Render for CodeView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self._focus_out.is_none() {
+            let focus = self.focus.clone();
+            self._focus_out = Some(cx.on_focus_out(&focus, window, |v, _, _, cx| {
+                v.hover.hide(cx);
+            }));
+        }
         if self.painted_revision != self.revision {
             self.painted_revision = self.revision;
             tracing::debug!(
@@ -1152,6 +1199,8 @@ impl Render for CodeView {
             .id("code-view")
             .debug_selector(|| "code-view".into())
             .track_focus(&self.focus)
+            // Any key that reaches the view hides the hover.
+            .on_key_down(cx.listener(|v, _, _, cx| v.hover.hide(cx)))
             .flex()
             .flex_col()
             .size_full()
