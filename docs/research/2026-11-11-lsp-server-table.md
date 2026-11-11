@@ -200,7 +200,7 @@ languageId lấy từ bảng "Language identifiers" của LSP 3.17 (https://micr
 | Ngôn ngữ | Server | Lệnh stdio | Root markers | languageId | Cài trên macOS | Cần Node? |
 |---|---|---|---|---|---|---|
 | PHP | intelephense | `intelephense --stdio` | `composer.json`, `.git` | `php` | `npm i -g intelephense` | Có |
-| PHP | phpactor | `phpactor language-server` | `composer.json`, `.phpactor.json`, `.git` | `php` | `brew install phpactor` hoặc phar | Không (PHP 8.1+) |
+| PHP | phpactor | `phpactor language-server` | `composer.json`, `.phpactor.json`, `.git` | `php` | `composer global require phpactor/phpactor` hoặc phar (Homebrew core không có formula) | Không (PHP 8.1+) |
 | Ruby | ruby-lsp | `ruby-lsp` | `Gemfile`, `.git` | `ruby` | `gem install ruby-lsp` | Không (Ruby) |
 | Ruby | solargraph | `solargraph stdio` | `Gemfile`, `.git` | `ruby` | `gem install solargraph` | Không (Ruby) |
 | Java | jdtls | `jdtls` (+ `-data <dir>`) | `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `.git` | `java` | `brew install jdtls` | Không (JDK 21+, Python 3) |

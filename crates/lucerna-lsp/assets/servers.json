@@ -157,8 +157,8 @@
     ],
     "enabled": false,
     "install": {
-      "macos": "brew install phpactor",
-      "linux": "brew install phpactor"
+      "macos": "composer global require phpactor/phpactor",
+      "linux": "composer global require phpactor/phpactor"
     },
     "homepage": "https://phpactor.readthedocs.io/en/master/usage/language-server.html"
   },
