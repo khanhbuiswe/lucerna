@@ -102,3 +102,25 @@ fn stderr_keeps_draining_after_invalid_utf8() {
     assert_eq!(lines, 3000);
     assert_eq!(recv(&rx), Event::Closed(Some(0)));
 }
+
+#[test]
+fn stdout_closed_while_alive_kills_and_closes() {
+    let (tx, rx) = unbounded();
+    let _transport = spawn_process(
+        &spec(&["-c", "exec 1>&-; sleep 30"]),
+        Arc::new(Recorder(tx)),
+    )
+    .unwrap();
+    let event = rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("closed within 3s of stdout EOF");
+    assert!(matches!(event, Event::Closed(_)), "{event:?}");
+}
+
+#[test]
+fn exit_code_reported_after_long_quiet_run() {
+    let (tx, rx) = unbounded();
+    let _transport =
+        spawn_process(&spec(&["-c", "sleep 0.3; exit 7"]), Arc::new(Recorder(tx))).unwrap();
+    assert_eq!(recv(&rx), Event::Closed(Some(7)));
+}
