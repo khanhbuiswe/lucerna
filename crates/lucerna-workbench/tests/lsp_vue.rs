@@ -152,10 +152,61 @@ fn relay_waits_for_a_starting_typescript_server(cx: &mut gpui::TestAppContext) {
     settle(cx);
 
     assert_eq!(count(&vtsls, "workspace/executeCommand"), 1);
+    // vtsls has the file before it is asked about it.
+    let order = methods(&vtsls);
+    let opened = order.iter().position(|m| m == "textDocument/didOpen");
+    let asked = order.iter().position(|m| m == "workspace/executeCommand");
+    assert!(opened.is_some() && opened < asked, "{order:?}");
     assert_eq!(
         sent(&vue, "tsserver/response"),
         vec![json!([[7, { "displayString": "_vue:quickinfo" }]])]
     );
+}
+
+#[gpui::test]
+fn relay_answers_null_when_starting_typescript_server_fails(cx: &mut gpui::TestAppContext) {
+    let dir = vue_project();
+    let vue = vue_server(quickinfo());
+    let vtsls = ts_server().hang_on("initialize");
+    let launcher = launcher()
+        .with_server("vue-language-server", vue.clone())
+        .with_server("vtsls", vtsls.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+
+    open(&wb, "App.vue", cx);
+    assert!(sent(&vue, "tsserver/response").is_empty());
+
+    // vtsls dies before answering `initialize`.
+    vtsls.crash(Some(1));
+    settle(cx);
+
+    assert_eq!(count(&vtsls, "workspace/executeCommand"), 0);
+    assert_eq!(sent(&vue, "tsserver/response"), vec![json!([[7, null]])]);
+}
+
+#[gpui::test]
+fn relay_answers_null_when_waiting_typescript_server_is_stopped(cx: &mut gpui::TestAppContext) {
+    let dir = vue_project();
+    let vue = vue_server(quickinfo());
+    let vtsls = ts_server().hang_on("initialize");
+    let launcher = launcher()
+        .with_server("vue-language-server", vue.clone())
+        .with_server("vtsls", vtsls.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+
+    open(&wb, "App.vue", cx);
+    assert!(sent(&vue, "tsserver/response").is_empty());
+
+    let servers = language_servers(&wb, cx);
+    let key = lucerna_lsp::ServerKey {
+        root: Arc::from(dir.path()),
+        server: "vtsls".into(),
+    };
+    servers.update(cx, |servers, cx| servers.stop(&key, cx));
+    settle(cx);
+
+    assert_eq!(count(&vtsls, "workspace/executeCommand"), 0);
+    assert_eq!(sent(&vue, "tsserver/response"), vec![json!([[7, null]])]);
 }
 
 #[gpui::test]

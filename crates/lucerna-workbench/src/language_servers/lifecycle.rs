@@ -379,7 +379,6 @@ impl LanguageServers {
             server.set_settings(settings);
         }
         self.registry.set_slot(key.clone(), Slot::Running(server));
-        self.flush_relay(None, cx);
         cx.emit(LanguageServersEvent::ServerReady(key.clone()));
         cx.emit(LanguageServersEvent::StatusChanged);
         let paths: Vec<Arc<Path>> = self
@@ -402,6 +401,9 @@ impl LanguageServers {
         for path in waiting {
             self.find_servers(&path, cx);
         }
+        // After `didOpen`: tsserver answers relayed requests about open
+        // files only.
+        self.flush_relay(None, cx);
         cx.notify();
     }
 
