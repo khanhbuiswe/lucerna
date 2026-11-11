@@ -19,6 +19,7 @@ lucerna-syntax = { path = "crates/lucerna-syntax" }
 lucerna-theme = { path = "crates/lucerna-theme" }
 lucerna-extension = { path = "crates/lucerna-extension" }
 lucerna-vim = { path = "crates/lucerna-vim" }
+lucerna-lsp = { path = "crates/lucerna-lsp" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -70,6 +71,10 @@ tree-sitter-html = "0.23"
 tree-sitter-css = "0.25"
 insta = "1"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+# LSP
+lsp-types = "0.97"
+pulldown-cmark = { version = "0.13", default-features = false }
 
 unicode-width = "0.2"
 url = "2"

@@ -1,0 +1,12 @@
+[package]
+name = "lucerna-lsp"
+description = "Lucerna: language server client (gpui-free)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lucerna-text.workspace = true
+lsp-types.workspace = true
+url.workspace = true
