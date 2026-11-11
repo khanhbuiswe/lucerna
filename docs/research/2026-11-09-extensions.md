@@ -25,6 +25,7 @@
     - `extensions.toml`, mỗi mục là `[<id>] submodule = "extensions/<id>"`, `version = "x.y.z"`, `path = "subdir"` (không bắt buộc);
     - các git submodule đã ghim theo commit.
   - CI của repo đó build extension bằng `extension_cli`. Repo không chứa archive build sẵn.
+  - Lưu ý về điều khoản: Zed có điều khoản công khai (https://zed.dev/terms, cập nhật 2026-03-02). §2.2 chỉ cho truy cập Service qua "the mechanisms designated by Zed", §2.4(b) cấm "seek to access non-public APIs associated with the Service". Endpoint extension của `api.zed.dev` không có tài liệu công khai, nên Lucerna không gọi nó. Xem `docs/research/2026-11-11-lsp-server-table.md` §5.
   - Muốn không dùng `api.zed.dev` thì phải tự làm các bước: đọc `extensions.toml` và `.gitmodules`, lấy commit của submodule, fetch về, áp dụng `path`, rồi tự build.
 - **VS Code:**
   - Gói `.vsix` là một file zip. Gallery là `POST {serviceUrl}/extensionquery`.

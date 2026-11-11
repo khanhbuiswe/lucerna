@@ -16,7 +16,7 @@ Người dùng cài được extension từ registry của Zed ngay trong Lucern
 - ngôn ngữ, gồm grammar tree-sitter và các query;
 - snippet: được cài và kiểm tra, nhưng chưa dùng tới. Phần chèn snippet thuộc giai đoạn 4.
 
-Extension được tự build từ repo `zed-industries/extensions`. Lucerna **không** gọi `api.zed.dev`, vì dịch vụ này không có điều khoản sử dụng công khai.
+Extension được tự build từ repo `zed-industries/extensions`. Lucerna **không** gọi `api.zed.dev`. Zed có điều khoản công khai (https://zed.dev/terms): §2.2 chỉ cho truy cập qua cơ chế do Zed chỉ định, §2.4(b) cấm truy cập API không công khai, mà endpoint extension của `api.zed.dev` không có tài liệu công khai. Chi tiết ở `docs/research/2026-11-11-lsp-server-table.md` §5.
 
 ### 1.2 Tiêu chí thành công
 
