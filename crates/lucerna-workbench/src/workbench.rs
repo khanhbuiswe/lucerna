@@ -24,6 +24,7 @@ use crate::documents::{DocumentStatusItem, Documents};
 use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode, TabId, TabItem};
 use crate::explorer::ExplorerView;
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
+use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;
 use crate::layout::sidebar::SidebarSash;
 use crate::layout::{
@@ -383,7 +384,8 @@ impl Workbench {
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
         let mut subscriptions = vec![
             cx.observe(&editor_groups, |wb, _, cx| {
-                wb.refresh_watched_open_files(cx)
+                wb.refresh_watched_open_files(cx);
+                wb.hide_hidden_hovers(cx);
             }),
             cx.observe_in(&editor_groups, window, Self::singleton_tab_hidden),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
@@ -1290,6 +1292,16 @@ impl Workbench {
         let stroke = keys::to_keystroke(ev);
         let ctx = self.context_keys(window, cx);
         let chord_pending = !self.pending_chord.is_empty();
+        // Typing hides the hover, also when vim or a command takes the
+        // key before the editor sees it.
+        let hover = self
+            .active_code_view(cx)
+            .filter(|v| v.read(cx).hover().is_visible());
+        let hide_hover = |cx: &mut Context<Self>| {
+            if let Some(view) = &hover {
+                view.update(cx, |v, cx| v.hover_mut().hide(cx));
+            }
+        };
         if vim::dispatch(
             &self.vim,
             &self.editor_groups,
@@ -1299,6 +1311,7 @@ impl Workbench {
             window,
             cx,
         ) {
+            hide_hover(cx);
             cx.stop_propagation();
             return;
         }
@@ -1314,6 +1327,9 @@ impl Workbench {
         }
         match resolution {
             Resolution::Command { command, args } => {
+                if command != SHOW_HOVER {
+                    hide_hover(cx);
+                }
                 if self.run_command(&command, args.as_ref(), window, cx) {
                     cx.stop_propagation();
                 } else {

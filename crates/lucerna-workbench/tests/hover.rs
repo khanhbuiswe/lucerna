@@ -154,7 +154,9 @@ fn deeply_nested_list_renders_without_overflowing(cx: &mut TestAppContext) {
 
 mod lsp_hover {
     use super::*;
-    use gpui::{Bounds, Entity, Modifiers, Pixels, ScrollDelta, ScrollEvent, point, px};
+    use gpui::{
+        BorrowAppContext, Bounds, Entity, Modifiers, Pixels, ScrollDelta, ScrollEvent, point, px,
+    };
     use lucerna_lsp::position::path_to_uri;
     use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
     use lucerna_settings::parse_when;
@@ -579,6 +581,109 @@ mod lsp_hover {
         assert!(
             above.bottom() <= row20.y - line / 2. + px(0.5),
             "above row 20"
+        );
+    }
+
+    #[gpui::test]
+    fn crossing_adjacent_row_into_popover_keeps_the_hover(cx: &mut TestAppContext) {
+        let (_dir, fake, _wb, view, cx) = setup(TRUSTED, answering(FakeServer::new()), cx);
+        hover_at(&view, 0, 4, cx);
+        advance(300, cx);
+        let before = markdown(&view, cx).expect("shown");
+        let bounds = popover(cx).expect("popover below row 0");
+        // The strip between row 0 and the popover is row 1's chars.
+        let row1 = view
+            .read_with(cx, |v, _| v.char_position(Point { row: 1, column: 4 }))
+            .unwrap();
+        let strip = point(row1.x, bounds.top() - px(2.));
+        move_to(strip, cx);
+        move_to(bounds.center(), cx);
+        advance(1000, cx);
+        assert!(visible(&view, cx));
+        assert_eq!(markdown(&view, cx), Some(before));
+        assert_eq!(count(&fake, HOVER), 1, "no request for the crossed row");
+    }
+
+    #[gpui::test]
+    fn key_bound_to_a_command_hides_the_hover(cx: &mut TestAppContext) {
+        let (_dir, _fake, wb, view, cx) = setup(TRUSTED, answering(FakeServer::new()), cx);
+        cx.update(|_, cx| {
+            cx.update_global::<AppState, _>(|state, _| {
+                let user = r#"[{ "key": "down", "command": "editor.action.toggleWordWrap" }]"#;
+                state.keymap = lucerna_settings::Keymap::load(
+                    lucerna_settings::Keymap::default_bindings(),
+                    Some(user),
+                )
+                .0;
+            })
+        });
+        wb.update_in(cx, |wb, window, cx| wb.focus_editor_area(window, cx));
+        hover_at(&view, 0, 4, cx);
+        advance(300, cx);
+        assert!(visible(&view, cx));
+        cx.simulate_keystrokes("down");
+        assert!(view.read_with(cx, |v, _| v.word_wrap()), "the command ran");
+        assert!(!visible(&view, cx));
+    }
+
+    #[gpui::test]
+    fn vim_visual_escape_hides_the_hover(cx: &mut TestAppContext) {
+        let settings = r#"{ "session.trustAllWorktrees": true, "vim.enabled": true }"#;
+        let (_dir, _fake, wb, view, cx) = setup(settings, answering(FakeServer::new()), cx);
+        wb.update_in(cx, |wb, window, cx| wb.focus_editor_area(window, cx));
+        cx.simulate_keystrokes("v");
+        super::draw(cx);
+        assert!(holds(&wb, "vim.mode == 'Visual'", cx), "in visual mode");
+        hover_at(&view, 0, 4, cx);
+        advance(300, cx);
+        assert!(visible(&view, cx));
+        cx.simulate_keystrokes("escape");
+        assert!(
+            holds(&wb, "vim.mode == 'Normal'", cx),
+            "vim took the Escape"
+        );
+        assert!(!visible(&view, cx));
+    }
+
+    #[gpui::test]
+    fn new_text_hides_the_hover(cx: &mut TestAppContext) {
+        let (_dir, _fake, _wb, view, cx) = setup(TRUSTED, answering(FakeServer::new()), cx);
+        hover_at(&view, 0, 4, cx);
+        advance(300, cx);
+        assert!(visible(&view, cx));
+        let snapshot = lucerna_text::Buffer::from_bytes(b"other text\n", false)
+            .unwrap()
+            .snapshot();
+        view.update(cx, |v, cx| v.set_buffer(snapshot, cx));
+        assert!(!visible(&view, cx));
+    }
+
+    #[gpui::test]
+    fn switching_tabs_by_command_hides_the_old_hover(cx: &mut TestAppContext) {
+        let (dir, _fake, wb, main, cx) = setup(TRUSTED, answering(FakeServer::new()), cx);
+        fs::write(dir.path().join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+        wb.update_in(cx, |wb, window, cx| wb.focus_editor_area(window, cx));
+        let lib = dir.path().join("src/lib.rs");
+        wb.update(cx, |wb, cx| {
+            wb.jump_to(
+                Arc::from(lib.as_path()),
+                Point { row: 0, column: 0 },
+                lucerna_workbench::OpenMode::Pinned,
+                cx,
+            )
+        });
+        settle(cx);
+        let lib_view = active_view(&wb, cx);
+        assert_ne!(lib_view, main);
+        hover_at(&lib_view, 0, 8, cx);
+        advance(300, cx);
+        assert!(visible(&lib_view, cx));
+        run(&wb, "workbench.action.navigateBack", cx);
+        settle(cx);
+        assert_eq!(active_view(&wb, cx), main);
+        assert!(
+            !lib_view.read_with(cx, |v, _| v.hover().is_visible()),
+            "the hidden tab's hover is gone"
         );
     }
 }

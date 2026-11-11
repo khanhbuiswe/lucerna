@@ -454,7 +454,7 @@ impl CodeView {
         self.large = snapshot.len_bytes() as u64 > self.config.max_bytes
             || snapshot.line_count() > self.config.max_lines;
         self.snapshot = snapshot;
-        self.hover.set_snapshot(self.snapshot.clone());
+        self.hover.set_snapshot(self.snapshot.clone(), cx);
         self.revision += 1;
         self.max_line_width = 0.;
         self.caches.clear();

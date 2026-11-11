@@ -43,6 +43,9 @@ const MIN_WIDTH_CHARS: f32 = 20.;
 const MAX_WIDTH_CHARS: f32 = 120.;
 const MAX_HEIGHT_LINES: f32 = 16.;
 
+/// Shows the hover at the cursor; the one key command that keeps it.
+pub(crate) const SHOW_HOVER: &str = "editor.action.showHover";
+
 /// The `editor.hover.*` settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HoverConfig {
@@ -140,11 +143,15 @@ impl HoverController {
         self.servers = Some(servers);
     }
 
-    /// The view shows `snapshot`: a hover waiting for content keeps its
-    /// point (a jump into a file that was loading).
-    pub(crate) fn set_snapshot(&mut self, snapshot: BufferSnapshot) {
+    /// The view shows `snapshot`: a visible hover is about the old text
+    /// and hides; one still waiting for content keeps its point (a jump
+    /// into a file that was loading).
+    pub(crate) fn set_snapshot(&mut self, snapshot: BufferSnapshot, cx: &mut Context<CodeView>) {
         self.snapshot = snapshot;
         self.pending = None;
+        if self.is_visible() {
+            self.hide(cx);
+        }
         if let Some(shown) = &mut self.shown
             && shown.info.is_none()
         {
@@ -179,6 +186,9 @@ impl HoverController {
                 .is_some_and(|s| visible && char_in(&s.range, p))
         });
         if visible && (in_range || (self.config.sticky && in_popover)) {
+            // A word crossed on the way (the strip between the line and
+            // the popover is the next row's) must not replace this one.
+            self.pending = None;
             self.hide_task = None;
             return;
         }
@@ -250,6 +260,11 @@ impl HoverController {
         if self.shown.take().is_some() {
             cx.notify();
         }
+    }
+
+    /// Whether a hover is shown, waiting or hiding.
+    pub(crate) fn is_busy(&self) -> bool {
+        self.shown.is_some() || self.pending.is_some() || self.hide_task.is_some()
     }
 
     /// Whether the popover shows: it has an answer or diagnostics.
@@ -596,19 +611,32 @@ fn diagnostic_block(i: usize, d: &Diagnostic, on_link: LinkHandler, cx: &App) ->
         .into_any_element()
 }
 
+impl Workbench {
+    /// Hides the hover of every code view whose tab is no longer on
+    /// screen: switching tabs need not move focus out of the old view.
+    pub(crate) fn hide_hidden_hovers(&mut self, cx: &mut Context<Workbench>) {
+        let views: Vec<Entity<CodeView>> = self
+            .editor_groups()
+            .read(cx)
+            .hidden_bodies()
+            .filter_map(|body| body.clone().downcast::<CodeView>().ok())
+            .filter(|view| view.read(cx).hover().is_busy())
+            .collect();
+        for view in views {
+            view.update(cx, |v, cx| v.hover_mut().hide(cx));
+        }
+    }
+}
+
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
-    commands.register(
-        "editor.action.showHover",
-        "Show or Focus Hover",
-        |wb, _, _, cx| {
-            if let Some(view) = wb.active_code_view(cx) {
-                view.update(cx, |v, cx| {
-                    let cursor = v.cursor();
-                    v.hover_mut().show_now(cursor, cx);
-                });
-            }
-        },
-    );
+    commands.register(SHOW_HOVER, "Show or Focus Hover", |wb, _, _, cx| {
+        if let Some(view) = wb.active_code_view(cx) {
+            view.update(cx, |v, cx| {
+                let cursor = v.cursor();
+                v.hover_mut().show_now(cursor, cx);
+            });
+        }
+    });
     commands.register("editor.action.hideHover", "Hide Hover", |wb, _, _, cx| {
         if let Some(view) = wb.active_code_view(cx) {
             view.update(cx, |v, cx| v.hover_mut().hide(cx));

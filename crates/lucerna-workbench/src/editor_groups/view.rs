@@ -155,6 +155,21 @@ impl EditorGroupsView {
     }
 
     /// The body of tab `id`, if it has been drawn.
+    /// The bodies made for tabs that are not the active tab of their
+    /// group, so not on screen.
+    pub(crate) fn hidden_bodies(&self) -> impl Iterator<Item = &AnyView> + '_ {
+        let active: Vec<TabId> = self
+            .model
+            .groups()
+            .iter()
+            .filter_map(|g| g.active)
+            .collect();
+        self.bodies
+            .iter()
+            .filter(move |(id, _)| !active.contains(id))
+            .map(|(_, body)| body)
+    }
+
     pub(crate) fn body_of(&self, id: TabId) -> Option<AnyView> {
         self.bodies.get(&id).cloned()
     }

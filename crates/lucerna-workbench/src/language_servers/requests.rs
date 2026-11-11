@@ -132,15 +132,32 @@ fn marked_string(marked: MarkedString) -> String {
 }
 
 /// Plain text as markdown showing it verbatim: punctuation escaped, line
-/// breaks kept.
+/// breaks kept, leading indentation as no-break spaces (markdown would
+/// drop it, or read four spaces as code), blank lines as paragraph breaks.
 fn escape_markdown(text: &str) -> String {
+    const NBSP: char = '\u{a0}';
     let mut out = String::with_capacity(text.len() + text.len() / 8);
+    // Whether the last line written had text, so the next one continues
+    // its paragraph.
+    let mut in_paragraph = false;
+    let mut blank = false;
     for line in text.lines() {
-        if !out.is_empty() {
-            // A backslash at the end of a line is a hard break.
-            out.push_str("\\\n");
+        if line.trim().is_empty() {
+            blank = true;
+            continue;
         }
-        for c in line.chars() {
+        if in_paragraph {
+            // A backslash at the end of a line is a hard break.
+            out.push_str(if blank { "\n\n" } else { "\\\n" });
+        }
+        blank = false;
+        in_paragraph = true;
+        let body = line.trim_start_matches([' ', '\t']);
+        for c in line[..line.len() - body.len()].chars() {
+            let width = if c == '\t' { 4 } else { 1 };
+            out.extend(std::iter::repeat_n(NBSP, width));
+        }
+        for c in body.chars() {
             if c.is_ascii_punctuation() {
                 out.push('\\');
             }
@@ -167,5 +184,28 @@ mod tests {
     #[test]
     fn plain_text_is_escaped() {
         assert_eq!(escape_markdown("a *b*\n# c"), "a \\*b\\*\\\n\\# c");
+    }
+
+    #[test]
+    fn plain_text_keeps_indentation_and_paragraphs() {
+        let md = escape_markdown("fn f()\n    indented\n\n  two");
+        let nbsp = '\u{a0}';
+        assert_eq!(
+            md,
+            format!(
+                "fn f\\(\\)\\\n{}indented\n\n{}two",
+                nbsp.to_string().repeat(4),
+                nbsp.to_string().repeat(2)
+            )
+        );
+        let blocks = crate::markdown::parse_markdown(&md, None);
+        assert!(
+            blocks
+                .blocks()
+                .iter()
+                .all(|b| matches!(b, crate::markdown::Block::Paragraph(_))),
+            "{blocks:?}"
+        );
+        assert_eq!(blocks.blocks().len(), 2);
     }
 }
