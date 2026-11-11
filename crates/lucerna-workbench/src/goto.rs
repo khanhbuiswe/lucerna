@@ -131,7 +131,9 @@ pub fn run_goto(
 }
 
 /// Looks up `kind` at `point` of `view`. The latest lookup wins: an
-/// earlier one still waiting is dropped, which cancels its requests.
+/// earlier one still waiting is dropped, which cancels its requests. An
+/// answer is dropped, as VS Code does, when it arrives after `view` stopped
+/// being the active editor, its cursor left `point` or its text changed.
 #[allow(clippy::too_many_arguments)]
 pub fn goto_at(
     wb: &mut Workbench,
@@ -144,6 +146,7 @@ pub fn goto_at(
     cx: &mut Context<Workbench>,
 ) {
     let path = wb.absolute_path(view.read(cx).path());
+    let revision = view.read(cx).revision();
     let request = wb
         .language_servers()
         .clone()
@@ -156,6 +159,12 @@ pub fn goto_at(
             let Some(view) = view.upgrade() else {
                 return;
             };
+            let active = wb.active_code_view(cx).as_ref() == Some(&view);
+            let v = view.read(cx);
+            if !active || v.cursor() != point || v.revision() != revision {
+                tracing::debug!(?kind, "goto answer dropped: the editor moved on");
+                return;
+            }
             let lookup = Lookup {
                 view,
                 point,
@@ -196,7 +205,7 @@ fn show_results(
     let Some(first) = locations.first().cloned() else {
         if source == GotoSource::Command {
             let word = message_word(view.read(cx), point);
-            show_no_result(&view, kind, &word, cx);
+            show_no_result_at(&view, kind, &word, point, cx);
         }
         return;
     };
@@ -262,7 +271,7 @@ fn show_locations(
 
 /// Opens `loc` as a preview tab with the cursor at its start, recording
 /// the jump in the navigation history; `aside` opens it in the group to
-/// the right instead, splitting when there is none.
+/// the right instead, splitting when there is none, and records it there.
 fn open_location(
     wb: &mut Workbench,
     loc: &ResolvedLocation,
@@ -282,7 +291,8 @@ fn open_location(
             m.split_active();
         }
     });
-    wb.open_path_at(path, OpenMode::Preview, point, cx);
+    // Recorded in the aside group, from the place it showed.
+    wb.jump_to(path, point, OpenMode::Preview, cx);
     wb.focus_editor_area(window, cx);
 }
 
@@ -325,9 +335,20 @@ fn no_result_text(kind: GotoKind, word: &str) -> String {
 /// Shows that `kind` found nothing for `word` at the cursor of `view`,
 /// for 3 s or until the cursor moves or a key is pressed.
 pub fn show_no_result(view: &Entity<CodeView>, kind: GotoKind, word: &str, cx: &mut App) {
+    let point = view.read(cx).cursor();
+    show_no_result_at(view, kind, word, point, cx);
+}
+
+/// Like [`show_no_result`], anchored at `point`.
+fn show_no_result_at(
+    view: &Entity<CodeView>,
+    kind: GotoKind,
+    word: &str,
+    point: Point,
+    cx: &mut App,
+) {
     let text = SharedString::from(no_result_text(kind, word));
     view.update(cx, |v, cx| {
-        let point = v.cursor();
         let hide = cx.spawn(async move |view, cx| {
             cx.background_executor().timer(MESSAGE_DURATION).await;
             view.update(cx, |v, cx| v.set_goto_message(None, cx)).ok();

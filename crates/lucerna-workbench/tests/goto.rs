@@ -210,7 +210,8 @@ fn no_result_popover_text(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("goto-message").is_some(), "message drawn");
     assert_eq!(active_file(&wb, cx), "main.rs");
 
-    // Gone after 3 s (each settle lets 200 ms pass: 2.9 s here).
+    // Gone after 3 s. Each settle lets 200 ms pass: shown during `run`,
+    // so 200 ms have passed; 200 + 2500 + 200 (this settle) = 2900 ms.
     cx.executor().advance_clock(Duration::from_millis(2500));
     settle(cx);
     assert!(message(&view, cx).is_some());
@@ -303,7 +304,11 @@ fn aside_opens_in_second_group(cx: &mut TestAppContext) {
     assert_eq!(active_file(&wb, cx), "b.rs");
     assert_eq!(cursor(&wb, cx), pt(1, 7));
 
-    // With a group to the right already, it is reused.
+    // With a group to the right already, it is reused, and the jump is
+    // in that group's history: from main.rs, which it showed.
+    let right = open(&wb, "src/main.rs", cx);
+    right.update(cx, |v, cx| v.set_cursor(pt(2, 0), cx));
+    settle(cx);
     run(&wb, "workbench.action.focusFirstEditorGroup", cx);
     run(&wb, "editor.action.revealDefinitionAside", cx);
     let (groups, active) = cx.update(|_, cx| {
@@ -312,6 +317,15 @@ fn aside_opens_in_second_group(cx: &mut TestAppContext) {
     });
     assert_eq!((groups, active), (2, 1));
     assert_eq!(active_file(&wb, cx), "b.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 7));
+    run(&wb, "workbench.action.navigateBack", cx);
+    assert_eq!(active_file(&wb, cx), "main.rs");
+    assert_eq!(cursor(&wb, cx), pt(2, 0));
+    let active = cx.update(|_, cx| {
+        let model = wb.read(cx).editor_groups().read(cx);
+        model.model().active_group()
+    });
+    assert_eq!(active, 1);
 }
 
 #[gpui::test]
@@ -351,6 +365,67 @@ fn duplicate_results_collapse_into_one(cx: &mut TestAppContext) {
     );
     run(&wb, "editor.action.revealDefinition", cx);
     assert_eq!(count(&fake, DEFINITION), 1);
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 7));
+}
+
+/// A server that answers `textDocument/definition` only when the test says.
+fn slow(_: &Path) -> FakeServer {
+    FakeServer::new().hang_on(DEFINITION)
+}
+
+/// Answers the oldest waiting definition request with b.rs `helper`.
+fn answer_definition(fake: &FakeServer, dir: &Path, cx: &mut VisualTestContext) {
+    let id = fake.hung_ids(DEFINITION).remove(0);
+    assert!(fake.answer_hung(&id, location(dir, "b.rs", 1, 7, 13)));
+    settle(cx);
+}
+
+#[gpui::test]
+fn late_answer_after_cursor_moved_is_dropped(cx: &mut TestAppContext) {
+    let (dir, fake, wb, view, cx) = setup(TRUSTED, pt(1, 8), slow, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    view.update(cx, |v, cx| v.set_cursor(pt(0, 4), cx));
+    settle(cx);
+    answer_definition(&fake, dir.path(), cx);
+    assert_eq!(active_file(&wb, cx), "main.rs");
+    assert_eq!(cursor(&wb, cx), pt(0, 4));
+    assert_eq!(message(&view, cx), None);
+}
+
+#[gpui::test]
+fn late_answer_after_file_switched_is_dropped(cx: &mut TestAppContext) {
+    let (dir, fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), slow, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    let b = open(&wb, "src/b.rs", cx);
+    b.update(cx, |v, cx| v.set_cursor(pt(2, 3), cx));
+    settle(cx);
+    answer_definition(&fake, dir.path(), cx);
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert_eq!(cursor(&wb, cx), pt(2, 3), "not moved to helper");
+}
+
+#[gpui::test]
+fn second_press_cancels_the_first(cx: &mut TestAppContext) {
+    let (dir, fake, wb, view, cx) = setup(TRUSTED, pt(1, 8), slow, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    let first = fake.hung_ids(DEFINITION).remove(0);
+    assert_eq!(count(&fake, "$/cancelRequest"), 0);
+    view.update(cx, |v, cx| v.set_cursor(pt(0, 4), cx));
+    settle(cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    let cancels = sent(&fake, "$/cancelRequest");
+    assert_eq!(cancels.len(), 1);
+    assert_eq!(cancels[0]["id"], first);
+
+    // The first answer, if it still came, goes nowhere; the second applies.
+    fake.answer_hung(&first, location(dir.path(), "b.rs", 2, 7, 12));
+    settle(cx);
+    assert_eq!(active_file(&wb, cx), "main.rs");
+    let ids = fake.hung_ids(DEFINITION);
+    assert_eq!(ids.len(), 1);
+    assert!(fake.answer_hung(&ids[0], location(dir.path(), "b.rs", 1, 7, 13)));
+    settle(cx);
     assert_eq!(active_file(&wb, cx), "b.rs");
     assert_eq!(cursor(&wb, cx), pt(1, 7));
 }

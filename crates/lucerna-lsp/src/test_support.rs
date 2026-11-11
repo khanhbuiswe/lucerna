@@ -47,6 +47,8 @@ struct Shared {
     /// Client replies to `FakePeer::request`, by id.
     responses: Mutex<HashMap<i64, FakeReply>>,
     next_id: AtomicI64,
+    /// Requests of `hang_on` methods not answered yet: method and id.
+    hung: Mutex<Vec<(String, Value)>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -119,6 +121,30 @@ impl FakeServer {
     pub fn hang_on(mut self, method: &str) -> Self {
         self.config.hang.insert(method.to_owned());
         self
+    }
+
+    /// The JSON-RPC ids of the unanswered requests for a `hang_on`
+    /// method, oldest first.
+    pub fn hung_ids(&self, method: &str) -> Vec<Value> {
+        lock(&self.shared.hung)
+            .iter()
+            .filter(|(m, _)| m == method)
+            .map(|(_, id)| id.clone())
+            .collect()
+    }
+
+    /// Answers the hung request `id` with `result`, as a slow server
+    /// would. Returns `false` when no such request is waiting.
+    pub fn answer_hung(&self, id: &Value, result: Value) -> bool {
+        let mut hung = lock(&self.shared.hung);
+        let Some(i) = hung.iter().position(|(_, h)| h == id) else {
+            return false;
+        };
+        hung.remove(i);
+        drop(hung);
+        self.shared
+            .deliver(&json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+        true
     }
 
     /// Method and params (`null` when absent) of every request and
@@ -263,6 +289,7 @@ impl Transport for FakeTransport {
 
         if let Some(id) = msg.get("id") {
             if self.config.hang.contains(method) {
+                lock(&self.shared.hung).push((method.to_owned(), id.clone()));
                 return;
             }
             let mut reply = json!({ "jsonrpc": "2.0", "id": id });
