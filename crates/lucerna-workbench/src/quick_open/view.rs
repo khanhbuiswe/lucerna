@@ -148,6 +148,10 @@ pub struct QuickOpen {
     rows: Vec<Row>,
     selected: usize,
     scroll: ScrollHandle,
+    /// Renders left that scroll to the selection again: gpui resolves
+    /// `scroll_to_item` in the list's first layout, before the list knows
+    /// its height, so new rows ask once more after that layout.
+    rescroll: u8,
     /// Bumped on every query; a background match applies its results
     /// only while its generation is still the latest.
     generation: u64,
@@ -196,6 +200,7 @@ impl QuickOpen {
             rows: Vec::new(),
             selected: 0,
             scroll: ScrollHandle::new(),
+            rescroll: 0,
             generation: 0,
             cancel: Arc::new(AtomicBool::new(false)),
             _matching: Task::ready(()),
@@ -324,6 +329,11 @@ impl QuickOpen {
 
     pub fn selected_index(&self) -> usize {
         self.selected
+    }
+
+    /// The list's vertical scroll offset: negative once scrolled down.
+    pub fn list_scroll_offset(&self) -> gpui::Pixels {
+        self.scroll.offset().y
     }
 
     /// Each row as plain text, the parts joined by spaces: `"main.rs src"`,
@@ -524,6 +534,7 @@ impl QuickOpen {
         self.rows = rows;
         self.selected = selected;
         self.scroll.scroll_to_item(selected);
+        self.rescroll = 2;
         cx.notify();
     }
 
@@ -698,6 +709,13 @@ impl Focusable for QuickOpen {
 
 impl Render for QuickOpen {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.rescroll > 0 {
+            self.rescroll -= 1;
+            self.scroll.scroll_to_item(self.selected);
+            if self.rescroll > 0 {
+                cx.notify();
+            }
+        }
         let rows: Vec<AnyElement> = (0..self.rows.len())
             .map(|i| self.render_row(i, cx))
             .collect();

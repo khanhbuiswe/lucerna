@@ -1023,3 +1023,29 @@ fn hash_enter_keeps_editor_text_focus(cx: &mut TestAppContext) {
     assert!(active_path(&wb, cx).ends_with("src/lib.rs"));
     assert!(editor_text_focus(&wb, cx));
 }
+
+/// Forty functions on rows 0..40, the cursor in the last one.
+fn many_symbols() -> Value {
+    Value::Array(
+        (0..40u32)
+            .map(|i| {
+                json!({ "name": format!("f{i}"), "kind": 12, "range": range(i, 0, i, 10),
+                        "selectionRange": range(i, 3, i, 5) })
+            })
+            .collect(),
+    )
+}
+
+#[gpui::test]
+fn at_scrolls_the_initial_selection_into_view(cx: &mut TestAppContext) {
+    let fake = FakeServer::new().on_request(DOCUMENT_SYMBOL, |_| Ok(many_symbols()));
+    let (_dir, wb, _view, cx) = setup(&fake, pt(39, 4), cx);
+    run(&wb, "workbench.action.gotoSymbol", cx);
+    assert_eq!(selected(&wb, cx), 39, "the symbol at the cursor");
+    let qo = quick_open(&wb, cx).expect("quick open is shown");
+    let offset = cx.update(|_, cx| qo.read(cx).list_scroll_offset());
+    assert!(
+        offset < gpui::px(0.),
+        "the list scrolled down to the selected row, offset {offset:?}"
+    );
+}
