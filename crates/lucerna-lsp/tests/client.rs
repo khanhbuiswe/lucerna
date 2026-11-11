@@ -512,3 +512,66 @@ fn set_settings_sends_did_change_configuration() {
         )
     );
 }
+
+#[test]
+fn configuration_matches_literal_dotted_keys_before_walking() {
+    let replies = Arc::new(Mutex::new(Vec::new()));
+    let fake = FakeServer::new().on_notification("initialized", {
+        let replies = Arc::clone(&replies);
+        move |_, peer| {
+            replies.lock().unwrap().push(peer.request(
+                "workspace/configuration",
+                json!({"items": [
+                    {"section": "basedpyright.analysis"},
+                    {"section": "rust-analyzer.cargo"},
+                    {"section": "rust-analyzer"}
+                ]}),
+            ));
+        }
+    });
+    let settings = json!({
+        "basedpyright.analysis": {"typeCheckingMode": "strict"},
+        "rust-analyzer": {"cargo": {"features": "all"}}
+    });
+    let (server, _events) = start(&fake, settings);
+    init(&server);
+    assert_eq!(
+        replies.lock().unwrap()[0],
+        Some(Ok(json!([
+            {"typeCheckingMode": "strict"},
+            {"features": "all"},
+            {"cargo": {"features": "all"}}
+        ])))
+    );
+}
+
+#[test]
+fn one_bad_diagnostic_does_not_drop_the_publish() {
+    let fake = FakeServer::new().on_notification("initialized", |_, peer| {
+        peer.notify(
+            "textDocument/publishDiagnostics",
+            json!({"uri": "file:///a.rs", "version": 2, "diagnostics": [
+                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+                 "message": "good"},
+                {"range": "not a range", "message": "bad"}
+            ]}),
+        );
+    });
+    let (server, mut events) = start(&fake, json!({}));
+    init(&server);
+    let published: Vec<_> = drain(&mut events)
+        .into_iter()
+        .filter_map(|e| match e {
+            ServerEvent::Diagnostics(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(published.len(), 1, "publish kept");
+    assert_eq!(published[0].version, Some(2));
+    let messages: Vec<_> = published[0]
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(messages, ["good"]);
+}

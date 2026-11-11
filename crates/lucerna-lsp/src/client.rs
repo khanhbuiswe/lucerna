@@ -550,7 +550,8 @@ impl Inner {
     }
 
     /// One value per item: the whole settings object without a `section`,
-    /// else the value at its dotted path, else `null`.
+    /// else the value at that section (literal dotted keys such as
+    /// `"basedpyright.analysis"` first, then nested objects), else `null`.
     fn configuration(&self, params: &Value) -> Value {
         let items = params
             .get("items")
@@ -561,9 +562,7 @@ impl Inner {
             .iter()
             .map(|item| match item.get("section").and_then(Value::as_str) {
                 None | Some("") => state.settings.clone(),
-                Some(section) => section
-                    .split('.')
-                    .try_fold(&state.settings, |value, key| value.get(key))
+                Some(section) => settings_section(&state.settings, section)
                     .cloned()
                     .unwrap_or(Value::Null),
             })
@@ -609,7 +608,7 @@ impl Inner {
     fn on_notification(&self, method: &str, params: Value) {
         match method {
             PublishDiagnostics::METHOD => {
-                if let Some(params) = self.parse::<PublishDiagnosticsParams>(method, params) {
+                if let Some(params) = self.parse_diagnostics(params) {
                     self.emit(ServerEvent::Diagnostics(params));
                 }
             }
@@ -633,6 +632,29 @@ impl Inner {
             }
             _ => {}
         }
+    }
+
+    /// Decodes each diagnostic on its own, so one malformed entry is
+    /// dropped (and logged) instead of the whole publish.
+    fn parse_diagnostics(&self, mut params: Value) -> Option<PublishDiagnosticsParams> {
+        let method = PublishDiagnostics::METHOD;
+        let items = params
+            .get_mut("diagnostics")
+            .map(Value::take)
+            .unwrap_or_default();
+        if let Some(object) = params.as_object_mut() {
+            object.insert("diagnostics".into(), Value::Array(Vec::new()));
+        }
+        let mut parsed = self.parse::<PublishDiagnosticsParams>(method, params)?;
+        let Value::Array(items) = items else {
+            tracing::warn!(server = %self.name, method, "diagnostics is not an array");
+            return Some(parsed);
+        };
+        parsed.diagnostics = items
+            .into_iter()
+            .filter_map(|item| self.parse(method, item))
+            .collect();
+        Some(parsed)
     }
 
     fn parse<T: DeserializeOwned>(&self, method: &str, params: Value) -> Option<T> {
@@ -756,4 +778,17 @@ impl<T> Drop for RequestFuture<T> {
             inner.cancel(self.id);
         }
     }
+}
+
+/// The value for a `workspace/configuration` section. Settings may spell a
+/// section as a literal dotted key (`"basedpyright.analysis": {..}`), as
+/// nested objects, or as a mix, so every split of the dotted path is tried,
+/// longest literal key first.
+fn settings_section<'a>(settings: &'a Value, section: &str) -> Option<&'a Value> {
+    if let Some(value) = settings.get(section) {
+        return Some(value);
+    }
+    section
+        .rmatch_indices('.')
+        .find_map(|(dot, _)| settings_section(settings.get(&section[..dot])?, &section[dot + 1..]))
 }
