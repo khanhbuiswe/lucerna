@@ -3,14 +3,17 @@
 pub mod adapters;
 pub mod capabilities;
 pub mod client;
+pub mod diagnostics;
 pub mod env;
 pub mod framing;
 mod guard;
 pub mod launcher;
+pub mod locations;
 pub mod position;
 pub mod process;
 pub mod registry;
 pub mod settings;
+pub mod sync;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod transport;
