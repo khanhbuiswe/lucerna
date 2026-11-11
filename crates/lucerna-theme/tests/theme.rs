@@ -273,3 +273,76 @@ fn editor_subheader_background_from_theme_or_fallback() {
         );
     }
 }
+
+#[test]
+fn theme_reads_diagnostic_colors() {
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "diag.json",
+        r##"{"name":"D","themes":[
+            {"name":"Set","appearance":"dark","style":{
+                "warning":"#112233ff","info":"#112234ff","hint":"#112235ff",
+                "error.background":"#112236ff","warning.background":"#112237ff",
+                "info.background":"#112238ff","hint.background":"#112239ff",
+                "error.border":"#11223aff","warning.border":"#11223bff",
+                "info.border":"#11223cff","hint.border":"#11223dff",
+                "link_text.hover":"#11223eff",
+                "editor.highlighted_line.background":"#11223fff",
+                "element.hover":"#112240ff"}},
+            {"name":"Plain","appearance":"dark","style":{}},
+            {"name":"Plain Light","appearance":"light","style":{}}
+        ]}"##,
+    );
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
+    let hex = |s: &str| Rgba::parse_hex(s).unwrap();
+    let set = &reg.get("Set").unwrap().ui;
+    assert_eq!(set.warning, hex("#112233ff"));
+    assert_eq!(set.info, hex("#112234ff"));
+    assert_eq!(set.hint, hex("#112235ff"));
+    assert_eq!(set.error_background, hex("#112236ff"));
+    assert_eq!(set.warning_background, hex("#112237ff"));
+    assert_eq!(set.info_background, hex("#112238ff"));
+    assert_eq!(set.hint_background, hex("#112239ff"));
+    assert_eq!(set.error_border, hex("#11223aff"));
+    assert_eq!(set.warning_border, hex("#11223bff"));
+    assert_eq!(set.info_border, hex("#11223cff"));
+    assert_eq!(set.hint_border, hex("#11223dff"));
+    assert_eq!(set.link_text_hover, hex("#11223eff"));
+    assert_eq!(set.editor_highlighted_line_background, hex("#11223fff"));
+    assert_eq!(set.element_hover, hex("#112240ff"));
+
+    let dark = &reg.get("Plain").unwrap().ui;
+    let light = &reg.get("Plain Light").unwrap().ui;
+    assert_eq!(*dark, UiColors::fallback(Appearance::Dark));
+    assert_eq!(*light, UiColors::fallback(Appearance::Light));
+    assert_eq!(dark.warning, hex("#dec184ff"));
+    assert_eq!(light.warning, hex("#a48819ff"));
+    assert_eq!(dark.info, hex("#74ade8ff"));
+    assert_eq!(light.info, hex("#5c78e2ff"));
+    assert_eq!(dark.hint, hex("#788ca6ff"));
+    assert_eq!(light.hint, hex("#7274a7ff"));
+    assert_eq!(dark.error_background, hex("#d072771a"));
+    assert_eq!(light.error_background, hex("#fbdfd9ff"));
+    assert_eq!(dark.warning_background, hex("#dec1841a"));
+    assert_eq!(light.warning_background, hex("#faf2e6ff"));
+    assert_eq!(dark.info_background, hex("#74ade81a"));
+    assert_eq!(light.info_background, hex("#e2e2faff"));
+    assert_eq!(dark.hint_background, hex("#5a6f891a"));
+    assert_eq!(light.hint_background, hex("#e2e2faff"));
+    assert_eq!(dark.error_border, hex("#4c2b2cff"));
+    assert_eq!(light.error_border, hex("#f6c6bdff"));
+    assert_eq!(dark.warning_border, hex("#5d4c2fff"));
+    assert_eq!(light.warning_border, hex("#f4e7d1ff"));
+    assert_eq!(dark.info_border, hex("#293b5bff"));
+    assert_eq!(light.info_border, hex("#cbcdf6ff"));
+    assert_eq!(dark.hint_border, hex("#293b5bff"));
+    assert_eq!(light.hint_border, hex("#cbcdf6ff"));
+    assert_eq!(dark.link_text_hover, hex("#74ade8ff"));
+    assert_eq!(light.link_text_hover, hex("#5c78e2ff"));
+    assert_eq!(dark.editor_highlighted_line_background, hex("#2f343eff"));
+    assert_eq!(light.editor_highlighted_line_background, hex("#ebebecff"));
+    assert_eq!(dark.element_hover, dark.ghost_element_hover);
+    assert_eq!(light.element_hover, light.ghost_element_hover);
+}

@@ -69,6 +69,22 @@ mod tests {
         Modifiers::control()
     }
 
+    fn alt_shift() -> Modifiers {
+        Modifiers {
+            alt: true,
+            shift: true,
+            ..Modifiers::none()
+        }
+    }
+
+    fn ctrl_shift() -> Modifiers {
+        Modifiers {
+            control: true,
+            shift: true,
+            ..Modifiers::none()
+        }
+    }
+
     fn alt() -> Modifiers {
         Modifiers::alt()
     }
@@ -102,6 +118,21 @@ mod tests {
             (event("j", None, cmd_shift()), "shift+cmd+j"),
             (event("f4", None, Modifiers::none()), "f4"),
             (event("f4", None, Modifiers::shift()), "shift+f4"),
+            (event("f12", None, Modifiers::none()), "f12"),
+            (event("f12", None, alt()), "alt+f12"),
+            (event("f12", None, cmd()), "cmd+f12"),
+            (event("f12", None, cmd_shift()), "shift+cmd+f12"),
+            (event("f12", None, Modifiers::shift()), "shift+f12"),
+            (event("f12", None, alt_shift()), "shift+alt+f12"),
+            (event("i", None, cmd()), "cmd+i"),
+            (event("f8", None, Modifiers::none()), "f8"),
+            (event("f8", None, Modifiers::shift()), "shift+f8"),
+            (event("f8", None, alt()), "alt+f8"),
+            (event("f8", None, alt_shift()), "shift+alt+f8"),
+            (event("o", None, cmd_shift()), "shift+cmd+o"),
+            (event(".", None, cmd_shift()), "shift+cmd+."),
+            (event("-", None, ctrl()), "ctrl+-"),
+            (event("-", None, ctrl_shift()), "ctrl+shift+-"),
         ];
         for (digit, binding) in [
             ("1", "cmd+1"),

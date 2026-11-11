@@ -247,3 +247,100 @@ fn files_associations_merge_across_layers() {
     assert_eq!(assoc["*.a"], "x");
     assert_eq!(assoc["*.b"], "y");
 }
+
+#[test]
+fn get_trusted_ignores_workspace_layer() {
+    let mut s = SettingsStore::with_defaults();
+    s.set_layer(
+        Layer::Workspace,
+        r#"{"lsp.x": "ws", "lsp.o": {"a": 1, "b": 1}, "[python]": {"lsp.py": "ws"}}"#,
+    )
+    .unwrap();
+    assert_eq!(s.get_trusted::<String>("lsp.x", None), None);
+    assert_eq!(s.get::<String>("lsp.x", None).as_deref(), Some("ws"));
+    assert_eq!(s.get_trusted::<String>("lsp.py", Some("python")), None);
+
+    s.set_layer(
+        Layer::User,
+        r#"{"lsp.x": "user", "lsp.o": {"b": 2}, "[python]": {"lsp.py": "user"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        s.get_trusted::<String>("lsp.x", None).as_deref(),
+        Some("user")
+    );
+    assert_eq!(
+        s.get_trusted::<String>("lsp.py", Some("python")).as_deref(),
+        Some("user")
+    );
+    // Objects still merge across Default and User, without Workspace.
+    s.set_layer(Layer::Default, r#"{"lsp.o": {"a": 0, "c": 0}}"#)
+        .unwrap();
+    let merged: BTreeMap<String, u32> = s.get_trusted("lsp.o", None).unwrap();
+    assert_eq!(
+        merged,
+        BTreeMap::from([("a".into(), 0), ("b".into(), 2), ("c".into(), 0)])
+    );
+}
+
+#[test]
+fn default_settings_have_phase3_keys() {
+    let s = SettingsStore::with_defaults();
+    assert_eq!(s.get::<bool>("lucerna.lsp.enabled", None), Some(true));
+    assert_eq!(
+        s.get::<Vec<String>>("lucerna.lsp.languageServers", None),
+        Some(vec!["...".to_string()])
+    );
+    assert_eq!(
+        s.get::<Vec<String>>("lucerna.lsp.languageServers", Some("python")),
+        Some(vec![
+            "basedpyright".to_string(),
+            "!pyright".to_string(),
+            "...".to_string()
+        ])
+    );
+    assert_eq!(
+        s.get::<serde_json::Value>("lsp", None),
+        Some(serde_json::json!({}))
+    );
+    assert_eq!(
+        s.get::<bool>("session.trustAllWorktrees", None),
+        Some(false)
+    );
+    assert_eq!(s.get::<bool>("editor.hover.enabled", None), Some(true));
+    assert_eq!(s.get::<u32>("editor.hover.delay", None), Some(300));
+    assert_eq!(s.get::<bool>("editor.hover.sticky", None), Some(true));
+    assert_eq!(s.get::<u32>("editor.hover.hidingDelay", None), Some(300));
+    for k in [
+        "multipleDefinitions",
+        "multipleTypeDefinitions",
+        "multipleImplementations",
+        "multipleDeclarations",
+        "multipleReferences",
+    ] {
+        assert_eq!(
+            s.get::<String>(&format!("editor.gotoLocation.{k}"), None)
+                .as_deref(),
+            Some("peek"),
+            "{k}"
+        );
+    }
+    assert_eq!(
+        s.get::<bool>("lucerna.diagnostics.gutterIcons", None),
+        Some(true)
+    );
+    assert_eq!(
+        s.get::<bool>("lucerna.diagnostics.inline.enabled", None),
+        Some(false)
+    );
+    assert_eq!(s.get::<bool>("breadcrumbs.enabled", None), Some(true));
+    assert_eq!(
+        s.get::<String>("breadcrumbs.filePath", None).as_deref(),
+        Some("on")
+    );
+    assert_eq!(
+        s.get::<String>("breadcrumbs.symbolPath", None).as_deref(),
+        Some("on")
+    );
+    assert_eq!(s.get::<bool>("breadcrumbs.icons", None), Some(true));
+}

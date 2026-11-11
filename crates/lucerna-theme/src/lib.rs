@@ -88,6 +88,25 @@ pub struct UiColors {
     pub tab_bar_background: Rgba,
     /// Error text, such as a broken settings file in the status bar.
     pub error: Rgba,
+    pub warning: Rgba,
+    pub info: Rgba,
+    pub hint: Rgba,
+    /// Diagnostic severity tints and borders (`<severity>.background`,
+    /// `<severity>.border`).
+    pub error_background: Rgba,
+    pub warning_background: Rgba,
+    pub info_background: Rgba,
+    pub hint_background: Rgba,
+    pub error_border: Rgba,
+    pub warning_border: Rgba,
+    pub info_border: Rgba,
+    pub hint_border: Rgba,
+    /// `link_text.hover`: a link or ⌘-hovered symbol under the mouse.
+    pub link_text_hover: Rgba,
+    /// `editor.highlighted_line.background`: the line a jump landed on.
+    pub editor_highlighted_line_background: Rgba,
+    /// `element.hover`: a control under the mouse.
+    pub element_hover: Rgba,
     /// `scrollbar.thumb.background`: the thin overlay scrollbar's thumb.
     pub scrollbar_thumb: Rgba,
 }
@@ -150,6 +169,11 @@ impl UiColors {
                 gray(0x38, 0x4c),
             ),
         };
+        let hex = |s: &str| Rgba::parse_hex(s).expect("valid fallback hex");
+        let pick = |dark: &str, light: &str| match appearance {
+            Appearance::Dark => hex(dark),
+            Appearance::Light => hex(light),
+        };
         UiColors {
             background: panel,
             border,
@@ -177,6 +201,20 @@ impl UiColors {
             icon_muted: muted,
             tab_bar_background: panel,
             error: ERROR_RED,
+            warning: pick("#dec184ff", "#a48819ff"),
+            info: pick("#74ade8ff", "#5c78e2ff"),
+            hint: pick("#788ca6ff", "#7274a7ff"),
+            error_background: pick("#d072771a", "#fbdfd9ff"),
+            warning_background: pick("#dec1841a", "#faf2e6ff"),
+            info_background: pick("#74ade81a", "#e2e2faff"),
+            hint_background: pick("#5a6f891a", "#e2e2faff"),
+            error_border: pick("#4c2b2cff", "#f6c6bdff"),
+            warning_border: pick("#5d4c2fff", "#f4e7d1ff"),
+            info_border: pick("#293b5bff", "#cbcdf6ff"),
+            hint_border: pick("#293b5bff", "#cbcdf6ff"),
+            link_text_hover: pick("#74ade8ff", "#5c78e2ff"),
+            editor_highlighted_line_background: pick("#2f343eff", "#ebebecff"),
+            element_hover: hover,
             scrollbar_thumb,
         }
     }

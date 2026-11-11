@@ -88,6 +88,21 @@ impl ThemeDef {
                 .or_else(|| color("panel.background"))
                 .unwrap_or(fb.tab_bar_background),
             error: color("error").unwrap_or(fb.error),
+            warning: color("warning").unwrap_or(fb.warning),
+            info: color("info").unwrap_or(fb.info),
+            hint: color("hint").unwrap_or(fb.hint),
+            error_background: color("error.background").unwrap_or(fb.error_background),
+            warning_background: color("warning.background").unwrap_or(fb.warning_background),
+            info_background: color("info.background").unwrap_or(fb.info_background),
+            hint_background: color("hint.background").unwrap_or(fb.hint_background),
+            error_border: color("error.border").unwrap_or(fb.error_border),
+            warning_border: color("warning.border").unwrap_or(fb.warning_border),
+            info_border: color("info.border").unwrap_or(fb.info_border),
+            hint_border: color("hint.border").unwrap_or(fb.hint_border),
+            link_text_hover: color("link_text.hover").unwrap_or(fb.link_text_hover),
+            editor_highlighted_line_background: color("editor.highlighted_line.background")
+                .unwrap_or(fb.editor_highlighted_line_background),
+            element_hover: color("element.hover").unwrap_or(fb.element_hover),
             scrollbar_thumb: color("scrollbar.thumb.background").unwrap_or(fb.scrollbar_thumb),
         };
 

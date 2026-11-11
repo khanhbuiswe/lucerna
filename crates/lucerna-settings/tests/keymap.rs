@@ -170,3 +170,63 @@ fn text_inputs_keep_option_z_and_cmd_c() {
     assert_eq!(km.resolve(&keys("alt+z"), &ctx), Resolution::NoMatch);
     assert_eq!(km.resolve(&keys("cmd+c"), &ctx), Resolution::NoMatch);
 }
+
+#[test]
+fn keymap_has_phase3_bindings() {
+    let km = defaults();
+    let mut editor = Context::default();
+    editor.set("editorTextFocus", ContextValue::Bool(true));
+    let cases = [
+        ("f12", "editor.action.revealDefinition"),
+        ("alt+f12", "editor.action.peekDefinition"),
+        ("cmd+f12", "editor.action.goToImplementation"),
+        ("shift+cmd+f12", "editor.action.peekImplementation"),
+        ("shift+f12", "editor.action.goToReferences"),
+        ("shift+alt+f12", "references-view.findReferences"),
+        ("cmd+k f12", "editor.action.revealDefinitionAside"),
+        ("cmd+k cmd+i", "editor.action.showHover"),
+        ("f8", "editor.action.marker.nextInFiles"),
+        ("shift+f8", "editor.action.marker.prevInFiles"),
+        ("alt+f8", "editor.action.marker.next"),
+        ("shift+alt+f8", "editor.action.marker.prev"),
+        ("shift+cmd+o", "workbench.action.gotoSymbol"),
+        ("shift+cmd+.", "breadcrumbs.focusAndSelect"),
+    ];
+    for (k, cmd) in cases {
+        assert_eq!(command(km.resolve(&keys(k), &editor)), cmd, "{k}");
+        // Editor actions need the editor focused.
+        assert_eq!(
+            km.resolve(&keys(k), &Context::default()),
+            Resolution::NoMatch,
+            "{k} without focus"
+        );
+    }
+    let none = Context::default();
+    assert_eq!(
+        command(km.resolve(&keys("cmd+t"), &none)),
+        "workbench.action.showAllSymbols"
+    );
+    assert_eq!(
+        command(km.resolve(&keys("ctrl+-"), &none)),
+        "workbench.action.navigateBack"
+    );
+    assert_eq!(
+        command(km.resolve(&keys("ctrl+shift+-"), &none)),
+        "workbench.action.navigateForward"
+    );
+    // f4 keeps its search meaning, and is the References view's when focused.
+    assert_eq!(
+        command(km.resolve(&keys("f4"), &none)),
+        "search.action.focusNextSearchResult"
+    );
+    let mut refs = Context::default();
+    refs.set("referencesViewFocus", ContextValue::Bool(true));
+    assert_eq!(
+        command(km.resolve(&keys("f4"), &refs)),
+        "references-view.next"
+    );
+    assert_eq!(
+        command(km.resolve(&keys("shift+f4"), &refs)),
+        "references-view.prev"
+    );
+}

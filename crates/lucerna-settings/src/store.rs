@@ -53,7 +53,23 @@ impl SettingsStore {
     /// value replaces lower ones. A value that does not deserialize into
     /// `T` yields `None`.
     pub fn get<T: DeserializeOwned>(&self, key: &str, language: Option<&str>) -> Option<T> {
-        let mut candidates = self.candidates(key, language);
+        self.get_from(key, language, true)
+    }
+
+    /// Like [`get`](Self::get) but without the Workspace layer, for settings
+    /// that can run code (a language server's binary) and so must not come
+    /// from an untrusted folder.
+    pub fn get_trusted<T: DeserializeOwned>(&self, key: &str, language: Option<&str>) -> Option<T> {
+        self.get_from(key, language, false)
+    }
+
+    fn get_from<T: DeserializeOwned>(
+        &self,
+        key: &str,
+        language: Option<&str>,
+        workspace: bool,
+    ) -> Option<T> {
+        let mut candidates = self.candidates(key, language, workspace);
         let first = candidates.next()?;
         if !first.is_object() {
             return T::deserialize(first).ok();
@@ -74,20 +90,22 @@ impl SettingsStore {
         &'a self,
         key: &'a str,
         language: Option<&str>,
+        workspace: bool,
     ) -> impl Iterator<Item = &'a Value> + 'a {
-        let layers = [&self.workspace, &self.user, &self.default];
+        let layers: Vec<&Map<String, Value>> = if workspace {
+            vec![&self.workspace, &self.user, &self.default]
+        } else {
+            vec![&self.user, &self.default]
+        };
         let section = language.map(|lang| format!("[{lang}]"));
+        let flat = layers.clone();
         let overrides = layers.into_iter().filter_map(move |layer| {
             let Some(Value::Object(overrides)) = layer.get(section.as_deref()?) else {
                 return None;
             };
             lookup(overrides, key)
         });
-        overrides.chain(
-            layers
-                .into_iter()
-                .filter_map(move |layer| lookup(layer, key)),
-        )
+        overrides.chain(flat.into_iter().filter_map(move |layer| lookup(layer, key)))
     }
 }
 
