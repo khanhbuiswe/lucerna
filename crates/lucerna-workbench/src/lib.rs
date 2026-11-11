@@ -15,6 +15,7 @@ pub mod fonts;
 pub mod git_branch;
 pub mod icons;
 pub mod keys;
+mod language_servers;
 mod layout;
 mod open_files;
 pub mod open_requests;
@@ -35,13 +36,14 @@ pub use config_files::{
     CONFIG_DEBOUNCE, ConfigError, ConfigFile, ConfigPaths, ConfigState, ConfigWatcher,
     reload_config, watch_config,
 };
-pub use documents::{DocState, DocumentStatus, Documents};
+pub use documents::{DocState, DocumentEvent, DocumentStatus, Documents};
 pub use editor_groups::{
     EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode,
     SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
 };
 pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
+pub use language_servers::{LanguageServers, LanguageServersEvent, ServerStatus, SlotState};
 pub use layout::StatusBarSide;
 pub use layout::title_bar::window_options;
 pub use open_files::OpenFileWatcher;

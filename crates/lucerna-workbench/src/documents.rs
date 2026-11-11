@@ -14,8 +14,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use gpui::{
-    App, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Task, WeakEntity,
-    Window, div, prelude::*, px,
+    App, AppContext, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled,
+    Task, WeakEntity, Window, div, prelude::*, px,
 };
 use lucerna_project::{ChangeKind, WorktreeEvent};
 use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
@@ -50,6 +50,34 @@ pub struct DocumentStatus {
     pub line_ending: &'static str,
     /// The language's display name, or `Plain Text`.
     pub language: Arc<str>,
+}
+
+/// What happened to a document, for listeners such as the language
+/// servers. Paths are the normalised keys of [`Documents`].
+#[derive(Debug, Clone)]
+pub enum DocumentEvent {
+    /// The first text of a document is loaded.
+    Opened {
+        path: Arc<Path>,
+        language_id: Option<Arc<str>>,
+        snapshot: BufferSnapshot,
+    },
+    /// The text changed on disk and was reloaded. Not sent when a reload
+    /// left the text as it was, unless the file had been deleted.
+    Reloaded {
+        path: Arc<Path>,
+        snapshot: BufferSnapshot,
+    },
+    /// The last view of an opened document was dropped. Sent no later than
+    /// the frame after (the workbench collects closed documents on each
+    /// draw).
+    Closed { path: Arc<Path> },
+    /// An opened document now has another language (or none).
+    LanguageChanged {
+        path: Arc<Path>,
+        language_id: Option<Arc<str>>,
+        snapshot: BufferSnapshot,
+    },
 }
 
 /// Size and modification time, to tell whether a file changed on disk.
@@ -103,11 +131,17 @@ struct Document {
     parse: Option<Task<()>>,
     /// Where to put the cursor once the text is loaded.
     pending_go_to: Option<Point>,
+    /// [`DocumentEvent::Opened`] was sent.
+    announced: bool,
 }
 
 impl Document {
     fn views(&self) -> impl Iterator<Item = Entity<CodeView>> + '_ {
         self.views.iter().filter_map(WeakEntity::upgrade)
+    }
+
+    fn language_id(&self) -> Option<Arc<str>> {
+        self.language.as_ref().map(|l| l.id.clone())
     }
 
     fn set_state(&mut self, state: DocState, cx: &mut App) {
@@ -131,6 +165,8 @@ pub struct Documents {
     pending_scroll: HashMap<Arc<Path>, u32>,
 }
 
+impl EventEmitter<DocumentEvent> for Documents {}
+
 impl Documents {
     /// Documents of the folder at `root`; relative paths are resolved
     /// against it.
@@ -153,7 +189,7 @@ impl Documents {
     /// first open starts a background load, later opens share its text,
     /// syntax and reloads but get their own scroll position.
     pub fn open(&mut self, path: Arc<Path>, cx: &mut Context<Self>) -> Entity<CodeView> {
-        self.collect_closed();
+        self.collect_closed(cx);
         let key = self.key(&path);
         let documents = cx.weak_entity();
         let view = cx.new(|cx| {
@@ -212,6 +248,7 @@ impl Documents {
                         dirty: false,
                         parse: None,
                         pending_go_to: self.pending_go_to.remove(&key),
+                        announced: false,
                     },
                 );
                 self.start_job(&key, cx);
@@ -225,14 +262,25 @@ impl Documents {
     /// language up again and is parsed afresh, since its syntax resolves
     /// injected languages through the old registry.
     pub fn languages_changed(&mut self, cx: &mut Context<Self>) {
-        self.collect_closed();
+        self.collect_closed(cx);
         let keys: Vec<Arc<Path>> = self.docs.keys().cloned().collect();
         for key in keys {
             let doc = self.docs.get_mut(&key).expect("key from the map");
             // Even an unchanged root language is parsed again: the new
             // registry may add or drop the languages it injects.
+            let old_id = doc.language_id();
             doc.language = language_for(&self.root, &key, doc.snapshot.as_ref(), cx);
             sync_language_id(doc, cx);
+            if doc.announced
+                && doc.language_id() != old_id
+                && let Some(snapshot) = doc.snapshot.clone()
+            {
+                cx.emit(DocumentEvent::LanguageChanged {
+                    path: key.clone(),
+                    language_id: doc.language_id(),
+                    snapshot,
+                });
+            }
             if doc.language.is_none() {
                 // Cancels a parse in flight with the old language.
                 doc.parse = None;
@@ -244,6 +292,34 @@ impl Documents {
             }
         }
         cx.notify();
+    }
+
+    /// The live views of the document at `path`.
+    pub fn views_of(&self, path: &Path) -> Vec<Entity<CodeView>> {
+        self.docs
+            .get(&self.key(path))
+            .map(|doc| doc.views().collect())
+            .unwrap_or_default()
+    }
+
+    /// The text of the document at `path`, once loaded.
+    pub fn snapshot_of(&self, path: &Path) -> Option<BufferSnapshot> {
+        self.docs.get(&self.key(path))?.snapshot.clone()
+    }
+
+    /// The language id of the document at `path`.
+    pub fn language_of(&self, path: &Path) -> Option<Arc<str>> {
+        self.docs.get(&self.key(path))?.language_id()
+    }
+
+    /// The keys of the documents that have been opened (their text has
+    /// loaded) and still have a view.
+    pub fn open_paths(&self) -> Vec<Arc<Path>> {
+        self.docs
+            .iter()
+            .filter(|(_, doc)| doc.announced && doc.views().next().is_some())
+            .map(|(key, _)| key.clone())
+            .collect()
     }
 
     /// The state of the document at `path`, if it is open.
@@ -318,7 +394,7 @@ impl Documents {
     /// Follows the files on disk: reloads modified files, marks removed
     /// ones deleted, and after a rescan checks every open file.
     pub fn on_worktree_event(&mut self, ev: &WorktreeEvent, cx: &mut Context<Self>) {
-        self.collect_closed();
+        self.collect_closed(cx);
         match ev {
             WorktreeEvent::Changed(changes) => {
                 for change in changes {
@@ -395,11 +471,17 @@ impl Documents {
         })
     }
 
-    /// Drops documents whose every view has closed.
-    fn collect_closed(&mut self) {
-        self.docs.retain(|_, doc| {
+    /// Drops documents whose every view has closed, sending
+    /// [`DocumentEvent::Closed`] for those that were opened. The workbench
+    /// calls it after each draw.
+    pub fn collect_closed(&mut self, cx: &mut Context<Self>) {
+        self.docs.retain(|key, doc| {
             doc.views.retain(|v| v.upgrade().is_some());
-            !doc.views.is_empty()
+            let keep = !doc.views.is_empty();
+            if !keep && doc.announced {
+                cx.emit(DocumentEvent::Closed { path: key.clone() });
+            }
+            keep
         });
     }
 
@@ -444,9 +526,32 @@ impl Documents {
             Ok(JobOutput::Loaded(Ok((buffer, stamp)))) => {
                 let snapshot = buffer.snapshot();
                 take_buffer(doc, buffer, stamp);
+                let old_id = doc.language_id();
                 // Now with the first line, for `first_line_pattern`.
                 doc.language = language_for(&self.root, key, Some(&snapshot), cx);
                 sync_language_id(doc, cx);
+                let (path, language_id) = (key.clone(), doc.language_id());
+                // A document loaded again (after an error, or as text) was
+                // already announced: it changed rather than opened.
+                cx.emit(if !doc.announced {
+                    doc.announced = true;
+                    DocumentEvent::Opened {
+                        path,
+                        language_id,
+                        snapshot: snapshot.clone(),
+                    }
+                } else if language_id != old_id {
+                    DocumentEvent::LanguageChanged {
+                        path,
+                        language_id,
+                        snapshot: snapshot.clone(),
+                    }
+                } else {
+                    DocumentEvent::Reloaded {
+                        path,
+                        snapshot: snapshot.clone(),
+                    }
+                });
                 for view in doc.views() {
                     let snapshot = snapshot.clone();
                     view.update(cx, |v, cx| v.set_buffer(snapshot, cx));
@@ -470,6 +575,16 @@ impl Documents {
                 // and no new revision for the views to redo.
                 doc.buffer = Some(buffer);
                 doc.stamp = Some(stamp);
+                // A deleted file came back as it was: listeners that let
+                // it go take it up again.
+                if doc.state == DocState::Deleted
+                    && let Some(snapshot) = doc.snapshot.clone()
+                {
+                    cx.emit(DocumentEvent::Reloaded {
+                        path: key.clone(),
+                        snapshot,
+                    });
+                }
                 doc.set_state(DocState::Ready, cx);
             }
             Ok(JobOutput::Reloaded(buffer, Ok((reload, stamp)))) => {
@@ -491,6 +606,10 @@ impl Documents {
                     let snapshot = snapshot.clone();
                     view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
                 }
+                cx.emit(DocumentEvent::Reloaded {
+                    path: key.clone(),
+                    snapshot,
+                });
                 doc.set_state(DocState::Ready, cx);
                 parse = true;
             }

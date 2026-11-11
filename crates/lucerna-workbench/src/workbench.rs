@@ -23,6 +23,7 @@ use crate::documents::{DocumentStatusItem, Documents};
 use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode, TabId, TabItem};
 use crate::explorer::ExplorerView;
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
+use crate::language_servers::LanguageServers;
 use crate::layout::sidebar::SidebarSash;
 use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
@@ -99,6 +100,8 @@ pub struct Workbench {
     extensions_page: Entity<ExtensionsPage>,
     /// Every open file; tab bodies are its code views.
     documents: Entity<Documents>,
+    /// The language servers of the open documents.
+    language_servers: Entity<LanguageServers>,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
     _worktree_events: Task<()>,
     /// `false` in single-file mode: the worktree neither scans nor
@@ -228,6 +231,16 @@ impl Workbench {
         theme_picker::register_commands(&mut commands);
         crate::extensions::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
+        let language_servers = {
+            let root = root.clone();
+            cx.new(|cx| LanguageServers::new(root, &documents, cx))
+        };
+        // Servers end with the window or the app, at most 5 s in all.
+        cx.on_release(|wb, cx| {
+            wb.language_servers
+                .update(cx, |servers, _| servers.shutdown_all())
+        })
+        .detach();
         let extensions_page = {
             let workbench = cx.weak_entity();
             cx.new(|cx| ExtensionsPage::new(workbench, cx))
@@ -329,6 +342,11 @@ impl Workbench {
             }),
             cx.observe_in(&editor_groups, window, Self::singleton_tab_hidden),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
+            cx.on_app_quit(|wb, cx| {
+                wb.language_servers
+                    .update(cx, |servers, _| servers.shutdown_all());
+                async {}
+            }),
             // The Search tab's title is its query; any input change is a
             // layout change too (the query is saved with the layout).
             cx.observe(&search_view, |wb, view, cx| {
@@ -396,6 +414,7 @@ impl Workbench {
             explorer_view: Some(explorer.clone().into()),
             explorer,
             documents,
+            language_servers,
             search_view,
             extensions_page,
             editor_area: Some(editor_groups.clone().into()),
@@ -626,6 +645,9 @@ impl Workbench {
         });
         self.documents
             .update(cx, |documents, cx| documents.on_worktree_event(ev, cx));
+        // After the documents: removed files are closed in their servers.
+        self.language_servers
+            .update(cx, |servers, cx| servers.on_worktree_event(ev, cx));
         // The tree changed: some open files may have joined or left it.
         self.refresh_watched_open_files(cx);
     }
@@ -705,6 +727,8 @@ impl Workbench {
         let ev = WorktreeEvent::Changed(changes);
         self.documents
             .update(cx, |documents, cx| documents.on_worktree_event(&ev, cx));
+        self.language_servers
+            .update(cx, |servers, cx| servers.on_worktree_event(&ev, cx));
     }
 
     /// A configuration batch arrived: an open `settings.json` (or other
@@ -811,6 +835,11 @@ impl Workbench {
     /// Every open file, shown by the code views in the tabs.
     pub fn documents(&self) -> &Entity<Documents> {
         &self.documents
+    }
+
+    /// The language servers of this window's folder.
+    pub fn language_servers(&self) -> &Entity<LanguageServers> {
+        &self.language_servers
     }
 
     pub fn commands(&self) -> &CommandRegistry {
@@ -1267,6 +1296,14 @@ impl Focusable for Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Tabs closed since the last frame have dropped their views: their
+        // documents close (and leave their language servers) now.
+        let documents = self.documents.downgrade();
+        cx.defer(move |cx| {
+            documents
+                .update(cx, |documents, cx| documents.collect_closed(cx))
+                .ok();
+        });
         let theme = cx.global::<AppState>().theme.clone();
         let ui = &theme.ui;
         let root_name = self.root_name();
