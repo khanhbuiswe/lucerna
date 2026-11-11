@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use lsp_types::{
     CodeDescription, DiagnosticSeverity, DiagnosticTag, NumberOrString, Position,
@@ -405,4 +405,130 @@ fn clear_server_returns_paths() {
     assert!(store.for_file(b).is_empty());
     assert_eq!(store.summary(), (0, 1));
     assert!(store.clear_server(&key("x")).is_empty());
+}
+
+/// Reads like the store does, remembering which files were read.
+fn counting_reader(
+    reads: &std::cell::RefCell<Vec<String>>,
+) -> impl Fn(&Path) -> Option<BufferSnapshot> + '_ {
+    move |path| {
+        reads
+            .borrow_mut()
+            .push(path.file_name().unwrap().to_str().unwrap().to_owned());
+        Buffer::load(path).ok().map(|buffer| buffer.snapshot())
+    }
+}
+
+#[test]
+fn files_scope_reads_only_what_it_needs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str| dir.path().join(name);
+    let mut store = DiagnosticStore::default();
+    // a: hints only. b: a warning. c: an error. d: hints only. e: would
+    // fail to read (it does not exist) and sits after the hit.
+    for (name, severity) in [
+        ("a.rs", HINT),
+        ("b.rs", WARN),
+        ("c.rs", ERR),
+        ("d.rs", HINT),
+    ] {
+        std::fs::write(path(name), "xxxx\nyyyy\n").unwrap();
+        store.publish(
+            &key("ra"),
+            params(
+                &path(name),
+                None,
+                vec![lsp_diag((1, 0), (1, 1), severity, name)],
+            ),
+            Utf16,
+            None,
+        );
+    }
+    store.publish(
+        &key("ra"),
+        params(
+            &path("e.rs"),
+            None,
+            vec![lsp_diag((0, 0), (0, 1), ERR, "e")],
+        ),
+        Utf16,
+        None,
+    );
+    let reads = std::cell::RefCell::new(Vec::new());
+    let reader = counting_reader(&reads);
+    let name = |hit: Option<(PathBuf, Diagnostic)>| hit.map(|(_, d)| d.message);
+
+    // From a (hints only: not read), forward: b is the first with a hit.
+    let hit = store.next_with_reader((&path("a.rs"), pt(0, 0)), true, Scope::Files, &reader);
+    assert_eq!(name(hit), Some("b.rs".into()));
+    assert_eq!(reads.take(), ["b.rs"]);
+
+    // From b forward: c. Neither d nor e is read.
+    let hit = store.next_with_reader((&path("b.rs"), pt(1, 0)), true, Scope::Files, &reader);
+    assert_eq!(name(hit), Some("c.rs".into()));
+    assert_eq!(reads.take(), ["b.rs", "c.rs"]);
+
+    // Backward from c: b. Neither a nor d is read.
+    let hit = store.next_with_reader((&path("c.rs"), pt(1, 0)), false, Scope::Files, &reader);
+    assert_eq!(name(hit), Some("b.rs".into()));
+    assert_eq!(reads.take(), ["c.rs", "b.rs"]);
+
+    // Wrapping forward from the last file with a hit.
+    let hit = store.next_with_reader((&path("e.rs"), pt(0, 0)), true, Scope::Files, &reader);
+    assert_eq!(name(hit), Some("b.rs".into()));
+    assert_eq!(reads.take(), ["e.rs", "b.rs"]);
+}
+
+#[test]
+fn same_start_diagnostics_have_a_fixed_order() {
+    let a = Path::new("/nonexistent/a.rs");
+    let snapshot = snap("0123456789\nabcdef\n");
+    let diags = || {
+        vec![
+            lsp_diag((0, 2), (0, 6), WARN, "zz"),
+            lsp_diag((0, 2), (0, 4), WARN, "b"),
+            lsp_diag((0, 2), (0, 4), ERR, "z"),
+            lsp_diag((0, 2), (0, 4), ERR, "a"),
+            lsp_diag((1, 0), (1, 1), ERR, "later"),
+        ]
+    };
+    let order = |split: bool| {
+        let mut store = DiagnosticStore::default();
+        let all = diags();
+        let (first, second) = if split {
+            (all[..2].to_vec(), all[2..].to_vec())
+        } else {
+            (all, Vec::new())
+        };
+        // Two servers: the order does not depend on who published.
+        for (server, list) in [("ra", first), ("lint", second)] {
+            store.publish(
+                &key(server),
+                params(a, Some(0), list),
+                Utf16,
+                Some((&snapshot, 0)),
+            );
+        }
+        let messages: Vec<String> = store.for_file(a).into_iter().map(|d| d.message).collect();
+        (store, messages)
+    };
+    let expected = ["a", "z", "b", "zz", "later"];
+    let (store, messages) = order(false);
+    assert_eq!(messages, expected);
+    assert_eq!(order(true).1, expected);
+
+    // Forward from before the group lands on its first; backward from
+    // after it on its last.
+    let step = |from, forward| {
+        store
+            .next((a, from), forward, Scope::File)
+            .unwrap()
+            .1
+            .message
+    };
+    assert_eq!(step(pt(0, 0), true), "a");
+    assert_eq!(step(pt(1, 0), false), "zz");
+    // Wrapping lands on the same ends.
+    assert_eq!(step(pt(1, 0), true), "a");
+    assert_eq!(step(pt(0, 2), false), "later");
 }

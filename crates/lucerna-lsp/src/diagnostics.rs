@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lsp_types::{DiagnosticSeverity, DiagnosticTag, NumberOrString};
 use lucerna_text::{BufferSnapshot, Point};
@@ -44,15 +45,18 @@ pub enum Scope {
     Files,
 }
 
+#[derive(Clone)]
 enum Entry {
-    Converted(Vec<Diagnostic>),
+    Converted(Arc<[Diagnostic]>),
     Raw {
-        diagnostics: Vec<lsp_types::Diagnostic>,
+        diagnostics: Arc<[lsp_types::Diagnostic]>,
         encoding: PositionEncoding,
     },
 }
 
-#[derive(Default)]
+/// Cloning is cheap (entries are shared): a copy can go to a background
+/// thread for [`DiagnosticStore::next`].
+#[derive(Default, Clone)]
 pub struct DiagnosticStore {
     files: BTreeMap<PathBuf, HashMap<ServerKey, Entry>>,
 }
@@ -102,11 +106,33 @@ fn start_key(d: &Diagnostic) -> (u32, u32) {
     (d.range.start.row, d.range.start.column)
 }
 
+/// The total order of a file's diagnostics: ties on the start are broken
+/// so the order does not depend on which server published first.
+fn order(a: &Diagnostic, b: &Diagnostic) -> std::cmp::Ordering {
+    let end = |d: &Diagnostic| (d.range.end.row, d.range.end.column);
+    (start_key(a), end(a), a.severity, &a.message).cmp(&(
+        start_key(b),
+        end(b),
+        b.severity,
+        &b.message,
+    ))
+}
+
 impl Entry {
     fn is_empty(&self) -> bool {
         match self {
             Entry::Converted(v) => v.is_empty(),
             Entry::Raw { diagnostics, .. } => diagnostics.is_empty(),
+        }
+    }
+
+    /// Whether any diagnostic is not a hint; known without converting.
+    fn has_non_hint(&self) -> bool {
+        match self {
+            Entry::Converted(v) => v.iter().any(|d| d.severity != Severity::Hint),
+            Entry::Raw { diagnostics, .. } => diagnostics
+                .iter()
+                .any(|d| severity(d.severity) != Severity::Hint),
         }
     }
 }
@@ -133,10 +159,10 @@ impl DiagnosticStore {
         }
         let entry = match open {
             Some((snapshot, _)) => {
-                Entry::Converted(convert_all(&params.diagnostics, snapshot, encoding))
+                Entry::Converted(convert_all(&params.diagnostics, snapshot, encoding).into())
             }
             None => Entry::Raw {
-                diagnostics: params.diagnostics,
+                diagnostics: params.diagnostics.into(),
                 encoding,
             },
         };
@@ -167,7 +193,7 @@ impl DiagnosticStore {
                 encoding,
             } = entry
             {
-                *entry = Entry::Converted(convert_all(diagnostics, snapshot, *encoding));
+                *entry = Entry::Converted(convert_all(diagnostics, snapshot, *encoding).into());
             }
         }
     }
@@ -176,6 +202,14 @@ impl DiagnosticStore {
     /// Raw entries of an unopened file are converted by reading it from
     /// disk (blocking); they are skipped when it cannot be read.
     pub fn for_file(&self, path: &Path) -> Vec<Diagnostic> {
+        self.for_file_with_reader(path, &read_lines_snapshot)
+    }
+
+    fn for_file_with_reader(
+        &self,
+        path: &Path,
+        read: &dyn Fn(&Path) -> Option<BufferSnapshot>,
+    ) -> Vec<Diagnostic> {
         let Some(servers) = self.files.get(path) else {
             return Vec::new();
         };
@@ -189,7 +223,7 @@ impl DiagnosticStore {
                     encoding,
                 } => {
                     if snapshot.is_none() {
-                        snapshot = Some(read_lines_snapshot(path));
+                        snapshot = Some(read(path));
                     }
                     if let Some(Some(snapshot)) = &snapshot {
                         out.extend(convert_all(diagnostics, snapshot, *encoding));
@@ -197,7 +231,7 @@ impl DiagnosticStore {
                 }
             }
         }
-        out.sort_by_key(start_key);
+        out.sort_by(order);
         out
     }
 
@@ -235,54 +269,109 @@ impl DiagnosticStore {
     }
 
     /// The diagnostic strictly after (or before) `from`, skipping hints.
-    /// Files are ordered by path, diagnostics by range start. Wraps around;
-    /// `None` when there is nothing else. May read unopened files
-    /// (blocking): see the module docs.
+    /// Files are ordered by path, diagnostics by (start, end, severity,
+    /// message). Wraps around; `None` when there is nothing else. May read
+    /// unopened files (blocking): see the module docs.
+    ///
+    /// Several diagnostics can share a start. A point origin cannot tell
+    /// them apart, so stepping goes past the whole group: forward lands on
+    /// the first of a group, backward on the last.
     pub fn next(
         &self,
         from: (&Path, Point),
         forward: bool,
         scope: Scope,
     ) -> Option<(PathBuf, Diagnostic)> {
+        self.next_with_reader(from, forward, scope, &read_lines_snapshot)
+    }
+
+    /// [`DiagnosticStore::next`] with the way unopened files are read.
+    /// Lazy: files are walked in path order from the origin, then wrapped;
+    /// a file whose raw entries are all hints is skipped unread, and the
+    /// walk stops at the first file with a hit.
+    pub fn next_with_reader(
+        &self,
+        from: (&Path, Point),
+        forward: bool,
+        scope: Scope,
+        read: &dyn Fn(&Path) -> Option<BufferSnapshot>,
+    ) -> Option<(PathBuf, Diagnostic)> {
+        use std::ops::Bound::{Excluded, Unbounded};
         let (from_path, from_point) = from;
         let from_pos = (from_point.row, from_point.column);
-        let paths: Vec<&PathBuf> = match scope {
-            Scope::File => self
-                .files
-                .get_key_value(from_path)
-                .map(|(path, _)| path)
-                .into_iter()
-                .collect(),
-            Scope::Files => self.files.keys().collect(),
+        // The first (or last) match of a file in walk order.
+        let pick = |path: &Path| -> Option<Vec<Diagnostic>> {
+            let servers = self.files.get(path)?;
+            if !servers.values().any(Entry::has_non_hint) {
+                return None;
+            }
+            let mut diagnostics = self.for_file_with_reader(path, read);
+            diagnostics.retain(|d| d.severity != Severity::Hint);
+            (!diagnostics.is_empty()).then_some(diagnostics)
         };
-        let mut all = Vec::new();
-        for path in paths {
-            all.extend(
-                self.for_file(path)
-                    .into_iter()
-                    .filter(|d| d.severity != Severity::Hint)
-                    .map(|d| (path, d)),
-            );
+        let hit = |path: &Path, d: &Diagnostic| Some((path.to_path_buf(), d.clone()));
+        let origin = pick(from_path);
+        let after = |diagnostics: &[Diagnostic]| -> Option<Diagnostic> {
+            if forward {
+                diagnostics
+                    .iter()
+                    .find(|d| start_key(d) > from_pos)
+                    .cloned()
+            } else {
+                diagnostics
+                    .iter()
+                    .rev()
+                    .find(|d| start_key(d) < from_pos)
+                    .cloned()
+            }
+        };
+        if let Some(d) = origin.as_deref().and_then(after) {
+            return hit(from_path, &d);
         }
-        // `for_file` sorts by start and the paths are in order: `all` is
-        // already ordered by (path, start).
-        let order = |(path, d): &(&PathBuf, Diagnostic)| {
-            (path.as_path().cmp(from_path), start_key(d).cmp(&from_pos))
-        };
-        let side = |entry: &(&PathBuf, Diagnostic)| {
-            let (by_path, by_pos) = order(entry);
-            by_path.then(by_pos)
-        };
-        let chosen = if forward {
-            all.iter()
-                .find(|e| side(e).is_gt())
-                .or_else(|| all.iter().find(|e| side(e).is_ne()))
+        if scope == Scope::Files {
+            let ahead: Vec<&PathBuf> = if forward {
+                self.files
+                    .range::<Path, _>((Excluded(from_path), Unbounded))
+                    .map(|(p, _)| p)
+                    .collect()
+            } else {
+                self.files
+                    .range::<Path, _>((Unbounded, Excluded(from_path)))
+                    .map(|(p, _)| p)
+                    .rev()
+                    .collect()
+            };
+            let behind: Vec<&PathBuf> = if forward {
+                self.files
+                    .range::<Path, _>((Unbounded, Excluded(from_path)))
+                    .map(|(p, _)| p)
+                    .collect()
+            } else {
+                self.files
+                    .range::<Path, _>((Excluded(from_path), Unbounded))
+                    .map(|(p, _)| p)
+                    .rev()
+                    .collect()
+            };
+            // Past the origin in walk order, then wrapped around.
+            for path in ahead.into_iter().chain(behind) {
+                if let Some(diagnostics) = pick(path) {
+                    let d = if forward {
+                        diagnostics.first()
+                    } else {
+                        diagnostics.last()
+                    };
+                    return d.and_then(|d| hit(path, d));
+                }
+            }
+        }
+        // Wrapped all the way back into the origin file.
+        let diagnostics = origin?;
+        let wrapped = if forward {
+            diagnostics.iter().find(|d| start_key(d) < from_pos)
         } else {
-            all.iter()
-                .rev()
-                .find(|e| side(e).is_lt())
-                .or_else(|| all.iter().rev().find(|e| side(e).is_ne()))
+            diagnostics.iter().rev().find(|d| start_key(d) > from_pos)
         };
-        chosen.map(|(path, d)| ((*path).clone(), d.clone()))
+        wrapped.and_then(|d| hit(from_path, d))
     }
 }
