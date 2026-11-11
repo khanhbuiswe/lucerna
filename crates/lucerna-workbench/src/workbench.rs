@@ -39,6 +39,7 @@ use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::references_view::{self, ReferencesView};
 use crate::search_view::{self, SearchView};
+use crate::symbols::SymbolSource;
 use crate::tasks::try_spawn_guarded;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
@@ -116,6 +117,8 @@ pub struct Workbench {
     documents: Entity<Documents>,
     /// The language servers of the open documents.
     language_servers: Entity<LanguageServers>,
+    /// The symbols of the open documents.
+    pub(crate) symbols: SymbolSource,
     /// The ⚡ status bar item.
     pub(crate) lsp_status: Entity<LspStatusItem>,
     /// The diagnostics counts and message in the status bar.
@@ -268,11 +271,13 @@ impl Workbench {
         crate::hover::register_commands(&mut commands);
         crate::goto::register_commands(&mut commands);
         crate::extensions::register_commands(&mut commands);
+        crate::symbols::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
             let root = root.clone();
             cx.new(|cx| LanguageServers::new(root, &documents, cx))
         };
+        let symbols = SymbolSource::new(root.clone(), &documents, &language_servers, cx);
         // Servers end with the window (without waiting for them) or the
         // app (waiting at most 5 s in all; see the `on_app_quit` below).
         cx.on_release(|wb, cx| {
@@ -495,6 +500,7 @@ impl Workbench {
             explorer,
             documents,
             language_servers,
+            symbols,
             lsp_status: lsp_status.clone(),
             diagnostics_status: diagnostics_status.clone(),
             marker_task: None,

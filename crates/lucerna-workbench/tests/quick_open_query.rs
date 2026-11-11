@@ -1,4 +1,5 @@
-//! Quick Open's input prefixes: files, `>` commands and `:` go to line.
+//! Quick Open's input prefixes: files, `>` commands, `:` go to line, `@`
+//! document symbols and `#` workspace symbols.
 
 use lucerna_workbench::{QuickOpenQuery, parse_query};
 
@@ -71,6 +72,46 @@ fn colon_garbage_none() {
         QuickOpenQuery::GotoLine {
             line: None,
             column: None
+        }
+    );
+}
+
+#[test]
+fn at_prefix_parses() {
+    assert_eq!(
+        parse_query("@ foo bar "),
+        QuickOpenQuery::Symbols {
+            text: "foo bar".into(),
+            group_by_kind: false
+        }
+    );
+    assert_eq!(
+        parse_query("@"),
+        QuickOpenQuery::Symbols {
+            text: String::new(),
+            group_by_kind: false
+        }
+    );
+    assert_eq!(
+        parse_query("#  Widget "),
+        QuickOpenQuery::WorkspaceSymbols("Widget".into())
+    );
+}
+
+#[test]
+fn at_colon_groups() {
+    assert_eq!(
+        parse_query("@:"),
+        QuickOpenQuery::Symbols {
+            text: String::new(),
+            group_by_kind: true
+        }
+    );
+    assert_eq!(
+        parse_query("@: new"),
+        QuickOpenQuery::Symbols {
+            text: "new".into(),
+            group_by_kind: true
         }
     );
 }

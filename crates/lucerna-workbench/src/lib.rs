@@ -31,6 +31,7 @@ pub mod open_requests;
 mod quick_open;
 mod references_view;
 mod search_view;
+mod symbols;
 pub mod tasks;
 mod text_input;
 mod theme_picker;
@@ -76,6 +77,7 @@ pub use quick_open::{
 };
 pub use references_view::{ReferencesView, find_references_in_tab};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
+pub use symbols::{EMPTY_SYMBOLS_TTL, SYMBOLS_DEBOUNCE, SymbolSource, SymbolState};
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};
 pub use trust::{TrustModal, TrustModalEvent, TrustStore};

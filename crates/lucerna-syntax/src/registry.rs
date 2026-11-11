@@ -8,6 +8,7 @@ use tree_sitter::{Query, QueryPredicateArg};
 
 use crate::associations::Associations;
 use crate::injection::InjectionQuery;
+use crate::outline::OutlineQuery;
 use crate::wasm;
 
 /// Why a grammar could not be loaded.
@@ -68,12 +69,15 @@ pub struct Language {
     injections: Option<String>,
     /// Source of the brackets query, which replaces the built-in pairs.
     brackets: Option<String>,
+    /// Source of the outline query (document symbols without a server).
+    outline: Option<String>,
     /// Extension languages only: matched against the first line of a file.
     first_line: Option<regex::Regex>,
     /// Extension languages only: the directory whose `highlights.scm`,
-    /// `injections.scm` and `brackets.scm` are read when the queries first
-    /// compile (instead of `highlights`, `injections` and `brackets`), so
-    /// building a registry opens no query file.
+    /// `injections.scm`, `brackets.scm` and `outline.scm` are read when the
+    /// queries first compile (instead of `highlights`, `injections`,
+    /// `brackets` and `outline`), so building a registry opens no query
+    /// file.
     query_dir: Option<PathBuf>,
     queries: OnceLock<Option<LanguageQueries>>,
 }
@@ -212,6 +216,7 @@ pub(crate) struct LanguageQueries {
     pub highlights: HighlightQuery,
     pub injections: Option<InjectionQuery>,
     pub brackets: Option<Query>,
+    pub outline: Option<OutlineQuery>,
 }
 
 /// An extension's language as the workbench hands it over.
@@ -336,6 +341,7 @@ impl Language {
             precedence,
             injections: None,
             brackets: None,
+            outline: None,
             first_line: None,
             query_dir: None,
             queries: OnceLock::new(),
@@ -395,6 +401,33 @@ impl Language {
         }
     }
 
+    /// Whether the language has an outline query (`outline.scm`). For an
+    /// extension language this looks for the file: one `stat`.
+    pub fn has_outline(&self) -> bool {
+        match &self.query_dir {
+            Some(dir) => dir.join("outline.scm").is_file(),
+            None => self.outline.is_some(),
+        }
+    }
+
+    /// A fresh copy of the bundled language `id` with `outline` as its
+    /// outline query, for tests.
+    ///
+    /// # Panics
+    /// If no bundled language has that id.
+    #[doc(hidden)]
+    pub fn bundled_with_outline_for_test(id: &str, outline: &str) -> Arc<Language> {
+        let language = LanguageRegistry::make_bundled_languages()
+            .into_iter()
+            .find(|l| &*l.id == id)
+            .and_then(|l| Arc::try_unwrap(l).ok())
+            .unwrap_or_else(|| panic!("no bundled language {id}"));
+        Arc::new(Language {
+            outline: Some(outline.to_string()),
+            ..language
+        })
+    }
+
     pub(crate) fn mark_failed(&self) {
         self.failed.store(true, Ordering::Relaxed);
     }
@@ -423,29 +456,36 @@ impl Language {
             .as_ref()
     }
 
-    /// The highlights, injections and brackets sources: as given, or read
-    /// from [`Language::query_dir`] now.
-    fn query_sources(&self) -> (Vec<String>, Option<String>, Option<String>) {
+    /// The highlights, injections, brackets and outline sources: as given,
+    /// or read from [`Language::query_dir`] now.
+    fn query_sources(&self) -> QuerySources {
         match &self.query_dir {
             Some(dir) => {
                 let read = |file: &str| std::fs::read_to_string(dir.join(file)).ok();
-                (
-                    vec![read("highlights.scm").unwrap_or_default()],
-                    read("injections.scm"),
-                    read("brackets.scm"),
-                )
+                QuerySources {
+                    highlights: vec![read("highlights.scm").unwrap_or_default()],
+                    injections: read("injections.scm"),
+                    brackets: read("brackets.scm"),
+                    outline: read("outline.scm"),
+                }
             }
-            None => (
-                self.highlights.clone(),
-                self.injections.clone(),
-                self.brackets.clone(),
-            ),
+            None => QuerySources {
+                highlights: self.highlights.clone(),
+                injections: self.injections.clone(),
+                brackets: self.brackets.clone(),
+                outline: self.outline.clone(),
+            },
         }
     }
 
     fn compile_queries(&self) -> Result<LanguageQueries, String> {
         let grammar = self.grammar().map_err(|e| e.to_string())?;
-        let (highlights, injections, brackets) = self.query_sources();
+        let QuerySources {
+            highlights,
+            injections,
+            brackets,
+            outline,
+        } = self.query_sources();
         let sources: Vec<&str> = highlights.iter().map(String::as_str).collect();
         let highlights = HighlightQuery::new(&grammar, &sources, self.precedence, &self.id)?;
         let optional = |kind: &str, source: &Option<String>| {
@@ -467,6 +507,8 @@ impl Language {
             injections: optional("injections", &injections)
                 .map(|query| InjectionQuery::new(query, &self.id)),
             brackets: optional("brackets", &brackets),
+            outline: optional("outline", &outline)
+                .and_then(|query| OutlineQuery::new(query, &self.id)),
         })
     }
 
@@ -495,6 +537,14 @@ impl Language {
     fn is_extension_language(&self) -> bool {
         matches!(self.origin, LanguageOrigin::Extension { .. })
     }
+}
+
+/// The query sources of a language, before they compile.
+struct QuerySources {
+    highlights: Vec<String>,
+    injections: Option<String>,
+    brackets: Option<String>,
+    outline: Option<String>,
 }
 
 impl fmt::Debug for Language {

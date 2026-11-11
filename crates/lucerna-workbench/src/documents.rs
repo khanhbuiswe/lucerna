@@ -333,6 +333,23 @@ impl Documents {
         self.docs.get(&self.key(path))?.snapshot.clone()
     }
 
+    /// Bumped per new text of the document at `path`; `None` until its
+    /// text is loaded.
+    pub fn revision_of(&self, path: &Path) -> Option<u64> {
+        let doc = self.docs.get(&self.key(path))?;
+        doc.snapshot.as_ref().map(|_| doc.revision)
+    }
+
+    /// The language of the document at `path` and its syntax state, once
+    /// parsed.
+    pub(crate) fn syntax_of(
+        &self,
+        path: &Path,
+    ) -> Option<(Arc<Language>, Option<Arc<SyntaxState>>)> {
+        let doc = self.docs.get(&self.key(path))?;
+        Some((doc.language.clone()?, doc.syntax.clone()))
+    }
+
     /// The language id of the document at `path`.
     pub fn language_of(&self, path: &Path) -> Option<Arc<str>> {
         self.docs.get(&self.key(path))?.language_id()

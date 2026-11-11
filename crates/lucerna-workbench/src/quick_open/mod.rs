@@ -19,7 +19,8 @@ use lucerna_text::Point;
 use crate::code_view::CodeView;
 use crate::extensions::ExtensionService;
 use crate::nav_history::NavEntry;
-use crate::{AppState, CommandRegistry, Workbench};
+use crate::symbols::quick_open::SymbolsContext;
+use crate::{AppState, CommandRegistry, OpenMode, Workbench};
 use view::{CommandItem, ExtensionIds, Sources};
 
 /// How many recently opened files are remembered.
@@ -122,13 +123,25 @@ impl Workbench {
                 keybinding: keymap.label_for(id),
             })
             .collect();
+        let symbols = self.active_code_view(cx).map(|editor| {
+            let path = self.absolute_path(editor.read(cx).path());
+            let cursor = editor.read(cx).cursor();
+            let state = self.symbols.get(&path, cx);
+            SymbolsContext {
+                path,
+                editor,
+                state,
+                cursor,
+            }
+        });
         let sources = Sources {
             workbench: cx.weak_entity(),
             snapshot: self.worktree().snapshot(),
             recent: self.recent_relative_to_root(),
             commands,
-            has_editor: self.active_code_view(cx).is_some(),
+            has_editor: symbols.is_some(),
             extension_ids: None,
+            symbols,
         };
         self.open_quick_open(prefix, sources, window, cx);
     }
@@ -152,6 +165,7 @@ impl Workbench {
             commands: Vec::new(),
             has_editor: false,
             extension_ids: Some(ids),
+            symbols: None,
         };
         self.open_quick_open("", sources, window, cx);
     }
@@ -192,11 +206,13 @@ impl Workbench {
     }
 
     /// Hides Quick Open and gives focus back to where it was, unless a
-    /// click outside already moved it elsewhere.
+    /// click outside already moved it elsewhere. An editor a `@` preview
+    /// moved goes back where it was.
     pub fn close_quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((qo, _)) = self.quick_open.take() else {
             return;
         };
+        qo.update(cx, |qo, cx| qo.end_preview(cx));
         let previous = self.focus_before_quick_open.take();
         let focused = window.focused(cx);
         if focused.is_none() || qo.focus_handle(cx).contains_focused(window, cx) {
@@ -244,6 +260,12 @@ impl Workbench {
             }
             QuickOpenEvent::GoToLine { line, column } => {
                 self.go_to_line(*line, *column, cx);
+                self.focus_editor_area(window, cx);
+            }
+            QuickOpenEvent::GoToSymbol { path, point } => {
+                // Closing put the editor back, so the history records
+                // where it was before the previews.
+                self.jump_to(path.clone(), *point, OpenMode::Preview, cx);
                 self.focus_editor_area(window, cx);
             }
             QuickOpenEvent::Dismiss => {}

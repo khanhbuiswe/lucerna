@@ -5,7 +5,9 @@ mod associations;
 mod brackets;
 mod folds;
 mod injection;
+mod outline;
 mod registry;
+mod symbols;
 mod syntax_state;
 mod wasm;
 
@@ -17,6 +19,7 @@ pub use folds::indent_folds;
 pub use registry::{
     ExtensionLanguage, GrammarError, GrammarKey, Language, LanguageOrigin, LanguageRegistry,
 };
+pub use symbols::{FlatSymbol, Symbol, SymbolKind, SymbolTree};
 pub use syntax_state::{HighlightSpan, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 
 /// The byte offset where `row` starts; rows past the end give the length.

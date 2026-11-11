@@ -526,7 +526,7 @@ fn file_group(path: &Arc<Path>, root: &Path) -> FileGroup {
 
 /// The rows a range covers, half-open: an end at column 0 of a later row
 /// does not count that row.
-fn highlighted_rows(range: &Range<lucerna_text::Point>) -> Range<u32> {
+pub(crate) fn highlighted_rows(range: &Range<lucerna_text::Point>) -> Range<u32> {
     let (start, end) = (range.start, range.end);
     let last = if end.column == 0 && end.row > start.row {
         end.row - 1

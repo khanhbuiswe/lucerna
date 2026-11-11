@@ -13,6 +13,7 @@ use crate::brackets;
 use crate::injection::{self, LayerParsers, Layers};
 use crate::registry::{GrammarError, HighlightQuery, Language, LanguageRegistry, Precedence};
 use crate::row_start;
+use crate::symbols::SymbolTree;
 use crate::wasm;
 
 /// How long the document pipeline parses synchronously before handing the
@@ -112,6 +113,20 @@ impl SyntaxState {
     #[doc(hidden)]
     pub fn max_layer_depth(&self) -> usize {
         self.layers.iter().map(|l| l.depth).max().unwrap_or(0)
+    }
+
+    pub fn language(&self) -> &Arc<Language> {
+        &self.language
+    }
+
+    /// The symbols the language's `outline.scm` finds in the current tree
+    /// (spec §3.2); `None` without a tree or without an outline query.
+    /// Runs the query over the whole tree, without reparsing: call it off
+    /// the UI thread.
+    pub fn outline(&self, snapshot: &BufferSnapshot) -> Option<SymbolTree> {
+        let tree = self.tree.as_ref()?;
+        let query = self.language.queries()?.outline.as_ref()?;
+        Some(query.symbols(tree, snapshot))
     }
 
     /// The current tree, if a parse has completed.

@@ -10,18 +10,20 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use gpui::{AppContext, Context, Task};
 use lsp_types::request::{
-    GotoDeclaration, GotoDefinition, GotoImplementation, GotoTypeDefinition, HoverRequest,
-    References,
+    DocumentSymbolRequest, GotoDeclaration, GotoDefinition, GotoImplementation, GotoTypeDefinition,
+    HoverRequest, References,
 };
 use lsp_types::{
-    DeclarationCapability, GotoDefinitionParams, GotoDefinitionResponse, HoverContents,
-    HoverParams, HoverProviderCapability, ImplementationProviderCapability, MarkedString,
-    MarkupKind, OneOf, ReferenceContext, ReferenceParams, ServerCapabilities,
+    DeclarationCapability, DocumentSymbolParams, GotoDefinitionParams, GotoDefinitionResponse,
+    HoverContents, HoverParams, HoverProviderCapability, ImplementationProviderCapability,
+    MarkedString, MarkupKind, OneOf, ReferenceContext, ReferenceParams, ServerCapabilities,
     TextDocumentIdentifier, TextDocumentPositionParams, TypeDefinitionProviderCapability,
 };
 use lucerna_lsp::locations::{ResolvedLocation, locations_from_response, resolve_locations};
 use lucerna_lsp::position::{PositionEncoding, path_to_uri, range_from_lsp, to_lsp};
-use lucerna_lsp::{LanguageServer, LspError};
+use lucerna_lsp::symbols::symbols_from_response;
+use lucerna_lsp::{LanguageServer, LspError, ServerKey, Slot};
+use lucerna_syntax::SymbolTree;
 use lucerna_text::{BufferSnapshot, Point};
 
 use super::LanguageServers;
@@ -163,6 +165,82 @@ impl LanguageServers {
             .unwrap_or_default()
         })
     }
+}
+
+impl LanguageServers {
+    /// Asks the first running server of `path` that has
+    /// `documentSymbolProvider` for the document's symbols. `None` when no
+    /// running server can answer; an error or a `null` answer is an empty
+    /// tree. The answer is converted off the UI thread. Dropping the task
+    /// cancels the request.
+    pub fn document_symbols(
+        &self,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<SymbolTree>> {
+        let path = absolute_path(&self.root, path);
+        let Some(doc) = self.docs.get(path.as_path()) else {
+            return Task::ready(None);
+        };
+        let server = self
+            .running_for(&path)
+            .into_iter()
+            .map(|(_, server)| server)
+            .find(|server| {
+                server
+                    .capabilities()
+                    .is_some_and(|caps| has_document_symbols(&caps))
+            });
+        let Some(server) = server else {
+            return Task::ready(None);
+        };
+        let snapshot = doc.snapshot.clone();
+        let encoding = server.encoding();
+        let params = DocumentSymbolParams {
+            text_document: TextDocumentIdentifier {
+                uri: path_to_uri(&path),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let request = server.request::<DocumentSymbolRequest>(params);
+        cx.background_spawn(async move {
+            let response = match request.await {
+                Ok(response) => response,
+                Err(err) => {
+                    tracing::debug!(%err, "documentSymbol failed");
+                    None
+                }
+            };
+            let tree = match response {
+                Some(response) => crate::tasks::guarded("document-symbols", || {
+                    symbols_from_response(response, &snapshot, encoding)
+                })
+                .unwrap_or_default(),
+                None => SymbolTree::default(),
+            };
+            Some(tree)
+        })
+    }
+
+    /// Whether a server of the open document `path` is still starting,
+    /// so it may yet answer [`LanguageServers::document_symbols`].
+    pub fn symbol_server_pending(&self, path: &Path) -> bool {
+        let path = absolute_path(&self.root, path);
+        self.docs.get(path.as_path()).is_some_and(|doc| {
+            doc.keys
+                .iter()
+                .any(|key: &ServerKey| matches!(self.registry.slot(key), Some(Slot::Starting)))
+        })
+    }
+}
+
+/// Whether a server with `caps` answers `textDocument/documentSymbol`.
+fn has_document_symbols(caps: &ServerCapabilities) -> bool {
+    !matches!(
+        caps.document_symbol_provider,
+        None | Some(OneOf::Left(false))
+    )
 }
 
 impl LanguageServers {

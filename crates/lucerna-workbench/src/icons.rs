@@ -51,6 +51,16 @@ pub const CIRCLE_X: &[u8] = lucide!("circle-x");
 pub const INFO: &[u8] = lucide!("info");
 pub const CHECK: &[u8] = lucide!("check");
 pub const ZAP: &[u8] = lucide!("zap");
+pub const SQUARE_FUNCTION: &[u8] = lucide!("square-function");
+pub const BOX: &[u8] = lucide!("box");
+pub const COMPONENT: &[u8] = lucide!("component");
+pub const LIST: &[u8] = lucide!("list");
+pub const BRACKETS: &[u8] = lucide!("brackets");
+pub const VARIABLE: &[u8] = lucide!("variable");
+pub const HASH: &[u8] = lucide!("hash");
+pub const PACKAGE: &[u8] = lucide!("package");
+pub const TYPE: &[u8] = lucide!("type");
+pub const CIRCLE: &[u8] = lucide!("circle");
 
 /// Every bundled icon with its upstream name.
 pub const ALL: &[(&str, &[u8])] = &[
@@ -88,6 +98,16 @@ pub const ALL: &[(&str, &[u8])] = &[
     ("info", INFO),
     ("check", CHECK),
     ("zap", ZAP),
+    ("square-function", SQUARE_FUNCTION),
+    ("box", BOX),
+    ("component", COMPONENT),
+    ("list", LIST),
+    ("brackets", BRACKETS),
+    ("variable", VARIABLE),
+    ("hash", HASH),
+    ("package", PACKAGE),
+    ("type", TYPE),
+    ("circle", CIRCLE),
 ];
 
 /// The bundled SVG for a Lucide icon name.

@@ -12,14 +12,31 @@ pub enum QuickOpenQuery {
         line: Option<u32>,
         column: Option<u32>,
     },
+    /// `@`: the symbols of the active document; `@:` groups them by kind.
+    Symbols { text: String, group_by_kind: bool },
+    /// `#`: symbols of the whole workspace.
+    WorkspaceSymbols(String),
 }
 
 /// Parses the Quick Open input. A leading `>` gives
-/// [`QuickOpenQuery::Commands`] and a leading `:` gives
+/// [`QuickOpenQuery::Commands`], a leading `:` gives
 /// [`QuickOpenQuery::GotoLine`] (`":12:5"` is line 12, column 5; parts
-/// that are not numbers are `None`). Arguments are trimmed.
+/// that are not numbers are `None`), `@` gives [`QuickOpenQuery::Symbols`]
+/// (grouped by kind after `@:`) and `#` gives
+/// [`QuickOpenQuery::WorkspaceSymbols`]. Arguments are trimmed.
 pub fn parse_query(input: &str) -> QuickOpenQuery {
-    if let Some(rest) = input.strip_prefix('>') {
+    if let Some(rest) = input.strip_prefix('@') {
+        let (rest, group_by_kind) = match rest.strip_prefix(':') {
+            Some(rest) => (rest, true),
+            None => (rest, false),
+        };
+        QuickOpenQuery::Symbols {
+            text: rest.trim().to_string(),
+            group_by_kind,
+        }
+    } else if let Some(rest) = input.strip_prefix('#') {
+        QuickOpenQuery::WorkspaceSymbols(rest.trim().to_string())
+    } else if let Some(rest) = input.strip_prefix('>') {
         QuickOpenQuery::Commands(rest.trim().to_string())
     } else if let Some(rest) = input.strip_prefix(':') {
         let mut parts = rest.splitn(2, ':').map(|p| p.trim().parse::<u32>().ok());

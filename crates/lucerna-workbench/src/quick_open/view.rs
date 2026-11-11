@@ -12,6 +12,7 @@ use gpui::{
     prelude::*, px,
 };
 use lucerna_project::{FileMatch, QUICK_OPEN_LIMIT, WorktreeSnapshot, match_files};
+use lucerna_text::Point;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
@@ -20,6 +21,8 @@ use super::picker::{
 };
 use super::query::{QuickOpenQuery, parse_query};
 use crate::layout::color;
+use crate::symbols::SymbolState;
+use crate::symbols::quick_open::{NO_SYMBOL_SOURCE, SymbolPicker, SymbolRow, SymbolsContext};
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{GRID, popover};
@@ -47,6 +50,8 @@ pub(crate) struct Sources {
     /// installs the selected one. `Err` holds the message shown while
     /// there are none yet, such as "Loading extension list…".
     pub extension_ids: Option<ExtensionIds>,
+    /// The active editor and its symbols, for `@`.
+    pub symbols: Option<SymbolsContext>,
 }
 
 /// The ids the install command lists, or the message shown instead.
@@ -67,6 +72,12 @@ pub enum QuickOpenEvent {
         line: u32,
         column: Option<u32>,
     },
+    /// Put the cursor of the active editor, showing `path`, at `point`
+    /// (a symbol picked with `@`).
+    GoToSymbol {
+        path: Arc<Path>,
+        point: Point,
+    },
     Dismiss,
 }
 
@@ -86,7 +97,19 @@ enum Row {
         /// Char indices into the id.
         positions: Vec<u32>,
     },
+    /// A `@` row: a document symbol or a group header.
+    Symbol(SymbolRow),
     Message(&'static str),
+}
+
+impl Row {
+    /// Group headers cannot be selected.
+    fn is_selectable(&self) -> bool {
+        match self {
+            Row::Symbol(row) => row.is_selectable(),
+            _ => true,
+        }
+    }
 }
 
 pub struct QuickOpen {
@@ -97,6 +120,8 @@ pub struct QuickOpen {
     commands: Rc<[CommandItem]>,
     has_editor: bool,
     extension_ids: Option<Result<Rc<[String]>, &'static str>>,
+    /// The active editor's symbols, for `@`.
+    symbols: Option<SymbolPicker>,
     rows: Vec<Row>,
     selected: usize,
     scroll: ScrollHandle,
@@ -141,6 +166,7 @@ impl QuickOpen {
             commands: sources.commands.into(),
             has_editor: sources.has_editor,
             extension_ids: sources.extension_ids.map(|ids| ids.map(Into::into)),
+            symbols: sources.symbols.map(SymbolPicker::new),
             rows: Vec::new(),
             selected: 0,
             scroll: ScrollHandle::new(),
@@ -179,6 +205,31 @@ impl QuickOpen {
         &self.input
     }
 
+    /// The document whose symbols `@` lists.
+    pub(crate) fn symbols_path(&self) -> Option<&Arc<Path>> {
+        self.symbols.as_ref().map(SymbolPicker::path)
+    }
+
+    /// Lists `state` in place of the symbols shown, keeping the typed
+    /// text.
+    pub(crate) fn set_symbol_state(&mut self, state: SymbolState, cx: &mut Context<Self>) {
+        let Some(symbols) = &mut self.symbols else {
+            return;
+        };
+        symbols.set_state(state);
+        let text = self.input.read(cx).text().to_string();
+        if matches!(parse_query(&text), QuickOpenQuery::Symbols { .. }) {
+            self.query_changed(&text, cx);
+        }
+    }
+
+    /// Puts the editor a `@` preview moved back where it was.
+    pub(crate) fn end_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some(symbols) = &mut self.symbols {
+            symbols.end_preview(cx);
+        }
+    }
+
     /// The text in the input, prefix included.
     pub fn query(&self, cx: &App) -> String {
         self.input.read(cx).text().to_string()
@@ -194,6 +245,9 @@ impl QuickOpen {
         self.rows
             .iter()
             .map(|row| {
+                if let (Row::Symbol(row), Some(symbols)) = (row, &self.symbols) {
+                    return symbols.row_text(row);
+                }
                 let (main, detail) = self.row_parts(row);
                 match detail {
                     Some(detail) if !detail.is_empty() => format!("{main} {detail}"),
@@ -216,6 +270,7 @@ impl QuickOpen {
             }
             Row::GoToLine { line, column } => (go_to_line_label(*line, *column).into(), None),
             Row::Extension { index, .. } => (self.extension_id(*index).to_string().into(), None),
+            Row::Symbol(_) => (SharedString::default(), None),
             Row::Message(text) => ((*text).into(), None),
         }
     }
@@ -254,6 +309,38 @@ impl QuickOpen {
                 };
                 self.set_rows(vec![row], cx);
             }
+            QuickOpenQuery::Symbols {
+                text,
+                group_by_kind,
+            } => {
+                let rows = match &self.symbols {
+                    Some(symbols) => symbols.rows(&text, group_by_kind),
+                    None => Err(NO_SYMBOL_SOURCE),
+                };
+                match rows {
+                    Ok((rows, selected)) => {
+                        let rows = rows.into_iter().map(Row::Symbol).collect();
+                        self.set_rows_at(rows, selected, cx);
+                        // Opening `@` selects the symbol at the cursor
+                        // without moving the editor.
+                        let previewing = self
+                            .symbols
+                            .as_ref()
+                            .is_some_and(SymbolPicker::is_previewing);
+                        if !text.is_empty() || previewing {
+                            self.preview_selected(cx);
+                        }
+                    }
+                    Err(message) => self.set_rows(vec![Row::Message(message)], cx),
+                }
+            }
+            QuickOpenQuery::WorkspaceSymbols(text) => {
+                let rows = match text.is_empty() {
+                    true => vec![Row::Message("Type to search symbols")],
+                    false => Vec::new(),
+                };
+                self.set_rows(rows, cx);
+            }
         }
     }
 
@@ -285,16 +372,39 @@ impl QuickOpen {
     }
 
     fn set_rows(&mut self, rows: Vec<Row>, cx: &mut Context<Self>) {
+        self.set_rows_at(rows, 0, cx);
+    }
+
+    fn set_rows_at(&mut self, rows: Vec<Row>, selected: usize, cx: &mut Context<Self>) {
         self.rows = rows;
-        self.selected = 0;
-        self.scroll.scroll_to_item(0);
+        self.selected = selected;
+        self.scroll.scroll_to_item(selected);
         cx.notify();
     }
 
+    /// Moves by `delta` rows, wrapping and skipping group headers.
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        self.selected = wrap_index(self.selected, self.rows.len(), delta);
+        let len = self.rows.len();
+        let mut selected = wrap_index(self.selected, len, delta);
+        for _ in 0..len {
+            if self.rows.get(selected).is_none_or(Row::is_selectable) {
+                break;
+            }
+            selected = wrap_index(selected, len, delta.signum());
+        }
+        self.selected = selected;
         self.scroll.scroll_to_item(self.selected);
+        self.preview_selected(cx);
         cx.notify();
+    }
+
+    /// Shows the selected `@` symbol in the editor.
+    fn preview_selected(&mut self, cx: &mut Context<Self>) {
+        if let (Some(Row::Symbol(SymbolRow::Symbol { index, .. })), Some(symbols)) =
+            (self.rows.get(self.selected), &mut self.symbols)
+        {
+            symbols.preview(*index, cx);
+        }
     }
 
     /// Activates row `index`; `to_side` opens a file in a new group.
@@ -315,7 +425,19 @@ impl QuickOpen {
             Some(Row::Extension { index, .. }) => {
                 QuickOpenEvent::InstallExtension(self.extension_id(*index).to_string())
             }
-            Some(Row::Message(_)) | None => return,
+            Some(Row::Symbol(SymbolRow::Symbol { index, .. })) => {
+                let Some(symbols) = &self.symbols else {
+                    return;
+                };
+                let Some(point) = symbols.target(*index) else {
+                    return;
+                };
+                QuickOpenEvent::GoToSymbol {
+                    path: symbols.path().clone(),
+                    point,
+                }
+            }
+            Some(Row::Symbol(SymbolRow::Header { .. }) | Row::Message(_)) | None => return,
         };
         cx.emit(event);
     }
@@ -336,6 +458,16 @@ impl QuickOpen {
 
     fn render_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let row = &self.rows[index];
+        if let (Row::Symbol(symbol_row), Some(symbols)) = (row, &self.symbols) {
+            let content = symbols.render_row(symbol_row, cx);
+            if !symbol_row.is_selectable() {
+                return content;
+            }
+            return picker_row("quick-open-row", index, index == self.selected, cx)
+                .on_click(cx.listener(move |qo, _, _, cx| qo.confirm(index, false, cx)))
+                .child(content)
+                .into_any_element();
+        }
         let ui = &cx.global::<AppState>().theme.ui;
         let (main, detail) = self.row_parts(row);
         let positions: &[u32] = match row {
