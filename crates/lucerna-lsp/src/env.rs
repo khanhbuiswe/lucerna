@@ -42,13 +42,25 @@ fn shell_env_impl(shell: &Path) -> Option<HashMap<String, String>> {
     const TIMEOUT: Duration = Duration::from_secs(5);
     const SCRIPT: &str = r#"printf "\0LUCERNA_ENV\0"; env -0"#;
 
-    let mut child = Command::new(shell)
+    let mut command = Command::new(shell);
+    command
         .args(["-l", "-i", "-c", SCRIPT])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    // A new session: the interactive shell has no controlling terminal, so
+    // it cannot take the terminal's foreground group from `luc`, and the
+    // whole session can be killed on timeout.
+    // SAFETY: `setsid` is async-signal-safe and touches no Rust state.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
@@ -68,6 +80,15 @@ fn shell_env_impl(shell: &Path) -> Option<HashMap<String, String>> {
                 std::thread::sleep(Duration::from_millis(10));
             }
             _ => {
+                // Kill the whole session group so no descendant keeps the
+                // stdout pipe (and the reader thread) alive.
+                if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+                    // SAFETY: plain syscall; the child is not reaped yet, so
+                    // the group id cannot have been recycled.
+                    unsafe {
+                        libc::killpg(pgid, libc::SIGKILL);
+                    }
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
