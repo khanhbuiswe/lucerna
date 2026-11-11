@@ -442,3 +442,92 @@ fn popover_bounds(
         .expect("the popover is drawn");
     (window, footer, popover)
 }
+
+#[gpui::test]
+fn not_found_row_shows_install_and_copy(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let (wb, cx) = lsp_workbench_with(dir.path(), Arc::new(FakeLauncher::new()), TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+
+    let item = status_item(&wb, cx);
+    let rows = cx.update(|_, cx| item.read(cx).rows(cx));
+    assert_eq!(
+        rows[0].install.as_deref(),
+        Some("rustup component add rust-analyzer")
+    );
+    click("lsp-button", cx);
+    assert!(shown("lsp-row-install-0", cx));
+    click("lsp-copy-0", cx);
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(
+        copied.as_deref(),
+        Some("rustup component add rust-analyzer")
+    );
+}
+
+#[gpui::test]
+fn running_row_has_no_install_line(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let (wb, cx) = lsp_workbench_with(dir.path(), rust_launcher(&fake), TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+
+    let item = status_item(&wb, cx);
+    let rows = cx.update(|_, cx| item.read(cx).rows(cx));
+    assert_eq!(rows[0].install, None);
+    click("lsp-button", cx);
+    assert!(!shown("lsp-row-install-0", cx));
+    assert!(!shown("lsp-copy-0", cx));
+}
+
+/// Trusted, with a malformed `lsp.evil` entry (Review Focus 2).
+const BAD_ENTRY: &str = r#"{
+    "session.trustAllWorktrees": true,
+    "lsp": { "evil": { "command": "evil", "args": "--stdio", "languages": ["rust"] } }
+}"#;
+
+#[gpui::test]
+fn table_error_row_shown(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let (wb, cx) = lsp_workbench_with(dir.path(), rust_launcher(&fake), BAD_ENTRY, cx);
+    settle(cx);
+
+    // Shown before any server runs, with the warning dot.
+    assert!(shown("lsp-button", cx));
+    assert_eq!(dot(&wb, cx), Some(StatusDot::Warning));
+
+    open(&wb, "src/main.rs", cx);
+    let servers = language_servers(&wb, cx);
+    let reason = cx.update(|_, cx| servers.read(cx).table_errors()[0].message.clone());
+    let item = status_item(&wb, cx);
+    let errors = cx.update(|_, cx| item.read(cx).table_error_lines(cx));
+    assert_eq!(errors, vec![format!("Invalid `lsp.evil`: {reason}")]);
+
+    // The other servers still run.
+    assert_eq!(state_of_first(&wb, cx), SlotState::Running);
+    click("lsp-button", cx);
+    assert!(shown("lsp-table-error-0", cx));
+    assert!(shown("lsp-row-0", cx));
+}
+
+#[gpui::test]
+fn footer_opens_health(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let (wb, cx) = lsp_workbench_with(dir.path(), rust_launcher(&fake), TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+
+    let registered = cx.update(|_, cx| {
+        wb.read(cx)
+            .commands()
+            .all()
+            .any(|(id, _)| id == "lucerna.lsp.health")
+    });
+    assert!(registered);
+
+    click("lsp-button", cx);
+    click("lsp-show-all-languages", cx);
+    assert!(!shown("lsp-popover", cx));
+    assert_eq!(cx.update(|_, cx| wb.read(cx).lsp_health_requests()), 1);
+}

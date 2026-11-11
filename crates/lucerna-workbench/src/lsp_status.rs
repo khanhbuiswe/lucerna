@@ -1,16 +1,18 @@
 //! The language servers' status (spec §7.7): the ⚡ button at the status
 //! bar's right with its dot, the progress text beside it, the popover
-//! listing the servers, and the `lucerna.lsp.*` commands. The log tab is
-//! in `lsp_log`.
+//! listing the servers with install hints and the server table's errors
+//! (spec §7 of the server-table design), and the `lucerna.lsp.*` commands.
+//! The log tab is in `lsp_log`.
 
 use std::sync::Arc;
 
 use gpui::{
-    Anchor, App, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, Pixels, Point, Render, Subscription, WeakEntity, Window, anchored, deferred,
-    div, point, prelude::*, px, svg,
+    Anchor, App, ClipboardItem, Context, Entity, FocusHandle, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, Pixels, Point, Render, Subscription, WeakEntity, Window, anchored,
+    deferred, div, point, prelude::*, px, svg,
 };
 use lucerna_lsp::ServerKey;
+use lucerna_lsp::health::current_os;
 use lucerna_theme::Rgba;
 use serde_json::Value;
 
@@ -48,10 +50,13 @@ pub struct ServerRow {
     pub lines: Vec<String>,
     /// Stderr lines left out of `lines` (they are in the log).
     pub more_lines: usize,
+    /// For a server not found: the table's install command for this OS.
+    pub install: Option<String>,
 }
 
 impl ServerRow {
-    fn new(status: ServerStatus) -> ServerRow {
+    /// `install` is kept only for a server not found.
+    fn new(status: ServerStatus, install: Option<String>) -> ServerRow {
         let mut more_lines = 0;
         let mut lines = match &status.state {
             SlotState::NotFound { message } => vec![message.clone()],
@@ -67,11 +72,13 @@ impl ServerRow {
             SlotState::Starting | SlotState::Running | SlotState::Stopped => Vec::new(),
         };
         lines.extend(status.errors);
+        let not_found = matches!(status.state, SlotState::NotFound { .. });
         ServerRow {
             key: status.key,
             state: status.state,
             lines,
             more_lines,
+            install: install.filter(|_| not_found),
         }
     }
 }
@@ -114,13 +121,17 @@ impl LspStatusItem {
         }
     }
 
-    /// Red when a server failed; yellow when one is not found or the
-    /// folder is in Restricted Mode; `None` when all is well.
+    /// Red when a server failed; yellow when one is not found, the `lsp`
+    /// setting has an invalid entry or the folder is in Restricted Mode;
+    /// `None` when all is well.
     pub fn dot(&self, cx: &App) -> Option<StatusDot> {
         let servers = self.servers.read(cx);
         if servers.any_failed() {
             Some(StatusDot::Error)
-        } else if servers.shows_restricted_mode() || servers.any_not_found() {
+        } else if servers.shows_restricted_mode()
+            || servers.any_not_found()
+            || !servers.table_errors().is_empty()
+        {
             Some(StatusDot::Warning)
         } else {
             None
@@ -129,11 +140,28 @@ impl LspStatusItem {
 
     /// The popover's rows, ordered by root then server name.
     pub fn rows(&self, cx: &App) -> Vec<ServerRow> {
-        self.servers
-            .read(cx)
+        let servers = self.servers.read(cx);
+        let table = servers.table();
+        servers
             .statuses()
             .into_iter()
-            .map(ServerRow::new)
+            .map(|status| {
+                let install = table
+                    .get(&status.key.server)
+                    .and_then(|def| def.install_for(current_os()))
+                    .map(str::to_owned);
+                ServerRow::new(status, install)
+            })
+            .collect()
+    }
+
+    /// The `lsp` setting's invalid entries, one line each.
+    pub fn table_error_lines(&self, cx: &App) -> Vec<String> {
+        self.servers
+            .read(cx)
+            .table_errors()
+            .iter()
+            .map(|e| format!("Invalid `lsp.{}`: {}", e.server, e.message))
             .collect()
     }
 
@@ -215,6 +243,28 @@ impl LspStatusItem {
         let restricted = self.servers.read(cx).shows_restricted_mode();
         let rows = self.rows(cx);
         let has_rows = !rows.is_empty();
+        let code_font = crate::fonts::editor_font_family(None, cx);
+        let table_errors = self
+            .table_error_lines(cx)
+            .into_iter()
+            .enumerate()
+            .map(|(i, line)| {
+                div()
+                    .debug_selector(move || format!("lsp-table-error-{i}"))
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap(px(2. * GRID))
+                    .child(
+                        svg()
+                            .data(icons::TRIANGLE_ALERT)
+                            .flex_none()
+                            .mt(px(1.))
+                            .size(px(UI_FONT_SIZE_SMALL))
+                            .text_color(color(ui.warning)),
+                    )
+                    .child(div().flex_1().min_w_0().child(line))
+            });
         let rows = rows.into_iter().enumerate().map(|(i, row)| {
             let (key, server) = (row.key.clone(), row.key.server.clone());
             let root = path_bar_text(&row.key.root, None, home.as_deref());
@@ -229,6 +279,36 @@ impl LspStatusItem {
                     .text_size(px(UI_FONT_SIZE_CAPTION))
                     .text_color(muted)
                     .child(line.clone())
+            });
+            // The install command in the code font, and Copy.
+            let install = row.install.clone().map(|command| {
+                let copied = command.clone();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(2. * GRID))
+                    .pl(px(DOT_SIZE + 2. * GRID))
+                    .child(
+                        div()
+                            .debug_selector(move || format!("lsp-row-install-{i}"))
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .font_family(code_font.clone())
+                            .text_size(px(UI_FONT_SIZE_CAPTION))
+                            .text_color(muted)
+                            .child(command),
+                    )
+                    .child(
+                        text_button(format!("lsp-copy-{i}"), "Copy", cx)
+                            .tooltip(tooltip("Copy the install command"))
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
+                            }),
+                    )
             });
             let more = (row.more_lines > 0).then(|| {
                 let server = server.clone();
@@ -302,6 +382,7 @@ impl LspStatusItem {
                         )),
                 )
                 .children(lines)
+                .children(install)
                 .children(more)
         });
         let hover = color(ui.ghost_element_hover);
@@ -330,17 +411,11 @@ impl LspStatusItem {
                     item.act(window, cx, |wb, window, cx| wb.show_trust_modal(window, cx));
                 }))
         });
-        let footer = has_rows.then(|| {
+        let server_actions = has_rows.then(|| {
             div()
-                .flex_none()
                 .flex()
                 .flex_row()
-                .justify_end()
                 .gap(px(2. * GRID))
-                .px(px(3. * GRID))
-                .py(px(2. * GRID))
-                .border_t_1()
-                .border_color(color(ui.border_variant))
                 .child(
                     text_button("lsp-restart-all", "Restart All", cx).on_click(cx.listener(
                         |item, _, window, cx| {
@@ -358,6 +433,26 @@ impl LspStatusItem {
                     )),
                 )
         });
+        let footer = div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .justify_between()
+            .gap(px(2. * GRID))
+            .px(px(3. * GRID))
+            .py(px(2. * GRID))
+            .border_t_1()
+            .border_color(color(ui.border_variant))
+            .child(
+                text_button("lsp-show-all-languages", "Show All Languages…", cx).on_click(
+                    cx.listener(|item, _, window, cx| {
+                        item.act(window, cx, |wb, window, cx| {
+                            wb.run_command("lucerna.lsp.health", None, window, cx);
+                        });
+                    }),
+                ),
+            )
+            .children(server_actions);
         popover(cx)
             .id("lsp-popover")
             .debug_selector(|| "lsp-popover".into())
@@ -382,9 +477,10 @@ impl LspStatusItem {
                     .gap(px(2. * GRID))
                     .p(px(3. * GRID))
                     .children(restricted_row)
+                    .children(table_errors)
                     .children(rows),
             )
-            .children(footer)
+            .child(footer)
     }
 }
 
@@ -411,7 +507,9 @@ fn dot(rgba: Rgba) -> gpui::Div {
 impl Render for LspStatusItem {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let servers = self.servers.read(cx);
-        let visible = servers.has_servers() || servers.shows_restricted_mode();
+        let visible = servers.has_servers()
+            || servers.shows_restricted_mode()
+            || !servers.table_errors().is_empty();
         let progress = servers.progress_text();
         if !visible {
             self.close(window, cx);
@@ -502,6 +600,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         },
     );
     commands.register(
+        "lucerna.lsp.health",
+        "Language Servers: Show All Languages",
+        |wb, _, window, cx| wb.show_lsp_health(window, cx),
+    );
+    commands.register(
         "lucerna.lsp.showLog",
         "Language Servers: Show Log",
         |wb, args, window, cx| {
@@ -524,6 +627,19 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 }
 
 impl Workbench {
+    /// Shows every language server of the table and whether it is
+    /// installed. For now it only counts the request: the Health tab
+    /// (`TabItem::LspHealth`) comes with Task 7 of the server-table plan.
+    pub fn show_lsp_health(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.lsp_health_requests += 1;
+        cx.notify();
+    }
+
+    /// How many times [`Workbench::show_lsp_health`] ran.
+    pub fn lsp_health_requests(&self) -> usize {
+        self.lsp_health_requests
+    }
+
     /// The ⚡ status bar item.
     pub fn lsp_status(&self) -> &Entity<LspStatusItem> {
         &self.lsp_status

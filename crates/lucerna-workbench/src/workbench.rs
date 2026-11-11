@@ -126,6 +126,8 @@ pub struct Workbench {
     pub(crate) breadcrumbs: Breadcrumbs,
     /// The ⚡ status bar item.
     pub(crate) lsp_status: Entity<LspStatusItem>,
+    /// Times `lucerna.lsp.health` ran; the Health tab (Task 7) replaces it.
+    pub(crate) lsp_health_requests: usize,
     /// The diagnostics counts and message in the status bar.
     pub(crate) diagnostics_status: Entity<DiagnosticsStatusItem>,
     /// The F8 lookup in flight.
@@ -536,6 +538,7 @@ impl Workbench {
             symbols,
             breadcrumbs: Breadcrumbs::default(),
             lsp_status: lsp_status.clone(),
+            lsp_health_requests: 0,
             diagnostics_status: diagnostics_status.clone(),
             marker_task: None,
             marker_hover: None,

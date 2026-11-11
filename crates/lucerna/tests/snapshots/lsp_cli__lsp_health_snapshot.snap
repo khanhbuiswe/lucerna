@@ -1,0 +1,14 @@
+---
+source: crates/lucerna/tests/lsp_cli.rs
+expression: "String::from_utf8(out).unwrap()"
+---
+Language         Server                      Status                               Install
+go               gopls                       disabled                             go install golang.org/x/tools/gopls@latest
+javascript       typescript-language-server  ✗ not found                          npm i -g typescript typescript-language-server
+javascriptreact  typescript-language-server  ✗ not found                          npm i -g typescript typescript-language-server
+mine             mine                        ✗ not found
+python           basedpyright                ✓ /fake/bin/basedpyright-langserver  npm i -g basedpyright
+python           pyright                     disabled                             npm i -g pyright
+rust             rust-analyzer               ✓ /fake/bin/rust-analyzer            rustup component add rust-analyzer
+typescript       typescript-language-server  ✗ not found                          npm i -g typescript typescript-language-server
+typescriptreact  typescript-language-server  ✗ not found                          npm i -g typescript typescript-language-server

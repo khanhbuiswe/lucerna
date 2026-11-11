@@ -7,6 +7,7 @@ pub mod diagnostics;
 pub mod env;
 pub mod framing;
 mod guard;
+pub mod health;
 pub mod launcher;
 pub mod locations;
 pub mod position;
