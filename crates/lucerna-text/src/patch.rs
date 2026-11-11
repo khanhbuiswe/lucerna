@@ -88,8 +88,9 @@ impl Patch {
             // Ranges in the middle (post-`self`, pre-`later`) coordinate space.
             let take_a = j >= b.len() || (i < a.len() && a[i].new.start <= b[j].old.start);
             let (da_before, db_before) = (da, db);
-            let mut start;
+            let start;
             let mut end;
+            let mut end_from_a = take_a;
             if take_a {
                 start = a[i].new.start;
                 end = a[i].new.end;
@@ -101,7 +102,6 @@ impl Patch {
                 db += delta(&b[j]);
                 j += 1;
             }
-            let cluster_start = start;
             loop {
                 let next_a = a.get(i).map(|e| (e.new.start, e.new.end, true));
                 let next_b = b.get(j).map(|e| (e.old.start, e.old.end, false));
@@ -110,12 +110,16 @@ impl Patch {
                     (x, y) => x.or(y),
                 };
                 let Some((s, e, from_a)) = next else { break };
-                let joins = s < end || (s == end && (e == s || end == start));
+                // Edits of one patch never merge with each other; edits of
+                // different patches merge when they overlap or touch.
+                let joins = s < end || (s == end && from_a != end_from_a);
                 if !joins {
                     break;
                 }
+                if e >= end {
+                    end_from_a = from_a;
+                }
                 end = end.max(e);
-                start = start.min(s);
                 if from_a {
                     da += delta(&a[i]);
                     i += 1;
@@ -124,7 +128,6 @@ impl Patch {
                     j += 1;
                 }
             }
-            debug_assert_eq!(start, cluster_start);
             out.push(PatchEdit {
                 old: (start as isize - da_before) as usize..(end as isize - da) as usize,
                 new: (start as isize + db_before) as usize..(end as isize + db) as usize,
@@ -232,49 +235,105 @@ mod tests {
     #[test]
     fn compose_equals_sequential() {
         let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+        let mut skipped = 0;
         for case in 0..500 {
             let (a, mid_len) = random_patch(&mut rng, 200);
             let (b, _) = random_patch(&mut rng, mid_len);
             let c = a.compose(&b);
-            for offset in 0..=200 {
-                for bias in [Bias::Left, Bias::Right] {
-                    let mid = a.map_offset(offset, bias);
-                    let inside_later_edit = b
+            // A composed edit that swallowed edits from both `a` and `b` is
+            // the only place where the old coordinates lose information.
+            let merged: Vec<&PatchEdit> = c
+                .edits()
+                .iter()
+                .filter(|e| {
+                    let has_a = a
                         .edits()
                         .iter()
-                        .any(|e| e.old.start <= mid && mid <= e.old.end);
-                    // `Left` at the end of a replaced range maps to the end of
-                    // the replacement, and an offset that `a` leaves alone may
-                    // sit inside a range `b` replaces. Once such edits merge,
-                    // the composed edit cannot tell those points apart from
-                    // other interior offsets, so for them we only require
-                    // landing inside the composed replacement.
-                    let ambiguous = inside_later_edit
-                        || (bias == Bias::Left
-                            && a.edits()
-                                .iter()
-                                .any(|e| e.old.end == offset && e.old.start < e.old.end));
-                    if ambiguous {
-                        let got = c.map_offset(offset, bias);
-                        assert!(
-                            c.edits().iter().any(|e| {
-                                e.old.start <= offset
-                                    && offset <= e.old.end
-                                    && e.new.start <= got
-                                    && got <= e.new.end
-                            }),
-                            "case {case} offset {offset} {bias:?}"
-                        );
+                        .any(|x| e.old.start <= x.old.start && x.old.end <= e.old.end);
+                    let has_b = b
+                        .edits()
+                        .iter()
+                        .any(|x| e.new.start <= x.new.start && x.new.end <= e.new.end);
+                    has_a && has_b
+                })
+                .collect();
+            for offset in 0..=200 {
+                for bias in [Bias::Left, Bias::Right] {
+                    let got = c.map_offset(offset, bias);
+                    let mid = a.map_offset(offset, bias);
+                    let seq = b.map_offset(mid, bias);
+                    // Left at the end of a replaced range maps to the end of
+                    // the replacement, and an offset `a` leaves alone may sit
+                    // in a range `b` replaces. Inside a merged replacement the
+                    // composed edit cannot tell those apart from other interior
+                    // offsets, so there we only require landing in it.
+                    if let Some(e) = merged
+                        .iter()
+                        .find(|e| e.old.start <= offset && offset <= e.old.end)
+                    {
+                        if got != seq {
+                            skipped += 1;
+                            assert!(
+                                e.new.start <= got && got <= e.new.end,
+                                "case {case} offset {offset} {bias:?}"
+                            );
+                        }
                         continue;
                     }
-                    let seq = b.map_offset(a.map_offset(offset, bias), bias);
                     assert_eq!(
-                        c.map_offset(offset, bias),
-                        seq,
+                        got, seq,
                         "case {case} offset {offset} {bias:?}\na={a:?}\nb={b:?}\nc={c:?}"
                     );
                 }
             }
+        }
+        assert!(skipped < 1000, "too many lossy cases: {skipped}");
+    }
+
+    /// Applies `p` to `text`, taking replacement slices from `new_text`.
+    fn apply(p: &Patch, text: &str, new_text: &str) -> String {
+        let mut out = String::new();
+        let mut pos = 0;
+        for e in p.edits() {
+            out.push_str(&text[pos..e.old.start]);
+            out.push_str(&new_text[e.new.clone()]);
+            pos = e.old.end;
+        }
+        out.push_str(&text[pos..]);
+        out
+    }
+
+    /// Applies the edits of `p` (with random replacement text) to `text`.
+    fn edit_text(rng: &mut Rng, p: &Patch, text: &str) -> String {
+        let mut out = String::new();
+        let mut pos = 0;
+        for e in p.edits() {
+            out.push_str(&text[pos..e.old.start]);
+            for _ in 0..e.new.len() {
+                out.push((b'A' + rng.below(26) as u8) as char);
+            }
+            pos = e.old.end;
+        }
+        out.push_str(&text[pos..]);
+        out
+    }
+
+    #[test]
+    fn compose_replays_to_the_same_text() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for case in 0..500 {
+            let text: String = (0..200).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+            let (a, mid_len) = random_patch(&mut rng, 200);
+            let mid = edit_text(&mut rng, &a, &text);
+            assert_eq!(mid.len(), mid_len);
+            let (b, _) = random_patch(&mut rng, mid_len);
+            let fin = edit_text(&mut rng, &b, &mid);
+            let c = a.compose(&b);
+            assert_eq!(
+                apply(&c, &text, &fin),
+                fin,
+                "case {case}\n{a:?}\n{b:?}\n{c:?}"
+            );
         }
     }
 
