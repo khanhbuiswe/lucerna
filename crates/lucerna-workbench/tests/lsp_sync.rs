@@ -519,6 +519,67 @@ fn shutdown_all_waits_for_running_and_starting_servers(cx: &mut TestAppContext) 
     assert!(statuses.iter().all(|s| s.state == SlotState::Stopped));
 }
 
+/// A crate outside the workspace (like `~/.cargo/registry/.../x.rs`).
+fn outside_crate() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"dep\"\n").unwrap();
+    fs::write(dir.path().join("lib.rs"), "pub fn dep() {}\n").unwrap();
+    dir
+}
+
+#[gpui::test]
+fn file_outside_the_workspace_joins_the_running_server_without_a_launch(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let outside = outside_crate();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    let lib = outside.path().join("lib.rs");
+    wb.update(cx, |wb, cx| {
+        wb.open_path(
+            Arc::from(lib.as_path()),
+            lucerna_workbench::OpenMode::Pinned,
+            cx,
+        )
+    });
+    settle(cx);
+
+    assert_eq!(
+        launcher.launches().len(),
+        1,
+        "no server for the outside root"
+    );
+    let opened: Vec<_> = sent(&fake, "textDocument/didOpen")
+        .into_iter()
+        .map(|p| p["textDocument"]["uri"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(opened.contains(&uri(&lib)), "{opened:?}");
+    let servers = language_servers(&wb, cx);
+    let statuses = cx.update(|_, cx| servers.read(cx).statuses());
+    assert_eq!(statuses.len(), 1, "{statuses:?}");
+}
+
+#[gpui::test]
+fn file_outside_the_workspace_alone_starts_nothing(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let outside = outside_crate();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), TRUSTED, cx);
+    let lib = outside.path().join("lib.rs");
+    wb.update(cx, |wb, cx| {
+        wb.open_path(
+            Arc::from(lib.as_path()),
+            lucerna_workbench::OpenMode::Pinned,
+            cx,
+        )
+    });
+    settle(cx);
+    assert!(launcher.launches().is_empty());
+    assert!(sent(&fake, "textDocument/didOpen").is_empty());
+}
+
 #[gpui::test]
 fn quit_shares_one_deadline_across_windows_and_kills_hung_servers(cx: &mut TestAppContext) {
     let (a, b) = (rust_project(), rust_project());

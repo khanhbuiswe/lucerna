@@ -54,8 +54,9 @@ impl Registry {
         }
     }
 
-    /// The servers for a file and the project root each uses. Checks the
-    /// filesystem for root markers: call it off the UI thread.
+    /// The servers for a file and the project root each uses; none for a
+    /// file outside the workspace. Checks the filesystem for root markers:
+    /// call it off the UI thread.
     pub fn keys_for(
         &self,
         language_id: &str,
@@ -65,9 +66,11 @@ impl Registry {
     ) -> Vec<ServerKey> {
         select_servers(list, &self.adapters, language_id)
             .iter()
-            .map(|adapter| ServerKey {
-                root: find_root(&**adapter, path, workspace_root).into(),
-                server: adapter.name(),
+            .filter_map(|adapter| {
+                Some(ServerKey {
+                    root: find_root(&**adapter, path, workspace_root)?.into(),
+                    server: adapter.name(),
+                })
             })
             .collect()
     }

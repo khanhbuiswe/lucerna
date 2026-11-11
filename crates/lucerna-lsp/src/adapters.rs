@@ -163,12 +163,14 @@ pub fn builtin_adapters() -> Vec<Arc<dyn Adapter>> {
 }
 
 /// The project root `adapter` uses for `file`. Never above `workspace_root`;
-/// the workspace root when no marker is found; the file's directory when the
-/// file lies outside the workspace.
-pub fn find_root(adapter: &dyn Adapter, file: &Path, workspace_root: &Path) -> PathBuf {
+/// the workspace root when no marker is found. `None` when the file lies
+/// outside the workspace: no server is ever started for such a root (it is
+/// not trusted, and a library file would index a whole registry); the file
+/// joins an already running server instead.
+pub fn find_root(adapter: &dyn Adapter, file: &Path, workspace_root: &Path) -> Option<PathBuf> {
     let parent = file.parent().unwrap_or(file);
     if !parent.starts_with(workspace_root) {
-        return parent.to_path_buf();
+        return None;
     }
     // From the file's directory up to and including the workspace root.
     let dirs: Vec<&Path> = parent
@@ -187,5 +189,5 @@ pub fn find_root(adapter: &dyn Adapter, file: &Path, workspace_root: &Path) -> P
             .iter()
             .find_map(|m| dirs.iter().find(|dir| has(dir, m))),
     };
-    found.map_or_else(|| workspace_root.to_path_buf(), |dir| dir.to_path_buf())
+    Some(found.map_or_else(|| workspace_root.to_path_buf(), |dir| dir.to_path_buf()))
 }

@@ -397,6 +397,17 @@ impl LanguageServers {
         for path in paths {
             self.open_in_servers(&path, cx);
         }
+        // Files outside the workspace opened before any server ran can
+        // join this one now.
+        let waiting: Vec<Arc<Path>> = self
+            .docs
+            .iter()
+            .filter(|(path, doc)| doc.keys.is_empty() && !path.starts_with(&self.root))
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in waiting {
+            self.find_servers(&path, cx);
+        }
         cx.notify();
     }
 

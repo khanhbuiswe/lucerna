@@ -168,16 +168,32 @@ impl LanguageServers {
             .get::<u32>("lucerna.largeFile.maxLines", language.as_deref())
             .unwrap_or(300_000);
         let (snapshot, file, root) = (doc.snapshot.clone(), path.clone(), self.root.clone());
+        // A file outside the workspace (a library, the standard library)
+        // never starts a server: it joins one already running here.
+        let outside = (!path.starts_with(&self.root)).then(|| {
+            let running: Vec<&ServerKey> = self.registry.running().map(|(key, _)| key).collect();
+            external_keys(
+                adapters.iter().map(|adapter| adapter.name()),
+                self.origins.get(&**path),
+                &running,
+                &self.root,
+            )
+        });
         let work = cx.background_executor().spawn(async move {
             guarded("lsp-find-servers", move || {
                 if too_large_for_lsp(&snapshot, max_bytes, max_lines) {
                     return Vec::new();
                 }
+                if let Some(keys) = outside {
+                    return keys;
+                }
                 adapters
                     .iter()
-                    .map(|adapter| ServerKey {
-                        root: find_root(&**adapter, &file, &root).into(),
-                        server: adapter.name(),
+                    .filter_map(|adapter| {
+                        Some(ServerKey {
+                            root: find_root(&**adapter, &file, &root)?.into(),
+                            server: adapter.name(),
+                        })
                     })
                     .collect()
             })
@@ -268,5 +284,67 @@ impl LanguageServers {
                 });
             }
         }
+    }
+}
+
+/// The servers a file outside the workspace joins, one per selected server
+/// name: the server whose answer led to the file (`origin`) while it runs,
+/// else a running server of that name, the one rooted at the workspace
+/// first; none when no such server runs. Never a new key.
+fn external_keys(
+    servers: impl Iterator<Item = &'static str>,
+    origin: Option<&ServerKey>,
+    running: &[&ServerKey],
+    workspace_root: &Path,
+) -> Vec<ServerKey> {
+    servers
+        .filter_map(|server| {
+            if let Some(origin) = origin.filter(|o| o.server == server && running.contains(o)) {
+                return Some(origin.clone());
+            }
+            running
+                .iter()
+                .filter(|key| key.server == server)
+                .min_by_key(|key| (&*key.root != workspace_root, key.root.clone()))
+                .map(|key| (*key).clone())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(root: &str, server: &'static str) -> ServerKey {
+        ServerKey {
+            root: Arc::from(Path::new(root)),
+            server,
+        }
+    }
+
+    #[test]
+    fn external_file_prefers_the_origin_server() {
+        let (ws, a, b) = (key("/ws", "ra"), key("/ws/a", "ra"), key("/ws/b", "ra"));
+        let running = [&ws, &a, &b];
+        let picked = external_keys(["ra"].into_iter(), Some(&b), &running, Path::new("/ws"));
+        assert_eq!(picked, [b.clone()]);
+        // Without an origin (or a stopped one): the workspace-rooted server.
+        let stopped = key("/ws/c", "ra");
+        let picked = external_keys(
+            ["ra"].into_iter(),
+            Some(&stopped),
+            &running,
+            Path::new("/ws"),
+        );
+        assert_eq!(picked, [ws.clone()]);
+        let picked = external_keys(["ra"].into_iter(), None, &[&b, &a], Path::new("/ws"));
+        assert_eq!(picked, [a.clone()]);
+    }
+
+    #[test]
+    fn external_file_without_a_running_server_gets_none() {
+        let other = key("/ws", "gopls");
+        let picked = external_keys(["ra"].into_iter(), None, &[&other], Path::new("/ws"));
+        assert!(picked.is_empty());
     }
 }

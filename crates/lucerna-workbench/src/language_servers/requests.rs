@@ -129,28 +129,31 @@ impl LanguageServers {
                     .capabilities()
                     .is_some_and(|caps| supports(&caps, kind))
             })
-            .map(|(_, server)| {
+            .map(|(key, server)| {
                 let encoding = server.encoding();
                 let position = TextDocumentPositionParams {
                     text_document: TextDocumentIdentifier { uri: uri.clone() },
                     position: to_lsp(snapshot, point, encoding),
                 };
                 let request = request_locations(&server, kind, position);
-                request.map(move |locs| (encoding, locs))
+                request.map(move |locs| (key, encoding, locs))
             })
             .collect();
         if requests.is_empty() {
             return Task::ready(Vec::new());
         }
         let open = self.open_snapshots();
-        cx.background_spawn(async move {
+        let work = cx.background_spawn(async move {
             let answers = futures::future::join_all(requests).await;
             crate::tasks::guarded("goto-locations", move || {
                 let open = |path: &Path| open.get(path).cloned();
-                let mut all: Vec<ResolvedLocation> = answers
-                    .into_iter()
-                    .flat_map(|(encoding, locs)| resolve_locations(locs, encoding, &open))
-                    .collect();
+                let mut origins = Vec::new();
+                let mut all: Vec<ResolvedLocation> = Vec::new();
+                for (key, encoding, locs) in answers {
+                    let resolved = resolve_locations(locs, encoding, &open);
+                    origins.extend(resolved.iter().map(|l| (l.path.to_path_buf(), key.clone())));
+                    all.extend(resolved);
+                }
                 // Each server's answer is sorted; together they need it again.
                 let key = |l: &ResolvedLocation| {
                     let r = &l.range;
@@ -159,9 +162,15 @@ impl LanguageServers {
                 };
                 all.sort_by_key(key);
                 all.dedup_by_key(|l| key(l));
-                all
+                (all, origins)
             })
             .unwrap_or_default()
+        });
+        cx.spawn(async move |this, cx| {
+            let (all, origins) = work.await;
+            this.update(cx, |servers, _| servers.note_origins(origins))
+                .ok();
+            all
         })
     }
 }
@@ -286,19 +295,29 @@ impl LanguageServers {
         }
         let open = self.open_snapshots();
         let root = self.root.clone();
-        cx.background_spawn(async move {
+        let work = cx.background_spawn(async move {
             let answers = futures::future::join_all(requests).await;
             crate::tasks::guarded("workspace-symbols", move || {
+                let mut origins = Vec::new();
                 let candidates = answers
                     .into_iter()
-                    .flat_map(|(key, encoding, response)| candidates(key, encoding, response))
+                    .flat_map(|(key, encoding, response)| {
+                        let found = candidates(key.clone(), encoding, response);
+                        origins.extend(
+                            found
+                                .iter()
+                                .filter(|c| !c.path.starts_with(&root))
+                                .map(|c| (c.path.clone(), key.clone())),
+                        );
+                        found
+                    })
                     .collect();
                 let in_project = |path: &Path| {
                     path.strip_prefix(&root)
                         .is_ok_and(|relative| project.contains(relative))
                 };
                 let mut snapshots = HashMap::new();
-                rank(candidates, &query, in_project)
+                let items = rank(candidates, &query, in_project)
                     .into_iter()
                     .map(|(c, in_project)| {
                         let snapshot = snapshots
@@ -318,9 +337,16 @@ impl LanguageServers {
                             unresolved: c.unresolved,
                         }
                     })
-                    .collect()
+                    .collect::<Vec<_>>();
+                (items, origins)
             })
             .unwrap_or_default()
+        });
+        cx.spawn(async move |this, cx| {
+            let (items, origins) = work.await;
+            this.update(cx, |servers, _| servers.note_origins(origins))
+                .ok();
+            items
         })
     }
 

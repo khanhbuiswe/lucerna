@@ -140,6 +140,10 @@ pub struct LanguageServers {
     /// Whether each server's binary is on `PATH`, as found by
     /// [`LanguageServers::server_binary_found`].
     on_path: HashMap<&'static str, bool>,
+    /// For files outside the workspace found in a server's answer
+    /// (definition, references, workspace symbols): that server, which the
+    /// file joins when it is opened.
+    origins: HashMap<PathBuf, ServerKey>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -184,6 +188,7 @@ impl LanguageServers {
             watched_changes: Vec::new(),
             watched_flush_pending: false,
             on_path: HashMap::new(),
+            origins: HashMap::new(),
             _subscriptions: vec![
                 cx.subscribe(documents, Self::on_document_event),
                 cx.observe_global::<AppState>(Self::settings_changed),
@@ -306,6 +311,22 @@ impl LanguageServers {
     /// The running servers that have `path` open, or will once it is
     /// sent to them. A relative `path` is joined onto the root, as
     /// [`Documents`] does.
+    /// Remembers which server answered with files outside the workspace,
+    /// so opening one attaches it to that server (see `find_servers`).
+    fn note_origins(&mut self, found: Vec<(PathBuf, ServerKey)>) {
+        /// Bounds the map over a long session; it only steers a choice.
+        const MAX_ORIGINS: usize = 4096;
+        for (path, key) in found {
+            if path.starts_with(&self.root) {
+                continue;
+            }
+            if self.origins.len() >= MAX_ORIGINS {
+                self.origins.clear();
+            }
+            self.origins.insert(path, key);
+        }
+    }
+
     pub fn running_for(&self, path: &Path) -> Vec<(ServerKey, Arc<LanguageServer>)> {
         let path = absolute_path(&self.root, path);
         let Some(doc) = self.docs.get(path.as_path()) else {

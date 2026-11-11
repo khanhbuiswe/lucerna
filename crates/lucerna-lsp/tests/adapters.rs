@@ -24,7 +24,10 @@ fn rust_root_is_outermost_cargo_toml() {
     touch(&root.join("crates/a/Cargo.toml"));
     let file = root.join("crates/a/src/lib.rs");
     touch(&file);
-    assert_eq!(find_root(&*adapter("rust-analyzer"), &file, root), root);
+    assert_eq!(
+        find_root(&*adapter("rust-analyzer"), &file, root).unwrap(),
+        root
+    );
 }
 
 #[test]
@@ -35,7 +38,7 @@ fn go_prefers_go_work_over_go_mod() {
     touch(&root.join("sub/go.mod"));
     let file = root.join("sub/main.go");
     touch(&file);
-    assert_eq!(find_root(&*adapter("gopls"), &file, root), root);
+    assert_eq!(find_root(&*adapter("gopls"), &file, root).unwrap(), root);
 }
 
 #[test]
@@ -45,7 +48,10 @@ fn go_mod_when_no_go_work() {
     touch(&root.join("sub/go.mod"));
     let file = root.join("sub/pkg/main.go");
     touch(&file);
-    assert_eq!(find_root(&*adapter("gopls"), &file, root), root.join("sub"));
+    assert_eq!(
+        find_root(&*adapter("gopls"), &file, root).unwrap(),
+        root.join("sub")
+    );
 }
 
 #[test]
@@ -57,7 +63,7 @@ fn ts_nearest_package_json() {
     let file = root.join("packages/web/src/index.ts");
     touch(&file);
     assert_eq!(
-        find_root(&*adapter("typescript-language-server"), &file, root),
+        find_root(&*adapter("typescript-language-server"), &file, root).unwrap(),
         root.join("packages/web")
     );
 }
@@ -71,20 +77,21 @@ fn root_never_escapes_workspace() {
     let file = root.join("src/lib.rs");
     touch(&file);
     // Marker only above the workspace: falls back to the workspace root.
-    assert_eq!(find_root(&*adapter("rust-analyzer"), &file, &root), root);
+    assert_eq!(
+        find_root(&*adapter("rust-analyzer"), &file, &root).unwrap(),
+        root
+    );
 }
 
 #[test]
-fn file_outside_workspace_uses_its_parent() {
+fn file_outside_workspace_has_no_root() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("ws");
     fs::create_dir_all(&root).unwrap();
     let file = dir.path().join("other/x.rs");
     touch(&file);
-    assert_eq!(
-        find_root(&*adapter("rust-analyzer"), &file, &root),
-        dir.path().join("other")
-    );
+    touch(&dir.path().join("other/Cargo.toml"));
+    assert_eq!(find_root(&*adapter("rust-analyzer"), &file, &root), None);
 }
 
 #[test]
@@ -93,7 +100,7 @@ fn no_marker_falls_back_to_workspace_root() {
     let root = dir.path();
     let file = root.join("a/b/main.go");
     touch(&file);
-    assert_eq!(find_root(&*adapter("gopls"), &file, root), root);
+    assert_eq!(find_root(&*adapter("gopls"), &file, root).unwrap(), root);
 }
 
 #[cfg(unix)]
