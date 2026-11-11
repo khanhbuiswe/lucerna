@@ -744,7 +744,8 @@ impl CodeView {
             };
         };
         let marks = diags
-            .marks_in(first.buffer_row..last.buffer_row + 1)
+            .marks_in_paint_order(first.buffer_row..last.buffer_row + 1)
+            .into_iter()
             .map(|m| (m.range.clone(), m.style, severity_color(ui, m.severity)))
             .collect();
         let icons = if g.icon_column {

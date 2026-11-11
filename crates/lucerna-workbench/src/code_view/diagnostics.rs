@@ -119,6 +119,16 @@ impl DiagnosticRows {
             .filter(move |m| m.range.end.row >= rows.start)
     }
 
+    /// [`DiagnosticRows::marks_in`], least severe first: painting them in
+    /// this order leaves an error's squiggle on top of a hint or warning
+    /// over the same text.
+    pub fn marks_in_paint_order(&self, rows: Range<u32>) -> Vec<&Mark> {
+        let mut marks: Vec<&Mark> = self.marks_in(rows).collect();
+        // `Severity` sorts `Error` first; the sort is stable.
+        marks.sort_by_key(|m| std::cmp::Reverse(m.severity));
+        marks
+    }
+
     /// The icon of `row`: the highest of Error, Warning and Information
     /// starting on it; hints have none.
     pub fn gutter(&self, row: u32) -> Option<Severity> {
@@ -479,5 +489,28 @@ mod tests {
         assert_eq!(found, vec!["long"]);
         assert_eq!(rows.marks_in(4..5).count(), 1);
         assert_eq!(rows.marks_in(5..9).count(), 0);
+    }
+
+    #[test]
+    fn paint_order_puts_errors_over_hints() {
+        let text = snapshot("let totl = 1;\n");
+        let rows = DiagnosticRows::build(
+            &[
+                diag(pt(0, 4)..pt(0, 8), Severity::Error, "cannot find"),
+                diag(pt(0, 4)..pt(0, 8), Severity::Hint, "similar name"),
+                diag(pt(0, 0)..pt(0, 13), Severity::Warning, "unused"),
+            ],
+            &text,
+        );
+        let order: Vec<Severity> = rows
+            .marks_in_paint_order(0..1)
+            .iter()
+            .map(|m| m.severity)
+            .collect();
+        assert_eq!(
+            order,
+            vec![Severity::Hint, Severity::Warning, Severity::Error],
+            "the most severe mark is painted last, on top"
+        );
     }
 }
