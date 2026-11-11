@@ -72,6 +72,10 @@ impl TextInput {
         self.placeholder = placeholder.into();
     }
 
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
     /// Calls `f` with the new text after every change, typed or set.
     pub fn on_change(&mut self, f: impl Fn(&str, &mut Window, &mut App) + 'static) {
         self.on_change = Some(Rc::new(f));

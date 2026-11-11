@@ -31,6 +31,7 @@ use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
     panel_toggles, sidebar, status_bar, title_bar,
 };
+use crate::locations_picker::ShownLocationsPicker;
 use crate::lsp_log::LspLogs;
 use crate::lsp_status::{self, LspStatusItem};
 use crate::nav_history::{NavEntry, NavHistory};
@@ -168,6 +169,8 @@ pub struct Workbench {
     nav_history: HashMap<usize, NavHistory>,
     /// The shown theme picker.
     pub(crate) theme_picker: Option<ShownThemePicker>,
+    /// The shown locations picker (several definitions, references…).
+    pub(crate) locations_picker: Option<ShownLocationsPicker>,
     /// Folder trust: the trust store's answer and the trust modal.
     pub(crate) trust: Trust,
     /// The notification at the bottom right.
@@ -490,6 +493,7 @@ impl Workbench {
             recent_files: RecentFiles::default(),
             nav_history: HashMap::new(),
             theme_picker: None,
+            locations_picker: None,
             trust,
             toast: None,
             toast_count: 0,
@@ -1095,10 +1099,13 @@ impl Workbench {
             "extensionsViewletFocus",
             self.extensions_focused(window, cx),
         );
-        // The theme picker is a quick pick too: Escape closes it.
+        // The theme and locations pickers are quick picks too: Escape
+        // closes them.
         flag(
             "inQuickOpen",
-            self.quick_open.is_some() || self.theme_picker.is_some(),
+            self.quick_open.is_some()
+                || self.theme_picker.is_some()
+                || self.locations_picker.is_some(),
         );
         // As of the last frame: GPUI knows key contexts only once drawn.
         flag(
@@ -1571,6 +1578,10 @@ impl Render for Workbench {
             )
             .children(
                 self.theme_picker()
+                    .map(|picker| popover_overlay(picker.clone())),
+            )
+            .children(
+                self.locations_picker()
                     .map(|picker| popover_overlay(picker.clone())),
             )
             .children(

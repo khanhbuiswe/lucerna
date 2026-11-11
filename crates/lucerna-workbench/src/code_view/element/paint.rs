@@ -31,6 +31,12 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
                 ));
             }
         }
+        for &top in &frame.highlighted_lines {
+            window.paint_quad(fill(
+                Bounds::new(point(text.left(), top), size(text.size.width, lh)),
+                colors.highlighted_line,
+            ));
+        }
         if let Some(range) = frame.hover_range.clone() {
             for bounds in range_bounds(frame, range) {
                 window.paint_quad(fill(bounds, colors.hover));

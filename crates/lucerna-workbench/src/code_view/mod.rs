@@ -219,6 +219,12 @@ pub struct CodeView {
     match_highlights: Arc<[Range<usize>]>,
     /// The index in `match_highlights` drawn with an outline.
     active_match: Option<usize>,
+    /// Rows painted across with `editor.highlighted_line.background`:
+    /// half-open row ranges, such as the place a picker previews.
+    line_highlights: Arc<[Range<u32>]>,
+    /// A picker's preview: a click leaves the focus where it is, and the
+    /// document's pending jumps go to other views.
+    passive: bool,
     /// The find widget, kept while hidden so it remembers its query.
     find: Option<Entity<FindWidget>>,
     find_visible: bool,
@@ -297,6 +303,8 @@ impl CodeView {
             documents: None,
             match_highlights: Arc::from([]),
             active_match: None,
+            line_highlights: Arc::from([]),
+            passive: false,
             find: None,
             find_visible: false,
             gutter_hovered: false,
@@ -663,6 +671,33 @@ impl CodeView {
 
     pub fn active_match(&self) -> Option<usize> {
         self.active_match
+    }
+
+    /// Paints the rows of `rows` (half-open row ranges) across the text
+    /// with `editor.highlighted_line.background`, under the selection and
+    /// the text. New text keeps them.
+    pub fn set_line_highlights(&mut self, rows: Vec<Range<u32>>, cx: &mut Context<Self>) {
+        self.line_highlights = rows.into();
+        cx.notify();
+    }
+
+    pub fn line_highlights(&self) -> &[Range<u32>] {
+        &self.line_highlights
+    }
+
+    /// Whether `row` is in a range of [`CodeView::set_line_highlights`].
+    fn is_line_highlighted(&self, row: u32) -> bool {
+        self.line_highlights.iter().any(|r| r.contains(&row))
+    }
+
+    /// Whether this is a picker's preview, made by
+    /// [`Documents::open_preview`].
+    pub fn is_passive(&self) -> bool {
+        self.passive
+    }
+
+    pub(crate) fn set_passive(&mut self, passive: bool) {
+        self.passive = passive;
     }
 
     /// The find widget, while it is shown.

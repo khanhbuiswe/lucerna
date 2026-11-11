@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{Entity, Pixels, TestAppContext, VisualTestContext};
+use gpui::{Entity, Focusable, Pixels, TestAppContext, VisualTestContext};
 use lucerna_lsp::position::path_to_uri;
 use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
 use lucerna_text::Point;
@@ -187,6 +187,8 @@ fn same_location_falls_back_to_references(cx: &mut TestAppContext) {
     assert_eq!(active_file(&wb, cx), "main.rs");
     run(&wb, "editor.action.peekDefinition", cx);
     assert_eq!(count(&fake, REFERENCES), 1);
+    assert_eq!(rows(&wb, cx), ["header:main.rs", "1:fn main() {"]);
+    keys("enter", cx);
     assert_eq!(active_file(&wb, cx), "main.rs");
     assert_eq!(cursor(&wb, cx), pt(0, 3));
 }
@@ -705,4 +707,293 @@ fn new_text_clears_the_link(cx: &mut TestAppContext) {
     move_over(&view, pt(1, 9), cmd, cx);
     assert_eq!(count(&fake, DEFINITION), 2);
     assert!(link_range(&view, cx).is_some());
+}
+
+// The locations picker (spec §7.4, `locations_picker.rs`).
+
+use lucerna_workbench::LocationsPicker;
+
+/// helper and other in b.rs, main in main.rs: three definitions.
+fn three(dir: &Path) -> FakeServer {
+    let targets = json!([
+        location(dir, "b.rs", 2, 7, 12),
+        location(dir, "main.rs", 0, 3, 7),
+        location(dir, "b.rs", 1, 7, 13),
+    ]);
+    FakeServer::new().on_request(DEFINITION, move |_| Ok(targets.clone()))
+}
+
+fn picker(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<Entity<LocationsPicker>> {
+    cx.update(|_, cx| wb.read(cx).locations_picker().cloned())
+}
+
+fn rows(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<String> {
+    let picker = picker(wb, cx).expect("the picker is shown");
+    picker.read_with(cx, |p, _| p.row_texts())
+}
+
+/// The selected location: file name and start.
+fn selected(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<(String, Point)> {
+    let picker = picker(wb, cx)?;
+    picker.read_with(cx, |p, _| {
+        p.selected().map(|l| {
+            let name = l.path.file_name().unwrap().to_string_lossy().into_owned();
+            (name, l.range.start)
+        })
+    })
+}
+
+/// The preview's file name, cursor and highlighted rows.
+fn preview(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> (String, Point, Vec<(u32, u32)>) {
+    let picker = picker(wb, cx).expect("the picker is shown");
+    let view = picker
+        .read_with(cx, |p, _| p.preview().cloned())
+        .expect("a preview");
+    view.read_with(cx, |v, _| {
+        (
+            v.path().file_name().unwrap().to_string_lossy().into_owned(),
+            v.cursor(),
+            v.line_highlights()
+                .iter()
+                .map(|r| (r.start, r.end))
+                .collect(),
+        )
+    })
+}
+
+fn keys(keystrokes: &str, cx: &mut VisualTestContext) {
+    cx.simulate_keystrokes(keystrokes);
+    settle(cx);
+}
+
+fn groups(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> (usize, usize) {
+    cx.update(|_, cx| {
+        let model = wb.read(cx).editor_groups().read(cx).model();
+        (model.groups().len(), model.active_group())
+    })
+}
+
+#[gpui::test]
+fn multiple_definitions_open_picker_grouped(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    // The current file first, then by path; by place within a file.
+    assert_eq!(
+        rows(&wb, cx),
+        [
+            "header:main.rs",
+            "1:fn main() {",
+            "header:b.rs",
+            "2:pub fn helper() {}",
+            "3:pub fn other() {}",
+        ]
+    );
+    assert_eq!(selected(&wb, cx), Some(("main.rs".into(), pt(0, 3))));
+    assert!(cx.debug_bounds("locations-picker").is_some(), "drawn");
+    assert!(
+        cx.debug_bounds("locations-preview").is_some(),
+        "preview drawn"
+    );
+    assert_eq!(preview(&wb, cx), ("main.rs".into(), pt(0, 3), vec![(0, 1)]));
+    // Nothing jumped, and the input has the focus.
+    assert_eq!(active_file(&wb, cx), "main.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 8));
+    let p = picker(&wb, cx).unwrap();
+    let placeholder = cx.update(|_, cx| p.read(cx).input().read(cx).placeholder().to_string());
+    assert_eq!(placeholder, "Filter definitions…");
+}
+
+#[gpui::test]
+fn filter_narrows_rows(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    cx.simulate_input("other");
+    settle(cx);
+    assert_eq!(rows(&wb, cx), ["header:b.rs", "3:pub fn other() {}"]);
+    assert_eq!(selected(&wb, cx), Some(("b.rs".into(), pt(2, 7))));
+    assert_eq!(preview(&wb, cx).0, "b.rs");
+    // The file name is matched too.
+    let picker = picker(&wb, cx).unwrap();
+    let input = picker.read_with(cx, |p, _| p.input().clone());
+    cx.update(|window, cx| input.update(cx, |i, cx| i.set_text("main", window, cx)));
+    settle(cx);
+    assert_eq!(rows(&wb, cx), ["header:main.rs", "1:fn main() {"]);
+    cx.update(|window, cx| input.update(cx, |i, cx| i.set_text("zzz", window, cx)));
+    settle(cx);
+    assert!(rows(&wb, cx).is_empty());
+    assert_eq!(selected(&wb, cx), None);
+}
+
+#[gpui::test]
+fn arrow_moves_preview(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    // Down skips the b.rs header.
+    keys("down", cx);
+    assert_eq!(selected(&wb, cx), Some(("b.rs".into(), pt(1, 7))));
+    assert_eq!(preview(&wb, cx), ("b.rs".into(), pt(1, 7), vec![(1, 2)]));
+    keys("down", cx);
+    assert_eq!(selected(&wb, cx), Some(("b.rs".into(), pt(2, 7))));
+    assert_eq!(preview(&wb, cx), ("b.rs".into(), pt(2, 7), vec![(2, 3)]));
+    // Wraps at both ends.
+    keys("down", cx);
+    assert_eq!(selected(&wb, cx), Some(("main.rs".into(), pt(0, 3))));
+    keys("up", cx);
+    assert_eq!(selected(&wb, cx), Some(("b.rs".into(), pt(2, 7))));
+    // Previewing moved nothing in the editor.
+    assert_eq!(active_file(&wb, cx), "main.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 8));
+}
+
+#[gpui::test]
+fn enter_opens_selected(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    keys("down", cx);
+    keys("enter", cx);
+    assert!(picker(&wb, cx).is_none());
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 7));
+    assert_eq!(groups(&wb, cx), (1, 0));
+    run(&wb, "workbench.action.navigateBack", cx);
+    assert_eq!(active_file(&wb, cx), "main.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 8));
+}
+
+#[gpui::test]
+fn click_selects_double_click_opens(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    let row = cx
+        .debug_bounds("locations-picker-row-4")
+        .expect("row 4 drawn")
+        .center();
+    cx.simulate_click(row, gpui::Modifiers::none());
+    settle(cx);
+    assert_eq!(selected(&wb, cx), Some(("b.rs".into(), pt(2, 7))));
+    assert!(picker(&wb, cx).is_some(), "a click only selects");
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: row,
+        button: gpui::MouseButton::Left,
+        modifiers: gpui::Modifiers::none(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position: row,
+        button: gpui::MouseButton::Left,
+        modifiers: gpui::Modifiers::none(),
+        click_count: 2,
+    });
+    settle(cx);
+    assert!(picker(&wb, cx).is_none());
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert_eq!(cursor(&wb, cx), pt(2, 7));
+}
+
+#[gpui::test]
+fn cmd_enter_opens_aside(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    keys("down", cx);
+    keys("cmd-enter", cx);
+    assert!(picker(&wb, cx).is_none());
+    assert_eq!(groups(&wb, cx), (2, 1));
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 7));
+}
+
+#[gpui::test]
+fn reveal_aside_picker_enter_opens_aside(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    run(&wb, "editor.action.revealDefinitionAside", cx);
+    assert!(picker(&wb, cx).is_some());
+    assert_eq!(groups(&wb, cx), (1, 0), "nothing opened yet");
+    keys("down", cx);
+    keys("enter", cx);
+    assert_eq!(groups(&wb, cx), (2, 1));
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 7));
+}
+
+#[gpui::test]
+fn esc_closes_without_jump(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    let editor_focus = cx.update(|_, cx| view.read(cx).focus_handle(cx));
+    cx.update(|window, cx| window.focus(&editor_focus, cx));
+    run(&wb, "editor.action.revealDefinition", cx);
+    assert!(
+        !cx.update(|window, _| editor_focus.is_focused(window)),
+        "the input has it"
+    );
+    keys("down", cx);
+    let preview = picker(&wb, cx)
+        .unwrap()
+        .read_with(cx, |p, _| p.preview().unwrap().downgrade());
+    keys("escape", cx);
+    assert!(picker(&wb, cx).is_none());
+    assert!(cx.debug_bounds("locations-picker").is_none());
+    assert_eq!(active_file(&wb, cx), "main.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 8));
+    assert!(preview.upgrade().is_none(), "the preview is dropped");
+    // The editor has the focus back.
+    assert!(cx.update(|window, _| editor_focus.is_focused(window)));
+}
+
+#[gpui::test]
+fn peek_with_single_result_still_opens_picker(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(
+        TRUSTED,
+        pt(1, 8),
+        |dir| {
+            let target = location(dir, "b.rs", 1, 7, 13);
+            FakeServer::new().on_request(DEFINITION, move |_| Ok(target.clone()))
+        },
+        cx,
+    );
+    run(&wb, "editor.action.peekDefinition", cx);
+    assert_eq!(rows(&wb, cx), ["header:b.rs", "2:pub fn helper() {}"]);
+    assert_eq!(active_file(&wb, cx), "main.rs");
+    keys("enter", cx);
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 7));
+}
+
+#[gpui::test]
+fn goto_and_peek_jumps_and_lists(cx: &mut TestAppContext) {
+    let settings = r#"{ "session.trustAllWorktrees": true,
+                        "editor.gotoLocation.multipleDefinitions": "gotoAndPeek" }"#;
+    let (_dir, _fake, wb, _view, cx) = setup(settings, pt(1, 8), three, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    // Jumps to the first result (by place: b.rs helper), then lists them
+    // all from there: the file jumped to comes first, so the selected row
+    // is the place shown.
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 7));
+    assert_eq!(rows(&wb, cx)[0], "header:b.rs");
+    assert_eq!(selected(&wb, cx), Some(("b.rs".into(), pt(1, 7))));
+    // Esc keeps the jump.
+    keys("escape", cx);
+    assert!(picker(&wb, cx).is_none());
+    assert_eq!(active_file(&wb, cx), "b.rs");
+}
+
+#[gpui::test]
+fn preview_click_keeps_focus_in_input(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    let input = picker(&wb, cx)
+        .unwrap()
+        .read_with(cx, |p, cx| p.input().read(cx).focus_handle(cx));
+    let at = cx
+        .debug_bounds("locations-preview")
+        .expect("preview drawn")
+        .center();
+    cx.simulate_click(at, gpui::Modifiers::none());
+    settle(cx);
+    assert!(picker(&wb, cx).is_some(), "a click inside keeps it open");
+    assert!(cx.update(|window, _| input.is_focused(window)));
+    // Arrows still move the selection.
+    keys("down", cx);
+    assert_eq!(selected(&wb, cx), Some(("b.rs".into(), pt(1, 7))));
 }

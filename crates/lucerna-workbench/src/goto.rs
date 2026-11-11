@@ -9,8 +9,6 @@
 //! Go to References instead, as VS Code's `alternativeDefinitionCommand`
 //! does.
 
-use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
@@ -22,6 +20,7 @@ use lucerna_text::Point;
 
 use crate::code_view::{CodeView, word_at};
 use crate::hover::{PopoverAnchor, place_popover};
+use crate::locations_picker::LocationsPicker;
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE_SMALL, popover};
 use crate::{AppState, CommandHandler, CommandRegistry, OpenMode, Workbench};
 
@@ -239,40 +238,19 @@ fn show_results(
         Multiple::Goto => open_location(wb, &first, aside, window, cx),
         Multiple::GotoAndPeek => {
             open_location(wb, &first, aside, window, cx);
-            // Already in the aside group, if any.
-            show_locations(wb, kind, locations, current, false, window, cx);
+            // Listed from the place jumped to, which is selected first;
+            // the picker opens in the aside group, if any, already.
+            let jumped = wb.absolute_path(&first.path);
+            LocationsPicker::open(wb, kind, locations, jumped, false, window, cx);
         }
-        Multiple::Peek => show_locations(wb, kind, locations, current, aside, window, cx),
-    }
-}
-
-/// Lists several locations to pick from; `aside` opens the pick in the
-/// group to the right. Until the locations picker exists (Task 18) this
-/// opens the first one.
-fn show_locations(
-    wb: &mut Workbench,
-    kind: GotoKind,
-    locations: Vec<ResolvedLocation>,
-    current: Arc<Path>,
-    aside: bool,
-    window: &mut Window,
-    cx: &mut Context<Workbench>,
-) {
-    tracing::debug!(
-        ?kind,
-        count = locations.len(),
-        current = %current.display(),
-        "no locations picker yet: opening the first location"
-    );
-    if let Some(first) = locations.first() {
-        open_location(wb, first, aside, window, cx);
+        Multiple::Peek => LocationsPicker::open(wb, kind, locations, current, aside, window, cx),
     }
 }
 
 /// Opens `loc` as a preview tab with the cursor at its start, recording
 /// the jump in the navigation history; `aside` opens it in the group to
 /// the right instead, splitting when there is none, and records it there.
-fn open_location(
+pub(crate) fn open_location(
     wb: &mut Workbench,
     loc: &ResolvedLocation,
     aside: bool,

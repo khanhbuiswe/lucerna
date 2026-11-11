@@ -189,12 +189,29 @@ impl Documents {
     /// first open starts a background load, later opens share its text,
     /// syntax and reloads but get their own scroll position.
     pub fn open(&mut self, path: Arc<Path>, cx: &mut Context<Self>) -> Entity<CodeView> {
+        self.open_view(path, false, cx)
+    }
+
+    /// A passive view of `path` for a picker's preview, read-only like
+    /// every view: a click does not focus it, and it never takes a jump or
+    /// scroll row waiting for the document's other views.
+    pub fn open_preview(&mut self, path: Arc<Path>, cx: &mut Context<Self>) -> Entity<CodeView> {
+        self.open_view(path, true, cx)
+    }
+
+    fn open_view(
+        &mut self,
+        path: Arc<Path>,
+        passive: bool,
+        cx: &mut Context<Self>,
+    ) -> Entity<CodeView> {
         self.collect_closed(cx);
         let key = self.key(&path);
         let documents = cx.weak_entity();
         let view = cx.new(|cx| {
             let mut view = CodeView::new(path, cx);
             view.set_documents(documents);
+            view.set_passive(passive);
             view
         });
         match self.docs.get_mut(&key) {
@@ -206,10 +223,11 @@ impl Documents {
                 let state = doc.state.clone();
                 let (snapshot, syntax) = (doc.snapshot.clone(), doc.syntax.clone());
                 let language_id = doc.language.as_ref().map(|l| l.id.clone());
-                let go_to = snapshot.as_ref().and(doc.pending_go_to.take());
-                let scroll = snapshot
-                    .as_ref()
-                    .and_then(|_| self.pending_scroll.remove(&key));
+                let takes_pending = snapshot.is_some() && !passive;
+                let go_to = takes_pending.then(|| doc.pending_go_to.take()).flatten();
+                let scroll = takes_pending
+                    .then(|| self.pending_scroll.remove(&key))
+                    .flatten();
                 view.update(cx, |v, cx| {
                     v.set_language_id(language_id, cx);
                     if let Some(snapshot) = snapshot {
@@ -598,14 +616,21 @@ impl Documents {
                     let snapshot = snapshot.clone();
                     view.update(cx, |v, cx| v.set_buffer(snapshot, cx));
                 }
-                // A requested jump moves the newest view only.
-                if let (Some(p), Some(view)) = (doc.pending_go_to.take(), doc.views().last()) {
+                // A requested jump moves the newest view only. A preview
+                // never takes it: without another view it waits for the
+                // next one to open.
+                let views: Vec<_> = doc.views().filter(|v| !v.read(cx).is_passive()).collect();
+                if let Some(view) = views.last()
+                    && let Some(p) = doc.pending_go_to.take()
+                {
                     view.update(cx, |v, cx| v.go_to(p, cx));
                 }
                 // After the jump, which centers its row: a scroll row asked
                 // for with it (Go Back) wins.
-                if let Some(row) = self.pending_scroll.remove(key) {
-                    for view in doc.views() {
+                if !views.is_empty()
+                    && let Some(row) = self.pending_scroll.remove(key)
+                {
+                    for view in &views {
                         view.update(cx, |v, cx| v.set_scroll_top_row(row, cx));
                     }
                 }

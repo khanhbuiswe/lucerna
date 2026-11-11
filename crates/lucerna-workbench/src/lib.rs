@@ -20,6 +20,7 @@ pub mod icons;
 pub mod keys;
 mod language_servers;
 mod layout;
+mod locations_picker;
 mod lsp_log;
 mod lsp_status;
 pub mod markdown;
@@ -57,6 +58,7 @@ pub use language_servers::{
 };
 pub use layout::StatusBarSide;
 pub use layout::title_bar::window_options;
+pub use locations_picker::{LocationsPicker, LocationsPickerEvent};
 pub use lsp_log::LspLogView;
 pub use lsp_status::{LspStatusItem, ServerRow, StatusDot};
 pub use nav_history::{NavEntry, NavHistory};

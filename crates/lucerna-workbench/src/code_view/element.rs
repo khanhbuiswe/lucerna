@@ -167,6 +167,8 @@ pub(crate) struct Frame {
     /// The range of the hover shown, painted with `element.hover`.
     hover_range: Option<std::ops::Range<Point>>,
     cursor_row: Option<u32>,
+    /// Tops of the display lines in [`CodeView::set_line_highlights`].
+    highlighted_lines: Vec<Pixels>,
     brackets: Vec<Point>,
     /// `·` and `→`, when whitespace is rendered.
     whitespace: Option<(ShapedLine, ShapedLine)>,
@@ -209,6 +211,7 @@ struct FrameColors {
     background: Hsla,
     gutter: Hsla,
     active_line: Hsla,
+    highlighted_line: Hsla,
     selection: Hsla,
     bracket: Hsla,
     search_match: Hsla,
@@ -588,6 +591,11 @@ impl CodeView {
             Some(cell) => Some(cell.start.row),
             None => self.selection.map(|s| s.head.row),
         };
+        let highlighted_lines = frame_rows
+            .iter()
+            .filter(|r| self.is_line_highlighted(r.buffer_row))
+            .map(|r| r.top)
+            .collect();
         let number_color = hsla(ui.editor_line_number);
         let active_color = hsla(ui.editor_active_line_number);
         let mut numbers = Vec::new();
@@ -691,6 +699,7 @@ impl CodeView {
             matches,
             hover_range: self.hover.highlight_range(),
             cursor_row,
+            highlighted_lines,
             brackets,
             whitespace,
             hitbox: Some(hitbox),
@@ -700,6 +709,7 @@ impl CodeView {
                 background: hsla(ui.editor_background),
                 gutter: hsla(ui.editor_background),
                 active_line: hsla(ui.editor_active_line_background),
+                highlighted_line: hsla(ui.editor_highlighted_line_background),
                 selection: hsla(ui.selection),
                 bracket: hsla(ui.editor_foreground).opacity(BRACKET_BOX_ALPHA),
                 search_match: hsla(ui.search_match_background),
@@ -1007,7 +1017,9 @@ impl CodeView {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        window.focus(&self.focus, cx);
+        if !self.passive {
+            window.focus(&self.focus, cx);
+        }
         self.hover.hide(cx);
         self.set_goto_message(None, cx);
         self.link_mouse_down(None);
