@@ -15,7 +15,9 @@ use lucerna_text::Point;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{ReferencesView, TabItem, Workbench};
 use serde_json::{Value, json};
-use support::lsp::{TRUSTED, active_view, lsp_workbench_with, open, sent, settle};
+use support::lsp::{
+    TRUSTED, active_view, editor_text_focus, focus_view, lsp_workbench_with, open, sent, settle,
+};
 use tempfile::TempDir;
 
 const MAIN: &str = "fn main() {\n    b::helper();\n    b::helper();\n}\n";
@@ -500,4 +502,18 @@ fn second_lookup_replaces_one_still_running(cx: &mut TestAppContext) {
     let files: Vec<PathBuf> = shown(&refs, cx).into_iter().map(|(p, _)| p).collect();
     assert_eq!(files, [PathBuf::from("src/main.rs")]);
     assert_eq!(tab_title(&wb, cx).as_deref(), Some("References to main"));
+}
+
+#[gpui::test]
+fn references_enter_leaves_working_focus(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, view, cx) = setup(cx);
+    focus_view(&view, cx);
+    keys("shift-alt-f12", cx);
+    keys("down down", cx);
+    keys("enter", cx);
+    assert_eq!(at(&wb, cx), ("b.rs".into(), pt(1, 7)));
+    assert!(
+        editor_text_focus(&wb, cx) || references_focus(&wb, cx),
+        "focus is on something shown"
+    );
 }

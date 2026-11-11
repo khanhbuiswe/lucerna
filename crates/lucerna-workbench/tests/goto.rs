@@ -17,7 +17,10 @@ use lucerna_text::Point;
 use lucerna_workbench::Workbench;
 use lucerna_workbench::code_view::CodeView;
 use serde_json::{Value, json};
-use support::lsp::{TRUSTED, active_view, count, lsp_workbench_with, open, sent, settle};
+use support::lsp::{
+    TRUSTED, active_view, count, editor_text_focus, focus_view, lsp_workbench_with, open, sent,
+    settle,
+};
 use tempfile::TempDir;
 
 const MAIN: &str = "fn main() {\n    b::helper();\n}\n";
@@ -1145,4 +1148,53 @@ fn navigation_history_stays_with_its_group_when_groups_shift(cx: &mut TestAppCon
     assert_eq!(active_file(&wb, cx), "b.rs");
     run(&wb, "workbench.action.navigateBack", cx);
     assert_eq!(active_file(&wb, cx), "main.rs", "B keeps its own history");
+}
+
+fn single(dir: &Path) -> FakeServer {
+    let target = location(dir, "b.rs", 1, 7, 13);
+    FakeServer::new().on_request(DEFINITION, move |_| Ok(target.clone()))
+}
+
+#[gpui::test]
+fn f12_single_result_keeps_editor_text_focus(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, view, cx) = setup(TRUSTED, pt(1, 8), single, cx);
+    focus_view(&view, cx);
+    assert!(editor_text_focus(&wb, cx));
+    run(&wb, "editor.action.revealDefinition", cx);
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert!(editor_text_focus(&wb, cx), "editor keys still work");
+}
+
+#[gpui::test]
+fn picker_enter_keeps_editor_text_focus(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    focus_view(&view, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    keys("down", cx);
+    keys("enter", cx);
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert!(editor_text_focus(&wb, cx));
+}
+
+#[gpui::test]
+fn goto_and_peek_esc_keeps_editor_text_focus(cx: &mut TestAppContext) {
+    let settings = r#"{ "session.trustAllWorktrees": true,
+                        "editor.gotoLocation.multipleDefinitions": "gotoAndPeek" }"#;
+    let (_dir, _fake, wb, view, cx) = setup(settings, pt(1, 8), three, cx);
+    focus_view(&view, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    keys("escape", cx);
+    assert!(picker(&wb, cx).is_none());
+    assert!(editor_text_focus(&wb, cx));
+}
+
+#[gpui::test]
+fn cmd_click_keeps_editor_text_focus(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, view, cx) = setup(TRUSTED, pt(0, 0), linking, cx);
+    let cmd = secondary(false, cx);
+    move_over(&view, pt(1, 8), cmd, cx);
+    click(&view, pt(1, 8), cmd, cx);
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert!(editor_text_focus(&wb, cx));
 }

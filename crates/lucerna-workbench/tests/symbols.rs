@@ -25,7 +25,8 @@ use lucerna_workbench::{
 };
 use serde_json::{Value, json};
 use support::lsp::{
-    TRUSTED, count, draw, init_with, language_servers, lsp_workbench_with, open, settle,
+    TRUSTED, count, draw, editor_text_focus, focus_view, init_with, language_servers,
+    lsp_workbench_with, open, settle,
 };
 use tempfile::TempDir;
 
@@ -990,4 +991,35 @@ fn empty_query_message(cx: &mut TestAppContext) {
         vec!["zzz"],
         "empty queries ask nothing"
     );
+}
+
+#[gpui::test]
+fn at_enter_keeps_editor_text_focus(cx: &mut TestAppContext) {
+    let fake = symbols_server();
+    let (_dir, wb, view, cx) = setup(&fake, pt(91, 4), cx);
+    focus_view(&view, cx);
+    run(&wb, "workbench.action.gotoSymbol", cx);
+    type_text("get", cx);
+    keys("enter", cx);
+    assert!(quick_open(&wb, cx).is_none());
+    assert!(editor_text_focus(&wb, cx));
+}
+
+#[gpui::test]
+fn hash_enter_keeps_editor_text_focus(cx: &mut TestAppContext) {
+    let lib = Arc::new(std::sync::Mutex::new(PathBuf::new()));
+    let lib_for_server = lib.clone();
+    let fake = symbols_server().on_request(WORKSPACE_SYMBOL, move |_| {
+        let lib = lib_for_server.lock().unwrap().clone();
+        Ok(json!([info("helper", Some("lib"), &lib, 1, 11)]))
+    });
+    let (dir, wb, view, cx) = lib_project(&fake, cx);
+    *lib.lock().unwrap() = dir.path().join("src/lib.rs");
+    focus_view(&view, cx);
+    run(&wb, "workbench.action.showAllSymbols", cx);
+    type_text("help", cx);
+    keys("enter", cx);
+    settle(cx);
+    assert!(active_path(&wb, cx).ends_with("src/lib.rs"));
+    assert!(editor_text_focus(&wb, cx));
 }

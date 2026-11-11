@@ -435,7 +435,9 @@ impl Workbench {
                 wb.hide_hidden_hovers(cx);
                 wb.release_closed_references(cx);
             }),
-            cx.observe_in(&editor_groups, window, Self::singleton_tab_hidden),
+            cx.observe_in(&editor_groups, window, |wb, _, window, cx| {
+                wb.refocus_if_hidden(window, cx)
+            }),
             cx.observe_in(&editor_groups, window, |wb, _, window, cx| {
                 wb.active_tabs_changed(window, cx)
             }),
@@ -982,18 +984,15 @@ impl Workbench {
                 .contains_focused(window, cx)
     }
 
-    /// After the tabs changed: when the Extensions, Search or References
-    /// tab or a server log closed, or
-    /// stopped being its group's active tab (say a search result opened in
-    /// its place), while it had focus, focus goes to the editor area, so
-    /// keys keep working.
-    fn singleton_tab_hidden(
-        &mut self,
-        groups: Entity<EditorGroupsView>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let model = groups.read(cx).model();
+    /// After the tabs changed (and wherever focus is restored): when the
+    /// focused tab body is no longer shown, because its tab closed or
+    /// stopped being its group's active tab (a jump in the same group, a
+    /// search result opened in its place), focus goes to the editor area,
+    /// so keys keep working. Covers code views, the Extensions, Search and
+    /// References tabs and server logs.
+    pub(crate) fn refocus_if_hidden(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let groups = self.editor_groups.read(cx);
+        let model = groups.model();
         let hidden = |tab: Option<TabId>| {
             tab.is_none_or(|id| !model.groups().iter().any(|g| g.active == Some(id)))
         };
@@ -1006,7 +1005,12 @@ impl Workbench {
         let lost = (extensions_hidden && had_focus(self.extensions_page.read(cx).focus_handle(cx)))
             || (search_hidden && had_focus(self.search_view.read(cx).focus_handle(cx)))
             || (references_hidden && had_focus(self.references_view.read(cx).focus_handle(cx)))
-            || self.lsp_logs.hidden_with_focus(model, window, cx);
+            || self.lsp_logs.hidden_with_focus(model, window, cx)
+            || groups.hidden_bodies().any(|body| {
+                body.clone()
+                    .downcast::<CodeView>()
+                    .is_ok_and(|view| had_focus(view.read(cx).focus_handle(cx)))
+            });
         if lost {
             self.focus_editor_area(window, cx);
         }

@@ -153,3 +153,18 @@ pub fn wait_until(what: &str, done: impl Fn() -> bool) {
 pub fn count(fake: &FakeServer, method: &str) -> usize {
     sent(fake, method).len()
 }
+
+/// Gives `view` keyboard focus, as clicking into it does.
+pub fn focus_view(view: &Entity<CodeView>, cx: &mut VisualTestContext) {
+    let handle = cx.update(|_, cx| gpui::Focusable::focus_handle(view.read(cx), cx));
+    cx.update(|window, cx| window.focus(&handle, cx));
+    settle(cx);
+}
+
+/// Whether editor keys work: `editorTextFocus` holds.
+pub fn editor_text_focus(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> bool {
+    let ctx = cx.update(|window, cx| wb.read(cx).context_keys(window, cx));
+    lucerna_settings::parse_when("editorTextFocus && editorFocus")
+        .unwrap()
+        .eval(&ctx)
+}

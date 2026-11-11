@@ -699,6 +699,9 @@ impl Workbench {
                 Some(focus) => window.focus(&focus, cx),
                 None => self.focus_editor_area(window, cx),
             }
+            // gotoAndPeek jumped while it was open: the view focused before
+            // may be hidden now.
+            self.refocus_if_hidden(window, cx);
         }
         cx.notify();
     }
