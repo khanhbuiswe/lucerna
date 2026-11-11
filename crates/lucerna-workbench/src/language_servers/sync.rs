@@ -359,7 +359,7 @@ mod tests {
         let (ws, a, b) = (key("/ws", "ra"), key("/ws/a", "ra"), key("/ws/b", "ra"));
         let running = [&ws, &a, &b];
         let picked = external_keys(["ra"].into_iter(), Some(&b), &running, Path::new("/ws"));
-        assert_eq!(picked, [b.clone()]);
+        assert_eq!(picked, std::slice::from_ref(&b));
         // Without an origin (or a stopped one): the workspace-rooted server.
         let stopped = key("/ws/c", "ra");
         let picked = external_keys(
@@ -368,9 +368,9 @@ mod tests {
             &running,
             Path::new("/ws"),
         );
-        assert_eq!(picked, [ws.clone()]);
+        assert_eq!(picked, std::slice::from_ref(&ws));
         let picked = external_keys(["ra"].into_iter(), None, &[&b, &a], Path::new("/ws"));
-        assert_eq!(picked, [a.clone()]);
+        assert_eq!(picked, std::slice::from_ref(&a));
     }
 
     #[test]
