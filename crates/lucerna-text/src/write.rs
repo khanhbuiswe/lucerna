@@ -14,10 +14,12 @@ use crate::buffer::{Buffer, BufferSnapshot, LineEnding, Point};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteError {
     /// The text has a character the file's encoding cannot represent. `at`
-    /// is in the LF-normalised text (byte column).
+    /// is in the LF-normalised text (byte column, for navigation); `column`
+    /// is the 0-based char column, which the message shows 1-based.
     Unencodable {
         encoding: &'static str,
         at: Point,
+        column: u32,
     },
     Io(String),
     PermissionDenied,
@@ -26,11 +28,15 @@ pub enum WriteError {
 impl fmt::Display for WriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WriteError::Unencodable { encoding, at } => write!(
+            WriteError::Unencodable {
+                encoding,
+                at,
+                column,
+            } => write!(
                 f,
                 "{encoding} cannot encode the character at Ln {}, Col {}",
                 at.row + 1,
-                at.column + 1
+                column + 1
             ),
             WriteError::Io(reason) => f.write_str(reason),
             WriteError::PermissionDenied => f.write_str("Permission denied"),
@@ -143,9 +149,13 @@ impl Buffer {
         line_ending: LineEnding,
     ) -> Result<Vec<u8>, WriteError> {
         let mut sink = Sink::new(encoding, snapshot.len_bytes());
-        let unencodable = |offset: usize| WriteError::Unencodable {
-            encoding: encoding.name(),
-            at: snapshot.offset_to_point(offset),
+        let unencodable = |offset: usize| {
+            let at = snapshot.offset_to_point(offset);
+            WriteError::Unencodable {
+                encoding: encoding.name(),
+                at,
+                column: snapshot.char_column(at),
+            }
         };
         if has_bom {
             // The BOM is U+FEFF in the file's own encoding.
@@ -191,21 +201,40 @@ impl Buffer {
     }
 }
 
-/// Writes `bytes` to `path`. Atomic (temp file, fsync, rename) unless the
-/// path is a symlink or has several hardlinks, where replacing the inode
-/// would break the link: those are written in place.
+/// Writes `bytes` to `path`. A symlink is resolved and its target written,
+/// leaving the link untouched. The write is atomic (temp file, fsync,
+/// rename) unless the target has several hardlinks, where replacing the
+/// inode would break the links: that is written in place. A read-only
+/// target is refused with `PermissionDenied`. A new file gets mode 0o644
+/// (the umask is not consulted).
 pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<Written, WriteError> {
     let mut hasher = DefaultHasher::new();
     hasher.write(bytes);
     let written = Written {
         hash: hasher.finish(),
     };
-    match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() || link_count(&meta) > 1 => {
-            write_in_place(path, bytes)?;
+    let is_symlink = match fs::symlink_metadata(path) {
+        Ok(meta) => meta.file_type().is_symlink(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e.into()),
+    };
+    let target = if is_symlink {
+        fs::canonicalize(path)?
+    } else {
+        path.to_path_buf()
+    };
+    match fs::metadata(&target) {
+        Ok(meta) => {
+            if meta.permissions().readonly() {
+                return Err(WriteError::PermissionDenied);
+            }
+            if link_count(&meta) > 1 {
+                write_in_place(&target, bytes)?;
+            } else {
+                write_atomic(&target, bytes, Some(meta))?;
+            }
         }
-        Ok(_) => write_atomic(path, bytes, fs::metadata(path).ok())?,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(path, bytes, None)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(&target, bytes, None)?,
         Err(e) => return Err(e.into()),
     }
     Ok(written)
@@ -235,14 +264,38 @@ fn write_atomic(path: &Path, bytes: &[u8], old: Option<fs::Metadata>) -> Result<
         .prefix(&format!(".{name}.luc~"))
         .rand_bytes(8)
         .tempfile_in(parent)?;
-    if let Some(meta) = old {
-        fs::set_permissions(temp.path(), meta.permissions())?;
+    match old {
+        Some(meta) => fs::set_permissions(temp.path(), meta.permissions())?,
+        None => set_new_file_mode(temp.path())?,
     }
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|e| WriteError::from(e.error))?;
+    sync_dir(parent);
     Ok(())
 }
+
+#[cfg(unix)]
+fn set_new_file_mode(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o644))
+}
+
+#[cfg(not(unix))]
+fn set_new_file_mode(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Best effort: makes the rename durable.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) {
+    if let Ok(d) = fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_: &Path) {}
 
 #[cfg(unix)]
 fn link_count(meta: &fs::Metadata) -> u64 {
@@ -337,7 +390,8 @@ mod tests {
             err,
             WriteError::Unencodable {
                 encoding: "windows-1252",
-                at: Point { row: 1, column: 2 }
+                at: Point { row: 1, column: 2 },
+                column: 2
             }
         );
         assert_eq!(
@@ -417,5 +471,60 @@ mod tests {
             .filter(|n| n.starts_with(".f.txt.luc~"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn unencodable_column_counts_chars() {
+        let original = encoding_rs::WINDOWS_1252.encode("café \n").0.into_owned();
+        let mut buffer = Buffer::from_bytes(&original, false).unwrap();
+        assert_eq!(buffer.encoding(), encoding_rs::WINDOWS_1252);
+        buffer.edit([(6..6, std::sync::Arc::from("ệ"))]);
+        let err = Buffer::encode(&buffer.snapshot(), buffer.encoding(), false, LineEnding::Lf)
+            .unwrap_err();
+        // "caf" + "é" is 4 chars but 5 bytes of UTF-8; the space follows.
+        assert_eq!(
+            err,
+            WriteError::Unencodable {
+                encoding: "windows-1252",
+                at: Point { row: 0, column: 6 },
+                column: 5
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "windows-1252 cannot encode the character at Ln 1, Col 6"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, b"old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        assert_eq!(
+            write_bytes(&path, b"new"),
+            Err(WriteError::PermissionDenied)
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o444
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_file_gets_default_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("new.txt");
+        write_bytes(&path, b"x").unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
     }
 }
