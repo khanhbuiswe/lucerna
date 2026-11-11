@@ -3309,6 +3309,7 @@ name = "lucerna-lsp"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "libc",
  "lsp-types",
  "lucerna-text",
  "tracing",

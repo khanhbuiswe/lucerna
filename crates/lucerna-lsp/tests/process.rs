@@ -52,9 +52,18 @@ fn echo_round_trip_then_stderr_and_exit_code() {
     let transport = spawn_process(&spec(&[script]), Arc::new(Recorder(tx))).unwrap();
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
     transport.send(body.to_owned());
-    assert_eq!(recv(&rx), Event::Message(body.to_owned()));
-    assert_eq!(recv(&rx), Event::Stderr("boom".into()));
+    // stdout and stderr are separate pipes, so their relative order is not
+    // defined; `closed` must come after both and only once.
+    let mut events = vec![recv(&rx), recv(&rx)];
     assert_eq!(recv(&rx), Event::Closed(Some(3)));
+    events.sort_by_key(|e| matches!(e, Event::Stderr(_)));
+    assert_eq!(
+        events,
+        [
+            Event::Message(body.to_owned()),
+            Event::Stderr("boom".into())
+        ]
+    );
     assert!(
         rx.recv_timeout(Duration::from_millis(200)).is_err(),
         "closed is last and once"
@@ -62,12 +71,34 @@ fn echo_round_trip_then_stderr_and_exit_code() {
 }
 
 #[test]
-fn kill_closes() {
+fn kill_closes_even_with_a_grandchild_holding_the_pipes() {
     let (tx, rx) = unbounded();
-    let transport = spawn_process(&spec(&["-c", "sleep 30"]), Arc::new(Recorder(tx))).unwrap();
+    let transport =
+        spawn_process(&spec(&["-c", "sleep 30 & wait"]), Arc::new(Recorder(tx))).unwrap();
     transport.kill();
     let event = rx
         .recv_timeout(Duration::from_secs(2))
         .expect("closed within 2s");
     assert!(matches!(event, Event::Closed(_)), "{event:?}");
+}
+
+#[test]
+fn stderr_keeps_draining_after_invalid_utf8() {
+    let (tx, rx) = unbounded();
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stderr_lsp.sh");
+    let _transport = spawn_process(&spec(&[script]), Arc::new(Recorder(tx))).unwrap();
+    assert_eq!(
+        recv(&rx),
+        Event::Stderr("bad \u{fffd}\u{fffd} bytes".into())
+    );
+    let mut lines = 0;
+    loop {
+        match recv(&rx) {
+            Event::Stderr(line) if line == "last" => break,
+            Event::Stderr(_) => lines += 1,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(lines, 3000);
+    assert_eq!(recv(&rx), Event::Closed(Some(0)));
 }
