@@ -86,8 +86,8 @@ Biến không biết, hoặc `{npm_root}` thất bại, thì server đó chuyể
 
 ### 4.1 Chọn server cho một file
 
-1. Nếu file có ngôn ngữ Lucerna (id `L`): server có `L` trong `languages`.
-2. Nếu không có ngôn ngữ: server có đuôi file hoặc tên file trong `file_types`.
+1. Nếu file có ngôn ngữ Lucerna (id `L`) và có server trong bảng (bật hay tắt) liệt kê `L` trong `languages`: các server đó.
+2. Nếu không có ngôn ngữ, hoặc không server nào liệt kê `L` (extension đặt tên khác bảng, ví dụ "Terraform Vars" → `terraform-vars` cho `.tfvars`, "OCaml Interface" → `ocaml-interface` cho `.mli`): server có đuôi file hoặc tên file trong `file_types`.
 3. Lọc theo `lucerna.lsp.languageServers` của `L` (hoặc mặc định `["..."]` khi không có ngôn ngữ) và `enabled`.
 4. `languageId` trong `didOpen` theo `language_id` (§3.1).
 
@@ -172,7 +172,7 @@ Mỗi ngôn ngữ đúng một server bật sẵn; server thay thế có trong b
 | gleam | gleam | `gleam lsp` | `gleam.toml` | `brew install gleam` | |
 | erlang | elp | `elp server` | `rebar.config`, `.elp.toml`, `erlang.mk` | `brew install erlang-language-platform` | |
 
-Id ngôn ngữ bundled của Lucerna (`shellscript`, `json`…) và id extension phổ biến (`php`, `ruby`, `vue.js`, `c++`, `c#`…) được kiểm trong test; dòng nào id không khớp registry thì vẫn chạy nhờ `file_types`.
+Test kiểm id ngôn ngữ bundled của Lucerna (`shellscript`, `json`…) có trong registry và được bảng nêu tên; id extension (`php`, `ruby`, `vue.js`, `c++`, `c#`…) chỉ được kiểm đúng dạng (chữ thường, không dấu cách), không kiểm khớp extension thật vì extension không có sẵn khi test. File có id không server nào liệt kê vẫn có server nhờ `file_types` (§4.1, có test).
 
 ## 10. Kiến trúc mã
 

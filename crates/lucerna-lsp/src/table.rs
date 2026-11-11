@@ -150,7 +150,8 @@ impl ServerDef {
     }
 
     /// Whether this server applies to a file: by Lucerna language when the
-    /// file has one, else by file name or extension.
+    /// file has one, else by file name or extension. [`crate::select_servers`]
+    /// passes no language when no server of the table lists it.
     pub fn matches(&self, language: Option<&str>, path: &Path) -> bool {
         if let Some(language) = language {
             return self.languages.iter().any(|l| l == language);
@@ -266,5 +267,13 @@ impl ServerTable {
 
     pub fn get(&self, name: &str) -> Option<&ServerDef> {
         self.servers.get(name)
+    }
+
+    /// Whether a server of the table, enabled or not, lists `language` in
+    /// its `languages`.
+    pub fn lists_language(&self, language: &str) -> bool {
+        self.servers
+            .values()
+            .any(|def| def.languages.iter().any(|l| l == language))
     }
 }

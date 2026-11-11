@@ -30,15 +30,19 @@ pub enum StartError {
 
 /// The servers to run for a file, in `list` order. `!name` removes a
 /// server wherever it appears; `...` stands for the remaining servers that
-/// match the file (by `language`, else by `path`'s file type) and are
-/// enabled, by name; a named server is used when it matches the file, even
-/// if disabled; unknown names are ignored.
+/// match the file (by `language` when a server of the table lists it,
+/// else by `path`'s file type) and are enabled, by name; a named server is
+/// used when it matches the file, even if disabled; unknown names are
+/// ignored.
 pub fn select_servers<'a>(
     list: &[String],
     table: &'a ServerTable,
     language: Option<&str>,
     path: &Path,
 ) -> Vec<&'a ServerDef> {
+    // A language no server lists (an extension's "Terraform Vars") is
+    // matched by file type, as a file without a language is.
+    let language = language.filter(|l| table.lists_language(l));
     let removed: HashSet<&str> = list.iter().filter_map(|s| s.strip_prefix('!')).collect();
     let matching = || {
         table

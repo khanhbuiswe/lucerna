@@ -94,6 +94,34 @@ fn select_by_file_type_without_language() {
     );
 }
 
+/// A file whose language no server lists (an extension's "Terraform Vars"
+/// for `.tfvars`, "OCaml Interface" for `.mli`, "CSharp" for `.cs`) is
+/// matched by its file type instead.
+#[test]
+fn select_unlisted_language_falls_back_to_file_type() {
+    let t = ServerTable::build(None);
+    assert_eq!(
+        names_for(&["..."], Some("terraform-vars"), "/ws/a.tfvars", &t),
+        ["terraform-ls"]
+    );
+    assert_eq!(
+        names_for(&["..."], Some("ocaml-interface"), "/ws/a.mli", &t),
+        ["ocamllsp"]
+    );
+    assert_eq!(
+        names_for(&["..."], Some("csharp"), "/ws/a.cs", &t),
+        ["csharp-ls"]
+    );
+    // A language some server lists is still matched by language only.
+    assert!(names_for(&["..."], Some("python"), "/ws/a.tfvars", &t) == ["basedpyright"]);
+    let t = table(json!({ "fake-rb": { "command": "fake-rb", "file_types": ["zzz"] } }));
+    assert_eq!(
+        names_for(&["..."], Some("zzz-lang"), "/ws/a.zzz", &t),
+        ["fake-rb"]
+    );
+    assert!(names_for(&["..."], Some("zzz-lang"), "/ws/a.txt", &t).is_empty());
+}
+
 #[test]
 fn select_dots_is_in_name_order() {
     let t = table(json!({
