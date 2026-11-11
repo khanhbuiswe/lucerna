@@ -166,6 +166,11 @@ impl ReferencesView {
         self.list.update(cx, |list, cx| list.clear(cx));
         self.columns.clear();
         self.files_shown = 0;
+        // A new lookup: nothing of the previous one is kept, so the
+        // refresh guard (keep results when no server can be asked) does
+        // not apply and an answer still on its way is dropped.
+        self.count = None;
+        self.generation += 1;
         self.refresh(cx);
         window.focus(&self.list_focus.clone(), cx);
     }

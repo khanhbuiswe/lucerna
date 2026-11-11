@@ -517,3 +517,30 @@ fn references_enter_leaves_working_focus(cx: &mut TestAppContext) {
         "focus is on something shown"
     );
 }
+
+#[gpui::test]
+fn new_lookup_without_server_does_not_keep_old_count(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(cx);
+    keys("shift-alt-f12", cx);
+    let refs = refs_view(&wb, cx);
+    assert_eq!(
+        cx.update(|_, cx| refs.read(cx).summary()),
+        Some("3 references in 2 files".into())
+    );
+    let servers = support::lsp::language_servers(&wb, cx);
+    servers.update(cx, |servers, cx| servers.stop_all(cx));
+    settle(cx);
+    // A new lookup (another word) with no server to ask.
+    let view = open(&wb, "src/main.rs", cx);
+    view.update(cx, |v, cx| v.set_cursor(pt(0, 4), cx));
+    settle(cx);
+    run(&wb, "references-view.findReferences", cx);
+    let summary = cx.update(|_, cx| refs.read(cx).summary());
+    assert!(
+        summary
+            .as_deref()
+            .is_none_or(|s| s.starts_with("No references found")),
+        "{summary:?}"
+    );
+    assert_eq!(shown(&refs, cx).len(), 0);
+}
