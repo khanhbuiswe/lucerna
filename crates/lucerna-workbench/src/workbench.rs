@@ -235,10 +235,11 @@ impl Workbench {
             let root = root.clone();
             cx.new(|cx| LanguageServers::new(root, &documents, cx))
         };
-        // Servers end with the window or the app, at most 5 s in all.
+        // Servers end with the window (without waiting for them) or the
+        // app (waiting at most 5 s in all; see the `on_app_quit` below).
         cx.on_release(|wb, cx| {
             wb.language_servers
-                .update(cx, |servers, _| servers.shutdown_all())
+                .update(cx, |servers, _| servers.shutdown_all_in_background())
         })
         .detach();
         let extensions_page = {

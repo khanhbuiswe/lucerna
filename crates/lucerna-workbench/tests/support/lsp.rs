@@ -137,3 +137,19 @@ pub fn sent(fake: &FakeServer, method: &str) -> Vec<Value> {
 pub fn methods(fake: &FakeServer) -> Vec<String> {
     fake.received().into_iter().map(|(m, _)| m).collect()
 }
+
+/// Waits (at most 5 s of real time) until `done` holds: for effects of the
+/// language servers' own shutdown threads, which the GPUI scheduler does
+/// not drive.
+pub fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+        std::thread::yield_now();
+    }
+}
+
+/// How many times the server got `method`.
+pub fn count(fake: &FakeServer, method: &str) -> usize {
+    sent(fake, method).len()
+}

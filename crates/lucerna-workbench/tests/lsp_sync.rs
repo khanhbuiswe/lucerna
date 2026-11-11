@@ -357,8 +357,10 @@ fn settings_change_restarts_on_binary_change(cx: &mut TestAppContext) {
     let launches = launcher.launches();
     assert_eq!(launches.len(), 2);
     assert_eq!(launches[1].program, Path::new("/opt/ra/ra-custom"));
-    // The old process is shut down on its own thread; not awaited here.
     assert_eq!(sent(&first, "textDocument/didOpen").len(), 1);
+    // The old process is shut down on its own thread.
+    wait_until("old server shut down", || count(&first, "shutdown") == 1);
+    assert_eq!(count(&second, "shutdown"), 0);
     let opens = sent(&second, "textDocument/didOpen");
     assert_eq!(opens.len(), 1, "the open file is sent to the new server");
     assert_eq!(
@@ -407,4 +409,127 @@ fn watched_file_event_forwarded(cx: &mut TestAppContext) {
         batches[0]["changes"],
         json!([{ "uri": uri(&dir.path().join("Cargo.toml")), "type": 2 }])
     );
+}
+
+#[gpui::test]
+fn running_for_accepts_a_relative_path(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let launcher = FakeLauncher::new().with_server("rust-analyzer", fake.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+    open(&wb, "src/main.rs", cx);
+
+    let servers = language_servers(&wb, cx);
+    let relative = cx.update(|_, cx| servers.read(cx).running_for(Path::new("src/main.rs")));
+    let absolute = cx.update(|_, cx| {
+        servers
+            .read(cx)
+            .running_for(&dir.path().join("src/main.rs"))
+    });
+    assert_eq!(relative.len(), 1);
+    assert_eq!(absolute.len(), 1);
+    assert_eq!(relative[0].0, key(dir.path(), "rust-analyzer"));
+}
+
+#[gpui::test]
+fn stop_while_starting_shuts_the_process_down(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new().hang_on("initialize");
+    let launcher = FakeLauncher::new().with_server("rust-analyzer", fake.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+    open(&wb, "src/main.rs", cx);
+    let key = key(dir.path(), "rust-analyzer");
+    assert_eq!(state_of(&wb, &key, cx), SlotState::Starting);
+
+    let servers = language_servers(&wb, cx);
+    servers.update(cx, |servers, cx| servers.stop(&key, cx));
+    settle(cx);
+
+    assert_eq!(state_of(&wb, &key, cx), SlotState::Stopped);
+    wait_until("starting server shut down", || {
+        count(&fake, "shutdown") == 1
+    });
+    assert_eq!(count(&fake, "textDocument/didOpen"), 0);
+}
+
+#[gpui::test]
+fn closing_a_document_while_starting_sends_nothing(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new().hang_on("initialize");
+    let launcher = FakeLauncher::new().with_server("rust-analyzer", fake.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+    open(&wb, "src/main.rs", cx);
+
+    close_active_tab(&wb, cx);
+
+    assert_eq!(count(&fake, "textDocument/didOpen"), 0);
+    assert_eq!(count(&fake, "textDocument/didClose"), 0);
+    assert_eq!(
+        state_of(&wb, &key(dir.path(), "rust-analyzer"), cx),
+        SlotState::Starting
+    );
+}
+
+#[gpui::test]
+fn untrusting_stops_every_server(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
+    let rust = FakeServer::new();
+    let python = FakeServer::new().hang_on("initialize");
+    let launcher = FakeLauncher::new()
+        .with_server("rust-analyzer", rust.clone())
+        .with_server("basedpyright-langserver", python.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+    open(&wb, "src/main.rs", cx);
+    open(&wb, "a.py", cx);
+
+    let servers = language_servers(&wb, cx);
+    servers.update(cx, |servers, cx| servers.set_trusted(false, cx));
+    settle(cx);
+
+    assert!(cx.update(|_, cx| servers.read(cx).statuses()).is_empty());
+    wait_until("running server shut down", || count(&rust, "shutdown") == 1);
+    wait_until("starting server shut down", || {
+        count(&python, "shutdown") == 1
+    });
+}
+
+#[gpui::test]
+fn shutdown_all_waits_for_running_and_starting_servers(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
+    let rust = FakeServer::new();
+    let python = FakeServer::new().hang_on("initialize");
+    let launcher = FakeLauncher::new()
+        .with_server("rust-analyzer", rust.clone())
+        .with_server("basedpyright-langserver", python.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+    open(&wb, "src/main.rs", cx);
+    open(&wb, "a.py", cx);
+
+    let servers = language_servers(&wb, cx);
+    servers.update(cx, |servers, _| servers.shutdown_all());
+
+    // Joined before returning: no waiting needed.
+    assert_eq!(count(&rust, "shutdown"), 1);
+    assert_eq!(count(&rust, "exit"), 1);
+    assert_eq!(count(&python, "shutdown"), 1);
+    let statuses = cx.update(|_, cx| servers.read(cx).statuses());
+    assert_eq!(statuses.len(), 2);
+    assert!(statuses.iter().all(|s| s.state == SlotState::Stopped));
+}
+
+#[gpui::test]
+fn closing_the_window_shuts_servers_down(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let launcher = FakeLauncher::new().with_server("rust-analyzer", fake.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+    open(&wb, "src/main.rs", cx);
+
+    drop(wb);
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+
+    wait_until("server shut down", || count(&fake, "exit") == 1);
 }
