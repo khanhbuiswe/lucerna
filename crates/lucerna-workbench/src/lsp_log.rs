@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use gpui::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement, KeyDownEvent,
-    MouseButton, Render, SharedString, Subscription, UniformListScrollHandle, Window, div,
-    prelude::*, px, uniform_list,
+    MouseButton, Render, Subscription, UniformListScrollHandle, Window, div, prelude::*, px,
+    uniform_list,
 };
 use lucerna_lsp::LogKind;
 
@@ -117,10 +117,7 @@ impl Focusable for LspLogView {
 impl Render for LspLogView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = &cx.global::<AppState>().settings;
-        let font: SharedString = settings
-            .get::<String>("editor.fontFamily", None)
-            .unwrap_or_else(|| crate::fonts::EDITOR_FONT_FAMILY.into())
-            .into();
+        let font = crate::fonts::editor_font_family(None, cx);
         let size = settings
             .get::<f32>("editor.fontSize", None)
             .unwrap_or(14.)

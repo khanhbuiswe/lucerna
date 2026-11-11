@@ -535,9 +535,15 @@ impl Documents {
     /// [`DocumentEvent::Closed`] for those that were opened. The workbench
     /// calls it after each draw.
     pub fn collect_closed(&mut self, cx: &mut Context<Self>) {
+        let pending_go_to = &mut self.pending_go_to;
         self.docs.retain(|key, doc| {
             doc.views.retain(|v| v.upgrade().is_some());
             let keep = !doc.views.is_empty();
+            // A jump no view took yet (one only a picker's preview held the
+            // document for) waits for the next view of the path.
+            if !keep && let Some(point) = doc.pending_go_to.take() {
+                pending_go_to.insert(key.clone(), point);
+            }
             if !keep && doc.announced {
                 cx.emit(DocumentEvent::Closed { path: key.clone() });
             }

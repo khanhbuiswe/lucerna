@@ -81,10 +81,7 @@ impl Config {
     fn read(language: Option<&str>, cx: &App) -> (Config, f32, bool) {
         let settings = &cx.global::<AppState>().settings;
         let config = Config {
-            font_family: settings
-                .get::<String>("editor.fontFamily", language)
-                .unwrap_or_else(|| crate::fonts::EDITOR_FONT_FAMILY.into())
-                .into(),
+            font_family: crate::fonts::editor_font_family(language, cx),
             line_height: settings.get("editor.lineHeight", language).unwrap_or(1.6),
             minimap: settings
                 .get("editor.minimap.enabled", language)

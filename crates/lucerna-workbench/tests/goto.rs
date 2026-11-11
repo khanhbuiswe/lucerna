@@ -997,3 +997,102 @@ fn preview_click_keeps_focus_in_input(cx: &mut TestAppContext) {
     keys("down", cx);
     assert_eq!(selected(&wb, cx), Some(("b.rs".into(), pt(1, 7))));
 }
+
+#[gpui::test]
+fn many_locations_and_a_huge_line_stay_bounded(cx: &mut TestAppContext) {
+    const ROWS: u32 = 5_000;
+    let (_dir, _fake, wb, _view, cx) = setup(
+        TRUSTED,
+        pt(1, 8),
+        |dir| {
+            // Row 0 is a 200 KB minified line with `needle` at its end.
+            let mut text = format!("{} needle\n", "x".repeat(200_000));
+            for row in 1..ROWS {
+                text.push_str(&format!("fn f{row}() {{}}\n"));
+            }
+            fs::write(dir.join("src/big.rs"), text).unwrap();
+            let mut targets = vec![location(dir, "big.rs", 0, 200_001, 200_007)];
+            targets.extend((1..ROWS).map(|row| location(dir, "big.rs", row, 3, 4)));
+            let targets = Value::Array(targets);
+            FakeServer::new().on_request(DEFINITION, move |_| Ok(targets.clone()))
+        },
+        cx,
+    );
+    run(&wb, "editor.action.revealDefinition", cx);
+    let texts = rows(&wb, cx);
+    assert_eq!(texts.len(), ROWS as usize + 1);
+    assert_eq!(texts[0], "header:big.rs");
+    for text in &texts[1..] {
+        let (_, line) = text.split_once(':').unwrap();
+        assert!(line.chars().count() <= lucerna_workbench::LOCATION_EXCERPT_CHARS);
+    }
+    assert!(texts[1].ends_with("x needle"), "{}", &texts[1]);
+    // Only the rows on screen are built.
+    assert!(cx.debug_bounds("locations-picker-row-1").is_some());
+    assert!(cx.debug_bounds("locations-picker-row-4000").is_none());
+    // Arrows wrap to the last row, which scrolls into view.
+    keys("up", cx);
+    assert_eq!(selected(&wb, cx), Some(("big.rs".into(), pt(ROWS - 1, 3))));
+    assert!(cx.debug_bounds("locations-picker-row-5000").is_some());
+    // The filter reads the shown part of the huge line.
+    cx.simulate_input("needle");
+    settle(cx);
+    assert_eq!(rows(&wb, cx).len(), 2);
+    assert_eq!(selected(&wb, cx), Some(("big.rs".into(), pt(0, 200_001))));
+}
+
+#[gpui::test]
+fn quick_open_closes_the_picker(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    let editor_focus = cx.update(|_, cx| view.read(cx).focus_handle(cx));
+    cx.update(|window, cx| window.focus(&editor_focus, cx));
+    run(&wb, "editor.action.revealDefinition", cx);
+    run(&wb, "workbench.action.quickOpen", cx);
+    assert!(picker(&wb, cx).is_none());
+    assert!(cx.update(|_, cx| wb.read(cx).quick_open().is_some()));
+    // One Esc closes Quick Open and gives the editor its focus back.
+    keys("escape", cx);
+    assert!(cx.update(|_, cx| wb.read(cx).quick_open().is_none()));
+    assert!(cx.update(|window, _| editor_focus.is_focused(window)));
+}
+
+#[gpui::test]
+fn range_ending_at_column_zero_highlights_its_rows_only(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(
+        TRUSTED,
+        pt(1, 8),
+        |dir| {
+            // Row 1 of b.rs whole, ending at the start of row 2.
+            let whole = json!({ "uri": uri(dir, "b.rs"), "range": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 2, "character": 0 } } });
+            FakeServer::new().on_request(DEFINITION, move |_| Ok(whole.clone()))
+        },
+        cx,
+    );
+    run(&wb, "editor.action.peekDefinition", cx);
+    assert_eq!(preview(&wb, cx), ("b.rs".into(), pt(1, 0), vec![(1, 2)]));
+}
+
+#[gpui::test]
+fn jump_survives_a_preview_dropped_before_the_tab_opens(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    // Only a preview holds b.rs, as when Enter is pressed in the picker.
+    let docs = cx.update(|_, cx| wb.read(cx).documents().clone());
+    let path = cx.update(|_, cx| wb.read(cx).root().join("src/b.rs"));
+    let preview = docs.update(cx, |d, cx| d.open_preview(Arc::from(path.as_path()), cx));
+    settle(cx);
+    // The preview goes before the tab's view is made (on the next draw).
+    cx.update(|_, cx| {
+        wb.update(cx, |wb, cx| {
+            let to = Arc::from(path.as_path());
+            wb.jump_to(to, pt(2, 7), lucerna_workbench::OpenMode::Preview, cx)
+        });
+        let views = docs.read(cx).views_of(&path);
+        assert_eq!(views, std::slice::from_ref(&preview), "no tab view yet");
+        drop(preview);
+    });
+    settle(cx);
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    assert_eq!(cursor(&wb, cx), pt(2, 7));
+}

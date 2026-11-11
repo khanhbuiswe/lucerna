@@ -10,17 +10,19 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    HighlightStyle, IntoElement, KeyDownEvent, ParentElement, Render, ScrollHandle, SharedString,
-    StyledText, Subscription, WeakEntity, Window, div, prelude::*, px, relative,
+    HighlightStyle, IntoElement, KeyDownEvent, ParentElement, Render, ScrollStrategy, SharedString,
+    StyledText, Subscription, UniformListScrollHandle, WeakEntity, Window, div, prelude::*, px,
+    relative, uniform_list,
 };
 use lucerna_lsp::locations::ResolvedLocation;
 
 use crate::code_view::CodeView;
 use crate::documents::Documents;
+use crate::fonts::editor_font_family;
 use crate::goto::{GotoKind, open_location};
 use crate::layout::color;
 use crate::quick_open::picker::{
-    PICKER_ROW_HEIGHT, fuzzy_filter, picker_input_row, picker_list, picker_row,
+    PICKER_ROW_HEIGHT, fuzzy_filter, match_color, picker_input_row, picker_row,
 };
 use crate::text_input::TextInput;
 use crate::ui::{GRID, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, file_icon, popover};
@@ -36,6 +38,11 @@ const HEIGHT_SHARE: f32 = 0.7;
 const LIST_SHARE: f32 = 0.4;
 /// A code font char's width, in ems: sizes the line number column.
 const CODE_CHAR_EM: f32 = 0.6;
+/// The most chars of a line a row shows and the filter reads, ellipses
+/// included: a minified line can be megabytes.
+pub const EXCERPT_CHARS: usize = 200;
+/// At most this many chars before the range when a line is cut.
+const EXCERPT_BEFORE: usize = 40;
 
 /// What the workbench does as the picker is used.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,11 +63,19 @@ struct FileGroup {
     path: Arc<Path>,
 }
 
+/// The part of a location's line a row shows: leading whitespace
+/// dropped, cut to [`EXCERPT_CHARS`] around the range.
+struct Excerpt {
+    text: SharedString,
+    /// The range's bytes on its first row, in `text`.
+    range: Range<usize>,
+}
+
 enum Row {
     /// A file's header: not selectable.
     Header { file: usize, count: usize },
-    /// A location; `positions` are matched char indices into its trimmed
-    /// line text.
+    /// A location; `positions` are matched char indices into its
+    /// excerpt.
     Location { index: usize, positions: Vec<u32> },
 }
 
@@ -71,13 +86,17 @@ pub struct LocationsPicker {
     locations: Vec<ResolvedLocation>,
     /// The file group of each location.
     location_files: Vec<usize>,
+    /// What each location's row shows.
+    excerpts: Vec<Excerpt>,
+    /// What the filter matches for each location: "file name excerpt".
+    haystacks: Vec<String>,
     files: Vec<FileGroup>,
     rows: Vec<Row>,
     /// The selected row, always a location.
     selected: Option<usize>,
     /// Enter and a double click open in the group to the right.
     aside: bool,
-    scroll: ScrollHandle,
+    scroll: UniformListScrollHandle,
     /// The selected location's file, read-only; dropped with the picker.
     preview: Option<Entity<CodeView>>,
     /// Centres the preview once its text has loaded.
@@ -163,6 +182,12 @@ impl LocationsPicker {
             }
             location_files.push(files.len() - 1);
         }
+        let excerpts: Vec<Excerpt> = locations.iter().map(excerpt).collect();
+        let haystacks = excerpts
+            .iter()
+            .zip(&location_files)
+            .map(|(e, &file)| format!("{} {}", files[file].name, e.text))
+            .collect();
         let digits = locations
             .iter()
             .map(|l| (l.range.start.row + 1).ilog10() as usize + 1)
@@ -183,11 +208,13 @@ impl LocationsPicker {
             documents,
             locations,
             location_files,
+            excerpts,
+            haystacks,
             files,
             rows: Vec::new(),
             selected: None,
             aside: false,
-            scroll: ScrollHandle::new(),
+            scroll: UniformListScrollHandle::new(),
             preview: None,
             _preview_loaded: None,
             digits,
@@ -214,15 +241,16 @@ impl LocationsPicker {
     }
 
     /// Each row as plain text: `"header:<file name>"` or
-    /// `"<line>:<trimmed line text>"`, the line 1-based.
+    /// `"<line>:<excerpt>"`, the line 1-based and the excerpt the shown
+    /// part of the line (leading whitespace dropped, long lines cut).
     pub fn row_texts(&self) -> Vec<String> {
         self.rows
             .iter()
             .map(|row| match row {
                 Row::Header { file, .. } => format!("header:{}", self.files[*file].name),
                 Row::Location { index, .. } => {
-                    let l = &self.locations[*index];
-                    format!("{}:{}", l.range.start.row + 1, l.line_text.trim_start())
+                    let row = self.locations[*index].range.start.row + 1;
+                    format!("{row}:{}", self.excerpts[*index].text)
                 }
             })
             .collect()
@@ -232,14 +260,8 @@ impl LocationsPicker {
     /// `text`, in their sorted order under their file headers, and
     /// selects the first.
     fn query_changed(&mut self, text: &str, cx: &mut Context<Self>) {
-        let haystacks: Vec<String> = self
-            .locations
-            .iter()
-            .zip(&self.location_files)
-            .map(|(l, &file)| format!("{} {}", self.files[file].name, l.line_text.trim_start()))
-            .collect();
         let mut matched: HashMap<usize, Vec<u32>> =
-            fuzzy_filter(haystacks.iter().map(String::as_str), text.trim())
+            fuzzy_filter(self.haystacks.iter().map(String::as_str), text.trim())
                 .into_iter()
                 .collect();
         let mut rows = Vec::new();
@@ -276,7 +298,7 @@ impl LocationsPicker {
     fn select(&mut self, row: Option<usize>, cx: &mut Context<Self>) {
         self.selected = row;
         if let Some(row) = row {
-            self.scroll.scroll_to_item(row);
+            self.scroll.scroll_to_item(row, ScrollStrategy::Nearest);
         }
         self.update_preview(cx);
         cx.notify();
@@ -322,7 +344,7 @@ impl LocationsPicker {
             }
         };
         let range = &location.range;
-        let rows = range.start.row..range.end.row.max(range.start.row) + 1;
+        let rows = highlighted_rows(range);
         let start = range.start;
         view.update(cx, |v, cx| v.set_line_highlights(vec![rows], cx));
         // A new view of a loaded document has its text at once.
@@ -415,6 +437,20 @@ impl LocationsPicker {
             .into_any_element()
     }
 
+    fn render_rows(&self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let font_family = editor_font_family(None, cx);
+        range
+            .filter_map(|row| {
+                Some(match self.rows.get(row)? {
+                    Row::Header { file, count } => self.render_header(row, *file, *count, cx),
+                    Row::Location { index, positions } => {
+                        self.render_location(row, *index, positions, &font_family, cx)
+                    }
+                })
+            })
+            .collect()
+    }
+
     fn render_location(
         &self,
         row: usize,
@@ -426,21 +462,13 @@ impl LocationsPicker {
         let ui = &cx.global::<AppState>().theme.ui;
         let location = &self.locations[index];
         let number_width = px(self.digits as f32 * UI_FONT_SIZE * CODE_CHAR_EM);
-        let line = location.line_text.trim_start();
-        let trimmed = location.line_text.len() - line.len();
-        // The part of the range on its first row, in the trimmed text.
-        let start = (location.range.start.column as usize).saturating_sub(trimmed);
-        let end = if location.range.end.row == location.range.start.row {
-            (location.range.end.column as usize).saturating_sub(trimmed)
-        } else {
-            line.len()
-        };
+        let excerpt = &self.excerpts[index];
         let text = line_text(
-            line,
-            start..end,
+            &excerpt.text,
+            excerpt.range.clone(),
             positions,
             color(ui.search_match_background).into(),
-            color(ui.editor_active_line_number).into(),
+            match_color(cx),
         );
         picker_row("locations-picker-row", row, self.selected == Some(row), cx)
             .on_click(cx.listener(move |picker, ev, _, cx| picker.clicked(row, ev, cx)))
@@ -496,10 +524,74 @@ fn file_group(path: &Arc<Path>, root: &Path) -> FileGroup {
     }
 }
 
+/// The rows a range covers, half-open: an end at column 0 of a later row
+/// does not count that row.
+fn highlighted_rows(range: &Range<lucerna_text::Point>) -> Range<u32> {
+    let (start, end) = (range.start, range.end);
+    let last = if end.column == 0 && end.row > start.row {
+        end.row - 1
+    } else {
+        end.row.max(start.row)
+    };
+    start.row..last + 1
+}
+
+/// The largest char boundary of `text` at or before `byte`.
+fn floor_boundary(text: &str, byte: usize) -> usize {
+    let mut byte = byte.min(text.len());
+    while !text.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    byte
+}
+
+/// What the row of `location` shows: its line without leading
+/// whitespace, cut to [`EXCERPT_CHARS`] chars (`…` marking a cut) with at
+/// most [`EXCERPT_BEFORE`] before the range. Reads only near the range,
+/// however long the line.
+fn excerpt(location: &ResolvedLocation) -> Excerpt {
+    let line = location.line_text.as_str();
+    let text = line.trim_start();
+    let trimmed = line.len() - text.len();
+    let range = &location.range;
+    let start = floor_boundary(text, (range.start.column as usize).saturating_sub(trimmed));
+    let end = if range.end.row == range.start.row {
+        floor_boundary(text, (range.end.column as usize).saturating_sub(trimmed)).max(start)
+    } else {
+        text.len()
+    };
+    if text.char_indices().nth(EXCERPT_CHARS).is_none() {
+        return Excerpt {
+            text: SharedString::from(text.to_owned()),
+            range: start..end,
+        };
+    }
+    let from = text[..start]
+        .char_indices()
+        .rev()
+        .take(EXCERPT_BEFORE)
+        .last()
+        .map_or(start, |(i, _)| i);
+    let prefix = if from > 0 { "…" } else { "" };
+    // Room for the prefix and a closing `…`.
+    let budget = EXCERPT_CHARS - prefix.chars().count() - 1;
+    let to = text[from..]
+        .char_indices()
+        .nth(budget)
+        .map_or(text.len(), |(i, _)| from + i);
+    let suffix = if to < text.len() { "…" } else { "" };
+    let shown = format!("{prefix}{}{suffix}", &text[from..to]);
+    let shift = |b: usize| b.clamp(from, to) - from + prefix.len();
+    Excerpt {
+        text: shown.into(),
+        range: shift(start)..shift(end),
+    }
+}
+
 /// `line` with `range` (bytes, clamped to char boundaries) on `range_bg`
 /// and the chars at `positions` (char indices) in `accent`.
 fn line_text(
-    line: &str,
+    line: &SharedString,
     range: Range<usize>,
     positions: &[u32],
     range_bg: gpui::Hsla,
@@ -524,7 +616,7 @@ fn line_text(
             _ => runs.push((byte..next, style)),
         }
     }
-    StyledText::new(SharedString::from(line.to_owned())).with_highlights(runs)
+    StyledText::new(line.clone()).with_highlights(runs)
 }
 
 impl Focusable for LocationsPicker {
@@ -538,21 +630,7 @@ impl Render for LocationsPicker {
         let viewport = window.viewport_size();
         let width = (viewport.width * WIDTH_SHARE).min(px(MAX_WIDTH));
         let height = (viewport.height * HEIGHT_SHARE).min(px(MAX_HEIGHT));
-        let font_family: SharedString = cx
-            .global::<AppState>()
-            .settings
-            .get::<String>("editor.fontFamily", None)
-            .unwrap_or_else(|| crate::fonts::EDITOR_FONT_FAMILY.into())
-            .into();
-        let rows: Vec<AnyElement> = (0..self.rows.len())
-            .map(|row| match &self.rows[row] {
-                Row::Header { file, count } => self.render_header(row, *file, *count, cx),
-                Row::Location { index, positions } => {
-                    let positions = positions.clone();
-                    self.render_location(row, *index, &positions, &font_family, cx)
-                }
-            })
-            .collect();
+        let count = self.rows.len();
         let border = color(cx.global::<AppState>().theme.ui.border);
         popover(cx)
             .id("locations-picker")
@@ -571,13 +649,24 @@ impl Render for LocationsPicker {
                     .flex_1()
                     .min_h_0()
                     .child(
-                        div().w(relative(LIST_SHARE)).h_full().child(
-                            picker_list("locations-picker-list", &self.scroll)
-                                .h_full()
-                                .max_h_full()
-                                .text_size(px(UI_FONT_SIZE))
-                                .children(rows),
-                        ),
+                        div()
+                            .w(relative(LIST_SHARE))
+                            .h_full()
+                            .p(px(GRID))
+                            .text_size(px(UI_FONT_SIZE))
+                            .child(
+                                // Only the rows on screen are built: there
+                                // may be thousands of references.
+                                uniform_list(
+                                    "locations-picker-list",
+                                    count,
+                                    cx.processor(|picker, range, _, cx| {
+                                        picker.render_rows(range, cx)
+                                    }),
+                                )
+                                .size_full()
+                                .track_scroll(&self.scroll),
+                            ),
                     )
                     .child(
                         div()
@@ -640,6 +729,45 @@ mod tests {
             placeholder(GotoKind::Implementation),
             "Filter implementations…"
         );
+    }
+
+    fn loc(line: &str, start: u32, end: u32) -> ResolvedLocation {
+        let p = |column| lucerna_text::Point { row: 0, column };
+        ResolvedLocation {
+            path: Arc::from(Path::new("/r/a.rs")),
+            range: p(start)..p(end),
+            line_text: line.to_owned(),
+        }
+    }
+
+    #[test]
+    fn excerpt_short_line_trimmed() {
+        let e = excerpt(&loc("    let x = 1;", 8, 9));
+        assert_eq!(&*e.text, "let x = 1;");
+        assert_eq!(&e.text[e.range], "x");
+    }
+
+    #[test]
+    fn excerpt_long_line_cut_around_range() {
+        // Multi-byte chars so a naive byte cut would split one.
+        let line = format!("{}needle{}", "é".repeat(100_000), "ü".repeat(100_000));
+        let start = "é".len() as u32 * 100_000;
+        let e = excerpt(&loc(&line, start, start + 6));
+        assert!(e.text.chars().count() <= EXCERPT_CHARS);
+        assert_eq!(&e.text[e.range.clone()], "needle");
+        assert!(e.text.starts_with('…') && e.text.ends_with('…'));
+        // At the start of a long line: no leading ellipsis.
+        let e = excerpt(&loc(&format!("needle{}", "x".repeat(1000)), 0, 6));
+        assert_eq!(e.text.chars().count(), EXCERPT_CHARS);
+        assert_eq!(&e.text[e.range], "needle");
+    }
+
+    #[test]
+    fn rows_end_at_column_zero_exclusive() {
+        let p = |row, column| lucerna_text::Point { row, column };
+        assert_eq!(highlighted_rows(&(p(1, 4)..p(3, 0))), 1..3);
+        assert_eq!(highlighted_rows(&(p(1, 4)..p(3, 2))), 1..4);
+        assert_eq!(highlighted_rows(&(p(2, 0)..p(2, 0))), 2..3);
     }
 
     #[test]

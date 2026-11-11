@@ -1135,10 +1135,7 @@ impl SearchView {
     fn row_style(&mut self, window: &Window, cx: &App) -> RowStyle {
         self.scale_factor = window.scale_factor();
         let settings = &cx.global::<AppState>().settings;
-        let font_family: SharedString = settings
-            .get::<String>("editor.fontFamily", None)
-            .unwrap_or_else(|| crate::fonts::EDITOR_FONT_FAMILY.into())
-            .into();
+        let font_family = crate::fonts::editor_font_family(None, cx);
         let font_size = px(editor_font_size(cx));
         let text_system = window.text_system();
         let font_id = text_system.resolve_font(&font(font_family.clone()));

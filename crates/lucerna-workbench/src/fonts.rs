@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use gpui::{App, TextSystem};
+use gpui::{App, SharedString, TextSystem};
 
 /// Family name of the bundled editor font.
 pub const EDITOR_FONT_FAMILY: &str = "Lilex";
@@ -18,6 +18,16 @@ const FONTS: [&[u8]; 6] = [
     include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf"),
     include_bytes!("../assets/fonts/IBMPlexSans-Medium.ttf"),
 ];
+
+/// `editor.fontFamily` for `language` (its `[lang]` override applies),
+/// else the bundled editor font.
+pub fn editor_font_family(language: Option<&str>, cx: &App) -> SharedString {
+    cx.global::<crate::AppState>()
+        .settings
+        .get::<String>("editor.fontFamily", language)
+        .unwrap_or_else(|| EDITOR_FONT_FAMILY.into())
+        .into()
+}
 
 /// Registers the bundled fonts with GPUI. Call it once at startup, before
 /// any window opens; a failure is logged and the system fallback is used.

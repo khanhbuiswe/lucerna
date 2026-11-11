@@ -180,6 +180,9 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Over the locations picker it would hide, and one Esc would close
+        // both.
+        self.close_locations_picker(window, cx);
         self.focus_before_quick_open = window.focused(cx);
         let qo = cx.new(|cx| QuickOpen::new(prefix, sources, window, cx));
         let events = cx.subscribe_in(&qo, window, Self::on_quick_open_event);

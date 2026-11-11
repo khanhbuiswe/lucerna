@@ -5,7 +5,7 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Div, Entity, HighlightStyle, ParentElement, ScrollHandle, SharedString, Stateful,
+    App, Div, Entity, HighlightStyle, Hsla, ParentElement, ScrollHandle, SharedString, Stateful,
     StyledText, div, prelude::*, px,
 };
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
@@ -64,12 +64,16 @@ pub(crate) fn wrap_index(current: usize, len: usize, delta: isize) -> usize {
     (current as isize + delta).rem_euclid(len as isize) as usize
 }
 
+/// The color of fuzzy-matched chars in a picker. The theme has no
+/// `text.accent`; the active line number is its accent.
+pub(crate) fn match_color(cx: &App) -> Hsla {
+    color(cx.global::<AppState>().theme.ui.editor_active_line_number).into()
+}
+
 /// `text` with the chars at `positions` (char indices) in the accent color.
 pub(crate) fn highlighted(text: SharedString, positions: &[u32], cx: &App) -> StyledText {
-    // The theme has no `text.accent`; the active line number is its accent.
-    let accent = color(cx.global::<AppState>().theme.ui.editor_active_line_number);
     let style = HighlightStyle {
-        color: Some(accent.into()),
+        color: Some(match_color(cx)),
         ..Default::default()
     };
     let ranges: Vec<(Range<usize>, HighlightStyle)> = text

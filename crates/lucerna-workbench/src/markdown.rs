@@ -190,11 +190,7 @@ fn nth_code(blocks: &[Block], index: usize) -> Option<(Option<&str>, &str)> {
 }
 
 fn code_font_family(cx: &App) -> SharedString {
-    cx.global::<AppState>()
-        .settings
-        .get::<String>("editor.fontFamily", None)
-        .unwrap_or_else(|| crate::fonts::EDITOR_FONT_FAMILY.into())
-        .into()
+    crate::fonts::editor_font_family(None, cx)
 }
 
 /// Capture spans of `text` in `language`; empty when the parse does not
