@@ -1,0 +1,421 @@
+//! Writing a buffer back to disk: encoding-preserving and atomic.
+
+use std::fmt;
+use std::fs;
+use std::hash::{DefaultHasher, Hasher};
+use std::io::{self, Write};
+use std::path::Path;
+
+use encoding_rs::{EncoderResult, Encoding, UTF_16BE, UTF_16LE};
+
+use crate::buffer::{Buffer, BufferSnapshot, LineEnding, Point};
+
+/// Why a save failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError {
+    /// The text has a character the file's encoding cannot represent. `at`
+    /// is in the LF-normalised text (byte column).
+    Unencodable {
+        encoding: &'static str,
+        at: Point,
+    },
+    Io(String),
+    PermissionDenied,
+}
+
+impl fmt::Display for WriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WriteError::Unencodable { encoding, at } => write!(
+                f,
+                "{encoding} cannot encode the character at Ln {}, Col {}",
+                at.row + 1,
+                at.column + 1
+            ),
+            WriteError::Io(reason) => f.write_str(reason),
+            WriteError::PermissionDenied => f.write_str("Permission denied"),
+        }
+    }
+}
+
+impl std::error::Error for WriteError {}
+
+impl From<io::Error> for WriteError {
+    fn from(e: io::Error) -> Self {
+        if e.kind() == io::ErrorKind::PermissionDenied {
+            WriteError::PermissionDenied
+        } else {
+            WriteError::Io(e.to_string())
+        }
+    }
+}
+
+/// A completed write. `hash` is computed exactly as `decode_file` does over
+/// the raw bytes, so a watcher event for our own write can be recognised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Written {
+    pub hash: u64,
+}
+
+/// Output side of the encoder: bytes in the file's encoding.
+struct Sink {
+    out: Vec<u8>,
+    kind: SinkKind,
+}
+
+enum SinkKind {
+    Utf16 { little_endian: bool },
+    Other(encoding_rs::Encoder),
+}
+
+impl Sink {
+    fn new(encoding: &'static Encoding, len_hint: usize) -> Sink {
+        let kind = if encoding == UTF_16LE {
+            SinkKind::Utf16 {
+                little_endian: true,
+            }
+        } else if encoding == UTF_16BE {
+            SinkKind::Utf16 {
+                little_endian: false,
+            }
+        } else {
+            SinkKind::Other(encoding.new_encoder())
+        };
+        Sink {
+            out: Vec::with_capacity(len_hint + 4),
+            kind,
+        }
+    }
+
+    /// Encodes `s`; on an unmappable char returns its byte index in `s`.
+    fn push(&mut self, s: &str, last: bool) -> Result<(), usize> {
+        match &mut self.kind {
+            SinkKind::Utf16 { little_endian } => {
+                for unit in s.encode_utf16() {
+                    let bytes = if *little_endian {
+                        unit.to_le_bytes()
+                    } else {
+                        unit.to_be_bytes()
+                    };
+                    self.out.extend_from_slice(&bytes);
+                }
+                Ok(())
+            }
+            SinkKind::Other(encoder) => {
+                let mut src = s;
+                let mut consumed = 0;
+                loop {
+                    let need = encoder
+                        .max_buffer_length_from_utf8_without_replacement(src.len())
+                        .unwrap_or(src.len() * 4 + 16);
+                    let start = self.out.len();
+                    self.out.resize(start + need, 0);
+                    let (result, read, written) = encoder.encode_from_utf8_without_replacement(
+                        src,
+                        &mut self.out[start..],
+                        last,
+                    );
+                    self.out.truncate(start + written);
+                    match result {
+                        EncoderResult::InputEmpty => return Ok(()),
+                        EncoderResult::OutputFull => {
+                            consumed += read;
+                            src = &src[read..];
+                        }
+                        EncoderResult::Unmappable(c) => {
+                            return Err(consumed + read - c.len_utf8());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Buffer {
+    /// Encodes the snapshot the way the file is stored: its encoding, BOM
+    /// and line ending. An associated function so it can run on a
+    /// background thread with copied settings.
+    pub fn encode(
+        snapshot: &BufferSnapshot,
+        encoding: &'static Encoding,
+        has_bom: bool,
+        line_ending: LineEnding,
+    ) -> Result<Vec<u8>, WriteError> {
+        let mut sink = Sink::new(encoding, snapshot.len_bytes());
+        let unencodable = |offset: usize| WriteError::Unencodable {
+            encoding: encoding.name(),
+            at: snapshot.offset_to_point(offset),
+        };
+        if has_bom {
+            // The BOM is U+FEFF in the file's own encoding.
+            sink.push("\u{FEFF}", false).map_err(|_| unencodable(0))?;
+        }
+        let mut offset = 0;
+        for chunk in snapshot.chunks_in_range(0..snapshot.len_bytes()) {
+            let mut seg_start = 0;
+            while seg_start < chunk.len() {
+                let (piece, newline) = match chunk[seg_start..].find('\n') {
+                    Some(i) => (&chunk[seg_start..seg_start + i], true),
+                    None => (&chunk[seg_start..], false),
+                };
+                sink.push(piece, false)
+                    .map_err(|i| unencodable(offset + seg_start + i))?;
+                seg_start += piece.len();
+                if newline {
+                    let eol = match line_ending {
+                        LineEnding::Lf => "\n",
+                        LineEnding::CrLf => "\r\n",
+                    };
+                    sink.push(eol, false)
+                        .map_err(|_| unencodable(offset + seg_start))?;
+                    seg_start += 1;
+                }
+            }
+            offset += chunk.len();
+        }
+        sink.push("", true).map_err(|_| unencodable(offset))?;
+        Ok(sink.out)
+    }
+
+    /// Encodes `snapshot` with this buffer's encoding, BOM and line ending,
+    /// then writes it to `path`.
+    pub fn write(&self, snapshot: &BufferSnapshot, path: &Path) -> Result<Written, WriteError> {
+        let bytes = Buffer::encode(
+            snapshot,
+            self.encoding(),
+            self.has_bom(),
+            self.line_ending(),
+        )?;
+        write_bytes(path, &bytes)
+    }
+}
+
+/// Writes `bytes` to `path`. Atomic (temp file, fsync, rename) unless the
+/// path is a symlink or has several hardlinks, where replacing the inode
+/// would break the link: those are written in place.
+pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<Written, WriteError> {
+    let mut hasher = DefaultHasher::new();
+    hasher.write(bytes);
+    let written = Written {
+        hash: hasher.finish(),
+    };
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() || link_count(&meta) > 1 => {
+            write_in_place(path, bytes)?;
+        }
+        Ok(_) => write_atomic(path, bytes, fs::metadata(path).ok())?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(path, bytes, None)?,
+        Err(e) => return Err(e.into()),
+    }
+    Ok(written)
+}
+
+fn write_in_place(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8], old: Option<fs::Metadata>) -> Result<(), WriteError> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let name = path
+        .file_name()
+        .ok_or_else(|| WriteError::Io("path has no file name".into()))?
+        .to_string_lossy();
+    // `tempfile` appends 8 random characters after the prefix.
+    let mut temp = tempfile::Builder::new()
+        .prefix(&format!(".{name}.luc~"))
+        .rand_bytes(8)
+        .tempfile_in(parent)?;
+    if let Some(meta) = old {
+        fs::set_permissions(temp.path(), meta.permissions())?;
+    }
+    temp.write_all(bytes)?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|e| WriteError::from(e.error))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn link_count(meta: &fs::Metadata) -> u64 {
+    std::os::unix::fs::MetadataExt::nlink(meta)
+}
+
+#[cfg(not(unix))]
+fn link_count(_: &fs::Metadata) -> u64 {
+    1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::load::decode_file;
+
+    fn utf16(text: &str, le: bool, bom: bool) -> Vec<u8> {
+        let mut units: Vec<u16> = Vec::new();
+        if bom {
+            units.push(0xFEFF);
+        }
+        units.extend(text.encode_utf16());
+        units
+            .into_iter()
+            .flat_map(|u| if le { u.to_le_bytes() } else { u.to_be_bytes() })
+            .collect()
+    }
+
+    fn fixtures() -> Vec<(&'static str, Vec<u8>)> {
+        let sjis = encoding_rs::SHIFT_JIS.encode("日本語\r\n").0.into_owned();
+        vec![
+            ("utf8", "hello\nworld\n".as_bytes().to_vec()),
+            ("utf8-bom", b"\xEF\xBB\xBFhello\nworld\n".to_vec()),
+            ("utf16le-bom-crlf", utf16("a\r\nb\r\n", true, true)),
+            ("utf16be-bom", utf16("a\nb\n", false, true)),
+            ("shift-jis", sjis),
+            (
+                "windows-1252",
+                encoding_rs::WINDOWS_1252.encode("café\n").0.into_owned(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn write_round_trips_every_encoding() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for (name, bytes) in fixtures() {
+            let buffer = Buffer::from_bytes(&bytes, false).unwrap();
+            let path = dir.path().join(name);
+            fs::write(&path, b"old").unwrap();
+            let written = buffer.write(&buffer.snapshot(), &path).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), bytes, "{name}");
+            assert_eq!(
+                written.hash,
+                decode_file(&bytes, false).unwrap().hash,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn edited_text_uses_file_line_ending() {
+        let mut buffer = Buffer::from_bytes(b"a\r\nb\r\n", false).unwrap();
+        buffer.edit([(0..0, std::sync::Arc::from("x\n"))]);
+        let bytes = Buffer::encode(
+            &buffer.snapshot(),
+            buffer.encoding(),
+            buffer.has_bom(),
+            buffer.line_ending(),
+        )
+        .unwrap();
+        assert_eq!(bytes, b"x\r\na\r\nb\r\n");
+    }
+
+    #[test]
+    fn unencodable_reports_position() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("f.txt");
+        let original = encoding_rs::WINDOWS_1252
+            .encode("café\nabc\n")
+            .0
+            .into_owned();
+        fs::write(&path, &original).unwrap();
+        let mut buffer = Buffer::from_bytes(&original, false).unwrap();
+        assert_eq!(buffer.encoding(), encoding_rs::WINDOWS_1252);
+        let at = buffer
+            .snapshot()
+            .point_to_offset(Point { row: 1, column: 2 });
+        buffer.edit([(at..at, std::sync::Arc::from("ệ"))]);
+        let err = buffer.write(&buffer.snapshot(), &path).unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::Unencodable {
+                encoding: "windows-1252",
+                at: Point { row: 1, column: 2 }
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "windows-1252 cannot encode the character at Ln 2, Col 3"
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_keeps_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, b"old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        write_bytes(&path, b"new").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_is_written_through() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("target.txt");
+        let link = dir.path().join("link.txt");
+        fs::write(&target, b"old").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_bytes(&link, b"new").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlink_is_written_in_place() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        fs::write(&a, b"old").unwrap();
+        fs::hard_link(&a, &b).unwrap();
+        write_bytes(&a, b"new").unwrap();
+        assert_eq!(fs::read(&a).unwrap(), b"new");
+        assert_eq!(fs::read(&b).unwrap(), b"new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_atomic_write_leaves_original_and_no_temp() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, b"old").unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores directory permissions: probe instead of trusting `$USER`.
+        let root = fs::File::create(dir.path().join("probe")).is_ok();
+        let result = write_bytes(&path, b"new");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        if root {
+            return;
+        }
+        assert_eq!(result, Err(WriteError::PermissionDenied));
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".f.txt.luc~"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+}

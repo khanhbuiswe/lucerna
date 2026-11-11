@@ -3388,6 +3388,7 @@ dependencies = [
  "criterion 0.5.1",
  "encoding_rs",
  "ropey",
+ "tempfile",
 ]
 
 [[package]]
