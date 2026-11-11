@@ -1,6 +1,5 @@
 //! The Search tab: project search results as excerpts in an editor tab.
 
-pub(crate) mod highlight;
 pub(crate) mod model;
 mod view;
 

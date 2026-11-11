@@ -121,7 +121,7 @@ fn search(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<SearchVi
 fn files(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> Vec<(PathBuf, usize)> {
     cx.update(|_, cx| {
         view.read(cx)
-            .results()
+            .results(cx)
             .files()
             .iter()
             .map(|f| (f.path.to_path_buf(), f.match_count()))
@@ -130,11 +130,11 @@ fn files(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> Vec<(PathBuf,
 }
 
 fn row_count(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> usize {
-    view.read_with(cx, |v, _| v.results().rows().len())
+    view.read_with(cx, |v, cx| v.results(cx).rows().len())
 }
 
 fn summary(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> Option<String> {
-    cx.update(|_, cx| view.read(cx).summary())
+    cx.update(|_, cx| view.read(cx).summary(cx))
 }
 
 fn query(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> String {
@@ -288,8 +288,8 @@ fn results_include_context_lines(cx: &mut TestAppContext) {
     type_text("needle", cx);
     settle_search(cx);
     let view = search(&wb, cx);
-    let rows: Vec<String> = view.read_with(cx, |v, _| {
-        let results = v.results();
+    let rows: Vec<String> = view.read_with(cx, |v, cx| {
+        let results = v.results(cx);
         results
             .rows()
             .iter()
@@ -747,7 +747,7 @@ fn highlights_of(
     cx: &mut VisualTestContext,
 ) -> Option<Vec<(u32, usize)>> {
     cx.update(|_, cx| {
-        view.read(cx).highlights(Path::new(path)).map(|h| {
+        view.read(cx).highlights(Path::new(path), cx).map(|h| {
             let mut lines: Vec<_> = h.iter().map(|(n, s)| (*n, s.len())).collect();
             lines.sort();
             lines
@@ -791,7 +791,7 @@ fn re_search_keeps_highlights_of_unchanged_lines(cx: &mut TestAppContext) {
     assert!(highlights_of(&view, "main.rs", cx).is_some());
 
     let started = |view: &Entity<SearchView>, cx: &mut VisualTestContext| {
-        view.read_with(cx, |v, _| v.highlight_jobs_started())
+        view.read_with(cx, |v, cx| v.highlight_jobs_started(cx))
     };
     assert_eq!(started(&view, cx), 1);
 
@@ -830,8 +830,8 @@ fn at_most_three_highlight_jobs_run(cx: &mut TestAppContext) {
     type_text("needle", cx);
     settle_search(cx);
     draw(cx);
-    let (peak, now) = view.read_with(cx, |v, _| {
-        (v.peak_highlight_jobs(), v.highlight_jobs_in_flight())
+    let (peak, now) = view.read_with(cx, |v, cx| {
+        (v.peak_highlight_jobs(cx), v.highlight_jobs_in_flight(cx))
     });
     assert_eq!(peak, 3, "three at once, never more");
     assert_eq!(now, 0, "all done once settled");
@@ -949,16 +949,16 @@ fn f4_expands_collapsed_file(cx: &mut TestAppContext) {
     keys("f4", cx);
     assert_eq!(active_path(&dir, &wb, cx), Some(p("a.rs")));
     assert_eq!(row_count(&view, cx), 4, "a.rs expanded, the others not");
-    assert!(view.read_with(cx, |v, _| v.selected().is_some()));
+    assert!(view.read_with(cx, |v, cx| v.selected(cx).is_some()));
 }
 
 #[gpui::test]
 fn arrows_and_enter_open_selected_line(cx: &mut TestAppContext) {
     let (dir, wb, view, cx) = searched(cx);
     keys("escape", cx);
-    assert_eq!(view.read_with(cx, |v, _| v.selected()), None);
+    assert_eq!(view.read_with(cx, |v, cx| v.selected(cx)), None);
     keys("down", cx);
-    let sel = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.selected().unwrap());
+    let sel = |cx: &mut VisualTestContext| view.read_with(cx, |v, cx| v.selected(cx).unwrap());
     let at = |file, line| (file, 0, line);
     let key = |r: lucerna_workbench::SearchLineRef| (r.file, r.excerpt, r.line);
     assert_eq!(key(sel(cx)), at(0, 0), "a.rs line, header skipped");
@@ -1024,7 +1024,7 @@ fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
 fn selection_follows_its_line_when_files_arrive_before_it(cx: &mut TestAppContext) {
     let (dir, _wb, view, cx) = searched(cx);
     keys("escape down down", cx);
-    let sel = view.read_with(cx, |v, _| v.selected().unwrap());
+    let sel = view.read_with(cx, |v, cx| v.selected(cx).unwrap());
     assert_eq!((sel.file, sel.line), (1, 0));
     // A new file sorting first, as streaming would insert it.
     let line = LineMatch {
@@ -1041,7 +1041,7 @@ fn selection_follows_its_line_when_files_arrive_before_it(cx: &mut TestAppContex
             cx,
         )
     });
-    let sel = view.read_with(cx, |v, _| v.selected().unwrap());
+    let sel = view.read_with(cx, |v, cx| v.selected(cx).unwrap());
     assert_eq!((sel.file, sel.line), (2, 0), "still b.rs's first line");
     drop(dir);
 }
@@ -1214,7 +1214,7 @@ fn long_query_is_cut_in_the_tab_title(cx: &mut TestAppContext) {
 }
 
 fn match_label(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> String {
-    view.read_with(cx, |v, _| v.match_label())
+    view.read_with(cx, |v, cx| v.match_label(cx))
 }
 
 fn bounds(selector: &'static str, cx: &mut VisualTestContext) -> gpui::Bounds<gpui::Pixels> {
@@ -1281,7 +1281,7 @@ fn enter_with_a_pending_edit_searches_now(cx: &mut TestAppContext) {
         files(&view, cx).is_empty(),
         "\"needlex\" was searched at once"
     );
-    assert_eq!(view.read_with(cx, |v, _| v.selected()), None);
+    assert_eq!(view.read_with(cx, |v, cx| v.selected(cx)), None);
 }
 
 #[gpui::test]
@@ -1291,7 +1291,7 @@ fn enter_after_nav_opens_the_selected_match(cx: &mut TestAppContext) {
     click("search-next", cx);
     assert_eq!(match_label(&view, cx), "2/4");
     view.update_in(cx, |v, window, cx| {
-        let r = v.selected().expect("a match is selected");
+        let r = v.selected(cx).expect("a match is selected");
         v.open_line(r, window, cx);
     });
     draw(cx);
@@ -1365,7 +1365,7 @@ fn header_open_file_button_opens_first_match(cx: &mut TestAppContext) {
     click("search-open-file-1", cx);
     assert_eq!(active_path(&dir, &wb, cx), Some(p("b.rs")));
     assert_eq!(cursor_row(&wb, cx), 0);
-    let sel = view.read_with(cx, |v, _| v.selected().unwrap());
+    let sel = view.read_with(cx, |v, cx| v.selected(cx).unwrap());
     assert_eq!((sel.file, sel.excerpt, sel.line), (1, 0, 0));
     assert_eq!(row_count(&view, cx), 8, "the button does not fold the file");
 }
@@ -1475,7 +1475,7 @@ fn sticky_header_pins_while_scrolling(cx: &mut TestAppContext) {
     scroll_list(600., cx);
 
     click("search-sticky-header", cx);
-    let collapsed = view.read_with(cx, |v, _| v.results().files()[0].collapsed);
+    let collapsed = view.read_with(cx, |v, cx| v.results(cx).files()[0].collapsed);
     assert!(collapsed, "clicking the sticky header folds its file");
     assert!(
         cx.debug_bounds("search-file-0").is_some(),
@@ -1495,7 +1495,7 @@ fn reveal_reaches_unmeasured_rows(cx: &mut TestAppContext) {
     settle_search(cx);
     // Back from none: the last match, far below anything drawn so far.
     keys("escape up", cx);
-    let last = view.read_with(cx, |v, _| v.selected().unwrap());
+    let last = view.read_with(cx, |v, cx| v.selected(cx).unwrap());
     assert_eq!((last.file, last.line), (1, 0));
     let line = bounds("search-line-1-0-0", cx);
     let list = bounds("search-list", cx);
@@ -1528,7 +1528,7 @@ fn streaming_twenty_thousand_results(cx: &mut TestAppContext) {
     let start = Instant::now();
     settle_search(cx);
     let applied = start.elapsed();
-    let matches = view.read_with(cx, |v, _| v.results().match_count());
+    let matches = view.read_with(cx, |v, cx| v.results(cx).match_count());
     assert_eq!(matches, 20_000);
     let start = Instant::now();
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -1586,8 +1586,8 @@ fn file_matching_both_queries_never_leaves_the_rows(cx: &mut TestAppContext) {
     let (_dir, _wb, view, cx) = searched(cx);
     keys("escape down down", cx);
     let b_line = |view: &Entity<SearchView>, cx: &mut VisualTestContext| {
-        view.read_with(cx, |v, _| {
-            v.results()
+        view.read_with(cx, |v, cx| {
+            v.results(cx)
                 .files()
                 .iter()
                 .any(|f| f.path.as_ref() == Path::new("b.rs"))
@@ -1614,7 +1614,7 @@ fn file_matching_both_queries_never_leaves_the_rows(cx: &mut TestAppContext) {
     });
     frame(cx);
     assert!(b_line(&view, cx), "b.rs waits for its own report");
-    assert!(view.read_with(cx, |v, _| v.selected().is_some()));
+    assert!(view.read_with(cx, |v, cx| v.selected(cx).is_some()));
     // ...then b.rs, whose new excerpt replaces the old ones in place.
     view.update(cx, |v, cx| {
         v.apply_event(file("b.rs", line(3, "needle two needle")), cx)
@@ -1622,7 +1622,7 @@ fn file_matching_both_queries_never_leaves_the_rows(cx: &mut TestAppContext) {
     frame(cx);
     assert!(b_line(&view, cx));
     assert!(
-        view.read_with(cx, |v, _| v.selected().is_none()),
+        view.read_with(cx, |v, cx| v.selected(cx).is_none()),
         "the selected line is gone from b.rs"
     );
     view.update(cx, |v, cx| {
@@ -1687,7 +1687,7 @@ fn gutter_width_holds_through_a_re_search(cx: &mut TestAppContext) {
     type_text("needle", cx);
     settle_search(cx);
     let digits = |view: &Entity<SearchView>, cx: &mut VisualTestContext| {
-        view.read_with(cx, |v, _| v.gutter_digits())
+        view.read_with(cx, |v, cx| v.gutter_digits(cx))
     };
     assert_eq!(digits(&view, cx), 4);
     // Only short.txt matches: the largest line number drops to 3 digits.

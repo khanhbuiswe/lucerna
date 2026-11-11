@@ -9,6 +9,7 @@ mod config_files;
 mod diagnostics_status;
 mod documents;
 mod editor_groups;
+mod excerpt_list;
 mod explorer;
 pub mod extensions;
 mod find_widget;
@@ -51,6 +52,10 @@ pub use editor_groups::{
     EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode,
     SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
 };
+pub use excerpt_list::model::{
+    FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
+    Row as SearchRow,
+};
 pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
 pub use language_servers::{
@@ -67,10 +72,6 @@ pub use nav_history::{NavEntry, NavHistory};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
-};
-pub use search_view::model::{
-    FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
-    Row as SearchRow,
 };
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};

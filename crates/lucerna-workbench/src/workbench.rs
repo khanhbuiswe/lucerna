@@ -279,7 +279,7 @@ impl Workbench {
         let search_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
             let searchable = single_file.is_none();
-            cx.new(|cx| SearchView::new(root, workbench, searchable, cx))
+            cx.new(|cx| SearchView::new(root, workbench, searchable, window, cx))
         };
         let lsp_logs = LspLogs::default();
         let lsp_status = {
