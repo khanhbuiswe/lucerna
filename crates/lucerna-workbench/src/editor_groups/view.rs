@@ -15,6 +15,7 @@ use lucerna_theme::{Rgba, UiColors};
 use super::model::{EditorGroups, GroupsState, Tab, TabId, TabItem};
 use crate::AppState;
 use crate::documents::{DocState, Documents};
+use crate::icons;
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
 use crate::ui::{
@@ -334,6 +335,7 @@ impl Render for EditorGroupsView {
                 let icon = match tab.item {
                     TabItem::Extensions => Some(BLOCKS_ICON),
                     TabItem::Search => Some(SEARCH_ICON),
+                    TabItem::LspLog(_) => Some(icons::ZAP),
                     TabItem::File(_) => None,
                 };
                 let icon = icon.map(|icon| {

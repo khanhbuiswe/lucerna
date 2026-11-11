@@ -11,6 +11,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{Context, Task};
+use lsp_types::MessageType;
 use lucerna_lsp::position::uri_to_path;
 use lucerna_lsp::{LanguageServer, LogKind, LogLine, ServerEvent, ServerKey, Slot};
 
@@ -19,6 +20,8 @@ use crate::workspace_state::absolute_path;
 
 /// Lines kept in each server's log.
 const LOG_LINES: usize = 2000;
+/// The most characters of the progress text, before the `+N`.
+const PROGRESS_TEXT_MAX: usize = 60;
 /// Lines of stderr shown with a failed server.
 const STDERR_TAIL: usize = 50;
 const DIAGNOSTICS_BATCH: Duration = Duration::from_millis(50);
@@ -40,6 +43,8 @@ impl Drop for Pump {
 
 /// One `$/progress` token of a server.
 pub(super) struct ProgressItem {
+    /// When it last changed: bigger is newer, across servers.
+    pub(super) updated: u64,
     token: String,
     title: Option<String>,
     message: Option<String>,
@@ -66,6 +71,35 @@ impl ProgressItem {
 }
 
 impl LanguageServers {
+    /// The status bar's progress text: the newest unfinished `$/progress`
+    /// of any server, `"{server}: {title} {percentage}% — {message}"`, or
+    /// `"Starting {server}…"` while one starts; cut at 60 characters, and
+    /// `" +N"` when N more are under way. `None` when nothing is.
+    pub fn progress_text(&self) -> Option<String> {
+        let mut items: Vec<(&'static str, &ProgressItem)> = self
+            .progress
+            .iter()
+            .flat_map(|(key, items)| items.iter().map(|item| (key.server, item)))
+            .collect();
+        items.sort_by_key(|(_, item)| std::cmp::Reverse(item.updated));
+        let mut starting: Vec<&ServerKey> = self
+            .registry
+            .keys()
+            .filter(|key| matches!(self.registry.slot(key), Some(Slot::Starting)))
+            .collect();
+        starting.sort_by(|a, b| (a.server, &a.root).cmp(&(b.server, &b.root)));
+        let first = match items.first() {
+            Some((server, item)) => format!("{server}: {}", item.text()),
+            None => format!("Starting {}…", starting.first()?.server),
+        };
+        let others = items.len() + starting.len() - 1;
+        let mut text = truncate(&first, PROGRESS_TEXT_MAX);
+        if others > 0 {
+            text.push_str(&format!(" +{others}"));
+        }
+        Some(text)
+    }
+
     /// Delivers a server's events on the UI thread until it is gone. Holds
     /// the server weakly, so dropping it ends the stream.
     pub(super) fn pump(
@@ -113,9 +147,17 @@ impl LanguageServers {
     ) {
         let current = self.is_current(key, generation);
         match event {
-            ServerEvent::Log(line) => self.push_log(key.server, line.kind, line.text),
-            ServerEvent::ShowMessage { message, .. } => {
-                self.push_log(key.server, LogKind::Server, message);
+            ServerEvent::Log(line) => self.push_log(key.server, line.kind, line.text, cx),
+            ServerEvent::ShowMessage { kind, message } => {
+                if current && kind == MessageType::ERROR {
+                    self.errors
+                        .entry(key.clone())
+                        .or_default()
+                        .push(message.clone());
+                    cx.emit(LanguageServersEvent::StatusChanged);
+                    cx.notify();
+                }
+                self.push_log(key.server, LogKind::Server, message, cx);
             }
             _ if !current => {}
             ServerEvent::Exited(code) => {
@@ -161,6 +203,7 @@ impl LanguageServers {
                 let mut item = match existing {
                     Some(i) => items.remove(i),
                     None => ProgressItem {
+                        updated: 0,
                         token,
                         title: None,
                         message: None,
@@ -168,6 +211,8 @@ impl LanguageServers {
                     },
                 };
                 if !done {
+                    self.progress_clock += 1;
+                    item.updated = self.progress_clock;
                     item.title = title.or(item.title);
                     item.message = message.or(item.message);
                     item.percentage = percentage.or(item.percentage);
@@ -200,12 +245,19 @@ impl LanguageServers {
         tail
     }
 
-    pub(super) fn push_log(&mut self, server: &'static str, kind: LogKind, text: String) {
+    pub(super) fn push_log(
+        &mut self,
+        server: &'static str,
+        kind: LogKind,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
         let log = self.logs.entry(server).or_default();
         if log.len() == LOG_LINES {
             log.pop_front();
         }
         log.push_back(LogLine { kind, text });
+        cx.emit(LanguageServersEvent::LogChanged(server));
     }
 
     /// Queues `paths` for the next [`LanguageServersEvent::DiagnosticsChanged`],
@@ -239,6 +291,16 @@ impl LanguageServers {
     }
 }
 
+/// `text`, or its first `max - 1` characters and `…` when longer.
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(max - 1).collect();
+    cut.push('…');
+    cut
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,11 +308,19 @@ mod tests {
     #[test]
     fn progress_text() {
         let item = ProgressItem {
+            updated: 1,
             token: "t".into(),
             title: Some("Indexing".into()),
             message: Some("crates/foo".into()),
             percentage: Some(45),
         };
         assert_eq!(item.text(), "Indexing 45% — crates/foo");
+    }
+
+    #[test]
+    fn truncate_keeps_max_characters() {
+        assert_eq!(truncate("abc", 3), "abc");
+        assert_eq!(truncate("abcd", 3), "ab…");
+        assert_eq!(truncate("ééééé", 4), "ééé…");
     }
 }

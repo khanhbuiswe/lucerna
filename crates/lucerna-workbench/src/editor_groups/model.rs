@@ -1,5 +1,5 @@
-//! The pure editor-groups model: which files (and the Extensions page and
-//! the Search tab) are open in which group, which tab is a preview, and the most-recently-used
+//! The pure editor-groups model: which files (and the Extensions page, the
+//! Search tab and language server logs) are open in which group, which tab is a preview, and the most-recently-used
 //! order per group.
 
 use std::path::{Path, PathBuf};
@@ -31,13 +31,19 @@ pub enum TabItem {
     Extensions,
     /// Project search. At most one in all groups; never a preview.
     Search,
+    /// The log of the language server with this name. At most one per
+    /// server in all groups; never a preview, never saved.
+    LspLog(Arc<str>),
 }
 
 impl TabItem {
-    /// The Extensions page or the Search tab: at most one in all groups,
-    /// never a preview and never split.
+    /// The Extensions page, the Search tab or a server log: at most one in
+    /// all groups, never a preview and never split.
     pub fn is_singleton(&self) -> bool {
-        matches!(self, TabItem::Extensions | TabItem::Search)
+        matches!(
+            self,
+            TabItem::Extensions | TabItem::Search | TabItem::LspLog(_)
+        )
     }
 }
 
@@ -65,16 +71,17 @@ pub struct Tab {
 }
 
 impl Tab {
-    /// The file the tab shows; `None` for the Extensions page and the
-    /// Search tab.
+    /// The file the tab shows; `None` for the Extensions page, the Search
+    /// tab and server logs.
     pub fn path(&self) -> Option<&Arc<Path>> {
         match &self.item {
             TabItem::File(path) => Some(path),
-            TabItem::Extensions | TabItem::Search => None,
+            TabItem::Extensions | TabItem::Search | TabItem::LspLog(_) => None,
         }
     }
 
-    /// The tab bar's label: the file name, "Extensions" or "Search".
+    /// The tab bar's label: the file name, "Extensions", "Search" or
+    /// "<server> Log".
     pub fn title(&self) -> String {
         match &self.item {
             TabItem::File(path) => path
@@ -84,6 +91,7 @@ impl Tab {
                 .into_owned(),
             TabItem::Extensions => EXTENSIONS_TAB_TITLE.to_string(),
             TabItem::Search => SEARCH_TAB_TITLE.to_string(),
+            TabItem::LspLog(server) => format!("{server} Log"),
         }
     }
 }
@@ -216,6 +224,12 @@ impl EditorGroups {
     /// The Search tab, if open in any group.
     pub fn search_tab(&self) -> Option<TabId> {
         self.find_item(&TabItem::Search)
+    }
+
+    /// Activates the log tab of `server` wherever it is, or opens it
+    /// (pinned) at the end of the active group. Returns its tab.
+    pub fn open_lsp_log(&mut self, server: Arc<str>) -> TabId {
+        self.open_singleton(TabItem::LspLog(server))
     }
 
     fn open_singleton(&mut self, item: TabItem) -> TabId {
@@ -427,18 +441,26 @@ impl EditorGroups {
         model
     }
 
+    /// The layout to save. Server log tabs are left out; a group whose
+    /// active tab is one saves no active tab.
     pub fn state(&self) -> GroupsState {
         GroupsState {
             groups: self
                 .groups
                 .iter()
-                .map(|g| GroupState {
-                    tabs: g
+                .map(|g| {
+                    let saved: Vec<(&Tab, PathBuf)> = g
                         .tabs
                         .iter()
-                        .map(|t| (saved_path(&t.item), t.pinned))
-                        .collect(),
-                    active: g.active.and_then(|id| g.position(id)),
+                        .filter_map(|t| Some((t, saved_path(&t.item)?)))
+                        .collect();
+                    GroupState {
+                        active: saved.iter().position(|(t, _)| g.active == Some(t.id)),
+                        tabs: saved
+                            .into_iter()
+                            .map(|(t, path)| (path, t.pinned))
+                            .collect(),
+                    }
                 })
                 .collect(),
             active_group: self.active_group,
@@ -467,11 +489,12 @@ fn saved_item(path: &Path) -> TabItem {
 }
 
 /// How a tab is saved: its path, [`EXTENSIONS_TAB_STATE`] or
-/// [`SEARCH_TAB_STATE`].
-fn saved_path(item: &TabItem) -> PathBuf {
+/// [`SEARCH_TAB_STATE`]; `None` for a server log, which is not saved.
+fn saved_path(item: &TabItem) -> Option<PathBuf> {
     match item {
-        TabItem::File(path) => path.to_path_buf(),
-        TabItem::Extensions => PathBuf::from(EXTENSIONS_TAB_STATE),
-        TabItem::Search => PathBuf::from(SEARCH_TAB_STATE),
+        TabItem::File(path) => Some(path.to_path_buf()),
+        TabItem::Extensions => Some(PathBuf::from(EXTENSIONS_TAB_STATE)),
+        TabItem::Search => Some(PathBuf::from(SEARCH_TAB_STATE)),
+        TabItem::LspLog(_) => None,
     }
 }

@@ -29,6 +29,7 @@ use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
     panel_toggles, sidebar, status_bar, title_bar,
 };
+use crate::lsp_status::{self, LspLogs, LspStatusItem};
 use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::search_view::{self, SearchView};
@@ -103,6 +104,10 @@ pub struct Workbench {
     documents: Entity<Documents>,
     /// The language servers of the open documents.
     language_servers: Entity<LanguageServers>,
+    /// The ⚡ status bar item.
+    pub(crate) lsp_status: Entity<LspStatusItem>,
+    /// The bodies of the server log tabs.
+    pub(crate) lsp_logs: LspLogs,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
     _worktree_events: Task<()>,
     /// `false` in single-file mode: the worktree neither scans nor
@@ -233,6 +238,7 @@ impl Workbench {
         config_files::register_commands(&mut commands);
         theme_picker::register_commands(&mut commands);
         trust::register_commands(&mut commands);
+        lsp_status::register_commands(&mut commands);
         crate::extensions::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
@@ -255,12 +261,18 @@ impl Workbench {
             let searchable = single_file.is_none();
             cx.new(|cx| SearchView::new(root, workbench, searchable, cx))
         };
+        let lsp_logs = LspLogs::default();
+        let lsp_status = {
+            let (workbench, servers) = (cx.weak_entity(), language_servers.clone());
+            cx.new(|cx| LspStatusItem::new(workbench, servers, cx))
+        };
         let workbench = cx.weak_entity();
         let editor_groups = cx.new(|cx| {
             let mut groups = EditorGroupsView::default();
             let docs = documents.clone();
             let page = extensions_page.clone();
             let search = search_view.clone();
+            let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
             groups.set_tab_body_factory(
                 Rc::new(move |tab, _, cx| {
                     let path = match &tab.item {
@@ -270,6 +282,7 @@ impl Workbench {
                             return page.clone().into();
                         }
                         TabItem::Search => return search.clone().into(),
+                        TabItem::LspLog(server) => return logs.view(server, &servers, cx).into(),
                     };
                     let view = docs.update(cx, |docs, cx| docs.open(path, cx));
                     // A scroll settles into a save.
@@ -421,6 +434,8 @@ impl Workbench {
             explorer,
             documents,
             language_servers,
+            lsp_status: lsp_status.clone(),
+            lsp_logs,
             search_view,
             extensions_page,
             editor_area: Some(editor_groups.clone().into()),
@@ -451,6 +466,7 @@ impl Workbench {
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, mode_indicator.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
+        workbench.add_status_item(StatusBarSide::Right, lsp_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
         workbench
     }
@@ -813,7 +829,8 @@ impl Workbench {
                 .contains_focused(window, cx)
     }
 
-    /// After the tabs changed: when the Extensions or Search tab closed, or
+    /// After the tabs changed: when the Extensions or Search tab or a server
+    /// log closed, or
     /// stopped being its group's active tab (say a search result opened in
     /// its place), while it had focus, focus goes to the editor area, so
     /// keys keep working.
@@ -831,7 +848,8 @@ impl Workbench {
             (hidden(model.extensions_tab()), hidden(model.search_tab()));
         let had_focus = |handle: FocusHandle| handle.contains_focused(window, cx);
         let lost = (extensions_hidden && had_focus(self.extensions_page.read(cx).focus_handle(cx)))
-            || (search_hidden && had_focus(self.search_view.read(cx).focus_handle(cx)));
+            || (search_hidden && had_focus(self.search_view.read(cx).focus_handle(cx)))
+            || self.lsp_logs.hidden_with_focus(model, window, cx);
         if lost {
             self.focus_editor_area(window, cx);
         }

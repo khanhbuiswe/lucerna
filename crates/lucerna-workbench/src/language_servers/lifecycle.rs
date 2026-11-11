@@ -166,6 +166,7 @@ impl LanguageServers {
         let generation = self.bump_generation(&key);
         self.registry.set_slot(key.clone(), Slot::Starting);
         self.progress.remove(&key);
+        self.errors.remove(&key);
         let settings = self.registry.settings(key.server).cloned();
         let (launcher, root) = (self.launcher.clone(), key.root.clone());
         let work = cx.background_executor().spawn(async move {
@@ -204,7 +205,7 @@ impl LanguageServers {
         let launched = match launched {
             Some(Ok(launched)) => launched,
             Some(Err(StartError::NotFound { message })) => {
-                self.push_log(key.server, LogKind::Lifecycle, message.clone());
+                self.push_log(key.server, LogKind::Lifecycle, message.clone(), cx);
                 self.registry
                     .set_slot(key.clone(), Slot::NotFound { message });
                 cx.emit(LanguageServersEvent::StatusChanged);
@@ -212,7 +213,7 @@ impl LanguageServers {
                 return;
             }
             Some(Err(StartError::Failed { message, .. })) => {
-                self.push_log(key.server, LogKind::Lifecycle, message.clone());
+                self.push_log(key.server, LogKind::Lifecycle, message.clone(), cx);
                 self.set_failed(key, message, cx);
                 return;
             }
@@ -233,11 +234,17 @@ impl LanguageServers {
             command.push(' ');
             command.push_str(arg);
         }
-        self.push_log(key.server, LogKind::Lifecycle, format!("Binary: {command}"));
+        self.push_log(
+            key.server,
+            LogKind::Lifecycle,
+            format!("Binary: {command}"),
+            cx,
+        );
         self.push_log(
             key.server,
             LogKind::Lifecycle,
             format!("Root: {}", key.root.display()),
+            cx,
         );
         self.pump(key.clone(), generation, Arc::downgrade(&server), events, cx);
         let defaults = self

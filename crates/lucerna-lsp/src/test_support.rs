@@ -127,6 +127,23 @@ impl FakeServer {
         lock(&self.shared.received).clone()
     }
 
+    /// Sends notification `method` to the client, as the server would.
+    pub fn notify(&self, method: &str, params: Value) {
+        self.shared
+            .deliver(&json!({ "jsonrpc": "2.0", "method": method, "params": params }));
+    }
+
+    /// Writes `line` to the server's stderr.
+    pub fn stderr(&self, line: &str) {
+        if self.shared.closed.load(Ordering::Acquire) {
+            return;
+        }
+        let inbox = lock(&self.shared.inbox).clone();
+        if let Some(inbox) = inbox {
+            inbox.stderr(line.to_owned());
+        }
+    }
+
     /// Ends the server as if the process exited with `code`.
     pub fn crash(&self, code: Option<i32>) {
         self.shared.close(code);

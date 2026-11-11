@@ -20,6 +20,7 @@ mod pump;
 mod sync;
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -64,6 +65,8 @@ pub struct ServerStatus {
     /// The newest unfinished `$/progress`: title, percentage and message,
     /// e.g. `Indexing 45% — crates/foo`. Without the server name.
     pub progress: Option<String>,
+    /// `window/showMessage` errors since the server last started.
+    pub errors: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +79,8 @@ pub enum LanguageServersEvent {
     ServerReady(ServerKey),
     /// A document was sent to its servers (opened or changed).
     DocumentChanged(Arc<Path>),
+    /// A line was added to the log of this server.
+    LogChanged(&'static str),
 }
 
 /// The settings a language's servers are picked by.
@@ -120,6 +125,10 @@ pub struct LanguageServers {
     docs: HashMap<Arc<Path>, OpenDoc>,
     logs: HashMap<&'static str, VecDeque<LogLine>>,
     progress: HashMap<ServerKey, Vec<ProgressItem>>,
+    /// Ticks per progress update; orders progress across servers.
+    progress_clock: u64,
+    /// `window/showMessage` errors per server, until it starts again.
+    errors: HashMap<ServerKey, Vec<String>>,
     changed_diagnostics: BTreeSet<Arc<Path>>,
     diagnostics_flush_pending: bool,
     watched_changes: Vec<(PathBuf, FileChangeType)>,
@@ -163,6 +172,8 @@ impl LanguageServers {
             docs: HashMap::new(),
             logs: HashMap::new(),
             progress: HashMap::new(),
+            progress_clock: 0,
+            errors: HashMap::new(),
             changed_diagnostics: BTreeSet::new(),
             diagnostics_flush_pending: false,
             watched_changes: Vec::new(),
@@ -244,6 +255,7 @@ impl LanguageServers {
                     key: key.clone(),
                     state,
                     progress,
+                    errors: self.errors.get(key).cloned().unwrap_or_default(),
                 })
             })
             .collect()
@@ -255,6 +267,30 @@ impl LanguageServers {
         self.logs
             .get(server)
             .map(|log| log.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// How many lines the log of `server` holds.
+    pub fn log_len(&self, server: &str) -> usize {
+        self.logs.get(server).map_or(0, VecDeque::len)
+    }
+
+    /// Lines `range` of the log of `server` (clamped to it).
+    pub fn log_range(&self, server: &str, range: Range<usize>) -> Vec<LogLine> {
+        let Some(log) = self.logs.get(server) else {
+            return Vec::new();
+        };
+        let end = range.end.min(log.len());
+        log.range(range.start.min(end)..end).cloned().collect()
+    }
+
+    /// The servers found for the open document `path` (any state). A
+    /// relative `path` is joined onto the root.
+    pub fn servers_for(&self, path: &Path) -> Vec<ServerKey> {
+        let path = absolute_path(&self.root, path);
+        self.docs
+            .get(path.as_path())
+            .map(|doc| doc.keys.clone())
             .unwrap_or_default()
     }
 

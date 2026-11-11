@@ -2,8 +2,9 @@
 //! draws chrome takes its sizes and popover/icon-button styling from here.
 
 use gpui::{
-    AnyElement, App, ClickEvent, Div, ElementId, Entity, Hsla, MouseButton, ParentElement, Pixels,
-    SharedString, Stateful, Styled, Window, div, img, prelude::*, px, relative, svg,
+    AnyElement, AnyView, App, ClickEvent, Context, Div, ElementId, Entity, Hsla, IntoElement,
+    MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled, Window, div, img,
+    prelude::*, px, relative, svg,
 };
 use lucerna_theme::IconSource;
 
@@ -160,6 +161,37 @@ pub fn icon_button(
                 .size(px(14.))
                 .text_color(color(if active { ui.icon } else { ui.icon_muted })),
         )
+}
+
+/// A tooltip showing `text`, for an element's `tooltip`: small text on
+/// `elevated_surface.background`, bordered like a [`popover`].
+pub fn tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView {
+    let text = text.into();
+    move |_, cx| {
+        let text = text.clone();
+        cx.new(|_| Tooltip { text }).into()
+    }
+}
+
+struct Tooltip {
+    text: SharedString,
+}
+
+impl Render for Tooltip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = &cx.global::<AppState>().theme.ui;
+        div()
+            .px(px(2. * GRID))
+            .py(px(GRID))
+            .rounded(px(GRID))
+            .border_1()
+            .border_color(color(ui.border))
+            .bg(color(ui.elevated_surface_background))
+            .text_size(px(UI_FONT_SIZE_STATUS))
+            .text_color(color(ui.text))
+            .shadow_md()
+            .child(self.text.clone())
+    }
 }
 
 /// A small bordered text button, 24 px tall; its id and debug selector are

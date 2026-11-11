@@ -48,6 +48,7 @@ pub const WHOLE_WORD: &[u8] = lucide!("whole-word");
 pub const REGEX: &[u8] = lucide!("regex");
 pub const TRIANGLE_ALERT: &[u8] = lucide!("triangle-alert");
 pub const CHECK: &[u8] = lucide!("check");
+pub const ZAP: &[u8] = lucide!("zap");
 
 /// Every bundled icon with its upstream name.
 pub const ALL: &[(&str, &[u8])] = &[
@@ -82,6 +83,7 @@ pub const ALL: &[(&str, &[u8])] = &[
     ("regex", REGEX),
     ("triangle-alert", TRIANGLE_ALERT),
     ("check", CHECK),
+    ("zap", ZAP),
 ];
 
 /// The bundled SVG for a Lucide icon name.
