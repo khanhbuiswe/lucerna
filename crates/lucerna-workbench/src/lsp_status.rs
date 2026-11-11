@@ -443,9 +443,7 @@ impl Render for LspStatusItem {
             )
             .on_click(cx.listener(|item, _, window, cx| item.button_clicked(window, cx)))
             .children(badge);
-        // Below the title bar, above the status bar, with the margins.
-        let max_height =
-            window.viewport_size().height - px(TITLE_BAR_HEIGHT + STATUS_BAR_HEIGHT + 4. * GRID);
+        let max_height = popover_max_height(window.viewport_size().height);
         let popover = self.open.then(|| {
             // Above the button, right edges aligned.
             div().absolute().top_0().right_0().child(
@@ -542,5 +540,26 @@ impl Workbench {
             Some(path) => self.language_servers().read(cx).servers_for(path),
             None => Vec::new(),
         }
+    }
+}
+
+/// The popover's height limit: below the title bar, above the status bar,
+/// with the margins; never negative in a tiny window.
+fn popover_max_height(viewport_height: Pixels) -> Pixels {
+    (viewport_height - px(TITLE_BAR_HEIGHT + STATUS_BAR_HEIGHT + 4. * GRID)).max(px(0.))
+}
+
+#[cfg(test)]
+mod popover_tests {
+    use super::*;
+
+    #[test]
+    fn popover_height_is_never_negative() {
+        assert_eq!(popover_max_height(px(10.)), px(0.));
+        let tall = popover_max_height(px(800.));
+        assert_eq!(
+            tall,
+            px(800. - (TITLE_BAR_HEIGHT + STATUS_BAR_HEIGHT + 4. * GRID))
+        );
     }
 }
