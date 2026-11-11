@@ -326,6 +326,10 @@ pub(crate) struct Trust {
     /// A file with a server opened before the store was read.
     prompt_waiting: bool,
     modal: Option<ShownTrustModal>,
+    /// The current press on the Restricted Mode button found the modal
+    /// open: that press closes it (a press outside), the click must not
+    /// open it again.
+    press_closed: bool,
     /// Done when the last write of `trusted.json` has finished; the next
     /// one waits for it. The writes themselves are detached, so closing
     /// the window right after a choice does not lose it.
@@ -347,6 +351,7 @@ impl Trust {
             prompted: false,
             prompt_waiting: false,
             modal: None,
+            press_closed: false,
             write: None,
             _load: None,
         }
@@ -483,6 +488,25 @@ impl Workbench {
             return;
         }
         self.trust.prompted = true;
+        self.show_trust_modal(window, cx);
+    }
+
+    /// A press on the Restricted Mode button: notes whether the modal is
+    /// open, so the press (outside it) closes it.
+    pub(crate) fn restricted_button_pressed(&mut self) {
+        self.trust.press_closed = self.trust.modal.is_some();
+    }
+
+    /// A click on the Restricted Mode button opens the modal, unless its
+    /// press closed it (so it is not closed and opened again).
+    pub(crate) fn restricted_button_clicked(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if std::mem::take(&mut self.trust.press_closed) {
+            return;
+        }
         self.show_trust_modal(window, cx);
     }
 

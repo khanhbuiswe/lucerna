@@ -512,3 +512,23 @@ fn restricted_mode_waits_until_trust_is_known(cx: &mut TestAppContext) {
         assert_eq!(shown, !trusted, "trusted: {trusted}");
     }
 }
+
+#[gpui::test]
+fn restricted_button_press_closes_the_open_modal(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    let fake = FakeServer::new();
+    let (wb, cx) = trust_workbench(
+        dir.path(),
+        data.path(),
+        rust_launcher(&fake),
+        "{}",
+        None,
+        cx,
+    );
+    run(&wb, "workbench.trust.manage", cx);
+    assert!(shown("trust-modal", cx));
+    click("restricted-mode", cx);
+    assert!(!shown("trust-modal", cx), "closed, not closed and reopened");
+    click("restricted-mode", cx);
+    assert!(shown("trust-modal", cx), "the next click opens it");
+}

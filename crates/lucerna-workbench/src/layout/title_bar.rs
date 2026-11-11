@@ -4,8 +4,8 @@
 //! double-click zooms it.
 
 use gpui::{
-    Bounds, Context, IntoElement, MouseButton, MouseMoveEvent, ParentElement, Pixels, Styled,
-    TitlebarOptions, WindowBounds, WindowOptions, div, point, prelude::*, px, svg,
+    Bounds, Context, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
+    Pixels, Styled, TitlebarOptions, WindowBounds, WindowOptions, div, point, prelude::*, px, svg,
 };
 use lucerna_theme::UiColors;
 
@@ -135,10 +135,16 @@ fn restricted_mode_button(ui: &UiColors, cx: &mut Context<Workbench>) -> impl In
         .hover(move |s| s.bg(hover))
         .text_size(px(UI_FONT_SIZE_SMALL))
         .text_color(color(ui.text))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|wb, _: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                wb.restricted_button_pressed();
+            }),
+        )
         .on_click(cx.listener(|wb, _, window, cx| {
             cx.stop_propagation();
-            wb.show_trust_modal(window, cx);
+            wb.restricted_button_clicked(window, cx);
         }))
         .child(
             svg()
