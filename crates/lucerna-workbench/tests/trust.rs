@@ -401,3 +401,42 @@ fn single_file_mode_trusts_the_file_folder(cx: &mut TestAppContext) {
         serde_json::json!([dir.path().join("src").to_string_lossy()])
     );
 }
+
+#[gpui::test]
+fn no_prompt_when_server_binary_missing(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    let launcher = Arc::new(FakeLauncher::new());
+    let (wb, cx) = trust_workbench(dir.path(), data.path(), launcher, "{}", None, cx);
+
+    open(&wb, "src/main.rs", cx);
+    assert!(!shown("trust-modal", cx), "rust-analyzer is not on PATH");
+    assert!(shown("restricted-mode", cx), "the title bar still shows it");
+
+    // The button still opens the modal.
+    click("restricted-mode", cx);
+    assert!(shown("trust-modal", cx));
+}
+
+#[gpui::test]
+fn prompt_when_user_binary_path_is_set(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    let launcher = Arc::new(FakeLauncher::new());
+    let user =
+        r#"{ "lsp": { "rust-analyzer": { "binary": { "path": "/opt/ra/rust-analyzer" } } } }"#;
+    let (wb, cx) = trust_workbench(dir.path(), data.path(), launcher, user, None, cx);
+
+    open(&wb, "src/main.rs", cx);
+    assert!(shown("trust-modal", cx));
+}
+
+#[gpui::test]
+fn workspace_binary_path_does_not_prompt(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    let launcher = Arc::new(FakeLauncher::new());
+    let workspace =
+        r#"{ "lsp": { "rust-analyzer": { "binary": { "path": "/opt/ra/rust-analyzer" } } } }"#;
+    let (wb, cx) = trust_workbench(dir.path(), data.path(), launcher, "{}", Some(workspace), cx);
+
+    open(&wb, "src/main.rs", cx);
+    assert!(!shown("trust-modal", cx), "an untrusted folder's setting");
+}

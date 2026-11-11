@@ -2,8 +2,9 @@
 //! run only in folders the user trusted. The choices live in
 //! `<data dir>/trusted.json`; the title bar's "Restricted Mode" button and
 //! the `workbench.trust.manage` command open the trust modal, which also
-//! opens by itself the first time a file with a language server is opened
-//! in an untrusted folder. The User setting `session.trustAllWorktrees`
+//! opens by itself the first time a file whose language server is
+//! installed (on `PATH`, or set in the User `lsp` setting) is opened in an
+//! untrusted folder. The User setting `session.trustAllWorktrees`
 //! trusts every folder without writing the file.
 //!
 //! Trust is per window: its root, which in single-file mode is the file's
@@ -428,7 +429,6 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         let DocumentEvent::Opened {
-            path,
             language_id: Some(language),
             ..
         } = ev
@@ -438,13 +438,21 @@ impl Workbench {
         if self.trust.prompted || !self.is_restricted(cx) {
             return;
         }
-        if !self
+        let found = self
             .language_servers()
-            .read(cx)
-            .wants_server(path, language, cx)
-        {
-            return;
-        }
+            .update(cx, |servers, cx| servers.server_binary_found(language, cx));
+        cx.spawn_in(window, async move |wb, cx| {
+            if found.await {
+                wb.update_in(cx, |wb, window, cx| wb.server_file_opened(window, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// A file whose server can start was opened: prompts now, or once the
+    /// store is read.
+    fn server_file_opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.trust.stored.is_none() {
             self.trust.prompt_waiting = true;
         } else {

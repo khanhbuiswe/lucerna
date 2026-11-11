@@ -19,7 +19,7 @@ mod lifecycle;
 mod pump;
 mod sync;
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -36,6 +36,7 @@ use serde_json::Value;
 
 use crate::AppState;
 use crate::documents::Documents;
+use crate::tasks::guarded;
 use crate::workspace_state::absolute_path;
 
 use lifecycle::Starting;
@@ -123,6 +124,9 @@ pub struct LanguageServers {
     diagnostics_flush_pending: bool,
     watched_changes: Vec<(PathBuf, FileChangeType)>,
     watched_flush_pending: bool,
+    /// Whether each server's binary is on `PATH`, as found by
+    /// [`LanguageServers::server_binary_found`].
+    on_path: HashMap<&'static str, bool>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -163,6 +167,7 @@ impl LanguageServers {
             diagnostics_flush_pending: false,
             watched_changes: Vec::new(),
             watched_flush_pending: false,
+            on_path: HashMap::new(),
             _subscriptions: vec![
                 cx.subscribe(documents, Self::on_document_event),
                 cx.observe_global::<AppState>(Self::settings_changed),
@@ -274,13 +279,70 @@ impl LanguageServers {
             .collect()
     }
 
-    /// Whether a file of `language_id` would get a server: language
-    /// servers are enabled for it and one is selected.
-    pub fn wants_server(&self, _path: &Path, language_id: &str, cx: &App) -> bool {
+    /// Whether a file of `language_id` would get a server that can start:
+    /// language servers are enabled for it, and a selected server has
+    /// `binary.path` in the User `lsp` setting or its binary on `PATH`.
+    /// `PATH` is searched off the UI thread, once per server per session.
+    pub fn server_binary_found(&mut self, language_id: &str, cx: &mut Context<Self>) -> Task<bool> {
         let selection = selection(language_id, cx);
-        selection.enabled
-            && !select_servers(&selection.servers, &self.adapters, language_id).is_empty()
+        if !selection.enabled {
+            return Task::ready(false);
+        }
+        let adapters = select_servers(&selection.servers, &self.adapters, language_id);
+        let user_paths = user_binary_paths(cx);
+        let found = |name: &str, on_path: &HashMap<&'static str, bool>| {
+            user_paths.contains(name) || on_path.get(name) == Some(&true)
+        };
+        if adapters.iter().any(|a| found(a.name(), &self.on_path)) {
+            return Task::ready(true);
+        }
+        let unknown: Vec<(&'static str, &'static str)> = adapters
+            .iter()
+            .filter(|a| !self.on_path.contains_key(a.name()))
+            .map(|a| (a.name(), a.binary()))
+            .collect();
+        if unknown.is_empty() {
+            return Task::ready(false);
+        }
+        let launcher = self.launcher.clone();
+        let work = cx.background_executor().spawn(async move {
+            guarded("lsp-which", move || {
+                unknown
+                    .into_iter()
+                    .map(|(name, binary)| (name, launcher.which(binary).is_some()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+        });
+        cx.spawn(async move |this, cx| {
+            let results = work.await;
+            this.update(cx, |servers, _| {
+                servers.on_path.extend(results.iter().copied());
+                results.iter().any(|(_, found)| *found)
+            })
+            .unwrap_or(false)
+        })
     }
+}
+
+/// The servers with `binary.path` in the `lsp` setting of the User (or
+/// Default) layer: a folder's own setting cannot make it look installed.
+fn user_binary_paths(cx: &App) -> HashSet<String> {
+    let Some(Value::Object(map)) = cx
+        .global::<AppState>()
+        .settings
+        .get_trusted::<Value>("lsp", None)
+    else {
+        return HashSet::new();
+    };
+    map.into_iter()
+        .filter(|(_, value)| {
+            value["binary"]["path"]
+                .as_str()
+                .is_some_and(|p| !p.is_empty())
+        })
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// `lucerna.lsp.enabled` and `lucerna.lsp.languageServers` for `language`.
