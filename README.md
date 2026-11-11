@@ -44,6 +44,12 @@ the GPU-accelerated UI framework from the Zed project. It has no AI features and
   - Lilex and IBM Plex Sans fonts, Lucide icons, and the One Dark and One Light themes.
 - **Syntax highlighting** with tree-sitter for Rust, TypeScript/TSX, JavaScript, Python, Go, JSON,
   Markdown, TOML, YAML, Bash, HTML and CSS. More languages come from extensions.
+- **Code intelligence over LSP.** Go to definition, references, hover, diagnostics and outline from
+  the language server you already have on your `PATH`. A built-in table covers about 40 servers
+  (rust-analyzer, gopls, basedpyright, typescript-language-server, clangd, intelephense, ruby-lsp,
+  jdtls, sourcekit-lsp, zls and more); add or override servers under `"lsp"` in `settings.json`.
+  Run `luc lsp health`, or click "Show All Languages…" in the ⚡ status bar popover, to see which
+  servers are installed and how to install the rest.
 - **Extensions from the Zed registry.** Install themes, icon themes and languages from the existing
   Zed extension ecosystem. Extensions are built locally, with no call to `api.zed.dev`.
 - **Large-file safe.** Files over 20 MB or 300k lines skip highlighting. A 5 MB minified line
@@ -254,7 +260,7 @@ and Zed do things are in [`docs/research/`](docs/research/). Before designing a 
 | 1 | Core viewer: tree, tabs, highlighting, Quick Open, search, live reload | ✅ Done |
 | 2 | Zed extensions: themes, icon themes, languages | ✅ Done |
 | 3 | Code intelligence over LSP: go to definition, references, hover, diagnostics, outline | ✅ Done |
-| 3b | WASM host for Zed extensions: language servers shipped inside `extension.wasm` (PHP, Ruby, Elixir, Vue…) | Planned |
+| 3b | WASM host for Zed extensions: language servers shipped inside `extension.wasm`. PHP, Ruby, Elixir, Vue and others already work through the language server table when their server is installed | Planned |
 | 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | Planned |
 | 5 | Git gutter and diff view, integrated terminal, settings UI | Planned |
 | V1 | Vim navigation: motions, search, scroll, marks, visual copy | ✅ Done |
