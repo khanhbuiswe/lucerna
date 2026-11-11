@@ -78,6 +78,9 @@ pub enum DocumentEvent {
         language_id: Option<Arc<str>>,
         snapshot: BufferSnapshot,
     },
+    /// A parse of the current text landed: the document has a new syntax
+    /// state (a reload first keeps the old tree, edited, until then).
+    Parsed { path: Arc<Path> },
 }
 
 /// Size and modification time, to tell whether a file changed on disk.
@@ -774,6 +777,7 @@ impl Documents {
             match sync {
                 Ok(Ok((syntax, ParseOutcome::Done))) => {
                     set_syntax(doc, Arc::new(syntax), cx);
+                    cx.emit(DocumentEvent::Parsed { path: key.clone() });
                     return;
                 }
                 Ok(Ok((syntax, ParseOutcome::TimedOut))) => started = Some(syntax),
@@ -808,7 +812,10 @@ impl Documents {
                 }
                 doc.parse = None;
                 match syntax {
-                    Ok(Ok(syntax)) => set_syntax(doc, Arc::new(syntax), cx),
+                    Ok(Ok(syntax)) => {
+                        set_syntax(doc, Arc::new(syntax), cx);
+                        cx.emit(DocumentEvent::Parsed { path: key.clone() });
+                    }
                     Ok(Err(err)) => {
                         tracing::warn!(path = %key.display(), %err, "grammar failed to load");
                         clear_syntax(doc, cx);

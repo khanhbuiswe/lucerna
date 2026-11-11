@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use gpui::{AppContext, Context, Entity, Subscription, Task};
@@ -46,9 +46,10 @@ pub enum SymbolState {
 /// The cached symbols of one document.
 struct Entry {
     revision: u64,
-    /// The syntax state an outline was read from, by address: a new parse
-    /// of the same revision makes the outline stale.
-    syntax: Option<usize>,
+    /// The syntax state an outline was read from: a new parse of the same
+    /// revision makes the outline stale. Held weakly, so the allocation
+    /// cannot be reused by another state while compared.
+    syntax: Option<Weak<SyntaxState>>,
     state: SymbolState,
     /// Shown until the fetch in flight replaces it.
     stale: bool,
@@ -71,7 +72,7 @@ pub struct SymbolSource {
 /// What a fetch found.
 struct Fetched {
     state: SymbolState,
-    syntax: Option<usize>,
+    syntax: Option<Weak<SyntaxState>>,
     /// An empty server answer: kept for [`EMPTY_SYMBOLS_TTL`].
     expires: bool,
 }
@@ -122,13 +123,14 @@ impl SymbolSource {
                 _ => SymbolState::Unavailable,
             };
         };
-        let syntax = docs
-            .syntax_of(&key)
-            .and_then(|(_, syntax)| syntax)
-            .map(|s| address(&s));
+        let syntax = docs.syntax_of(&key).and_then(|(_, syntax)| syntax);
         match self.entries.get_mut(&key) {
             Some(entry) if entry.revision == revision => {
-                if entry.syntax.is_some() && entry.syntax != syntax {
+                if entry
+                    .syntax
+                    .as_ref()
+                    .is_some_and(|read| !is_state(read, syntax.as_ref()))
+                {
                     entry.stale = true;
                 }
                 let state = entry.state.clone();
@@ -151,6 +153,17 @@ impl SymbolSource {
             | DocumentEvent::LanguageChanged { path, .. } => self.fetch(path.clone(), cx),
             DocumentEvent::Closed { path } => {
                 self.entries.remove(path);
+            }
+            // An outline read from the old tree (or the edited one a
+            // reload keeps until the parse) is out of date.
+            DocumentEvent::Parsed { path } => {
+                if self
+                    .entries
+                    .get(path)
+                    .is_some_and(|e| e.fetching || e.syntax.is_some())
+                {
+                    self.fetch(path.clone(), cx);
+                }
             }
         }
     }
@@ -256,7 +269,7 @@ impl SymbolSource {
             path,
             Entry {
                 revision,
-                syntax: fresh.as_ref().and_then(|e| e.syntax),
+                syntax: fresh.as_ref().and_then(|e| e.syntax.clone()),
                 state,
                 stale: true,
                 fetching: true,
@@ -333,7 +346,7 @@ async fn outline(inputs: OutlineInputs, cx: &mut gpui::AsyncApp) -> Option<Fetch
     let (Some((language, syntax)), Some(snapshot)) = inputs else {
         return Some(unavailable);
     };
-    let address = syntax.as_ref().map(address);
+    let read = syntax.as_ref().map(Arc::downgrade);
     let outline = cx
         .background_spawn(async move {
             guarded("outline", || {
@@ -345,7 +358,7 @@ async fn outline(inputs: OutlineInputs, cx: &mut gpui::AsyncApp) -> Option<Fetch
     match outline {
         Outline::Ready(tree) => Some(Fetched {
             state: SymbolState::Ready(Arc::new(tree)),
-            syntax: address,
+            syntax: read,
             expires: false,
         }),
         Outline::Retry => None,
@@ -376,6 +389,7 @@ fn read_outline(
     }
 }
 
-fn address(syntax: &Arc<SyntaxState>) -> usize {
-    Arc::as_ptr(syntax) as usize
+/// Whether `read` is the syntax state `current`.
+fn is_state(read: &Weak<SyntaxState>, current: Option<&Arc<SyntaxState>>) -> bool {
+    current.is_some_and(|current| std::ptr::eq(read.as_ptr(), Arc::as_ptr(current)))
 }

@@ -49,6 +49,19 @@ struct Item {
     depth: usize,
     /// The names of the containing symbols, outermost first.
     ancestors: Vec<SharedString>,
+    /// The ancestors and the name, space-separated: what a query of
+    /// several words matches.
+    haystack: String,
+    /// Where the name starts in `haystack`, in chars.
+    name_start: u32,
+}
+
+/// Which symbol a row shows, kept across new symbol trees: its name and
+/// selection range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SymbolId {
+    name: SharedString,
+    selection_range: Range<Point>,
 }
 
 /// One `@` row.
@@ -106,12 +119,30 @@ impl SymbolPicker {
     pub(crate) fn set_state(&mut self, state: SymbolState) {
         (self.items, self.at_cursor) = match state {
             SymbolState::Ready(tree) => {
-                let at_cursor = deepest_at(&tree, self.cursor);
-                (Ok(items(&tree)), at_cursor)
+                let (items, at_cursor) = items(&tree, self.cursor);
+                (Ok(items), at_cursor)
             }
             SymbolState::Loading => (Err(LOADING_SYMBOLS), None),
             SymbolState::Unavailable => (Err(NO_SYMBOL_SOURCE), None),
         };
+    }
+
+    /// The identity of item `index`.
+    pub(crate) fn symbol_id(&self, index: usize) -> Option<SymbolId> {
+        let item = self.items.as_ref().ok()?.get(index)?;
+        Some(SymbolId {
+            name: item.name.clone(),
+            selection_range: item.selection_range.clone(),
+        })
+    }
+
+    /// The index of the item `id` names.
+    pub(crate) fn index_of(&self, id: &SymbolId) -> Option<usize> {
+        self.items
+            .as_ref()
+            .ok()?
+            .iter()
+            .position(|item| item.name == id.name && item.selection_range == id.selection_range)
     }
 
     /// The rows for `text` and the row to select first: the deepest
@@ -342,32 +373,45 @@ fn matched(text: SharedString, positions: &[u32], cx: &App) -> StyledText {
     StyledText::new(text).with_highlights(ranges)
 }
 
-/// Every symbol of `tree` in document order.
-fn items(tree: &SymbolTree) -> Vec<Item> {
-    tree.flatten()
+/// Every symbol of `tree` in document order, and the index of the
+/// deepest one containing `cursor`, from one flatten pass.
+fn items(tree: &SymbolTree, cursor: Point) -> (Vec<Item>, Option<usize>) {
+    let deepest = tree.path_at(cursor).last().copied();
+    let mut at_cursor = None;
+    let items = tree
+        .flatten()
         .into_iter()
-        .map(|flat| Item {
-            name: flat.symbol.name.clone().into(),
-            detail: flat.symbol.detail.clone().map(Into::into),
-            kind: flat.symbol.kind,
-            range: flat.symbol.range.clone(),
-            selection_range: flat.symbol.selection_range.clone(),
-            depth: flat.depth,
-            ancestors: flat
-                .ancestors
-                .iter()
-                .map(|a| SharedString::from(a.to_string()))
-                .collect(),
+        .enumerate()
+        .map(|(index, flat)| {
+            if deepest.is_some_and(|d| std::ptr::eq(d, flat.symbol)) {
+                at_cursor = Some(index);
+            }
+            // "ancestors name", for queries of several words.
+            let mut haystack = String::new();
+            for ancestor in &flat.ancestors {
+                haystack.push_str(ancestor);
+                haystack.push(' ');
+            }
+            let name_start = haystack.chars().count() as u32;
+            haystack.push_str(&flat.symbol.name);
+            Item {
+                name: flat.symbol.name.clone().into(),
+                detail: flat.symbol.detail.clone().map(Into::into),
+                kind: flat.symbol.kind,
+                range: flat.symbol.range.clone(),
+                selection_range: flat.symbol.selection_range.clone(),
+                depth: flat.depth,
+                ancestors: flat
+                    .ancestors
+                    .iter()
+                    .map(|a| SharedString::from(a.to_string()))
+                    .collect(),
+                haystack,
+                name_start,
+            }
         })
-        .collect()
-}
-
-/// The index, in [`items`] order, of the deepest symbol containing `p`.
-fn deepest_at(tree: &SymbolTree, p: Point) -> Option<usize> {
-    let deepest = *tree.path_at(p).last()?;
-    tree.flatten()
-        .iter()
-        .position(|flat| std::ptr::eq(flat.symbol, deepest))
+        .collect();
+    (items, at_cursor)
 }
 
 /// The items matching `text`, with matched char indices into their names:
@@ -378,23 +422,10 @@ fn filter(items: &[Item], text: &str) -> Vec<(usize, Vec<u32>)> {
     if text.split_whitespace().nth(1).is_none() {
         return fuzzy_filter(items.iter().map(|i| i.name.as_ref()), text);
     }
-    let haystacks: Vec<(String, u32)> = items
-        .iter()
-        .map(|item| {
-            let mut haystack = String::new();
-            for ancestor in &item.ancestors {
-                haystack.push_str(ancestor);
-                haystack.push(' ');
-            }
-            let name_start = haystack.chars().count() as u32;
-            haystack.push_str(&item.name);
-            (haystack, name_start)
-        })
-        .collect();
-    fuzzy_filter(haystacks.iter().map(|(h, _)| h.as_str()), text)
+    fuzzy_filter(items.iter().map(|i| i.haystack.as_str()), text)
         .into_iter()
         .map(|(index, positions)| {
-            let start = haystacks[index].1;
+            let start = items[index].name_start;
             let positions = positions
                 .into_iter()
                 .filter_map(|p| p.checked_sub(start))
@@ -439,7 +470,7 @@ mod tests {
 
     #[test]
     fn one_word_matches_the_name_several_the_path() {
-        let items = items(&tree());
+        let (items, _) = items(&tree(), pt(0, 0));
         let names = |text: &str| -> Vec<&str> {
             filter(&items, text)
                 .into_iter()
@@ -456,8 +487,8 @@ mod tests {
     #[test]
     fn deepest_symbol_at_the_cursor() {
         let tree = tree();
-        assert_eq!(deepest_at(&tree, pt(2, 0)), Some(1));
-        assert_eq!(deepest_at(&tree, pt(5, 0)), Some(0));
-        assert_eq!(deepest_at(&tree, pt(10, 5)), None);
+        assert_eq!(items(&tree, pt(2, 0)).1, Some(1));
+        assert_eq!(items(&tree, pt(5, 0)).1, Some(0));
+        assert_eq!(items(&tree, pt(10, 5)).1, None);
     }
 }

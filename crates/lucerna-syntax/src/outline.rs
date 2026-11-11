@@ -2,6 +2,7 @@
 //! match is a symbol, `@name` its name, `@context` (less the name) its
 //! detail and the source of its guessed kind. Nesting follows ranges.
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use lucerna_text::{BufferSnapshot, Point};
@@ -54,6 +55,9 @@ impl OutlineQuery {
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&self.query, tree.root_node(), text_of);
         let mut items: Vec<Symbol> = Vec::new();
+        // Several patterns can match the same node: one symbol per
+        // (range, selection range).
+        let mut seen: HashSet<[u32; 8]> = HashSet::new();
         while let Some(m) = matches.next() {
             if !self.predicates.accepts(m) {
                 continue;
@@ -92,11 +96,18 @@ impl OutlineQuery {
                 selection_range: point(first.start_position())..point(last.end_position()),
                 children: Vec::new(),
             };
-            // Several patterns can match the same node.
-            if !items
-                .iter()
-                .any(|s| s.range == symbol.range && s.selection_range == symbol.selection_range)
-            {
+            let (r, s) = (&symbol.range, &symbol.selection_range);
+            let key = [
+                r.start.row,
+                r.start.column,
+                r.end.row,
+                r.end.column,
+                s.start.row,
+                s.start.column,
+                s.end.row,
+                s.end.column,
+            ];
+            if seen.insert(key) {
                 items.push(symbol);
             }
         }

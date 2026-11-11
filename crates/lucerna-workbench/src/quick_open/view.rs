@@ -22,7 +22,7 @@ use super::picker::{
 use super::query::{QuickOpenQuery, parse_query};
 use crate::layout::color;
 use crate::symbols::SymbolState;
-use crate::symbols::quick_open::{NO_SYMBOL_SOURCE, SymbolPicker, SymbolRow, SymbolsContext};
+use crate::symbols::quick_open::{NO_SYMBOL_SOURCE, SymbolId, SymbolPicker, SymbolRow};
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{GRID, popover};
@@ -50,8 +50,6 @@ pub(crate) struct Sources {
     /// installs the selected one. `Err` holds the message shown while
     /// there are none yet, such as "Loading extension list…".
     pub extension_ids: Option<ExtensionIds>,
-    /// The active editor and its symbols, for `@`.
-    pub symbols: Option<SymbolsContext>,
 }
 
 /// The ids the install command lists, or the message shown instead.
@@ -120,8 +118,10 @@ pub struct QuickOpen {
     commands: Rc<[CommandItem]>,
     has_editor: bool,
     extension_ids: Option<Result<Rc<[String]>, &'static str>>,
-    /// The active editor's symbols, for `@`.
+    /// The active editor's symbols, for `@`; read from the workbench when
+    /// `@` is first typed.
     symbols: Option<SymbolPicker>,
+    symbols_loaded: bool,
     rows: Vec<Row>,
     selected: usize,
     scroll: ScrollHandle,
@@ -166,7 +166,8 @@ impl QuickOpen {
             commands: sources.commands.into(),
             has_editor: sources.has_editor,
             extension_ids: sources.extension_ids.map(|ids| ids.map(Into::into)),
-            symbols: sources.symbols.map(SymbolPicker::new),
+            symbols: None,
+            symbols_loaded: false,
             rows: Vec::new(),
             selected: 0,
             scroll: ScrollHandle::new(),
@@ -211,16 +212,77 @@ impl QuickOpen {
     }
 
     /// Lists `state` in place of the symbols shown, keeping the typed
-    /// text.
-    pub(crate) fn set_symbol_state(&mut self, state: SymbolState, cx: &mut Context<Self>) {
+    /// text. The selected symbol stays selected (by name and selection
+    /// range) when the new symbols still have it, without moving the
+    /// editor again; the symbol at the cursor is selected only when
+    /// symbols first arrive.
+    pub fn set_symbol_state(&mut self, state: SymbolState, cx: &mut Context<Self>) {
         let Some(symbols) = &mut self.symbols else {
             return;
         };
+        let keep = match self.rows.get(self.selected) {
+            Some(Row::Symbol(SymbolRow::Symbol { index, .. })) => symbols.symbol_id(*index),
+            _ => None,
+        };
         symbols.set_state(state);
         let text = self.input.read(cx).text().to_string();
-        if matches!(parse_query(&text), QuickOpenQuery::Symbols { .. }) {
-            self.query_changed(&text, cx);
+        if let QuickOpenQuery::Symbols {
+            text,
+            group_by_kind,
+        } = parse_query(&text)
+        {
+            self.show_symbols(&text, group_by_kind, keep, cx);
         }
+    }
+
+    /// Lists the symbols matching `text`. `keep` is selected again when
+    /// listed; otherwise the picker's first choice is, and previewed
+    /// unless the query is empty and nothing was previewed yet. A message
+    /// instead of rows ends the preview.
+    fn show_symbols(
+        &mut self,
+        text: &str,
+        group_by_kind: bool,
+        keep: Option<SymbolId>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(symbols) = &self.symbols else {
+            self.set_rows(vec![Row::Message(NO_SYMBOL_SOURCE)], cx);
+            return;
+        };
+        match symbols.rows(text, group_by_kind) {
+            Ok((rows, selected)) => {
+                let kept = keep.and_then(|id| symbols.index_of(&id)).and_then(|at| {
+                    rows.iter()
+                        .position(|r| matches!(r, SymbolRow::Symbol { index, .. } if *index == at))
+                });
+                let previewing = symbols.is_previewing();
+                let rows = rows.into_iter().map(Row::Symbol).collect();
+                self.set_rows_at(rows, kept.unwrap_or(selected), cx);
+                if kept.is_none() && (!text.is_empty() || previewing) {
+                    self.preview_selected(cx);
+                }
+            }
+            Err(message) => {
+                self.end_preview(cx);
+                self.set_rows(vec![Row::Message(message)], cx);
+            }
+        }
+    }
+
+    /// Reads the active editor's symbols from the workbench the first
+    /// time `@` is typed. Runs from the input's deferred change callback,
+    /// never while the workbench is being updated.
+    fn load_symbols(&mut self, cx: &mut Context<Self>) {
+        if self.symbols_loaded {
+            return;
+        }
+        self.symbols_loaded = true;
+        self.symbols = self
+            .workbench
+            .upgrade()
+            .and_then(|wb| wb.update(cx, |wb, cx| wb.symbols_context(cx)))
+            .map(SymbolPicker::new);
     }
 
     /// Puts the editor a `@` preview moved back where it was.
@@ -295,7 +357,11 @@ impl QuickOpen {
             }
             None => {}
         }
-        match parse_query(text) {
+        let query = parse_query(text);
+        if !matches!(query, QuickOpenQuery::Symbols { .. }) {
+            self.end_preview(cx);
+        }
+        match query {
             QuickOpenQuery::Files(query) => self.match_files(query, cx),
             QuickOpenQuery::Commands(query) => {
                 let rows = filter_commands(&self.commands, &query);
@@ -313,33 +379,15 @@ impl QuickOpen {
                 text,
                 group_by_kind,
             } => {
-                let rows = match &self.symbols {
-                    Some(symbols) => symbols.rows(&text, group_by_kind),
-                    None => Err(NO_SYMBOL_SOURCE),
-                };
-                match rows {
-                    Ok((rows, selected)) => {
-                        let rows = rows.into_iter().map(Row::Symbol).collect();
-                        self.set_rows_at(rows, selected, cx);
-                        // Opening `@` selects the symbol at the cursor
-                        // without moving the editor.
-                        let previewing = self
-                            .symbols
-                            .as_ref()
-                            .is_some_and(SymbolPicker::is_previewing);
-                        if !text.is_empty() || previewing {
-                            self.preview_selected(cx);
-                        }
-                    }
-                    Err(message) => self.set_rows(vec![Row::Message(message)], cx),
-                }
+                self.load_symbols(cx);
+                self.show_symbols(&text, group_by_kind, None, cx);
             }
             QuickOpenQuery::WorkspaceSymbols(text) => {
-                let rows = match text.is_empty() {
-                    true => vec![Row::Message("Type to search symbols")],
-                    false => Vec::new(),
+                let message = match text.is_empty() {
+                    true => "Type to search symbols",
+                    false => "Searching symbols…",
                 };
-                self.set_rows(rows, cx);
+                self.set_rows(vec![Row::Message(message)], cx);
             }
         }
     }

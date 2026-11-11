@@ -4,17 +4,22 @@
 
 mod support;
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{Entity, TestAppContext, VisualTestContext};
+use lucerna_lsp::position::PositionEncoding;
+use lucerna_lsp::symbols::symbols_from_response;
 use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
+use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_syntax::{Associations, ExtensionLanguage, LanguageRegistry};
 use lucerna_text::Point;
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::{AppState, QuickOpen, Workbench};
+use lucerna_workbench::{AppState, DocumentEvent, QuickOpen, SymbolState, Workbench};
 use serde_json::{Value, json};
 use support::lsp::{TRUSTED, init_with, language_servers, lsp_workbench_with, open, settle};
 use tempfile::TempDir;
@@ -328,7 +333,8 @@ fn at_falls_back_to_outline_without_server(cx: &mut TestAppContext) {
 
     init_with(TRUSTED, cx);
     cx.update(|cx| cx.global_mut::<AppState>().languages = Arc::new(registry));
-    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(project, window, cx));
+    let root = project.clone();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
     let servers = language_servers(&wb, cx);
     servers.update(cx, |servers, _| {
         servers.set_launcher(Arc::new(FakeLauncher::new()))
@@ -338,4 +344,66 @@ fn at_falls_back_to_outline_without_server(cx: &mut TestAppContext) {
 
     run(&wb, "workbench.action.gotoSymbol", cx);
     assert_eq!(rows(&wb, cx), vec!["\"a\"", "  \"b\"", "\"c\""]);
+    keys("escape", cx);
+
+    // A reload first keeps the old tree, edited; the parse that lands
+    // after it is announced, and the outline is read again from it.
+    let documents = cx.update(|_, cx| wb.read(cx).documents().clone());
+    let parsed = Rc::new(RefCell::new(Vec::new()));
+    let _subscription = cx.update(|_, cx| {
+        let parsed = parsed.clone();
+        cx.subscribe(&documents, move |_, ev, _| {
+            if let DocumentEvent::Parsed { path } = ev {
+                parsed.borrow_mut().push(path.clone());
+            }
+        })
+    });
+    fs::write(project.join("data.outl"), "{\n  \"x\": 1\n}\n").unwrap();
+    let change = Change {
+        path: Arc::from(Path::new("data.outl")),
+        kind: ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    settle_symbols(cx);
+    assert_eq!(
+        parsed.borrow().as_slice(),
+        &[Arc::from(project.join("data.outl").as_path())]
+    );
+    // Fresh without waiting for another fetch.
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command("workbench.action.gotoSymbol", None, window, cx)
+        })
+    });
+    settle(cx);
+    assert_eq!(rows(&wb, cx), vec!["\"x\""]);
+}
+
+#[gpui::test]
+fn new_symbols_keep_the_selection_and_preview(cx: &mut TestAppContext) {
+    let fake = symbols_server();
+    let (_dir, wb, view, cx) = setup(&fake, pt(0, 0), cx);
+    run(&wb, "workbench.action.gotoSymbol", cx);
+    assert_eq!(selected(&wb, cx), 0);
+    keys("down down", cx);
+    assert_eq!(selected(&wb, cx), 2);
+    let before = place(&view, cx);
+    assert_eq!(before.2, vec![3..11], "`impl Foo` is previewed");
+
+    // The same symbols again, as a refetch brings them.
+    let snapshot = cx.update(|_, cx| view.read(cx).snapshot().clone());
+    let tree = symbols_from_response(
+        serde_json::from_value(main_symbols()).unwrap(),
+        &snapshot,
+        PositionEncoding::Utf16,
+    );
+    let qo = quick_open(&wb, cx).expect("quick open is shown");
+    qo.update(cx, |qo, cx| {
+        qo.set_symbol_state(SymbolState::Ready(Arc::new(tree)), cx)
+    });
+    settle(cx);
+    assert_eq!(selected(&wb, cx), 2);
+    assert_eq!(place(&view, cx), before);
 }

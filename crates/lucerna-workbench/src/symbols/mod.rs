@@ -12,6 +12,7 @@ use gpui::Context;
 use lucerna_syntax::SymbolKind;
 
 use crate::{CommandRegistry, Workbench, icons};
+use quick_open::SymbolsContext;
 
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
@@ -74,6 +75,20 @@ pub(crate) fn kind_icon(kind: SymbolKind) -> &'static [u8] {
 }
 
 impl Workbench {
+    /// The active editor, its symbols and cursor, for Quick Open `@`.
+    pub(crate) fn symbols_context(&mut self, cx: &mut Context<Self>) -> Option<SymbolsContext> {
+        let editor = self.active_code_view(cx)?;
+        let path = self.absolute_path(editor.read(cx).path());
+        let cursor = editor.read(cx).cursor();
+        let state = self.symbols.get(&path, cx);
+        Some(SymbolsContext {
+            path,
+            editor,
+            state,
+            cursor,
+        })
+    }
+
     /// Hands the symbols of `path` to Quick Open when it lists them.
     pub(crate) fn symbols_changed(&mut self, path: &Path, cx: &mut Context<Self>) {
         let Some((qo, _)) = &self.quick_open else {

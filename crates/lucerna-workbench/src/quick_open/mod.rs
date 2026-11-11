@@ -19,7 +19,6 @@ use lucerna_text::Point;
 use crate::code_view::CodeView;
 use crate::extensions::ExtensionService;
 use crate::nav_history::NavEntry;
-use crate::symbols::quick_open::SymbolsContext;
 use crate::{AppState, CommandRegistry, OpenMode, Workbench};
 use view::{CommandItem, ExtensionIds, Sources};
 
@@ -123,25 +122,13 @@ impl Workbench {
                 keybinding: keymap.label_for(id),
             })
             .collect();
-        let symbols = self.active_code_view(cx).map(|editor| {
-            let path = self.absolute_path(editor.read(cx).path());
-            let cursor = editor.read(cx).cursor();
-            let state = self.symbols.get(&path, cx);
-            SymbolsContext {
-                path,
-                editor,
-                state,
-                cursor,
-            }
-        });
         let sources = Sources {
             workbench: cx.weak_entity(),
             snapshot: self.worktree().snapshot(),
             recent: self.recent_relative_to_root(),
             commands,
-            has_editor: symbols.is_some(),
+            has_editor: self.active_code_view(cx).is_some(),
             extension_ids: None,
-            symbols,
         };
         self.open_quick_open(prefix, sources, window, cx);
     }
@@ -165,7 +152,6 @@ impl Workbench {
             commands: Vec::new(),
             has_editor: false,
             extension_ids: Some(ids),
-            symbols: None,
         };
         self.open_quick_open("", sources, window, cx);
     }
