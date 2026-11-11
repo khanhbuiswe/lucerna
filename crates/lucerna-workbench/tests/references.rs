@@ -348,3 +348,156 @@ fn search_tab_unaffected(cx: &mut TestAppContext) {
         Some("3 references in 2 files".into())
     );
 }
+
+#[gpui::test]
+fn refresh_after_origin_preview_replaced(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = references(dir.path());
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher, TRUSTED, cx);
+    // main.rs in the preview tab.
+    wb.update(cx, |wb, cx| {
+        wb.open_path(
+            Arc::from(Path::new("src/main.rs")),
+            lucerna_workbench::OpenMode::Preview,
+            cx,
+        )
+    });
+    settle(cx);
+    let view = active_view(&wb, cx);
+    view.update(cx, |v, cx| v.set_cursor(pt(1, 8), cx));
+    drop(view);
+    settle(cx);
+    keys("shift-alt-f12", cx);
+    // b.rs's `helper` takes main.rs's preview tab.
+    keys("down down enter", cx);
+    assert_eq!(at(&wb, cx), ("b.rs".into(), pt(1, 7)));
+    let main_tab = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .any(|t| t.path().is_some_and(|p| p.ends_with("main.rs")))
+    });
+    assert!(!main_tab, "main.rs's tab was replaced");
+
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.open_references())
+    });
+    settle(cx);
+    let bounds = cx
+        .debug_bounds("references-refresh")
+        .expect("refresh drawn");
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    settle(cx);
+    assert_eq!(sent(&fake, REFERENCES).len(), 2, "asked again");
+    let refs = refs_view(&wb, cx);
+    assert_eq!(
+        cx.update(|_, cx| refs.read(cx).summary()),
+        Some("3 references in 2 files".into())
+    );
+}
+
+#[gpui::test]
+fn refresh_without_server_keeps_results(cx: &mut TestAppContext) {
+    let (_dir, fake, wb, _view, cx) = setup(cx);
+    keys("shift-alt-f12", cx);
+    let servers = support::lsp::language_servers(&wb, cx);
+    servers.update(cx, |servers, cx| servers.stop_all(cx));
+    settle(cx);
+    let refs = refs_view(&wb, cx);
+    refs.update(cx, |view, cx| view.refresh(cx));
+    settle(cx);
+    assert_eq!(sent(&fake, REFERENCES).len(), 1);
+    assert_eq!(
+        cx.update(|_, cx| refs.read(cx).summary()),
+        Some("3 references in 2 files".into())
+    );
+    assert_eq!(shown(&refs, cx).len(), 2);
+}
+
+/// Whether `referencesViewFocus` holds.
+fn references_focus(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> bool {
+    let ctx = cx.update(|window, cx| wb.read(cx).context_keys(window, cx));
+    lucerna_settings::parse_when("referencesViewFocus")
+        .unwrap()
+        .eval(&ctx)
+}
+
+#[gpui::test]
+fn f4_follows_the_results_tab_used_last(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(cx);
+    keys("shift-alt-f12", cx);
+    run(&wb, "workbench.action.findInFiles", cx);
+    cx.simulate_input("b::");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(150));
+    settle(cx);
+    // Search's lines are `b::helper` at column 4.
+    keys("f4", cx);
+    assert_eq!(at(&wb, cx), ("main.rs".into(), pt(1, 4)));
+    assert!(!references_focus(&wb, cx), "an editor has the focus");
+    keys("f4", cx);
+    assert_eq!(at(&wb, cx), ("main.rs".into(), pt(2, 4)), "Search's next");
+
+    // A line opened from the References tab hands F4 to it.
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.open_references())
+    });
+    settle(cx);
+    let refs = refs_view(&wb, cx);
+    let focus = cx.update(|_, cx| refs.read(cx).list_focus_handle().clone());
+    cx.update(|window, cx| window.focus(&focus, cx));
+    settle(cx);
+    keys("down down enter", cx);
+    assert_eq!(at(&wb, cx), ("b.rs".into(), pt(1, 7)));
+    assert!(references_focus(&wb, cx));
+    keys("f4", cx);
+    assert_eq!(
+        at(&wb, cx),
+        ("main.rs".into(), pt(1, 7)),
+        "references' next"
+    );
+}
+
+#[gpui::test]
+fn second_lookup_replaces_one_still_running(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, view, cx) = setup(cx);
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            assert!(wb.run_command("references-view.findReferences", None, window, cx))
+        })
+    });
+    // Before the first answer: a lookup on `main`.
+    let main = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .find(|t| t.path().is_some_and(|p| p.ends_with("main.rs")))
+            .map(|t| t.id)
+            .unwrap()
+    });
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.activate(main))
+    });
+    view.update(cx, |v, cx| v.set_cursor(pt(0, 4), cx));
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            assert!(wb.run_command("references-view.findReferences", None, window, cx))
+        })
+    });
+    settle(cx);
+    let refs = refs_view(&wb, cx);
+    assert_eq!(
+        cx.update(|_, cx| refs.read(cx).summary()),
+        Some("1 reference in 1 file".into())
+    );
+    let files: Vec<PathBuf> = shown(&refs, cx).into_iter().map(|(p, _)| p).collect();
+    assert_eq!(files, [PathBuf::from("src/main.rs")]);
+    assert_eq!(tab_title(&wb, cx).as_deref(), Some("References to main"));
+}

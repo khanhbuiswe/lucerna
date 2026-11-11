@@ -166,6 +166,19 @@ impl LanguageServers {
 }
 
 impl LanguageServers {
+    /// Whether [`LanguageServers::locations`] can ask anything about
+    /// `path`: its document is open here and a running server of it
+    /// supports `kind`.
+    pub fn can_request_locations(&self, path: &Path, kind: GotoKind) -> bool {
+        let path = absolute_path(&self.root, path);
+        self.docs.contains_key(path.as_path())
+            && self.running_for(&path).iter().any(|(_, server)| {
+                server
+                    .capabilities()
+                    .is_some_and(|caps| supports(&caps, kind))
+            })
+    }
+
     /// The range to show as a link to the definition of the symbol at
     /// `point` (⌘-hover): the `originSelectionRange` of the first
     /// server's answer that has one, else the word at `point` when some

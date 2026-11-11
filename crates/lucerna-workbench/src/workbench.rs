@@ -1,6 +1,5 @@
 //! The root view: shell layout, view slots and VS Code–style key dispatch.
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -109,7 +108,7 @@ pub struct Workbench {
     /// The References tab is the results tab used last: its list had the
     /// focus at the last key press, or it opened a line since the Search
     /// tab did. `F4` walks its references then (`referencesViewFocus`).
-    pub(crate) references_used_last: Cell<bool>,
+    references_used_last: bool,
     /// The Extensions page, the body of the Extensions tab when it is
     /// open. Kept while the tab is closed, so it reopens as it was.
     extensions_page: Entity<ExtensionsPage>,
@@ -293,7 +292,8 @@ impl Workbench {
         let references_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
             let servers = language_servers.clone();
-            cx.new(|cx| ReferencesView::new(root, workbench, servers, window, cx))
+            let docs = documents.clone();
+            cx.new(|cx| ReferencesView::new(root, workbench, servers, docs, window, cx))
         };
         let lsp_logs = LspLogs::default();
         let lsp_status = {
@@ -408,6 +408,7 @@ impl Workbench {
             cx.observe(&editor_groups, |wb, _, cx| {
                 wb.refresh_watched_open_files(cx);
                 wb.hide_hidden_hovers(cx);
+                wb.release_closed_references(cx);
             }),
             cx.observe_in(&editor_groups, window, Self::singleton_tab_hidden),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
@@ -502,7 +503,7 @@ impl Workbench {
             lsp_logs,
             search_view,
             references_view,
-            references_used_last: Cell::new(false),
+            references_used_last: false,
             extensions_page,
             editor_area: Some(editor_groups.clone().into()),
             editor_groups,
@@ -863,17 +864,43 @@ impl Workbench {
         &self.references_view
     }
 
+    /// Records which results tab was used last: `true` for References,
+    /// `false` for Search (see `references_used_last`).
+    pub(crate) fn set_references_used_last(&mut self, references: bool) {
+        self.references_used_last = references;
+    }
+
+    /// Before a key is resolved: a results list with the focus is the one
+    /// used last.
+    fn note_results_focus(&mut self, window: &Window, cx: &App) {
+        let focused = |handle: FocusHandle| handle.contains_focused(window, cx);
+        if focused(self.references_view.read(cx).focus_handle(cx)) {
+            self.references_used_last = true;
+        } else if focused(self.search_view.read(cx).focus_handle(cx)) {
+            self.references_used_last = false;
+        }
+    }
+
+    /// Drops the References tab's hold on its lookup's document once the
+    /// tab is closed.
+    fn release_closed_references(&mut self, cx: &mut Context<Self>) {
+        if self
+            .editor_groups
+            .read(cx)
+            .model()
+            .references_tab()
+            .is_none()
+        {
+            self.references_view
+                .update(cx, |view, _| view.release_origin());
+        }
+    }
+
     /// `referencesViewFocus`: the References tab is open and is the
     /// results tab used last (see `references_used_last`), so `F4` walks
     /// it even after a reference it opened took the focus.
-    fn references_view_focus(&self, window: &Window, cx: &App) -> bool {
-        let focused = |handle: FocusHandle| handle.contains_focused(window, cx);
-        if focused(self.references_view.read(cx).focus_handle(cx)) {
-            self.references_used_last.set(true);
-        } else if focused(self.search_view.read(cx).focus_handle(cx)) {
-            self.references_used_last.set(false);
-        }
-        self.references_used_last.get()
+    fn references_view_focus(&self, cx: &App) -> bool {
+        self.references_used_last
             && self
                 .editor_groups
                 .read(cx)
@@ -1146,10 +1173,7 @@ impl Workbench {
         flag("sideBarFocus", sidebar_focus);
         flag("explorerViewletFocus", sidebar_focus);
         flag("searchViewletFocus", self.search_focused(window, cx));
-        flag(
-            "referencesViewFocus",
-            self.references_view_focus(window, cx),
-        );
+        flag("referencesViewFocus", self.references_view_focus(cx));
         flag(
             "extensionsViewletFocus",
             self.extensions_focused(window, cx),
@@ -1356,6 +1380,7 @@ impl Workbench {
     /// swallows that character in every text input.
     fn dispatch_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let stroke = keys::to_keystroke(ev);
+        self.note_results_focus(window, cx);
         let ctx = self.context_keys(window, cx);
         let chord_pending = !self.pending_chord.is_empty();
         // Typing hides the hover, also when vim or a command takes the

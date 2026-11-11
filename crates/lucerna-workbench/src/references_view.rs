@@ -21,6 +21,7 @@ use lucerna_lsp::locations::ResolvedLocation;
 use lucerna_project::{Excerpt, LineMatch, MAX_LINE_CHARS};
 use lucerna_text::{Buffer, Point};
 
+use crate::code_view::CodeView;
 use crate::excerpt_list::model::{LineRef, Results};
 use crate::excerpt_list::{ExcerptList, ExcerptListEvent};
 use crate::goto::{GotoKind, message_word, no_result_text};
@@ -28,7 +29,7 @@ use crate::icons::{CHEVRONS_DOWN_UP, CHEVRONS_UP_DOWN, REFRESH_CW};
 use crate::layout::color;
 use crate::tasks::guarded;
 use crate::ui::{GRID, UI_FONT_SIZE_SMALL, bar_icon_button, search_bar_row, search_toolbar};
-use crate::{AppState, CommandRegistry, LanguageServers, OpenMode, Workbench};
+use crate::{AppState, CommandRegistry, Documents, LanguageServers, OpenMode, Workbench};
 
 /// The summary row's height.
 const SUMMARY_HEIGHT: f32 = 8. * GRID;
@@ -58,6 +59,11 @@ pub(crate) struct Built {
 pub struct ReferencesView {
     workbench: WeakEntity<Workbench>,
     servers: Entity<LanguageServers>,
+    documents: Entity<Documents>,
+    /// A passive view of the lookup's file while the tab is open: it keeps
+    /// the document open in the servers, so a refresh can still ask them
+    /// after the file's own tab closed (say a preview replaced it).
+    origin_view: Option<Entity<CodeView>>,
     root: PathBuf,
     focus: FocusHandle,
     list: Entity<ExcerptList>,
@@ -80,6 +86,7 @@ impl ReferencesView {
         root: PathBuf,
         workbench: WeakEntity<Workbench>,
         servers: Entity<LanguageServers>,
+        documents: Entity<Documents>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -95,6 +102,8 @@ impl ReferencesView {
         ReferencesView {
             workbench,
             servers,
+            documents,
+            origin_view: None,
             root,
             focus: cx.focus_handle(),
             list,
@@ -149,6 +158,10 @@ impl ReferencesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let origin = self
+            .documents
+            .update(cx, |docs, cx| docs.open_preview(path.clone(), cx));
+        self.origin_view = Some(origin);
         self.lookup = Some(Lookup { path, point, word });
         self.list.update(cx, |list, cx| list.clear(cx));
         self.columns.clear();
@@ -158,11 +171,20 @@ impl ReferencesView {
     }
 
     /// Runs the lookup again at the same place (the refresh button). The
-    /// shown references stay until the answer replaces them.
+    /// shown references stay until the answer replaces them, and stay as
+    /// they are when no server can be asked (none running for the file).
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(lookup) = self.lookup.clone() else {
             return;
         };
+        let can_ask = self
+            .servers
+            .read(cx)
+            .can_request_locations(&lookup.path, GotoKind::References);
+        if !can_ask && self.count.is_some() {
+            tracing::debug!(path = ?lookup.path, "references refresh skipped: no server to ask");
+            return;
+        }
         self.generation += 1;
         self.count = None;
         cx.notify();
@@ -197,6 +219,12 @@ impl ReferencesView {
         cx.notify();
     }
 
+    /// The tab closed: lets the lookup's document close with its views.
+    /// The results stay for when the tab opens again.
+    pub(crate) fn release_origin(&mut self) {
+        self.origin_view = None;
+    }
+
     /// Opens the file of line `r` as a preview: a reference line at its
     /// first reference, a context line at its start. Recorded in the
     /// navigation history.
@@ -220,7 +248,7 @@ impl ReferencesView {
             column,
         };
         workbench.update(cx, |wb, cx| {
-            wb.references_used_last.set(true);
+            wb.set_references_used_last(true);
             wb.jump_to(path, point, OpenMode::Preview, cx);
         });
     }
@@ -357,7 +385,8 @@ pub(crate) fn build(root: &Path, locations: &[ResolvedLocation]) -> Built {
         let mut count = 0;
         for loc in locs {
             let (start, end) = (loc.range.start, loc.range.end);
-            if start.row >= line_count {
+            // An inverted range (a server bug) is left out, uncounted.
+            if start.row >= line_count || (end.row, end.column) < (start.row, start.column) {
                 continue;
             }
             count += 1;
@@ -562,6 +591,7 @@ mod tests {
             range: Point { row, column: start }..Point { row, column: end },
             line_text: String::new(),
         };
+        let inverted = loc(5, 4, 1);
         let missing = ResolvedLocation {
             path: Arc::from(dir.path().join("gone.txt")),
             ..loc(0, 0, 1)
@@ -572,6 +602,7 @@ mod tests {
                 loc(1, 0, 4),
                 loc(1, 5, 6),
                 loc(2, 0, 4),
+                inverted,
                 loc(8, 5, 6),
                 missing,
             ],
