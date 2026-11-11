@@ -58,7 +58,9 @@ enum Entry {
 /// thread for [`DiagnosticStore::next`].
 #[derive(Default, Clone)]
 pub struct DiagnosticStore {
-    files: BTreeMap<PathBuf, HashMap<ServerKey, Entry>>,
+    /// Shared copy-on-write, so a clone (F8 across files searches a
+    /// snapshot off the UI thread) costs one reference count.
+    files: Arc<BTreeMap<PathBuf, HashMap<ServerKey, Entry>>>,
 }
 
 fn severity(raw: Option<DiagnosticSeverity>) -> Severity {
@@ -166,15 +168,16 @@ impl DiagnosticStore {
                 encoding,
             },
         };
+        let files = Arc::make_mut(&mut self.files);
         if entry.is_empty() {
-            if let Some(servers) = self.files.get_mut(&path) {
+            if let Some(servers) = files.get_mut(&path) {
                 servers.remove(key);
                 if servers.is_empty() {
-                    self.files.remove(&path);
+                    files.remove(&path);
                 }
             }
         } else {
-            self.files
+            files
                 .entry(path.clone())
                 .or_default()
                 .insert(key.clone(), entry);
@@ -184,7 +187,10 @@ impl DiagnosticStore {
 
     /// Converts the raw entries of a file that was just opened or reloaded.
     pub fn resolve_open(&mut self, path: &Path, snapshot: &BufferSnapshot) {
-        let Some(servers) = self.files.get_mut(path) else {
+        if !self.files.contains_key(path) {
+            return;
+        }
+        let Some(servers) = Arc::make_mut(&mut self.files).get_mut(path) else {
             return;
         };
         for entry in servers.values_mut() {
@@ -259,7 +265,7 @@ impl DiagnosticStore {
     /// Forgets everything a server published; the files that had entries.
     pub fn clear_server(&mut self, key: &ServerKey) -> Vec<PathBuf> {
         let mut cleared = Vec::new();
-        self.files.retain(|path, servers| {
+        Arc::make_mut(&mut self.files).retain(|path, servers| {
             if servers.remove(key).is_some() {
                 cleared.push(path.clone());
             }

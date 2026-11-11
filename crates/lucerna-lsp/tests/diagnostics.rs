@@ -532,3 +532,25 @@ fn same_start_diagnostics_have_a_fixed_order() {
     assert_eq!(step(pt(1, 0), true), "a");
     assert_eq!(step(pt(0, 2), false), "later");
 }
+
+#[test]
+fn clone_is_a_snapshot_unaffected_by_later_publishes() {
+    let path = PathBuf::from("/proj/a.rs");
+    let mut store = DiagnosticStore::default();
+    store.publish(
+        &key("ra"),
+        params(&path, None, vec![lsp_diag((0, 0), (0, 1), ERR, "e1")]),
+        Utf16,
+        None,
+    );
+    let snapshot = store.clone();
+    store.publish(
+        &key("ra"),
+        params(&path, None, vec![lsp_diag((0, 0), (0, 1), WARN, "w1")]),
+        Utf16,
+        None,
+    );
+    store.clear_server(&key("ra"));
+    assert_eq!(snapshot.summary(), (1, 0), "the clone kept its contents");
+    assert_eq!(store.summary(), (0, 0));
+}
