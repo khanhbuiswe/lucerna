@@ -137,6 +137,68 @@ fn shell_env_parses_marker_output() {
     assert_eq!(env.len(), 2);
 }
 
+#[cfg(unix)]
+fn fake_shell(dir: &Path, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let shell = dir.join("fakesh");
+    fs::write(&shell, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+    shell
+}
+
+#[cfg(unix)]
+#[test]
+fn login_shell_runs_in_its_own_session() {
+    let dir = tempfile::tempdir().unwrap();
+    // Prints the env only when it leads its own process group (setsid), so
+    // an interactive shell cannot grab the terminal's foreground group.
+    let shell = fake_shell(
+        dir.path(),
+        r#"[ "$(ps -o pgid= -p $$ | tr -d ' ')" = "$$" ] || exit 1
+printf '\0LUCERNA_ENV\0A=1\0'"#,
+    );
+    let env = shell_env_from(&shell).expect("shell is a session leader");
+    assert_eq!(env.get("A").map(String::as_str), Some("1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn login_shell_timeout_kills_its_children() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pid");
+    let shell = fake_shell(
+        dir.path(),
+        &format!("sleep 60 &\necho $! > '{}'\nsleep 60", pid_file.display()),
+    );
+    assert!(shell_env_from(&shell).is_none());
+    let pid = fs::read_to_string(&pid_file).unwrap();
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while alive() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        !alive(),
+        "background child of the timed-out shell was killed"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn process_launcher_probe_runs_in_the_project_root() {
+    use lucerna_lsp::{Launcher, ProcessLauncher};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let launcher = ProcessLauncher::new();
+    let script = format!("[ \"$(pwd -P)\" = '{}' ]", root.display());
+    assert!(launcher.probe(Path::new("/bin/sh"), &["-c", &script], &root));
+}
+
 #[test]
 fn builtin_adapter_table() {
     let all = builtin_adapters();
@@ -208,7 +270,7 @@ fn fake_launcher_resolves_only_registered_binaries() {
     let found = launcher.which("gopls").expect("registered");
     assert!(found.ends_with("gopls"));
     assert!(launcher.which("clangd").is_none());
-    assert!(launcher.probe(&found, &["version"]));
+    assert!(launcher.probe(&found, &["version"], Path::new("/")));
     assert!(launcher.launches().is_empty());
 }
 
@@ -217,7 +279,8 @@ fn fake_launcher_resolves_only_registered_binaries() {
 fn process_launcher_probe_reports_exit_status() {
     use lucerna_lsp::{Launcher, ProcessLauncher};
     let launcher = ProcessLauncher::new();
-    assert!(launcher.probe(Path::new("/usr/bin/true"), &[]));
-    assert!(!launcher.probe(Path::new("/usr/bin/false"), &[]));
-    assert!(!launcher.probe(Path::new("/nonexistent/x"), &[]));
+    let root = Path::new("/");
+    assert!(launcher.probe(Path::new("/usr/bin/true"), &[], root));
+    assert!(!launcher.probe(Path::new("/usr/bin/false"), &[], root));
+    assert!(!launcher.probe(Path::new("/nonexistent/x"), &[], root));
 }

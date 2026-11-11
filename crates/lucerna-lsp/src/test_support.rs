@@ -361,7 +361,7 @@ impl Launcher for FakeLauncher {
             .then(|| Path::new("/fake/bin").join(name))
     }
 
-    fn probe(&self, program: &Path, _args: &[&str]) -> bool {
+    fn probe(&self, program: &Path, _args: &[&str], _cwd: &Path) -> bool {
         self.lookup(program).is_some()
     }
 

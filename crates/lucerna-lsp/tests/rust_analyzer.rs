@@ -29,7 +29,7 @@ fn rust_analyzer_definition_and_hover() {
         eprintln!("skipped: rust-analyzer not found on PATH");
         return;
     };
-    if !launcher.probe(&program, &["--version"]) {
+    if !launcher.probe(&program, &["--version"], std::path::Path::new("/")) {
         eprintln!("skipped: `rust-analyzer --version` fails (component not installed?)");
         return;
     }

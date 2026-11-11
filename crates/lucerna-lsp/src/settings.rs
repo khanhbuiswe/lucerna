@@ -105,7 +105,7 @@ pub fn resolve_launch(
             .which(adapter.binary())
             .ok_or_else(|| not_found(adapter))?;
         let probe_args = adapter.probe_args();
-        if !probe_args.is_empty() && !launcher.probe(&program, probe_args) {
+        if !probe_args.is_empty() && !launcher.probe(&program, probe_args, root) {
             return Err(not_found(adapter));
         }
         program

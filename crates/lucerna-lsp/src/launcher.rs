@@ -20,9 +20,10 @@ pub trait Launcher: Send + Sync + 'static {
     fn env(&self) -> HashMap<String, String>;
     /// The executable `name` on this environment's `PATH`.
     fn which(&self, name: &str) -> Option<PathBuf>;
-    /// Runs `program args` with stdin closed; true when it exits with
-    /// success within 5 s. May block.
-    fn probe(&self, program: &Path, args: &[&str]) -> bool;
+    /// Runs `program args` in `cwd` (the project root, as the server would
+    /// run) with stdin closed; true when it exits with success within 5 s.
+    /// May block.
+    fn probe(&self, program: &Path, args: &[&str], cwd: &Path) -> bool;
     /// Starts the server.
     ///
     /// # Errors
@@ -52,10 +53,14 @@ impl Launcher for ProcessLauncher {
         which(name, env.get("PATH").map_or("", String::as_str))
     }
 
-    fn probe(&self, program: &Path, args: &[&str]) -> bool {
+    fn probe(&self, program: &Path, args: &[&str], cwd: &Path) -> bool {
+        // Same environment and directory as `spawn_process`, so a rustup
+        // toolchain file or a project-local shim answers as it will at launch.
         let Ok(mut child) = Command::new(program)
             .args(args)
+            .env_clear()
             .envs(self.env.get_or_init(login_shell_env))
+            .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

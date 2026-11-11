@@ -121,7 +121,7 @@ fn resolve_probe_failure_is_not_found() {
         fn which(&self, name: &str) -> Option<PathBuf> {
             self.0.which(name)
         }
-        fn probe(&self, _: &Path, _: &[&str]) -> bool {
+        fn probe(&self, _: &Path, _: &[&str], _: &Path) -> bool {
             false
         }
         fn launch(
