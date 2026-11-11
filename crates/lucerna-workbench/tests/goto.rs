@@ -651,3 +651,58 @@ fn alt_cmd_click_opens_aside(cx: &mut TestAppContext) {
     assert_eq!(active_file(&wb, cx), "b.rs");
     assert_eq!(cursor(&wb, cx), pt(1, 7));
 }
+
+#[gpui::test]
+fn cmd_drag_selects_without_jumping(cx: &mut TestAppContext) {
+    let (_dir, fake, wb, view, cx) = setup(TRUSTED, pt(0, 0), linking, cx);
+    let cmd = secondary(false, cx);
+    let (from, to) = (char_at(&view, pt(1, 8), cx), char_at(&view, pt(1, 12), cx));
+    let left = gpui::MouseButton::Left;
+    cx.simulate_mouse_down(from, left, cmd);
+    cx.simulate_mouse_move(to, left, cmd);
+    cx.simulate_mouse_up(to, left, cmd);
+    settle(cx);
+    let selection = view.read_with(cx, |v, _| v.selection());
+    assert!(
+        selection.as_ref().is_some_and(|s| s.start == pt(1, 8)),
+        "{selection:?}"
+    );
+    assert_eq!(count(&fake, DEFINITION), 0, "no lookup for a drag");
+    assert_eq!(active_file(&wb, cx), "main.rs");
+}
+
+#[gpui::test]
+fn cmd_click_with_nothing_cached_and_no_result_is_silent(cx: &mut TestAppContext) {
+    let (_dir, fake, wb, view, cx) = setup(
+        TRUSTED,
+        pt(0, 0),
+        |_| FakeServer::new().on_request(DEFINITION, |_| Ok(Value::Null)),
+        cx,
+    );
+    // No ⌘-hover first: the click itself asks.
+    click(&view, pt(1, 8), secondary(false, cx), cx);
+    assert_eq!(count(&fake, DEFINITION), 1);
+    assert_eq!(active_file(&wb, cx), "main.rs");
+    assert_eq!(cursor(&wb, cx), pt(1, 8));
+    assert_eq!(message(&view, cx), None, "no 'No definition found'");
+    assert!(cx.debug_bounds("goto-message").is_none());
+}
+
+#[gpui::test]
+fn new_text_clears_the_link(cx: &mut TestAppContext) {
+    let (_dir, fake, _wb, view, cx) = setup(TRUSTED, pt(0, 0), linking, cx);
+    let cmd = secondary(false, cx);
+    move_over(&view, pt(1, 8), cmd, cx);
+    assert!(link_range(&view, cx).is_some());
+    let text = format!("{MAIN}// more\n");
+    let snapshot = lucerna_text::Buffer::from_bytes(text.as_bytes(), false)
+        .unwrap()
+        .snapshot();
+    view.update(cx, |v, cx| v.set_buffer(snapshot, cx));
+    settle(cx);
+    assert_eq!(link_range(&view, cx), None);
+    // The cached answer was about the old text: asked again.
+    move_over(&view, pt(1, 9), cmd, cx);
+    assert_eq!(count(&fake, DEFINITION), 2);
+    assert!(link_range(&view, cx).is_some());
+}

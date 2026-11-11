@@ -999,30 +999,35 @@ impl CodeView {
         shaped
     }
 
-    /// A click: moves the cursor or selects. A ⌘-click on a char
-    /// returns the go to definition to run once the view is updated.
+    /// A click: moves the cursor or selects. A ⌘-click on a char also
+    /// remembers the go to definition to run at mouse-up.
     fn mouse_down(
         &mut self,
         ev: &MouseDownEvent,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
-    ) -> Option<link::LinkClick> {
+    ) {
         window.focus(&self.focus, cx);
         self.hover.hide(cx);
         self.set_goto_message(None, cx);
-        let frame = self.frame.clone()?;
+        self.link_mouse_down(None);
+        let Some(frame) = self.frame.clone() else {
+            return;
+        };
         if ev.position.x < frame.text_bounds.left() {
-            let row = frame.row_at(ev.position.y)?;
+            let Some(row) = frame.row_at(ev.position.y) else {
+                return;
+            };
             let on_chevron = frame.chevrons.iter().any(|(_, r, ..)| *r == row.buffer_row)
                 && ev.position.x >= frame.text_bounds.left() - frame.char_width * 2.;
             if on_chevron {
                 self.toggle_fold(row.buffer_row, cx);
-                return None;
+                return;
             }
             let line = selection::line_at(&self.snapshot, row.buffer_row);
             self.select(line, cx);
             self.drag = Some(Drag::Text);
-            return None;
+            return;
         }
         let secondary = ev.modifiers.secondary(cx) && !ev.modifiers.shift;
         if secondary
@@ -1030,13 +1035,15 @@ impl CodeView {
             && let Some(p) = frame.char_at(ev.position)
         {
             // The cursor goes to the click first, so the answer is for
-            // where the cursor is.
+            // where the cursor is; a drag from here still selects.
             self.set_selection(Selection::cursor(p), cx);
-            let click = self.link_click(p, ev.modifiers.alt, cx);
-            self.drag = click.is_none().then_some(Drag::Text);
-            return click;
+            self.link_mouse_down(Some((p, ev.modifiers.alt)));
+            self.drag = Some(Drag::Text);
+            return;
         }
-        let p = frame.point_at(ev.position)?;
+        let Some(p) = frame.point_at(ev.position) else {
+            return;
+        };
         let selection = match ev.click_count {
             0 | 1 => match self.selection {
                 Some(s) if ev.modifiers.shift => Selection { head: p, ..s },
@@ -1059,7 +1066,6 @@ impl CodeView {
         };
         self.set_selection(selection, cx);
         self.drag = Some(Drag::Text);
-        None
     }
 
     fn mouse_drag(&mut self, position: gpui::Point<Pixels>, cx: &mut gpui::Context<Self>) {
@@ -1149,10 +1155,7 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
                 && ev.button == MouseButton::Left
                 && hitbox.is_hovered(window)
             {
-                let click = view.update(cx, |v, cx| v.mouse_down(ev, window, cx));
-                if let Some(click) = click {
-                    click.run(&view, window, cx);
-                }
+                view.update(cx, |v, cx| v.mouse_down(ev, window, cx));
                 cx.stop_propagation();
             }
         }
@@ -1221,9 +1224,15 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
     });
     window.on_mouse_event({
         let view = view.clone();
-        move |ev: &MouseUpEvent, phase, _, cx| {
+        move |ev: &MouseUpEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left {
-                view.update(cx, |v, _| v.drag = None);
+                let click = view.update(cx, |v, cx| {
+                    v.drag = None;
+                    v.link_mouse_up(cx)
+                });
+                if let Some(click) = click {
+                    click.run(&view, window, cx);
+                }
             }
         }
     });

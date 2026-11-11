@@ -9,10 +9,11 @@
 //! modifier or leaving the range hides the link. While the modifier is
 //! held the hover does not show, as in Zed.
 //!
-//! ⌘-click puts the cursor at the click, as a plain click does, then goes
-//! to the definition from there (⌥⌘-click: in the group to the right);
-//! an empty answer is silent. A click where the last answer found nothing
-//! is a plain click.
+//! ⌘-click puts the cursor at the click, as a plain click does; on
+//! release, when the mouse did not select anything (as VS Code and Zed
+//! do), it goes to the definition from there (⌥⌘-click: in the group to
+//! the right); an empty answer is silent. ⌘-drag selects as a plain drag
+//! does. A click where the last answer found nothing is a plain click.
 
 use std::ops::Range;
 use std::path::Path;
@@ -41,7 +42,8 @@ struct Pending {
     _task: Task<()>,
 }
 
-/// A ⌘-click to act on once the code view is no longer being updated.
+/// A ⌘-click to act on at mouse-up, once the code view is no longer
+/// being updated.
 pub(crate) struct LinkClick {
     point: Point,
     aside: bool,
@@ -88,6 +90,8 @@ pub(crate) struct Link {
     pending: Option<Pending>,
     /// The range shown as a link.
     shown: Option<Range<Point>>,
+    /// A ⌘-click whose button is still down.
+    click: Option<LinkClick>,
 }
 
 impl Link {
@@ -159,25 +163,31 @@ impl CodeView {
         self.set_link_shown(None, cx);
     }
 
-    /// A click with the secondary modifier on the char `p`: moves the
-    /// cursor there and returns the lookup to run, unless the last answer
-    /// says `p` links nowhere.
-    pub(crate) fn link_click(
-        &mut self,
-        p: Point,
-        aside: bool,
-        cx: &mut Context<Self>,
-    ) -> Option<LinkClick> {
-        if self.link.known_unlinked(p) {
+    /// The button went down with the secondary modifier on the char `p`,
+    /// where the cursor now is: remembers the lookup for mouse-up, unless
+    /// the last answer says `p` links nowhere. `None` forgets any.
+    pub(crate) fn link_mouse_down(&mut self, click: Option<(Point, bool)>) {
+        self.link.click = click.and_then(|(p, aside)| {
+            if self.link.known_unlinked(p) {
+                return None;
+            }
+            Some(LinkClick {
+                point: p,
+                aside,
+                workbench: self.link.workbench.clone()?,
+            })
+        });
+    }
+
+    /// The button went up: the ⌘-click to run, when the mouse selected
+    /// nothing since it went down.
+    pub(crate) fn link_mouse_up(&mut self, cx: &mut Context<Self>) -> Option<LinkClick> {
+        let click = self.link.click.take()?;
+        if self.selection().is_some() || self.selection_head() != click.point {
             return None;
         }
-        let workbench = self.link.workbench.clone()?;
         self.set_link_shown(None, cx);
-        Some(LinkClick {
-            point: p,
-            aside,
-            workbench,
-        })
+        Some(click)
     }
 
     fn update_link(&mut self, cx: &mut Context<Self>) {
