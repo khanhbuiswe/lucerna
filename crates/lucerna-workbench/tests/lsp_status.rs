@@ -529,5 +529,10 @@ fn footer_opens_health(cx: &mut TestAppContext) {
     click("lsp-button", cx);
     click("lsp-show-all-languages", cx);
     assert!(!shown("lsp-popover", cx));
-    assert_eq!(cx.update(|_, cx| wb.read(cx).lsp_health_requests()), 1);
+    let active = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups.model().active_tab().map(|t| t.item.clone())
+    });
+    assert_eq!(active, Some(TabItem::LspHealth));
+    assert!(shown("lsp-health", cx));
 }

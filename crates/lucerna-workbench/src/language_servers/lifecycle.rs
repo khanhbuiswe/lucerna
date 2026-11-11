@@ -477,6 +477,9 @@ impl LanguageServers {
         let old_errors = self.registry.table().errors.clone();
         let diff = self.rebuild_table(cx);
         let table_changed = diff.is_some();
+        if table_changed {
+            cx.emit(LanguageServersEvent::TableChanged);
+        }
         let mut status_changed = old_errors != self.registry.table().errors;
         if !self.trusted {
             // No slot exists while untrusted.

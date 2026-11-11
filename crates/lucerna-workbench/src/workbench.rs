@@ -34,6 +34,7 @@ use crate::layout::{
     panel_toggles, sidebar, status_bar, title_bar,
 };
 use crate::locations_picker::ShownLocationsPicker;
+use crate::lsp_health::LspHealthView;
 use crate::lsp_log::LspLogs;
 use crate::lsp_status::{self, LspStatusItem};
 use crate::nav_history::{NavEntry, NavHistory};
@@ -126,8 +127,9 @@ pub struct Workbench {
     pub(crate) breadcrumbs: Breadcrumbs,
     /// The ⚡ status bar item.
     pub(crate) lsp_status: Entity<LspStatusItem>,
-    /// Times `lucerna.lsp.health` ran; the Health tab (Task 7) replaces it.
-    pub(crate) lsp_health_requests: usize,
+    /// The body of the Health tab, kept (with its last check) while the
+    /// tab is closed.
+    pub(crate) lsp_health: Entity<LspHealthView>,
     /// The diagnostics counts and message in the status bar.
     pub(crate) diagnostics_status: Entity<DiagnosticsStatusItem>,
     /// The F8 lookup in flight.
@@ -317,6 +319,13 @@ impl Workbench {
             cx.new(|cx| ReferencesView::new(root, workbench, servers, docs, window, cx))
         };
         let lsp_logs = LspLogs::default();
+        let lsp_health = {
+            // Probes run in the folder, as servers start there; a loose
+            // file's folder is not a project.
+            let probe_dir = single_file.is_none().then(|| root.clone());
+            let servers = language_servers.clone();
+            cx.new(|cx| LspHealthView::new(servers, probe_dir, cx))
+        };
         let lsp_status = {
             let (workbench, servers) = (cx.weak_entity(), language_servers.clone());
             cx.new(|cx| LspStatusItem::new(workbench, servers, cx))
@@ -329,6 +338,7 @@ impl Workbench {
             let page = extensions_page.clone();
             let search = search_view.clone();
             let references = references_view.clone();
+            let health = lsp_health.clone();
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
             groups.set_tab_body_factory(
                 Rc::new(move |tab, _, cx| {
@@ -341,6 +351,10 @@ impl Workbench {
                         TabItem::Search => return search.clone().into(),
                         TabItem::References => return references.clone().into(),
                         TabItem::LspLog(server) => return logs.view(server, &servers, cx).into(),
+                        TabItem::LspHealth => {
+                            health.update(cx, |health, cx| health.shown(cx));
+                            return health.clone().into();
+                        }
                     };
                     let view = docs.update(cx, |docs, cx| docs.open(path, cx));
                     view.update(cx, |v, _| {
@@ -538,7 +552,7 @@ impl Workbench {
             symbols,
             breadcrumbs: Breadcrumbs::default(),
             lsp_status: lsp_status.clone(),
-            lsp_health_requests: 0,
+            lsp_health: lsp_health.clone(),
             diagnostics_status: diagnostics_status.clone(),
             marker_task: None,
             marker_hover: None,
@@ -998,23 +1012,25 @@ impl Workbench {
     /// focused tab body is no longer shown, because its tab closed or
     /// stopped being its group's active tab (a jump in the same group, a
     /// search result opened in its place), focus goes to the editor area,
-    /// so keys keep working. Covers code views, the Extensions, Search and
-    /// References tabs and server logs.
+    /// so keys keep working. Covers code views, the Extensions, Search,
+    /// References and Health tabs and server logs.
     pub(crate) fn refocus_if_hidden(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let groups = self.editor_groups.read(cx);
         let model = groups.model();
         let hidden = |tab: Option<TabId>| {
             tab.is_none_or(|id| !model.groups().iter().any(|g| g.active == Some(id)))
         };
-        let (extensions_hidden, search_hidden, references_hidden) = (
+        let (extensions_hidden, search_hidden, references_hidden, health_hidden) = (
             hidden(model.extensions_tab()),
             hidden(model.search_tab()),
             hidden(model.references_tab()),
+            hidden(model.lsp_health_tab()),
         );
         let had_focus = |handle: FocusHandle| handle.contains_focused(window, cx);
         let lost = (extensions_hidden && had_focus(self.extensions_page.read(cx).focus_handle(cx)))
             || (search_hidden && had_focus(self.search_view.read(cx).focus_handle(cx)))
             || (references_hidden && had_focus(self.references_view.read(cx).focus_handle(cx)))
+            || (health_hidden && had_focus(self.lsp_health.read(cx).focus_handle(cx)))
             || self.lsp_logs.hidden_with_focus(model, window, cx)
             || groups.hidden_bodies().any(|body| {
                 body.clone()

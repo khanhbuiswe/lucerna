@@ -1,5 +1,5 @@
 //! The pure editor-groups model: which files (and the Extensions page, the
-//! Search and References tabs and language server logs) are open in which group, which tab is a preview, and the most-recently-used
+//! Search, References and Health tabs and language server logs) are open in which group, which tab is a preview, and the most-recently-used
 //! order per group.
 
 use std::path::{Path, PathBuf};
@@ -37,16 +37,17 @@ pub enum TabItem {
     /// The References tab (spec §7.5). At most one in all groups; never a
     /// preview, never saved.
     References,
+    /// The language server Health tab (`lucerna.lsp.health`). At most one
+    /// in all groups; never a preview, never saved.
+    LspHealth,
 }
 
 impl TabItem {
-    /// The Extensions page, the Search or References tab or a server log:
-    /// at most one in all groups, never a preview and never split.
+    /// The Extensions page, the Search, References or Health tab or a
+    /// server log: at most one in all groups, never a preview and never
+    /// split.
     pub fn is_singleton(&self) -> bool {
-        matches!(
-            self,
-            TabItem::Extensions | TabItem::Search | TabItem::LspLog(_) | TabItem::References
-        )
+        !matches!(self, TabItem::File(_))
     }
 }
 
@@ -68,6 +69,9 @@ pub const SEARCH_TAB_TITLE: &str = "Search";
 /// The title of the References tab before a lookup names its word.
 pub const REFERENCES_TAB_TITLE: &str = "References";
 
+/// The title of the language server Health tab.
+pub const LSP_HEALTH_TAB_TITLE: &str = "Language Servers";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tab {
     pub id: TabId,
@@ -77,19 +81,17 @@ pub struct Tab {
 }
 
 impl Tab {
-    /// The file the tab shows; `None` for the Extensions page, the Search
-    /// and References tabs and server logs.
+    /// The file the tab shows; `None` for the Extensions page, the Search,
+    /// References and Health tabs and server logs.
     pub fn path(&self) -> Option<&Arc<Path>> {
         match &self.item {
             TabItem::File(path) => Some(path),
-            TabItem::Extensions | TabItem::Search | TabItem::LspLog(_) | TabItem::References => {
-                None
-            }
+            _ => None,
         }
     }
 
     /// The tab bar's label: the file name, "Extensions", "Search",
-    /// "<server> Log" or "References".
+    /// "<server> Log", "References" or "Language Servers".
     pub fn title(&self) -> String {
         match &self.item {
             TabItem::File(path) => path
@@ -101,6 +103,7 @@ impl Tab {
             TabItem::Search => SEARCH_TAB_TITLE.to_string(),
             TabItem::LspLog(server) => format!("{server} Log"),
             TabItem::References => REFERENCES_TAB_TITLE.to_string(),
+            TabItem::LspHealth => LSP_HEALTH_TAB_TITLE.to_string(),
         }
     }
 }
@@ -257,6 +260,17 @@ impl EditorGroups {
     /// The References tab, if open in any group.
     pub fn references_tab(&self) -> Option<TabId> {
         self.find_item(&TabItem::References)
+    }
+
+    /// Activates the Health tab wherever it is, or opens it (pinned) at
+    /// the end of the active group. Returns its tab.
+    pub fn open_lsp_health(&mut self) -> TabId {
+        self.open_singleton(TabItem::LspHealth)
+    }
+
+    /// The Health tab, if open in any group.
+    pub fn lsp_health_tab(&self) -> Option<TabId> {
+        self.find_item(&TabItem::LspHealth)
     }
 
     fn open_singleton(&mut self, item: TabItem) -> TabId {
@@ -532,13 +546,13 @@ fn saved_item(path: &Path) -> TabItem {
 }
 
 /// How a tab is saved: its path, [`EXTENSIONS_TAB_STATE`] or
-/// [`SEARCH_TAB_STATE`]; `None` for a server log or the References tab,
-/// which are not saved.
+/// [`SEARCH_TAB_STATE`]; `None` for a server log, the References tab or
+/// the Health tab, which are not saved.
 fn saved_path(item: &TabItem) -> Option<PathBuf> {
     match item {
         TabItem::File(path) => Some(path.to_path_buf()),
         TabItem::Extensions => Some(PathBuf::from(EXTENSIONS_TAB_STATE)),
         TabItem::Search => Some(PathBuf::from(SEARCH_TAB_STATE)),
-        TabItem::LspLog(_) | TabItem::References => None,
+        TabItem::LspLog(_) | TabItem::References | TabItem::LspHealth => None,
     }
 }

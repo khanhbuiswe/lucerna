@@ -22,6 +22,7 @@ pub mod keys;
 mod language_servers;
 mod layout;
 mod locations_picker;
+mod lsp_health;
 mod lsp_log;
 mod lsp_status;
 pub mod markdown;
@@ -68,6 +69,7 @@ pub use layout::title_bar::window_options;
 pub use locations_picker::{
     EXCERPT_CHARS as LOCATION_EXCERPT_CHARS, LocationsPicker, LocationsPickerEvent,
 };
+pub use lsp_health::LspHealthView;
 pub use lsp_log::LspLogView;
 pub use lsp_status::{LspStatusItem, ServerRow, StatusDot};
 pub use nav_history::{NavEntry, NavHistory};

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use lucerna_lsp::ServerTable;
-use lucerna_lsp::health::{HealthRow, HealthStatus, current_os, format_table, health};
+use lucerna_lsp::health::{HealthRow, HealthStatus, current_os, format_table, health, health_in};
 use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
 use serde_json::json;
 
@@ -185,4 +185,49 @@ fn current_os_is_known() {
     assert!(["macos", "linux", "windows"].contains(&current_os()));
     #[cfg(target_os = "macos")]
     assert_eq!(current_os(), "macos");
+}
+
+/// Records the folder each probe runs in; every binary is found.
+#[derive(Default)]
+struct ProbeDirs(std::sync::Mutex<Vec<PathBuf>>);
+
+impl lucerna_lsp::Launcher for ProbeDirs {
+    fn env(&self) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
+    fn which(&self, name: &str) -> Option<PathBuf> {
+        Some(PathBuf::from("/fake/bin").join(name))
+    }
+    fn probe(&self, _: &std::path::Path, _: &[&str], cwd: &std::path::Path) -> bool {
+        self.0.lock().unwrap().push(cwd.to_path_buf());
+        true
+    }
+    fn output(&self, _: &str, _: &[&str]) -> Option<String> {
+        None
+    }
+    fn launch(
+        &self,
+        _: &lucerna_lsp::transport::LaunchSpec,
+        _: std::sync::Arc<dyn lucerna_lsp::transport::Inbox>,
+    ) -> std::io::Result<std::sync::Arc<dyn lucerna_lsp::transport::Transport>> {
+        Err(std::io::ErrorKind::NotFound.into())
+    }
+}
+
+#[test]
+fn probes_run_in_the_given_folder() {
+    let setting = json!({
+        "probed": { "command": "probed-ls", "languages": ["probed"], "probe": ["--version"] }
+    });
+    let table = ServerTable::build(Some(&setting));
+    let dir = tempfile::tempdir().unwrap();
+    let launcher = ProbeDirs::default();
+    let rows = health_in(&table, &launcher, "macos", dir.path());
+    assert!(matches!(
+        row(&rows, "probed", "probed").status,
+        HealthStatus::Found(_)
+    ));
+    let dirs = launcher.0.lock().unwrap().clone();
+    assert!(!dirs.is_empty());
+    assert!(dirs.iter().all(|d| d == dir.path()), "{dirs:?}");
 }

@@ -87,6 +87,9 @@ pub enum LanguageServersEvent {
     DocumentChanged(Arc<Path>),
     /// A line was added to the log of this server.
     LogChanged(Arc<str>),
+    /// [`LanguageServers::table`] was built again from changed settings
+    /// or a trust change.
+    TableChanged,
 }
 
 /// The settings a file's servers are picked by: its language's, or for a
@@ -232,6 +235,11 @@ impl LanguageServers {
         self.launcher = launcher;
     }
 
+    /// How servers are found and started.
+    pub fn launcher(&self) -> Arc<dyn Launcher> {
+        self.launcher.clone()
+    }
+
     /// Untrusted stops every server; trusted sends every open document
     /// to its servers, starting them.
     pub fn set_trusted(&mut self, trusted: bool, cx: &mut Context<Self>) {
@@ -239,9 +247,10 @@ impl LanguageServers {
             return;
         }
         self.trusted = trusted;
+        let table_changed;
         if trusted {
             // No slot exists while untrusted: nothing to restart.
-            self.rebuild_table(cx);
+            table_changed = self.rebuild_table(cx).is_some();
             let paths: Vec<Arc<Path>> = self.docs.keys().cloned().collect();
             for path in paths {
                 self.find_servers(&path, cx);
@@ -258,7 +267,10 @@ impl LanguageServers {
                 doc.search += 1;
                 doc._search_task = None;
             }
-            self.rebuild_table(cx);
+            table_changed = self.rebuild_table(cx).is_some();
+        }
+        if table_changed {
+            cx.emit(LanguageServersEvent::TableChanged);
         }
         cx.emit(LanguageServersEvent::StatusChanged);
         cx.notify();

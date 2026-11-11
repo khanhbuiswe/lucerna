@@ -627,19 +627,6 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 }
 
 impl Workbench {
-    /// Shows every language server of the table and whether it is
-    /// installed. For now it only counts the request: the Health tab
-    /// (`TabItem::LspHealth`) comes with Task 7 of the server-table plan.
-    pub fn show_lsp_health(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.lsp_health_requests += 1;
-        cx.notify();
-    }
-
-    /// How many times [`Workbench::show_lsp_health`] ran.
-    pub fn lsp_health_requests(&self) -> usize {
-        self.lsp_health_requests
-    }
-
     /// The ⚡ status bar item.
     pub fn lsp_status(&self) -> &Entity<LspStatusItem> {
         &self.lsp_status

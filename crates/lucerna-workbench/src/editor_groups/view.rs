@@ -455,6 +455,7 @@ impl Render for EditorGroupsView {
                     TabItem::Search => Some(SEARCH_ICON),
                     TabItem::LspLog(_) => Some(icons::ZAP),
                     TabItem::References => Some(icons::FILE_CODE),
+                    TabItem::LspHealth => Some(icons::ZAP),
                     TabItem::File(_) => None,
                 };
                 let icon = icon.map(|icon| {

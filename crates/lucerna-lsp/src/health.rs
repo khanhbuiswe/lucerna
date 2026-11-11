@@ -41,13 +41,26 @@ pub fn current_os() -> &'static str {
 /// Checks every server of `table`: one row per (language, server), where
 /// the languages are the server's `languages`, else its first file type.
 /// Rows are sorted by language, enabled servers first, then by name.
+/// Probes run in `$HOME`, as there is no project; see [`health_in`].
 /// Blocks (`which`, the probe, the login-shell environment): call it off
 /// the UI thread.
 pub fn health(table: &ServerTable, launcher: &dyn Launcher, os: &str) -> Vec<HealthRow> {
-    let probe_dir = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    health_in(table, launcher, os, &home)
+}
+
+/// [`health`] with the probes run in `probe_dir`: an open folder's root,
+/// so a project toolchain (a `rust-toolchain.toml` shim) answers as it
+/// will when the server starts there. Blocks.
+pub fn health_in(
+    table: &ServerTable,
+    launcher: &dyn Launcher,
+    os: &str,
+    probe_dir: &Path,
+) -> Vec<HealthRow> {
     let mut rows = Vec::new();
     for def in table.servers.values() {
-        let status = status(def, launcher, &probe_dir);
+        let status = status(def, launcher, probe_dir);
         let languages: Vec<&String> = if def.languages.is_empty() {
             def.file_types.iter().take(1).collect()
         } else {
@@ -74,8 +87,7 @@ pub fn health(table: &ServerTable, launcher: &dyn Launcher, os: &str) -> Vec<Hea
 }
 
 /// As `resolve_launch` finds the binary: `binary.path` (when it exists),
-/// else `command` on `PATH` passing its probe. The probe runs in
-/// `probe_dir`, as there is no project.
+/// else `command` on `PATH` passing its probe, run in `probe_dir`.
 fn status(def: &ServerDef, launcher: &dyn Launcher, probe_dir: &Path) -> HealthStatus {
     if !def.enabled {
         return HealthStatus::Disabled;
