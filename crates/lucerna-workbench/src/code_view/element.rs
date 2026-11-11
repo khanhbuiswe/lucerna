@@ -10,7 +10,7 @@ use gpui::{
     App, Bounds, CursorStyle, DispatchPhase, Element, ElementId, Font, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
     MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent, ShapedLine, SharedString,
-    Style, TextRun, Window, font, point, px, relative, size, underline_y_offset,
+    Style, TextRun, UnderlineStyle, Window, font, point, px, relative, size, underline_y_offset,
 };
 use lucerna_lsp::diagnostics::Severity;
 use lucerna_text::Point;
@@ -20,7 +20,7 @@ use super::cache::ShapeKey;
 use super::diagnostics::MarkStyle;
 use super::layout::{FoldState, char_columns, display_lines_with_tab_size, row_range, row_start};
 use super::selection::{self, Selection};
-use super::{CodeView, Drag, hsla};
+use super::{CodeView, Drag, hsla, link};
 use crate::AppState;
 use crate::hover::PopoverAnchor;
 use crate::ui::{SCROLLBAR_WIDTH, thumb_geometry};
@@ -431,7 +431,13 @@ impl Element for CodeElement {
     ) {
         paint::paint_frame(frame, window, cx);
         if let Some(hitbox) = &frame.hitbox {
-            window.set_cursor_style(CursorStyle::IBeam, hitbox);
+            // The link shows only while the mouse is over it.
+            let style = if self.view.read(cx).link_range().is_some() {
+                CursorStyle::PointingHand
+            } else {
+                CursorStyle::IBeam
+            };
+            window.set_cursor_style(style, hitbox);
         }
         register_mouse(&self.view, frame, window);
     }
@@ -546,10 +552,12 @@ impl CodeView {
             tab_size: self.config.tab_size,
             theme: cx.global::<AppState>().theme_generation,
         };
+        let link = self.link_range();
         let mut frame_rows = Vec::new();
         let mut max_width = px(0.);
         for &(row, top) in &rows {
-            let shaped = self.shaped_row(key, row, &theme, window);
+            let link = link.as_ref().and_then(|r| link::row_columns(r, row));
+            let shaped = self.shaped_row(key, row, link, &theme, window);
             if top >= bounds.bottom() {
                 continue;
             }
@@ -879,15 +887,17 @@ impl CodeView {
             .collect()
     }
 
-    /// The shaped pieces of `row`, from the cache or shaped now.
+    /// The shaped pieces of `row`, from the cache or shaped now; the
+    /// buffer columns `link` are drawn as a link.
     fn shaped_row(
         &mut self,
         key: ShapeKey,
         row: u32,
+        link: Option<std::ops::Range<u32>>,
         theme: &Theme,
         window: &mut Window,
     ) -> Arc<ShapedRow> {
-        if let Some(shaped) = self.caches.shaped(key, row) {
+        if let Some(shaped) = self.caches.shaped(key, row, &link) {
             return shaped;
         }
         let lines = display_lines_with_tab_size(
@@ -901,6 +911,7 @@ impl CodeView {
         let spans = self.caches.spans(row).unwrap_or(&[]);
         let base = self.base_font();
         let default_color = hsla(theme.ui.editor_foreground);
+        let link_color = hsla(theme.ui.link_text_hover);
         let piece_count = lines.len();
         let mut buf_start = 0u32;
         let mut pieces = Vec::with_capacity(piece_count);
@@ -914,8 +925,9 @@ impl CodeView {
             let abs = line_start + buf_start as usize;
             let styles = span_styles(spans, abs..abs + buf_text.len());
             let mut text = String::with_capacity(line.text.len());
-            let mut keys: Vec<(usize, Option<usize>)> = Vec::new();
-            let mut push = |text: &mut String, s: &str, style: Option<usize>| {
+            // Runs: (length, (highlight span, whether in the link)).
+            let mut keys: Vec<(usize, (Option<usize>, bool))> = Vec::new();
+            let mut push = |text: &mut String, s: &str, style: (Option<usize>, bool)| {
                 match keys.last_mut() {
                     Some((len, last)) if *last == style => *len += s.len(),
                     _ => keys.push((s.len(), style)),
@@ -930,7 +942,10 @@ impl CodeView {
             // Display columns from the piece start, as wrapping counts them.
             let mut column = 0u32;
             for (b, c) in buf_text.char_indices() {
-                let style = styles[b];
+                let linked = link
+                    .as_ref()
+                    .is_some_and(|l| l.contains(&(buf_start + b as u32)));
+                let style = (styles[b], linked);
                 if c == '\t' {
                     let width = char_columns(c, column, key.tab_size);
                     map.tabs.push((b as u32, text.len() as u32, width));
@@ -943,11 +958,11 @@ impl CodeView {
                 }
             }
             if cut {
-                push(&mut text, "…", None);
+                push(&mut text, "…", (None, false));
             }
             let runs: Vec<TextRun> = keys
                 .into_iter()
-                .map(|(len, style)| {
+                .map(|(len, (style, linked))| {
                     let style = style.and_then(|s| theme.style_for(&spans[s].1));
                     let mut font = base.clone();
                     if style.is_some_and(|s| s.bold) {
@@ -956,12 +971,18 @@ impl CodeView {
                     if style.is_some_and(|s| s.italic) {
                         font = font.italic();
                     }
+                    let color = style.and_then(|s| s.color).map_or(default_color, hsla);
                     TextRun {
                         len,
                         font,
-                        color: style.and_then(|s| s.color).map_or(default_color, hsla),
+                        color: if linked { link_color } else { color },
                         background_color: None,
-                        underline: None,
+                        // A straight 1 px line, as Zed draws links.
+                        underline: linked.then_some(UnderlineStyle {
+                            thickness: px(1.),
+                            color: Some(link_color),
+                            wavy: false,
+                        }),
                         strikethrough: None,
                     }
                 })
@@ -974,40 +995,48 @@ impl CodeView {
             pieces.push(Piece { line: shaped, map });
         }
         let shaped = Arc::new(ShapedRow { pieces });
-        self.caches.insert_shaped(row, shaped.clone());
+        self.caches.insert_shaped(row, link, shaped.clone());
         shaped
     }
 
+    /// A click: moves the cursor or selects. A ⌘-click on a char
+    /// returns the go to definition to run once the view is updated.
     fn mouse_down(
         &mut self,
         ev: &MouseDownEvent,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
-    ) {
+    ) -> Option<link::LinkClick> {
         window.focus(&self.focus, cx);
         self.hover.hide(cx);
         self.set_goto_message(None, cx);
-        let Some(frame) = self.frame.clone() else {
-            return;
-        };
+        let frame = self.frame.clone()?;
         if ev.position.x < frame.text_bounds.left() {
-            let Some(row) = frame.row_at(ev.position.y) else {
-                return;
-            };
+            let row = frame.row_at(ev.position.y)?;
             let on_chevron = frame.chevrons.iter().any(|(_, r, ..)| *r == row.buffer_row)
                 && ev.position.x >= frame.text_bounds.left() - frame.char_width * 2.;
             if on_chevron {
                 self.toggle_fold(row.buffer_row, cx);
-                return;
+                return None;
             }
             let line = selection::line_at(&self.snapshot, row.buffer_row);
             self.select(line, cx);
             self.drag = Some(Drag::Text);
-            return;
+            return None;
         }
-        let Some(p) = frame.point_at(ev.position) else {
-            return;
-        };
+        let secondary = ev.modifiers.secondary(cx) && !ev.modifiers.shift;
+        if secondary
+            && ev.click_count == 1
+            && let Some(p) = frame.char_at(ev.position)
+        {
+            // The cursor goes to the click first, so the answer is for
+            // where the cursor is.
+            self.set_selection(Selection::cursor(p), cx);
+            let click = self.link_click(p, ev.modifiers.alt, cx);
+            self.drag = click.is_none().then_some(Drag::Text);
+            return click;
+        }
+        let p = frame.point_at(ev.position)?;
         let selection = match ev.click_count {
             0 | 1 => match self.selection {
                 Some(s) if ev.modifiers.shift => Selection { head: p, ..s },
@@ -1030,6 +1059,7 @@ impl CodeView {
         };
         self.set_selection(selection, cx);
         self.drag = Some(Drag::Text);
+        None
     }
 
     fn mouse_drag(&mut self, position: gpui::Point<Pixels>, cx: &mut gpui::Context<Self>) {
@@ -1053,6 +1083,9 @@ impl CodeView {
         let delta = ev.delta.pixel_delta(px(self.line_height()));
         self.hover.hide(cx);
         self.set_goto_message(None, cx);
+        // Other text comes under the mouse: the next move says which.
+        let held = self.link.held();
+        self.link_mouse_moved(None, held, cx);
         self.scroll_by(-f32::from(delta.y));
         if !self.word_wrap {
             self.scroll_x = (self.scroll_x - f32::from(delta.x)).max(0.);
@@ -1116,7 +1149,10 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
                 && ev.button == MouseButton::Left
                 && hitbox.is_hovered(window)
             {
-                view.update(cx, |v, cx| v.mouse_down(ev, window, cx));
+                let click = view.update(cx, |v, cx| v.mouse_down(ev, window, cx));
+                if let Some(click) = click {
+                    click.run(&view, window, cx);
+                }
                 cx.stop_propagation();
             }
         }
@@ -1145,8 +1181,9 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
             }
         }
     });
-    // The LSP hover follows the char under the mouse; the button held
-    // (a selection drag) counts as no char.
+    // The LSP hover and the ⌘-hover link follow the char under the
+    // mouse; the button held (a selection drag) counts as no char. While
+    // ⌘ is held the link shows instead of the hover.
     window.on_mouse_event({
         let (view, hitbox, frame) = (view.clone(), hitbox.clone(), frame.clone());
         move |ev: &MouseMoveEvent, phase, window, cx| {
@@ -1156,7 +1193,12 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
             let point = (ev.pressed_button.is_none() && hitbox.is_hovered(window))
                 .then(|| frame.char_at(ev.position))
                 .flatten();
-            view.update(cx, |v, cx| v.hover.mouse_moved(point, ev.position, cx));
+            let held = ev.modifiers.secondary(cx);
+            view.update(cx, |v, cx| {
+                v.link_mouse_moved(point, held, cx);
+                let hover_point = point.filter(|_| !held);
+                v.hover.mouse_moved(hover_point, ev.position, cx);
+            });
         }
     });
     // The mouse can leave the window straight from the gutter, with no
@@ -1170,7 +1212,11 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
             if view.read(cx).gutter_hovered() {
                 view.update(cx, |v, cx| v.set_gutter_hovered(false, cx));
             }
-            view.update(cx, |v, cx| v.hover.mouse_moved(None, ev.position, cx));
+            let held = ev.modifiers.secondary(cx);
+            view.update(cx, |v, cx| {
+                v.link_mouse_moved(None, held, cx);
+                v.hover.mouse_moved(None, ev.position, cx);
+            });
         }
     });
     window.on_mouse_event({

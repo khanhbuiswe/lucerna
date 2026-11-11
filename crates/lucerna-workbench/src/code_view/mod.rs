@@ -10,6 +10,7 @@ mod cache;
 mod diagnostics;
 mod element;
 mod layout;
+mod link;
 mod minimap;
 mod selection;
 
@@ -241,7 +242,10 @@ pub struct CodeView {
     /// The "No definition found" message, until it times out or the
     /// cursor moves.
     goto_message: Option<GotoMessage>,
-    /// Hides the hover when focus leaves the view; made on first render.
+    /// The ⌘-hover definition link.
+    link: link::Link,
+    /// Hides the hover and the link when focus leaves the view; made on
+    /// first render.
     _focus_out: Option<Subscription>,
 }
 
@@ -303,6 +307,7 @@ impl CodeView {
             scrollbar_marks: None,
             hover,
             goto_message: None,
+            link: link::Link::default(),
             _focus_out: None,
         }
     }
@@ -460,6 +465,7 @@ impl CodeView {
             || snapshot.line_count() > self.config.max_lines;
         self.snapshot = snapshot;
         self.hover.set_snapshot(self.snapshot.clone(), cx);
+        self.reset_link(cx);
         self.set_goto_message(None, cx);
         self.revision += 1;
         self.max_line_width = 0.;
@@ -600,13 +606,14 @@ impl CodeView {
         &mut self.hover
     }
 
-    /// Where hover answers come from and where their links go.
+    /// Where hover and link answers come from and where their links go.
     pub(crate) fn set_hover_sources(
         &mut self,
         workbench: WeakEntity<Workbench>,
         servers: WeakEntity<LanguageServers>,
     ) {
-        self.hover.set_sources(workbench, servers);
+        self.hover.set_sources(workbench.clone(), servers.clone());
+        self.set_link_sources(workbench, servers);
     }
 
     /// The middle of the char at `p` in window coordinates, as last
@@ -1200,6 +1207,8 @@ impl Render for CodeView {
             self._focus_out = Some(cx.on_focus_out(&focus, window, |v, _, _, cx| {
                 v.hover.hide(cx);
                 v.set_goto_message(None, cx);
+                // Its release (⌘-Tab away) may never reach the view.
+                v.link_modifiers_changed(false, cx);
             }));
         }
         if self.painted_revision != self.revision {
@@ -1235,6 +1244,10 @@ impl Render for CodeView {
             .on_key_down(cx.listener(|v, _, _, cx| {
                 v.hover.hide(cx);
                 v.set_goto_message(None, cx);
+            }))
+            .on_modifiers_changed(cx.listener(|v, ev: &gpui::ModifiersChangedEvent, _, cx| {
+                let held = ev.modifiers.secondary(cx);
+                v.link_modifiers_changed(held, cx);
             }))
             .flex()
             .flex_col()

@@ -26,7 +26,8 @@ const MINIMAP_ROWS: usize = 4096;
 /// One highlight span on a row: absolute byte range and capture name.
 pub(crate) type RowSpan = (Range<usize>, Arc<str>);
 
-/// What shaped rows depend on besides the row itself.
+/// What shaped rows depend on besides the row itself and its link
+/// columns (kept with each row, so showing a link reshapes only its rows).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ShapeKey {
     pub revision: u64,
@@ -46,7 +47,8 @@ pub(crate) struct Caches {
     highlight_theme: u64,
     highlights: HashMap<u32, Vec<RowSpan>>,
     shape_key: Option<ShapeKey>,
-    shaped: HashMap<u32, Arc<ShapedRow>>,
+    /// Each row with the link columns it was shaped with.
+    shaped: HashMap<u32, (Option<Range<u32>>, Arc<ShapedRow>)>,
     shaped_order: VecDeque<u32>,
     wrap_key: Option<(u64, Option<u32>, u32)>,
     wraps: HashMap<u32, u32>,
@@ -142,22 +144,32 @@ impl Caches {
         Some(self.highlights.get(&row).map_or(&[], Vec::as_slice))
     }
 
-    pub fn shaped(&mut self, key: ShapeKey, row: u32) -> Option<Arc<ShapedRow>> {
+    /// `row` as shaped for `key` with `link` (its columns drawn as a
+    /// link), if cached.
+    pub fn shaped(
+        &mut self,
+        key: ShapeKey,
+        row: u32,
+        link: &Option<Range<u32>>,
+    ) -> Option<Arc<ShapedRow>> {
         if self.shape_key != Some(key) {
             self.shape_key = Some(key);
             self.shaped.clear();
             self.shaped_order.clear();
         }
-        self.shaped.get(&row).cloned()
+        self.shaped
+            .get(&row)
+            .filter(|(shaped_link, _)| shaped_link == link)
+            .map(|(_, shaped)| shaped.clone())
     }
 
-    pub fn insert_shaped(&mut self, row: u32, shaped: Arc<ShapedRow>) {
+    pub fn insert_shaped(&mut self, row: u32, link: Option<Range<u32>>, shaped: Arc<ShapedRow>) {
         if self.shaped.len() >= SHAPED_ROWS
             && let Some(oldest) = self.shaped_order.pop_front()
         {
             self.shaped.remove(&oldest);
         }
-        if self.shaped.insert(row, shaped).is_none() {
+        if self.shaped.insert(row, (link, shaped)).is_none() {
             self.shaped_order.push_back(row);
         }
     }

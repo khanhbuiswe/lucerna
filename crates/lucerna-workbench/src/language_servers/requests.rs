@@ -30,6 +30,8 @@ use crate::workspace_state::absolute_path;
 
 /// `textDocument/hover` gives up after this.
 const HOVER_TIMEOUT: Duration = Duration::from_secs(10);
+/// The `textDocument/definition` of a ⌘-hover gives up after this.
+const LINK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A hover answer, as markdown.
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +163,95 @@ impl LanguageServers {
             .unwrap_or_default()
         })
     }
+}
+
+impl LanguageServers {
+    /// The range to show as a link to the definition of the symbol at
+    /// `point` (⌘-hover): the `originSelectionRange` of the first
+    /// server's answer that has one, else the word at `point` when some
+    /// server found a definition. `None` when none did, on errors and
+    /// after a 10 s timeout. Dropping the task cancels the requests.
+    pub fn definition_link(
+        &self,
+        path: &Path,
+        point: Point,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Range<Point>>> {
+        let path = absolute_path(&self.root, path);
+        let Some(doc) = self.docs.get(path.as_path()) else {
+            return Task::ready(None);
+        };
+        let snapshot = doc.snapshot.clone();
+        let uri = path_to_uri(&path);
+        let requests: Vec<_> = self
+            .running_for(&path)
+            .into_iter()
+            .filter(|(_, server)| {
+                server
+                    .capabilities()
+                    .is_some_and(|caps| supports(&caps, GotoKind::Definition))
+            })
+            .map(|(_, server)| {
+                let encoding = server.encoding();
+                let params = GotoDefinitionParams {
+                    text_document_position_params: TextDocumentPositionParams {
+                        text_document: TextDocumentIdentifier { uri: uri.clone() },
+                        position: to_lsp(&snapshot, point, encoding),
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                let request = server.request_with_timeout::<GotoDefinition>(params, LINK_TIMEOUT);
+                async move {
+                    match request.await {
+                        Ok(response) => (encoding, response),
+                        Err(err) => {
+                            tracing::debug!(%err, "definition link request failed");
+                            (encoding, None)
+                        }
+                    }
+                }
+            })
+            .collect();
+        if requests.is_empty() {
+            return Task::ready(None);
+        }
+        cx.background_spawn(async move {
+            let answers = futures::future::join_all(requests).await;
+            crate::tasks::guarded("definition-link", move || {
+                link_range(answers, &snapshot, point)
+            })
+            .flatten()
+        })
+    }
+}
+
+/// The link range of the definition answers: the first origin range of a
+/// `LocationLink`, else the word at `point` when any answer has a file
+/// location; `None` when none has.
+fn link_range(
+    answers: Vec<(PositionEncoding, Option<GotoDefinitionResponse>)>,
+    snapshot: &BufferSnapshot,
+    point: Point,
+) -> Option<Range<Point>> {
+    let mut found = false;
+    for (encoding, response) in answers {
+        let origin = match &response {
+            Some(GotoDefinitionResponse::Link(links)) => links
+                .iter()
+                .find_map(|l| l.origin_selection_range)
+                .map(|r| range_from_lsp(snapshot, r, encoding)),
+            _ => None,
+        };
+        if locations_from_response(response).is_empty() {
+            continue;
+        }
+        if let Some(origin) = origin.filter(|r| r.start != r.end) {
+            return Some(origin);
+        }
+        found = true;
+    }
+    found.then(|| crate::code_view::word_at(snapshot, point))
 }
 
 /// Whether a server with `caps` answers `kind` requests.
