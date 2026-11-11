@@ -3,6 +3,7 @@
 //! underline marks, the gutter icon and inline message of each row, and
 //! the scrollbar marks.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use lucerna_lsp::diagnostics::{Diagnostic, Severity};
@@ -58,7 +59,8 @@ pub struct DiagnosticRows {
 impl DiagnosticRows {
     pub fn build(diags: &[Diagnostic], snapshot: &BufferSnapshot) -> DiagnosticRows {
         let mut marks = Vec::new();
-        let mut rows: Vec<RowInfo> = Vec::new();
+        // Keyed by row: one lookup per diagnostic, O(n log n) overall.
+        let mut rows: BTreeMap<u32, RowInfo> = BTreeMap::new();
         for d in diags {
             let range = clamp_range(snapshot, d.range.clone());
             let row = range.start.row;
@@ -74,17 +76,11 @@ impl DiagnosticRows {
             if d.severity == Severity::Hint {
                 continue;
             }
-            let info = match rows.iter_mut().find(|r| r.row == row) {
-                Some(info) => info,
-                None => {
-                    rows.push(RowInfo {
-                        row,
-                        gutter: None,
-                        inline: None,
-                    });
-                    rows.last_mut().expect("just pushed")
-                }
-            };
+            let info = rows.entry(row).or_insert(RowInfo {
+                row,
+                gutter: None,
+                inline: None,
+            });
             // `Severity` sorts `Error` first: smaller is more severe.
             if info.gutter.is_none_or(|s| d.severity < s) {
                 info.gutter = Some(d.severity);
@@ -94,7 +90,7 @@ impl DiagnosticRows {
             }
         }
         marks.sort_by_key(|m| (m.range.start.row, m.range.start.column));
-        rows.sort_by_key(|r| r.row);
+        let rows: Vec<RowInfo> = rows.into_values().collect();
         let max_span = marks
             .iter()
             .map(|m| m.range.end.row - m.range.start.row)
@@ -427,6 +423,37 @@ mod tests {
             rows.scrollbar(),
             &[(0, Severity::Error), (1, Severity::Error)]
         );
+    }
+
+    #[test]
+    fn many_diagnostics_group_by_row() {
+        // 10 000 rows, two diagnostics each: an error then a warning on
+        // even rows, a hint then an info on odd ones.
+        let text = snapshot(&"abc\n".repeat(10_000));
+        let mut diags = Vec::new();
+        for row in 0..10_000u32 {
+            let (a, b) = if row % 2 == 0 {
+                (Severity::Error, Severity::Warning)
+            } else {
+                (Severity::Hint, Severity::Information)
+            };
+            diags.push(diag(pt(row, 0)..pt(row, 1), a, &format!("a{row}")));
+            diags.push(diag(pt(row, 1)..pt(row, 2), b, &format!("b{row}")));
+        }
+        assert_eq!(diags.len(), 20_000);
+        let rows = DiagnosticRows::build(&diags, &text);
+        assert_eq!(rows.marks_in(0..u32::MAX).count(), 20_000);
+        assert_eq!(rows.gutter(0), Some(Severity::Error));
+        assert_eq!(rows.gutter(1), Some(Severity::Information));
+        assert_eq!(rows.inline(9_998), Some((Severity::Error, "a9998")));
+        assert_eq!(rows.inline(9_999), Some((Severity::Information, "b9999")));
+        assert_eq!(rows.scrollbar().len(), 5_000);
+        assert!(
+            rows.scrollbar()
+                .iter()
+                .all(|&(r, s)| r % 2 == 0 && s == Severity::Error)
+        );
+        assert_eq!(rows.marks_in(5_000..5_001).count(), 2);
     }
 
     #[test]

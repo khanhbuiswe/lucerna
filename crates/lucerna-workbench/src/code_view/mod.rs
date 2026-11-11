@@ -225,6 +225,11 @@ pub struct CodeView {
     diagnostics_source: bool,
     /// `diagnostics` as painted, against the current snapshot.
     diagnostic_rows: DiagnosticRows,
+    /// Bumped whenever `diagnostic_rows` is rebuilt.
+    diagnostic_rows_generation: u64,
+    /// The scrollbar marks last laid out, reused while nothing they
+    /// depend on changed.
+    scrollbar_marks: Option<element::ScrollbarMarks>,
 }
 
 impl CodeView {
@@ -280,6 +285,8 @@ impl CodeView {
             diagnostics: Arc::from([]),
             diagnostics_source: false,
             diagnostic_rows: DiagnosticRows::default(),
+            diagnostic_rows_generation: 0,
+            scrollbar_marks: None,
         }
     }
 
@@ -441,6 +448,7 @@ impl CodeView {
         self._fold_task = (!self.large).then(|| self.compute_folds(cx));
         // Clamped to the new text until the servers publish again.
         self.diagnostic_rows = DiagnosticRows::build(&self.diagnostics, &self.snapshot);
+        self.diagnostic_rows_generation += 1;
     }
 
     /// Re-reads the `editor.*` settings and applies what changed:
@@ -520,6 +528,7 @@ impl CodeView {
     /// server is set up for the file.
     pub fn set_diagnostics(&mut self, diagnostics: Arc<[Diagnostic]>, cx: &mut Context<Self>) {
         self.diagnostic_rows = DiagnosticRows::build(&diagnostics, &self.snapshot);
+        self.diagnostic_rows_generation += 1;
         self.diagnostics = diagnostics;
         self.diagnostics_source = true;
         cx.notify();
@@ -532,6 +541,7 @@ impl CodeView {
             self.diagnostics = Arc::from([]);
             self.diagnostics_source = false;
             self.diagnostic_rows = DiagnosticRows::default();
+            self.diagnostic_rows_generation += 1;
             cx.notify();
         }
     }

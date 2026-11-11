@@ -120,7 +120,7 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
             .ok();
     }
     let inset = px((DIAGNOSTIC_COLUMN - DIAGNOSTIC_ICON) / 2.);
-    for (top, svg, color) in &frame.diagnostics.icons {
+    for (top, (key, svg), color) in &frame.diagnostics.icons {
         let bounds = Bounds::new(
             point(
                 frame.bounds.left() + inset,
@@ -128,12 +128,10 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
             ),
             size(px(DIAGNOSTIC_ICON), px(DIAGNOSTIC_ICON)),
         );
-        // The data is static: its address names it in the sprite atlas.
-        let key = format!("lucerna-diagnostic-icon-{:p}", svg.as_ptr());
         window
             .paint_svg(
                 bounds,
-                key.into(),
+                (*key).into(),
                 Some(svg),
                 TransformationMatrix::unit(),
                 *color,
@@ -143,10 +141,10 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
     }
     // The right half of the scrollbar track, under the thumb.
     let half = px(SCROLLBAR_WIDTH / 2.);
-    for (top, color) in &frame.diagnostics.scrollbar {
+    for (top, color) in frame.diagnostics.scrollbar.iter() {
         window.paint_quad(fill(
             Bounds::new(
-                point(frame.bounds.right() - half, *top),
+                point(frame.bounds.right() - half, frame.bounds.top() + *top),
                 size(half, px(SCROLLBAR_MARK_HEIGHT)),
             ),
             *color,

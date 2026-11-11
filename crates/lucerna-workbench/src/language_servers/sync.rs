@@ -77,7 +77,7 @@ impl LanguageServers {
                 language_id,
                 snapshot,
             } => {
-                self.diagnostics.resolve_open(path, snapshot);
+                // `push_diagnostics` converts the raw entries.
                 self.docs.insert(
                     path.clone(),
                     OpenDoc {
@@ -94,7 +94,7 @@ impl LanguageServers {
                 self.find_servers(path, cx);
             }
             DocumentEvent::Reloaded { path, snapshot } => {
-                self.diagnostics.resolve_open(path, snapshot);
+                // `push_diagnostics` converts the raw entries.
                 let Some(doc) = self.docs.get_mut(path) else {
                     return;
                 };

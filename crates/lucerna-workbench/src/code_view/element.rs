@@ -181,11 +181,24 @@ pub(crate) struct FrameDiagnostics {
     marks: Vec<(std::ops::Range<Point>, MarkStyle, Hsla)>,
     /// From a display line's top to its underline.
     underline_y: Pixels,
-    /// Gutter icons: (top, svg, color).
-    icons: Vec<(Pixels, &'static [u8], Hsla)>,
+    /// Gutter icons: (top, icon, color).
+    icons: Vec<(Pixels, DiagnosticIcon, Hsla)>,
     inline: Vec<InlineDiagnostic>,
-    /// Scrollbar marks: (top, color).
-    scrollbar: Vec<(Pixels, Hsla)>,
+    /// Scrollbar marks: (offset from the top, color).
+    scrollbar: Arc<[(Pixels, Hsla)]>,
+}
+
+/// A gutter icon: its sprite atlas key and SVG.
+pub(crate) type DiagnosticIcon = (&'static str, &'static [u8]);
+
+/// The scrollbar marks as last laid out, with what they depend on.
+pub(crate) struct ScrollbarMarks {
+    /// [`CodeView`]'s diagnostic rows generation.
+    rows_generation: u64,
+    folds: FoldState,
+    height: Pixels,
+    theme_generation: u64,
+    marks: Arc<[(Pixels, Hsla)]>,
 }
 
 #[derive(Clone, Copy)]
@@ -214,7 +227,6 @@ struct InlineDiagnostic {
 
 /// Where [`CodeView::layout_diagnostics`] puts things.
 struct DiagnosticGeometry {
-    bounds: Bounds<Pixels>,
     text_bounds: Bounds<Pixels>,
     text_x: Pixels,
     line_height: Pixels,
@@ -232,11 +244,14 @@ fn severity_color(ui: &UiColors, severity: Severity) -> Hsla {
     })
 }
 
-fn severity_icon(severity: Severity) -> &'static [u8] {
+fn severity_icon(severity: Severity) -> DiagnosticIcon {
     match severity {
-        Severity::Error => crate::icons::CIRCLE_X,
-        Severity::Warning => crate::icons::TRIANGLE_ALERT,
-        Severity::Information | Severity::Hint => crate::icons::INFO,
+        Severity::Error => ("lucerna-diagnostic-circle-x", crate::icons::CIRCLE_X),
+        Severity::Warning => (
+            "lucerna-diagnostic-triangle-alert",
+            crate::icons::TRIANGLE_ALERT,
+        ),
+        Severity::Information | Severity::Hint => ("lucerna-diagnostic-info", crate::icons::INFO),
     }
 }
 
@@ -573,10 +588,10 @@ impl CodeView {
                 )
             });
 
+        let scrollbar_marks = self.scrollbar_marks(bounds.size.height, ui, cx);
         let diagnostics = self.layout_diagnostics(
             &frame_rows,
             DiagnosticGeometry {
-                bounds,
                 text_bounds,
                 text_x,
                 line_height,
@@ -584,6 +599,7 @@ impl CodeView {
                 icon_column,
                 underline_y,
             },
+            scrollbar_marks,
             ui,
             window,
         );
@@ -632,12 +648,16 @@ impl CodeView {
         &self,
         rows: &[FrameRow],
         g: DiagnosticGeometry,
+        scrollbar: Arc<[(Pixels, Hsla)]>,
         ui: &UiColors,
         window: &mut Window,
     ) -> FrameDiagnostics {
         let diags = &self.diagnostic_rows;
         let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
-            return FrameDiagnostics::default();
+            return FrameDiagnostics {
+                scrollbar,
+                ..FrameDiagnostics::default()
+            };
         };
         let marks = diags
             .marks_in(first.buffer_row..last.buffer_row + 1)
@@ -690,31 +710,60 @@ impl CodeView {
                 });
             }
         }
+        FrameDiagnostics {
+            marks,
+            underline_y: g.underline_y,
+            icons,
+            inline,
+            scrollbar,
+        }
+    }
+
+    /// The scrollbar marks of the whole file for a track `height` tall:
+    /// laid out again only when the diagnostics, folds, height or theme
+    /// change.
+    fn scrollbar_marks(
+        &mut self,
+        height: Pixels,
+        ui: &UiColors,
+        cx: &gpui::Context<Self>,
+    ) -> Arc<[(Pixels, Hsla)]> {
+        let theme_generation = cx.global::<AppState>().theme_generation;
+        if let Some(cached) = &self.scrollbar_marks
+            && cached.rows_generation == self.diagnostic_rows_generation
+            && cached.folds == self.folds
+            && cached.height == height
+            && cached.theme_generation == theme_generation
+        {
+            return cached.marks.clone();
+        }
         // At each row's share of the rows shown (folded ones left out).
         let line_count = self.snapshot.line_count();
         let shown = (line_count - self.folds.hidden_before(line_count)).max(1);
-        let track = f32::from(g.bounds.size.height) - SCROLLBAR_MARK_HEIGHT;
-        let mut scrollbar: Vec<(Pixels, Hsla, Severity)> = Vec::new();
-        for &(row, severity) in diags.scrollbar() {
+        let track = f32::from(height) - SCROLLBAR_MARK_HEIGHT;
+        let mut marks: Vec<(Pixels, Hsla, Severity)> = Vec::new();
+        for &(row, severity) in self.diagnostic_rows.scrollbar() {
             let index = row - self.folds.hidden_before(row.min(line_count));
-            let top = g.bounds.top() + px((index as f32 / shown as f32 * track).round());
-            match scrollbar.last_mut() {
+            let top = px((index as f32 / shown as f32 * track).round());
+            match marks.last_mut() {
                 // One mark per pixel row, the most severe.
                 Some(prev) if prev.0 == top => {
                     if severity < prev.2 {
                         *prev = (top, severity_color(ui, severity), severity);
                     }
                 }
-                _ => scrollbar.push((top, severity_color(ui, severity), severity)),
+                _ => marks.push((top, severity_color(ui, severity), severity)),
             }
         }
-        FrameDiagnostics {
-            marks,
-            underline_y: g.underline_y,
-            icons,
-            inline,
-            scrollbar: scrollbar.into_iter().map(|(y, c, _)| (y, c)).collect(),
-        }
+        let marks: Arc<[(Pixels, Hsla)]> = marks.into_iter().map(|(y, c, _)| (y, c)).collect();
+        self.scrollbar_marks = Some(ScrollbarMarks {
+            rows_generation: self.diagnostic_rows_generation,
+            folds: self.folds.clone(),
+            height,
+            theme_generation,
+            marks: marks.clone(),
+        });
+        marks
     }
 
     /// The cell the cursor overlay covers: from its column, moved back to
