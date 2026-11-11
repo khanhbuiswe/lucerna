@@ -89,7 +89,14 @@ pub fn range_from_lsp(
     r: lsp_types::Range,
     enc: PositionEncoding,
 ) -> Range<Point> {
-    from_lsp(snapshot, r.start, enc)..from_lsp(snapshot, r.end, enc)
+    let start = from_lsp(snapshot, r.start, enc);
+    let end = from_lsp(snapshot, r.end, enc);
+    // Some servers send reversed ranges; never hand out start > end.
+    if (end.row, end.column) < (start.row, start.column) {
+        end..start
+    } else {
+        start..end
+    }
 }
 
 pub fn path_to_uri(path: &Path) -> lsp_types::Uri {
@@ -176,6 +183,19 @@ mod tests {
         assert_eq!(
             range_from_lsp(&s, r, Utf16),
             pt..Point { row: 1, column: 1 }
+        );
+    }
+
+    #[test]
+    fn reversed_range_is_swapped() {
+        let s = snap("abc\ndef");
+        let r = lsp_types::Range::new(
+            lsp_types::Position::new(1, 2),
+            lsp_types::Position::new(0, 1),
+        );
+        assert_eq!(
+            range_from_lsp(&s, r, Utf16),
+            Point { row: 0, column: 1 }..Point { row: 1, column: 2 }
         );
     }
 
