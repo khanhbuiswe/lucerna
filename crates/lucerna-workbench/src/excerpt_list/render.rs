@@ -16,8 +16,7 @@ use crate::AppState;
 use crate::icons::ARROW_UP_RIGHT;
 use crate::layout::color;
 use crate::ui::{
-    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, FILE_ICON_SIZE, GRID, UI_FONT_SIZE_SMALL,
-    file_icon_sized,
+    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, FILE_ICON_SIZE, GRID, file_icon_sized, subheader_card,
 };
 
 /// A file header is this many editor lines tall, as in Zed.
@@ -164,24 +163,17 @@ impl ExcerptList {
                     .size(px(14.))
                     .text_color(color(ui.icon_muted)),
             );
-        let card = div()
+        let card = subheader_card(cx)
             .id(card_id)
             .debug_selector(move || selector)
             .group(group)
-            .flex()
-            .items_center()
             .gap(px(1.5 * GRID))
             .size_full()
             .pl(px(GRID))
             .pr(px(GRID))
-            .rounded_sm()
-            .border_1()
-            .border_color(color(ui.border))
-            .bg(color(ui.editor_subheader_background))
             .hover(move |s| s.bg(hover))
             .when(sticky, |d| d.shadow_md())
             .cursor_pointer()
-            .text_size(px(UI_FONT_SIZE_SMALL))
             .on_click(cx.listener(move |list, _, _, cx| {
                 if sticky {
                     list.toggle_sticky(&path, cx);

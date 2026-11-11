@@ -2,9 +2,9 @@
 //! draws chrome takes its sizes and popover/icon-button styling from here.
 
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, Context, Div, ElementId, Entity, Hsla, IntoElement,
-    MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled, Window, div, img,
-    prelude::*, px, relative, svg,
+    AnyElement, AnyView, App, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity, Hsla,
+    IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled,
+    Window, div, img, prelude::*, px, relative, svg,
 };
 use lucerna_theme::IconSource;
 
@@ -251,6 +251,84 @@ fn styled_text_button(
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .hover(move |s| s.bg(hover))
         .child(label)
+}
+
+/// A command to copy, such as a language server's install command: the
+/// command in `code_font` (caption size, `text.muted`, cut off with an
+/// ellipsis; debug selector `text_selector`) and a "Copy" [`text_button`]
+/// (id `copy_id`) that puts it on the clipboard. Size and pad the row
+/// where it is placed.
+pub fn copy_command_row(
+    command: String,
+    text_selector: String,
+    copy_id: String,
+    code_font: SharedString,
+    cx: &App,
+) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let copied = command.clone();
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(2. * GRID))
+        .child(
+            div()
+                .debug_selector(move || text_selector)
+                .flex_auto()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .font_family(code_font)
+                .text_size(px(UI_FONT_SIZE_CAPTION))
+                .text_color(color(ui.text_muted))
+                .child(command),
+        )
+        .child(
+            text_button(copy_id, "Copy", cx)
+                .tooltip(tooltip("Copy the install command"))
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
+                }),
+        )
+}
+
+/// A warning line, such as an invalid `lsp` setting entry: a
+/// `warning`-colored triangle and the text, wrapping. Its debug selector
+/// is `selector`.
+pub fn warning_row(selector: String, text: impl Into<SharedString>, cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .debug_selector(move || selector)
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap(px(2. * GRID))
+        .child(
+            svg()
+                .data(icons::TRIANGLE_ALERT)
+                .flex_none()
+                .mt(px(1.))
+                .size(px(UI_FONT_SIZE_SMALL))
+                .text_color(color(ui.warning)),
+        )
+        .child(div().flex_1().min_w_0().child(text.into()))
+}
+
+/// A card heading a group of a results list (a file of search results, a
+/// language of the Health tab): a row with a 1px `border` on
+/// `editor.subheader.background`, small text.
+pub fn subheader_card(cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .flex()
+        .items_center()
+        .rounded_sm()
+        .border_1()
+        .border_color(color(ui.border))
+        .bg(color(ui.editor_subheader_background))
+        .text_size(px(UI_FONT_SIZE_SMALL))
 }
 
 /// A 14 px checkbox: a bordered box, filled with `element.selected` and

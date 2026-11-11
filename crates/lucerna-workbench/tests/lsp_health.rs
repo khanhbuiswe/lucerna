@@ -268,3 +268,36 @@ fn untrusted_folder_probes_in_home(cx: &mut TestAppContext) {
     let last = probes.last().unwrap().canonicalize().unwrap();
     assert_eq!(last, root, "{probes:?}");
 }
+
+/// The `lsp` setting's invalid entries are listed under the toolbar, as in
+/// the ⚡ popover (spec §11).
+#[gpui::test]
+fn table_errors_shown(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let settings = r#"{
+        "session.trustAllWorktrees": true,
+        "lsp": { "evil": { "command": "evil", "args": "--stdio", "languages": ["rust"] } }
+    }"#;
+    let (wb, cx) = lsp_workbench_with(dir.path(), rust_launcher(), settings, cx);
+    settle(cx);
+    show_health(&wb, cx);
+
+    let view = health_view(&wb, cx);
+    let servers = language_servers(&wb, cx);
+    let reason = cx.update(|_, cx| servers.read(cx).table_errors()[0].message.clone());
+    let lines = cx.update(|_, cx| view.read(cx).table_error_lines(cx));
+    assert_eq!(lines, vec![format!("Invalid `lsp.evil`: {reason}")]);
+    assert!(shown("lsp-health-table-error-0", cx));
+
+    // Fixed: the row goes.
+    cx.update(|_, cx| {
+        cx.update_global::<AppState, _>(|state, _| {
+            state
+                .settings
+                .set_layer(Layer::User, r#"{ "session.trustAllWorktrees": true }"#)
+                .unwrap();
+        })
+    });
+    settle(cx);
+    assert!(!shown("lsp-health-table-error-0", cx));
+}

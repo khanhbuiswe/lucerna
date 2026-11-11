@@ -1,7 +1,8 @@
 //! The language server Health tab (`lucerna.lsp.health`, spec §7): every
 //! (language, server) pair of the server table and whether it is
 //! installed, grouped by language under file-header-like cards, with the
-//! install command and Copy for a server not found. One tab, never saved.
+//! install command and Copy for a server not found, and the `lsp`
+//! setting's invalid entries under the toolbar. One tab, never saved.
 //!
 //! The check (`which`, the probe) runs in the background; its rows are
 //! kept until refresh or until the table changes.
@@ -10,8 +11,8 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use gpui::{
-    App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement, MouseButton, Render,
-    SharedString, Subscription, Task, Window, div, prelude::*, px,
+    App, Context, Entity, FocusHandle, Focusable, IntoElement, MouseButton, Render, SharedString,
+    Subscription, Task, Window, div, prelude::*, px,
 };
 use lucerna_lsp::health::{HealthRow, HealthStatus, current_os, health, health_in, status_text};
 
@@ -19,8 +20,8 @@ use crate::language_servers::{LanguageServers, LanguageServersEvent};
 use crate::layout::color;
 use crate::tasks::guarded;
 use crate::ui::{
-    GRID, UI_FONT_SIZE_CAPTION, UI_FONT_SIZE_SMALL, bar_icon_button, search_bar_row,
-    search_toolbar, text_button, tooltip,
+    GRID, UI_FONT_SIZE_CAPTION, UI_FONT_SIZE_SMALL, bar_icon_button, copy_command_row,
+    search_bar_row, search_toolbar, subheader_card, tooltip, warning_row,
 };
 use crate::{AppState, Workbench, icons};
 
@@ -113,6 +114,12 @@ impl LspHealthView {
         self.rows.as_deref()
     }
 
+    /// The `lsp` setting's invalid entries, one line each, as in the ⚡
+    /// popover.
+    pub fn table_error_lines(&self, cx: &App) -> Vec<String> {
+        self.servers.read(cx).table_error_lines()
+    }
+
     /// Whether a check is running.
     pub fn checking(&self) -> bool {
         self.task.is_some()
@@ -159,22 +166,14 @@ impl LspHealthView {
         )
     }
 
-    /// The language's card, as a file header of a results list: a 1px
-    /// border on `editor.subheader.background`.
+    /// The language's card, as a file header of a results list.
     fn render_header(language: &str, cx: &App) -> impl IntoElement {
         let ui = &cx.global::<AppState>().theme.ui;
-        div()
-            .flex()
+        subheader_card(cx)
             .flex_none()
-            .items_center()
             .h(px(7. * GRID))
             .mt(px(2. * GRID))
             .px(px(2. * GRID))
-            .rounded_sm()
-            .border_1()
-            .border_color(color(ui.border))
-            .bg(color(ui.editor_subheader_background))
-            .text_size(px(UI_FONT_SIZE_SMALL))
             .text_color(color(ui.text))
             .child(language.to_owned())
     }
@@ -193,32 +192,15 @@ impl LspHealthView {
         };
         let found = matches!(row.status, HealthStatus::Found(_));
         let install = row.install.clone().filter(|_| !found).map(|command| {
-            let copied = command.clone();
-            div()
-                .flex()
-                .flex_row()
-                .flex_none()
-                .items_center()
-                .gap(px(2. * GRID))
-                .max_w(px(100. * GRID))
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .font_family(code_font)
-                        .text_size(px(UI_FONT_SIZE_CAPTION))
-                        .text_color(muted)
-                        .child(command),
-                )
-                .child(
-                    text_button(format!("lsp-health-copy-{i}"), "Copy", cx)
-                        .tooltip(tooltip("Copy the install command"))
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
-                        }),
-                )
+            copy_command_row(
+                command,
+                format!("lsp-health-install-{i}"),
+                format!("lsp-health-copy-{i}"),
+                code_font,
+                cx,
+            )
+            .flex_none()
+            .max_w(px(100. * GRID))
         });
         let note = row.note.clone().map(|note| {
             div()
@@ -276,6 +258,19 @@ impl Render for LspHealthView {
         let ui = &cx.global::<AppState>().theme.ui;
         let background = color(ui.editor_background);
         let code_font = crate::fonts::editor_font_family(None, cx);
+        // The `lsp` setting's invalid entries, above the languages.
+        let errors = self.table_error_lines(cx);
+        let errors =
+            (!errors.is_empty()).then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(GRID))
+                    .pt(px(2. * GRID))
+                    .children(errors.into_iter().enumerate().map(|(i, line)| {
+                        warning_row(format!("lsp-health-table-error-{i}"), line, cx)
+                    }))
+            });
         let mut list = Vec::new();
         let mut language: Option<&str> = None;
         for (i, row) in self.rows.iter().flatten().enumerate() {
@@ -307,6 +302,7 @@ impl Render for LspHealthView {
                     .overflow_y_scroll()
                     .px(px(3. * GRID))
                     .pb(px(3. * GRID))
+                    .children(errors)
                     .children(list),
             )
     }

@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use gpui::{
-    Anchor, App, ClipboardItem, Context, Entity, FocusHandle, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, Pixels, Point, Render, Subscription, WeakEntity, Window, anchored,
-    deferred, div, point, prelude::*, px, svg,
+    Anchor, App, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, Pixels, Point, Render, Subscription, WeakEntity, Window, anchored, deferred,
+    div, point, prelude::*, px, svg,
 };
 use lucerna_lsp::ServerKey;
 use lucerna_lsp::health::current_os;
@@ -22,7 +22,7 @@ use crate::language_servers::{LanguageServers, LanguageServersEvent, ServerStatu
 use crate::layout::color;
 use crate::ui::{
     GRID, STATUS_BAR_HEIGHT, TITLE_BAR_HEIGHT, UI_FONT_SIZE_CAPTION, UI_FONT_SIZE_SMALL,
-    icon_button, popover, text_button, tooltip,
+    copy_command_row, icon_button, popover, text_button, tooltip, warning_row,
 };
 use crate::{AppState, CommandRegistry, Workbench};
 
@@ -157,12 +157,7 @@ impl LspStatusItem {
 
     /// The `lsp` setting's invalid entries, one line each.
     pub fn table_error_lines(&self, cx: &App) -> Vec<String> {
-        self.servers
-            .read(cx)
-            .table_errors()
-            .iter()
-            .map(|e| format!("Invalid `lsp.{}`: {}", e.server, e.message))
-            .collect()
+        self.servers.read(cx).table_error_lines()
     }
 
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -248,23 +243,7 @@ impl LspStatusItem {
             .table_error_lines(cx)
             .into_iter()
             .enumerate()
-            .map(|(i, line)| {
-                div()
-                    .debug_selector(move || format!("lsp-table-error-{i}"))
-                    .flex()
-                    .flex_row()
-                    .items_start()
-                    .gap(px(2. * GRID))
-                    .child(
-                        svg()
-                            .data(icons::TRIANGLE_ALERT)
-                            .flex_none()
-                            .mt(px(1.))
-                            .size(px(UI_FONT_SIZE_SMALL))
-                            .text_color(color(ui.warning)),
-                    )
-                    .child(div().flex_1().min_w_0().child(line))
-            });
+            .map(|(i, line)| warning_row(format!("lsp-table-error-{i}"), line, cx));
         let rows = rows.into_iter().enumerate().map(|(i, row)| {
             let (key, server) = (row.key.clone(), row.key.server.clone());
             let root = path_bar_text(&row.key.root, None, home.as_deref());
@@ -282,33 +261,14 @@ impl LspStatusItem {
             });
             // The install command in the code font, and Copy.
             let install = row.install.clone().map(|command| {
-                let copied = command.clone();
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(2. * GRID))
-                    .pl(px(DOT_SIZE + 2. * GRID))
-                    .child(
-                        div()
-                            .debug_selector(move || format!("lsp-row-install-{i}"))
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .font_family(code_font.clone())
-                            .text_size(px(UI_FONT_SIZE_CAPTION))
-                            .text_color(muted)
-                            .child(command),
-                    )
-                    .child(
-                        text_button(format!("lsp-copy-{i}"), "Copy", cx)
-                            .tooltip(tooltip("Copy the install command"))
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
-                            }),
-                    )
+                copy_command_row(
+                    command,
+                    format!("lsp-row-install-{i}"),
+                    format!("lsp-copy-{i}"),
+                    code_font.clone(),
+                    cx,
+                )
+                .pl(px(DOT_SIZE + 2. * GRID))
             });
             let more = (row.more_lines > 0).then(|| {
                 let server = server.clone();

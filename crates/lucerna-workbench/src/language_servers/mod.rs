@@ -295,6 +295,15 @@ impl LanguageServers {
         &self.registry.table().errors
     }
 
+    /// [`LanguageServers::table_errors`] as shown in the ⚡ popover and the
+    /// Health tab: "Invalid `lsp.<name>`: <reason>", one line each.
+    pub fn table_error_lines(&self) -> Vec<String> {
+        self.table_errors()
+            .iter()
+            .map(|e| format!("Invalid `lsp.{}`: {}", e.server, e.message))
+            .collect()
+    }
+
     /// Builds the table from the settings again when the `lsp` value
     /// changed. Returns the old and new table's difference for the slots,
     /// or `None` when nothing changed.
