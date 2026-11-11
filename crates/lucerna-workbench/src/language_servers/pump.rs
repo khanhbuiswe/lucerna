@@ -13,6 +13,7 @@ use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{Context, Task};
 use lsp_types::MessageType;
+use lucerna_lsp::diagnostics::Diagnostic;
 use lucerna_lsp::position::uri_to_path;
 use lucerna_lsp::{LanguageServer, LogKind, LogLine, ServerEvent, ServerKey, Slot};
 
@@ -262,6 +263,9 @@ impl LanguageServers {
             this.update(cx, |servers, cx| {
                 servers.diagnostics_flush_pending = false;
                 let paths = std::mem::take(&mut servers.changed_diagnostics);
+                for path in &paths {
+                    servers.push_diagnostics(path, cx);
+                }
                 if !paths.is_empty() {
                     cx.emit(LanguageServersEvent::DiagnosticsChanged(
                         paths.into_iter().collect(),
@@ -272,6 +276,33 @@ impl LanguageServers {
             .ok();
         })
         .detach();
+    }
+
+    /// Gives every view of the open document `path` its diagnostics from
+    /// all servers; switches their icon column on while it has servers,
+    /// off when it has neither servers nor diagnostics. Unopened paths are
+    /// skipped. Raw entries (published before the server had the file)
+    /// are converted with the open text first, so `for_file` never reads
+    /// the disk on the UI thread.
+    pub(super) fn push_diagnostics(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(path) else {
+            return;
+        };
+        let has_servers = !doc.keys.is_empty();
+        let snapshot = doc.snapshot.clone();
+        self.diagnostics.resolve_open(path, &snapshot);
+        let diagnostics: Arc<[Diagnostic]> = self.diagnostics.for_file(path).into();
+        let source = has_servers || !diagnostics.is_empty();
+        for view in self.documents.read(cx).views_of(path) {
+            let diagnostics = diagnostics.clone();
+            view.update(cx, |view, cx| {
+                if source {
+                    view.set_diagnostics(diagnostics, cx);
+                } else {
+                    view.clear_diagnostics(cx);
+                }
+            });
+        }
     }
 }
 

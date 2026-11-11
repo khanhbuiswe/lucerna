@@ -90,6 +90,7 @@ impl LanguageServers {
                         deleted: false,
                     },
                 );
+                self.push_diagnostics(path, cx);
                 self.find_servers(path, cx);
             }
             DocumentEvent::Reloaded { path, snapshot } => {
@@ -98,7 +99,9 @@ impl LanguageServers {
                     return;
                 };
                 doc.snapshot = snapshot.clone();
-                if std::mem::take(&mut doc.deleted) {
+                let was_deleted = std::mem::take(&mut doc.deleted);
+                self.push_diagnostics(path, cx);
+                if was_deleted {
                     self.open_in_servers(path, cx);
                 } else {
                     let servers = self.running_for(path);
@@ -215,6 +218,7 @@ impl LanguageServers {
                 self.start(key, cx);
             }
         }
+        self.push_diagnostics(path, cx);
         self.open_in_servers(path, cx);
     }
 

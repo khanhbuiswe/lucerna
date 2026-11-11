@@ -7,6 +7,7 @@
 //! highlighting, folding or minimap.
 
 mod cache;
+mod diagnostics;
 mod element;
 mod layout;
 mod minimap;
@@ -21,9 +22,11 @@ use gpui::{
     IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
     Window, div, prelude::*, px,
 };
+use lucerna_lsp::diagnostics::Diagnostic;
 use lucerna_syntax::{SyntaxState, indent_folds};
 use lucerna_text::{Buffer, BufferSnapshot, LoadError, Point, Reload};
 
+pub use diagnostics::{DiagnosticRows, Mark, MarkStyle};
 pub use layout::{
     DisplayLine, FoldState, MAX_RENDERED_LINE_CHARS, display_lines, display_lines_with_tab_size,
 };
@@ -60,6 +63,10 @@ struct Config {
     /// `editor.cursorSurroundingLines`: rows kept between the cursor and
     /// the viewport edges by [`CodeView::set_cursor`].
     cursor_surrounding_lines: u32,
+    /// `lucerna.diagnostics.gutterIcons`.
+    gutter_icons: bool,
+    /// `lucerna.diagnostics.inline.enabled`.
+    inline_diagnostics: bool,
 }
 
 impl Config {
@@ -92,6 +99,12 @@ impl Config {
             cursor_surrounding_lines: settings
                 .get("editor.cursorSurroundingLines", language)
                 .unwrap_or(0),
+            gutter_icons: settings
+                .get("lucerna.diagnostics.gutterIcons", language)
+                .unwrap_or(true),
+            inline_diagnostics: settings
+                .get("lucerna.diagnostics.inline.enabled", language)
+                .unwrap_or(false),
         };
         let font_size = settings
             .get::<f32>("editor.fontSize", language)
@@ -205,6 +218,13 @@ pub struct CodeView {
     /// Whether the mouse is over the gutter: fold chevrons show only then
     /// (and always on folded rows).
     gutter_hovered: bool,
+    /// The file's diagnostics, as last set by the language servers.
+    diagnostics: Arc<[Diagnostic]>,
+    /// Whether a language server feeds this view: the gutter gets its
+    /// icon column from then on, even before anything is published.
+    diagnostics_source: bool,
+    /// `diagnostics` as painted, against the current snapshot.
+    diagnostic_rows: DiagnosticRows,
 }
 
 impl CodeView {
@@ -257,6 +277,9 @@ impl CodeView {
             find: None,
             find_visible: false,
             gutter_hovered: false,
+            diagnostics: Arc::from([]),
+            diagnostics_source: false,
+            diagnostic_rows: DiagnosticRows::default(),
         }
     }
 
@@ -416,6 +439,8 @@ impl CodeView {
         self.caches.clear();
         self.fold_ranges.clear();
         self._fold_task = (!self.large).then(|| self.compute_folds(cx));
+        // Clamped to the new text until the servers publish again.
+        self.diagnostic_rows = DiagnosticRows::build(&self.diagnostics, &self.snapshot);
     }
 
     /// Re-reads the `editor.*` settings and applies what changed:
@@ -488,6 +513,43 @@ impl CodeView {
             })
             .ok();
         })
+    }
+
+    /// Shows `diagnostics` (the file's, from every server) and turns on
+    /// the gutter's icon column: call it, even with none, once a language
+    /// server is set up for the file.
+    pub fn set_diagnostics(&mut self, diagnostics: Arc<[Diagnostic]>, cx: &mut Context<Self>) {
+        self.diagnostic_rows = DiagnosticRows::build(&diagnostics, &self.snapshot);
+        self.diagnostics = diagnostics;
+        self.diagnostics_source = true;
+        cx.notify();
+    }
+
+    /// Drops the diagnostics and the gutter's icon column: no language
+    /// server is set up for the file any more.
+    pub(crate) fn clear_diagnostics(&mut self, cx: &mut Context<Self>) {
+        if self.diagnostics_source || !self.diagnostics.is_empty() {
+            self.diagnostics = Arc::from([]);
+            self.diagnostics_source = false;
+            self.diagnostic_rows = DiagnosticRows::default();
+            cx.notify();
+        }
+    }
+
+    /// The diagnostics last set, sorted by range start.
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    /// The diagnostics as painted: marks, gutter icons, inline messages.
+    pub fn diagnostic_rows(&self) -> &DiagnosticRows {
+        &self.diagnostic_rows
+    }
+
+    /// The diagnostics of a view fed by a language server, for another
+    /// view of the same file; `None` when no server feeds this one.
+    pub(crate) fn diagnostics_source(&self) -> Option<Arc<[Diagnostic]>> {
+        self.diagnostics_source.then(|| self.diagnostics.clone())
     }
 
     /// Bumped by every new snapshot (load or reload).
@@ -635,6 +697,21 @@ impl CodeView {
     /// `None` while the rows fit (or before the first paint).
     pub fn scrollbar_thumb(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
         self.frame.as_ref().and_then(|f| f.thumb())
+    }
+
+    /// The gutter's width in pixels as last laid out; 0 before the first
+    /// paint.
+    pub fn gutter_width(&self) -> f32 {
+        self.frame.as_ref().map_or(0., |f| f.gutter_width())
+    }
+
+    /// The buffer rows that got an inline diagnostic message in the last
+    /// frame.
+    pub fn painted_inline_rows(&self) -> Vec<u32> {
+        self.frame
+            .as_ref()
+            .map(|f| f.inline_rows())
+            .unwrap_or_default()
     }
 
     /// How many whole rows fit in the viewport; 0 before the first paint.

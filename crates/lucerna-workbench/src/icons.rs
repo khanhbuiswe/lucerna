@@ -47,6 +47,8 @@ pub const CASE_SENSITIVE: &[u8] = lucide!("case-sensitive");
 pub const WHOLE_WORD: &[u8] = lucide!("whole-word");
 pub const REGEX: &[u8] = lucide!("regex");
 pub const TRIANGLE_ALERT: &[u8] = lucide!("triangle-alert");
+pub const CIRCLE_X: &[u8] = lucide!("circle-x");
+pub const INFO: &[u8] = lucide!("info");
 pub const CHECK: &[u8] = lucide!("check");
 pub const ZAP: &[u8] = lucide!("zap");
 
@@ -82,6 +84,8 @@ pub const ALL: &[(&str, &[u8])] = &[
     ("whole-word", WHOLE_WORD),
     ("regex", REGEX),
     ("triangle-alert", TRIANGLE_ALERT),
+    ("circle-x", CIRCLE_X),
+    ("info", INFO),
     ("check", CHECK),
     ("zap", ZAP),
 ];

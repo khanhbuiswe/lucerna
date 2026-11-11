@@ -1,14 +1,19 @@
 //! Painting a laid-out [`Frame`]: background, active line, selection,
-//! text, whitespace marks, bracket boxes and the gutter.
+//! text, whitespace marks, bracket boxes, diagnostics and the gutter.
 
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ContentMask, Pixels, ShapedLine, TextAlign, Window, fill, outline, point, px, size,
+    App, Bounds, ContentMask, Pixels, ShapedLine, TextAlign, TransformationMatrix, UnderlineStyle,
+    Window, fill, outline, point, px, size,
 };
 use lucerna_text::Point;
 
-use super::Frame;
+use super::{
+    DIAGNOSTIC_COLUMN, DIAGNOSTIC_ICON, Frame, INLINE_BACKGROUND_ALPHA, INLINE_RADIUS,
+    SCROLLBAR_MARK_HEIGHT,
+};
+use crate::code_view::MarkStyle;
 use crate::ui::SCROLLBAR_WIDTH;
 
 pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
@@ -70,6 +75,15 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
         if let Some((dot, arrow)) = &frame.whitespace {
             paint_whitespace(frame, dot, arrow, window, cx);
         }
+        paint_marks(frame, window);
+        for inline in &frame.diagnostics.inline {
+            let background = inline.color.opacity(INLINE_BACKGROUND_ALPHA);
+            window.paint_quad(fill(inline.pill, background).corner_radii(px(INLINE_RADIUS)));
+            inline
+                .text
+                .paint(inline.origin, lh, TextAlign::Left, None, window, cx)
+                .ok();
+        }
         for p in &frame.brackets {
             let Some(row) = frame
                 .rows
@@ -105,9 +119,71 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
             .paint(origin, lh, TextAlign::Left, None, window, cx)
             .ok();
     }
+    let inset = px((DIAGNOSTIC_COLUMN - DIAGNOSTIC_ICON) / 2.);
+    for (top, svg, color) in &frame.diagnostics.icons {
+        let bounds = Bounds::new(
+            point(
+                frame.bounds.left() + inset,
+                *top + (lh - px(DIAGNOSTIC_ICON)) / 2.,
+            ),
+            size(px(DIAGNOSTIC_ICON), px(DIAGNOSTIC_ICON)),
+        );
+        // The data is static: its address names it in the sprite atlas.
+        let key = format!("lucerna-diagnostic-icon-{:p}", svg.as_ptr());
+        window
+            .paint_svg(
+                bounds,
+                key.into(),
+                Some(svg),
+                TransformationMatrix::unit(),
+                *color,
+                cx,
+            )
+            .ok();
+    }
+    // The right half of the scrollbar track, under the thumb.
+    let half = px(SCROLLBAR_WIDTH / 2.);
+    for (top, color) in &frame.diagnostics.scrollbar {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(frame.bounds.right() - half, *top),
+                size(half, px(SCROLLBAR_MARK_HEIGHT)),
+            ),
+            *color,
+        ));
+    }
     if let Some(thumb) = frame.thumb {
         window
             .paint_quad(fill(thumb, colors.scrollbar_thumb).corner_radii(px(SCROLLBAR_WIDTH / 2.)));
+    }
+}
+
+/// Diagnostic marks over the text: wavy underlines in the severity's
+/// color, faded text (the background drawn over it) and strike lines.
+fn paint_marks(frame: &Frame, window: &mut Window) {
+    let lh = frame.line_height;
+    for (range, style, color) in &frame.diagnostics.marks {
+        for b in range_bounds(frame, range.clone()) {
+            match style {
+                MarkStyle::Wavy => window.paint_underline(
+                    point(b.left(), b.top() + frame.diagnostics.underline_y),
+                    b.size.width,
+                    &UnderlineStyle {
+                        thickness: px(1.),
+                        color: Some(*color),
+                        wavy: true,
+                    },
+                ),
+                MarkStyle::Fade => window.paint_quad(fill(b, frame.colors.fade)),
+                MarkStyle::Strike => window.paint_quad(fill(
+                    Bounds::new(
+                        point(b.left(), b.top() + lh / 2.),
+                        size(b.size.width, px(1.)),
+                    ),
+                    frame.colors.strike,
+                )),
+            }
+        }
     }
 }
 

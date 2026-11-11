@@ -199,6 +199,9 @@ impl Documents {
         });
         match self.docs.get_mut(&key) {
             Some(doc) => {
+                // The language servers feed the views they know of; a new
+                // view starts with what its siblings show.
+                let diagnostics = doc.views().find_map(|v| v.read(cx).diagnostics_source());
                 doc.views.push(view.downgrade());
                 let state = doc.state.clone();
                 let (snapshot, syntax) = (doc.snapshot.clone(), doc.syntax.clone());
@@ -215,6 +218,9 @@ impl Documents {
                     }
                     if let Some(row) = scroll {
                         v.set_scroll_top_row(row, cx);
+                    }
+                    if let Some(diagnostics) = diagnostics {
+                        v.set_diagnostics(diagnostics, cx);
                     }
                     if let Some(p) = go_to {
                         v.go_to(p, cx);

@@ -10,12 +10,14 @@ use gpui::{
     App, Bounds, CursorStyle, DispatchPhase, Element, ElementId, Font, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
     MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent, ShapedLine, SharedString,
-    Style, TextRun, Window, font, point, px, relative, size,
+    Style, TextRun, Window, font, point, px, relative, size, underline_y_offset,
 };
+use lucerna_lsp::diagnostics::Severity;
 use lucerna_text::Point;
-use lucerna_theme::Theme;
+use lucerna_theme::{Theme, UiColors};
 
 use super::cache::ShapeKey;
+use super::diagnostics::MarkStyle;
 use super::layout::{FoldState, char_columns, display_lines_with_tab_size, row_range, row_start};
 use super::selection::{self, Selection};
 use super::{CodeView, Drag, hsla};
@@ -34,6 +36,18 @@ const CURSOR_ALPHA: f32 = 0.4;
 /// Most search matches painted in one frame (a minified line can hold
 /// thousands).
 const MAX_PAINTED_MATCHES: usize = 2_000;
+/// The diagnostics icon column at the gutter's left edge, and its icons.
+const DIAGNOSTIC_COLUMN: f32 = 16.;
+const DIAGNOSTIC_ICON: f32 = 12.;
+/// The gap before an inline diagnostic, in ems.
+const INLINE_GAP_EMS: f32 = 4.;
+const INLINE_PADDING_X: f32 = 4.;
+const INLINE_RADIUS: f32 = 2.;
+const INLINE_BACKGROUND_ALPHA: f32 = 0.05;
+/// What is left of faded (`Unnecessary`) text: the background drawn over
+/// it at 70%.
+const FADE_ALPHA: f32 = 0.7;
+const SCROLLBAR_MARK_HEIGHT: f32 = 2.;
 
 /// Maps between a wrapped piece's buffer columns and the bytes of its
 /// displayed text, where tabs are expanded to spaces.
@@ -156,7 +170,22 @@ pub(crate) struct Frame {
     hitbox: Option<Hitbox>,
     /// The overlay scrollbar thumb, while the rows overflow.
     thumb: Option<Bounds<Pixels>>,
+    diagnostics: FrameDiagnostics,
     colors: FrameColors,
+}
+
+/// The diagnostics on screen, laid out.
+#[derive(Default)]
+pub(crate) struct FrameDiagnostics {
+    /// Marks touching the rows on screen, with their color.
+    marks: Vec<(std::ops::Range<Point>, MarkStyle, Hsla)>,
+    /// From a display line's top to its underline.
+    underline_y: Pixels,
+    /// Gutter icons: (top, svg, color).
+    icons: Vec<(Pixels, &'static [u8], Hsla)>,
+    inline: Vec<InlineDiagnostic>,
+    /// Scrollbar marks: (top, color).
+    scrollbar: Vec<(Pixels, Hsla)>,
 }
 
 #[derive(Clone, Copy)]
@@ -170,6 +199,45 @@ struct FrameColors {
     active_match: Hsla,
     cursor: Hsla,
     scrollbar_thumb: Hsla,
+    fade: Hsla,
+    strike: Hsla,
+}
+
+/// An inline diagnostic message after a row's text.
+struct InlineDiagnostic {
+    buffer_row: u32,
+    pill: Bounds<Pixels>,
+    origin: gpui::Point<Pixels>,
+    text: ShapedLine,
+    color: Hsla,
+}
+
+/// Where [`CodeView::layout_diagnostics`] puts things.
+struct DiagnosticGeometry {
+    bounds: Bounds<Pixels>,
+    text_bounds: Bounds<Pixels>,
+    text_x: Pixels,
+    line_height: Pixels,
+    font_size: Pixels,
+    icon_column: bool,
+    underline_y: Pixels,
+}
+
+fn severity_color(ui: &UiColors, severity: Severity) -> Hsla {
+    hsla(match severity {
+        Severity::Error => ui.error,
+        Severity::Warning => ui.warning,
+        Severity::Information => ui.info,
+        Severity::Hint => ui.hint,
+    })
+}
+
+fn severity_icon(severity: Severity) -> &'static [u8] {
+    match severity {
+        Severity::Error => crate::icons::CIRCLE_X,
+        Severity::Warning => crate::icons::TRIANGLE_ALERT,
+        Severity::Information | Severity::Hint => crate::icons::INFO,
+    }
 }
 
 impl Frame {
@@ -179,6 +247,18 @@ impl Frame {
 
     pub fn visible_rows(&self) -> u32 {
         (self.bounds.size.height / self.line_height).floor().max(0.) as u32
+    }
+
+    pub fn gutter_width(&self) -> f32 {
+        f32::from(self.text_bounds.left() - self.bounds.left())
+    }
+
+    pub fn inline_rows(&self) -> Vec<u32> {
+        self.diagnostics
+            .inline
+            .iter()
+            .map(|i| i.buffer_row)
+            .collect()
     }
 
     /// The buffer position under `position`, clamped to the rows on screen.
@@ -303,10 +383,21 @@ impl CodeView {
             .ok()
             .filter(|w| *w > px(0.))
             .unwrap_or(font_size * 0.6);
+        let underline_y = underline_y_offset(
+            line_height,
+            text_system.ascent(font_id, font_size),
+            text_system.descent(font_id, font_size),
+        );
 
         let line_count = self.snapshot.line_count();
         let digits = line_count.max(1).ilog10() + 1;
-        let gutter_width = char_width * (digits.max(2) as f32 + GUTTER_EXTRA_CHARS);
+        let icon_column = self.config.gutter_icons && self.diagnostics_source;
+        let gutter_width = char_width * (digits.max(2) as f32 + GUTTER_EXTRA_CHARS)
+            + if icon_column {
+                px(DIAGNOSTIC_COLUMN)
+            } else {
+                px(0.)
+            };
         let text_bounds = Bounds {
             origin: point(bounds.left() + gutter_width, bounds.top()),
             size: size(
@@ -482,6 +573,20 @@ impl CodeView {
                 )
             });
 
+        let diagnostics = self.layout_diagnostics(
+            &frame_rows,
+            DiagnosticGeometry {
+                bounds,
+                text_bounds,
+                text_x,
+                line_height,
+                font_size,
+                icon_column,
+                underline_y,
+            },
+            ui,
+            window,
+        );
         let frame = Arc::new(Frame {
             bounds,
             text_bounds,
@@ -501,6 +606,7 @@ impl CodeView {
             whitespace,
             hitbox: Some(hitbox),
             thumb,
+            diagnostics,
             colors: FrameColors {
                 background: hsla(ui.editor_background),
                 gutter: hsla(ui.editor_background),
@@ -511,10 +617,104 @@ impl CodeView {
                 active_match: hsla(ui.editor_foreground).opacity(ACTIVE_MATCH_ALPHA),
                 cursor: hsla(ui.editor_foreground).opacity(CURSOR_ALPHA),
                 scrollbar_thumb: hsla(ui.scrollbar_thumb),
+                fade: hsla(ui.editor_background).opacity(FADE_ALPHA),
+                strike: hsla(ui.editor_foreground),
             },
         });
         self.frame = Some(frame.clone());
         frame
+    }
+
+    /// The diagnostics on `rows`: marks, gutter icons (when the column
+    /// shows), inline messages (when enabled; shaped only on screen) and
+    /// the scrollbar marks of the whole file.
+    fn layout_diagnostics(
+        &self,
+        rows: &[FrameRow],
+        g: DiagnosticGeometry,
+        ui: &UiColors,
+        window: &mut Window,
+    ) -> FrameDiagnostics {
+        let diags = &self.diagnostic_rows;
+        let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
+            return FrameDiagnostics::default();
+        };
+        let marks = diags
+            .marks_in(first.buffer_row..last.buffer_row + 1)
+            .map(|m| (m.range.clone(), m.style, severity_color(ui, m.severity)))
+            .collect();
+        let icons = if g.icon_column {
+            rows.iter()
+                .filter(|r| r.piece == 0)
+                .filter_map(|r| {
+                    let severity = diags.gutter(r.buffer_row)?;
+                    Some((r.top, severity_icon(severity), severity_color(ui, severity)))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut inline = Vec::new();
+        if self.config.inline_diagnostics {
+            let font_size = (g.font_size - px(1.)).max(px(1.));
+            for r in rows.iter().filter(|r| r.is_last_piece()) {
+                let Some((severity, message)) = diags.inline(r.buffer_row) else {
+                    continue;
+                };
+                let left = g.text_x + r.piece().line.width() + g.font_size * INLINE_GAP_EMS;
+                if left >= g.text_bounds.right() || message.is_empty() {
+                    continue;
+                }
+                let color = severity_color(ui, severity);
+                let text = shape(
+                    window,
+                    message.to_owned(),
+                    font_size,
+                    self.base_font(),
+                    color,
+                );
+                let pill = Bounds::new(
+                    point(left, r.top + px(2.)),
+                    size(
+                        text.width() + px(2. * INLINE_PADDING_X),
+                        (g.line_height - px(4.)).max(px(0.)),
+                    ),
+                );
+                let origin = point(left + px(INLINE_PADDING_X), r.top);
+                inline.push(InlineDiagnostic {
+                    buffer_row: r.buffer_row,
+                    pill,
+                    origin,
+                    text,
+                    color,
+                });
+            }
+        }
+        // At each row's share of the rows shown (folded ones left out).
+        let line_count = self.snapshot.line_count();
+        let shown = (line_count - self.folds.hidden_before(line_count)).max(1);
+        let track = f32::from(g.bounds.size.height) - SCROLLBAR_MARK_HEIGHT;
+        let mut scrollbar: Vec<(Pixels, Hsla, Severity)> = Vec::new();
+        for &(row, severity) in diags.scrollbar() {
+            let index = row - self.folds.hidden_before(row.min(line_count));
+            let top = g.bounds.top() + px((index as f32 / shown as f32 * track).round());
+            match scrollbar.last_mut() {
+                // One mark per pixel row, the most severe.
+                Some(prev) if prev.0 == top => {
+                    if severity < prev.2 {
+                        *prev = (top, severity_color(ui, severity), severity);
+                    }
+                }
+                _ => scrollbar.push((top, severity_color(ui, severity), severity)),
+            }
+        }
+        FrameDiagnostics {
+            marks,
+            underline_y: g.underline_y,
+            icons,
+            inline,
+            scrollbar: scrollbar.into_iter().map(|(y, c, _)| (y, c)).collect(),
+        }
     }
 
     /// The cell the cursor overlay covers: from its column, moved back to
