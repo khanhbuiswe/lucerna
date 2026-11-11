@@ -5,7 +5,7 @@ use std::path::Path;
 use encoding_rs::Encoding;
 use ropey::Rope;
 
-use crate::load::{LoadError, check_size, decode};
+use crate::load::{Decoded, LoadError, check_size, decode_file};
 use crate::reload::Reload;
 
 /// The dominant line ending of a file, for the status bar.
@@ -27,6 +27,8 @@ pub struct Buffer {
     rope: Rope,
     encoding: &'static Encoding,
     line_ending: LineEnding,
+    has_bom: bool,
+    disk_hash: u64,
     force_text: bool,
 }
 
@@ -39,13 +41,33 @@ impl Buffer {
     }
 
     pub fn from_bytes(bytes: &[u8], force_text: bool) -> Result<Buffer, LoadError> {
-        let (text, encoding) = decode(bytes, force_text)?;
-        Ok(Buffer {
-            line_ending: dominant_line_ending(&text),
-            rope: Rope::from_str(&text),
-            encoding,
-            force_text,
-        })
+        let mut buffer = Buffer::from_decoded(decode_file(bytes, force_text)?);
+        buffer.force_text = force_text;
+        Ok(buffer)
+    }
+
+    pub fn from_decoded(decoded: Decoded) -> Buffer {
+        Buffer {
+            rope: Rope::from_str(&decoded.text),
+            encoding: decoded.encoding,
+            line_ending: decoded.line_ending,
+            has_bom: decoded.has_bom,
+            disk_hash: decoded.hash,
+            force_text: false,
+        }
+    }
+
+    pub fn has_bom(&self) -> bool {
+        self.has_bom
+    }
+
+    /// The hash of the bytes last loaded or saved.
+    pub fn disk_hash(&self) -> u64 {
+        self.disk_hash
+    }
+
+    pub fn set_line_ending(&mut self, line_ending: LineEnding) {
+        self.line_ending = line_ending;
     }
 
     pub fn encoding(&self) -> &'static Encoding {
@@ -65,29 +87,21 @@ impl Buffer {
     /// Replaces the contents with `bytes` and describes what changed.
     /// On error the buffer is left untouched.
     pub fn reload(&mut self, bytes: &[u8]) -> Result<Reload, LoadError> {
-        let (text, encoding) = decode(bytes, self.force_text)?;
+        let decoded = decode_file(bytes, self.force_text)?;
         let new = BufferSnapshot {
-            rope: Rope::from_str(&text),
+            rope: Rope::from_str(&decoded.text),
         };
         let reload = Reload::diff(&self.snapshot(), &new);
-        self.line_ending = dominant_line_ending(&text);
-        self.encoding = encoding;
+        self.line_ending = decoded.line_ending;
+        self.encoding = decoded.encoding;
+        self.has_bom = decoded.has_bom;
+        self.disk_hash = decoded.hash;
         self.rope = new.rope;
         Ok(reload)
     }
 
     pub fn is_large(&self, max_bytes: u64, max_lines: u32) -> bool {
         self.rope.len_bytes() as u64 > max_bytes || self.snapshot().line_count() > max_lines
-    }
-}
-
-fn dominant_line_ending(text: &str) -> LineEnding {
-    let lf = text.matches('\n').count();
-    let crlf = text.matches("\r\n").count();
-    if crlf > lf - crlf {
-        LineEnding::CrLf
-    } else {
-        LineEnding::Lf
     }
 }
 
@@ -185,3 +199,62 @@ const _: fn() = || {
     fn assert_send_sync<T: Send + Sync + Clone>() {}
     assert_send_sync::<BufferSnapshot>();
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use encoding_rs::UTF_16LE;
+
+    fn all_text(b: &Buffer) -> String {
+        let s = b.snapshot();
+        s.text_for_range(0..s.len_bytes())
+    }
+
+    #[test]
+    fn crlf_is_normalised_and_remembered() {
+        let b = Buffer::from_bytes(b"a\r\nb\r\n", false).unwrap();
+        assert_eq!(all_text(&b), "a\nb\n");
+        assert_eq!(b.line_ending(), LineEnding::CrLf);
+        assert_eq!(b.snapshot().line(0), "a");
+    }
+
+    #[test]
+    fn lone_cr_is_kept() {
+        let b = Buffer::from_bytes(b"a\rb\n", false).unwrap();
+        assert_eq!(all_text(&b), "a\rb\n");
+    }
+
+    #[test]
+    fn mixed_endings_pick_majority() {
+        let b = Buffer::from_bytes(b"a\r\nb\r\nc\n", false).unwrap();
+        assert_eq!(b.line_ending(), LineEnding::CrLf);
+        assert_eq!(all_text(&b), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn bom_is_recorded() {
+        let b = Buffer::from_bytes(b"\xEF\xBB\xBFx", false).unwrap();
+        assert!(b.has_bom());
+        assert_eq!(all_text(&b), "x");
+        let b = Buffer::from_bytes(b"\xFF\xFEx\x00", false).unwrap();
+        assert!(b.has_bom());
+        assert_eq!(b.encoding(), UTF_16LE);
+        assert!(!Buffer::from_bytes(b"x", false).unwrap().has_bom());
+    }
+
+    #[test]
+    fn hash_matches_bytes() {
+        let a = Buffer::from_bytes(b"same", false).unwrap();
+        let b = Buffer::from_bytes(b"same", false).unwrap();
+        let c = Buffer::from_bytes(b"other", false).unwrap();
+        assert_eq!(a.disk_hash(), b.disk_hash());
+        assert_ne!(a.disk_hash(), c.disk_hash());
+    }
+
+    #[test]
+    fn set_line_ending_overrides() {
+        let mut b = Buffer::from_bytes(b"a\n", false).unwrap();
+        b.set_line_ending(LineEnding::CrLf);
+        assert_eq!(b.line_ending(), LineEnding::CrLf);
+    }
+}

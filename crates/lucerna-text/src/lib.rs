@@ -6,5 +6,5 @@ mod load;
 mod reload;
 
 pub use buffer::{Buffer, BufferSnapshot, LineEnding, Point};
-pub use load::{LoadError, MAX_OPEN_BYTES, check_size};
+pub use load::{Decoded, LoadError, MAX_OPEN_BYTES, check_size, decode_file};
 pub use reload::Reload;
