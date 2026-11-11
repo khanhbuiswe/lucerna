@@ -1,10 +1,12 @@
-//! Built-in language server adapters for servers found on `PATH`.
+//! Finding a server's project root from its root markers.
 
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
+use globset::{Glob, GlobMatcher};
 use serde::Deserialize;
-use serde_json::Value;
+
+use crate::table::ServerDef;
 
 /// Which marker directory wins when several enclose a file.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -21,157 +23,46 @@ pub enum RootSearch {
     NearestByMarker,
 }
 
-pub trait Adapter: Send + Sync + 'static {
-    /// The server key used in settings, e.g. `rust-analyzer`.
-    fn name(&self) -> &'static str;
-    /// Lucerna language ids this server handles.
-    fn language_ids(&self) -> &'static [&'static str];
-    /// Executable name looked up on `PATH`.
-    fn binary(&self) -> &'static str;
-    fn args(&self) -> &'static [&'static str];
-    fn root_markers(&self) -> &'static [&'static str];
-    fn root_search(&self) -> RootSearch {
-        RootSearch::Nearest
+/// A root marker: a file or directory name, or a glob (`*.sln`) over the
+/// names of a directory's entries.
+enum Marker<'a> {
+    Name(&'a str),
+    Glob(GlobMatcher),
+    /// A glob that does not parse: matches nothing.
+    Invalid,
+}
+
+impl<'a> Marker<'a> {
+    fn new(marker: &'a str) -> Marker<'a> {
+        if !marker.contains(['*', '?']) {
+            return Marker::Name(marker);
+        }
+        match Glob::new(marker) {
+            Ok(glob) => Marker::Glob(glob.compile_matcher()),
+            Err(_) => Marker::Invalid,
+        }
     }
-    /// Arguments of the check run before use; empty means do not probe.
-    fn probe_args(&self) -> &'static [&'static str] {
-        &["--version"]
-    }
-    /// The language id sent in `didOpen`.
-    fn lsp_language_id(&self, lucerna_id: &str) -> String {
-        lucerna_id.to_string()
-    }
-    fn initialization_options(&self) -> Option<Value> {
-        None
-    }
-    fn enabled_by_default(&self) -> bool {
-        true
+
+    fn in_dir(&self, dir: &Path) -> bool {
+        match self {
+            Marker::Name(name) => dir.join(name).exists(),
+            Marker::Glob(glob) => fs::read_dir(dir).is_ok_and(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .any(|entry| glob.is_match(entry.file_name()))
+            }),
+            Marker::Invalid => false,
+        }
     }
 }
 
-struct Static {
-    name: &'static str,
-    language_ids: &'static [&'static str],
-    binary: &'static str,
-    args: &'static [&'static str],
-    root_markers: &'static [&'static str],
-    root_search: RootSearch,
-    probe_args: &'static [&'static str],
-    enabled_by_default: bool,
-}
-
-impl Adapter for Static {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-    fn language_ids(&self) -> &'static [&'static str] {
-        self.language_ids
-    }
-    fn binary(&self) -> &'static str {
-        self.binary
-    }
-    fn args(&self) -> &'static [&'static str] {
-        self.args
-    }
-    fn root_markers(&self) -> &'static [&'static str] {
-        self.root_markers
-    }
-    fn root_search(&self) -> RootSearch {
-        self.root_search
-    }
-    fn probe_args(&self) -> &'static [&'static str] {
-        self.probe_args
-    }
-    fn enabled_by_default(&self) -> bool {
-        self.enabled_by_default
-    }
-}
-
-const PYTHON_MARKERS: &[&str] = &[
-    "pyproject.toml",
-    "setup.py",
-    "setup.cfg",
-    "pyrightconfig.json",
-];
-
-pub fn builtin_adapters() -> Vec<Arc<dyn Adapter>> {
-    let nearest = Static {
-        name: "",
-        language_ids: &[],
-        binary: "",
-        args: &[],
-        root_markers: &[],
-        root_search: RootSearch::Nearest,
-        probe_args: &["--version"],
-        enabled_by_default: true,
-    };
-    let all = vec![
-        Static {
-            name: "rust-analyzer",
-            language_ids: &["rust"],
-            binary: "rust-analyzer",
-            root_markers: &["Cargo.toml"],
-            root_search: RootSearch::Outermost,
-            ..nearest
-        },
-        Static {
-            name: "gopls",
-            language_ids: &["go"],
-            binary: "gopls",
-            root_markers: &["go.work", "go.mod"],
-            root_search: RootSearch::NearestByMarker,
-            probe_args: &["version"],
-            ..nearest
-        },
-        Static {
-            name: "basedpyright",
-            language_ids: &["python"],
-            binary: "basedpyright-langserver",
-            args: &["--stdio"],
-            root_markers: PYTHON_MARKERS,
-            probe_args: &[],
-            ..nearest
-        },
-        Static {
-            name: "pyright",
-            language_ids: &["python"],
-            binary: "pyright-langserver",
-            args: &["--stdio"],
-            root_markers: PYTHON_MARKERS,
-            probe_args: &[],
-            enabled_by_default: false,
-            ..nearest
-        },
-        Static {
-            name: "typescript-language-server",
-            language_ids: &[
-                "typescript",
-                "typescriptreact",
-                "javascript",
-                "javascriptreact",
-            ],
-            binary: "typescript-language-server",
-            args: &["--stdio"],
-            root_markers: &["tsconfig.json", "jsconfig.json", "package.json"],
-            ..nearest
-        },
-        Static {
-            name: "clangd",
-            language_ids: &["c", "cpp"],
-            binary: "clangd",
-            root_markers: &["compile_commands.json", ".clangd"],
-            ..nearest
-        },
-    ];
-    all.into_iter().map(|a| Arc::new(a) as _).collect()
-}
-
-/// The project root `adapter` uses for `file`. Never above `workspace_root`;
+/// The project root `def` uses for `file`. Never above `workspace_root`;
 /// the workspace root when no marker is found. `None` when the file lies
 /// outside the workspace: no server is ever started for such a root (it is
 /// not trusted, and a library file would index a whole registry); the file
-/// joins an already running server instead.
-pub fn find_root(adapter: &dyn Adapter, file: &Path, workspace_root: &Path) -> Option<PathBuf> {
+/// joins an already running server instead. Markers containing `*` or `?`
+/// are globs over the entry names of each directory.
+pub fn find_root(def: &ServerDef, file: &Path, workspace_root: &Path) -> Option<PathBuf> {
     let parent = file.parent().unwrap_or(file);
     if !parent.starts_with(workspace_root) {
         return None;
@@ -181,17 +72,18 @@ pub fn find_root(adapter: &dyn Adapter, file: &Path, workspace_root: &Path) -> O
         .ancestors()
         .take_while(|dir| dir.starts_with(workspace_root))
         .collect();
-    let markers = adapter.root_markers();
-    let has = |dir: &Path, marker: &str| dir.join(marker).exists();
-    let found = match adapter.root_search() {
-        RootSearch::Nearest => dirs.iter().find(|dir| markers.iter().any(|m| has(dir, m))),
+    let markers: Vec<Marker<'_>> = def.root_markers.iter().map(|m| Marker::new(m)).collect();
+    let found = match def.root_search {
+        RootSearch::Nearest => dirs
+            .iter()
+            .find(|dir| markers.iter().any(|m| m.in_dir(dir))),
         RootSearch::Outermost => dirs
             .iter()
             .rev()
-            .find(|dir| markers.iter().any(|m| has(dir, m))),
+            .find(|dir| markers.iter().any(|m| m.in_dir(dir))),
         RootSearch::NearestByMarker => markers
             .iter()
-            .find_map(|m| dirs.iter().find(|dir| has(dir, m))),
+            .find_map(|m| dirs.iter().find(|dir| m.in_dir(dir))),
     };
     Some(found.map_or_else(|| workspace_root.to_path_buf(), |dir| dir.to_path_buf()))
 }

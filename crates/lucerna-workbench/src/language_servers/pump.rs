@@ -132,7 +132,7 @@ impl LanguageServers {
     ) {
         let current = self.is_current(key, generation);
         match event {
-            ServerEvent::Log(line) => self.push_log(key.server, line.kind, line.text, cx),
+            ServerEvent::Log(line) => self.push_log(&key.server, line.kind, line.text, cx),
             ServerEvent::ShowMessage { kind, message } => {
                 if current && kind == MessageType::ERROR {
                     self.errors
@@ -142,7 +142,7 @@ impl LanguageServers {
                     cx.emit(LanguageServersEvent::StatusChanged);
                     cx.notify();
                 }
-                self.push_log(key.server, LogKind::Server, message, cx);
+                self.push_log(&key.server, LogKind::Server, message, cx);
             }
             _ if !current => {}
             ServerEvent::Exited(code) => {
@@ -232,17 +232,17 @@ impl LanguageServers {
 
     pub(super) fn push_log(
         &mut self,
-        server: &'static str,
+        server: &Arc<str>,
         kind: LogKind,
         text: String,
         cx: &mut Context<Self>,
     ) {
-        let log = self.logs.entry(server).or_default();
+        let log = self.logs.entry(server.clone()).or_default();
         if log.len() == LOG_LINES {
             log.pop_front();
         }
         log.push_back(LogLine { kind, text });
-        cx.emit(LanguageServersEvent::LogChanged(server));
+        cx.emit(LanguageServersEvent::LogChanged(server.clone()));
     }
 
     /// Queues `paths` for the next [`LanguageServersEvent::DiagnosticsChanged`],
@@ -313,15 +313,15 @@ fn summarize_progress<'a>(
     progress: &'a HashMap<ServerKey, Vec<ProgressItem>>,
     starting: impl Iterator<Item = &'a ServerKey>,
 ) -> Option<String> {
-    let mut items: Vec<(&'static str, &ProgressItem)> = progress
+    let mut items: Vec<(&str, &ProgressItem)> = progress
         .iter()
-        .flat_map(|(key, items)| items.iter().map(|item| (key.server, item)))
+        .flat_map(|(key, items)| items.iter().map(|item| (&*key.server, item)))
         .collect();
     items.sort_by_key(|(_, item)| std::cmp::Reverse(item.updated));
     let mut starting: Vec<&ServerKey> = starting
         .filter(|key| progress.get(*key).is_none_or(Vec::is_empty))
         .collect();
-    starting.sort_by(|a, b| (a.server, &a.root).cmp(&(b.server, &b.root)));
+    starting.sort_by(|a, b| (&a.server, &a.root).cmp(&(&b.server, &b.root)));
     let first = match items.first() {
         Some((server, item)) => format!("{server}: {}", item.text()),
         None => format!("Starting {}…", starting.first()?.server),
@@ -360,10 +360,10 @@ mod tests {
         assert_eq!(item.text(), "Indexing 45% — crates/foo");
     }
 
-    fn key(server: &'static str) -> ServerKey {
+    fn key(server: &str) -> ServerKey {
         ServerKey {
             root: Arc::from(Path::new("/p")),
-            server,
+            server: server.into(),
         }
     }
 

@@ -15,10 +15,10 @@ fn snap(text: &str) -> BufferSnapshot {
         .snapshot()
 }
 
-fn key(server: &'static str) -> ServerKey {
+fn key(server: &str) -> ServerKey {
     ServerKey {
         root: Path::new("/proj").into(),
-        server,
+        server: server.into(),
     }
 }
 

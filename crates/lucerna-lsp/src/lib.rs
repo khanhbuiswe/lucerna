@@ -19,12 +19,13 @@ pub mod table;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod transport;
+pub mod vars;
 
-pub use adapters::{Adapter, RootSearch, builtin_adapters, find_root};
+pub use adapters::{RootSearch, find_root};
 pub use capabilities::initialize_params;
 pub use client::{LanguageServer, LogKind, LogLine, LspError, RequestFuture, ServerEvent};
 pub use launcher::{Launcher, ProcessLauncher};
 pub use registry::{Registry, ServerKey, SettingsDiff, Slot};
-pub use settings::{
-    BinarySettings, ServerSettings, ServersSettings, StartError, resolve_launch, select_servers,
-};
+pub use settings::{BinarySettings, StartError, resolve_launch, select_servers};
+pub use table::{ServerDef, ServerTable, TableError};
+pub use vars::Vars;

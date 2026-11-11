@@ -532,3 +532,55 @@ fn restricted_button_press_closes_the_open_modal(cx: &mut TestAppContext) {
     click("restricted-mode", cx);
     assert!(shown("trust-modal", cx), "the next click opens it");
 }
+
+#[gpui::test]
+fn workspace_defined_server_runs_only_when_trusted(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    fs::write(dir.path().join("x.rb"), "puts 1\n").unwrap();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("evil", fake.clone()));
+    let workspace = r#"{ "lsp": { "evil": { "command": "evil", "file_types": ["rb"] } } }"#;
+    let (wb, cx) = trust_workbench(
+        dir.path(),
+        data.path(),
+        launcher.clone(),
+        "{}",
+        Some(workspace),
+        cx,
+    );
+
+    open(&wb, "x.rb", cx);
+    assert!(launcher.launches().is_empty());
+    assert!(fake.received().is_empty());
+    assert!(
+        !shown("trust-modal", cx),
+        "an untrusted folder's own server does not count as found"
+    );
+    let servers = language_servers(&wb, cx);
+    assert!(
+        cx.update(|_, cx| servers.read(cx).table().get("evil").is_none()),
+        "the Workspace layer is not read while untrusted"
+    );
+
+    click("restricted-mode", cx);
+    click("trust-continue", cx);
+
+    assert!(is_trusted(&wb, cx));
+    assert!(cx.update(|_, cx| servers.read(cx).table().get("evil").is_some()));
+    let launches = launcher.launches();
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0].program, Path::new("/fake/bin/evil"));
+    assert_eq!(sent(&fake, "textDocument/didOpen").len(), 1);
+}
+
+#[gpui::test]
+fn user_file_type_server_prompts_for_trust(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    fs::write(dir.path().join("x.rb"), "puts 1\n").unwrap();
+    let launcher = Arc::new(FakeLauncher::new().with_server("fake-rb", FakeServer::new()));
+    let user = r#"{ "lsp": { "fake-rb": { "command": "fake-rb", "file_types": ["rb"] } } }"#;
+    let (wb, cx) = trust_workbench(dir.path(), data.path(), launcher, user, None, cx);
+
+    open(&wb, "x.rb", cx);
+    assert!(shown("trust-modal", cx));
+}

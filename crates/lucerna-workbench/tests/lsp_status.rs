@@ -102,7 +102,7 @@ fn not_found_shows_warning_dot_and_message(cx: &mut TestAppContext) {
     let item = status_item(&wb, cx);
     let rows = cx.update(|_, cx| item.read(cx).rows(cx));
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].key.server, "rust-analyzer");
+    assert_eq!(&*rows[0].key.server, "rust-analyzer");
     assert!(matches!(rows[0].state, SlotState::NotFound { .. }));
     assert_eq!(
         rows[0].lines,

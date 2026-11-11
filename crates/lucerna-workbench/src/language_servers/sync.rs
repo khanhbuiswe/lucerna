@@ -9,7 +9,7 @@ use gpui::{Context, Entity};
 use lsp_types::notification::DidChangeWatchedFiles;
 use lsp_types::{DidChangeWatchedFilesParams, FileChangeType};
 use lucerna_lsp::sync::too_large_for_lsp;
-use lucerna_lsp::{LanguageServer, ServerKey, Slot, find_root, select_servers};
+use lucerna_lsp::{LanguageServer, ServerDef, ServerKey, Slot, find_root, select_servers};
 use lucerna_project::{ChangeKind, WorktreeEvent};
 
 use super::{LanguageServers, LanguageServersEvent, OpenDoc, selection};
@@ -156,8 +156,9 @@ impl LanguageServers {
         }
     }
 
-    /// Picks the servers of `path` by its language's settings and looks
-    /// for their roots (and the file's size limits) off the UI thread.
+    /// Picks the servers of `path` by its language's settings (or, without
+    /// a language, by its file type) and looks for their roots (and the
+    /// file's size limits) off the UI thread.
     pub(super) fn find_servers(&mut self, path: &Arc<Path>, cx: &mut Context<Self>) {
         if !self.trusted {
             return;
@@ -168,14 +169,22 @@ impl LanguageServers {
         doc.search += 1;
         let search = doc.search;
         let language = doc.language_id.clone();
-        doc.selection = language.as_deref().map(|lang| selection(lang, cx));
-        let adapters = match (&language, &doc.selection) {
-            (Some(lang), Some(selection)) if selection.enabled => {
-                select_servers(&selection.servers, &self.adapters, lang)
-            }
-            _ => Vec::new(),
+        let selection = selection(language.as_deref(), cx);
+        let defs: Vec<ServerDef> = if selection.enabled {
+            select_servers(
+                &selection.servers,
+                self.registry.table(),
+                language.as_deref(),
+                path,
+            )
+            .into_iter()
+            .cloned()
+            .collect()
+        } else {
+            Vec::new()
         };
-        if adapters.is_empty() {
+        doc.selection = Some(selection);
+        if defs.is_empty() {
             doc._search_task = None;
             doc.too_large = false;
             self.set_keys(path, Vec::new(), cx);
@@ -188,7 +197,7 @@ impl LanguageServers {
         let outside = (!path.starts_with(&self.root)).then(|| {
             let running: Vec<&ServerKey> = self.registry.running().map(|(key, _)| key).collect();
             external_keys(
-                adapters.iter().map(|adapter| adapter.name()),
+                defs.iter().map(|def| &*def.name),
                 self.origins.get(&**path),
                 &running,
                 &self.root,
@@ -202,12 +211,11 @@ impl LanguageServers {
                 if let Some(keys) = outside {
                     return Some(keys);
                 }
-                adapters
-                    .iter()
-                    .filter_map(|adapter| {
+                defs.iter()
+                    .filter_map(|def| {
                         Some(ServerKey {
-                            root: find_root(&**adapter, &file, &root)?.into(),
-                            server: adapter.name(),
+                            root: find_root(def, &file, &root)?.into(),
+                            server: def.name.clone(),
                         })
                     })
                     .collect::<Vec<_>>()
@@ -267,9 +275,7 @@ impl LanguageServers {
         let Some(doc) = self.docs.get(path) else {
             return;
         };
-        let Some(language) = doc.language_id.as_deref() else {
-            return;
-        };
+        let language = doc.language_id.as_deref();
         if !self.trusted || doc.deleted {
             return;
         }
@@ -278,10 +284,10 @@ impl LanguageServers {
             if self.sync.is_open(path, &key) {
                 continue;
             }
-            let Some(adapter) = self.registry.adapter(key.server) else {
+            let Some(def) = self.registry.table().get(&key.server) else {
                 continue;
             };
-            let language_id = adapter.lsp_language_id(language);
+            let language_id = def.lsp_language_id(language);
             self.sync
                 .open(path, &language_id, &doc.snapshot, &[(key, server)]);
             opened = true;
@@ -323,20 +329,20 @@ fn large_file_limits(language: Option<&str>, cx: &gpui::App) -> (u64, u32) {
 /// name: the server whose answer led to the file (`origin`) while it runs,
 /// else a running server of that name, the one rooted at the workspace
 /// first; none when no such server runs. Never a new key.
-fn external_keys(
-    servers: impl Iterator<Item = &'static str>,
+fn external_keys<'a>(
+    servers: impl Iterator<Item = &'a str>,
     origin: Option<&ServerKey>,
     running: &[&ServerKey],
     workspace_root: &Path,
 ) -> Vec<ServerKey> {
     servers
         .filter_map(|server| {
-            if let Some(origin) = origin.filter(|o| o.server == server && running.contains(o)) {
+            if let Some(origin) = origin.filter(|o| &*o.server == server && running.contains(o)) {
                 return Some(origin.clone());
             }
             running
                 .iter()
-                .filter(|key| key.server == server)
+                .filter(|key| &*key.server == server)
                 .min_by_key(|key| (&*key.root != workspace_root, key.root.clone()))
                 .map(|key| (*key).clone())
         })
@@ -347,10 +353,10 @@ fn external_keys(
 mod tests {
     use super::*;
 
-    fn key(root: &str, server: &'static str) -> ServerKey {
+    fn key(root: &str, server: &str) -> ServerKey {
         ServerKey {
             root: Arc::from(Path::new(root)),
-            server,
+            server: server.into(),
         }
     }
 

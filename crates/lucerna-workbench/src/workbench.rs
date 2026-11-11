@@ -281,7 +281,14 @@ impl Workbench {
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
             let root = root.clone();
-            cx.new(|cx| LanguageServers::new(root, &documents, cx))
+            // Servers' `{data_dir}`: the workspace's data dir, else the
+            // app's (a temporary folder when there is none).
+            let data_dir = store
+                .as_ref()
+                .map(|store| store.data_dir().to_path_buf())
+                .or_else(crate::default_data_dir)
+                .unwrap_or_else(|| std::env::temp_dir().join("Lucerna"));
+            cx.new(|cx| LanguageServers::new(root, &documents, data_dir, cx))
         };
         let symbols = SymbolSource::new(root.clone(), &documents, &language_servers, cx);
         // Servers end with the window (without waiting for them) or the

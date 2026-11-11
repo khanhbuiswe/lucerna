@@ -22,7 +22,7 @@ fn snap(text: &str) -> BufferSnapshot {
 fn key(root: &str) -> ServerKey {
     ServerKey {
         root: Path::new(root).into(),
-        server: "fake",
+        server: "fake".into(),
     }
 }
 

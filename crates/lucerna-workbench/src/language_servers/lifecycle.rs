@@ -2,9 +2,9 @@
 //! applying settings changes to the slots.
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::task::Poll;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -15,13 +15,14 @@ use futures::future::BoxFuture;
 use gpui::{App, Context, Global, Task, WeakEntity};
 use lucerna_lsp::sync::{DocumentSync, WatchedFiles};
 use lucerna_lsp::transport::LaunchSpec;
+use lucerna_lsp::vars::{self, Vars, data_dir_for, expand_value, uses_npm_root, uses_variable};
 use lucerna_lsp::{
-    Adapter, LanguageServer, Launcher, LogKind, LspError, ServerEvent, ServerKey, ServerSettings,
-    Slot, StartError, initialize_params, resolve_launch, select_servers,
+    LanguageServer, Launcher, LogKind, LspError, ServerDef, ServerEvent, ServerKey, Slot,
+    StartError, initialize_params, resolve_launch, select_servers,
 };
 use serde_json::Value;
 
-use super::{LanguageServers, LanguageServersEvent, selection, servers_settings};
+use super::{LanguageServers, LanguageServersEvent, selection};
 use crate::tasks::{guarded, try_spawn_guarded};
 
 /// The most [`LanguageServers::shutdown_all`] waits, for all servers (and,
@@ -78,8 +79,10 @@ struct Launched {
     server: Arc<LanguageServer>,
     events: UnboundedReceiver<ServerEvent>,
     spec: LaunchSpec,
-    /// `lsp.<server>.settings` the server was started with.
+    /// `lsp.<server>.settings` the server was started with, expanded.
     settings: Value,
+    /// `lsp.<server>.initialization_options`, expanded.
+    initialization_options: Option<Value>,
 }
 
 /// A launched process waiting for `initialize`, kept so stopping the slot
@@ -224,18 +227,18 @@ impl LanguageServers {
     /// Finds the binary and spawns the server in the background, then
     /// awaits `initialize`. The slot is `Starting` meanwhile.
     pub(super) fn start(&mut self, key: ServerKey, cx: &mut Context<Self>) {
-        let Some(adapter) = self.registry.adapter(key.server) else {
+        let Some(def) = self.registry.table().get(&key.server).cloned() else {
             return;
         };
         let generation = self.bump_generation(&key);
         self.registry.set_slot(key.clone(), Slot::Starting);
         self.progress.remove(&key);
         self.errors.remove(&key);
-        let settings = self.registry.settings(key.server).cloned();
         let (launcher, root) = (self.launcher.clone(), key.root.clone());
+        let (data_dir, npm_root) = (self.data_dir.clone(), self.npm_root.clone());
         let work = cx.background_executor().spawn(async move {
             guarded("lsp-launch", move || {
-                launch(&*adapter, settings.as_ref(), &root, &*launcher)
+                launch(&def, &root, &*launcher, &data_dir, &npm_root)
             })
         });
         cx.spawn(async move |this, cx| {
@@ -269,7 +272,7 @@ impl LanguageServers {
         let launched = match launched {
             Some(Ok(launched)) => launched,
             Some(Err(StartError::NotFound { message })) => {
-                self.push_log(key.server, LogKind::Lifecycle, message.clone(), cx);
+                self.push_log(&key.server, LogKind::Lifecycle, message.clone(), cx);
                 self.registry
                     .set_slot(key.clone(), Slot::NotFound { message });
                 cx.emit(LanguageServersEvent::StatusChanged);
@@ -277,7 +280,7 @@ impl LanguageServers {
                 return;
             }
             Some(Err(StartError::Failed { message, .. })) => {
-                self.push_log(key.server, LogKind::Lifecycle, message.clone(), cx);
+                self.push_log(&key.server, LogKind::Lifecycle, message.clone(), cx);
                 self.set_failed(key, message, cx);
                 return;
             }
@@ -292,6 +295,7 @@ impl LanguageServers {
             events,
             spec,
             settings,
+            initialization_options,
         } = launched;
         let mut command = spec.program.display().to_string();
         for arg in &spec.args {
@@ -299,30 +303,21 @@ impl LanguageServers {
             command.push_str(arg);
         }
         self.push_log(
-            key.server,
+            &key.server,
             LogKind::Lifecycle,
             format!("Binary: {command}"),
             cx,
         );
         self.push_log(
-            key.server,
+            &key.server,
             LogKind::Lifecycle,
             format!("Root: {}", key.root.display()),
             cx,
         );
         self.pump(key.clone(), generation, Arc::downgrade(&server), events, cx);
-        let defaults = self
-            .registry
-            .adapter(key.server)
-            .and_then(|adapter| adapter.initialization_options());
-        let overrides = self
-            .registry
-            .settings(key.server)
-            .and_then(|s| s.initialization_options.clone());
-        let options = merge_options(defaults, overrides);
         let initialize = Rc::new(RefCell::new(Some(
             server
-                .initialize(initialize_params(&key.root, options))
+                .initialize(initialize_params(&key.root, initialization_options))
                 .boxed(),
         )));
         let (pending, task_key) = (initialize.clone(), key.clone());
@@ -377,12 +372,9 @@ impl LanguageServers {
             return;
         }
         // `settings` changed while it started.
-        let settings = self
-            .registry
-            .settings(key.server)
-            .and_then(|s| s.settings.clone())
-            .unwrap_or(Value::Null);
-        if settings != started_with {
+        if let Some(settings) = self.current_settings(key)
+            && settings != started_with
+        {
             server.set_settings(settings);
         }
         self.registry.set_slot(key.clone(), Slot::Running(server));
@@ -437,7 +429,7 @@ impl LanguageServers {
     /// The process is gone or never came up.
     pub(super) fn set_failed(&mut self, key: &ServerKey, message: String, cx: &mut Context<Self>) {
         self.starting.remove(key);
-        let stderr_tail = self.stderr_tail(key.server);
+        let stderr_tail = self.stderr_tail(&key.server);
         self.registry.set_slot(
             key.clone(),
             Slot::Failed {
@@ -450,26 +442,61 @@ impl LanguageServers {
         cx.notify();
     }
 
-    /// After any [`crate::AppState`] change: stops servers no longer
-    /// selected, applies `lsp` changes (restart, retry or reconfigure), and
-    /// finds the servers again for documents whose language's selection
+    /// The variables of the server of `key`. `{npm_root}` has a value
+    /// only once some server's start has looked it up.
+    pub(super) fn vars_for(&self, key: &ServerKey) -> Vars {
+        Vars {
+            root: key.root.to_path_buf(),
+            data_dir: data_dir_for(&self.data_dir, &key.server, &key.root),
+            npm_root: self.npm_root.get().cloned().flatten(),
+        }
+    }
+
+    /// `lsp.<server>.settings` of `key` from the table, expanded (`Null`
+    /// when unset); `None` when a variable cannot be expanded.
+    fn current_settings(&self, key: &ServerKey) -> Option<Value> {
+        let def = self.registry.table().get(&key.server)?;
+        let raw = def.settings.clone().unwrap_or(Value::Null);
+        expand_value(&raw, &self.vars_for(key))
+            .inspect_err(|err| tracing::warn!(server = &*key.server, %err, "lsp settings"))
+            .ok()
+    }
+
+    /// After any [`crate::AppState`] change: rebuilds the server table
+    /// when the `lsp` setting changed and applies the difference (stop,
+    /// restart, retry or reconfigure), stops servers no longer selected,
+    /// and finds the servers again for documents whose selection or table
     /// changed.
     pub(super) fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        let old_errors = self.registry.table().errors.clone();
+        let diff = self.rebuild_table(cx);
+        let table_changed = diff.is_some();
+        let mut status_changed = old_errors != self.registry.table().errors;
         if !self.trusted {
+            // No slot exists while untrusted.
+            if status_changed {
+                cx.emit(LanguageServersEvent::StatusChanged);
+                cx.notify();
+            }
             return;
+        }
+        let diff = diff.unwrap_or_default();
+        for key in &diff.stop {
+            status_changed = true;
+            self.stop_server(key, cx);
+            self.registry.remove(key);
         }
         let deselected: Vec<ServerKey> = self
             .registry
             .keys()
-            .filter(|key| !self.selected_anywhere(key.server, cx))
+            .filter(|key| !self.selected_anywhere(&key.server, cx))
             .cloned()
             .collect();
-        let mut status_changed = !deselected.is_empty();
+        status_changed |= !deselected.is_empty();
         for key in deselected {
             self.stop_server(&key, cx);
             self.registry.remove(&key);
         }
-        let diff = self.registry.set_settings(servers_settings(cx));
         for key in diff.restart {
             match self.registry.slot(&key) {
                 Some(Slot::Running(_) | Slot::Starting) => self.restart(&key, cx),
@@ -477,16 +504,22 @@ impl LanguageServers {
                 Some(Slot::Stopped) | None => {}
             }
         }
-        for (key, settings) in diff.reconfigure {
-            if let Some(Slot::Running(server)) = self.registry.slot(&key) {
-                server.set_settings(settings);
+        for (key, _) in diff.reconfigure {
+            let Some(Slot::Running(server)) = self.registry.slot(&key) else {
+                continue;
+            };
+            match self.current_settings(&key) {
+                Some(settings) => server.set_settings(settings),
+                // A variable (`{npm_root}`) not known yet: a start finds it,
+                // or fails with its message.
+                None => self.restart(&key, cx),
             }
         }
         let stale: Vec<Arc<Path>> = self
             .docs
             .iter()
             .filter(|(_, doc)| {
-                doc.language_id.as_deref().map(|lang| selection(lang, cx)) != doc.selection
+                table_changed || Some(selection(doc.language_id.as_deref(), cx)) != doc.selection
             })
             .map(|(path, _)| path.clone())
             .collect();
@@ -500,35 +533,72 @@ impl LanguageServers {
         }
     }
 
-    /// Whether `server` is enabled and selected for any of its languages.
+    /// Whether `server` is in the table and selected for any of its
+    /// languages, or (for its file types) enabled with language servers
+    /// on.
     fn selected_anywhere(&self, server: &str, cx: &App) -> bool {
-        let Some(adapter) = self.registry.adapter(server) else {
+        let table = self.registry.table();
+        let Some(def) = table.get(server) else {
             return false;
         };
-        adapter.language_ids().iter().any(|lang| {
-            let selection = selection(lang, cx);
-            selection.enabled
-                && select_servers(&selection.servers, &self.adapters, lang)
-                    .iter()
-                    .any(|a| a.name() == server)
-        })
+        let by_file_type =
+            || !def.file_types.is_empty() && def.enabled && selection(None, cx).enabled;
+        by_file_type()
+            || def.languages.iter().any(|lang| {
+                let selection = selection(Some(lang), cx);
+                selection.enabled
+                    && select_servers(&selection.servers, table, Some(lang), Path::new(""))
+                        .iter()
+                        .any(|d| &*d.name == server)
+            })
     }
 }
 
-/// Resolves the binary and starts the process. Blocks (`which`, probe,
-/// login-shell environment, spawn): runs on the background executor.
+fn var_failed(err: &vars::VarError) -> StartError {
+    StartError::Failed {
+        message: err.to_string(),
+        stderr_tail: Vec::new(),
+    }
+}
+
+/// Resolves the binary, expands the variables (looking `npm root -g` up
+/// once, when `def` needs it; creating `{data_dir}` when used) and starts
+/// the process. Blocks (`which`, probe, `npm`, login-shell environment,
+/// spawn): runs on the background executor.
 fn launch(
-    adapter: &dyn Adapter,
-    settings: Option<&ServerSettings>,
+    def: &ServerDef,
     root: &Path,
     launcher: &dyn Launcher,
+    data_dir: &Path,
+    npm_root: &OnceLock<Option<PathBuf>>,
 ) -> Result<Launched, StartError> {
-    let spec = resolve_launch(adapter, settings, root, launcher)?;
-    let server_settings = settings
-        .and_then(|s| s.settings.clone())
-        .unwrap_or(Value::Null);
+    let npm_root = if uses_npm_root(def) {
+        npm_root.get_or_init(|| vars::npm_root(launcher)).clone()
+    } else {
+        npm_root.get().cloned().flatten()
+    };
+    let vars = Vars {
+        root: root.to_path_buf(),
+        data_dir: data_dir_for(data_dir, &def.name, root),
+        npm_root,
+    };
+    let spec = resolve_launch(def, root, launcher, &vars)?;
+    let expand = |value: Option<&Value>| {
+        value
+            .map(|v| expand_value(v, &vars))
+            .transpose()
+            .map_err(|err| var_failed(&err))
+    };
+    let initialization_options = expand(def.initialization_options.as_ref())?;
+    let server_settings = expand(def.settings.as_ref())?.unwrap_or(Value::Null);
+    if uses_variable(def, "data_dir") {
+        std::fs::create_dir_all(&vars.data_dir).map_err(|err| StartError::Failed {
+            message: format!("could not create {}: {err}", vars.data_dir.display()),
+            stderr_tail: Vec::new(),
+        })?;
+    }
     let (server, events) = LanguageServer::start(
-        adapter.name(),
+        &def.name,
         |inbox| launcher.launch(&spec, inbox),
         server_settings.clone(),
     )
@@ -541,43 +611,6 @@ fn launch(
         events,
         spec,
         settings: server_settings,
+        initialization_options,
     })
-}
-
-/// The adapter's `initializationOptions` with the user's on top: objects
-/// merge key by key (recursively), anything else replaces.
-fn merge_options(defaults: Option<Value>, overrides: Option<Value>) -> Option<Value> {
-    match (defaults, overrides) {
-        (Some(Value::Object(mut base)), Some(Value::Object(top))) => {
-            for (key, value) in top {
-                let merged = merge_options(base.remove(&key), Some(value));
-                if let Some(merged) = merged {
-                    base.insert(key, merged);
-                }
-            }
-            Some(Value::Object(base))
-        }
-        (defaults, None) => defaults,
-        (_, overrides) => overrides,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn merge_options_overrides_by_key() {
-        let merged = merge_options(
-            Some(json!({ "a": 1, "nested": { "x": 1, "y": 2 } })),
-            Some(json!({ "b": 2, "nested": { "y": 3 } })),
-        );
-        assert_eq!(
-            merged,
-            Some(json!({ "a": 1, "b": 2, "nested": { "x": 1, "y": 3 } }))
-        );
-        assert_eq!(merge_options(None, Some(json!(1))), Some(json!(1)));
-        assert_eq!(merge_options(Some(json!({})), None), Some(json!({})));
-    }
 }

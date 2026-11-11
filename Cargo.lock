@@ -3318,6 +3318,7 @@ dependencies = [
  "lucerna-text",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tracing",
  "url",

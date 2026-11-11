@@ -1,14 +1,16 @@
 use std::fs;
 use std::path::Path;
 
-use lucerna_lsp::adapters::{Adapter, builtin_adapters, find_root};
+use lucerna_lsp::adapters::find_root;
 use lucerna_lsp::env::{shell_env_from, which};
+use lucerna_lsp::table::{ServerDef, ServerTable};
+use serde_json::json;
 
-fn adapter(name: &str) -> std::sync::Arc<dyn Adapter> {
-    builtin_adapters()
-        .into_iter()
-        .find(|a| a.name() == name)
-        .unwrap_or_else(|| panic!("no adapter {name}"))
+fn adapter(name: &str) -> ServerDef {
+    ServerTable::build(None)
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| panic!("no server {name}"))
 }
 
 fn touch(path: &Path) {
@@ -25,7 +27,7 @@ fn rust_root_is_outermost_cargo_toml() {
     let file = root.join("crates/a/src/lib.rs");
     touch(&file);
     assert_eq!(
-        find_root(&*adapter("rust-analyzer"), &file, root).unwrap(),
+        find_root(&adapter("rust-analyzer"), &file, root).unwrap(),
         root
     );
 }
@@ -38,7 +40,7 @@ fn go_prefers_go_work_over_go_mod() {
     touch(&root.join("sub/go.mod"));
     let file = root.join("sub/main.go");
     touch(&file);
-    assert_eq!(find_root(&*adapter("gopls"), &file, root).unwrap(), root);
+    assert_eq!(find_root(&adapter("gopls"), &file, root).unwrap(), root);
 }
 
 #[test]
@@ -49,7 +51,7 @@ fn go_mod_when_no_go_work() {
     let file = root.join("sub/pkg/main.go");
     touch(&file);
     assert_eq!(
-        find_root(&*adapter("gopls"), &file, root).unwrap(),
+        find_root(&adapter("gopls"), &file, root).unwrap(),
         root.join("sub")
     );
 }
@@ -63,7 +65,7 @@ fn ts_nearest_package_json() {
     let file = root.join("packages/web/src/index.ts");
     touch(&file);
     assert_eq!(
-        find_root(&*adapter("typescript-language-server"), &file, root).unwrap(),
+        find_root(&adapter("typescript-language-server"), &file, root).unwrap(),
         root.join("packages/web")
     );
 }
@@ -78,7 +80,7 @@ fn root_never_escapes_workspace() {
     touch(&file);
     // Marker only above the workspace: falls back to the workspace root.
     assert_eq!(
-        find_root(&*adapter("rust-analyzer"), &file, &root).unwrap(),
+        find_root(&adapter("rust-analyzer"), &file, &root).unwrap(),
         root
     );
 }
@@ -91,7 +93,7 @@ fn file_outside_workspace_has_no_root() {
     let file = dir.path().join("other/x.rs");
     touch(&file);
     touch(&dir.path().join("other/Cargo.toml"));
-    assert_eq!(find_root(&*adapter("rust-analyzer"), &file, &root), None);
+    assert_eq!(find_root(&adapter("rust-analyzer"), &file, &root), None);
 }
 
 #[test]
@@ -100,7 +102,7 @@ fn no_marker_falls_back_to_workspace_root() {
     let root = dir.path();
     let file = root.join("a/b/main.go");
     touch(&file);
-    assert_eq!(find_root(&*adapter("gopls"), &file, root).unwrap(), root);
+    assert_eq!(find_root(&adapter("gopls"), &file, root).unwrap(), root);
 }
 
 #[cfg(unix)]
@@ -207,69 +209,6 @@ fn process_launcher_probe_runs_in_the_project_root() {
 }
 
 #[test]
-fn builtin_adapter_table() {
-    let all = builtin_adapters();
-    let names: Vec<_> = all.iter().map(|a| a.name()).collect();
-    assert_eq!(
-        names,
-        [
-            "rust-analyzer",
-            "gopls",
-            "basedpyright",
-            "pyright",
-            "typescript-language-server",
-            "clangd"
-        ]
-    );
-    let ra = adapter("rust-analyzer");
-    assert_eq!(ra.language_ids(), ["rust"]);
-    assert_eq!(ra.binary(), "rust-analyzer");
-    assert!(ra.args().is_empty());
-    assert_eq!(ra.probe_args(), ["--version"]);
-
-    let go = adapter("gopls");
-    assert_eq!(go.language_ids(), ["go"]);
-    assert_eq!(go.probe_args(), ["version"]);
-    assert_eq!(go.root_markers(), ["go.work", "go.mod"]);
-
-    let bp = adapter("basedpyright");
-    assert_eq!(bp.language_ids(), ["python"]);
-    assert_eq!(bp.binary(), "basedpyright-langserver");
-    assert_eq!(bp.args(), ["--stdio"]);
-    assert!(bp.probe_args().is_empty());
-    assert!(bp.enabled_by_default());
-
-    let py = adapter("pyright");
-    assert_eq!(py.binary(), "pyright-langserver");
-    assert_eq!(py.args(), ["--stdio"]);
-    assert!(py.probe_args().is_empty());
-    assert!(!py.enabled_by_default());
-    assert_eq!(py.root_markers(), bp.root_markers());
-
-    let ts = adapter("typescript-language-server");
-    assert_eq!(
-        ts.language_ids(),
-        [
-            "typescript",
-            "typescriptreact",
-            "javascript",
-            "javascriptreact"
-        ]
-    );
-    assert_eq!(ts.binary(), "typescript-language-server");
-    assert_eq!(ts.args(), ["--stdio"]);
-    assert_eq!(
-        ts.root_markers(),
-        ["tsconfig.json", "jsconfig.json", "package.json"]
-    );
-
-    let cl = adapter("clangd");
-    assert_eq!(cl.language_ids(), ["c", "cpp"]);
-    assert_eq!(cl.binary(), "clangd");
-    assert_eq!(cl.root_markers(), ["compile_commands.json", ".clangd"]);
-}
-
-#[test]
 fn fake_launcher_resolves_only_registered_binaries() {
     use lucerna_lsp::Launcher;
     use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
@@ -290,4 +229,72 @@ fn process_launcher_probe_reports_exit_status() {
     assert!(launcher.probe(Path::new("/usr/bin/true"), &[], root));
     assert!(!launcher.probe(Path::new("/usr/bin/false"), &[], root));
     assert!(!launcher.probe(Path::new("/nonexistent/x"), &[], root));
+}
+
+#[test]
+fn glob_marker_finds_sln() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    touch(&root.join("a.sln"));
+    let file = root.join("src/App/Program.cs");
+    touch(&file);
+    touch(&root.join("src/notes.txt"));
+    let table = ServerTable::build(Some(&json!({
+        "csharp-ls": { "command": "csharp-ls", "languages": ["csharp"],
+                       "root_markers": ["*.sln", "*.csproj"] }
+    })));
+    let def = table.get("csharp-ls").unwrap();
+    assert_eq!(find_root(def, &file, root).unwrap(), root);
+    // The nearest directory with a matching entry wins.
+    touch(&root.join("src/App/App.csproj"));
+    assert_eq!(find_root(def, &file, root).unwrap(), root.join("src/App"));
+}
+
+#[test]
+fn glob_marker_question_mark_and_no_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    touch(&root.join("sub/pkg.cabal"));
+    let file = root.join("sub/src/Main.hs");
+    touch(&file);
+    let table = ServerTable::build(Some(&json!({
+        "hls": { "command": "hls", "languages": ["haskell"],
+                 "root_markers": ["???.cabal"] },
+        "none": { "command": "none", "languages": ["haskell"],
+                  "root_markers": ["*.nothing"] }
+    })));
+    assert_eq!(
+        find_root(table.get("hls").unwrap(), &file, root).unwrap(),
+        root.join("sub")
+    );
+    assert_eq!(
+        find_root(table.get("none").unwrap(), &file, root).unwrap(),
+        root
+    );
+}
+
+#[test]
+fn fake_launcher_output_is_registered_per_command() {
+    use lucerna_lsp::Launcher;
+    use lucerna_lsp::test_support::FakeLauncher;
+    let launcher = FakeLauncher::new().with_output("npm", &["root", "-g"], "/n\n");
+    assert_eq!(
+        launcher.output("npm", &["root", "-g"]).as_deref(),
+        Some("/n\n")
+    );
+    assert_eq!(launcher.output("npm", &["-v"]), None);
+    assert_eq!(launcher.output("node", &[]), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn process_launcher_output_returns_stdout_on_success() {
+    use lucerna_lsp::{Launcher, ProcessLauncher};
+    let launcher = ProcessLauncher::new();
+    assert_eq!(
+        launcher.output("echo", &["hello"]).as_deref(),
+        Some("hello\n")
+    );
+    assert_eq!(launcher.output("false", &[]), None);
+    assert_eq!(launcher.output("lucerna-no-such-binary", &[]), None);
 }

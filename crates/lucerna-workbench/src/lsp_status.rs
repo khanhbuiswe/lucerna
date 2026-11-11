@@ -216,7 +216,7 @@ impl LspStatusItem {
         let rows = self.rows(cx);
         let has_rows = !rows.is_empty();
         let rows = rows.into_iter().enumerate().map(|(i, row)| {
-            let (key, server) = (row.key.clone(), Arc::<str>::from(row.key.server));
+            let (key, server) = (row.key.clone(), row.key.server.clone());
             let root = path_bar_text(&row.key.root, None, home.as_deref());
             let lines = row.lines.iter().enumerate().map(|(j, line)| {
                 div()
@@ -261,7 +261,11 @@ impl LspStatusItem {
                         .items_center()
                         .gap(px(2. * GRID))
                         .child(dot(state_color(&row.state, &ui)))
-                        .child(div().flex_none().child(row.key.server))
+                        .child(
+                            div()
+                                .flex_none()
+                                .child(gpui::SharedString::from(row.key.server.clone())),
+                        )
                         .child(
                             div()
                                 .flex_1()
@@ -510,7 +514,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
                     let statuses = wb.language_servers().read(cx).statuses();
                     statuses.into_iter().next().map(|s| s.key)
                 });
-                first.map(|key| Arc::from(key.server))
+                first.map(|key| key.server)
             });
             if let Some(server) = server {
                 wb.show_lsp_log(server, window, cx);

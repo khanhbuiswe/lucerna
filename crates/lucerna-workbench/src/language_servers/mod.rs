@@ -21,18 +21,18 @@ mod pump;
 mod requests;
 mod sync;
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use gpui::{App, Context, Entity, EventEmitter, Subscription, Task};
 use lsp_types::FileChangeType;
 use lucerna_lsp::diagnostics::DiagnosticStore;
 use lucerna_lsp::sync::{DocumentSync, WatchedFiles};
 use lucerna_lsp::{
-    Adapter, LanguageServer, Launcher, LogLine, ProcessLauncher, Registry, ServerKey,
-    ServerSettings, ServersSettings, Slot, builtin_adapters, select_servers,
+    LanguageServer, Launcher, LogLine, ProcessLauncher, Registry, ServerKey, ServerTable, Slot,
+    TableError, select_servers,
 };
 use lucerna_text::BufferSnapshot;
 use serde_json::Value;
@@ -84,10 +84,11 @@ pub enum LanguageServersEvent {
     /// A document was sent to its servers (opened or changed).
     DocumentChanged(Arc<Path>),
     /// A line was added to the log of this server.
-    LogChanged(&'static str),
+    LogChanged(Arc<str>),
 }
 
-/// The settings a language's servers are picked by.
+/// The settings a file's servers are picked by: its language's, or for a
+/// file without a language the global `lucerna.lsp.enabled` and `...`.
 #[derive(Clone, Debug, PartialEq)]
 struct Selection {
     enabled: bool,
@@ -116,7 +117,14 @@ pub struct LanguageServers {
     root: PathBuf,
     documents: Entity<Documents>,
     launcher: Arc<dyn Launcher>,
-    adapters: Vec<Arc<dyn Adapter>>,
+    /// The base of each server's `{data_dir}`.
+    data_dir: PathBuf,
+    /// `npm root -g`, found the first time a server uses `{npm_root}`
+    /// (off the UI thread); `None` inside when npm failed.
+    npm_root: Arc<OnceLock<Option<PathBuf>>>,
+    /// The `lsp` value the registry's table was built from (the trusted
+    /// layers only while untrusted).
+    lsp_setting: Option<Value>,
     trusted: bool,
     /// Whether the folder's trust is known (the store is read, or
     /// `session.trustAllWorktrees` is set). Until then Restricted Mode is
@@ -137,7 +145,7 @@ pub struct LanguageServers {
     /// batch: the status bar reads it every frame.
     diagnostic_counts: (usize, usize),
     docs: HashMap<Arc<Path>, OpenDoc>,
-    logs: HashMap<&'static str, VecDeque<LogLine>>,
+    logs: HashMap<Arc<str>, VecDeque<LogLine>>,
     progress: HashMap<ServerKey, Vec<ProgressItem>>,
     /// Ticks per progress update; orders progress across servers.
     progress_clock: u64,
@@ -147,9 +155,9 @@ pub struct LanguageServers {
     diagnostics_flush_pending: bool,
     watched_changes: Vec<(PathBuf, FileChangeType)>,
     watched_flush_pending: bool,
-    /// Whether each server's binary is on `PATH`, as found by
+    /// Whether each server command is on `PATH`, as found by
     /// [`LanguageServers::server_binary_found`].
-    on_path: HashMap<&'static str, bool>,
+    on_path: HashMap<String, bool>,
     /// For files outside the workspace found in a server's answer
     /// (definition, references, workspace symbols): that server, which the
     /// file joins when it is opened.
@@ -163,23 +171,29 @@ impl LanguageServers {
     /// The servers of the folder at `root`, following `documents`. Starts
     /// processes with a [`ProcessLauncher`]. Trusted when the User setting
     /// `session.trustAllWorktrees` is `true`; untrusted, nothing starts.
-    pub fn new(root: PathBuf, documents: &Entity<Documents>, cx: &mut Context<Self>) -> Self {
-        let adapters = builtin_adapters();
+    /// `data_dir` is the app's data directory: servers' `{data_dir}` lie
+    /// under its `lsp/`.
+    pub fn new(
+        root: PathBuf,
+        documents: &Entity<Documents>,
+        data_dir: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let trusted = cx
             .global::<AppState>()
             .settings
             .get_trusted::<bool>("session.trustAllWorktrees", None)
             == Some(true);
         lifecycle::QuitShutdown::register(cx);
-        let mut registry = Registry::new(adapters.clone());
-        if trusted {
-            registry.set_settings(servers_settings(cx));
-        }
+        let lsp_setting = lsp_setting(trusted, cx);
+        let registry = Registry::new(ServerTable::build(lsp_setting.as_ref()));
         LanguageServers {
             root,
             documents: documents.clone(),
             launcher: Arc::new(ProcessLauncher::new()),
-            adapters,
+            data_dir,
+            npm_root: Arc::default(),
+            lsp_setting,
             trusted,
             trust_known: trusted,
             registry,
@@ -221,7 +235,8 @@ impl LanguageServers {
         }
         self.trusted = trusted;
         if trusted {
-            self.registry.set_settings(servers_settings(cx));
+            // No slot exists while untrusted: nothing to restart.
+            self.rebuild_table(cx);
             let paths: Vec<Arc<Path>> = self.docs.keys().cloned().collect();
             for path in paths {
                 self.find_servers(&path, cx);
@@ -238,6 +253,7 @@ impl LanguageServers {
                 doc.search += 1;
                 doc._search_task = None;
             }
+            self.rebuild_table(cx);
         }
         cx.emit(LanguageServersEvent::StatusChanged);
         cx.notify();
@@ -245,6 +261,30 @@ impl LanguageServers {
 
     pub fn is_trusted(&self) -> bool {
         self.trusted
+    }
+
+    /// The server table: the built-in servers merged with the `lsp`
+    /// setting (without the Workspace layer while untrusted).
+    pub fn table(&self) -> &ServerTable {
+        self.registry.table()
+    }
+
+    /// The `lsp` entries left out of [`LanguageServers::table`], and why.
+    pub fn table_errors(&self) -> &[TableError] {
+        &self.registry.table().errors
+    }
+
+    /// Builds the table from the settings again when the `lsp` value
+    /// changed. Returns the old and new table's difference for the slots,
+    /// or `None` when nothing changed.
+    pub(super) fn rebuild_table(&mut self, cx: &App) -> Option<lucerna_lsp::SettingsDiff> {
+        let lsp = lsp_setting(self.trusted, cx);
+        if lsp == self.lsp_setting {
+            return None;
+        }
+        let table = ServerTable::build(lsp.as_ref());
+        self.lsp_setting = lsp;
+        Some(self.registry.set_table(table))
     }
 
     /// Whether the folder's trust is known yet (see the field).
@@ -295,7 +335,7 @@ impl LanguageServers {
     /// Every slot, ordered by root then server name.
     pub fn statuses(&self) -> Vec<ServerStatus> {
         let mut keys: Vec<&ServerKey> = self.registry.keys().collect();
-        keys.sort_by(|a, b| (&a.root, a.server).cmp(&(&b.root, b.server)));
+        keys.sort_by(|a, b| (&a.root, &a.server).cmp(&(&b.root, &b.server)));
         keys.into_iter()
             .filter_map(|key| {
                 let state = match self.registry.slot(key)? {
@@ -398,28 +438,39 @@ impl LanguageServers {
             .collect()
     }
 
-    /// Whether a file of `language_id` would get a server that can start:
-    /// language servers are enabled for it, and a selected server has
-    /// `binary.path` in the User `lsp` setting or its binary on `PATH`.
-    /// `PATH` is searched off the UI thread, once per server per session.
-    pub fn server_binary_found(&mut self, language_id: &str, cx: &mut Context<Self>) -> Task<bool> {
-        let selection = selection(language_id, cx);
+    /// Whether the file `path` (of `language`, if any) would get a server
+    /// that can start: language servers are enabled for it, and a server
+    /// selected from the table of the trusted layers (never the folder's
+    /// own settings) has `binary.path` set or its command on `PATH`.
+    /// `PATH` is searched off the UI thread, once per command per session.
+    pub fn server_binary_found(
+        &mut self,
+        language: Option<&str>,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
+        let selection = selection(language, cx);
         if !selection.enabled {
             return Task::ready(false);
         }
-        let adapters = select_servers(&selection.servers, &self.adapters, language_id);
-        let user_paths = user_binary_paths(cx);
-        let found = |name: &str, on_path: &HashMap<&'static str, bool>| {
-            user_paths.contains(name) || on_path.get(name) == Some(&true)
-        };
-        if adapters.iter().any(|a| found(a.name(), &self.on_path)) {
+        let table = ServerTable::build(lsp_setting(false, cx).as_ref());
+        let defs = select_servers(&selection.servers, &table, language, path);
+        let has_path = defs.iter().any(|def| {
+            def.binary
+                .as_ref()
+                .and_then(|b| b.path.as_ref())
+                .is_some_and(|p| !p.as_os_str().is_empty())
+        });
+        let commands: Vec<String> = defs.iter().filter_map(|d| d.command.clone()).collect();
+        if has_path || commands.iter().any(|c| self.on_path.get(c) == Some(&true)) {
             return Task::ready(true);
         }
-        let unknown: Vec<(&'static str, &'static str)> = adapters
-            .iter()
-            .filter(|a| !self.on_path.contains_key(a.name()))
-            .map(|a| (a.name(), a.binary()))
+        let mut unknown: Vec<String> = commands
+            .into_iter()
+            .filter(|c| !self.on_path.contains_key(c))
             .collect();
+        unknown.sort_unstable();
+        unknown.dedup();
         if unknown.is_empty() {
             return Task::ready(false);
         }
@@ -428,7 +479,10 @@ impl LanguageServers {
             guarded("lsp-which", move || {
                 unknown
                     .into_iter()
-                    .map(|(name, binary)| (name, launcher.which(binary).is_some()))
+                    .map(|command| {
+                        let found = launcher.which(&command).is_some();
+                        (command, found)
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -436,63 +490,38 @@ impl LanguageServers {
         cx.spawn(async move |this, cx| {
             let results = work.await;
             this.update(cx, |servers, _| {
-                servers.on_path.extend(results.iter().copied());
-                results.iter().any(|(_, found)| *found)
+                let found = results.iter().any(|(_, found)| *found);
+                servers.on_path.extend(results);
+                found
             })
             .unwrap_or(false)
         })
     }
 }
 
-/// The servers with `binary.path` in the `lsp` setting of the User (or
-/// Default) layer: a folder's own setting cannot make it look installed.
-fn user_binary_paths(cx: &App) -> HashSet<String> {
-    let Some(Value::Object(map)) = cx
-        .global::<AppState>()
-        .settings
-        .get_trusted::<Value>("lsp", None)
-    else {
-        return HashSet::new();
-    };
-    map.into_iter()
-        .filter(|(_, value)| {
-            value["binary"]["path"]
-                .as_str()
-                .is_some_and(|p| !p.is_empty())
-        })
-        .map(|(name, _)| name)
-        .collect()
-}
-
-/// `lucerna.lsp.enabled` and `lucerna.lsp.languageServers` for `language`.
-fn selection(language: &str, cx: &App) -> Selection {
+/// The `lsp` setting the table is built from: every layer once the folder
+/// is trusted, without the Workspace layer before.
+fn lsp_setting(trusted: bool, cx: &App) -> Option<Value> {
     let settings = &cx.global::<AppState>().settings;
-    Selection {
-        enabled: settings
-            .get::<bool>("lucerna.lsp.enabled", Some(language))
-            .unwrap_or(true),
-        servers: settings
-            .get::<Vec<String>>("lucerna.lsp.languageServers", Some(language))
-            .unwrap_or_else(|| vec!["...".to_owned()]),
+    if trusted {
+        settings.get::<Value>("lsp", None)
+    } else {
+        settings.get_trusted::<Value>("lsp", None)
     }
 }
 
-/// The `lsp` setting from every layer. A server whose entry does not
-/// parse is left out (it runs with defaults) and logged.
-fn servers_settings(cx: &App) -> ServersSettings {
-    let Some(Value::Object(map)) = cx.global::<AppState>().settings.get::<Value>("lsp", None)
-    else {
-        return ServersSettings::new();
-    };
-    map.into_iter()
-        .filter_map(
-            |(name, value)| match serde_json::from_value::<ServerSettings>(value) {
-                Ok(settings) => Some((name, settings)),
-                Err(err) => {
-                    tracing::warn!(server = name, %err, "invalid lsp setting ignored");
-                    None
-                }
-            },
-        )
-        .collect()
+/// `lucerna.lsp.enabled` and `lucerna.lsp.languageServers` for
+/// `language`; for a file without a language, the global
+/// `lucerna.lsp.enabled` and `["..."]`.
+fn selection(language: Option<&str>, cx: &App) -> Selection {
+    let settings = &cx.global::<AppState>().settings;
+    let servers = language.and_then(|language| {
+        settings.get::<Vec<String>>("lucerna.lsp.languageServers", Some(language))
+    });
+    Selection {
+        enabled: settings
+            .get::<bool>("lucerna.lsp.enabled", language)
+            .unwrap_or(true),
+        servers: servers.unwrap_or_else(|| vec!["...".to_owned()]),
+    }
 }

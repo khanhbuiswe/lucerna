@@ -44,10 +44,10 @@ fn changed(wb: &Entity<Workbench>, path: &str, kind: ChangeKind, cx: &mut Visual
     settle(cx);
 }
 
-fn key(root: &Path, server: &'static str) -> ServerKey {
+fn key(root: &Path, server: &str) -> ServerKey {
     ServerKey {
         root: Arc::from(root),
-        server,
+        server: server.into(),
     }
 }
 
@@ -675,4 +675,274 @@ fn closing_the_window_shuts_servers_down(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     wait_until("server shut down", || count(&fake, "exit") == 1);
+}
+
+// ---- The server table (language server table spec §3–§4) ----
+
+/// Replaces the User settings layer and settles.
+fn set_user_settings(text: &str, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        cx.update_global::<AppState, _>(|state, _| {
+            state.settings.set_layer(Layer::User, text).unwrap();
+        });
+    });
+    settle(cx);
+}
+
+/// User settings: trusted, with `lsp` set to `lsp`.
+fn trusted_with_lsp(lsp: &serde_json::Value) -> String {
+    json!({ "session.trustAllWorktrees": true, "lsp": lsp }).to_string()
+}
+
+#[gpui::test]
+fn language_less_file_starts_file_type_server(cx: &mut TestAppContext) {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("x.rb"), "puts 1\n").unwrap();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("fake-rb", fake.clone()));
+    let settings = trusted_with_lsp(&json!({
+        "fake-rb": { "command": "fake-rb", "file_types": ["rb"], "language_id": "ruby" }
+    }));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), &settings, cx);
+
+    open(&wb, "x.rb", cx);
+
+    assert_eq!(launcher.launches().len(), 1);
+    let opens = sent(&fake, "textDocument/didOpen");
+    assert_eq!(opens.len(), 1, "{:?}", methods(&fake));
+    assert_eq!(opens[0]["textDocument"]["languageId"], "ruby");
+    assert_eq!(opens[0]["textDocument"]["text"], "puts 1\n");
+    assert_eq!(
+        state_of(&wb, &key(dir.path(), "fake-rb"), cx),
+        SlotState::Running
+    );
+}
+
+#[gpui::test]
+fn file_type_and_language_share_one_server(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    fs::write(dir.path().join("src/gen.rsx"), "x\n").unwrap();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let settings = trusted_with_lsp(&json!({ "rust-analyzer": { "file_types": ["rsx"] } }));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), &settings, cx);
+
+    open(&wb, "src/main.rs", cx);
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| {
+            m.split_active();
+        })
+    });
+    settle(cx);
+    open(&wb, "src/gen.rsx", cx);
+
+    assert_eq!(launcher.launches().len(), 1, "one process for both files");
+    let opens = sent(&fake, "textDocument/didOpen");
+    assert_eq!(opens.len(), 2);
+    let language_of = |file: &str| {
+        let uri = uri(&dir.path().join(file));
+        opens
+            .iter()
+            .find(|o| o["textDocument"]["uri"] == uri)
+            .map(|o| o["textDocument"]["languageId"].clone())
+    };
+    assert_eq!(language_of("src/main.rs"), Some(json!("rust")));
+    assert_eq!(language_of("src/gen.rsx"), Some(json!("rust")));
+    let servers = language_servers(&wb, cx);
+    let keys = cx.update(|_, cx| {
+        let s = servers.read(cx);
+        (
+            s.servers_for(Path::new("src/main.rs")),
+            s.servers_for(Path::new("src/gen.rsx")),
+        )
+    });
+    assert_eq!(keys.0, [key(dir.path(), "rust-analyzer")]);
+    assert_eq!(keys.0, keys.1);
+}
+
+#[gpui::test]
+fn user_defined_server_runs(cx: &mut TestAppContext) {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("mine-ls", fake.clone()));
+    let settings = trusted_with_lsp(&json!({
+        "mine": { "command": "mine-ls", "args": ["--stdio"], "languages": ["python"] }
+    }));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), &settings, cx);
+
+    open(&wb, "a.py", cx);
+
+    let launches = launcher.launches();
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0].server, "mine");
+    assert_eq!(launches[0].program, Path::new("/fake/bin/mine-ls"));
+    assert_eq!(launches[0].args, ["--stdio"]);
+    let opens = sent(&fake, "textDocument/didOpen");
+    assert_eq!(opens.len(), 1);
+    assert_eq!(opens[0]["textDocument"]["languageId"], "python");
+    let servers = language_servers(&wb, cx);
+    let table_has_mine = cx.update(|_, cx| servers.read(cx).table().get("mine").is_some());
+    assert!(table_has_mine);
+}
+
+#[gpui::test]
+fn invalid_table_entry_is_reported_and_others_run(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let settings = trusted_with_lsp(&json!({ "bad": { "command": "bad", "args": "--stdio" } }));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), &settings, cx);
+
+    open(&wb, "src/main.rs", cx);
+
+    assert_eq!(sent(&fake, "textDocument/didOpen").len(), 1);
+    let servers = language_servers(&wb, cx);
+    let errors = cx.update(|_, cx| servers.read(cx).table_errors().to_vec());
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].server, "bad");
+}
+
+#[gpui::test]
+fn settings_only_override_reconfigures(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    assert_eq!(count(&fake, "workspace/didChangeConfiguration"), 1);
+
+    set_user_settings(
+        &trusted_with_lsp(&json!({ "rust-analyzer": { "settings": { "a": "{root}" } } })),
+        cx,
+    );
+
+    assert_eq!(launcher.launches().len(), 1, "no second launch");
+    assert_eq!(count(&fake, "shutdown"), 0);
+    let configs = sent(&fake, "workspace/didChangeConfiguration");
+    assert_eq!(configs.len(), 2);
+    assert_eq!(
+        configs[1]["settings"],
+        json!({ "a": dir.path().to_string_lossy() }),
+        "settings are expanded"
+    );
+    assert_eq!(
+        state_of(&wb, &key(dir.path(), "rust-analyzer"), cx),
+        SlotState::Running
+    );
+}
+
+#[gpui::test]
+fn disabling_server_stops_it(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+
+    set_user_settings(
+        &trusted_with_lsp(&json!({ "rust-analyzer": { "enabled": false } })),
+        cx,
+    );
+
+    wait_until("server shut down", || count(&fake, "shutdown") == 1);
+    let servers = language_servers(&wb, cx);
+    assert!(cx.update(|_, cx| servers.read(cx).statuses()).is_empty());
+    assert!(
+        cx.update(|_, cx| servers.read(cx).servers_for(Path::new("src/main.rs")))
+            .is_empty()
+    );
+    assert_eq!(launcher.launches().len(), 1);
+
+    // Enabled again: it starts for the open file.
+    set_user_settings(TRUSTED, cx);
+    assert_eq!(launcher.launches().len(), 2);
+    assert_eq!(sent(&fake, "textDocument/didOpen").len(), 2);
+}
+
+#[gpui::test]
+fn data_dir_variable_passed_to_server(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    init_with(
+        &trusted_with_lsp(&json!({ "rust-analyzer": { "args": ["-data", "{data_dir}"] } })),
+        cx,
+    );
+    let (root, data_dir) = (dir.path().to_path_buf(), data.path().to_path_buf());
+    let (wb, cx) =
+        cx.add_window_view(|window, cx| Workbench::with_data_dir(root, data_dir, window, cx));
+    let servers = language_servers(&wb, cx);
+    servers.update(cx, |servers, _| servers.set_launcher(launcher.clone()));
+    settle(cx);
+
+    open(&wb, "src/main.rs", cx);
+
+    let expected = lucerna_lsp::vars::data_dir_for(data.path(), "rust-analyzer", dir.path());
+    assert!(expected.starts_with(data.path().join("lsp").join("rust-analyzer")));
+    let launches = launcher.launches();
+    assert_eq!(launches.len(), 1);
+    assert_eq!(
+        launches[0].args,
+        ["-data".to_owned(), expected.to_string_lossy().into_owned()]
+    );
+    assert!(expected.is_dir(), "the data dir is created");
+    assert_eq!(sent(&fake, "textDocument/didOpen").len(), 1);
+}
+
+#[gpui::test]
+fn npm_root_failure_marks_failed(cx: &mut TestAppContext) {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.vue"), "<template/>\n").unwrap();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("vue-ls", fake.clone()));
+    let settings = trusted_with_lsp(&json!({
+        "vue": { "command": "vue-ls", "file_types": ["vue"],
+                 "settings": { "location": "{npm_root}/@vue/language-server" } }
+    }));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), &settings, cx);
+
+    open(&wb, "a.vue", cx);
+
+    assert!(launcher.launches().is_empty());
+    let SlotState::Failed { message, .. } = state_of(&wb, &key(dir.path(), "vue"), cx) else {
+        panic!("expected Failed");
+    };
+    assert_eq!(message, "npm not found; {npm_root} unavailable");
+}
+
+#[gpui::test]
+fn npm_root_expands_in_settings(cx: &mut TestAppContext) {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.vue"), "<template/>\n").unwrap();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(
+        FakeLauncher::new()
+            .with_server("vue-ls", fake.clone())
+            .with_output("npm", &["root", "-g"], "/opt/node/lib\n"),
+    );
+    let settings = trusted_with_lsp(&json!({
+        "vue": { "command": "vue-ls", "file_types": ["vue"],
+                 "initialization_options": { "ts": "{npm_root}/typescript" },
+                 "settings": { "location": "{npm_root}/@vue/language-server" } }
+    }));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), &settings, cx);
+
+    open(&wb, "a.vue", cx);
+
+    assert_eq!(launcher.launches().len(), 1);
+    let init = sent(&fake, "initialize");
+    assert_eq!(
+        init[0]["initializationOptions"],
+        json!({ "ts": "/opt/node/lib/typescript" })
+    );
+    let configs = sent(&fake, "workspace/didChangeConfiguration");
+    assert_eq!(
+        configs[0]["settings"],
+        json!({ "location": "/opt/node/lib/@vue/language-server" })
+    );
+    assert_eq!(
+        state_of(&wb, &key(dir.path(), "vue"), cx),
+        SlotState::Running
+    );
 }

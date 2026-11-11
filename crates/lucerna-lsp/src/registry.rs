@@ -7,14 +7,15 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::adapters::{Adapter, find_root};
+use crate::adapters::find_root;
 use crate::client::LanguageServer;
-use crate::settings::{ServerSettings, ServersSettings, select_servers};
+use crate::settings::select_servers;
+use crate::table::ServerTable;
 
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct ServerKey {
     pub root: Arc<Path>,
-    pub server: &'static str,
+    pub server: Arc<str>,
 }
 
 pub enum Slot {
@@ -30,28 +31,34 @@ pub enum Slot {
     Stopped,
 }
 
-/// What a settings change requires of the existing slots.
+/// What a new server table requires of the existing slots.
 #[derive(Debug, Default, PartialEq)]
 pub struct SettingsDiff {
-    /// `binary` or `initialization_options` changed.
+    /// `command`, `args`, `env`, `binary` or `initialization_options`
+    /// changed.
     pub restart: Vec<ServerKey>,
-    /// Only `settings` changed; the new value (`Null` when removed).
+    /// Only `settings` changed; the new value (`Null` when removed), not
+    /// expanded.
     pub reconfigure: Vec<(ServerKey, Value)>,
+    /// The server left the table, or was disabled.
+    pub stop: Vec<ServerKey>,
 }
 
 pub struct Registry {
-    adapters: Vec<Arc<dyn Adapter>>,
+    table: ServerTable,
     slots: HashMap<ServerKey, Slot>,
-    settings: ServersSettings,
 }
 
 impl Registry {
-    pub fn new(adapters: Vec<Arc<dyn Adapter>>) -> Registry {
+    pub fn new(table: ServerTable) -> Registry {
         Registry {
-            adapters,
+            table,
             slots: HashMap::new(),
-            settings: ServersSettings::new(),
         }
+    }
+
+    pub fn table(&self) -> &ServerTable {
+        &self.table
     }
 
     /// The servers for a file and the project root each uses; none for a
@@ -59,24 +66,20 @@ impl Registry {
     /// call it off the UI thread.
     pub fn keys_for(
         &self,
-        language_id: &str,
+        language: Option<&str>,
         path: &Path,
         workspace_root: &Path,
         list: &[String],
     ) -> Vec<ServerKey> {
-        select_servers(list, &self.adapters, language_id)
-            .iter()
-            .filter_map(|adapter| {
+        select_servers(list, &self.table, language, path)
+            .into_iter()
+            .filter_map(|def| {
                 Some(ServerKey {
-                    root: find_root(&**adapter, path, workspace_root)?.into(),
-                    server: adapter.name(),
+                    root: find_root(def, path, workspace_root)?.into(),
+                    server: Arc::clone(&def.name),
                 })
             })
             .collect()
-    }
-
-    pub fn adapter(&self, server: &str) -> Option<Arc<dyn Adapter>> {
-        self.adapters.iter().find(|a| a.name() == server).cloned()
     }
 
     pub fn slot(&self, key: &ServerKey) -> Option<&Slot> {
@@ -98,27 +101,31 @@ impl Registry {
         self.slots.keys()
     }
 
-    pub fn settings(&self, server: &str) -> Option<&ServerSettings> {
-        self.settings.get(server)
-    }
-
-    /// Replaces the settings and says which existing slots are affected.
-    /// Servers dropped from the map count as changed back to defaults.
-    pub fn set_settings(&mut self, new: ServersSettings) -> SettingsDiff {
-        let default = ServerSettings::default();
+    /// Replaces the table and says which existing slots are affected.
+    /// A server that left the table or was disabled is stopped; one whose
+    /// launch fields changed is restarted; one whose `settings` alone
+    /// changed is reconfigured.
+    pub fn set_table(&mut self, table: ServerTable) -> SettingsDiff {
         let mut diff = SettingsDiff::default();
         for key in self.slots.keys() {
-            let old = self.settings.get(key.server).unwrap_or(&default);
-            let now = new.get(key.server).unwrap_or(&default);
-            if old.binary != now.binary || old.initialization_options != now.initialization_options
-            {
+            let Some(now) = table.get(&key.server) else {
+                diff.stop.push(key.clone());
+                continue;
+            };
+            let Some(old) = self.table.get(&key.server) else {
+                diff.restart.push(key.clone());
+                continue;
+            };
+            if old.enabled && !now.enabled {
+                diff.stop.push(key.clone());
+            } else if !old.launch_fields_eq(now) {
                 diff.restart.push(key.clone());
             } else if old.settings != now.settings {
                 diff.reconfigure
                     .push((key.clone(), now.settings.clone().unwrap_or(Value::Null)));
             }
         }
-        self.settings = new;
+        self.table = table;
         diff
     }
 

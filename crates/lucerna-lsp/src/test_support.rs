@@ -331,6 +331,8 @@ impl Transport for FakeTransport {
 #[derive(Default)]
 pub struct FakeLauncher {
     servers: HashMap<String, FakeServer>,
+    /// `output` answers, by program and arguments.
+    outputs: HashMap<(String, Vec<String>), String>,
     launches: Mutex<Vec<LaunchSpec>>,
 }
 
@@ -342,6 +344,15 @@ impl FakeLauncher {
     /// Makes `binary_name` resolvable and launchable as `server`.
     pub fn with_server(mut self, binary_name: &str, server: FakeServer) -> Self {
         self.servers.insert(binary_name.to_owned(), server);
+        self
+    }
+
+    /// Makes `output(program, args)` return `stdout`; any other command
+    /// gives `None`, as a missing or failing program would.
+    pub fn with_output(mut self, program: &str, args: &[&str], stdout: &str) -> Self {
+        let args = args.iter().map(|a| (*a).to_owned()).collect();
+        self.outputs
+            .insert((program.to_owned(), args), stdout.to_owned());
         self
     }
 
@@ -368,6 +379,11 @@ impl Launcher for FakeLauncher {
 
     fn probe(&self, program: &Path, _args: &[&str], _cwd: &Path) -> bool {
         self.lookup(program).is_some()
+    }
+
+    fn output(&self, program: &str, args: &[&str]) -> Option<String> {
+        let args = args.iter().map(|a| (*a).to_owned()).collect();
+        self.outputs.get(&(program.to_owned(), args)).cloned()
     }
 
     fn launch(&self, spec: &LaunchSpec, inbox: Arc<dyn Inbox>) -> io::Result<Arc<dyn Transport>> {

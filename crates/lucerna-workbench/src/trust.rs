@@ -451,8 +451,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         let DocumentEvent::Opened {
-            language_id: Some(language),
-            ..
+            path, language_id, ..
         } = ev
         else {
             return;
@@ -460,9 +459,9 @@ impl Workbench {
         if self.trust.prompted || !self.is_restricted(cx) {
             return;
         }
-        let found = self
-            .language_servers()
-            .update(cx, |servers, cx| servers.server_binary_found(language, cx));
+        let found = self.language_servers().update(cx, |servers, cx| {
+            servers.server_binary_found(language_id.as_deref(), path, cx)
+        });
         cx.spawn_in(window, async move |wb, cx| {
             if found.await {
                 wb.update_in(cx, |wb, window, cx| wb.server_file_opened(window, cx))

@@ -1,7 +1,7 @@
 use std::path::Path;
 
+use lucerna_lsp::RootSearch;
 use lucerna_lsp::table::{Install, LanguageIdMap, ServerDef, ServerTable, merge_json};
-use lucerna_lsp::{RootSearch, builtin_adapters};
 use serde_json::json;
 
 fn strs(v: &[&str]) -> Vec<String> {
@@ -129,13 +129,6 @@ fn defaults_match_phase3_values() {
         assert_eq!(d.probe, probe.map(strs), "{name}");
         assert_eq!(d.enabled, enabled, "{name}");
         assert!(d.env.is_empty() && d.relay.is_none() && d.binary.is_none());
-    }
-    // And they agree with the old adapters.
-    for a in builtin_adapters() {
-        let d = table.get(a.name()).unwrap();
-        assert_eq!(d.command.as_deref(), Some(a.binary()));
-        assert_eq!(d.enabled, a.enabled_by_default());
-        assert_eq!(d.root_search, a.root_search());
     }
 }
 

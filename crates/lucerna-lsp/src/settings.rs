@@ -2,14 +2,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use serde::Deserialize;
-use serde_json::Value;
 
-use crate::adapters::Adapter;
 use crate::launcher::Launcher;
+use crate::table::{ServerDef, ServerTable};
 use crate::transport::LaunchSpec;
+use crate::vars::{VarError, Vars, expand};
 
 #[derive(Deserialize, Default, Clone, PartialEq, Debug)]
 pub struct BinarySettings {
@@ -17,16 +16,6 @@ pub struct BinarySettings {
     pub arguments: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
 }
-
-#[derive(Deserialize, Default, Clone, PartialEq, Debug)]
-pub struct ServerSettings {
-    pub binary: Option<BinarySettings>,
-    pub initialization_options: Option<Value>,
-    pub settings: Option<Value>,
-}
-
-/// The value of the `lsp` setting, by server name.
-pub type ServersSettings = HashMap<String, ServerSettings>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StartError {
@@ -39,24 +28,28 @@ pub enum StartError {
     },
 }
 
-/// The adapters to run for `language_id`, in `list` order. `!name` removes a
-/// server wherever it appears; `...` stands for the remaining adapters of
-/// the language that are enabled by default; unknown names are ignored.
-pub fn select_servers(
+/// The servers to run for a file, in `list` order. `!name` removes a
+/// server wherever it appears; `...` stands for the remaining servers that
+/// match the file (by `language`, else by `path`'s file type) and are
+/// enabled, by name; a named server is used when it matches the file, even
+/// if disabled; unknown names are ignored.
+pub fn select_servers<'a>(
     list: &[String],
-    adapters: &[Arc<dyn Adapter>],
-    language_id: &str,
-) -> Vec<Arc<dyn Adapter>> {
+    table: &'a ServerTable,
+    language: Option<&str>,
+    path: &Path,
+) -> Vec<&'a ServerDef> {
     let removed: HashSet<&str> = list.iter().filter_map(|s| s.strip_prefix('!')).collect();
-    let for_language = || {
-        adapters
-            .iter()
-            .filter(|a| a.language_ids().contains(&language_id) && !removed.contains(a.name()))
+    let matching = || {
+        table
+            .servers
+            .values()
+            .filter(|def| !removed.contains(&*def.name) && def.matches(language, path))
     };
-    let mut selected: Vec<Arc<dyn Adapter>> = Vec::new();
-    let mut push = |adapter: &Arc<dyn Adapter>| {
-        if !selected.iter().any(|a| a.name() == adapter.name()) {
-            selected.push(Arc::clone(adapter));
+    let mut selected: Vec<&ServerDef> = Vec::new();
+    let mut push = |def: &'a ServerDef| {
+        if !selected.iter().any(|d| d.name == def.name) {
+            selected.push(def);
         }
     };
     for entry in list {
@@ -64,60 +57,78 @@ pub fn select_servers(
             continue;
         }
         if entry == "..." {
-            for_language()
-                .filter(|a| a.enabled_by_default())
-                .for_each(&mut push);
-        } else if let Some(adapter) = for_language().find(|a| a.name() == entry) {
-            push(adapter);
+            matching().filter(|def| def.enabled).for_each(&mut push);
+        } else if let Some(def) = matching().find(|def| &*def.name == entry) {
+            push(def);
         }
     }
     selected
 }
 
-fn not_found(adapter: &dyn Adapter) -> StartError {
+fn not_found(def: &ServerDef) -> StartError {
     StartError::NotFound {
         message: format!(
             "{} not found on PATH. Install it or set \"lsp\": {{ \"{}\": {{ \"binary\": {{ \"path\": … }} }} }}",
-            adapter.binary(),
-            adapter.name()
+            def.command.as_deref().unwrap_or(&def.name),
+            def.name
         ),
     }
 }
 
-/// How to start `adapter` in `root`. May block (`which`, probe, login-shell
-/// environment): call it off the UI thread.
+fn var_failed(err: &VarError) -> StartError {
+    StartError::Failed {
+        message: err.to_string(),
+        stderr_tail: Vec::new(),
+    }
+}
+
+/// How to start `def` in `root`: `binary.path` as is, else `command` found
+/// on `PATH` (and probed unless probing is off); `binary.arguments` or
+/// `args`; the launcher's environment with `env` then `binary.env` on top.
+/// Arguments and environment values are expanded with `vars`. May block
+/// (`which`, probe, login-shell environment): call it off the UI thread.
 ///
 /// # Errors
 /// [`StartError::NotFound`] when the binary is not on `PATH` or fails its
-/// probe.
+/// probe; [`StartError::Failed`] for a variable that cannot be expanded.
 pub fn resolve_launch(
-    adapter: &dyn Adapter,
-    settings: Option<&ServerSettings>,
+    def: &ServerDef,
     root: &Path,
     launcher: &dyn Launcher,
+    vars: &Vars,
 ) -> Result<LaunchSpec, StartError> {
-    let binary = settings.and_then(|s| s.binary.as_ref());
-    let mut env = launcher.env();
+    let binary = def.binary.as_ref();
     let program = if let Some(path) = binary.and_then(|b| b.path.clone()) {
         path
     } else {
-        let program = launcher
-            .which(adapter.binary())
-            .ok_or_else(|| not_found(adapter))?;
-        let probe_args = adapter.probe_args();
-        if !probe_args.is_empty() && !launcher.probe(&program, probe_args, root) {
-            return Err(not_found(adapter));
+        let command = def.command.as_deref().ok_or_else(|| not_found(def))?;
+        let program = launcher.which(command).ok_or_else(|| not_found(def))?;
+        if let Some(probe) = &def.probe {
+            let probe: Vec<&str> = probe.iter().map(String::as_str).collect();
+            if !launcher.probe(&program, &probe, root) {
+                return Err(not_found(def));
+            }
         }
         program
     };
     let args = binary
-        .and_then(|b| b.arguments.clone())
-        .unwrap_or_else(|| adapter.args().iter().map(|a| (*a).to_owned()).collect());
-    if let Some(overrides) = binary.and_then(|b| b.env.as_ref()) {
-        env.extend(overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
+        .and_then(|b| b.arguments.as_ref())
+        .unwrap_or(&def.args)
+        .iter()
+        .map(|arg| expand(arg, vars))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| var_failed(&err))?;
+    let mut env = launcher.env();
+    let overrides = def
+        .env
+        .iter()
+        .chain(binary.and_then(|b| b.env.as_ref()).into_iter().flatten());
+    for (key, value) in overrides {
+        let value = expand(value, vars).map_err(|err| var_failed(&err))?;
+        env.insert(key.clone(), value);
     }
     Ok(LaunchSpec {
-        server: adapter.name().to_owned(),
+        server: def.name.to_string(),
         program,
         args,
         env,
