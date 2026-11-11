@@ -9,6 +9,8 @@
 //! Go to References instead, as VS Code's `alternativeDefinitionCommand`
 //! does.
 
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
@@ -257,8 +259,20 @@ pub(crate) fn open_location(
     window: &mut Window,
     cx: &mut Context<Workbench>,
 ) {
-    let path = wb.absolute_path(&loc.path);
-    let point = loc.range.start;
+    open_at(wb, loc.path.clone(), loc.range.start, aside, window, cx);
+}
+
+/// Opens `path` as a preview tab with the cursor at `point`, as
+/// [`open_location`] does.
+pub(crate) fn open_at(
+    wb: &mut Workbench,
+    path: Arc<Path>,
+    point: Point,
+    aside: bool,
+    window: &mut Window,
+    cx: &mut Context<Workbench>,
+) {
+    let path = wb.absolute_path(&path);
     if !aside {
         wb.jump_to(path, point, OpenMode::Preview, cx);
         return;

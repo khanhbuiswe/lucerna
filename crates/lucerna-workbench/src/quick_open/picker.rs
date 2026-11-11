@@ -119,6 +119,17 @@ pub(crate) fn picker_row(
     selected: bool,
     cx: &App,
 ) -> Stateful<Div> {
+    picker_row_sized(id, index, selected, PICKER_ROW_HEIGHT, cx)
+}
+
+/// A [`picker_row`] `height` px tall, for rows of two lines.
+pub(crate) fn picker_row_sized(
+    id: &'static str,
+    index: usize,
+    selected: bool,
+    height: f32,
+    cx: &App,
+) -> Stateful<Div> {
     let ui = &cx.global::<AppState>().theme.ui;
     let hover = color(ui.ghost_element_hover);
     div()
@@ -127,7 +138,7 @@ pub(crate) fn picker_row(
         .flex()
         .flex_none()
         .items_center()
-        .h(px(PICKER_ROW_HEIGHT))
+        .h(px(height))
         .px(px(2. * GRID))
         .rounded(px(GRID))
         .overflow_hidden()

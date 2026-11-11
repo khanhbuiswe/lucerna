@@ -1,14 +1,17 @@
 //! Document symbols (spec §7.6): where they come from ([`SymbolSource`])
-//! and Quick Open `@`, which lists them with a preview in the editor.
+//! and Quick Open `@`, which lists them with a preview in the editor;
+//! workspace symbols for Quick Open `#`.
 
 pub(crate) mod breadcrumbs;
 pub(crate) mod quick_open;
 mod source;
+pub(crate) mod workspace;
 
 pub use breadcrumbs::{
     BREADCRUMBS_BATCH, BreadcrumbMode, FilePathMode, Segment, SymbolPathMode, breadcrumb_segments,
 };
 pub use source::{EMPTY_SYMBOLS_TTL, SYMBOLS_DEBOUNCE, SymbolSource, SymbolState};
+pub use workspace::{MAX_WORKSPACE_SYMBOLS, WORKSPACE_SYMBOLS_DEBOUNCE, WorkspaceSymbolItem};
 
 use std::path::Path;
 
@@ -23,6 +26,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "workbench.action.gotoSymbol",
         "Go to Symbol in Editor…",
         |wb, _, window, cx| wb.show_document_symbols(window, cx),
+    );
+    commands.register(
+        "workbench.action.showAllSymbols",
+        "Go to Symbol in Workspace…",
+        |wb, _, window, cx| wb.show_quick_open("#", window, cx),
     );
     commands.register(
         "breadcrumbs.focusAndSelect",

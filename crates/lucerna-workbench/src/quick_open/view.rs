@@ -17,12 +17,17 @@ use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 use super::picker::{
-    fuzzy_filter, highlighted, picker_input_row, picker_list, picker_row, wrap_index,
+    fuzzy_filter, highlighted, picker_input_row, picker_list, picker_row, picker_row_sized,
+    wrap_index,
 };
 use super::query::{QuickOpenQuery, parse_query};
 use crate::layout::color;
 use crate::symbols::SymbolState;
-use crate::symbols::quick_open::{NO_SYMBOL_SOURCE, SymbolId, SymbolPicker, SymbolRow};
+use crate::symbols::quick_open::{NO_SYMBOL_SOURCE, NO_SYMBOLS, SymbolId, SymbolPicker, SymbolRow};
+use crate::symbols::workspace::{
+    self, NO_SERVER, TYPE_TO_SEARCH, WORKSPACE_ROW_HEIGHT, WORKSPACE_SYMBOLS_DEBOUNCE,
+    WorkspaceSymbolItem,
+};
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{GRID, popover};
@@ -76,6 +81,11 @@ pub enum QuickOpenEvent {
         path: Arc<Path>,
         point: Point,
     },
+    /// Open a symbol picked with `#`; `to_side` in the group to the right.
+    OpenWorkspaceSymbol {
+        item: Box<WorkspaceSymbolItem>,
+        to_side: bool,
+    },
     Dismiss,
 }
 
@@ -97,6 +107,14 @@ enum Row {
     },
     /// A `@` row: a document symbol or a group header.
     Symbol(SymbolRow),
+    /// A `#` row: a workspace symbol.
+    WorkspaceSymbol {
+        index: usize,
+        /// Char indices into the name.
+        positions: Vec<u32>,
+        /// Its file and line, as shown.
+        location: SharedString,
+    },
     Message(&'static str),
 }
 
@@ -122,6 +140,11 @@ pub struct QuickOpen {
     /// `@` is first typed.
     symbols: Option<SymbolPicker>,
     symbols_loaded: bool,
+    /// The symbols `#` lists.
+    workspace_symbols: Vec<WorkspaceSymbolItem>,
+    /// The debounced `#` search of the latest query; replacing it cancels
+    /// the requests of the one before.
+    _workspace_search: Task<()>,
     rows: Vec<Row>,
     selected: usize,
     scroll: ScrollHandle,
@@ -168,6 +191,8 @@ impl QuickOpen {
             extension_ids: sources.extension_ids.map(|ids| ids.map(Into::into)),
             symbols: None,
             symbols_loaded: false,
+            workspace_symbols: Vec::new(),
+            _workspace_search: Task::ready(()),
             rows: Vec::new(),
             selected: 0,
             scroll: ScrollHandle::new(),
@@ -310,6 +335,12 @@ impl QuickOpen {
                 if let (Row::Symbol(row), Some(symbols)) = (row, &self.symbols) {
                     return symbols.row_text(row);
                 }
+                if let Row::WorkspaceSymbol {
+                    index, location, ..
+                } = row
+                {
+                    return workspace::row_text(&self.workspace_symbols[*index], location);
+                }
                 let (main, detail) = self.row_parts(row);
                 match detail {
                     Some(detail) if !detail.is_empty() => format!("{main} {detail}"),
@@ -332,7 +363,7 @@ impl QuickOpen {
             }
             Row::GoToLine { line, column } => (go_to_line_label(*line, *column).into(), None),
             Row::Extension { index, .. } => (self.extension_id(*index).to_string().into(), None),
-            Row::Symbol(_) => (SharedString::default(), None),
+            Row::Symbol(_) | Row::WorkspaceSymbol { .. } => (SharedString::default(), None),
             Row::Message(text) => ((*text).into(), None),
         }
     }
@@ -340,6 +371,7 @@ impl QuickOpen {
     fn query_changed(&mut self, text: &str, cx: &mut Context<Self>) {
         self.generation += 1;
         self.cancel.store(true, Ordering::Relaxed);
+        self._workspace_search = Task::ready(());
         match &self.extension_ids {
             Some(Ok(ids)) => {
                 // Hundreds of ids: only the best ones are drawn.
@@ -382,14 +414,79 @@ impl QuickOpen {
                 self.load_symbols(cx);
                 self.show_symbols(&text, group_by_kind, None, cx);
             }
-            QuickOpenQuery::WorkspaceSymbols(text) => {
-                let message = match text.is_empty() {
-                    true => "Type to search symbols",
-                    false => "Searching symbols…",
-                };
-                self.set_rows(vec![Row::Message(message)], cx);
-            }
+            QuickOpenQuery::WorkspaceSymbols(text) => self.search_workspace_symbols(text, cx),
         }
+    }
+
+    /// Asks the language servers for the symbols matching `text` once
+    /// typing pauses for 100 ms. The symbols shown stay until the answer
+    /// arrives; other rows are cleared.
+    fn search_workspace_symbols(&mut self, text: String, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            self.set_rows(vec![Row::Message(TYPE_TO_SEARCH)], cx);
+            return;
+        }
+        let Some(wb) = self.workbench.upgrade() else {
+            return;
+        };
+        let servers = wb.read(cx).language_servers().clone();
+        if !servers.read(cx).has_workspace_symbols() {
+            self.set_rows(vec![Row::Message(NO_SERVER)], cx);
+            return;
+        }
+        if !matches!(self.rows.first(), Some(Row::WorkspaceSymbol { .. })) {
+            self.set_rows(Vec::new(), cx);
+        }
+        let generation = self.generation;
+        self._workspace_search = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(WORKSPACE_SYMBOLS_DEBOUNCE)
+                .await;
+            let search = this.update(cx, |qo, cx| {
+                let wb = qo.workbench.upgrade()?;
+                let project = wb.read(cx).worktree().snapshot();
+                Some(servers.update(cx, |s, cx| s.workspace_symbols(text.clone(), project, cx)))
+            });
+            let Ok(Some(search)) = search else {
+                return;
+            };
+            let items = search.await;
+            this.update(cx, |qo, cx| {
+                if qo.generation == generation {
+                    qo.show_workspace_symbols(items, &text, cx);
+                }
+            })
+            .ok();
+        });
+    }
+
+    /// Lists `items`, the answer for `text`, or "No symbols found".
+    fn show_workspace_symbols(
+        &mut self,
+        items: Vec<WorkspaceSymbolItem>,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if items.is_empty() {
+            self.workspace_symbols.clear();
+            self.set_rows(vec![Row::Message(NO_SYMBOLS)], cx);
+            return;
+        }
+        let Some(wb) = self.workbench.upgrade() else {
+            return;
+        };
+        let root = wb.read(cx).root();
+        let rows = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| Row::WorkspaceSymbol {
+                index,
+                positions: workspace::match_positions(&item.name, text),
+                location: workspace::location_label(item, root).into(),
+            })
+            .collect();
+        self.workspace_symbols = items;
+        self.set_rows(rows, cx);
     }
 
     /// Matches files on the background executor; the old rows stay until
@@ -485,6 +582,10 @@ impl QuickOpen {
                     point,
                 }
             }
+            Some(Row::WorkspaceSymbol { index, .. }) => QuickOpenEvent::OpenWorkspaceSymbol {
+                item: Box::new(self.workspace_symbols[*index].clone()),
+                to_side,
+            },
             Some(Row::Symbol(SymbolRow::Header { .. }) | Row::Message(_)) | None => return,
         };
         cx.emit(event);
@@ -515,6 +616,29 @@ impl QuickOpen {
                 .on_click(cx.listener(move |qo, _, _, cx| qo.confirm(index, false, cx)))
                 .child(content)
                 .into_any_element();
+        }
+        if let Row::WorkspaceSymbol {
+            index: item,
+            positions,
+            location,
+        } = row
+        {
+            let content = workspace::render_row(
+                &self.workspace_symbols[*item],
+                positions,
+                location.clone(),
+                cx,
+            );
+            return picker_row_sized(
+                "quick-open-row",
+                index,
+                index == self.selected,
+                WORKSPACE_ROW_HEIGHT,
+                cx,
+            )
+            .on_click(cx.listener(move |qo, _, _, cx| qo.confirm(index, false, cx)))
+            .child(content)
+            .into_any_element();
         }
         let ui = &cx.global::<AppState>().theme.ui;
         let (main, detail) = self.row_parts(row);

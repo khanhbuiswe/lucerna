@@ -732,3 +732,262 @@ fn tab_switch_and_split_show_symbols_at_once(cx: &mut TestAppContext) {
     });
     assert_eq!(crumbs_now(cx, 1).as_deref(), Some("src › main.rs › Foo"));
 }
+
+// ---------------------------------------------------------------------------
+// Quick Open `#`: workspace symbols.
+
+const WORKSPACE_SYMBOL: &str = "workspace/symbol";
+const RESOLVE_SYMBOL: &str = "workspaceSymbol/resolve";
+
+/// Waits (real time) for the worktree scan, so Quick Open knows which
+/// files are in the project.
+fn wait_for_scan(wb: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| wb.worktree().snapshot().scan_complete()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worktree scan did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::ScanComplete, cx)
+    });
+    settle(cx);
+}
+
+/// Types `text` one char at a time, `gap` of clock apart (also after the
+/// last char), without running the `#` debounce otherwise.
+fn type_slowly(text: &str, gap: Duration, cx: &mut VisualTestContext) {
+    for ch in text.chars() {
+        cx.simulate_input(&ch.to_string());
+        cx.run_until_parked();
+        cx.executor().advance_clock(gap);
+        cx.run_until_parked();
+    }
+}
+
+fn uri(path: &Path) -> Value {
+    serde_json::to_value(lucerna_lsp::position::path_to_uri(path)).unwrap()
+}
+
+/// A `SymbolInformation` for a function `name` at `line`, `character`.
+fn info(name: &str, container: Option<&str>, path: &Path, line: u32, character: u32) -> Value {
+    let end = character + name.len() as u32;
+    json!({
+        "name": name, "kind": 12, "containerName": container,
+        "location": { "uri": uri(path), "range": range(line, character, line, end) },
+    })
+}
+
+/// The queries of the `workspace/symbol` requests the server got.
+fn symbol_queries(fake: &FakeServer) -> Vec<String> {
+    support::lsp::sent(fake, WORKSPACE_SYMBOL)
+        .into_iter()
+        .map(|params| params["query"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// `src/lib.rs`: `helper` on row 1, after a comment with a two-byte
+/// char, so its UTF-16 column (11) is not its byte column (12).
+const LIB_RS: &str = "// lib\n/* é */ fn helper() {}\n";
+
+#[gpui::test]
+fn hash_debounces_and_cancels(cx: &mut TestAppContext) {
+    let fake = symbols_server().hang_on(WORKSPACE_SYMBOL);
+    let (_dir, wb, _view, cx) = setup(&fake, pt(0, 0), cx);
+    run(&wb, "workbench.action.showAllSymbols", cx);
+    let qo = quick_open(&wb, cx).expect("quick open is shown");
+    assert_eq!(cx.update(|_, cx| qo.read(cx).query(cx)), "#");
+
+    type_slowly("Foo", Duration::from_millis(30), cx);
+    assert!(symbol_queries(&fake).is_empty(), "still debouncing");
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    assert_eq!(symbol_queries(&fake), vec!["Foo"], "one request");
+    let first = fake.hung_ids(WORKSPACE_SYMBOL)[0].clone();
+
+    cx.simulate_input("x");
+    cx.run_until_parked();
+    let cancels = support::lsp::sent(&fake, "$/cancelRequest");
+    assert!(
+        cancels.contains(&json!({ "id": first })),
+        "the pending request is cancelled: {cancels:?}"
+    );
+    cx.executor().advance_clock(Duration::from_millis(150));
+    cx.run_until_parked();
+    assert_eq!(symbol_queries(&fake), vec!["Foo", "Foox"]);
+}
+
+#[gpui::test]
+fn project_results_first_max_100(cx: &mut TestAppContext) {
+    let outside = TempDir::new().unwrap();
+    let ext = outside.path().join("ext.rs");
+    fs::write(&ext, "fn x() {}\n".repeat(200)).unwrap();
+    let root = rust_project();
+    fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
+    fs::create_dir(root.path().join("target")).unwrap();
+    let gen_rs = root.path().join("target/gen.rs");
+    fs::write(&gen_rs, "fn foo() {}\n").unwrap();
+    let main = root.path().join("src/main.rs");
+
+    // The project's symbols match worst; the server sends everything.
+    let mut answer = vec![
+        info("fxoxo", Some("Foo"), &main, 4, 7),
+        info("fyoyo", None, &main, 90, 3),
+        info("foo", None, &gen_rs, 0, 3),
+        info("bar", None, &ext, 0, 3),
+    ];
+    for i in 0..120 {
+        answer.push(info(&format!("foo_ext_{i}"), None, &ext, i, 3));
+    }
+    let answer = Value::Array(answer);
+    let fake = symbols_server().on_request(WORKSPACE_SYMBOL, move |_| Ok(answer.clone()));
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let (wb, cx) = lsp_workbench_with(root.path(), launcher, TRUSTED, cx);
+    wait_for_scan(&wb, cx);
+    open(&wb, "src/main.rs", cx);
+    settle_symbols(cx);
+
+    run(&wb, "workbench.action.showAllSymbols", cx);
+    type_text("foo", cx);
+    let rows = rows(&wb, cx);
+    assert_eq!(rows.len(), 100, "at most 100");
+    assert_eq!(rows[0], "fxoxo Foo src/main.rs:5", "{rows:?}");
+    assert_eq!(rows[1], "fyoyo src/main.rs:91");
+    assert_eq!(rows[2], "foo target/gen.rs:1", "ignored files are external");
+    let external = format!("{}:", ext.display());
+    assert!(rows[3..].iter().all(|r| r.contains(&external)), "{rows:?}");
+    assert!(!rows.iter().any(|r| r.starts_with("bar")), "filtered");
+}
+
+/// [`setup`] (cursor on row 91) with `src/lib.rs` ([`LIB_RS`]) added.
+fn lib_project<'a>(
+    fake: &FakeServer,
+    cx: &'a mut TestAppContext,
+) -> (
+    TempDir,
+    Entity<Workbench>,
+    Entity<CodeView>,
+    &'a mut VisualTestContext,
+) {
+    let (dir, wb, view, cx) = setup(fake, pt(91, 4), cx);
+    fs::write(dir.path().join("src/lib.rs"), LIB_RS).unwrap();
+    (dir, wb, view, cx)
+}
+
+fn active_path(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> PathBuf {
+    let view = support::lsp::active_view(wb, cx);
+    cx.update(|_, cx| view.read(cx).path().to_path_buf())
+}
+
+#[gpui::test]
+fn enter_opens_symbol(cx: &mut TestAppContext) {
+    let lib = Arc::new(std::sync::Mutex::new(PathBuf::new()));
+    let lib_for_server = lib.clone();
+    let fake = symbols_server().on_request(WORKSPACE_SYMBOL, move |_| {
+        let lib = lib_for_server.lock().unwrap().clone();
+        Ok(json!([info("helper", Some("lib"), &lib, 1, 11)]))
+    });
+    let (dir, wb, _view, cx) = lib_project(&fake, cx);
+    *lib.lock().unwrap() = dir.path().join("src/lib.rs");
+
+    run(&wb, "workbench.action.showAllSymbols", cx);
+    type_text("help", cx);
+    assert_eq!(rows(&wb, cx), vec!["helper lib src/lib.rs:2"]);
+    keys("down", cx);
+    assert!(
+        active_path(&wb, cx).ends_with("src/main.rs"),
+        "no preview while moving"
+    );
+    keys("enter", cx);
+    assert!(quick_open(&wb, cx).is_none());
+    settle(cx);
+    assert!(active_path(&wb, cx).ends_with("src/lib.rs"));
+    let view = support::lsp::active_view(&wb, cx);
+    assert_eq!(place(&view, cx).0, pt(1, 12), "UTF-16 column 11");
+
+    run(&wb, "workbench.action.navigateBack", cx);
+    assert!(active_path(&wb, cx).ends_with("src/main.rs"), "history");
+
+    // ⌘Enter opens it in the group to the right.
+    run(&wb, "workbench.action.showAllSymbols", cx);
+    type_text("help", cx);
+    keys("cmd-enter", cx);
+    settle(cx);
+    let groups = cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).model().groups().len());
+    assert_eq!(groups, 2);
+    assert!(active_path(&wb, cx).ends_with("src/lib.rs"));
+    let view = support::lsp::active_view(&wb, cx);
+    assert_eq!(place(&view, cx).0, pt(1, 12));
+}
+
+#[gpui::test]
+fn uri_only_symbol_resolves_on_confirm(cx: &mut TestAppContext) {
+    use lsp_types::{
+        OneOf, PositionEncodingKind, ServerCapabilities, TextDocumentSyncCapability,
+        TextDocumentSyncKind, WorkspaceSymbolOptions,
+    };
+    let lib = Arc::new(std::sync::Mutex::new(PathBuf::new()));
+    let (lib_a, lib_b) = (lib.clone(), lib.clone());
+    let fake = FakeServer::new()
+        .capabilities(ServerCapabilities {
+            position_encoding: Some(PositionEncodingKind::UTF16),
+            text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+            workspace_symbol_provider: Some(OneOf::Right(WorkspaceSymbolOptions {
+                resolve_provider: Some(true),
+                work_done_progress_options: Default::default(),
+            })),
+            ..Default::default()
+        })
+        .on_request(WORKSPACE_SYMBOL, move |_| {
+            let lib = lib_a.lock().unwrap().clone();
+            Ok(json!([{ "name": "helper", "kind": 12,
+                        "location": { "uri": uri(&lib) }, "data": 7 }]))
+        })
+        .on_request(RESOLVE_SYMBOL, move |params| {
+            let lib = lib_b.lock().unwrap().clone();
+            assert_eq!(params["data"], json!(7), "the symbol is sent back");
+            Ok(info("helper", None, &lib, 1, 11))
+        });
+    let (dir, wb, _view, cx) = lib_project(&fake, cx);
+    *lib.lock().unwrap() = dir.path().join("src/lib.rs");
+
+    run(&wb, "workbench.action.showAllSymbols", cx);
+    type_text("helper", cx);
+    assert_eq!(rows(&wb, cx), vec!["helper src/lib.rs"], "no line yet");
+    keys("enter", cx);
+    settle(cx);
+    assert_eq!(count(&fake, RESOLVE_SYMBOL), 1);
+    assert!(active_path(&wb, cx).ends_with("src/lib.rs"));
+    let view = support::lsp::active_view(&wb, cx);
+    assert_eq!(place(&view, cx).0, pt(1, 12));
+}
+
+#[gpui::test]
+fn no_server_message(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let launcher = Arc::new(FakeLauncher::new());
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher, TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    run(&wb, "workbench.action.showAllSymbols", cx);
+    type_text("Foo", cx);
+    assert_eq!(rows(&wb, cx), vec!["No language server is running"]);
+}
+
+#[gpui::test]
+fn empty_query_message(cx: &mut TestAppContext) {
+    let fake = symbols_server().on_request(WORKSPACE_SYMBOL, |_| Ok(json!([])));
+    let (_dir, wb, _view, cx) = setup(&fake, pt(0, 0), cx);
+    run(&wb, "workbench.action.showAllSymbols", cx);
+    assert_eq!(rows(&wb, cx), vec!["Type to search symbols"]);
+    type_text("zzz", cx);
+    assert_eq!(rows(&wb, cx), vec!["No symbols found"]);
+    keys("backspace backspace backspace", cx);
+    assert_eq!(rows(&wb, cx), vec!["Type to search symbols"]);
+    assert_eq!(
+        symbol_queries(&fake),
+        vec!["zzz"],
+        "empty queries ask nothing"
+    );
+}

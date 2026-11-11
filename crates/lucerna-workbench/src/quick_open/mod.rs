@@ -1,6 +1,7 @@
 //! Quick Open: one floating picker for files (`⌘P`), commands (`⇧⌘P`,
-//! `>` prefix) and go to line (`⌃G`, `:` prefix), and the recently
-//! opened files that rank first in it.
+//! `>` prefix), go to line (`⌃G`, `:` prefix), the editor's symbols
+//! (`⇧⌘O`, `@`) and the workspace's (`⌘T`, `#`), and the recently opened
+//! files that rank first in it.
 
 /// The picker building blocks shared with the theme picker.
 pub(crate) mod picker;
@@ -18,6 +19,7 @@ use lucerna_text::Point;
 
 use crate::code_view::CodeView;
 use crate::extensions::ExtensionService;
+use crate::goto::open_at;
 use crate::nav_history::NavEntry;
 use crate::{AppState, CommandRegistry, OpenMode, Workbench};
 use view::{CommandItem, ExtensionIds, Sources};
@@ -253,6 +255,25 @@ impl Workbench {
                 // where it was before the previews.
                 self.jump_to(path.clone(), *point, OpenMode::Preview, cx);
                 self.focus_editor_area(window, cx);
+            }
+            QuickOpenEvent::OpenWorkspaceSymbol { item, to_side } => {
+                let (path, aside) = (item.path.clone(), *to_side);
+                if let Some(range) = &item.range {
+                    open_at(self, path, range.start, aside, window, cx);
+                    self.focus_editor_area(window, cx);
+                    return;
+                }
+                let servers = self.language_servers().clone();
+                let resolve = servers.update(cx, |s, cx| s.resolve_workspace_symbol(item, cx));
+                cx.spawn_in(window, async move |wb, cx| {
+                    let point = resolve.await.unwrap_or(Point { row: 0, column: 0 });
+                    wb.update_in(cx, |wb, window, cx| {
+                        open_at(wb, path, point, aside, window, cx);
+                        wb.focus_editor_area(window, cx);
+                    })
+                    .ok();
+                })
+                .detach();
             }
             QuickOpenEvent::Dismiss => {}
         }

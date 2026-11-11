@@ -78,8 +78,9 @@ pub use quick_open::{
 pub use references_view::{ReferencesView, find_references_in_tab};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
 pub use symbols::{
-    BREADCRUMBS_BATCH, BreadcrumbMode, EMPTY_SYMBOLS_TTL, FilePathMode, SYMBOLS_DEBOUNCE, Segment,
-    SymbolPathMode, SymbolSource, SymbolState, breadcrumb_segments,
+    BREADCRUMBS_BATCH, BreadcrumbMode, EMPTY_SYMBOLS_TTL, FilePathMode, MAX_WORKSPACE_SYMBOLS,
+    SYMBOLS_DEBOUNCE, Segment, SymbolPathMode, SymbolSource, SymbolState,
+    WORKSPACE_SYMBOLS_DEBOUNCE, WorkspaceSymbolItem, breadcrumb_segments,
 };
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};

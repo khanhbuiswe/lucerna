@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::FutureExt;
@@ -11,23 +12,26 @@ use futures::future::BoxFuture;
 use gpui::{AppContext, Context, Task};
 use lsp_types::request::{
     DocumentSymbolRequest, GotoDeclaration, GotoDefinition, GotoImplementation, GotoTypeDefinition,
-    HoverRequest, References,
+    HoverRequest, References, WorkspaceSymbolRequest, WorkspaceSymbolResolve,
 };
 use lsp_types::{
     DeclarationCapability, DocumentSymbolParams, GotoDefinitionParams, GotoDefinitionResponse,
     HoverContents, HoverParams, HoverProviderCapability, ImplementationProviderCapability,
     MarkedString, MarkupKind, OneOf, ReferenceContext, ReferenceParams, ServerCapabilities,
     TextDocumentIdentifier, TextDocumentPositionParams, TypeDefinitionProviderCapability,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use lucerna_lsp::locations::{ResolvedLocation, locations_from_response, resolve_locations};
-use lucerna_lsp::position::{PositionEncoding, path_to_uri, range_from_lsp, to_lsp};
-use lucerna_lsp::symbols::symbols_from_response;
+use lucerna_lsp::position::{PositionEncoding, path_to_uri, range_from_lsp, to_lsp, uri_to_path};
+use lucerna_lsp::symbols::{symbol_kind, symbols_from_response};
 use lucerna_lsp::{LanguageServer, LspError, ServerKey, Slot};
+use lucerna_project::WorktreeSnapshot;
 use lucerna_syntax::SymbolTree;
-use lucerna_text::{BufferSnapshot, Point};
+use lucerna_text::{Buffer, BufferSnapshot, Point};
 
 use super::LanguageServers;
 use crate::goto::GotoKind;
+use crate::symbols::workspace::{Candidate, Unresolved, WorkspaceSymbolItem, rank};
 use crate::workspace_state::absolute_path;
 
 /// `textDocument/hover` gives up after this.
@@ -138,12 +142,7 @@ impl LanguageServers {
         if requests.is_empty() {
             return Task::ready(Vec::new());
         }
-        // The text the servers were sent, for the files open here.
-        let open: HashMap<PathBuf, BufferSnapshot> = self
-            .docs
-            .iter()
-            .map(|(path, doc)| (path.to_path_buf(), doc.snapshot.clone()))
-            .collect();
+        let open = self.open_snapshots();
         cx.background_spawn(async move {
             let answers = futures::future::join_all(requests).await;
             crate::tasks::guarded("goto-locations", move || {
@@ -233,6 +232,224 @@ impl LanguageServers {
                 .any(|key: &ServerKey| matches!(self.registry.slot(key), Some(Slot::Starting)))
         })
     }
+}
+
+impl LanguageServers {
+    /// Whether a running server answers `workspace/symbol`.
+    pub fn has_workspace_symbols(&self) -> bool {
+        self.registry.running().any(|(_, server)| {
+            server
+                .capabilities()
+                .is_some_and(|caps| has_workspace_symbols(&caps))
+        })
+    }
+
+    /// Sends `workspace/symbol { query }` to every running server that
+    /// supports it and joins the answers (errors count as none), off the
+    /// UI thread: duplicates dropped, names fuzzy-filtered by the last
+    /// `::` segment of `query`, files of `project` (the root's
+    /// not-ignored files) first, at most 100, and only then are their
+    /// ranges read against the files' text. Dropping the task cancels
+    /// the requests.
+    pub fn workspace_symbols(
+        &self,
+        query: String,
+        project: WorktreeSnapshot,
+        cx: &mut Context<Self>,
+    ) -> Task<Vec<WorkspaceSymbolItem>> {
+        let requests: Vec<_> = self
+            .registry
+            .running()
+            .filter(|(_, server)| {
+                server
+                    .capabilities()
+                    .is_some_and(|caps| has_workspace_symbols(&caps))
+            })
+            .map(|(key, server)| {
+                let key = key.clone();
+                let encoding = server.encoding();
+                let request = server.request::<WorkspaceSymbolRequest>(WorkspaceSymbolParams {
+                    query: query.clone(),
+                    ..Default::default()
+                });
+                async move {
+                    let response = request.await.unwrap_or_else(|err| {
+                        tracing::debug!(%err, "workspace/symbol failed");
+                        None
+                    });
+                    (key, encoding, response)
+                }
+            })
+            .collect();
+        if requests.is_empty() {
+            return Task::ready(Vec::new());
+        }
+        let open = self.open_snapshots();
+        let root = self.root.clone();
+        cx.background_spawn(async move {
+            let answers = futures::future::join_all(requests).await;
+            crate::tasks::guarded("workspace-symbols", move || {
+                let candidates = answers
+                    .into_iter()
+                    .flat_map(|(key, encoding, response)| candidates(key, encoding, response))
+                    .collect();
+                let in_project = |path: &Path| {
+                    path.strip_prefix(&root)
+                        .is_ok_and(|relative| project.contains(relative))
+                };
+                let mut snapshots = HashMap::new();
+                rank(candidates, &query, in_project)
+                    .into_iter()
+                    .map(|(c, in_project)| {
+                        let snapshot = snapshots
+                            .entry(c.path.clone())
+                            .or_insert_with(|| text_of(&c.path, &open));
+                        let range = c
+                            .range
+                            .zip(snapshot.as_ref())
+                            .map(|(range, snapshot)| range_from_lsp(snapshot, range, c.encoding));
+                        WorkspaceSymbolItem {
+                            name: c.name,
+                            kind: c.kind,
+                            container: c.container,
+                            path: Arc::from(c.path),
+                            range,
+                            in_project,
+                            unresolved: c.unresolved,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+        })
+    }
+
+    /// Where to open `item`: the start of its range; for a symbol sent
+    /// without one, the range `workspaceSymbol/resolve` gives, if its
+    /// server is running and supports that. `None` when there is none
+    /// (open it at the top).
+    pub fn resolve_workspace_symbol(
+        &self,
+        item: &WorkspaceSymbolItem,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Point>> {
+        if let Some(range) = &item.range {
+            return Task::ready(Some(range.start));
+        }
+        let Some(Unresolved { key, symbol }) = &item.unresolved else {
+            return Task::ready(None);
+        };
+        let Some(Slot::Running(server)) = self.registry.slot(key) else {
+            return Task::ready(None);
+        };
+        let resolves = server.capabilities().is_some_and(|caps| {
+            matches!(
+                &caps.workspace_symbol_provider,
+                Some(OneOf::Right(options)) if options.resolve_provider == Some(true)
+            )
+        });
+        if !resolves {
+            return Task::ready(None);
+        }
+        let encoding = server.encoding();
+        let request = server.request::<WorkspaceSymbolResolve>(symbol.clone());
+        let open = self.open_snapshots();
+        let path = item.path.to_path_buf();
+        cx.background_spawn(async move {
+            let symbol = match request.await {
+                Ok(symbol) => symbol,
+                Err(err) => {
+                    tracing::debug!(%err, "workspaceSymbol/resolve failed");
+                    return None;
+                }
+            };
+            let OneOf::Left(location) = symbol.location else {
+                return None;
+            };
+            crate::tasks::guarded("resolve-workspace-symbol", move || {
+                let snapshot = text_of(&path, &open)?;
+                Some(range_from_lsp(&snapshot, location.range, encoding).start)
+            })
+            .flatten()
+        })
+    }
+
+    /// The text the servers were sent, for the files open here.
+    fn open_snapshots(&self) -> HashMap<PathBuf, BufferSnapshot> {
+        self.docs
+            .iter()
+            .map(|(path, doc)| (path.to_path_buf(), doc.snapshot.clone()))
+            .collect()
+    }
+}
+
+/// The text of `path`: from `open`, else read from disk. Blocks.
+fn text_of(path: &Path, open: &HashMap<PathBuf, BufferSnapshot>) -> Option<BufferSnapshot> {
+    open.get(path)
+        .cloned()
+        .or_else(|| Buffer::load(path).ok().map(|buffer| buffer.snapshot()))
+}
+
+/// The symbols of one server's `workspace/symbol` answer; symbols outside
+/// files are dropped. A `WorkspaceSymbol` with only a URI keeps itself
+/// for `workspaceSymbol/resolve`.
+fn candidates(
+    key: ServerKey,
+    encoding: PositionEncoding,
+    response: Option<WorkspaceSymbolResponse>,
+) -> Vec<Candidate> {
+    let container = |c: Option<String>| c.filter(|c| !c.is_empty());
+    match response {
+        None => Vec::new(),
+        Some(WorkspaceSymbolResponse::Flat(infos)) => infos
+            .into_iter()
+            .filter_map(|info| {
+                Some(Candidate {
+                    path: uri_to_path(&info.location.uri)?,
+                    range: Some(info.location.range),
+                    name: info.name,
+                    kind: symbol_kind(info.kind),
+                    container: container(info.container_name),
+                    encoding,
+                    unresolved: None,
+                })
+            })
+            .collect(),
+        Some(WorkspaceSymbolResponse::Nested(symbols)) => symbols
+            .into_iter()
+            .filter_map(|symbol| {
+                let (path, range, unresolved) = match &symbol.location {
+                    OneOf::Left(location) => {
+                        (uri_to_path(&location.uri)?, Some(location.range), None)
+                    }
+                    OneOf::Right(location) => {
+                        let unresolved = Unresolved {
+                            key: key.clone(),
+                            symbol: symbol.clone(),
+                        };
+                        (uri_to_path(&location.uri)?, None, Some(unresolved))
+                    }
+                };
+                Some(Candidate {
+                    name: symbol.name,
+                    kind: symbol_kind(symbol.kind),
+                    container: container(symbol.container_name),
+                    path,
+                    range,
+                    encoding,
+                    unresolved,
+                })
+            })
+            .collect(),
+    }
+}
+
+/// Whether a server with `caps` answers `workspace/symbol`.
+fn has_workspace_symbols(caps: &ServerCapabilities) -> bool {
+    !matches!(
+        caps.workspace_symbol_provider,
+        None | Some(OneOf::Left(false))
+    )
 }
 
 /// Whether a server with `caps` answers `textDocument/documentSymbol`.

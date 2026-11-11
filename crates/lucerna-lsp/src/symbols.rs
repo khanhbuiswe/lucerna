@@ -24,7 +24,7 @@ pub fn symbols_from_response(
                     Symbol {
                         name: info.name,
                         detail: None,
-                        kind: kind(info.kind),
+                        kind: symbol_kind(info.kind),
                         selection_range: range.clone(),
                         range,
                         children: Vec::new(),
@@ -48,7 +48,7 @@ fn nested(
         .map(|s| Symbol {
             name: s.name,
             detail: s.detail.filter(|d| !d.is_empty()),
-            kind: kind(s.kind),
+            kind: symbol_kind(s.kind),
             range: range_from_lsp(snapshot, s.range, enc),
             selection_range: range_from_lsp(snapshot, s.selection_range, enc),
             children: nested(s.children.unwrap_or_default(), snapshot, enc),
@@ -91,8 +91,8 @@ const LSP_KINDS: [lsp_types::SymbolKind; 26] = {
     ]
 };
 
-/// Unknown kinds are `Object`.
-fn kind(kind: lsp_types::SymbolKind) -> SymbolKind {
+/// An LSP symbol kind as Lucerna's; unknown kinds are `Object`.
+pub fn symbol_kind(kind: lsp_types::SymbolKind) -> SymbolKind {
     LSP_KINDS
         .iter()
         .position(|k| *k == kind)

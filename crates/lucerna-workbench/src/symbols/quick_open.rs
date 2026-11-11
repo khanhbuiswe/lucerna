@@ -359,7 +359,7 @@ fn ancestors_text(item: &Item, nested: bool) -> Option<String> {
 
 /// `text` with the chars at `positions` on the accent color at 30%
 /// opacity, as Zed marks matches in its outline.
-fn matched(text: SharedString, positions: &[u32], cx: &App) -> StyledText {
+pub(crate) fn matched(text: SharedString, positions: &[u32], cx: &App) -> StyledText {
     let style = HighlightStyle {
         background_color: Some(match_color(cx).opacity(0.3)),
         ..Default::default()

@@ -10,6 +10,7 @@ use lsp_types::{
     MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities, TagSupport,
     TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities,
     WorkspaceClientCapabilities, WorkspaceFolder, WorkspaceSymbolClientCapabilities,
+    WorkspaceSymbolResolveSupportCapability,
 };
 use serde_json::Value;
 
@@ -82,7 +83,14 @@ fn client_capabilities() -> ClientCapabilities {
             ..Default::default()
         }),
         workspace: Some(WorkspaceClientCapabilities {
-            symbol: Some(WorkspaceSymbolClientCapabilities::default()),
+            // A symbol may come without a range; Quick Open `#` resolves
+            // it when opened.
+            symbol: Some(WorkspaceSymbolClientCapabilities {
+                resolve_support: Some(WorkspaceSymbolResolveSupportCapability {
+                    properties: vec!["location.range".to_owned()],
+                }),
+                ..Default::default()
+            }),
             configuration: Some(true),
             workspace_folders: Some(true),
             did_change_watched_files: Some(DidChangeWatchedFilesClientCapabilities {
