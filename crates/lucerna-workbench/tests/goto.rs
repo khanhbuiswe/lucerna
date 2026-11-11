@@ -1096,3 +1096,53 @@ fn jump_survives_a_preview_dropped_before_the_tab_opens(cx: &mut TestAppContext)
     assert_eq!(active_file(&wb, cx), "b.rs");
     assert_eq!(cursor(&wb, cx), pt(2, 7));
 }
+
+fn split(wb: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| {
+            m.split_active();
+        })
+    });
+    settle(cx);
+}
+
+fn focus_group(wb: &Entity<Workbench>, index: usize, cx: &mut VisualTestContext) {
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| {
+            assert!(m.focus_group(index));
+        })
+    });
+    settle(cx);
+}
+
+#[gpui::test]
+fn navigation_history_stays_with_its_group_when_groups_shift(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(
+        TRUSTED,
+        pt(1, 8),
+        |dir| {
+            let target = location(dir, "b.rs", 1, 7, 13);
+            FakeServer::new().on_request(DEFINITION, move |_| Ok(target.clone()))
+        },
+        cx,
+    );
+    // [A, B]: B jumps main.rs → b.rs, so B has history and A has none.
+    split(&wb, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    assert_eq!(active_file(&wb, cx), "b.rs");
+
+    // Splitting A inserts a group between A and B: [A, new, B].
+    focus_group(&wb, 0, cx);
+    split(&wb, cx);
+    let view = active_view(&wb, cx);
+    view.update(cx, |v, cx| v.set_cursor(pt(0, 0), cx));
+    settle(cx);
+    run(&wb, "workbench.action.navigateBack", cx);
+    assert_eq!(active_file(&wb, cx), "main.rs");
+    assert_eq!(cursor(&wb, cx), pt(0, 0), "the new group has no history");
+
+    focus_group(&wb, 2, cx);
+    assert_eq!(active_file(&wb, cx), "b.rs");
+    run(&wb, "workbench.action.navigateBack", cx);
+    assert_eq!(active_file(&wb, cx), "main.rs", "B keeps its own history");
+}

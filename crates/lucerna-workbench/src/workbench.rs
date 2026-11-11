@@ -21,7 +21,9 @@ use crate::code_view::{self, CodeView, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
 use crate::documents::{DocumentStatusItem, Documents};
-use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode, TabId, TabItem};
+use crate::editor_groups::{
+    self, EditorGroups, EditorGroupsView, GroupId, OpenMode, TabId, TabItem,
+};
 use crate::explorer::ExplorerView;
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
 use crate::hover::SHOW_HOVER;
@@ -179,7 +181,8 @@ pub struct Workbench {
     /// Every opened file, newest first; Quick Open ranks them first.
     pub(crate) recent_files: RecentFiles,
     /// Go Back / Go Forward, per editor group index.
-    nav_history: HashMap<usize, NavHistory>,
+    /// Go Back / Go Forward history per editor group, by stable group id.
+    nav_history: HashMap<GroupId, NavHistory>,
     /// The shown theme picker.
     pub(crate) theme_picker: Option<ShownThemePicker>,
     /// The shown locations picker (several definitions, references…).
@@ -1130,10 +1133,10 @@ impl Workbench {
             return;
         };
         let groups = self.editor_groups.read(cx).model();
-        let group = groups.active_group();
-        let count = groups.groups().len();
+        let group = groups.active_group_id();
         // Groups that were closed take their history with them.
-        self.nav_history.retain(|&g, _| g < count);
+        self.nav_history
+            .retain(|id, _| groups.groups().iter().any(|g| g.id == *id));
         self.nav_history.entry(group).or_default().record(from, to);
     }
 
@@ -1167,7 +1170,7 @@ impl Workbench {
         let Some(current) = self.nav_here(cx) else {
             return;
         };
-        let group = self.editor_groups.read(cx).model().active_group();
+        let group = self.editor_groups.read(cx).model().active_group_id();
         let Some(history) = self.nav_history.get_mut(&group) else {
             return;
         };

@@ -105,8 +105,14 @@ impl Tab {
     }
 }
 
+/// A group's identity for its lifetime: unlike its index, it does not
+/// shift when groups to its left are split or closed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct GroupId(u64);
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Group {
+    pub id: GroupId,
     pub tabs: Vec<Tab>,
     pub active: Option<TabId>,
     /// Every tab in the group, most recently active first.
@@ -174,7 +180,8 @@ impl EditorGroups {
         if mode == OpenMode::ToSide {
             let right = self.active_group + 1;
             if right == self.groups.len() {
-                self.groups.push(Group::default());
+                let group = self.new_group();
+                self.groups.push(group);
             }
             self.active_group = right;
         }
@@ -338,7 +345,7 @@ impl EditorGroups {
             id: self.new_id(),
             ..tab
         };
-        let mut group = Group::default();
+        let mut group = self.new_group();
         group.activate(copy.id);
         group.tabs.push(copy);
         self.active_group += 1;
@@ -353,6 +360,11 @@ impl EditorGroups {
         }
         self.active_group = index;
         true
+    }
+
+    /// The id of the active group.
+    pub fn active_group_id(&self) -> GroupId {
+        self.groups[self.active_group].id
     }
 
     pub fn active_group(&self) -> usize {
@@ -400,7 +412,7 @@ impl EditorGroups {
         // Singletons already restored in earlier groups.
         let mut singletons: Vec<TabItem> = Vec::new();
         for saved in &state.groups {
-            let mut group = Group::default();
+            let mut group = model.new_group();
             for (path, pinned) in &saved.tabs {
                 let item = saved_item(path);
                 let seen = singletons.contains(&item) || group.tabs.iter().any(|t| t.item == item);
@@ -444,7 +456,8 @@ impl EditorGroups {
             }
         }
         if model.groups.is_empty() {
-            model.groups.push(Group::default());
+            let group = model.new_group();
+            model.groups.push(group);
         }
         let last = model.groups.len() - 1;
         model.active_group = match restored_index.get(state.active_group) {
@@ -494,6 +507,16 @@ impl EditorGroups {
     fn new_id(&mut self) -> TabId {
         self.next_id += 1;
         TabId(self.next_id)
+    }
+
+    /// An empty group with a fresh id (ids share the tab counter; the
+    /// first group of a new model keeps id 0).
+    fn new_group(&mut self) -> Group {
+        self.next_id += 1;
+        Group {
+            id: GroupId(self.next_id),
+            ..Group::default()
+        }
     }
 }
 
