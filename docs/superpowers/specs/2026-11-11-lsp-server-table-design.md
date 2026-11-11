@@ -1,6 +1,6 @@
 # Bảng language server (kiểu Helix)
 
-Ngày 2026-11-11. Trạng thái: đã triển khai (commit 92d55bd..6d668f9, cộng commit docs). Khác spec khi triển khai: `languages` của clangd là `["c","c++","objective-c"]` vì id extension là tên chữ thường; relay chờ vtsls đang `Starting` thay vì trả `null` ngay; lệnh `probe` của Health chạy trong thư mục root. Tiếp nối Phase 3 (`2026-11-10-lucerna-phase3-lsp-design.md`).
+Ngày 2026-11-11. Trạng thái: đã triển khai (commit 92d55bd–0c85e21, cộng commit docs sửa dòng này; gồm đợt sửa sau review cuối). Khác spec khi triển khai: `languages` của clangd là `["c","c++","objective-c"]` vì id extension là tên chữ thường; root marker của clangd giữ như Phase 3 (`compile_commands.json`, `.clangd`), không thêm `compile_flags.txt`, `.git`; lệnh cài clangd theo hệ điều hành (`xcode-select --install` trên macOS, `sudo apt install clangd` trên Linux); relay chờ vtsls đang `Starting` thay vì trả `null` ngay; lệnh `probe` của Health chạy trong thư mục root khi thư mục đã được tin cậy, chưa tin cậy thì chạy trong `$HOME`; hàng tóm tắt Health đếm server (mỗi server một lần), không đếm cặp (ngôn ngữ, server); phpactor cài bằng `composer global require phpactor/phpactor` vì Homebrew core không có formula.
 
 ## 1. Mục tiêu
 
@@ -124,7 +124,7 @@ Dòng trong bảng: `"command": "jdtls", "args": ["-data", "{data_dir}"]` (scrip
 ## 7. Health
 
 - **Popover ⚡:** hàng server `NotFound` cho các file đang mở hiện thêm dòng lệnh cài theo hệ điều hành hiện tại (font code, mờ) và nút chữ "Copy" (chép lệnh vào clipboard). Lỗi bảng (`TableError`) hiện thành hàng riêng "Invalid `lsp.<tên>`: <lý do>". Cuối popover thêm nút "Show All Languages…" mở tab Health. Dùng lại `popover`, `text_button`, `tooltip` của `ui.rs`.
-- **Tab Health** (`lucerna.lsp.health`, `TabItem::LspHealth`, một tab, không lưu workspace state): danh sách chỉ đọc, mỗi dòng một cặp (ngôn ngữ, server) trong bảng, gom theo ngôn ngữ với header như `excerpt_list`. Cột: server, trạng thái (`✓ /đường/dẫn` màu `text.muted`, `✗ not found` màu `warning`, `disabled` mờ), lệnh cài + nút Copy. Đầu tab có hàng tóm tắt "18 of 40 servers found" và nút refresh. `which` và `probe` chạy nền, kết quả cache tới khi bấm refresh hoặc settings đổi.
+- **Tab Health** (`lucerna.lsp.health`, `TabItem::LspHealth`, một tab, không lưu workspace state): danh sách chỉ đọc, mỗi dòng một cặp (ngôn ngữ, server) trong bảng, gom theo ngôn ngữ với header như `excerpt_list`. Cột: server, trạng thái (`✓ /đường/dẫn` màu `text.muted`, `✗ not found` màu `warning`, `disabled` mờ), lệnh cài + nút Copy. Đầu tab có hàng tóm tắt "18 of 40 servers found" (đếm server, mỗi server một lần) và nút refresh; lỗi bảng hiện ngay dưới, cùng dạng hàng với popover. `which` và `probe` chạy nền, kết quả cache tới khi bấm refresh, settings đổi hoặc thư mục đổi trạng thái tin cậy. `probe` chạy trong root khi thư mục đã tin cậy, không thì trong `$HOME` (shim rustup, asdf, mise đọc file cấu hình của thư mục).
 - **`luc lsp health`:** in cùng bảng ra stdout dạng cột (ngôn ngữ, server, trạng thái, lệnh cài), không cần GUI; mã thoát 0. Dùng `lucerna-lsp` trực tiếp và settings User (không đọc settings Workspace của thư mục hiện tại).
 - Server ghi vào thư mục project (ruby-lsp `.ruby-lsp/`, elixir-ls `.elixir_ls/`, metals `.metals/` `.bloop/`, clangd `.cache/clangd/`, sourcekit-lsp `.build/`) có ghi chú một dòng trong tab Health. Không chặn: thư mục đã qua bước tin cậy.
 
@@ -154,7 +154,7 @@ Mỗi ngôn ngữ đúng một server bật sẵn; server thay thế có trong b
 | zig | zls | `zls` | `build.zig`, `zls.json` | `brew install zls` | |
 | dart | dart | `dart language-server --protocol=lsp` | `pubspec.yaml` | Dart SDK hoặc Flutter | |
 | vue.js | vue-language-server + vtsls | §5 | `package.json` | `npm i -g @vue/language-server @vtsls/language-server` | |
-| c, c++, objective-c | clangd | `clangd` | `compile_commands.json`, `compile_flags.txt`, `.clangd`, `.git` | Command Line Tools hoặc `brew install llvm` | |
+| c, c++, objective-c | clangd | `clangd` | `compile_commands.json`, `.clangd` | `xcode-select --install` (Linux: `sudo apt install clangd`) | |
 | c# | csharp-ls | `csharp-ls` | `*.sln`, `*.slnx`, `*.csproj` | `dotnet tool install -g csharp-ls` | roslyn-language-server |
 | haskell | haskell-language-server | `haskell-language-server-wrapper --lsp` | `hie.yaml`, `cabal.project`, `stack.yaml`, `*.cabal`, `package.yaml` | `ghcup install hls` | |
 | ocaml | ocamllsp | `ocamllsp` | `dune-project`, `dune-workspace`, `*.opam` | `opam install ocaml-lsp-server` | |

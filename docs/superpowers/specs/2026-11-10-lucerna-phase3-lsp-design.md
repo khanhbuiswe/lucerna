@@ -90,7 +90,7 @@ Crate mới, phụ thuộc `lsp-types`, `serde`, `serde_json`, `futures`, `cross
 
 **`adapters`**
 
-> Đã thay bằng bảng JSON `crates/lucerna-lsp/assets/servers.json` (xem `2026-11-11-lsp-server-table-design.md`). Bảng dưới là giá trị gốc của năm server đầu; giá trị đó giữ nguyên trong `servers.json`, riêng `clangd` có `languages` là `["c","c++","objective-c"]` (id extension = tên chữ thường) và thêm root marker `compile_flags.txt`, `.git`.
+> Đã thay bằng bảng JSON `crates/lucerna-lsp/assets/servers.json` (xem `2026-11-11-lsp-server-table-design.md`). Bảng dưới là giá trị gốc của sáu server đầu; giá trị đó giữ nguyên trong `servers.json`, riêng `clangd` có `languages` là `["c","c++","objective-c"]` (id extension = tên chữ thường); root marker của `clangd` giữ nguyên (`compile_commands.json`, `.clangd`).
 
 | Server | Ngôn ngữ (id của Lucerna) | Binary và tham số | Root | Ghi chú |
 |---|---|---|---|---|
