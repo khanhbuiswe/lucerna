@@ -1,0 +1,53 @@
+{
+  "rust-analyzer": {
+    "command": "rust-analyzer",
+    "languages": ["rust"],
+    "root_markers": ["Cargo.toml"],
+    "root_search": "outermost",
+    "install": "rustup component add rust-analyzer",
+    "homepage": "https://rust-analyzer.github.io/book/installation.html"
+  },
+  "gopls": {
+    "command": "gopls",
+    "languages": ["go"],
+    "root_markers": ["go.work", "go.mod"],
+    "root_search": "ordered",
+    "probe": ["version"],
+    "install": "go install golang.org/x/tools/gopls@latest",
+    "homepage": "https://go.dev/gopls/"
+  },
+  "basedpyright": {
+    "command": "basedpyright-langserver",
+    "args": ["--stdio"],
+    "languages": ["python"],
+    "root_markers": ["pyproject.toml", "setup.py", "setup.cfg", "pyrightconfig.json"],
+    "probe": false,
+    "install": "npm i -g basedpyright",
+    "homepage": "https://docs.basedpyright.com/"
+  },
+  "pyright": {
+    "command": "pyright-langserver",
+    "args": ["--stdio"],
+    "languages": ["python"],
+    "root_markers": ["pyproject.toml", "setup.py", "setup.cfg", "pyrightconfig.json"],
+    "probe": false,
+    "enabled": false,
+    "install": "npm i -g pyright",
+    "homepage": "https://microsoft.github.io/pyright/"
+  },
+  "typescript-language-server": {
+    "command": "typescript-language-server",
+    "args": ["--stdio"],
+    "languages": ["typescript", "typescriptreact", "javascript", "javascriptreact"],
+    "root_markers": ["tsconfig.json", "jsconfig.json", "package.json"],
+    "install": "npm i -g typescript typescript-language-server",
+    "homepage": "https://github.com/typescript-language-server/typescript-language-server"
+  },
+  "clangd": {
+    "command": "clangd",
+    "languages": ["c", "cpp"],
+    "root_markers": ["compile_commands.json", ".clangd"],
+    "install": "xcode-select --install, or brew install llvm",
+    "homepage": "https://clangd.llvm.org/installation"
+  }
+}

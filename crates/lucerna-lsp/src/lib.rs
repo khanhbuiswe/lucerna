@@ -15,6 +15,7 @@ pub mod registry;
 pub mod settings;
 pub mod symbols;
 pub mod sync;
+pub mod table;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod transport;

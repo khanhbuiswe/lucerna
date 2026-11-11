@@ -3,17 +3,21 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde::Deserialize;
 use serde_json::Value;
 
 /// Which marker directory wins when several enclose a file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum RootSearch {
     /// The nearest directory containing any marker.
+    #[default]
     Nearest,
     /// The outermost directory containing any marker.
     Outermost,
     /// Markers are ranked by their order: the nearest directory containing
     /// the first marker wins, then the second, and so on.
+    #[serde(rename = "ordered")]
     NearestByMarker,
 }
 
