@@ -5,24 +5,42 @@
 <h1 align="center">Lucerna</h1>
 
 <p align="center">
-  A fast, read-first code editor with a minimal UI.<br>
-  A slimmer VS Code for people who let AI agents write the code.
+  A fast, minimal code editor for reading what your AI agent wrote.<br>
+  Written in Rust. No built-in AI, no bloat.
 </p>
 
 ---
 
-When an AI agent writes the code, you mostly *read* it: you browse the project, jump between
-files, and watch what the agent just changed. Lucerna is built for that, whether the agent runs
-in your terminal (Claude Code, Codex CLI) or in a desktop app (Claude, Codex). It opens instantly,
-follows changes on disk as they happen, and keeps VS Code's keyboard shortcuts and
-`settings.json`, so there is nothing new to learn.
+Your agent writes the code in Claude, Codex or a CLI such as Claude Code. You open Lucerna to
+read it: browse the project, jump between files and see what the agent just changed. Lucerna
+opens instantly, follows changes on disk as they happen, and keeps VS Code's keyboard shortcuts
+and `settings.json`, so there is nothing new to learn.
 
-Lucerna is written in Rust on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui),
-the GPU-accelerated UI framework from the Zed project. It has no AI features and no telemetry.
+```
+Claude / Codex (app or CLI) writes  →  Lucerna shows  →  you review
+```
 
 > **Status:** Phase 2 of the roadmap is complete. Lucerna is a **viewer** for now, and editing
 > comes later. It runs on **macOS** today. **Linux and Windows** are planned, and GPUI already
 > supports both. See [Roadmap](#roadmap).
+
+## Why Lucerna
+
+**Why not VS Code?** VS Code runs on Electron. Lucerna is written in Rust and draws on the GPU
+with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), the UI framework from
+the Zed project. In a release build the first frame takes about 150 ms, idle memory is about
+110 MB, and an 80,000-file repo shows its tree in about 60 ms
+(see [`docs/perf-checklist.md`](docs/perf-checklist.md)). You keep VS Code's shortcuts, setting
+names and `keybindings.json` format.
+
+**Why not Zed?** Zed is fast too, but it is an AI-first editor: it ships its own agent panel,
+edit predictions, collaboration and account sign-in. Lucerna leaves the agent to the tool you
+already use and stays small. It has no AI features, no telemetry and no account. It is fast,
+simple and does one job well: showing you the code.
+
+**Built for one flow.** Reading code is the first priority. Every feature is there to help you
+follow, navigate and understand what the agent wrote, and anything that does not serve that is
+left out.
 
 ## Features
 
