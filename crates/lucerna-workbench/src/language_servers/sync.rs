@@ -88,6 +88,7 @@ impl LanguageServers {
                         search: 0,
                         _search_task: None,
                         deleted: false,
+                        too_large: false,
                     },
                 );
                 self.push_diagnostics(path, cx);
@@ -98,10 +99,29 @@ impl LanguageServers {
                 let Some(doc) = self.docs.get_mut(path) else {
                     return;
                 };
+                let (max_bytes, max_lines) = large_file_limits(doc.language_id.as_deref(), cx);
+                // O(1): sizes only; `find_servers` checks long lines too.
+                let over =
+                    snapshot.len_bytes() as u64 > max_bytes || snapshot.line_count() > max_lines;
                 doc.snapshot = snapshot.clone();
                 let was_deleted = std::mem::take(&mut doc.deleted);
+                let was_too_large = doc.too_large;
+                let grew_too_large = over && !was_too_large;
+                if grew_too_large {
+                    doc.too_large = true;
+                    doc.search += 1;
+                    doc._search_task = None;
+                }
                 self.push_diagnostics(path, cx);
-                if was_deleted {
+                if over {
+                    // Grew past the limit: no more full-text `didChange`
+                    // built here; it leaves its servers until it shrinks.
+                    if grew_too_large {
+                        self.set_keys(path, Vec::new(), cx);
+                    }
+                } else if was_too_large {
+                    self.find_servers(path, cx);
+                } else if was_deleted {
                     self.open_in_servers(path, cx);
                 } else {
                     let servers = self.running_for(path);
@@ -157,16 +177,11 @@ impl LanguageServers {
         };
         if adapters.is_empty() {
             doc._search_task = None;
+            doc.too_large = false;
             self.set_keys(path, Vec::new(), cx);
             return;
         }
-        let settings = &cx.global::<AppState>().settings;
-        let max_bytes = settings
-            .get::<u64>("lucerna.largeFile.maxBytes", language.as_deref())
-            .unwrap_or(20 * 1024 * 1024);
-        let max_lines = settings
-            .get::<u32>("lucerna.largeFile.maxLines", language.as_deref())
-            .unwrap_or(300_000);
+        let (max_bytes, max_lines) = large_file_limits(language.as_deref(), cx);
         let (snapshot, file, root) = (doc.snapshot.clone(), path.clone(), self.root.clone());
         // A file outside the workspace (a library, the standard library)
         // never starts a server: it joins one already running here.
@@ -182,10 +197,10 @@ impl LanguageServers {
         let work = cx.background_executor().spawn(async move {
             guarded("lsp-find-servers", move || {
                 if too_large_for_lsp(&snapshot, max_bytes, max_lines) {
-                    return Vec::new();
+                    return None;
                 }
                 if let Some(keys) = outside {
-                    return keys;
+                    return Some(keys);
                 }
                 adapters
                     .iter()
@@ -195,9 +210,11 @@ impl LanguageServers {
                             server: adapter.name(),
                         })
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
+                    .into()
             })
-            .unwrap_or_default()
+            // A panic finds no servers but is not a size limit.
+            .unwrap_or_else(|| Some(Vec::new()))
         });
         let path = path.clone();
         doc._search_task = Some(cx.spawn(async move |this, cx| {
@@ -208,7 +225,10 @@ impl LanguageServers {
                     .get(&path)
                     .is_some_and(|doc| doc.search == search);
                 if current && servers.trusted {
-                    servers.set_keys(&path, keys, cx);
+                    if let Some(doc) = servers.docs.get_mut(&path) {
+                        doc.too_large = keys.is_none();
+                    }
+                    servers.set_keys(&path, keys.unwrap_or_default(), cx);
                 }
             })
             .ok();
@@ -285,6 +305,18 @@ impl LanguageServers {
             }
         }
     }
+}
+
+/// `lucerna.largeFile.maxBytes` and `.maxLines` for `language`.
+fn large_file_limits(language: Option<&str>, cx: &gpui::App) -> (u64, u32) {
+    let settings = &cx.global::<AppState>().settings;
+    let max_bytes = settings
+        .get::<u64>("lucerna.largeFile.maxBytes", language)
+        .unwrap_or(20 * 1024 * 1024);
+    let max_lines = settings
+        .get::<u32>("lucerna.largeFile.maxLines", language)
+        .unwrap_or(300_000);
+    (max_bytes, max_lines)
 }
 
 /// The servers a file outside the workspace joins, one per selected server

@@ -519,6 +519,32 @@ fn shutdown_all_waits_for_running_and_starting_servers(cx: &mut TestAppContext) 
     assert!(statuses.iter().all(|s| s.state == SlotState::Stopped));
 }
 
+#[gpui::test]
+fn file_growing_past_the_large_file_limit_leaves_its_servers(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let settings = r#"{ "session.trustAllWorktrees": true, "lucerna.largeFile.maxLines": 5 }"#;
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher, settings, cx);
+    open(&wb, "src/main.rs", cx);
+    assert_eq!(count(&fake, "textDocument/didOpen"), 1);
+
+    fs::write(dir.path().join("src/main.rs"), "//\n".repeat(20)).unwrap();
+    changed(&wb, "src/main.rs", ChangeKind::Modified, cx);
+    assert_eq!(
+        count(&fake, "textDocument/didChange"),
+        0,
+        "no full text past the limit"
+    );
+    assert_eq!(count(&fake, "textDocument/didClose"), 1);
+
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    changed(&wb, "src/main.rs", ChangeKind::Modified, cx);
+    let opens = sent(&fake, "textDocument/didOpen");
+    assert_eq!(opens.len(), 2, "back under the limit: opened again");
+    assert_eq!(opens[1]["textDocument"]["text"], "fn main() {}\n");
+}
+
 /// A crate outside the workspace (like `~/.cargo/registry/.../x.rs`).
 fn outside_crate() -> TempDir {
     let dir = TempDir::new().unwrap();

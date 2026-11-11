@@ -107,6 +107,9 @@ struct OpenDoc {
     _search_task: Option<Task<()>>,
     /// Gone from disk: closed in the servers until it is back.
     deleted: bool,
+    /// Over `lucerna.largeFile.*` (or with a very long line) when its
+    /// servers were last looked for: it has none until it shrinks.
+    too_large: bool,
 }
 
 pub struct LanguageServers {
