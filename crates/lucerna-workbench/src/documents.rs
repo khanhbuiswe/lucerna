@@ -340,7 +340,11 @@ impl Documents {
     pub fn go_to(&mut self, view: &Entity<CodeView>, point: Point, cx: &mut Context<Self>) {
         let key = self.key(view.read(cx).path());
         match self.docs.get_mut(&key) {
-            Some(doc) if doc.snapshot.is_none() => doc.pending_go_to = Some(point),
+            Some(doc) if doc.snapshot.is_none() => {
+                doc.pending_go_to = Some(point);
+                // The jump supersedes a restored scroll row.
+                self.pending_scroll.remove(&key);
+            }
             _ => view.update(cx, |v, cx| v.go_to(point, cx)),
         }
     }
@@ -349,6 +353,8 @@ impl Documents {
     /// there once its text is loaded.
     pub(crate) fn go_to_when_opened(&mut self, path: &Path, point: Point) {
         let key = self.key(path);
+        // The jump supersedes a restored scroll row.
+        self.pending_scroll.remove(&key);
         match self.docs.get_mut(&key) {
             Some(doc) => doc.pending_go_to = Some(point),
             None => {

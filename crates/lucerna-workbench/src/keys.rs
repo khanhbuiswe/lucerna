@@ -15,6 +15,11 @@ use lucerna_settings::Keystroke;
 /// `events.rs` `parse_keystroke`, the `shift = false; chars_with_shift`
 /// branch). Those are turned back into `shift` + the unshifted key, which
 /// is how the keymap files write them. US layout.
+///
+/// A user binding written with the shifted character (`ctrl+_`,
+/// `cmd+>`) therefore never matches: write `ctrl+shift+-` / `cmd+shift+.`.
+/// (Normalising in the keymap parser would touch another crate for the
+/// same effect.)
 pub fn to_keystroke(ev: &KeyDownEvent) -> Keystroke {
     let gpui::Keystroke { modifiers, key, .. } = &ev.keystroke;
     let mut keystroke = Keystroke {

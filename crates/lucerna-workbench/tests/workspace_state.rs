@@ -284,6 +284,38 @@ fn restore_applies_scroll_and_sidebar(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn jump_before_load_beats_the_restored_scroll_row(cx: &mut TestAppContext) {
+    init(cx);
+    let project = Project::new();
+    let (a, b, c) = (
+        project.file("a.txt"),
+        project.file("b.txt"),
+        project.file("c.txt"),
+    );
+    let long: String = (1..=500).map(|i| format!("line {i}\n")).collect();
+    fs::write(&b, long).unwrap();
+    let mut saved = sample(&[&c, &a, &b]); // `b` is a background tab
+    saved.scroll = HashMap::from([(b.clone(), 400)]);
+    save_state(&project.state_file(), &saved).unwrap();
+
+    let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
+    // `b` is a restored background tab: not drawn, so not loaded.
+    wb.update(cx, |wb, cx| {
+        wb.jump_to(
+            Arc::from(b.as_path()),
+            lucerna_text::Point { row: 20, column: 0 },
+            OpenMode::Preview,
+            cx,
+        )
+    });
+    settle(cx);
+    let view = active_view(&wb, cx);
+    let (cursor, top) = view.read_with(cx, |v, _| (v.cursor(), v.scroll_top_row()));
+    assert_eq!(cursor.row, 20);
+    assert!(top <= 20, "the jump target is in view, not row {top}");
+}
+
+#[gpui::test]
 fn without_a_data_dir_nothing_is_restored_or_saved(cx: &mut TestAppContext) {
     init(cx);
     let project = Project::new();
