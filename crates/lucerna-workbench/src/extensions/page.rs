@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Context, Div, Entity, FocusHandle, Focusable, IntoElement, ListAlignment,
-    ListOffset, ListState, MouseButton, ParentElement, Render, SharedString, Stateful, Styled,
-    Subscription, WeakEntity, Window, div, list, prelude::*, px,
+    ListOffset, ListState, MouseButton, ParentElement, Render, SharedString, Styled, Subscription,
+    WeakEntity, Window, div, list, prelude::*, px,
 };
 
 use super::ExtensionService;
@@ -21,7 +21,7 @@ use super::panel_model::{
 };
 use crate::layout::color;
 use crate::text_input::TextInput;
-use crate::ui::{GRID, UI_FONT_SIZE, UI_FONT_SIZE_CAPTION, UI_FONT_SIZE_SMALL};
+use crate::ui::{GRID, UI_FONT_SIZE, UI_FONT_SIZE_CAPTION, UI_FONT_SIZE_SMALL, text_button};
 use crate::{AppState, OpenMode, Workbench};
 
 pub(crate) const LOADING_LIST: &str = "Loading extension list…";
@@ -580,32 +580,6 @@ fn truncated(text: String) -> Div {
 /// [`truncated`] text that takes the rest of a row.
 fn text_cell(text: String) -> Div {
     truncated(text).flex_1()
-}
-
-/// A small bordered text button, 24 px tall; its id and debug selector are
-/// `id`. Clicking it leaves focus where it was.
-fn text_button(id: String, label: &'static str, cx: &App) -> Stateful<Div> {
-    let ui = &cx.global::<AppState>().theme.ui;
-    let hover = color(ui.ghost_element_hover);
-    let selector = id.clone();
-    div()
-        .id(SharedString::from(id))
-        .debug_selector(move || selector)
-        .flex()
-        .flex_none()
-        .items_center()
-        .h(px(6. * GRID))
-        .px(px(2. * GRID))
-        .rounded(px(GRID))
-        .border_1()
-        .border_color(color(ui.border_variant))
-        .bg(color(ui.editor_background))
-        .text_size(px(UI_FONT_SIZE_SMALL))
-        .text_color(color(ui.text))
-        .cursor_pointer()
-        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-        .hover(move |s| s.bg(hover))
-        .child(label)
 }
 
 impl Focusable for ExtensionsPage {

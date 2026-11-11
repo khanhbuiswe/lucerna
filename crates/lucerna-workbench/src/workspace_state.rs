@@ -168,6 +168,11 @@ impl WorkspaceStateStore {
         state_path(&self.data_dir, &self.root)
     }
 
+    /// The app data directory it keeps the state in.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     pub fn load(&self) -> Option<WorkspaceState> {
         load_state(&self.path())
     }

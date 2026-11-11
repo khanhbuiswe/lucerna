@@ -1,5 +1,6 @@
 //! The 34 px integrated title bar: macOS traffic lights inset into the
-//! window, then the root folder's name and its git branch. Dragging it moves the window and a
+//! window, then the root folder's name, its git branch and, in Restricted
+//! Mode, the "Restricted Mode" button. Dragging it moves the window and a
 //! double-click zooms it.
 
 use gpui::{
@@ -35,6 +36,7 @@ pub fn window_options(bounds: Bounds<Pixels>) -> WindowOptions {
 pub(crate) fn render(
     root_name: String,
     branch: Option<String>,
+    restricted: bool,
     ui: &UiColors,
     cx: &mut Context<Workbench>,
 ) -> impl IntoElement {
@@ -111,4 +113,39 @@ pub(crate) fn render(
                         .child(branch),
                 )
         }))
+        .when(restricted, |bar| bar.child(restricted_mode_button(ui, cx)))
+}
+
+/// A warning icon and "Restricted Mode": opens the trust modal. Presses on
+/// it neither move nor zoom the window.
+fn restricted_mode_button(ui: &UiColors, cx: &mut Context<Workbench>) -> impl IntoElement {
+    let hover = color(ui.ghost_element_hover);
+    div()
+        .id("restricted-mode")
+        .debug_selector(|| "restricted-mode".into())
+        .flex()
+        .flex_row()
+        .flex_none()
+        .items_center()
+        .gap(px(GRID))
+        .h(px(6. * GRID))
+        .px(px(1.5 * GRID))
+        .rounded(px(GRID))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .text_size(px(UI_FONT_SIZE_SMALL))
+        .text_color(color(ui.text))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(|wb, _, window, cx| {
+            cx.stop_propagation();
+            wb.show_trust_modal(window, cx);
+        }))
+        .child(
+            svg()
+                .data(icons::TRIANGLE_ALERT)
+                .flex_none()
+                .size(px(UI_FONT_SIZE_SMALL))
+                .text_color(color(ui.warning)),
+        )
+        .child("Restricted Mode")
 }

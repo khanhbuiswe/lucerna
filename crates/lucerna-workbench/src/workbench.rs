@@ -35,6 +35,7 @@ use crate::search_view::{self, SearchView};
 use crate::tasks::try_spawn_guarded;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
+use crate::trust::{self, Trust};
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
 use crate::vim::{self, VimLayer};
 use crate::vim_indicator::ModeIndicator;
@@ -148,6 +149,8 @@ pub struct Workbench {
     pub(crate) recent_files: RecentFiles,
     /// The shown theme picker.
     pub(crate) theme_picker: Option<ShownThemePicker>,
+    /// Folder trust: the trust store's answer and the trust modal.
+    pub(crate) trust: Trust,
     /// The notification at the bottom right.
     pub(crate) toast: Option<Toast>,
     /// Toasts shown so far; tells a toast's timer whether it is current.
@@ -229,6 +232,7 @@ impl Workbench {
         search_view::register_commands(&mut commands);
         config_files::register_commands(&mut commands);
         theme_picker::register_commands(&mut commands);
+        trust::register_commands(&mut commands);
         crate::extensions::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
@@ -299,6 +303,7 @@ impl Workbench {
             Some(file) => Worktree::without_scan(root.clone(), vec![file]),
             None => Worktree::start(root.clone(), scan_options.clone()),
         };
+        let trust = Trust::new(store.as_ref().map(|s| s.data_dir().to_path_buf()));
         let restored = store
             .as_ref()
             .and_then(WorkspaceStateStore::load)
@@ -429,6 +434,7 @@ impl Workbench {
             focus_before_quick_open: None,
             recent_files: RecentFiles::default(),
             theme_picker: None,
+            trust,
             toast: None,
             toast_count: 0,
             fresh_installs_seen,
@@ -438,6 +444,9 @@ impl Workbench {
         if let Some(store) = store {
             workbench.start_persistence(store, restored.as_ref(), window, cx);
         }
+        let documents = workbench.documents.clone();
+        let trust_events = workbench.start_trust(&documents, window, cx);
+        workbench._subscriptions.push(trust_events);
         workbench.refresh_watched_open_files(cx);
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, mode_indicator.into(), cx);
@@ -612,6 +621,8 @@ impl Workbench {
             self.documents
                 .update(cx, |documents, cx| documents.languages_changed(cx));
         }
+        // `session.trustAllWorktrees` may have changed.
+        self.apply_trust(cx);
         cx.notify();
     }
 
@@ -1349,6 +1360,7 @@ impl Render for Workbench {
             .child(title_bar::render(
                 root_name.clone(),
                 self.git_branch.clone(),
+                self.is_restricted(cx),
                 ui,
                 cx,
             ))
@@ -1390,6 +1402,10 @@ impl Render for Workbench {
             .children(
                 self.theme_picker()
                     .map(|picker| popover_overlay(picker.clone())),
+            )
+            .children(
+                self.trust_modal()
+                    .map(|modal| popover_overlay(modal.clone())),
             )
             .children(
                 self.toast

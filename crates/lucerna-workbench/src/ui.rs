@@ -3,7 +3,7 @@
 
 use gpui::{
     AnyElement, App, ClickEvent, Div, ElementId, Entity, Hsla, MouseButton, ParentElement, Pixels,
-    Stateful, Styled, Window, div, img, prelude::*, px, relative, svg,
+    SharedString, Stateful, Styled, Window, div, img, prelude::*, px, relative, svg,
 };
 use lucerna_theme::IconSource;
 
@@ -160,6 +160,94 @@ pub fn icon_button(
                 .size(px(14.))
                 .text_color(color(if active { ui.icon } else { ui.icon_muted })),
         )
+}
+
+/// A small bordered text button, 24 px tall; its id and debug selector are
+/// `id`. Clicking it leaves focus where it was. Add `on_click`.
+pub fn text_button(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Stateful<Div> {
+    styled_text_button(id.into(), label.into(), false, cx)
+}
+
+/// A [`text_button`] for the main action of a dialog: on
+/// `element.selected` (`element.hover` on hover), with the stronger
+/// `border` color.
+pub fn primary_text_button(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Stateful<Div> {
+    styled_text_button(id.into(), label.into(), true, cx)
+}
+
+fn styled_text_button(
+    id: SharedString,
+    label: SharedString,
+    primary: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let (background, hover, border) = if primary {
+        (ui.element_selected, ui.element_hover, ui.border)
+    } else {
+        (
+            ui.editor_background,
+            ui.ghost_element_hover,
+            ui.border_variant,
+        )
+    };
+    let hover = color(hover);
+    let selector = id.clone();
+    div()
+        .id(id)
+        .debug_selector(move || selector.to_string())
+        .flex()
+        .flex_none()
+        .items_center()
+        .h(px(6. * GRID))
+        .px(px(2. * GRID))
+        .rounded(px(GRID))
+        .border_1()
+        .border_color(color(border))
+        .bg(color(background))
+        .text_size(px(UI_FONT_SIZE_SMALL))
+        .text_color(color(ui.text))
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .hover(move |s| s.bg(hover))
+        .child(label)
+}
+
+/// A 14 px checkbox: a bordered box, filled with `element.selected` and
+/// holding a check mark while `checked`. Put it in a clickable row with
+/// its label.
+pub fn checkbox(checked: bool, cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .flex()
+        .flex_none()
+        .justify_center()
+        .items_center()
+        .size(px(14.))
+        .rounded(px(3.))
+        .border_1()
+        .border_color(color(ui.border))
+        .bg(color(if checked {
+            ui.element_selected
+        } else {
+            ui.editor_background
+        }))
+        .when(checked, |d| {
+            d.child(
+                svg()
+                    .data(icons::CHECK)
+                    .size(px(10.))
+                    .text_color(color(ui.icon)),
+            )
+        })
 }
 
 /// Height of a search bar row: the find bar and the Search tab's toolbar.

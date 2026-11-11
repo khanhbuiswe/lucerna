@@ -7,6 +7,7 @@ pub use model::{
     EXTENSIONS_TAB_STATE, EditorGroups, Group, GroupState, GroupsState, OpenMode, SEARCH_TAB_STATE,
     Tab, TabId, TabItem,
 };
+pub(crate) use view::path_bar_text;
 pub use view::{EditorGroupsView, TabBodyFactory, placeholder_body};
 
 use crate::{CommandHandler, CommandRegistry, Workbench};

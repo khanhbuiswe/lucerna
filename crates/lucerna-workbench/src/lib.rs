@@ -24,6 +24,7 @@ mod search_view;
 pub mod tasks;
 mod text_input;
 mod theme_picker;
+mod trust;
 pub mod ui;
 mod vim;
 mod vim_indicator;
@@ -57,6 +58,7 @@ pub use search_view::model::{
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};
+pub use trust::{TrustModal, TrustModalEvent, TrustStore};
 pub use vim::VimLayer;
 pub use workbench::{SidebarView, Workbench};
 pub use workspace_state::{

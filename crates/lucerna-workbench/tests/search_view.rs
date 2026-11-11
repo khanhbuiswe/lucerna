@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{Entity, Focusable, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_project::{Excerpt, LineMatch, SearchEvent, WorktreeEvent};
-use lucerna_settings::{Keymap, SettingsStore, parse_when};
+use lucerna_settings::{Keymap, Layer, SettingsStore, parse_when};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::Point;
 use lucerna_theme::ThemeRegistry;
@@ -26,8 +26,14 @@ fn init(cx: &mut TestAppContext) {
     assert!(error.is_none(), "keymap error: {error:?}");
     let themes = ThemeRegistry::builtin();
     let theme = themes.get_or_default("One Dark");
+    // No language servers: the trust modal (opened by the first `.rs`
+    // file) would take the focus these tests follow.
+    let mut settings = SettingsStore::with_defaults();
+    settings
+        .set_layer(Layer::User, r#"{ "lucerna.lsp.enabled": false }"#)
+        .expect("valid user settings");
     cx.set_global(AppState {
-        settings: SettingsStore::with_defaults(),
+        settings,
         keymap,
         themes,
         theme,

@@ -46,6 +46,8 @@ pub const ARROW_UP_RIGHT: &[u8] = lucide!("arrow-up-right");
 pub const CASE_SENSITIVE: &[u8] = lucide!("case-sensitive");
 pub const WHOLE_WORD: &[u8] = lucide!("whole-word");
 pub const REGEX: &[u8] = lucide!("regex");
+pub const TRIANGLE_ALERT: &[u8] = lucide!("triangle-alert");
+pub const CHECK: &[u8] = lucide!("check");
 
 /// Every bundled icon with its upstream name.
 pub const ALL: &[(&str, &[u8])] = &[
@@ -78,6 +80,8 @@ pub const ALL: &[(&str, &[u8])] = &[
     ("case-sensitive", CASE_SENSITIVE),
     ("whole-word", WHOLE_WORD),
     ("regex", REGEX),
+    ("triangle-alert", TRIANGLE_ALERT),
+    ("check", CHECK),
 ];
 
 /// The bundled SVG for a Lucide icon name.
