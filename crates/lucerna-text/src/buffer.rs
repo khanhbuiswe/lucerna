@@ -204,6 +204,9 @@ impl Buffer {
     }
 
     pub fn undo(&mut self) -> Option<UndoResult> {
+        if self.history.in_transaction() {
+            return None;
+        }
         self.push_stop();
         let t = self.history.pop_undo()?;
         let mut patches = Vec::with_capacity(t.edits.len());
@@ -221,6 +224,9 @@ impl Buffer {
     }
 
     pub fn redo(&mut self) -> Option<UndoResult> {
+        if self.history.in_transaction() {
+            return None;
+        }
         self.push_stop();
         let t = self.history.pop_redo()?;
         let mut patches = Vec::with_capacity(t.edits.len());

@@ -132,7 +132,9 @@ impl History {
         }
         self.top_is_new = false;
         let top = self.undo.last_mut()?;
-        top.selections_after = selections_after;
+        if selections_after.is_some() {
+            top.selections_after = selections_after;
+        }
         Some(top.id)
     }
 
@@ -145,9 +147,11 @@ impl History {
     /// Appends applied edits to the open top transaction and drops redo.
     pub fn record(&mut self, edits: Vec<Inverse>) {
         self.redo.clear();
-        if let Some(top) = self.undo.last_mut() {
-            top.edits.extend(edits);
-        }
+        self.undo
+            .last_mut()
+            .expect("record requires an open transaction")
+            .edits
+            .extend(edits);
     }
 
     pub fn pop_undo(&mut self) -> Option<Transaction> {
@@ -319,6 +323,39 @@ mod tests {
         b.push_stop();
         b.undo().unwrap();
         assert_eq!(text(&b), "");
+    }
+
+    #[test]
+    fn undo_redo_are_refused_inside_a_transaction() {
+        let mut b = buf("");
+        ed(&mut b, 0..0, "a");
+        b.push_stop();
+        b.start_transaction(None);
+        let v = b.version();
+        assert!(b.undo().is_none());
+        assert!(b.redo().is_none());
+        assert_eq!(b.version(), v);
+        ed(&mut b, 1..1, "b");
+        b.end_transaction(None);
+        assert_eq!(text(&b), "ab");
+        assert!(b.is_dirty());
+        b.undo().unwrap();
+        assert_eq!(text(&b), "a");
+        b.undo().unwrap();
+        assert_eq!(text(&b), "");
+        assert!(!b.is_dirty());
+    }
+
+    #[test]
+    fn standalone_edit_keeps_selections_after() {
+        let mut b = buf("");
+        b.start_transaction(None);
+        ed(&mut b, 0..0, "a");
+        b.end_transaction(Some(Arc::new(7u32)));
+        ed(&mut b, 1..1, "b");
+        b.undo().unwrap();
+        let r = b.redo().unwrap();
+        assert_eq!(*r.selections.unwrap().downcast::<u32>().unwrap(), 7);
     }
 
     #[test]
