@@ -8,15 +8,59 @@ use lucerna_settings::Keystroke;
 ///
 /// Uses `key`, never `key_char`: with modifiers held `key_char` is the
 /// produced character (`alt+z` types `Ω`), not the key that was pressed.
+///
+/// On macOS, shift held with a key that is not a letter reports the
+/// shifted character with `shift` cleared (`ctrl+shift+-` arrives as
+/// `ctrl` + `_`, `cmd+shift+.` as `cmd` + `>`; gpui_macos
+/// `events.rs` `parse_keystroke`, the `shift = false; chars_with_shift`
+/// branch). Those are turned back into `shift` + the unshifted key, which
+/// is how the keymap files write them. US layout.
 pub fn to_keystroke(ev: &KeyDownEvent) -> Keystroke {
     let gpui::Keystroke { modifiers, key, .. } = &ev.keystroke;
-    Keystroke {
+    let mut keystroke = Keystroke {
         cmd: modifiers.platform,
         ctrl: modifiers.control,
         alt: modifiers.alt,
         shift: modifiers.shift,
         key: canonical_key(key),
+    };
+    let chorded = keystroke.cmd || keystroke.ctrl || keystroke.alt;
+    if chorded
+        && !keystroke.shift
+        && let Some(base) = unshifted(&keystroke.key)
+    {
+        keystroke.key = base.into();
+        keystroke.shift = true;
     }
+    keystroke
+}
+
+/// The key a US-layout shifted character is typed with.
+fn unshifted(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "_" => "-",
+        "+" => "=",
+        "<" => ",",
+        ">" => ".",
+        "?" => "/",
+        ":" => ";",
+        "\"" => "'",
+        "{" => "[",
+        "}" => "]",
+        "|" => "\\",
+        "~" => "`",
+        "!" => "1",
+        "@" => "2",
+        "#" => "3",
+        "$" => "4",
+        "%" => "5",
+        "^" => "6",
+        "&" => "7",
+        "*" => "8",
+        "(" => "9",
+        ")" => "0",
+        _ => return None,
+    })
 }
 
 fn canonical_key(key: &str) -> String {
@@ -130,9 +174,11 @@ mod tests {
             (event("f8", None, alt()), "alt+f8"),
             (event("f8", None, alt_shift()), "shift+alt+f8"),
             (event("o", None, cmd_shift()), "shift+cmd+o"),
-            (event(".", None, cmd_shift()), "shift+cmd+."),
+            // As gpui_macos reports them: the shifted character, `shift`
+            // cleared.
+            (event(">", None, cmd()), "shift+cmd+."),
             (event("-", None, ctrl()), "ctrl+-"),
-            (event("-", None, ctrl_shift()), "ctrl+shift+-"),
+            (event("_", None, ctrl()), "ctrl+shift+-"),
         ];
         for (digit, binding) in [
             ("1", "cmd+1"),
@@ -176,6 +222,25 @@ mod tests {
                 assert!(covered.contains(&stroke), "no table row for '{keys}'");
             }
         }
+    }
+
+    #[test]
+    fn shift_with_symbol_keys_matches_either_event_shape() {
+        // macOS: shifted character, no shift flag.
+        let mac = to_keystroke(&event("_", None, ctrl()));
+        // Platforms that keep the key and the flag (and gpui's test platform).
+        let kept = to_keystroke(&event("-", None, ctrl_shift()));
+        let expected = parse_keys("ctrl+shift+-").unwrap().remove(0);
+        assert_eq!(mac, expected);
+        assert_eq!(kept, expected);
+        let expected = parse_keys("shift+cmd+.").unwrap().remove(0);
+        assert_eq!(to_keystroke(&event(">", None, cmd())), expected);
+        assert_eq!(to_keystroke(&event(".", None, cmd_shift())), expected);
+        // Without a chord modifier the character is left alone.
+        assert_eq!(
+            to_keystroke(&event("_", Some("_"), Modifiers::none())).key,
+            "_"
+        );
     }
 
     #[test]

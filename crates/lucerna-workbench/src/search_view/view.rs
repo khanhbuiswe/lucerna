@@ -1058,7 +1058,7 @@ impl SearchView {
         // own decoded line once it is loaded (ruling R24).
         let point = Point { row, column: 0 };
         let view = workbench.update(cx, |wb, cx| {
-            wb.open_path_at(path, OpenMode::Preview, point, cx);
+            wb.jump_to(path, point, OpenMode::Preview, cx);
             wb.editor_groups()
                 .update(cx, |groups, cx| groups.ensure_active_body(window, cx))
         });

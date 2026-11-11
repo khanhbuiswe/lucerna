@@ -216,14 +216,16 @@ impl Documents {
                         v.set_buffer(snapshot, cx);
                         v.set_syntax(syntax, cx);
                     }
-                    if let Some(row) = scroll {
-                        v.set_scroll_top_row(row, cx);
-                    }
                     if let Some(diagnostics) = diagnostics {
                         v.set_diagnostics(diagnostics, cx);
                     }
+                    // A jump centers its row; a scroll row asked for with it
+                    // (Go Back) wins over that.
                     if let Some(p) = go_to {
                         v.go_to(p, cx);
+                    }
+                    if let Some(row) = scroll {
+                        v.set_scroll_top_row(row, cx);
                     }
                     v.set_doc_state(state, cx);
                 });
@@ -353,6 +355,34 @@ impl Documents {
                 self.pending_go_to.insert(key, point);
             }
         }
+    }
+
+    /// [`Documents::go_to`], then scrolls `row` to the top of `view`
+    /// instead of centering the cursor.
+    pub fn go_to_and_scroll(
+        &mut self,
+        view: &Entity<CodeView>,
+        point: Point,
+        row: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let key = self.key(view.read(cx).path());
+        match self.docs.get_mut(&key) {
+            Some(doc) if doc.snapshot.is_none() => {
+                doc.pending_go_to = Some(point);
+                self.pending_scroll.insert(key, row);
+            }
+            _ => view.update(cx, |v, cx| {
+                v.go_to(point, cx);
+                v.set_scroll_top_row(row, cx);
+            }),
+        }
+    }
+
+    /// [`Documents::go_to_when_opened`] with a scroll row.
+    pub(crate) fn go_to_and_scroll_when_opened(&mut self, path: &Path, point: Point, row: u32) {
+        self.go_to_when_opened(path, point);
+        self.scroll_when_opened(path, row);
     }
 
     /// Remembers a scroll row for `path`: its next view shows that row as
@@ -562,14 +592,16 @@ impl Documents {
                     let snapshot = snapshot.clone();
                     view.update(cx, |v, cx| v.set_buffer(snapshot, cx));
                 }
+                // A requested jump moves the newest view only.
+                if let (Some(p), Some(view)) = (doc.pending_go_to.take(), doc.views().last()) {
+                    view.update(cx, |v, cx| v.go_to(p, cx));
+                }
+                // After the jump, which centers its row: a scroll row asked
+                // for with it (Go Back) wins.
                 if let Some(row) = self.pending_scroll.remove(key) {
                     for view in doc.views() {
                         view.update(cx, |v, cx| v.set_scroll_top_row(row, cx));
                     }
-                }
-                // A requested jump moves the newest view only.
-                if let (Some(p), Some(view)) = (doc.pending_go_to.take(), doc.views().last()) {
-                    view.update(cx, |v, cx| v.go_to(p, cx));
                 }
                 doc.set_state(DocState::Ready, cx);
                 parse = true;

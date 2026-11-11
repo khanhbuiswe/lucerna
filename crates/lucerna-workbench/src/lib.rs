@@ -19,6 +19,7 @@ mod language_servers;
 mod layout;
 mod lsp_log;
 mod lsp_status;
+mod nav_history;
 mod open_files;
 pub mod open_requests;
 mod quick_open;
@@ -51,6 +52,7 @@ pub use layout::StatusBarSide;
 pub use layout::title_bar::window_options;
 pub use lsp_log::LspLogView;
 pub use lsp_status::{LspStatusItem, ServerRow, StatusDot};
+pub use nav_history::{NavEntry, NavHistory};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,

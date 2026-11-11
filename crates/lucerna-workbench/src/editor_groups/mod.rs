@@ -35,6 +35,22 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             wb.update_editor_groups(cx, EditorGroups::cycle_mru);
         },
     );
+    commands.register(
+        "workbench.action.navigateBack",
+        "Go: Back",
+        |wb, _, window, cx| {
+            wb.navigate(true, cx);
+            wb.focus_editor_area(window, cx);
+        },
+    );
+    commands.register(
+        "workbench.action.navigateForward",
+        "Go: Forward",
+        |wb, _, window, cx| {
+            wb.navigate(false, cx);
+            wb.focus_editor_area(window, cx);
+        },
+    );
     let focus_group: [(&'static str, &'static str, CommandHandler); 8] = [
         (
             "workbench.action.focusFirstEditorGroup",

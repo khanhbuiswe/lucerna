@@ -31,6 +31,7 @@ use crate::layout::{
 };
 use crate::lsp_log::LspLogs;
 use crate::lsp_status::{self, LspStatusItem};
+use crate::nav_history::{NavEntry, NavHistory};
 use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::search_view::{self, SearchView};
@@ -153,6 +154,8 @@ pub struct Workbench {
     pub(crate) focus_before_quick_open: Option<FocusHandle>,
     /// Every opened file, newest first; Quick Open ranks them first.
     pub(crate) recent_files: RecentFiles,
+    /// Go Back / Go Forward, per editor group index.
+    nav_history: HashMap<usize, NavHistory>,
     /// The shown theme picker.
     pub(crate) theme_picker: Option<ShownThemePicker>,
     /// Folder trust: the trust store's answer and the trust modal.
@@ -449,6 +452,7 @@ impl Workbench {
             quick_open: None,
             focus_before_quick_open: None,
             recent_files: RecentFiles::default(),
+            nav_history: HashMap::new(),
             theme_picker: None,
             trust,
             toast: None,
@@ -953,6 +957,85 @@ impl Workbench {
         self.documents.update(cx, |docs, cx| match view {
             Some(view) => docs.go_to(&view, point, cx),
             None => docs.go_to_when_opened(&path, point),
+        });
+    }
+
+    /// The place the active editor shows: cursor and scroll, if its tab is
+    /// a drawn code view.
+    pub(crate) fn nav_here(&self, cx: &App) -> Option<NavEntry> {
+        let view = self.active_code_view(cx)?;
+        let v = view.read(cx);
+        Some(NavEntry {
+            path: v.path().clone(),
+            point: v.cursor(),
+            scroll_top_row: v.scroll_top_row(),
+        })
+    }
+
+    /// Remembers where the active editor is before a jump to `to`, for
+    /// the active group's Go Back.
+    pub(crate) fn record_nav(&mut self, to: &NavEntry, cx: &App) {
+        let Some(from) = self.nav_here(cx) else {
+            return;
+        };
+        let groups = self.editor_groups.read(cx).model();
+        let group = groups.active_group();
+        let count = groups.groups().len();
+        // Groups that were closed take their history with them.
+        self.nav_history.retain(|&g, _| g < count);
+        self.nav_history.entry(group).or_default().record(from, to);
+    }
+
+    /// Opens `path` like [`Workbench::open_path_at`] after recording the
+    /// place the active editor is at, so Go Back returns to it. Jumps in
+    /// the same file go through here too; short ones are not recorded.
+    pub fn jump_to(
+        &mut self,
+        path: Arc<Path>,
+        point: Point,
+        mode: OpenMode,
+        cx: &mut Context<Self>,
+    ) {
+        let path = self.absolute_path(&path);
+        self.record_nav(
+            &NavEntry {
+                path: path.clone(),
+                point,
+                scroll_top_row: 0,
+            },
+            cx,
+        );
+        self.open_path_at(path, mode, point, cx);
+    }
+
+    /// Go Back (`back`) or Go Forward in the active group: opens the
+    /// remembered place as a pinned tab with its cursor and scroll. Places
+    /// whose file no longer exists are dropped, found by one `stat` each
+    /// on this thread when the key is pressed.
+    pub(crate) fn navigate(&mut self, back: bool, cx: &mut Context<Self>) {
+        let Some(current) = self.nav_here(cx) else {
+            return;
+        };
+        let group = self.editor_groups.read(cx).model().active_group();
+        let Some(history) = self.nav_history.get_mut(&group) else {
+            return;
+        };
+        let exists = |entry: &NavEntry| entry.path.exists();
+        let target = if back {
+            history.back_where(current, exists)
+        } else {
+            history.forward_where(current, exists)
+        };
+        let Some(target) = target else {
+            return;
+        };
+        self.open_path(target.path.clone(), OpenMode::Pinned, cx);
+        let view = self.active_code_view(cx);
+        self.documents.update(cx, |docs, cx| match view {
+            Some(view) => docs.go_to_and_scroll(&view, target.point, target.scroll_top_row, cx),
+            None => {
+                docs.go_to_and_scroll_when_opened(&target.path, target.point, target.scroll_top_row)
+            }
         });
     }
 

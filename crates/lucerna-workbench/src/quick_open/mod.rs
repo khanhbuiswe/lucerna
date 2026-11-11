@@ -18,6 +18,7 @@ use lucerna_text::Point;
 
 use crate::code_view::CodeView;
 use crate::extensions::ExtensionService;
+use crate::nav_history::NavEntry;
 use crate::{AppState, CommandRegistry, Workbench};
 use view::{CommandItem, ExtensionIds, Sources};
 
@@ -213,7 +214,20 @@ impl Workbench {
         self.close_quick_open(window, cx);
         match event {
             QuickOpenEvent::Open { path, mode } => {
-                self.open_path(path.clone(), *mode, cx);
+                let path = self.absolute_path(path);
+                // Opening the file already shown is no jump; the cursor
+                // stays where it is.
+                if self.nav_here(cx).is_some_and(|here| here.path != path) {
+                    self.record_nav(
+                        &NavEntry {
+                            path: path.clone(),
+                            point: Point { row: 0, column: 0 },
+                            scroll_top_row: 0,
+                        },
+                        cx,
+                    );
+                }
+                self.open_path(path, *mode, cx);
                 self.focus_editor_area(window, cx);
             }
             QuickOpenEvent::RunCommand(id) => {
@@ -252,6 +266,14 @@ impl Workbench {
             _ => 0,
         };
         let point = Point { row, column };
+        self.record_nav(
+            &NavEntry {
+                path: view.read(cx).path().clone(),
+                point,
+                scroll_top_row: 0,
+            },
+            cx,
+        );
         self.documents()
             .clone()
             .update(cx, |docs, cx| docs.go_to(&view, point, cx));
