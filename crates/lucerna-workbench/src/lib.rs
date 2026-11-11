@@ -20,6 +20,7 @@ mod language_servers;
 mod layout;
 mod lsp_log;
 mod lsp_status;
+pub mod markdown;
 mod nav_history;
 mod open_files;
 pub mod open_requests;

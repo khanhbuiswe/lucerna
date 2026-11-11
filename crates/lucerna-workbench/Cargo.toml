@@ -23,6 +23,7 @@ lucerna-theme.workspace = true
 lucerna-vim.workspace = true
 notify.workspace = true
 nucleo-matcher.workspace = true
+pulldown-cmark.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
