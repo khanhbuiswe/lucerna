@@ -1,6 +1,6 @@
 # Bảng language server (kiểu Helix)
 
-Ngày 2026-11-11. Trạng thái: chờ duyệt. Tiếp nối Phase 3 (`2026-11-10-lucerna-phase3-lsp-design.md`).
+Ngày 2026-11-11. Trạng thái: đã triển khai (commit 92d55bd..6d668f9, cộng commit docs). Khác spec khi triển khai: `languages` của clangd là `["c","c++","objective-c"]` vì id extension là tên chữ thường; relay chờ vtsls đang `Starting` thay vì trả `null` ngay; lệnh `probe` của Health chạy trong thư mục root. Tiếp nối Phase 3 (`2026-11-10-lucerna-phase3-lsp-design.md`).
 
 ## 1. Mục tiêu
 
@@ -57,6 +57,7 @@ Chi tiết ở `docs/research/2026-11-11-lsp-server-table.md`. Tóm tắt:
 | `relay`* | `"vue-tsserver"` | Bật relay của Vue (§5) |
 | `install`* | chuỗi, hoặc object `macos`/`linux`/`windows` → chuỗi | Lệnh cài hiển thị trong Health |
 | `homepage`* | URL | Tài liệu upstream; cũng là nguồn của dòng này |
+| `note`* | chuỗi | Ghi chú một dòng hiển thị trong tab Health (ví dụ server ghi vào thư mục project) |
 | `binary` | object `{path, arguments, env}` | Có sẵn (kiểu Zed); `path` thay `command`, `arguments` thay `args`, `env` gộp lên `env` |
 | `initialization_options` | object | Có sẵn |
 | `settings` | object | Có sẵn (trả lời `workspace/configuration`, `didChangeConfiguration`) |

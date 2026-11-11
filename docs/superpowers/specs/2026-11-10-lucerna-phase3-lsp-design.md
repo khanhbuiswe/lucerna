@@ -12,7 +12,7 @@ Lucerna đọc được code như một IDE. Người dùng nhảy tới định
 |---|---|---|
 | D1 | **Server lấy từ PATH qua adapter viết sẵn**: rust-analyzer, gopls, pyright / basedpyright, typescript-language-server, clangd. Không tự tải server. | Đây là các ngôn ngữ chính. Zed viết sẵn server cho chúng bằng Rust (GPL), không qua extension. |
 | D2 | **Host WASM cho extension Zed để sang Phase 3b**, với spec riêng. | Host WASM không đem lại Rust/Go/Python/TS, và cần `cargo` + `wasm32-wasip2` trên máy người dùng để build `extension.wasm` (Lucerna không dùng `api.zed.dev`). Ước lượng 2–4 tuần riêng phần host. |
-| D3 | **Không cho tự khai báo server** chỉ bằng settings. | Giống cả VS Code và Zed. Ngôn ngữ khác chờ Phase 3b. |
+| D3 | **Cho tự khai báo server bằng settings** (`lsp.<tên>.command`…), theo Helix. Lệch khỏi VS Code và Zed. | Chưa có host WASM, đây là cách rẻ nhất để có LSP cho mọi ngôn ngữ; rủi ro chạy lệnh tùy ý đã được cơ chế tin cậy thư mục chặn (settings Workspace chỉ được đọc khi đã tin cậy). Xem `2026-11-11-lsp-server-table-design.md`. |
 | D4 | **Crate `lucerna-lsp` không dùng gpui**, tự viết transport, kiểu dữ liệu từ `lsp-types`. | Test được bằng fake server; không kéo tokio. |
 | D5 | **Nhiều kết quả và peek mở picker có preview** (theo `lsp_locations` của Zed); `⇧⌥F12` mở **tab References** dùng chung giao diện với tab Search. Không có vùng peek chèn trong editor. | Giao diện theo Zed. |
 | D6 | **Symbol lấy từ LSP `documentSymbol`**; khi không có server thì dùng `outline.scm` của extension ngôn ngữ (nếu có). | Chính xác như VS Code, vẫn có outline khi không có server. |
@@ -27,7 +27,7 @@ Lucerna đọc được code như một IDE. Người dùng nhảy tới định
 - Không có server trên PATH: Lucerna vẫn như cũ, nút ⚡ báo rõ thiếu gì và cách cấu hình.
 - Mục tiêu hiệu năng của Phase 1 vẫn giữ (khung hình đầu dưới 200 ms, RAM rỗi dưới 150 MB khi chưa mở file nào có server).
 
-**Ngoài phạm vi:** host WASM (3b); tự tải server; server tự khai báo; tab Problems; tô màu Explorer theo lỗi; pull diagnostics (chỉ dùng push); semantic tokens, inlay hint, document highlight, code lens; mọi thứ thuộc về sửa code; workspace nhiều root.
+**Ngoài phạm vi:** host WASM (3b); tự tải server; tab Problems; tô màu Explorer theo lỗi; pull diagnostics (chỉ dùng push); semantic tokens, inlay hint, document highlight, code lens; mọi thứ thuộc về sửa code; workspace nhiều root.
 
 ## 2. Tham khảo
 
@@ -89,6 +89,8 @@ Crate mới, phụ thuộc `lsp-types`, `serde`, `serde_json`, `futures`, `cross
 - Notification từ server: `textDocument/publishDiagnostics` → kho diagnostics; `$/progress` → trạng thái; `window/logMessage` và `window/showMessage` → log (showMessage loại Error còn hiện ở popover ⚡); khác thì bỏ.
 
 **`adapters`**
+
+> Đã thay bằng bảng JSON `crates/lucerna-lsp/assets/servers.json` (xem `2026-11-11-lsp-server-table-design.md`). Bảng dưới là giá trị gốc của năm server đầu; giá trị đó giữ nguyên trong `servers.json`, riêng `clangd` có `languages` là `["c","c++","objective-c"]` (id extension = tên chữ thường) và thêm root marker `compile_flags.txt`, `.git`.
 
 | Server | Ngôn ngữ (id của Lucerna) | Binary và tham số | Root | Ghi chú |
 |---|---|---|---|---|
@@ -372,7 +374,7 @@ Không có phím: `goToTypeDefinition`, `peekTypeDefinition`, `revealDeclaration
 |---|---|---|
 | `lucerna.lsp.enabled` | `true` | Ghi đè được theo ngôn ngữ (`"[rust]": { … }`) |
 | `lucerna.lsp.languageServers` | `["..."]` | Theo ngôn ngữ. Thứ tự là ưu tiên; `"!tên"` tắt; `"..."` là các server còn lại của ngôn ngữ, trừ server mặc định tắt. Mặc định `[python]`: `["basedpyright", "!pyright", "..."]` |
-| `lsp` | `{}` | Object theo shape của Zed: `"lsp": { "<server>": { "binary": { "path", "arguments", "env" }, "initialization_options", "settings" } }`. Lớp workspace bị bỏ qua khi chưa tin cậy |
+| `lsp` | `{}` | Object theo shape của Zed: `"lsp": { "<server>": { "binary": { "path", "arguments", "env" }, "initialization_options", "settings" } }`, thêm các trường khai báo server của bảng language server (`command`, `args`, `languages`, `file_types`, `root_markers`, `enabled`, `note`…; xem `2026-11-11-lsp-server-table-design.md` §3.1). Lớp workspace bị bỏ qua khi chưa tin cậy |
 | `session.trustAllWorktrees` | `false` | Chỉ đọc ở lớp User |
 | `editor.hover.enabled` / `delay` / `sticky` / `hidingDelay` | `true` / `300` / `true` / `300` | |
 | `editor.gotoLocation.multipleDefinitions` (+ `TypeDefinitions`, `Implementations`, `Declarations`, `References`) | `peek` | `peek` \| `gotoAndPeek` \| `goto` |
