@@ -3291,6 +3291,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucerna-editor"
+version = "0.1.0"
+dependencies = [
+ "lucerna-text",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "lucerna-extension"
 version = "0.1.0"
 dependencies = [

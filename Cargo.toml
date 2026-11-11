@@ -14,6 +14,7 @@ rust-version = "1.99"
 lucerna-workbench = { path = "crates/lucerna-workbench" }
 lucerna-settings = { path = "crates/lucerna-settings" }
 lucerna-text = { path = "crates/lucerna-text" }
+lucerna-editor = { path = "crates/lucerna-editor" }
 lucerna-project = { path = "crates/lucerna-project" }
 lucerna-syntax = { path = "crates/lucerna-syntax" }
 lucerna-theme = { path = "crates/lucerna-theme" }
@@ -79,6 +80,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 unicode-width = "0.2"
 url = "2"
 unicode-segmentation = "1"
+similar = "2"
 
 # UI: only lucerna-workbench may depend on these. Pinned to one Zed commit.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "b5cd310b3b54dfc659fcc06453e6358843dfe216" }
