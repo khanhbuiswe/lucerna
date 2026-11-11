@@ -12,6 +12,15 @@ lsp-types.workspace = true
 url.workspace = true
 crossbeam-channel.workspace = true
 tracing.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[features]
+test-support = []
+
+[dev-dependencies]
+lucerna-lsp = { path = ".", features = ["test-support"] }
