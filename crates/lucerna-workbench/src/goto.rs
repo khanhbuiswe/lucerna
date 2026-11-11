@@ -242,16 +242,25 @@ fn show_results(
         GotoMode::Peek => Multiple::Peek,
         _ => Multiple::read(kind, view.read(cx).language_id(), cx),
     };
+    // Quick Open, the theme picker or the trust modal opened while the
+    // servers answered: the picker would stack over it.
+    let picker_allowed = !wb.other_modal_overlay_shown();
     match multiple {
         Multiple::Goto => open_location(wb, &first, aside, window, cx),
         Multiple::GotoAndPeek => {
             open_location(wb, &first, aside, window, cx);
+            if !picker_allowed {
+                return;
+            }
             // Listed from the place jumped to, which is selected first;
             // the picker opens in the aside group, if any, already.
             let jumped = wb.absolute_path(&first.path);
             LocationsPicker::open(wb, kind, locations, jumped, false, window, cx);
         }
-        Multiple::Peek => LocationsPicker::open(wb, kind, locations, current, aside, window, cx),
+        Multiple::Peek if picker_allowed => {
+            LocationsPicker::open(wb, kind, locations, current, aside, window, cx);
+        }
+        Multiple::Peek => tracing::debug!(?kind, "goto picker skipped: another overlay is shown"),
     }
 }
 

@@ -128,7 +128,7 @@ impl LocationsPicker {
         window: &mut Window,
         cx: &mut Context<Workbench>,
     ) {
-        wb.close_locations_picker(window, cx);
+        wb.close_modal_overlays(window, cx);
         let focus_before = window.focused(cx);
         let documents = wb.documents().downgrade();
         let root: Arc<Path> = Arc::from(wb.root());

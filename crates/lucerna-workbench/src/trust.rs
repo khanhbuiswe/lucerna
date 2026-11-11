@@ -469,13 +469,12 @@ impl Workbench {
         self.show_trust_modal(window, cx);
     }
 
-    /// Shows the trust modal (closing Quick Open and the theme picker).
+    /// Shows the trust modal, closing any other modal overlay.
     pub fn show_trust_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.trust.modal.is_some() {
             return;
         }
-        self.close_quick_open(window, cx);
-        self.close_theme_picker(true, window, cx);
+        self.close_modal_overlays(window, cx);
         let root = self.root().to_path_buf();
         let modal = cx.new(|cx| TrustModal::new(&root, cx));
         let events = cx.subscribe_in(&modal, window, Self::on_trust_modal_event);
@@ -489,7 +488,7 @@ impl Workbench {
         cx.notify();
     }
 
-    fn close_trust_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn close_trust_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(shown) = self.trust.modal.take() else {
             return;
         };

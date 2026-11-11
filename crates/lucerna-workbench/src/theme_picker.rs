@@ -211,8 +211,8 @@ impl Workbench {
         self.theme_picker.as_ref().map(|shown| &shown.picker)
     }
 
-    /// Shows the theme picker with the active theme selected, closing
-    /// Quick Open.
+    /// Shows the theme picker with the active theme selected, closing any
+    /// other modal overlay.
     pub fn show_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.theme_picker.is_some() {
             return;
@@ -259,7 +259,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_quick_open(window, cx);
+        self.close_modal_overlays(window, cx);
         let picker = cx.new(|cx| ThemePicker::new(names, current, placeholder, cx));
         let events = cx.subscribe_in(&picker, window, Self::on_theme_picker_event);
         let focus_before = window.focused(cx);

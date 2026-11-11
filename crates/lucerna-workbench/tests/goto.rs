@@ -1211,3 +1211,48 @@ fn server_error_shows_no_message(cx: &mut TestAppContext) {
     assert_eq!(message(&view, cx), None, "an error is not 'no definition'");
     assert_eq!(active_file(&wb, cx), "main.rs");
 }
+
+fn with_window(
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    f: impl FnOnce(&mut Workbench, &mut gpui::Window, &mut gpui::Context<Workbench>),
+) {
+    cx.update(|window, cx| wb.update(cx, |wb, cx| f(wb, window, cx)));
+    settle(cx);
+}
+
+fn overlays(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> [bool; 4] {
+    cx.update(|_, cx| {
+        let wb = wb.read(cx);
+        [
+            wb.quick_open().is_some(),
+            wb.locations_picker().is_some(),
+            wb.theme_picker().is_some(),
+            wb.trust_modal().is_some(),
+        ]
+    })
+}
+
+#[gpui::test]
+fn only_one_modal_overlay_is_shown(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    run(&wb, "editor.action.revealDefinition", cx);
+    assert_eq!(overlays(&wb, cx), [false, true, false, false]);
+    with_window(&wb, cx, |wb, window, cx| wb.show_theme_picker(window, cx));
+    assert_eq!(overlays(&wb, cx), [false, false, true, false]);
+    with_window(&wb, cx, |wb, window, cx| wb.show_trust_modal(window, cx));
+    assert_eq!(overlays(&wb, cx), [false, false, false, true]);
+    with_window(&wb, cx, |wb, window, cx| wb.show_quick_open("", window, cx));
+    assert_eq!(overlays(&wb, cx), [true, false, false, false]);
+    with_window(&wb, cx, |wb, window, cx| wb.show_trust_modal(window, cx));
+    with_window(&wb, cx, |wb, window, cx| wb.show_theme_picker(window, cx));
+    assert_eq!(overlays(&wb, cx), [false, false, true, false]);
+}
+
+#[gpui::test]
+fn goto_answer_does_not_stack_a_picker_over_another_overlay(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, _view, cx) = setup(TRUSTED, pt(1, 8), three, cx);
+    with_window(&wb, cx, |wb, window, cx| wb.show_theme_picker(window, cx));
+    run(&wb, "editor.action.revealDefinition", cx);
+    assert_eq!(overlays(&wb, cx), [false, false, true, false]);
+}

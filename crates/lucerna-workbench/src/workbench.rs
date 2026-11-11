@@ -1340,6 +1340,23 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Closes every modal overlay (Quick Open, the locations picker, the
+    /// theme picker, reverting its preview, and the trust modal). Each
+    /// `show_*` calls it first, so at most one is ever shown and one Esc
+    /// never has to close two.
+    pub(crate) fn close_modal_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_quick_open(window, cx);
+        self.close_locations_picker(window, cx);
+        self.close_theme_picker(true, window, cx);
+        self.close_trust_modal(window, cx);
+    }
+
+    /// Whether Quick Open, the theme picker or the trust modal is shown: a
+    /// late go-to answer then does not open the locations picker over it.
+    pub(crate) fn other_modal_overlay_shown(&self) -> bool {
+        self.quick_open.is_some() || self.theme_picker.is_some() || self.trust_modal().is_some()
+    }
+
     pub fn focus_editor_area(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.editor_focus, cx);
         cx.notify();
