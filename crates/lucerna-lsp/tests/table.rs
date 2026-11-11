@@ -9,26 +9,10 @@ fn strs(v: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn defaults_parse_and_have_six_servers() {
+fn defaults_parse_without_errors() {
     assert!(ServerTable::defaults().is_object());
     let table = ServerTable::build(None);
     assert!(table.errors.is_empty(), "{:?}", table.errors);
-    let names: Vec<&str> = table.servers.keys().map(|k| &**k).collect();
-    assert_eq!(
-        names,
-        [
-            "basedpyright",
-            "clangd",
-            "gopls",
-            "pyright",
-            "rust-analyzer",
-            "typescript-language-server"
-        ]
-    );
-    for def in table.servers.values() {
-        assert!(def.install.is_some(), "{} install", def.name);
-        assert!(def.homepage.is_some(), "{} homepage", def.name);
-    }
 }
 
 #[test]
@@ -112,7 +96,7 @@ fn defaults_match_phase3_values() {
             "clangd",
             "clangd",
             &[],
-            &["c", "cpp"],
+            &["c", "c++", "objective-c"],
             &["compile_commands.json", ".clangd"],
             RootSearch::Nearest,
             Some(&["--version"]),
@@ -287,4 +271,165 @@ fn launch_fields_include_probe() {
     assert!(gopls(&a).launch_fields_eq(&gopls(&a)));
     assert!(!gopls(&a).launch_fields_eq(&gopls(&b)));
     assert!(!gopls(&a).launch_fields_eq(&gopls(&c)));
+}
+
+const SPEC_SERVERS: &[&str] = &[
+    "rust-analyzer",
+    "gopls",
+    "basedpyright",
+    "pyright",
+    "typescript-language-server",
+    "intelephense",
+    "phpactor",
+    "ruby-lsp",
+    "solargraph",
+    "jdtls",
+    "kotlin-lsp",
+    "kotlin-language-server",
+    "sourcekit-lsp",
+    "lua-language-server",
+    "elixir-ls",
+    "expert",
+    "zls",
+    "dart",
+    "vue-language-server",
+    "vtsls",
+    "clangd",
+    "csharp-ls",
+    "roslyn-language-server",
+    "haskell-language-server",
+    "ocamllsp",
+    "metals",
+    "terraform-ls",
+    "docker-langserver",
+    "yaml-language-server",
+    "vscode-json-language-server",
+    "vscode-css-language-server",
+    "vscode-html-language-server",
+    "bash-language-server",
+    "taplo",
+    "marksman",
+    "nil",
+    "nixd",
+    "gleam",
+    "elp",
+];
+
+#[test]
+fn spec_rows_present() {
+    let table = ServerTable::build(None);
+    for name in SPEC_SERVERS {
+        assert!(table.get(name).is_some(), "{name} missing");
+    }
+    assert_eq!(table.servers.len(), SPEC_SERVERS.len());
+}
+
+#[test]
+fn every_default_entry_is_complete() {
+    let table = ServerTable::build(None);
+    for def in table.servers.values() {
+        let n = &def.name;
+        assert!(def.command.is_some(), "{n} command");
+        assert!(
+            !def.languages.is_empty() || !def.file_types.is_empty(),
+            "{n} languages"
+        );
+        assert!(def.install.is_some(), "{n} install");
+        assert!(
+            def.homepage
+                .as_deref()
+                .is_some_and(|h| h.starts_with("https://")),
+            "{n} homepage"
+        );
+    }
+}
+
+#[test]
+fn one_enabled_server_per_language() {
+    let table = ServerTable::build(None);
+    let mut count: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+    for def in table.servers.values().filter(|d| d.enabled) {
+        for lang in &def.languages {
+            count.entry(lang).or_default().push(&def.name);
+        }
+    }
+    for (lang, servers) in &count {
+        let allowed = if *lang == "vue.js" { 2 } else { 1 };
+        assert_eq!(servers.len(), allowed, "{lang}: {servers:?}");
+    }
+    for alt in [
+        "pyright",
+        "phpactor",
+        "solargraph",
+        "kotlin-language-server",
+        "expert",
+        "roslyn-language-server",
+        "nixd",
+    ] {
+        assert!(!table.get(alt).unwrap().enabled, "{alt} should be disabled");
+    }
+}
+
+#[test]
+fn install_commands_are_single_copyable_commands() {
+    let table = ServerTable::build(None);
+    for def in table.servers.values() {
+        let values: Vec<&String> = match def.install.as_ref().unwrap() {
+            Install::One(s) => vec![s],
+            Install::PerOs(m) => m.values().collect(),
+        };
+        for v in values {
+            assert!(
+                !v.contains(", or ") && !v.contains(" or "),
+                "{}: {v}",
+                def.name
+            );
+            assert!(
+                !v.trim().is_empty() && !v.contains('\n'),
+                "{}: {v}",
+                def.name
+            );
+        }
+    }
+}
+
+#[test]
+fn vue_entries_follow_the_spec() {
+    let table = ServerTable::build(None);
+    let vue = table.get("vue-language-server").unwrap();
+    assert_eq!(vue.relay, Some(lucerna_lsp::table::Relay::VueTsserver));
+    assert_eq!(vue.lsp_language_id(Some("vue.js")), "vue");
+    let vtsls = table.get("vtsls").unwrap();
+    let location =
+        &vtsls.settings.as_ref().unwrap()["vtsls"]["tsserver"]["globalPlugins"][0]["location"];
+    assert_eq!(location, "{npm_root}/@vue/language-server");
+    let jdtls = table.get("jdtls").unwrap();
+    assert_eq!(jdtls.args, strs(&["-data", "{data_dir}"]));
+}
+
+#[test]
+fn language_id_mappings() {
+    let table = ServerTable::build(None);
+    assert_eq!(
+        table.get("clangd").unwrap().lsp_language_id(Some("c++")),
+        "cpp"
+    );
+    assert_eq!(
+        table
+            .get("clangd")
+            .unwrap()
+            .lsp_language_id(Some("objective-c")),
+        "objective-c"
+    );
+    assert_eq!(
+        table.get("csharp-ls").unwrap().lsp_language_id(Some("c#")),
+        "csharp"
+    );
+    assert_eq!(
+        table
+            .get("bash-language-server")
+            .unwrap()
+            .lsp_language_id(Some("shellscript")),
+        "shellscript"
+    );
 }

@@ -77,19 +77,19 @@ fn select_explicit_pyright_first() {
 #[test]
 fn select_by_file_type_without_language() {
     let t = table(json!({
-        "fake-rb": { "command": "fake-rb", "file_types": ["rb", "Gemfile"] },
-        "off-rb": { "command": "off-rb", "file_types": ["rb"], "enabled": false },
+        "fake-rb": { "command": "fake-rb", "file_types": ["zzz", "Zzzfile"] },
+        "off-rb": { "command": "off-rb", "file_types": ["zzz"], "enabled": false },
     }));
-    assert_eq!(names_for(&["..."], None, "/ws/a.rb", &t), ["fake-rb"]);
-    assert_eq!(names_for(&["..."], None, "/ws/A.RB", &t), ["fake-rb"]);
-    assert_eq!(names_for(&["..."], None, "/ws/Gemfile", &t), ["fake-rb"]);
+    assert_eq!(names_for(&["..."], None, "/ws/a.zzz", &t), ["fake-rb"]);
+    assert_eq!(names_for(&["..."], None, "/ws/A.ZZZ", &t), ["fake-rb"]);
+    assert_eq!(names_for(&["..."], None, "/ws/Zzzfile", &t), ["fake-rb"]);
     assert!(names_for(&["..."], None, "/ws/gemfile", &t).is_empty());
     assert!(names_for(&["..."], None, "/ws/a.py", &t).is_empty());
     // A file with a language is matched by language only.
-    assert!(names_for(&["..."], Some("python"), "/ws/a.rb", &t) == ["basedpyright"]);
+    assert!(names_for(&["..."], Some("python"), "/ws/a.zzz", &t) == ["basedpyright"]);
     // Named explicitly, a disabled server is used.
     assert_eq!(
-        names_for(&["off-rb", "..."], None, "/ws/a.rb", &t),
+        names_for(&["off-rb", "..."], None, "/ws/a.zzz", &t),
         ["off-rb", "fake-rb"]
     );
 }
@@ -448,10 +448,10 @@ fn keys_for_a_file_type_without_language() {
     std::fs::write(ws.join("Gemfile"), "").unwrap();
     std::fs::create_dir_all(ws.join("lib")).unwrap();
     let reg = Registry::new(table(json!({
-        "fake-rb": { "command": "fake-rb", "file_types": ["rb"], "root_markers": ["Gemfile"] }
+        "fake-rb": { "command": "fake-rb", "file_types": ["zzz"], "root_markers": ["Gemfile"] }
     })));
     let list = vec!["...".to_owned()];
-    let keys = reg.keys_for(None, &ws.join("lib/x.rb"), ws, &list);
+    let keys = reg.keys_for(None, &ws.join("lib/x.zzz"), ws, &list);
     assert_eq!(keys, [key(ws.to_str().unwrap(), "fake-rb")]);
     assert!(
         reg.keys_for(None, &ws.join("lib/x.txt"), ws, &list)

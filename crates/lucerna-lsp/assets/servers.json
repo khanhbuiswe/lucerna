@@ -1,35 +1,64 @@
 {
   "rust-analyzer": {
     "command": "rust-analyzer",
-    "languages": ["rust"],
-    "root_markers": ["Cargo.toml"],
+    "languages": [
+      "rust"
+    ],
+    "root_markers": [
+      "Cargo.toml"
+    ],
     "root_search": "outermost",
     "install": "rustup component add rust-analyzer",
     "homepage": "https://rust-analyzer.github.io/book/installation.html"
   },
   "gopls": {
     "command": "gopls",
-    "languages": ["go"],
-    "root_markers": ["go.work", "go.mod"],
+    "languages": [
+      "go"
+    ],
+    "root_markers": [
+      "go.work",
+      "go.mod"
+    ],
     "root_search": "ordered",
-    "probe": ["version"],
+    "probe": [
+      "version"
+    ],
     "install": "go install golang.org/x/tools/gopls@latest",
     "homepage": "https://go.dev/gopls/"
   },
   "basedpyright": {
     "command": "basedpyright-langserver",
-    "args": ["--stdio"],
-    "languages": ["python"],
-    "root_markers": ["pyproject.toml", "setup.py", "setup.cfg", "pyrightconfig.json"],
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "python"
+    ],
+    "root_markers": [
+      "pyproject.toml",
+      "setup.py",
+      "setup.cfg",
+      "pyrightconfig.json"
+    ],
     "probe": false,
     "install": "npm i -g basedpyright",
     "homepage": "https://docs.basedpyright.com/"
   },
   "pyright": {
     "command": "pyright-langserver",
-    "args": ["--stdio"],
-    "languages": ["python"],
-    "root_markers": ["pyproject.toml", "setup.py", "setup.cfg", "pyrightconfig.json"],
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "python"
+    ],
+    "root_markers": [
+      "pyproject.toml",
+      "setup.py",
+      "setup.cfg",
+      "pyrightconfig.json"
+    ],
     "probe": false,
     "enabled": false,
     "install": "npm i -g pyright",
@@ -37,17 +66,778 @@
   },
   "typescript-language-server": {
     "command": "typescript-language-server",
-    "args": ["--stdio"],
-    "languages": ["typescript", "typescriptreact", "javascript", "javascriptreact"],
-    "root_markers": ["tsconfig.json", "jsconfig.json", "package.json"],
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "typescript",
+      "typescriptreact",
+      "javascript",
+      "javascriptreact"
+    ],
+    "root_markers": [
+      "tsconfig.json",
+      "jsconfig.json",
+      "package.json"
+    ],
     "install": "npm i -g typescript typescript-language-server",
     "homepage": "https://github.com/typescript-language-server/typescript-language-server"
   },
   "clangd": {
     "command": "clangd",
-    "languages": ["c", "cpp"],
-    "root_markers": ["compile_commands.json", ".clangd"],
-    "install": "xcode-select --install, or brew install llvm",
-    "homepage": "https://clangd.llvm.org/installation"
+    "languages": [
+      "c",
+      "c++",
+      "objective-c"
+    ],
+    "root_markers": [
+      "compile_commands.json",
+      ".clangd"
+    ],
+    "install": {
+      "macos": "xcode-select --install",
+      "linux": "sudo apt install clangd"
+    },
+    "homepage": "https://clangd.llvm.org/installation",
+    "file_types": [
+      "c",
+      "h",
+      "cc",
+      "cpp",
+      "cxx",
+      "hpp",
+      "hh",
+      "m",
+      "mm"
+    ],
+    "language_id": {
+      "c++": "cpp",
+      "objective-c": "objective-c"
+    },
+    "note": "Writes its index to `.cache/clangd/` in the project."
+  },
+  "intelephense": {
+    "command": "intelephense",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "php"
+    ],
+    "file_types": [
+      "php",
+      "phtml"
+    ],
+    "root_markers": [
+      "composer.json",
+      ".git"
+    ],
+    "probe": false,
+    "install": "npm i -g intelephense",
+    "homepage": "https://intelephense.com/"
+  },
+  "phpactor": {
+    "command": "phpactor",
+    "args": [
+      "language-server"
+    ],
+    "languages": [
+      "php"
+    ],
+    "file_types": [
+      "php",
+      "phtml"
+    ],
+    "root_markers": [
+      "composer.json",
+      ".git"
+    ],
+    "probe": [
+      "--version"
+    ],
+    "enabled": false,
+    "install": {
+      "macos": "brew install phpactor",
+      "linux": "brew install phpactor"
+    },
+    "homepage": "https://phpactor.readthedocs.io/en/master/usage/language-server.html"
+  },
+  "ruby-lsp": {
+    "command": "ruby-lsp",
+    "languages": [
+      "ruby"
+    ],
+    "file_types": [
+      "rb",
+      "rake",
+      "gemspec",
+      "Gemfile",
+      "Rakefile"
+    ],
+    "root_markers": [
+      "Gemfile",
+      ".git"
+    ],
+    "install": "gem install ruby-lsp",
+    "homepage": "https://shopify.github.io/ruby-lsp/",
+    "note": "Writes `.ruby-lsp/` in the project."
+  },
+  "solargraph": {
+    "command": "solargraph",
+    "args": [
+      "stdio"
+    ],
+    "languages": [
+      "ruby"
+    ],
+    "file_types": [
+      "rb",
+      "rake",
+      "gemspec",
+      "Gemfile",
+      "Rakefile"
+    ],
+    "root_markers": [
+      "Gemfile",
+      ".git"
+    ],
+    "enabled": false,
+    "install": "gem install solargraph",
+    "homepage": "https://solargraph.org/guides/language-server"
+  },
+  "jdtls": {
+    "command": "jdtls",
+    "args": [
+      "-data",
+      "{data_dir}"
+    ],
+    "languages": [
+      "java"
+    ],
+    "file_types": [
+      "java"
+    ],
+    "root_markers": [
+      "pom.xml",
+      "build.gradle",
+      "build.gradle.kts",
+      "settings.gradle",
+      "settings.gradle.kts",
+      ".git"
+    ],
+    "probe": false,
+    "install": {
+      "macos": "brew install jdtls",
+      "linux": "brew install jdtls"
+    },
+    "homepage": "https://github.com/eclipse-jdtls/eclipse.jdt.ls",
+    "note": "Needs JDK 21 or newer."
+  },
+  "kotlin-lsp": {
+    "command": "kotlin-lsp",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "kotlin"
+    ],
+    "file_types": [
+      "kt",
+      "kts"
+    ],
+    "root_markers": [
+      "settings.gradle.kts",
+      "settings.gradle",
+      "build.gradle.kts",
+      "build.gradle",
+      "pom.xml"
+    ],
+    "probe": false,
+    "install": {
+      "macos": "brew install JetBrains/utils/kotlin-lsp"
+    },
+    "homepage": "https://github.com/Kotlin/kotlin-lsp"
+  },
+  "kotlin-language-server": {
+    "command": "kotlin-language-server",
+    "languages": [
+      "kotlin"
+    ],
+    "file_types": [
+      "kt",
+      "kts"
+    ],
+    "root_markers": [
+      "settings.gradle.kts",
+      "settings.gradle",
+      "build.gradle.kts",
+      "build.gradle",
+      "pom.xml"
+    ],
+    "probe": false,
+    "enabled": false,
+    "install": {
+      "macos": "brew install kotlin-language-server",
+      "linux": "brew install kotlin-language-server"
+    },
+    "homepage": "https://github.com/fwcd/kotlin-language-server"
+  },
+  "sourcekit-lsp": {
+    "command": "sourcekit-lsp",
+    "languages": [
+      "swift"
+    ],
+    "file_types": [
+      "swift"
+    ],
+    "root_markers": [
+      "Package.swift",
+      "buildServer.json",
+      "compile_commands.json",
+      ".git"
+    ],
+    "probe": false,
+    "install": {
+      "macos": "xcode-select --install"
+    },
+    "homepage": "https://github.com/swiftlang/sourcekit-lsp",
+    "note": "Writes `.build/` in the project."
+  },
+  "lua-language-server": {
+    "command": "lua-language-server",
+    "languages": [
+      "lua"
+    ],
+    "file_types": [
+      "lua"
+    ],
+    "root_markers": [
+      ".luarc.json",
+      ".luarc.jsonc",
+      ".stylua.toml",
+      "selene.toml",
+      ".git"
+    ],
+    "install": {
+      "macos": "brew install lua-language-server",
+      "linux": "brew install lua-language-server"
+    },
+    "homepage": "https://luals.github.io/"
+  },
+  "elixir-ls": {
+    "command": "elixir-ls",
+    "languages": [
+      "elixir"
+    ],
+    "file_types": [
+      "ex",
+      "exs"
+    ],
+    "root_markers": [
+      "mix.exs"
+    ],
+    "probe": false,
+    "install": {
+      "macos": "brew install elixir-ls",
+      "linux": "brew install elixir-ls"
+    },
+    "homepage": "https://github.com/elixir-lsp/elixir-ls",
+    "note": "Writes `.elixir_ls/` in the project."
+  },
+  "expert": {
+    "command": "expert",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "elixir"
+    ],
+    "file_types": [
+      "ex",
+      "exs"
+    ],
+    "root_markers": [
+      "mix.exs"
+    ],
+    "probe": false,
+    "enabled": false,
+    "install": {
+      "macos": "brew install expert"
+    },
+    "homepage": "https://expert-lsp.org/"
+  },
+  "zls": {
+    "command": "zls",
+    "languages": [
+      "zig"
+    ],
+    "file_types": [
+      "zig",
+      "zon"
+    ],
+    "root_markers": [
+      "build.zig",
+      "zls.json"
+    ],
+    "install": {
+      "macos": "brew install zls",
+      "linux": "brew install zls"
+    },
+    "homepage": "https://zigtools.org/zls/install/"
+  },
+  "dart": {
+    "command": "dart",
+    "args": [
+      "language-server",
+      "--protocol=lsp"
+    ],
+    "languages": [
+      "dart"
+    ],
+    "file_types": [
+      "dart"
+    ],
+    "root_markers": [
+      "pubspec.yaml"
+    ],
+    "install": {
+      "macos": "brew install dart-lang/dart/dart",
+      "windows": "choco install dart-sdk"
+    },
+    "homepage": "https://dart.dev/get-dart"
+  },
+  "vue-language-server": {
+    "command": "vue-language-server",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "vue.js"
+    ],
+    "file_types": [
+      "vue"
+    ],
+    "language_id": "vue",
+    "root_markers": [
+      "package.json"
+    ],
+    "probe": false,
+    "relay": "vue-tsserver",
+    "install": "npm i -g @vue/language-server @vtsls/language-server",
+    "homepage": "https://github.com/vuejs/language-tools"
+  },
+  "vtsls": {
+    "command": "vtsls",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "vue.js"
+    ],
+    "file_types": [
+      "vue"
+    ],
+    "language_id": "vue",
+    "root_markers": [
+      "package.json"
+    ],
+    "probe": false,
+    "settings": {
+      "vtsls": {
+        "tsserver": {
+          "globalPlugins": [
+            {
+              "name": "@vue/typescript-plugin",
+              "location": "{npm_root}/@vue/language-server",
+              "languages": [
+                "vue"
+              ],
+              "configNamespace": "typescript",
+              "enableForWorkspaceTypeScriptVersions": true
+            }
+          ]
+        }
+      }
+    },
+    "install": "npm i -g @vtsls/language-server",
+    "homepage": "https://github.com/yioneko/vtsls"
+  },
+  "csharp-ls": {
+    "command": "csharp-ls",
+    "languages": [
+      "c#"
+    ],
+    "file_types": [
+      "cs"
+    ],
+    "language_id": {
+      "c#": "csharp"
+    },
+    "root_markers": [
+      "*.sln",
+      "*.slnx",
+      "*.csproj"
+    ],
+    "install": "dotnet tool install -g csharp-ls",
+    "homepage": "https://github.com/razzmatazz/csharp-language-server"
+  },
+  "roslyn-language-server": {
+    "command": "roslyn-language-server",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "c#"
+    ],
+    "file_types": [
+      "cs"
+    ],
+    "language_id": {
+      "c#": "csharp"
+    },
+    "root_markers": [
+      "*.sln",
+      "*.slnx",
+      "*.csproj"
+    ],
+    "probe": false,
+    "enabled": false,
+    "install": "dotnet tool install -g roslyn-language-server --prerelease",
+    "homepage": "https://github.com/dotnet/roslyn"
+  },
+  "haskell-language-server": {
+    "command": "haskell-language-server-wrapper",
+    "args": [
+      "--lsp"
+    ],
+    "languages": [
+      "haskell"
+    ],
+    "file_types": [
+      "hs",
+      "lhs"
+    ],
+    "root_markers": [
+      "hie.yaml",
+      "cabal.project",
+      "stack.yaml",
+      "*.cabal",
+      "package.yaml"
+    ],
+    "install": "ghcup install hls",
+    "homepage": "https://haskell-language-server.readthedocs.io/"
+  },
+  "ocamllsp": {
+    "command": "ocamllsp",
+    "languages": [
+      "ocaml"
+    ],
+    "file_types": [
+      "ml",
+      "mli"
+    ],
+    "root_markers": [
+      "dune-project",
+      "dune-workspace",
+      "*.opam"
+    ],
+    "install": "opam install ocaml-lsp-server",
+    "homepage": "https://github.com/ocaml/ocaml-lsp"
+  },
+  "metals": {
+    "command": "metals",
+    "languages": [
+      "scala"
+    ],
+    "file_types": [
+      "scala",
+      "sbt",
+      "sc"
+    ],
+    "root_markers": [
+      "build.sbt",
+      "build.sc",
+      "build.mill",
+      ".scala-build"
+    ],
+    "probe": false,
+    "install": "cs install metals",
+    "homepage": "https://scalameta.org/metals/",
+    "note": "Writes `.metals/` and `.bloop/` in the project."
+  },
+  "terraform-ls": {
+    "command": "terraform-ls",
+    "args": [
+      "serve"
+    ],
+    "languages": [
+      "terraform"
+    ],
+    "file_types": [
+      "tf",
+      "tfvars"
+    ],
+    "root_markers": [
+      ".terraform",
+      ".git"
+    ],
+    "probe": [
+      "version"
+    ],
+    "install": {
+      "macos": "brew install hashicorp/tap/terraform-ls",
+      "linux": "brew install hashicorp/tap/terraform-ls"
+    },
+    "homepage": "https://github.com/hashicorp/terraform-ls"
+  },
+  "docker-langserver": {
+    "command": "docker-langserver",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "dockerfile"
+    ],
+    "file_types": [
+      "Dockerfile",
+      "dockerfile"
+    ],
+    "root_markers": [
+      "Dockerfile",
+      ".git"
+    ],
+    "probe": false,
+    "install": "npm i -g dockerfile-language-server-nodejs",
+    "homepage": "https://github.com/rcjsuen/dockerfile-language-server"
+  },
+  "yaml-language-server": {
+    "command": "yaml-language-server",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "yaml"
+    ],
+    "file_types": [
+      "yaml",
+      "yml"
+    ],
+    "root_markers": [
+      ".git"
+    ],
+    "install": {
+      "macos": "brew install yaml-language-server",
+      "linux": "brew install yaml-language-server"
+    },
+    "homepage": "https://github.com/redhat-developer/yaml-language-server"
+  },
+  "vscode-json-language-server": {
+    "command": "vscode-json-language-server",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "json",
+      "jsonc"
+    ],
+    "file_types": [
+      "json",
+      "jsonc"
+    ],
+    "root_markers": [
+      ".git"
+    ],
+    "probe": false,
+    "install": "npm i -g vscode-langservers-extracted",
+    "homepage": "https://github.com/hrsh7th/vscode-langservers-extracted"
+  },
+  "vscode-css-language-server": {
+    "command": "vscode-css-language-server",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "css",
+      "scss",
+      "less"
+    ],
+    "file_types": [
+      "css",
+      "scss",
+      "less"
+    ],
+    "root_markers": [
+      "package.json",
+      ".git"
+    ],
+    "probe": false,
+    "install": "npm i -g vscode-langservers-extracted",
+    "homepage": "https://github.com/hrsh7th/vscode-langservers-extracted"
+  },
+  "vscode-html-language-server": {
+    "command": "vscode-html-language-server",
+    "args": [
+      "--stdio"
+    ],
+    "languages": [
+      "html"
+    ],
+    "file_types": [
+      "html",
+      "htm"
+    ],
+    "root_markers": [
+      "package.json",
+      ".git"
+    ],
+    "probe": false,
+    "install": "npm i -g vscode-langservers-extracted",
+    "homepage": "https://github.com/hrsh7th/vscode-langservers-extracted"
+  },
+  "bash-language-server": {
+    "command": "bash-language-server",
+    "args": [
+      "start"
+    ],
+    "languages": [
+      "shellscript"
+    ],
+    "file_types": [
+      "sh",
+      "bash",
+      "zsh"
+    ],
+    "language_id": "shellscript",
+    "root_markers": [
+      ".git"
+    ],
+    "install": {
+      "macos": "brew install bash-language-server",
+      "linux": "brew install bash-language-server"
+    },
+    "homepage": "https://github.com/bash-lsp/bash-language-server"
+  },
+  "taplo": {
+    "command": "taplo",
+    "args": [
+      "lsp",
+      "stdio"
+    ],
+    "languages": [
+      "toml"
+    ],
+    "file_types": [
+      "toml"
+    ],
+    "root_markers": [
+      ".taplo.toml",
+      "taplo.toml",
+      ".git"
+    ],
+    "install": {
+      "macos": "brew install taplo",
+      "linux": "brew install taplo"
+    },
+    "homepage": "https://taplo.tamasfe.dev/"
+  },
+  "marksman": {
+    "command": "marksman",
+    "args": [
+      "server"
+    ],
+    "languages": [
+      "markdown"
+    ],
+    "file_types": [
+      "md",
+      "markdown"
+    ],
+    "root_markers": [
+      ".marksman.toml",
+      ".git"
+    ],
+    "probe": false,
+    "install": {
+      "macos": "brew install marksman",
+      "linux": "brew install marksman"
+    },
+    "homepage": "https://github.com/artempyanykh/marksman"
+  },
+  "nil": {
+    "command": "nil",
+    "languages": [
+      "nix"
+    ],
+    "file_types": [
+      "nix"
+    ],
+    "root_markers": [
+      "flake.nix",
+      ".git"
+    ],
+    "install": "nix profile install nixpkgs#nil",
+    "homepage": "https://github.com/oxalica/nil"
+  },
+  "nixd": {
+    "command": "nixd",
+    "languages": [
+      "nix"
+    ],
+    "file_types": [
+      "nix"
+    ],
+    "root_markers": [
+      "flake.nix",
+      ".git"
+    ],
+    "enabled": false,
+    "install": "nix profile install nixpkgs#nixd",
+    "homepage": "https://github.com/nix-community/nixd"
+  },
+  "gleam": {
+    "command": "gleam",
+    "args": [
+      "lsp"
+    ],
+    "languages": [
+      "gleam"
+    ],
+    "file_types": [
+      "gleam"
+    ],
+    "root_markers": [
+      "gleam.toml"
+    ],
+    "install": {
+      "macos": "brew install gleam",
+      "linux": "brew install gleam"
+    },
+    "homepage": "https://gleam.run/language-server/"
+  },
+  "elp": {
+    "command": "elp",
+    "args": [
+      "server"
+    ],
+    "languages": [
+      "erlang"
+    ],
+    "file_types": [
+      "erl",
+      "hrl"
+    ],
+    "root_markers": [
+      "rebar.config",
+      ".elp.toml",
+      "erlang.mk"
+    ],
+    "probe": [
+      "version"
+    ],
+    "install": {
+      "macos": "brew install erlang-language-platform",
+      "linux": "brew install erlang-language-platform"
+    },
+    "homepage": "https://whatsapp.github.io/erlang-language-platform/"
   }
 }
