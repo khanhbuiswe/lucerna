@@ -199,7 +199,8 @@ impl ReferencesView {
         });
         let root = self.root.clone();
         self._lookup = cx.spawn(async move |this, cx| {
-            let locations = request.await;
+            // Failed servers leave the list empty, as no references do.
+            let locations = request.await.unwrap_or_default();
             let built = cx
                 .background_spawn(async move {
                     guarded("references excerpts", || build(&root, &locations))

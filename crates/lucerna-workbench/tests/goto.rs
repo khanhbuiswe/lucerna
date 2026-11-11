@@ -1198,3 +1198,16 @@ fn cmd_click_keeps_editor_text_focus(cx: &mut TestAppContext) {
     assert_eq!(active_file(&wb, cx), "b.rs");
     assert!(editor_text_focus(&wb, cx));
 }
+
+#[gpui::test]
+fn server_error_shows_no_message(cx: &mut TestAppContext) {
+    let (_dir, _fake, wb, view, cx) = setup(
+        TRUSTED,
+        pt(0, 4),
+        |_| FakeServer::new().on_request(DEFINITION, |_| Err((-32801, "content modified".into()))),
+        cx,
+    );
+    run(&wb, "editor.action.revealDefinition", cx);
+    assert_eq!(message(&view, cx), None, "an error is not 'no definition'");
+    assert_eq!(active_file(&wb, cx), "main.rs");
+}

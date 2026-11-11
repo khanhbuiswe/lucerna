@@ -107,17 +107,19 @@ impl LanguageServers {
     /// locations of the symbol at `point` (references include the
     /// declaration). The answers are joined, sorted by path and place, and
     /// deduplicated; files that are not open are read off the UI thread.
-    /// Errors count as no answer. Dropping the task cancels the requests.
+    /// Errors and timeouts count as no answer; `None` when every server
+    /// asked failed (spec §10: say nothing then). Dropping the task cancels
+    /// the requests.
     pub fn locations(
         &self,
         path: &Path,
         point: Point,
         kind: GotoKind,
         cx: &mut Context<Self>,
-    ) -> Task<Vec<ResolvedLocation>> {
+    ) -> Task<Option<Vec<ResolvedLocation>>> {
         let path = absolute_path(&self.root, path);
         let Some(doc) = self.docs.get(path.as_path()) else {
-            return Task::ready(Vec::new());
+            return Task::ready(Some(Vec::new()));
         };
         let snapshot = &doc.snapshot;
         let uri = path_to_uri(&path);
@@ -140,16 +142,20 @@ impl LanguageServers {
             })
             .collect();
         if requests.is_empty() {
-            return Task::ready(Vec::new());
+            return Task::ready(Some(Vec::new()));
         }
         let open = self.open_snapshots();
         let work = cx.background_spawn(async move {
             let answers = futures::future::join_all(requests).await;
+            if answers.iter().all(|(_, _, locs)| locs.is_none()) {
+                return None;
+            }
             crate::tasks::guarded("goto-locations", move || {
                 let open = |path: &Path| open.get(path).cloned();
                 let mut origins = Vec::new();
                 let mut all: Vec<ResolvedLocation> = Vec::new();
                 for (key, encoding, locs) in answers {
+                    let Some(locs) = locs else { continue };
                     let resolved = resolve_locations(locs, encoding, &open);
                     origins.extend(resolved.iter().map(|l| (l.path.to_path_buf(), key.clone())));
                     all.extend(resolved);
@@ -164,13 +170,12 @@ impl LanguageServers {
                 all.dedup_by_key(|l| key(l));
                 (all, origins)
             })
-            .unwrap_or_default()
         });
         cx.spawn(async move |this, cx| {
-            let (all, origins) = work.await;
+            let (all, origins) = work.await?;
             this.update(cx, |servers, _| servers.note_origins(origins))
                 .ok();
-            all
+            Some(all)
         })
     }
 }
@@ -618,7 +623,7 @@ fn request_locations(
     server: &LanguageServer,
     kind: GotoKind,
     position: TextDocumentPositionParams,
-) -> BoxFuture<'static, Vec<(PathBuf, lsp_types::Range)>> {
+) -> BoxFuture<'static, Option<Vec<(PathBuf, lsp_types::Range)>>> {
     let goto = GotoDefinitionParams {
         text_document_position_params: position.clone(),
         work_done_progress_params: Default::default(),
@@ -649,17 +654,18 @@ fn request_locations(
     }
 }
 
-/// The locations `request` resolves to; an error is logged and gives none.
+/// The locations `request` resolves to; `None` (logged) on an error or a
+/// timeout, which is not an answer.
 fn answer(
     kind: GotoKind,
     request: impl Future<Output = Result<Option<GotoDefinitionResponse>, LspError>> + Send + 'static,
-) -> BoxFuture<'static, Vec<(PathBuf, lsp_types::Range)>> {
+) -> BoxFuture<'static, Option<Vec<(PathBuf, lsp_types::Range)>>> {
     async move {
         match request.await {
-            Ok(response) => locations_from_response(response),
+            Ok(response) => Some(locations_from_response(response)),
             Err(err) => {
                 tracing::debug!(?kind, %err, "location request failed");
-                Vec::new()
+                None
             }
         }
     }

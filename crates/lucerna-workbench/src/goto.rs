@@ -157,6 +157,12 @@ pub fn goto_at(
         let locations = request.await;
         wb.update_in(cx, |wb, window, cx| {
             wb.goto_task = None;
+            // Every server failed (an error or a timeout): not "no
+            // definition", so nothing is said (spec §10).
+            let Some(locations) = locations else {
+                tracing::debug!(?kind, "goto: every server failed");
+                return;
+            };
             let Some(view) = view.upgrade() else {
                 return;
             };
