@@ -14,6 +14,7 @@ pub mod extensions;
 mod find_widget;
 pub mod fonts;
 pub mod git_branch;
+pub mod goto;
 pub mod hover;
 pub mod icons;
 pub mod keys;

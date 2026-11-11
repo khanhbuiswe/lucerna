@@ -402,7 +402,7 @@ impl Element for CodeElement {
         let frame = self
             .view
             .update(cx, |view, cx| view.layout_frame(bounds, hitbox, window, cx));
-        let anchor = self.view.read(cx).hover().anchor().and_then(|p| {
+        let anchor_at = |p: Point| {
             let (x, line_top) = frame.position_of(p)?;
             Some(PopoverAnchor {
                 editor: frame.bounds,
@@ -411,8 +411,11 @@ impl Element for CodeElement {
                 line_height: frame.line_height,
                 char_width: frame.char_width,
             })
-        });
+        };
+        let anchor = self.view.read(cx).hover().anchor().and_then(anchor_at);
         crate::hover::prepaint_popover(&self.view, anchor, window, cx);
+        let anchor = self.view.read(cx).goto_message_anchor().and_then(anchor_at);
+        crate::goto::prepaint_message(&self.view, anchor, window, cx);
         frame
     }
 
@@ -983,6 +986,7 @@ impl CodeView {
     ) {
         window.focus(&self.focus, cx);
         self.hover.hide(cx);
+        self.set_goto_message(None, cx);
         let Some(frame) = self.frame.clone() else {
             return;
         };
@@ -1048,6 +1052,7 @@ impl CodeView {
     fn scroll_wheel(&mut self, ev: &ScrollEvent, cx: &mut gpui::Context<Self>) {
         let delta = ev.delta.pixel_delta(px(self.line_height()));
         self.hover.hide(cx);
+        self.set_goto_message(None, cx);
         self.scroll_by(-f32::from(delta.y));
         if !self.word_wrap {
             self.scroll_x = (self.scroll_x - f32::from(delta.x)).max(0.);

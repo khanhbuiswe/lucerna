@@ -38,6 +38,7 @@ use self::selection::Selection;
 use crate::documents::{DocState, Documents};
 use crate::editor_groups::{EditorGroupsView, Tab};
 use crate::find_widget::FindWidget;
+use crate::goto::GotoMessage;
 use crate::hover::{HoverConfig, HoverController};
 use crate::language_servers::LanguageServers;
 use crate::layout::color;
@@ -237,6 +238,9 @@ pub struct CodeView {
     scrollbar_marks: Option<element::ScrollbarMarks>,
     /// The LSP hover of this view.
     hover: HoverController,
+    /// The "No definition found" message, until it times out or the
+    /// cursor moves.
+    goto_message: Option<GotoMessage>,
     /// Hides the hover when focus leaves the view; made on first render.
     _focus_out: Option<Subscription>,
 }
@@ -298,6 +302,7 @@ impl CodeView {
             diagnostic_rows_generation: 0,
             scrollbar_marks: None,
             hover,
+            goto_message: None,
             _focus_out: None,
         }
     }
@@ -455,6 +460,7 @@ impl CodeView {
             || snapshot.line_count() > self.config.max_lines;
         self.snapshot = snapshot;
         self.hover.set_snapshot(self.snapshot.clone(), cx);
+        self.set_goto_message(None, cx);
         self.revision += 1;
         self.max_line_width = 0.;
         self.caches.clear();
@@ -561,6 +567,28 @@ impl CodeView {
             self.diagnostic_rows_generation += 1;
             cx.notify();
         }
+    }
+
+    /// The "No … found" message shown at the cursor.
+    pub fn goto_message(&self) -> Option<&str> {
+        self.goto_message.as_ref().map(GotoMessage::text)
+    }
+
+    /// Shows `message` at its point, replacing any other; `None` hides it.
+    pub(crate) fn set_goto_message(
+        &mut self,
+        message: Option<GotoMessage>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.goto_message.is_some() || message.is_some() {
+            self.goto_message = message;
+            cx.notify();
+        }
+    }
+
+    /// Where the "No … found" message is anchored.
+    pub(crate) fn goto_message_anchor(&self) -> Option<Point> {
+        self.goto_message.as_ref().map(GotoMessage::point)
     }
 
     /// The LSP hover of this view.
@@ -808,6 +836,7 @@ impl CodeView {
 
     /// Sets the selection, dropping any block selection.
     fn set_selection(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        self.set_goto_message(None, cx);
         self.selection = Some(selection);
         self.block_selection = None;
         self.selection_generation += 1;
@@ -853,6 +882,7 @@ impl CodeView {
     /// Paints `overlay` as the cursor; `None` paints no cursor.
     pub fn set_cursor_overlay(&mut self, overlay: Option<CursorOverlay>, cx: &mut Context<Self>) {
         if self.cursor_overlay != overlay {
+            self.set_goto_message(None, cx);
             self.cursor_overlay = overlay;
             self.update_brackets();
             cx.notify();
@@ -1169,6 +1199,7 @@ impl Render for CodeView {
             let focus = self.focus.clone();
             self._focus_out = Some(cx.on_focus_out(&focus, window, |v, _, _, cx| {
                 v.hover.hide(cx);
+                v.set_goto_message(None, cx);
             }));
         }
         if self.painted_revision != self.revision {
@@ -1199,8 +1230,12 @@ impl Render for CodeView {
             .id("code-view")
             .debug_selector(|| "code-view".into())
             .track_focus(&self.focus)
-            // Any key that reaches the view hides the hover.
-            .on_key_down(cx.listener(|v, _, _, cx| v.hover.hide(cx)))
+            // Any key that reaches the view hides the hover and the
+            // "No … found" message.
+            .on_key_down(cx.listener(|v, _, _, cx| {
+                v.hover.hide(cx);
+                v.set_goto_message(None, cx);
+            }))
             .flex()
             .flex_col()
             .size_full()

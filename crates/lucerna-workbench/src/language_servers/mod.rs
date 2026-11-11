@@ -10,7 +10,7 @@
 //! - `lifecycle`: starting, stopping and restarting servers; settings.
 //! - `pump`: server events, diagnostics batches, logs and progress.
 //! - `sync`: document events and file changes sent to the servers.
-//! - `requests`: requests the editor sends (hover).
+//! - `requests`: requests the editor sends (hover, locations).
 //!
 //! Paths are the keys of [`Documents`] (absolute, joined onto the root,
 //! not canonicalised). Servers echo the URIs they were sent, so a

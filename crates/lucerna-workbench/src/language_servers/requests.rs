@@ -1,19 +1,31 @@
 //! Requests the editor sends to the language servers of a document.
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use futures::FutureExt;
+use futures::future::BoxFuture;
 use gpui::{AppContext, Context, Task};
-use lsp_types::request::HoverRequest;
-use lsp_types::{
-    HoverContents, HoverParams, HoverProviderCapability, MarkedString, MarkupKind,
-    TextDocumentIdentifier, TextDocumentPositionParams,
+use lsp_types::request::{
+    GotoDeclaration, GotoDefinition, GotoImplementation, GotoTypeDefinition, HoverRequest,
+    References,
 };
+use lsp_types::{
+    DeclarationCapability, GotoDefinitionParams, GotoDefinitionResponse, HoverContents,
+    HoverParams, HoverProviderCapability, ImplementationProviderCapability, MarkedString,
+    MarkupKind, OneOf, ReferenceContext, ReferenceParams, ServerCapabilities,
+    TextDocumentIdentifier, TextDocumentPositionParams, TypeDefinitionProviderCapability,
+};
+use lucerna_lsp::locations::{ResolvedLocation, locations_from_response, resolve_locations};
 use lucerna_lsp::position::{PositionEncoding, path_to_uri, range_from_lsp, to_lsp};
+use lucerna_lsp::{LanguageServer, LspError};
 use lucerna_text::{BufferSnapshot, Point};
 
 use super::LanguageServers;
+use crate::goto::GotoKind;
 use crate::workspace_state::absolute_path;
 
 /// `textDocument/hover` gives up after this.
@@ -80,6 +92,153 @@ impl LanguageServers {
                 .flatten()
         })
     }
+}
+
+impl LanguageServers {
+    /// Asks every running server of `path` that supports `kind` for the
+    /// locations of the symbol at `point` (references include the
+    /// declaration). The answers are joined, sorted by path and place, and
+    /// deduplicated; files that are not open are read off the UI thread.
+    /// Errors count as no answer. Dropping the task cancels the requests.
+    pub fn locations(
+        &self,
+        path: &Path,
+        point: Point,
+        kind: GotoKind,
+        cx: &mut Context<Self>,
+    ) -> Task<Vec<ResolvedLocation>> {
+        let path = absolute_path(&self.root, path);
+        let Some(doc) = self.docs.get(path.as_path()) else {
+            return Task::ready(Vec::new());
+        };
+        let snapshot = &doc.snapshot;
+        let uri = path_to_uri(&path);
+        let requests: Vec<_> = self
+            .running_for(&path)
+            .into_iter()
+            .filter(|(_, server)| {
+                server
+                    .capabilities()
+                    .is_some_and(|caps| supports(&caps, kind))
+            })
+            .map(|(_, server)| {
+                let encoding = server.encoding();
+                let position = TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: to_lsp(snapshot, point, encoding),
+                };
+                let request = request_locations(&server, kind, position);
+                request.map(move |locs| (encoding, locs))
+            })
+            .collect();
+        if requests.is_empty() {
+            return Task::ready(Vec::new());
+        }
+        // The text the servers were sent, for the files open here.
+        let open: HashMap<PathBuf, BufferSnapshot> = self
+            .docs
+            .iter()
+            .map(|(path, doc)| (path.to_path_buf(), doc.snapshot.clone()))
+            .collect();
+        cx.background_spawn(async move {
+            let answers = futures::future::join_all(requests).await;
+            crate::tasks::guarded("goto-locations", move || {
+                let open = |path: &Path| open.get(path).cloned();
+                let mut all: Vec<ResolvedLocation> = answers
+                    .into_iter()
+                    .flat_map(|(encoding, locs)| resolve_locations(locs, encoding, &open))
+                    .collect();
+                // Each server's answer is sorted; together they need it again.
+                let key = |l: &ResolvedLocation| {
+                    let r = &l.range;
+                    let key = (r.start.row, r.start.column, r.end.row, r.end.column);
+                    (l.path.clone(), key)
+                };
+                all.sort_by_key(key);
+                all.dedup_by_key(|l| key(l));
+                all
+            })
+            .unwrap_or_default()
+        })
+    }
+}
+
+/// Whether a server with `caps` answers `kind` requests.
+fn supports(caps: &ServerCapabilities, kind: GotoKind) -> bool {
+    match kind {
+        GotoKind::Definition => {
+            !matches!(caps.definition_provider, None | Some(OneOf::Left(false)))
+        }
+        GotoKind::TypeDefinition => !matches!(
+            caps.type_definition_provider,
+            None | Some(TypeDefinitionProviderCapability::Simple(false))
+        ),
+        GotoKind::Implementation => !matches!(
+            caps.implementation_provider,
+            None | Some(ImplementationProviderCapability::Simple(false))
+        ),
+        GotoKind::Declaration => !matches!(
+            caps.declaration_provider,
+            None | Some(DeclarationCapability::Simple(false))
+        ),
+        GotoKind::References => {
+            !matches!(caps.references_provider, None | Some(OneOf::Left(false)))
+        }
+    }
+}
+
+/// Sends the `kind` request for `position` to `server`; resolves to its
+/// locations, none on errors.
+fn request_locations(
+    server: &LanguageServer,
+    kind: GotoKind,
+    position: TextDocumentPositionParams,
+) -> BoxFuture<'static, Vec<(PathBuf, lsp_types::Range)>> {
+    let goto = GotoDefinitionParams {
+        text_document_position_params: position.clone(),
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    };
+    match kind {
+        GotoKind::Definition => answer(kind, server.request::<GotoDefinition>(goto)),
+        GotoKind::TypeDefinition => answer(kind, server.request::<GotoTypeDefinition>(goto)),
+        GotoKind::Implementation => answer(kind, server.request::<GotoImplementation>(goto)),
+        GotoKind::Declaration => answer(kind, server.request::<GotoDeclaration>(goto)),
+        GotoKind::References => {
+            let params = ReferenceParams {
+                text_document_position: position,
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: ReferenceContext {
+                    include_declaration: true,
+                },
+            };
+            let request = server.request::<References>(params);
+            let request = async move {
+                request
+                    .await
+                    .map(|locs| locs.map(GotoDefinitionResponse::Array))
+            };
+            answer(kind, request)
+        }
+    }
+}
+
+/// The locations `request` resolves to; an error is logged and gives none.
+fn answer(
+    kind: GotoKind,
+    request: impl Future<Output = Result<Option<GotoDefinitionResponse>, LspError>> + Send + 'static,
+) -> BoxFuture<'static, Vec<(PathBuf, lsp_types::Range)>> {
+    async move {
+        match request.await {
+            Ok(response) => locations_from_response(response),
+            Err(err) => {
+                tracing::debug!(?kind, %err, "location request failed");
+                Vec::new()
+            }
+        }
+    }
+    .boxed()
 }
 
 /// The markdown of `hover`; `None` when it says nothing.

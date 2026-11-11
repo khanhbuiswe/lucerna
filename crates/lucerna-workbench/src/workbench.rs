@@ -116,6 +116,8 @@ pub struct Workbench {
     pub(crate) marker_task: Option<Task<()>>,
     /// Where an F8 jump into a tab not drawn yet shows its hover.
     pub(crate) marker_hover: Option<(Arc<Path>, Point)>,
+    /// The go to definition / references lookup in flight.
+    pub(crate) goto_task: Option<Task<()>>,
     /// The bodies of the server log tabs.
     pub(crate) lsp_logs: LspLogs,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
@@ -253,6 +255,7 @@ impl Workbench {
         lsp_status::register_commands(&mut commands);
         diagnostics_status::register_commands(&mut commands);
         crate::hover::register_commands(&mut commands);
+        crate::goto::register_commands(&mut commands);
         crate::extensions::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
@@ -471,6 +474,7 @@ impl Workbench {
             diagnostics_status: diagnostics_status.clone(),
             marker_task: None,
             marker_hover: None,
+            goto_task: None,
             lsp_logs,
             search_view,
             extensions_page,

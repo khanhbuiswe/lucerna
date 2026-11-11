@@ -479,6 +479,20 @@ pub(crate) fn prepaint_popover(
         }
         return;
     };
+    let bounds = place_popover(&mut element, &a, window, cx);
+    view.update(cx, |v, _| v.hover_mut().set_popover_bounds(Some(bounds)));
+    window.defer_draw(element, bounds.origin, 1, None);
+}
+
+/// Lays out `element` and finds its place by the anchor: above the
+/// anchor line when it fits, else below; 8 px from the editor's right
+/// edge.
+pub(crate) fn place_popover(
+    element: &mut AnyElement,
+    a: &PopoverAnchor,
+    window: &mut Window,
+    cx: &mut App,
+) -> Bounds<Pixels> {
     let size = element.layout_as_root(
         size(
             AvailableSpace::MaxContent,
@@ -496,12 +510,10 @@ pub(crate) fn prepaint_popover(
     let x =
         a.x.min(a.editor.right() - px(PADDING) - size.width)
             .max(a.editor.left());
-    let origin = point(x, y);
-    view.update(cx, |v, _| {
-        v.hover_mut()
-            .set_popover_bounds(Some(Bounds { origin, size }))
-    });
-    window.defer_draw(element, origin, 1, None);
+    Bounds {
+        origin: point(x, y),
+        size,
+    }
 }
 
 impl HoverController {
