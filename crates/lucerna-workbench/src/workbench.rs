@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use crate::code_view::{self, CodeView, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
+use crate::diagnostics_status::{self, DiagnosticsStatusItem};
 use crate::documents::{DocumentStatusItem, Documents};
 use crate::editor_groups::{self, EditorGroups, EditorGroupsView, OpenMode, TabId, TabItem};
 use crate::explorer::ExplorerView;
@@ -108,6 +109,10 @@ pub struct Workbench {
     language_servers: Entity<LanguageServers>,
     /// The ⚡ status bar item.
     pub(crate) lsp_status: Entity<LspStatusItem>,
+    /// The diagnostics counts and message in the status bar.
+    pub(crate) diagnostics_status: Entity<DiagnosticsStatusItem>,
+    /// The F8 lookup in flight.
+    pub(crate) marker_task: Option<Task<()>>,
     /// The bodies of the server log tabs.
     pub(crate) lsp_logs: LspLogs,
     /// Forwards worktree events to [`Workbench::on_worktree_event`].
@@ -243,6 +248,7 @@ impl Workbench {
         theme_picker::register_commands(&mut commands);
         trust::register_commands(&mut commands);
         lsp_status::register_commands(&mut commands);
+        diagnostics_status::register_commands(&mut commands);
         crate::extensions::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
@@ -400,6 +406,11 @@ impl Workbench {
             let (vim, groups) = (vim.clone(), editor_groups.clone());
             cx.new(|cx| ModeIndicator::new(vim, groups, cx))
         };
+        let diagnostics_status = {
+            let (workbench, servers) = (cx.weak_entity(), language_servers.clone());
+            let groups = editor_groups.clone();
+            cx.new(|cx| DiagnosticsStatusItem::new(workbench, servers, groups, cx))
+        };
         let git_head = crate::git_branch::head_path(&root);
         let git_branch = crate::git_branch::read_branch(&root);
         if let (Some(watcher), Some(head)) = (&open_file_watcher, &git_head) {
@@ -439,6 +450,8 @@ impl Workbench {
             documents,
             language_servers,
             lsp_status: lsp_status.clone(),
+            diagnostics_status: diagnostics_status.clone(),
+            marker_task: None,
             lsp_logs,
             search_view,
             extensions_page,
@@ -468,6 +481,7 @@ impl Workbench {
         let trust_events = workbench.start_trust(&documents, window, cx);
         workbench._subscriptions.push(trust_events);
         workbench.refresh_watched_open_files(cx);
+        workbench.add_status_item(StatusBarSide::Left, diagnostics_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, mode_indicator.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
@@ -1068,6 +1082,16 @@ impl Workbench {
                 .context_stack()
                 .iter()
                 .any(|c| c.contains(TEXT_INPUT_KEY_CONTEXT)),
+        );
+        // The code view has focus and no text input (find, Quick Open…)
+        // has taken the keys: where the LSP editor actions apply.
+        let text_input = window
+            .context_stack()
+            .iter()
+            .any(|c| c.contains(TEXT_INPUT_KEY_CONTEXT));
+        flag(
+            "editorTextFocus",
+            self.editor_focus.contains_focused(window, cx) && !text_input,
         );
         flag("findWidgetVisible", self.find_widget_visible(cx));
         let active = self.editor_groups.read(cx).model().active_tab();

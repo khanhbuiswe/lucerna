@@ -6,6 +6,7 @@ mod app_state;
 pub mod code_view;
 mod commands;
 mod config_files;
+mod diagnostics_status;
 mod documents;
 mod editor_groups;
 mod explorer;
@@ -40,6 +41,7 @@ pub use config_files::{
     CONFIG_DEBOUNCE, ConfigError, ConfigFile, ConfigPaths, ConfigState, ConfigWatcher,
     reload_config, watch_config,
 };
+pub use diagnostics_status::DiagnosticsStatusItem;
 pub use documents::{DocState, DocumentEvent, DocumentStatus, Documents};
 pub use editor_groups::{
     EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode,

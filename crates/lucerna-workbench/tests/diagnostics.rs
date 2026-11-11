@@ -7,14 +7,15 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{BorrowAppContext, Entity, TestAppContext, VisualTestContext};
+use gpui::{BorrowAppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_lsp::diagnostics::Severity;
 use lucerna_lsp::position::path_to_uri;
 use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::Layer;
+use lucerna_text::Point;
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::{AppState, Workbench};
+use lucerna_workbench::{AppState, DiagnosticsStatusItem, Workbench};
 use serde_json::{Value, json};
 use support::lsp::*;
 use tempfile::TempDir;
@@ -231,4 +232,268 @@ fn stale_version_ignored(cx: &mut TestAppContext) {
     fake.notify("textDocument/publishDiagnostics", two(&dir, 1));
     after_batch(cx);
     assert_eq!(diagnostics_len(&view, cx), 2);
+}
+
+// Status bar item and F8 (spec §7.1).
+
+const LIB: &str = "pub fn a() {}\npub fn b() {}\n";
+
+fn lib_uri(dir: &TempDir) -> String {
+    path_to_uri(&dir.path().join("src/lib.rs"))
+        .as_str()
+        .to_owned()
+}
+
+/// `main.rs` (open): error (0,3) "boom", warning (1,8). `lib.rs` (never
+/// opened): error (0,7) "lib error".
+fn publish_both(dir: &TempDir, fake: &FakeServer, cx: &mut VisualTestContext) {
+    fs::write(dir.path().join("src/lib.rs"), LIB).unwrap();
+    fake.notify("textDocument/publishDiagnostics", two(dir, 0));
+    fake.notify(
+        "textDocument/publishDiagnostics",
+        json!({
+            "uri": lib_uri(dir),
+            "diagnostics": [diagnostic(0, 7, 8, 1, "lib error")],
+        }),
+    );
+    after_batch(cx);
+}
+
+fn item(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<DiagnosticsStatusItem> {
+    cx.update(|_, cx| wb.read(cx).diagnostics_status().clone())
+}
+
+fn counts(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<(usize, usize)> {
+    let item = item(wb, cx);
+    cx.update(|_, cx| item.read(cx).counts(cx))
+}
+
+fn message(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<String> {
+    let item = item(wb, cx);
+    cx.update(|_, cx| item.read(cx).message(cx))
+}
+
+fn shown(selector: &'static str, cx: &mut VisualTestContext) -> bool {
+    draw(cx);
+    cx.debug_bounds(selector).is_some()
+}
+
+fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            assert!(wb.run_command(command, None, window, cx), "{command}");
+        })
+    });
+    settle(cx);
+}
+
+fn go_to(view: &Entity<CodeView>, row: u32, column: u32, cx: &mut VisualTestContext) {
+    view.update(cx, |v, cx| v.go_to(Point { row, column }, cx));
+    draw(cx);
+}
+
+/// The active file's name and cursor.
+fn here(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> (String, (u32, u32)) {
+    let view = active_view(wb, cx);
+    cx.update(|_, cx| {
+        let v = view.read(cx);
+        let name = v.path().file_name().unwrap().to_str().unwrap().to_owned();
+        (name, (v.cursor().row, v.cursor().column))
+    })
+}
+
+fn click(selector: &'static str, cx: &mut VisualTestContext) {
+    draw(cx);
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"));
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    settle(cx);
+}
+
+#[gpui::test]
+fn hidden_before_any_server(cx: &mut TestAppContext) {
+    let (dir, _fake, wb, cx) = setup(TRUSTED, cx);
+    fs::write(dir.path().join("notes.txt"), "plain\n").unwrap();
+    open(&wb, "notes.txt", cx);
+    assert!(!shown("diagnostics-counts", cx));
+    assert_eq!(counts(&wb, cx), None);
+
+    open(&wb, "src/main.rs", cx);
+    assert!(shown("diagnostics-counts", cx));
+}
+
+#[gpui::test]
+fn counts_update_after_publish(cx: &mut TestAppContext) {
+    let (dir, fake, wb, cx) = setup(TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    assert_eq!(counts(&wb, cx), Some((0, 0)));
+
+    publish_both(&dir, &fake, cx);
+    // Unopened files count too: errors in main.rs and lib.rs.
+    assert_eq!(counts(&wb, cx), Some((2, 1)));
+
+    fake.notify(
+        "textDocument/publishDiagnostics",
+        json!({ "uri": lib_uri(&dir), "diagnostics": [] }),
+    );
+    after_batch(cx);
+    assert_eq!(counts(&wb, cx), Some((1, 1)));
+}
+
+#[gpui::test]
+fn check_icon_when_clean(cx: &mut TestAppContext) {
+    let (dir, fake, wb, cx) = setup(TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    assert!(shown("diagnostics-check", cx));
+
+    publish_both(&dir, &fake, cx);
+    assert!(!shown("diagnostics-check", cx));
+    assert!(shown("diagnostics-counts", cx));
+}
+
+#[gpui::test]
+fn message_under_cursor(cx: &mut TestAppContext) {
+    let (dir, fake, wb, cx) = setup(TRUSTED, cx);
+    let view = open(&wb, "src/main.rs", cx);
+    assert_eq!(message(&wb, cx), None);
+    assert!(!shown("diagnostics-message", cx));
+
+    publish_both(&dir, &fake, cx);
+    // Outside any range.
+    assert_eq!(message(&wb, cx), None);
+    // The first line only.
+    go_to(&view, 0, 4, cx);
+    assert_eq!(message(&wb, cx), Some("boom".into()));
+    assert!(shown("diagnostics-message", cx));
+    go_to(&view, 1, 8, cx);
+    assert_eq!(message(&wb, cx), Some("unused variable".into()));
+    go_to(&view, 1, 2, cx);
+    assert_eq!(message(&wb, cx), None);
+
+    // Cut at 80 characters.
+    let long = "x".repeat(100);
+    let one = json!({
+        "uri": main_uri(&dir),
+        "version": 0,
+        "diagnostics": [diagnostic(0, 3, 7, 1, &long)],
+    });
+    fake.notify("textDocument/publishDiagnostics", one);
+    after_batch(cx);
+    go_to(&view, 0, 4, cx);
+    assert_eq!(message(&wb, cx), Some(format!("{}…", "x".repeat(80))));
+}
+
+#[gpui::test]
+fn f8_moves_across_files_and_wraps(cx: &mut TestAppContext) {
+    let (dir, fake, wb, cx) = setup(TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    publish_both(&dir, &fake, cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (0, 0)));
+
+    let next = "editor.action.marker.nextInFiles";
+    run(&wb, next, cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (0, 3)));
+    run(&wb, next, cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (1, 8)));
+    // Across files: lib.rs is opened (it sorts before main.rs, so this is
+    // the wrap).
+    run(&wb, next, cx);
+    assert_eq!(here(&wb, cx), ("lib.rs".into(), (0, 7)));
+    run(&wb, next, cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (0, 3)));
+
+    // Backward, with wrap.
+    run(&wb, "editor.action.marker.prevInFiles", cx);
+    assert_eq!(here(&wb, cx), ("lib.rs".into(), (0, 7)));
+    run(&wb, "editor.action.marker.prevInFiles", cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (1, 8)));
+
+    // The jump is in the navigation history.
+    run(&wb, "workbench.action.navigateBack", cx);
+    assert_eq!(here(&wb, cx), ("lib.rs".into(), (0, 7)));
+}
+
+#[gpui::test]
+fn f8_key_runs_next_in_files(cx: &mut TestAppContext) {
+    let (dir, fake, wb, cx) = setup(TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    publish_both(&dir, &fake, cx);
+    wb.update_in(cx, |wb, window, cx| wb.focus_editor_area(window, cx));
+    cx.simulate_keystrokes("f8");
+    settle(cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (0, 3)));
+}
+
+#[gpui::test]
+fn alt_f8_stays_in_file(cx: &mut TestAppContext) {
+    let (dir, fake, wb, cx) = setup(TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    publish_both(&dir, &fake, cx);
+
+    let next = "editor.action.marker.next";
+    run(&wb, next, cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (0, 3)));
+    run(&wb, next, cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (1, 8)));
+    // Wraps inside the file; lib.rs is not opened.
+    run(&wb, next, cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (0, 3)));
+    run(&wb, "editor.action.marker.prev", cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (1, 8)));
+    let tabs = cx.update(|_, cx| {
+        wb.read(cx).editor_groups().read(cx).model().groups()[0]
+            .tabs
+            .len()
+    });
+    assert_eq!(tabs, 1);
+}
+
+#[gpui::test]
+fn hints_skipped(cx: &mut TestAppContext) {
+    let (dir, fake, wb, cx) = setup(TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    fs::write(dir.path().join("src/lib.rs"), LIB).unwrap();
+    let main = json!({
+        "uri": main_uri(&dir),
+        "version": 0,
+        "diagnostics": [
+            diagnostic(0, 3, 7, 4, "hint"),
+            diagnostic(1, 8, 9, 2, "unused variable"),
+        ],
+    });
+    let lib = json!({
+        "uri": lib_uri(&dir),
+        "diagnostics": [diagnostic(0, 0, 1, 4, "lib hint")],
+    });
+    fake.notify("textDocument/publishDiagnostics", main);
+    fake.notify("textDocument/publishDiagnostics", lib);
+    after_batch(cx);
+
+    let next = "editor.action.marker.nextInFiles";
+    run(&wb, next, cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (1, 8)));
+    // Neither main's hint nor lib.rs's: the only warning again.
+    run(&wb, next, cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (1, 8)));
+    let tabs = cx.update(|_, cx| {
+        wb.read(cx).editor_groups().read(cx).model().groups()[0]
+            .tabs
+            .len()
+    });
+    assert_eq!(tabs, 1);
+}
+
+#[gpui::test]
+fn click_counts_runs_next_in_files(cx: &mut TestAppContext) {
+    let (dir, fake, wb, cx) = setup(TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    publish_both(&dir, &fake, cx);
+
+    click("diagnostics-counts", cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (0, 3)));
+    // The message is under the cursor now; clicking it goes to the next
+    // marker in the file.
+    click("diagnostics-message", cx);
+    assert_eq!(here(&wb, cx), ("main.rs".into(), (1, 8)));
 }
