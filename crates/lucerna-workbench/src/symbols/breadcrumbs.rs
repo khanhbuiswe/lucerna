@@ -172,6 +172,8 @@ pub(crate) struct Breadcrumbs {
     /// The last symbols of each shown file, used while its symbols for a
     /// newer revision load.
     trees: HashMap<Arc<Path>, Arc<SymbolTree>>,
+    /// The active tab of each group when the rows were last computed.
+    active: Vec<TabId>,
 }
 
 impl Workbench {
@@ -191,10 +193,39 @@ impl Workbench {
         }));
     }
 
+    /// The editor groups changed: when another tab became active (a tab
+    /// switch, a split, a close), computes the rows now rather than after
+    /// the batch, so the symbols show at once. Makes the bodies of the
+    /// active tabs first, as drawing would.
+    pub(crate) fn active_tabs_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let groups = self.editor_groups().clone();
+        let active: Vec<TabId> = groups
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .filter_map(|g| g.active)
+            .collect();
+        if active == self.breadcrumbs.active {
+            return;
+        }
+        if BreadcrumbSettings::read(cx).enabled {
+            groups.update(cx, |view, cx| view.ensure_active_bodies(window, cx));
+        }
+        self.refresh_breadcrumbs(cx);
+    }
+
     /// Hands each group's file tab its row.
     fn refresh_breadcrumbs(&mut self, cx: &mut Context<Self>) {
         let settings = BreadcrumbSettings::read(cx);
         let groups = self.editor_groups().clone();
+        self.breadcrumbs.active = groups
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .filter_map(|g| g.active)
+            .collect();
         let shown: Vec<(TabId, String, CodeViewRef)> = if settings.enabled {
             let view = groups.read(cx);
             (0..view.model().groups().len())
@@ -246,7 +277,13 @@ impl Workbench {
             rows.insert(id, Crumbs { segments, font });
         }
         self.breadcrumbs.trees.retain(|path, _| used.contains(path));
-        groups.update(cx, |view, cx| view.set_breadcrumbs(rows, cx));
+        groups.update(cx, |view, cx| {
+            if settings.enabled {
+                view.set_breadcrumbs(rows, cx);
+            } else {
+                view.clear_breadcrumbs(cx);
+            }
+        });
     }
 
     /// The symbols of `path` as cached: the last ones known while newer
@@ -274,8 +311,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         self.update_editor_groups(cx, |m| m.focus_group(group));
-        self.focus_editor_area(window, cx);
-        self.show_quick_open("@", window, cx);
+        self.show_document_symbols(window, cx);
     }
 }
 

@@ -210,6 +210,20 @@ impl EditorGroupsView {
         Some(self.body(&tab, window, cx))
     }
 
+    /// The bodies of every group's active tab, made now if they have not
+    /// been drawn yet.
+    pub(crate) fn ensure_active_bodies(&mut self, window: &mut Window, cx: &mut App) {
+        let active: Vec<Tab> = self
+            .model
+            .groups()
+            .iter()
+            .filter_map(|g| g.tabs.iter().find(|t| Some(t.id) == g.active).cloned())
+            .collect();
+        for tab in &active {
+            self.body(tab, window, cx);
+        }
+    }
+
     /// Replaces how tab bodies are made; existing bodies are rebuilt.
     pub fn set_tab_body_factory(&mut self, make_body: TabBodyFactory, cx: &mut Context<Self>) {
         self.make_body = make_body;
@@ -269,10 +283,25 @@ impl EditorGroupsView {
         ))
     }
 
-    /// Replaces the breadcrumbs of file tabs.
+    /// Sets the breadcrumbs of the file tabs in `rows`. Other tabs keep
+    /// theirs, shown again as they were when they become active.
     pub(crate) fn set_breadcrumbs(&mut self, rows: HashMap<TabId, Crumbs>, cx: &mut Context<Self>) {
-        if self.breadcrumbs != rows {
-            self.breadcrumbs = rows;
+        let mut changed = false;
+        for (id, row) in rows {
+            if self.breadcrumbs.get(&id) != Some(&row) {
+                self.breadcrumbs.insert(id, row);
+                changed = true;
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// Forgets every tab's breadcrumbs.
+    pub(crate) fn clear_breadcrumbs(&mut self, cx: &mut Context<Self>) {
+        if !self.breadcrumbs.is_empty() {
+            self.breadcrumbs.clear();
             cx.notify();
         }
     }

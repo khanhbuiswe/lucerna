@@ -146,16 +146,26 @@ impl SymbolSource {
         }
     }
 
-    /// Like [`SymbolSource::get`], but a result of the document's current
-    /// revision is given as is, even an expired empty answer: only a new
-    /// revision (or no result yet) starts a fetch. For readers that ask
-    /// on every change, such as the breadcrumbs, which would otherwise
-    /// ask an empty answer again every [`EMPTY_SYMBOLS_TTL`].
+    /// Like [`SymbolSource::get`], except that an expired empty answer is
+    /// given as is rather than asked again: for readers that ask on every
+    /// change, such as the breadcrumbs, which would otherwise ask it again
+    /// every [`EMPTY_SYMBOLS_TTL`]. A new revision, or an outline read from
+    /// an older parse, is fetched as `get` does.
     pub(crate) fn current(&mut self, path: &Path, cx: &mut Context<Workbench>) -> SymbolState {
         let key = self.key(path);
-        let revision = self.documents.read(cx).revision_of(&key);
+        let docs = self.documents.read(cx);
+        let revision = docs.revision_of(&key);
+        let syntax = docs.syntax_of(&key).and_then(|(_, syntax)| syntax);
         match self.entries.get(&key) {
-            Some(entry) if Some(entry.revision) == revision => entry.state.clone(),
+            Some(entry)
+                if Some(entry.revision) == revision
+                    && entry
+                        .syntax
+                        .as_ref()
+                        .is_none_or(|read| is_state(read, syntax.as_ref())) =>
+            {
+                entry.state.clone()
+            }
             _ => self.get(path, cx),
         }
     }

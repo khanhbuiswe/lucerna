@@ -24,7 +24,9 @@ use lucerna_workbench::{
     Workbench, breadcrumb_segments,
 };
 use serde_json::{Value, json};
-use support::lsp::{TRUSTED, count, init_with, language_servers, lsp_workbench_with, open, settle};
+use support::lsp::{
+    TRUSTED, count, draw, init_with, language_servers, lsp_workbench_with, open, settle,
+};
 use tempfile::TempDir;
 
 const DOCUMENT_SYMBOL: &str = "textDocument/documentSymbol";
@@ -697,4 +699,36 @@ fn breadcrumbs_do_not_poll_empty_symbols(cx: &mut TestAppContext) {
         settle_symbols(cx);
     }
     assert_eq!(count(&fake, DOCUMENT_SYMBOL), requests);
+}
+
+#[gpui::test]
+fn tab_switch_and_split_show_symbols_at_once(cx: &mut TestAppContext) {
+    let fake = symbols_server();
+    let (_dir, wb, _view, cx) = setup(&fake, pt(8, 8), cx);
+    let crumbs_now = |cx: &mut VisualTestContext, group| {
+        // No clock advance: the 50 ms batch does not run.
+        cx.run_until_parked();
+        draw(cx);
+        crumbs(&wb, group, cx)
+    };
+    let main_tab = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups.model().active_tab().expect("main.rs").id
+    });
+    open(&wb, "notes.txt", cx);
+    assert_eq!(crumbs(&wb, 0, cx).as_deref(), Some("notes.txt"));
+
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.activate(main_tab))
+    });
+    assert_eq!(
+        crumbs_now(cx, 0).as_deref(),
+        Some("src › main.rs › impl Foo › get")
+    );
+
+    // The split's editor starts with its own cursor, at the top.
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.split_active())
+    });
+    assert_eq!(crumbs_now(cx, 1).as_deref(), Some("src › main.rs › Foo"));
 }

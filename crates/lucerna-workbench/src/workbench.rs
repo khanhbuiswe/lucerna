@@ -432,6 +432,9 @@ impl Workbench {
                 wb.release_closed_references(cx);
             }),
             cx.observe_in(&editor_groups, window, Self::singleton_tab_hidden),
+            cx.observe_in(&editor_groups, window, |wb, _, window, cx| {
+                wb.active_tabs_changed(window, cx)
+            }),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
             cx.on_app_quit(|wb, cx| {
                 wb.language_servers

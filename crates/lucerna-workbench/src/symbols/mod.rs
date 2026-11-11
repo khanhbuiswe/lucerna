@@ -12,7 +12,7 @@ pub use source::{EMPTY_SYMBOLS_TTL, SYMBOLS_DEBOUNCE, SymbolSource, SymbolState}
 
 use std::path::Path;
 
-use gpui::Context;
+use gpui::{Context, Window};
 use lucerna_syntax::SymbolKind;
 
 use crate::{CommandRegistry, Workbench, icons};
@@ -22,12 +22,12 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "workbench.action.gotoSymbol",
         "Go to Symbol in Editor…",
-        |wb, _, window, cx| wb.show_quick_open("@", window, cx),
+        |wb, _, window, cx| wb.show_document_symbols(window, cx),
     );
     commands.register(
         "breadcrumbs.focusAndSelect",
         "Focus and Select Breadcrumbs",
-        |wb, _, window, cx| wb.show_quick_open("@", window, cx),
+        |wb, _, window, cx| wb.show_document_symbols(window, cx),
     );
 }
 
@@ -84,6 +84,13 @@ pub(crate) fn kind_icon(kind: SymbolKind) -> &'static [u8] {
 }
 
 impl Workbench {
+    /// Quick Open `@` for the focused group's editor, which gets the
+    /// focus first (Quick Open gives it back when it closes).
+    pub(crate) fn show_document_symbols(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_editor_area(window, cx);
+        self.show_quick_open("@", window, cx);
+    }
+
     /// The active editor, its symbols and cursor, for Quick Open `@`.
     pub(crate) fn symbols_context(&mut self, cx: &mut Context<Self>) -> Option<SymbolsContext> {
         let editor = self.active_code_view(cx)?;
