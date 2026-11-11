@@ -135,7 +135,7 @@ pub struct Row {
     pub commit: Option<String>,
     /// What an installed extension holds, e.g. `"2 themes · 1 language"`.
     pub summary: String,
-    /// The manifest declares language servers ("Language server: Phase 3").
+    /// The manifest declares language servers ("Language server: Phase 3b").
     pub lsp_note: bool,
     pub state: RowState,
 }

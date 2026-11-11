@@ -28,7 +28,7 @@ pub(crate) const LOADING_LIST: &str = "Loading extension list…";
 pub(crate) const GIT_MISSING: &str =
     "git was not found. Install the Xcode Command Line Tools: xcode-select --install";
 pub(crate) const FETCH_FAILED: &str = "Could not fetch the extension list.";
-pub(crate) const LSP_NOTE: &str = "Language server: Phase 3";
+pub(crate) const LSP_NOTE: &str = "Language server: Phase 3b";
 pub(crate) const LOADING_DESCRIPTION: &str = "Loading description…";
 pub(crate) const NO_DESCRIPTION: &str = "No description";
 pub(crate) const CLEAR_CACHE_BUSY: &str =

@@ -253,7 +253,8 @@ and Zed do things are in [`docs/research/`](docs/research/). Before designing a 
 |---|---|---|
 | 1 | Core viewer: tree, tabs, highlighting, Quick Open, search, live reload | ✅ Done |
 | 2 | Zed extensions: themes, icon themes, languages | ✅ Done |
-| 3 | Code intelligence over LSP: go to definition, references, hover, diagnostics, outline | Planned |
+| 3 | Code intelligence over LSP: go to definition, references, hover, diagnostics, outline | ✅ Done |
+| 3b | WASM host for Zed extensions: language servers shipped inside `extension.wasm` (PHP, Ruby, Elixir, Vue…) | Planned |
 | 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | Planned |
 | 5 | Git gutter and diff view, integrated terminal, settings UI | Planned |
 | V1 | Vim navigation: motions, search, scroll, marks, visual copy | ✅ Done |

@@ -1,6 +1,6 @@
 # Phase 3: hiểu code qua LSP
 
-Ngày 2026-11-10. Trạng thái: chờ duyệt.
+Ngày 2026-11-10. Trạng thái: đã triển khai (commit 3a9951d..HEAD).
 
 ## 1. Mục tiêu
 

@@ -32,7 +32,7 @@ Extension được tự build từ repo `zed-industries/extensions`. Lucerna **k
 
 | # | Quyết định | Lý do |
 |---|---|---|
-| D1 | **Chưa có host WASM component** (WIT, `extension.wasm`, các hàm host) ở giai đoạn này. Để sang giai đoạn 3, cùng với LSP. | Bốn thứ trong scope đều là dữ liệu. Chỉ language server cần chạy code của extension. |
+| D1 | **Chưa có host WASM component** (WIT, `extension.wasm`, các hàm host) ở giai đoạn này. Để sang giai đoạn 3b. | Bốn thứ trong scope đều là dữ liệu. Chỉ language server cần chạy code của extension. |
 | D2 | **Grammar từ extension được biên dịch sang WASM** bằng wasi-sdk và chạy qua `WasmStore` của tree-sitter trên wasmtime. Grammar bundled vẫn native. | Có sandbox: grammar lỗi chỉ gây trap, không làm sập app. Zed cũng làm như vậy. Giai đoạn 3 vẫn cần wasmtime. |
 | D3 | **Panel Extensions trong app**, cộng thêm lệnh CLI `luc ext …`. | Trải nghiệm giống VS Code; CLI tiện cho script và test. |
 | D4 | **Snippet** được cài và kiểm tra, nhưng chưa dùng. | Lucerna vẫn chỉ đọc cho tới giai đoạn 4. |
@@ -407,7 +407,7 @@ Các trường khác được bỏ qua.
 - **Danh sách thẻ**, ảo hóa (GPUI `list`, chiều cao thay đổi được). Extension đã cài đứng trước, rồi tới các mục chưa cài. Mỗi thẻ gồm:
   - dòng 1: tên (hoặc id nếu chưa biết tên), version, id bằng chữ mờ;
   - dòng 2: mô tả. Với mục chưa cài, mô tả được lấy theo §3.4 khi thẻ hiện lên màn hình lần đầu; trong lúc lấy hiện "Loading description…";
-  - dòng 3: những gì extension cung cấp, ví dụ "2 themes · 1 language · 14 snippets (Phase 4)", kèm "Language server: Phase 3" nếu có; với mục chưa cài là repository và commit rút gọn;
+  - dòng 3: những gì extension cung cấp, ví dụ "2 themes · 1 language · 14 snippets (Phase 4)", kèm "Language server: Phase 3b" nếu có; với mục chưa cài là repository và commit rút gọn;
   - bên phải: nút Install / Update / Uninstall / Reinstall, hoặc Cancel khi đang cài;
   - khi đang cài: bước hiện tại, ví dụ "Building grammar 2/3: zig";
   - khi xong mà có cảnh báo: danh sách cảnh báo;
