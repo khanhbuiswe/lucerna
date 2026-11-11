@@ -176,6 +176,7 @@ impl ServerDef {
             && self.args == other.args
             && self.env == other.env
             && self.binary == other.binary
+            && self.probe == other.probe
             && self.initialization_options == other.initialization_options
     }
 }
@@ -224,7 +225,8 @@ impl ServerTable {
     }
 
     /// The defaults merged with the `lsp` setting, validated. Invalid
-    /// entries are left out and reported in `errors`.
+    /// entries are reported in `errors` and left out; a built-in server
+    /// whose override is invalid keeps its built-in entry.
     pub fn build(lsp_setting: Option<&Value>) -> ServerTable {
         let mut merged = Self::defaults().clone();
         if let Some(setting) = lsp_setting.filter(|s| s.is_object()) {
@@ -242,10 +244,21 @@ impl ServerTable {
                 Ok(def) => {
                     table.servers.insert(Arc::clone(&def.name), def);
                 }
-                Err(message) => table.errors.push(TableError {
-                    server: name,
-                    message,
-                }),
+                Err(message) => {
+                    // A bad override of a built-in server leaves the
+                    // built-in entry as it is.
+                    let default = Self::defaults()
+                        .get(&name)
+                        .and_then(|value| serde_json::from_value::<RawDef>(value.clone()).ok())
+                        .and_then(|raw| raw.into_def(&name).ok());
+                    if let Some(def) = default {
+                        table.servers.insert(Arc::clone(&def.name), def);
+                    }
+                    table.errors.push(TableError {
+                        server: name,
+                        message,
+                    });
+                }
             }
         }
         table

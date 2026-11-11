@@ -266,3 +266,25 @@ fn launch_fields_eq_ignores_settings() {
     let c = ServerTable::build(Some(&json!({"clangd": {"args": ["--x"]}})));
     assert!(!x.launch_fields_eq(c.get("clangd").unwrap()));
 }
+
+#[test]
+fn bad_override_of_default_keeps_the_default() {
+    let t = ServerTable::build(Some(&json!({"rust-analyzer": {"args": "x"}})));
+    assert_eq!(t.errors.len(), 1, "{:?}", t.errors);
+    assert_eq!(t.errors[0].server, "rust-analyzer");
+    let ra = t.get("rust-analyzer").expect("default kept");
+    let default = ServerTable::build(None);
+    assert_eq!(ra, default.get("rust-analyzer").unwrap());
+    assert!(ra.args.is_empty());
+}
+
+#[test]
+fn launch_fields_include_probe() {
+    let a = ServerTable::build(None);
+    let b = ServerTable::build(Some(&json!({"gopls": {"probe": ["-v"]}})));
+    let c = ServerTable::build(Some(&json!({"gopls": {"probe": false}})));
+    let gopls = |t: &ServerTable| t.get("gopls").unwrap().clone();
+    assert!(gopls(&a).launch_fields_eq(&gopls(&a)));
+    assert!(!gopls(&a).launch_fields_eq(&gopls(&b)));
+    assert!(!gopls(&a).launch_fields_eq(&gopls(&c)));
+}

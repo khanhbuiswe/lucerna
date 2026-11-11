@@ -373,11 +373,38 @@ fn set_table_stops_removed_server() {
         "other": { "command": "other", "languages": ["x"] },
         "rust-analyzer": { "enabled": false },
     })));
-    let mut stop = diff.stop.clone();
-    stop.sort_by(|a, b| a.server.cmp(&b.server));
-    assert_eq!(stop, [mine, ra]);
+    // Only a server that left the table is stopped here: a disabled one
+    // may still be selected by name; the workbench stops it when nothing
+    // selects it any more.
+    assert_eq!(diff.stop, [mine]);
     assert!(diff.restart.is_empty() && diff.reconfigure.is_empty());
     assert!(reg.table().get("mine").is_none());
+    assert!(reg.slot(&ra).is_some());
+}
+
+#[test]
+fn enabled_flip_changes_nothing_for_existing_slots() {
+    let mut reg = Registry::new(ServerTable::build(None));
+    let py = key("/ws", "pyright");
+    reg.set_slot(py.clone(), Slot::Starting);
+    let diff = reg.set_table(table(json!({ "pyright": { "enabled": true } })));
+    assert_eq!(diff, lucerna_lsp::SettingsDiff::default());
+    let diff = reg.set_table(ServerTable::build(None));
+    assert_eq!(diff, lucerna_lsp::SettingsDiff::default());
+}
+
+#[test]
+fn probe_change_restarts() {
+    let mut reg = Registry::new(ServerTable::build(None));
+    let gopls = key("/ws", "gopls");
+    reg.set_slot(
+        gopls.clone(),
+        Slot::NotFound {
+            message: "x".into(),
+        },
+    );
+    let diff = reg.set_table(table(json!({ "gopls": { "probe": false } })));
+    assert_eq!(diff.restart, [gopls]);
 }
 
 #[test]

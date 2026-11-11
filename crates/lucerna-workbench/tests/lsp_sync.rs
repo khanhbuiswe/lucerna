@@ -946,3 +946,57 @@ fn npm_root_expands_in_settings(cx: &mut TestAppContext) {
         SlotState::Running
     );
 }
+
+#[gpui::test]
+fn bad_override_keeps_running_default_server(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+
+    set_user_settings(
+        &trusted_with_lsp(&json!({ "rust-analyzer": { "args": "x" } })),
+        cx,
+    );
+
+    assert_eq!(launcher.launches().len(), 1, "not relaunched");
+    assert_eq!(count(&fake, "shutdown"), 0, "not stopped");
+    assert_eq!(
+        state_of(&wb, &key(dir.path(), "rust-analyzer"), cx),
+        SlotState::Running
+    );
+    let servers = language_servers(&wb, cx);
+    let errors = cx.update(|_, cx| servers.read(cx).table_errors().to_vec());
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].server, "rust-analyzer");
+}
+
+#[gpui::test]
+fn enabled_flip_keeps_server_selected_by_name(cx: &mut TestAppContext) {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("pyright-langserver", fake.clone()));
+    let base = json!({
+        "session.trustAllWorktrees": true,
+        "[python]": { "lucerna.lsp.languageServers": ["pyright", "!basedpyright"] }
+    });
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), &base.to_string(), cx);
+    open(&wb, "a.py", cx);
+    assert_eq!(launcher.launches().len(), 1);
+    let pyright = key(dir.path(), "pyright");
+    assert_eq!(state_of(&wb, &pyright, cx), SlotState::Running);
+
+    for enabled in [true, false] {
+        let mut settings = base.clone();
+        settings["lsp"] = json!({ "pyright": { "enabled": enabled } });
+        set_user_settings(&settings.to_string(), cx);
+        assert_eq!(launcher.launches().len(), 1, "enabled: {enabled}");
+        assert_eq!(count(&fake, "shutdown"), 0, "enabled: {enabled}");
+        assert_eq!(state_of(&wb, &pyright, cx), SlotState::Running);
+    }
+    set_user_settings(&base.to_string(), cx);
+    assert_eq!(launcher.launches().len(), 1);
+    assert_eq!(count(&fake, "shutdown"), 0);
+}

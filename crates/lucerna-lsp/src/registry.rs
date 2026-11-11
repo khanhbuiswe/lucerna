@@ -40,7 +40,8 @@ pub struct SettingsDiff {
     /// Only `settings` changed; the new value (`Null` when removed), not
     /// expanded.
     pub reconfigure: Vec<(ServerKey, Value)>,
-    /// The server left the table, or was disabled.
+    /// The server left the table. (A disabled server may still be
+    /// selected by name: whether it stops depends on the selection.)
     pub stop: Vec<ServerKey>,
 }
 
@@ -102,9 +103,9 @@ impl Registry {
     }
 
     /// Replaces the table and says which existing slots are affected.
-    /// A server that left the table or was disabled is stopped; one whose
-    /// launch fields changed is restarted; one whose `settings` alone
-    /// changed is reconfigured.
+    /// A server that left the table is stopped; one whose launch fields
+    /// changed is restarted; one whose `settings` alone changed is
+    /// reconfigured. `enabled` changes nothing here.
     pub fn set_table(&mut self, table: ServerTable) -> SettingsDiff {
         let mut diff = SettingsDiff::default();
         for key in self.slots.keys() {
@@ -116,9 +117,7 @@ impl Registry {
                 diff.restart.push(key.clone());
                 continue;
             };
-            if old.enabled && !now.enabled {
-                diff.stop.push(key.clone());
-            } else if !old.launch_fields_eq(now) {
+            if !old.launch_fields_eq(now) {
                 diff.restart.push(key.clone());
             } else if old.settings != now.settings {
                 diff.reconfigure
