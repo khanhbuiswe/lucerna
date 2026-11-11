@@ -262,6 +262,7 @@ impl LanguageServers {
             cx.background_executor().timer(DIAGNOSTICS_BATCH).await;
             this.update(cx, |servers, cx| {
                 servers.diagnostics_flush_pending = false;
+                servers.diagnostic_counts = servers.diagnostics.summary();
                 let paths = std::mem::take(&mut servers.changed_diagnostics);
                 for path in &paths {
                     servers.push_diagnostics(path, cx);

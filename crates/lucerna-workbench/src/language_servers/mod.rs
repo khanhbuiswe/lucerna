@@ -133,6 +133,9 @@ pub struct LanguageServers {
     sync: DocumentSync,
     watched: WatchedFiles,
     diagnostics: DiagnosticStore,
+    /// `(errors, warnings)` over every file, as of the last diagnostics
+    /// batch: the status bar reads it every frame.
+    diagnostic_counts: (usize, usize),
     docs: HashMap<Arc<Path>, OpenDoc>,
     logs: HashMap<&'static str, VecDeque<LogLine>>,
     progress: HashMap<ServerKey, Vec<ProgressItem>>,
@@ -186,6 +189,7 @@ impl LanguageServers {
             sync: DocumentSync::default(),
             watched: WatchedFiles::default(),
             diagnostics: DiagnosticStore::default(),
+            diagnostic_counts: (0, 0),
             docs: HashMap::new(),
             logs: HashMap::new(),
             progress: HashMap::new(),
@@ -259,6 +263,33 @@ impl LanguageServers {
             cx.emit(LanguageServersEvent::StatusChanged);
             cx.notify();
         }
+    }
+
+    /// Whether any server was selected for some file (any slot exists).
+    /// Cheap, for per-frame checks; [`LanguageServers::statuses`] builds
+    /// the full list.
+    pub fn has_servers(&self) -> bool {
+        self.registry.keys().next().is_some()
+    }
+
+    /// Whether some server failed to start or crashed.
+    pub fn any_failed(&self) -> bool {
+        self.registry
+            .keys()
+            .any(|key| matches!(self.registry.slot(key), Some(Slot::Failed { .. })))
+    }
+
+    /// Whether some server's binary was not found.
+    pub fn any_not_found(&self) -> bool {
+        self.registry
+            .keys()
+            .any(|key| matches!(self.registry.slot(key), Some(Slot::NotFound { .. })))
+    }
+
+    /// `(errors, warnings)` over every file, as of the last 50 ms
+    /// diagnostics batch (cached; no walk over the store).
+    pub fn diagnostic_counts(&self) -> (usize, usize) {
+        self.diagnostic_counts
     }
 
     /// Every slot, ordered by root then server name.

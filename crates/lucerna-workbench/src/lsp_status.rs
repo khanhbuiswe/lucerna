@@ -118,17 +118,9 @@ impl LspStatusItem {
     /// folder is in Restricted Mode; `None` when all is well.
     pub fn dot(&self, cx: &App) -> Option<StatusDot> {
         let servers = self.servers.read(cx);
-        let statuses = servers.statuses();
-        if statuses
-            .iter()
-            .any(|s| matches!(s.state, SlotState::Failed { .. }))
-        {
+        if servers.any_failed() {
             Some(StatusDot::Error)
-        } else if servers.shows_restricted_mode()
-            || statuses
-                .iter()
-                .any(|s| matches!(s.state, SlotState::NotFound { .. }))
-        {
+        } else if servers.shows_restricted_mode() || servers.any_not_found() {
             Some(StatusDot::Warning)
         } else {
             None
@@ -415,7 +407,7 @@ fn dot(rgba: Rgba) -> gpui::Div {
 impl Render for LspStatusItem {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let servers = self.servers.read(cx);
-        let visible = !servers.statuses().is_empty() || servers.shows_restricted_mode();
+        let visible = servers.has_servers() || servers.shows_restricted_mode();
         let progress = servers.progress_text();
         if !visible {
             self.close(window, cx);

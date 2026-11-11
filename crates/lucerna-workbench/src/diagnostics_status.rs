@@ -82,7 +82,7 @@ impl DiagnosticsStatusItem {
     /// until a server was selected for some file.
     pub fn counts(&self, cx: &gpui::App) -> Option<(usize, usize)> {
         let servers = self.servers.read(cx);
-        (!servers.statuses().is_empty()).then(|| servers.diagnostics().summary())
+        servers.has_servers().then(|| servers.diagnostic_counts())
     }
 
     /// The first line of the message of the diagnostic under the active

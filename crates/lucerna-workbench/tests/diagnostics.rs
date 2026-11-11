@@ -497,3 +497,15 @@ fn click_counts_runs_next_in_files(cx: &mut TestAppContext) {
     click("diagnostics-message", cx);
     assert_eq!(here(&wb, cx), ("main.rs".into(), (1, 8)));
 }
+
+#[gpui::test]
+fn cached_counts_follow_a_stopped_server(cx: &mut TestAppContext) {
+    let (dir, fake, wb, cx) = setup(TRUSTED, cx);
+    open(&wb, "src/main.rs", cx);
+    publish_both(&dir, &fake, cx);
+    assert_eq!(counts(&wb, cx), Some((2, 1)));
+    let servers = language_servers(&wb, cx);
+    servers.update(cx, |servers, cx| servers.stop_all(cx));
+    after_batch(cx);
+    assert_eq!(counts(&wb, cx), Some((0, 0)), "its diagnostics are gone");
+}
