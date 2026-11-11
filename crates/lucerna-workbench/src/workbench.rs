@@ -40,6 +40,7 @@ use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::references_view::{self, ReferencesView};
 use crate::search_view::{self, SearchView};
 use crate::symbols::SymbolSource;
+use crate::symbols::breadcrumbs::Breadcrumbs;
 use crate::tasks::try_spawn_guarded;
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
@@ -119,6 +120,8 @@ pub struct Workbench {
     language_servers: Entity<LanguageServers>,
     /// The symbols of the open documents.
     pub(crate) symbols: SymbolSource,
+    /// The rows under the tab bars following the cursor.
+    pub(crate) breadcrumbs: Breadcrumbs,
     /// The ⚡ status bar item.
     pub(crate) lsp_status: Entity<LspStatusItem>,
     /// The diagnostics counts and message in the status bar.
@@ -306,6 +309,7 @@ impl Workbench {
             cx.new(|cx| LspStatusItem::new(workbench, servers, cx))
         };
         let workbench = cx.weak_entity();
+        let breadcrumbs_target = cx.weak_entity();
         let editor_groups = cx.new(|cx| {
             let mut groups = EditorGroupsView::default();
             let docs = documents.clone();
@@ -339,10 +343,16 @@ impl Workbench {
                                 .ok();
                         }
                     });
-                    // A scroll settles into a save.
+                    // A scroll settles into a save; the breadcrumbs follow
+                    // the cursor.
                     let workbench = workbench.clone();
                     cx.observe(&view, move |_, cx| {
-                        workbench.update(cx, |wb, cx| wb.layout_changed(cx)).ok();
+                        workbench
+                            .update(cx, |wb, cx| {
+                                wb.layout_changed(cx);
+                                wb.breadcrumbs_changed(cx);
+                            })
+                            .ok();
                     })
                     .detach();
                     view.into()
@@ -351,6 +361,11 @@ impl Workbench {
             );
             groups.set_documents(documents.clone());
             groups.set_root(root.clone());
+            groups.set_on_breadcrumbs_click(Rc::new(move |group, window, cx| {
+                breadcrumbs_target
+                    .update(cx, |wb, cx| wb.open_breadcrumbs(group, window, cx))
+                    .ok();
+            }));
             groups
         });
         let large_file_status = {
@@ -411,6 +426,7 @@ impl Workbench {
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
         let mut subscriptions = vec![
             cx.observe(&editor_groups, |wb, _, cx| {
+                wb.breadcrumbs_changed(cx);
                 wb.refresh_watched_open_files(cx);
                 wb.hide_hidden_hovers(cx);
                 wb.release_closed_references(cx);
@@ -501,6 +517,7 @@ impl Workbench {
             documents,
             language_servers,
             symbols,
+            breadcrumbs: Breadcrumbs::default(),
             lsp_status: lsp_status.clone(),
             diagnostics_status: diagnostics_status.clone(),
             marker_task: None,
@@ -715,6 +732,8 @@ impl Workbench {
         }
         // `session.trustAllWorktrees` may have changed.
         self.apply_trust(cx);
+        // `breadcrumbs.*` may have changed.
+        self.breadcrumbs_changed(cx);
         cx.notify();
     }
 

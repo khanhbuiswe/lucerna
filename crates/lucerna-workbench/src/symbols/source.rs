@@ -146,6 +146,20 @@ impl SymbolSource {
         }
     }
 
+    /// Like [`SymbolSource::get`], but a result of the document's current
+    /// revision is given as is, even an expired empty answer: only a new
+    /// revision (or no result yet) starts a fetch. For readers that ask
+    /// on every change, such as the breadcrumbs, which would otherwise
+    /// ask an empty answer again every [`EMPTY_SYMBOLS_TTL`].
+    pub(crate) fn current(&mut self, path: &Path, cx: &mut Context<Workbench>) -> SymbolState {
+        let key = self.key(path);
+        let revision = self.documents.read(cx).revision_of(&key);
+        match self.entries.get(&key) {
+            Some(entry) if Some(entry.revision) == revision => entry.state.clone(),
+            _ => self.get(path, cx),
+        }
+    }
+
     fn on_document_event(&mut self, ev: &DocumentEvent, cx: &mut Context<Workbench>) {
         match ev {
             DocumentEvent::Opened { path, .. }

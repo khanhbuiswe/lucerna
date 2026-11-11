@@ -18,6 +18,9 @@ use crate::documents::{DocState, Documents};
 use crate::icons;
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
+use crate::symbols::breadcrumbs::{
+    BreadcrumbSettings, Crumbs, breadcrumb_segments, breadcrumbs_row, segments_text,
+};
 use crate::ui::{
     BLOCKS_ICON, CLOSE_ICON, GRID, PATH_BAR_HEIGHT, SEARCH_ICON, TAB_HEIGHT, TAB_PADDING_X,
     UI_FONT_SIZE_SMALL,
@@ -32,6 +35,9 @@ const MIN_GROUP_WIDTH: Pixels = px(120.);
 /// Produces the view shown under the tab bar for a tab. It is called once
 /// per tab; the view is kept until the tab closes.
 pub type TabBodyFactory = Rc<dyn Fn(&Tab, &mut Window, &mut App) -> AnyView>;
+
+/// Called with a group's index when its breadcrumbs row is clicked.
+pub(crate) type BreadcrumbsClick = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
 /// The default tab body until the code view exists: the file's path (the
 /// tab title for the Extensions page).
@@ -85,6 +91,9 @@ pub struct EditorGroupsView {
     search_title: Option<SharedString>,
     /// Shown as the References tab's title in place of "References".
     references_title: Option<SharedString>,
+    /// The breadcrumbs of file tabs, as the workbench last computed them.
+    breadcrumbs: HashMap<TabId, Crumbs>,
+    on_breadcrumbs_click: Option<BreadcrumbsClick>,
 }
 
 impl Default for EditorGroupsView {
@@ -100,6 +109,8 @@ impl Default for EditorGroupsView {
             home: std::env::home_dir(),
             search_title: None,
             references_title: None,
+            breadcrumbs: HashMap::new(),
+            on_breadcrumbs_click: None,
         }
     }
 }
@@ -258,6 +269,50 @@ impl EditorGroupsView {
         ))
     }
 
+    /// Replaces the breadcrumbs of file tabs.
+    pub(crate) fn set_breadcrumbs(&mut self, rows: HashMap<TabId, Crumbs>, cx: &mut Context<Self>) {
+        if self.breadcrumbs != rows {
+            self.breadcrumbs = rows;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_on_breadcrumbs_click(&mut self, on_click: BreadcrumbsClick) {
+        self.on_breadcrumbs_click = Some(on_click);
+    }
+
+    /// The breadcrumbs of group `group` when its active tab is a file and
+    /// they are enabled; the path alone until the workbench computes them.
+    fn crumbs(&self, group: usize, settings: &BreadcrumbSettings, cx: &App) -> Option<Crumbs> {
+        if !settings.enabled {
+            return None;
+        }
+        let g = self.model.groups().get(group)?;
+        let tab = g.tabs.iter().find(|t| Some(t.id) == g.active)?;
+        let TabItem::File(_) = tab.item else {
+            return None;
+        };
+        if let Some(crumbs) = self.breadcrumbs.get(&tab.id) {
+            return Some(crumbs.clone());
+        }
+        let text = self.path_bar_text(group)?;
+        Some(Crumbs {
+            segments: breadcrumb_segments(&text, &[], settings.file_path, settings.symbol_path),
+            font: crate::fonts::editor_font_family(None, cx),
+        })
+    }
+
+    /// What the bar under the tab bar of group `group` shows, as text:
+    /// the breadcrumbs joined by ` › `, or the plain path (see
+    /// [`EditorGroupsView::path_bar_text`]) when they are disabled or the
+    /// tab is not a file.
+    pub fn breadcrumbs_text(&self, group: usize, cx: &App) -> Option<String> {
+        match self.crumbs(group, &BreadcrumbSettings::read(cx), cx) {
+            Some(crumbs) => Some(segments_text(&crumbs.segments)),
+            None => self.path_bar_text(group),
+        }
+    }
+
     /// The title colour of tab `tab` in group `group` under `ui` (see
     /// [`title_color`]).
     pub fn tab_title_color_in(&self, group: usize, tab: usize, ui: &UiColors) -> Option<Rgba> {
@@ -341,6 +396,8 @@ impl Render for EditorGroupsView {
             .collect();
         let count = self.model.groups().len();
         let focused_group = self.model.active_group();
+        let crumbs_settings = BreadcrumbSettings::read(cx);
+        self.breadcrumbs.retain(|id, _| live.contains(id));
         let mut row = div()
             .id("editor-groups")
             .debug_selector(|| "editor-groups".into())
@@ -474,7 +531,7 @@ impl Render for EditorGroupsView {
                         .border_b_1()
                         .border_color(color(ui.border_variant)),
                 );
-            let path_bar = self.path_bar_text(gi).map(|text| {
+            let bar = || {
                 div()
                     .debug_selector(move || format!("path-bar-{gi}"))
                     .flex()
@@ -482,13 +539,25 @@ impl Render for EditorGroupsView {
                     .items_center()
                     .w_full()
                     .h(px(PATH_BAR_HEIGHT))
-                    .px(px(TAB_PADDING_X))
                     .bg(color(ui.editor_background))
                     .border_b_1()
                     .border_color(color(ui.border_variant))
                     .text_size(px(UI_FONT_SIZE_SMALL))
                     .text_color(color(ui.text_muted))
-                    .child(
+            };
+            let path_bar = match self.crumbs(gi, &crumbs_settings, cx) {
+                Some(crumbs) => {
+                    let row = breadcrumbs_row(gi, &crumbs, crumbs_settings.icons, ui).on_click(
+                        cx.listener(move |view, _: &ClickEvent, window, cx| {
+                            if let Some(on_click) = view.on_breadcrumbs_click.clone() {
+                                window.defer(cx, move |window, cx| on_click(gi, window, cx));
+                            }
+                        }),
+                    );
+                    Some(bar().child(row))
+                }
+                None => self.path_bar_text(gi).map(|text| {
+                    bar().px(px(TAB_PADDING_X)).child(
                         div()
                             .min_w_0()
                             .overflow_hidden()
@@ -496,7 +565,8 @@ impl Render for EditorGroupsView {
                             .text_ellipsis()
                             .child(text),
                     )
-            });
+                }),
+            };
             let body = match body {
                 Some(body) => body.into_any_element(),
                 None => empty_hint(ui, cx).into_any_element(),

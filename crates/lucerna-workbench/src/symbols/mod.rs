@@ -1,9 +1,13 @@
 //! Document symbols (spec §7.6): where they come from ([`SymbolSource`])
 //! and Quick Open `@`, which lists them with a preview in the editor.
 
+pub(crate) mod breadcrumbs;
 pub(crate) mod quick_open;
 mod source;
 
+pub use breadcrumbs::{
+    BREADCRUMBS_BATCH, BreadcrumbMode, FilePathMode, Segment, SymbolPathMode, breadcrumb_segments,
+};
 pub use source::{EMPTY_SYMBOLS_TTL, SYMBOLS_DEBOUNCE, SymbolSource, SymbolState};
 
 use std::path::Path;
@@ -18,6 +22,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "workbench.action.gotoSymbol",
         "Go to Symbol in Editor…",
+        |wb, _, window, cx| wb.show_quick_open("@", window, cx),
+    );
+    commands.register(
+        "breadcrumbs.focusAndSelect",
+        "Focus and Select Breadcrumbs",
         |wb, _, window, cx| wb.show_quick_open("@", window, cx),
     );
 }
@@ -89,8 +98,10 @@ impl Workbench {
         })
     }
 
-    /// Hands the symbols of `path` to Quick Open when it lists them.
+    /// Hands the symbols of `path` to Quick Open when it lists them, and
+    /// to the breadcrumbs.
     pub(crate) fn symbols_changed(&mut self, path: &Path, cx: &mut Context<Self>) {
+        self.breadcrumbs_changed(cx);
         let Some((qo, _)) = &self.quick_open else {
             return;
         };
