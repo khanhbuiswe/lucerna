@@ -86,8 +86,10 @@ pub fn health_in(
     rows
 }
 
-/// As `resolve_launch` finds the binary: `binary.path` (when it exists),
-/// else `command` on `PATH` passing its probe, run in `probe_dir`.
+/// Whether the binary `resolve_launch` would start is there: `binary.path`
+/// when set (found only if the file exists; `resolve_launch` uses it
+/// without checking), else `command` on `PATH` passing its probe, run in
+/// `probe_dir`.
 fn status(def: &ServerDef, launcher: &dyn Launcher, probe_dir: &Path) -> HealthStatus {
     if !def.enabled {
         return HealthStatus::Disabled;

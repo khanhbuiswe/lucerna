@@ -13,7 +13,7 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
     /// File or directory to open. A folder literally named `ext` or `lsp`
-    /// must be opened as `luc ./ext`.
+    /// must be opened as `luc ./ext` or `luc ./lsp`.
     path: Option<PathBuf>,
     /// Print `startup_ms=<n>` to stderr once the first frame is painted.
     #[arg(long)]
