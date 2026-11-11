@@ -24,3 +24,4 @@ test-support = []
 
 [dev-dependencies]
 lucerna-lsp = { path = ".", features = ["test-support"] }
+tempfile.workspace = true

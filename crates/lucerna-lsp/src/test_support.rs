@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -14,7 +15,8 @@ use lsp_types::{
 };
 use serde_json::{Value, json};
 
-use crate::transport::{Inbox, Transport};
+use crate::launcher::Launcher;
+use crate::transport::{Inbox, LaunchSpec, Transport};
 
 /// A JSON-RPC result, or an error `(code, message)`.
 pub type FakeReply = Result<Value, (i64, String)>;
@@ -23,6 +25,7 @@ type NotificationHandler = Arc<dyn Fn(Value, &FakePeer) + Send + Sync>;
 
 const METHOD_NOT_FOUND: i64 = -32601;
 
+#[derive(Clone)]
 pub struct FakeServer {
     config: Config,
     shared: Arc<Shared>,
@@ -271,5 +274,58 @@ impl Transport for FakeTransport {
 
     fn kill(&self) {
         self.shared.close(None);
+    }
+}
+
+/// A launcher whose "binaries" are in-process [`FakeServer`]s, registered
+/// under the binary name an adapter looks up.
+#[derive(Default)]
+pub struct FakeLauncher {
+    servers: HashMap<String, FakeServer>,
+    launches: Mutex<Vec<LaunchSpec>>,
+}
+
+impl FakeLauncher {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Makes `binary_name` resolvable and launchable as `server`.
+    pub fn with_server(mut self, binary_name: &str, server: FakeServer) -> Self {
+        self.servers.insert(binary_name.to_owned(), server);
+        self
+    }
+
+    /// Every spec passed to `launch`, in order.
+    pub fn launches(&self) -> Vec<LaunchSpec> {
+        lock(&self.launches).clone()
+    }
+
+    fn lookup(&self, program: &Path) -> Option<&FakeServer> {
+        self.servers.get(program.file_name()?.to_str()?)
+    }
+}
+
+impl Launcher for FakeLauncher {
+    fn env(&self) -> HashMap<String, String> {
+        HashMap::from([("PATH".to_owned(), "/fake/bin".to_owned())])
+    }
+
+    fn which(&self, name: &str) -> Option<PathBuf> {
+        self.servers
+            .contains_key(name)
+            .then(|| Path::new("/fake/bin").join(name))
+    }
+
+    fn probe(&self, program: &Path, _args: &[&str]) -> bool {
+        self.lookup(program).is_some()
+    }
+
+    fn launch(&self, spec: &LaunchSpec, inbox: Arc<dyn Inbox>) -> io::Result<Arc<dyn Transport>> {
+        lock(&self.launches).push(spec.clone());
+        match self.lookup(&spec.program) {
+            Some(server) => server.launch(inbox),
+            None => Err(io::ErrorKind::NotFound.into()),
+        }
     }
 }
