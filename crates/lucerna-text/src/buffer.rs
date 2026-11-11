@@ -1,11 +1,14 @@
 use std::borrow::Cow;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::Arc;
 
 use encoding_rs::Encoding;
 use ropey::Rope;
 
+use crate::history::{History, HistoryState, Inverse, SelectionsToken, UndoResult, compose_all};
 use crate::load::{Decoded, LoadError, check_size, decode_file};
+use crate::patch::{Patch, PatchEdit};
 use crate::reload::Reload;
 
 /// The dominant line ending of a file, for the status bar.
@@ -30,6 +33,8 @@ pub struct Buffer {
     has_bom: bool,
     disk_hash: u64,
     force_text: bool,
+    history: History,
+    version: u64,
 }
 
 impl Buffer {
@@ -54,6 +59,8 @@ impl Buffer {
             has_bom: decoded.has_bom,
             disk_hash: decoded.hash,
             force_text: false,
+            history: History::new(),
+            version: 0,
         }
     }
 
@@ -100,9 +107,153 @@ impl Buffer {
         Ok(reload)
     }
 
+    /// Incremented by every edit, undo and redo.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn history_state(&self) -> HistoryState {
+        self.history.state()
+    }
+
+    pub fn set_saved(&mut self, state: HistoryState) {
+        self.history.set_saved(state);
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.history.is_dirty()
+    }
+
+    /// Closes the open undo group, then captures what to write and the
+    /// history state that becomes clean once the write succeeds.
+    pub fn begin_save(&mut self) -> (BufferSnapshot, HistoryState) {
+        self.push_stop();
+        (self.snapshot(), self.history_state())
+    }
+
+    pub fn start_transaction(&mut self, selections_before: Option<SelectionsToken>) {
+        self.history.start(selections_before);
+    }
+
+    pub fn end_transaction(
+        &mut self,
+        selections_after: Option<SelectionsToken>,
+    ) -> Option<crate::history::TransactionId> {
+        self.history.end(selections_after)
+    }
+
+    /// Closes the top transaction: the next edit starts a new undo step.
+    pub fn push_stop(&mut self) {
+        self.history.push_stop();
+    }
+
+    /// Applies `edits`, whose sorted, non-overlapping ranges are against the
+    /// current text. `\r\n` in inserted text becomes `\n`. Outside a
+    /// transaction the edit is its own (appendable) transaction. Ranges must
+    /// lie on char boundaries.
+    pub fn edit<I: IntoIterator<Item = (Range<usize>, Arc<str>)>>(&mut self, edits: I) -> Patch {
+        let edits: Vec<(Range<usize>, Arc<str>)> = edits
+            .into_iter()
+            .map(|(r, t)| {
+                let t = if t.contains("\r\n") {
+                    Arc::from(t.replace("\r\n", "\n"))
+                } else {
+                    t
+                };
+                (r, t)
+            })
+            .filter(|(r, t)| !(r.is_empty() && t.is_empty()))
+            .collect();
+        if edits.is_empty() {
+            return Patch::default();
+        }
+        debug_assert!(
+            edits.windows(2).all(|w| w[0].0.end <= w[1].0.start),
+            "edits must be sorted and non-overlapping"
+        );
+        let standalone = !self.history.in_transaction();
+        if standalone {
+            self.history.start(None);
+        }
+        let mut patch = Vec::with_capacity(edits.len());
+        let mut delta = 0isize;
+        for (r, t) in &edits {
+            let start = (r.start as isize + delta) as usize;
+            patch.push(PatchEdit {
+                old: r.clone(),
+                new: start..start + t.len(),
+            });
+            delta += t.len() as isize - r.len() as isize;
+        }
+        let mut inverses = Vec::with_capacity(edits.len());
+        for (r, t) in edits.into_iter().rev() {
+            let old_text = splice(&mut self.rope, r.clone(), &t);
+            inverses.push(Inverse {
+                range_after: r.start..r.start + t.len(),
+                old_text,
+                range_before: r,
+                new_text: t,
+            });
+        }
+        self.history.record(inverses);
+        self.version += 1;
+        if standalone {
+            self.history.end(None);
+        }
+        Patch::new(patch)
+    }
+
+    pub fn undo(&mut self) -> Option<UndoResult> {
+        self.push_stop();
+        let t = self.history.pop_undo()?;
+        let mut patches = Vec::with_capacity(t.edits.len());
+        for inv in t.edits.iter().rev() {
+            splice(&mut self.rope, inv.range_after.clone(), &inv.old_text);
+            patches.push(Patch::new(vec![inv.undo_patch()]));
+        }
+        let selections = t.selections_before.clone();
+        self.history.push_redo(t);
+        self.version += 1;
+        Some(UndoResult {
+            patch: compose_all(patches),
+            selections,
+        })
+    }
+
+    pub fn redo(&mut self) -> Option<UndoResult> {
+        self.push_stop();
+        let t = self.history.pop_redo()?;
+        let mut patches = Vec::with_capacity(t.edits.len());
+        for inv in &t.edits {
+            splice(&mut self.rope, inv.range_before.clone(), &inv.new_text);
+            patches.push(Patch::new(vec![inv.redo_patch()]));
+        }
+        let selections = t.selections_after.clone();
+        self.history.push_undo(t);
+        self.version += 1;
+        Some(UndoResult {
+            patch: compose_all(patches),
+            selections,
+        })
+    }
+
     pub fn is_large(&self, max_bytes: u64, max_lines: u32) -> bool {
         self.rope.len_bytes() as u64 > max_bytes || self.snapshot().line_count() > max_lines
     }
+}
+
+/// Replaces the byte `range` with `text`, returning the removed text.
+fn splice(rope: &mut Rope, range: Range<usize>, text: &str) -> Arc<str> {
+    let old: Arc<str> = Arc::from(rope.byte_slice(range.clone()).to_string());
+    let start = rope.byte_to_char(range.start);
+    let end = rope.byte_to_char(range.end);
+    if start < end {
+        rope.remove(start..end);
+    }
+    if !text.is_empty() {
+        rope.insert(start, text);
+    }
+    old
 }
 
 /// An immutable, cheap-to-clone view of the text (`Send + Sync`).
