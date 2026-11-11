@@ -134,3 +134,14 @@ fn file_link_opens_the_file_at_the_line(cx: &mut TestAppContext) {
     // Anything else is ignored.
     wb.update(cx, |wb, cx| open_markdown_link("command:rm", wb, cx));
 }
+
+#[gpui::test]
+fn deeply_nested_markdown_renders_without_overflowing(cx: &mut TestAppContext) {
+    let quotes = format!("{}x\n\n```rust\nfn a() {{}}\n```", "> ".repeat(49_000));
+    let (_blocks, _cx) = host(&quotes, None, cx);
+}
+
+#[gpui::test]
+fn deeply_nested_list_renders_without_overflowing(cx: &mut TestAppContext) {
+    let (_blocks, _cx) = host(&format!("{}x", "- ".repeat(49_000)), None, cx);
+}

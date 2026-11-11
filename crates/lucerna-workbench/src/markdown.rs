@@ -27,6 +27,13 @@ use crate::workbench::Workbench;
 /// Longer sources are cut here, on a char boundary.
 pub const MAX_MARKDOWN_BYTES: usize = 100_000;
 
+/// Containers (quotes, lists) nested deeper than this are merged into
+/// their parent: pulldown-cmark has no limit, and rendering, dropping
+/// and lookups recurse per level.
+const MAX_BLOCK_DEPTH: usize = 16;
+/// Same for emphasis and links.
+const MAX_INLINE_DEPTH: usize = 32;
+
 /// Tabs in code blocks are shown as this many spaces.
 const TAB_WIDTH: usize = 4;
 
@@ -68,6 +75,7 @@ struct CachedRuns {
     theme_generation: u64,
     languages_generation: u64,
     font_family: SharedString,
+    text: SharedString,
     runs: Arc<Vec<TextRun>>,
 }
 
@@ -103,8 +111,6 @@ impl MarkdownBlocks {
     /// that text exactly. `None` when there is no such block. Computed on
     /// first use per theme and registry, then cached.
     pub fn code_runs(&self, index: usize, cx: &App) -> Option<(SharedString, Arc<Vec<TextRun>>)> {
-        let (language, text) = nth_code(&self.blocks, index)?;
-        let shown = SharedString::from(text.trim_end_matches('\n').to_owned());
         let app = cx.global::<AppState>();
         let family = code_font_family(cx);
         let mut cache = self.code_runs.lock().unwrap_or_else(|e| e.into_inner());
@@ -113,19 +119,17 @@ impl MarkdownBlocks {
             && c.languages_generation == app.languages_generation
             && c.font_family == family
         {
-            return Some((shown, c.runs.clone()));
+            return Some((c.text.clone(), c.runs.clone()));
         }
-        let spans = resolve_language(
-            &app.languages,
-            language.as_deref(),
-            self.fallback_language(),
-        )
-        .map(|l| {
-            highlight(&shown, &l, &app.languages, &|c| {
-                app.theme.style_for(c).is_some()
+        let (language, text) = nth_code(&self.blocks, index)?;
+        let shown = SharedString::from(text.trim_end_matches('\n').to_owned());
+        let spans = resolve_language(&app.languages, language, self.fallback_language())
+            .map(|l| {
+                highlight(&shown, &l, &app.languages, &|c| {
+                    app.theme.style_for(c).is_some()
+                })
             })
-        })
-        .unwrap_or_default();
+            .unwrap_or_default();
         let ui = &app.theme.ui;
         let base = font(family.clone());
         let plain = TextRun {
@@ -143,6 +147,7 @@ impl MarkdownBlocks {
                 theme_generation: app.theme_generation,
                 languages_generation: app.languages_generation,
                 font_family: family,
+                text: shown.clone(),
                 runs: runs.clone(),
             },
         );
@@ -150,13 +155,17 @@ impl MarkdownBlocks {
     }
 }
 
-fn nth_code(blocks: &[Block], index: usize) -> Option<(Option<String>, String)> {
-    fn walk(blocks: &[Block], seen: &mut usize, index: usize) -> Option<(Option<String>, String)> {
+fn nth_code(blocks: &[Block], index: usize) -> Option<(Option<&str>, &str)> {
+    fn walk<'a>(
+        blocks: &'a [Block],
+        seen: &mut usize,
+        index: usize,
+    ) -> Option<(Option<&'a str>, &'a str)> {
         for block in blocks {
             match block {
                 Block::Code { language, text } => {
                     if *seen == index {
-                        return Some((language.clone(), text.clone()));
+                        return Some((language.as_deref(), text));
                     }
                     *seen += 1;
                 }
@@ -335,6 +344,11 @@ struct Builder {
     /// in a `Span::Base` that no `Start(Paragraph)` opened.
     implicit: bool,
     code: Option<(Option<String>, String)>,
+    /// For each open container tag: whether it opened a frame (false when
+    /// past [`MAX_BLOCK_DEPTH`], its content then joins the parent).
+    container_real: Vec<bool>,
+    /// The same for open emphasis, strong, link and image tags.
+    span_real: Vec<bool>,
 }
 
 impl Builder {
@@ -370,7 +384,9 @@ impl Builder {
             }
             Tag::BlockQuote(_) => {
                 self.flush_implicit();
-                self.frames.push(Frame::Quote(Vec::new()));
+                if self.open_container() {
+                    self.frames.push(Frame::Quote(Vec::new()));
+                }
             }
             Tag::CodeBlock(kind) => {
                 self.flush_implicit();
@@ -385,18 +401,25 @@ impl Builder {
             }
             Tag::List(first) => {
                 self.flush_implicit();
-                self.frames.push(Frame::List {
-                    ordered: first.is_some(),
-                    items: Vec::new(),
-                });
+                if self.open_container() {
+                    self.frames.push(Frame::List {
+                        ordered: first.is_some(),
+                        items: Vec::new(),
+                    });
+                }
             }
-            Tag::Item => self.frames.push(Frame::Item(Vec::new())),
-            Tag::Strong => self.spans.push((Span::Strong, Vec::new())),
-            Tag::Emphasis => self.spans.push((Span::Emph, Vec::new())),
-            Tag::Link { dest_url, .. } => self
-                .spans
-                .push((Span::Link(dest_url.into_string()), Vec::new())),
-            Tag::Image { .. } => self.spans.push((Span::Image, Vec::new())),
+            Tag::Item => {
+                // An item is kept exactly when its list is.
+                let real = matches!(self.frames.last(), Some(Frame::List { .. }));
+                self.container_real.push(real);
+                if real {
+                    self.frames.push(Frame::Item(Vec::new()));
+                }
+            }
+            Tag::Strong => self.open_span(Span::Strong),
+            Tag::Emphasis => self.open_span(Span::Emph),
+            Tag::Link { dest_url, .. } => self.open_span(Span::Link(dest_url.into_string())),
+            Tag::Image { .. } => self.open_span(Span::Image),
             _ => {}
         }
     }
@@ -417,7 +440,9 @@ impl Builder {
             }
             TagEnd::BlockQuote(_) => {
                 self.flush_implicit();
-                if let Some(Frame::Quote(blocks)) = self.frames.pop() {
+                if self.close_container()
+                    && let Some(Frame::Quote(blocks)) = self.frames.pop()
+                {
                     self.block(Block::Quote(blocks));
                 }
             }
@@ -427,19 +452,25 @@ impl Builder {
                 }
             }
             TagEnd::List(_) => {
-                if let Some(Frame::List { ordered, items }) = self.frames.pop() {
+                if self.close_container()
+                    && let Some(Frame::List { ordered, items }) = self.frames.pop()
+                {
                     self.block(Block::List { ordered, items });
                 }
             }
             TagEnd::Item => {
                 self.flush_implicit();
-                if let Some(Frame::Item(blocks)) = self.frames.pop()
+                if self.close_container()
+                    && let Some(Frame::Item(blocks)) = self.frames.pop()
                     && let Some(Frame::List { items, .. }) = self.frames.last_mut()
                 {
                     items.push(blocks);
                 }
             }
             TagEnd::Strong | TagEnd::Emphasis | TagEnd::Link | TagEnd::Image => {
+                if !self.span_real.pop().unwrap_or(true) {
+                    return;
+                }
                 if let Some((span, children)) = self.spans.pop() {
                     match span {
                         Span::Strong => self.inline(Inline::Strong(children)),
@@ -454,6 +485,26 @@ impl Builder {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Notes a quote or list tag; true when it gets a frame of its own.
+    fn open_container(&mut self) -> bool {
+        let real = self.frames.len() < MAX_BLOCK_DEPTH;
+        self.container_real.push(real);
+        real
+    }
+
+    /// Whether the container tag that ends now got a frame.
+    fn close_container(&mut self) -> bool {
+        self.container_real.pop().unwrap_or(true)
+    }
+
+    fn open_span(&mut self, span: Span) {
+        let real = self.spans.len() < MAX_INLINE_DEPTH;
+        self.span_real.push(real);
+        if real {
+            self.spans.push((span, Vec::new()));
         }
     }
 
@@ -563,8 +614,8 @@ pub fn open_markdown_link(url: &str, wb: &mut Workbench, cx: &mut Context<Workbe
 
 // ---- Rendering ----
 
-/// Renders `blocks`; clicking a web link opens the browser. Use
-/// [`render_markdown_with`] to open file links too.
+/// Renders `blocks`; clicking a web link opens the browser. The default
+/// handler ignores file links: use [`render_markdown_with`] for those.
 pub fn render_markdown(blocks: &MarkdownBlocks, cx: &App) -> AnyElement {
     render_markdown_with(
         blocks,
@@ -1016,6 +1067,50 @@ mod tests {
             parse("a <b>bold</b> c"),
             vec![Block::Paragraph(vec![text("a bold c")])]
         );
+    }
+
+    fn depth(blocks: &[Block]) -> usize {
+        blocks
+            .iter()
+            .map(|b| match b {
+                Block::Quote(inner) => 1 + depth(inner),
+                Block::List { items, .. } => 1 + items.iter().map(|i| depth(i)).max().unwrap_or(0),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn contains_text(blocks: &[Block], needle: &str) -> bool {
+        blocks.iter().any(|b| match b {
+            Block::Paragraph(inlines) => inlines.iter().any(|i| i == &text(needle)),
+            Block::Quote(inner) => contains_text(inner, needle),
+            Block::List { items, .. } => items.iter().any(|i| contains_text(i, needle)),
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn deep_nesting_is_flattened() {
+        let quotes = parse(&format!("{}x", "> ".repeat(49_000)));
+        assert!(depth(&quotes) <= MAX_BLOCK_DEPTH, "{}", depth(&quotes));
+        assert!(contains_text(&quotes, "x"));
+
+        let lists = parse(&format!("{}x", "- ".repeat(49_000)));
+        assert!(depth(&lists) <= MAX_BLOCK_DEPTH, "{}", depth(&lists));
+        assert!(contains_text(&lists, "x"));
+
+        let indented: String = (0..200)
+            .map(|i| format!("{}- x{i}\n", "  ".repeat(i)))
+            .collect();
+        let nested = parse(&indented);
+        assert!(depth(&nested) <= MAX_BLOCK_DEPTH);
+        assert!(contains_text(&nested, "x199"));
+
+        let emphasis = parse(&format!("{}x", "*_".repeat(20_000)));
+        drop(emphasis);
+        let links = parse(&format!("{}x{}", "[".repeat(20_000), "](u)".repeat(20_000)));
+        drop(links);
     }
 
     #[test]
