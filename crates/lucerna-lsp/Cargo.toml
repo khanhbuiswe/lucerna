@@ -10,3 +10,5 @@ repository.workspace = true
 lucerna-text.workspace = true
 lsp-types.workspace = true
 url.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true

@@ -3308,8 +3308,10 @@ dependencies = [
 name = "lucerna-lsp"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "lsp-types",
  "lucerna-text",
+ "tracing",
  "url",
 ]
 
