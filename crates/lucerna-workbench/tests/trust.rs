@@ -440,3 +440,34 @@ fn workspace_binary_path_does_not_prompt(cx: &mut TestAppContext) {
     open(&wb, "src/main.rs", cx);
     assert!(!shown("trust-modal", cx), "an untrusted folder's setting");
 }
+
+#[gpui::test]
+fn trust_change_is_saved_when_the_window_closes_right_after(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    TrustStore::load(data.path())
+        .trust(dir.path(), false)
+        .unwrap();
+    let fake = FakeServer::new();
+    let (wb, cx) = trust_workbench(
+        dir.path(),
+        data.path(),
+        rust_launcher(&fake),
+        "{}",
+        None,
+        cx,
+    );
+    assert!(is_trusted(&wb, cx));
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            assert!(wb.run_command("workbench.trust.clear", None, window, cx));
+        })
+    });
+    // The window closes before the write had a chance to run.
+    drop(wb);
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+    assert!(
+        !TrustStore::load(data.path()).is_trusted(dir.path()),
+        "the choice is saved"
+    );
+}

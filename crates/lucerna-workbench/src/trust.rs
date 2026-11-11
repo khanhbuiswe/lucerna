@@ -12,6 +12,11 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
+
+use futures::FutureExt;
+use futures::channel::oneshot;
+use futures::future::Shared;
 
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, IntoElement,
@@ -305,6 +310,9 @@ impl Render for TrustModal {
     }
 }
 
+/// Held while `trusted.json` is read, changed and written, by any window.
+static TRUST_FILE_LOCK: Mutex<()> = Mutex::new(());
+
 /// A window's trust state, kept by the [`Workbench`].
 pub(crate) struct Trust {
     /// Where `trusted.json` is; `None` keeps choices for this session only.
@@ -318,8 +326,10 @@ pub(crate) struct Trust {
     /// A file with a server opened before the store was read.
     prompt_waiting: bool,
     modal: Option<ShownTrustModal>,
-    /// The last write of `trusted.json`; the next one waits for it.
-    write: Option<Task<()>>,
+    /// Done when the last write of `trusted.json` has finished; the next
+    /// one waits for it. The writes themselves are detached, so closing
+    /// the window right after a choice does not lose it.
+    write: Option<Shared<oneshot::Receiver<()>>>,
     _load: Option<Task<()>>,
 }
 
@@ -548,16 +558,23 @@ impl Workbench {
             return;
         };
         let previous = self.trust.write.take();
-        self.trust.write = Some(cx.background_executor().spawn(async move {
-            if let Some(previous) = previous {
-                previous.await;
-            }
-            guarded(name, move || {
-                let mut store = TrustStore::load(&dir);
-                if let Err(err) = change(&mut store) {
-                    tracing::error!(%err, path = %store.path.display(), "cannot save the trust file");
+        let (done, done_rx) = oneshot::channel::<()>();
+        self.trust.write = Some(done_rx.shared());
+        cx.background_executor()
+            .spawn(async move {
+                if let Some(previous) = previous {
+                    let _ = previous.await;
                 }
-            });
-        }));
+                guarded(name, move || {
+                    // Windows share the file: one read-change-write at a time.
+                    let _file = TRUST_FILE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+                    let mut store = TrustStore::load(&dir);
+                    if let Err(err) = change(&mut store) {
+                        tracing::error!(%err, path = %store.path.display(), "cannot save the trust file");
+                    }
+                });
+                let _ = done.send(());
+            })
+            .detach();
     }
 }
