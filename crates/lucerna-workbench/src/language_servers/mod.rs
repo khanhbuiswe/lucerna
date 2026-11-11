@@ -11,6 +11,7 @@
 //! - `pump`: server events, diagnostics batches, logs and progress.
 //! - `sync`: document events and file changes sent to the servers.
 //! - `requests`: requests the editor sends (hover, locations).
+//! - `relay`: the Vue `tsserver/request` relay.
 //!
 //! Paths are the keys of [`Documents`] (absolute, joined onto the root,
 //! not canonicalised). Servers echo the URIs they were sent, so a
@@ -18,6 +19,7 @@
 
 mod lifecycle;
 mod pump;
+mod relay;
 mod requests;
 mod sync;
 
@@ -162,6 +164,8 @@ pub struct LanguageServers {
     /// (definition, references, workspace symbols): that server, which the
     /// file joins when it is opened.
     origins: HashMap<PathBuf, ServerKey>,
+    /// `tsserver/request`s waiting for a starting TypeScript server.
+    relay_waiting: Vec<relay::WaitingRelay>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -215,6 +219,7 @@ impl LanguageServers {
             watched_flush_pending: false,
             on_path: HashMap::new(),
             origins: HashMap::new(),
+            relay_waiting: Vec::new(),
             _subscriptions: vec![
                 cx.subscribe(documents, Self::on_document_event),
                 cx.observe_global::<AppState>(Self::settings_changed),

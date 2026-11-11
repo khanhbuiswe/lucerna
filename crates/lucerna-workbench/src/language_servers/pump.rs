@@ -15,6 +15,7 @@ use gpui::{Context, Task};
 use lsp_types::MessageType;
 use lucerna_lsp::diagnostics::Diagnostic;
 use lucerna_lsp::position::uri_to_path;
+use lucerna_lsp::relay::TSSERVER_REQUEST;
 use lucerna_lsp::{LanguageServer, LogKind, LogLine, ServerEvent, ServerKey, Slot};
 
 use super::{LanguageServers, LanguageServersEvent};
@@ -211,6 +212,11 @@ impl LanguageServers {
             }
             ServerEvent::WatchedFilesUnregistered { id } => {
                 self.watched.unregister(key, &id);
+            }
+            ServerEvent::Notification { method, params } => {
+                if method == TSSERVER_REQUEST && self.relays(key) {
+                    self.relay(key, generation, server, &params, cx);
+                }
             }
         }
     }

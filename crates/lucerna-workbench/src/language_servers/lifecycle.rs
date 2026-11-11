@@ -275,6 +275,7 @@ impl LanguageServers {
                 self.push_log(&key.server, LogKind::Lifecycle, message.clone(), cx);
                 self.registry
                     .set_slot(key.clone(), Slot::NotFound { message });
+                self.flush_relay(None, cx);
                 cx.emit(LanguageServersEvent::StatusChanged);
                 cx.notify();
                 return;
@@ -378,6 +379,7 @@ impl LanguageServers {
             server.set_settings(settings);
         }
         self.registry.set_slot(key.clone(), Slot::Running(server));
+        self.flush_relay(None, cx);
         cx.emit(LanguageServersEvent::ServerReady(key.clone()));
         cx.emit(LanguageServersEvent::StatusChanged);
         let paths: Vec<Arc<Path>> = self
@@ -416,6 +418,7 @@ impl LanguageServers {
             let _ = server.shutdown();
         }
         self.forget(key, cx);
+        self.flush_relay(Some(key), cx);
     }
 
     fn forget(&mut self, key: &ServerKey, cx: &mut Context<Self>) {
@@ -438,6 +441,7 @@ impl LanguageServers {
             },
         );
         self.forget(key, cx);
+        self.flush_relay(None, cx);
         cx.emit(LanguageServersEvent::StatusChanged);
         cx.notify();
     }

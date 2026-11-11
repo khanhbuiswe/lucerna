@@ -396,7 +396,7 @@ fn progress_and_log_events() {
             "textDocument/publishDiagnostics",
             json!({"uri": "file:///a.rs", "diagnostics": []}),
         );
-        peer.notify("custom/ignored", json!({}));
+        peer.notify("custom/unhandled", json!({ "a": 1 }));
     });
     let (server, mut events) = start(&fake, json!({}));
     init(&server);
@@ -450,6 +450,11 @@ fn progress_and_log_events() {
                 diagnostics: vec![],
                 version: None,
             }),
+            // Left to the workbench (e.g. the Vue `tsserver/request` relay).
+            ServerEvent::Notification {
+                method: "custom/unhandled".into(),
+                params: json!({ "a": 1 }),
+            },
         ]
     );
 }

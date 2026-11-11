@@ -110,6 +110,12 @@ pub enum ServerEvent {
     WatchedFilesUnregistered {
         id: String,
     },
+    /// A server notification the client does not handle itself, such as
+    /// vue-language-server's `tsserver/request`.
+    Notification {
+        method: String,
+        params: Value,
+    },
     Exited(Option<i32>),
 }
 
@@ -643,7 +649,10 @@ impl Inner {
                     });
                 }
             }
-            _ => {}
+            _ => self.emit(ServerEvent::Notification {
+                method: method.to_owned(),
+                params,
+            }),
         }
     }
 

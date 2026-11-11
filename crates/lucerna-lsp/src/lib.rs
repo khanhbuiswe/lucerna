@@ -12,6 +12,7 @@ pub mod locations;
 pub mod position;
 pub mod process;
 pub mod registry;
+pub mod relay;
 pub mod settings;
 pub mod symbols;
 pub mod sync;
