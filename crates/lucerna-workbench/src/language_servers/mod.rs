@@ -90,6 +90,9 @@ pub enum LanguageServersEvent {
     /// [`LanguageServers::table`] was built again from changed settings
     /// or a trust change.
     TableChanged,
+    /// The folder was trusted or untrusted ([`LanguageServers::is_trusted`]),
+    /// whether or not the table changed with it.
+    TrustChanged,
 }
 
 /// The settings a file's servers are picked by: its language's, or for a
@@ -272,6 +275,7 @@ impl LanguageServers {
         if table_changed {
             cx.emit(LanguageServersEvent::TableChanged);
         }
+        cx.emit(LanguageServersEvent::TrustChanged);
         cx.emit(LanguageServersEvent::StatusChanged);
         cx.notify();
     }

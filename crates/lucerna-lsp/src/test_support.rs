@@ -334,6 +334,8 @@ pub struct FakeLauncher {
     /// `output` answers, by program and arguments.
     outputs: HashMap<(String, Vec<String>), String>,
     launches: Mutex<Vec<LaunchSpec>>,
+    /// The folder each `probe` ran in, in order.
+    probe_dirs: Mutex<Vec<PathBuf>>,
 }
 
 impl FakeLauncher {
@@ -361,6 +363,11 @@ impl FakeLauncher {
         lock(&self.launches).clone()
     }
 
+    /// The folder each `probe` ran in, in order.
+    pub fn probe_dirs(&self) -> Vec<PathBuf> {
+        lock(&self.probe_dirs).clone()
+    }
+
     fn lookup(&self, program: &Path) -> Option<&FakeServer> {
         self.servers.get(program.file_name()?.to_str()?)
     }
@@ -377,7 +384,8 @@ impl Launcher for FakeLauncher {
             .then(|| Path::new("/fake/bin").join(name))
     }
 
-    fn probe(&self, program: &Path, _args: &[&str], _cwd: &Path) -> bool {
+    fn probe(&self, program: &Path, _args: &[&str], cwd: &Path) -> bool {
+        lock(&self.probe_dirs).push(cwd.to_path_buf());
         self.lookup(program).is_some()
     }
 

@@ -237,3 +237,30 @@ fn untrusted_workspace_server_not_listed_as_found(cx: &mut TestAppContext) {
     assert!(!rows.is_empty());
     assert!(!found(&rows, "evil"), "{rows:#?}");
 }
+
+/// Version probes of an untrusted folder run in `$HOME`: a rustup, asdf or
+/// mise shim reads the folder's toolchain files, so the folder would pick
+/// what runs. Trusting it checks again, in the folder.
+#[gpui::test]
+fn untrusted_folder_probes_in_home(cx: &mut TestAppContext) {
+    let dir = rust_project();
+    let launcher = rust_launcher();
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher.clone(), "{}", cx);
+    settle(cx);
+    let servers = language_servers(&wb, cx);
+    assert!(!cx.update(|_, cx| servers.read(cx).is_trusted()));
+
+    show_health(&wb, cx);
+    assert!(found(&rows(&wb, cx), "rust-analyzer"));
+    let home = std::env::home_dir().unwrap();
+    let probes = launcher.probe_dirs();
+    assert!(!probes.is_empty());
+    assert!(probes.iter().all(|d| *d == home), "{probes:?}");
+
+    servers.update(cx, |servers, cx| servers.set_trusted(true, cx));
+    settle(cx);
+    let probes = launcher.probe_dirs();
+    let root = dir.path().canonicalize().unwrap();
+    let last = probes.last().unwrap().canonicalize().unwrap();
+    assert_eq!(last, root, "{probes:?}");
+}

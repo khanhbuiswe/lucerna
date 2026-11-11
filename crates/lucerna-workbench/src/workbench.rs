@@ -320,8 +320,8 @@ impl Workbench {
         };
         let lsp_logs = LspLogs::default();
         let lsp_health = {
-            // Probes run in the folder, as servers start there; a loose
-            // file's folder is not a project.
+            // Probes run in the folder once it is trusted, as servers
+            // start there; a loose file's folder is not a project.
             let probe_dir = single_file.is_none().then(|| root.clone());
             let servers = language_servers.clone();
             cx.new(|cx| LspHealthView::new(servers, probe_dir, cx))

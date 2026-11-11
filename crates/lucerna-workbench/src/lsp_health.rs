@@ -26,8 +26,8 @@ use crate::{AppState, Workbench, icons};
 /// The body of the Health tab.
 pub struct LspHealthView {
     servers: Entity<LanguageServers>,
-    /// Where probes run: the open folder's root; `None` (`$HOME`) in
-    /// single-file mode.
+    /// Where probes run once the folder is trusted: the open folder's
+    /// root; `None` (`$HOME`) in single-file mode.
     probe_dir: Option<PathBuf>,
     focus: FocusHandle,
     /// The last check's rows; `None` before the first one finished.
@@ -45,14 +45,17 @@ impl LspHealthView {
         probe_dir: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> Self {
-        // A new table (settings or trust changed) is checked again once
-        // the tab has been shown.
-        let subscription = cx.subscribe(&servers, |view, _, ev, cx| {
-            if *ev == LanguageServersEvent::TableChanged
-                && (view.rows.is_some() || view.task.is_some())
+        // A new table (settings changed) or a trust change is checked
+        // again once the tab has been shown; the table's errors are drawn
+        // as they change.
+        let subscription = cx.subscribe(&servers, |view, _, ev, cx| match ev {
+            LanguageServersEvent::TableChanged | LanguageServersEvent::TrustChanged
+                if view.rows.is_some() || view.task.is_some() =>
             {
                 view.refresh(cx);
             }
+            LanguageServersEvent::StatusChanged => cx.notify(),
+            _ => {}
         });
         LspHealthView {
             servers,
@@ -74,11 +77,13 @@ impl LspHealthView {
 
     /// Checks every server of the table again, in the background. The
     /// table is the one servers start from: without the folder's own
-    /// settings while it is untrusted.
+    /// settings while it is untrusted. Probes run in the folder only once
+    /// it is trusted: a rustup, asdf or mise shim reads the folder's
+    /// toolchain files, so an untrusted folder would pick what runs.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let servers = self.servers.read(cx);
         let (table, launcher) = (servers.table().clone(), servers.launcher());
-        let probe_dir = self.probe_dir.clone();
+        let probe_dir = self.probe_dir.clone().filter(|_| servers.is_trusted());
         self.generation += 1;
         let generation = self.generation;
         let work = cx.background_spawn(async move {
