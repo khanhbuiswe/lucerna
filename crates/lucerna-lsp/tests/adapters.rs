@@ -298,3 +298,26 @@ fn process_launcher_output_returns_stdout_on_success() {
     assert_eq!(launcher.output("false", &[]), None);
     assert_eq!(launcher.output("lucerna-no-such-binary", &[]), None);
 }
+
+/// Glob markers ignore case where file names do (Windows): `App.SLN` is a
+/// `*.sln` there, not on Linux or macOS.
+#[test]
+fn glob_marker_case_follows_platform() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    touch(&root.join("sub/App.SLN"));
+    let file = root.join("sub/Program.cs");
+    touch(&file);
+    let table = ServerTable::build(Some(&json!({
+        "cs": { "command": "cs", "languages": ["csharp"], "root_markers": ["*.sln"] }
+    })));
+    let expected = if cfg!(windows) {
+        root.join("sub")
+    } else {
+        root.to_path_buf()
+    };
+    assert_eq!(
+        find_root(table.get("cs").unwrap(), &file, root).unwrap(),
+        expected
+    );
+}

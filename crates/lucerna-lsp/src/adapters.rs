@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use globset::{Glob, GlobMatcher};
+use globset::{GlobBuilder, GlobMatcher};
 use serde::Deserialize;
 
 use crate::table::ServerDef;
@@ -37,7 +37,11 @@ impl<'a> Marker<'a> {
         if !marker.contains(['*', '?']) {
             return Marker::Name(marker);
         }
-        match Glob::new(marker) {
+        // Case-insensitive where file names are (Windows).
+        match GlobBuilder::new(marker)
+            .case_insensitive(cfg!(windows))
+            .build()
+        {
             Ok(glob) => Marker::Glob(glob.compile_matcher()),
             Err(_) => Marker::Invalid,
         }
