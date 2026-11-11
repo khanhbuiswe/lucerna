@@ -141,6 +141,8 @@ pub enum Action {
         action: FoldAction,
     },
     ModeChanged(Mode),
+    /// Run the workbench command with this id (`gd`, `]d`, `ctrl-o`...).
+    RunCommand(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

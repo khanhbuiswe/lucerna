@@ -101,6 +101,9 @@ pub struct VimLayer {
     _retry: Option<Task<()>>,
     /// The open `/` or `?`, if any.
     search: Option<VimSearch>,
+    /// Set by [`Action::RunCommand`]: the workbench runs it once the key
+    /// is consumed, since a command needs the workbench itself.
+    run_command: Option<&'static str>,
     /// Set by [`Action::OpenSearch`]: the widget needs the window, which
     /// [`VimLayer::handle_key`] has.
     open_search: Option<bool>,
@@ -125,6 +128,7 @@ impl VimLayer {
             key_generation: 0,
             _retry: None,
             search: None,
+            run_command: None,
             open_search: None,
             groups: None,
             _new_views: None,
@@ -182,11 +186,17 @@ impl VimLayer {
         self.key_generation += 1;
         self._retry = None;
         self.open_search = None;
+        self.run_command = None;
         let consumed = self.feed(key, view, true, cx);
         if let Some(backward) = self.open_search.take() {
             self.start_search(view, backward, window, cx);
         }
         consumed
+    }
+
+    /// The command the last key asked for; the caller runs it.
+    pub(crate) fn take_command(&mut self) -> Option<&'static str> {
+        self.run_command.take()
     }
 
     /// `/` or `?`: opens the find widget of `view` for vim.
@@ -693,6 +703,7 @@ impl VimLayer {
                 }
                 Action::ModeChanged(_) => redraw = true,
                 Action::OpenSearch { backward } => self.open_search = Some(backward),
+                Action::RunCommand(id) => self.run_command = Some(id),
             }
         }
         let synced = match (reveal, redraw) {

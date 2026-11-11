@@ -17,6 +17,8 @@ use lucerna_vim::Mode;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{AppState, FindWidgetEvent, OpenMode, TabItem, Workbench};
 
+mod support;
+
 const VIM_ON: &str = r#"{ "vim.enabled": true }"#;
 
 fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
@@ -905,4 +907,52 @@ fn mode_indicator_takes_no_room_when_off(cx: &mut TestAppContext) {
         .expect("the pending chord is drawn");
     // The status bar's gap is 3 * GRID (4 px).
     assert_eq!(chord.left() - toggles.right(), gpui::px(12.));
+}
+
+/// `gd` goes through `editor.action.revealDefinition` to the fake
+/// server's answer, `ctrl-o` comes back through the navigation history.
+#[gpui::test]
+fn vim_gd_jumps_to_definition(cx: &mut TestAppContext) {
+    use lucerna_lsp::position::path_to_uri;
+    use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
+    use serde_json::json;
+    use support::lsp::{lsp_workbench_with, open as open_file, sent, settle};
+
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/main.rs"),
+        "fn main() {\n    b::helper();\n}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("src/b.rs"), "// b\npub fn helper() {}\n").unwrap();
+    let target = json!({
+        "uri": path_to_uri(&dir.path().join("src/b.rs")).as_str(),
+        "range": { "start": { "line": 1, "character": 7 }, "end": { "line": 1, "character": 13 } },
+    });
+    let fake = FakeServer::new().on_request("textDocument/definition", move |_| Ok(target.clone()));
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let settings = r#"{ "session.trustAllWorktrees": true, "vim.enabled": true }"#;
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher, settings, cx);
+    let view = open_file(&wb, "src/main.rs", cx);
+    view.update(cx, |v, cx| v.set_cursor(pt(1, 8), cx));
+    settle(cx);
+    draw(cx);
+
+    keys("g d", cx);
+    settle(cx);
+    assert_eq!(sent(&fake, "textDocument/definition").len(), 1);
+    let file = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let groups = wb.read(cx).editor_groups().read(cx);
+            let path = groups.model().active_tab().unwrap().path().unwrap();
+            path.file_name().unwrap().to_string_lossy().into_owned()
+        })
+    };
+    assert_eq!(file(cx), "b.rs");
+
+    keys("ctrl-o", cx);
+    settle(cx);
+    assert_eq!(file(cx), "main.rs");
 }

@@ -289,6 +289,13 @@ impl Vim {
                         self.scroll(view, ScrollKind::Page(rows), c == 'f', settings)
                     }
                     'v' => self.switch_mode(Mode::VisualBlock, view, globals),
+                    'o' | 'i' if self.mode == Mode::Normal => {
+                        Outcome::Handled(vec![Action::RunCommand(if c == 'o' {
+                            "workbench.action.navigateBack"
+                        } else {
+                            "workbench.action.navigateForward"
+                        })])
+                    }
                     _ => Outcome::Unhandled,
                 }
             }
@@ -396,7 +403,10 @@ impl Vim {
             return Outcome::Handled(vec![]);
         }
         if self.prefix.is_none()
-            && matches!(c, 'g' | 'z' | 'f' | 'F' | 't' | 'T' | 'm' | '\'' | '`')
+            && matches!(
+                c,
+                'g' | 'z' | 'f' | 'F' | 't' | 'T' | 'm' | '\'' | '`' | ']' | '['
+            )
         {
             self.prefix = Some(c);
             self.pending = format!("{}{c}", self.count.map_or(String::new(), |n| n.to_string()));
@@ -444,6 +454,16 @@ impl Vim {
                 }
                 'e' => self.word(view, WordMotion::PrevEnd, false, n),
                 'E' => self.word(view, WordMotion::PrevEnd, true, n),
+                'd' => self.run_command("editor.action.revealDefinition"),
+                'D' => self.run_command("editor.action.revealDeclaration"),
+                'h' => self.run_command("editor.action.showHover"),
+                _ => Outcome::Handled(vec![]),
+            };
+        }
+        if let Some(p @ (']' | '[')) = prefix {
+            return match c {
+                'd' if p == ']' => self.run_command("editor.action.marker.next"),
+                'd' => self.run_command("editor.action.marker.prev"),
                 _ => Outcome::Handled(vec![]),
             };
         }
@@ -558,6 +578,15 @@ impl Vim {
                 self.find(view, find, n, true)
             }
             _ => Outcome::Handled(vec![]),
+        }
+    }
+
+    /// A command key of normal mode (`gd`, `]d`...); not bound in Visual.
+    fn run_command(&self, id: &'static str) -> Outcome {
+        if self.mode == Mode::Normal {
+            Outcome::Handled(vec![Action::RunCommand(id)])
+        } else {
+            Outcome::Handled(vec![])
         }
     }
 
@@ -841,6 +870,69 @@ mod tests {
         feed_keys(&mut vim, &view, "xj");
         assert_eq!(vim.pending(), "");
         assert_eq!(vim.cursor(), Point { row: 1, column: 0 });
+    }
+
+    fn runs(keys: &str, text: &str) -> Vec<Outcome> {
+        let view = TestView::new(text);
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, keys)
+    }
+
+    fn run_command(id: &'static str) -> Outcome {
+        Outcome::Handled(vec![Action::RunCommand(id)])
+    }
+
+    #[test]
+    fn gd_runs_reveal_definition() {
+        let out = runs("gd", "|abc");
+        assert_eq!(out[1], run_command("editor.action.revealDefinition"));
+        let out = runs("gD", "|abc");
+        assert_eq!(out[1], run_command("editor.action.revealDeclaration"));
+        let out = runs("gh", "|abc");
+        assert_eq!(out[1], run_command("editor.action.showHover"));
+    }
+
+    #[test]
+    fn bracket_d_runs_marker_next() {
+        assert_eq!(
+            runs("]d", "|abc")[1],
+            run_command("editor.action.marker.next")
+        );
+        assert_eq!(
+            runs("[d", "|abc")[1],
+            run_command("editor.action.marker.prev")
+        );
+        // Other keys after the bracket stay unbound and clear the prefix.
+        assert_eq!(runs("]x", "|abc")[1], Outcome::Handled(vec![]));
+    }
+
+    #[test]
+    fn ctrl_o_runs_navigate_back() {
+        assert_eq!(
+            runs("<C-o>", "|abc")[0],
+            run_command("workbench.action.navigateBack")
+        );
+        assert_eq!(
+            runs("<C-i>", "|abc")[0],
+            run_command("workbench.action.navigateForward")
+        );
+    }
+
+    #[test]
+    fn counts_are_ignored_and_cleared() {
+        let view = TestView::new("|a\nb\nc");
+        let mut vim = Vim::new(view.cursor);
+        let out = feed_keys(&mut vim, &view, "3gdj");
+        assert_eq!(out[2], run_command("editor.action.revealDefinition"));
+        assert_eq!(vim.cursor(), Point { row: 1, column: 0 });
+    }
+
+    #[test]
+    fn lsp_keys_are_normal_mode_only() {
+        let out = runs("vgd", "|abc");
+        assert_eq!(out[2], Outcome::Handled(vec![]));
+        let out = runs("v<C-o>", "|abc");
+        assert_eq!(out[1], Outcome::Unhandled);
     }
 
     #[test]

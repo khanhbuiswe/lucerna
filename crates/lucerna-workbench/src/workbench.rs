@@ -1432,6 +1432,11 @@ impl Workbench {
         ) {
             hide_hover(cx);
             cx.stop_propagation();
+            // `gd`, `]d`, `ctrl-o`...: after the hover is hidden, so
+            // `gh` can show it again.
+            if let Some(command) = self.vim.update(cx, |vim, _| vim.take_command()) {
+                self.run_command(command, None, window, cx);
+            }
             return;
         }
         let had_pending = !self.pending_chord.is_empty();
