@@ -459,7 +459,6 @@ impl CodeView {
         self.hover.hide(cx);
         let mut selections = self.selections.clone();
         selections.remap(patch);
-        selections.clamp(&snapshot);
         // A rectangle stays one only while no edit reaches into it.
         self.block_selection = self
             .block_selection
@@ -926,6 +925,21 @@ impl CodeView {
         self.set_goto_message(None, cx);
         self.block_selection = None;
         self.set_selections_inner(set, autoscroll, true, cx);
+    }
+
+    /// Replaces the selections like [`CodeView::set_selections`], but is
+    /// no cursor move: no undo stop. For edits and undo / redo restoring
+    /// their selections.
+    #[allow(dead_code, reason = "used by typing and undo (Task 12)")]
+    pub(crate) fn set_selections_without_stop(
+        &mut self,
+        set: SelectionSet,
+        autoscroll: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_goto_message(None, cx);
+        self.block_selection = None;
+        self.set_selections_inner(set, autoscroll, false, cx);
     }
 
     /// Replaces the selections (clamped to the text) and restarts the

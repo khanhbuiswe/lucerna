@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
+use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Context, Keymap, Layer, SettingsStore, parse_when};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::Point;
@@ -309,4 +310,69 @@ fn cursor_move_is_an_undo_stop(cx: &mut TestAppContext) {
     insert(&wb, &view, 1, "y", cx);
     undo(cx);
     assert_eq!(text(cx), "xabc\n");
+}
+
+/// Writes `text` to `file.txt` and lets the workbench reload it.
+fn reload(wb: &Entity<Workbench>, dir: &TempDir, text: &str, cx: &mut VisualTestContext) {
+    fs::write(dir.path().join("file.txt"), text).unwrap();
+    let change = Change {
+        path: Arc::from(Path::new("file.txt")),
+        kind: ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    settle(cx);
+}
+
+#[gpui::test]
+fn reload_of_the_cursor_line_keeps_the_cursor_on_it(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("one\ntwo\nthree\nfour\n", cx);
+    for column in [0, 2] {
+        view.update(cx, |v, cx| v.set_cursor(pt(1, column), cx));
+        let new = if column == 0 {
+            "one\nTWO!\nthree\nfour\n"
+        } else {
+            "one\nzwei\nthree\nfour\n"
+        };
+        reload(&wb, &dir, new, cx);
+        let text = view.read_with(cx, |v, _| {
+            let s = v.snapshot();
+            s.text_for_range(0..s.len_bytes())
+        });
+        assert_eq!(text, new);
+        assert_eq!(cursor(&view, cx), pt(1, 0), "cursor at column {column}");
+    }
+}
+
+#[gpui::test]
+fn opening_a_file_focuses_its_view(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.txt"), "abc\n").unwrap();
+    fs::write(dir.path().join("b.txt"), "def\n").unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    let focused = |view: &Entity<CodeView>, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| view.read(cx).focus_handle(cx).is_focused(window))
+    };
+    for name in ["a.txt", "b.txt"] {
+        wb.update(cx, |wb, cx| {
+            wb.open_path(Arc::from(Path::new(name)), OpenMode::Pinned, cx)
+        });
+        settle(cx);
+        let view = active_view(&wb, cx);
+        assert!(focused(&view, cx), "{name} is focused");
+        assert!(view.read_with(cx, |v, _| v.caret_visible()));
+    }
+    // Arrows reach the focused view, and its caret follows.
+    keys("right", cx);
+    assert_eq!(cursor(&active_view(&wb, cx), cx), pt(0, 1));
+    // Focusing the editor area (as closing Quick Open does) focuses the
+    // active view.
+    cx.update(|window, cx| wb.update(cx, |wb, cx| wb.focus_editor_area(window, cx)));
+    settle(cx);
+    let view = active_view(&wb, cx);
+    assert!(focused(&view, cx));
 }

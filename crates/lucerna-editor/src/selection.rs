@@ -139,8 +139,11 @@ impl SelectionSet {
         self.selections.is_empty()
     }
 
-    /// Moves every selection through `patch`. The head sticks right when it is
-    /// the later end and left otherwise; empty selections stick right.
+    /// Moves every selection through `patch`. An endpoint inside replaced
+    /// text (from its start up to, not including, its end) goes to the start
+    /// of the replacement. Otherwise the head sticks right when it is the
+    /// later end and left otherwise, and empty selections stick right (after
+    /// text inserted at them).
     pub fn remap(&mut self, patch: &Patch) {
         for s in &mut self.selections {
             let (anchor_bias, head_bias) = if s.is_empty() {
@@ -150,8 +153,8 @@ impl SelectionSet {
             } else {
                 (Bias::Left, Bias::Right)
             };
-            s.anchor = patch.map_offset(s.anchor, anchor_bias);
-            s.head = patch.map_offset(s.head, head_bias);
+            s.anchor = map_endpoint(patch, s.anchor, anchor_bias);
+            s.head = map_endpoint(patch, s.head, head_bias);
         }
         // Deletes can collapse or overlap selections: renormalise.
         let selections = std::mem::take(&mut self.selections);
@@ -172,6 +175,17 @@ impl SelectionSet {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+}
+
+/// `offset` through `patch`: the start of the replacement when it lies in a
+/// non-empty replaced range (end excluded), else `Patch::map_offset`.
+fn map_endpoint(patch: &Patch, offset: usize, bias: Bias) -> usize {
+    let edits = patch.edits();
+    let i = edits.partition_point(|e| e.old.end <= offset);
+    match edits.get(i) {
+        Some(e) if e.old.start <= offset && offset < e.old.end => e.new.start,
+        _ => patch.map_offset(offset, bias),
     }
 }
 
@@ -260,6 +274,35 @@ mod tests {
         let mut set = SelectionSet::cursor(2);
         set.remap(&insert_at(2, 3));
         assert_eq!(set.primary().head, 5);
+    }
+
+    fn replace(old: std::ops::Range<usize>, new_len: usize) -> Patch {
+        Patch::new(vec![PatchEdit {
+            new: old.start..old.start + new_len,
+            old,
+        }])
+    }
+
+    #[test]
+    fn remap_inside_replaced_text_goes_to_its_start() {
+        // "ab\ncd\nef": line 1 ("cd\n", 3..6) becomes "XYZW\n" (3..8).
+        for at in [3, 4, 5] {
+            let mut set = SelectionSet::cursor(at);
+            set.remap(&replace(3..6, 5));
+            assert_eq!(set.primary().head, 3, "cursor at {at}");
+        }
+        // The end of the replaced range follows the replacement's end.
+        let mut set = SelectionSet::cursor(6);
+        set.remap(&replace(3..6, 5));
+        assert_eq!(set.primary().head, 8);
+        // A selection inside the hunk does not grow to all of it.
+        let (_, mut set) = marked("ab\nc«d»\nef");
+        set.remap(&replace(3..6, 5));
+        assert_eq!(set.primary().range(), 3..3);
+        // One reaching out of it keeps its outside end.
+        let (_, mut set) = marked("a«b\ncd\ne»f");
+        set.remap(&replace(3..6, 5));
+        assert_eq!(set.primary().range(), 1..9);
     }
 
     #[test]

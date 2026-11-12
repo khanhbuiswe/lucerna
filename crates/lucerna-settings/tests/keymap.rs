@@ -175,7 +175,18 @@ fn text_inputs_keep_option_z_and_cmd_c() {
 fn keymap_has_phase3_bindings() {
     let km = defaults();
     let mut editor = Context::default();
+    // A focused code view: editorTextFocus implies editorFocus.
+    editor.set("editorFocus", ContextValue::Bool(true));
     editor.set("editorTextFocus", ContextValue::Bool(true));
+    // F8 / ⇧F8 also work from the Search and References tabs.
+    let mut other_tab = Context::default();
+    other_tab.set("editorFocus", ContextValue::Bool(true));
+    for (k, cmd) in [
+        ("f8", "editor.action.marker.nextInFiles"),
+        ("shift+f8", "editor.action.marker.prevInFiles"),
+    ] {
+        assert_eq!(command(km.resolve(&keys(k), &other_tab)), cmd, "{k}");
+    }
     let cases = [
         ("f12", "editor.action.revealDefinition"),
         ("alt+f12", "editor.action.peekDefinition"),

@@ -44,13 +44,16 @@ impl ThemeDef {
         };
         let color = |key: &str| -> Option<Rgba> { Rgba::parse_hex(self.style.get(key)?.as_str()?) };
         let fb = UiColors::fallback(appearance);
-        let selection = self
-            .style
-            .get("players")
-            .and_then(|p| p.get(0))
-            .and_then(|p| p.get("selection"))
-            .and_then(Value::as_str)
-            .and_then(Rgba::parse_hex);
+        let player = |key: &str| {
+            self.style
+                .get("players")
+                .and_then(|p| p.get(0))
+                .and_then(|p| p.get(key))
+                .and_then(Value::as_str)
+                .and_then(Rgba::parse_hex)
+        };
+        let selection = player("selection");
+        let editor_foreground = color("editor.foreground").unwrap_or(fb.editor_foreground);
         let ui = UiColors {
             background: color("background").unwrap_or(fb.background),
             border: color("border").unwrap_or(fb.border),
@@ -68,7 +71,7 @@ impl ThemeDef {
             tab_inactive_background: color("tab.inactive_background")
                 .unwrap_or(fb.tab_inactive_background),
             editor_background: color("editor.background").unwrap_or(fb.editor_background),
-            editor_foreground: color("editor.foreground").unwrap_or(fb.editor_foreground),
+            editor_foreground,
             editor_line_number: color("editor.line_number").unwrap_or(fb.editor_line_number),
             editor_active_line_number: color("editor.active_line_number")
                 .unwrap_or(fb.editor_active_line_number),
@@ -77,6 +80,7 @@ impl ThemeDef {
             search_match_background: color("search.match_background")
                 .unwrap_or(fb.search_match_background),
             selection: selection.unwrap_or(fb.selection),
+            cursor: player("cursor").unwrap_or(editor_foreground),
             title_bar_background: color("title_bar.background").unwrap_or(fb.title_bar_background),
             elevated_surface_background: color("elevated_surface.background")
                 .unwrap_or(fb.elevated_surface_background),

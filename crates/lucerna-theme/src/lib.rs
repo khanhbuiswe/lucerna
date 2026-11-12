@@ -75,6 +75,8 @@ pub struct UiColors {
     pub editor_active_line_background: Rgba,
     pub search_match_background: Rgba,
     pub selection: Rgba,
+    /// The caret: the first player's `cursor`, else `editor.foreground`.
+    pub cursor: Rgba,
     pub title_bar_background: Rgba,
     /// Floating surfaces: popovers, Quick Open, the find widget.
     pub elevated_surface_background: Rgba,
@@ -193,6 +195,7 @@ impl UiColors {
             editor_active_line_background: gray(0x80, 0x1f),
             search_match_background: gray(0x80, 0x55),
             selection: gray(0x80, 0x44),
+            cursor: fg,
             title_bar_background: title_bar,
             elevated_surface_background: elevated,
             ghost_element_hover: hover,

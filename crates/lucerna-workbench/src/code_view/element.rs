@@ -733,7 +733,7 @@ impl CodeView {
                 active_match: hsla(ui.editor_foreground).opacity(ACTIVE_MATCH_ALPHA),
                 hover: hsla(ui.element_hover),
                 cursor: hsla(ui.editor_foreground).opacity(CURSOR_ALPHA),
-                caret: hsla(ui.editor_foreground),
+                caret: hsla(ui.cursor),
                 scrollbar_thumb: hsla(ui.scrollbar_thumb),
                 fade: hsla(ui.editor_background).opacity(FADE_ALPHA),
                 strike: hsla(ui.editor_foreground),

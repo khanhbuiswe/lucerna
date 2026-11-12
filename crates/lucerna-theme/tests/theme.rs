@@ -35,6 +35,7 @@ fn ui_colors_present_for_one_dark() {
     assert_eq!(t.ui.text, Rgba::parse_hex("#dce0e5ff").unwrap());
     assert_eq!(t.ui.editor_line_number, Rgba::parse_hex("#4e5a5f").unwrap());
     assert_eq!(t.ui.selection, Rgba::parse_hex("#74ade83d").unwrap());
+    assert_eq!(t.ui.cursor, Rgba::parse_hex("#74ade8ff").unwrap());
     assert_eq!(
         t.ui.status_bar_background,
         Rgba::parse_hex("#3b414dff").unwrap()
@@ -345,4 +346,22 @@ fn theme_reads_diagnostic_colors() {
     assert_eq!(light.editor_highlighted_line_background, hex("#ebebecff"));
     assert_eq!(dark.element_hover, dark.ghost_element_hover);
     assert_eq!(light.element_hover, light.ghost_element_hover);
+}
+
+#[test]
+fn cursor_falls_back_to_editor_foreground() {
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "t.json",
+        r##"{"name":"F","themes":[
+            {"name":"No Cursor","appearance":"dark","style":{
+                "editor.foreground":"#abcdefff","players":[{"selection":"#11223344"}]}}
+        ]}"##,
+    );
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
+    let ui = &reg.get("No Cursor").unwrap().ui;
+    assert_eq!(ui.cursor, Rgba::parse_hex("#abcdefff").unwrap());
+    assert_eq!(ui.selection, Rgba::parse_hex("#11223344").unwrap());
 }

@@ -9,8 +9,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, ParentElement, Pixels, Render, Styled, Subscription, Task, Window, div,
-    prelude::*, px,
+    KeyDownEvent, ParentElement, Pixels, Render, Styled, Subscription, Task, WeakEntity, Window,
+    div, prelude::*, px,
 };
 use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
@@ -164,6 +164,9 @@ pub struct Workbench {
     focus: FocusHandle,
     sidebar_focus: FocusHandle,
     editor_focus: FocusHandle,
+    /// The code view last made active, to focus a newly active one when
+    /// focus was on the editor area or on that view.
+    active_view: Option<WeakEntity<CodeView>>,
     sidebar_visible: bool,
     sidebar_width: Pixels,
     explorer_view: Option<AnyView>,
@@ -542,6 +545,7 @@ impl Workbench {
             focus,
             sidebar_focus: cx.focus_handle(),
             editor_focus,
+            active_view: None,
             sidebar_visible: restored.as_ref().is_none_or(|s| s.sidebar_visible),
             sidebar_width: restored.as_ref().map_or(SIDEBAR_DEFAULT_WIDTH, |s| {
                 px(s.sidebar_width).clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
@@ -1402,9 +1406,42 @@ impl Workbench {
         self.quick_open.is_some() || self.theme_picker.is_some() || self.trust_modal().is_some()
     }
 
+    /// Focuses the active tab's code view, or the editor area when the
+    /// active tab shows none (yet: a new tab's view is made while drawing,
+    /// and [`Workbench::focus_active_view`] focuses it then).
     pub fn focus_editor_area(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.editor_focus, cx);
+        match self
+            .active_code_view(cx)
+            .filter(|v| !v.read(cx).is_passive())
+        {
+            Some(view) => window.focus(&view.read(cx).focus_handle(cx), cx),
+            None => window.focus(&self.editor_focus, cx),
+        }
         cx.notify();
+    }
+
+    /// Like Zed, a code view that becomes active (a file opened or a tab
+    /// activated) takes the focus, unless the focus is somewhere else
+    /// than the editor area itself or the previously active view (the
+    /// sidebar, a picker, the Search tab).
+    fn focus_active_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.active_code_view(cx) else {
+            return;
+        };
+        let previous = self.active_view.as_ref().and_then(WeakEntity::upgrade);
+        if previous.as_ref() == Some(&view) {
+            return;
+        }
+        self.active_view = Some(view.downgrade());
+        if view.read(cx).is_passive() {
+            return;
+        }
+        let focus_free = window.focused(cx).is_none()
+            || self.editor_focus.is_focused(window)
+            || previous.is_some_and(|p| p.read(cx).focus_handle(cx).contains_focused(window, cx));
+        if focus_free {
+            window.focus(&view.read(cx).focus_handle(cx), cx);
+        }
     }
 
     /// Puts `view` in the sidebar slot for `kind`; shown while `kind` is active.
@@ -1668,7 +1705,8 @@ impl Focusable for Workbench {
 }
 
 impl Render for Workbench {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.focus_active_view(window, cx);
         // Tabs closed since the last frame have dropped their views: their
         // documents close (and leave their language servers) now.
         let documents = self.documents.downgrade();
