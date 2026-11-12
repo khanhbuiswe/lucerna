@@ -61,6 +61,14 @@ pub const HASH: &[u8] = lucide!("hash");
 pub const PACKAGE: &[u8] = lucide!("package");
 pub const TYPE: &[u8] = lucide!("type");
 pub const CIRCLE: &[u8] = lucide!("circle");
+pub const HISTORY: &[u8] = lucide!("history");
+
+/// The Lucerna mark (`assets/brand/mark.svg` at the repository root), in
+/// its own colors: draw it as an image, not as a single-color `svg`.
+pub const LUCERNA_MARK: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/brand/mark.svg"
+));
 
 /// Every bundled icon with its upstream name.
 pub const ALL: &[(&str, &[u8])] = &[
@@ -108,6 +116,7 @@ pub const ALL: &[(&str, &[u8])] = &[
     ("package", PACKAGE),
     ("type", TYPE),
     ("circle", CIRCLE),
+    ("history", HISTORY),
 ];
 
 /// The bundled SVG for a Lucide icon name.

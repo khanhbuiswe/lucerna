@@ -29,7 +29,7 @@ pub struct RecentEntry {
 
 impl RecentEntry {
     /// Whether the path still exists as the kind of thing it was saved as.
-    fn exists(&self) -> bool {
+    pub(crate) fn exists(&self) -> bool {
         match self.kind {
             RecentKind::Folder => self.path.is_dir(),
             RecentKind::File => self.path.is_file(),

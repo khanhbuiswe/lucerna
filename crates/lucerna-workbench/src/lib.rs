@@ -46,6 +46,7 @@ mod trust;
 pub mod ui;
 mod vim;
 mod vim_indicator;
+mod welcome;
 mod workbench;
 mod workspace_state;
 
@@ -97,6 +98,7 @@ pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};
 pub use trust::{TrustModal, TrustModalEvent, TrustStore};
 pub use vim::VimLayer;
+pub use welcome::{WELCOME_COMMANDS, WelcomeEvent, WelcomeView};
 pub use workbench::{SidebarView, Workbench};
 pub use workspace_state::{
     SearchState, WorkspaceState, WorkspaceStateStore, default_data_dir, load_state, save_state,
