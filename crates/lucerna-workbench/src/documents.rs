@@ -26,6 +26,7 @@ use gpui::{
     App, AppContext, Context, Entity, EntityId, EventEmitter, IntoElement, ParentElement,
     PromptLevel, Render, Styled, Task, WeakEntity, Window, div, prelude::*, px,
 };
+use lucerna_editor::merge::merge;
 use lucerna_project::{ChangeKind, WorktreeEvent};
 use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{
@@ -190,27 +191,73 @@ type RevertOutput = (Decoded, Edits, Stamp);
 /// A revert's read, or why it failed.
 type RevertRead = Result<RevertOutput, LoadError>;
 
-/// Background work on one document. A reload diffs the file against a
-/// snapshot of the text; the buffer stays on the main thread.
+/// Background work on one document. A reload diffs (or merges) the file
+/// against a snapshot of the text; the buffer stays on the main thread.
 enum Job {
     Load {
         force_text: bool,
     },
     Reload {
         force_text: bool,
-        base: BufferSnapshot,
+        /// The text as it was when the job started.
+        ours: BufferSnapshot,
+        /// The file's text the unsaved changes were made on, to merge the
+        /// disk's changes into them (spec §7.2). Set when the text is
+        /// dirty and `lucerna.externalChanges.autoMerge` is on.
+        merge_base: Option<BufferSnapshot>,
+        /// Whether `ours` had unsaved changes.
+        dirty: bool,
         base_version: u64,
         base_hash: u64,
         base_epoch: u64,
     },
 }
 
-/// A file read for a reload, and the edits from the text it was diffed
-/// against (version `base_version` of the buffer) to the file's.
+/// What a reload does to the text.
+enum ReloadOutcome {
+    /// Make the text the file's: the edits from `ours` to the disk's text
+    /// (none when they are already equal).
+    Apply(Edits),
+    /// Put the disk's changes into the unsaved text: edits on `ours`.
+    Merge(Edits),
+    /// The disk's changes meet the unsaved ones: leave the text alone.
+    Conflict,
+}
+
+/// A file read for a reload of version `base_version` of the buffer.
 struct Reloaded {
+    /// The decode, its `text` moved into `theirs`.
     decoded: Decoded,
+    /// The file's text.
+    theirs: BufferSnapshot,
     base_version: u64,
-    edits: Edits,
+    /// Whether the text was dirty when the job started.
+    dirty: bool,
+    outcome: ReloadOutcome,
+    stamp: Stamp,
+}
+
+/// Why a document is in conflict with the disk.
+#[expect(
+    dead_code,
+    reason = "Keep Mine and the conflict bar (spec §7.3) read these"
+)]
+pub(crate) struct Conflict {
+    /// The file's text that could not be merged; `None` when it could not
+    /// be read.
+    disk: Option<DiskText>,
+    /// Why the file could not be read.
+    reason: Option<String>,
+}
+
+/// A file's text as read from disk, with what makes the buffer's text the
+/// file's ([`Buffer::set_disk_state`]).
+#[expect(dead_code, reason = "Keep Mine (spec §7.3) reads these")]
+pub(crate) struct DiskText {
+    text: BufferSnapshot,
+    /// The decode without its text (which is `text`): encoding, BOM, line
+    /// ending and the bytes' hash.
+    decoded: Decoded,
     stamp: Stamp,
 }
 
@@ -235,8 +282,12 @@ struct Document {
     /// revert). A reload read in an older epoch may predate a save, even
     /// one that wrote the same bytes, so its result is dropped.
     disk_epoch: u64,
-    /// The file changed on disk while the text had unsaved changes.
-    conflict: bool,
+    /// The file's text as last loaded, saved or reloaded: the base of a
+    /// merge of the disk's changes into unsaved ones.
+    base: Option<BufferSnapshot>,
+    /// The file changed on disk in a way the unsaved changes could not
+    /// take (or could not be read).
+    conflict: Option<Conflict>,
     /// Bumped per new text, so a parse of older text is dropped.
     revision: u64,
     encoding: &'static str,
@@ -423,7 +474,8 @@ impl Documents {
                         version: 0,
                         base_hash: 0,
                         disk_epoch: 0,
-                        conflict: false,
+                        base: None,
+                        conflict: None,
                         revision: 0,
                         encoding: "UTF-8",
                         line_ending: LineEnding::Lf,
@@ -702,7 +754,9 @@ impl Documents {
     /// Whether the file at `path` changed on disk while its text had
     /// unsaved changes.
     pub fn has_conflict(&self, path: &Path) -> bool {
-        self.docs.get(&self.key(path)).is_some_and(|d| d.conflict)
+        self.docs
+            .get(&self.key(path))
+            .is_some_and(|d| d.conflict.is_some())
     }
 
     /// The keys of the documents whose text has unsaved changes.
@@ -853,7 +907,7 @@ impl Documents {
 
     /// Whether a save of the document at `key` asks about a conflict first.
     fn asks(&self, key: &Arc<Path>, cx: &App) -> bool {
-        self.docs.get(key).is_some_and(|d| d.conflict) && !self.overwrites(key, cx)
+        self.docs.get(key).is_some_and(|d| d.conflict.is_some()) && !self.overwrites(key, cx)
     }
 
     /// Runs the save participants, captures the text and starts writing it;
@@ -986,11 +1040,12 @@ impl Documents {
                     buffer.set_saved(state);
                     let dirty = buffer.is_dirty();
                     doc.base_hash = written.hash;
+                    doc.base = Some(snapshot.clone());
                     doc.disk_epoch += 1;
                     if let Some(meta) = &meta {
                         doc.stamp = Some(Stamp::of(meta));
                     }
-                    set_conflict(doc, key, false, cx);
+                    set_conflict(doc, key, None, cx);
                     if doc.state == DocState::Deleted {
                         // The save made the file again.
                         doc.set_state(DocState::Ready, cx);
@@ -1012,7 +1067,14 @@ impl Documents {
             Ok(WriteOutcome::ChangedOnDisk) => {
                 tracing::debug!(path = %key.display(), "file changed on disk; not saved");
                 if doc.buffer.as_ref().is_some_and(Buffer::is_dirty) {
-                    set_conflict(doc, key, true, cx);
+                    // The watcher's report of the change reads the file.
+                    if doc.conflict.is_none() {
+                        let conflict = Conflict {
+                            disk: None,
+                            reason: None,
+                        };
+                        set_conflict(doc, key, Some(conflict), cx);
+                    }
                     SaveStep::Conflict
                 } else {
                     // Nothing unsaved to protect: take the file's text.
@@ -1192,7 +1254,7 @@ impl Documents {
         // (an undo back to clean), taking it would drop that step, so the
         // conflict stays until the next disk event, a Revert, or a redo
         // back to clean with nothing left to redo.
-        let reload = doc.conflict && was_dirty && !dirty && !can_redo;
+        let reload = doc.conflict.is_some() && was_dirty && !dirty && !can_redo;
         if !patch.is_empty() {
             // From the edited tree: tree-sitter reuses what the edit did
             // not touch.
@@ -1428,6 +1490,7 @@ impl Documents {
     /// Loads or reloads the document off the main thread. While one job
     /// runs, further requests collapse into a single follow-up reload.
     fn start_job(&mut self, key: &Arc<Path>, cx: &mut Context<Self>) {
+        let auto_merge = self.auto_merge(key, cx);
         let Some(doc) = self.docs.get_mut(key) else {
             return;
         };
@@ -1444,7 +1507,9 @@ impl Documents {
         let job = match &doc.buffer {
             Some(buffer) => Job::Reload {
                 force_text: doc.force_text,
-                base: buffer.snapshot(),
+                ours: buffer.snapshot(),
+                merge_base: doc.base.clone().filter(|_| auto_merge && buffer.is_dirty()),
+                dirty: buffer.is_dirty(),
                 base_version: buffer.version(),
                 base_hash: doc.base_hash,
                 base_epoch: doc.disk_epoch,
@@ -1461,6 +1526,16 @@ impl Documents {
             this.update(cx, |docs, cx| docs.finish_job(&key, output, cx))
                 .ok();
         }));
+    }
+
+    /// Whether `lucerna.externalChanges.autoMerge` is on for the document
+    /// at `key`.
+    fn auto_merge(&self, key: &Arc<Path>, cx: &App) -> bool {
+        let language = self.docs.get(key).and_then(Document::language_id);
+        cx.global::<AppState>()
+            .settings
+            .get::<bool>("lucerna.externalChanges.autoMerge", language.as_deref())
+            .unwrap_or(true)
     }
 
     fn finish_job(
@@ -1576,12 +1651,15 @@ impl Documents {
 
     /// Applies a reload's result to the document at `key` (spec §7.1):
     /// - the same bytes as last loaded or saved: nothing changes;
-    /// - unsaved changes: the text is left alone and the document is in
-    ///   conflict with the disk;
-    /// - the buffer changed since the job took its snapshot: the job runs
-    ///   again against the new text;
-    /// - else the diff is applied as one undo step of its own (which parses
-    ///   the new text), and the text counts as saved.
+    /// - the buffer changed (or its dirty state did) since the job took its
+    ///   snapshot: the job runs again against the new text;
+    /// - a clean text, or one equal to the file's: the diff is applied as
+    ///   one undo step of its own (which parses the new text), and the text
+    ///   counts as saved;
+    /// - unsaved changes the disk's do not meet: the disk's are merged in
+    ///   as one undo step, and the text stays dirty;
+    /// - else the text is left alone and the document is in conflict with
+    ///   the disk.
     fn finish_reload(&mut self, key: &Arc<Path>, reloaded: Reloaded, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.get_mut(key) else {
             return;
@@ -1592,35 +1670,95 @@ impl Documents {
         let was_deleted = doc.state == DocState::Deleted;
         let Reloaded {
             decoded,
+            theirs,
             base_version,
-            edits,
+            dirty,
+            outcome,
             stamp,
-            ..
         } = reloaded;
         if decoded.hash == doc.base_hash {
             // `touch`, a rewrite with the same bytes, or our own save.
-            set_conflict(doc, key, false, cx);
+            set_conflict(doc, key, None, cx);
             doc.set_state(DocState::Ready, cx);
             if was_deleted {
                 announce_return(doc, key, cx);
             }
             return;
         }
-        if buffer.is_dirty() {
-            set_conflict(doc, key, true, cx);
-            doc.set_state(DocState::Ready, cx);
-            if was_deleted {
-                announce_return(doc, key, cx);
-            }
-            return;
-        }
-        if buffer.version() != base_version {
-            // Edited (and undone back to clean) while the job ran: diff again.
+        if buffer.version() != base_version || buffer.is_dirty() != dirty {
+            // Edited (or saved) while the job ran: diff or merge again.
             doc.reload_again = true;
             return;
         }
-        tracing::debug!(path = %key.display(), "document reloaded");
-        self.apply_disk(key, &decoded, edits, stamp, cx);
+        match outcome {
+            ReloadOutcome::Apply(edits) => {
+                tracing::debug!(path = %key.display(), "document reloaded");
+                self.apply_disk(key, &decoded, edits, stamp, cx);
+            }
+            ReloadOutcome::Merge(edits) => {
+                tracing::debug!(path = %key.display(), "disk changes merged");
+                self.apply_merge(key, decoded, theirs, edits, stamp, cx);
+            }
+            ReloadOutcome::Conflict => {
+                let disk = DiskText {
+                    text: theirs,
+                    decoded,
+                    stamp,
+                };
+                let conflict = Conflict {
+                    disk: Some(disk),
+                    reason: None,
+                };
+                set_conflict(doc, key, Some(conflict), cx);
+                doc.set_state(DocState::Ready, cx);
+                if was_deleted {
+                    announce_return(doc, key, cx);
+                }
+            }
+        }
+    }
+
+    /// Puts the disk's changes into the unsaved text of `key` (spec §7.2):
+    /// applies `edits` as one undo step of its own and makes `theirs` the
+    /// file's text, so the text stays dirty (every undo state too: none is
+    /// the file's) and the next save writes without asking. Any conflict
+    /// ends.
+    fn apply_merge(
+        &mut self,
+        key: &Arc<Path>,
+        decoded: Decoded,
+        theirs: BufferSnapshot,
+        edits: Edits,
+        stamp: Stamp,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.docs.get_mut(key) else {
+            return;
+        };
+        let Some(buffer) = doc.buffer.as_mut() else {
+            return;
+        };
+        let was_deleted = doc.state == DocState::Deleted;
+        let was_dirty = buffer.is_dirty();
+        let old = buffer.snapshot();
+        buffer.push_stop();
+        let patch = buffer.edit(edits);
+        buffer.push_stop();
+        buffer.set_disk_state(&decoded);
+        buffer.clear_saved();
+        doc.base = Some(theirs);
+        doc.base_hash = decoded.hash;
+        doc.stamp = Some(stamp);
+        doc.disk_epoch += 1;
+        doc.encoding = buffer.encoding().name();
+        doc.line_ending = buffer.line_ending();
+        set_conflict(doc, key, None, cx);
+        doc.set_state(DocState::Ready, cx);
+        if patch.is_empty() && was_deleted {
+            announce_return(doc, key, cx);
+        }
+        self.commit_edit(key, old, &patch, was_dirty, None, cx);
+        status_message::show("Merged changes from disk", cx);
     }
 
     /// Makes the text of `key` the file's: applies `edits` (from the text
@@ -1651,11 +1789,12 @@ impl Documents {
         let saved = buffer.history_state();
         buffer.set_saved(saved);
         doc.base_hash = decoded.hash;
+        doc.base = Some(buffer.snapshot());
         doc.disk_epoch += 1;
         doc.stamp = Some(stamp);
         doc.encoding = buffer.encoding().name();
         doc.line_ending = buffer.line_ending();
-        set_conflict(doc, key, false, cx);
+        set_conflict(doc, key, None, cx);
         doc.set_state(DocState::Ready, cx);
         if patch.is_empty() && was_deleted {
             announce_return(doc, key, cx);
@@ -1813,14 +1952,20 @@ impl Documents {
     }
 }
 
-/// Sets whether `doc` is in conflict with the disk, telling listeners
-/// when that changes.
-fn set_conflict(doc: &mut Document, key: &Arc<Path>, conflict: bool, cx: &mut Context<Documents>) {
-    if doc.conflict != conflict {
-        doc.conflict = conflict;
+/// Sets the conflict of `doc` with the disk, telling listeners when it
+/// starts or ends.
+fn set_conflict(
+    doc: &mut Document,
+    key: &Arc<Path>,
+    conflict: Option<Conflict>,
+    cx: &mut Context<Documents>,
+) {
+    let changed = doc.conflict.is_some() != conflict.is_some();
+    doc.conflict = conflict;
+    if changed {
         cx.emit(DocumentEvent::ConflictChanged {
             path: key.clone(),
-            conflict,
+            conflict: doc.conflict.is_some(),
         });
     }
 }
@@ -1839,7 +1984,11 @@ fn reload_failed(doc: &mut Document, key: &Arc<Path>, err: LoadError, cx: &mut C
     }
     tracing::warn!(path = %key.display(), %err, "reload failed; text kept");
     let was_deleted = doc.state == DocState::Deleted;
-    set_conflict(doc, key, true, cx);
+    let conflict = Conflict {
+        disk: None,
+        reason: Some(err.to_string()),
+    };
+    set_conflict(doc, key, Some(conflict), cx);
     if doc.state != DocState::Ready {
         doc.set_state(DocState::Ready, cx);
     }
@@ -1882,7 +2031,8 @@ fn take_buffer(doc: &mut Document, buffer: Buffer, stamp: Stamp) {
     doc.snapshot = Some(buffer.snapshot());
     doc.version = buffer.version();
     doc.base_hash = buffer.disk_hash();
-    doc.conflict = false;
+    doc.base = doc.snapshot.clone();
+    doc.conflict = None;
     doc.encoding = buffer.encoding().name();
     doc.line_ending = buffer.line_ending();
     doc.buffer = Some(buffer);
@@ -1982,24 +2132,38 @@ fn run_job(path: &Path, job: Job) -> JobOutput {
         ),
         Job::Reload {
             force_text,
-            base,
+            ours,
+            merge_base,
+            dirty,
             base_version,
             base_hash,
             base_epoch,
         } => JobOutput::Reloaded(
             base_epoch,
             read(path).and_then(|(bytes, stamp)| {
-                let decoded = decode_file(&bytes, force_text)?;
-                // The same bytes need no diff: nothing will change.
-                let edits = if decoded.hash == base_hash {
-                    Vec::new()
+                let mut decoded = decode_file(&bytes, force_text)?;
+                let text = std::mem::take(&mut decoded.text);
+                let theirs = BufferSnapshot::from_text(&text);
+                let outcome = if decoded.hash == base_hash || ours.text_eq(&theirs) {
+                    // The same bytes, or the text the user already has.
+                    ReloadOutcome::Apply(Vec::new())
+                } else if !dirty {
+                    ReloadOutcome::Apply(diff_edits(&ours, &text))
+                } else if let Some(base) = merge_base {
+                    let whole = |s: &BufferSnapshot| s.text_for_range(0..s.len_bytes());
+                    match merge(&whole(&base), &whole(&ours), &text) {
+                        Ok(edits) => ReloadOutcome::Merge(edits),
+                        Err(_) => ReloadOutcome::Conflict,
+                    }
                 } else {
-                    diff_edits(&base, &decoded.text)
+                    ReloadOutcome::Conflict
                 };
                 Ok(Reloaded {
                     decoded,
+                    theirs,
                     base_version,
-                    edits,
+                    dirty,
+                    outcome,
                     stamp,
                 })
             }),

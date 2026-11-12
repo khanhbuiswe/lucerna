@@ -22,6 +22,7 @@
   "files.autoSave": "off",
   "files.autoSaveDelay": 1000,
   "files.saveConflictResolution": "askUser",
+  "lucerna.externalChanges.autoMerge": true,
   "search.exclude": { "**/node_modules": true, "**/target": true },
   "search.searchEditor.defaultNumberOfContextLines": 1,
   "workbench.colorTheme": "One Dark",
