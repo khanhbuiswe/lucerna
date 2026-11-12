@@ -13,7 +13,9 @@ use lucerna_extension::index::{ExtensionIndex, IndexedExtension, LanguageEntry};
 use lucerna_extension::process::CancelToken;
 use lucerna_extension::registry::{Registry, is_stale};
 use lucerna_extension::store::{InstallProgress, Store, StoreError, StoreEvent};
-use lucerna_syntax::{Associations, ExtensionLanguage, LanguageRegistry};
+use lucerna_syntax::{
+    Associations, BracketPair, ExtensionLanguage, LanguageEditing, LanguageRegistry,
+};
 use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 
 use crate::AppState;
@@ -64,9 +66,38 @@ pub fn extension_languages(index: &ExtensionIndex) -> Vec<ExtensionLanguage> {
                 path_suffixes: l.path_suffixes.clone(),
                 first_line_pattern: l.first_line_pattern.clone(),
                 hidden: l.hidden,
+                editing: language_editing(l),
             })
         })
         .collect()
+}
+
+/// The editing data a language's `config.toml` declares; what it leaves out
+/// keeps the default.
+fn language_editing(l: &LanguageEntry) -> LanguageEditing {
+    let mut editing = LanguageEditing::default();
+    if !l.brackets.is_empty() {
+        editing.brackets = l
+            .brackets
+            .iter()
+            .map(|b| BracketPair {
+                start: b.start.clone(),
+                end: b.end.clone(),
+                close: b.close,
+                newline: b.newline,
+                not_in: b.not_in.clone(),
+            })
+            .collect();
+    }
+    if let Some(before) = &l.autoclose_before {
+        editing.autoclose_before = before.clone();
+    }
+    editing.line_comments = l.line_comments.clone();
+    editing.block_comment = l
+        .block_comment
+        .as_ref()
+        .map(|b| (b.start.clone(), b.end.clone()));
+    editing
 }
 
 /// `(extension id, theme family file)`, each file once. With `only`, just

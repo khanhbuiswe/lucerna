@@ -137,6 +137,7 @@ fn extension_query_files_are_read_on_first_use() {
         path_suffixes: vec!["lazy".into()],
         first_line_pattern: None,
         hidden: false,
+        editing: Default::default(),
     };
     let registry = Arc::new(LanguageRegistry::build(&[spec], Associations::default()));
     let language = registry.language_by_name("Lazy").unwrap();

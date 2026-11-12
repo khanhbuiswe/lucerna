@@ -3,6 +3,7 @@
 
 mod associations;
 mod brackets;
+mod editing;
 mod folds;
 mod injection;
 mod outline;
@@ -15,6 +16,7 @@ use lucerna_text::{BufferSnapshot, Point};
 
 pub use associations::Associations;
 pub use brackets::matching_bracket;
+pub use editing::{BracketPair, LanguageEditing};
 pub use folds::indent_folds;
 pub use registry::{
     ExtensionLanguage, GrammarError, GrammarKey, Language, LanguageOrigin, LanguageRegistry,

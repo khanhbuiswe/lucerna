@@ -344,6 +344,7 @@ mod tests {
             first_line_pattern: None,
             hidden: false,
             queries: Vec::new(),
+            ..Default::default()
         }
     }
 

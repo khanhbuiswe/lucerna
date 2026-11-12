@@ -85,6 +85,7 @@ fn brackets_scm_pairs_used_when_present() {
         path_suffixes: vec!["br".into()],
         first_line_pattern: None,
         hidden: false,
+        editing: Default::default(),
     };
     let registry = LanguageRegistry::build(&[spec], Associations::default());
     let lang = registry.language_by_name("Br").unwrap();

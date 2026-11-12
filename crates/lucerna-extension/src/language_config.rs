@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::manifest::ManifestError;
 
@@ -21,6 +21,62 @@ pub struct LanguageConfig {
     pub hidden: bool,
     #[serde(default)]
     pub tab_size: Option<u32>,
+    /// Auto-closing and surrounding pairs; empty means the editor default.
+    #[serde(default)]
+    pub brackets: Vec<BracketPairConfig>,
+    /// Characters before which the editor may auto-close.
+    #[serde(default)]
+    pub autoclose_before: Option<String>,
+    #[serde(default)]
+    pub block_comment: Option<BlockComment>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// One `brackets` entry of `config.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BracketPairConfig {
+    pub start: String,
+    pub end: String,
+    #[serde(default = "yes")]
+    pub close: bool,
+    #[serde(default = "yes")]
+    pub newline: bool,
+    #[serde(default)]
+    pub not_in: Vec<String>,
+}
+
+/// A block comment's delimiters, trimmed of surrounding spaces. Written
+/// either `["/* ", " */"]` or `{ start = "/*", end = "*/", .. }`; other
+/// keys of the table are ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "BlockCommentRaw")]
+pub struct BlockComment {
+    pub start: String,
+    pub end: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BlockCommentRaw {
+    Pair(String, String),
+    Table { start: String, end: String },
+}
+
+impl From<BlockCommentRaw> for BlockComment {
+    fn from(raw: BlockCommentRaw) -> BlockComment {
+        let (start, end) = match raw {
+            BlockCommentRaw::Pair(start, end) | BlockCommentRaw::Table { start, end } => {
+                (start, end)
+            }
+        };
+        BlockComment {
+            start: start.trim().to_string(),
+            end: end.trim().to_string(),
+        }
+    }
 }
 
 pub const QUERY_KINDS: [&str; 10] = [
@@ -66,4 +122,46 @@ pub fn query_files(dir: &Path) -> (Vec<(String, PathBuf)>, Vec<String>) {
         }
     }
     (files, warnings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_toml_brackets_and_block_comment_both_shapes() {
+        let cfg: LanguageConfig = toml::from_str(
+            r#"
+name = "X"
+brackets = [
+  { start = "{", end = "}", close = true, newline = true },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["string"] },
+]
+autoclose_before = ";:.,=}])>"
+block_comment = ["/* ", " */"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.brackets.len(), 2);
+        assert_eq!(cfg.brackets[0].start, "{");
+        assert!(cfg.brackets[0].close && cfg.brackets[0].newline);
+        assert_eq!(cfg.brackets[1].start, "\"");
+        assert!(!cfg.brackets[1].newline);
+        assert_eq!(cfg.brackets[1].not_in, ["string"]);
+        assert_eq!(cfg.autoclose_before.as_deref(), Some(";:.,=}])>"));
+        let block = cfg.block_comment.unwrap();
+        assert_eq!((block.start.as_str(), block.end.as_str()), ("/*", "*/"));
+
+        let cfg: LanguageConfig = toml::from_str(
+            r#"
+name = "X"
+block_comment = { start = "/* ", end = " */", prefix = "* ", tab_size = 1 }
+brackets = [{ start = "(", end = ")" }]
+"#,
+        )
+        .unwrap();
+        let block = cfg.block_comment.unwrap();
+        assert_eq!((block.start.as_str(), block.end.as_str()), ("/*", "*/"));
+        assert!(cfg.brackets[0].close && cfg.brackets[0].newline);
+    }
 }

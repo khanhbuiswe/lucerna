@@ -33,6 +33,7 @@ fn ext(extension_id: &str, name: &str, suffixes: &[&str]) -> ExtensionLanguage {
         path_suffixes: suffixes.iter().map(|s| s.to_string()).collect(),
         first_line_pattern: None,
         hidden: false,
+        editing: Default::default(),
     }
 }
 
@@ -317,4 +318,42 @@ fn injections_query_is_stored() {
 /// The registry injected language names resolve in.
 fn bundled() -> std::sync::Arc<LanguageRegistry> {
     std::sync::Arc::new(LanguageRegistry::bundled())
+}
+
+#[test]
+fn extension_language_carries_editing() {
+    use lucerna_syntax::{BracketPair, LanguageEditing};
+    let mut spec = ext("ed-ext", "Edit Lang", &["edl"]);
+    let editing = LanguageEditing {
+        brackets: vec![BracketPair {
+            start: "<".into(),
+            end: ">".into(),
+            close: true,
+            newline: false,
+            not_in: vec!["string".into()],
+        }],
+        autoclose_before: ";".into(),
+        line_comments: vec!["--".into()],
+        block_comment: Some(("{-".into(), "-}".into())),
+    };
+    spec.editing = editing.clone();
+    let with_indents = dir_with(
+        "ed-ext-indents",
+        &[
+            ("highlights.scm", "(string) @string"),
+            ("indents.scm", "(object) @indent"),
+        ],
+    );
+    let without_indents = spec.dir.clone();
+    let mut with = spec.clone();
+    with.dir = with_indents;
+    with.name = "Edit Lang Indents".into();
+    with.path_suffixes = vec!["edi".into()];
+    let registry = LanguageRegistry::build(&[spec, with], assoc(&[]));
+    let plain = registry.language_by_name("Edit Lang").unwrap();
+    assert_eq!(plain.editing(), &editing);
+    assert!(plain.indents_query().is_none());
+    assert!(without_indents.is_dir());
+    let indented = registry.language_by_name("Edit Lang Indents").unwrap();
+    assert_eq!(indented.indents_query(), Some("(object) @indent"));
 }

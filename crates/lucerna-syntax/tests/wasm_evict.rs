@@ -26,6 +26,7 @@ fn retain_grammars_drops_unused_and_live_parsers_keep_working() {
         path_suffixes: vec!["ev".into()],
         first_line_pattern: None,
         hidden: false,
+        editing: Default::default(),
     };
     let registry = Arc::new(LanguageRegistry::build(&[spec], Associations::default()));
     let language = registry.language_by_name("Evict").unwrap();

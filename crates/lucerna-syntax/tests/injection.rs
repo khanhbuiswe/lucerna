@@ -66,6 +66,7 @@ fn json_extension_with(name: &str, highlights: &str, injections: &str) -> Extens
         path_suffixes: vec![name.to_lowercase()],
         first_line_pattern: None,
         hidden: false,
+        editing: Default::default(),
     }
 }
 

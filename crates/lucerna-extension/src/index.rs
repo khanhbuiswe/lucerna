@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::builder::unique_suffix;
-use crate::language_config::{load_language_config, query_files};
+use crate::language_config::{BlockComment, BracketPairConfig, load_language_config, query_files};
 use crate::lock::lock_index;
 use crate::manifest::{ExtensionManifest, load_manifest};
 use crate::snippets::check_snippets;
@@ -42,7 +42,7 @@ pub struct GrammarRef {
     pub wasm_path: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LanguageEntry {
     pub name: String,
     /// The installed language directory (holds `config.toml` and queries).
@@ -53,6 +53,14 @@ pub struct LanguageEntry {
     pub hidden: bool,
     /// Query kinds present (`highlights`, `injections`, ...).
     pub queries: Vec<String>,
+    #[serde(default)]
+    pub line_comments: Vec<String>,
+    #[serde(default)]
+    pub block_comment: Option<BlockComment>,
+    #[serde(default)]
+    pub brackets: Vec<BracketPairConfig>,
+    #[serde(default)]
+    pub autoclose_before: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +202,10 @@ fn index_one(dir: &Path, id: &str) -> IndexedExtension {
             first_line_pattern: cfg.first_line_pattern,
             hidden: cfg.hidden,
             queries,
+            line_comments: cfg.line_comments,
+            block_comment: cfg.block_comment,
+            brackets: cfg.brackets,
+            autoclose_before: cfg.autoclose_before,
         });
     }
 

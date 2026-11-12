@@ -348,6 +348,7 @@ fn at_falls_back_to_outline_without_server(cx: &mut TestAppContext) {
             path_suffixes: vec!["outl".into()],
             first_line_pattern: None,
             hidden: false,
+            editing: Default::default(),
         }],
         Associations::default(),
     );

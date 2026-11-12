@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tree_sitter::{Query, QueryPredicateArg};
 
 use crate::associations::Associations;
+use crate::editing::LanguageEditing;
 use crate::injection::InjectionQuery;
 use crate::outline::OutlineQuery;
 use crate::wasm;
@@ -79,6 +80,9 @@ pub struct Language {
     /// `brackets` and `outline`), so building a registry opens no query
     /// file.
     query_dir: Option<PathBuf>,
+    editing: LanguageEditing,
+    /// Extension languages only: `indents.scm`, read on first use.
+    indents: OnceLock<Option<String>>,
     queries: OnceLock<Option<LanguageQueries>>,
 }
 
@@ -231,6 +235,7 @@ pub struct ExtensionLanguage {
     pub path_suffixes: Vec<String>,
     pub first_line_pattern: Option<String>,
     pub hidden: bool,
+    pub editing: LanguageEditing,
 }
 
 impl Language {
@@ -257,6 +262,20 @@ impl Language {
             GrammarSource::Native(_) | GrammarSource::None => true,
             GrammarSource::Wasm { key, path } => wasm::is_loaded(key, path),
         }
+    }
+
+    /// Pairs and comment tokens used while editing this language.
+    pub fn editing(&self) -> &LanguageEditing {
+        &self.editing
+    }
+
+    /// An extension language's `indents.scm` source, read on first use.
+    /// Bundled languages have none.
+    pub fn indents_query(&self) -> Option<&str> {
+        let dir = self.query_dir.as_ref()?;
+        self.indents
+            .get_or_init(|| std::fs::read_to_string(dir.join("indents.scm")).ok())
+            .as_deref()
     }
 
     pub fn origin(&self) -> &LanguageOrigin {
@@ -344,6 +363,8 @@ impl Language {
             outline: None,
             first_line: None,
             query_dir: None,
+            editing: LanguageEditing::default(),
+            indents: OnceLock::new(),
             queries: OnceLock::new(),
         }
     }
@@ -379,6 +400,7 @@ impl Language {
             filenames: spec.path_suffixes.clone(),
             first_line,
             query_dir: Some(spec.dir.clone()),
+            editing: spec.editing.clone(),
             ..Language::new(
                 &id,
                 &spec.name,
@@ -914,6 +936,7 @@ fn lang(
             "html" => Some(tree_sitter_html::INJECTIONS_QUERY.to_string()),
             _ => None,
         },
+        editing: LanguageEditing::bundled(id),
         ..Language::new(
             id,
             name,

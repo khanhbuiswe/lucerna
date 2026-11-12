@@ -18,6 +18,8 @@ pub mod test_support;
 pub mod toolchain;
 pub mod validate;
 
-pub use language_config::{LanguageConfig, QUERY_KINDS, load_language_config, query_files};
+pub use language_config::{
+    BlockComment, BracketPairConfig, LanguageConfig, QUERY_KINDS, load_language_config, query_files,
+};
 pub use manifest::{ExtensionManifest, GrammarManifest, ManifestError, load_manifest};
 pub use snippets::{SnippetFile, check_snippet_body, check_snippets};
