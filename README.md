@@ -215,7 +215,7 @@ non-blank character of the next line.
 | `editor.cursorStyle` | `"line"` | Cursor shape |
 | `editor.emptySelectionClipboard` | `true` | Copy or cut the whole line when nothing is selected |
 | `files.eol` | `"auto"` | Line ending for new text |
-| `files.encoding` | `"utf8"` | Encoding for new files |
+| `files.encoding` | `"utf8"` | Reserved: encoding for new files, not read yet (takes effect in a later release) |
 | `files.insertFinalNewline` | `false` | Add a final newline on save |
 | `files.trimFinalNewlines` | `false` | Remove extra final newlines on save |
 | `files.trimTrailingWhitespace` | `false` | Remove trailing whitespace on save |
