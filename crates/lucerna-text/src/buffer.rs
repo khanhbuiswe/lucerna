@@ -112,6 +112,11 @@ impl Buffer {
         self.history.is_dirty()
     }
 
+    /// Whether an undone step is waiting to be redone. Any edit drops it.
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
     /// Closes the open undo group, then captures what to write and the
     /// history state that becomes clean once the write succeeds.
     pub fn begin_save(&mut self) -> (BufferSnapshot, HistoryState) {

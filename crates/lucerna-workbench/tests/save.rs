@@ -565,16 +565,56 @@ fn saving_a_deleted_file_recreates_it(cx: &mut TestAppContext) {
     assert_eq!(edited_count(&events), 1);
 }
 
-/// Controller ruling (b): a conflict outlives a return to clean, so the
-/// newer disk text is picked up then.
+/// Final review, finding 1: undoing a conflicted document back to clean
+/// keeps the user's step redoable. The conflict stays; the disk text is
+/// taken on the next disk event, on Revert, or when the text is clean with
+/// nothing left to redo.
 #[gpui::test]
-fn undo_to_clean_while_conflicted_reloads(cx: &mut TestAppContext) {
+fn undo_to_clean_while_conflicted_keeps_redo(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = conflicted(cx);
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "abc\n");
+    assert!(has_conflict(&wb, "file.txt", cx));
+    assert!(!is_dirty(&wb, "file.txt", cx));
+    assert!(drawn("tab-conflict-0-0", cx));
+    keys("cmd-shift-z", cx);
+    assert_eq!(text_of(&view, cx), "xabc\n");
+    assert!(has_conflict(&wb, "file.txt", cx));
+    assert!(is_dirty(&wb, "file.txt", cx));
+    // Undone again, the next disk event takes the disk text.
+    keys("cmd-z", cx);
+    external_write(&wb, &dir, "disk 2\n", cx);
+    assert_eq!(text_of(&view, cx), "disk 2\n");
+    assert!(!has_conflict(&wb, "file.txt", cx));
+}
+
+/// Undone to clean while conflicted, Revert takes the disk text.
+#[gpui::test]
+fn undo_to_clean_while_conflicted_then_revert(cx: &mut TestAppContext) {
     init(cx, None);
     let (_dir, wb, view, cx) = conflicted(cx);
     keys("cmd-z", cx);
+    run(&wb, "workbench.action.files.revert", cx);
     assert_eq!(text_of(&view, cx), "disk\n");
     assert!(!has_conflict(&wb, "file.txt", cx));
-    assert!(!is_dirty(&wb, "file.txt", cx));
+}
+
+/// Redone back to the saved text with nothing left to redo: no user text
+/// is lost, so the disk text is taken.
+#[gpui::test]
+fn redo_to_clean_while_conflicted_reloads(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    keys("cmd-s", cx);
+    keys("cmd-z", cx);
+    assert!(is_dirty(&wb, "file.txt", cx));
+    external_write(&wb, &dir, "disk\n", cx);
+    assert!(has_conflict(&wb, "file.txt", cx));
+    keys("cmd-shift-z", cx);
+    assert_eq!(text_of(&view, cx), "disk\n");
+    assert!(!has_conflict(&wb, "file.txt", cx));
 }
 
 /// Controller ruling (c): a deleted file that comes back while the text is

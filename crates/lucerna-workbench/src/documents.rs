@@ -1125,6 +1125,7 @@ impl Documents {
         };
         doc.version = buffer.version();
         let dirty = buffer.is_dirty();
+        let can_redo = buffer.can_redo();
         if !patch.is_empty() {
             let snapshot = buffer.snapshot();
             doc.snapshot = Some(snapshot.clone());
@@ -1154,9 +1155,13 @@ impl Documents {
                 dirty,
             });
         }
-        // Back to the saved text while the disk has newer text: nothing
-        // unsaved is left to protect, so the disk's text is taken now.
-        let reload = doc.conflict && was_dirty && !dirty;
+        // Back to the saved text while the disk has newer text, with no
+        // undone step left to redo: nothing of the user's is left to
+        // protect, so the disk's text is taken now. With a step to redo
+        // (an undo back to clean), taking it would drop that step, so the
+        // conflict stays until the next disk event, a Revert, or a redo
+        // back to clean with nothing left to redo.
+        let reload = doc.conflict && was_dirty && !dirty && !can_redo;
         if !patch.is_empty() {
             // From the edited tree: tree-sitter reuses what the edit did
             // not touch.

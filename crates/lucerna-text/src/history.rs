@@ -96,6 +96,10 @@ impl History {
         self.depth > 0
     }
 
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
     pub fn start(&mut self, selections_before: Option<SelectionsToken>) {
         self.depth += 1;
         if self.depth > 1 {
@@ -418,6 +422,21 @@ mod tests {
         ed(&mut b, 1..1, "c");
         assert!(b.redo().is_none());
         assert_eq!(text(&b), "ac");
+    }
+
+    #[test]
+    fn can_redo_follows_the_redo_stack() {
+        let mut b = buf("a");
+        assert!(!b.can_redo());
+        ed(&mut b, 1..1, "b");
+        assert!(!b.can_redo());
+        b.undo().unwrap();
+        assert!(b.can_redo());
+        b.redo().unwrap();
+        assert!(!b.can_redo());
+        b.undo().unwrap();
+        ed(&mut b, 1..1, "c");
+        assert!(!b.can_redo());
     }
 
     #[test]
