@@ -33,6 +33,11 @@
   "search.searchEditor.defaultNumberOfContextLines": 1,
   "workbench.colorTheme": "One Dark",
   "workbench.iconTheme": "Lucide",
+  // Controls which editor is shown at startup, if none are restored from the previous session.
+  // "welcomePage" | "welcomePageInEmptyWorkbench": the Welcome screen when Lucerna starts without a folder.
+  // "none": ask for a folder instead; Cancel quits.
+  "workbench.startupEditor": "welcomePage",
+  "workbench.tips.enabled": true,
   "files.associations": {},
   "extensions.autoCheckUpdates": true,
   "workbench.editor.enablePreview": true,

@@ -508,7 +508,7 @@ fn config_paths_layout() {
     assert_eq!(paths.user_dir, PathBuf::from("/u"));
     assert_eq!(
         paths.workspace_settings,
-        PathBuf::from("/r/.lucerna/settings.json")
+        Some(PathBuf::from("/r/.lucerna/settings.json"))
     );
     assert_eq!(paths.user_settings(), PathBuf::from("/u/settings.json"));
     assert_eq!(paths.keybindings(), PathBuf::from("/u/keybindings.json"));
@@ -616,4 +616,18 @@ fn settings_change_keeps_scroll_position(cx: &mut TestAppContext) {
         cx,
     );
     assert_eq!(cx.update(|_, cx| view.read(cx).scroll_top_row()), 120);
+}
+
+#[gpui::test]
+fn user_only_loads_user_settings_without_a_workspace_layer(cx: &mut TestAppContext) {
+    let user = tempfile::tempdir().unwrap();
+    std::fs::write(
+        user.path().join("settings.json"),
+        "{\"workbench.colorTheme\":\"One Light\"}",
+    )
+    .unwrap();
+    init_with(ConfigPaths::user_only_with_user_dir(user.path()), cx);
+    let (_wb, cx) = cx.add_window_view(|_, _| gpui::Empty);
+    assert_eq!(theme_name(cx), "One Light");
+    assert!(error_texts(cx).is_empty());
 }

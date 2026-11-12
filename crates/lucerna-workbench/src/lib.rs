@@ -35,6 +35,7 @@ pub mod recent;
 mod references_view;
 mod save;
 mod search_view;
+mod startup;
 pub mod status_message;
 mod symbols;
 pub mod tasks;
@@ -84,6 +85,7 @@ pub use quick_open::{
 pub use references_view::{ReferencesView, find_references_in_tab};
 pub use save::{SaveOptions, SaveReason};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
+pub use startup::{Startup, startup_choice};
 pub use symbols::{
     BREADCRUMBS_BATCH, BreadcrumbMode, EMPTY_SYMBOLS_TTL, FilePathMode, MAX_WORKSPACE_SYMBOLS,
     SYMBOLS_DEBOUNCE, Segment, SymbolPathMode, SymbolSource, SymbolState,
