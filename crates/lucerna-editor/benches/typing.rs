@@ -29,7 +29,7 @@ fn rust_text_10k_lines() -> String {
     (0..2_500)
         .map(|i| {
             format!(
-                "fn f_{i}(x: u32) -> u32 {{\n    let value = compute(x, \"text\"); // {i}\n    value + 1\n}}\n"
+                "fn f_{i}(x: u32) -> u32 {{\n    let value = compute(x, \"text\", {i});\n    value + 1\n}}\n"
             )
         })
         .collect()
@@ -177,9 +177,23 @@ fn typing(c: &mut Criterion) {
     });
     let parsed = parsed_rust();
     let fresh = || Buffer::from_bytes(parsed.text.as_bytes(), false).unwrap();
-    // Row 4k + 1 is `    let value = compute(x, "text"); // k`; the
+    // Row 4k + 1 is `    let value = compute(x, "text", k);`, in code; the
     // 1,000 cursors sit on every other function's.
     let let_rows = |count: u32| (0..count).map(|i| i * 8 + 1);
+    {
+        // The quote case measures an auto-close, not a plain insert.
+        let buffer = fresh();
+        let set = cursors_at_rows(&buffer, std::iter::once(5_001));
+        let snapshot = buffer.snapshot();
+        let ctx = Ctx {
+            snapshot: &snapshot,
+            config: &config,
+            language: Some(parsed.language.editing()),
+            syntax: Some(&parsed.syntax),
+        };
+        let plan = commands::insert(ctx, &set, "\"", EditKind::TypingOther, &[]);
+        assert_eq!(plan.autoclose.len(), 1, "the quote auto-closes");
+    }
     let cases: [(&str, &str, u32); 3] = [
         ("rust_quote_10k_lines", "\"", 1),
         ("rust_close_paren_10k_lines", ")", 1),

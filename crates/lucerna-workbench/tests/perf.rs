@@ -168,3 +168,37 @@ fn keystroke_latency_1000_cursors(cx: &mut TestAppContext) {
     report("1000 cursors edit", edit);
     report("1000 cursors keystroke total", total);
 }
+
+/// Smart typing (spec §15): brackets and quotes that auto-close and type
+/// over, on the parsed 10,000-line file. Each round types `("")`, so every
+/// key runs the scope check of auto-close or overtype.
+#[gpui::test]
+#[ignore = "a measurement: run in a release build with --ignored"]
+fn keystroke_latency_smart_typing(cx: &mut TestAppContext) {
+    let (_dir, view, cx) = rust_10k(cx);
+    // After `{`, before a space: pairs auto-close there.
+    view.update(cx, |v, cx| {
+        v.go_to(
+            Point {
+                row: 5_000,
+                column: 26,
+            },
+            cx,
+        )
+    });
+    let mut total = Vec::new();
+    for i in 0..300 {
+        let text = ["(", "\"", "\"", ")"][i % 4];
+        let start = Instant::now();
+        view.update(cx, |v, cx| v.type_text(text, cx));
+        draw(cx);
+        total.push(start.elapsed());
+        cx.run_until_parked();
+    }
+    let line = view.read_with(cx, |v, _| v.snapshot().line(5_000).to_string());
+    assert!(
+        line.contains("(\"\")(\"\")"),
+        "auto-closed and typed over: {line}"
+    );
+    report("smart typing keystroke total", total);
+}
