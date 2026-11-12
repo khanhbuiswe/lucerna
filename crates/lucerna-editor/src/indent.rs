@@ -138,16 +138,17 @@ pub(crate) fn closer_indent(ctx: Ctx, offset: usize, ch: &str) -> Option<(Range<
         .iter()
         .find(|p| p.start != p.end && p.end == ch)?;
     let snap = ctx.snapshot;
-    // Not inside a string or comment (VS Code's `ignoreBracketsInToken`).
-    if let Some(syntax) = ctx.syntax.filter(|s| s.tree().is_some())
-        && syntax.scope_at(snap, offset) != Scope::Code
-    {
-        return None;
-    }
+    // The cheap check first: this runs on every keystroke of a closer.
     let p = snap.offset_to_point(offset);
     let line = snap.line(p.row);
     let prefix = &line[..(p.column as usize).min(line.len())];
     if !prefix.bytes().all(|b| b == b' ' || b == b'\t') {
+        return None;
+    }
+    // Not inside a string or comment (VS Code's `ignoreBracketsInToken`).
+    if let Some(syntax) = ctx.syntax.filter(|s| s.tree().is_some())
+        && syntax.scope_at(snap, offset) != Scope::Code
+    {
         return None;
     }
     let open = matching_open(ctx, offset, pair)?;

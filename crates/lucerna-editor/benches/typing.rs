@@ -1,16 +1,20 @@
-//! Typing (spec §15): one char into a 10,000-line file, and one char at
-//! 1,000 cursors (target <= 16 ms). Each builds the plan with
-//! `commands::insert` and applies it to the buffer, as the workbench does.
+//! Typing (spec §15): one char into a 10,000-line file (target <= 8 ms),
+//! and one char at 1,000 cursors (target <= 16 ms). Each builds the plan
+//! with `commands::insert` (or `commands::newline`) and applies it to the
+//! buffer, as the workbench does. The `rust_*` cases run on a parsed
+//! 10,000-line Rust file with the bundled language's editing data, so
+//! auto-close, overtype and closer indent see real scopes.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use lucerna_editor::{
-    AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, EditConfig, EditKind, Goal,
-    Selection, SelectionSet, commands,
+    AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, EditConfig, EditKind, EditPlan,
+    Goal, Selection, SelectionSet, commands,
 };
-use lucerna_text::Buffer;
+use lucerna_syntax::{Language, LanguageRegistry, ParseOutcome, SyntaxState};
+use lucerna_text::{Buffer, Point};
 
 /// 10,000 lines of Rust-like text.
 fn buffer_10k_lines() -> Buffer {
@@ -18,6 +22,79 @@ fn buffer_10k_lines() -> Buffer {
         .map(|i| format!("    let value_{i} = compute({i}, \"text\"); // line {i}\n"))
         .collect();
     Buffer::from_bytes(text.as_bytes(), false).unwrap()
+}
+
+/// 10,000 lines of Rust: 2,500 functions of four lines each.
+fn rust_text_10k_lines() -> String {
+    (0..2_500)
+        .map(|i| {
+            format!(
+                "fn f_{i}(x: u32) -> u32 {{\n    let value = compute(x, \"text\"); // {i}\n    value + 1\n}}\n"
+            )
+        })
+        .collect()
+}
+
+/// The text parsed once; each run gets a fresh buffer of the same text.
+struct Parsed {
+    text: String,
+    language: Arc<Language>,
+    syntax: SyntaxState,
+}
+
+fn parsed_rust() -> Parsed {
+    let text = rust_text_10k_lines();
+    let registry = Arc::new(LanguageRegistry::bundled());
+    let language = registry.language_by_name("Rust").unwrap();
+    let mut syntax = SyntaxState::new(language.clone(), registry).unwrap();
+    let buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
+    assert_eq!(syntax.parse(&buffer.snapshot(), None), ParseOutcome::Done);
+    Parsed {
+        text,
+        language,
+        syntax,
+    }
+}
+
+/// A cursor at the end of each of `rows`.
+fn cursors_at_rows(buffer: &Buffer, rows: impl Iterator<Item = u32>) -> SelectionSet {
+    let snapshot = buffer.snapshot();
+    let selections = rows
+        .enumerate()
+        .map(|(i, row)| {
+            let at = snapshot.point_to_offset(Point {
+                row,
+                column: snapshot.line(row).len() as u32,
+            });
+            Selection {
+                id: i as u64,
+                anchor: at,
+                head: at,
+                goal: Goal::None,
+            }
+        })
+        .collect();
+    SelectionSet::from_selections(selections, 0, true)
+}
+
+/// Builds a plan on `parsed` with `build` and applies it to `buffer`.
+fn apply_parsed(
+    buffer: &mut Buffer,
+    parsed: &Parsed,
+    config: &EditConfig,
+    build: impl FnOnce(Ctx) -> EditPlan,
+) {
+    let snapshot = buffer.snapshot();
+    let ctx = Ctx {
+        snapshot: &snapshot,
+        config,
+        language: Some(parsed.language.editing()),
+        syntax: Some(&parsed.syntax),
+    };
+    let plan = build(ctx);
+    buffer.start_transaction(None);
+    buffer.edit(plan.edits);
+    buffer.end_transaction(None);
 }
 
 fn config() -> EditConfig {
@@ -95,6 +172,53 @@ fn typing(c: &mut Criterion) {
                 (buffer, set)
             },
             |(mut buffer, set)| type_x(&mut buffer, &set, &config),
+            BatchSize::LargeInput,
+        )
+    });
+    let parsed = parsed_rust();
+    let fresh = || Buffer::from_bytes(parsed.text.as_bytes(), false).unwrap();
+    // Row 4k + 1 is `    let value = compute(x, "text"); // k`; the
+    // 1,000 cursors sit on every other function's.
+    let let_rows = |count: u32| (0..count).map(|i| i * 8 + 1);
+    let cases: [(&str, &str, u32); 3] = [
+        ("rust_quote_10k_lines", "\"", 1),
+        ("rust_close_paren_10k_lines", ")", 1),
+        ("rust_close_paren_1000_cursors", ")", 1_000),
+    ];
+    for (name, ch, count) in cases {
+        group.bench_function(name, |b| {
+            b.iter_batched(
+                || {
+                    let buffer = fresh();
+                    let set = if count == 1 {
+                        cursors_at_rows(&buffer, std::iter::once(5_001))
+                    } else {
+                        cursors_at_rows(&buffer, let_rows(count))
+                    };
+                    (buffer, set)
+                },
+                |(mut buffer, set)| {
+                    apply_parsed(&mut buffer, &parsed, &config, |ctx| {
+                        commands::insert(ctx, &set, ch, EditKind::TypingOther, &[])
+                    })
+                },
+                BatchSize::LargeInput,
+            )
+        });
+    }
+    // Row 4k is `fn f_k(x: u32) -> u32 {`.
+    group.bench_function("rust_enter_after_brace_10k_lines", |b| {
+        b.iter_batched(
+            || {
+                let buffer = fresh();
+                let set = cursors_at_rows(&buffer, std::iter::once(5_000));
+                (buffer, set)
+            },
+            |(mut buffer, set)| {
+                apply_parsed(&mut buffer, &parsed, &config, |ctx| {
+                    commands::newline(ctx, &set)
+                })
+            },
             BatchSize::LargeInput,
         )
     });
