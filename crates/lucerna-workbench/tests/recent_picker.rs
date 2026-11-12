@@ -178,3 +178,87 @@ fn keys_drive_the_picker(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     assert_eq!(*events.lock().unwrap(), vec![RecentPickerEvent::Dismiss]);
 }
+
+fn two(cx: &mut TestAppContext) -> (Entity<RecentPicker>, Events, &mut VisualTestContext) {
+    open(vec![folder("/Users/me/a"), folder("/Users/me/b")], cx)
+}
+
+fn center(selector: &'static str, cx: &mut VisualTestContext) -> gpui::Point<gpui::Pixels> {
+    cx.debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"))
+        .center()
+}
+
+fn open_event(path: &str, new_window: bool) -> RecentPickerEvent {
+    RecentPickerEvent::Open {
+        entry: folder(path),
+        new_window,
+    }
+}
+
+#[gpui::test]
+fn clicking_a_row_opens_it(cx: &mut TestAppContext) {
+    let (_, events, cx) = two(cx);
+    let at = center("recent-picker-row-1", cx);
+    cx.simulate_click(at, gpui::Modifiers::none());
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![open_event("/Users/me/b", false)]
+    );
+}
+
+#[gpui::test]
+fn cmd_clicking_a_row_opens_a_new_window(cx: &mut TestAppContext) {
+    let (_, events, cx) = two(cx);
+    let at = center("recent-picker-row-0", cx);
+    cx.simulate_click(at, gpui::Modifiers::command());
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![open_event("/Users/me/a", true)]
+    );
+}
+
+#[gpui::test]
+fn the_remove_button_only_removes(cx: &mut TestAppContext) {
+    let (picker, events, cx) = two(cx);
+    let at = center("recent-picker-row-0", cx);
+    cx.simulate_mouse_move(at, None, gpui::Modifiers::none());
+    draw(cx);
+    let at = center("recent-picker-remove-0", cx);
+    cx.simulate_click(at, gpui::Modifiers::none());
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![RecentPickerEvent::Remove(PathBuf::from("/Users/me/a"))]
+    );
+    assert_eq!(texts(&picker, cx), vec!["b ~/"]);
+}
+
+#[gpui::test]
+fn the_new_window_button_only_opens_a_new_window(cx: &mut TestAppContext) {
+    let (_, events, cx) = two(cx);
+    let at = center("recent-picker-row-0", cx);
+    cx.simulate_mouse_move(at, None, gpui::Modifiers::none());
+    draw(cx);
+    let at = center("recent-picker-new-window-0", cx);
+    cx.simulate_click(at, gpui::Modifiers::none());
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![open_event("/Users/me/a", true)]
+    );
+}
+
+#[gpui::test]
+fn enter_and_cmd_enter_open_the_selected_row(cx: &mut TestAppContext) {
+    let (picker, events, cx) = two(cx);
+    let focus = cx.update(|_, cx| gpui::Focusable::focus_handle(picker.read(cx), cx));
+    cx.update(|window, cx| window.focus(&focus, cx));
+    cx.simulate_keystrokes("down enter");
+    cx.simulate_keystrokes("cmd-enter");
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            open_event("/Users/me/b", false),
+            open_event("/Users/me/b", true)
+        ]
+    );
+}

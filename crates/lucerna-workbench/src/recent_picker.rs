@@ -199,9 +199,9 @@ impl RecentPicker {
         let (index, positions) = &self.rows[row];
         let entry = &self.entries[*index];
         let ui = &cx.global::<AppState>().theme.ui;
-        let (icon, noun) = match entry.kind {
-            RecentKind::Folder => (icons::FOLDER, "folder"),
-            RecentKind::File => (icons::FILE, "file"),
+        let icon = match entry.kind {
+            RecentKind::Folder => icons::FOLDER,
+            RecentKind::File => icons::FILE,
         };
         // The text is "{name} {parent}": split the matches at the space.
         let split = self.name_chars[*index] as u32;
@@ -241,9 +241,7 @@ impl RecentPicker {
                     .data(icon)
                     .size(px(FILE_ICON_SIZE))
                     .flex_none()
-                    .text_color(color(ui.icon_muted))
-                    .id(("recent-picker-icon", row))
-                    .tooltip(tooltip(noun)),
+                    .text_color(color(ui.icon_muted)),
             )
             .child(
                 div()
@@ -272,7 +270,7 @@ impl RecentPicker {
                         button(
                             "recent-picker-new-window",
                             icons::ARROW_UP_RIGHT,
-                            "Open in New Window",
+                            "Open in New Window (⌘Enter)",
                         )
                         .on_click(cx.listener(
                             move |picker, _, window, cx| {
