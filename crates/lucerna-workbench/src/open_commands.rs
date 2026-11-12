@@ -166,7 +166,7 @@ impl Workbench {
         }
         self.close_modal_overlays(window, cx);
         let dir = data_dir(cx);
-        let root = self.root().to_path_buf();
+        let opened = self.opened_paths();
         let load = cx.spawn_in(window, async move |wb, cx| {
             let entries = match dir {
                 Some(dir) => {
@@ -179,7 +179,10 @@ impl Workbench {
             };
             wb.update_in(cx, |wb, window, cx| {
                 wb.recent_picker_loading = None;
-                let entries = entries.into_iter().filter(|e| e.path != root).collect();
+                let entries = entries
+                    .into_iter()
+                    .filter(|e| !opened.contains(&e.path))
+                    .collect();
                 wb.open_recent_picker(entries, window, cx);
             })
             .ok();

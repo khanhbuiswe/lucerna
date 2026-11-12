@@ -652,14 +652,24 @@ fn set_menus(recent: &[RecentEntry], cx: &mut App) {
     } else {
         Platform::Other
     };
-    let window = match active_window(cx) {
-        Some(id) if WindowHandle::<Workbench>::new(id).read(cx).is_ok() => WindowKind::Workbench,
-        _ => WindowKind::Welcome,
+    let opened = active_window(cx)
+        .and_then(|id| WindowHandle::<Workbench>::new(id).read(cx).ok())
+        .map(Workbench::opened_paths);
+    let window = match opened {
+        Some(_) => WindowKind::Workbench,
+        None => WindowKind::Welcome,
     };
+    // Choosing the window's own folder would only reopen it.
+    let opened = opened.unwrap_or_default();
+    let recent: Vec<RecentEntry> = recent
+        .iter()
+        .filter(|entry| !opened.contains(&entry.path))
+        .cloned()
+        .collect();
     cx.set_menus(build_menus(&BuildInput {
         commands: &commands,
         platform,
-        recent,
+        recent: &recent,
         window,
     }));
 }
@@ -673,14 +683,31 @@ fn active_window(cx: &App) -> Option<WindowId> {
         .map(|window| window.window_id())
 }
 
+/// Whether the menu may run `id` in `context`: where its key would. A
+/// command whose every binding has a `when` that does not hold is left
+/// alone, so Undo with the find box focused does not undo the document.
+/// A command with no binding, or one with no `when`, always runs.
+fn menu_may_run(keymap: &Keymap, id: &str, context: &WhenContext) -> bool {
+    let mut bindings = keymap.bindings_for(id).peekable();
+    if bindings.peek().is_none() {
+        return true;
+    }
+    bindings.any(|b| b.when.as_ref().is_none_or(|w| w.eval(context)))
+}
+
 /// Runs `id` in the active window's workbench, or Welcome screen; with no
-/// window, nothing.
+/// window, nothing. In a workbench, only where the command's key would
+/// run it ([`menu_may_run`]): AppKit fires a menu item for a key the
+/// workbench let through.
 fn run_command(id: &str, cx: &mut App) {
     let Some(window) = active_window(cx) else {
         return;
     };
     let ran = WindowHandle::<Workbench>::new(window).update(cx, |wb, window, cx| {
-        wb.run_command(id, None, window, cx);
+        let context = wb.context_keys(window, cx);
+        if menu_may_run(&cx.global::<AppState>().keymap, id, &context) {
+            wb.run_command(id, None, window, cx);
+        }
     });
     if ran.is_err() {
         WindowHandle::<WelcomeView>::new(window)
@@ -928,6 +955,28 @@ mod tests {
             r#"[{ "key": "cmd+p", "command": "-workbench.action.quickOpen" }]"#,
         ));
         assert_eq!(menu_key_bindings(&removed, &ids), []);
+    }
+
+    #[test]
+    fn menu_runs_commands_where_their_key_would() {
+        let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
+        assert!(error.is_none());
+        let mut text_input = WhenContext::default();
+        text_input.set("editorFocus", ContextValue::Bool(true));
+        text_input.set("editorTextFocus", ContextValue::Bool(false));
+        let mut editor = text_input.clone();
+        editor.set("editorTextFocus", ContextValue::Bool(true));
+        // `when` is `editorTextFocus && !editorReadonly`.
+        assert!(!menu_may_run(&keymap, "undo", &text_input));
+        assert!(menu_may_run(&keymap, "undo", &editor));
+        // ⌘B has no `when`; Clear Recently Opened has no key.
+        let none = WhenContext::default();
+        assert!(menu_may_run(
+            &keymap,
+            "workbench.action.toggleSidebarVisibility",
+            &none
+        ));
+        assert!(menu_may_run(&keymap, CLEAR_RECENT, &none));
     }
 
     #[test]

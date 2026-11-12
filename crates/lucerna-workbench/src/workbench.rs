@@ -147,6 +147,8 @@ pub struct Workbench {
     /// `false` in single-file mode: the worktree neither scans nor
     /// watches, so every open file is followed by the open-file watcher.
     scanning: bool,
+    /// The file of single-file mode, absolute; `None` for a folder.
+    single_file: Option<PathBuf>,
     /// Follows open files the worktree does not; `None` on the test
     /// scheduler or when it could not start.
     open_file_watcher: Option<OpenFileWatcher>,
@@ -405,6 +407,7 @@ impl Workbench {
         };
         let scan_started = std::time::Instant::now();
         let scanning = single_file.is_none();
+        let single_file_path = single_file.as_ref().map(|rel| root.join(rel));
         let worktree = match single_file {
             Some(file) => Worktree::without_scan(root.clone(), vec![file]),
             None => Worktree::start(root.clone(), scan_options.clone()),
@@ -533,6 +536,7 @@ impl Workbench {
             languages_generation: cx.global::<AppState>().languages_generation,
             _worktree_events: worktree_events,
             scanning,
+            single_file: single_file_path,
             open_file_watcher,
             watched_open_files: Vec::new(),
             _open_file_events: open_file_events,
@@ -725,6 +729,14 @@ impl Workbench {
     /// The opened folder.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// What this window shows, which Open Recent leaves out: the folder,
+    /// and in single-file mode the file too.
+    pub fn opened_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.root.clone()];
+        paths.extend(self.single_file.clone());
+        paths
     }
 
     /// The opened folder's name, as the title bar shows it.
