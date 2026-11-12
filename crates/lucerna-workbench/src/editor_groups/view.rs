@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     AnyView, App, ClickEvent, Context, DragMoveEvent, Entity, IntoElement, MouseButton,
@@ -18,6 +19,7 @@ use crate::documents::{DocState, Documents};
 use crate::icons;
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
+use crate::save::{self, SaveChoice};
 use crate::symbols::breadcrumbs::{
     BreadcrumbSettings, Crumbs, breadcrumb_segments, breadcrumbs_row, segments_text,
 };
@@ -159,6 +161,41 @@ impl EditorGroupsView {
         }
         cx.notify();
         result
+    }
+
+    /// Closes tab `id` for the user (the tab's ×, a middle click,
+    /// `workbench.action.closeActiveEditor`). When it is the last tab
+    /// showing a document with unsaved changes, asks first (spec §6.3):
+    /// Save closes it once saved, Don't Save closes it and so drops the
+    /// document with its history, Cancel keeps it.
+    pub fn request_close(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((path, documents)) = self.last_tab_of_dirty(id, cx) else {
+            self.update_model(cx, |m| m.close(id));
+            return;
+        };
+        let answer = save::prompt_unsaved(&save::display_name(&path), window, cx);
+        cx.spawn_in(window, async move |view, cx| {
+            let close = match SaveChoice::of(answer.await) {
+                SaveChoice::Save => save::save_each(documents, vec![path], cx).await,
+                SaveChoice::DontSave => true,
+                SaveChoice::Cancel => false,
+            };
+            if close {
+                view.update(cx, |view, cx| view.update_model(cx, |m| m.close(id)))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// The path and documents of tab `id` when it shows a document with
+    /// unsaved changes that no other tab, in any group, shows.
+    fn last_tab_of_dirty(&self, id: TabId, cx: &App) -> Option<(Arc<Path>, Entity<Documents>)> {
+        let tabs = || self.model.groups().iter().flat_map(|g| &g.tabs);
+        let path = tabs().find(|t| t.id == id)?.path()?.clone();
+        let documents = self.documents.clone()?;
+        let shown_elsewhere = tabs().any(|t| t.id != id && t.path() == Some(&path));
+        (!shown_elsewhere && documents.read(cx).is_dirty(&path)).then_some((path, documents))
     }
 
     /// Replaces the layout with the one saved in `state` (see
@@ -517,9 +554,9 @@ impl Render for EditorGroupsView {
                         .rounded(px(GRID))
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover))
-                        .on_click(cx.listener(move |view, _, _, cx| {
+                        .on_click(cx.listener(move |view, _, window, cx| {
                             cx.stop_propagation();
-                            view.update_model(cx, |m| m.close(id));
+                            view.request_close(id, window, cx);
                         }))
                         .child(
                             svg()
@@ -565,8 +602,8 @@ impl Render for EditorGroupsView {
                     }))
                     .on_mouse_up(
                         MouseButton::Middle,
-                        cx.listener(move |view, _, _, cx| {
-                            view.update_model(cx, |m| m.close(id));
+                        cx.listener(move |view, _, window, cx| {
+                            view.request_close(id, window, cx);
                         }),
                     )
                     .children(icon)

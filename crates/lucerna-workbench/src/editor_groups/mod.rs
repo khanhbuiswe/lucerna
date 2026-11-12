@@ -24,8 +24,13 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "workbench.action.closeActiveEditor",
         "View: Close Editor",
-        |wb, _, _, cx| {
-            wb.update_editor_groups(cx, |m| m.active_tab().map(|t| t.id).map(|id| m.close(id)));
+        |wb, _, window, cx| {
+            let groups = wb.editor_groups().clone();
+            groups.update(cx, |view, cx| {
+                if let Some(id) = view.model().active_tab().map(|t| t.id) {
+                    view.request_close(id, window, cx);
+                }
+            });
         },
     );
     commands.register(

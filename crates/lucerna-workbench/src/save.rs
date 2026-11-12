@@ -12,11 +12,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use encoding_rs::Encoding;
-use gpui::{Context, Window};
+use futures::channel::oneshot;
+use gpui::{App, AsyncWindowContext, Context, Entity, PromptLevel, Window};
 use lucerna_text::{Buffer, BufferSnapshot, LineEnding, Point, WriteError, Written, write_bytes};
 
 use crate::documents::{Edits, Stamp};
-use crate::{CommandRegistry, Workbench};
+use crate::{CommandRegistry, Documents, Workbench};
 
 /// Why a document is saved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,107 @@ pub struct SaveOptions {
 pub(crate) const CONFLICT_MESSAGE: &str =
     "This file has changed on disk since you started editing it. Do you want to overwrite it?";
 pub(crate) const CONFLICT_ANSWERS: [&str; 3] = ["Overwrite", "Reload", "Cancel"];
+
+/// The detail of the close and quit prompts (spec §6.3).
+pub(crate) const UNSAVED_DETAIL: &str = "Your changes will be lost if you don't save them.";
+/// The close prompt's buttons; the quit prompt's with one file.
+pub(crate) const CLOSE_ANSWERS: [&str; 3] = ["Save", "Don't Save", "Cancel"];
+/// The quit prompt's buttons with several files.
+const QUIT_ANSWERS: [&str; 3] = ["Save All", "Don't Save", "Cancel"];
+
+/// What a save prompt's answer asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SaveChoice {
+    Save,
+    DontSave,
+    /// Also a dismissed prompt.
+    Cancel,
+}
+
+impl SaveChoice {
+    /// The choice of the button at `answer` of [`CLOSE_ANSWERS`] or the
+    /// quit prompt's buttons; `Err` (the prompt went away) is Cancel.
+    pub(crate) fn of<E>(answer: Result<usize, E>) -> SaveChoice {
+        match answer {
+            Ok(0) => SaveChoice::Save,
+            Ok(1) => SaveChoice::DontSave,
+            _ => SaveChoice::Cancel,
+        }
+    }
+}
+
+/// The close prompt for a document named `name`, as VS Code words it.
+pub(crate) fn prompt_unsaved(
+    name: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> oneshot::Receiver<usize> {
+    let message = format!("Do you want to save the changes you made to {name}?");
+    window.prompt(
+        PromptLevel::Warning,
+        &message,
+        Some(UNSAVED_DETAIL),
+        &CLOSE_ANSWERS[..],
+        cx,
+    )
+}
+
+/// The quit (or window close) prompt for the dirty documents named
+/// `names`: one prompt listing them all; with one, the close prompt.
+pub(crate) fn prompt_unsaved_all(
+    names: &[String],
+    window: &mut Window,
+    cx: &mut App,
+) -> oneshot::Receiver<usize> {
+    if let [name] = names {
+        return prompt_unsaved(name, window, cx);
+    }
+    let message = format!(
+        "Do you want to save the changes to the following {} files?",
+        names.len()
+    );
+    let detail = format!("{}\n\n{UNSAVED_DETAIL}", names.join("\n"));
+    window.prompt(
+        PromptLevel::Warning,
+        &message,
+        Some(&detail),
+        &QUIT_ANSWERS[..],
+        cx,
+    )
+}
+
+/// The file name of `path`, as prompts and messages name a document.
+pub(crate) fn display_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into(),
+    )
+}
+
+/// Saves the documents at `paths` (explicitly, with participants) one
+/// after another, each of which may ask about a conflict. `true` when
+/// every one was saved; a failure is reported in the status bar and the
+/// rest still save.
+pub(crate) async fn save_each(
+    documents: Entity<Documents>,
+    paths: Vec<Arc<Path>>,
+    cx: &mut AsyncWindowContext,
+) -> bool {
+    let opts = SaveOptions {
+        reason: SaveReason::Explicit,
+        participants: true,
+    };
+    let mut all = true;
+    for path in paths {
+        let Ok(save) =
+            cx.update(|window, cx| documents.update(cx, |d, cx| d.save(&path, opts, window, cx)))
+        else {
+            return false;
+        };
+        all &= matches!(save.await, Ok(true));
+    }
+    all
+}
 
 /// A save participant: the edits it makes to `text`.
 pub(crate) type Participant = fn(&BufferSnapshot) -> Edits;
@@ -171,11 +273,7 @@ fn changed_on_disk(path: &Path, stamp: Option<Stamp>, hash: u64) -> Result<bool,
 
 /// The message for a failed save of `path`.
 pub(crate) fn failure_message(path: &Path, err: &WriteError) -> String {
-    let name = path.file_name().map_or_else(
-        || path.display().to_string(),
-        |n| n.to_string_lossy().into(),
-    );
-    format!("Failed to save '{name}': {err}")
+    format!("Failed to save '{}': {err}", display_name(path))
 }
 
 /// Saves the document of the active code view.
@@ -200,20 +298,8 @@ fn save_active(
 fn save_all(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>) {
     let documents = wb.documents().clone();
     let paths = documents.read(cx).dirty_paths();
-    let opts = SaveOptions {
-        reason: SaveReason::Explicit,
-        participants: true,
-    };
     cx.spawn_in(window, async move |_, cx| {
-        for path in paths {
-            let Ok(save) = cx
-                .update(|window, cx| documents.update(cx, |d, cx| d.save(&path, opts, window, cx)))
-            else {
-                return;
-            };
-            // A failure is reported in the status bar; the rest still save.
-            save.await.ok();
-        }
+        save_each(documents, paths, cx).await;
     })
     .detach();
 }

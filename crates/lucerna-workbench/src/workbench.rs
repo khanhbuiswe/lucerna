@@ -10,7 +10,7 @@ use futures::StreamExt;
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
     KeyDownEvent, ParentElement, Pixels, Render, Styled, Subscription, Task, WeakEntity, Window,
-    div, prelude::*, px,
+    WindowHandle, div, prelude::*, px,
 };
 use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::code_view::{self, CodeView, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
-use crate::documents::{DocumentStatusItem, Documents};
+use crate::documents::{DocumentEvent, DocumentStatusItem, Documents};
 use crate::editor_groups::{
     self, EditorGroups, EditorGroupsView, GroupId, OpenMode, TabId, TabItem,
 };
@@ -41,6 +41,7 @@ use crate::nav_history::{NavEntry, NavHistory};
 use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::references_view::{self, ReferencesView};
+use crate::save::{self, SaveChoice};
 use crate::search_view::{self, SearchView};
 use crate::symbols::SymbolSource;
 use crate::symbols::breadcrumbs::Breadcrumbs;
@@ -206,6 +207,8 @@ pub struct Workbench {
     /// Fresh installs whose index entry had not arrived when looked at.
     pub(crate) fresh_installs_waiting: Vec<String>,
     persistence: Option<Persistence>,
+    /// A quit or window close is waiting on the save prompt.
+    confirming_quit: bool,
 }
 
 impl Workbench {
@@ -470,6 +473,13 @@ impl Workbench {
                 wb.active_tabs_changed(window, cx)
             }),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
+            // VS Code: a preview tab whose file gets unsaved changes is
+            // pinned, so opening another file never replaces it.
+            cx.subscribe(&documents, |wb, _, ev: &DocumentEvent, cx| {
+                if let DocumentEvent::DirtyChanged { dirty: true, .. } = ev {
+                    wb.pin_dirty_previews(cx);
+                }
+            }),
             crate::status_message::observe(cx, |_, cx| cx.notify()),
             // The first window's hook shuts every window's servers down
             // against one 5 s deadline; the others find nothing left.
@@ -588,9 +598,15 @@ impl Workbench {
             fresh_installs_seen,
             fresh_installs_waiting: Vec::new(),
             persistence: None,
+            confirming_quit: false,
         };
+        let weak = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            weak.update(cx, |wb, cx| wb.should_close_window(window, cx))
+                .unwrap_or(true)
+        });
         if let Some(store) = store {
-            workbench.start_persistence(store, restored.as_ref(), window, cx);
+            workbench.start_persistence(store, restored.as_ref(), cx);
         }
         let documents = workbench.documents.clone();
         let trust_events = workbench.start_trust(&documents, window, cx);
@@ -611,15 +627,9 @@ impl Workbench {
         &mut self,
         store: WorkspaceStateStore,
         restored: Option<&WorkspaceState>,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let groups = self.editor_groups.clone();
-        let weak = cx.weak_entity();
-        window.on_window_should_close(cx, move |_, cx| {
-            weak.update(cx, |wb, cx| wb.save_workspace_state(cx)).ok();
-            true
-        });
         self.persistence = Some(Persistence {
             store,
             last_saved: None,
@@ -1125,6 +1135,80 @@ impl Workbench {
             .get::<bool>("workbench.editor.enablePreview", None)
             .unwrap_or(true);
         self.update_editor_groups(cx, |m| m.open(path, mode, preview_enabled));
+        // A file with unsaved changes opened as a preview.
+        self.pin_dirty_previews(cx);
+    }
+
+    /// Pins every preview tab whose document has unsaved changes.
+    fn pin_dirty_previews(&mut self, cx: &mut Context<Self>) {
+        let documents = self.documents.read(cx);
+        let previews: Vec<TabId> = self
+            .editor_groups
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter(|t| !t.pinned && t.path().is_some_and(|p| documents.is_dirty(p)))
+            .map(|t| t.id)
+            .collect();
+        if !previews.is_empty() {
+            self.update_editor_groups(cx, |m| previews.into_iter().for_each(|id| m.pin(id)));
+        }
+    }
+
+    /// Asks whether to save the documents with unsaved changes before the
+    /// app quits or the window closes (spec §6.3): `true` to go on. Save
+    /// All saves each one and goes on only if all were saved, Don't Save
+    /// goes on, Cancel (or a dismissed prompt) stops. Nothing dirty: `true`
+    /// at once.
+    pub fn confirm_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
+        let documents = self.documents.clone();
+        let paths = documents.read(cx).dirty_paths();
+        if paths.is_empty() {
+            return Task::ready(true);
+        }
+        // The prompt is already up for an earlier quit or close.
+        if self.confirming_quit {
+            return Task::ready(false);
+        }
+        self.confirming_quit = true;
+        let names: Vec<String> = paths.iter().map(|p| save::display_name(p)).collect();
+        let answer = save::prompt_unsaved_all(&names, window, cx);
+        cx.spawn_in(window, async move |wb, cx| {
+            let go_on = match SaveChoice::of(answer.await) {
+                SaveChoice::Save => {
+                    let paths = documents.read_with(cx, |d, _| d.dirty_paths());
+                    save::save_each(documents, paths, cx).await
+                }
+                SaveChoice::DontSave => true,
+                SaveChoice::Cancel => false,
+            };
+            wb.update(cx, |wb, _| wb.confirming_quit = false).ok();
+            go_on
+        })
+    }
+
+    /// The window's close button: closes at once when nothing is dirty;
+    /// otherwise asks ([`Workbench::confirm_quit`]) and closes the window
+    /// itself if told to go on.
+    fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.documents.read(cx).dirty_paths().is_empty() {
+            self.save_workspace_state(cx);
+            return true;
+        }
+        let confirm = self.confirm_quit(window, cx);
+        cx.spawn_in(window, async move |wb, cx| {
+            if confirm.await {
+                wb.update_in(cx, |wb, window, cx| {
+                    wb.save_workspace_state(cx);
+                    window.remove_window();
+                })
+                .ok();
+            }
+        })
+        .detach();
+        false
     }
 
     /// Opens `path` like [`Workbench::open_path`], then puts the cursor at
@@ -1681,10 +1765,34 @@ fn pump_open_file_changes(cx: &mut Context<Workbench>) -> (Option<OpenFileWatche
     }
 }
 
+/// Quits the app once every workbench window agreed to
+/// ([`Workbench::confirm_quit`], one window after another). Quitting runs
+/// the `on_app_quit` hooks, which save the layout.
+pub(crate) fn quit(cx: &mut App) {
+    let windows: Vec<WindowHandle<Workbench>> = cx
+        .windows()
+        .into_iter()
+        .filter_map(|w| w.downcast::<Workbench>())
+        .collect();
+    cx.spawn(async move |cx| {
+        for handle in windows {
+            let Ok(confirm) = handle.update(cx, |wb, window, cx| wb.confirm_quit(window, cx))
+            else {
+                // The window closed meanwhile.
+                continue;
+            };
+            if !confirm.await {
+                return;
+            }
+        }
+        cx.update(|cx| cx.quit());
+    })
+    .detach();
+}
+
 fn register_shell_commands(commands: &mut CommandRegistry) {
-    // Quitting runs the `on_app_quit` hooks, which save the layout.
     commands.register("workbench.action.quit", "File: Quit", |_, _, _, cx| {
-        cx.quit()
+        quit(cx)
     });
     commands.register(
         "workbench.action.toggleSidebarVisibility",

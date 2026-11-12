@@ -255,10 +255,11 @@ actions!(lucerna, [Quit, Hide, Minimize]);
 /// The macOS app menu: Lucerna → Hide (⌘H), Quit (⌘Q), and Window →
 /// Minimize (⌘M). The menu shows the shortcuts GPUI's keymap binds to its
 /// actions; ⌘Q also resolves through the user keymap to
-/// `workbench.action.quit`. Both quit the same way, so the layout is saved
-/// by the workbench's `on_app_quit` hook.
+/// `workbench.action.quit`. Both quit the same way: each window first asks
+/// about unsaved changes, then the layout is saved by the workbench's
+/// `on_app_quit` hook.
 fn install_app_menu(cx: &mut App) {
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Quit, cx| crate::workbench::quit(cx));
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &Minimize, cx| {
         if let Some(window) = cx.active_window() {

@@ -818,3 +818,248 @@ fn eol_setting_leaves_files_with_line_breaks(cx: &mut TestAppContext) {
     keys("cmd-s", cx);
     assert_eq!(disk(&dir, "file.txt"), "\na\nb");
 }
+
+const CLOSE_DETAIL: &str = "Your changes will be lost if you don't save them.";
+
+fn close_message(name: &str) -> String {
+    format!("Do you want to save the changes you made to {name}?")
+}
+
+/// The paths and pinned flags of every tab, group by group.
+fn tabs(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Vec<(String, bool)>> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .map(|g| g.tabs.iter().map(|t| (t.title(), t.pinned)).collect())
+            .collect()
+    })
+}
+
+/// `file.txt` with the unsaved `x`, ready to be closed.
+fn dirty_editor(cx: &mut TestAppContext) -> (TempDir, Entity<Workbench>, &mut VisualTestContext) {
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    assert!(is_dirty(&wb, "file.txt", cx));
+    // Only the tab holds the view, so closing it closes the document.
+    drop(view);
+    (dir, wb, cx)
+}
+
+fn close_active(wb: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    run(wb, "workbench.action.closeActiveEditor", cx);
+}
+
+#[gpui::test]
+fn close_dirty_tab_prompts_save(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = dirty_editor(cx);
+    close_active(&wb, cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((close_message("file.txt"), CLOSE_DETAIL.to_string()))
+    );
+    assert_eq!(tabs(&wb, cx).concat().len(), 1, "open until answered");
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+    assert!(tabs(&wb, cx).concat().is_empty());
+}
+
+#[gpui::test]
+fn close_dirty_tab_dont_save_discards(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = dirty_editor(cx);
+    close_active(&wb, cx);
+    cx.simulate_prompt_answer("Don't Save");
+    settle(cx);
+    assert!(tabs(&wb, cx).concat().is_empty());
+    assert_eq!(disk(&dir, "file.txt"), "abc\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+    let docs = documents(&wb, cx);
+    assert!(
+        docs.read_with(cx, |d, _| d.open_paths().is_empty()),
+        "the document is dropped"
+    );
+    let view = open(&wb, "file.txt", cx);
+    assert_eq!(text_of(&view, cx), "abc\n", "the next open reads the disk");
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "abc\n", "with no history");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn close_dirty_tab_cancel_keeps(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = dirty_editor(cx);
+    close_active(&wb, cx);
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(tabs(&wb, cx).concat().len(), 1);
+    assert_eq!(disk(&dir, "file.txt"), "abc\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert_eq!(text_of(&active_view(&wb, cx), cx), "xabc\n");
+}
+
+#[gpui::test]
+fn close_one_of_two_tabs_on_same_file_does_not_prompt(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, cx) = dirty_editor(cx);
+    run(&wb, "workbench.action.splitEditor", cx);
+    assert_eq!(tabs(&wb, cx).concat().len(), 2);
+    close_active(&wb, cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(tabs(&wb, cx).concat().len(), 1);
+    assert!(is_dirty(&wb, "file.txt", cx));
+
+    close_active(&wb, cx);
+    assert!(cx.has_pending_prompt(), "the last tab of the file asks");
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+}
+
+/// `file.txt` and `other.txt`, both with unsaved changes.
+fn two_dirty(cx: &mut TestAppContext) -> (TempDir, Entity<Workbench>, &mut VisualTestContext) {
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    fs::write(dir.path().join("other.txt"), "def\n").unwrap();
+    open(&wb, "other.txt", cx);
+    input("y", cx);
+    (dir, wb, cx)
+}
+
+fn confirm_quit(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> gpui::Task<bool> {
+    let quit = cx.update(|window, cx| wb.update(cx, |wb, cx| wb.confirm_quit(window, cx)));
+    settle(cx);
+    quit
+}
+
+fn quit_answer(quit: gpui::Task<bool>) -> bool {
+    use futures::FutureExt as _;
+    quit.now_or_never().expect("the quit prompt was answered")
+}
+
+#[gpui::test]
+fn quit_with_dirty_prompts_and_cancel_aborts(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = two_dirty(cx);
+    let quit = confirm_quit(&wb, cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((
+            "Do you want to save the changes to the following 2 files?".to_string(),
+            format!("file.txt\nother.txt\n\n{CLOSE_DETAIL}"),
+        ))
+    );
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert!(!quit_answer(quit));
+    assert_eq!(disk(&dir, "file.txt"), "abc\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert!(is_dirty(&wb, "other.txt", cx));
+}
+
+#[gpui::test]
+fn quit_save_all_saves_every_file(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = two_dirty(cx);
+    let quit = confirm_quit(&wb, cx);
+    cx.simulate_prompt_answer("Save All");
+    settle(cx);
+    assert!(quit_answer(quit));
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+    assert_eq!(disk(&dir, "other.txt"), "ydef\n");
+}
+
+#[gpui::test]
+fn quit_dont_save_quits_without_saving(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = two_dirty(cx);
+    let quit = confirm_quit(&wb, cx);
+    cx.simulate_prompt_answer("Don't Save");
+    settle(cx);
+    assert!(quit_answer(quit));
+    assert_eq!(disk(&dir, "file.txt"), "abc\n");
+}
+
+#[gpui::test]
+fn quit_with_one_dirty_file_uses_the_close_wording(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, cx) = dirty_editor(cx);
+    let quit = confirm_quit(&wb, cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((close_message("file.txt"), CLOSE_DETAIL.to_string()))
+    );
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert!(!quit_answer(quit));
+}
+
+#[gpui::test]
+fn quit_with_nothing_dirty_does_not_ask(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, _view, cx) = editor("abc\n", cx);
+    let quit = confirm_quit(&wb, cx);
+    assert!(!cx.has_pending_prompt());
+    assert!(quit_answer(quit));
+}
+
+#[gpui::test]
+fn window_close_with_dirty_prompts(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, cx) = two_dirty(cx);
+    assert!(!cx.simulate_close(), "the window waits for the answer");
+    settle(cx);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(cx.windows().len(), 1, "Cancel keeps the window");
+    assert!(is_dirty(&wb, "file.txt", cx));
+
+    assert!(!cx.simulate_close());
+    settle(cx);
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    assert!(cx.windows().is_empty(), "Don't Save closes the window");
+}
+
+#[gpui::test]
+fn editing_a_preview_pins_it(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("file.txt"), "abc\n").unwrap();
+    fs::write(dir.path().join("other.txt"), "def\n").unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("file.txt")), OpenMode::Preview, cx)
+    });
+    settle(cx);
+    assert_eq!(tabs(&wb, cx), vec![vec![("file.txt".to_string(), false)]]);
+    let view = active_view(&wb, cx);
+    cx.update(|window, cx| {
+        let focus = view.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    input("x", cx);
+    assert_eq!(
+        tabs(&wb, cx),
+        vec![vec![("file.txt".to_string(), true)]],
+        "a dirty file is never a preview (VS Code)"
+    );
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("other.txt")), OpenMode::Preview, cx)
+    });
+    settle(cx);
+    assert_eq!(
+        tabs(&wb, cx),
+        vec![vec![
+            ("file.txt".to_string(), true),
+            ("other.txt".to_string(), false)
+        ]]
+    );
+}
