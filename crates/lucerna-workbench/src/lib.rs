@@ -53,7 +53,7 @@ pub use config_files::{
     reload_config, watch_config,
 };
 pub use diagnostics_status::DiagnosticsStatusItem;
-pub use documents::{DocState, DocumentEvent, DocumentStatus, Documents};
+pub use documents::{DiskNotice, DocState, DocumentEvent, DocumentStatus, Documents};
 pub use editor_groups::{
     EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode,
     SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
