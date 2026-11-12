@@ -6,6 +6,8 @@
 //! writes it here in the background, then marks what it captured as saved.
 
 use std::fs;
+use std::hash::{DefaultHasher, Hasher};
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -13,7 +15,7 @@ use encoding_rs::Encoding;
 use gpui::{Context, Window};
 use lucerna_text::{Buffer, BufferSnapshot, LineEnding, Point, WriteError, Written, write_bytes};
 
-use crate::documents::Edits;
+use crate::documents::{Edits, Stamp};
 use crate::{CommandRegistry, Workbench};
 
 /// Why a document is saved.
@@ -110,12 +112,28 @@ pub(crate) struct WriteJob {
     pub(crate) encoding: &'static Encoding,
     pub(crate) has_bom: bool,
     pub(crate) line_ending: LineEnding,
+    /// The stamp and hash of the file as last loaded or saved. When set,
+    /// a file that no longer matches them is not written over.
+    pub(crate) expected: Option<(Option<Stamp>, u64)>,
+}
+
+/// What a write ended in.
+pub(crate) enum WriteOutcome {
+    /// The written bytes' hash and the file's metadata after the write.
+    Written(Written, Option<fs::Metadata>),
+    /// Another program changed the file since it was last loaded or saved;
+    /// nothing was written.
+    ChangedOnDisk,
 }
 
 impl WriteJob {
-    /// Encodes and writes the text to `path`; also returns the file's
-    /// metadata after the write.
-    pub(crate) fn run(self, path: &Path) -> Result<(Written, Option<fs::Metadata>), WriteError> {
+    /// Encodes and writes the text to `path`.
+    pub(crate) fn run(self, path: &Path) -> Result<WriteOutcome, WriteError> {
+        if let Some((stamp, hash)) = self.expected
+            && changed_on_disk(path, stamp, hash)?
+        {
+            return Ok(WriteOutcome::ChangedOnDisk);
+        }
         let bytes = Buffer::encode(
             &self.snapshot,
             self.encoding,
@@ -123,8 +141,32 @@ impl WriteJob {
             self.line_ending,
         )?;
         let written = write_bytes(path, &bytes)?;
-        Ok((written, fs::metadata(path).ok()))
+        Ok(WriteOutcome::Written(written, fs::metadata(path).ok()))
     }
+}
+
+/// Whether the file at `path` differs from the one with `stamp` and
+/// `hash`, the way VS Code checks a file's etag before a save: an equal
+/// stamp is trusted, otherwise the bytes are hashed. A missing file has
+/// not changed (the save makes it again).
+fn changed_on_disk(path: &Path, stamp: Option<Stamp>, hash: u64) -> Result<bool, WriteError> {
+    let meta = match fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err.into()),
+    };
+    if stamp == Some(Stamp::of(&meta)) {
+        return Ok(false);
+    }
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err.into()),
+    };
+    // Hashed as `decode_file` and `write_bytes` hash a file's bytes.
+    let mut hasher = DefaultHasher::new();
+    hasher.write(&bytes);
+    Ok(hasher.finish() != hash)
 }
 
 /// The message for a failed save of `path`.

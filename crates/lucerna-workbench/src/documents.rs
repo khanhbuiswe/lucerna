@@ -30,13 +30,13 @@ use lucerna_project::{ChangeKind, WorktreeEvent};
 use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{
     Buffer, BufferSnapshot, Decoded, HistoryState, LineEnding, LoadError, Patch, PatchEdit, Point,
-    SelectionsToken, WriteError, Written, check_size, decode_file, diff_edits,
+    SelectionsToken, WriteError, check_size, decode_file, diff_edits,
 };
 
 use crate::AppState;
 use crate::code_view::CodeView;
 use crate::editor_groups::EditorGroupsView;
-use crate::save::{self, CONFLICT_ANSWERS, CONFLICT_MESSAGE, SaveOptions, WriteJob};
+use crate::save::{self, CONFLICT_ANSWERS, CONFLICT_MESSAGE, SaveOptions, WriteJob, WriteOutcome};
 use crate::status_message;
 use crate::tasks::catch_panic;
 use crate::ui::GRID;
@@ -121,13 +121,13 @@ pub enum DocumentEvent {
 
 /// Size and modification time, to tell whether a file changed on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
+pub(crate) struct Stamp {
     modified: Option<SystemTime>,
     len: u64,
 }
 
 impl Stamp {
-    fn of(meta: &fs::Metadata) -> Stamp {
+    pub(crate) fn of(meta: &fs::Metadata) -> Stamp {
         Stamp {
             modified: meta.modified().ok(),
             len: meta.len(),
@@ -137,8 +137,40 @@ impl Stamp {
 
 pub(crate) type Edits = Vec<(Range<usize>, Arc<str>)>;
 
-/// A finished write: the written bytes' hash and the file's metadata.
-type WriteResult = Result<(Written, Option<fs::Metadata>), WriteError>;
+type WriteResult = Result<WriteOutcome, WriteError>;
+
+/// A write started by [`Documents::start_write`].
+struct StartedWrite {
+    task: Task<WriteResult>,
+    /// The history state the write captured; it becomes the saved one.
+    state: HistoryState,
+    guard: SavingGuard,
+}
+
+/// Counts a write in flight in a document's `saving` for as long as it
+/// lives, so a save dropped half-way cannot hold reloads back for good.
+struct SavingGuard(Rc<Cell<u32>>);
+
+impl SavingGuard {
+    fn new(saving: &Rc<Cell<u32>>) -> Self {
+        saving.set(saving.get() + 1);
+        SavingGuard(saving.clone())
+    }
+}
+
+impl Drop for SavingGuard {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(1));
+    }
+}
+
+/// Where a save stands after a write ended.
+enum SaveStep {
+    Done(Result<bool, WriteError>),
+    /// The file changed on disk under unsaved changes and was not written:
+    /// the document is in conflict.
+    Conflict,
+}
 
 /// A revert's read of the file: its decode, the edits from the text to it,
 /// and its stamp.
@@ -163,19 +195,18 @@ enum Job {
 }
 
 /// A file read for a reload, and the edits from the text it was diffed
-/// against (version `base_version` of the buffer, in disk epoch
-/// `base_epoch`) to the file's.
+/// against (version `base_version` of the buffer) to the file's.
 struct Reloaded {
     decoded: Decoded,
     base_version: u64,
-    base_epoch: u64,
     edits: Edits,
     stamp: Stamp,
 }
 
 enum JobOutput {
     Loaded(Result<(Buffer, Stamp), LoadError>),
-    Reloaded(Result<Reloaded, LoadError>),
+    /// A reload's read, and the disk epoch it started in.
+    Reloaded(u64, Result<Reloaded, LoadError>),
 }
 
 struct Document {
@@ -210,7 +241,7 @@ struct Document {
     reload_again: bool,
     /// Writes in flight. A reload waits for them (`reload_after_save`):
     /// it could read the file from before the write.
-    saving: u32,
+    saving: Rc<Cell<u32>>,
     /// A reload was asked for, or finished, while a write was in flight:
     /// reload once the writes are done.
     reload_after_save: bool,
@@ -392,7 +423,7 @@ impl Documents {
                         views: vec![view.downgrade()],
                         job: None,
                         reload_again: false,
-                        saving: 0,
+                        saving: Rc::default(),
                         reload_after_save: false,
                         last_save: None,
                         parse: None,
@@ -661,21 +692,28 @@ impl Documents {
     }
 
     /// Saves the document at `path` (spec §6.1). `Ok(false)` when there was
-    /// nothing to save (no text loaded) or the user answered the conflict
-    /// prompt with Reload or Cancel; a failed write is also reported in
-    /// the status bar, and the text stays dirty.
+    /// nothing to save (no text loaded), the user answered the conflict
+    /// prompt with Reload or Cancel, or the file changed on disk under a
+    /// clean text (which is then reloaded); a failed write is also reported
+    /// in the status bar, and the text stays dirty.
     ///
-    /// 1. When the file changed on disk under unsaved changes and
+    /// 1. When the document is in conflict with the disk and
     ///    `files.saveConflictResolution` is `askUser`, asks first.
     /// 2. With `opts.participants`, runs the save participants as one undo
     ///    step.
     /// 3. Captures the text and its history state and writes it on a
-    ///    background thread; edits made meanwhile stay unsaved.
+    ///    background thread; edits made meanwhile stay unsaved. Right
+    ///    before writing, the file is checked against the one last loaded
+    ///    or saved (like VS Code's etag): a file changed by another program
+    ///    is not written over, the document goes into conflict and step 1
+    ///    asks.
     /// 4. Marks the captured state saved, takes the written bytes' hash
     ///    (so the watcher's report of the write is ignored) and sends
     ///    [`DocumentEvent::Saved`].
     ///
-    /// Saves of one document write in the order they were asked for.
+    /// Saves and reverts of one document run one at a time, in the order
+    /// asked for; a save that waited looks at the conflict when its turn
+    /// comes.
     pub fn save(
         &mut self,
         path: &Path,
@@ -687,71 +725,103 @@ impl Documents {
         let Some(doc) = self.docs.get_mut(&key) else {
             return Task::ready(Ok(false));
         };
-        let language = doc.language_id();
-        let resolution = cx
-            .global::<AppState>()
-            .settings
-            .get::<String>("files.saveConflictResolution", language.as_deref());
-        let ask = doc.conflict && resolution.as_deref() != Some("overwriteFileOnDisk");
         let (done, previous) = queue_disk_work(doc);
-        // With nothing to wait for, the text is captured now: an edit made
-        // after this call is not part of the save.
-        let started = (!ask && previous.is_none()).then(|| self.start_write(&key, opts, cx));
-        let prompt = ask.then(|| {
-            window.prompt(
-                PromptLevel::Warning,
-                CONFLICT_MESSAGE,
-                None,
-                &CONFLICT_ANSWERS[..],
-                cx,
-            )
-        });
-        cx.spawn(async move |this, cx| {
+        // With nothing to wait for or ask, the text is captured now: an
+        // edit made after this call is not part of the save.
+        let started = (previous.is_none() && !self.asks(&key, cx))
+            .then(|| self.start_write(&key, opts, false, cx));
+        cx.spawn_in(window, async move |this, cx| {
             // Dropped at the end: the next save of the document goes on.
             let _done = done;
-            let started = match started {
-                Some(started) => started,
-                None => {
-                    let answer = match prompt {
-                        Some(prompt) => prompt.await.unwrap_or(2),
-                        None => 0,
-                    };
-                    if answer == 2 {
-                        return Ok(false);
-                    }
-                    if let Some(previous) = previous {
-                        previous.await.ok();
-                    }
-                    if answer == 1 {
-                        let Ok(revert) = this.update(cx, |d, cx| d.revert_now(&key, cx)) else {
+            let mut started = started;
+            if started.is_none()
+                && let Some(previous) = previous
+            {
+                previous.await.ok();
+            }
+            // The user chose Overwrite: write without asking or checking.
+            let mut overwrite = false;
+            loop {
+                let write = match started.take() {
+                    Some(write) => write,
+                    None => {
+                        let Ok(ask) = this.update(cx, |d, cx| d.asks(&key, cx)) else {
                             return Ok(false);
                         };
-                        revert.await;
-                        return Ok(false);
+                        if ask && !overwrite {
+                            let Ok(prompt) = this.update_in(cx, |_, window, cx| {
+                                window.prompt(
+                                    PromptLevel::Warning,
+                                    CONFLICT_MESSAGE,
+                                    None,
+                                    &CONFLICT_ANSWERS[..],
+                                    cx,
+                                )
+                            }) else {
+                                return Ok(false);
+                            };
+                            match prompt.await {
+                                Ok(0) => overwrite = true,
+                                Ok(1) => {
+                                    if let Ok(revert) =
+                                        this.update(cx, |d, cx| d.revert_now(&key, cx))
+                                    {
+                                        revert.await;
+                                    }
+                                    return Ok(false);
+                                }
+                                _ => return Ok(false),
+                            }
+                        }
+                        let Ok(write) =
+                            this.update(cx, |d, cx| d.start_write(&key, opts, overwrite, cx))
+                        else {
+                            return Ok(false);
+                        };
+                        write
                     }
-                    let Ok(started) = this.update(cx, |d, cx| d.start_write(&key, opts, cx)) else {
-                        return Ok(false);
-                    };
-                    started
+                };
+                let Some(StartedWrite { task, state, guard }) = write else {
+                    return Ok(false);
+                };
+                let result = task.await;
+                match this.update(cx, |d, cx| d.finish_save(&key, state, guard, result, cx)) {
+                    Ok(SaveStep::Done(result)) => return result,
+                    // The document is in conflict now: ask.
+                    Ok(SaveStep::Conflict) => {}
+                    Err(_) => return Ok(false),
                 }
-            };
-            let Some((write, state)) = started else {
-                return Ok(false);
-            };
-            let result = write.await;
-            this.update(cx, |d, cx| d.finish_save(&key, state, result, cx))
-                .unwrap_or(Ok(false))
+            }
         })
     }
 
-    /// Runs the save participants, captures the text and starts writing it.
-    /// `None` when the document has no text to save.
+    /// Whether `files.saveConflictResolution` for the document at `key`
+    /// says to write over a changed file without asking.
+    fn overwrites(&self, key: &Arc<Path>, cx: &App) -> bool {
+        let language = self.docs.get(key).and_then(Document::language_id);
+        cx.global::<AppState>()
+            .settings
+            .get::<String>("files.saveConflictResolution", language.as_deref())
+            .as_deref()
+            == Some("overwriteFileOnDisk")
+    }
+
+    /// Whether a save of the document at `key` asks about a conflict first.
+    fn asks(&self, key: &Arc<Path>, cx: &App) -> bool {
+        self.docs.get(key).is_some_and(|d| d.conflict) && !self.overwrites(key, cx)
+    }
+
+    /// Runs the save participants, captures the text and starts writing it;
+    /// with `overwrite`, without checking the file on disk first. `None`
+    /// when the document has no text to save.
     fn start_write(
         &mut self,
         key: &Arc<Path>,
         opts: SaveOptions,
+        overwrite: bool,
         cx: &mut Context<Self>,
-    ) -> Option<(Task<WriteResult>, HistoryState)> {
+    ) -> Option<StartedWrite> {
+        let check = !overwrite && !self.overwrites(key, cx);
         let doc = self.docs.get_mut(key)?;
         // A file that failed to load (or reload) shows no editable text.
         if !matches!(doc.state, DocState::Ready | DocState::Deleted) {
@@ -783,15 +853,16 @@ impl Documents {
             encoding: buffer.encoding(),
             has_bom: buffer.has_bom(),
             line_ending: buffer.line_ending(),
+            expected: check.then_some((doc.stamp, doc.base_hash)),
         };
-        doc.saving += 1;
+        let guard = SavingGuard::new(&doc.saving);
         let path = key.clone();
-        let write = cx.background_spawn(async move {
+        let task = cx.background_spawn(async move {
             catch_panic("save", || job.run(&path))
                 .unwrap_or_else(|message| Err(WriteError::Io(format!("internal error: {message}"))))
         });
         cx.notify();
-        Some((write, state))
+        Some(StartedWrite { task, state, guard })
     }
 
     /// Takes the end of a write started by [`Documents::start_write`] for
@@ -800,15 +871,16 @@ impl Documents {
         &mut self,
         key: &Arc<Path>,
         state: HistoryState,
+        guard: SavingGuard,
         result: WriteResult,
         cx: &mut Context<Self>,
-    ) -> Result<bool, WriteError> {
+    ) -> SaveStep {
+        drop(guard);
         let Some(doc) = self.docs.get_mut(key) else {
-            return Ok(false);
+            return SaveStep::Done(Ok(false));
         };
-        doc.saving = doc.saving.saturating_sub(1);
-        let outcome = match result {
-            Ok((written, meta)) => {
+        let step = match result {
+            Ok(WriteOutcome::Written(written, meta)) => {
                 if let Some(buffer) = doc.buffer.as_mut() {
                     let was_dirty = buffer.is_dirty();
                     // Edits made while writing stay unsaved.
@@ -833,19 +905,30 @@ impl Documents {
                         });
                     }
                 }
-                Ok(true)
+                SaveStep::Done(Ok(true))
+            }
+            Ok(WriteOutcome::ChangedOnDisk) => {
+                tracing::debug!(path = %key.display(), "file changed on disk; not saved");
+                if doc.buffer.as_ref().is_some_and(Buffer::is_dirty) {
+                    set_conflict(doc, key, true, cx);
+                    SaveStep::Conflict
+                } else {
+                    // Nothing unsaved to protect: take the file's text.
+                    doc.reload_after_save = true;
+                    SaveStep::Done(Ok(false))
+                }
             }
             Err(err) => {
                 tracing::warn!(path = %key.display(), %err, "save failed");
                 status_message::show(save::failure_message(key, &err), cx);
-                Err(err)
+                SaveStep::Done(Err(err))
             }
         };
-        if doc.saving == 0 && std::mem::take(&mut doc.reload_after_save) {
+        if doc.saving.get() == 0 && std::mem::take(&mut doc.reload_after_save) {
             self.start_job(key, cx);
         }
         cx.notify();
-        outcome
+        step
     }
 
     /// Replaces the text of the document at `path` with the file's, as one
@@ -1209,6 +1292,19 @@ impl Documents {
             }
             keep
         });
+        // A save dropped before its write's end left a reload waiting.
+        let waiting: Vec<Arc<Path>> = self
+            .docs
+            .iter()
+            .filter(|(_, d)| d.reload_after_save && d.saving.get() == 0)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in waiting {
+            if let Some(doc) = self.docs.get_mut(&key) {
+                doc.reload_after_save = false;
+            }
+            self.start_job(&key, cx);
+        }
     }
 
     /// Loads or reloads the document off the main thread. While one job
@@ -1221,7 +1317,7 @@ impl Documents {
             doc.reload_again = true;
             return;
         }
-        if doc.saving > 0 {
+        if doc.saving.get() > 0 {
             // It could read the file half-way through our own write's
             // rename; the write's end starts it.
             doc.reload_after_save = true;
@@ -1328,13 +1424,13 @@ impl Documents {
             }
             // Read while a save writes: it may be the file from before the
             // write. Read again once the writes are done.
-            Ok(JobOutput::Reloaded(_)) if doc.saving > 0 => doc.reload_after_save = true,
-            // A save (or revert) landed while the job ran: what it read
-            // may be older than the file now.
-            Ok(JobOutput::Reloaded(Ok(reloaded))) if reloaded.base_epoch != doc.disk_epoch => {
+            Ok(JobOutput::Reloaded(..)) if doc.saving.get() > 0 => doc.reload_after_save = true,
+            // A save (or revert) landed while the job ran: what it read,
+            // or failed to, may be older than the file now.
+            Ok(JobOutput::Reloaded(epoch, _)) if epoch != doc.disk_epoch => {
                 doc.reload_again = true;
             }
-            Ok(JobOutput::Reloaded(Ok(reloaded))) => {
+            Ok(JobOutput::Reloaded(_, Ok(reloaded))) => {
                 doc.stamp = Some(reloaded.stamp);
                 self.finish_reload(key, reloaded, cx);
             }
@@ -1342,7 +1438,7 @@ impl Documents {
                 let state = failure_state(doc, err);
                 doc.set_state(state, cx);
             }
-            Ok(JobOutput::Reloaded(Err(err))) => {
+            Ok(JobOutput::Reloaded(_, Err(err))) => {
                 let state = failure_state(doc, err);
                 doc.set_state(state, cx);
             }
@@ -1749,22 +1845,24 @@ fn run_job(path: &Path, job: Job) -> JobOutput {
             base_version,
             base_hash,
             base_epoch,
-        } => JobOutput::Reloaded(read(path).and_then(|(bytes, stamp)| {
-            let decoded = decode_file(&bytes, force_text)?;
-            // The same bytes need no diff: nothing will change.
-            let edits = if decoded.hash == base_hash {
-                Vec::new()
-            } else {
-                diff_edits(&base, &decoded.text)
-            };
-            Ok(Reloaded {
-                decoded,
-                base_version,
-                base_epoch,
-                edits,
-                stamp,
-            })
-        })),
+        } => JobOutput::Reloaded(
+            base_epoch,
+            read(path).and_then(|(bytes, stamp)| {
+                let decoded = decode_file(&bytes, force_text)?;
+                // The same bytes need no diff: nothing will change.
+                let edits = if decoded.hash == base_hash {
+                    Vec::new()
+                } else {
+                    diff_edits(&base, &decoded.text)
+                };
+                Ok(Reloaded {
+                    decoded,
+                    base_version,
+                    edits,
+                    stamp,
+                })
+            }),
+        ),
     }
 }
 

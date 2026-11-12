@@ -603,35 +603,202 @@ fn deleted_file_returning_while_dirty_is_announced(cx: &mut TestAppContext) {
     );
 }
 
-/// Controller ruling (a): a reload that read the disk before a save must
-/// not undo the save. Whatever order the background read and write run in,
-/// the text ends equal to the disk and clean.
-#[gpui::test(iterations = 30)]
-fn reload_racing_a_save_keeps_text_and_disk_equal(cx: &mut TestAppContext) {
-    init(cx, None);
-    let (dir, wb, view, cx) = editor("abc\n", cx);
-    fs::write(dir.path().join("file.txt"), "ext\n").unwrap();
-    let change = Change {
-        path: Arc::from(Path::new("file.txt")),
-        kind: ChangeKind::Modified,
-    };
-    // The reload starts, but its read has not run.
-    wb.update(cx, |wb, cx| {
-        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
-    });
-    let docs = documents(&wb, cx);
+/// Starts a save of `file.txt` without waiting for it.
+fn start_save(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> gpui::Task<SaveResult> {
+    let docs = documents(wb, cx);
     let opts = SaveOptions {
         reason: SaveReason::Explicit,
         participants: false,
     };
-    cx.update(|window, cx| {
-        docs.update(cx, |d, cx| d.save(Path::new("file.txt"), opts, window, cx))
+    cx.update(|window, cx| docs.update(cx, |d, cx| d.save(Path::new("file.txt"), opts, window, cx)))
+}
+
+type SaveResult = Result<bool, lucerna_text::WriteError>;
+
+/// Delivers the watcher's report for `file.txt` without letting the
+/// reload it starts run.
+fn modified_unsettled(wb: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    let change = Change {
+        path: Arc::from(Path::new("file.txt")),
+        kind: ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+}
+
+/// Writes `text` to `file.txt` the first time the document is saved, as an
+/// agent writing right after our write landed.
+fn write_after_first_save(
+    wb: &Entity<Workbench>,
+    dir: &TempDir,
+    text: &'static str,
+    cx: &mut VisualTestContext,
+) -> gpui::Subscription {
+    let docs = documents(wb, cx);
+    let file = dir.path().join("file.txt");
+    let fired = Rc::new(std::cell::Cell::new(false));
+    cx.update(|_, cx| {
+        cx.subscribe(&docs, move |_, ev: &DocumentEvent, _| {
+            if matches!(ev, DocumentEvent::Saved { .. }) && !fired.replace(true) {
+                fs::write(&file, text).unwrap();
+            }
+        })
     })
-    .detach();
+}
+
+/// An external write that lands before the watcher reports it is never
+/// written over: whatever order the reload and the save run in, the save
+/// ends in the conflict prompt.
+#[gpui::test(iterations = 30)]
+fn external_write_racing_a_save_ends_in_conflict(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    fs::write(dir.path().join("file.txt"), "ext\n").unwrap();
+    modified_unsettled(&wb, cx);
+    start_save(&wb, cx).detach();
     settle(cx);
-    assert_eq!(disk(&dir, "file.txt"), text_of(&view, cx));
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((CONFLICT_MESSAGE.to_string(), String::new()))
+    );
+    assert_eq!(disk(&dir, "file.txt"), "ext\n");
+    assert_eq!(text_of(&view, cx), "xabc\n");
+    assert!(has_conflict(&wb, "file.txt", cx));
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(disk(&dir, "file.txt"), "ext\n");
+}
+
+/// The same race under a clean text: the file's text is taken, not
+/// written over, and nothing asks.
+#[gpui::test(iterations = 30)]
+fn external_write_racing_a_clean_save_is_taken(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    fs::write(dir.path().join("file.txt"), "ext\n").unwrap();
+    modified_unsettled(&wb, cx);
+    start_save(&wb, cx).detach();
+    settle(cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(disk(&dir, "file.txt"), "ext\n");
+    assert_eq!(text_of(&view, cx), "ext\n");
     assert!(!is_dirty(&wb, "file.txt", cx));
     assert!(!has_conflict(&wb, "file.txt", cx));
+}
+
+/// The disk is checked right before writing, even with no watcher report.
+#[gpui::test]
+fn save_checks_the_file_before_writing(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    fs::write(dir.path().join("file.txt"), "agent wrote this\n").unwrap();
+    keys("cmd-s", cx);
+    assert!(cx.has_pending_prompt());
+    assert_eq!(disk(&dir, "file.txt"), "agent wrote this\n");
+    cx.simulate_prompt_answer("Overwrite");
+    settle(cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+    assert!(!has_conflict(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn overwrite_setting_skips_the_disk_check(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"files.saveConflictResolution": "overwriteFileOnDisk"}"#),
+    );
+    let (dir, _wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    fs::write(dir.path().join("file.txt"), "agent wrote this\n").unwrap();
+    keys("cmd-s", cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+}
+
+/// ⌘S twice: an agent writes between the two writes. The second save
+/// checks the disk when its turn comes and asks instead of writing over.
+#[gpui::test]
+fn second_save_does_not_write_over_an_agent(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    let _sub = write_after_first_save(&wb, &dir, "agent\n", cx);
+    start_save(&wb, cx).detach();
+    // Typed while the first save writes, then saved again.
+    let docs = documents(&wb, cx);
+    let id = view.entity_id();
+    docs.update(cx, |d, cx| {
+        d.apply_edits(
+            Path::new("file.txt"),
+            vec![(0..0, Arc::from("y"))],
+            None,
+            None,
+            id,
+            cx,
+        )
+    })
+    .expect("loaded");
+    start_save(&wb, cx).detach();
+    settle(cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((CONFLICT_MESSAGE.to_string(), String::new()))
+    );
+    assert_eq!(disk(&dir, "file.txt"), "agent\n");
+    assert!(has_conflict(&wb, "file.txt", cx));
+    cx.simulate_prompt_answer("Overwrite");
+    settle(cx);
+    assert_eq!(disk(&dir, "file.txt"), "yxabc\n");
+}
+
+/// A save queued behind a revert looks at the conflict when its turn
+/// comes: the revert ended it, so the save writes without asking.
+#[gpui::test]
+fn save_queued_behind_a_revert_rechecks_the_conflict(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = conflicted(cx);
+    let docs = documents(&wb, cx);
+    docs.update(cx, |d, cx| d.revert(Path::new("file.txt"), cx))
+        .detach();
+    start_save(&wb, cx).detach();
+    settle(cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(text_of(&view, cx), "disk\n");
+    assert_eq!(disk(&dir, "file.txt"), "disk\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+    assert!(!has_conflict(&wb, "file.txt", cx));
+}
+
+/// A reload asked for while a write is in flight waits for it, then runs.
+#[gpui::test]
+fn reload_deferred_by_a_write_runs_after_it(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    let _sub = write_after_first_save(&wb, &dir, "ext\n", cx);
+    start_save(&wb, cx).detach();
+    modified_unsettled(&wb, cx);
+    settle(cx);
+    assert_eq!(text_of(&view, cx), "ext\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+}
+
+/// A save dropped before its write ended does not hold a reload back.
+#[gpui::test]
+fn dropped_save_does_not_hold_reloads_back(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    let save = start_save(&wb, cx);
+    fs::write(dir.path().join("file.txt"), "ext\n").unwrap();
+    modified_unsettled(&wb, cx);
+    drop(save);
+    settle(cx);
+    settle(cx);
+    assert_eq!(text_of(&view, cx), "ext\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
 }
 
 #[gpui::test]
