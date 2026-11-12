@@ -163,15 +163,18 @@ fn line(ctx: Ctx, set: &SelectionSet, mode: Mode) -> EditPlan {
             } else {
                 non_blank
             };
-            let col = targets
+            let tab = ctx.config.tab_size.max(1) as usize;
+            let min = targets
                 .iter()
-                .map(|(_, l)| leading_whitespace(l).len())
+                .map(|(_, l)| visible_width(leading_whitespace(l), tab))
                 .min()
                 .unwrap_or(0);
+            // Down to a whole indent level, as VS Code does.
+            let min = min / tab * tab;
             for (row, l) in targets {
                 match style {
-                    // At the shared indent column (blank rows keep their length).
-                    Style::Line(_) => push(*row, style.add(l, col.min(l.len()))),
+                    // At the shared visible indent column.
+                    Style::Line(_) => push(*row, style.add(l, insertion_offset(l, min, tab))),
                     Style::Block(..) => push(*row, style.add(l, leading_whitespace(l).len())),
                 }
             }
@@ -185,6 +188,35 @@ fn line(ctx: Ctx, set: &SelectionSet, mode: Mode) -> EditPlan {
         Bias::Left
     };
     plan(set, edits, move |s, p| map_with(s, p, Bias::Left, end_bias))
+}
+
+/// The visible width of `indent` (spaces and tabs) with tab stops every
+/// `tab` columns.
+fn visible_width(indent: &str, tab: usize) -> usize {
+    indent.bytes().fold(0, |col, b| next_column(col, b, tab))
+}
+
+fn next_column(col: usize, b: u8, tab: usize) -> usize {
+    if b == b'\t' {
+        col + tab - col % tab
+    } else {
+        col + 1
+    }
+}
+
+/// The byte offset in `line`'s indent where the visible column reaches
+/// `min`; a tab that crosses it is not split, so the token goes before it.
+///
+/// Adapted from microsoft/vscode src/vs/editor/contrib/comment/browser/lineCommentCommand.ts (MIT)
+/// (`_normalizeInsertionPoint`).
+fn insertion_offset(line: &str, min: usize, tab: usize) -> usize {
+    let indent = leading_whitespace(line).as_bytes();
+    let (mut col, mut j) = (0, 0);
+    while col < min && j < indent.len() {
+        col = next_column(col, indent[j], tab);
+        j += 1;
+    }
+    if col > min { j - 1 } else { j }
 }
 
 pub fn toggle_block(ctx: Ctx, set: &SelectionSet) -> EditPlan {
@@ -442,11 +474,26 @@ mod tests {
     #[test]
     fn toggle_mixed_block_comments_all_at_min_indent() {
         assert_eq!(
-            rust("«  a\n\n    // b\n  c»", toggle_line),
-            "«  // a\n\n  //   // b\n  // c»"
+            rust("«    a\n\n        // b\n    c»", toggle_line),
+            "«    // a\n\n    //     // b\n    // c»"
         );
         // All commented: uncomment, blank rows untouched.
         assert_eq!(rust("«  // a\n\n  // b»", toggle_line), "«  a\n\n  b»");
+    }
+
+    /// Final review, finding 5: the token goes at the minimum visible
+    /// indent (tabs count to the next tab stop), rounded down to a whole
+    /// indent level, as in VS Code's `_normalizeInsertionPoint` tests.
+    #[test]
+    fn mixed_tab_and_space_indents_align_by_visible_column() {
+        // A tab and four spaces are both one level at tab size 4.
+        assert_eq!(rust("«\ta\n    b»", toggle_line), "«\t// a\n    // b»");
+        assert_eq!(
+            rust("«\t\ta\n    \tb\n        c»", toggle_line),
+            "«\t\t// a\n    \t// b\n        // c»"
+        );
+        // VS Code bug 16696: two and four spaces at tab size 4 align at 0.
+        assert_eq!(rust("«  a\n    b»", toggle_line), "«//   a\n//     b»");
     }
 
     #[test]
@@ -456,7 +503,7 @@ mod tests {
 
     #[test]
     fn selection_stays_on_its_text() {
-        assert_eq!(rust("  «a»", toggle_line), "  «// a»");
+        assert_eq!(rust("    «a»", toggle_line), "    «// a»");
         assert_eq!(rust("»a b«", toggle_line), "»// a b«");
     }
 
