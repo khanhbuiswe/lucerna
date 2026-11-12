@@ -1045,3 +1045,52 @@ fn typing_sends_incremental_change(cx: &mut TestAppContext) {
         }])
     );
 }
+
+/// Final review, finding 7: `didSave` with `includeText` sends the text
+/// that was written, not an edit made while writing.
+#[gpui::test]
+fn did_save_sends_the_written_text(cx: &mut TestAppContext) {
+    use lsp_types::{
+        SaveOptions, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+        TextDocumentSyncOptions, TextDocumentSyncSaveOptions,
+    };
+    let dir = rust_project();
+    let fake = FakeServer::new().capabilities(ServerCapabilities {
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::FULL),
+                save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
+                    include_text: Some(true),
+                })),
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    });
+    let launcher = FakeLauncher::new().with_server("rust-analyzer", fake.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+    let view = open(&wb, "src/main.rs", cx);
+    let docs = cx.update(|_, cx| wb.read(cx).documents().clone());
+    let path = Path::new("src/main.rs");
+    let opts = lucerna_workbench::SaveOptions {
+        reason: lucerna_workbench::SaveReason::Explicit,
+        participants: false,
+    };
+    let save = cx.update(|window, cx| docs.update(cx, |d, cx| d.save(path, opts, window, cx)));
+    // The write runs on a background thread, which has not run yet.
+    let id = view.entity_id();
+    docs.update(cx, |d, cx| {
+        d.apply_edits(path, vec![(0..0, Arc::from("// x\n"))], None, None, id, cx)
+    })
+    .expect("loaded");
+    settle(cx);
+    assert_eq!(futures::FutureExt::now_or_never(save), Some(Ok(true)));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("src/main.rs")).unwrap(),
+        "fn main() {}\n"
+    );
+    let saves = sent(&fake, "textDocument/didSave");
+    assert_eq!(saves.len(), 1, "{:?}", methods(&fake));
+    assert_eq!(saves[0]["text"], "fn main() {}\n");
+}

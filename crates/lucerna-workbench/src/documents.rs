@@ -101,8 +101,12 @@ pub enum DocumentEvent {
     },
     /// The text now differs from (or again matches) the file on disk.
     DirtyChanged { path: Arc<Path>, dirty: bool },
-    /// The text was written to disk.
-    Saved { path: Arc<Path> },
+    /// The text was written to disk: `snapshot` is the text written, which
+    /// edits made while writing may have changed since.
+    Saved {
+        path: Arc<Path>,
+        snapshot: BufferSnapshot,
+    },
     /// The file changed on disk while the text had unsaved changes (or that
     /// state ended); the text was left alone.
     ConflictChanged { path: Arc<Path>, conflict: bool },
@@ -149,6 +153,8 @@ struct StartedWrite {
     task: Task<WriteResult>,
     /// The history state the write captured; it becomes the saved one.
     state: HistoryState,
+    /// The text the write captured.
+    snapshot: BufferSnapshot,
     guard: SavingGuard,
 }
 
@@ -807,11 +813,20 @@ impl Documents {
                         write
                     }
                 };
-                let Some(StartedWrite { task, state, guard }) = write else {
+                let Some(StartedWrite {
+                    task,
+                    state,
+                    snapshot,
+                    guard,
+                }) = write
+                else {
                     return Ok(false);
                 };
                 let result = task.await;
-                match this.update(cx, |d, cx| d.finish_save(&key, state, guard, result, cx)) {
+                let finish = |d: &mut Self, cx: &mut Context<Self>| {
+                    d.finish_save(&key, state, snapshot, guard, result, cx)
+                };
+                match this.update(cx, finish) {
                     Ok(SaveStep::Done(result)) => return result,
                     // An autosave leaves the conflict alone.
                     Ok(SaveStep::Conflict) if opts.reason == SaveReason::Auto => {
@@ -896,7 +911,7 @@ impl Documents {
         let buffer = doc.buffer.as_mut()?;
         let (snapshot, state) = buffer.begin_save();
         let job = WriteJob {
-            snapshot,
+            snapshot: snapshot.clone(),
             encoding: buffer.encoding(),
             has_bom: buffer.has_bom(),
             line_ending: buffer.line_ending(),
@@ -909,7 +924,12 @@ impl Documents {
                 .unwrap_or_else(|message| Err(WriteError::Io(format!("internal error: {message}"))))
         });
         cx.notify();
-        Some(StartedWrite { task, state, guard })
+        Some(StartedWrite {
+            task,
+            state,
+            snapshot,
+            guard,
+        })
     }
 
     /// The sorted rows holding a cursor of any view of the document at
@@ -949,6 +969,7 @@ impl Documents {
         &mut self,
         key: &Arc<Path>,
         state: HistoryState,
+        snapshot: BufferSnapshot,
         guard: SavingGuard,
         result: WriteResult,
         cx: &mut Context<Self>,
@@ -975,7 +996,10 @@ impl Documents {
                         doc.set_state(DocState::Ready, cx);
                         announce_return(doc, key, cx);
                     }
-                    cx.emit(DocumentEvent::Saved { path: key.clone() });
+                    cx.emit(DocumentEvent::Saved {
+                        path: key.clone(),
+                        snapshot,
+                    });
                     if dirty != was_dirty {
                         cx.emit(DocumentEvent::DirtyChanged {
                             path: key.clone(),

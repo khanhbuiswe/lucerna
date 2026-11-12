@@ -104,13 +104,14 @@ impl LanguageServers {
                 patch,
                 ..
             } => self.document_edited(path, snapshot, patch, cx),
-            DocumentEvent::Saved { path } => {
-                let Some(doc) = self.docs.get(path) else {
+            // The text written, not the latest: edits made while writing
+            // are not on disk.
+            DocumentEvent::Saved { path, snapshot } => {
+                if !self.docs.contains_key(path) {
                     return;
-                };
-                let snapshot = doc.snapshot.clone();
+                }
                 let servers = self.running_for(path);
-                self.sync.did_save(path, &snapshot, &servers);
+                self.sync.did_save(path, snapshot, &servers);
             }
             // The language servers have no notion of either.
             DocumentEvent::DirtyChanged { .. } | DocumentEvent::ConflictChanged { .. } => {}
