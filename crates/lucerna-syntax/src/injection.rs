@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::{ControlFlow, Range};
 use std::sync::Arc;
+use std::time::Instant;
 
 use lucerna_text::BufferSnapshot;
 use streaming_iterator::StreamingIterator;
@@ -313,30 +314,62 @@ impl Layers {
     /// range moves with the text, as the root tree does. A range end
     /// inside or touching an edit stretches over the new text, and so does
     /// a start inside one or touching an insertion, so text typed into a
-    /// region keeps its colours until the next parse. Layers wholly before
-    /// the edits are untouched; a layer left with no text is dropped.
-    pub fn edited(&self, edits: &[InputEdit]) -> Layers {
-        let Some(first) = edits.iter().map(|e| e.start_byte).min() else {
+    /// region keeps its colours until the next parse. A layer gets the
+    /// edits reaching into it one by one, and those before it merged into
+    /// one (they only shift it); those after it leave it alone. A layer
+    /// left with no text is dropped. Past `deadline`, every layer is
+    /// dropped: the next parse rebuilds them.
+    pub fn edited(&self, edits: &[InputEdit], deadline: Instant) -> Layers {
+        // In text order, to search.
+        let asc: Vec<&InputEdit> = edits.iter().rev().collect();
+        let Some(first) = asc.first().map(|e| e.start_byte) else {
             return self.clone();
         };
-        let list = self
-            .list
-            .iter()
-            .filter_map(|layer| {
-                let mut layer = layer.clone();
-                if layer.end() < first {
-                    return Some(layer);
-                }
-                for edit in edits {
-                    layer.tree.edit(edit);
-                    for range in &mut layer.ranges {
-                        edit_range(range, edit);
+        // `merged[i]`: the first `i + 1` edits as one.
+        let mut merged: Vec<InputEdit> = Vec::with_capacity(asc.len());
+        for &edit in &asc {
+            let next = match merged.last() {
+                None => *edit,
+                Some(before) => {
+                    let (new_end_byte, new_end_position) =
+                        shift(before, edit.new_end_byte, edit.new_end_position);
+                    InputEdit {
+                        start_byte: before.start_byte,
+                        start_position: before.start_position,
+                        old_end_byte: edit.old_end_byte,
+                        old_end_position: edit.old_end_position,
+                        new_end_byte,
+                        new_end_position,
                     }
                 }
-                layer.ranges.retain(|r| r.start_byte < r.end_byte);
-                (!layer.ranges.is_empty()).then_some(layer)
-            })
-            .collect();
+            };
+            merged.push(next);
+        }
+        let mut list = Vec::with_capacity(self.list.len());
+        for (i, layer) in self.list.iter().enumerate() {
+            if i % 64 == 63 && Instant::now() > deadline {
+                return Layers::default();
+            }
+            let mut layer = layer.clone();
+            if layer.end() < first {
+                list.push(layer);
+                continue;
+            }
+            let (start, end) = (layer.start(), layer.end());
+            let before = asc.partition_point(|e| e.old_end_byte < start);
+            let reaching = asc.partition_point(|e| e.start_byte <= end);
+            let into = asc[before..reaching].iter().rev().copied();
+            for edit in into.chain(before.checked_sub(1).map(|i| &merged[i])) {
+                layer.tree.edit(edit);
+                for range in &mut layer.ranges {
+                    edit_range(range, edit);
+                }
+            }
+            layer.ranges.retain(|r| r.start_byte < r.end_byte);
+            if !layer.ranges.is_empty() {
+                list.push(layer);
+            }
+        }
         Layers::new(list)
     }
 
@@ -362,26 +395,29 @@ impl Layers {
     }
 }
 
+/// Where `byte` / `point`, at or after `edit`'s old end, is once `edit` is
+/// applied.
+fn shift(edit: &InputEdit, byte: usize, point: tree_sitter::Point) -> (usize, tree_sitter::Point) {
+    let point = if point.row == edit.old_end_position.row {
+        tree_sitter::Point::new(
+            edit.new_end_position.row,
+            edit.new_end_position.column + point.column - edit.old_end_position.column,
+        )
+    } else {
+        tree_sitter::Point::new(
+            point.row - edit.old_end_position.row + edit.new_end_position.row,
+            point.column,
+        )
+    };
+    (byte - edit.old_end_byte + edit.new_end_byte, point)
+}
+
 /// Moves `range` with the text through `edit` (see [`Layers::edited`]).
 fn edit_range(range: &mut tree_sitter::Range, edit: &InputEdit) {
-    let shift = |byte: usize, point: tree_sitter::Point| {
-        let point = if point.row == edit.old_end_position.row {
-            tree_sitter::Point::new(
-                edit.new_end_position.row,
-                edit.new_end_position.column + point.column - edit.old_end_position.column,
-            )
-        } else {
-            tree_sitter::Point::new(
-                point.row - edit.old_end_position.row + edit.new_end_position.row,
-                point.column,
-            )
-        };
-        (byte - edit.old_end_byte + edit.new_end_byte, point)
-    };
     // The end: after (or touching) the edit, it shifts; inside, it stretches
     // to the end of the new text.
     if range.end_byte >= edit.old_end_byte {
-        (range.end_byte, range.end_point) = shift(range.end_byte, range.end_point);
+        (range.end_byte, range.end_point) = shift(edit, range.end_byte, range.end_point);
     } else if range.end_byte > edit.start_byte {
         (range.end_byte, range.end_point) = (edit.new_end_byte, edit.new_end_position);
     }
@@ -389,7 +425,8 @@ fn edit_range(range: &mut tree_sitter::Range, edit: &InputEdit) {
     // to the start of the new text; after, it shifts.
     if range.start_byte > edit.start_byte {
         if range.start_byte >= edit.old_end_byte {
-            (range.start_byte, range.start_point) = shift(range.start_byte, range.start_point);
+            (range.start_byte, range.start_point) =
+                shift(edit, range.start_byte, range.start_point);
         } else {
             (range.start_byte, range.start_point) = (edit.start_byte, edit.start_position);
         }

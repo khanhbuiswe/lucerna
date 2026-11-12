@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use lucerna_text::{BufferSnapshot, Patch};
+use lucerna_text::{BufferSnapshot, Patch, PatchEdit};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{
     InputEdit, Node, ParseOptions, ParseState, Parser, QueryCursor, TextProvider, Tree,
@@ -234,15 +234,22 @@ impl SyntaxState {
         let Some(mut tree) = self.tree.clone() else {
             return edited;
         };
-        // Too many changed line endings: show plain text until parsed.
-        let Some(edits) = input_edits(old, new, patch) else {
+        // Too costly to edit: plain text until parsed.
+        let root_children = tree.root_node().child_count() as usize;
+        let Some(edits) = input_edits(old, new, patch, root_children) else {
             return edited;
         };
-        for edit in &edits {
+        // The estimate cannot see a tree's shape (an error tree is costlier
+        // per edit): past the time budget, drop the tree too.
+        let deadline = Instant::now() + EDIT_TIME_BUDGET;
+        for (i, edit) in edits.iter().enumerate() {
             tree.edit(edit);
+            if i % 8 == 7 && Instant::now() > deadline {
+                return edited;
+            }
         }
         edited.tree = Some(tree);
-        edited.layers = self.layers.edited(&edits);
+        edited.layers = self.layers.edited(&edits, deadline);
         edited
     }
 
@@ -504,28 +511,67 @@ fn long_line_cap(snapshot: &BufferSnapshot, line: Range<usize>) -> Option<usize>
     None
 }
 
-/// Most edits [`input_edits`] converts before giving up.
-const MAX_EDITS: usize = 1000;
+/// Roughly how many tree nodes the edits after one change may visit on
+/// the UI thread. tree-sitter scans a node's children from the first one
+/// for every edit, and visits every node inside an edit, so 1,000 cursors
+/// in a file of 10,000 top-level items cost 10 million visits (hundreds of
+/// ms); the budget is a few ms. Past the budget the tree is dropped: plain text until the parse
+/// (in the background) lands.
+const EDIT_BUDGET: usize = 100_000;
 
-/// The tree-sitter edits for `patch`, to apply in order, or `None` when
-/// the patch has too many edits to be worth applying (the caller drops the
-/// tree). They run from the end of the text to the start, so each is
-/// expressed in the offsets of the text the earlier ones left alone.
+/// The most time editing the trees after one change may take on the UI
+/// thread before they are dropped (see [`EDIT_BUDGET`]).
+const EDIT_TIME_BUDGET: Duration = Duration::from_millis(2);
+
+/// Edits this close (in bytes) merge into one: the text between them counts
+/// as replaced, which costs a visit of its few nodes rather than a scan
+/// from the first child per edit (a cursor on each of many lines).
+const MERGE_GAP: usize = 256;
+
+/// `patch`'s edits, or, when applying them one by one to a tree whose root
+/// has `root_children` children would exceed [`EDIT_BUDGET`], with those
+/// [`MERGE_GAP`] apart or closer merged into one. `None` when even that
+/// exceeds it.
+fn grouped(patch: &Patch, root_children: usize) -> Option<Vec<PatchEdit>> {
+    // A scan of the root's children per edit, and a node per few bytes
+    // inside the edits.
+    let cost = |edits: &[PatchEdit]| {
+        let spanned: usize = edits.iter().map(|e| e.old.len() + e.new.len()).sum();
+        edits.len() * (root_children + 64) + spanned / 4
+    };
+    if cost(patch.edits()) <= EDIT_BUDGET {
+        return Some(patch.edits().to_vec());
+    }
+    let mut out: Vec<PatchEdit> = Vec::new();
+    for edit in patch.edits() {
+        match out.last_mut() {
+            Some(last) if edit.old.start - last.old.end <= MERGE_GAP => {
+                last.old.end = edit.old.end;
+                last.new.end = edit.new.end;
+            }
+            _ => out.push(edit.clone()),
+        }
+    }
+    (cost(&out) <= EDIT_BUDGET).then_some(out)
+}
+
+/// The tree-sitter edits for `patch` (merged as [`grouped`] does), to
+/// apply in order, or `None` when they would cost too much. They run from
+/// the end of the text to the start, so each is expressed in the offsets
+/// of the text the earlier ones left alone.
 fn input_edits(
     old: &BufferSnapshot,
     new: &BufferSnapshot,
     patch: &Patch,
+    root_children: usize,
 ) -> Option<Vec<InputEdit>> {
-    if patch.edits().len() > MAX_EDITS {
-        return None;
-    }
     let point = |snapshot: &BufferSnapshot, offset: usize| {
         let p = snapshot.offset_to_point(offset);
         tree_sitter::Point::new(p.row as usize, p.column as usize)
     };
+    let edits = grouped(patch, root_children)?;
     Some(
-        patch
-            .edits()
+        edits
             .iter()
             .rev()
             .map(|edit| {
@@ -564,7 +610,7 @@ mod tests {
         let decoded = decode_file(new_text.as_bytes(), false).unwrap();
         let patch = buffer.edit(diff_edits(&old, &decoded.text));
         let new = buffer.snapshot();
-        input_edits(&old, &new, &patch).expect("below the cap")
+        input_edits(&old, &new, &patch, 0).expect("within budget")
     }
 
     #[test]
@@ -611,7 +657,7 @@ mod tests {
                 new: 5..7,
             },
         ]);
-        let edits = input_edits(&old, &new, &patch).unwrap();
+        let edits = input_edits(&old, &new, &patch, 0).expect("within budget");
         assert_eq!(
             edits
                 .iter()
@@ -622,27 +668,60 @@ mod tests {
     }
 
     #[test]
-    fn too_many_edits_give_up() {
-        let text = "x\n".repeat(2 * MAX_EDITS + 2);
+    fn close_edits_merge() {
+        let text = "x\n".repeat(1000);
         let snapshot = Buffer::from_bytes(text.as_bytes(), false)
             .unwrap()
             .snapshot();
-        let patch = |n: usize| {
-            Patch::new(
-                (0..n)
-                    .map(|i| PatchEdit {
-                        old: 2 * i..2 * i,
-                        new: 2 * i..2 * i,
-                    })
-                    .collect(),
-            )
-        };
-        assert!(input_edits(&snapshot, &snapshot, &patch(MAX_EDITS + 1)).is_none());
-        assert_eq!(
-            input_edits(&snapshot, &snapshot, &patch(MAX_EDITS))
-                .unwrap()
-                .len(),
-            MAX_EDITS
+        // Empty edits at 0, 2, 4, then 1000 and 1002: two clusters.
+        let at = [0usize, 2, 4, 1000, 1002];
+        let patch = Patch::new(
+            at.iter()
+                .map(|&i| PatchEdit {
+                    old: i..i,
+                    new: i..i,
+                })
+                .collect(),
         );
+        // Within the budget, every edit stays.
+        assert_eq!(
+            input_edits(&snapshot, &snapshot, &patch, 0).unwrap().len(),
+            5
+        );
+        // Over it, close ones merge.
+        let edits = input_edits(&snapshot, &snapshot, &patch, 30_000).unwrap();
+        assert_eq!(
+            edits
+                .iter()
+                .map(|e| (e.start_byte, e.old_end_byte, e.new_end_byte))
+                .collect::<Vec<_>>(),
+            vec![(1000, 1002, 1002), (0, 4, 4)]
+        );
+        assert_eq!(edits[1].old_end_position, tree_sitter::Point::new(2, 0));
+    }
+
+    #[test]
+    fn edits_past_the_budget_give_up() {
+        let text = "x\n".repeat(160_000);
+        let snapshot = Buffer::from_bytes(text.as_bytes(), false)
+            .unwrap()
+            .snapshot();
+        // 1,000 cursors, too far apart to merge.
+        let patch = Patch::new(
+            (0..1000)
+                .map(|i| PatchEdit {
+                    old: 300 * i..300 * i,
+                    new: 300 * i..300 * i,
+                })
+                .collect(),
+        );
+        assert!(input_edits(&snapshot, &snapshot, &patch, 100).is_none());
+        let few = Patch::new(patch.edits()[..10].to_vec());
+        assert_eq!(
+            input_edits(&snapshot, &snapshot, &few, 100).unwrap().len(),
+            10
+        );
+        // A large root makes even a few edits costly.
+        assert!(input_edits(&snapshot, &snapshot, &few, 20_000).is_none());
     }
 }

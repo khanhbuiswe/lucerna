@@ -276,6 +276,37 @@ fn typing_inside_a_layer_keeps_it() {
     assert_eq!(all_spans(&reparsed, &new), all_spans(&fresh, &new));
 }
 
+/// Several edits, some before a layer and some inside it: each layer
+/// ends up where a fresh parse puts it.
+#[test]
+fn edits_before_and_inside_layers_move_them() {
+    let registry = Arc::new(LanguageRegistry::bundled());
+    let mut buffer = Buffer::from_bytes(MD.as_bytes(), false).unwrap();
+    let old = buffer.snapshot();
+    let language = registry.language_by_name("markdown").unwrap();
+    let mut state = SyntaxState::new(language, registry.clone()).unwrap();
+    assert_eq!(state.parse(&old, None), ParseOutcome::Done);
+    let main = MD.find("main").unwrap() + 2;
+    let code = MD.find("code`").unwrap() + 2;
+    let patch = buffer.edit([
+        (0..0, Arc::from("\n\n")),
+        (main..main, Arc::from("xy")),
+        (code..code, Arc::from("z")),
+    ]);
+    let new = buffer.snapshot();
+    let edited = state.edited(&old, &new, &patch);
+    let (fresh, _) = parsed_in(
+        registry,
+        "markdown",
+        &new.text_for_range(0..new.len_bytes()),
+    );
+    let sorted = |mut l: Vec<Vec<std::ops::Range<usize>>>| {
+        l.sort_by_key(|r| r.first().map(|r| (r.start, r.end)));
+        l
+    };
+    assert_eq!(sorted(edited.layer_ranges()), sorted(fresh.layer_ranges()));
+}
+
 /// Deleting a whole injected region drops its layer.
 #[test]
 fn deleting_a_layer_drops_it() {

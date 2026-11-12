@@ -302,25 +302,49 @@ fn eol_only_reload_keeps_the_tree_usable() {
     }
 }
 
-/// Past the cap the edited state shows plain text rather than editing
-/// thousands of times.
+/// A mass edit (a cursor on each of 1,200 lines) is merged into one tree
+/// edit rather than editing a large tree thousands of times: the tree
+/// stays, and the text after the edits keeps its colours, shifted.
 #[test]
-fn mass_edit_patch_drops_the_tree() {
-    let text = "fn a() {}\n".repeat(1200);
+fn mass_edit_patch_keeps_the_tree() {
+    let text = "fn a() {}\n".repeat(2400);
     let mut buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
     let old = buffer.snapshot();
     let mut state = SyntaxState::new(language("a.rs"), bundled()).unwrap();
     assert_eq!(state.parse(&old, None), ParseOutcome::Done);
     let patch = buffer.edit((0..1200).map(|i| (i * 10..i * 10, "//".into())));
-    assert!(patch.edits().len() > 1000);
+    assert_eq!(patch.edits().len(), 1200);
+    let new = buffer.snapshot();
+    let start = std::time::Instant::now();
+    let edited = state.edited(&old, &new, &patch);
+    assert!(start.elapsed() < std::time::Duration::from_millis(200));
+    assert!(edited.tree().is_some());
+    let row = 2000;
+    let at = new.point_to_offset(lucerna_text::Point { row, column: 0 });
+    let spans = edited.highlights(&new, row..row + 1, &|_| true);
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.range == (at..at + 2) && s.capture.starts_with("keyword")),
+        "{spans:?}"
+    );
+}
+
+/// Edits too costly to apply (1,000 cursors far apart in a file of
+/// thousands of top-level items) drop the tree: plain text until parsed.
+#[test]
+fn costly_mass_edit_drops_the_tree() {
+    let text = "fn a() {}\n".repeat(40_000);
+    let mut buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
+    let old = buffer.snapshot();
+    let mut state = SyntaxState::new(language("a.rs"), bundled()).unwrap();
+    assert_eq!(state.parse(&old, None), ParseOutcome::Done);
+    // Every 30 lines: too far apart to merge.
+    let patch = buffer.edit((0..1000).map(|i| (i * 300..i * 300, "//".into())));
     let new = buffer.snapshot();
     let edited = state.edited(&old, &new, &patch);
     assert!(edited.tree().is_none());
-    assert!(
-        edited
-            .highlights(&new, 0..new.line_count(), &|_| true)
-            .is_empty()
-    );
+    assert_eq!(edited.layer_count(), 0);
 }
 
 /// The registry injected language names resolve in.
