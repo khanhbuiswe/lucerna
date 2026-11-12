@@ -39,12 +39,86 @@ pub fn remove_line(ctx: Ctx, set: &SelectionSet) -> EditPlan {
     line(ctx, set, Mode::Remove)
 }
 
+/// How a line is commented: a line token, or (languages with only block
+/// comments) the block tokens around each line, as VS Code does.
+enum Style {
+    Line(String),
+    Block(String, String),
+}
+
+impl Style {
+    fn of(ctx: &Ctx) -> Option<Style> {
+        let language = ctx.language?;
+        // Data may carry the token with its space (`"# "`).
+        let token = language
+            .line_comments
+            .iter()
+            .map(|t| t.trim())
+            .find(|t| !t.is_empty());
+        if let Some(token) = token {
+            return Some(Style::Line(token.to_string()));
+        }
+        let (open, close) = language.block_comment.clone()?;
+        Some(Style::Block(open, close))
+    }
+
+    /// Whether `line` is commented in this style.
+    fn commented(&self, line: &str) -> bool {
+        let body = line.trim();
+        match self {
+            Style::Line(token) => body.starts_with(token.as_str()),
+            Style::Block(open, close) => {
+                body.len() >= open.len() + close.len()
+                    && body.starts_with(open.as_str())
+                    && body.ends_with(close.as_str())
+            }
+        }
+    }
+
+    /// The edits (relative to the line start) that comment `line`.
+    fn add(&self, line: &str, col: usize) -> Vec<(Range<usize>, Arc<str>)> {
+        match self {
+            Style::Line(token) => vec![(col..col, Arc::from(format!("{token} ").as_str()))],
+            Style::Block(open, close) => {
+                let end = line.trim_end().len();
+                vec![
+                    (col..col, Arc::from(format!("{open} ").as_str())),
+                    (end..end, Arc::from(format!(" {close}").as_str())),
+                ]
+            }
+        }
+    }
+
+    /// The edits (relative to the line start) that uncomment `line`.
+    fn remove(&self, line: &str) -> Vec<(Range<usize>, Arc<str>)> {
+        let at = leading_whitespace(line).len();
+        let empty: Arc<str> = Arc::from("");
+        match self {
+            Style::Line(token) => {
+                let mut end = at + token.len();
+                if line[end..].starts_with(' ') {
+                    end += 1;
+                }
+                vec![(at..end, empty)]
+            }
+            Style::Block(open, close) => {
+                let mut a = at + open.len();
+                if line[a..].starts_with(' ') {
+                    a += 1;
+                }
+                let trimmed = line.trim_end().len();
+                let mut b = trimmed - close.len();
+                if b > a && line[..b].ends_with(' ') {
+                    b -= 1;
+                }
+                vec![(at..a, empty.clone()), (b..trimmed, empty)]
+            }
+        }
+    }
+}
+
 fn line(ctx: Ctx, set: &SelectionSet, mode: Mode) -> EditPlan {
-    let Some(token) = ctx
-        .language
-        .and_then(|l| l.line_comments.first())
-        .map(String::as_str)
-    else {
+    let Some(style) = Style::of(&ctx) else {
         return plan(set, Vec::new(), default_map);
     };
     let snap = ctx.snapshot;
@@ -61,27 +135,30 @@ fn line(ctx: Ctx, set: &SelectionSet, mode: Mode) -> EditPlan {
         let lines: Vec<(u32, String)> = rows.map(|r| (r, snap.line(r).to_string())).collect();
         let non_blank: Vec<&(u32, String)> =
             lines.iter().filter(|(_, l)| !l.trim().is_empty()).collect();
-        let commented = |l: &str| starts(l, token);
         let remove = match mode {
             Mode::Add => false,
             Mode::Remove => true,
-            Mode::Toggle => !non_blank.is_empty() && non_blank.iter().all(|(_, l)| commented(l)),
+            Mode::Toggle => {
+                !non_blank.is_empty() && non_blank.iter().all(|(_, l)| style.commented(l))
+            }
+        };
+        let mut push = |row: u32, rel: Vec<(Range<usize>, Arc<str>)>| {
+            let base = row_start(snap, row);
+            edits.extend(
+                rel.into_iter()
+                    .map(|(r, t)| (base + r.start..base + r.end, t)),
+            );
         };
         if remove {
             for (row, l) in &lines {
-                if !commented(l) {
-                    continue;
+                if style.commented(l) {
+                    push(*row, style.remove(l));
                 }
-                let at = row_start(snap, *row) + leading_whitespace(l).len();
-                let mut end = at + token.len();
-                if l[end - row_start(snap, *row)..].starts_with(' ') {
-                    end += 1;
-                }
-                edits.push((at..end, Arc::from("")));
             }
         } else {
-            // All-blank: comment them; otherwise skip the blank rows.
-            let targets: Vec<&(u32, String)> = if non_blank.is_empty() {
+            // All-blank: comment them (line style); otherwise skip blank rows.
+            let blank_ok = non_blank.is_empty() && matches!(style, Style::Line(_));
+            let targets: Vec<&(u32, String)> = if blank_ok {
                 lines.iter().collect()
             } else {
                 non_blank
@@ -92,19 +169,22 @@ fn line(ctx: Ctx, set: &SelectionSet, mode: Mode) -> EditPlan {
                 .min()
                 .unwrap_or(0);
             for (row, l) in targets {
-                // Blank rows shorter than the indent column keep their length.
-                let col = col.min(l.len());
-                let at = row_start(snap, *row) + col;
-                edits.push((at..at, Arc::from(format!("{token} ").as_str())));
+                match style {
+                    // At the shared indent column (blank rows keep their length).
+                    Style::Line(_) => push(*row, style.add(l, col.min(l.len()))),
+                    Style::Block(..) => push(*row, style.add(l, leading_whitespace(l).len())),
+                }
             }
         }
     }
     edits.sort_by_key(|(r, _)| (r.start, r.end));
-    plan(set, edits, default_map)
-}
-
-fn starts(line: &str, token: &str) -> bool {
-    line[leading_whitespace(line).len()..].starts_with(token)
+    // A wrapped line's selection end takes in the closing token.
+    let end_bias = if matches!(style, Style::Block(..)) {
+        Bias::Right
+    } else {
+        Bias::Left
+    };
+    plan(set, edits, move |s, p| map_with(s, p, Bias::Left, end_bias))
 }
 
 pub fn toggle_block(ctx: Ctx, set: &SelectionSet) -> EditPlan {
@@ -154,7 +234,7 @@ pub fn toggle_block(ctx: Ctx, set: &SelectionSet) -> EditPlan {
             let o = patch.map_offset(s.range().start, Bias::Left) + into;
             return (o, o);
         }
-        map_with(s, patch, Bias::Right)
+        map_with(s, patch, Bias::Right, Bias::Left)
     })
 }
 
@@ -194,10 +274,10 @@ fn outside_after(after: &str, close: &str) -> Option<usize> {
 /// `Left`, a line comment's token) or before the selection (`Right`, a
 /// block comment's open token); at its end it stays outside.
 fn default_map(s: &Selection, patch: &Patch) -> (usize, usize) {
-    map_with(s, patch, Bias::Left)
+    map_with(s, patch, Bias::Left, Bias::Left)
 }
 
-fn map_with(s: &Selection, patch: &Patch, start_bias: Bias) -> (usize, usize) {
+fn map_with(s: &Selection, patch: &Patch, start_bias: Bias, end_bias: Bias) -> (usize, usize) {
     let r = s.range();
     let (start, end) = if s.is_empty() {
         let o = patch.map_offset(r.start, Bias::Right);
@@ -205,7 +285,7 @@ fn map_with(s: &Selection, patch: &Patch, start_bias: Bias) -> (usize, usize) {
     } else {
         (
             patch.map_offset(r.start, start_bias),
-            patch.map_offset(r.end, Bias::Left),
+            patch.map_offset(r.end, end_bias),
         )
     };
     if s.reversed() {
@@ -253,7 +333,17 @@ mod tests {
     use crate::test_util::{marked, render_plan, test_config};
 
     fn run(lang: Option<&str>, src: &str, f: fn(Ctx, &SelectionSet) -> EditPlan) -> String {
+        // `marked` reads `*` as a primary marker: `~` stands for it in `src`.
         let (snapshot, set) = marked(src);
+        let snapshot = Buffer::from_bytes(
+            snapshot
+                .text_for_range(0..snapshot.len_bytes())
+                .replace('~', "*")
+                .as_bytes(),
+            false,
+        )
+        .unwrap()
+        .snapshot();
         let config = test_config();
         let language = lang.map(|n| {
             LanguageRegistry::bundled()
@@ -312,6 +402,36 @@ mod tests {
         render_plan(&snapshot, &plan)
     }
 
+    fn block_reversed(before: &str, sel: &str, after: &str) -> String {
+        let text = format!("{before}{sel}{after}");
+        let snapshot = Buffer::from_bytes(text.as_bytes(), false)
+            .unwrap()
+            .snapshot();
+        let set = SelectionSet::from_selections(
+            vec![Selection {
+                id: 0,
+                anchor: before.len() + sel.len(),
+                head: before.len(),
+                goal: Goal::None,
+            }],
+            0,
+            false,
+        );
+        let config = test_config();
+        let language = LanguageRegistry::bundled()
+            .language_by_name("Rust")
+            .unwrap()
+            .editing()
+            .clone();
+        let ctx = Ctx {
+            snapshot: &snapshot,
+            config: &config,
+            language: Some(&language),
+            syntax: None,
+        };
+        render_plan(&snapshot, &toggle_block(ctx, &set))
+    }
+
     #[test]
     fn toggle_comments_and_uncomments() {
         assert_eq!(rust("|a\nb", toggle_line), "// |a\nb");
@@ -349,6 +469,43 @@ mod tests {
     #[test]
     fn add_line_on_commented_adds_again() {
         assert_eq!(rust("// |a", add_line), "// // |a");
+    }
+
+    #[test]
+    fn token_with_trailing_space_round_trips() {
+        let (snapshot, set) = marked("|a");
+        let config = test_config();
+        let mut language = LanguageRegistry::bundled()
+            .language_by_name("Python")
+            .unwrap()
+            .editing()
+            .clone();
+        language.line_comments = vec!["# ".into()];
+        let ctx = Ctx {
+            snapshot: &snapshot,
+            config: &config,
+            language: Some(&language),
+            syntax: None,
+        };
+        assert_eq!(render_plan(&snapshot, &toggle_line(ctx, &set)), "# |a");
+        let (snapshot, set) = marked("# |a");
+        let ctx = Ctx {
+            snapshot: &snapshot,
+            ..ctx
+        };
+        assert_eq!(render_plan(&snapshot, &toggle_line(ctx, &set)), "|a");
+    }
+
+    #[test]
+    fn block_only_language_wraps_each_line() {
+        let css = |src, f| run(Some("CSS"), src, f);
+        assert_eq!(css("«a\n\n  b»", toggle_line), "«/* a */\n\n  /* b */»");
+        assert_eq!(css("«/~ a ~/\n  /~ b ~/»", toggle_line), "«a\n  b»");
+        // Mixed: comment all, including the already wrapped one.
+        assert_eq!(css("«a\n/~ b ~/»", toggle_line), "«/* a */\n/* /* b */ */»");
+        assert_eq!(css("|a", add_line), "/* |a */");
+        assert_eq!(css("«/~ a ~/\nb»", remove_line), "«a\nb»");
+        assert_eq!(css("|/~ a ~/", toggle_line), "|a");
     }
 
     #[test]
@@ -400,5 +557,13 @@ mod tests {
         assert_eq!(rust("|a\nb\n|c", toggle_line), "// |a\nb\n// |c");
         // Two cursors on one line comment it once.
         assert_eq!(rust("|a |b", toggle_line), "// |a |b");
+    }
+
+    #[test]
+    fn block_toggle_multi_cursor_and_reversed() {
+        assert_eq!(rust("«a» b «c»", toggle_block), "/* «a» */ b /* «c» */");
+        assert_eq!(rust("|a |b", toggle_block), "/* | */a /* | */b");
+        assert_eq!(rust("»ab«", toggle_block), "/* »ab« */");
+        assert_eq!(block_reversed("/* ", "ab", " */"), "»ab«");
     }
 }
