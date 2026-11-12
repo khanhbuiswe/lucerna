@@ -26,6 +26,22 @@ done
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
+# Disk is tight: a release build removes the debug build and vice versa, so
+# only one profile's artifacts are ever on disk. Skipped while another cargo
+# runs (another session may be building or testing in this folder).
+case $profile in
+  release) other=debug ;;
+  *) other=release ;;
+esac
+if [ -d "target/$other" ]; then
+  if pgrep -x cargo >/dev/null 2>&1; then
+    echo "bundle-app: another cargo is running; keeping target/$other" >&2
+  else
+    echo "bundle-app: removing the old $other build (target/$other)"
+    rm -rf "target/$other"
+  fi
+fi
+
 if [ "$profile" = release ]; then
   cargo build --release --bin luc
 else
