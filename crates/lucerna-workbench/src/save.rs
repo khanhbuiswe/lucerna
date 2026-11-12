@@ -5,18 +5,21 @@
 //! disk, runs the participants as one undo step, captures the text and
 //! writes it here in the background, then marks what it captured as saved.
 
+use std::collections::HashMap;
 use std::fs;
 use std::hash::{DefaultHasher, Hasher};
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use encoding_rs::Encoding;
 use futures::channel::oneshot;
-use gpui::{App, AsyncWindowContext, Context, Entity, PromptLevel, Window};
+use gpui::{App, AsyncWindowContext, Context, Entity, PromptLevel, Subscription, Task, Window};
 use lucerna_text::{Buffer, BufferSnapshot, LineEnding, Point, WriteError, Written, write_bytes};
 
-use crate::documents::{Edits, Stamp};
+use crate::app_state::AppState;
+use crate::documents::{DocState, DocumentEvent, Edits, Stamp};
 use crate::{CommandRegistry, Documents, Workbench};
 
 /// Why a document is saved.
@@ -143,7 +146,8 @@ pub(crate) async fn save_each(
 }
 
 /// A save participant: the edits it makes to `text`.
-pub(crate) type Participant = fn(&BufferSnapshot) -> Edits;
+/// `cursor_rows` (sorted) are lines trimming must leave alone.
+pub(crate) type Participant = fn(&BufferSnapshot, &[u32]) -> Edits;
 
 /// The participants enabled for a document of `language`, in the order
 /// they run.
@@ -168,9 +172,12 @@ pub(crate) fn participants(
 
 /// Deletes the spaces and tabs at the end of every line (VS Code trims
 /// those two only).
-fn trim_trailing_whitespace(text: &BufferSnapshot) -> Edits {
+fn trim_trailing_whitespace(text: &BufferSnapshot, cursor_rows: &[u32]) -> Edits {
     let mut edits = Vec::new();
     for row in 0..text.line_count() {
+        if cursor_rows.binary_search(&row).is_ok() {
+            continue;
+        }
         let line = text.line(row);
         let kept = line.trim_end_matches([' ', '\t']).len();
         if kept < line.len() {
@@ -185,7 +192,7 @@ fn trim_trailing_whitespace(text: &BufferSnapshot) -> Edits {
 }
 
 /// Appends a line break to text that does not end with one.
-fn insert_final_newline(text: &BufferSnapshot) -> Edits {
+fn insert_final_newline(text: &BufferSnapshot, _: &[u32]) -> Edits {
     let len = text.len_bytes();
     if len == 0 || text.byte_at(len - 1) == b'\n' {
         return Vec::new();
@@ -194,7 +201,7 @@ fn insert_final_newline(text: &BufferSnapshot) -> Edits {
 }
 
 /// Collapses the line breaks at the end of the text to one.
-fn trim_final_newlines(text: &BufferSnapshot) -> Edits {
+fn trim_final_newlines(text: &BufferSnapshot, _: &[u32]) -> Edits {
     let len = text.len_bytes();
     let mut start = len;
     while start > 0 && text.byte_at(start - 1) == b'\n' {
@@ -304,6 +311,134 @@ fn save_all(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>
     .detach();
 }
 
+/// `files.autoSave` (spec §6.2): saves dirty documents on its own, never
+/// asking and never touching a conflicted or deleted one.
+#[derive(Default)]
+pub(crate) struct AutoSave {
+    /// The `afterDelay` timer of each document with unsaved changes;
+    /// dropping one cancels it.
+    timers: HashMap<Arc<Path>, Task<()>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// The default of `files.autoSaveDelay`, in milliseconds.
+const DEFAULT_AUTO_SAVE_DELAY: u64 = 1000;
+
+impl Workbench {
+    /// Starts following `documents` and the window for `files.autoSave`.
+    pub(crate) fn start_auto_save(
+        &mut self,
+        documents: &Entity<Documents>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let events = cx.subscribe_in(documents, window, Self::auto_save_event);
+        let activation = cx.observe_window_activation(window, |wb, window, cx| {
+            if !window.is_window_active() {
+                wb.auto_save_where("onWindowChange", window, cx);
+            }
+        });
+        self.auto_save._subscriptions = vec![events, activation];
+    }
+
+    /// `files.autoSave` for the document at `path`.
+    fn auto_save_mode(&self, path: &Path, cx: &App) -> String {
+        let language = self
+            .documents()
+            .read(cx)
+            .language_id_of(path)
+            .map(|id| id.to_string());
+        cx.global::<AppState>()
+            .settings
+            .get::<String>("files.autoSave", language.as_deref())
+            .unwrap_or_else(|| "off".into())
+    }
+
+    fn auto_save_delay(&self, path: &Path, cx: &App) -> Duration {
+        let language = self
+            .documents()
+            .read(cx)
+            .language_id_of(path)
+            .map(|id| id.to_string());
+        let ms = cx
+            .global::<AppState>()
+            .settings
+            .get::<u64>("files.autoSaveDelay", language.as_deref())
+            .unwrap_or(DEFAULT_AUTO_SAVE_DELAY);
+        Duration::from_millis(ms)
+    }
+
+    fn auto_save_event(
+        &mut self,
+        _: &Entity<Documents>,
+        event: &DocumentEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            DocumentEvent::Edited { path, .. } => {
+                if self.auto_save_mode(path, cx) != "afterDelay" {
+                    self.auto_save.timers.remove(path);
+                    return;
+                }
+                // Restarted by every edit: the old timer is dropped.
+                let delay = self.auto_save_delay(path, cx);
+                let target = path.clone();
+                let timer = cx.spawn_in(window, async move |wb, cx| {
+                    cx.background_executor().timer(delay).await;
+                    wb.update_in(cx, |wb, window, cx| {
+                        wb.auto_save.timers.remove(&target);
+                        wb.auto_save_document(&target, window, cx);
+                    })
+                    .ok();
+                });
+                self.auto_save.timers.insert(path.clone(), timer);
+            }
+            DocumentEvent::DirtyChanged { path, dirty: false } | DocumentEvent::Closed { path } => {
+                self.auto_save.timers.remove(path);
+            }
+            DocumentEvent::FocusLost { path }
+                if self.auto_save_mode(path, cx) == "onFocusChange" =>
+            {
+                self.auto_save_document(path, window, cx);
+            }
+            _ => {}
+        }
+    }
+
+    /// Autosaves every dirty document whose `files.autoSave` is `mode`.
+    fn auto_save_where(&mut self, mode: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.documents().read(cx).dirty_paths();
+        for path in paths {
+            if self.auto_save_mode(&path, cx) == mode {
+                self.auto_save_document(&path, window, cx);
+            }
+        }
+    }
+
+    /// Saves the document at `path` if it has unsaved changes and is
+    /// neither in conflict with the disk nor deleted.
+    fn auto_save_document(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let documents = self.documents().clone();
+        {
+            let docs = documents.read(cx);
+            if !docs.is_dirty(path)
+                || docs.has_conflict(path)
+                || docs.state(path) != Some(&DocState::Ready)
+            {
+                return;
+            }
+        }
+        let opts = SaveOptions {
+            reason: SaveReason::Auto,
+            participants: true,
+        };
+        documents
+            .update(cx, |d, cx| d.save(path, opts, window, cx))
+            .detach();
+    }
+}
+
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "workbench.action.files.save",
@@ -356,7 +491,7 @@ mod tests {
         let buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
         let snapshot = buffer.snapshot();
         let mut out = text.to_string();
-        for (range, new) in f(&snapshot).into_iter().rev() {
+        for (range, new) in f(&snapshot, &[]).into_iter().rev() {
             out.replace_range(range, &new);
         }
         out

@@ -177,7 +177,8 @@ impl SymbolSource {
             | DocumentEvent::LanguageChanged { path, .. } => self.fetch(path.clone(), cx),
             DocumentEvent::DirtyChanged { .. }
             | DocumentEvent::Saved { .. }
-            | DocumentEvent::ConflictChanged { .. } => {}
+            | DocumentEvent::ConflictChanged { .. }
+            | DocumentEvent::FocusLost { .. } => {}
             DocumentEvent::Closed { path } => {
                 self.entries.remove(path);
             }

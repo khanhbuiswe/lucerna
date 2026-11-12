@@ -197,6 +197,8 @@ pub struct Workbench {
     pub(crate) locations_picker: Option<ShownLocationsPicker>,
     /// Folder trust: the trust store's answer and the trust modal.
     pub(crate) trust: Trust,
+    /// `files.autoSave`.
+    pub(crate) auto_save: crate::save::AutoSave,
     /// The notification at the bottom right.
     pub(crate) toast: Option<Toast>,
     /// Toasts shown so far; tells a toast's timer whether it is current.
@@ -593,6 +595,7 @@ impl Workbench {
             theme_picker: None,
             locations_picker: None,
             trust,
+            auto_save: Default::default(),
             toast: None,
             toast_count: 0,
             fresh_installs_seen,
@@ -611,6 +614,7 @@ impl Workbench {
         let documents = workbench.documents.clone();
         let trust_events = workbench.start_trust(&documents, window, cx);
         workbench._subscriptions.push(trust_events);
+        workbench.start_auto_save(&documents, window, cx);
         workbench.refresh_watched_open_files(cx);
         workbench.add_status_item(StatusBarSide::Left, diagnostics_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);

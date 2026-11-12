@@ -1186,3 +1186,216 @@ fn close_save_that_fails_keeps_tab(cx: &mut TestAppContext) {
     assert!(is_dirty(&wb, "ro/f.txt", cx));
     assert!(message(cx).is_some_and(|m| m.starts_with("Failed to save 'f.txt': ")));
 }
+
+const AFTER_DELAY: &str = r#"{"files.autoSave": "afterDelay"}"#;
+
+fn advance(ms: u64, cx: &mut VisualTestContext) {
+    cx.executor().advance_clock(Duration::from_millis(ms));
+    cx.run_until_parked();
+}
+
+/// Makes the test window the active one, as in a running app.
+fn activate(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.activate_window());
+    settle(cx);
+}
+
+/// Moves focus out of the code view, to Quick Open's input.
+fn blur(cx: &mut VisualTestContext) {
+    keys("cmd-p", cx);
+}
+
+#[gpui::test]
+fn auto_save_is_off_by_default(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    advance(5000, cx);
+    blur(cx);
+    assert_eq!(disk(&dir, "file.txt"), "abc\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn after_delay_saves_after_1000ms_of_quiet(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    advance(999, cx);
+    assert_eq!(disk(&dir, "file.txt"), "abc\n", "not yet");
+    advance(1, cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn after_delay_restarts_on_each_edit(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, _wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    advance(600, cx);
+    input("y", cx);
+    advance(600, cx);
+    assert_eq!(
+        disk(&dir, "file.txt"),
+        "abc\n",
+        "restarted by the second edit"
+    );
+    advance(400, cx);
+    assert_eq!(disk(&dir, "file.txt"), "xyabc\n");
+}
+
+#[gpui::test]
+fn after_delay_follows_the_delay_setting(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"files.autoSave": "afterDelay", "files.autoSaveDelay": 200}"#),
+    );
+    let (dir, _wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    advance(199, cx);
+    assert_eq!(disk(&dir, "file.txt"), "abc\n");
+    advance(1, cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+}
+
+#[gpui::test]
+fn after_delay_skips_conflicted(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = conflicted(cx);
+    advance(1000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "disk\n");
+    assert!(has_conflict(&wb, "file.txt", cx));
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert!(!cx.pending_prompt().is_some(), "an autosave never prompts");
+}
+
+#[gpui::test]
+fn after_delay_skips_deleted(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    fs::remove_file(dir.path().join("file.txt")).unwrap();
+    changed(&wb, "file.txt", ChangeKind::Removed, cx);
+    advance(1000, cx);
+    assert!(!dir.path().join("file.txt").exists());
+    assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn auto_save_conflict_found_while_writing_does_not_prompt(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    // Another program writes, and the watcher has not said so yet.
+    fs::write(dir.path().join("file.txt"), "disk, longer\n").unwrap();
+    advance(1000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "disk, longer\n");
+    assert!(has_conflict(&wb, "file.txt", cx));
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert!(!cx.pending_prompt().is_some());
+}
+
+#[gpui::test]
+fn closing_a_dirty_document_cancels_its_timer(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    // Undo back to clean: nothing left to save.
+    keys("cmd-z", cx);
+    assert!(!is_dirty(&wb, "file.txt", cx));
+    fs::write(dir.path().join("file.txt"), "other\n").unwrap();
+    advance(1000, cx);
+    assert_eq!(
+        disk(&dir, "file.txt"),
+        "other\n",
+        "a clean document is not written"
+    );
+}
+
+#[gpui::test]
+fn on_focus_change_saves_when_focus_leaves(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"files.autoSave": "onFocusChange"}"#));
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    activate(cx);
+    input("x", cx);
+    advance(5000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "abc\n", "no timer in this mode");
+    blur(cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn on_focus_change_ignores_focus_moving_to_the_find_widget(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"files.autoSave": "onFocusChange"}"#));
+    let (dir, _wb, _view, cx) = editor("abc\n", cx);
+    activate(cx);
+    input("x", cx);
+    keys("cmd-f", cx);
+    assert_eq!(
+        disk(&dir, "file.txt"),
+        "abc\n",
+        "the widget belongs to the view"
+    );
+}
+
+#[gpui::test]
+fn on_window_change_saves_when_the_window_loses_focus(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"files.autoSave": "onWindowChange"}"#));
+    let (dir, _wb, _view, cx) = editor("abc\n", cx);
+    activate(cx);
+    input("x", cx);
+    blur(cx);
+    assert_eq!(
+        disk(&dir, "file.txt"),
+        "abc\n",
+        "focus inside the window is not a window change"
+    );
+    // Activating another window deactivates this one.
+    cx.update(|_, cx| {
+        let other = cx
+            .open_window(gpui::WindowOptions::default(), |_, cx| {
+                gpui::AppContext::new(cx, |_| gpui::Empty)
+            })
+            .unwrap();
+        other
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+    });
+    settle(cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+}
+
+#[gpui::test]
+fn auto_save_keeps_whitespace_on_cursor_lines(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"files.autoSave": "afterDelay", "files.trimTrailingWhitespace": true}"#),
+    );
+    let (dir, _wb, view, cx) = editor("a  \nb  \nc  \n", cx);
+    // Cursor at the end of line 2, after the spaces; line 1 and 3 trim.
+    view.update(cx, |v, cx| {
+        v.select(
+            lucerna_text::Point { row: 1, column: 3 }..lucerna_text::Point { row: 1, column: 3 },
+            cx,
+        )
+    });
+    input("x", cx);
+    advance(1000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "a\nb  x\nc\n");
+}
+
+#[gpui::test]
+fn explicit_save_trims_cursor_lines(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"files.trimTrailingWhitespace": true}"#));
+    let (dir, _wb, view, cx) = editor("a  \nb  \n", cx);
+    view.update(cx, |v, cx| {
+        v.select(
+            lucerna_text::Point { row: 1, column: 3 }..lucerna_text::Point { row: 1, column: 3 },
+            cx,
+        )
+    });
+    keys("cmd-s", cx);
+    assert_eq!(disk(&dir, "file.txt"), "a\nb\n");
+}

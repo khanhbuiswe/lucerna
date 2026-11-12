@@ -1457,7 +1457,16 @@ impl Render for CodeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self._focus_out.is_none() {
             let focus = self.focus.clone();
-            self._focus_out = Some(cx.on_focus_out(&focus, window, |v, _, _, cx| {
+            self._focus_out = Some(cx.on_focus_out(&focus, window, |v, _, window, cx| {
+                // Focus left the view for something outside it (the view's
+                // own find widget is inside), for `files.autoSave`.
+                if !v.passive
+                    && !v.focus.contains_focused(window, cx)
+                    && let Some(docs) = v.documents.as_ref().and_then(WeakEntity::upgrade)
+                {
+                    let path = v.path.clone();
+                    docs.update(cx, |d, cx| d.view_focus_lost(&path, cx));
+                }
                 v.caret.stop();
                 v.hover.hide(cx);
                 v.set_goto_message(None, cx);

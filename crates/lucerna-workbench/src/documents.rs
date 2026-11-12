@@ -36,7 +36,9 @@ use lucerna_text::{
 use crate::AppState;
 use crate::code_view::CodeView;
 use crate::editor_groups::EditorGroupsView;
-use crate::save::{self, CONFLICT_ANSWERS, CONFLICT_MESSAGE, SaveOptions, WriteJob, WriteOutcome};
+use crate::save::{
+    self, CONFLICT_ANSWERS, CONFLICT_MESSAGE, SaveOptions, SaveReason, WriteJob, WriteOutcome,
+};
 use crate::status_message;
 use crate::tasks::catch_panic;
 use crate::ui::GRID;
@@ -104,6 +106,9 @@ pub enum DocumentEvent {
     /// The file changed on disk while the text had unsaved changes (or that
     /// state ended); the text was left alone.
     ConflictChanged { path: Arc<Path>, conflict: bool },
+    /// A view of the document lost focus to something outside it (not to
+    /// its own find widget or hover); `files.autoSave: onFocusChange`.
+    FocusLost { path: Arc<Path> },
     /// The last view of an opened document was dropped. Sent no later than
     /// the frame after (the workbench collects closed documents on each
     /// draw).
@@ -673,6 +678,21 @@ impl Documents {
             .is_some_and(Buffer::is_dirty)
     }
 
+    /// The id of the language of the document at `path`.
+    pub(crate) fn language_id_of(&self, path: &Path) -> Option<Arc<str>> {
+        self.docs
+            .get(&self.key(path))
+            .and_then(Document::language_id)
+    }
+
+    /// Tells listeners that a view of the document at `path` lost focus.
+    pub(crate) fn view_focus_lost(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let key = self.key(path);
+        if self.docs.contains_key(&key) {
+            cx.emit(DocumentEvent::FocusLost { path: key });
+        }
+    }
+
     /// Whether the file at `path` changed on disk while its text had
     /// unsaved changes.
     pub fn has_conflict(&self, path: &Path) -> bool {
@@ -748,6 +768,12 @@ impl Documents {
                         let Ok(ask) = this.update(cx, |d, cx| d.asks(&key, cx)) else {
                             return Ok(false);
                         };
+                        // An autosave never asks: it leaves a conflict alone.
+                        if opts.reason == SaveReason::Auto
+                            && this.update(cx, |d, _| d.has_conflict(&key)).unwrap_or(true)
+                        {
+                            return Ok(false);
+                        }
                         if ask && !overwrite {
                             let Ok(prompt) = this.update_in(cx, |_, window, cx| {
                                 window.prompt(
@@ -787,6 +813,10 @@ impl Documents {
                 let result = task.await;
                 match this.update(cx, |d, cx| d.finish_save(&key, state, guard, result, cx)) {
                     Ok(SaveStep::Done(result)) => return result,
+                    // An autosave leaves the conflict alone.
+                    Ok(SaveStep::Conflict) if opts.reason == SaveReason::Auto => {
+                        return Ok(false);
+                    }
                     // The document is in conflict now: ask.
                     Ok(SaveStep::Conflict) => {}
                     Err(_) => return Ok(false),
@@ -832,11 +862,18 @@ impl Documents {
             let language = doc.language_id();
             let participants =
                 save::participants(&cx.global::<AppState>().settings, language.as_deref());
+            // An autosave keeps the whitespace the user just typed: the
+            // lines with a cursor are not trimmed (as VS Code does).
+            let cursor_rows = if opts.reason == SaveReason::Auto {
+                self.cursor_rows(key, cx)
+            } else {
+                Vec::new()
+            };
             // One undo step: no stop between them.
             for participant in participants {
                 let buffer = self.docs.get_mut(key)?.buffer.as_mut()?;
                 let old = buffer.snapshot();
-                let edits = participant(&old);
+                let edits = participant(&old, &cursor_rows);
                 if edits.is_empty() {
                     continue;
                 }
@@ -863,6 +900,37 @@ impl Documents {
         });
         cx.notify();
         Some(StartedWrite { task, state, guard })
+    }
+
+    /// The sorted rows holding a cursor of any view of the document at
+    /// `key`.
+    fn cursor_rows(&self, key: &Arc<Path>, cx: &App) -> Vec<u32> {
+        let Some(doc) = self.docs.get(key) else {
+            return Vec::new();
+        };
+        let Some(buffer) = doc.buffer.as_ref() else {
+            return Vec::new();
+        };
+        let text = buffer.snapshot();
+        let mut rows: Vec<u32> = doc
+            .views
+            .iter()
+            .filter_map(WeakEntity::upgrade)
+            .flat_map(|v| {
+                let heads: Vec<usize> = v
+                    .read(cx)
+                    .selections()
+                    .all()
+                    .iter()
+                    .map(|s| s.head)
+                    .collect();
+                heads
+            })
+            .map(|head| text.offset_to_point(head.min(text.len_bytes())).row)
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        rows
     }
 
     /// Takes the end of a write started by [`Documents::start_write`] for
