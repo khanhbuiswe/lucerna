@@ -1,5 +1,5 @@
 //! Starts the app for `luc`: the configuration, themes and keymap, then
-//! one workbench window on a folder, asking for the folder when the app
+//! one workbench window on a folder, or the Welcome screen when the app
 //! bundle is started from Finder or the Dock, and opening the paths the
 //! platform sends ([`open_requests`]).
 
@@ -14,8 +14,8 @@ use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::future::{self, Either};
 use gpui::{
-    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, PathPromptOptions, WindowBounds,
-    WindowHandle, actions, px, size,
+    App, AppContext as _, Bounds, Entity, Global, KeyBinding, Menu, MenuItem, PathPromptOptions,
+    Window, WindowBounds, WindowHandle, WindowOptions, actions, px, size,
 };
 use gpui_platform::application;
 use lucerna_extension::store::Store;
@@ -27,8 +27,11 @@ use crate::extensions::{
     ExtensionService, WasmGrammarValidator, extension_languages, extensions_root,
 };
 use crate::open_requests::{self, OpenWindow, Route};
+use crate::process::{self, SpawnRequest, Spawner};
+use crate::recent::{self, RecentEntry, RecentKind, RecentStore};
 use crate::{
-    AppState, ConfigPaths, OpenMode, Workbench, default_data_dir, watch_config, window_options,
+    AppState, ConfigPaths, OpenMode, Startup, WelcomeEvent, WelcomeView, Workbench,
+    default_data_dir, startup_choice, watch_config, window_options,
 };
 
 /// What [`run`] opens.
@@ -56,8 +59,10 @@ const OPEN_REQUEST_GRACE: Duration = Duration::from_millis(300);
 ///
 /// With `launch`, the window opens on it. Without, as when Finder or the
 /// Dock starts the app bundle, the app waits briefly for a path to open and
-/// otherwise asks for a folder; Cancel quits. Paths the platform asks to
-/// open later go through [`open_requests::route`], resolved by `resolve`.
+/// otherwise shows the Welcome screen, or asks for a folder when
+/// `workbench.startupEditor` is `"none"` (Cancel quits). Paths the platform
+/// asks to open later go through [`open_requests::route`], resolved by
+/// `resolve`.
 pub fn run(launch: Option<Launch>, resolve: Resolve) {
     let (requests_tx, mut requests) = mpsc::unbounded::<Vec<String>>();
     let app = application();
@@ -67,8 +72,9 @@ pub fn run(launch: Option<Launch>, resolve: Resolve) {
     app.run(move |cx: &mut App| {
         start(cx);
         let router = Rc::new(RefCell::new(Router {
-            window: None,
+            shown: None,
             resolve,
+            user_dir: ConfigPaths::user_only().user_dir,
         }));
         let waiting = launch.is_none();
         if let Some(launch) = launch {
@@ -84,7 +90,7 @@ pub fn run(launch: Option<Launch>, resolve: Resolve) {
                         cx.update(|cx| Router::open_urls(&router, &urls, cx));
                     }
                     Either::Left((None, _)) => return,
-                    Either::Right(_) => cx.update(|cx| pick_folder(&router, cx)),
+                    Either::Right(_) => cx.update(|cx| open_without_folder(&router, cx)),
                 }
             }
             while let Some(urls) = requests.next().await {
@@ -95,21 +101,122 @@ pub fn run(launch: Option<Launch>, resolve: Resolve) {
     });
 }
 
+/// With no folder to open: reads the user's configuration, then shows the
+/// Welcome screen or the folder prompt as `workbench.startupEditor` says.
+fn open_without_folder(router: &Rc<RefCell<Router>>, cx: &mut App) {
+    let user_dir = router.borrow().user_dir.clone();
+    watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
+    match startup_choice(&cx.global::<AppState>().settings) {
+        Startup::FolderPrompt => pick_folder(router, cx),
+        Startup::Welcome => Router::open_welcome(router, cx),
+    }
+}
+
+/// What the process's one window shows.
+enum Shown {
+    Welcome(WindowHandle<WelcomeView>),
+    Workbench(OpenWindow, WindowHandle<Workbench>),
+}
+
 /// The process's one window, and how to open paths the platform sends.
 struct Router {
-    window: Option<(OpenWindow, WindowHandle<Workbench>)>,
+    shown: Option<Shown>,
     resolve: Resolve,
+    /// The user configuration directory ([`ConfigPaths::user_dir`]).
+    user_dir: PathBuf,
 }
 
 impl Router {
+    /// Opens the workbench on `launch`: in place of the Welcome screen when
+    /// it shows, else in a new window. Then records it as recently opened.
     fn open_first(this: &Rc<RefCell<Router>>, launch: Launch, cx: &mut App) {
-        let shown = match (&launch.file, launch.single_file) {
-            (Some(file), true) => OpenWindow::single_file(file.clone()),
-            _ => OpenWindow::folder(launch.root.clone()),
+        let (open, entry) = match (&launch.file, launch.single_file) {
+            (Some(file), true) => (
+                OpenWindow::single_file(file.clone()),
+                RecentEntry {
+                    path: file.clone(),
+                    kind: RecentKind::File,
+                },
+            ),
+            _ => (
+                OpenWindow::folder(launch.root.clone()),
+                RecentEntry {
+                    path: launch.root.clone(),
+                    kind: RecentKind::Folder,
+                },
+            ),
         };
-        if let Some(handle) = open_workbench(launch, cx) {
-            this.borrow_mut().window = Some((shown, handle));
+        let (welcome, user_dir) = {
+            let router = this.borrow();
+            let welcome = match router.shown {
+                Some(Shown::Welcome(handle)) => Some(handle),
+                _ => None,
+            };
+            (welcome, router.user_dir.clone())
+        };
+        watch_config(ConfigPaths::with_user_dir(user_dir, &launch.root), cx);
+        let handle = match welcome {
+            Some(welcome) => replace_welcome(welcome, launch, cx),
+            None => open_workbench(launch, cx),
+        };
+        if let Some(handle) = handle {
+            this.borrow_mut().shown = Some(Shown::Workbench(open, handle));
+            record_recent(entry, cx);
         }
+    }
+
+    /// Opens the Welcome screen in a window like the workbench's; quits if
+    /// it cannot.
+    fn open_welcome(this: &Rc<RefCell<Router>>, cx: &mut App) {
+        let router = this.clone();
+        let opened = cx.open_window(maximized_window_options(cx), |window, cx| {
+            let view = cx.new(|cx| WelcomeView::new(window, cx));
+            cx.subscribe(&view, move |_, event: &WelcomeEvent, cx| {
+                Router::on_welcome_event(&router, event, cx)
+            })
+            .detach();
+            view
+        });
+        match opened {
+            Ok(handle) => {
+                cx.activate(true);
+                this.borrow_mut().shown = Some(Shown::Welcome(handle));
+            }
+            Err(err) => {
+                tracing::error!(%err, "could not open the window");
+                cx.quit();
+            }
+        }
+    }
+
+    fn on_welcome_event(this: &Rc<RefCell<Router>>, event: &WelcomeEvent, cx: &mut App) {
+        match event {
+            WelcomeEvent::Open { path, new_window } => {
+                Router::open_from_welcome(this, path.clone(), *new_window, cx)
+            }
+            WelcomeEvent::Quit => crate::workbench::quit(cx),
+        }
+    }
+
+    /// Opens `path` chosen on the Welcome screen: in this window, or in a
+    /// new process when `new_window`. Ignored once the window shows a
+    /// workbench, as for the second `Open` of a double-click.
+    fn open_from_welcome(
+        this: &Rc<RefCell<Router>>,
+        path: PathBuf,
+        new_window: bool,
+        cx: &mut App,
+    ) {
+        if !matches!(this.borrow().shown, Some(Shown::Welcome(_))) {
+            return;
+        }
+        if new_window {
+            if let Err(err) = process::spawn(&SpawnRequest::Path(path.clone()), cx) {
+                tracing::error!(%err, path = %path.display(), "could not start luc");
+            }
+            return;
+        }
+        Router::open_path(this, &path, cx);
     }
 
     fn open_urls(this: &Rc<RefCell<Router>>, urls: &[String], cx: &mut App) {
@@ -118,6 +225,8 @@ impl Router {
         }
     }
 
+    /// Opens `path` where [`open_requests::route`] says; while the Welcome
+    /// screen shows, that is in its window.
     fn open_path(this: &Rc<RefCell<Router>>, path: &Path, cx: &mut App) {
         let path = match std::fs::canonicalize(path) {
             Ok(path) => path,
@@ -126,11 +235,11 @@ impl Router {
                 return;
             }
         };
-        let (route, handle) = {
-            let router = this.borrow();
-            let shown = router.window.as_ref().map(|(shown, _)| shown);
-            let handle = router.window.as_ref().map(|(_, handle)| *handle);
-            (open_requests::route(&path, shown), handle)
+        let (route, handle) = match &this.borrow().shown {
+            Some(Shown::Workbench(open, handle)) => {
+                (open_requests::route(&path, Some(open)), Some(*handle))
+            }
+            _ => (open_requests::route(&path, None), None),
         };
         tracing::info!(path = %path.display(), ?route, "open request");
         match (route, handle) {
@@ -146,7 +255,7 @@ impl Router {
                     .ok();
                 cx.activate(true);
             }
-            (Route::NewProcess, _) => open_requests::spawn_process(&path),
+            (Route::NewProcess, _) => open_requests::spawn_process(&path, cx),
             _ => {
                 let resolved = (this.borrow().resolve)(path);
                 match resolved {
@@ -156,6 +265,27 @@ impl Router {
             }
         }
     }
+}
+
+/// Adds `entry` to the recent list in the background, when the app has a
+/// data directory.
+fn record_recent(entry: RecentEntry, cx: &mut App) {
+    let Some(data_dir) = app_data_dir(cx) else {
+        return;
+    };
+    cx.background_spawn(async move {
+        if let Err(err) = recent::record(&data_dir, entry) {
+            tracing::warn!(%err, "could not update the recent list");
+        }
+    })
+    .detach();
+}
+
+/// The app data directory ([`RecentStore`]): the recent list and the
+/// workspace state live there.
+fn app_data_dir(cx: &App) -> Option<PathBuf> {
+    cx.try_global::<RecentStore>()
+        .and_then(|store| store.data_dir.clone())
 }
 
 /// Asks for a folder to open; quits on Cancel unless a window opened
@@ -190,6 +320,10 @@ fn pick_folder(router: &Rc<RefCell<Router>>, cx: &mut App) {
 fn start(cx: &mut App) {
     crate::fonts::register(cx);
     set_app_state(extensions_root(), cx);
+    cx.set_global(RecentStore {
+        data_dir: default_data_dir(),
+    });
+    cx.set_global(Spawner::default());
     install_app_menu(cx);
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
@@ -199,43 +333,23 @@ fn start(cx: &mut App) {
     .detach();
 }
 
-/// Opens the workbench window on `launch`; quits if it cannot.
-fn open_workbench(launch: Launch, cx: &mut App) -> Option<WindowHandle<Workbench>> {
-    let Launch {
-        root,
-        file,
-        single_file,
-        on_first_frame,
-    } = launch;
-    watch_config(ConfigPaths::for_root(&root), cx);
-    // Open zoomed to fill the screen (what double-clicking the title bar does
-    // on macOS). The windowed size is what un-zooming returns to.
+/// Options for the app's window: zoomed to fill the screen (what
+/// double-clicking the title bar does on macOS). The windowed size is what
+/// un-zooming returns to.
+fn maximized_window_options(cx: &App) -> WindowOptions {
     let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);
     let mut options = window_options(bounds);
-    options.window_bounds = Some(WindowBounds::Maximized(bounds));
-    let opened = cx.open_window(options, |window, cx| {
-        let workbench = cx.new(|cx| match (&file, default_data_dir()) {
-            (Some(file), data_dir) if single_file => {
-                Workbench::single_file(root, file, data_dir, window, cx)
-            }
-            (_, Some(data_dir)) => Workbench::with_data_dir(root, data_dir, window, cx),
-            (_, None) => Workbench::new(root, window, cx),
-        });
-        if let Some(file) = file {
-            let path: Arc<Path> = file.into();
-            workbench.update(cx, |wb, cx| wb.open_path(path, OpenMode::Pinned, cx));
-        }
-        // Next-frame callbacks run before that frame draws, so the
-        // second one runs once the first frame has been presented.
-        window.on_next_frame(move |window, _| {
-            window.on_next_frame(move |_, cx| {
-                ExtensionService::schedule_startup_refresh(cx);
-                if let Some(callback) = on_first_frame {
-                    callback();
-                }
-            });
-        });
-        workbench
+    // GPUI's test platform cannot zoom a window.
+    if !cx.background_executor().is_test() {
+        options.window_bounds = Some(WindowBounds::Maximized(bounds));
+    }
+    options
+}
+
+/// Opens the workbench window on `launch`; quits if it cannot.
+fn open_workbench(launch: Launch, cx: &mut App) -> Option<WindowHandle<Workbench>> {
+    let opened = cx.open_window(maximized_window_options(cx), |window, cx| {
+        build_workbench(launch, window, cx)
     });
     match opened {
         Ok(handle) => {
@@ -247,6 +361,130 @@ fn open_workbench(launch: Launch, cx: &mut App) -> Option<WindowHandle<Workbench
             cx.quit();
             None
         }
+    }
+}
+
+/// Makes the Welcome window show the workbench on `launch`, keeping its
+/// place and size. `None` when the window closed meanwhile.
+fn replace_welcome(
+    welcome: WindowHandle<WelcomeView>,
+    launch: Launch,
+    cx: &mut App,
+) -> Option<WindowHandle<Workbench>> {
+    let any = *welcome;
+    match any.update(cx, |_, window, cx| {
+        build_workbench(launch, window, cx);
+        window.activate_window();
+    }) {
+        // The window's handle still names its first root type.
+        Ok(()) => Some(WindowHandle::new(any.window_id())),
+        Err(err) => {
+            tracing::error!(%err, "could not show the workbench");
+            None
+        }
+    }
+}
+
+/// Makes the workbench on `launch` the root of `window`, opens its file,
+/// and runs the startup work once its first frame is presented.
+fn build_workbench(launch: Launch, window: &mut Window, cx: &mut App) -> Entity<Workbench> {
+    let Launch {
+        root,
+        file,
+        single_file,
+        on_first_frame,
+    } = launch;
+    let data_dir = app_data_dir(cx);
+    let workbench = window.replace_root(cx, |window, cx| match (&file, data_dir) {
+        (Some(file), data_dir) if single_file => {
+            Workbench::single_file(root, file, data_dir, window, cx)
+        }
+        (_, Some(data_dir)) => Workbench::with_data_dir(root, data_dir, window, cx),
+        (_, None) => Workbench::new(root, window, cx),
+    });
+    if let Some(file) = file {
+        let path: Arc<Path> = file.into();
+        workbench.update(cx, |wb, cx| wb.open_path(path, OpenMode::Pinned, cx));
+    }
+    // Next-frame callbacks run before that frame draws, so the
+    // second one runs once the first frame has been presented.
+    window.on_next_frame(move |window, _| {
+        window.on_next_frame(move |_, cx| {
+            ExtensionService::schedule_startup_refresh(cx);
+            if let Some(callback) = on_first_frame {
+                callback();
+            }
+        });
+    });
+    workbench
+}
+
+/// The router the test hooks below drive, made on first use. It resolves
+/// a folder to itself and a file to a single-file window, and reads the
+/// user configuration from `config` in the app data directory, not the
+/// developer's own.
+struct TestRouter(Rc<RefCell<Router>>);
+
+impl Global for TestRouter {}
+
+fn test_router(cx: &mut App) -> Rc<RefCell<Router>> {
+    if let Some(router) = cx.try_global::<TestRouter>() {
+        return router.0.clone();
+    }
+    let resolve: Resolve = Box::new(|path: PathBuf| {
+        Ok(if path.is_dir() {
+            Launch {
+                root: path,
+                file: None,
+                single_file: false,
+                on_first_frame: None,
+            }
+        } else {
+            Launch {
+                root: path.parent().unwrap_or(Path::new("/")).to_path_buf(),
+                file: Some(path),
+                single_file: true,
+                on_first_frame: None,
+            }
+        })
+    });
+    let user_dir = app_data_dir(cx).unwrap_or_default().join("config");
+    let router = Rc::new(RefCell::new(Router {
+        shown: None,
+        resolve,
+        user_dir,
+    }));
+    cx.set_global(TestRouter(router.clone()));
+    router
+}
+
+/// Opens the Welcome screen through the app's router; for tests.
+#[doc(hidden)]
+pub fn open_welcome_for_test(cx: &mut App) -> WindowHandle<WelcomeView> {
+    let router = test_router(cx);
+    Router::open_welcome(&router, cx);
+    match router.borrow().shown {
+        Some(Shown::Welcome(handle)) => handle,
+        _ => panic!("the Welcome window opened"),
+    }
+}
+
+/// Opens `launch` through the app's router, as `luc <path>` does; for
+/// tests.
+#[doc(hidden)]
+pub fn open_launch_for_test(launch: Launch, cx: &mut App) {
+    let router = test_router(cx);
+    Router::open_first(&router, launch, cx);
+}
+
+/// The folder of the workbench the router shows; `None` while it shows
+/// Welcome or nothing. For tests.
+#[doc(hidden)]
+pub fn router_shown_root_for_test(cx: &mut App) -> Option<PathBuf> {
+    let router = test_router(cx);
+    match &router.borrow().shown {
+        Some(Shown::Workbench(open, _)) => Some(open.root().to_path_buf()),
+        _ => None,
     }
 }
 

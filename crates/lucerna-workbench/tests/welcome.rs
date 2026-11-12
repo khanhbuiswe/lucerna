@@ -2,15 +2,20 @@
 //! the events its buttons and keys emit. It runs standalone, as the app's
 //! router hosts it.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
+use gpui::{Entity, Focusable as _, Modifiers, TestAppContext, VisualTestContext, WindowHandle};
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
-use lucerna_workbench::recent::{RecentStore, load, recent_path};
-use lucerna_workbench::{AppState, WelcomeEvent, WelcomeView};
+use lucerna_workbench::app::{self, Launch};
+use lucerna_workbench::code_view::CodeView;
+use lucerna_workbench::process::{SpawnRequest, Spawner};
+use lucerna_workbench::recent::{RecentEntry, RecentKind, RecentStore, load, recent_path};
+use lucerna_workbench::{AppState, OpenMode, WelcomeEvent, WelcomeView, Workbench};
 
 fn init(user_keymap: Option<&str>, data_dir: Option<PathBuf>, cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), user_keymap);
@@ -102,6 +107,12 @@ fn draw(cx: &mut VisualTestContext) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+fn settle(cx: &mut VisualTestContext) {
+    draw(cx);
+    cx.run_until_parked();
+    draw(cx);
 }
 
 fn drawn(selector: &'static str, cx: &mut VisualTestContext) -> bool {
@@ -378,4 +389,183 @@ fn no_data_dir_shows_get_started_only(cx: &mut TestAppContext) {
         cx.update(|_, cx| view.read(cx).recent().map(<[_]>::len)),
         Some(0)
     );
+}
+
+type Spawns = Rc<RefCell<Vec<SpawnRequest>>>;
+
+/// A Welcome window opened through the app's router, with a fake process
+/// spawner; returns the window and its view.
+fn routed_welcome(
+    fixture: &Fixture,
+    cx: &mut TestAppContext,
+) -> (WindowHandle<WelcomeView>, Entity<WelcomeView>, Spawns) {
+    init(None, Some(fixture.data_dir()), cx);
+    let spawns: Spawns = Rc::default();
+    let sink = spawns.clone();
+    let handle = cx.update(|cx| {
+        cx.set_global(Spawner(Rc::new(move |request: &SpawnRequest| {
+            sink.borrow_mut().push(request.clone());
+            Ok(())
+        })));
+        app::open_welcome_for_test(cx)
+    });
+    cx.run_until_parked();
+    let view = handle.root(cx).expect("the root is the Welcome view");
+    (handle, view, spawns)
+}
+
+fn emit(view: &Entity<WelcomeView>, events: Vec<WelcomeEvent>, cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        view.update(cx, |_, cx| {
+            for event in events {
+                cx.emit(event);
+            }
+        })
+    });
+    cx.run_until_parked();
+}
+
+/// The only window's root, when it is a workbench.
+fn only_workbench(cx: &mut TestAppContext) -> Option<Entity<Workbench>> {
+    cx.update(|cx| {
+        let windows = cx.windows();
+        assert_eq!(windows.len(), 1, "one window");
+        windows[0]
+            .update(cx, |root, _, _| root.downcast::<Workbench>().ok())
+            .unwrap()
+    })
+}
+
+fn shown_root(cx: &mut TestAppContext) -> Option<PathBuf> {
+    cx.update(app::router_shown_root_for_test)
+}
+
+fn stored_entries(fixture: &Fixture) -> Vec<RecentEntry> {
+    load(&recent_path(fixture.dir.path())).entries
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap()
+}
+
+#[gpui::test]
+fn opening_a_recent_folder_replaces_the_root(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&["proj"], &[]);
+    let (_, view, spawns) = routed_welcome(&fixture, cx);
+    emit(&view, vec![open_event(&fixture.path("proj"), false)], cx);
+    assert!(only_workbench(cx).is_some());
+    assert_eq!(shown_root(cx), Some(canonical(&fixture.path("proj"))));
+    assert!(spawns.borrow().is_empty());
+}
+
+#[gpui::test]
+fn opening_records_the_folder(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&["other", "proj"], &[]);
+    let (_, view, _) = routed_welcome(&fixture, cx);
+    emit(&view, vec![open_event(&fixture.path("proj"), false)], cx);
+    assert_eq!(
+        stored_entries(&fixture).first(),
+        Some(&RecentEntry {
+            path: canonical(&fixture.path("proj")),
+            kind: RecentKind::Folder,
+        })
+    );
+}
+
+#[gpui::test]
+fn new_window_spawns_instead(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&["proj"], &[]);
+    let (handle, view, spawns) = routed_welcome(&fixture, cx);
+    emit(&view, vec![open_event(&fixture.path("proj"), true)], cx);
+    assert_eq!(
+        *spawns.borrow(),
+        vec![SpawnRequest::Path(fixture.path("proj"))]
+    );
+    assert!(handle.root(cx).is_ok(), "the window still shows Welcome");
+    assert_eq!(shown_root(cx), None);
+}
+
+#[gpui::test]
+fn a_second_open_after_the_root_changed_is_ignored(cx: &mut TestAppContext) {
+    // A double-click on a recent row emits Open twice.
+    let fixture = Fixture::new(&["a", "b"], &[]);
+    let (_, view, spawns) = routed_welcome(&fixture, cx);
+    emit(
+        &view,
+        vec![
+            open_event(&fixture.path("a"), false),
+            open_event(&fixture.path("b"), false),
+            open_event(&fixture.path("b"), true),
+        ],
+        cx,
+    );
+    assert!(only_workbench(cx).is_some());
+    assert_eq!(shown_root(cx), Some(canonical(&fixture.path("a"))));
+    assert!(spawns.borrow().is_empty());
+}
+
+#[gpui::test]
+fn cli_launch_records_single_file_as_file(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&[], &[]);
+    init(None, Some(fixture.data_dir()), cx);
+    let file = fixture.path("notes.txt");
+    std::fs::write(&file, "notes\n").unwrap();
+    let file = canonical(&file);
+    let launch = Launch {
+        root: file.parent().unwrap().to_path_buf(),
+        file: Some(file.clone()),
+        single_file: true,
+        on_first_frame: None,
+    };
+    cx.update(|cx| app::open_launch_for_test(launch, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        stored_entries(&fixture).first(),
+        Some(&RecentEntry {
+            path: file,
+            kind: RecentKind::File,
+        })
+    );
+}
+
+#[gpui::test]
+fn quit_asks_the_replaced_window_about_unsaved_changes(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&["proj"], &[]);
+    std::fs::write(fixture.path("proj").join("file.txt"), "abc\n").unwrap();
+    let (_, view, _) = routed_welcome(&fixture, cx);
+    emit(&view, vec![open_event(&fixture.path("proj"), false)], cx);
+    let wb = only_workbench(cx).expect("the root is a workbench");
+    let window = cx.update(|cx| cx.windows()[0]);
+    let cx = &mut VisualTestContext::from_window(window, cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("file.txt")), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+    let focus = cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .expect("the file is open")
+            .downcast::<CodeView>()
+            .expect("tab bodies are code views")
+            .focus_handle(cx)
+    });
+    cx.update(|window, cx| window.focus(&focus, cx));
+    cx.simulate_input("x");
+    settle(cx);
+    let docs = cx.update(|_, cx| wb.read(cx).documents().clone());
+    assert!(docs.read_with(cx, |d, _| d.is_dirty(Path::new("file.txt"))));
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command("workbench.action.quit", None, window, cx)
+        })
+    });
+    settle(cx);
+    assert!(
+        cx.has_pending_prompt(),
+        "quitting asks about the unsaved file"
+    );
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
 }

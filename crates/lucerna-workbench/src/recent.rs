@@ -3,6 +3,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +93,17 @@ impl RecentList {
     }
 }
 
+/// Held while [`record`], [`remove`] or [`clear`] rewrites the file: each
+/// reads it, changes it and writes it back, so two at once in this process
+/// would lose one change.
+static STORE_WRITE: Mutex<()> = Mutex::new(());
+
+fn write_lock() -> MutexGuard<'static, ()> {
+    STORE_WRITE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn save(path: &Path, entries: Vec<RecentEntry>) -> io::Result<()> {
     let file = RecentFile {
         version: RECENT_VERSION,
@@ -104,6 +116,7 @@ fn save(path: &Path, entries: Vec<RecentEntry>) -> io::Result<()> {
 /// Puts `entry` first (dropping an older one with the same path) and drops
 /// entries that no longer exist.
 pub fn record(data_dir: &Path, entry: RecentEntry) -> io::Result<()> {
+    let _writing = write_lock();
     let path = recent_path(data_dir);
     let mut entries = load(&path).existing();
     entries.retain(|e| e.path != entry.path);
@@ -114,6 +127,7 @@ pub fn record(data_dir: &Path, entry: RecentEntry) -> io::Result<()> {
 
 /// Forgets `path` and drops entries that no longer exist.
 pub fn remove(data_dir: &Path, path: &Path) -> io::Result<()> {
+    let _writing = write_lock();
     let file = recent_path(data_dir);
     let mut entries = load(&file).existing();
     entries.retain(|e| e.path != path);
@@ -122,6 +136,7 @@ pub fn remove(data_dir: &Path, path: &Path) -> io::Result<()> {
 
 /// Empties the list.
 pub fn clear(data_dir: &Path) -> io::Result<()> {
+    let _writing = write_lock();
     save(&recent_path(data_dir), Vec::new())
 }
 
@@ -141,8 +156,8 @@ pub fn display_parts(entry: &RecentEntry, home: Option<&Path>) -> (String, Strin
     (name, parent)
 }
 
-/// Where the recent list lives; `None` when the app has no data directory.
-/// Later tasks read it to load and record entries.
+/// The app data directory, where the recent list lives (and the
+/// workbench keeps its workspace state); `None` when the app has none.
 pub struct RecentStore {
     pub data_dir: Option<PathBuf>,
 }
@@ -198,6 +213,29 @@ mod tests {
         let got = paths(&data);
         assert_eq!(got.len(), RECENT_LIMIT);
         assert!(!got.contains(&dirs[0]));
+    }
+
+    #[test]
+    fn concurrent_records_keep_every_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let mut dirs: Vec<_> = (0..8)
+            .map(|i| mkdir(tmp.path(), &format!("d{i}")))
+            .collect();
+        std::thread::scope(|scope| {
+            for dir in &dirs {
+                let data = &data;
+                scope.spawn(move || {
+                    for _ in 0..5 {
+                        record(data, folder(dir.clone())).unwrap();
+                    }
+                });
+            }
+        });
+        let mut got = paths(&data);
+        got.sort();
+        dirs.sort();
+        assert_eq!(got, dirs);
     }
 
     #[test]

@@ -63,11 +63,12 @@ pub const TYPE: &[u8] = lucide!("type");
 pub const CIRCLE: &[u8] = lucide!("circle");
 pub const HISTORY: &[u8] = lucide!("history");
 
-/// The Lucerna mark (`assets/brand/mark.svg` at the repository root), in
-/// its own colors: draw it as an image, not as a single-color `svg`.
+/// The one-color Lucerna mark (`assets/brand/mark-mono.svg` at the
+/// repository root): draw it as an `svg` tinted with the theme's text
+/// color, so it shows on light and dark themes.
 pub const LUCERNA_MARK: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/brand/mark.svg"
+    "/../../assets/brand/mark-mono.svg"
 ));
 
 /// Every bundled icon with its upstream name.

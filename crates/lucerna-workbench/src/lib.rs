@@ -30,6 +30,7 @@ pub mod markdown;
 mod nav_history;
 mod open_files;
 pub mod open_requests;
+pub mod process;
 mod quick_open;
 pub mod recent;
 mod recent_picker;

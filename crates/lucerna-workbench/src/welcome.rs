@@ -6,12 +6,11 @@
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Image,
-    ImageFormat, IntoElement, KeyDownEvent, MouseButton, ParentElement, PathPromptOptions, Render,
-    SharedString, Styled, Subscription, Task, Window, div, img, prelude::*, px,
+    AnyElement, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    KeyDownEvent, MouseButton, ParentElement, PathPromptOptions, Render, SharedString, Styled,
+    Subscription, Task, Window, div, prelude::*, px, svg,
 };
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
 
@@ -49,9 +48,6 @@ pub const WELCOME_COMMANDS: &[&str] = &[
 /// How many recent entries the page lists; "More…" opens the rest in the
 /// picker.
 const RECENT_ROWS: usize = 5;
-
-/// Held while a removal rewrites `recent.json`.
-static STORE_WRITE: Mutex<()> = Mutex::new(());
 
 /// The content column's widest.
 const COLUMN_MAX_WIDTH: f32 = 512.;
@@ -138,7 +134,6 @@ pub struct WelcomeView {
     pending_chord: Vec<Keystroke>,
     /// Whether a press began on the title bar, for its drag.
     title_bar_pressed: Rc<Cell<bool>>,
-    logo: Arc<Image>,
     _load: Task<()>,
 }
 
@@ -182,10 +177,6 @@ impl WelcomeView {
             picker: None,
             pending_chord: Vec::new(),
             title_bar_pressed: Rc::default(),
-            logo: Arc::new(Image::from_bytes(
-                ImageFormat::Svg,
-                icons::LUCERNA_MARK.to_vec(),
-            )),
             _load: load,
         }
     }
@@ -357,9 +348,6 @@ impl WelcomeView {
             return;
         };
         cx.background_spawn(async move {
-            // Each removal reads and rewrites the file: one at a time, so a
-            // quick second one does not bring back the first.
-            let _writing = STORE_WRITE.lock();
             if let Err(err) = recent::remove(&dir, &path) {
                 tracing::warn!(%err, path = %path.display(), "could not update the recent list");
             }
@@ -469,7 +457,13 @@ impl WelcomeView {
             .flex_row()
             .items_center()
             .gap(px(3. * GRID))
-            .child(img(self.logo.clone()).flex_none().size(px(LOGO_SIZE)))
+            .child(
+                svg()
+                    .data(icons::LUCERNA_MARK)
+                    .flex_none()
+                    .size(px(LOGO_SIZE))
+                    .text_color(color(ui.text)),
+            )
             .child(
                 div()
                     .flex()

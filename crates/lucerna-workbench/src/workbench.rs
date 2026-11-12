@@ -1777,16 +1777,18 @@ fn pump_open_file_changes(cx: &mut Context<Workbench>) -> (Option<OpenFileWatche
 /// ([`Workbench::confirm_quit`], one window after another). Quitting runs
 /// the `on_app_quit` hooks, which save the layout.
 pub(crate) fn quit(cx: &mut App) {
+    // Not `downcast`: a Welcome window that became a workbench keeps the
+    // handle type it opened with. Updating a window of another root fails.
     let windows: Vec<WindowHandle<Workbench>> = cx
         .windows()
         .into_iter()
-        .filter_map(|w| w.downcast::<Workbench>())
+        .map(|w| WindowHandle::new(w.window_id()))
         .collect();
     cx.spawn(async move |cx| {
         for handle in windows {
             let Ok(confirm) = handle.update(cx, |wb, window, cx| wb.confirm_quit(window, cx))
             else {
-                // The window closed meanwhile.
+                // The window closed meanwhile, or shows Welcome.
                 continue;
             };
             if !confirm.await {
