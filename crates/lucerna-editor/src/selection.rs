@@ -153,13 +153,18 @@ impl SelectionSet {
             s.anchor = patch.map_offset(s.anchor, anchor_bias);
             s.head = patch.map_offset(s.head, head_bias);
         }
+        // Deletes can collapse or overlap selections: renormalise.
+        let selections = std::mem::take(&mut self.selections);
+        let next_id = self.next_id;
+        *self = Self::from_selections(selections, self.primary, true);
+        self.next_id = self.next_id.max(next_id);
     }
 
     pub fn clamp(&mut self, snapshot: &BufferSnapshot) {
         let len = snapshot.len_bytes();
         for s in &mut self.selections {
-            s.anchor = s.anchor.min(len);
-            s.head = s.head.min(len);
+            s.anchor = snapshot.floor_char_boundary(s.anchor.min(len));
+            s.head = snapshot.floor_char_boundary(s.head.min(len));
         }
     }
 
@@ -221,11 +226,33 @@ mod tests {
 
     #[test]
     fn remap_after_insert() {
-        let (snap, mut set) = marked("ab|cd");
+        let (_, mut set) = marked("ab|cd");
         set.remap(&insert_at(0, 1));
-        let (_, expected) = marked("Xab|cd");
-        assert_eq!(set.primary().head, expected.primary().head);
-        let _ = snap;
+        let (snap, _) = marked("Xabcd|");
+        assert_eq!(render(&snap, &set), "Xab|cd");
+    }
+
+    #[test]
+    fn clamp_snaps_to_char_boundary() {
+        let (snap, _) = marked("é|");
+        let mut set = SelectionSet::cursor(1);
+        set.clamp(&snap);
+        assert_eq!(set.primary().head, 0);
+    }
+
+    #[test]
+    fn remap_remerges_collapsed_cursors() {
+        let (_, set) = marked("a|bc*|d");
+        assert_eq!(set.primary().id, 1);
+        let mut set = set;
+        // Delete "bc" (1..3).
+        set.remap(&Patch::new(vec![PatchEdit {
+            old: 1..3,
+            new: 1..1,
+        }]));
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.primary().head, 1);
+        assert_eq!(set.primary().id, 1);
     }
 
     #[test]

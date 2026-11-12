@@ -29,7 +29,8 @@ impl EditKind {
 }
 
 /// Whether an undo stop belongs between an edit of kind `prev` and one of
-/// kind `cur`.
+/// kind `cur`. Faithful to VS Code, `(Other, Other)` is false: non-typing
+/// commands get stops only through `EditPlan::stop_before` / `stop_after`.
 // Adapted from microsoft/vscode src/vs/editor/common/cursor/cursorTypeEditOperations.ts (MIT)
 pub fn should_stop_between(prev: EditKind, cur: EditKind) -> bool {
     if prev.is_typing() && !cur.is_typing() {
@@ -94,6 +95,11 @@ mod tests {
         assert!(should_stop_between(DeletingLeft, DeletingRight));
         assert_eq!(groups("abc def"), ["abc", " def"]);
         assert_eq!(groups("abc  def"), ["abc", "  ", "def"]);
+    }
+
+    #[test]
+    fn other_after_other_does_not_stop() {
+        assert!(!should_stop_between(Other, Other));
     }
 
     #[test]

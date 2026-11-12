@@ -323,6 +323,17 @@ impl BufferSnapshot {
         self.rope.byte(offset)
     }
 
+    /// The largest char boundary at or below `offset` (clamped to the end).
+    pub fn floor_char_boundary(&self, offset: usize) -> usize {
+        let mut offset = offset.min(self.rope.len_bytes());
+        // Continuation bytes are 0b10xx_xxxx; the end is always a boundary.
+        while offset > 0 && offset < self.rope.len_bytes() && self.rope.byte(offset) & 0xC0 == 0x80
+        {
+            offset -= 1;
+        }
+        offset
+    }
+
     pub fn point_to_offset(&self, p: Point) -> usize {
         let row = (p.row as usize).min(self.rope.len_lines() - 1);
         (self.rope.line_to_byte(row) + p.column as usize).min(self.rope.len_bytes())
@@ -365,6 +376,14 @@ mod tests {
     fn all_text(b: &Buffer) -> String {
         let s = b.snapshot();
         s.text_for_range(0..s.len_bytes())
+    }
+
+    #[test]
+    fn floor_char_boundary_snaps_down() {
+        let b = Buffer::from_bytes("aé€".as_bytes(), false).unwrap();
+        let s = b.snapshot();
+        let got: Vec<usize> = (0..=7).map(|i| s.floor_char_boundary(i)).collect();
+        assert_eq!(got, [0, 1, 1, 3, 3, 3, 6, 6]);
     }
 
     #[test]
