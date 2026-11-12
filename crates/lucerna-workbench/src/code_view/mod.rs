@@ -25,7 +25,7 @@ use gpui::{
 };
 use lucerna_lsp::diagnostics::Diagnostic;
 use lucerna_syntax::{SyntaxState, indent_folds};
-use lucerna_text::{Buffer, BufferSnapshot, LoadError, Point, Reload};
+use lucerna_text::{Buffer, BufferSnapshot, LoadError, Patch, Point, Reload};
 
 pub use diagnostics::{DiagnosticRows, Mark, MarkStyle};
 pub use layout::{
@@ -441,8 +441,9 @@ impl CodeView {
             });
         self.selection_generation += 1;
         let old = std::mem::replace(&mut self.snapshot, snapshot.clone());
+        let patch = Patch::from_reload(&old, &snapshot, &reload);
         self.syntax = self.syntax.as_ref().and_then(|syntax| {
-            catch_panic("edit syntax", || syntax.edited(&old, &snapshot, &reload))
+            catch_panic("edit syntax", || syntax.edited(&old, &snapshot, &patch))
                 .ok()
                 .map(Arc::new)
         });

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lucerna_syntax::{HighlightSpan, Language, LanguageRegistry, ParseOutcome, SyntaxState};
-use lucerna_text::{Buffer, BufferSnapshot};
+use lucerna_text::{Buffer, BufferSnapshot, Patch};
 
 fn snapshot(text: &str) -> BufferSnapshot {
     Buffer::from_bytes(text.as_bytes(), false)
@@ -253,7 +253,7 @@ fn edited_state_highlights_the_new_text_until_reparsed() {
     let reload = buffer.reload(new_text.as_bytes()).unwrap();
     let new = buffer.snapshot();
 
-    let edited = state.edited(&old, &new, &reload);
+    let edited = state.edited(&old, &new, &Patch::from_reload(&old, &new, &reload));
     assert!(edited.tree().is_some());
     let spans = edited.highlights(&new, 0..new.line_count(), &|_| true);
     assert!(
@@ -277,7 +277,7 @@ fn highlights_after_reload(old_text: &str, new_text: &str) -> (Vec<HighlightSpan
     assert_eq!(state.parse(&old, None), ParseOutcome::Done);
     let reload = buffer.reload(new_text.as_bytes()).unwrap();
     let new = buffer.snapshot();
-    let edited = state.edited(&old, &new, &reload);
+    let edited = state.edited(&old, &new, &Patch::from_reload(&old, &new, &reload));
     let spans = edited.highlights(&new, 0..new.line_count(), &|_| true);
     (spans, new.len_bytes())
 }
@@ -343,4 +343,25 @@ fn mass_eol_conversion_drops_the_tree() {
 /// The registry injected language names resolve in.
 fn bundled() -> std::sync::Arc<LanguageRegistry> {
     std::sync::Arc::new(LanguageRegistry::bundled())
+}
+
+/// An insert at the top shifts the old tree: `b` is a function name on
+/// row 2 before any reparse.
+#[test]
+fn edited_tree_shifts_highlights_after_insert() {
+    let mut buffer = Buffer::from_bytes(b"fn a() {}\nfn b() {}", false).unwrap();
+    let old = buffer.snapshot();
+    let mut state = SyntaxState::new(language("a.rs"), bundled()).unwrap();
+    assert_eq!(state.parse(&old, None), ParseOutcome::Done);
+    let patch = buffer.edit([(0..0, "// x\n".into())]);
+    let new = buffer.snapshot();
+    let edited = state.edited(&old, &new, &patch);
+    let b = new.len_bytes() - "b() {}".len();
+    let spans = edited.highlights(&new, 2..3, &|_| true);
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.range == (b..b + 1) && s.capture.starts_with("function")),
+        "`b` is a function name on row 2: {spans:?}"
+    );
 }

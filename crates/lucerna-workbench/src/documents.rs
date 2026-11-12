@@ -19,7 +19,9 @@ use gpui::{
 };
 use lucerna_project::{ChangeKind, WorktreeEvent};
 use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
-use lucerna_text::{Buffer, BufferSnapshot, LineEnding, LoadError, Point, Reload, check_size};
+use lucerna_text::{
+    Buffer, BufferSnapshot, LineEnding, LoadError, Patch, Point, Reload, check_size,
+};
 
 use crate::AppState;
 use crate::code_view::CodeView;
@@ -687,11 +689,15 @@ impl Documents {
                 let snapshot = buffer.snapshot();
                 let old = doc.snapshot.clone();
                 take_buffer(doc, buffer, stamp);
+                let patch = old
+                    .as_ref()
+                    .map(|old| Patch::from_reload(old, &snapshot, &reload));
                 // The old tree, edited to the new text, keeps the colours
                 // until the new parse lands; views edit their own copy.
                 doc.syntax = match (doc.syntax.take(), old) {
                     (Some(syntax), Some(old)) => {
-                        catch_panic("edit syntax", || syntax.edited(&old, &snapshot, &reload))
+                        let patch = patch.expect("set with old");
+                        catch_panic("edit syntax", || syntax.edited(&old, &snapshot, &patch))
                             .ok()
                             .map(Arc::new)
                     }

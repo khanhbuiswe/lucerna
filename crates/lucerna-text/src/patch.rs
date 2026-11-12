@@ -136,6 +136,38 @@ impl Patch {
         Patch { edits: out }
     }
 
+    /// The patch for a reload: one edit over its changed row span.
+    // Temporary: removed in Task 10, when reloads produce a real patch.
+    #[doc(hidden)]
+    pub fn from_reload(old: &BufferSnapshot, new: &BufferSnapshot, reload: &Reload) -> Patch {
+        let row_start = |snapshot: &BufferSnapshot, row: u32| {
+            if row >= snapshot.line_count() {
+                snapshot.len_bytes()
+            } else {
+                snapshot.point_to_offset(crate::buffer::Point { row, column: 0 })
+            }
+        };
+        let mut edit = PatchEdit {
+            old: row_start(old, reload.start_row)..row_start(old, reload.old_end_row),
+            new: row_start(new, reload.start_row)..row_start(new, reload.new_end_row),
+        };
+        // Rows compare equal without their line ending, so adding or removing
+        // the final newline changes no row. Start one row earlier then, to
+        // cover that line ending.
+        let balanced = edit.old.start == edit.new.start
+            && old.len_bytes() - edit.old.len() == new.len_bytes() - edit.new.len();
+        if !balanced && reload.start_row > 0 {
+            let from = reload.start_row - 1;
+            edit.old.start = row_start(old, from);
+            edit.new.start = row_start(new, from);
+        }
+        if edit.old.is_empty() && edit.new.is_empty() {
+            Patch::default()
+        } else {
+            Patch { edits: vec![edit] }
+        }
+    }
+
     /// A coarse row summary of this patch for folds, marks and scroll.
     pub fn reload(&self, old: &BufferSnapshot, new: &BufferSnapshot) -> Reload {
         let (Some(first), Some(last)) = (self.edits.first(), self.edits.last()) else {

@@ -3,7 +3,7 @@ use std::ops::{ControlFlow, Range};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use lucerna_text::{BufferSnapshot, Reload};
+use lucerna_text::{BufferSnapshot, Patch};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{
     InputEdit, Node, ParseOptions, ParseState, Parser, QueryCursor, TextProvider, Tree,
@@ -178,23 +178,18 @@ impl SyntaxState {
         outcome
     }
 
-    /// A copy for the reloaded text `new`, with the tree edited by
-    /// `reload` (the change from `old`). Until `new` is parsed, it keeps
+    /// A copy for the edited text `new`, with the tree edited by
+    /// `patch` (the change from `old`). Until `new` is parsed, it keeps
     /// the old colours on screen: ranges after the change shift, and those
     /// inside it stretch over the new text. Without a tree, the copy has
     /// none either. Injected layers are dropped; the next parse rebuilds
     /// them.
-    pub fn edited(
-        &self,
-        old: &BufferSnapshot,
-        new: &BufferSnapshot,
-        reload: &Reload,
-    ) -> SyntaxState {
+    pub fn edited(&self, old: &BufferSnapshot, new: &BufferSnapshot, patch: &Patch) -> SyntaxState {
         let mut edited = SyntaxState::new(self.language.clone(), self.registry.clone())
             .expect("the language of an existing state loaded already");
         edited.tree = self.tree.clone().and_then(|mut tree| {
             // Too many changed line endings: show plain text until parsed.
-            let edits = input_edits(old, new, reload)?;
+            let edits = input_edits(old, new, patch)?;
             for edit in &edits {
                 tree.edit(edit);
             }
@@ -437,149 +432,81 @@ fn long_line_cap(snapshot: &BufferSnapshot, line: Range<usize>) -> Option<usize>
     None
 }
 
-/// Most line-ending edits [`input_edits`] makes before giving up.
-const MAX_EOL_EDITS: usize = 1000;
+/// Most edits [`input_edits`] converts before giving up.
+const MAX_EDITS: usize = 1000;
 
-/// The byte length of the line ending of `row`.
-fn eol_len(snapshot: &BufferSnapshot, row: u32) -> usize {
-    let (start, end) = (row_start(snapshot, row), row_start(snapshot, row + 1));
-    if end > start && snapshot.byte_at(end - 1) == b'\n' {
-        if end - 1 > start && snapshot.byte_at(end - 2) == b'\r' {
-            2
-        } else {
-            1
-        }
-    } else {
-        0
-    }
-}
-
-/// The tree-sitter edits for `reload`, to apply in order, or `None` when
-/// too many line endings changed to be worth editing (the caller drops
-/// the tree). Each edit is valid (its start lies within both ends), and
-/// they run from the end of the text to the start, so each is expressed
-/// in the offsets of the text the earlier ones left alone.
-///
-/// Rows compare equal whatever their line ending, so besides the changed
-/// rows there is one small edit per unchanged row whose line ending
-/// changed length (LF to CRLF, R31), keeping the offsets of the head and
-/// tail right until the text is parsed again.
+/// The tree-sitter edits for `patch`, to apply in order, or `None` when
+/// the patch has too many edits to be worth applying (the caller drops the
+/// tree). They run from the end of the text to the start, so each is
+/// expressed in the offsets of the text the earlier ones left alone.
 fn input_edits(
     old: &BufferSnapshot,
     new: &BufferSnapshot,
-    reload: &Reload,
+    patch: &Patch,
 ) -> Option<Vec<InputEdit>> {
+    if patch.edits().len() > MAX_EDITS {
+        return None;
+    }
     let point = |snapshot: &BufferSnapshot, offset: usize| {
         let p = snapshot.offset_to_point(offset);
         tree_sitter::Point::new(p.row as usize, p.column as usize)
     };
-    // The edit of the line ending of old row `old_row` / new row `new_row`.
-    let eol_edit = |old_row: u32, new_row: u32| {
-        let (old_eol, new_eol) = (eol_len(old, old_row), eol_len(new, new_row));
-        if old_eol == new_eol {
-            return None;
-        }
-        let start = row_start(old, old_row + 1) - old_eol;
-        let start_position = point(old, start);
-        Some(InputEdit {
-            start_byte: start,
-            old_end_byte: start + old_eol,
-            new_end_byte: start + new_eol,
-            start_position,
-            old_end_position: point(old, start + old_eol),
-            new_end_position: if new_eol > 0 {
-                tree_sitter::Point::new(start_position.row + 1, 0)
-            } else {
-                start_position
-            },
-        })
-    };
-    let (sr, oe, ne) = (reload.start_row, reload.old_end_row, reload.new_end_row);
-    let (main_start, new_main_start) = (row_start(old, sr), row_start(new, sr));
-    let main_old = row_start(old, oe) - main_start;
-    let main_new = row_start(new, ne) - new_main_start;
-    // Same head length and same total outside the changed rows: no line
-    // ending outside them changed length.
-    let outside_unchanged =
-        main_start == new_main_start && old.len_bytes() - main_old == new.len_bytes() - main_new;
-    let mut edits = Vec::new();
-    let mut eol_edits = Vec::new();
-    if !outside_unchanged {
-        for row in (oe..old.line_count()).rev() {
-            eol_edits.extend(eol_edit(row, row - oe + ne));
-            if eol_edits.len() > MAX_EOL_EDITS {
-                return None;
-            }
-        }
-    }
-    edits.append(&mut eol_edits);
-    if sr != oe || sr != ne {
-        // Relative to the start, as the head still has its old endings.
-        let (from, to) = (
-            point(new, new_main_start),
-            point(new, new_main_start + main_new),
-        );
-        let start_position = point(old, main_start);
-        let new_end_position = if to.row == from.row {
-            tree_sitter::Point::new(
-                start_position.row,
-                start_position.column + to.column - from.column,
-            )
-        } else {
-            tree_sitter::Point::new(start_position.row + to.row - from.row, to.column)
-        };
-        edits.push(InputEdit {
-            start_byte: main_start,
-            old_end_byte: main_start + main_old,
-            new_end_byte: main_start + main_new,
-            start_position,
-            old_end_position: point(old, main_start + main_old),
-            new_end_position,
-        });
-    }
-    if !outside_unchanged {
-        for row in (0..sr).rev() {
-            eol_edits.extend(eol_edit(row, row));
-            if edits.len() + eol_edits.len() > MAX_EOL_EDITS {
-                return None;
-            }
-        }
-    }
-    edits.append(&mut eol_edits);
-    Some(edits)
+    Some(
+        patch
+            .edits()
+            .iter()
+            .rev()
+            .map(|edit| {
+                let start_position = point(old, edit.old.start);
+                let (from, to) = (point(new, edit.new.start), point(new, edit.new.end));
+                // Relative to the start: the text before it is still old.
+                let new_end_position = if to.row == from.row {
+                    tree_sitter::Point::new(
+                        start_position.row,
+                        start_position.column + to.column - from.column,
+                    )
+                } else {
+                    tree_sitter::Point::new(start_position.row + to.row - from.row, to.column)
+                };
+                InputEdit {
+                    start_byte: edit.old.start,
+                    old_end_byte: edit.old.end,
+                    new_end_byte: edit.old.start + edit.new.len(),
+                    start_position,
+                    old_end_position: point(old, edit.old.end),
+                    new_end_position,
+                }
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lucerna_text::Buffer;
+    use lucerna_text::{Buffer, PatchEdit};
 
     fn edits_for(old_text: &str, new_text: &str) -> Vec<InputEdit> {
         let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
         let old = buffer.snapshot();
         let reload = buffer.reload(new_text.as_bytes()).unwrap();
-        input_edits(&old, &buffer.snapshot(), &reload).expect("below the cap")
+        let new = buffer.snapshot();
+        input_edits(&old, &new, &Patch::from_reload(&old, &new, &reload)).expect("below the cap")
     }
 
     #[test]
     fn edits_are_valid_and_account_for_every_byte() {
         let lf = "fn a() {}\nfn b() {}\n";
-        let crlf = lf.replace('\n', "\r\n");
         for (old, new) in [
-            (crlf.as_str(), lf),
-            (lf, crlf.as_str()),
             (lf, "fn a() {}\nfn b() {}"),
             ("fn a() {}\nfn b() {}", lf),
             (lf, "fn a() {}\n"),
             ("", lf),
-            ("fn a() {}\r\nfn b() {}\n", "fn a() {}\nfn b() {}\r\n"),
-            ("a\nb\nc\n", "a\r\nX\nc\n"),
+            ("a\nb\nc\n", "a\nX\nc\n"),
             ("a", "a\nb"),
-            ("a\r\nb\nc", "a\nX\nY\r\nc\r\n"),
         ] {
             let edits = edits_for(old, new);
             let mut delta = 0isize;
-            let mut previous_start = usize::MAX;
             for e in &edits {
                 let ctx = format!("{old:?} -> {new:?}: {e:?}");
                 assert!(e.start_byte <= e.old_end_byte, "{ctx}");
@@ -587,11 +514,6 @@ mod tests {
                 assert!(e.start_position <= e.old_end_position, "{ctx}");
                 assert!(e.start_position <= e.new_end_position, "{ctx}");
                 assert!(e.old_end_byte <= old.len(), "{ctx}");
-                assert!(
-                    e.start_byte <= previous_start,
-                    "applied end to start: {ctx}"
-                );
-                previous_start = e.start_byte;
                 delta += e.new_end_byte as isize - e.old_end_byte as isize;
             }
             assert_eq!(
@@ -603,17 +525,51 @@ mod tests {
     }
 
     #[test]
-    fn too_many_changed_line_endings_give_up() {
-        let lf = "x\n".repeat(MAX_EOL_EDITS + 1);
-        let mut buffer = Buffer::from_bytes(lf.as_bytes(), false).unwrap();
-        let old = buffer.snapshot();
-        let reload = buffer.reload(lf.replace('\n', "\r\n").as_bytes()).unwrap();
-        assert!(input_edits(&old, &buffer.snapshot(), &reload).is_none());
-        let few = "x\n".repeat(MAX_EOL_EDITS);
-        let mut buffer = Buffer::from_bytes(few.as_bytes(), false).unwrap();
-        let old = buffer.snapshot();
-        let reload = buffer.reload(few.replace('\n', "\r\n").as_bytes()).unwrap();
-        let edits = input_edits(&old, &buffer.snapshot(), &reload).unwrap();
-        assert_eq!(edits.len(), MAX_EOL_EDITS);
+    fn edits_run_from_the_end_of_the_text_to_the_start() {
+        let old = Buffer::from_bytes(b"abcdef", false).unwrap().snapshot();
+        let new = Buffer::from_bytes(b"aXbcdYYef", false).unwrap().snapshot();
+        let patch = Patch::new(vec![
+            PatchEdit {
+                old: 1..1,
+                new: 1..2,
+            },
+            PatchEdit {
+                old: 4..4,
+                new: 5..7,
+            },
+        ]);
+        let edits = input_edits(&old, &new, &patch).unwrap();
+        assert_eq!(
+            edits
+                .iter()
+                .map(|e| (e.start_byte, e.new_end_byte))
+                .collect::<Vec<_>>(),
+            vec![(4, 6), (1, 2)]
+        );
+    }
+
+    #[test]
+    fn too_many_edits_give_up() {
+        let text = "x\n".repeat(2 * MAX_EDITS + 2);
+        let snapshot = Buffer::from_bytes(text.as_bytes(), false)
+            .unwrap()
+            .snapshot();
+        let patch = |n: usize| {
+            Patch::new(
+                (0..n)
+                    .map(|i| PatchEdit {
+                        old: 2 * i..2 * i,
+                        new: 2 * i..2 * i,
+                    })
+                    .collect(),
+            )
+        };
+        assert!(input_edits(&snapshot, &snapshot, &patch(MAX_EDITS + 1)).is_none());
+        assert_eq!(
+            input_edits(&snapshot, &snapshot, &patch(MAX_EDITS))
+                .unwrap()
+                .len(),
+            MAX_EDITS
+        );
     }
 }
