@@ -6,6 +6,7 @@ mod app_state;
 pub mod code_view;
 mod commands;
 mod config_files;
+mod conflict_bar;
 mod diagnostics_status;
 mod documents;
 mod editing;

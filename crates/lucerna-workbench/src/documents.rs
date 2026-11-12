@@ -780,12 +780,18 @@ impl Documents {
     }
 
     /// `Deleted` when the file is gone, the text is dirty and Keep was not
-    /// chosen; else `Conflict` while in conflict; else `None`.
+    /// chosen; `None` once Keep was chosen (a conflict is moot until the
+    /// file returns); else `Conflict` while in conflict; else `None`.
     pub fn disk_notice(&self, path: &Path) -> Option<DiskNotice> {
         let doc = self.docs.get(&self.key(path))?;
         let dirty = doc.buffer.as_ref().is_some_and(Buffer::is_dirty);
-        if doc.state == DocState::Deleted && dirty && !doc.deleted_kept {
-            return Some(DiskNotice::Deleted);
+        if doc.state == DocState::Deleted {
+            if doc.deleted_kept {
+                return None;
+            }
+            if dirty {
+                return Some(DiskNotice::Deleted);
+            }
         }
         let conflict = doc.conflict.as_ref()?;
         Some(DiskNotice::Conflict {

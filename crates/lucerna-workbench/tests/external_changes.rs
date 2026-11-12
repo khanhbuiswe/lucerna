@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
+use gpui::{Entity, Focusable as _, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
@@ -529,4 +529,115 @@ fn reload_after_merge_keeps_mine_undoable(cx: &mut TestAppContext) {
     assert!(!is_dirty(&wb, "file.txt", cx));
     keys("cmd-z", cx);
     assert_eq!(text_of(&view, cx), "xabc\nz\nQ\n");
+}
+
+#[gpui::test]
+fn kept_deleted_conflicted_file_has_no_notice(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = conflicted(cx);
+    external_remove(&wb, &dir, cx);
+    assert_eq!(notice(&wb, cx), Some(DiskNotice::Deleted));
+    keep_deleted(&wb, cx);
+    assert_eq!(notice(&wb, cx), None);
+}
+
+/// Whether the element with debug selector `selector` was drawn.
+fn drawn(selector: &'static str, cx: &mut VisualTestContext) -> bool {
+    draw(cx);
+    cx.debug_bounds(selector).is_some()
+}
+
+fn click(selector: &'static str, cx: &mut VisualTestContext) {
+    draw(cx);
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"));
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    settle(cx);
+}
+
+#[gpui::test]
+fn bar_shows_on_conflict_and_hides_after_merge(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor("abc\nz\nq\n", cx);
+    assert!(!drawn("conflict-bar-0", cx), "no bar on a clean file");
+    input("x", cx);
+    external_write(&wb, &dir, "abc\nz\nQ\n", cx);
+    assert!(!drawn("conflict-bar-0", cx), "no bar after a merge");
+    external_write(&wb, &dir, "abd\nz\nQ\n", cx);
+    assert!(has_conflict(&wb, "file.txt", cx));
+    assert!(drawn("conflict-bar-0", cx));
+    assert!(drawn("conflict-bar-message-0", cx));
+    assert!(drawn("conflict-bar-reload-0", cx));
+    assert!(drawn("conflict-bar-keep-mine-0", cx));
+}
+
+#[gpui::test]
+fn bar_reload_button(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, view, cx) = conflicted(cx);
+    click("conflict-bar-reload-0", cx);
+    assert_eq!(text_of(&view, cx), "disk\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+    assert!(!drawn("conflict-bar-0", cx));
+}
+
+#[gpui::test]
+fn bar_keep_mine_button(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = conflicted(cx);
+    click("conflict-bar-keep-mine-0", cx);
+    assert!(!drawn("conflict-bar-0", cx));
+    assert!(is_dirty(&wb, "file.txt", cx));
+    keys("cmd-s", cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+}
+
+/// The user typed `x` into `abc`; then `file.txt` was removed.
+fn deleted_dirty(cx: &mut TestAppContext) -> (TempDir, Entity<Workbench>, &mut VisualTestContext) {
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    external_remove(&wb, &dir, cx);
+    (dir, wb, cx)
+}
+
+#[gpui::test]
+fn deleted_bar_keep(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, cx) = deleted_dirty(cx);
+    assert!(drawn("deleted-bar-close-0", cx));
+    assert!(!drawn("conflict-bar-reload-0", cx));
+    click("deleted-bar-keep-0", cx);
+    assert!(!drawn("deleted-bar-close-0", cx));
+    assert!(!drawn("conflict-bar-0", cx));
+    assert!(drawn("tab-deleted-0-0", cx));
+    assert_eq!(state(&wb, cx), Some(DocState::Deleted));
+}
+
+#[gpui::test]
+fn deleted_bar_close(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, cx) = deleted_dirty(cx);
+    click("deleted-bar-close-0", cx);
+    assert!(!cx.has_pending_prompt());
+    assert!(!drawn("tab-0-0", cx));
+    assert_eq!(state(&wb, cx), None);
+}
+
+#[gpui::test]
+fn bar_only_in_group_showing_the_file(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    fs::write(dir.path().join("other.txt"), "other\n").unwrap();
+    input("x", cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("other.txt")), OpenMode::ToSide, cx)
+    });
+    settle(cx);
+    external_write(&wb, &dir, "disk\n", cx);
+    assert!(has_conflict(&wb, "file.txt", cx));
+    assert!(drawn("tab-1-0", cx), "group 1 exists");
+    assert!(drawn("conflict-bar-0", cx));
+    assert!(!drawn("conflict-bar-1", cx));
 }
