@@ -1387,6 +1387,39 @@ fn after_delay_skips_conflicted(cx: &mut TestAppContext) {
     assert!(cx.pending_prompt().is_none(), "an autosave never prompts");
 }
 
+/// Final review, finding 8: an autosave waits while a composition is in
+/// progress (its participants would split it), and saves once it ends.
+#[gpui::test]
+fn after_delay_waits_for_a_composition(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler as _;
+    init(
+        cx,
+        Some(r#"{"files.autoSave": "afterDelay", "files.trimTrailingWhitespace": true}"#),
+    );
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    keys("cmd-right", cx);
+    input(" ", cx);
+    view.update_in(cx, |v, window, cx| {
+        v.replace_and_mark_text_in_range(None, "a", None, window, cx);
+        v.replace_and_mark_text_in_range(None, "ă", None, window, cx);
+    });
+    settle(cx);
+    advance(3000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "abc\n", "not saved mid-composition");
+    assert!(
+        view.read_with(cx, |v, _| v.is_composing()),
+        "still composing"
+    );
+    assert_eq!(text_of(&view, cx), "abc ă\n");
+    view.update_in(cx, |v, window, cx| {
+        v.replace_text_in_range(None, "ằ", window, cx);
+    });
+    settle(cx);
+    advance(1000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "abc ằ\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+}
+
 #[gpui::test]
 fn after_delay_skips_deleted(cx: &mut TestAppContext) {
     init(cx, Some(AFTER_DELAY));

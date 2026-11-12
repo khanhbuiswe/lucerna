@@ -179,6 +179,11 @@ impl CodeView {
         }
     }
 
+    /// Whether an IME composition is in progress.
+    pub fn is_composing(&self) -> bool {
+        self.marked.is_some()
+    }
+
     /// Ends the IME composition: the composed text stays as it is.
     pub(crate) fn unmark(&mut self) {
         self.marked = None;

@@ -392,17 +392,7 @@ impl Workbench {
                     return;
                 }
                 // Restarted by every edit: the old timer is dropped.
-                let delay = self.auto_save_delay(path, cx);
-                let target = path.clone();
-                let timer = cx.spawn_in(window, async move |wb, cx| {
-                    cx.background_executor().timer(delay).await;
-                    wb.update_in(cx, |wb, window, cx| {
-                        wb.auto_save.timers.remove(&target);
-                        wb.auto_save_document(&target, window, cx);
-                    })
-                    .ok();
-                });
-                self.auto_save.timers.insert(path.clone(), timer);
+                self.arm_auto_save(path, window, cx);
             }
             DocumentEvent::DirtyChanged { path, dirty: false } | DocumentEvent::Closed { path } => {
                 self.auto_save.timers.remove(path);
@@ -416,6 +406,22 @@ impl Workbench {
         }
     }
 
+    /// Autosaves the document at `path` once `files.autoSaveDelay` has
+    /// passed, replacing its timer.
+    fn arm_auto_save(&mut self, path: &Arc<Path>, window: &mut Window, cx: &mut Context<Self>) {
+        let delay = self.auto_save_delay(path, cx);
+        let target = path.clone();
+        let timer = cx.spawn_in(window, async move |wb, cx| {
+            cx.background_executor().timer(delay).await;
+            wb.update_in(cx, |wb, window, cx| {
+                wb.auto_save.timers.remove(&target);
+                wb.auto_save_document(&target, window, cx);
+            })
+            .ok();
+        });
+        self.auto_save.timers.insert(path.clone(), timer);
+    }
+
     /// Autosaves every dirty document whose `files.autoSave` is `mode`.
     fn auto_save_where(&mut self, mode: &str, window: &mut Window, cx: &mut Context<Self>) {
         let paths = self.documents().read(cx).dirty_paths();
@@ -427,7 +433,10 @@ impl Workbench {
     }
 
     /// Saves the document at `path` if it has unsaved changes and is
-    /// neither in conflict with the disk nor deleted.
+    /// neither in conflict with the disk nor deleted. While a view of it is
+    /// in the middle of an IME composition, the save waits another
+    /// `files.autoSaveDelay`: its participants' edits and its undo stop
+    /// would split the composition.
     fn auto_save_document(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         let documents = self.documents().clone();
         {
@@ -436,6 +445,14 @@ impl Workbench {
                 || docs.has_conflict(path)
                 || docs.state(path) != Some(&DocState::Ready)
             {
+                return;
+            }
+            if docs
+                .views_of(path)
+                .iter()
+                .any(|v| v.read(cx).is_composing())
+            {
+                self.arm_auto_save(&Arc::from(path), window, cx);
                 return;
             }
         }
