@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use lucerna_text::{BufferSnapshot, Point};
+use unicode_segmentation::UnicodeSegmentation as _;
 
 use crate::classify::{self, display_col, last_char_col, line};
 use crate::marks::FileMarks;
@@ -342,10 +343,12 @@ impl Vim {
         let col = self.cursor.column;
         let column = match at {
             InsertAt::Before | InsertAt::LineBelow | InsertAt::LineAbove => col,
+            // After the whole grapheme cluster (a base char with its
+            // combining marks), never inside it.
             InsertAt::After => text
                 .get(col as usize..)
-                .and_then(|rest| rest.chars().next())
-                .map_or(col, |c| col + c.len_utf8() as u32),
+                .and_then(|rest| rest.graphemes(true).next())
+                .map_or(col, |g| col + g.len() as u32),
             // On a blank line, after its whitespace.
             InsertAt::LineStart => text
                 .char_indices()
@@ -1162,6 +1165,8 @@ mod tests {
     fn a_appends_after_the_last_char_and_on_empty_lines() {
         assert_eq!(insert_key("ab|c", "a").2, pt(0, 3));
         assert_eq!(insert_key("a|é", "a").2, pt(0, 3));
+        // `e` + U+0301 COMBINING ACUTE ACCENT: one cluster of 3 bytes.
+        assert_eq!(insert_key("a|e\u{301}b", "a").2, pt(0, 4));
         assert_eq!(insert_key("|\nx", "a").2, pt(0, 0));
         // `I` on a blank line types after its whitespace.
         assert_eq!(insert_key("  |  ", "I").2, pt(0, 4));

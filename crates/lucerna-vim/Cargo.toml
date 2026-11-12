@@ -8,3 +8,4 @@ repository.workspace = true
 
 [dependencies]
 lucerna-text.workspace = true
+unicode-segmentation.workspace = true
