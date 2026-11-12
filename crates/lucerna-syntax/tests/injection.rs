@@ -4,7 +4,7 @@ use std::sync::Arc;
 use lucerna_syntax::{
     Associations, ExtensionLanguage, HighlightSpan, LanguageRegistry, ParseOutcome, SyntaxState,
 };
-use lucerna_text::{Buffer, BufferSnapshot, decode_file, diff_edits};
+use lucerna_text::{Buffer, BufferSnapshot};
 
 fn snapshot(text: &str) -> BufferSnapshot {
     Buffer::from_bytes(text.as_bytes(), false)
@@ -193,25 +193,99 @@ fn layer_cap_1000() {
     assert_eq!(state.layer_count(), 1000);
 }
 
-#[test]
-fn edited_drops_children_until_reparse() {
-    let old_text = "# T\n\n```rust\nfn main() {}\n```\n";
-    let new_text = "# T2\n\n```rust\nfn main() {}\n```\n";
+/// `text` parsed as Markdown, then edited by replacing `at` with `with`:
+/// the old state, the edited state, the new text, and a fresh parse of it.
+fn markdown_edited(
+    text: &str,
+    at: std::ops::Range<usize>,
+    with: &str,
+) -> (SyntaxState, SyntaxState, BufferSnapshot, SyntaxState) {
     let registry = Arc::new(LanguageRegistry::bundled());
-    let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
+    let mut buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
     let old = buffer.snapshot();
     let language = registry.language_by_name("markdown").unwrap();
-    let mut state = SyntaxState::new(language, registry).unwrap();
+    let mut state = SyntaxState::new(language, registry.clone()).unwrap();
     assert_eq!(state.parse(&old, None), ParseOutcome::Done);
-    assert!(state.layer_count() > 0);
-    let decoded = decode_file(new_text.as_bytes(), false).unwrap();
-    let patch = buffer.edit(diff_edits(&old, &decoded.text));
+    let patch = buffer.edit([(at, Arc::from(with))]);
     let new = buffer.snapshot();
-    let mut edited = state.edited(&old, &new, &patch);
+    let edited = state.edited(&old, &new, &patch);
+    let (fresh, _) = parsed_in(
+        registry,
+        "markdown",
+        &new.text_for_range(0..new.len_bytes()),
+    );
+    (state, edited, new, fresh)
+}
+
+const MD: &str = "# T\n\n```rust\nfn main() {}\n```\n\nsee `code` and **bold**\n";
+
+/// Final review, finding 4: an edit keeps the injected layers (a fenced
+/// code block, inline code), shifted with the text, until the next parse.
+#[test]
+fn edited_keeps_children_shifted() {
+    let (state, edited, new, fresh) = markdown_edited(MD, 0..0, "\n\n");
     assert!(edited.tree().is_some());
-    assert_eq!(edited.layer_count(), 0);
-    assert_eq!(edited.parse(&new, None), ParseOutcome::Done);
     assert_eq!(edited.layer_count(), state.layer_count());
+    let shifted: Vec<Vec<_>> = state
+        .layer_ranges()
+        .into_iter()
+        .map(|l| l.into_iter().map(|r| r.start + 2..r.end + 2).collect())
+        .collect();
+    let mut got = edited.layer_ranges();
+    let mut want = shifted;
+    got.sort_by_key(|l| l.first().map(|r| r.start));
+    want.sort_by_key(|l| l.first().map(|r| r.start));
+    assert_eq!(got, want);
+    // The same colours as a fresh parse of the new text.
+    assert_eq!(all_spans(&edited, &new), all_spans(&fresh, &new));
+    let text = new.text_for_range(0..new.len_bytes());
+    let at = text.find("fn").unwrap();
+    assert!(
+        captures_at(&all_spans(&edited, &new), at..at + 2)
+            .iter()
+            .any(|c| c.starts_with("keyword")),
+    );
+}
+
+/// Typing inside an injected region keeps its colours; a reparse from the
+/// edited state (which reuses the layer trees) matches a fresh parse.
+#[test]
+fn typing_inside_a_layer_keeps_it() {
+    let at = MD.find("main").unwrap() + 2;
+    let (state, edited, new, fresh) = markdown_edited(MD, at..at, "x");
+    assert_eq!(edited.layer_count(), state.layer_count());
+    let text = new.text_for_range(0..new.len_bytes());
+    let fn_at = text.find("fn").unwrap();
+    let spans = all_spans(&edited, &new);
+    assert!(
+        captures_at(&spans, fn_at..fn_at + 2)
+            .iter()
+            .any(|c| c.starts_with("keyword")),
+        "{spans:?}"
+    );
+    let code = text.find("`code`").unwrap();
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.range.start >= code && s.range.end <= code + 6),
+        "inline code keeps its span: {spans:?}"
+    );
+    let mut reparsed = edited.fork();
+    assert_eq!(reparsed.reparse(&new, None, None), ParseOutcome::Done);
+    assert_eq!(reparsed.layer_count(), fresh.layer_count());
+    assert_eq!(all_spans(&reparsed, &new), all_spans(&fresh, &new));
+}
+
+/// Deleting a whole injected region drops its layer.
+#[test]
+fn deleting_a_layer_drops_it() {
+    let start = MD.find("```rust").unwrap();
+    let end = MD.find("```\n\n").unwrap() + 4;
+    let (state, edited, new, fresh) = markdown_edited(MD, start..end, "");
+    assert!(edited.layer_count() < state.layer_count());
+    let mut reparsed = edited.fork();
+    assert_eq!(reparsed.reparse(&new, None, None), ParseOutcome::Done);
+    assert_eq!(all_spans(&reparsed, &new), all_spans(&fresh, &new));
 }
 
 /// With a budget (the sync attempt on the UI thread), an injected WASM

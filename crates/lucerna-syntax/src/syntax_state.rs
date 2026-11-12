@@ -167,13 +167,14 @@ impl SyntaxState {
         self.parse_bounded(snapshot, true, limit, None)
     }
 
-    /// A new state (with its own parser) holding the same tree and no
+    /// A new state (with its own parsers) holding the same tree and
     /// injected layers: what [`SyntaxState::reparse`] starts from while
     /// this one stays on screen.
     pub fn fork(&self) -> SyntaxState {
         let mut fork = SyntaxState::new(self.language.clone(), self.registry.clone())
             .expect("the language of an existing state loaded already");
         fork.tree = self.tree.clone();
+        fork.layers = self.layers.clone();
         fork
     }
 
@@ -213,6 +214,7 @@ impl SyntaxState {
             &mut self.layer_parsers,
             limit,
             max_children,
+            incremental.then_some(&self.layers),
         );
         self.layers = layers;
         self.tree = Some(tree);
@@ -223,19 +225,24 @@ impl SyntaxState {
     /// `patch` (the change from `old`). Until `new` is parsed, it keeps
     /// the old colours on screen: ranges after the change shift, and those
     /// inside it stretch over the new text. Without a tree, the copy has
-    /// none either. Injected layers are dropped; the next parse rebuilds
-    /// them.
+    /// none either. Injected layers are edited the same way (see
+    /// `Layers::edited`), so they keep their colours too, and the next
+    /// incremental parse reuses their trees.
     pub fn edited(&self, old: &BufferSnapshot, new: &BufferSnapshot, patch: &Patch) -> SyntaxState {
         let mut edited = SyntaxState::new(self.language.clone(), self.registry.clone())
             .expect("the language of an existing state loaded already");
-        edited.tree = self.tree.clone().and_then(|mut tree| {
-            // Too many changed line endings: show plain text until parsed.
-            let edits = input_edits(old, new, patch)?;
-            for edit in &edits {
-                tree.edit(edit);
-            }
-            Some(tree)
-        });
+        let Some(mut tree) = self.tree.clone() else {
+            return edited;
+        };
+        // Too many changed line endings: show plain text until parsed.
+        let Some(edits) = input_edits(old, new, patch) else {
+            return edited;
+        };
+        for edit in &edits {
+            tree.edit(edit);
+        }
+        edited.tree = Some(tree);
+        edited.layers = self.layers.edited(&edits);
         edited
     }
 

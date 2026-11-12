@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use lucerna_text::BufferSnapshot;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Node, Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, Tree};
+use tree_sitter::{
+    InputEdit, Node, Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, Tree,
+};
 
 use crate::registry::{Language, LanguageOrigin, LanguageRegistry, Predicates};
 use crate::syntax_state::{Limit, ParseOutcome, parse_snapshot};
@@ -248,6 +250,7 @@ fn intersect(
 }
 
 /// An injected region parsed as `language`.
+#[derive(Clone)]
 pub(crate) struct Layer {
     pub language: Arc<Language>,
     /// 1 for a child of the root.
@@ -277,7 +280,7 @@ impl Layer {
 /// The child layers of a document, sorted by start so a viewport finds its
 /// layers without visiting all of them (Markdown's inline layers are not
 /// capped, so there can be many).
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct Layers {
     list: Vec<Layer>,
     /// `max_end[i]`: the largest end among `list[..=i]`.
@@ -305,6 +308,49 @@ impl Layers {
         self.list.iter()
     }
 
+    /// The layers edited by `edits` (as from `input_edits`: last edit
+    /// first, in the old text's coordinates): each tree is edited and each
+    /// range moves with the text, as the root tree does. A range end
+    /// inside or touching an edit stretches over the new text, and so does
+    /// a start inside one or touching an insertion, so text typed into a
+    /// region keeps its colours until the next parse. Layers wholly before
+    /// the edits are untouched; a layer left with no text is dropped.
+    pub fn edited(&self, edits: &[InputEdit]) -> Layers {
+        let Some(first) = edits.iter().map(|e| e.start_byte).min() else {
+            return self.clone();
+        };
+        let list = self
+            .list
+            .iter()
+            .filter_map(|layer| {
+                let mut layer = layer.clone();
+                if layer.end() < first {
+                    return Some(layer);
+                }
+                for edit in edits {
+                    layer.tree.edit(edit);
+                    for range in &mut layer.ranges {
+                        edit_range(range, edit);
+                    }
+                }
+                layer.ranges.retain(|r| r.start_byte < r.end_byte);
+                (!layer.ranges.is_empty()).then_some(layer)
+            })
+            .collect();
+        Layers::new(list)
+    }
+
+    /// The tree of the layer of `language` at `depth` whose text starts at
+    /// `start`: the old tree to reparse that region from.
+    fn tree_at(&self, language: &Arc<Language>, depth: usize, start: usize) -> Option<&Tree> {
+        let from = self.list.partition_point(|l| l.start() < start);
+        self.list[from..]
+            .iter()
+            .take_while(|l| l.start() == start)
+            .find(|l| l.depth == depth && Arc::ptr_eq(&l.language, language))
+            .map(|l| &l.tree)
+    }
+
     /// The layers with text in `bytes`.
     pub fn intersecting(&self, bytes: &Range<usize>) -> impl Iterator<Item = &Layer> {
         let before = self.list.partition_point(|l| l.start() < bytes.end);
@@ -313,6 +359,40 @@ impl Layers {
             .take_while(|&i| self.max_end[i] > bytes.start)
             .map(|i| &self.list[i])
             .filter(|l| l.intersects(bytes))
+    }
+}
+
+/// Moves `range` with the text through `edit` (see [`Layers::edited`]).
+fn edit_range(range: &mut tree_sitter::Range, edit: &InputEdit) {
+    let shift = |byte: usize, point: tree_sitter::Point| {
+        let point = if point.row == edit.old_end_position.row {
+            tree_sitter::Point::new(
+                edit.new_end_position.row,
+                edit.new_end_position.column + point.column - edit.old_end_position.column,
+            )
+        } else {
+            tree_sitter::Point::new(
+                point.row - edit.old_end_position.row + edit.new_end_position.row,
+                point.column,
+            )
+        };
+        (byte - edit.old_end_byte + edit.new_end_byte, point)
+    };
+    // The end: after (or touching) the edit, it shifts; inside, it stretches
+    // to the end of the new text.
+    if range.end_byte >= edit.old_end_byte {
+        (range.end_byte, range.end_point) = shift(range.end_byte, range.end_point);
+    } else if range.end_byte > edit.start_byte {
+        (range.end_byte, range.end_point) = (edit.new_end_byte, edit.new_end_position);
+    }
+    // The start: at or before the edit's start it stays; inside, it moves
+    // to the start of the new text; after, it shifts.
+    if range.start_byte > edit.start_byte {
+        if range.start_byte >= edit.old_end_byte {
+            (range.start_byte, range.start_point) = shift(range.start_byte, range.start_point);
+        } else {
+            (range.start_byte, range.start_point) = (edit.start_byte, edit.start_position);
+        }
     }
 }
 
@@ -330,8 +410,8 @@ fn is_bundled(language: &Language, id: &str) -> bool {
 
 /// One parser per injected language, kept across parses. Layers keep only
 /// their trees: a parser per layer (up to 1000, each possibly holding a
-/// WASM store) would cost far more than the reparse it could speed up, as
-/// layers are rebuilt from scratch anyway.
+/// WASM store) would cost far more than it saves; an incremental parse
+/// reuses a layer's old tree through the shared parser instead.
 #[derive(Default)]
 pub(crate) struct LayerParsers {
     parsers: Vec<(Arc<Language>, Parser)>,
@@ -391,6 +471,10 @@ impl LayerParsers {
 ///
 /// `max_children` (tests only) stops the build the same way once that many
 /// layers are built, so the partial outcome can be tested without timing.
+///
+/// `old` (an incremental parse) are layers whose trees describe `snapshot`
+/// once edited (see [`Layers::edited`]): a region found again at the same
+/// start, in the same language and depth, is reparsed from its old tree.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_layers(
     root_language: &Arc<Language>,
@@ -400,6 +484,7 @@ pub(crate) fn build_layers(
     parsers: &mut LayerParsers,
     limit: Limit,
     max_children: Option<usize>,
+    old: Option<&Layers>,
 ) -> (Layers, ParseOutcome) {
     let mut layers: Vec<Layer> = Vec::new();
     let outcome = build(
@@ -410,6 +495,7 @@ pub(crate) fn build_layers(
         parsers,
         limit,
         max_children,
+        old,
         &mut layers,
     );
     (Layers::new(layers), outcome)
@@ -424,6 +510,7 @@ fn build(
     parsers: &mut LayerParsers,
     limit: Limit,
     max_children: Option<usize>,
+    old: Option<&Layers>,
     layers: &mut Vec<Layer>,
 ) -> ParseOutcome {
     let out_of_budget =
@@ -504,7 +591,9 @@ fn build(
             if out_of_budget(layers.len()) {
                 return ParseOutcome::TimedOut;
             }
-            let Some(tree) = parse_snapshot(parser, snapshot, None, limit) else {
+            let start = injection.ranges.first().map_or(0, |r| r.start_byte);
+            let seed = old.and_then(|old| old.tree_at(&language, depth + 1, start));
+            let Some(tree) = parse_snapshot(parser, snapshot, seed, limit) else {
                 return ParseOutcome::TimedOut;
             };
             if !exempt {
