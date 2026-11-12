@@ -52,11 +52,11 @@
   - `Buffer::clear_saved(&mut self)`: no history state counts as saved; `is_dirty()` is true until the next `set_saved`.
   - `BufferSnapshot::text_eq(&self, other: &BufferSnapshot) -> bool` (rope equality, no copy).
 
-- [ ] **Step 1: Failing tests** — `from_text_round_trips` (`from_text("a\nb").text_for_range(0..3) == "a\nb"`, `line_count() == 2`); `clear_saved_is_dirty_until_set_saved` (fresh buffer clean → `clear_saved()` → dirty; undo/redo stays dirty; `set_saved(history_state())` → clean); `text_eq_compares_content`.
-- [ ] **Step 2: Run** `cargo test -p lucerna-text` — expect compile failure.
-- [ ] **Step 3: Implement.** `History.saved` becomes `Option<HistoryState>`; `is_dirty` is `self.saved != Some(self.state())`; `set_saved` stores `Some`; `clear_saved` stores `None`.
-- [ ] **Step 4: Run** `cargo test -p lucerna-text` — PASS.
-- [ ] **Step 5: Commit** `feat(text): snapshots from text and a buffer with no saved state`.
+- [x] **Step 1: Failing tests** — `from_text_round_trips` (`from_text("a\nb").text_for_range(0..3) == "a\nb"`, `line_count() == 2`); `clear_saved_is_dirty_until_set_saved` (fresh buffer clean → `clear_saved()` → dirty; undo/redo stays dirty; `set_saved(history_state())` → clean); `text_eq_compares_content`.
+- [x] **Step 2: Run** `cargo test -p lucerna-text` — expect compile failure.
+- [x] **Step 3: Implement.** `History.saved` becomes `Option<HistoryState>`; `is_dirty` is `self.saved != Some(self.state())`; `set_saved` stores `Some`; `clear_saved` stores `None`.
+- [x] **Step 4: Run** `cargo test -p lucerna-text` — PASS.
+- [x] **Step 5: Commit** `feat(text): snapshots from text and a buffer with no saved state`.
 
 ### Task 2: `lucerna-editor::merge`
 
@@ -80,7 +80,7 @@ Algorithm (spec §7.2):
 3. Every ours hunk is now strictly before or strictly after each theirs hunk. Ours line of base line `a` = `a + Σ(len(side) - len(base))` over ours hunks with `d < a`. Edit = ours byte range of those lines (via ours line offsets) → theirs' text for `side_lines`.
 4. Shortcut: `ours == theirs` → `Ok(vec![])` is **not** done here (the caller handles it; see Task 3). `ours == base` → the theirs hunks as edits (falls out of the algorithm).
 
-- [ ] **Step 1: Failing table tests** (each asserts the text after applying the edits to `ours`, or `Err`):
+- [x] **Step 1: Failing table tests** (each asserts the text after applying the edits to `ours`, or `Err`):
 
 | test | base | ours | theirs | expected |
 |---|---|---|---|---|
@@ -96,11 +96,11 @@ Algorithm (spec §7.2):
 | `unchanged_ours_takes_theirs` | `"a\n"` | `"a\n"` | `"b\n"` | `"b\n"` |
 | `multibyte` | `"xin chào\nb\nđ\n"` | `"xin chào!\nb\nđ\n"` | `"xin chào\nb\nđường\n"` | `"xin chào!\nb\nđường\n"` |
 
-- [ ] **Step 2: Failing property test** `merge_keeps_both_sides` — 2000 cases from a small seeded LCG (no new dependency): base of 0–12 lines from a 4-word alphabet; build ours and theirs by applying 0–3 random line replace/insert/delete each. Assert: (a) `merge(base, ours, theirs).is_ok() == merge(base, theirs, ours).is_ok()`; (b) when both are `Ok`, applying the first to `ours` gives the same text as applying the second to `theirs` (both sides' hunks kept whole); (c) the result equals `theirs` when ours == base and `ours` when theirs == base.
-- [ ] **Step 3: Run** `cargo test -p lucerna-editor merge` — fail.
-- [ ] **Step 4: Implement** as above. Doc comment names spec §7.2.
-- [ ] **Step 5: Run** `cargo test -p lucerna-editor` — PASS. `cargo clippy -p lucerna-editor --all-targets -- -D warnings`.
-- [ ] **Step 6: Commit** `feat(editor): three-way line merge for external changes`.
+- [x] **Step 2: Failing property test** `merge_keeps_both_sides` — 2000 cases from a small seeded LCG (no new dependency): base of 0–12 lines from a 4-word alphabet; build ours and theirs by applying 0–3 random line replace/insert/delete each. Assert: (a) `merge(base, ours, theirs).is_ok() == merge(base, theirs, ours).is_ok()`; (b) when both are `Ok`, applying the first to `ours` gives the same text as applying the second to `theirs` (both sides' hunks kept whole); (c) the result equals `theirs` when ours == base and `ours` when theirs == base.
+- [x] **Step 3: Run** `cargo test -p lucerna-editor merge` — fail.
+- [x] **Step 4: Implement** as above. Doc comment names spec §7.2.
+- [x] **Step 5: Run** `cargo test -p lucerna-editor` — PASS. `cargo clippy -p lucerna-editor --all-targets -- -D warnings`.
+- [x] **Step 6: Commit** `feat(editor): three-way line merge for external changes`.
 
 ### Task 3: Auto-merge on disk change
 
@@ -125,7 +125,7 @@ Algorithm (spec §7.2):
 
 `reload_failed` sets `Conflict { disk: None, reason: Some(err.to_string()) }`.
 
-- [ ] **Step 1: Failing tests** in `tests/external_changes.rs` (helpers copied from `tests/save.rs`: `init`, `settle`, `editor`, `input`, `keys`, `text_of`, `is_dirty`, `has_conflict`, `external_write`, `message`, `disk`, `documents`):
+- [x] **Step 1: Failing tests** in `tests/external_changes.rs` (helpers copied from `tests/save.rs`: `init`, `settle`, `editor`, `input`, `keys`, `text_of`, `is_dirty`, `has_conflict`, `external_write`, `message`, `disk`, `documents`):
   - `non_overlapping_change_merges`: file `"a\nb\nc\nd\ne\n"`; type `x` at start (`"xa\n…"`); external write `"a\nb\nc\nd\nE\n"` → text `"xa\nb\nc\nd\nE\n"`, dirty, no conflict, `message() == Some("Merged changes from disk")`.
   - `merge_is_one_undo_step`: after the above, `cmd-z` → `"xa\nb\nc\nd\ne\n"`; `cmd-z` again → `"a\nb\nc\nd\ne\n"`.
   - `undo_past_merge_stays_dirty`: after two undos, `is_dirty` is true and no conflict.
@@ -136,10 +136,10 @@ Algorithm (spec §7.2):
   - `disk_equal_to_buffer_cleans`: file `"abc\n"`, type `x`, external write `"xabc\n"` → clean, no conflict.
   - `typing_during_merge_job_recomputes`: type `x`; write the disk file and send the `Modified` change **without** settling; type `y` (via `cx.simulate_input`, no settle); then `settle` → text `"xya\nb\nc\nd\nE\n"`, no conflict. (Use the first scenario's file.)
   - `conflict_clears_when_disk_merges_again`: overlapping conflict, then the agent writes a version whose change no longer touches the user's line (`"abc\nmore\n"` against base `"abc\n"`… choose: base `"abc\nz\nq\n"`, user types `x` on line 0, agent writes `"abd\nz\nq\n"` → conflict; agent then writes `"abc\nz\nQ\n"` → merged `"xabc\nz\nQ\n"`, no conflict).
-- [ ] **Step 2: Run** `cargo test -p lucerna-workbench --test external_changes` — fail.
-- [ ] **Step 3: Implement** as specified above.
-- [ ] **Step 4: Run** `cargo test -p lucerna-workbench --test external_changes --test save --test documents` — PASS (the existing conflict tests in `tests/save.rs` must still pass unchanged).
-- [ ] **Step 5: Commit** `feat(workbench): merge an agent's non-overlapping changes into unsaved text`.
+- [x] **Step 2: Run** `cargo test -p lucerna-workbench --test external_changes` — fail.
+- [x] **Step 3: Implement** as specified above.
+- [x] **Step 4: Run** `cargo test -p lucerna-workbench --test external_changes --test save --test documents` — PASS (the existing conflict tests in `tests/save.rs` must still pass unchanged).
+- [x] **Step 5: Commit** `feat(workbench): merge an agent's non-overlapping changes into unsaved text`.
 
 ### Task 4: Keep Mine, Keep and the disk notice
 
@@ -173,7 +173,7 @@ Algorithm (spec §7.2):
   New `Document` fields: `deleted_kept: bool` (cleared whenever the state leaves `Deleted`), `skip_disk_check: bool` (consumed by the next `start_write`, cleared by any later disk event that reaches `finish_reload`).
   Reload on the bar calls the existing `Documents::revert`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `keep_mine_saves_without_prompt`: overlapping conflict (`"abc\n"`, `x`, disk `"disk\n"`); `keep_mine` → `has_conflict` false, still dirty, `disk_notice == None`; `cmd-s` → no prompt, disk `"xabc\n"`.
   - `keep_mine_then_agent_writes_again_merges`: base `"abc\nz\nq\n"`, user `x` on line 0, agent `"abd\nz\nq\n"` → conflict; `keep_mine`; agent writes `"abd\nz\nQ\n"` → text `"xabc\nz\nQ\n"`, no conflict (base is now the agent's first version).
   - `keep_mine_on_unreadable_file_overwrites`: dirty `x`, disk rewritten as `b"\0\x01bin"` → `disk_notice == Some(Conflict { reason: Some(_) })`; `keep_mine`; `cmd-s` → no prompt, disk `"xabc\n"`.
@@ -182,10 +182,10 @@ Algorithm (spec §7.2):
   - `deleted_clean_file_has_no_notice`: clean file removed → `disk_notice == None`, state `Deleted`.
   - `autosave_skips_kept_deleted_file`: `files.autoSave: afterDelay`, dirty, removed, `keep_deleted`, advance clock 2 s → file still absent.
   - `overwrite_setting_keeps_the_notice`: `files.saveConflictResolution: overwriteFileOnDisk`; overlapping conflict → notice `Conflict`; `cmd-s` writes without prompt and the notice goes away.
-- [ ] **Step 2: Run** — fail.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `cargo test -p lucerna-workbench --test external_changes --test save` — PASS.
-- [ ] **Step 5: Commit** `feat(workbench): Keep Mine, Keep, and the disk notice of a document`.
+- [x] **Step 2: Run** — fail.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** `cargo test -p lucerna-workbench --test external_changes --test save` — PASS.
+- [x] **Step 5: Commit** `feat(workbench): Keep Mine, Keep, and the disk notice of a document`.
 
 ### Task 5: The conflict bar
 
@@ -204,23 +204,23 @@ Algorithm (spec §7.2):
 
 Layout (spec §7.3, Zed look): `search_toolbar(cx).child(search_bar_row().child(warning_row(…).flex_1().min_w_0()).child(text_button(primary)).child(text_button(secondary)))`. The message is one line: `whitespace_nowrap`, `text_ellipsis`, `UI_FONT_SIZE_SMALL`, `text` color. Debug selectors: `conflict-bar-{group}`, buttons `conflict-bar-reload-{group}`, `conflict-bar-keep-mine-{group}`, `deleted-bar-close-{group}`, `deleted-bar-keep-{group}`. Clicking a button leaves focus in the editor (`text_button` already prevents default on mouse down).
 
-- [ ] **Step 1: Failing tests** (use `drawn` and `cx.debug_bounds(sel)` + `cx.simulate_click(bounds.center(), Modifiers::none())`):
+- [x] **Step 1: Failing tests** (use `drawn` and `cx.debug_bounds(sel)` + `cx.simulate_click(bounds.center(), Modifiers::none())`):
   - `bar_shows_on_conflict_and_hides_after_merge`: no bar when clean; merged change → no bar; overlapping conflict → `conflict-bar-0` and `conflict-bar-message-0` drawn. The exact copy is pinned by a unit test in `conflict_bar.rs`: `message(name, notice) -> String` returns the three Global Constraints strings.
   - `bar_reload_button`: click `conflict-bar-reload-0` → text `"disk\n"`, bar gone.
   - `bar_keep_mine_button`: click `conflict-bar-keep-mine-0` → bar gone, still dirty, `cmd-s` without prompt.
   - `deleted_bar_keep_and_close`: dirty file removed → `deleted-bar-close-0` drawn; click `deleted-bar-keep-0` → bar gone, tab still `tab-deleted-0-0`; in a second test, click `deleted-bar-close-0` → the tab is gone, no prompt, `documents.state("file.txt") == None`.
   - `bar_only_in_group_showing_the_file`: split right with another file active in group 1 → `conflict-bar-0` drawn, `conflict-bar-1` not.
-- [ ] **Step 2: Run** — fail.
-- [ ] **Step 3: Implement.** Make sure the groups view redraws on `ConflictChanged` and on `disk_notice` changes (the test proves it).
-- [ ] **Step 4: Run** `cargo test -p lucerna-workbench --test external_changes --test editor_groups_view --test save` — PASS.
-- [ ] **Step 5: Manual look** (record in the commit body, not a blocker for tests): `cargo run -p lucerna -- <folder>`; edit a file, make an overlapping change from a shell; compare the bar's height, background and border with the find bar (⌘F) — they must match.
-- [ ] **Step 6: Commit** `feat(workbench): conflict bar with Reload / Keep Mine and deleted-file bar`.
+- [x] **Step 2: Run** — fail.
+- [x] **Step 3: Implement.** Make sure the groups view redraws on `ConflictChanged` and on `disk_notice` changes (the test proves it).
+- [x] **Step 4: Run** `cargo test -p lucerna-workbench --test external_changes --test editor_groups_view --test save` — PASS.
+- [ ] **Step 5: Manual look** (record in the commit body, not a blocker for tests): `cargo run -p lucerna -- <folder>`; edit a file, make an overlapping change from a shell; compare the bar's height, background and border with the find bar (⌘F) — they must match. (bỏ qua: chưa kiểm tra tay)
+- [x] **Step 6: Commit** `feat(workbench): conflict bar with Reload / Keep Mine and deleted-file bar`.
 
 ### Task 6: Docs and final check
 
 **Files:**
 - Modify: spec status line (line 3: "4.1 và 4.4 đã triển khai"), `README.md` (feature list: auto-merge of agent changes, conflict bar), roadmap table §1.3 of `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md` (4.4 delivered), this plan's checkboxes.
 
-- [ ] **Step 1:** Update the docs above (Vietnamese, as the existing text).
-- [ ] **Step 2:** `scripts/prune-target.sh`, then `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`, `cargo deny check` — all pass.
-- [ ] **Step 3: Commit** `docs: phase 4.4 conflicts with agents delivered`.
+- [x] **Step 1:** Update the docs above (Vietnamese, as the existing text).
+- [x] **Step 2:** `scripts/prune-target.sh`, then `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`, `cargo deny check` — all pass.
+- [x] **Step 3: Commit** `docs: phase 4.4 conflicts with agents delivered`.
