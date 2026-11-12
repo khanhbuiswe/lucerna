@@ -282,10 +282,15 @@ fn changed_on_disk(path: &Path, stamp: Option<Stamp>, hash: u64) -> Result<bool,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(err.into()),
     };
-    // Hashed as `decode_file` and `write_bytes` hash a file's bytes.
+    Ok(hash_bytes(&bytes) != hash)
+}
+
+/// The hash of a file's bytes, as `decode_file` and `write_bytes` hash
+/// them.
+pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
-    hasher.write(&bytes);
-    Ok(hasher.finish() != hash)
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 /// The message for a failed save of `path`.

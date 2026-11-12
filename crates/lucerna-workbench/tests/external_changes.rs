@@ -2,8 +2,10 @@
 //! that do not touch the user's lines merge into the unsaved text as one
 //! undo step; overlapping ones put the document in conflict.
 
+use std::cell::Cell;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -640,4 +642,97 @@ fn bar_only_in_group_showing_the_file(cx: &mut TestAppContext) {
     assert!(drawn("tab-1-0", cx), "group 1 exists");
     assert!(drawn("conflict-bar-0", cx));
     assert!(!drawn("conflict-bar-1", cx));
+}
+
+/// Types `text` at the start of `file.txt` without running any task, so a
+/// reload in flight sees the text change under it.
+fn type_unsettled(
+    wb: &Entity<Workbench>,
+    view: &Entity<CodeView>,
+    text: &str,
+    cx: &mut VisualTestContext,
+) {
+    let docs = documents(wb, cx);
+    let origin = view.entity_id();
+    docs.update(cx, |d, cx| {
+        d.apply_edits(
+            Path::new("file.txt"),
+            vec![(0..0, Arc::from(text))],
+            None,
+            None,
+            origin,
+            cx,
+        )
+    })
+    .expect("the text is loaded");
+}
+
+/// Runs tasks one at a time until `Documents` next notifies (a job's end),
+/// leaving whatever it started unrun.
+fn tick_until_documents_notify(wb: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    let docs = documents(wb, cx);
+    let notified = Rc::new(Cell::new(false));
+    let flag = notified.clone();
+    let _subscription = cx.update(|_, cx| cx.observe(&docs, move |_, _| flag.set(true)));
+    while !notified.get() {
+        assert!(cx.executor().tick(), "Documents never notified");
+    }
+}
+
+/// The agent's write reaches the reload, the user types before its result
+/// lands (so the reload runs again), and ⌘S comes in between: the save
+/// must not take the file as the one the text was based on.
+#[gpui::test]
+fn save_while_reload_reruns_keeps_agent_write(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("a\nb\nc\nd\ne\n", cx);
+    input("x", cx);
+    external_write_unsettled(&wb, &dir, "a\nb\nc\nd\nEE\n", cx);
+    type_unsettled(&wb, &view, "y", cx);
+    // The first reload ends stale and starts another; nothing else runs.
+    tick_until_documents_notify(&wb, cx);
+    keys("cmd-s", cx);
+    let on_disk = disk(&dir, "file.txt");
+    assert!(
+        on_disk.contains("EE"),
+        "the agent's write was lost: disk is {on_disk:?}"
+    );
+    assert!(
+        cx.has_pending_prompt() || on_disk == "yxa\nb\nc\nd\nEE\n",
+        "neither asked nor merged: disk {on_disk:?}"
+    );
+}
+
+/// A save finds the file changed but no watcher event came: the document
+/// reads the file itself, so the agent's change still merges.
+#[gpui::test]
+fn save_conflict_without_watcher_reads_the_file(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("a\nb\nc\nd\ne\n", cx);
+    input("x", cx);
+    fs::write(dir.path().join("file.txt"), "a\nb\nc\nd\nEE\n").unwrap();
+    keys("cmd-s", cx);
+    assert_eq!(disk(&dir, "file.txt"), "a\nb\nc\nd\nEE\n");
+    assert_eq!(text_of(&view, cx), "xa\nb\nc\nd\nEE\n");
+    assert!(!has_conflict(&wb, "file.txt", cx));
+    assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+/// Keep Mine on a file that could not be read keeps that read's stamp: a
+/// later write by another program (unreported) is not overwritten.
+#[gpui::test]
+fn keep_mine_on_unreadable_file_still_checks_later_writes(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    external_write(&wb, &dir, "\0\x01bin", cx);
+    assert!(matches!(
+        notice(&wb, cx),
+        Some(DiskNotice::Conflict { reason: Some(_) })
+    ));
+    keep_mine(&wb, cx);
+    fs::write(dir.path().join("file.txt"), "agent wrote this later\n").unwrap();
+    keys("cmd-s", cx);
+    assert_eq!(disk(&dir, "file.txt"), "agent wrote this later\n");
+    assert!(cx.has_pending_prompt() || has_conflict(&wb, "file.txt", cx));
 }

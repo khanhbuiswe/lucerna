@@ -274,26 +274,89 @@ mod tests {
         lines
     }
 
-    fn join(lines: &[&str]) -> String {
-        lines.iter().map(|l| format!("{l}\n")).collect()
+    /// The lines with a `\n` each, but now and then none after the last.
+    fn join(rng: &mut Lcg, lines: &[&str]) -> String {
+        let mut text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        if rng.below(4) == 0 {
+            text.pop();
+        }
+        text
     }
 
     #[test]
     fn merge_keeps_both_sides() {
+        use similar::ChangeTag;
+
+        /// Each run of changed lines of `side` against `base`, found by
+        /// walking the diff line by line (not through `hunks`): the base
+        /// lines it replaces and the lines it puts there.
+        fn changes(base: &str, side: &str) -> Vec<(Range<usize>, Vec<String>)> {
+            let diff = TextDiff::configure()
+                .algorithm(Algorithm::Myers)
+                .diff_lines(base, side);
+            let mut runs: Vec<(Range<usize>, Vec<String>)> = Vec::new();
+            let (mut at, mut open) = (0, false);
+            for change in diff.iter_all_changes() {
+                if change.tag() == ChangeTag::Equal {
+                    at += 1;
+                    open = false;
+                    continue;
+                }
+                if !open {
+                    runs.push((at..at, Vec::new()));
+                    open = true;
+                }
+                let run = runs.last_mut().expect("just pushed");
+                match change.tag() {
+                    ChangeTag::Delete => {
+                        at += 1;
+                        run.0.end = at;
+                    }
+                    _ => run.1.push(change.value().to_string()),
+                }
+            }
+            runs
+        }
+
+        /// `base` with both sides' changes, which a clean merge keeps
+        /// apart: the result the merge must give.
+        fn oracle(base: &str, ours: &str, theirs: &str) -> String {
+            let mut lines: Vec<String> = base.split_inclusive('\n').map(String::from).collect();
+            let mut all = changes(base, ours);
+            all.extend(changes(base, theirs));
+            all.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+            for (range, new) in all {
+                lines.splice(range, new);
+            }
+            lines.concat()
+        }
+
         let mut rng = Lcg(0x5eed);
+        let mut merged_cases = 0;
+        let mut open_ended = 0;
         for case in 0..2000 {
             let base: Vec<&str> = (0..rng.below(13))
                 .map(|_| WORDS[rng.below(WORDS.len())])
                 .collect();
-            let ours = join(&mutate(&mut rng, &base));
-            let theirs = join(&mutate(&mut rng, &base));
-            let base = join(&base);
+            let ours = mutate(&mut rng, &base);
+            let ours = join(&mut rng, &ours);
+            let theirs = mutate(&mut rng, &base);
+            let theirs = join(&mut rng, &theirs);
+            let base = join(&mut rng, &base);
             let forward = merge(&base, &ours, &theirs);
             let backward = merge(&base, &theirs, &ours);
             let ctx = format!("case {case}: base {base:?} ours {ours:?} theirs {theirs:?}");
             assert_eq!(forward.is_ok(), backward.is_ok(), "{ctx}");
             if let (Ok(f), Ok(b)) = (&forward, &backward) {
                 assert_eq!(apply(&ours, f), apply(&theirs, b), "{ctx}");
+                assert_eq!(apply(&ours, f), oracle(&base, &ours, &theirs), "{ctx}");
+                merged_cases += 1;
+                if [&base, &ours, &theirs]
+                    .iter()
+                    .any(|t| !t.is_empty() && !t.ends_with('\n'))
+                {
+                    open_ended += 1;
+                }
             }
             if ours == base {
                 assert_eq!(
@@ -305,5 +368,11 @@ mod tests {
                 assert_eq!(forward.map(|e| apply(&ours, &e)), Ok(ours.clone()), "{ctx}");
             }
         }
+        // The generator must reach the cases the oracle checks.
+        assert!(merged_cases > 200, "only {merged_cases} cases merged");
+        assert!(
+            open_ended > 50,
+            "only {open_ended} merged cases lack a final \\n"
+        );
     }
 }
