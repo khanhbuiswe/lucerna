@@ -77,7 +77,8 @@ pub(crate) struct History {
     /// `start_transaction` (so it is dropped if it stays empty).
     top_is_new: bool,
     next_id: u64,
-    saved: HistoryState,
+    /// `None`: no state counts as saved (always dirty).
+    saved: Option<HistoryState>,
 }
 
 impl History {
@@ -88,7 +89,7 @@ impl History {
             depth: 0,
             top_is_new: false,
             next_id: 0,
-            saved: HistoryState(None),
+            saved: Some(HistoryState(None)),
         }
     }
 
@@ -193,11 +194,15 @@ impl History {
     }
 
     pub fn set_saved(&mut self, state: HistoryState) {
-        self.saved = state;
+        self.saved = Some(state);
+    }
+
+    pub fn clear_saved(&mut self) {
+        self.saved = None;
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.state() != self.saved
+        self.saved != Some(self.state())
     }
 }
 
@@ -401,6 +406,21 @@ mod tests {
         assert!(!b.is_dirty());
         b.redo().unwrap();
         assert!(b.is_dirty());
+    }
+
+    #[test]
+    fn clear_saved_is_dirty_until_set_saved() {
+        let mut b = buf("a");
+        assert!(!b.is_dirty());
+        b.clear_saved();
+        assert!(b.is_dirty());
+        ed(&mut b, 1..1, "b");
+        b.undo().unwrap();
+        assert!(b.is_dirty());
+        b.redo().unwrap();
+        assert!(b.is_dirty());
+        b.set_saved(b.history_state());
+        assert!(!b.is_dirty());
     }
 
     #[test]
