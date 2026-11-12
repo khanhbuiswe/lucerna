@@ -539,6 +539,25 @@ fn autoclose_overtype_and_autodelete(cx: &mut TestAppContext) {
     assert_eq!(text_of(&view, cx), "(a)[]]");
 }
 
+/// Final review, finding 4: auto-close starts an undo step, as VS Code's
+/// `_runAutoClosingOpenCharType` does; what is typed inside groups with it.
+#[gpui::test]
+fn undo_after_autoclose_removes_only_the_pair(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("", cx);
+    input("f", cx);
+    input("o", cx);
+    input("o", cx);
+    input("(", cx);
+    assert_eq!(text_of(&view, cx), "foo()");
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "foo");
+    input("(", cx);
+    input("a", cx);
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "foo");
+}
+
 #[gpui::test]
 fn overtype_forgets_region_after_cursor_leaves(cx: &mut TestAppContext) {
     init(cx, None);

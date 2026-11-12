@@ -31,7 +31,7 @@ pub(crate) fn type_char(
     let lang = language(&ctx);
     overtype(ctx, lang, set, ch, regions, kind, stop_before)
         .or_else(|| surround(ctx, lang, set, ch))
-        .or_else(|| auto_close(ctx, lang, set, ch, kind, stop_before))
+        .or_else(|| auto_close(ctx, lang, set, ch, kind))
 }
 
 /// The document language's pairs, else the default brackets.
@@ -191,7 +191,6 @@ fn auto_close(
     set: &SelectionSet,
     ch: &str,
     kind: EditKind,
-    stop_before: bool,
 ) -> Option<EditPlan> {
     let pair = lang.brackets.iter().find(|p| p.close && p.start == ch)?;
     let quote = is_quote(pair);
@@ -262,7 +261,9 @@ fn auto_close(
             place: Place::At(pair.start.len()),
         })
         .collect();
-    let mut plan = build(items, set.primary().id, kind, stop_before, false);
+    // VS Code pushes a stop before an auto-close (`shouldPushStackElementBefore:
+    // true`), so undo after `foo(` removes only `()`.
+    let mut plan = build(items, set.primary().id, kind, true, false);
     plan.autoclose = plan
         .selections
         .all()
@@ -461,10 +462,13 @@ mod tests {
             language: Some(&lang),
             syntax: None,
         };
+        // VS Code's `_runAutoClosingOpenCharType` pushes a stop before
+        // (`shouldPushStackElementBefore: true`): undo after `foo(` removes
+        // only `()`. Typing after the pair groups with it.
         let p = insert(ctx, &set, "(", EditKind::TypingOther, &[]);
         assert_eq!(
             (p.kind, p.stop_before, p.stop_after),
-            (EditKind::TypingOther, false, false)
+            (EditKind::TypingOther, true, false)
         );
         let p = insert(ctx, &set, ")", EditKind::TypingOther, &[]);
         assert_eq!(p.kind, EditKind::TypingOther);
