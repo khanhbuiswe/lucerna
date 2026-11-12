@@ -336,6 +336,20 @@ impl BufferSnapshot {
         }
     }
 
+    /// The UTF-16 offset of byte `offset` (moved back to a char boundary,
+    /// clamped to the end), as platform text input APIs count. O(log n).
+    pub fn offset_to_utf16(&self, offset: usize) -> usize {
+        let offset = self.floor_char_boundary(offset);
+        self.rope.char_to_utf16_cu(self.rope.byte_to_char(offset))
+    }
+
+    /// The byte offset of UTF-16 offset `utf16` (clamped to the end); an
+    /// offset inside a surrogate pair gives the start of its char.
+    pub fn utf16_to_offset(&self, utf16: usize) -> usize {
+        let utf16 = utf16.min(self.rope.len_utf16_cu());
+        self.rope.char_to_byte(self.rope.utf16_cu_to_char(utf16))
+    }
+
     pub fn text_for_range(&self, r: Range<usize>) -> String {
         self.rope.byte_slice(r).to_string()
     }
@@ -364,6 +378,20 @@ mod tests {
     fn all_text(b: &Buffer) -> String {
         let s = b.snapshot();
         s.text_for_range(0..s.len_bytes())
+    }
+
+    #[test]
+    fn utf16_offsets_round_trip() {
+        // `é` is 2 bytes / 1 unit, `😀` 4 bytes / 2 units.
+        let s = Buffer::from_bytes("aé😀\nb".as_bytes(), false)
+            .unwrap()
+            .snapshot();
+        assert_eq!(s.offset_to_utf16(3), 2);
+        assert_eq!(s.offset_to_utf16(7), 4);
+        assert_eq!(s.offset_to_utf16(5), 2, "inside a char snaps back");
+        assert_eq!(s.utf16_to_offset(4), 7);
+        assert_eq!(s.utf16_to_offset(3), 3, "inside a pair snaps back");
+        assert_eq!(s.utf16_to_offset(99), s.len_bytes());
     }
 
     #[test]

@@ -98,6 +98,16 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
         }
         paint_carets(frame, window);
         paint_marks(frame, window);
+        // The IME composition: a thin underline in the text colour.
+        for range in &frame.marked {
+            for b in range_bounds(frame, range.clone()) {
+                let line = Bounds::new(
+                    point(b.left(), b.bottom() - px(2.)),
+                    size(b.size.width, px(1.)),
+                );
+                window.paint_quad(fill(line, colors.strike));
+            }
+        }
         for inline in &frame.diagnostics.inline {
             let background = inline.color.opacity(INLINE_BACKGROUND_ALPHA);
             window.paint_quad(fill(inline.pill, background).corner_radii(px(INLINE_RADIUS)));

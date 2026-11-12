@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::code_view::{self, CodeView, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
-use crate::documents::{DocState, DocumentStatusItem, Documents};
+use crate::documents::{DocumentStatusItem, Documents};
 use crate::editor_groups::{
     self, EditorGroups, EditorGroupsView, GroupId, OpenMode, TabId, TabItem,
 };
@@ -1276,9 +1276,7 @@ impl Workbench {
         );
         if let Some(view) = &code_view {
             let v = view.read(cx);
-            let readonly =
-                !matches!(v.doc_state(), DocState::Ready | DocState::Deleted) || v.is_passive();
-            flag("editorReadonly", readonly);
+            flag("editorReadonly", v.is_readonly());
             let selections = v.selections();
             flag(
                 "editorHasSelection",

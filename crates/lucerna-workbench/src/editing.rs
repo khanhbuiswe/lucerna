@@ -1,8 +1,10 @@
 //! The editing commands of the code view, with VS Code's ids: cursor
-//! movement and selection.
+//! movement and selection, typing, deleting, indenting, the clipboard,
+//! undo / redo and `cursorUndo` / `cursorRedo`.
 
-use gpui::Context;
-use lucerna_editor::Motion;
+use gpui::{Context, Focusable as _, Window};
+use lucerna_editor::commands;
+use lucerna_editor::{Ctx, EditPlan, Motion, SelectionSet};
 
 use crate::code_view::CodeView;
 use crate::{CommandHandler, CommandRegistry, Workbench};
@@ -15,6 +17,25 @@ fn with_view(
 ) {
     if let Some(view) = wb.active_code_view(cx) {
         view.update(cx, f);
+    }
+}
+
+/// Runs the edit command `f` in the active view.
+fn edit(wb: &mut Workbench, cx: &mut Context<Workbench>, f: fn(Ctx, &SelectionSet) -> EditPlan) {
+    with_view(wb, cx, |v, cx| {
+        v.unmark();
+        v.edit(cx, f);
+    });
+}
+
+/// Undo (or redo) in the active view; any composition ends first.
+fn undo(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>, undo: bool) {
+    if let Some(view) = wb.active_code_view(cx) {
+        let focus = view.update(cx, |v, cx| {
+            v.undo(undo, cx);
+            v.focus_handle(cx)
+        });
+        window.notify_text_input_changed(&focus);
     }
 }
 
@@ -64,4 +85,63 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register("editor.action.selectAll", "Select All", |wb, _, _, cx| {
         with_view(wb, cx, CodeView::select_all)
     });
+
+    let edits: [(&'static str, CommandHandler); 9] = [
+        ("deleteLeft", |wb, _, _, cx| {
+            edit(wb, cx, commands::delete_left)
+        }),
+        ("deleteRight", |wb, _, _, cx| {
+            edit(wb, cx, commands::delete_right)
+        }),
+        ("deleteWordLeft", |wb, _, _, cx| {
+            edit(wb, cx, commands::delete_word_left)
+        }),
+        ("deleteWordRight", |wb, _, _, cx| {
+            edit(wb, cx, commands::delete_word_right)
+        }),
+        ("deleteAllLeft", |wb, _, _, cx| {
+            edit(wb, cx, commands::delete_all_left)
+        }),
+        ("deleteAllRight", |wb, _, _, cx| {
+            edit(wb, cx, commands::delete_all_right)
+        }),
+        ("tab", |wb, _, _, cx| edit(wb, cx, commands::tab)),
+        ("outdent", |wb, _, _, cx| edit(wb, cx, commands::outdent)),
+        ("lineBreakInsert", |wb, _, _, cx| {
+            edit(wb, cx, commands::line_break_insert)
+        }),
+    ];
+    for (id, handler) in edits {
+        commands.register(id, "", handler);
+    }
+    // VS Code's `type` command: `{"text": "\n"}` is Enter.
+    commands.register("type", "", |wb, args, _, cx| {
+        let Some(text) = args.and_then(|a| a.get("text")).and_then(|t| t.as_str()) else {
+            return;
+        };
+        let text = text.to_string();
+        with_view(wb, cx, |v, cx| {
+            v.type_text(&text, cx);
+        });
+    });
+    commands.register("undo", "Undo", |wb, _, window, cx| {
+        undo(wb, window, cx, true)
+    });
+    commands.register("redo", "Redo", |wb, _, window, cx| {
+        undo(wb, window, cx, false)
+    });
+    commands.register("cursorUndo", "Cursor Undo", |wb, _, _, cx| {
+        with_view(wb, cx, |v, cx| v.cursor_undo(true, cx))
+    });
+    commands.register("cursorRedo", "Cursor Redo", |wb, _, _, cx| {
+        with_view(wb, cx, |v, cx| v.cursor_undo(false, cx))
+    });
+    commands.register("editor.action.clipboardCutAction", "Cut", |wb, _, _, cx| {
+        with_view(wb, cx, CodeView::cut)
+    });
+    commands.register(
+        "editor.action.clipboardPasteAction",
+        "Paste",
+        |wb, _, _, cx| with_view(wb, cx, CodeView::paste),
+    );
 }

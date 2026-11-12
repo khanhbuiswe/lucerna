@@ -11,23 +11,26 @@ mod caret;
 mod diagnostics;
 mod element;
 mod frame_layout;
+mod input;
 mod layout;
 mod link;
 mod minimap;
 mod selection;
+mod transact;
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    AnyView, App, Context, Entity, EntityInputHandler as _, EventEmitter, FocusHandle, Focusable,
     IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
     Window, div, prelude::*, px,
 };
-use lucerna_editor::{Goal, Motion, Selection, SelectionSet, move_selections};
+use lucerna_editor::{EditKind, Goal, Motion, Selection, SelectionSet, move_selections};
 use lucerna_lsp::diagnostics::Diagnostic;
 use lucerna_syntax::{SyntaxState, indent_folds};
 use lucerna_text::{Bias, Buffer, BufferSnapshot, LoadError, Patch, Point, Reload};
@@ -56,7 +59,7 @@ use crate::{AppState, CommandRegistry, Workbench};
 /// The status-bar text shown while the active view is a large file.
 pub const LARGE_FILE_STATUS: &str = "Large file: highlighting disabled";
 
-/// `editor.wordSeparators` until the setting has a default.
+/// `editor.wordSeparators` when the setting is missing.
 const DEFAULT_WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
 const MIN_FONT_SIZE: f32 = 6.;
@@ -184,6 +187,22 @@ pub enum CodeViewEvent {
     Reloaded { reload: Reload },
 }
 
+/// What changed the selections, which decides the undo stop and the
+/// `cursorUndo` history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionChange {
+    /// A cursor move (keys, mouse, API): an undo stop before the next
+    /// edit, and the old selections go on the `cursorUndo` stack.
+    Move,
+    /// An edit, an undo or text following an edit: neither.
+    Edit,
+    /// `cursorUndo` / `cursorRedo` themselves: an undo stop only.
+    History,
+}
+
+/// How many selection states `cursorUndo` keeps, as VS Code.
+const CURSOR_HISTORY: usize = 50;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Drag {
     Text,
@@ -229,6 +248,15 @@ pub struct CodeView {
     /// so the next edit starts a new undo step (see
     /// [`Documents::apply_edits`]).
     stop_requested: Option<Rc<Cell<bool>>>,
+    /// The kind of this view's last edit, for the undo stops of the next.
+    last_kind: EditKind,
+    /// The IME composition in progress: one byte range per selection, in
+    /// selection order. The composed text is in the buffer, underlined.
+    marked: Option<Vec<Range<usize>>>,
+    /// `cursorUndo`: the selections before each cursor move, newest last;
+    /// at most [`CURSOR_HISTORY`]. Any edit clears it and `cursor_redo`.
+    cursor_undo: VecDeque<SelectionSet>,
+    cursor_redo: Vec<SelectionSet>,
     /// Both brackets of the pair next to the cursor, as byte offsets.
     brackets: Option<[usize; 2]>,
     drag: Option<Drag>,
@@ -324,6 +352,10 @@ impl CodeView {
             cursor_overlay: None,
             caret: Caret::default(),
             stop_requested: None,
+            last_kind: EditKind::Other,
+            marked: None,
+            cursor_undo: VecDeque::new(),
+            cursor_redo: Vec::new(),
             brackets: None,
             drag: None,
             folds: FoldState::default(),
@@ -430,6 +462,10 @@ impl CodeView {
         self.block_selection = None;
         self.selection_generation += 1;
         self.brackets = None;
+        self.marked = None;
+        self.last_kind = EditKind::Other;
+        self.cursor_undo.clear();
+        self.cursor_redo.clear();
         self.folds.clear();
         self.pending_center = None;
         cx.notify();
@@ -498,11 +534,18 @@ impl CodeView {
         self.active_match = active;
         self.folds.remap(&reload, rows);
         self.scroll.top_row = self.folds.prev_visible(self.scroll.top_row);
+        // Any change to the text ends a composition (the edit that makes
+        // one marks it again) and the typing run, and clears the cursor
+        // history, as in VS Code.
+        self.marked = None;
+        self.last_kind = EditKind::Other;
+        self.cursor_undo.clear();
+        self.cursor_redo.clear();
         // Emitted before the selection change notifies, so listeners (vim)
         // see the event before they see the bumped selection generation.
         cx.emit(CodeViewEvent::Reloaded { reload });
         // Following the text is no cursor move: no undo stop.
-        self.set_selections_inner(selections, false, false, cx);
+        self.set_selections_inner(selections, false, SelectionChange::Edit, cx);
     }
 
     /// Sets the parsed syntax of the current snapshot; `None` shows plain
@@ -924,13 +967,12 @@ impl CodeView {
     pub fn set_selections(&mut self, set: SelectionSet, autoscroll: bool, cx: &mut Context<Self>) {
         self.set_goto_message(None, cx);
         self.block_selection = None;
-        self.set_selections_inner(set, autoscroll, true, cx);
+        self.set_selections_inner(set, autoscroll, SelectionChange::Move, cx);
     }
 
     /// Replaces the selections like [`CodeView::set_selections`], but is
     /// no cursor move: no undo stop. For edits and undo / redo restoring
     /// their selections.
-    #[allow(dead_code, reason = "used by typing and undo (Task 12)")]
     pub(crate) fn set_selections_without_stop(
         &mut self,
         set: SelectionSet,
@@ -939,25 +981,38 @@ impl CodeView {
     ) {
         self.set_goto_message(None, cx);
         self.block_selection = None;
-        self.set_selections_inner(set, autoscroll, false, cx);
+        self.set_selections_inner(set, autoscroll, SelectionChange::Edit, cx);
     }
 
     /// Replaces the selections (clamped to the text) and restarts the
-    /// caret blink. `stop` asks the document for an undo stop before the
-    /// next edit; following an edit or restoring an undo step does not.
+    /// caret blink. A cursor move asks the document for an undo stop
+    /// before the next edit and is remembered for `cursorUndo`; following
+    /// an edit or restoring an undo step is neither.
     fn set_selections_inner(
         &mut self,
         mut set: SelectionSet,
         autoscroll: bool,
-        stop: bool,
+        change: SelectionChange,
         cx: &mut Context<Self>,
     ) {
         set.clamp(&self.snapshot);
-        self.selections = set;
+        let old = std::mem::replace(&mut self.selections, set);
+        if change == SelectionChange::Move && old != self.selections {
+            if self.cursor_undo.len() == CURSOR_HISTORY {
+                self.cursor_undo.pop_front();
+            }
+            self.cursor_undo.push_back(old);
+            self.cursor_redo.clear();
+        }
         self.selection_generation += 1;
         self.caret.reset(cx);
-        if stop && let Some(flag) = &self.stop_requested {
-            flag.set(true);
+        if change != SelectionChange::Edit {
+            // A cursor move ends the typing run and any composition.
+            self.last_kind = EditKind::Other;
+            self.marked = None;
+            if let Some(flag) = &self.stop_requested {
+                flag.set(true);
+            }
         }
         self.update_brackets();
         if autoscroll {
@@ -1074,7 +1129,7 @@ impl CodeView {
     ) {
         let head = self.selections.primary().head;
         let set = self.single(head, head);
-        self.set_selections_inner(set, false, true, cx);
+        self.set_selections_inner(set, false, SelectionChange::Move, cx);
         self.block_selection = ranges.filter(|r| !r.is_empty());
     }
 
@@ -1385,11 +1440,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             if crate::lsp_log::copy_from_log(wb, cx) {
                 return;
             }
-            with_active_view(wb, cx, |v, cx| {
-                if let Some(text) = v.copy_selection() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
-            })
+            with_active_view(wb, cx, CodeView::copy)
         },
     );
 }
@@ -1445,10 +1496,13 @@ impl Render for CodeView {
             .debug_selector(|| "code-view".into())
             .track_focus(&self.focus)
             // Any key that reaches the view hides the hover and the
-            // "No … found" message.
-            .on_key_down(cx.listener(|v, _, _, cx| {
+            // "No … found" message; Escape ends an IME composition.
+            .on_key_down(cx.listener(|v, ev: &gpui::KeyDownEvent, window, cx| {
                 v.hover.hide(cx);
                 v.set_goto_message(None, cx);
+                if ev.keystroke.key == "escape" && v.marked.is_some() {
+                    v.unmark_text(window, cx);
+                }
             }))
             .on_modifiers_changed(cx.listener(|v, ev: &gpui::ModifiersChangedEvent, _, cx| {
                 let held = ev.modifiers.secondary(cx);

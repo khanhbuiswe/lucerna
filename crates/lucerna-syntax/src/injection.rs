@@ -6,14 +6,13 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::{ControlFlow, Range};
 use std::sync::Arc;
-use std::time::Instant;
 
 use lucerna_text::BufferSnapshot;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, Tree};
 
 use crate::registry::{Language, LanguageOrigin, LanguageRegistry, Predicates};
-use crate::syntax_state::{ParseOutcome, parse_snapshot};
+use crate::syntax_state::{Limit, ParseOutcome, parse_snapshot};
 use crate::wasm;
 
 /// The deepest a layer may be; the root is depth 0.
@@ -90,20 +89,15 @@ struct Injection {
     ranges: Vec<tree_sitter::Range>,
 }
 
-/// Whether `deadline` has passed.
-fn passed(deadline: Option<Instant>) -> bool {
-    deadline.is_some_and(|d| Instant::now() >= d)
-}
-
 /// The injections `query` finds in `root`'s tree, in document order.
 /// `parent_ranges` (the parent layer's included ranges, if it is not the
-/// root) bound every range. `None` once `deadline` passes.
+/// root) bound every range. `None` once `limit` is reached.
 fn find_injections(
     query: &InjectionQuery,
     root: Node,
     snapshot: &BufferSnapshot,
     parent_ranges: Option<&[tree_sitter::Range]>,
-    deadline: Option<Instant>,
+    limit: Limit,
 ) -> Option<Vec<Injection>> {
     let len = snapshot.len_bytes();
     let text = |node: Node| {
@@ -117,22 +111,23 @@ fn find_injections(
     let mut combined: HashMap<(usize, String), usize> = HashMap::new();
     let cancelled = Cell::new(false);
     let mut progress = |_: &QueryCursorState| {
-        if passed(deadline) {
+        if limit.reached() {
             cancelled.set(true);
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())
         }
     };
-    let options = match deadline {
-        Some(_) => QueryCursorOptions::new().progress_callback(&mut progress),
-        None => QueryCursorOptions::new(),
+    let options = if limit.is_bounded() {
+        QueryCursorOptions::new().progress_callback(&mut progress)
+    } else {
+        QueryCursorOptions::new()
     };
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches_with_options(&query.query, root, text, options);
     while let Some(m) = matches.next() {
         // The callback runs only now and then; small trees never reach it.
-        if passed(deadline) {
+        if limit.reached() {
             return None;
         }
         if !query.predicates.accepts(m) {
@@ -384,11 +379,12 @@ impl LayerParsers {
 /// Builds the child layers of `root_tree` (parsed as `root_language`),
 /// breadth first, up to [`MAX_DEPTH`] and [`MAX_LAYERS`].
 ///
-/// `deadline` bounds the whole build: it is checked before each injections
-/// query (and while it runs) and before each child parse. Past it, the
-/// layers built so far are kept and the result is `TimedOut`.
+/// `limit` (a deadline, a cancel flag) bounds the whole build: it is
+/// checked before each injections query (and while it runs) and before
+/// each child parse. Once reached, the layers built so far are kept and the
+/// result is `TimedOut`.
 ///
-/// With a `deadline` (the synchronous attempt on the UI thread), a WASM
+/// With a deadline (the synchronous attempt on the UI thread), a WASM
 /// grammar not loaded yet is not loaded here: its region is skipped and the
 /// result is `TimedOut`, so the caller finishes the parse in the background,
 /// where the grammar loads.
@@ -402,7 +398,7 @@ pub(crate) fn build_layers(
     snapshot: &BufferSnapshot,
     registry: &LanguageRegistry,
     parsers: &mut LayerParsers,
-    deadline: Option<Instant>,
+    limit: Limit,
     max_children: Option<usize>,
 ) -> (Layers, ParseOutcome) {
     let mut layers: Vec<Layer> = Vec::new();
@@ -412,7 +408,7 @@ pub(crate) fn build_layers(
         snapshot,
         registry,
         parsers,
-        deadline,
+        limit,
         max_children,
         &mut layers,
     );
@@ -426,12 +422,12 @@ fn build(
     snapshot: &BufferSnapshot,
     registry: &LanguageRegistry,
     parsers: &mut LayerParsers,
-    deadline: Option<Instant>,
+    limit: Limit,
     max_children: Option<usize>,
     layers: &mut Vec<Layer>,
 ) -> ParseOutcome {
     let out_of_budget =
-        |built: usize| passed(deadline) || max_children.is_some_and(|max| built >= max);
+        |built: usize| limit.reached() || max_children.is_some_and(|max| built >= max);
     let mut outcome = ParseOutcome::Done;
     // Layers that count toward the cap.
     let mut counted = 0;
@@ -469,7 +465,7 @@ fn build(
         if out_of_budget(layers.len()) {
             return ParseOutcome::TimedOut;
         }
-        let Some(injections) = find_injections(query, tree.root_node(), snapshot, ranges, deadline)
+        let Some(injections) = find_injections(query, tree.root_node(), snapshot, ranges, limit)
         else {
             return ParseOutcome::TimedOut;
         };
@@ -491,7 +487,7 @@ fn build(
             if language.is_failed() {
                 continue;
             }
-            if deadline.is_some() && !language.grammar_ready() {
+            if limit.deadline.is_some() && !language.grammar_ready() {
                 outcome = ParseOutcome::TimedOut;
                 continue;
             }
@@ -508,7 +504,7 @@ fn build(
             if out_of_budget(layers.len()) {
                 return ParseOutcome::TimedOut;
             }
-            let Some(tree) = parse_snapshot(parser, snapshot, deadline) else {
+            let Some(tree) = parse_snapshot(parser, snapshot, None, limit) else {
                 return ParseOutcome::TimedOut;
             };
             if !exempt {

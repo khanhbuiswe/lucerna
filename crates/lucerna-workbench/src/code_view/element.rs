@@ -7,10 +7,11 @@ mod paint;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, CursorStyle, DispatchPhase, Element, ElementId, Font, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent, ShapedLine, SharedString,
-    Style, TextRun, UnderlineStyle, Window, font, point, px, relative, size, underline_y_offset,
+    App, Bounds, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler, Font,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent,
+    ShapedLine, SharedString, Style, TextRun, UnderlineStyle, Window, font, point, px, relative,
+    size, underline_y_offset,
 };
 use lucerna_lsp::diagnostics::Severity;
 use lucerna_text::Point;
@@ -159,6 +160,8 @@ pub(crate) struct Frame {
     chevrons: Vec<(Pixels, u32, ShapedLine, bool)>,
     /// The non-empty selections touching the rows on screen.
     selections: Vec<std::ops::Range<Point>>,
+    /// The IME composition's marked ranges on screen, underlined.
+    marked: Vec<std::ops::Range<Point>>,
     /// The cells of the carets to paint (every cursor on screen), while
     /// the view has focus, no cursor overlay is set and the blink is on.
     carets: Vec<std::ops::Range<Point>>,
@@ -291,7 +294,7 @@ impl Frame {
     }
 
     /// The buffer position under `position`, clamped to the rows on screen.
-    fn point_at(&self, position: gpui::Point<Pixels>) -> Option<Point> {
+    pub(crate) fn point_at(&self, position: gpui::Point<Pixels>) -> Option<Point> {
         let row = self
             .rows
             .iter()
@@ -347,6 +350,15 @@ impl Frame {
     pub fn char_position(&self, p: Point) -> Option<gpui::Point<Pixels>> {
         let (x, top) = self.position_of(p)?;
         Some(point(x + self.char_width / 2., top + self.line_height / 2.))
+    }
+
+    /// The cell of the char at `p` (one char wide, one line high).
+    pub fn char_bounds(&self, p: Point) -> Option<Bounds<Pixels>> {
+        let (x, top) = self.position_of(p)?;
+        Some(Bounds::new(
+            point(x, top),
+            size(self.char_width, self.line_height),
+        ))
     }
 
     fn row_at(&self, y: Pixels) -> Option<&FrameRow> {
@@ -439,6 +451,13 @@ impl Element for CodeElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        // Typed text and IME input reach the view while it has focus.
+        let focus = self.view.read(cx).focus.clone();
+        window.handle_input(
+            &focus,
+            ElementInputHandler::new(frame.bounds, self.view.clone()),
+            cx,
+        );
         paint::paint_frame(frame, window, cx);
         if let Some(hitbox) = &frame.hitbox {
             // The link shows only while the mouse is over it.
@@ -709,6 +728,7 @@ impl CodeView {
             numbers,
             chevrons,
             selections,
+            marked: self.visible_marked(),
             carets,
             caret_style: self.config.cursor_style,
             block_selection: self.block_selection.clone().unwrap_or_default(),
@@ -867,6 +887,16 @@ impl CodeView {
             marks: marks.clone(),
         });
         marks
+    }
+
+    /// The marked ranges of the composition, as points (painting skips
+    /// those off screen).
+    fn visible_marked(&self) -> Vec<std::ops::Range<Point>> {
+        self.marked
+            .iter()
+            .flatten()
+            .map(|r| self.snapshot.offset_to_point(r.start)..self.snapshot.offset_to_point(r.end))
+            .collect()
     }
 
     /// The non-empty selections (none while a block selection shows) and

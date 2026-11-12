@@ -227,6 +227,28 @@ mod tests {
             rows.push((event(letter, None, ctrl()), binding));
         }
         rows.push((event("a", None, cmd()), "cmd+a"));
+        // Editing.
+        rows.extend([
+            (event("z", None, cmd()), "cmd+z"),
+            (event("z", None, cmd_shift()), "shift+cmd+z"),
+            (event("u", None, cmd()), "cmd+u"),
+            (event("x", None, cmd()), "cmd+x"),
+            (event("v", None, cmd()), "cmd+v"),
+            (event("backspace", None, Modifiers::none()), "backspace"),
+            (event("backspace", None, Modifiers::shift()), "shift+backspace"),
+            (event("backspace", None, alt()), "alt+backspace"),
+            (event("backspace", None, cmd()), "cmd+backspace"),
+            (event("delete", None, Modifiers::none()), "delete"),
+            (event("delete", None, alt()), "alt+delete"),
+            (event("delete", None, cmd()), "cmd+delete"),
+            (event("h", None, ctrl()), "ctrl+h"),
+            (event("d", None, ctrl()), "ctrl+d"),
+            (event("k", None, ctrl()), "ctrl+k"),
+            (event("o", None, ctrl()), "ctrl+o"),
+            (event("tab", Some("\t"), Modifiers::none()), "tab"),
+            (event("tab", None, Modifiers::shift()), "shift+tab"),
+            (event("enter", Some("\n"), Modifiers::none()), "enter"),
+        ]);
         for (digit, binding) in [
             ("1", "cmd+1"),
             ("2", "cmd+2"),

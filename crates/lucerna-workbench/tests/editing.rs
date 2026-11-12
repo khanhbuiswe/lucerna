@@ -1,13 +1,15 @@
 //! Editing in the code view driven through the workbench: the selection
 //! set, cursor movement keys, two views of one file, the editing context
-//! keys and the caret blink.
+//! keys, the caret blink, typing (with IME), edit commands, the clipboard
+//! and undo / redo.
 
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
+use gpui::{Entity, EntityInputHandler as _, Focusable as _, TestAppContext, VisualTestContext};
+use lucerna_editor::{Goal, Selection, SelectionSet};
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Context, Keymap, Layer, SettingsStore, parse_when};
 use lucerna_syntax::LanguageRegistry;
@@ -375,4 +377,341 @@ fn opening_a_file_focuses_its_view(cx: &mut TestAppContext) {
     settle(cx);
     let view = active_view(&wb, cx);
     assert!(focused(&view, cx));
+}
+
+fn text_of(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> String {
+    view.read_with(cx, |v, _| {
+        let s = v.snapshot();
+        s.text_for_range(0..s.len_bytes())
+    })
+}
+
+fn is_dirty(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> bool {
+    let docs = documents(wb, cx);
+    docs.read_with(cx, |d, _| d.is_dirty(Path::new("file.txt")))
+}
+
+fn input(text: &str, cx: &mut VisualTestContext) {
+    cx.simulate_input(text);
+    settle(cx);
+}
+
+fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| wb.update(cx, |wb, cx| wb.run_command(command, None, window, cx)));
+    settle(cx);
+}
+
+/// Cursors at `offsets`, the first one primary.
+fn cursors(offsets: &[usize]) -> SelectionSet {
+    let selections = offsets
+        .iter()
+        .enumerate()
+        .map(|(id, &at)| Selection {
+            id: id as u64,
+            anchor: at,
+            head: at,
+            goal: Goal::None,
+        })
+        .collect();
+    SelectionSet::from_selections(selections, 0, true)
+}
+
+#[gpui::test]
+fn typing_inserts_text(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, view, cx) = editor("\nnext\n", cx);
+    assert!(!is_dirty(&wb, cx));
+    input("héllo", cx);
+    assert_eq!(text_of(&view, cx), "héllo\nnext\n");
+    assert_eq!(cursor(&view, cx), pt(0, 6));
+    assert!(is_dirty(&wb, cx));
+    // Typing replaces the selection.
+    keys("shift-left shift-left", cx);
+    input("p", cx);
+    assert_eq!(text_of(&view, cx), "hélp\nnext\n");
+}
+
+#[gpui::test]
+fn undo_groups_like_vscode(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("", cx);
+    input("abc def", cx);
+    assert_eq!(text_of(&view, cx), "abc def");
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "abc");
+    assert_eq!(cursor(&view, cx), pt(0, 3));
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "");
+    keys("cmd-shift-z", cx);
+    assert_eq!(text_of(&view, cx), "abc");
+    assert_eq!(cursor(&view, cx), pt(0, 3));
+}
+
+#[gpui::test]
+fn cursor_move_closes_undo_group(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("", cx);
+    input("ab", cx);
+    keys("left", cx);
+    input("c", cx);
+    assert_eq!(text_of(&view, cx), "acb");
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "ab");
+    assert_eq!(cursor(&view, cx), pt(0, 1));
+}
+
+#[gpui::test]
+fn undo_back_to_saved_is_clean(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, view, cx) = editor("x\n", cx);
+    input("yz", cx);
+    assert!(is_dirty(&wb, cx));
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "x\n");
+    assert!(!is_dirty(&wb, cx));
+    keys("cmd-shift-z", cx);
+    assert!(is_dirty(&wb, cx));
+}
+
+#[gpui::test]
+fn edit_commands_delete_and_indent(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("foo bar baz\n", cx);
+    keys("cmd-right backspace", cx);
+    assert_eq!(text_of(&view, cx), "foo bar ba\n");
+    keys("alt-backspace", cx);
+    assert_eq!(text_of(&view, cx), "foo bar \n");
+    keys("cmd-left delete", cx);
+    assert_eq!(text_of(&view, cx), "oo bar \n");
+    keys("alt-delete", cx);
+    assert_eq!(text_of(&view, cx), " bar \n");
+    keys("right ctrl-k", cx);
+    assert_eq!(text_of(&view, cx), " \n");
+    // To the next tab stop.
+    keys("tab", cx);
+    assert_eq!(text_of(&view, cx), "    \n");
+    keys("shift-tab", cx);
+    assert_eq!(text_of(&view, cx), "\n");
+    input("ab", cx);
+    keys("left ctrl-o", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\n");
+    assert_eq!(cursor(&view, cx), pt(0, 1));
+    keys("cmd-backspace", cx);
+    assert_eq!(text_of(&view, cx), "\nb\n");
+}
+
+#[gpui::test]
+fn ime_composition_is_one_step(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("x\n", cx);
+    keys("cmd-right", cx);
+    view.update_in(cx, |v, window, cx| {
+        v.replace_and_mark_text_in_range(None, "a", None, window, cx);
+        assert_eq!(v.marked_text_range(window, cx), Some(1..2));
+        v.replace_and_mark_text_in_range(None, "ă", None, window, cx);
+        v.replace_and_mark_text_in_range(None, "ằ", None, window, cx);
+        assert_eq!(v.marked_text_range(window, cx), Some(1..2));
+        let sel = v.selected_text_range(false, window, cx).unwrap();
+        assert_eq!(sel.range, 2..2);
+        v.replace_text_in_range(None, "ằ", window, cx);
+        assert_eq!(v.marked_text_range(window, cx), None);
+    });
+    settle(cx);
+    assert_eq!(text_of(&view, cx), "xằ\n");
+    assert_eq!(cursor(&view, cx), pt(0, 1 + "ằ".len() as u32));
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "x\n");
+}
+
+#[gpui::test]
+fn ime_composes_at_every_cursor(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("a\nb\n", cx);
+    view.update(cx, |v, cx| v.set_selections(cursors(&[1, 3]), false, cx));
+    view.update_in(cx, |v, window, cx| {
+        v.replace_and_mark_text_in_range(None, "d", None, window, cx);
+        v.replace_and_mark_text_in_range(None, "đ", None, window, cx);
+        // The primary's range, in UTF-16.
+        assert_eq!(v.marked_text_range(window, cx), Some(1..2));
+        v.replace_text_in_range(None, "đ", window, cx);
+    });
+    settle(cx);
+    assert_eq!(text_of(&view, cx), "ađ\nbđ\n");
+    let heads: Vec<usize> = view.read_with(cx, |v, _| {
+        v.selections().all().iter().map(|s| s.head).collect()
+    });
+    assert_eq!(heads, [3, 7]);
+}
+
+#[gpui::test]
+fn undo_cancels_composition(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("x\n", cx);
+    view.update_in(cx, |v, window, cx| {
+        v.replace_and_mark_text_in_range(None, "a", None, window, cx);
+    });
+    settle(cx);
+    assert_eq!(text_of(&view, cx), "ax\n");
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "x\n");
+    view.update_in(cx, |v, window, cx| {
+        assert_eq!(v.marked_text_range(window, cx), None);
+    });
+}
+
+#[gpui::test]
+fn cut_paste_whole_line(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("one\ntwo\n", cx);
+    keys("right cmd-x", cx);
+    assert_eq!(text_of(&view, cx), "two\n");
+    let clip = cx.read_from_clipboard().expect("cut wrote the clipboard");
+    assert_eq!(clip.text().as_deref(), Some("one\n"));
+    // Pasted with an empty cursor, a whole line goes above the cursor's.
+    keys("right cmd-v", cx);
+    assert_eq!(text_of(&view, cx), "one\ntwo\n");
+    assert_eq!(cursor(&view, cx), pt(1, 1));
+    // Copy with an empty selection copies the line too.
+    keys("cmd-c down cmd-v", cx);
+    assert_eq!(text_of(&view, cx), "one\ntwo\ntwo\n");
+}
+
+#[gpui::test]
+fn copy_from_several_selections_writes_pieces(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("ab\ncd\n", cx);
+    let set = SelectionSet::from_selections(
+        vec![
+            Selection {
+                id: 0,
+                anchor: 0,
+                head: 1,
+                goal: Goal::None,
+            },
+            Selection {
+                id: 1,
+                anchor: 3,
+                head: 4,
+                goal: Goal::None,
+            },
+        ],
+        0,
+        true,
+    );
+    view.update(cx, |v, cx| v.set_selections(set, false, cx));
+    keys("cmd-c", cx);
+    let clip = cx.read_from_clipboard().unwrap();
+    assert_eq!(clip.text().as_deref(), Some("a\nc"));
+    let meta: serde_json::Value = serde_json::from_str(clip.metadata().unwrap()).unwrap();
+    assert_eq!(
+        meta,
+        serde_json::json!({ "pieces": ["a", "c"], "wholeLine": false })
+    );
+    // Pasted at two cursors, each gets its piece.
+    keys("right", cx);
+    view.update(cx, |v, cx| v.set_selections(cursors(&[2, 5]), false, cx));
+    keys("cmd-v", cx);
+    assert_eq!(text_of(&view, cx), "aba\ncdc\n");
+}
+
+#[gpui::test]
+fn enter_keeps_indent(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("    foo\n", cx);
+    keys("cmd-right enter", cx);
+    assert_eq!(text_of(&view, cx), "    foo\n    \n");
+    assert_eq!(cursor(&view, cx), pt(1, 4));
+    input("bar", cx);
+    assert_eq!(text_of(&view, cx), "    foo\n    bar\n");
+}
+
+#[gpui::test]
+fn readonly_view_ignores_typing(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, _view, cx) = editor("abc\n", cx);
+    let docs = documents(&wb, cx);
+    let preview = docs.update(cx, |d, cx| {
+        d.open_preview(Arc::from(Path::new("file.txt")), cx)
+    });
+    settle(cx);
+    assert!(preview.read_with(cx, |v, _| v.is_passive()));
+    // The preview is in no window: the input reaches it directly.
+    cx.update(|window, cx| {
+        preview.update(cx, |v, cx| {
+            v.replace_text_in_range(None, "x", window, cx);
+            v.replace_and_mark_text_in_range(None, "y", None, window, cx);
+            assert_eq!(v.marked_text_range(window, cx), None);
+        })
+    });
+    settle(cx);
+    assert_eq!(text_of(&preview, cx), "abc\n");
+    assert!(!is_dirty(&wb, cx));
+}
+
+#[gpui::test]
+fn vim_normal_mode_does_not_type(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "vim.enabled": true }"#));
+    let (_dir, wb, view, cx) = editor("abc\n", cx);
+    keys("backspace tab enter", cx);
+    view.update_in(cx, |v, window, cx| {
+        v.replace_text_in_range(None, "x", window, cx)
+    });
+    settle(cx);
+    assert_eq!(text_of(&view, cx), "abc\n");
+    assert!(!is_dirty(&wb, cx));
+}
+
+#[gpui::test]
+fn cursor_undo_restores_previous_selection(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, view, cx) = editor("abcd\n", cx);
+    keys("right right shift-right", cx);
+    keys("cmd-u", cx);
+    assert_eq!(selection(&view, cx), None);
+    assert_eq!(cursor(&view, cx), pt(0, 2));
+    keys("cmd-u", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 1));
+    run(&wb, "cursorRedo", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 2));
+    run(&wb, "cursorRedo", cx);
+    assert_eq!(selection(&view, cx), Some(pt(0, 2)..pt(0, 3)));
+    // An edit clears the stack.
+    input("x", cx);
+    keys("cmd-u", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 3));
+}
+
+/// A keystroke in a 10k-line Rust file reparses incrementally: the items
+/// below the edit keep their tree-sitter nodes.
+#[gpui::test]
+fn typing_reparses_incrementally(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = TempDir::new().unwrap();
+    let text = "fn f(x: u32) -> u32 { x }\n".repeat(10_000);
+    fs::write(dir.path().join("big.rs"), &text).unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("big.rs")), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+    let view = active_view(&wb, cx);
+    focus(&view, cx);
+    let last_item = |syntax: &lucerna_syntax::SyntaxState| {
+        let root = syntax.tree().expect("parsed").root_node();
+        root.child(root.child_count() - 1).unwrap().id()
+    };
+    // Kept alive, so no new node can reuse an old node's address.
+    let before = view
+        .read_with(cx, |v, _| v.syntax().cloned())
+        .expect("parsed");
+    // `fn gf(…`: a valid edit, so no error recovery spreads it.
+    keys("right right right", cx);
+    input("g", cx);
+    let after = view
+        .read_with(cx, |v, _| v.syntax().cloned())
+        .expect("parsed");
+    let tree = after.tree().unwrap();
+    assert!(!tree.root_node().has_changes(), "the new text was parsed");
+    assert_eq!(last_item(&after), last_item(&before), "reused, not rebuilt");
 }

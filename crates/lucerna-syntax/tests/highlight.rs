@@ -348,3 +348,57 @@ fn edited_tree_shifts_highlights_after_insert() {
         "`b` is a function name on row 2: {spans:?}"
     );
 }
+
+/// The id of the last top-level node of `state`'s tree.
+fn last_item_id(state: &SyntaxState) -> usize {
+    let root = state.tree().expect("parsed").root_node();
+    root.child(root.child_count() - 1).expect("an item").id()
+}
+
+/// A keystroke near the top of a 10k-line file reparses incrementally:
+/// the items below the edit keep their nodes (tree-sitter reuses them),
+/// where a from-scratch parse builds new ones.
+#[test]
+fn reparse_reuses_untouched_subtrees() {
+    let text = "fn f(x: u32) -> u32 { x }\n".repeat(10_000);
+    let mut buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
+    let old = buffer.snapshot();
+    let mut state = SyntaxState::new(language("a.rs"), bundled()).unwrap();
+    assert_eq!(state.parse(&old, None), ParseOutcome::Done);
+    let before = last_item_id(&state);
+    let patch = buffer.edit([(3..3, "g".into())]);
+    let new = buffer.snapshot();
+
+    let mut edited = state.edited(&old, &new, &patch).fork();
+    assert_eq!(edited.reparse(&new, None, None), ParseOutcome::Done);
+    let tree = edited.tree().unwrap();
+    assert!(!tree.root_node().has_changes(), "the edit was parsed");
+    assert_eq!(last_item_id(&edited), before, "reused, not rebuilt");
+
+    let (full, _) = parsed("a.rs", &new.text_for_range(0..new.len_bytes()));
+    assert_ne!(last_item_id(&full), before, "a full parse rebuilds it");
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        full.tree().unwrap().root_node().to_sexp(),
+        "the same tree as a full parse"
+    );
+}
+
+/// A set cancel flag stops a parse like a spent budget: the old tree stays.
+#[test]
+fn cancelled_reparse_keeps_the_old_tree() {
+    let text = "fn f() {}\n".repeat(1000);
+    let (mut state, snap) = parsed("a.rs", &text);
+    let before = last_item_id(&state);
+    let cancel = std::sync::atomic::AtomicBool::new(true);
+    assert_eq!(
+        state.reparse(&snap, None, Some(&cancel)),
+        ParseOutcome::TimedOut
+    );
+    assert_eq!(last_item_id(&state), before);
+    cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        state.reparse(&snap, None, Some(&cancel)),
+        ParseOutcome::Done
+    );
+}

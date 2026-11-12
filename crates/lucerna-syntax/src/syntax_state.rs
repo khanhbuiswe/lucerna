@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
 use std::ops::{ControlFlow, Range};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use lucerna_text::{BufferSnapshot, Patch};
@@ -139,8 +140,41 @@ impl SyntaxState {
     /// parse that runs out keeps the previous tree and layers; a child parse
     /// that runs out keeps the new root and the layers built so far.
     pub fn parse(&mut self, snapshot: &BufferSnapshot, budget: Option<Duration>) -> ParseOutcome {
-        let deadline = budget.map(|budget| Instant::now() + budget);
-        self.parse_bounded(snapshot, deadline, None)
+        let limit = Limit {
+            deadline: budget.map(|budget| Instant::now() + budget),
+            cancel: None,
+        };
+        self.parse_bounded(snapshot, false, limit, None)
+    }
+
+    /// Like [`SyntaxState::parse`], but incremental: the current tree is
+    /// given to tree-sitter as the old tree, so the parts of it no edit
+    /// touched are reused. The tree must describe `snapshot` once edited:
+    /// it comes from [`SyntaxState::edited`] (or [`SyntaxState::fork`] of
+    /// one), or from a parse of this same text. Without a tree it is a
+    /// full parse. Setting `cancel` stops the parse as if out of time, so
+    /// a newer edit can abandon a background parse of older text.
+    pub fn reparse(
+        &mut self,
+        snapshot: &BufferSnapshot,
+        budget: Option<Duration>,
+        cancel: Option<&AtomicBool>,
+    ) -> ParseOutcome {
+        let limit = Limit {
+            deadline: budget.map(|budget| Instant::now() + budget),
+            cancel,
+        };
+        self.parse_bounded(snapshot, true, limit, None)
+    }
+
+    /// A new state (with its own parser) holding the same tree and no
+    /// injected layers: what [`SyntaxState::reparse`] starts from while
+    /// this one stays on screen.
+    pub fn fork(&self) -> SyntaxState {
+        let mut fork = SyntaxState::new(self.language.clone(), self.registry.clone())
+            .expect("the language of an existing state loaded already");
+        fork.tree = self.tree.clone();
+        fork
     }
 
     /// Like an unbudgeted [`SyntaxState::parse`], but the layer build stops
@@ -152,16 +186,23 @@ impl SyntaxState {
         snapshot: &BufferSnapshot,
         max_children: usize,
     ) -> ParseOutcome {
-        self.parse_bounded(snapshot, None, Some(max_children))
+        self.parse_bounded(snapshot, false, Limit::default(), Some(max_children))
     }
 
+    /// With `incremental`, the current tree is the old tree of the parse.
     fn parse_bounded(
         &mut self,
         snapshot: &BufferSnapshot,
-        deadline: Option<Instant>,
+        incremental: bool,
+        limit: Limit,
         max_children: Option<usize>,
     ) -> ParseOutcome {
-        let Some(tree) = parse_snapshot(&mut self.parser, snapshot, deadline) else {
+        let old = if incremental {
+            self.tree.as_ref()
+        } else {
+            None
+        };
+        let Some(tree) = parse_snapshot(&mut self.parser, snapshot, old, limit) else {
             return ParseOutcome::TimedOut;
         };
         let (layers, outcome) = injection::build_layers(
@@ -170,7 +211,7 @@ impl SyntaxState {
             snapshot,
             &self.registry,
             &mut self.layer_parsers,
-            deadline,
+            limit,
             max_children,
         );
         self.layers = layers;
@@ -350,13 +391,34 @@ fn resolve(mut spans: Vec<RankedSpan>) -> Vec<HighlightSpan> {
         .collect()
 }
 
-/// Parses all of `snapshot` (within the parser's included ranges). `None`
-/// once `deadline` passes; the parser is then reset, so the next call
-/// starts afresh rather than resuming.
+/// When a parse gives up: past a deadline, or once a cancel flag is set.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Limit<'a> {
+    pub(crate) deadline: Option<Instant>,
+    pub(crate) cancel: Option<&'a AtomicBool>,
+}
+
+impl Limit<'_> {
+    /// Whether the parse may give up at all.
+    pub(crate) fn is_bounded(&self) -> bool {
+        self.deadline.is_some() || self.cancel.is_some()
+    }
+
+    pub(crate) fn reached(&self) -> bool {
+        self.deadline.is_some_and(|d| Instant::now() >= d)
+            || self.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+    }
+}
+
+/// Parses all of `snapshot` (within the parser's included ranges), reusing
+/// `old` (already edited to the text) where nothing changed. `None` once
+/// `limit` is reached; the parser is then reset, so the next call starts
+/// afresh rather than resuming.
 pub(crate) fn parse_snapshot(
     parser: &mut Parser,
     snapshot: &BufferSnapshot,
-    deadline: Option<Instant>,
+    old: Option<&Tree>,
+    limit: Limit,
 ) -> Option<Tree> {
     let len = snapshot.len_bytes();
     let mut read = |offset: usize, _: tree_sitter::Point| -> &str {
@@ -366,19 +428,22 @@ pub(crate) fn parse_snapshot(
             snapshot.chunks_in_range(offset..len).next().unwrap_or("")
         }
     };
-    let tree = match deadline {
-        None => parser.parse_with_options(&mut read, None, None),
-        Some(deadline) => {
-            let mut progress = |_: &ParseState| {
-                if Instant::now() >= deadline {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
-            };
-            let options = ParseOptions::new().progress_callback(&mut progress);
-            parser.parse_with_options(&mut read, None, Some(options))
-        }
+    // Small parses may finish before the first progress callback.
+    if limit.reached() {
+        return None;
+    }
+    let tree = if limit.is_bounded() {
+        let mut progress = |_: &ParseState| {
+            if limit.reached() {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let options = ParseOptions::new().progress_callback(&mut progress);
+        parser.parse_with_options(&mut read, old, Some(options))
+    } else {
+        parser.parse_with_options(&mut read, old, None)
     };
     if tree.is_none() {
         parser.reset();

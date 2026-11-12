@@ -16,6 +16,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use gpui::{
@@ -46,6 +47,16 @@ pub enum DocState {
     Error(LoadError),
     /// The file is gone from disk; the last text stays visible.
     Deleted,
+}
+
+/// A change for the view that made it, which updates itself (see
+/// [`Documents::apply_edits_from_view`]): `patch` turned `old` into
+/// `snapshot`, and `syntax` is the document's syntax after it.
+pub(crate) struct ViewUpdate {
+    pub(crate) old: BufferSnapshot,
+    pub(crate) snapshot: BufferSnapshot,
+    pub(crate) patch: Patch,
+    pub(crate) syntax: Option<Arc<SyntaxState>>,
 }
 
 /// What the status bar shows for the active document.
@@ -176,6 +187,13 @@ struct Document {
     /// Another change arrived while `job` ran: reload once more after it.
     reload_again: bool,
     parse: Option<Task<()>>,
+    /// Set to stop the background parse of `parse` once newer text makes
+    /// it useless (dropping the task cannot stop a running thread).
+    parse_cancel: Option<Arc<AtomicBool>>,
+    /// The view an edit or undo is coming from, while it runs: that view
+    /// is in the middle of an update, so it takes the change itself (see
+    /// [`Documents::apply_edits_from_view`]).
+    skip_view: Option<EntityId>,
     /// Where to put the cursor once the text is loaded.
     pending_go_to: Option<Point>,
     /// [`DocumentEvent::Opened`] was sent.
@@ -188,7 +206,18 @@ struct Document {
 
 impl Document {
     fn views(&self) -> impl Iterator<Item = Entity<CodeView>> + '_ {
-        self.views.iter().filter_map(WeakEntity::upgrade)
+        self.views
+            .iter()
+            .filter(|v| Some(v.entity_id()) != self.skip_view)
+            .filter_map(WeakEntity::upgrade)
+    }
+
+    /// Drops the parse in flight and stops its background work.
+    fn cancel_parse(&mut self) {
+        self.parse = None;
+        if let Some(cancel) = self.parse_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
     }
 
     fn language_id(&self) -> Option<Arc<str>> {
@@ -332,6 +361,8 @@ impl Documents {
                         job: None,
                         reload_again: false,
                         parse: None,
+                        parse_cancel: None,
+                        skip_view: None,
                         pending_go_to: self.pending_go_to.remove(&key),
                         announced: false,
                         stop_requested,
@@ -369,12 +400,12 @@ impl Documents {
             }
             if doc.language.is_none() {
                 // Cancels a parse in flight with the old language.
-                doc.parse = None;
+                doc.cancel_parse();
                 clear_syntax(doc, cx);
             } else {
                 // In the background: a swap must not parse every open file
                 // on the UI thread. The old syntax stays shown meanwhile.
-                self.parse(&key, false, cx);
+                self.parse(&key, false, false, cx);
             }
         }
         cx.notify();
@@ -467,6 +498,59 @@ impl Documents {
         Some(patch)
     }
 
+    /// [`Documents::apply_edits`] for an edit made by `view` while it is
+    /// being updated (typing, an edit command): every other view is
+    /// updated here, and `view` gets what it needs to update itself.
+    pub(crate) fn apply_edits_from_view(
+        &mut self,
+        path: &Path,
+        edits: Edits,
+        selections_before: Option<SelectionsToken>,
+        selections_after: Option<SelectionsToken>,
+        view: EntityId,
+        cx: &mut Context<Self>,
+    ) -> Option<ViewUpdate> {
+        let key = self.key(path);
+        let old = self.docs.get(&key)?.buffer.as_ref()?.snapshot();
+        self.docs.get_mut(&key)?.skip_view = Some(view);
+        let patch = self.apply_edits(path, edits, selections_before, selections_after, view, cx);
+        let doc = self.docs.get_mut(&key)?;
+        doc.skip_view = None;
+        Some(ViewUpdate {
+            old,
+            snapshot: doc.snapshot.clone()?,
+            patch: patch?,
+            syntax: doc.syntax.clone(),
+        })
+    }
+
+    /// [`Documents::undo`] (or, without `undo`, [`Documents::redo`]) asked
+    /// for by `view` while it is being updated, as in
+    /// [`Documents::apply_edits_from_view`]. `None` when there is nothing
+    /// to undo; else the change for `view` and the step's selections.
+    pub(crate) fn undo_from_view(
+        &mut self,
+        path: &Path,
+        undo: bool,
+        view: EntityId,
+        cx: &mut Context<Self>,
+    ) -> Option<(ViewUpdate, Option<SelectionsToken>)> {
+        let key = self.key(path);
+        let old = self.docs.get(&key)?.buffer.as_ref()?.snapshot();
+        self.docs.get_mut(&key)?.skip_view = Some(view);
+        let result = self.undo_redo_patch(path, undo, cx);
+        let doc = self.docs.get_mut(&key)?;
+        doc.skip_view = None;
+        let (patch, selections) = result?;
+        let update = ViewUpdate {
+            old,
+            snapshot: doc.snapshot.clone()?,
+            patch,
+            syntax: doc.syntax.clone(),
+        };
+        Some((update, selections))
+    }
+
     /// Ends the current undo step of the document at `path`: the next
     /// edit starts a new one.
     pub fn push_stop(&mut self, path: &Path) {
@@ -494,6 +578,16 @@ impl Documents {
         undo: bool,
         cx: &mut Context<Self>,
     ) -> Option<Option<SelectionsToken>> {
+        self.undo_redo_patch(path, undo, cx)
+            .map(|(_, selections)| selections)
+    }
+
+    fn undo_redo_patch(
+        &mut self,
+        path: &Path,
+        undo: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<(Patch, Option<SelectionsToken>)> {
         let key = self.key(path);
         let buffer = self.docs.get_mut(&key)?.buffer.as_mut()?;
         let old = buffer.snapshot();
@@ -501,7 +595,7 @@ impl Documents {
         let result = if undo { buffer.undo() } else { buffer.redo() }?;
         self.commit_edit(&key, old, &result.patch, was_dirty, None, cx);
         cx.notify();
-        Some(result.selections)
+        Some((result.patch, result.selections))
     }
 
     /// Whether the text of the document at `path` differs from the file
@@ -569,7 +663,9 @@ impl Documents {
             });
         }
         if !patch.is_empty() {
-            self.parse(key, true, cx);
+            // From the edited tree: tree-sitter reuses what the edit did
+            // not touch.
+            self.parse(key, true, true, cx);
         }
     }
 
@@ -898,7 +994,7 @@ impl Documents {
         };
         let again = std::mem::take(&mut doc.reload_again);
         if parse {
-            self.parse(key, true, cx);
+            self.parse(key, true, false, cx);
         }
         if again {
             self.start_job(key, cx);
@@ -981,8 +1077,17 @@ impl Documents {
 
     /// Parses the current text: within [`SYNC_PARSE_BUDGET`] here when
     /// `try_sync`, else (or when that times out) to completion on a
-    /// background thread. Large files are not parsed.
-    fn parse(&mut self, key: &Arc<Path>, try_sync: bool, cx: &mut Context<Self>) {
+    /// background thread. Large files are not parsed. With `incremental`
+    /// (after an edit), the parse starts from the document's syntax, whose
+    /// tree was edited to the text, so tree-sitter reuses what the edit
+    /// did not touch. A parse of older text in flight is cancelled.
+    fn parse(
+        &mut self,
+        key: &Arc<Path>,
+        try_sync: bool,
+        incremental: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(doc) = self.docs.get_mut(key) else {
             return;
         };
@@ -997,7 +1102,7 @@ impl Documents {
             .unwrap_or(300_000);
         // A parse of older text is cancelled; its syntax stays shown (see
         // `finish_job`) until this one lands.
-        doc.parse = None;
+        doc.cancel_parse();
         let (Some(language), Some(buffer)) = (doc.language.clone(), doc.buffer.as_ref()) else {
             return;
         };
@@ -1007,6 +1112,12 @@ impl Documents {
         }
         let snapshot = buffer.snapshot();
         let revision = doc.revision;
+        // Only a tree of the same language, edited to this text, is a seed.
+        let mut seed = doc
+            .syntax
+            .as_ref()
+            .filter(|s| incremental && Arc::ptr_eq(s.language(), &language))
+            .and_then(|s| catch_panic("fork syntax", || s.fork()).ok());
         // A WASM grammar's first load compiles a module, far over the sync
         // budget: it happens in the background job. Otherwise, on the UI
         // thread, a panic in the grammar must not take the app down (spec
@@ -1015,9 +1126,13 @@ impl Documents {
         // time out, so it loads here too.
         let mut started = None;
         if try_sync && language.grammar_ready() {
+            let seed = seed.take();
             let sync = catch_panic("parse", || {
-                let mut syntax = SyntaxState::new(language.clone(), registry.clone())?;
-                let outcome = syntax.parse(&snapshot, Some(SYNC_PARSE_BUDGET));
+                let mut syntax = match seed {
+                    Some(seed) => seed,
+                    None => SyntaxState::new(language.clone(), registry.clone())?,
+                };
+                let outcome = syntax.reparse(&snapshot, Some(SYNC_PARSE_BUDGET), None);
                 Ok::<_, GrammarError>((syntax, outcome))
             });
             match sync {
@@ -1038,12 +1153,16 @@ impl Documents {
                 }
             }
         }
+        let started = started.or(seed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        doc.parse_cancel = Some(cancel.clone());
         let work = spawn_contained(cx, move || {
             let mut syntax = match started {
                 Some(syntax) => syntax,
                 None => SyntaxState::new(language, registry)?,
             };
-            syntax.parse(&snapshot, None);
+            // Cancelled: newer text is being parsed; this result is dropped.
+            syntax.reparse(&snapshot, None, Some(&cancel));
             Ok::<_, GrammarError>(syntax)
         });
         let key = key.clone();
@@ -1057,6 +1176,7 @@ impl Documents {
                     return;
                 }
                 doc.parse = None;
+                doc.parse_cancel = None;
                 match syntax {
                     Ok(Ok(syntax)) => {
                         set_syntax(doc, Arc::new(syntax), cx);
