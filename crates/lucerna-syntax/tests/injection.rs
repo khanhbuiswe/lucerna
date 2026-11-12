@@ -438,3 +438,37 @@ fn budget_bounds_child_layers() {
     assert_eq!(state.parse(&snap, None), ParseOutcome::Done);
     assert_eq!(state.layer_count(), all);
 }
+
+#[test]
+fn enclosing_nodes_includes_injected_layer_nodes() {
+    let text = "<script>let x = foo(1);</script>";
+    let (state, _) = parsed("html", text);
+    let one = text.find('1').unwrap();
+    let nodes = state.enclosing_nodes(one..one + 1);
+    // Innermost first and without duplicates.
+    assert!(
+        nodes.windows(2).all(|w| w[0].len() <= w[1].len()),
+        "{nodes:?}"
+    );
+    let mut dedup = nodes.clone();
+    dedup.dedup();
+    assert_eq!(nodes, dedup);
+    // Nodes from the JavaScript layer: `(1)` and `foo(1)`.
+    let args = text.find("(1)").unwrap();
+    assert!(nodes.contains(&(args..args + 3)), "{nodes:?}");
+    let call = text.find("foo").unwrap();
+    assert!(nodes.contains(&(call..args + 3)), "{nodes:?}");
+    // Nodes from the HTML root: the whole `<script>` element.
+    assert!(nodes.contains(&(0..text.len())), "{nodes:?}");
+}
+
+#[test]
+fn enclosing_nodes_excludes_range_itself_unless_empty() {
+    let text = "fn a() { foo(bar); }";
+    let (state, _) = parsed("rust", text);
+    let bar = text.find("bar").unwrap();
+    let nodes = state.enclosing_nodes(bar..bar + 3);
+    assert!(!nodes.contains(&(bar..bar + 3)), "{nodes:?}");
+    let nodes = state.enclosing_nodes(bar..bar);
+    assert_eq!(nodes[0], bar..bar + 3);
+}

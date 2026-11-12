@@ -20,3 +20,4 @@ pub mod comment;
 mod indent;
 pub mod indentation;
 pub mod lines;
+pub mod smart_select;

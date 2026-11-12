@@ -121,6 +121,8 @@
   { "key": "cmd+[", "command": "editor.action.outdentLines", "when": "editorTextFocus && !editorReadonly" },
   { "key": "ctrl+j", "command": "editor.action.joinLines", "when": "editorTextFocus && !editorReadonly" },
   { "key": "cmd+k cmd+x", "command": "editor.action.trimTrailingWhitespace", "when": "editorTextFocus && !editorReadonly" },
+  { "key": "ctrl+shift+cmd+right", "command": "editor.action.smartSelect.expand", "when": "editorTextFocus" },
+  { "key": "ctrl+shift+cmd+left", "command": "editor.action.smartSelect.shrink", "when": "editorTextFocus" },
   { "key": "cmd+s", "command": "workbench.action.files.save" },
   { "key": "alt+cmd+s", "command": "workbench.action.files.saveAll" },
   { "key": "cmd+k s", "command": "workbench.action.files.saveWithoutFormatting" },

@@ -287,6 +287,11 @@ pub struct CodeView {
     /// `cursorUndo`: the selections before each cursor move, newest last;
     /// at most [`CURSOR_HISTORY`]. Any edit clears it and `cursor_redo`.
     cursor_undo: VecDeque<SelectionSet>,
+    /// The selections before each smart select expansion, to shrink back
+    /// to; any other selection change or edit clears it.
+    smart_select_stack: Vec<SelectionSet>,
+    /// Set while expand / shrink apply their selections.
+    smart_selecting: bool,
     cursor_redo: Vec<SelectionSet>,
     /// The pairs typing auto-closed (open start .. close end): typing a
     /// closer moves over theirs and Backspace deletes an empty one. Each
@@ -392,6 +397,8 @@ impl CodeView {
             suppress_stops: false,
             marked: None,
             cursor_undo: VecDeque::new(),
+            smart_select_stack: Vec::new(),
+            smart_selecting: false,
             cursor_redo: Vec::new(),
             autoclose_regions: Vec::new(),
             brackets: None,
@@ -504,6 +511,7 @@ impl CodeView {
         self.last_kind = EditKind::Other;
         self.cursor_undo.clear();
         self.cursor_redo.clear();
+        self.smart_select_stack.clear();
         self.autoclose_regions.clear();
         self.folds.clear();
         self.pending_center = None;
@@ -1045,6 +1053,9 @@ impl CodeView {
     ) {
         set.clamp(&self.snapshot);
         let old = std::mem::replace(&mut self.selections, set);
+        if !self.smart_selecting {
+            self.smart_select_stack.clear();
+        }
         if change == SelectionChange::Move && old != self.selections {
             if self.cursor_undo.len() == CURSOR_HISTORY {
                 self.cursor_undo.pop_front();
@@ -1115,6 +1126,46 @@ impl CodeView {
         if let Some(set) = self.contained("cursor motion", f, cx) {
             self.set_selections(set, true, cx);
         }
+    }
+
+    /// `editor.action.smartSelect.expand`: grows every selection to the
+    /// next word, syntax node, line or the whole text.
+    pub fn smart_select_expand(&mut self, cx: &mut Context<Self>) {
+        let syntax = self.syntax.clone();
+        let next = lucerna_editor::smart_select::expand(
+            &self.snapshot,
+            syntax.as_deref(),
+            &self.selections,
+            &self.config.word_separators,
+        );
+        if next == self.selections {
+            return;
+        }
+        let mut stack = std::mem::take(&mut self.smart_select_stack);
+        stack.push(self.selections.clone());
+        self.smart_selecting = true;
+        self.set_selections(next, true, cx);
+        self.smart_selecting = false;
+        self.smart_select_stack = stack;
+    }
+
+    /// `editor.action.smartSelect.shrink`: back to the selections before
+    /// the last expansion; nothing when there is none.
+    pub fn smart_select_shrink(&mut self, cx: &mut Context<Self>) {
+        let Some(previous) = self.smart_select_stack.pop() else {
+            return;
+        };
+        let stack = std::mem::take(&mut self.smart_select_stack);
+        self.smart_selecting = true;
+        self.set_selections(previous, true, cx);
+        self.smart_selecting = false;
+        self.smart_select_stack = stack;
+    }
+
+    /// How many expansions `shrink` can undo, for tests.
+    #[doc(hidden)]
+    pub fn smart_select_depth(&self) -> usize {
+        self.smart_select_stack.len()
     }
 
     /// Selects the whole text.

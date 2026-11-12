@@ -126,6 +126,15 @@ mod tests {
         }
     }
 
+    fn ctrl_shift_cmd() -> Modifiers {
+        Modifiers {
+            control: true,
+            shift: true,
+            platform: true,
+            ..Modifiers::none()
+        }
+    }
+
     fn ctrl_shift() -> Modifiers {
         Modifiers {
             control: true,
@@ -267,6 +276,11 @@ mod tests {
             (event("]", None, cmd()), "cmd+]"),
             (event("[", None, cmd()), "cmd+["),
             (event("j", None, ctrl()), "ctrl+j"),
+            (
+                event("right", None, ctrl_shift_cmd()),
+                "ctrl+shift+cmd+right",
+            ),
+            (event("left", None, ctrl_shift_cmd()), "ctrl+shift+cmd+left"),
         ]);
         for (digit, binding) in [
             ("1", "cmd+1"),

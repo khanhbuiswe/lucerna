@@ -221,6 +221,16 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register("cursorRedo", "Cursor Redo", |wb, _, _, cx| {
         with_view(wb, cx, |v, cx| v.cursor_undo(false, cx))
     });
+    commands.register(
+        "editor.action.smartSelect.expand",
+        "Expand Selection",
+        |wb, _, _, cx| with_view(wb, cx, CodeView::smart_select_expand),
+    );
+    commands.register(
+        "editor.action.smartSelect.shrink",
+        "Shrink Selection",
+        |wb, _, _, cx| with_view(wb, cx, CodeView::smart_select_shrink),
+    );
     commands.register("editor.action.clipboardCutAction", "Cut", |wb, _, _, cx| {
         with_view(wb, cx, CodeView::cut)
     });

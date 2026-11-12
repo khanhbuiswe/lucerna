@@ -914,3 +914,40 @@ fn cmd_shift_k_deletes_line(cx: &mut TestAppContext) {
     run(&wb, "editor.action.trimTrailingWhitespace", cx);
     assert_eq!(text_of(&view, cx), "a\n  c\nx");
 }
+
+#[gpui::test]
+fn smart_select_expands_shrinks_and_clears_on_edit(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, view, cx) = editor_file("a.rs", "fn a() { let x = foo(bar); }\n", cx);
+    settle(cx);
+    let at = "fn a() { let x = foo(b".len();
+    view.update(cx, |v, cx| v.set_selections(cursors(&[at]), false, cx));
+    let selected = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |v, _| {
+            let r = v.selections().primary().range();
+            v.snapshot().text_for_range(r)
+        })
+    };
+    run(&wb, "editor.action.smartSelect.expand", cx);
+    assert_eq!(selected(cx), "bar");
+    keys("ctrl-shift-cmd-right", cx);
+    assert_eq!(selected(cx), "(bar)");
+    keys("ctrl-shift-cmd-left", cx);
+    assert_eq!(selected(cx), "bar");
+    keys("ctrl-shift-cmd-left", cx);
+    assert_eq!(selected(cx), "");
+    // Nothing left to shrink.
+    keys("ctrl-shift-cmd-left", cx);
+    assert_eq!(selected(cx), "");
+    // A cursor move not made by expand clears the stack.
+    run(&wb, "editor.action.smartSelect.expand", cx);
+    run(&wb, "editor.action.smartSelect.expand", cx);
+    assert_eq!(view.read_with(cx, |v, _| v.smart_select_depth()), 2);
+    keys("right", cx);
+    assert_eq!(view.read_with(cx, |v, _| v.smart_select_depth()), 0);
+    // So does an edit.
+    run(&wb, "editor.action.smartSelect.expand", cx);
+    assert_eq!(view.read_with(cx, |v, _| v.smart_select_depth()), 1);
+    input("z", cx);
+    assert_eq!(view.read_with(cx, |v, _| v.smart_select_depth()), 0);
+}

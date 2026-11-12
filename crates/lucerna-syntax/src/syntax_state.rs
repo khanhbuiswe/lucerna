@@ -148,6 +148,44 @@ impl SyntaxState {
         Some(query.symbols(tree, snapshot))
     }
 
+    /// The byte ranges of the named nodes that strictly contain `range`
+    /// (or equal it when `range` is empty), innermost first, without
+    /// duplicates. Every layer with text in `range` counts, so injected
+    /// code contributes its own nodes. Empty without a tree.
+    pub fn enclosing_nodes(&self, range: Range<usize>) -> Vec<Range<usize>> {
+        let mut out: Vec<Range<usize>> = Vec::new();
+        let mut collect = |tree: &Tree| {
+            let root = tree.root_node();
+            let Some(mut node) = root.descendant_for_byte_range(range.start, range.end) else {
+                return;
+            };
+            loop {
+                let r = node.byte_range();
+                if node.is_named()
+                    && r.start <= range.start
+                    && r.end >= range.end
+                    && (r != range || range.is_empty())
+                {
+                    out.push(r);
+                }
+                match node.parent() {
+                    Some(parent) => node = parent,
+                    None => break,
+                }
+            }
+        };
+        if let Some(tree) = &self.tree {
+            collect(tree);
+        }
+        let probe = range.start..range.end.max(range.start + 1);
+        for layer in self.layers.intersecting(&probe) {
+            collect(&layer.tree);
+        }
+        out.sort_by_key(|r| (r.end - r.start, r.start));
+        out.dedup();
+        out
+    }
+
     /// The current tree, if a parse has completed.
     pub fn tree(&self) -> Option<&Tree> {
         self.tree.as_ref()
