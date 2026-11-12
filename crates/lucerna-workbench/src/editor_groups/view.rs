@@ -764,10 +764,7 @@ pub(crate) fn path_bar_text(path: &Path, root: Option<&Path>, home: Option<&Path
     {
         return rel.display().to_string();
     }
-    if let Some(rel) = home.and_then(|home| path.strip_prefix(home).ok()) {
-        return Path::new("~").join(rel).display().to_string();
-    }
-    path.display().to_string()
+    crate::workspace_state::tilde_path(path, home)
 }
 
 /// Shown in a group with no tabs: the app name and the shortcuts to find

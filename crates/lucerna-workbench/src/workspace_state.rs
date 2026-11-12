@@ -138,17 +138,32 @@ pub fn load_state(path: &Path) -> Option<WorkspaceState> {
 /// Writes `s` to a temporary file next to `path`, then renames it over
 /// `path`, so a crash never leaves half a file.
 pub fn save_state(path: &Path, s: &WorkspaceState) -> io::Result<()> {
+    let json = serde_json::to_vec_pretty(s).map_err(io::Error::other)?;
+    write_atomic(path, &json)
+}
+
+/// Writes `bytes` to `<path>.tmp`, then renames it over `path` (creating
+/// the parent directory first), so a crash never leaves half a file.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let json = serde_json::to_vec_pretty(s).map_err(io::Error::other)?;
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, json)?;
+    std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+/// `path` with the `home` folder written as `~`; the absolute path
+/// otherwise.
+pub(crate) fn tilde_path(path: &Path, home: Option<&Path>) -> String {
+    if let Some(rel) = home.and_then(|home| path.strip_prefix(home).ok()) {
+        return Path::new("~").join(rel).display().to_string();
+    }
+    path.display().to_string()
 }
 
 /// Where a workbench keeps its state: the app data directory and the

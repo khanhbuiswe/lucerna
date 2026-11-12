@@ -31,6 +31,7 @@ mod nav_history;
 mod open_files;
 pub mod open_requests;
 mod quick_open;
+pub mod recent;
 mod references_view;
 mod save;
 mod search_view;
