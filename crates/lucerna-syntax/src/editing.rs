@@ -81,7 +81,7 @@ impl LanguageEditing {
                 Some(SLASH),
                 &[("\"", STRING_COMMENT), ("`", STRING_COMMENT)],
             ),
-            "python" | "toml" | "yaml" | "bash" => (
+            "python" | "toml" | "yaml" | "shellscript" => (
                 &["#"],
                 None,
                 &[("\"", STRING_COMMENT), ("'", STRING_COMMENT)],
@@ -138,6 +138,33 @@ mod tests {
         );
         assert!(editing.brackets.iter().any(|b| b.start == "\""));
         assert!(rust.indents_query().is_none());
+    }
+
+    /// Catches table ids that drift from the registry's ids (Shell is
+    /// `shellscript`, not `bash`). `markdown_inline` is injected only and
+    /// never edited on its own; JSON has no comments.
+    #[test]
+    fn every_bundled_language_has_editing_data() {
+        let registry = crate::LanguageRegistry::bundled();
+        for language in registry.languages() {
+            let id = language.id.as_ref();
+            if id == "markdown_inline" {
+                continue;
+            }
+            let editing = language.editing();
+            assert!(
+                editing.brackets.len() > LanguageEditing::default().brackets.len(),
+                "{id} has no quote pairs"
+            );
+            if id != "json" {
+                assert!(
+                    !editing.line_comments.is_empty() || editing.block_comment.is_some(),
+                    "{id} has no comment tokens"
+                );
+            }
+        }
+        let shell = registry.language_by_name("Shell").unwrap();
+        assert_eq!(shell.editing().line_comments, ["#"]);
     }
 
     #[test]
