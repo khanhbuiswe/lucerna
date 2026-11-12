@@ -34,7 +34,7 @@ Spec này **chỉ** mô tả giai đoạn 1. Mỗi giai đoạn sau có spec ri�
 | 4 | Sửa code đầy đủ ([spec](2026-11-11-lucerna-phase4-editing-design.md), 4.1 đã xong) | Multi-cursor, undo, xử lý xung đột với agent, completion, rename, format |
 | 5 | Mở rộng | Git gutter, xem diff, terminal tích hợp, giao diện settings |
 | V1 | Vim di chuyển (đã xong) | Bật bằng `vim.enabled` trong settings. Chỉ có các thao tác đọc: motion, tìm kiếm, cuộn, số đếm, mark, chọn bằng visual rồi copy |
-| V2 | Vim sửa (làm sau giai đoạn 4) | Insert mode, các toán tử `d`/`c`/`y`, text object, `.`, macro, register, một phần lệnh `:` |
+| V2 | Vim sửa (làm ngay sau bước 4.2 và 4.4, trước 4.3, 4.5, 4.6) | Insert mode, các toán tử `d`/`c`/`y`, text object, `.`, macro, register, một phần lệnh `:` |
 
 Vim mode là tính năng có sẵn trong lõi editor, không phải extension, giống cách Zed làm. Xem phần nghiên cứu ở `docs/research/2026-11-09-vim-mode.md`.
 
