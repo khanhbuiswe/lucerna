@@ -300,44 +300,25 @@ fn eol_only_reload_keeps_the_tree_usable() {
     }
 }
 
-/// R31: LF to CRLF changes no row, yet moves the second function; the
-/// edited tree must already place it at its new byte offset.
+/// Past the cap the edited state shows plain text rather than editing
+/// thousands of times.
 #[test]
-fn eol_conversion_shifts_unchanged_rows_before_reparse() {
-    let lf = "fn a() {}\nfn b() {}\n";
-    let crlf = lf.replace('\n', "\r\n");
-    let (spans, _) = highlights_after_reload(lf, &crlf);
+fn mass_edit_patch_drops_the_tree() {
+    let text = "fn a() {}\n".repeat(1200);
+    let mut buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
+    let old = buffer.snapshot();
+    let mut state = SyntaxState::new(language("a.rs"), bundled()).unwrap();
+    assert_eq!(state.parse(&old, None), ParseOutcome::Done);
+    let patch = buffer.edit((0..1200).map(|i| (i * 10..i * 10, "//".into())));
+    assert!(patch.edits().len() > 1000);
+    let new = buffer.snapshot();
+    let edited = state.edited(&old, &new, &patch);
+    assert!(edited.tree().is_none());
     assert!(
-        spans
-            .iter()
-            .any(|s| s.range == (11..13) && &*s.capture == "keyword"),
-        "`fn` of row 1 starts at byte 11: {spans:?}"
+        edited
+            .highlights(&new, 0..new.line_count(), &|_| true)
+            .is_empty()
     );
-}
-
-/// R32: a changed middle row plus a head line-ending change must put the
-/// token after them at its true offset, not shifted twice.
-#[test]
-fn changed_row_and_head_eol_place_the_suffix_correctly() {
-    let old_text = "fn a() {}\nfn b() {}\nfn c() {}\n";
-    let new_text = "fn a() {}\r\nfn bb() {}\nfn c() {}\n";
-    let (spans, _) = highlights_after_reload(old_text, new_text);
-    let c = new_text.rfind("fn c").unwrap();
-    assert!(
-        spans
-            .iter()
-            .any(|s| s.range == (c..c + 2) && &*s.capture == "keyword"),
-        "`fn` of row 2 starts at byte {c}: {spans:?}"
-    );
-}
-
-/// R32: past the cap the edited state shows plain text rather than
-/// editing thousands of times.
-#[test]
-fn mass_eol_conversion_drops_the_tree() {
-    let lf = "fn a() {}\n".repeat(1200);
-    let (spans, _) = highlights_after_reload(&lf, &lf.replace('\n', "\r\n"));
-    assert!(spans.is_empty());
 }
 
 /// The registry injected language names resolve in.

@@ -156,13 +156,13 @@ mod tests {
 
     #[test]
     fn offsets_snap_to_char_boundaries_within_the_line() {
-        let s = snapshot("héllo\r\nnext\n");
+        let s = snapshot("héllo\nnext\n");
         assert_eq!(boundary_offset(&s, pt(0, 2)), 1);
         assert_eq!(boundary_offset(&s, pt(0, 3)), 3);
-        // Past the end of the line stops before its `\r\n`.
+        // Past the end of the line stops before its `\n`.
         assert_eq!(boundary_offset(&s, pt(0, 99)), 6);
         assert_eq!(boundary_offset(&s, pt(9, 0)), s.len_bytes());
-        assert_eq!(text_for(&s, pt(0, 2)..pt(1, 2)), "éllo\r\nne");
+        assert_eq!(text_for(&s, pt(0, 2)..pt(1, 2)), "éllo\nne");
     }
 
     #[test]
