@@ -3,6 +3,7 @@
 
 pub mod clipboard;
 pub mod commands;
+pub mod merge;
 mod motion;
 mod plan;
 mod selection;
