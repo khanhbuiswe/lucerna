@@ -74,6 +74,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             wb.close_quick_open(window, cx);
             wb.close_theme_picker(true, window, cx);
             wb.close_locations_picker(window, cx);
+            wb.close_recent_picker(window, cx);
         },
     );
 }

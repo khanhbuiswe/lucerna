@@ -2,6 +2,7 @@
 //! registry and key dispatch.
 
 pub mod app;
+mod app_menu;
 mod app_state;
 pub mod code_view;
 mod commands;
@@ -28,6 +29,7 @@ mod lsp_log;
 mod lsp_status;
 pub mod markdown;
 mod nav_history;
+mod open_commands;
 mod open_files;
 pub mod open_requests;
 pub mod process;

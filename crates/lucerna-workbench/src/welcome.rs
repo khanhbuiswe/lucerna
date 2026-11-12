@@ -17,6 +17,7 @@ use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resoluti
 use crate::icons;
 use crate::keys;
 use crate::layout::{color, title_bar};
+use crate::open_commands::clear_recent_with_prompt;
 use crate::recent::{self, RecentEntry, RecentKind, RecentStore, display_parts};
 use crate::ui::{
     CLOSE_ICON, GRID, UI_FONT_FAMILY, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, UI_FONT_SIZE_STATUS,
@@ -30,6 +31,8 @@ const OPEN_FILE: &str = "workbench.action.files.openFile";
 const OPEN_FOLDER: &str = "workbench.action.files.openFolder";
 const OPEN_RECENT: &str = "workbench.action.openRecent";
 const CLEAR_RECENT: &str = "workbench.action.clearRecentFiles";
+const PICKER_NEXT: &str = "workbench.action.quickOpenNavigateNextInRecentFilesPicker";
+const PICKER_PREVIOUS: &str = "workbench.action.quickOpenNavigatePreviousInRecentFilesPicker";
 const ABOUT: &str = "workbench.action.showAboutDialog";
 const QUIT: &str = "workbench.action.quit";
 
@@ -41,6 +44,8 @@ pub const WELCOME_COMMANDS: &[&str] = &[
     OPEN_FOLDER,
     OPEN_RECENT,
     CLEAR_RECENT,
+    PICKER_NEXT,
+    PICKER_PREVIOUS,
     ABOUT,
     QUIT,
 ];
@@ -233,11 +238,38 @@ impl WelcomeView {
             OPEN_FILE => self.prompt_for_path(true, false, cx),
             OPEN_FOLDER => self.prompt_for_path(false, true, cx),
             OPEN_RECENT => self.show_recent_picker(window, cx),
-            CLEAR_RECENT | ABOUT => {}
+            PICKER_NEXT => self.step_picker(1, cx),
+            PICKER_PREVIOUS => self.step_picker(-1, cx),
+            CLEAR_RECENT => self.clear_recent(window, cx),
+            ABOUT => {}
             QUIT => cx.emit(WelcomeEvent::Quit),
             _ => return false,
         }
         true
+    }
+
+    /// Moves the picker's selection by `delta` rows.
+    fn step_picker(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some((picker, _)) = &self.picker {
+            picker.update(cx, |picker, cx| picker.select_next(delta, cx));
+        }
+    }
+
+    /// Asks before clearing the recent list; once cleared, the RECENT
+    /// section goes.
+    fn clear_recent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cleared = clear_recent_with_prompt(window, cx);
+        cx.spawn(async move |this, cx| {
+            if cleared.await {
+                this.update(cx, |view, cx| {
+                    view.recent = Some(Vec::new());
+                    view.focused = view.focused.min(view.buttons().len() - 1);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// Asks for a path to open; Cancel leaves the page as it is.
@@ -384,6 +416,7 @@ impl WelcomeView {
         let stroke = keys::to_keystroke(ev);
         let mut ctx = WhenContext::default();
         ctx.set("inQuickOpen", ContextValue::Bool(self.picker.is_some()));
+        ctx.set("inRecentPicker", ContextValue::Bool(self.picker.is_some()));
         let had_pending = !self.pending_chord.is_empty();
         let mut chord = std::mem::take(&mut self.pending_chord);
         chord.push(stroke.clone());

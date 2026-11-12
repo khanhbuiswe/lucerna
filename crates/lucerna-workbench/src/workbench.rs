@@ -38,6 +38,7 @@ use crate::lsp_health::LspHealthView;
 use crate::lsp_log::LspLogs;
 use crate::lsp_status::{self, LspStatusItem};
 use crate::nav_history::{NavEntry, NavHistory};
+use crate::open_commands::{self, ShownRecentPicker};
 use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::references_view::{self, ReferencesView};
@@ -193,6 +194,10 @@ pub struct Workbench {
     nav_history: HashMap<GroupId, NavHistory>,
     /// The shown theme picker.
     pub(crate) theme_picker: Option<ShownThemePicker>,
+    /// The shown Open Recent picker.
+    pub(crate) recent_picker: Option<ShownRecentPicker>,
+    /// Loads the recent list for the Open Recent picker about to show.
+    pub(crate) recent_picker_loading: Option<Task<()>>,
     /// The shown locations picker (several definitions, references…).
     pub(crate) locations_picker: Option<ShownLocationsPicker>,
     /// Folder trust: the trust store's answer and the trust modal.
@@ -283,6 +288,7 @@ impl Workbench {
         references_view::register_commands(&mut commands);
         config_files::register_commands(&mut commands);
         theme_picker::register_commands(&mut commands);
+        open_commands::register_commands(&mut commands);
         trust::register_commands(&mut commands);
         lsp_status::register_commands(&mut commands);
         diagnostics_status::register_commands(&mut commands);
@@ -593,6 +599,8 @@ impl Workbench {
             recent_files: RecentFiles::default(),
             nav_history: HashMap::new(),
             theme_picker: None,
+            recent_picker: None,
+            recent_picker_loading: None,
             locations_picker: None,
             trust,
             auto_save: Default::default(),
@@ -1340,14 +1348,16 @@ impl Workbench {
             "extensionsViewletFocus",
             self.extensions_focused(window, cx),
         );
-        // The theme and locations pickers are quick picks too: Escape
-        // closes them.
+        // The theme, locations and recent pickers are quick picks too:
+        // Escape closes them.
         flag(
             "inQuickOpen",
             self.quick_open.is_some()
                 || self.theme_picker.is_some()
-                || self.locations_picker.is_some(),
+                || self.locations_picker.is_some()
+                || self.recent_picker.is_some(),
         );
+        flag("inRecentPicker", self.recent_picker.is_some());
         // As of the last frame: GPUI knows key contexts only once drawn.
         flag(
             "textInputFocus",
@@ -1482,20 +1492,25 @@ impl Workbench {
     }
 
     /// Closes every modal overlay (Quick Open, the locations picker, the
-    /// theme picker, reverting its preview, and the trust modal). Each
-    /// `show_*` calls it first, so at most one is ever shown and one Esc
-    /// never has to close two.
+    /// theme picker, reverting its preview, the Open Recent picker and the
+    /// trust modal). Each `show_*` calls it first, so at most one is ever
+    /// shown and one Esc never has to close two.
     pub(crate) fn close_modal_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_quick_open(window, cx);
         self.close_locations_picker(window, cx);
         self.close_theme_picker(true, window, cx);
+        self.close_recent_picker(window, cx);
         self.close_trust_modal(window, cx);
     }
 
-    /// Whether Quick Open, the theme picker or the trust modal is shown: a
-    /// late go-to answer then does not open the locations picker over it.
+    /// Whether Quick Open, the theme picker, the Open Recent picker or the
+    /// trust modal is shown: a late go-to answer then does not open the
+    /// locations picker over it.
     pub(crate) fn other_modal_overlay_shown(&self) -> bool {
-        self.quick_open.is_some() || self.theme_picker.is_some() || self.trust_modal().is_some()
+        self.quick_open.is_some()
+            || self.theme_picker.is_some()
+            || self.recent_picker.is_some()
+            || self.trust_modal().is_some()
     }
 
     /// Focuses the active tab's code view, or the editor area when the
@@ -1920,6 +1935,10 @@ impl Render for Workbench {
             )
             .children(
                 self.theme_picker()
+                    .map(|picker| popover_overlay(picker.clone())),
+            )
+            .children(
+                self.recent_picker()
                     .map(|picker| popover_overlay(picker.clone())),
             )
             .children(

@@ -110,5 +110,10 @@
   { "key": "alt+cmd+s", "command": "workbench.action.files.saveAll" },
   { "key": "cmd+k s", "command": "workbench.action.files.saveWithoutFormatting" },
   { "key": "f4", "command": "references-view.next", "when": "referencesViewFocus" },
-  { "key": "shift+f4", "command": "references-view.prev", "when": "referencesViewFocus" }
+  { "key": "shift+f4", "command": "references-view.prev", "when": "referencesViewFocus" },
+  { "key": "ctrl+r", "command": "workbench.action.openRecent" },
+  { "key": "cmd+o", "command": "workbench.action.files.openFileFolder" },
+  { "key": "cmd+k f", "command": "workbench.action.closeFolder" },
+  { "key": "ctrl+r", "command": "workbench.action.quickOpenNavigateNextInRecentFilesPicker", "when": "inRecentPicker" },
+  { "key": "ctrl+shift+r", "command": "workbench.action.quickOpenNavigatePreviousInRecentFilesPicker", "when": "inRecentPicker" }
 ]
