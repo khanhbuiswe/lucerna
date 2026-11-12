@@ -162,6 +162,7 @@ impl CodeView {
             kind: EditKind::TypingOther,
             stop_before: false,
             stop_after: false,
+            autoclose: Vec::new(),
         };
         (plan, marked)
     }

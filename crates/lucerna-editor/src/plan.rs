@@ -18,6 +18,9 @@ pub struct EditPlan {
     pub kind: EditKind,
     pub stop_before: bool,
     pub stop_after: bool,
+    /// The pairs this plan auto-closed (open start .. close end), in
+    /// post-edit offsets: the view types over and deletes their closers.
+    pub autoclose: Vec<Range<usize>>,
 }
 
 #[derive(Debug, Clone)]

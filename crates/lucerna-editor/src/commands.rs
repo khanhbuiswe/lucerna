@@ -31,6 +31,8 @@ pub(crate) enum Place {
     /// Keep the logical position of this (old) offset, which lies at or
     /// after the edit's range.
     Keep(usize),
+    /// This many bytes into the inserted text.
+    At(usize),
 }
 
 pub(crate) struct Item {
@@ -99,6 +101,7 @@ pub(crate) fn build(
                 Place::End => new.end,
                 Place::Start => new.start,
                 Place::Keep(old) => new.end + (old - merged[m].0.end.min(old)),
+                Place::At(n) => new.start + n,
             };
             sels.push(cursor(item.id, offset));
         }
@@ -112,6 +115,7 @@ pub(crate) fn build(
         kind,
         stop_before,
         stop_after,
+        autoclose: Vec::new(),
     }
 }
 
@@ -156,6 +160,7 @@ fn build_mapped(
         kind,
         stop_before: true,
         stop_after: true,
+        autoclose: Vec::new(),
     }
 }
 
@@ -182,12 +187,33 @@ fn display_col(prefix: &str, tab_size: u32) -> u32 {
     })
 }
 
-pub fn insert(ctx: Ctx, set: &SelectionSet, text: &str, prev: EditKind) -> EditPlan {
-    let kind = if text.chars().count() > 1 {
+/// Types `text` at every selection. A single typed char may instead type
+/// over an auto-inserted closer, surround the selections or auto-close a
+/// pair (see [`crate::autoclose`]); `regions` are the view's auto-closed
+/// pairs.
+pub fn insert(
+    ctx: Ctx,
+    set: &SelectionSet,
+    text: &str,
+    prev: EditKind,
+    regions: &[Range<usize>],
+) -> EditPlan {
+    let mut chars = text.chars();
+    let single = match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    };
+    let kind = if single.is_none() && !text.is_empty() {
         EditKind::Other
     } else {
         typing_kind(text, prev)
     };
+    let stop_before = should_stop_between(prev, kind);
+    if let Some(ch) = single
+        && let Some(plan) = crate::autoclose::type_char(ctx, set, ch, regions, kind, stop_before)
+    {
+        return plan;
+    }
     let items = set
         .all()
         .iter()
@@ -198,14 +224,7 @@ pub fn insert(ctx: Ctx, set: &SelectionSet, text: &str, prev: EditKind) -> EditP
             place: Place::End,
         })
         .collect();
-    let _ = ctx;
-    build(
-        items,
-        set.primary().id,
-        kind,
-        should_stop_between(prev, kind),
-        false,
-    )
+    build(items, set.primary().id, kind, stop_before, false)
 }
 
 /// The previous grapheme boundary before `offset` (the previous `\n` counts
@@ -267,10 +286,17 @@ fn delete_plan(
     build(items, set.primary().id, kind, before, after)
 }
 
-pub fn delete_left(ctx: Ctx, set: &SelectionSet) -> EditPlan {
-    delete_plan(ctx, set, EditKind::DeletingLeft, |s| {
+/// Deletes left of every cursor. Between an empty auto-closed pair
+/// (`editor.autoClosingDelete`), both of its chars go; `regions` are the
+/// view's auto-closed pairs.
+pub fn delete_left(ctx: Ctx, set: &SelectionSet, regions: &[Range<usize>]) -> EditPlan {
+    let pairs = crate::autoclose::deletes_pairs(ctx, set, regions);
+    let mut plan = delete_plan(ctx, set, EditKind::DeletingLeft, |s| {
         let snap = ctx.snapshot;
         let o = s.head;
+        if pairs && let Some(range) = crate::autoclose::empty_pair_at(ctx, o) {
+            return range;
+        }
         if o == 0 {
             return 0..0;
         }
@@ -289,7 +315,10 @@ pub fn delete_left(ctx: Ctx, set: &SelectionSet) -> EditPlan {
             return o - (col - keep)..o;
         }
         prev_boundary(snap, o)..o
-    })
+    });
+    // As VS Code's `_runAutoClosingPairDelete`: a new undo step.
+    plan.stop_before |= pairs;
+    plan
 }
 
 pub fn delete_right(ctx: Ctx, set: &SelectionSet) -> EditPlan {
@@ -550,8 +579,12 @@ mod tests {
         render_plan(&snapshot, &plan)
     }
 
+    fn dl(c: Ctx, s: &SelectionSet) -> EditPlan {
+        delete_left(c, s, &[])
+    }
+
     fn typed(src: &str, text: &str) -> String {
-        run(src, |c, s| insert(c, s, text, EditKind::Other))
+        run(src, |c, s| insert(c, s, text, EditKind::Other, &[]))
     }
 
     #[test]
@@ -572,32 +605,32 @@ mod tests {
             language: None,
             syntax: None,
         };
-        let p = insert(ctx, &set, "x", EditKind::TypingOther);
+        let p = insert(ctx, &set, "x", EditKind::TypingOther, &[]);
         assert_eq!(
             (p.kind, p.stop_before, p.stop_after),
             (EditKind::TypingOther, false, false)
         );
-        let p = insert(ctx, &set, " ", EditKind::TypingOther);
+        let p = insert(ctx, &set, " ", EditKind::TypingOther, &[]);
         assert_eq!(p.kind, EditKind::TypingFirstSpace);
         assert!(p.stop_before);
-        let p = insert(ctx, &set, "ab", EditKind::TypingOther);
+        let p = insert(ctx, &set, "ab", EditKind::TypingOther, &[]);
         assert_eq!(p.kind, EditKind::Other);
         assert!(p.stop_before);
     }
 
     #[test]
     fn delete_left_cases() {
-        assert_eq!(run("ab|c", delete_left), "a|c");
-        assert_eq!(run("a«bc»d", delete_left), "a|d");
-        assert_eq!(run("|ab", delete_left), "|ab");
-        assert_eq!(run("a\n|b", delete_left), "a|b");
-        assert_eq!(run("        |x", delete_left), "    |x");
-        assert_eq!(run("      |x", delete_left), "    |x");
-        assert_eq!(run("e\u{301}|x", delete_left), "|x");
-        assert_eq!(run("a|b\nc|d", delete_left), "|b\n|d");
+        assert_eq!(run("ab|c", dl), "a|c");
+        assert_eq!(run("a«bc»d", dl), "a|d");
+        assert_eq!(run("|ab", dl), "|ab");
+        assert_eq!(run("a\n|b", dl), "a|b");
+        assert_eq!(run("        |x", dl), "    |x");
+        assert_eq!(run("      |x", dl), "    |x");
+        assert_eq!(run("e\u{301}|x", dl), "|x");
+        assert_eq!(run("a|b\nc|d", dl), "|b\n|d");
         // adjacent cursors merge instead of overlapping
-        assert_eq!(run("a||b", delete_left), "|b");
-        assert_eq!(run("ab|c|", delete_left), "a|");
+        assert_eq!(run("a||b", dl), "|b");
+        assert_eq!(run("ab|c|", dl), "a|");
     }
 
     #[test]
@@ -610,7 +643,7 @@ mod tests {
             language: None,
             syntax: None,
         };
-        assert!(delete_left(ctx, &set).edits.is_empty());
+        assert!(delete_left(ctx, &set, &[]).edits.is_empty());
         let (snap, set) = marked("a\n|b");
         let p = delete_left(
             Ctx {
@@ -620,6 +653,7 @@ mod tests {
                 syntax: None,
             },
             &set,
+            &[],
         );
         assert_eq!(p.kind, EditKind::DeletingLeft);
         assert!(p.stop_before && !p.stop_after);
@@ -751,8 +785,8 @@ mod tests {
 
     #[test]
     fn delete_left_visible_tab_stop() {
-        assert_eq!(run("\t  |x", delete_left), "\t|x");
-        assert_eq!(run("\t|x", delete_left), "|x");
-        assert_eq!(run("  \t|x", delete_left), "|x");
+        assert_eq!(run("\t  |x", dl), "\t|x");
+        assert_eq!(run("\t|x", dl), "|x");
+        assert_eq!(run("  \t|x", dl), "|x");
     }
 }

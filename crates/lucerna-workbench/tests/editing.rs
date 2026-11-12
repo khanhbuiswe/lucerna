@@ -501,6 +501,39 @@ fn edit_commands_delete_and_indent(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn autoclose_overtype_and_autodelete(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("", cx);
+    input("(", cx);
+    assert_eq!(text_of(&view, cx), "()");
+    assert_eq!(cursor(&view, cx), pt(0, 1));
+    input("a", cx);
+    input(")", cx);
+    assert_eq!(text_of(&view, cx), "(a)");
+    assert_eq!(cursor(&view, cx), pt(0, 3));
+    input("[", cx);
+    keys("backspace", cx);
+    assert_eq!(text_of(&view, cx), "(a)");
+    // The pair delete is its own step; undo forgets the pairs.
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "(a)[]");
+    assert_eq!(cursor(&view, cx), pt(0, 4));
+    input("]", cx);
+    assert_eq!(text_of(&view, cx), "(a)[]]");
+}
+
+#[gpui::test]
+fn overtype_forgets_region_after_cursor_leaves(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("", cx);
+    input("(", cx);
+    keys("left right right left", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 1));
+    input(")", cx);
+    assert_eq!(text_of(&view, cx), "())");
+}
+
+#[gpui::test]
 fn ime_composition_is_one_step(cx: &mut TestAppContext) {
     init(cx, None);
     let (_dir, _wb, view, cx) = editor("x\n", cx);

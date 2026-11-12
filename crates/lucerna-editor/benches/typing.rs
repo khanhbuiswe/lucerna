@@ -66,7 +66,7 @@ fn type_x(buffer: &mut Buffer, set: &SelectionSet, config: &EditConfig) {
         language: None,
         syntax: None,
     };
-    let plan = commands::insert(ctx, set, "x", EditKind::TypingOther);
+    let plan = commands::insert(ctx, set, "x", EditKind::TypingOther, &[]);
     buffer.start_transaction(None);
     buffer.edit(plan.edits);
     buffer.end_transaction(None);

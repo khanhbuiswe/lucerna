@@ -30,7 +30,7 @@ use gpui::{
     IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
     Window, div, prelude::*, px,
 };
-use lucerna_editor::{EditKind, Goal, Motion, Selection, SelectionSet, move_selections};
+use lucerna_editor::{EditKind, Goal, Motion, Selection, SelectionSet, autoclose, move_selections};
 use lucerna_lsp::diagnostics::Diagnostic;
 use lucerna_syntax::{SyntaxState, indent_folds};
 use lucerna_text::{Bias, Buffer, BufferSnapshot, LoadError, Patch, Point, Reload};
@@ -265,6 +265,10 @@ pub struct CodeView {
     /// at most [`CURSOR_HISTORY`]. Any edit clears it and `cursor_redo`.
     cursor_undo: VecDeque<SelectionSet>,
     cursor_redo: Vec<SelectionSet>,
+    /// The pairs typing auto-closed (open start .. close end): typing a
+    /// closer moves over theirs and Backspace deletes an empty one. Each
+    /// follows the edits and goes when no cursor is inside it.
+    autoclose_regions: Vec<Range<usize>>,
     /// Both brackets of the pair next to the cursor, as byte offsets.
     brackets: Option<[usize; 2]>,
     drag: Option<Drag>,
@@ -365,6 +369,7 @@ impl CodeView {
             marked: None,
             cursor_undo: VecDeque::new(),
             cursor_redo: Vec::new(),
+            autoclose_regions: Vec::new(),
             brackets: None,
             drag: None,
             folds: FoldState::default(),
@@ -475,6 +480,7 @@ impl CodeView {
         self.last_kind = EditKind::Other;
         self.cursor_undo.clear();
         self.cursor_redo.clear();
+        self.autoclose_regions.clear();
         self.folds.clear();
         self.pending_center = None;
         cx.notify();
@@ -504,6 +510,8 @@ impl CodeView {
         self.hover.hide(cx);
         let mut selections = self.selections.clone();
         selections.remap(patch);
+        self.autoclose_regions =
+            autoclose::remap_regions(&self.autoclose_regions, old, &snapshot, patch);
         // A rectangle stays one only while no edit reaches into it.
         self.block_selection = self
             .block_selection
@@ -1031,6 +1039,7 @@ impl CodeView {
                 flag.set(true);
             }
         }
+        autoclose::retain_regions(&mut self.autoclose_regions, &self.selections);
         self.update_brackets();
         if autoscroll {
             self.autoscroll();

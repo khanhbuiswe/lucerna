@@ -15,3 +15,4 @@ pub use motion::{Layout, Motion, PlainLayout, move_selections};
 pub use plan::{AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, EditConfig, EditPlan};
 pub use selection::{Goal, Selection, SelectionSet};
 pub use undo_stops::{EditKind, should_stop_between, typing_kind};
+pub mod autoclose;

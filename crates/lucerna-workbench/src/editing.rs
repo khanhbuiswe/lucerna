@@ -88,7 +88,9 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 
     let edits: [(&'static str, CommandHandler); 9] = [
         ("deleteLeft", |wb, _, _, cx| {
-            edit(wb, cx, commands::delete_left)
+            with_view(wb, cx, |v, cx| {
+                v.delete_left(cx);
+            })
         }),
         ("deleteRight", |wb, _, _, cx| {
             edit(wb, cx, commands::delete_right)

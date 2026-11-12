@@ -149,6 +149,9 @@ impl CodeView {
             return false;
         };
         self.take_update(update, cx);
+        // The new pairs, in the new text; the selections keep those they
+        // are inside.
+        self.autoclose_regions.extend(plan.autoclose);
         self.set_selections_without_stop(plan.selections, true, cx);
         self.last_kind = plan.kind;
         true
@@ -226,10 +229,20 @@ impl CodeView {
         if text == "\n" {
             self.edit(cx, lucerna_editor::commands::newline)
         } else {
+            let regions = self.autoclose_regions.clone();
             self.edit(cx, |ctx, set| {
-                lucerna_editor::commands::insert(ctx, set, text, prev)
+                lucerna_editor::commands::insert(ctx, set, text, prev, &regions)
             })
         }
+    }
+
+    /// `deleteLeft`: an empty auto-closed pair goes as a whole.
+    pub fn delete_left(&mut self, cx: &mut Context<Self>) -> bool {
+        self.unmark();
+        let regions = self.autoclose_regions.clone();
+        self.edit(cx, |ctx, set| {
+            lucerna_editor::commands::delete_left(ctx, set, &regions)
+        })
     }
 
     /// Whether an IME composition is in progress.
@@ -260,6 +273,7 @@ impl CodeView {
             return false;
         };
         self.take_update(update, cx);
+        self.autoclose_regions.clear();
         let restored = selections.and_then(|s| s.downcast_ref::<SelectionSet>().cloned());
         if let Some(mut set) = restored {
             set.clamp(&self.snapshot);
