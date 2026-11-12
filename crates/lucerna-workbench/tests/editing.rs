@@ -715,3 +715,26 @@ fn typing_reparses_incrementally(cx: &mut TestAppContext) {
     assert!(!tree.root_node().has_changes(), "the new text was parsed");
     assert_eq!(last_item(&after), last_item(&before), "reused, not rebuilt");
 }
+
+/// Final review, finding 3 (spec §16): a panic while building an edit or
+/// moving the cursors applies nothing, closes the undo step, and the view
+/// keeps working.
+#[gpui::test]
+fn panicking_edit_or_motion_is_contained(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    let applied = view.update(cx, |v, cx| v.edit(cx, |_, _| panic!("plan builder")));
+    assert!(!applied);
+    assert_eq!(text_of(&view, cx), "xabc\n");
+    view.update(cx, |v, cx| v.move_with(|_| panic!("motion"), cx));
+    assert_eq!(cursor(&view, cx), pt(0, 1), "the cursor stays");
+    // Still editable; the panic closed the step, so typing starts a new one.
+    input("y", cx);
+    assert_eq!(text_of(&view, cx), "xyabc\n");
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "xabc\n");
+    keys("right", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 2));
+    assert!(is_dirty(&wb, cx));
+}

@@ -78,18 +78,41 @@ impl CodeView {
         if overlap { vec![target] } else { moved }
     }
 
-    /// Replaces `ranges` (one per selection, or one for the primary alone)
-    /// with `text`. Each selection then covers `selected` (UTF-16, within
-    /// the new text), or sits after the text. With `mark`, the new text is
+    /// Replaces the input ranges for `range_utf16` (one per selection, or
+    /// one for the primary alone; see `input_ranges`) with `text`. Each
+    /// selection then covers `selected` (UTF-16, within the new text), or
+    /// sits after the text. With `mark`, the new text is
     /// marked as the composition. Returns whether the text changed.
     fn replace_ranges(
         &mut self,
-        ranges: Vec<Range<usize>>,
+        range_utf16: Option<Range<usize>>,
         text: &str,
         selected: Option<Range<usize>>,
         mark: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        // A panic here applies nothing and ends the composition (spec §16).
+        let built = self.contained(
+            "input",
+            |v| v.input_plan(v.input_ranges(range_utf16), text, selected),
+            cx,
+        );
+        let Some((plan, marked)) = built else {
+            return false;
+        };
+        let applied = self.transact(plan, cx);
+        self.marked = (applied && mark && !text.is_empty()).then_some(marked);
+        applied
+    }
+
+    /// The edit replacing `ranges` with `text` (see `replace_ranges`), and
+    /// the ranges of the new text.
+    fn input_plan(
+        &self,
+        ranges: Vec<Range<usize>>,
+        text: &str,
+        selected: Option<Range<usize>>,
+    ) -> (EditPlan, Vec<Range<usize>>) {
         let text: Arc<str> = Arc::from(text);
         // The selected part of the text, in bytes.
         let selected = selected.map(|r| {
@@ -140,9 +163,7 @@ impl CodeView {
             stop_before: false,
             stop_after: false,
         };
-        let applied = self.transact(plan, cx);
-        self.marked = (applied && mark && !text.is_empty()).then_some(marked);
-        applied
+        (plan, marked)
     }
 }
 
@@ -206,8 +227,7 @@ impl EntityInputHandler for CodeView {
             }
             self.type_text(text, cx);
         } else {
-            let ranges = self.input_ranges(range_utf16);
-            self.replace_ranges(ranges, text, None, false, cx);
+            self.replace_ranges(range_utf16, text, None, false, cx);
             self.unmark();
         }
         window.notify_text_input_changed(&self.focus);
@@ -227,8 +247,7 @@ impl EntityInputHandler for CodeView {
             self.unmark();
             return;
         }
-        let ranges = self.input_ranges(range_utf16);
-        self.replace_ranges(ranges, text, new_selected_range_utf16, true, cx);
+        self.replace_ranges(range_utf16, text, new_selected_range_utf16, true, cx);
     }
 
     /// Where the IME puts its candidate window: the start of the primary

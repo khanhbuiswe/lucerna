@@ -1053,21 +1053,34 @@ impl CodeView {
     /// Moves every cursor by `motion`; with `extend`, their anchors stay
     /// (shift).
     pub fn move_cursor(&mut self, motion: Motion, extend: bool, cx: &mut Context<Self>) {
-        let layout = FrameLayout {
-            folds: &self.folds,
-            wrap_chars: self.wrap_chars(),
-            tab_size: self.config.tab_size,
-            page_rows: self.visible_rows().saturating_sub(1).max(1),
-        };
-        let set = move_selections(
-            &self.snapshot,
-            &self.selections,
-            motion,
-            extend,
-            &layout,
-            &self.config.word_separators,
+        self.move_with(
+            |v| {
+                let layout = FrameLayout {
+                    folds: &v.folds,
+                    wrap_chars: v.wrap_chars(),
+                    tab_size: v.config.tab_size,
+                    page_rows: v.visible_rows().saturating_sub(1).max(1),
+                };
+                move_selections(
+                    &v.snapshot,
+                    &v.selections,
+                    motion,
+                    extend,
+                    &layout,
+                    &v.config.word_separators,
+                )
+            },
+            cx,
         );
-        self.set_selections(set, true, cx);
+    }
+
+    /// Moves the cursors to the selections `f` computes. A panic in `f`
+    /// leaves them where they are (spec §16).
+    #[doc(hidden)]
+    pub fn move_with(&mut self, f: impl FnOnce(&Self) -> SelectionSet, cx: &mut Context<Self>) {
+        if let Some(set) = self.contained("cursor motion", f, cx) {
+            self.set_selections(set, true, cx);
+        }
     }
 
     /// Selects the whole text.

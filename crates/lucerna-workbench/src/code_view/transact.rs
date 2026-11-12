@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::{CodeView, DEFAULT_WORD_SEPARATORS, SelectionChange};
 use crate::AppState;
 use crate::documents::{DocState, ViewUpdate};
+use crate::tasks::catch_panic;
 
 /// The `ClipboardItem` metadata of a copy: the pieces of a copy from
 /// several selections, and whether it is a whole line.
@@ -114,9 +115,34 @@ impl CodeView {
         self.set_syntax(update.syntax, cx);
     }
 
+    /// Runs `f`, which builds an edit or moves the cursors, so that a
+    /// panic in it cannot take the app down (spec §16): it is logged,
+    /// nothing is applied (`None`), the composition ends and the undo step
+    /// is closed.
+    pub(crate) fn contained<T>(
+        &mut self,
+        name: &'static str,
+        f: impl FnOnce(&Self) -> T,
+        cx: &mut Context<Self>,
+    ) -> Option<T> {
+        match catch_panic(name, || f(self)) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                self.unmark();
+                if let Some(documents) = self.documents.as_ref().and_then(WeakEntity::upgrade) {
+                    let path = self.path.clone();
+                    documents.update(cx, |docs, _| docs.push_stop(&path));
+                }
+                cx.notify();
+                None
+            }
+        }
+    }
+
     /// Runs the edit command `f` on the selections when the view takes
-    /// text.
-    pub(crate) fn edit(
+    /// text. A panic in `f` applies nothing (see `contained`). Returns
+    /// whether an edit was applied.
+    pub fn edit(
         &mut self,
         cx: &mut Context<Self>,
         f: impl FnOnce(Ctx, &SelectionSet) -> EditPlan,
@@ -125,12 +151,18 @@ impl CodeView {
             return false;
         }
         let config = self.edit_config(cx);
-        let ctx = Ctx {
-            snapshot: &self.snapshot,
-            config: &config,
-        };
-        let plan = f(ctx, &self.selections);
-        self.transact(plan, cx)
+        let plan = self.contained(
+            "edit command",
+            |v| {
+                let ctx = Ctx {
+                    snapshot: &v.snapshot,
+                    config: &config,
+                };
+                f(ctx, &v.selections)
+            },
+            cx,
+        );
+        plan.is_some_and(|plan| self.transact(plan, cx))
     }
 
     /// Types `text` at every selection (the `type` command): `\n` is
@@ -221,7 +253,8 @@ impl CodeView {
     /// `editor.action.clipboardCopyAction`.
     pub fn copy(&mut self, cx: &mut Context<Self>) {
         let config = self.edit_config(cx);
-        if let Some(clip) = self.clipboard_text(&config) {
+        let clip = self.contained("copy", |v| v.clipboard_text(&config), cx);
+        if let Some(clip) = clip.flatten() {
             cx.write_to_clipboard(clipboard_item(clip));
         }
     }
@@ -232,11 +265,20 @@ impl CodeView {
             return self.copy(cx);
         }
         let config = self.edit_config(cx);
-        let ctx = Ctx {
-            snapshot: &self.snapshot,
-            config: &config,
+        let cut = self.contained(
+            "cut",
+            |v| {
+                let ctx = Ctx {
+                    snapshot: &v.snapshot,
+                    config: &config,
+                };
+                clipboard::cut(ctx, &v.selections)
+            },
+            cx,
+        );
+        let Some((plan, clip)) = cut else {
+            return;
         };
-        let (plan, clip) = clipboard::cut(ctx, &self.selections);
         if clip.text.is_empty() {
             return;
         }
