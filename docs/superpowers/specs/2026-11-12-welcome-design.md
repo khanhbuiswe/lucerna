@@ -1,6 +1,6 @@
-# Màn Welcome và Open Recent
+# Màn Welcome, Open Recent và menu bar
 
-Ngày 2026-11-12. Trạng thái: chờ duyệt.
+Ngày 2026-11-12. Trạng thái: chờ duyệt. Phần menu bar (W11, W13, W14, §9) được gộp vào theo yêu cầu bổ sung của người dùng.
 
 ## 1. Mục tiêu
 
@@ -25,8 +25,10 @@ Quyết định (W1–W4 là phạm vi người dùng đã đồng ý; W5–W12 
 | W8 | "Thay cửa sổ hiện tại" khi đang mở một thư mục: hỏi lưu như lúc đóng cửa sổ (`confirm_quit`), lưu layout, **khởi động `luc <path>` ở tiến trình mới rồi đóng cửa sổ này**. "Cửa sổ mới" thì chỉ khởi động tiến trình mới. | Mỗi tiến trình chỉ có một cửa sổ (`open_requests.rs`). Bỏ một `Workbench` đang chạy (LSP, watcher, task) ngay trong tiến trình là rủi ro rò tài nguyên. Tiến trình mới thì sạch, và đường `Route::NewProcess` đã có sẵn. Riêng Welcome không có trạng thái nặng nên đổi root ngay tại chỗ (W1). |
 | W9 | Welcome trên macOS có "Open…" (⌘O, `workbench.action.files.openFileFolder`, hộp thoại chọn được cả file lẫn thư mục) và "Open Recent…" (⌃R). Trên Linux và Windows thì thay "Open…" bằng "Open File…" và "Open Folder…". | Theo VS Code ở từng nền tảng. Phím và nhãn theo nền tảng nằm ở `cfg`, nên không thêm giả định chỉ có macOS vào chỗ khác. |
 | W10 | Thêm `workbench.action.closeFolder` (`cmd+k f`): hỏi lưu, rồi đưa về Welcome bằng cách chạy `luc` không kèm đường dẫn ở tiến trình mới với `cwd = /` và đóng cửa sổ hiện tại. | VS Code có lệnh này. Có Welcome mà không quay lại được thì thiếu. |
-| W11 | Menu **File** của app: Open…, Open Recent ▸ (tối đa 10 mục, More…, Clear Recently Opened), Close Folder. | Người dùng macOS tìm Open Recent trong menu File. GPUI có submenu. |
+| W11 | **Menu bar đầy đủ** (§9): Lucerna, File, Edit, Selection, View, Go, Window, Help. Mục menu khai báo một lần trong một bảng ID lệnh kiểu VS Code; mục có ID chưa đăng ký thì bị ẩn. Phím cạnh mỗi mục theo keymap hiện hành của người dùng. | Yêu cầu bổ sung của người dùng. Cả VS Code lẫn Zed đều dựng menu từ chính các lệnh của editor. |
 | W12 | Không có nội dung AI, đăng nhập, onboarding, New File hay Clone Repository. | Lucerna không có các tính năng đó. Untitled file chưa có. |
+| W13 | Menu gọi lệnh qua một action GPUI duy nhất `RunCommand { id }`. Phím hiển thị được đăng ký thành `KeyBinding` GPUI trong context `LucernaMenu`. Không element nào có context này, nên phím vẫn do `keys.rs` xử lý. | GPUI chỉ đọc phím của menu từ keymap GPUI, còn lệnh Lucerna là chuỗi ID. Context riêng làm binding chỉ có tác dụng hiển thị, không chạy lệnh hai lần. |
+| W14 | Thêm `workbench.action.showAboutDialog` ("About Lucerna"), dùng `window.prompt` hiện phiên bản, có nút Copy. | Menu app cần About. VS Code có lệnh này; Lucerna chưa có. |
 
 **Thành công khi:**
 - Mở `Lucerna.app` từ Dock: hiện Welcome có danh sách thư mục gần đây. Bấm một mục thì cửa sổ thành workbench của thư mục đó, không có cửa sổ thứ hai.
@@ -34,6 +36,7 @@ Quyết định (W1–W4 là phạm vi người dùng đã đồng ý; W5–W12 
 - Xóa (hoặc đổi tên) một thư mục từng mở: lần sau nó không còn trong Welcome hay picker, và không còn trong `recent.json` sau lần ghi kế tiếp.
 - Đóng hết tab: vùng editor hiện watermark có phím đúng theo keymap người dùng. Đặt `"workbench.tips.enabled": false` thì watermark biến mất.
 - `"workbench.startupEditor": "none"` thì khởi động như hiện nay (hộp thoại chọn thư mục).
+- Menu bar có đủ 8 menu. Phím cạnh mỗi mục đổi theo khi người dùng sửa `keybindings.json`. Menu Edit có Emoji & Symbols và Start Dictation do macOS thêm vào. Menu Help có ô tìm lệnh của macOS. Mục của lệnh chưa tồn tại không hiện.
 - Mọi test cũ vẫn xanh. `cargo clippy`, `cargo fmt --check`, `cargo deny check` đều sạch.
 
 **Ngoài phạm vi:**
@@ -57,6 +60,10 @@ Chi tiết ở `docs/research/2026-11-12-welcome.md`. Tóm tắt:
   - Các nút rộng hết cột, gồm icon muted, nhãn, và phím ở bên phải. Có 5 dự án gần đây, `cmd-1`…`cmd-5` mở từng dự án.
   - Picker `OpenRecent` dùng `ctrl-r`; nút ở cuối dòng chỉ hiện khi hover.
   - Đường dẫn mất bị ẩn khi đọc. Pane trống trong cửa sổ có thư mục thì để trống.
+- **Menu bar:**
+  - VS Code dựng menu từ các `MenuId.Menubar*Menu`, gồm Code, File, Edit, Selection, View, Go, Run, Terminal, Window, Help.
+  - Zed khai báo menu trong `app_menus.rs` (Zed, File, Edit, Selection, View, Go, Run, Window, Help), dùng `os_action` cho Edit, và dựng lại menu khi keymap đổi.
+  - Phím hiển thị lấy từ keymap GPUI. Trên Linux/Windows, Zed vẽ menu trong title bar.
 - **Lucerna:** lệnh, phím và setting theo VS Code; bố cục Welcome, cách hiện nút × khi hover và `cmd-1`…`cmd-5` theo Zed; giữ watermark (lệch khỏi Zed, xem W3).
 
 ## 3. Danh sách gần đây (`recent.rs`)
@@ -204,9 +211,7 @@ Thêm vào `default-settings.json`:
   - Chọn file: mở thành tab ghim trong cửa sổ hiện tại, kể cả file ở ngoài root (VS Code mở file trong cửa sổ hiện tại).
   - Chọn thư mục: thay cửa sổ, như W8.
 - **Clear Recently Opened:** hỏi lại bằng `window.prompt` ("Do you want to clear all recently opened folders?", nút Clear / Cancel).
-- **Menu File** (`install_app_menu`): Open… (⌘O), Open Recent ▸ (10 mục đầu của `existing()`, separator, More…, Clear Recently Opened…), separator, Close Folder.
-  - Submenu được dựng lại sau mỗi `record`, `remove` hoặc `clear` trong tiến trình. Danh sách cho menu được nạp ở luồng nền rồi gọi `cx.set_menus`.
-  - Trong cửa sổ Welcome thì Close Folder bị tắt.
+- **Menu:** các lệnh này nằm trong menu File (§9).
 
 ## 7. Picker Open Recent (`recent_picker.rs`)
 
@@ -246,7 +251,92 @@ Viết lại `empty_hint` trong `editor_groups/view.rs`, giữ debug selector `e
 - Lệnh nào không có phím trong keymap người dùng thì bỏ dòng đó, như hiện nay.
 - Thêm setting `"workbench.tips.enabled": true`. Khi là `false`, vùng trống chỉ còn nền.
 
-## 9. Kiến trúc mã
+## 9. Menu bar (`app_menu.rs`)
+
+Nghiên cứu ở `docs/research/2026-11-12-welcome.md` §4. Hiện `install_app_menu` chỉ có Lucerna (Hide, Quit) và Window (Minimize).
+
+### 9.1 Bảng menu
+
+Bảng menu là dữ liệu tĩnh, khai báo một lần và không phụ thuộc nền tảng:
+
+```rust
+enum Entry {
+    Command { title: &'static str, id: &'static str, os: Option<OsAction> },
+    Separator,
+    RecentSubmenu,           // File ▸ Open Recent
+    Services,                // chỉ được dựng trên macOS
+    App(AppAction),          // Hide, HideOthers, ShowAll, Minimize, Zoom: action GPUI, không phải lệnh
+}
+struct MenuSpec { title: &'static str, role: Role, entries: &'static [Entry] }
+enum Role { App, File, Edit, Selection, View, Go, Window, Help }
+```
+
+Mục `Command` có `id` chưa đăng ký trong `CommandRegistry` thì bị bỏ khi dựng menu. Separator đứng đầu, đứng cuối hoặc đứng liền nhau sau khi bỏ mục thì cũng bị gộp hoặc bỏ. Nhờ vậy các lệnh của 4.2 tự hiện khi branch được merge sau `main`.
+
+Danh sách lệnh lấy từ `Workbench::command_ids()`. Hàm này dựng registry mặc định đúng như `Workbench::new` (các hàm `register_commands`) mà không cần cửa sổ.
+
+| Menu | Mục (ID lệnh; ★ là lệnh của 4.2, ẩn khi chưa có; ✚ là lệnh mới của spec này) |
+|---|---|
+| **Lucerna** | About Lucerna (`workbench.action.showAboutDialog` ✚) · — · Settings ▸ { Open Settings (JSON) `workbench.action.openSettingsJson`, Open Workspace Settings (JSON) `workbench.action.openWorkspaceSettingsFile`, Open Keyboard Shortcuts (JSON) `workbench.action.openGlobalKeybindingsFile`, —, Color Theme… `workbench.action.selectTheme`, File Icon Theme… `workbench.action.selectIconTheme` } · Extensions `workbench.view.extensions` · — · Services · — · Hide Lucerna · Hide Others · Show All · — · Quit Lucerna `workbench.action.quit` |
+| **File** | Open… `workbench.action.files.openFileFolder` ✚ (chỉ macOS) · Open File… `…files.openFile` ✚ và Open Folder… `…files.openFolder` ✚ (ngoài macOS) · Open Recent ▸ (10 mục đầu, —, More… `workbench.action.openRecent` ✚, Clear Recently Opened… `workbench.action.clearRecentFiles` ✚) · — · Save `workbench.action.files.save` · Save All `…files.saveAll` · Save without Formatting `…files.saveWithoutFormatting` · Revert File `…files.revert` · — · Close Editor `workbench.action.closeActiveEditor` · Close Folder `workbench.action.closeFolder` ✚ |
+| **Edit** | Undo `undo` (`OsAction::Undo`) · Redo `redo` (`OsAction::Redo`) · — · Cut `editor.action.clipboardCutAction` (`OsAction::Cut`) · Copy `…clipboardCopyAction` (`OsAction::Copy`) · Paste `…clipboardPasteAction` (`OsAction::Paste`) · — · Find `actions.find` · Find in Files `workbench.action.findInFiles` · — · Toggle Line Comment `editor.action.commentLine` ★ |
+| **Selection** | Select All `editor.action.selectAll` (`OsAction::SelectAll`) · Expand Selection `editor.action.smartSelect.expand` ★ · Shrink Selection `editor.action.smartSelect.shrink` ★ · — · Copy Line Up `editor.action.copyLinesUpAction` ★ · Copy Line Down `…copyLinesDownAction` ★ · Move Line Up `editor.action.moveLinesUpAction` ★ · Move Line Down `…moveLinesDownAction` ★ |
+| **View** | Command Palette… `workbench.action.showCommands` · — · Explorer `workbench.view.explorer` · Search `workbench.view.search` · Extensions `workbench.view.extensions` · — · Toggle Sidebar `workbench.action.toggleSidebarVisibility` · Split Editor `workbench.action.splitEditor` · — · Word Wrap `editor.action.toggleWordWrap` · Zoom In `editor.action.fontZoomIn` · Zoom Out `editor.action.fontZoomOut` · — · Language Server Health `lucerna.lsp.health` · Language Server Log `lucerna.lsp.showLog` |
+| **Go** | Back `workbench.action.navigateBack` · Forward `workbench.action.navigateForward` · — · Go to File… `workbench.action.quickOpen` · Go to Symbol in Workspace… `workbench.action.showAllSymbols` · Go to Symbol in Editor… `workbench.action.gotoSymbol` · Go to Line… `workbench.action.gotoLine` · — · Go to Definition `editor.action.revealDefinition` · Go to Type Definition `editor.action.goToTypeDefinition` · Go to Implementations `editor.action.goToImplementation` · Go to References `editor.action.goToReferences` · — · Next Problem `editor.action.marker.nextInFiles` · Previous Problem `editor.action.marker.prevInFiles` |
+| **Window** | Minimize · Zoom (`window.zoom_window()`). macOS tự thêm danh sách cửa sổ vào menu này (GPUI gọi `setWindowsMenu` cho menu tên "Window"). |
+| **Help** | Show All Commands `workbench.action.showCommands` · Open Logs Folder `lucerna.openLogsFolder` |
+
+Tiêu đề mục theo tiêu đề menu của VS Code (không có tiền tố nhóm như "File:" của Command Palette).
+
+### 9.2 Dựng menu (`build_menus`)
+
+`build_menus(spec, &BuildInput) -> Vec<gpui::Menu>` là một hàm thuần, test được không cần cửa sổ. `BuildInput` gồm:
+- danh sách ID lệnh đã đăng ký;
+- `Platform`;
+- 10 mục gần đây;
+- loại cửa sổ đang active (`Welcome` hoặc `Workbench`).
+
+Hàm này làm các việc sau:
+- **Theo nền tảng** (chỉ ở bước dựng này, bảng dữ liệu giữ nguyên):
+  - **macOS:** `Role::App` thành menu đầu tiên tên "Lucerna".
+  - **Linux/Windows** (theo VS Code):
+    - không có menu app;
+    - About chuyển xuống cuối Help;
+    - Settings ▸ thành File ▸ Preferences;
+    - Quit thành "Exit", nằm cuối File;
+    - bỏ Services, Hide, Hide Others và Show All.
+- **Trong cửa sổ Welcome:** chỉ bật các mục mà Welcome xử lý được: About, Open…, Open File…, Open Folder…, Open Recent, Clear Recently Opened, Quit, Hide…, Minimize, Zoom. Các mục khác, kể cả Settings ▸ (mở file settings cần một workbench), dựng với `.disabled(true)`, như VS Code làm khi cửa sổ trống.
+- **Mỗi mục `Command`** thành `MenuItem::action(title, RunCommand { id })`, hoặc `MenuItem::os_action(…, os)` khi có `os`.
+
+### 9.3 Chạy lệnh và hiện phím
+
+- `RunCommand { id: SharedString }` là action GPUI (derive `Action`, namespace `lucerna`). Nó có một listener toàn cục (`cx.on_action`) chuyển lệnh tới cửa sổ đang active:
+  - Root là `Workbench`: `run_command(id, None, …)`.
+  - Root là `WelcomeView`: lệnh của Welcome.
+  - Không có cửa sổ: bỏ qua.
+- **Phím hiển thị** (W13): mỗi lần dựng menu, với mỗi ID, lấy binding đầu tiên **một phím** (không phải chord) trong keymap Lucerna mà `when` để trống hoặc đúng trong ngữ cảnh editor có focus. Binding đó được đổi thành `KeyBinding::new(keystroke, RunCommand { id }, Some("LucernaMenu"))`.
+  - Trước khi bind lại thì gọi `cx.clear_key_bindings()`. Tiếp theo bind lại các phím GPUI cố định (Hide ⌘H, Hide Others ⌥⌘H, Minimize ⌘M, Quit ⌘Q, hiện ở `install_app_menu`), rồi bind các phím vừa đổi. Lucerna hiện chỉ dùng `bind_keys` ở `app.rs`.
+  - GPUI chọn binding khớp context Workspace/Pane/Editor trước, không khớp thì lấy binding đầu tiên (`find_or_first`). Vì `LucernaMenu` không khớp, menu vẫn hiện đúng phím. Không element nào có key context `LucernaMenu`, nên GPUI không tự chạy binding; phím vẫn đi qua `keys.rs`.
+  - Chord (`cmd+k f`) không hiện được trong menu macOS (GPUI chỉ hiện binding một phím), giống Zed.
+- **Key equivalent:** cửa sổ GPUI nhận phím trước menu (`handle_key_equivalent`). Lucerna xử lý phím thì menu không chạy nữa, nên lệnh không bị chạy hai lần. Nếu cửa sổ không xử lý (ví dụ không có focus), menu chạy `RunCommand`, và kết quả giống hệt.
+- **Dựng lại menu** (`cx.set_menus`) khi:
+  - keymap đổi (quan sát `ConfigState.keymap_generation`);
+  - danh sách gần đây đổi trong tiến trình (`record`, `remove`, `clear`);
+  - root của cửa sổ đổi (Welcome sang Workbench).
+  
+  Danh sách gần đây cho menu được nạp ở luồng nền rồi mới gọi `set_menus`.
+
+### 9.4 Các mục đặc biệt của macOS
+
+- **Edit:** tiêu đề phải đúng "Edit" và có Cut/Copy/Paste/Undo/Redo dạng `os_action`. AppKit nhận menu này là menu Edit và tự thêm "Emoji & Symbols" và "Start Dictation…". Các ô nhập trong hộp thoại hệ thống (Open, Save) cũng dùng được ⌘X, ⌘C, ⌘V nhờ selector `cut:`, `copy:`, `paste:`.
+- **Help:** tiêu đề phải đúng "Help". AppKit tự gắn ô tìm kiếm (tìm theo tên mục menu) vào menu này. GPUI không gọi `setHelpMenu`. Nếu khi chạy thử ô tìm kiếm không hiện, cách xử lý là gọi `setHelpMenu` trong lớp native của Lucerna (`#[cfg(target_os = "macos")]`, sau `set_menus`). Plan sẽ có một bước kiểm tra việc này.
+- **Services** dùng `MenuItem::os_submenu("Services", SystemMenuType::Services)`.
+
+### 9.5 Linux và Windows
+
+Bảng dữ liệu và `build_menus` đã hỗ trợ cả hai nền tảng (§9.2), nhưng **phần vẽ menu trong title bar để sau**. Khi làm: `title_bar` đọc `cx.get_menus()` và vẽ mỗi menu thành một nút dropdown, như `ApplicationMenu` của Zed. Spec này không làm phần vẽ đó.
+
+## 10. Kiến trúc mã
 
 | File | Thay đổi |
 |---|---|
@@ -254,17 +344,19 @@ Viết lại `empty_hint` trong `editor_groups/view.rs`, giữ debug selector `e
 | `welcome.rs` (mới) | `WelcomeView`: render (§4), xử lý phím, nạp danh sách ở luồng nền, hiện `RecentPicker`. |
 | `recent_picker.rs` (mới) | `RecentPicker` và `RecentPickerEvent::{Open { entry, new_window }, Dismissed}`. |
 | `ui.rs` | Thêm `section_header`, `list_button`. |
-| `app.rs` | Đổi `Router.window` thành enum `Shown::{Welcome(handle), Workbench(OpenWindow, handle)}`. Thêm `Router::open_welcome`, `Router::open_in_welcome(path)` (đổi root), gọi `record` sau khi mở, đọc `startupEditor`, thêm menu File. Router là `Rc<RefCell<…>>`, được lưu thành global (`RouterHandle`) để workbench gọi được. |
+| `app.rs` | Đổi `Router.window` thành enum `Shown::{Welcome(handle), Workbench(OpenWindow, handle)}`. Thêm `Router::open_welcome`, `Router::open_in_welcome(path)` (đổi root), gọi `record` sau khi mở, đọc `startupEditor`, gọi `app_menu::install`. Router là `Rc<RefCell<…>>`, được lưu thành global (`RouterHandle`) để workbench gọi được. |
 | `open_requests.rs` | `spawn_process` trả `io::Result<()>` để W8 không đóng cửa sổ khi khởi động tiến trình mới thất bại. Thêm `spawn_welcome_process()` (`cwd = /`, không đối số). |
-| `workbench.rs` | Đăng ký lệnh ở §6 qua `register_commands` của module mới (như `theme_picker::register_commands`). Thêm `replace_with(path)` cho W8: `confirm_quit` → `save_workspace_state` → spawn → `window.remove_window()`. |
+| `workbench.rs` | Đăng ký lệnh ở §6 qua `register_commands` của module mới (như `theme_picker::register_commands`). Thêm `Workbench::command_ids()` (§9.1). Thêm `replace_with(path)` cho W8: `confirm_quit` → `save_workspace_state` → spawn → `window.remove_window()`. |
 | `config_files.rs` | `ConfigPaths.workspace_settings: Option<PathBuf>` và `ConfigPaths::user_only()`. |
 | `workspace_state.rs` | Tách `write_atomic`; thêm hàm dùng chung rút gọn `~`. |
 | `editor_groups/view.rs` | `empty_hint` theo §8. |
+| `app_menu.rs` (mới) | Bảng menu (§9.1), `build_menus` (thuần), `RunCommand`, listener toàn cục, đăng ký phím hiển thị, dựng lại menu. `install_app_menu` trong `app.rs` chuyển sang đây. |
+| `about.rs` (mới, nhỏ) | Lệnh `workbench.action.showAboutDialog` (W14). |
 | `default-settings.json`, `default-keybindings.json` | Thêm như §5, §6. |
 
 Các phần không đụng tới: `lucerna-editor`, `save.rs` (chỉ gọi `confirm_quit` sẵn có), thanh xung đột, `merge`.
 
-## 10. Xử lý lỗi
+## 11. Xử lý lỗi
 
 - `recent.json` hỏng thì đổi thành `.bak` và dùng danh sách rỗng. Ghi lỗi thì `tracing::warn` và bỏ qua, vì danh sách gần đây không bao giờ được chặn việc mở thư mục.
 - Không có `HOME` (`default_data_dir()` là `None`) thì không có danh sách gần đây: Welcome chỉ còn Get Started, và mọi thao tác ghi đều bỏ qua.
@@ -272,7 +364,7 @@ Các phần không đụng tới: `lucerna-editor`, `save.rs` (chỉ gọi `conf
 - Khởi động tiến trình mới thất bại (W8, W10) thì giữ cửa sổ hiện tại và báo qua `status_message`.
 - Hộp thoại hỏi lưu bị Cancel (W8, W10) thì không làm gì.
 
-## 11. Kiểm thử
+## 12. Kiểm thử
 
 - **Unit (`recent.rs`):**
   - `record` đặt mục lên đầu, bỏ trùng, cắt ở 100;
@@ -287,4 +379,17 @@ Các phần không đụng tới: `lucerna-editor`, `save.rs` (chỉ gọi `conf
   - picker lọc theo tên và đường dẫn cha; `ctrl+r` chọn mục kế; ⌘Enter phát `Open { new_window: true }`; Escape đóng picker;
   - watermark hiện nhãn theo keymap và ẩn khi `workbench.tips.enabled` là `false`;
   - `startupEditor: "none"` chọn hộp thoại, giá trị khác chọn Welcome (tách logic chọn thành một hàm thuần để test).
+- **Unit (`build_menus`):**
+  - ẩn mục có ID chưa đăng ký, và gộp separator thừa;
+  - macOS có menu "Lucerna" đứng đầu;
+  - Linux/Windows không có menu app: About nằm trong Help, Exit cuối File, không có Services/Hide;
+  - cửa sổ Welcome tắt các mục cần workbench;
+  - Open Recent ▸ có 10 mục và More…, Clear;
+  - phím hiển thị lấy binding một phím đầu tiên, bỏ chord, và đổi theo keymap người dùng.
+- **GPUI test:** dispatch `RunCommand { id: "workbench.action.toggleSidebarVisibility" }` thì sidebar đổi trạng thái; binding context `LucernaMenu` không chạy khi gõ phím trong workbench (lệnh chỉ chạy một lần).
 - **Thủ công (bắt buộc trước khi coi là xong, theo design-principles §1.1):** chạy `Lucerna.app` từ Dock và đặt cạnh Zed khi chưa mở project để so khoảng cách, cỡ chữ, hover và trạng thái trống. Sau đó thử ⌃R trong workbench: Enter thay cửa sổ, ⌘Enter mở cửa sổ mới, Close Folder quay về Welcome.
+- **Thủ công, phần menu:** so menu bar với Zed và VS Code. Kiểm tra:
+  - Edit có Emoji & Symbols và Start Dictation;
+  - Help có ô tìm lệnh;
+  - sửa `keybindings.json` thì phím trong menu đổi theo;
+  - ⌘C trong ô tên file của hộp thoại Open vẫn chạy.
