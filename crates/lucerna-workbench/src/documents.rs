@@ -860,8 +860,11 @@ impl Documents {
         doc.buffer.as_mut()?.push_stop();
         if opts.participants {
             let language = doc.language_id();
-            let participants =
-                save::participants(&cx.global::<AppState>().settings, language.as_deref());
+            let participants = save::participants(
+                &cx.global::<AppState>().settings,
+                language.as_deref(),
+                opts.reason,
+            );
             // An autosave keeps the whitespace the user just typed: the
             // lines with a cursor are not trimmed (as VS Code does).
             let cursor_rows = if opts.reason == SaveReason::Auto {

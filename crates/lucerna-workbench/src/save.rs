@@ -154,13 +154,17 @@ pub(crate) type Participant = fn(&BufferSnapshot, &[u32]) -> Edits;
 pub(crate) fn participants(
     settings: &lucerna_settings::SettingsStore,
     language: Option<&str>,
+    reason: SaveReason,
 ) -> Vec<Participant> {
     let on = |key: &str| settings.get::<bool>(key, language).unwrap_or(false);
     let mut out: Vec<Participant> = Vec::new();
     if on("files.trimTrailingWhitespace") {
         out.push(trim_trailing_whitespace);
     }
-    // `editor.formatOnSave` runs here from step 4.6.
+    // 4.6: format runs here, never for Auto.
+    if reason != SaveReason::Auto && on("editor.formatOnSave") {
+        // No formatter yet: the slot is wired in step 4.6.
+    }
     if on("files.insertFinalNewline") {
         out.push(insert_final_newline);
     }
@@ -192,22 +196,28 @@ fn trim_trailing_whitespace(text: &BufferSnapshot, cursor_rows: &[u32]) -> Edits
 }
 
 /// Appends a line break to text that does not end with one.
-fn insert_final_newline(text: &BufferSnapshot, _: &[u32]) -> Edits {
+fn insert_final_newline(text: &BufferSnapshot, cursor_rows: &[u32]) -> Edits {
     let len = text.len_bytes();
     if len == 0 || text.byte_at(len - 1) == b'\n' {
+        return Vec::new();
+    }
+    // An autosave must not push a caret at the end past the new line.
+    if cursor_rows.contains(&text.offset_to_point(len).row) {
         return Vec::new();
     }
     vec![(len..len, Arc::from("\n"))]
 }
 
 /// Collapses the line breaks at the end of the text to one.
-fn trim_final_newlines(text: &BufferSnapshot, _: &[u32]) -> Edits {
+fn trim_final_newlines(text: &BufferSnapshot, cursor_rows: &[u32]) -> Edits {
     let len = text.len_bytes();
     let mut start = len;
     while start > 0 && text.byte_at(start - 1) == b'\n' {
         start -= 1;
     }
-    if len - start > 1 {
+    // An autosave keeps the blank lines that hold a cursor.
+    let kept_row = text.offset_to_point(start).row;
+    if len - start > 1 && !cursor_rows.iter().any(|&row| row > kept_row) {
         vec![(start + 1..len, Arc::from(""))]
     } else {
         Vec::new()
@@ -519,5 +529,17 @@ mod tests {
         assert_eq!(apply("a\n", trim_final_newlines), "a\n");
         assert_eq!(apply("a", trim_final_newlines), "a");
         assert_eq!(apply("\n\n", trim_final_newlines), "\n");
+    }
+
+    #[test]
+    fn auto_tail_participants_leave_cursors_alone() {
+        let run = |text: &str, f: Participant, rows: &[u32]| {
+            let buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
+            f(&buffer.snapshot(), rows).len()
+        };
+        assert_eq!(run("a", insert_final_newline, &[0]), 0);
+        assert_eq!(run("a\nb", insert_final_newline, &[0]), 1);
+        assert_eq!(run("a\n\n\n", trim_final_newlines, &[2]), 0);
+        assert_eq!(run("a\n\n\n", trim_final_newlines, &[0]), 1);
     }
 }

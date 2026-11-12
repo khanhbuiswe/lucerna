@@ -1267,7 +1267,7 @@ fn after_delay_skips_conflicted(cx: &mut TestAppContext) {
     assert_eq!(disk(&dir, "file.txt"), "disk\n");
     assert!(has_conflict(&wb, "file.txt", cx));
     assert!(is_dirty(&wb, "file.txt", cx));
-    assert!(!cx.pending_prompt().is_some(), "an autosave never prompts");
+    assert!(cx.pending_prompt().is_none(), "an autosave never prompts");
 }
 
 #[gpui::test]
@@ -1293,11 +1293,11 @@ fn auto_save_conflict_found_while_writing_does_not_prompt(cx: &mut TestAppContex
     assert_eq!(disk(&dir, "file.txt"), "disk, longer\n");
     assert!(has_conflict(&wb, "file.txt", cx));
     assert!(is_dirty(&wb, "file.txt", cx));
-    assert!(!cx.pending_prompt().is_some());
+    assert!(cx.pending_prompt().is_none());
 }
 
 #[gpui::test]
-fn closing_a_dirty_document_cancels_its_timer(cx: &mut TestAppContext) {
+fn undo_to_clean_cancels_the_timer(cx: &mut TestAppContext) {
     init(cx, Some(AFTER_DELAY));
     let (dir, wb, _view, cx) = editor("abc\n", cx);
     input("x", cx);
@@ -1398,4 +1398,55 @@ fn explicit_save_trims_cursor_lines(cx: &mut TestAppContext) {
     });
     keys("cmd-s", cx);
     assert_eq!(disk(&dir, "file.txt"), "a\nb\n");
+}
+
+#[gpui::test]
+fn closing_the_tab_mid_delay_cancels_the_timer(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    advance(500, cx);
+    run(&wb, "workbench.action.closeActiveEditor", cx);
+    cx.simulate_prompt_answer("Don't Save");
+    settle(cx);
+    advance(1000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "abc\n");
+}
+
+#[gpui::test]
+fn auto_save_keeps_final_blank_lines_with_a_cursor(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"files.autoSave": "afterDelay", "files.trimFinalNewlines": true}"#),
+    );
+    let (dir, _wb, view, cx) = editor("a\n\n\n", cx);
+    view.update(cx, |v, cx| {
+        v.select(
+            lucerna_text::Point { row: 2, column: 0 }..lucerna_text::Point { row: 2, column: 0 },
+            cx,
+        )
+    });
+    input("x", cx);
+    advance(1000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "a\n\nx\n");
+}
+
+#[gpui::test]
+fn auto_save_does_not_move_a_caret_at_the_end_past_a_final_newline(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"files.autoSave": "afterDelay", "files.insertFinalNewline": true}"#),
+    );
+    let (dir, _wb, view, cx) = editor("abc", cx);
+    view.update(cx, |v, cx| {
+        v.select(
+            lucerna_text::Point { row: 0, column: 3 }..lucerna_text::Point { row: 0, column: 3 },
+            cx,
+        )
+    });
+    input("x", cx);
+    advance(1000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "abcx");
+    keys("cmd-s", cx);
+    assert_eq!(disk(&dir, "file.txt"), "abcx\n", "an explicit save adds it");
 }
