@@ -1,6 +1,17 @@
 # Màn Welcome, Open Recent và menu bar
 
-Ngày 2026-11-12. Trạng thái: chờ duyệt. Phần menu bar (W11, W13, W14, §9) được gộp vào theo yêu cầu bổ sung của người dùng.
+Ngày 2026-11-12. Trạng thái: đã triển khai (commit 336a5e5–a03b07b). Phần kiểm tra thủ công trên app thật (§12) chưa làm. Phần menu bar (W11, W13, W14, §9) được gộp vào theo yêu cầu bổ sung của người dùng.
+
+Những chỗ khác spec khi triển khai:
+- **Bảng menu (§9.1):** có thêm hai biến thể `Entry::Submenu` (cho Settings ▸) và `Entry::Only(Platform, …)` (cho Open… chỉ có trên macOS).
+- **Mục gần đây trong File ▸ Open Recent** chạy action riêng `OpenRecentEntry`.
+- **Mục mà cửa sổ hiện tại không chạy được** dùng action `DisabledCommand`, vì action này không có listener nên AppKit hiện nó ở trạng thái tắt.
+- **Lệnh gọi từ menu chỉ chạy ở nơi phím tắt của nó chạy được** (kiểm tra theo `when` của keymap). Ví dụ: Edit ▸ Undo không làm gì khi ô tìm kiếm đang có focus.
+- **Open Recent bỏ các mục của chính cửa sổ đang mở**, cả trong menu lẫn trong picker. Cửa sổ chỉ mở một file thì bỏ cả file đó lẫn thư mục cha của nó.
+- **Logo trên Welcome** dùng `mark-mono.svg`, tô bằng màu `text` của theme.
+- **Trong picker**, khi lọc mà không còn mục nào thì hiện "No matching results".
+- **Mở mục gần đây kiểu File từ picker trong workbench** thì mở thành tab ghim ngay trong cửa sổ đó.
+- **Ghi file:** ghi nguyên tử dùng file tạm riêng cho từng tiến trình (`<name>.<pid>.tmp`). `record` và `remove` không ghi khi đọc file lỗi vì lý do khác "không tồn tại".
 
 ## 1. Mục tiêu
 
