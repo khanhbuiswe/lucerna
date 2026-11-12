@@ -344,7 +344,6 @@ fn extension_language_carries_editing() {
             ("indents.scm", "(object) @indent"),
         ],
     );
-    let without_indents = spec.dir.clone();
     let mut with = spec.clone();
     with.dir = with_indents;
     with.name = "Edit Lang Indents".into();
@@ -353,7 +352,6 @@ fn extension_language_carries_editing() {
     let plain = registry.language_by_name("Edit Lang").unwrap();
     assert_eq!(plain.editing(), &editing);
     assert!(plain.indents_query().is_none());
-    assert!(without_indents.is_dir());
     let indented = registry.language_by_name("Edit Lang Indents").unwrap();
     assert_eq!(indented.indents_query(), Some("(object) @indent"));
 }

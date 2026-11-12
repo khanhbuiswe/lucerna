@@ -16,6 +16,9 @@ use crate::validate::{check_icon_theme_json, check_theme_json};
 /// Install metadata file inside each `installed/<id>/`.
 pub const INSTALL_INFO_FILE: &str = "lucerna.json";
 const INDEX_FILE: &str = "index.json";
+/// Bumped whenever `LanguageEntry` or the index gains data an older index
+/// lacks. 1: per-language editing data.
+pub const INDEX_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -96,6 +99,10 @@ pub struct IndexedExtension {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionIndex {
+    /// [`INDEX_VERSION`] when written; a missing or different version makes
+    /// the index stale, so it is rebuilt.
+    #[serde(default)]
+    pub version: u32,
     /// Keyed by the `installed/` directory name (the extension id).
     pub extensions: BTreeMap<String, IndexedExtension>,
 }
@@ -135,7 +142,10 @@ pub fn write_install_info(dir: &Path, info: &InstallInfo) -> std::io::Result<()>
 /// Indexes every non-dot directory in `installed`. A directory whose
 /// manifest or install info cannot be read is marked `broken`.
 pub fn rebuild(installed: &Path) -> ExtensionIndex {
-    let mut index = ExtensionIndex::default();
+    let mut index = ExtensionIndex {
+        version: INDEX_VERSION,
+        ..Default::default()
+    };
     let Ok(rd) = std::fs::read_dir(installed) else {
         return index;
     };
@@ -262,7 +272,8 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 /// corrupt. Writers replace it with a rename, so a plain read is atomic.
 pub fn read(root: &Path) -> Option<ExtensionIndex> {
     let bytes = std::fs::read(root.join(INDEX_FILE)).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    let index: ExtensionIndex = serde_json::from_slice(&bytes).ok()?;
+    (index.version == INDEX_VERSION).then_some(index)
 }
 
 /// Reads `<root>/index.json`. It is rebuilt (and written back) when it is
@@ -279,7 +290,13 @@ pub fn load_or_rebuild(root: &Path) -> ExtensionIndex {
     };
     if fresh && let Ok(bytes) = std::fs::read(&path) {
         match serde_json::from_slice(&bytes) {
-            Ok(index) => return index,
+            Ok(
+                index @ ExtensionIndex {
+                    version: INDEX_VERSION,
+                    ..
+                },
+            ) => return index,
+            Ok(_) => tracing::info!("rebuilding {}: older index format", path.display()),
             Err(e) => tracing::warn!("rebuilding corrupt {}: {e}", path.display()),
         }
     }

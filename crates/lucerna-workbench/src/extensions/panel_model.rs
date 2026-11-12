@@ -368,6 +368,7 @@ mod tests {
                 .into_iter()
                 .map(|(id, ext)| (id.to_string(), ext))
                 .collect(),
+            ..Default::default()
         }
     }
 

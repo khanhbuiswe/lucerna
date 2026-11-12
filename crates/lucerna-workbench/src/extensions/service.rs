@@ -1062,3 +1062,79 @@ fn start_pump(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucerna_extension::index;
+
+    /// An installed extension with one language whose `config.toml` is `config`.
+    fn installed_with(root: &std::path::Path, config: &str) {
+        let dir = root.join("installed/ext");
+        std::fs::create_dir_all(dir.join("languages/x")).unwrap();
+        std::fs::write(
+            dir.join("extension.toml"),
+            "id = \"ext\"\nname = \"Ext\"\nversion = \"1.0.0\"\nschema_version = 1\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("languages/x/config.toml"), config).unwrap();
+        index::write_install_info(&dir, &Default::default()).unwrap();
+    }
+
+    fn editing_via_disk(root: &std::path::Path) -> LanguageEditing {
+        index::write(root, &index::rebuild(&root.join("installed"))).unwrap();
+        let on_disk = index::read(root).expect("index round-trips");
+        extension_languages(&on_disk).remove(0).editing
+    }
+
+    #[test]
+    fn config_editing_data_reaches_the_language() {
+        let tmp = tempfile::tempdir().unwrap();
+        installed_with(
+            tmp.path(),
+            r#"
+name = "X"
+line_comments = ["--", ";;"]
+block_comment = ["{- ", " -}"]
+autoclose_before = ";)"
+brackets = [
+  { start = "<", end = ">", close = false, newline = false, not_in = ["string"] },
+  { start = "(", end = ")" },
+]
+"#,
+        );
+        let editing = editing_via_disk(tmp.path());
+        assert_eq!(editing.line_comments, ["--", ";;"]);
+        assert_eq!(
+            editing.block_comment,
+            Some(("{-".to_string(), "-}".to_string()))
+        );
+        assert_eq!(editing.autoclose_before, ";)");
+        assert_eq!(
+            editing.brackets,
+            vec![
+                BracketPair {
+                    start: "<".into(),
+                    end: ">".into(),
+                    close: false,
+                    newline: false,
+                    not_in: vec!["string".into()],
+                },
+                BracketPair {
+                    start: "(".into(),
+                    end: ")".into(),
+                    close: true,
+                    newline: true,
+                    not_in: vec![],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_config_keys_fall_back_to_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        installed_with(tmp.path(), "name = \"X\"\n");
+        assert_eq!(editing_via_disk(tmp.path()), LanguageEditing::default());
+    }
+}
