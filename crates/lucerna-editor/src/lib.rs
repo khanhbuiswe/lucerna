@@ -16,5 +16,6 @@ pub use plan::{AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, Edit
 pub use selection::{Goal, Selection, SelectionSet};
 pub use undo_stops::{EditKind, should_stop_between, typing_kind};
 pub mod autoclose;
+pub mod comment;
 mod indent;
 pub mod indentation;

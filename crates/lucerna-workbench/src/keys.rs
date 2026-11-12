@@ -255,6 +255,8 @@ mod tests {
             (event("tab", Some("\t"), Modifiers::none()), "tab"),
             (event("tab", None, Modifiers::shift()), "shift+tab"),
             (event("enter", Some("\n"), Modifiers::none()), "enter"),
+            (event("/", None, cmd()), "cmd+/"),
+            (event("a", Some("Å"), alt_shift()), "shift+alt+a"),
         ]);
         for (digit, binding) in [
             ("1", "cmd+1"),

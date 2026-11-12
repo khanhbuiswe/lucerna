@@ -3,8 +3,8 @@
 //! undo / redo and `cursorUndo` / `cursorRedo`.
 
 use gpui::{Context, Focusable as _, Window};
-use lucerna_editor::commands;
 use lucerna_editor::{Ctx, EditPlan, Motion, SelectionSet};
+use lucerna_editor::{commands, comment};
 
 use crate::code_view::CodeView;
 use crate::{CommandHandler, CommandRegistry, Workbench};
@@ -115,6 +115,31 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     ];
     for (id, handler) in edits {
         commands.register(id, "", handler);
+    }
+    let comments: [(&'static str, &'static str, CommandHandler); 4] = [
+        (
+            "editor.action.commentLine",
+            "Toggle Line Comment",
+            |wb, _, _, cx| edit(wb, cx, comment::toggle_line),
+        ),
+        (
+            "editor.action.addCommentLine",
+            "Add Line Comment",
+            |wb, _, _, cx| edit(wb, cx, comment::add_line),
+        ),
+        (
+            "editor.action.removeCommentLine",
+            "Remove Line Comment",
+            |wb, _, _, cx| edit(wb, cx, comment::remove_line),
+        ),
+        (
+            "editor.action.blockComment",
+            "Toggle Block Comment",
+            |wb, _, _, cx| edit(wb, cx, comment::toggle_block),
+        ),
+    ];
+    for (id, title, handler) in comments {
+        commands.register(id, title, handler);
     }
     // VS Code's `type` command: `{"text": "\n"}` is Enter.
     commands.register("type", "", |wb, args, _, cx| {

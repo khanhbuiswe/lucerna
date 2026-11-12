@@ -92,12 +92,26 @@ fn editor<'a>(
     Entity<CodeView>,
     &'a mut VisualTestContext,
 ) {
+    editor_file("file.txt", text, cx)
+}
+
+/// Like `editor`, with the file named `name`.
+fn editor_file<'a>(
+    name: &str,
+    text: &str,
+    cx: &'a mut TestAppContext,
+) -> (
+    TempDir,
+    Entity<Workbench>,
+    Entity<CodeView>,
+    &'a mut VisualTestContext,
+) {
     let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("file.txt"), text).unwrap();
+    fs::write(dir.path().join(name), text).unwrap();
     let root = dir.path().to_path_buf();
     let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
     wb.update(cx, |wb, cx| {
-        wb.open_path(Arc::from(Path::new("file.txt")), OpenMode::Pinned, cx)
+        wb.open_path(Arc::from(Path::new(name)), OpenMode::Pinned, cx)
     });
     settle(cx);
     let view = active_view(&wb, cx);
@@ -840,4 +854,32 @@ fn reload_redetects_indentation(cx: &mut TestAppContext) {
     assert_eq!(indentation_status(&wb, cx), "Spaces: 2");
     reload(&wb, &dir, "a\n\tb\n\tc\n", cx);
     assert_eq!(indentation_status(&wb, cx), "Tab Size: 4");
+}
+
+#[gpui::test]
+fn cmd_slash_toggles(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, view, cx) = editor_file("main.rs", "a\nb\n", cx);
+    keys("cmd-/", cx);
+    assert_eq!(text_of(&view, cx), "// a\nb\n");
+    // The cursor stayed on its text.
+    assert_eq!(cursor(&view, cx), pt(0, 3));
+    keys("cmd-/", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\n");
+    // Each command is one undo step.
+    keys("cmd-/", cx);
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\n");
+    run(&wb, "editor.action.addCommentLine", cx);
+    run(&wb, "editor.action.addCommentLine", cx);
+    assert_eq!(text_of(&view, cx), "// // a\nb\n");
+    run(&wb, "editor.action.removeCommentLine", cx);
+    assert_eq!(text_of(&view, cx), "// a\nb\n");
+    keys("cmd-k cmd-u", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\n");
+    keys("cmd-k cmd-c", cx);
+    assert_eq!(text_of(&view, cx), "// a\nb\n");
+    // Block comment at a cursor, from the key.
+    keys("cmd-down shift-alt-a", cx);
+    assert_eq!(text_of(&view, cx), "// a\nb\n/*  */");
 }

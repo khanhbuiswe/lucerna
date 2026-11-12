@@ -42,7 +42,7 @@ pub(crate) struct Item {
     pub place: Place,
 }
 
-fn mk_patch(edits: &[(Range<usize>, Arc<str>)]) -> Patch {
+pub(crate) fn mk_patch(edits: &[(Range<usize>, Arc<str>)]) -> Patch {
     let mut delta = 0isize;
     let mut out = Vec::with_capacity(edits.len());
     for (range, text) in edits {
@@ -490,7 +490,7 @@ fn shift_edits(ctx: Ctx, set: &SelectionSet, outdent: bool) -> Vec<(Range<usize>
 
 /// The rows a selection touches: a selection ending at column 0 of a later
 /// row does not touch that row.
-fn touched_rows(snap: &BufferSnapshot, r: Range<usize>) -> Range<u32> {
+pub(crate) fn touched_rows(snap: &BufferSnapshot, r: Range<usize>) -> Range<u32> {
     let (a, b) = (snap.offset_to_point(r.start), snap.offset_to_point(r.end));
     let end = if b.row > a.row && b.column == 0 {
         b.row - 1
