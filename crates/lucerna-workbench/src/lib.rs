@@ -32,6 +32,7 @@ mod open_files;
 pub mod open_requests;
 mod quick_open;
 pub mod recent;
+mod recent_picker;
 mod references_view;
 mod save;
 mod search_view;
@@ -82,6 +83,7 @@ pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
 };
+pub use recent_picker::{RecentPicker, RecentPickerEvent};
 pub use references_view::{ReferencesView, find_references_in_tab};
 pub use save::{SaveOptions, SaveReason};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
