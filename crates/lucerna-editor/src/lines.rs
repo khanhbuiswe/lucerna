@@ -250,8 +250,24 @@ pub fn insert_line(ctx: Ctx, set: &SelectionSet, after: bool) -> EditPlan {
 }
 
 /// The 4.1 line-mode shift (indent-stop snapping), also on empty selections.
+///
+/// A selection within one row also indents that row when it is empty
+/// (`shouldIndentEmptyLines = startLine === endLine` in VS Code's
+/// shiftCommand.ts); the cursor ends after the inserted indent.
 pub fn indent_lines(ctx: Ctx, set: &SelectionSet) -> EditPlan {
-    build_mapped(set, shift_edits(ctx, set, false), EditKind::Other)
+    let snap = ctx.snapshot;
+    let mut edits = shift_edits(ctx, set, false);
+    for sel in set.all() {
+        let rows = touched_rows(snap, sel.range());
+        if rows.len() == 1 && snap.line(rows.start).is_empty() {
+            let at = row_start(snap, rows.start);
+            let indent = crate::commands::indent_string(ctx, ctx.config.tab_size.max(1));
+            edits.push((at..at, Arc::from(indent.as_str())));
+        }
+    }
+    edits.sort_by_key(|(r, _)| (r.start, r.end));
+    edits.dedup_by(|a, b| a.0 == b.0);
+    build_mapped(set, edits, EditKind::Other)
 }
 
 pub fn outdent_lines(ctx: Ctx, set: &SelectionSet) -> EditPlan {
@@ -274,9 +290,12 @@ pub fn join_lines(ctx: Ctx, set: &SelectionSet) -> EditPlan {
         a..(if b > a { b } else { a + 1 }) + 1
     };
     let mut items = Vec::new();
+    // Selections with nothing to join (on the last row): kept as they are.
+    let mut skipped: Vec<Selection> = Vec::new();
     for block in blocks(set, false, rows) {
         let (r0, last) = (block.rows.start, (block.rows.end - 1).min(count - 1));
         if last <= r0 {
+            skipped.extend(block.members.iter().map(|&i| set.all()[i]));
             continue;
         }
         let mut current_len = snap.line(r0).len();
@@ -303,7 +322,24 @@ pub fn join_lines(ctx: Ctx, set: &SelectionSet) -> EditPlan {
     if items.is_empty() {
         return finish(set, Vec::new(), set.all().to_vec());
     }
-    build(items, set.primary().id, EditKind::Other, true, true)
+    let mut plan = build(items, set.primary().id, EditKind::Other, true, true);
+    if !skipped.is_empty() {
+        let patch = mk_patch(&plan.edits);
+        let mut sels = plan.selections.all().to_vec();
+        let primary = if skipped.iter().any(|s| s.id == set.primary().id) {
+            set.primary().id
+        } else {
+            plan.selections.primary().id
+        };
+        sels.extend(skipped.iter().map(|s| Selection {
+            anchor: patch.map_offset(s.anchor, Bias::Right),
+            head: patch.map_offset(s.head, Bias::Right),
+            goal: Goal::None,
+            ..*s
+        }));
+        plan.selections = SelectionSet::from_selections(sels, primary, true);
+    }
+    plan
 }
 
 /// Removes trailing spaces and tabs on every line of the document.
@@ -414,6 +450,9 @@ mod tests {
         assert_eq!(after("a|\nb"), "a\n|\nb");
         assert_eq!(before("    a\n    b|"), "    a\n    |\n    b");
         assert_eq!(before("a|"), "|\na");
+        // Two cursors on one row open one line, not two.
+        assert_eq!(after("  a|b|"), "  ab\n  |");
+        assert_eq!(before("a\nb|c|"), "a\n|\nbc");
     }
 
     #[test]
@@ -428,6 +467,11 @@ mod tests {
         assert_eq!(run("a|", indent_lines), "    a|");
         assert_eq!(run("      a|", outdent_lines), "    a|");
         assert_eq!(run("«a\nb»", indent_lines), "«    a\n    b»");
+        // An empty row indents when it is the only row (VS Code
+        // shiftCommand.ts `shouldIndentEmptyLines`), but not inside a block.
+        assert_eq!(run("|", indent_lines), "    |");
+        assert_eq!(run("a\n|\nb", indent_lines), "a\n    |\nb");
+        assert_eq!(run("«a\n\nb»", indent_lines), "«    a\n\n    b»");
     }
 
     #[test]
@@ -439,6 +483,9 @@ mod tests {
         assert_eq!(run("a|b", join_lines), "a|b");
         assert_eq!(run("«a\n b\n   c»", join_lines), "a b| c");
         assert_eq!(run("a\nb|", join_lines), "a\nb|");
+        // A block with nothing to join keeps its selection.
+        assert_eq!(run("a|\nb\nc|", join_lines), "a| b\nc|");
+        assert_eq!(run("a|\nb\nc*|", join_lines), "a| b\nc*|");
     }
 
     #[test]

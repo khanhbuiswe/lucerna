@@ -906,8 +906,11 @@ fn cmd_shift_k_deletes_line(cx: &mut TestAppContext) {
     keys("down cmd-shift-k", cx);
     assert_eq!(text_of(&view, cx), "a\nc\n");
     assert_eq!(cursor(&view, cx), pt(1, 0));
-    keys("cmd-enter", cx);
-    assert_eq!(text_of(&view, cx), "a\nc\n\n");
+    input("  ", cx);
+    assert_eq!(text_of(&view, cx), "a\n  c\n");
+    keys("cmd-down", cx);
+    input("x  ", cx);
+    assert_eq!(text_of(&view, cx), "a\n  c\nx  ");
     run(&wb, "editor.action.trimTrailingWhitespace", cx);
-    assert_eq!(text_of(&view, cx), "a\nc\n\n");
+    assert_eq!(text_of(&view, cx), "a\n  c\nx");
 }
