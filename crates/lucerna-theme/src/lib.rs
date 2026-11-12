@@ -57,6 +57,8 @@ pub struct UiColors {
     pub border: Rgba,
     pub text: Rgba,
     pub text_muted: Rgba,
+    /// `text.accent`: text that stands out, such as a tab's unsaved dot.
+    pub text_accent: Rgba,
     pub element_selected: Rgba,
     /// `element.background`: the resting background of a control or a
     /// header row, such as a search result's file header.
@@ -181,6 +183,7 @@ impl UiColors {
             border,
             text: fg,
             text_muted: muted,
+            text_accent: pick("#74ade8ff", "#5c78e2ff"),
             element_selected: sel,
             element_background: title_bar,
             editor_subheader_background: title_bar,

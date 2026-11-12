@@ -29,6 +29,20 @@ use crate::ui::{
 /// Square slot that holds a tab's close button, kept even while the
 /// button is hidden so tabs do not change width on hover.
 const CLOSE_SLOT: Pixels = px(16.);
+/// The unsaved (or conflict) dot shown in the close button's slot.
+const DIRTY_DOT: Pixels = px(6.);
+
+/// What a file tab's dot says about its document.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TabMark {
+    /// Unsaved changes.
+    Dirty,
+    /// The file changed on disk under unsaved changes.
+    Conflict,
+}
+
+/// The deleted state and the dot of each tab's document, per group.
+type TabStates = Vec<Vec<(bool, Option<TabMark>)>>;
 const SASH_WIDTH: Pixels = px(4.);
 const MIN_GROUP_WIDTH: Pixels = px(120.);
 
@@ -407,7 +421,7 @@ impl Render for EditorGroupsView {
             .map(|tab| tab.as_ref().map(|t| self.body(t, window, cx)))
             .collect();
 
-        let deleted: Vec<Vec<bool>> = self
+        let states: TabStates = self
             .model
             .groups()
             .iter()
@@ -415,10 +429,19 @@ impl Render for EditorGroupsView {
                 g.tabs
                     .iter()
                     .map(|t| {
-                        let docs = self.documents.as_ref();
-                        t.path().zip(docs).is_some_and(|(path, d)| {
-                            d.read(cx).state(path) == Some(&DocState::Deleted)
-                        })
+                        let Some((path, docs)) = t.path().zip(self.documents.as_ref()) else {
+                            return (false, None);
+                        };
+                        let docs = docs.read(cx);
+                        let deleted = docs.state(path) == Some(&DocState::Deleted);
+                        let mark = if docs.has_conflict(path) {
+                            Some(TabMark::Conflict)
+                        } else if docs.is_dirty(path) {
+                            Some(TabMark::Dirty)
+                        } else {
+                            None
+                        };
+                        (deleted, mark)
                     })
                     .collect()
             })
@@ -466,8 +489,22 @@ impl Render for EditorGroupsView {
                         .size(px(14.))
                         .text_color(color(ui.icon_muted))
                 });
-                let show_close = active || self.hovered_tab == Some(id);
-                let deleted = deleted[gi][ti];
+                let (deleted, mark) = states[gi][ti];
+                // As in Zed: a dot takes the ×'s place until the tab is
+                // hovered.
+                let hovered = self.hovered_tab == Some(id);
+                let show_close = hovered || (active && mark.is_none());
+                let dot = mark.filter(|_| !hovered).map(|mark| {
+                    let (fill, kind) = match mark {
+                        TabMark::Dirty => (ui.text_accent, "dirty"),
+                        TabMark::Conflict => (ui.warning, "conflict"),
+                    };
+                    div()
+                        .debug_selector(move || format!("tab-{kind}-{gi}-{ti}"))
+                        .size(DIRTY_DOT)
+                        .rounded_full()
+                        .bg(color(fill))
+                });
                 let hover = color(ui.ghost_element_hover);
                 let close = show_close.then(|| {
                     div()
@@ -542,7 +579,16 @@ impl Render for EditorGroupsView {
                             })
                             .child(title),
                     )
-                    .child(div().flex_none().size(CLOSE_SLOT).children(close))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .justify_center()
+                            .items_center()
+                            .size(CLOSE_SLOT)
+                            .children(close)
+                            .children(dot),
+                    )
             });
             let tab_bar = div()
                 .id(("tab-bar", gi))

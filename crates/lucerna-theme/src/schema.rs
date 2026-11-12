@@ -59,6 +59,7 @@ impl ThemeDef {
             border: color("border").unwrap_or(fb.border),
             text: color("text").unwrap_or(fb.text),
             text_muted: color("text.muted").unwrap_or(fb.text_muted),
+            text_accent: color("text.accent").unwrap_or(fb.text_accent),
             element_selected: color("element.selected").unwrap_or(fb.element_selected),
             element_background: color("element.background").unwrap_or(fb.element_background),
             editor_subheader_background: color("editor.subheader.background")

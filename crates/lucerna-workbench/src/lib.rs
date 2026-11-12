@@ -32,7 +32,9 @@ mod open_files;
 pub mod open_requests;
 mod quick_open;
 mod references_view;
+mod save;
 mod search_view;
+pub mod status_message;
 mod symbols;
 pub mod tasks;
 mod text_input;
@@ -79,6 +81,7 @@ pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
 };
 pub use references_view::{ReferencesView, find_references_in_tab};
+pub use save::{SaveOptions, SaveReason};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
 pub use symbols::{
     BREADCRUMBS_BATCH, BreadcrumbMode, EMPTY_SYMBOLS_TTL, FilePathMode, MAX_WORKSPACE_SYMBOLS,

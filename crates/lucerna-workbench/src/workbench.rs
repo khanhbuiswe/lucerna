@@ -286,6 +286,7 @@ impl Workbench {
         crate::extensions::register_commands(&mut commands);
         crate::symbols::register_commands(&mut commands);
         crate::editing::register_commands(&mut commands);
+        crate::save::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
             let root = root.clone();
@@ -469,6 +470,7 @@ impl Workbench {
                 wb.active_tabs_changed(window, cx)
             }),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
+            crate::status_message::observe(cx, |_, cx| cx.notify()),
             // The first window's hook shuts every window's servers down
             // against one 5 s deadline; the others find nothing left.
             cx.on_app_quit(|_, cx| {
@@ -1738,6 +1740,7 @@ impl Render for Workbench {
                     .child("Lucerna")
             });
 
+        let status_message = crate::status_message::current(cx);
         div()
             .id("workbench")
             .track_focus(&self.focus)
@@ -1787,6 +1790,7 @@ impl Render for Workbench {
                     cx,
                 ),
                 &self.status_left,
+                status_message,
                 self.pending_chord_label(),
                 &self.status_right,
                 ui,

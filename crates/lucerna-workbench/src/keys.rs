@@ -231,11 +231,18 @@ mod tests {
         rows.extend([
             (event("z", None, cmd()), "cmd+z"),
             (event("z", None, cmd_shift()), "shift+cmd+z"),
+            (event("s", None, cmd()), "cmd+s"),
+            (event("s", None, alt_cmd()), "alt+cmd+s"),
+            // The second stroke of `cmd+k s`.
+            (event("s", Some("s"), Modifiers::none()), "s"),
             (event("u", None, cmd()), "cmd+u"),
             (event("x", None, cmd()), "cmd+x"),
             (event("v", None, cmd()), "cmd+v"),
             (event("backspace", None, Modifiers::none()), "backspace"),
-            (event("backspace", None, Modifiers::shift()), "shift+backspace"),
+            (
+                event("backspace", None, Modifiers::shift()),
+                "shift+backspace",
+            ),
             (event("backspace", None, alt()), "alt+backspace"),
             (event("backspace", None, cmd()), "cmd+backspace"),
             (event("delete", None, Modifiers::none()), "delete"),

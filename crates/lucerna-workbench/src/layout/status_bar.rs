@@ -1,7 +1,7 @@
-//! The 26 px status bar: panel toggles and left items, the pending key
-//! chord, then right items.
+//! The 26 px status bar: panel toggles, left items and the status
+//! message, the pending key chord, then right items.
 
-use gpui::{AnyView, IntoElement, ParentElement, Styled, div, prelude::*, px};
+use gpui::{AnyView, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px};
 use lucerna_theme::UiColors;
 
 use super::color;
@@ -10,6 +10,7 @@ use crate::ui::{GRID, STATUS_BAR_HEIGHT, UI_FONT_SIZE_STATUS};
 pub(crate) fn render(
     toggles: impl IntoElement,
     left: &[AnyView],
+    message: Option<SharedString>,
     pending_chord: Option<String>,
     right: &[AnyView],
     ui: &UiColors,
@@ -44,7 +45,13 @@ pub(crate) fn render(
                 .items_center()
                 .gap(px(2. * GRID))
                 .child(toggles)
-                .children(left.iter().cloned()),
+                .children(left.iter().cloned())
+                .children(message.map(|message| {
+                    div()
+                        .debug_selector(|| "status-message".into())
+                        .whitespace_nowrap()
+                        .child(message)
+                })),
         )
         .children(pending)
         .child(div().flex_1())

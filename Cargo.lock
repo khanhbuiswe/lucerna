@@ -3423,6 +3423,7 @@ name = "lucerna-workbench"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "encoding_rs",
  "futures",
  "gpui",
  "gpui_platform",

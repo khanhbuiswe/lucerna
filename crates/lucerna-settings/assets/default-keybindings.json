@@ -106,6 +106,9 @@
   { "key": "cmd+x", "command": "editor.action.clipboardCutAction", "when": "editorTextFocus && !editorReadonly" },
   { "key": "cmd+v", "command": "editor.action.clipboardPasteAction", "when": "editorTextFocus && !editorReadonly" },
   { "key": "enter", "command": "type", "args": { "text": "\n" }, "when": "editorTextFocus && !editorReadonly" },
+  { "key": "cmd+s", "command": "workbench.action.files.save" },
+  { "key": "alt+cmd+s", "command": "workbench.action.files.saveAll" },
+  { "key": "cmd+k s", "command": "workbench.action.files.saveWithoutFormatting" },
   { "key": "f4", "command": "references-view.next", "when": "referencesViewFocus" },
   { "key": "shift+f4", "command": "references-view.prev", "when": "referencesViewFocus" }
 ]

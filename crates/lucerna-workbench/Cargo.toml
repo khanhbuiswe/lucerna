@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 crossbeam-channel.workspace = true
+encoding_rs.workspace = true
 futures.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
