@@ -227,9 +227,9 @@ fn auto_close(
             }
         }
         let before = line[..col].chars().next_back();
-        // `don't`: no pair after a word char (VS Code skips this with
-        // `always`).
-        if quote
+        // `don't`: no `'` or `"` pair after a word char (VS Code skips this
+        // with `always`, and for other quotes such as backticks).
+        if matches!(ch, "'" | "\"")
             && setting != AutoClosing::Always
             && before.is_some_and(|c| is_word_char(c, &ctx.config.word_separators))
         {
@@ -477,6 +477,13 @@ mod tests {
         assert_eq!(ts("don|", "'"), "don'|");
         assert_eq!(ts("x = |", "'"), "x = '|'");
         assert_eq!(ts("// a |", "'"), "// a '|");
+        // Only `'` and `"` skip the pair after a word char.
+        assert_eq!(ts("html|", "`"), "html`|`");
+        // Inside a string, with a non-word char before and a space after.
+        assert_eq!(
+            rust("let s = \"a | b\";", "\"", &[]),
+            "let s = \"a \"| b\";"
+        );
         // In code, a quote closes.
         assert_eq!(rust("let s = |;", "\"", &[]), "let s = \"|\";");
     }
@@ -584,6 +591,13 @@ mod tests {
             },
         ]);
         assert_eq!(remap_regions(&[0..3], &old, &new, &patch), [1..5]);
+        // Typed right after the closer: outside the region.
+        let new = text("(a)x");
+        let patch = Patch::new(vec![lucerna_text::PatchEdit {
+            old: 3..3,
+            new: 3..4,
+        }]);
+        assert_eq!(remap_regions(&[0..3], &old, &new, &patch), [0..3]);
         // The closer was deleted: the region goes.
         let new = text("(a");
         let patch = Patch::new(vec![lucerna_text::PatchEdit {
