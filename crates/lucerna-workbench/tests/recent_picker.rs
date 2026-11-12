@@ -92,7 +92,7 @@ fn lists_folders_then_files_with_headers(cx: &mut TestAppContext) {
     );
     assert_eq!(
         texts(&picker, cx),
-        vec!["lucerna ~/a", "zed ~/src", "notes.md ~/"]
+        vec!["lucerna ~/a", "zed ~/src", "notes.md ~"]
     );
     assert!(cx.debug_bounds("recent-picker-header-folders").is_some());
     assert!(cx.debug_bounds("recent-picker-header-files").is_some());
@@ -155,7 +155,7 @@ fn remove_emits_and_drops_the_row(cx: &mut TestAppContext) {
         *events.lock().unwrap(),
         vec![RecentPickerEvent::Remove(PathBuf::from("/Users/me/a"))]
     );
-    assert_eq!(texts(&picker, cx), vec!["b ~/"]);
+    assert_eq!(texts(&picker, cx), vec!["b ~"]);
 }
 
 #[gpui::test]
@@ -230,7 +230,7 @@ fn the_remove_button_only_removes(cx: &mut TestAppContext) {
         *events.lock().unwrap(),
         vec![RecentPickerEvent::Remove(PathBuf::from("/Users/me/a"))]
     );
-    assert_eq!(texts(&picker, cx), vec!["b ~/"]);
+    assert_eq!(texts(&picker, cx), vec!["b ~"]);
 }
 
 #[gpui::test]

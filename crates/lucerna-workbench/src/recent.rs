@@ -57,17 +57,24 @@ pub fn recent_path(data_dir: &Path) -> PathBuf {
 
 /// Reads the list. A missing file is an empty list; a file that does not
 /// parse or has another version is renamed to `recent.json.bak` (replacing
-/// an older one) and is an empty list too.
+/// an older one) and is an empty list too. A file that cannot be read is
+/// an empty list as well; see [`try_load`].
 pub fn load(path: &Path) -> RecentList {
+    try_load(path).unwrap_or_else(|err| {
+        tracing::warn!(%err, path = %path.display(), "could not read recent list");
+        RecentList::default()
+    })
+}
+
+/// [`load`], failing when the file exists but cannot be read, so that a
+/// write does not replace a history it never saw.
+fn try_load(path: &Path) -> io::Result<RecentList> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return RecentList::default(),
-        Err(err) => {
-            tracing::warn!(%err, path = %path.display(), "could not read recent list");
-            return RecentList::default();
-        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(RecentList::default()),
+        Err(err) => return Err(err),
     };
-    match serde_json::from_str::<RecentFile>(&text) {
+    Ok(match serde_json::from_str::<RecentFile>(&text) {
         Ok(file) if file.version == RECENT_VERSION => RecentList {
             entries: file.entries,
         },
@@ -79,7 +86,7 @@ pub fn load(path: &Path) -> RecentList {
             }
             RecentList::default()
         }
-    }
+    })
 }
 
 impl RecentList {
@@ -114,22 +121,24 @@ fn save(path: &Path, entries: Vec<RecentEntry>) -> io::Result<()> {
 }
 
 /// Puts `entry` first (dropping an older one with the same path) and drops
-/// entries that no longer exist.
+/// entries that no longer exist. Fails without writing when the file
+/// cannot be read.
 pub fn record(data_dir: &Path, entry: RecentEntry) -> io::Result<()> {
     let _writing = write_lock();
     let path = recent_path(data_dir);
-    let mut entries = load(&path).existing();
+    let mut entries = try_load(&path)?.existing();
     entries.retain(|e| e.path != entry.path);
     entries.insert(0, entry);
     entries.truncate(RECENT_LIMIT);
     save(&path, entries)
 }
 
-/// Forgets `path` and drops entries that no longer exist.
+/// Forgets `path` and drops entries that no longer exist. Fails without
+/// writing when the file cannot be read.
 pub fn remove(data_dir: &Path, path: &Path) -> io::Result<()> {
     let _writing = write_lock();
     let file = recent_path(data_dir);
-    let mut entries = load(&file).existing();
+    let mut entries = try_load(&file)?.existing();
     entries.retain(|e| e.path != path);
     save(&file, entries)
 }
@@ -295,7 +304,45 @@ mod tests {
         let data = tmp.path().join("data");
         record(&data, folder(a)).unwrap();
         assert!(recent_path(&data).exists());
-        assert!(!data.join("recent.json.tmp").exists());
+        let names: Vec<_> = std::fs::read_dir(&data)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["recent.json"]);
+    }
+
+    /// Two processes writing at once each use a temporary file of their own.
+    #[test]
+    fn tmp_file_is_per_process() {
+        let tmp = crate::workspace_state::tmp_path(Path::new("/data/recent.json"));
+        let pid = std::process::id();
+        assert_eq!(tmp, PathBuf::from(format!("/data/recent.json.{pid}.tmp")));
+    }
+
+    /// A file that exists but cannot be read is not overwritten: the next
+    /// write would lose the whole history.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_is_not_overwritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = mkdir(tmp.path(), "a");
+        let data = tmp.path().join("data");
+        record(&data, folder(a.clone())).unwrap();
+        let file = recent_path(&data);
+        let before = std::fs::read(&file).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            // Running as root: the file is readable anyway.
+            return;
+        }
+        let b = mkdir(tmp.path(), "b");
+        let recorded = record(&data, folder(b));
+        let removed = remove(&data, &a);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(recorded.is_err());
+        assert!(removed.is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), before);
     }
 
     #[test]
@@ -304,6 +351,15 @@ mod tests {
         assert_eq!(
             display_parts(&entry, Some(Path::new("/Users/me"))),
             ("x".to_string(), "~/code".to_string())
+        );
+        let entry = folder(PathBuf::from("/Users/me/x"));
+        assert_eq!(
+            display_parts(&entry, Some(Path::new("/Users/me"))),
+            ("x".to_string(), "~".to_string())
+        );
+        assert_eq!(
+            tilde_path(Path::new("/Users/me"), Some(Path::new("/Users/me"))),
+            "~"
         );
     }
 }
