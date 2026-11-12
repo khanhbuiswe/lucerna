@@ -21,9 +21,9 @@ there is nothing new to learn.
 Claude / Codex (app or CLI) writes  →  Lucerna shows  →  you review
 ```
 
-> **Status:** Phase 4.1 (the editing core) is done: Lucerna edits and saves files. Smart typing,
-> multi-cursor, auto-merge with a conflict bar, completion, rename and format (4.2 to 4.6) are
-> not done yet. Known limits: quitting from the Dock or at logout cannot show the save prompt
+> **Status:** Phases 4.1 (the editing core) and 4.2 (smart typing) are done: Lucerna edits and
+> saves files. Auto-merge with a conflict bar, multi-cursor, completion, rename and format
+> (4.3 to 4.6) are not done yet. Known limits: quitting from the Dock or at logout cannot show the save prompt
 > (a GPUI limitation at the pinned revision), and there is no hot exit yet. It runs on **macOS** today. **Linux and Windows** are planned, and GPUI already
 > supports both. See [Roadmap](#roadmap).
 
@@ -82,6 +82,13 @@ left out.
   `files.eol` and `files.autoSave`. Writes are atomic and keep the file's encoding, BOM and line
   ending. Tabs show a dirty dot, and a conflict dot when the file changed on disk. Saving over
   a changed file asks first, and closing or quitting with unsaved changes prompts.
+- **Smart typing.** Brackets and quotes close themselves, type over their closer, delete as a
+  pair and wrap a selection. They follow the language and stay out of strings and comments.
+  Enter indents after brackets (and by the extension's `indents.scm`), and typing a closer
+  outdents. The indentation of a file is detected, and the status bar shows `Spaces: N` or
+  `Tab Size: N`. Toggle line and block comments (languages with only block comments wrap each
+  line), move, copy, delete, insert, indent, outdent and join lines, trim trailing whitespace,
+  and expand or shrink the selection by syntax.
 - **Vim (optional).** Set `"vim.enabled": true` for Vim keys: motions, search,
   scrolling, marks, visual selection to copy and a minimal Insert mode (`i a I A o O`). It is off by default. See [Vim mode](#vim-mode).
 - **Vietnamese / IME input** works in every text field (Telex, VNI).
@@ -214,6 +221,13 @@ non-blank character of the next line.
 | `editor.cursorBlinking` | `"blink"` | Cursor blink style |
 | `editor.cursorStyle` | `"line"` | Cursor shape |
 | `editor.emptySelectionClipboard` | `true` | Copy or cut the whole line when nothing is selected |
+| `editor.autoIndent` | `"full"` | Auto-indent on Enter and paste: `none`, `keep`, `brackets`, `advanced` or `full` |
+| `editor.detectIndentation` | `true` | Detect tabs or spaces and the tab size from the file |
+| `editor.autoClosingBrackets` | `"languageDefined"` | Close brackets: `always`, `languageDefined`, `beforeWhitespace` or `never` |
+| `editor.autoClosingQuotes` | `"languageDefined"` | Close quotes, same values |
+| `editor.autoClosingOvertype` | `"auto"` | Type over a closer: `always`, `auto` (only ones the editor inserted) or `never` |
+| `editor.autoClosingDelete` | `"auto"` | Delete the closer with its opener: `always`, `auto` or `never` |
+| `editor.autoSurround` | `"languageDefined"` | Wrap a selection when typing a bracket or quote: `languageDefined`, `quotes`, `brackets` or `never` |
 | `files.eol` | `"auto"` | Line ending for new text |
 | `files.encoding` | `"utf8"` | Reserved: encoding for new files, not read yet (takes effect in a later release) |
 | `files.insertFinalNewline` | `false` | Add a final newline on save |
@@ -308,10 +322,10 @@ and Zed do things are in [`docs/research/`](docs/research/). Before designing a 
 | 2 | Zed extensions: themes, icon themes, languages | ✅ Done |
 | 3 | Code intelligence over LSP: go to definition, references, hover, diagnostics, outline | ✅ Done |
 | 3b | WASM host for Zed extensions: language servers shipped inside `extension.wasm`. PHP, Ruby, Elixir, Vue and others already work through the language server table when their server is installed | Planned |
-| 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | 4.1 done (editing core); 4.2 to 4.6 planned |
+| 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | 4.1 (editing core) and 4.2 (smart typing) done; 4.3 to 4.6 planned |
 | 5 | Git gutter and diff view, integrated terminal, settings UI | Planned |
 | V1 | Vim navigation: motions, search, scroll, marks, visual copy | ✅ Done |
-| V2 | Vim editing beyond minimal Insert (after phase 4) | Planned |
+| V2 | Vim editing beyond minimal Insert (right after 4.2 and 4.4, before 4.3, 4.5 and 4.6) | Planned |
 | — | Linux and Windows support, using GPUI's Wayland/X11 and DirectX backends | Planned |
 
 ## License

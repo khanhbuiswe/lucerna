@@ -136,6 +136,11 @@ Each file carries a comment of the form
 | `crates/lucerna-editor/src/words.rs` | `src/vs/editor/common/core/wordCharacterClassifier.ts`, `src/vs/editor/common/cursor/cursorWordOperations.ts` |
 | `crates/lucerna-editor/src/commands.rs` | `src/vs/editor/common/cursor/cursorDeleteOperations.ts`, `src/vs/editor/common/cursor/cursorTypeEditOperations.ts`, `src/vs/editor/contrib/wordOperations/browser/wordOperations.ts`, `src/vs/editor/common/commands/shiftCommand.ts` |
 | `crates/lucerna-editor/src/clipboard.rs` | `src/vs/editor/common/cursor/cursorTypeEditOperations.ts` (paste), `src/vs/editor/common/cursor/cursorDeleteOperations.ts` (cut), `src/vs/editor/common/viewModel/viewModelImpl.ts` (copy) |
+| `crates/lucerna-editor/src/autoclose.rs` | `src/vs/editor/common/cursor/cursorTypeEditOperations.ts`, `src/vs/editor/common/cursor/cursorDeleteOperations.ts` |
+| `crates/lucerna-editor/src/indent.rs` | `src/vs/editor/common/cursor/cursorTypeEditOperations.ts` |
+| `crates/lucerna-editor/src/indentation.rs` | `src/vs/editor/common/model/indentationGuesser.ts` |
+| `crates/lucerna-editor/src/comment.rs` | `src/vs/editor/contrib/comment/browser/lineCommentCommand.ts`, `src/vs/editor/contrib/comment/browser/blockCommentCommand.ts` |
+| `crates/lucerna-editor/src/lines.rs` | `src/vs/editor/contrib/linesOperations/browser/linesOperations.ts`, `src/vs/editor/contrib/linesOperations/browser/moveLinesCommand.ts`, `src/vs/editor/contrib/linesOperations/browser/copyLinesCommand.ts` |
 
 ```
 MIT License

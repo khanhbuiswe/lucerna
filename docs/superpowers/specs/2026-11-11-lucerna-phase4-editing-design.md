@@ -1,6 +1,6 @@
 # Phase 4: sửa code đầy đủ
 
-Ngày 2026-11-11. Trạng thái: 4.1 đã triển khai (commits ba061dc..HEAD); 4.2–4.6 chưa làm.
+Ngày 2026-11-11. Trạng thái: 4.1 và 4.2 đã triển khai; 4.3–4.6 chưa làm.
 
 ## 1. Mục tiêu
 
