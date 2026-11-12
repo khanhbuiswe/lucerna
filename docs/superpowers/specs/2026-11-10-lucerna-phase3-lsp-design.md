@@ -4,7 +4,7 @@ Ngày 2026-11-10. Trạng thái: đã triển khai (commit 3a9951d..HEAD).
 
 ## 1. Mục tiêu
 
-Lucerna đọc được code như một IDE. Người dùng nhảy tới định nghĩa, xem tham chiếu, hover xem kiểu và tài liệu, thấy lỗi của compiler ngay trong file, và tìm symbol trong file hay cả project, mà không phải mở VS Code. Lucerna vẫn chỉ đọc: completion, rename, format, code action thuộc Phase 4.
+Lucerna đọc được code như một IDE. Người dùng nhảy tới định nghĩa, xem tham chiếu, hover xem kiểu và tài liệu, thấy lỗi của compiler ngay trong file, và tìm symbol trong file hay cả project, mà không phải mở VS Code. Lucerna vẫn chỉ đọc (Phase 4 đã cho sửa, xem `2026-11-11-lucerna-phase4-editing-design.md`): completion, rename, format, code action thuộc Phase 4.
 
 Đã chốt với người dùng:
 

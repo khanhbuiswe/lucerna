@@ -31,7 +31,7 @@ Spec này **chỉ** mô tả giai đoạn 1. Mỗi giai đoạn sau có spec ri�
 | 2 | Host extension Zed | Theme, icon theme, ngôn ngữ và grammar, snippet từ extension của Zed |
 | 3 | Hiểu code qua LSP | Định nghĩa, tham chiếu, hover, diagnostics, outline, breadcrumbs, Quick Open `@` và `#` |
 | 3b | Host WASM cho extension Zed | Language server từ `extension.wasm`. PHP, Ruby, Elixir, Vue… đã chạy qua bảng language server (`2026-11-11-lsp-server-table-design.md`) khi người dùng đã cài server |
-| 4 | Sửa code đầy đủ | Multi-cursor, undo, xử lý xung đột với agent, completion, rename, format |
+| 4 | Sửa code đầy đủ ([spec](2026-11-11-lucerna-phase4-editing-design.md), 4.1 đã xong) | Multi-cursor, undo, xử lý xung đột với agent, completion, rename, format |
 | 5 | Mở rộng | Git gutter, xem diff, terminal tích hợp, giao diện settings |
 | V1 | Vim di chuyển (đã xong) | Bật bằng `vim.enabled` trong settings. Chỉ có các thao tác đọc: motion, tìm kiếm, cuộn, số đếm, mark, chọn bằng visual rồi copy |
 | V2 | Vim sửa (làm sau giai đoạn 4) | Insert mode, các toán tử `d`/`c`/`y`, text object, `.`, macro, register, một phần lệnh `:` |
@@ -64,7 +64,7 @@ Giai đoạn 1 xong khi tác giả dùng Lucerna thay VS Code để đọc code 
   - Cmd+W đóng tab.
   - Ctrl+Tab chuyển qua lại giữa các tab gần đây.
 - **Khung xem code:**
-  - Chỉ đọc.
+  - Sửa được từ Phase 4: xem [2026-11-11-lucerna-phase4-editing-design.md](2026-11-11-lucerna-phase4-editing-design.md).
   - Số dòng, tô màu cú pháp, cuộn mượt, word wrap bật tắt được.
   - Chọn văn bản và copy (Cmd+C).
   - Tìm trong file (Cmd+F), có tùy chọn phân biệt hoa thường, cả từ và regex.

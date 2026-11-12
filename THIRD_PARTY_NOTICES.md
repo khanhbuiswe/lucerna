@@ -123,6 +123,44 @@ Icons: `folder`, `folder-open`, `file`, `file-code`, `braces`, `book-open`,
 `settings`, `lock`, `git-branch`, `scale`, `terminal`, `image`, `search`, `files`,
 `x`, `chevron-right`, `chevron-down`, `chevron-up`, `blocks`, `loader-circle`.
 
+## VS Code editing logic
+
+Parts of the editing core in `lucerna-editor` are adapted from VS Code
+(https://github.com/microsoft/vscode, MIT, Copyright (c) Microsoft Corporation).
+Each file carries a comment of the form
+`// Adapted from microsoft/vscode <path> (MIT)`. The files and their VS Code sources:
+
+| Lucerna file | VS Code source |
+|---|---|
+| `crates/lucerna-editor/src/undo_stops.rs` | `src/vs/editor/common/cursor/cursorTypeEditOperations.ts` |
+| `crates/lucerna-editor/src/words.rs` | `src/vs/editor/common/core/wordCharacterClassifier.ts`, `src/vs/editor/common/cursor/cursorWordOperations.ts` |
+| `crates/lucerna-editor/src/commands.rs` | `src/vs/editor/common/cursor/cursorDeleteOperations.ts`, `src/vs/editor/common/cursor/cursorTypeEditOperations.ts`, `src/vs/editor/contrib/wordOperations/browser/wordOperations.ts`, `src/vs/editor/common/commands/shiftCommand.ts` |
+| `crates/lucerna-editor/src/clipboard.rs` | `src/vs/editor/common/cursor/cursorTypeEditOperations.ts` (paste), `src/vs/editor/common/cursor/cursorDeleteOperations.ts` (cut), `src/vs/editor/common/viewModel/viewModelImpl.ts` (copy) |
+
+```
+MIT License
+
+Copyright (c) 2015 - present Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## VSCodeVim test cases
 
 Some unit tests in `lucerna-vim` are adapted from the test suite of VSCodeVim

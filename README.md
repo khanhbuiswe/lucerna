@@ -12,16 +12,19 @@
 ---
 
 Your agent writes the code in Claude, Codex or a CLI such as Claude Code. You open Lucerna to
-read it: browse the project, jump between files and see what the agent just changed. Lucerna
-opens instantly, follows changes on disk as they happen, and keeps VS Code's keyboard shortcuts
-and `settings.json`, so there is nothing new to learn.
+read it and fix it: browse the project, jump between files, see what the agent just changed and
+edit it yourself. Lucerna opens instantly, follows changes on disk as they happen, never silently
+overwrites either side's changes, and keeps VS Code's keyboard shortcuts and `settings.json`, so
+there is nothing new to learn.
 
 ```
 Claude / Codex (app or CLI) writes  →  Lucerna shows  →  you review
 ```
 
-> **Status:** Phase 2 of the roadmap is complete. Lucerna is a **viewer** for now, and editing
-> comes later. It runs on **macOS** today. **Linux and Windows** are planned, and GPUI already
+> **Status:** Phase 4.1 (the editing core) is done: Lucerna edits and saves files. Smart typing,
+> multi-cursor, auto-merge with a conflict bar, completion, rename and format (4.2 to 4.6) are
+> not done yet. Known limits: quitting from the Dock or at logout cannot show the save prompt
+> (a GPUI limitation at the pinned revision), and there is no hot exit yet. It runs on **macOS** today. **Linux and Windows** are planned, and GPUI already
 > supports both. See [Roadmap](#roadmap).
 
 ## Why Lucerna
@@ -72,8 +75,15 @@ left out.
   Zed extension ecosystem. Extensions are built locally, with no call to `api.zed.dev`.
 - **Large-file safe.** Files over 20 MB or 300k lines skip highlighting. A 5 MB minified line
   renders without freezing. Binary files and files in other encodings (UTF-16, Latin-1, …) are detected.
-- **Vim navigation (optional).** Set `"vim.enabled": true` for read-only Vim keys: motions, search,
-  scrolling, marks and visual selection to copy. It is off by default. See [Vim mode](#vim-mode).
+- **Editing.** Typing (with IME), cursor movement, delete and word delete, Enter that keeps the
+  indent, Tab and outdent, cut, copy and paste (a whole line when nothing is selected), and
+  undo and redo grouped like VS Code, plus cursor undo. Save, Save All, Save Without Formatting
+  and Revert; `files.trimTrailingWhitespace`, `files.insertFinalNewline`, `files.trimFinalNewlines`,
+  `files.eol` and `files.autoSave`. Writes are atomic and keep the file's encoding, BOM and line
+  ending. Tabs show a dirty dot, and a conflict dot when the file changed on disk. Saving over
+  a changed file asks first, and closing or quitting with unsaved changes prompts.
+- **Vim (optional).** Set `"vim.enabled": true` for Vim keys: motions, search,
+  scrolling, marks, visual selection to copy and a minimal Insert mode (`i a I A o O`). It is off by default. See [Vim mode](#vim-mode).
 - **Vietnamese / IME input** works in every text field (Telex, VNI).
 
 ## Install
@@ -170,8 +180,8 @@ The settings use VS Code's names, for example:
 ### Vim mode
 
 Vim navigation is built in and off by default. It takes effect as soon as you save the setting.
-The status bar shows the mode, and the cursor becomes a block. Lucerna is still a viewer, so
-there is no insert mode or editing yet.
+The status bar shows the mode, and the cursor becomes a block. Insert mode is minimal for now
+(`i a I A o O`, one undo step per session); operators such as `d` and `c` come later.
 
 | Group | Keys |
 |---|---|
@@ -193,6 +203,25 @@ non-blank character of the next line.
 | `vim.startofline` | `true` | `gg`, `G`, `H`, `M`, `L` go to the first non-blank character |
 | `vim.scroll` | `0` | Lines for `Ctrl+d` / `Ctrl+u`; `0` means half a page |
 | `editor.cursorSurroundingLines` | `0` | Lines kept around the cursor when it moves |
+
+### Editing settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `editor.insertSpaces` | `true` | Tab inserts spaces |
+| `editor.trimAutoWhitespace` | `true` | Remove auto-inserted indentation that was left unused |
+| `editor.wordSeparators` | `` `~!@#$%^&*()-=+[{]}\|;:'",.<>/? `` | Characters that split words |
+| `editor.cursorBlinking` | `"blink"` | Cursor blink style |
+| `editor.cursorStyle` | `"line"` | Cursor shape |
+| `editor.emptySelectionClipboard` | `true` | Copy or cut the whole line when nothing is selected |
+| `files.eol` | `"auto"` | Line ending for new text |
+| `files.encoding` | `"utf8"` | Encoding for new files |
+| `files.insertFinalNewline` | `false` | Add a final newline on save |
+| `files.trimFinalNewlines` | `false` | Remove extra final newlines on save |
+| `files.trimTrailingWhitespace` | `false` | Remove trailing whitespace on save |
+| `files.autoSave` | `"off"` | When to save automatically |
+| `files.autoSaveDelay` | `1000` | Milliseconds before an auto save |
+| `files.saveConflictResolution` | `"askUser"` | What to do when the file changed on disk |
 
 ## Extensions
 
@@ -279,10 +308,10 @@ and Zed do things are in [`docs/research/`](docs/research/). Before designing a 
 | 2 | Zed extensions: themes, icon themes, languages | ✅ Done |
 | 3 | Code intelligence over LSP: go to definition, references, hover, diagnostics, outline | ✅ Done |
 | 3b | WASM host for Zed extensions: language servers shipped inside `extension.wasm`. PHP, Ruby, Elixir, Vue and others already work through the language server table when their server is installed | Planned |
-| 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | Planned |
+| 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | 4.1 done (editing core); 4.2 to 4.6 planned |
 | 5 | Git gutter and diff view, integrated terminal, settings UI | Planned |
 | V1 | Vim navigation: motions, search, scroll, marks, visual copy | ✅ Done |
-| V2 | Vim editing (after phase 4) | Planned |
+| V2 | Vim editing beyond minimal Insert (after phase 4) | Planned |
 | — | Linux and Windows support, using GPUI's Wayland/X11 and DirectX backends | Planned |
 
 ## License

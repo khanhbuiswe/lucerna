@@ -9,7 +9,7 @@
 
 ### 1.1 Kết quả
 
-Người quen Vim đọc code trong Lucerna hoàn toàn bằng bàn phím: di chuyển, tìm, cuộn, đặt mark, chọn rồi copy. Lucerna vẫn là trình xem chỉ đọc. V1 chưa có insert mode và chưa có toán tử sửa.
+Người quen Vim đọc code trong Lucerna hoàn toàn bằng bàn phím: di chuyển, tìm, cuộn, đặt mark, chọn rồi copy. Lucerna vẫn là trình xem chỉ đọc. (Ghi chú: Insert tối thiểu đã có từ Phase 4.1; V2 dựa trên hợp đồng ở §13 của spec Phase 4.) V1 chưa có insert mode và chưa có toán tử sửa.
 
 ### 1.2 Tiêu chí thành công
 
