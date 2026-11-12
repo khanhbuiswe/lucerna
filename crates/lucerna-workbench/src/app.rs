@@ -382,6 +382,7 @@ fn replace_welcome(
     match any.update(cx, |_, window, cx| {
         build_workbench(launch, window, cx);
         window.activate_window();
+        cx.activate(true);
     }) {
         // The window's handle still names its first root type.
         Ok(()) => Some(WindowHandle::new(any.window_id())),

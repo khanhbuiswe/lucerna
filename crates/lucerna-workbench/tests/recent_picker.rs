@@ -252,6 +252,8 @@ fn enter_and_cmd_enter_open_the_selected_row(cx: &mut TestAppContext) {
     let (picker, events, cx) = two(cx);
     let focus = cx.update(|_, cx| gpui::Focusable::focus_handle(picker.read(cx), cx));
     cx.update(|window, cx| window.focus(&focus, cx));
+    // Only the secondary modifier alone opens a new window.
+    cx.simulate_keystrokes("alt-enter shift-cmd-enter");
     cx.simulate_keystrokes("down enter");
     cx.simulate_keystrokes("cmd-enter");
     assert_eq!(

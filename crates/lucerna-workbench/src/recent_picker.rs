@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, MouseButton, ParentElement, Render, ScrollHandle, SharedString, Styled, Window,
-    div, prelude::*, px, svg,
+    KeyDownEvent, Modifiers, MouseButton, ParentElement, Render, ScrollHandle, SharedString,
+    Styled, Window, div, prelude::*, px, svg,
 };
 
 use crate::AppState;
@@ -24,6 +24,12 @@ use crate::ui::{
     CLOSE_ICON, FILE_ICON_SIZE, GRID, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, icon_button, popover,
     section_header, tooltip,
 };
+
+/// The search box's hint, naming the key that opens a new window.
+#[cfg(target_os = "macos")]
+const PLACEHOLDER: &str = "Select to open (⌘Enter for a new window)";
+#[cfg(not(target_os = "macos"))]
+const PLACEHOLDER: &str = "Select to open (Ctrl+Enter for a new window)";
 
 /// What the host does as the picker is used.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,7 +68,7 @@ impl RecentPicker {
         let this = cx.weak_entity();
         let input = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder("Select to open (⌘Enter for a new window)");
+            input.set_placeholder(PLACEHOLDER);
             input.on_change(move |text, _, cx| {
                 this.update(cx, |picker, cx| picker.query_changed(text, cx))
                     .ok();
@@ -179,13 +185,15 @@ impl RecentPicker {
 
     fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let m = &ev.keystroke.modifiers;
+        // ⌘Enter on macOS, Ctrl+Enter elsewhere: a new window.
+        let new_window = *m == Modifiers::secondary_key(cx);
         match ev.keystroke.key.as_str() {
             "r" if m.control && !m.alt && !m.platform => {
                 self.select_next(if m.shift { -1 } else { 1 }, cx)
             }
-            _ if m.control || m.alt || m.shift => return,
-            "enter" => self.confirm(m.platform, cx),
-            _ if m.platform => return,
+            "enter" if new_window => self.confirm(true, cx),
+            _ if m.control || m.alt || m.shift || m.platform => return,
+            "enter" => self.confirm(false, cx),
             "up" => self.select_next(-1, cx),
             "down" => self.select_next(1, cx),
             // Unless a key binding closed the picker first.
@@ -233,7 +241,7 @@ impl RecentPicker {
             .group(group.clone())
             .on_click(cx.listener(move |picker, ev: &gpui::ClickEvent, _, cx| {
                 picker.select(row, cx);
-                picker.open(row, ev.modifiers().platform, cx);
+                picker.open(row, ev.modifiers().secondary(cx), cx);
             }))
             .gap(px(2. * GRID))
             .child(
