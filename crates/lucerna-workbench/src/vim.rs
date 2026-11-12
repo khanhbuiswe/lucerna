@@ -16,8 +16,8 @@ use gpui::{
 use lucerna_settings::{Context as WhenContext, WhenExpr, parse_when};
 use lucerna_text::{BufferSnapshot, Point, Reload};
 use lucerna_vim::{
-    Action, FoldAction, Key, Mode, Outcome, SearchQuery, Settings, ViewInfo, Vim, VimGlobals,
-    VimSelection, block_ranges, exclusive_range,
+    Action, FoldAction, InsertAt, Key, Mode, Outcome, SearchQuery, Settings, ViewInfo, Vim,
+    VimGlobals, VimSelection, block_ranges, exclusive_range,
 };
 
 use crate::AppState;
@@ -183,6 +183,11 @@ impl VimLayer {
         let Some(key) = to_vim_key(ev) else {
             return false;
         };
+        // Insert mode: every key but Escape types, through the keymap and
+        // the view's input handler (IME included).
+        if key != Key::Escape && self.mode_for(view.entity_id()) == Some(Mode::Insert) {
+            return false;
+        }
         self.key_generation += 1;
         self._retry = None;
         self.open_search = None;
@@ -359,12 +364,14 @@ impl VimLayer {
                 let Some(view) = state.view.upgrade() else {
                     continue;
                 };
-                // The cursor stays where vim had it; a visual selection
-                // goes, one made in Normal mode (with the mouse) stays.
+                // The cursor stays where vim had it (or, in Insert mode,
+                // where the caret is); a visual selection goes, one made in
+                // Normal mode (with the mouse) stays.
                 let at = state.vim.cursor();
-                let visual = state.vim.mode() != Mode::Normal;
+                let visual = !matches!(state.vim.mode(), Mode::Normal | Mode::Insert);
                 view.update(cx, |v, cx| {
                     v.set_cursor_overlay(None, cx);
+                    v.set_suppress_stops(false, cx);
                     if visual || v.has_block_selection() {
                         v.select(at..at, cx);
                     }
@@ -451,7 +458,10 @@ impl VimLayer {
         let lines = snapshot.line_count();
         state.vim.remap_rows(|row| reload.adjust_row(row, lines));
         state.vim.clamp(snapshot);
-        if state.vim.mode() == Mode::Normal {
+        if state.vim.mode() == Mode::Insert {
+            // The edit is (most likely) the user typing: the caret is the
+            // view's, and `view_changed` follows it.
+        } else if state.vim.mode() == Mode::Normal {
             // A selection the view kept (its rows did not change) moved
             // the same way as the cursor and stays: it may be one made with
             // the mouse. A dropped one is replaced by vim's cursor, so the
@@ -483,6 +493,13 @@ impl VimLayer {
         };
         let v = view.read(cx);
         let ready = takes_keys(v);
+        if state.vim.mode() == Mode::Insert {
+            // Typing, arrow keys and clicks move the caret; the mode stays.
+            follow_selection(&mut state.vim, v);
+            state.generation = v.selection_generation();
+            cx.notify();
+            return;
+        }
         if v.selection_generation() != state.generation {
             state.vim.reset(v.selection_head());
             state.vim.clamp(v.snapshot());
@@ -533,7 +550,7 @@ impl VimLayer {
                 return false;
             };
             if v.selection_generation() != state.generation {
-                state.vim.reset(v.selection_head());
+                follow_selection(&mut state.vim, v);
                 state.generation = v.selection_generation();
             }
             let info = Info {
@@ -667,6 +684,7 @@ impl VimLayer {
         let id = view.entity_id();
         let mut reveal = None;
         let mut redraw = false;
+        let mut insert = None;
         for action in actions {
             match action {
                 Action::ScrollTopRow(row) => {
@@ -704,7 +722,13 @@ impl VimLayer {
                 Action::ModeChanged(_) => redraw = true,
                 Action::OpenSearch { backward } => self.open_search = Some(backward),
                 Action::RunCommand(id) => self.run_command = Some(id),
+                Action::EnterInsert(at) => insert = Some(at),
             }
+        }
+        if let Some(at) = insert {
+            self.start_insert(view, at, cx);
+            cx.notify();
+            return true;
         }
         let synced = match (reveal, redraw) {
             (Some(reveal), _) => {
@@ -726,6 +750,53 @@ impl VimLayer {
         };
         cx.notify();
         synced
+    }
+
+    /// Starts an Insert session in `view`: one undo step from here to
+    /// Escape, the bar cursor, and the caret where `at` says: vim's cursor,
+    /// or a line `o` / `O` opens with `commands::newline` (keeping the
+    /// indent).
+    fn start_insert(&mut self, view: &Entity<CodeView>, at: InsertAt, cx: &mut Context<Self>) {
+        let Some(state) = self.views.get_mut(&view.entity_id()) else {
+            return;
+        };
+        let p = state.vim.cursor();
+        let generation = view.update(cx, |v, cx| {
+            v.set_suppress_stops(true, cx);
+            // Before the edit: a block cursor refuses it.
+            v.set_cursor_overlay(Some(bar_cursor(p)), cx);
+            let line_len = |v: &CodeView, row: u32| v.snapshot().line(row).len() as u32;
+            match at {
+                InsertAt::LineBelow => {
+                    let column = line_len(v, p.row);
+                    v.set_cursor(Point { row: p.row, column }, cx);
+                    v.edit(cx, lucerna_editor::commands::newline);
+                }
+                InsertAt::LineAbove => {
+                    // A break after the indent leaves the indent alone on
+                    // the line above (or, on a blank line, an empty line).
+                    let line = v.snapshot().line(p.row);
+                    let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+                    v.set_cursor(
+                        Point {
+                            row: p.row,
+                            column: indent as u32,
+                        },
+                        cx,
+                    );
+                    if v.edit(cx, lucerna_editor::commands::newline) {
+                        let column = line_len(v, p.row);
+                        v.set_cursor(Point { row: p.row, column }, cx);
+                    }
+                }
+                InsertAt::Before | InsertAt::After | InsertAt::LineStart | InsertAt::LineEnd => {
+                    v.set_cursor(p, cx)
+                }
+            }
+            v.selection_generation()
+        });
+        state.generation = generation;
+        follow_selection(&mut state.vim, view.read(cx));
     }
 
     /// The matches of `query` in `view`: cached, or found now when the
@@ -789,8 +860,21 @@ impl VimLayer {
                 }
             }
             v.set_cursor_overlay(Some(block_cursor(at)), cx);
+            // Leaving Insert mode ends its undo step.
+            v.set_suppress_stops(false, cx);
             v.selection_generation()
         });
+    }
+}
+
+/// Moves vim's cursor to the view's after the view moved it: in Insert
+/// mode the mode stays, otherwise vim goes back to Normal mode there.
+fn follow_selection(vim: &mut Vim, v: &CodeView) {
+    if vim.mode() == Mode::Insert {
+        vim.set_cursor(v.selection_head());
+        vim.clamp(v.snapshot());
+    } else {
+        vim.reset(v.selection_head());
     }
 }
 
@@ -911,6 +995,13 @@ fn block_cursor(at: Point) -> CursorOverlay {
     CursorOverlay {
         at,
         shape: CursorShape::Block,
+    }
+}
+
+fn bar_cursor(at: Point) -> CursorOverlay {
+    CursorOverlay {
+        at,
+        shape: CursorShape::Bar,
     }
 }
 

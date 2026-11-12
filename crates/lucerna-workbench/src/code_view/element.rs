@@ -22,7 +22,7 @@ use super::caret::CaretStyle;
 use super::diagnostics::MarkStyle;
 use super::layout::{FoldState, char_columns, display_lines_with_tab_size, row_range, row_start};
 use super::selection;
-use super::{CodeView, Drag, hsla, link};
+use super::{CodeView, CursorOverlay, CursorShape, Drag, hsla, link};
 use crate::AppState;
 use crate::hover::PopoverAnchor;
 use crate::ui::{SCROLLBAR_WIDTH, thumb_geometry};
@@ -612,13 +612,13 @@ impl CodeView {
         };
         let text_x = text_bounds.left() + padding - px(self.scroll_x);
 
-        let cursor_overlay = self.cursor_overlay.and_then(|o| self.cell_at(o.at));
+        let cursor_overlay = self.block_cursor().and_then(|at| self.cell_at(at));
         let cursor_row = match &cursor_overlay {
             Some(cell) => Some(cell.start.row),
             None => Some(self.selection_head().row),
         };
         let show_carets =
-            self.cursor_overlay.is_none() && self.caret.visible() && self.focus.is_focused(window);
+            cursor_overlay.is_none() && self.caret.visible() && self.focus.is_focused(window);
         let (selections, carets) = match (frame_rows.first(), frame_rows.last()) {
             (Some(first), Some(last)) => {
                 self.visible_selections(first.buffer_row..last.buffer_row + 1, show_carets)
@@ -730,7 +730,13 @@ impl CodeView {
             selections,
             marked: self.visible_marked(),
             carets,
-            caret_style: self.config.cursor_style,
+            caret_style: match self.cursor_overlay {
+                Some(CursorOverlay {
+                    shape: CursorShape::Bar,
+                    ..
+                }) => CaretStyle::Line(2),
+                _ => self.config.cursor_style,
+            },
             block_selection: self.block_selection.clone().unwrap_or_default(),
             cursor_overlay,
             matches,

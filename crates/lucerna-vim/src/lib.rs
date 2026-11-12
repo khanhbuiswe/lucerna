@@ -36,6 +36,25 @@ pub enum Mode {
     Visual,
     VisualLine,
     VisualBlock,
+    /// Keys type text: they go to the editor, not to vim, until Escape.
+    Insert,
+}
+
+/// Where `i a I A o O` start inserting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertAt {
+    /// `i`: at the cursor.
+    Before,
+    /// `a`: after the char under the cursor.
+    After,
+    /// `I`: at the first non-blank of the line.
+    LineStart,
+    /// `A`: at the end of the line.
+    LineEnd,
+    /// `o`: on a new line below.
+    LineBelow,
+    /// `O`: on a new line above.
+    LineAbove,
 }
 
 impl Mode {
@@ -46,6 +65,7 @@ impl Mode {
             Mode::Visual => "-- VISUAL --",
             Mode::VisualLine => "-- VISUAL LINE --",
             Mode::VisualBlock => "-- VISUAL BLOCK --",
+            Mode::Insert => "-- INSERT --",
         }
     }
 
@@ -56,6 +76,7 @@ impl Mode {
             Mode::Visual => "Visual",
             Mode::VisualLine => "VisualLine",
             Mode::VisualBlock => "VisualBlock",
+            Mode::Insert => "Insert",
         }
     }
 }
@@ -143,6 +164,10 @@ pub enum Action {
     ModeChanged(Mode),
     /// Run the workbench command with this id (`gd`, `]d`, `ctrl-o`...).
     RunCommand(&'static str),
+    /// Insert mode began: the view puts its caret where `InsertAt` says
+    /// ([`Vim::cursor`] for all but `LineBelow` and `LineAbove`, which open
+    /// a line) and takes the keys until Escape.
+    EnterInsert(InsertAt),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

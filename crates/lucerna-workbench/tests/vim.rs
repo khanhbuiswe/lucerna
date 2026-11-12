@@ -966,3 +966,181 @@ fn vim_gd_jumps_to_definition(cx: &mut TestAppContext) {
     settle(cx);
     assert_eq!(file(cx), "main.rs");
 }
+
+/// A workbench with vim on and `file.txt` (holding `text`) open from a
+/// temporary folder, so the view takes edits; the view has focus.
+fn vim_editor<'a>(
+    text: &str,
+    cx: &'a mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<Workbench>,
+    Entity<CodeView>,
+    &'a mut VisualTestContext,
+) {
+    init(cx, Some(VIM_ON));
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("file.txt"), text).unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    wb.update(cx, |wb, cx| {
+        wb.open_path(p("file.txt"), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    let view = active_code_view(&wb, cx).expect("the active tab shows a code view");
+    cx.update(|window, cx| {
+        let focus = view.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    (dir, wb, view, cx)
+}
+
+fn text_of(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> String {
+    view.read_with(cx, |v, _| {
+        let s = v.snapshot();
+        s.text_for_range(0..s.len_bytes())
+    })
+}
+
+fn shape(
+    view: &Entity<CodeView>,
+    cx: &mut VisualTestContext,
+) -> Option<lucerna_workbench::code_view::CursorShape> {
+    view.read_with(cx, |v, _| v.cursor_overlay().map(|o| o.shape))
+}
+
+#[gpui::test]
+fn insert_session_is_one_undo_step(cx: &mut TestAppContext) {
+    use lucerna_workbench::code_view::CursorShape;
+    let (_dir, wb, view, cx) = vim_editor("hello\n", cx);
+    keys("l i", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    assert_eq!(indicator(&wb, &view, cx).as_deref(), Some("-- INSERT --"));
+    assert_eq!(shape(&view, cx), Some(CursorShape::Bar));
+    // Letters, an arrow key (a cursor move) and IME text all type into
+    // one step.
+    keys("a b", cx);
+    keys("right", cx);
+    type_text("c", cx);
+    keys("space", cx);
+    assert_eq!(text_of(&view, cx), "habec llo\n");
+    assert_eq!(cursor(&view, cx), pt(0, 6));
+    keys("escape", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    assert_eq!(shape(&view, cx), Some(CursorShape::Block));
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "hello\n");
+    keys("shift-cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "habec llo\n");
+}
+
+#[gpui::test]
+fn insert_sessions_are_separate_steps(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("x\n", cx);
+    keys("i a escape", cx);
+    keys("A b escape", cx);
+    assert_eq!(text_of(&view, cx), "axb\n");
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "ax\n");
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "x\n");
+}
+
+#[gpui::test]
+fn escape_moves_left(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("hello\n", cx);
+    keys("shift-a", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 5));
+    keys("escape", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 4));
+    assert_eq!(overlay(&view, cx), Some(pt(0, 4)));
+    keys("0 i escape", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 0));
+    keys("a", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 1));
+    keys("escape", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 0));
+}
+
+#[gpui::test]
+fn shift_i_types_at_the_first_non_blank(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("  ab\n", cx);
+    keys("$ shift-i x escape", cx);
+    assert_eq!(text_of(&view, cx), "  xab\n");
+}
+
+#[gpui::test]
+fn o_opens_line_below(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("  foo\nbar\n", cx);
+    keys("o", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    assert_eq!(text_of(&view, cx), "  foo\n  \nbar\n");
+    assert_eq!(cursor(&view, cx), pt(1, 2));
+    keys("x escape", cx);
+    assert_eq!(text_of(&view, cx), "  foo\n  x\nbar\n");
+    assert_eq!(cursor(&view, cx), pt(1, 2));
+    // The new line and the text are one step.
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "  foo\nbar\n");
+}
+
+#[gpui::test]
+fn shift_o_opens_line_above(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("a\n  foo\n", cx);
+    keys("j $ shift-o", cx);
+    assert_eq!(text_of(&view, cx), "a\n  \n  foo\n");
+    assert_eq!(cursor(&view, cx), pt(1, 2));
+    keys("y escape", cx);
+    assert_eq!(text_of(&view, cx), "a\n  y\n  foo\n");
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "a\n  foo\n");
+}
+
+#[gpui::test]
+fn normal_mode_still_eats_letters(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("abc\n", cx);
+    keys("i x escape", cx);
+    assert_eq!(text_of(&view, cx), "xabc\n");
+    keys("x y z backspace", cx);
+    assert_eq!(text_of(&view, cx), "xabc\n");
+    view.update_in(cx, |v, window, cx| {
+        use gpui::EntityInputHandler as _;
+        v.replace_text_in_range(None, "q", window, cx)
+    });
+    draw(cx);
+    assert_eq!(text_of(&view, cx), "xabc\n");
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+}
+
+#[gpui::test]
+fn disabling_vim_in_insert_mode_leaves_the_caret(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("abc\n", cx);
+    keys("shift-a x", cx);
+    set_user_settings(r#"{ "vim.enabled": false }"#, cx);
+    assert_eq!(mode(&wb, &view, cx), None);
+    assert_eq!(overlay(&view, cx), None);
+    assert_eq!(cursor(&view, cx), pt(0, 4));
+    keys("y", cx);
+    assert_eq!(text_of(&view, cx), "abcxy\n");
+    // Stops are VS Code's again: the cursor move splits the steps.
+    keys("left z", cx);
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "abcxy\n");
+    // Switched on again: Normal mode with the block cursor.
+    set_user_settings(VIM_ON, cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    assert!(overlay(&view, cx).is_some());
+}
+
+#[gpui::test]
+fn click_in_insert_mode_stays_in_insert(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("abc\ndef\n", cx);
+    keys("i", cx);
+    view.update(cx, |v, cx| v.set_cursor(pt(1, 1), cx));
+    draw(cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    keys("x escape", cx);
+    assert_eq!(text_of(&view, cx), "abc\ndxef\n");
+    assert_eq!(cursor(&view, cx), pt(1, 1));
+}

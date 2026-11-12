@@ -12,7 +12,7 @@ use crate::motion::{self, FindChar, Goal, WordMotion};
 use crate::scroll::{self, Screen, ScrollKind};
 use crate::search;
 use crate::visual::{self, VimSelection};
-use crate::{Action, FoldAction, Key, Mode, Outcome, SearchQuery, Settings, ViewInfo};
+use crate::{Action, FoldAction, InsertAt, Key, Mode, Outcome, SearchQuery, Settings, ViewInfo};
 
 /// The largest count; more digits are ignored.
 const MAX_COUNT: u32 = 99_999;
@@ -158,7 +158,7 @@ impl Vim {
             (h, a)
         };
         match self.mode {
-            Mode::Normal => None,
+            Mode::Normal | Mode::Insert => None,
             Mode::Visual => Some(VimSelection::Char {
                 start,
                 end_inclusive: end,
@@ -189,11 +189,14 @@ impl Vim {
 
     /// Moves the cursor from outside vim and forgets the goal column. A
     /// visual mode ends without a [`Action::ModeChanged`] (the caller made
-    /// the change) and without setting the `<` and `>` marks; the anchor
-    /// moves with the cursor. The point is clamped to the buffer on the
-    /// next [`Vim::feed`] or [`Vim::clamp`].
+    /// the change) and without setting the `<` and `>` marks; Insert mode
+    /// stays (the view's caret moved while typing). The anchor moves with
+    /// the cursor. The point is clamped to the buffer on the next
+    /// [`Vim::feed`] or [`Vim::clamp`].
     pub fn set_cursor(&mut self, p: Point) {
-        self.mode = Mode::Normal;
+        if self.mode != Mode::Insert {
+            self.mode = Mode::Normal;
+        }
         self.cursor = p;
         self.anchor = p;
         self.goal = None;
@@ -226,9 +229,10 @@ impl Vim {
     }
 
     /// `p` clamped for the current mode: onto a char, except that Visual
-    /// (char) mode also allows the line break, where `$` puts the head.
+    /// (char) mode also allows the line break, where `$` puts the head, and
+    /// Insert mode the line end, where `A` types.
     fn clamp_in_mode(&self, snapshot: &BufferSnapshot, p: Point) -> Point {
-        if self.mode == Mode::Visual {
+        if matches!(self.mode, Mode::Visual | Mode::Insert) {
             let row = p.row.min(snapshot.line_count().saturating_sub(1));
             let len = visual::line_len(snapshot, row);
             if p.column >= len {
@@ -256,6 +260,13 @@ impl Vim {
         globals: &mut VimGlobals,
         settings: &Settings,
     ) -> Outcome {
+        if self.mode == Mode::Insert {
+            // Every other key types.
+            return match key {
+                Key::Escape => self.exit_insert(view),
+                _ => Outcome::Unhandled,
+            };
+        }
         match key {
             Key::Escape => self.escape(view, globals),
             Key::Ctrl(c) => {
@@ -320,6 +331,58 @@ impl Vim {
         } else {
             Outcome::Unhandled
         }
+    }
+
+    /// `i a I A o O`: enters Insert mode. The cursor goes where the text
+    /// will be typed, except for `o` and `O`, whose new line the view opens.
+    fn enter_insert(&mut self, view: &dyn ViewInfo, at: InsertAt) -> Outcome {
+        let snapshot = view.snapshot();
+        let row = self.cursor.row;
+        let text = line(snapshot, row);
+        let col = self.cursor.column;
+        let column = match at {
+            InsertAt::Before | InsertAt::LineBelow | InsertAt::LineAbove => col,
+            InsertAt::After => text
+                .get(col as usize..)
+                .and_then(|rest| rest.chars().next())
+                .map_or(col, |c| col + c.len_utf8() as u32),
+            // On a blank line, after its whitespace.
+            InsertAt::LineStart => text
+                .char_indices()
+                .find(|(_, c)| !c.is_whitespace())
+                .map_or(visual::line_len(snapshot, row), |(i, _)| i as u32),
+            InsertAt::LineEnd => visual::line_len(snapshot, row),
+        };
+        self.mode = Mode::Insert;
+        self.cursor = Point { row, column };
+        self.anchor = self.cursor;
+        self.goal = None;
+        Outcome::Handled(vec![
+            Action::EnterInsert(at),
+            Action::ModeChanged(Mode::Insert),
+        ])
+    }
+
+    /// Escape in Insert mode: back to Normal, the cursor one char left
+    /// (never past column 0) and onto a char.
+    fn exit_insert(&mut self, view: &dyn ViewInfo) -> Outcome {
+        let snapshot = view.snapshot();
+        let text = line(snapshot, self.cursor.row);
+        let column = motion::left(&text, self.cursor.column, 1);
+        self.mode = Mode::Normal;
+        self.cursor = clamp_point(
+            snapshot,
+            Point {
+                row: self.cursor.row,
+                column,
+            },
+        );
+        self.anchor = self.cursor;
+        self.goal = None;
+        Outcome::Handled(vec![
+            Action::ModeChanged(Mode::Normal),
+            Action::CursorMoved { jump: false },
+        ])
     }
 
     /// `v`, `V`, `Ctrl+v`: enters `mode`, leaves it when already in it, or
@@ -499,6 +562,17 @@ impl Vim {
                 self.move_to(to, None)
             }
             'y' if visual => self.yank(view, globals),
+            'i' | 'a' | 'I' | 'A' | 'o' | 'O' if !visual => {
+                let at = match c {
+                    'i' => InsertAt::Before,
+                    'a' => InsertAt::After,
+                    'I' => InsertAt::LineStart,
+                    'A' => InsertAt::LineEnd,
+                    'o' => InsertAt::LineBelow,
+                    _ => InsertAt::LineAbove,
+                };
+                self.enter_insert(view, at)
+            }
             'h' => self.move_horizontal(Point {
                 row,
                 column: motion::left(&text, col, n),
@@ -1050,12 +1124,115 @@ mod tests {
         assert_eq!(vim.mode(), Mode::Visual);
     }
 
+    /// The first outcome of `key` from `text`, and the cursor after it.
+    fn insert_key(text: &str, key: &str) -> (Outcome, Mode, Point) {
+        let view = TestView::new(text);
+        let mut vim = Vim::new(view.cursor);
+        let out = feed_keys(&mut vim, &view, key).remove(0);
+        (out, vim.mode(), vim.cursor())
+    }
+
+    #[test]
+    fn insert_keys_yield_insert_at() {
+        use crate::InsertAt;
+        let cases = [
+            ("ab|cd", "i", InsertAt::Before, pt(0, 2)),
+            ("ab|cd", "a", InsertAt::After, pt(0, 3)),
+            ("  ab|cd", "I", InsertAt::LineStart, pt(0, 2)),
+            ("ab|cd", "A", InsertAt::LineEnd, pt(0, 4)),
+            ("ab|cd\nx", "o", InsertAt::LineBelow, pt(0, 2)),
+            ("x\nab|cd", "O", InsertAt::LineAbove, pt(1, 2)),
+        ];
+        for (text, key, at, cursor) in cases {
+            let (out, mode, got) = insert_key(text, key);
+            assert_eq!(
+                out,
+                Outcome::Handled(vec![
+                    Action::EnterInsert(at),
+                    Action::ModeChanged(Mode::Insert)
+                ]),
+                "{key}"
+            );
+            assert_eq!(mode, Mode::Insert, "{key}");
+            assert_eq!(got, cursor, "{key}");
+        }
+    }
+
+    #[test]
+    fn a_appends_after_the_last_char_and_on_empty_lines() {
+        assert_eq!(insert_key("ab|c", "a").2, pt(0, 3));
+        assert_eq!(insert_key("a|é", "a").2, pt(0, 3));
+        assert_eq!(insert_key("|\nx", "a").2, pt(0, 0));
+        // `I` on a blank line types after its whitespace.
+        assert_eq!(insert_key("  |  ", "I").2, pt(0, 4));
+    }
+
+    #[test]
+    fn insert_keys_are_not_vims_in_visual_mode() {
+        let view = TestView::new("|abc");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "vi");
+        assert_eq!(vim.mode(), Mode::Visual);
+    }
+
+    #[test]
+    fn insert_mode_passes_keys_on_and_escape_returns_normal() {
+        let view = TestView::new("ab|c");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "A");
+        assert_eq!(
+            feed_keys(&mut vim, &view, "jx<C-d><CR>"),
+            vec![Outcome::Unhandled; 4]
+        );
+        assert_eq!(vim.mode(), Mode::Insert);
+        assert_eq!(
+            feed_keys(&mut vim, &view, "<Esc>"),
+            vec![Outcome::Handled(vec![
+                Action::ModeChanged(Mode::Normal),
+                Action::CursorMoved { jump: false }
+            ])]
+        );
+        assert_eq!(vim.mode(), Mode::Normal);
+        // From the line end (after `c`) back onto `c`.
+        assert_eq!(vim.cursor(), pt(0, 2));
+    }
+
+    #[test]
+    fn escape_moves_left_but_not_past_column_zero() {
+        let view = TestView::new("|aé");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "i<Esc>");
+        assert_eq!(vim.cursor(), pt(0, 0));
+        feed_keys(&mut vim, &view, "A<Esc>");
+        assert_eq!(vim.cursor(), pt(0, 1));
+    }
+
+    #[test]
+    fn set_cursor_keeps_insert_mode() {
+        let view = TestView::new("|abc");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "i");
+        // The view's caret moved while typing; the line end is allowed.
+        vim.set_cursor(pt(0, 3));
+        vim.clamp(&view.snapshot);
+        assert_eq!(vim.mode(), Mode::Insert);
+        assert_eq!(vim.cursor(), pt(0, 3));
+        feed_keys(&mut vim, &view, "<Esc>");
+        assert_eq!(vim.cursor(), pt(0, 2));
+    }
+
+    fn pt(row: u32, column: u32) -> Point {
+        Point { row, column }
+    }
+
     #[test]
     fn mode_labels() {
         assert_eq!(Mode::Normal.label(), "-- NORMAL --");
         assert_eq!(Mode::Visual.label(), "-- VISUAL --");
         assert_eq!(Mode::VisualLine.label(), "-- VISUAL LINE --");
         assert_eq!(Mode::VisualBlock.label(), "-- VISUAL BLOCK --");
+        assert_eq!(Mode::Insert.label(), "-- INSERT --");
+        assert_eq!(Mode::Insert.context_value(), "Insert");
         assert_eq!(Mode::Normal.context_value(), "Normal");
         assert_eq!(Mode::Visual.context_value(), "Visual");
         assert_eq!(Mode::VisualLine.context_value(), "VisualLine");

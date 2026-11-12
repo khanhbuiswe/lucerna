@@ -31,9 +31,9 @@ impl CodeView {
     }
 
     /// Whether typing and edit keys change the text: not read-only, and no
-    /// cursor overlay (vim's Normal-mode cursor) is shown.
+    /// block cursor (vim's Normal mode) is shown.
     pub(crate) fn takes_text(&self) -> bool {
-        !self.is_readonly() && self.cursor_overlay.is_none()
+        !self.is_readonly() && self.block_cursor().is_none()
     }
 
     /// The editing settings of this view's language.
@@ -63,7 +63,8 @@ impl CodeView {
     /// a new one: a stop goes before it when `plan.stop_before` or the
     /// kind changed (`should_stop_between`), and after it when
     /// `plan.stop_after`. The selections become the plan's (no cursor
-    /// move) and the primary scrolls into view. Does nothing in a
+    /// move) and the primary scrolls into view. During vim's Insert
+    /// session (`suppress_stops`) no stop is pushed. Does nothing in a
     /// read-only view; returns whether the edit was applied.
     pub fn transact(&mut self, plan: EditPlan, cx: &mut Context<Self>) -> bool {
         if self.is_readonly() {
@@ -72,7 +73,13 @@ impl CodeView {
         let Some(documents) = self.documents.as_ref().and_then(WeakEntity::upgrade) else {
             return false;
         };
-        let stop = plan.stop_before || should_stop_between(self.last_kind, plan.kind);
+        let suppress = self.suppress_stops;
+        let stop =
+            !suppress && (plan.stop_before || should_stop_between(self.last_kind, plan.kind));
+        if suppress && let Some(flag) = &self.stop_requested {
+            // A cursor move asked for a stop before the session held them.
+            flag.set(false);
+        }
         let before: SelectionsToken = Arc::new(self.selections.clone());
         let after: SelectionsToken = Arc::new(plan.selections.clone());
         let (path, view) = (self.path.clone(), cx.entity_id());
@@ -82,7 +89,7 @@ impl CodeView {
             }
             let update =
                 docs.apply_edits_from_view(&path, plan.edits, Some(before), Some(after), view, cx);
-            if update.is_some() && plan.stop_after {
+            if update.is_some() && plan.stop_after && !suppress {
                 docs.push_stop(&path);
             }
             update

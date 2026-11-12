@@ -168,12 +168,17 @@ pub enum FoldOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorShape {
-    /// Fills the cell of the char under the cursor.
+    /// Fills the cell of the char under the cursor at `at` (vim's Normal
+    /// mode). The view paints no caret and takes no typing.
     Block,
+    /// vim's Insert mode: the view's own carets, each painted as a bar
+    /// whatever `editor.cursorStyle` says; the view types as usual and
+    /// `at` is not used.
+    Bar,
 }
 
-/// A cursor painted over the text (vim's normal-mode cursor); the view
-/// paints none by default.
+/// A cursor shape set from outside the view (vim's); the view paints its
+/// own carets by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CursorOverlay {
     pub at: Point,
@@ -250,6 +255,9 @@ pub struct CodeView {
     stop_requested: Option<Rc<Cell<bool>>>,
     /// The kind of this view's last edit, for the undo stops of the next.
     last_kind: EditKind,
+    /// vim's Insert session: no automatic undo stops (edit kinds, cursor
+    /// moves), so the whole session is one step.
+    suppress_stops: bool,
     /// The IME composition in progress: one byte range per selection, in
     /// selection order. The composed text is in the buffer, underlined.
     marked: Option<Vec<Range<usize>>>,
@@ -353,6 +361,7 @@ impl CodeView {
             caret: Caret::default(),
             stop_requested: None,
             last_kind: EditKind::Other,
+            suppress_stops: false,
             marked: None,
             cursor_undo: VecDeque::new(),
             cursor_redo: Vec::new(),
@@ -941,12 +950,18 @@ impl CodeView {
         })
     }
 
-    /// The cursor: the painted cursor overlay (vim's) when there is one,
+    /// The cursor: vim's block cursor when one is painted,
     /// else the moving end of the primary selection. The status bar, find
     /// and the bracket highlight follow it.
     pub fn cursor(&self) -> Point {
+        self.block_cursor().unwrap_or_else(|| self.selection_head())
+    }
+
+    /// Where the block cursor (vim's Normal mode) is painted, if one is.
+    pub(crate) fn block_cursor(&self) -> Option<Point> {
         self.cursor_overlay
-            .map_or_else(|| self.selection_head(), |o| o.at)
+            .filter(|o| o.shape == CursorShape::Block)
+            .map(|o| o.at)
     }
 
     /// The moving end of the primary selection, whatever the overlay
@@ -1010,7 +1025,9 @@ impl CodeView {
             // A cursor move ends the typing run and any composition.
             self.last_kind = EditKind::Other;
             self.marked = None;
-            if let Some(flag) = &self.stop_requested {
+            if let Some(flag) = &self.stop_requested
+                && !self.suppress_stops
+            {
                 flag.set(true);
             }
         }
@@ -1142,6 +1159,23 @@ impl CodeView {
     /// The cursor painted over the text, if any.
     pub fn cursor_overlay(&self) -> Option<CursorOverlay> {
         self.cursor_overlay
+    }
+
+    /// Starts (`true`) or ends vim's Insert session: while it lasts, edits
+    /// and cursor moves push no undo stops, so the session is one step.
+    /// Either way the current step ends here.
+    pub fn set_suppress_stops(&mut self, suppress: bool, cx: &mut Context<Self>) {
+        if self.suppress_stops == suppress {
+            return;
+        }
+        self.suppress_stops = suppress;
+        if let Some(flag) = &self.stop_requested {
+            flag.set(false);
+        }
+        if let Some(documents) = self.documents.as_ref().and_then(WeakEntity::upgrade) {
+            let path = self.path.clone();
+            documents.update(cx, |docs, _| docs.push_stop(&path));
+        }
     }
 
     /// Paints `overlay` as the cursor instead of the caret; `None` paints
@@ -1474,7 +1508,7 @@ impl Render for CodeView {
                 v.link_modifiers_changed(false, cx);
             }));
         }
-        let focused = self.focus.is_focused(window) && self.cursor_overlay.is_none();
+        let focused = self.focus.is_focused(window) && self.block_cursor().is_none();
         self.caret.ensure(focused, self.config.cursor_blinking, cx);
         if self.painted_revision != self.revision {
             self.painted_revision = self.revision;
