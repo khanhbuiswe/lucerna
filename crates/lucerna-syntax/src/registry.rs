@@ -221,6 +221,8 @@ pub(crate) struct LanguageQueries {
     pub injections: Option<InjectionQuery>,
     pub brackets: Option<Query>,
     pub outline: Option<OutlineQuery>,
+    /// `indents.scm`: `@indent`, `@end` and `@outdent` captures.
+    pub indents: Option<Query>,
 }
 
 /// An extension's language as the workbench hands it over.
@@ -272,9 +274,11 @@ impl Language {
     /// An extension language's `indents.scm` source, read on first use.
     /// Bundled languages have none.
     pub fn indents_query(&self) -> Option<&str> {
-        let dir = self.query_dir.as_ref()?;
         self.indents
-            .get_or_init(|| std::fs::read_to_string(dir.join("indents.scm")).ok())
+            .get_or_init(|| {
+                let dir = self.query_dir.as_ref()?;
+                std::fs::read_to_string(dir.join("indents.scm")).ok()
+            })
             .as_deref()
     }
 
@@ -450,6 +454,24 @@ impl Language {
         })
     }
 
+    /// A fresh copy of the bundled language `id` with `indents` as its
+    /// `indents.scm`, for tests.
+    ///
+    /// # Panics
+    /// If no bundled language has that id.
+    #[doc(hidden)]
+    pub fn bundled_with_indents_for_test(id: &str, indents: &str) -> Arc<Language> {
+        let language = LanguageRegistry::make_bundled_languages()
+            .into_iter()
+            .find(|l| &*l.id == id)
+            .and_then(|l| Arc::try_unwrap(l).ok())
+            .unwrap_or_else(|| panic!("no bundled language {id}"));
+        Arc::new(Language {
+            indents: OnceLock::from(Some(indents.to_string())),
+            ..language
+        })
+    }
+
     pub(crate) fn mark_failed(&self) {
         self.failed.store(true, Ordering::Relaxed);
     }
@@ -531,6 +553,7 @@ impl Language {
             brackets: optional("brackets", &brackets),
             outline: optional("outline", &outline)
                 .and_then(|query| OutlineQuery::new(query, &self.id)),
+            indents: optional("indents", &self.indents_query().map(str::to_string)),
         })
     }
 

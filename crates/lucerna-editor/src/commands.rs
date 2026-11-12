@@ -16,7 +16,7 @@ use std::sync::Arc;
 use lucerna_text::{Bias, BufferSnapshot, Patch, PatchEdit, Point};
 use unicode_segmentation::GraphemeCursor;
 
-use crate::plan::{AutoIndent, Ctx, EditPlan};
+use crate::plan::{Ctx, EditPlan};
 use crate::selection::{Goal, Selection, SelectionSet};
 use crate::undo_stops::{EditKind, should_stop_between, typing_kind};
 use crate::words;
@@ -168,7 +168,7 @@ pub(crate) fn row_start(snapshot: &BufferSnapshot, row: u32) -> usize {
     snapshot.point_to_offset(Point { row, column: 0 })
 }
 
-fn leading_whitespace(line: &str) -> &str {
+pub(crate) fn leading_whitespace(line: &str) -> &str {
     let n = line
         .find(|c: char| c != ' ' && c != '\t')
         .unwrap_or(line.len());
@@ -176,7 +176,7 @@ fn leading_whitespace(line: &str) -> &str {
 }
 
 /// The display column after `prefix`, with tabs jumping to the next stop.
-fn display_col(prefix: &str, tab_size: u32) -> u32 {
+pub(crate) fn display_col(prefix: &str, tab_size: u32) -> u32 {
     let ts = tab_size.max(1);
     prefix.chars().fold(0, |col, c| {
         if c == '\t' {
@@ -214,17 +214,39 @@ pub fn insert(
     {
         return plan;
     }
+    // A closer first on its line takes the opener line's indent, and ends
+    // the undo step (VS Code's electric characters); one per line.
+    let mut outdented: Vec<u32> = Vec::new();
     let items = set
         .all()
         .iter()
-        .map(|s| Item {
-            id: s.id,
-            range: s.range(),
-            text: text.to_string(),
-            place: Place::End,
+        .map(|s| {
+            if let Some(ch) = single
+                && s.is_empty()
+                && let Some((range, text)) =
+                    crate::indent::closer_indent(ctx, s.head, ch.encode_utf8(&mut [0; 4]))
+            {
+                let row = ctx.snapshot.offset_to_point(s.head).row;
+                if !outdented.contains(&row) {
+                    outdented.push(row);
+                    return Item {
+                        id: s.id,
+                        range,
+                        text,
+                        place: Place::End,
+                    };
+                }
+            }
+            Item {
+                id: s.id,
+                range: s.range(),
+                text: text.to_string(),
+                place: Place::End,
+            }
         })
         .collect();
-    build(items, set.primary().id, kind, stop_before, false)
+    let stop_after = !outdented.is_empty();
+    build(items, set.primary().id, kind, stop_before, stop_after)
 }
 
 /// The previous grapheme boundary before `offset` (the previous `\n` counts
@@ -391,44 +413,17 @@ pub fn delete_all_right(ctx: Ctx, set: &SelectionSet) -> EditPlan {
     })
 }
 
-/// The `\n` + indent a newline at `start` inserts, and the range it replaces.
-fn newline_edit(ctx: Ctx, range: Range<usize>, trim: bool) -> (Range<usize>, String) {
-    let snap = ctx.snapshot;
-    let p = snap.offset_to_point(range.start);
-    let line = snap.line(p.row);
-    let col = (p.column as usize).min(line.len());
-    let indent = if ctx.config.auto_indent >= AutoIndent::Keep {
-        let lead = leading_whitespace(&line);
-        &lead[..lead.len().min(col)]
-    } else {
-        ""
-    };
-    let text = format!("\n{indent}");
-    // A whitespace-only line with the cursor at its end loses that
-    // whitespace; the indent is re-inserted after the break.
-    if trim
-        && ctx.config.trim_auto_whitespace
-        && range.is_empty()
-        && col == line.len()
-        && col > 0
-        && line.bytes().all(|b| b == b' ' || b == b'\t')
-    {
-        return (row_start(snap, p.row)..range.end, text);
-    }
-    (range, text)
-}
-
 pub fn newline(ctx: Ctx, set: &SelectionSet) -> EditPlan {
     let items = set
         .all()
         .iter()
         .map(|s| {
-            let (range, text) = newline_edit(ctx, s.range(), true);
+            let e = crate::indent::enter(ctx, s.range(), true);
             Item {
                 id: s.id,
-                range,
-                text,
-                place: Place::End,
+                range: e.range,
+                text: e.text,
+                place: Place::At(e.cursor),
             }
         })
         .collect();
@@ -442,11 +437,11 @@ pub fn line_break_insert(ctx: Ctx, set: &SelectionSet) -> EditPlan {
         .all()
         .iter()
         .map(|s| {
-            let (range, text) = newline_edit(ctx, s.range(), false);
+            let e = crate::indent::enter(ctx, s.range(), false);
             Item {
                 id: s.id,
-                range,
-                text,
+                range: e.range,
+                text: e.text,
                 place: Place::Start,
             }
         })
@@ -455,7 +450,7 @@ pub fn line_break_insert(ctx: Ctx, set: &SelectionSet) -> EditPlan {
 }
 
 /// `cols` visible columns of indent in the configured style.
-fn indent_string(ctx: Ctx, cols: u32) -> String {
+pub(crate) fn indent_string(ctx: Ctx, cols: u32) -> String {
     let ts = ctx.config.tab_size.max(1);
     if ctx.config.insert_spaces {
         " ".repeat(cols as usize)
@@ -562,6 +557,7 @@ pub fn outdent(ctx: Ctx, set: &SelectionSet) -> EditPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::AutoIndent;
     use crate::test_util::{marked, render_plan, test_config};
 
     fn run(src: &str, f: impl Fn(Ctx, &SelectionSet) -> EditPlan) -> String {

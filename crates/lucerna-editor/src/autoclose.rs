@@ -35,7 +35,7 @@ pub(crate) fn type_char(
 }
 
 /// The document language's pairs, else the default brackets.
-fn language<'a>(ctx: &Ctx<'a>) -> &'a LanguageEditing {
+pub(crate) fn language<'a>(ctx: &Ctx<'a>) -> &'a LanguageEditing {
     static DEFAULT: OnceLock<LanguageEditing> = OnceLock::new();
     ctx.language
         .unwrap_or_else(|| DEFAULT.get_or_init(LanguageEditing::default))

@@ -41,6 +41,15 @@ pub enum Scope {
     Comment,
 }
 
+/// How a row's indent differs from the previous non-blank row's, as the
+/// language's `indents.scm` suggests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndentDelta {
+    Same,
+    Indent,
+    Outdent,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseOutcome {
     Done,
@@ -342,6 +351,110 @@ impl SyntaxState {
         }
     }
 
+    /// The indent of `row` relative to the previous non-blank row, by the
+    /// language's `indents.scm` (spec §3.3). A row inside an `@indent` node
+    /// that starts at or after the previous non-blank row is indented; a row
+    /// starting with the `@end` node of an `@indent` node that started
+    /// before that row, or with an `@outdent` node, is outdented. `None`
+    /// without a tree, without the query, or with no previous non-blank row.
+    pub fn indent_suggestion(&self, snapshot: &BufferSnapshot, row: u32) -> Option<IndentDelta> {
+        if row >= snapshot.line_count() {
+            return None;
+        }
+        let basis = prev_non_blank(snapshot, row)?;
+        let line = snapshot.line(row);
+        let lead = leading_blanks(&line);
+        let at = row_start(snapshot, row) + lead;
+        self.indent_delta(snapshot, basis, at, lead == line.len())
+    }
+
+    /// Like [`SyntaxState::indent_suggestion`], for the row Enter over
+    /// `range` starts, before the edit: its text is what follows `range` on
+    /// the line, or nothing with `empty` (that text moves on to a later
+    /// row). Returns the row the delta is relative to with it: the cursor's
+    /// own when text precedes `range` on it, else the previous non-blank
+    /// row.
+    pub fn indent_suggestion_for_newline(
+        &self,
+        snapshot: &BufferSnapshot,
+        range: Range<usize>,
+        empty: bool,
+    ) -> Option<(u32, IndentDelta)> {
+        let len = snapshot.len_bytes();
+        let p = snapshot.offset_to_point(range.start.min(len));
+        let line = snapshot.line(p.row);
+        let col = (p.column as usize).min(line.len());
+        let basis = if leading_blanks(&line[..col]) < col {
+            p.row
+        } else {
+            prev_non_blank(snapshot, p.row)?
+        };
+        let end = range.end.min(len);
+        let q = snapshot.offset_to_point(end);
+        let line = snapshot.line(q.row);
+        let after = &line[(q.column as usize).min(line.len())..];
+        let skip = leading_blanks(after);
+        let empty = empty || skip == after.len();
+        let at = if empty { end } else { end + skip };
+        Some((basis, self.indent_delta(snapshot, basis, at, empty)?))
+    }
+
+    /// The delta of a row whose text starts at `at` (`empty`: a row with no
+    /// text, at `at`) from the row `basis`.
+    fn indent_delta(
+        &self,
+        snapshot: &BufferSnapshot,
+        basis: u32,
+        at: usize,
+        empty: bool,
+    ) -> Option<IndentDelta> {
+        let tree = self.tree.as_ref()?;
+        let query = self.language.queries()?.indents.as_ref()?;
+        let indent = query.capture_index_for_name("indent");
+        let end = query.capture_index_for_name("end");
+        let outdent = query.capture_index_for_name("outdent");
+        let len = snapshot.len_bytes();
+        let text = move |node: Node| {
+            let range = node.byte_range();
+            snapshot
+                .chunks_in_range(range.start.min(len)..range.end.min(len))
+                .map(str::as_bytes)
+        };
+        let from = row_start(snapshot, basis);
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(from..(at + 1).max(from + 1));
+        let (mut indents, mut outdents) = (false, false);
+        let mut matches = cursor.matches(query, tree.root_node(), text);
+        while let Some(m) = matches.next() {
+            let closer = end
+                .and_then(|i| m.nodes_for_capture_index(i).next())
+                .map(|n| n.start_byte());
+            for capture in m.captures() {
+                let node = capture.node;
+                if Some(capture.index) == indent {
+                    let close = closer.unwrap_or(node.end_byte());
+                    let start_row = node.start_position().row as u32;
+                    if start_row >= basis
+                        && node.start_byte() < at
+                        && (close > at || (empty && close == at))
+                    {
+                        indents = true;
+                    }
+                    if closer.is_some() && start_row < basis && !empty && close == at {
+                        outdents = true;
+                    }
+                } else if Some(capture.index) == outdent && !empty && node.start_byte() == at {
+                    outdents = true;
+                }
+            }
+        }
+        Some(match (indents, outdents) {
+            (true, false) => IndentDelta::Indent,
+            (false, true) => IndentDelta::Outdent,
+            _ => IndentDelta::Same,
+        })
+    }
+
     /// Like [`crate::matching_bracket`], but uses the tree when there is one,
     /// so brackets inside strings and comments are ignored.
     pub fn matching_bracket(&self, snapshot: &BufferSnapshot, offset: usize) -> Option<usize> {
@@ -359,6 +472,19 @@ impl SyntaxState {
             None => brackets::matching_bracket(snapshot, offset),
         }
     }
+}
+
+/// The length of the blanks (spaces and tabs) `line` starts with.
+fn leading_blanks(line: &str) -> usize {
+    line.len() - line.trim_start_matches([' ', '\t']).len()
+}
+
+/// The last row before `row` with more than blanks on it.
+fn prev_non_blank(snapshot: &BufferSnapshot, row: u32) -> Option<u32> {
+    (0..row).rev().find(|&r| {
+        let line = snapshot.line(r);
+        leading_blanks(&line) < line.len()
+    })
 }
 
 struct RankedSpan {

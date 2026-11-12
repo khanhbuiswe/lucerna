@@ -659,6 +659,26 @@ fn enter_keeps_indent(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn enter_and_closer_auto_indent(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("", cx);
+    input("if {", cx);
+    assert_eq!(text_of(&view, cx), "if {}");
+    // Between the auto-closed pair: the closer goes on its own line.
+    keys("enter", cx);
+    assert_eq!(text_of(&view, cx), "if {\n    \n}");
+    assert_eq!(cursor(&view, cx), pt(1, 4));
+    input("a {", cx);
+    keys("delete enter", cx);
+    assert_eq!(text_of(&view, cx), "if {\n    a {\n        \n}");
+    // A closer first on its line goes back to its opener's indent.
+    keys("enter", cx);
+    input("}", cx);
+    assert_eq!(text_of(&view, cx), "if {\n    a {\n\n    }\n}");
+    assert_eq!(cursor(&view, cx), pt(3, 5));
+}
+
+#[gpui::test]
 fn readonly_view_ignores_typing(cx: &mut TestAppContext) {
     init(cx, None);
     let (_dir, wb, _view, cx) = editor("abc\n", cx);
