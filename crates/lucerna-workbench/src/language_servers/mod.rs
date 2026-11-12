@@ -119,6 +119,13 @@ struct OpenDoc {
     /// Over `lucerna.largeFile.*` (or with a very long line) when its
     /// servers were last looked for: it has none until it shrinks.
     too_large: bool,
+    /// Counts the changes of `snapshot` seen here.
+    changes: u64,
+    /// Per server: the value of `changes` when the server was last sent the
+    /// text (by `didOpen` or `didChange`). A patch is only exact for a
+    /// server that has the text it starts from; the others get the whole
+    /// text.
+    synced: HashMap<ServerKey, u64>,
 }
 
 pub struct LanguageServers {

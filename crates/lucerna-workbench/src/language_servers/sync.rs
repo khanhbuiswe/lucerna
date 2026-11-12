@@ -1,6 +1,7 @@
 //! Document events and file changes sent to the servers: `didOpen`,
 //! `didChange`, `didClose` and `didChangeWatchedFiles`.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,6 +12,7 @@ use lsp_types::{DidChangeWatchedFilesParams, FileChangeType};
 use lucerna_lsp::sync::too_large_for_lsp;
 use lucerna_lsp::{LanguageServer, ServerDef, ServerKey, Slot, find_root, select_servers};
 use lucerna_project::{ChangeKind, WorktreeEvent};
+use lucerna_text::{BufferSnapshot, Patch};
 
 use super::{LanguageServers, LanguageServersEvent, OpenDoc, selection};
 use crate::AppState;
@@ -89,48 +91,29 @@ impl LanguageServers {
                         _search_task: None,
                         deleted: false,
                         too_large: false,
+                        changes: 0,
+                        synced: HashMap::new(),
                     },
                 );
                 self.push_diagnostics(path, cx);
                 self.find_servers(path, cx);
             }
-            DocumentEvent::Reloaded { path, snapshot } => {
-                // `push_diagnostics` converts the raw entries.
-                let Some(doc) = self.docs.get_mut(path) else {
+            DocumentEvent::Edited {
+                path,
+                snapshot,
+                patch,
+                ..
+            } => self.document_edited(path, snapshot, patch, cx),
+            DocumentEvent::Saved { path } => {
+                let Some(doc) = self.docs.get(path) else {
                     return;
                 };
-                let (max_bytes, max_lines) = large_file_limits(doc.language_id.as_deref(), cx);
-                // O(1): sizes only; `find_servers` checks long lines too.
-                let over =
-                    snapshot.len_bytes() as u64 > max_bytes || snapshot.line_count() > max_lines;
-                doc.snapshot = snapshot.clone();
-                let was_deleted = std::mem::take(&mut doc.deleted);
-                let was_too_large = doc.too_large;
-                let grew_too_large = over && !was_too_large;
-                if grew_too_large {
-                    doc.too_large = true;
-                    doc.search += 1;
-                    doc._search_task = None;
-                }
-                self.push_diagnostics(path, cx);
-                if over {
-                    // Grew past the limit: no more full-text `didChange`
-                    // built here; it leaves its servers until it shrinks.
-                    if grew_too_large {
-                        self.set_keys(path, Vec::new(), cx);
-                    }
-                } else if was_too_large {
-                    self.find_servers(path, cx);
-                } else if was_deleted {
-                    self.open_in_servers(path, cx);
-                } else {
-                    let servers = self.running_for(path);
-                    if !servers.is_empty() {
-                        self.sync.change(path, snapshot, None, &servers);
-                        cx.emit(LanguageServersEvent::DocumentChanged(path.clone()));
-                    }
-                }
+                let snapshot = doc.snapshot.clone();
+                let servers = self.running_for(path);
+                self.sync.did_save(path, &snapshot, &servers);
             }
+            // The language servers have no notion of either.
+            DocumentEvent::DirtyChanged { .. } | DocumentEvent::ConflictChanged { .. } => {}
             DocumentEvent::Closed { path } => {
                 let servers = self.running_for(path);
                 self.sync.close(path, &servers);
@@ -153,6 +136,67 @@ impl LanguageServers {
             }
             // The servers parse for themselves.
             DocumentEvent::Parsed { .. } => {}
+        }
+    }
+
+    /// `didChange` for an edit, an undo or a reload. The diagnostics shown
+    /// were shifted by the views; they are converted again only when the
+    /// document's servers change.
+    fn document_edited(
+        &mut self,
+        path: &Arc<Path>,
+        snapshot: &BufferSnapshot,
+        patch: &Patch,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.docs.get_mut(path) else {
+            return;
+        };
+        let (max_bytes, max_lines) = large_file_limits(doc.language_id.as_deref(), cx);
+        // O(1): sizes only; `find_servers` checks long lines too.
+        let over = snapshot.len_bytes() as u64 > max_bytes || snapshot.line_count() > max_lines;
+        doc.snapshot = snapshot.clone();
+        let base = doc.changes;
+        if !patch.is_empty() {
+            doc.changes += 1;
+        }
+        let was_deleted = std::mem::take(&mut doc.deleted);
+        let was_too_large = doc.too_large;
+        let grew_too_large = over && !was_too_large;
+        if grew_too_large {
+            doc.too_large = true;
+            doc.search += 1;
+            doc._search_task = None;
+        }
+        if over {
+            // Grew past the limit: no more `didChange` built here; it
+            // leaves its servers until it shrinks.
+            if grew_too_large {
+                self.set_keys(path, Vec::new(), cx);
+            }
+        } else if was_too_large {
+            self.push_diagnostics(path, cx);
+            self.find_servers(path, cx);
+        } else if was_deleted {
+            self.push_diagnostics(path, cx);
+            self.open_in_servers(path, cx);
+        } else if !patch.is_empty() {
+            let servers = self.running_for(path);
+            if servers.is_empty() {
+                return;
+            }
+            let doc = self.docs.get_mut(path).expect("checked above");
+            // A server that missed a change would apply the patch to the
+            // wrong text: it gets the whole text instead.
+            let (exact, stale): (Vec<_>, Vec<_>) = servers
+                .into_iter()
+                .partition(|(key, _)| doc.synced.get(key) == Some(&base));
+            for (key, _) in exact.iter().chain(&stale) {
+                doc.synced.insert(key.clone(), doc.changes);
+            }
+            self.sync.change(path, snapshot, Some(patch), &exact);
+            self.sync.change(path, snapshot, None, &stale);
+            cx.emit(LanguageServersEvent::DocumentChanged(path.clone()));
         }
     }
 
@@ -280,6 +324,7 @@ impl LanguageServers {
             return;
         }
         let mut opened = false;
+        let mut synced = Vec::new();
         for (key, server) in servers {
             if self.sync.is_open(path, &key) {
                 continue;
@@ -289,8 +334,14 @@ impl LanguageServers {
             };
             let language_id = def.lsp_language_id(language);
             self.sync
-                .open(path, &language_id, &doc.snapshot, &[(key, server)]);
+                .open(path, &language_id, &doc.snapshot, &[(key.clone(), server)]);
+            synced.push(key);
             opened = true;
+        }
+        if let Some(doc) = self.docs.get_mut(path) {
+            for key in synced {
+                doc.synced.insert(key, doc.changes);
+            }
         }
         if opened {
             cx.emit(LanguageServersEvent::DocumentChanged(path.clone()));

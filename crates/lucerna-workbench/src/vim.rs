@@ -416,7 +416,7 @@ impl VimLayer {
     /// A reload: marks follow the moved lines, the cursor is kept on the
     /// text and the selection is drawn again.
     ///
-    /// `CodeView::apply_reload` bumps the selection generation and emits
+    /// `CodeView::apply_edit` bumps the selection generation and emits
     /// `Reloaded` before it notifies, so this runs (and stores the new
     /// generation) before [`VimLayer::view_changed`] would take the bump
     /// for an outside change and drop the visual mode.

@@ -11,6 +11,7 @@ ropey.workspace = true
 encoding_rs.workspace = true
 chardetng.workspace = true
 tempfile.workspace = true
+similar.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

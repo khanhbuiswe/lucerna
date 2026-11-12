@@ -1,4 +1,7 @@
-use lucerna_text::{Buffer, LineEnding, LoadError, MAX_OPEN_BYTES, Point, check_size};
+use lucerna_text::{
+    Buffer, LineEnding, LoadError, MAX_OPEN_BYTES, Point, Reload, check_size, decode_file,
+    diff_edits,
+};
 
 fn buf(s: &str) -> Buffer {
     Buffer::from_bytes(s.as_bytes(), false).unwrap()
@@ -105,6 +108,16 @@ fn numbered(n: usize) -> String {
     (0..n).map(|i| format!("line{i}\n")).collect()
 }
 
+/// A reload as `Documents` does it: decode, diff, edit, take the new
+/// file format. Returns the row summary of the patch.
+fn reload(b: &mut Buffer, bytes: &[u8]) -> Result<Reload, LoadError> {
+    let decoded = decode_file(bytes, false)?;
+    let old = b.snapshot();
+    let patch = b.edit(diff_edits(&old, &decoded.text));
+    b.set_disk_state(&decoded);
+    Ok(patch.reload(&old, &b.snapshot()))
+}
+
 #[test]
 fn reload_insert_above_shifts_row() {
     let mut b = buf(&numbered(10));
@@ -113,7 +126,7 @@ fn reload_insert_above_shifts_row() {
         new_lines.insert(2 + k, format!("new{k}"));
     }
     let new = new_lines.join("\n") + "\n";
-    let r = b.reload(new.as_bytes()).unwrap();
+    let r = reload(&mut b, new.as_bytes()).unwrap();
     assert_eq!((r.start_row, r.old_end_row, r.new_end_row), (2, 2, 5));
     assert_eq!(b.snapshot().line_count(), 13);
     assert_eq!(r.adjust_row(7, 13), 10);
@@ -123,7 +136,7 @@ fn reload_insert_above_shifts_row() {
 #[test]
 fn reload_truncate_to_empty_clamps() {
     let mut b = buf(&numbered(100));
-    let r = b.reload(b"").unwrap();
+    let r = reload(&mut b, b"").unwrap();
     assert_eq!(r.adjust_row(80, 1), 0);
 }
 
@@ -131,18 +144,10 @@ fn reload_truncate_to_empty_clamps() {
 fn reload_edit_inside_changed_region() {
     let mut b = buf(&numbered(10));
     let new = numbered(10).replace("line4\nline5\n", "x\ny\nz\n");
-    let r = b.reload(new.as_bytes()).unwrap();
+    let r = reload(&mut b, new.as_bytes()).unwrap();
     assert_eq!((r.start_row, r.old_end_row, r.new_end_row), (4, 6, 7));
     assert_eq!(r.adjust_row(5, 11), 4);
     assert_eq!(r.adjust_row(6, 11), 7);
-}
-
-#[test]
-fn reload_keeps_force_text() {
-    let mut b = Buffer::from_bytes(b"a\0b", true).unwrap();
-    assert!(b.reload(b"a\0c").is_ok());
-    let mut plain = buf("a");
-    assert_eq!(plain.reload(b"a\0c").err(), Some(LoadError::Binary));
 }
 
 #[test]
@@ -166,14 +171,14 @@ fn long_crlf_line_spans_chunks() {
 #[test]
 fn reload_shrink_below_scroll_clamps_to_last_row() {
     let mut b = buf(&numbered(100));
-    let r = b.reload(numbered(10).as_bytes()).unwrap();
+    let r = reload(&mut b, numbered(10).as_bytes()).unwrap();
     assert_eq!(r.adjust_row(80, 10), 9);
 }
 
 #[test]
 fn reload_with_crlf_content() {
     let mut b = buf("a\r\nb\r\nc\r\nd\r\n");
-    let r = b.reload(b"a\r\nb\r\nX\r\nY\r\nd\r\n").unwrap();
+    let r = reload(&mut b, b"a\r\nb\r\nX\r\nY\r\nd\r\n").unwrap();
     assert_eq!((r.start_row, r.old_end_row, r.new_end_row), (2, 3, 4));
     assert_eq!(b.line_ending(), LineEnding::CrLf);
 }

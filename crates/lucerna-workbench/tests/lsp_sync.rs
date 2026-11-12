@@ -1000,3 +1000,48 @@ fn enabled_flip_keeps_server_selected_by_name(cx: &mut TestAppContext) {
     assert_eq!(launcher.launches().len(), 1);
     assert_eq!(count(&fake, "shutdown"), 0);
 }
+
+#[gpui::test]
+fn typing_sends_incremental_change(cx: &mut TestAppContext) {
+    use lsp_types::{
+        PositionEncodingKind, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    };
+    let dir = rust_project();
+    let fake = FakeServer::new().capabilities(ServerCapabilities {
+        position_encoding: Some(PositionEncodingKind::UTF16),
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(
+            TextDocumentSyncKind::INCREMENTAL,
+        )),
+        ..Default::default()
+    });
+    let launcher = FakeLauncher::new().with_server("rust-analyzer", fake.clone());
+    let (wb, cx) = lsp_workbench(dir.path(), launcher, cx);
+    let view = open(&wb, "src/main.rs", cx);
+    let documents = cx.update(|_, cx| wb.read(cx).documents().clone());
+    let origin = view.entity_id();
+
+    // "fn main() {}\n": insert after `{`.
+    documents.update(cx, |d, cx| {
+        d.apply_edits(
+            Path::new("src/main.rs"),
+            vec![(11..11, Arc::from("x"))],
+            None,
+            None,
+            origin,
+            cx,
+        )
+    });
+    settle(cx);
+
+    let changes = sent(&fake, "textDocument/didChange");
+    assert_eq!(changes.len(), 1, "{:?}", methods(&fake));
+    assert_eq!(changes[0]["textDocument"]["version"], 1);
+    assert_eq!(
+        changes[0]["contentChanges"],
+        json!([{
+            "range": { "start": { "line": 0, "character": 11 },
+                       "end": { "line": 0, "character": 11 } },
+            "text": "x",
+        }])
+    );
+}

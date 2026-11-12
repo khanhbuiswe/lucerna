@@ -136,38 +136,6 @@ impl Patch {
         Patch { edits: out }
     }
 
-    /// The patch for a reload: one edit over its changed row span.
-    // Temporary: removed in Task 10, when reloads produce a real patch.
-    #[doc(hidden)]
-    pub fn from_reload(old: &BufferSnapshot, new: &BufferSnapshot, reload: &Reload) -> Patch {
-        let row_start = |snapshot: &BufferSnapshot, row: u32| {
-            if row >= snapshot.line_count() {
-                snapshot.len_bytes()
-            } else {
-                snapshot.point_to_offset(crate::buffer::Point { row, column: 0 })
-            }
-        };
-        let mut edit = PatchEdit {
-            old: row_start(old, reload.start_row)..row_start(old, reload.old_end_row),
-            new: row_start(new, reload.start_row)..row_start(new, reload.new_end_row),
-        };
-        // Rows compare equal without their line ending, so adding or removing
-        // the final newline changes no row. Start one row earlier then, to
-        // cover that line ending.
-        let balanced = edit.old.start == edit.new.start
-            && old.len_bytes() - edit.old.len() == new.len_bytes() - edit.new.len();
-        if !balanced && reload.start_row > 0 {
-            let from = reload.start_row - 1;
-            edit.old.start = row_start(old, from);
-            edit.new.start = row_start(new, from);
-        }
-        if edit.old.is_empty() && edit.new.is_empty() {
-            Patch::default()
-        } else {
-            Patch { edits: vec![edit] }
-        }
-    }
-
     /// A coarse row summary of this patch for folds, marks and scroll.
     pub fn reload(&self, old: &BufferSnapshot, new: &BufferSnapshot) -> Reload {
         let (Some(first), Some(last)) = (self.edits.first(), self.edits.last()) else {
@@ -177,15 +145,23 @@ impl Patch {
                 new_end_row: 0,
             };
         };
-        let start_row = old.offset_to_point(first.old.start).row;
+        let start = old.offset_to_point(first.old.start);
+        let start_row = start.row;
         let end = old.offset_to_point(last.old.end);
-        // A range ending at column 0 of a row leaves that row untouched.
-        let old_end_row = if end.column == 0 && last.old.end > last.old.start {
+        let line_start =
+            |s: &BufferSnapshot, offset: usize| offset == 0 || s.byte_at(offset - 1) == b'\n';
+        // Whole lines replaced by whole lines (a line diff, or Enter at the
+        // start of a line) touch no row outside them: the row at the end
+        // only moves.
+        let whole_lines = start.column == 0 && end.column == 0 && line_start(new, last.new.end);
+        let old_end_row = if whole_lines {
             end.row
+        } else if end.column == 0 && last.old.end > last.old.start {
+            // A range ending at column 0 of a row leaves that row untouched.
+            end.row.max(start_row + 1)
         } else {
             end.row + 1
         }
-        .max(start_row + 1)
         .min(old.line_count());
         // Rows after the change shift by exactly the line-count difference.
         let delta = new.line_count() as i64 - old.line_count() as i64;
@@ -367,6 +343,24 @@ mod tests {
                 "case {case}\n{a:?}\n{b:?}\n{c:?}"
             );
         }
+    }
+
+    #[test]
+    fn whole_line_insertions_and_deletions_touch_no_row() {
+        let snap = |t: &str| Buffer::from_bytes(t.as_bytes(), false).unwrap().snapshot();
+        let rows = |r: Reload| (r.start_row, r.old_end_row, r.new_end_row);
+        // Two lines inserted above row 0.
+        let (old, new) = (snap("a\nb\n"), snap("x\ny\na\nb\n"));
+        assert_eq!(rows(patch(0..0, 0..4).reload(&old, &new)), (0, 0, 2));
+        // Row 1 deleted.
+        let (old, new) = (snap("a\nb\nc\n"), snap("a\nc\n"));
+        assert_eq!(rows(patch(2..4, 2..2).reload(&old, &new)), (1, 2, 1));
+        // Enter at the start of row 1.
+        let (old, new) = (snap("a\nb\n"), snap("a\n\nb\n"));
+        assert_eq!(rows(patch(2..2, 2..3).reload(&old, &new)), (1, 1, 2));
+        // A char typed at the start of row 1 changes that row.
+        let (old, new) = (snap("a\nb\n"), snap("a\nxb\n"));
+        assert_eq!(rows(patch(2..2, 2..3).reload(&old, &new)), (1, 2, 2));
     }
 
     #[test]

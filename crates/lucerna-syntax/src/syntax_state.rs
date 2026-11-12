@@ -484,14 +484,15 @@ fn input_edits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lucerna_text::{Buffer, PatchEdit};
+    use lucerna_text::{Buffer, PatchEdit, decode_file, diff_edits};
 
     fn edits_for(old_text: &str, new_text: &str) -> Vec<InputEdit> {
         let mut buffer = Buffer::from_bytes(old_text.as_bytes(), false).unwrap();
         let old = buffer.snapshot();
-        let reload = buffer.reload(new_text.as_bytes()).unwrap();
+        let decoded = decode_file(new_text.as_bytes(), false).unwrap();
+        let patch = buffer.edit(diff_edits(&old, &decoded.text));
         let new = buffer.snapshot();
-        input_edits(&old, &new, &Patch::from_reload(&old, &new, &reload)).expect("below the cap")
+        input_edits(&old, &new, &patch).expect("below the cap")
     }
 
     #[test]

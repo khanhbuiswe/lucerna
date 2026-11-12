@@ -9,7 +9,6 @@ use ropey::Rope;
 use crate::history::{History, HistoryState, Inverse, SelectionsToken, UndoResult, compose_all};
 use crate::load::{Decoded, LoadError, check_size, decode_file};
 use crate::patch::{Patch, PatchEdit};
-use crate::reload::Reload;
 
 /// The dominant line ending of a file, for the status bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +31,6 @@ pub struct Buffer {
     line_ending: LineEnding,
     has_bom: bool,
     disk_hash: u64,
-    force_text: bool,
     history: History,
     version: u64,
 }
@@ -46,9 +44,7 @@ impl Buffer {
     }
 
     pub fn from_bytes(bytes: &[u8], force_text: bool) -> Result<Buffer, LoadError> {
-        let mut buffer = Buffer::from_decoded(decode_file(bytes, force_text)?);
-        buffer.force_text = force_text;
-        Ok(buffer)
+        Ok(Buffer::from_decoded(decode_file(bytes, force_text)?))
     }
 
     pub fn from_decoded(decoded: Decoded) -> Buffer {
@@ -58,7 +54,6 @@ impl Buffer {
             line_ending: decoded.line_ending,
             has_bom: decoded.has_bom,
             disk_hash: decoded.hash,
-            force_text: false,
             history: History::new(),
             version: 0,
         }
@@ -91,20 +86,13 @@ impl Buffer {
         }
     }
 
-    /// Replaces the contents with `bytes` and describes what changed.
-    /// On error the buffer is left untouched.
-    pub fn reload(&mut self, bytes: &[u8]) -> Result<Reload, LoadError> {
-        let decoded = decode_file(bytes, self.force_text)?;
-        let new = BufferSnapshot {
-            rope: Rope::from_str(&decoded.text),
-        };
-        let reload = Reload::diff(&self.snapshot(), &new);
-        self.line_ending = decoded.line_ending;
+    /// Takes the encoding, BOM, line ending and hash of a newer decode of
+    /// the file, whose text the buffer was edited to match (a reload).
+    pub fn set_disk_state(&mut self, decoded: &Decoded) {
         self.encoding = decoded.encoding;
         self.has_bom = decoded.has_bom;
+        self.line_ending = decoded.line_ending;
         self.disk_hash = decoded.hash;
-        self.rope = new.rope;
-        Ok(reload)
     }
 
     /// Incremented by every edit, undo and redo.

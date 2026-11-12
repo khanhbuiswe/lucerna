@@ -1,7 +1,8 @@
-//! `reload_10mb`: reloading a 10 MB buffer whose tail changed.
+//! `reload_10mb`: reloading a 10 MB buffer whose tail changed: decode, line
+//! diff and apply the edits, as `Documents` does.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use lucerna_text::Buffer;
+use lucerna_text::{Buffer, decode_file, diff_edits};
 use std::time::Duration;
 
 fn source(extra_tail: bool) -> Vec<u8> {
@@ -28,7 +29,11 @@ fn reload_10mb(c: &mut Criterion) {
     group.bench_function("reload", |b| {
         b.iter_batched(
             || Buffer::from_bytes(&before, false).unwrap(),
-            |mut buffer| black_box(buffer.reload(&after).unwrap()),
+            |mut buffer| {
+                let decoded = decode_file(&after, false).unwrap();
+                let edits = diff_edits(&buffer.snapshot(), &decoded.text);
+                black_box(buffer.edit(edits))
+            },
             criterion::BatchSize::LargeInput,
         );
     });

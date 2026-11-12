@@ -25,7 +25,7 @@ use gpui::{
 };
 use lucerna_lsp::diagnostics::Diagnostic;
 use lucerna_syntax::{SyntaxState, indent_folds};
-use lucerna_text::{Buffer, BufferSnapshot, LoadError, Patch, Point, Reload};
+use lucerna_text::{Bias, Buffer, BufferSnapshot, LoadError, Patch, Point, Reload};
 
 pub use diagnostics::{DiagnosticRows, Mark, MarkStyle};
 pub use layout::{
@@ -153,7 +153,8 @@ pub struct CursorOverlay {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeViewEvent {
-    /// Emitted by [`CodeView::apply_reload`] once the new text is shown.
+    /// Emitted by [`CodeView::apply_edit`] once the new text is shown,
+    /// with the rows the edit changed.
     Reloaded { reload: Reload },
 }
 
@@ -376,7 +377,7 @@ impl CodeView {
     }
 
     /// Shows `snapshot` from the top, dropping the selection, folds and
-    /// syntax. Use [`CodeView::apply_reload`] for a new version of the
+    /// syntax. Use [`CodeView::apply_edit`] for a new version of the
     /// same file.
     pub fn set_buffer(&mut self, snapshot: BufferSnapshot, cx: &mut Context<Self>) {
         self.replace_snapshot(snapshot, cx);
@@ -392,62 +393,70 @@ impl CodeView {
         cx.notify();
     }
 
-    /// Shows a reloaded version of the file, keeping the scroll position,
-    /// selection and closed folds on the same lines; a selection touching
-    /// a changed row is cleared, as is a fold whose header changed. The
-    /// syntax tree is edited to the new text and stays until the next
+    /// Shows the text after an edit, an undo or a reload: `patch` turned
+    /// `old` (the text shown) into `snapshot`. The selection, search
+    /// matches and diagnostics follow the text around them (diagnostics
+    /// until the servers publish again); the scroll position and closed
+    /// folds stay on the same lines, except a fold whose header changed.
+    /// The syntax tree is edited to the new text and stays until the next
     /// [`CodeView::set_syntax`], so colours do not flicker off.
-    pub fn apply_reload(
+    pub fn apply_edit(
         &mut self,
+        old: &BufferSnapshot,
         snapshot: BufferSnapshot,
-        reload: Reload,
+        patch: &Patch,
         cx: &mut Context<Self>,
     ) {
         let rows = snapshot.line_count();
-        let adjust = |p: Point| Point {
-            row: reload.adjust_row(p.row, rows),
-            column: p.column,
-        };
+        let reload = patch.reload(old, &snapshot);
+        let map = |p: Point| map_point(old, &snapshot, patch, p);
         self.scroll = Scroll {
             top_row: reload.adjust_row(self.scroll.top_row, rows),
             offset: 0.,
         };
-        let changed = reload.start_row..reload.old_end_row;
         self.hover.hide(cx);
-        self.selection = self
-            .selection
-            .filter(|s| {
-                let r = s.range();
-                r.end.row < changed.start || r.start.row >= changed.end
-            })
-            .map(|s| Selection {
-                anchor: adjust(s.anchor),
-                head: adjust(s.head),
-            });
-        // Like the selection: dropped if any of its rows changed.
+        self.selection = self.selection.map(|s| Selection {
+            anchor: map(s.anchor),
+            head: map(s.head),
+        });
+        // A rectangle stays one only while no edit reaches into it.
         self.block_selection = self
             .block_selection
             .take()
             .filter(|block| {
-                block
-                    .iter()
-                    .all(|r| r.end.row < changed.start || r.start.row >= changed.end)
+                !block.iter().any(|r| {
+                    touches(
+                        patch,
+                        old.point_to_offset(r.start)..old.point_to_offset(r.end),
+                    )
+                })
             })
             .map(|block| {
                 block
                     .into_iter()
-                    .map(|r| adjust(r.start)..adjust(r.end))
+                    .map(|r| map(r.start)..map(r.end))
                     .collect()
             });
         self.selection_generation += 1;
-        let old = std::mem::replace(&mut self.snapshot, snapshot.clone());
-        let patch = Patch::from_reload(&old, &snapshot, &reload);
+        let (matches, active) = remap_ranges(&self.match_highlights, self.active_match, patch);
+        let diagnostics: Arc<[Diagnostic]> = self
+            .diagnostics
+            .iter()
+            .map(|d| Diagnostic {
+                range: map(d.range.start)..map(d.range.end),
+                ..d.clone()
+            })
+            .collect();
+        self.hover.set_diagnostics(diagnostics.clone());
+        self.diagnostics = diagnostics;
         self.syntax = self.syntax.as_ref().and_then(|syntax| {
-            catch_panic("edit syntax", || syntax.edited(&old, &snapshot, &patch))
+            catch_panic("edit syntax", || syntax.edited(old, &snapshot, patch))
                 .ok()
                 .map(Arc::new)
         });
         self.replace_snapshot(snapshot, cx);
+        self.match_highlights = matches;
+        self.active_match = active;
         self.folds.remap(&reload, rows);
         self.scroll.top_row = self.folds.prev_visible(self.scroll.top_row);
         self.update_brackets();
@@ -1409,4 +1418,47 @@ impl Render for LargeFileStatus {
 /// Converts a theme color to a GPUI fill color.
 fn hsla(c: lucerna_theme::Rgba) -> gpui::Hsla {
     color(c).into()
+}
+
+/// Where `p` of `old` lands in `new` after `patch`. A point where text was
+/// inserted moves past it, like a cursor typing; one at the start of or
+/// inside replaced text goes to the start of the replacement.
+fn map_point(old: &BufferSnapshot, new: &BufferSnapshot, patch: &Patch, p: Point) -> Point {
+    let offset = old.point_to_offset(p);
+    let edits = patch.edits();
+    let i = edits.partition_point(|e| e.old.end <= offset);
+    let inside = edits
+        .get(i)
+        .is_some_and(|e| e.old.start <= offset && offset < e.old.end);
+    let bias = if inside { Bias::Left } else { Bias::Right };
+    new.offset_to_point(patch.map_offset(offset, bias))
+}
+
+/// Byte ranges (sorted, non-overlapping) shifted by `patch`; a range an
+/// edit touches is dropped. `active` is an index into `ranges`; it follows
+/// its range, or is `None` once that is dropped.
+fn remap_ranges(
+    ranges: &[Range<usize>],
+    active: Option<usize>,
+    patch: &Patch,
+) -> (Arc<[Range<usize>]>, Option<usize>) {
+    let mut out = Vec::with_capacity(ranges.len());
+    let mut new_active = None;
+    for (i, r) in ranges.iter().enumerate() {
+        if touches(patch, r.clone()) {
+            continue;
+        }
+        if active == Some(i) {
+            new_active = Some(out.len());
+        }
+        out.push(patch.map_offset(r.start, Bias::Left)..patch.map_offset(r.end, Bias::Left));
+    }
+    (out.into(), new_active)
+}
+
+/// Whether an edit of `patch` overlaps or touches the old byte `range`.
+fn touches(patch: &Patch, range: Range<usize>) -> bool {
+    let edits = patch.edits();
+    let first = edits.partition_point(|e| e.old.end < range.start);
+    edits.get(first).is_some_and(|e| e.old.start <= range.end)
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use lucerna_syntax::{
     Associations, ExtensionLanguage, HighlightSpan, LanguageRegistry, ParseOutcome, SyntaxState,
 };
-use lucerna_text::{Buffer, BufferSnapshot, Patch};
+use lucerna_text::{Buffer, BufferSnapshot, decode_file, diff_edits};
 
 fn snapshot(text: &str) -> BufferSnapshot {
     Buffer::from_bytes(text.as_bytes(), false)
@@ -204,9 +204,10 @@ fn edited_drops_children_until_reparse() {
     let mut state = SyntaxState::new(language, registry).unwrap();
     assert_eq!(state.parse(&old, None), ParseOutcome::Done);
     assert!(state.layer_count() > 0);
-    let reload = buffer.reload(new_text.as_bytes()).unwrap();
+    let decoded = decode_file(new_text.as_bytes(), false).unwrap();
+    let patch = buffer.edit(diff_edits(&old, &decoded.text));
     let new = buffer.snapshot();
-    let mut edited = state.edited(&old, &new, &Patch::from_reload(&old, &new, &reload));
+    let mut edited = state.edited(&old, &new, &patch);
     assert!(edited.tree().is_some());
     assert_eq!(edited.layer_count(), 0);
     assert_eq!(edited.parse(&new, None), ParseOutcome::Done);

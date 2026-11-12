@@ -173,8 +173,11 @@ impl SymbolSource {
     fn on_document_event(&mut self, ev: &DocumentEvent, cx: &mut Context<Workbench>) {
         match ev {
             DocumentEvent::Opened { path, .. }
-            | DocumentEvent::Reloaded { path, .. }
+            | DocumentEvent::Edited { path, .. }
             | DocumentEvent::LanguageChanged { path, .. } => self.fetch(path.clone(), cx),
+            DocumentEvent::DirtyChanged { .. }
+            | DocumentEvent::Saved { .. }
+            | DocumentEvent::ConflictChanged { .. } => {}
             DocumentEvent::Closed { path } => {
                 self.entries.remove(path);
             }

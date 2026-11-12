@@ -1,26 +1,30 @@
 //! Open files: loads them off the main thread, parses them, and keeps every
 //! [`CodeView`] of a path in step with the file on disk.
 //!
-//! One [`Document`] per file holds the buffer, its parsed syntax and the
-//! views showing it. Each tab gets its own view (with its own scroll
-//! position); a reload updates them all. Paths are normalised to a key:
+//! One [`Document`] per file holds the buffer, its undo history, its parsed
+//! syntax and the views showing it. Each tab gets its own view (with its own
+//! scroll position); an edit, an undo or a reload updates them all. The
+//! buffer never leaves the main thread: a reload reads and diffs the file in
+//! the background, then applies the diff here as one undoable edit. Paths are normalised to a key:
 //! absolute paths as given, relative ones joined onto the workbench root,
 //! so a tab's path and a worktree change's root-relative path meet.
 
 use std::collections::HashMap;
 use std::fs;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use gpui::{
-    App, AppContext, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled,
-    Task, WeakEntity, Window, div, prelude::*, px,
+    App, AppContext, Context, Entity, EntityId, EventEmitter, IntoElement, ParentElement, Render,
+    Styled, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use lucerna_project::{ChangeKind, WorktreeEvent};
 use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{
-    Buffer, BufferSnapshot, LineEnding, LoadError, Patch, Point, Reload, check_size,
+    Buffer, BufferSnapshot, Decoded, LineEnding, LoadError, Patch, PatchEdit, Point,
+    SelectionsToken, check_size, decode_file, diff_edits,
 };
 
 use crate::AppState;
@@ -64,12 +68,24 @@ pub enum DocumentEvent {
         language_id: Option<Arc<str>>,
         snapshot: BufferSnapshot,
     },
-    /// The text changed on disk and was reloaded. Not sent when a reload
-    /// left the text as it was, unless the file had been deleted.
-    Reloaded {
+    /// The text changed from `old` to `snapshot` by `patch`: an edit from
+    /// the view `origin`, or (`origin: None`) an undo, a redo or a reload
+    /// from disk. Also sent with an empty patch when a deleted file came
+    /// back as it was, so listeners that let it go take it up again.
+    Edited {
         path: Arc<Path>,
+        old: BufferSnapshot,
         snapshot: BufferSnapshot,
+        patch: Arc<Patch>,
+        origin: Option<EntityId>,
     },
+    /// The text now differs from (or again matches) the file on disk.
+    DirtyChanged { path: Arc<Path>, dirty: bool },
+    /// The text was written to disk.
+    Saved { path: Arc<Path> },
+    /// The file changed on disk while the text had unsaved changes (or that
+    /// state ended); the text was left alone.
+    ConflictChanged { path: Arc<Path>, conflict: bool },
     /// The last view of an opened document was dropped. Sent no later than
     /// the frame after (the workbench collects closed documents on each
     /// draw).
@@ -101,25 +117,49 @@ impl Stamp {
     }
 }
 
-/// Background work on one document. A reload takes the buffer with it so
-/// it can diff against the old text.
+type Edits = Vec<(Range<usize>, Arc<str>)>;
+
+/// Background work on one document. A reload diffs the file against a
+/// snapshot of the text; the buffer stays on the main thread.
 enum Job {
-    Load { force_text: bool },
-    Reload(Buffer),
+    Load {
+        force_text: bool,
+    },
+    Reload {
+        force_text: bool,
+        base: BufferSnapshot,
+        base_version: u64,
+        base_hash: u64,
+    },
+}
+
+/// A file read for a reload, and the edits from the text it was diffed
+/// against (version `base_version` of the buffer) to the file's.
+struct Reloaded {
+    decoded: Decoded,
+    base_version: u64,
+    edits: Edits,
+    stamp: Stamp,
 }
 
 enum JobOutput {
     Loaded(Result<(Buffer, Stamp), LoadError>),
-    /// The buffer comes back unchanged when the reload failed.
-    Reloaded(Buffer, Result<(Reload, Stamp), LoadError>),
+    Reloaded(Result<Reloaded, LoadError>),
 }
 
 struct Document {
     state: DocState,
-    /// `None` until loaded, and while a reload has it on another thread.
+    /// `None` until loaded.
     buffer: Option<Buffer>,
-    /// The text the views show; outlives the buffer's trips off-thread.
+    /// The buffer's text, as the views show it.
     snapshot: Option<BufferSnapshot>,
+    /// The buffer's version, as of the last change seen here.
+    version: u64,
+    /// The hash of the file's bytes as last loaded, reloaded or saved: a
+    /// change on disk with the same hash is ignored.
+    base_hash: u64,
+    /// The file changed on disk while the text had unsaved changes.
+    conflict: bool,
     /// Bumped per new text, so a parse of older text is dropped.
     revision: u64,
     encoding: &'static str,
@@ -132,7 +172,7 @@ struct Document {
     /// The load or reload in flight; at most one per document.
     job: Option<Task<()>>,
     /// Another change arrived while `job` ran: reload once more after it.
-    dirty: bool,
+    reload_again: bool,
     parse: Option<Task<()>>,
     /// Where to put the cursor once the text is loaded.
     pending_go_to: Option<Point>,
@@ -267,6 +307,9 @@ impl Documents {
                         state: DocState::Loading,
                         buffer: None,
                         snapshot: None,
+                        version: 0,
+                        base_hash: 0,
+                        conflict: false,
                         revision: 0,
                         encoding: "UTF-8",
                         line_ending: LineEnding::Lf,
@@ -276,7 +319,7 @@ impl Documents {
                         stamp: None,
                         views: vec![view.downgrade()],
                         job: None,
-                        dirty: false,
+                        reload_again: false,
                         parse: None,
                         pending_go_to: self.pending_go_to.remove(&key),
                         announced: false,
@@ -375,6 +418,144 @@ impl Documents {
         self.docs.get(&self.key(path)).map(|d| &d.state)
     }
 
+    /// Applies `edits` (sorted, non-overlapping, against the current text)
+    /// to the document at `path` as part of the current undo step, and
+    /// updates every view. `selections_before` is kept if this starts a new
+    /// step, `selections_after` replaces the step's. `None` when the text
+    /// is not loaded.
+    pub fn apply_edits(
+        &mut self,
+        path: &Path,
+        edits: Edits,
+        selections_before: Option<SelectionsToken>,
+        selections_after: Option<SelectionsToken>,
+        origin: EntityId,
+        cx: &mut Context<Self>,
+    ) -> Option<Patch> {
+        let key = self.key(path);
+        let buffer = self.docs.get_mut(&key)?.buffer.as_mut()?;
+        let old = buffer.snapshot();
+        let was_dirty = buffer.is_dirty();
+        // An edit from a stale range must not split a char or run past
+        // the end: the rope would panic.
+        let edits = edits.into_iter().map(|(r, text)| {
+            let end = old.floor_char_boundary(r.end);
+            (old.floor_char_boundary(r.start).min(end)..end, text)
+        });
+        buffer.start_transaction(selections_before);
+        let patch = buffer.edit(edits);
+        buffer.end_transaction(selections_after);
+        self.commit_edit(&key, old, &patch, was_dirty, Some(origin), cx);
+        cx.notify();
+        Some(patch)
+    }
+
+    /// Ends the current undo step of the document at `path`: the next
+    /// edit starts a new one.
+    pub fn push_stop(&mut self, path: &Path) {
+        let key = self.key(path);
+        if let Some(buffer) = self.docs.get_mut(&key).and_then(|d| d.buffer.as_mut()) {
+            buffer.push_stop();
+        }
+    }
+
+    /// Undoes the last step of the document at `path`. `None` when there
+    /// is nothing to undo; else the selections from before that step.
+    pub fn undo(&mut self, path: &Path, cx: &mut Context<Self>) -> Option<Option<SelectionsToken>> {
+        self.undo_redo(path, true, cx)
+    }
+
+    /// Redoes the last undone step of the document at `path`. `None` when
+    /// there is nothing to redo; else the selections from after that step.
+    pub fn redo(&mut self, path: &Path, cx: &mut Context<Self>) -> Option<Option<SelectionsToken>> {
+        self.undo_redo(path, false, cx)
+    }
+
+    fn undo_redo(
+        &mut self,
+        path: &Path,
+        undo: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<Option<SelectionsToken>> {
+        let key = self.key(path);
+        let buffer = self.docs.get_mut(&key)?.buffer.as_mut()?;
+        let old = buffer.snapshot();
+        let was_dirty = buffer.is_dirty();
+        let result = if undo { buffer.undo() } else { buffer.redo() }?;
+        self.commit_edit(&key, old, &result.patch, was_dirty, None, cx);
+        cx.notify();
+        Some(result.selections)
+    }
+
+    /// Whether the text of the document at `path` differs from the file
+    /// as last loaded or saved.
+    pub fn is_dirty(&self, path: &Path) -> bool {
+        self.docs
+            .get(&self.key(path))
+            .and_then(|d| d.buffer.as_ref())
+            .is_some_and(Buffer::is_dirty)
+    }
+
+    /// Whether the file at `path` changed on disk while its text had
+    /// unsaved changes.
+    pub fn has_conflict(&self, path: &Path) -> bool {
+        self.docs.get(&self.key(path)).is_some_and(|d| d.conflict)
+    }
+
+    /// After the buffer of `key` changed from `old` by `patch`: shows the
+    /// new text in every view, edits the syntax to it and parses it, and
+    /// tells listeners. `was_dirty` is the dirty state before the change.
+    fn commit_edit(
+        &mut self,
+        key: &Arc<Path>,
+        old: BufferSnapshot,
+        patch: &Patch,
+        was_dirty: bool,
+        origin: Option<EntityId>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.docs.get_mut(key) else {
+            return;
+        };
+        let Some(buffer) = doc.buffer.as_ref() else {
+            return;
+        };
+        doc.version = buffer.version();
+        let dirty = buffer.is_dirty();
+        if !patch.is_empty() {
+            let snapshot = buffer.snapshot();
+            doc.snapshot = Some(snapshot.clone());
+            doc.revision += 1;
+            // The old tree, edited to the new text, keeps the colours
+            // until the new parse lands; views edit their own copy.
+            doc.syntax = doc.syntax.take().and_then(|syntax| {
+                catch_panic("edit syntax", || syntax.edited(&old, &snapshot, patch))
+                    .ok()
+                    .map(Arc::new)
+            });
+            for view in doc.views() {
+                let snapshot = snapshot.clone();
+                view.update(cx, |v, cx| v.apply_edit(&old, snapshot, patch, cx));
+            }
+            cx.emit(DocumentEvent::Edited {
+                path: key.clone(),
+                old,
+                snapshot,
+                patch: Arc::new(patch.clone()),
+                origin,
+            });
+        }
+        if dirty != was_dirty {
+            cx.emit(DocumentEvent::DirtyChanged {
+                path: key.clone(),
+                dirty,
+            });
+        }
+        if !patch.is_empty() {
+            self.parse(key, true, cx);
+        }
+    }
+
     /// Puts the cursor of `view` at `point` and scrolls to it, now if its
     /// text is loaded, else as soon as it is.
     pub fn go_to(&mut self, view: &Entity<CodeView>, point: Point, cx: &mut Context<Self>) {
@@ -463,9 +644,9 @@ impl Documents {
         let Some(doc) = self.docs.get_mut(&key) else {
             return;
         };
+        // A loaded buffer stays (with its history): the reload decodes the
+        // file as text and applies it as an edit.
         doc.force_text = true;
-        // A buffer decoded without `force_text` would keep refusing.
-        doc.buffer = None;
         if doc.snapshot.is_none() {
             doc.set_state(DocState::Loading, cx);
         }
@@ -490,7 +671,7 @@ impl Documents {
                             doc.set_state(DocState::Deleted, cx);
                             // A load in flight may have read the old file.
                             if doc.job.is_some() {
-                                doc.dirty = true;
+                                doc.reload_again = true;
                             }
                         }
                         ChangeKind::Added => {
@@ -580,11 +761,16 @@ impl Documents {
             return;
         };
         if doc.job.is_some() {
-            doc.dirty = true;
+            doc.reload_again = true;
             return;
         }
-        let job = match doc.buffer.take() {
-            Some(buffer) => Job::Reload(buffer),
+        let job = match &doc.buffer {
+            Some(buffer) => Job::Reload {
+                force_text: doc.force_text,
+                base: buffer.snapshot(),
+                base_version: buffer.version(),
+                base_hash: doc.base_hash,
+            },
             None => Job::Load {
                 force_text: doc.force_text,
             },
@@ -613,6 +799,7 @@ impl Documents {
         match output {
             Ok(JobOutput::Loaded(Ok((buffer, stamp)))) => {
                 let snapshot = buffer.snapshot();
+                let old_snapshot = doc.snapshot.clone();
                 take_buffer(doc, buffer, stamp);
                 let old_id = doc.language_id();
                 // Now with the first line, for `first_line_pattern`.
@@ -635,9 +822,18 @@ impl Documents {
                         snapshot: snapshot.clone(),
                     }
                 } else {
-                    DocumentEvent::Reloaded {
+                    // A new buffer replaces the old text whole.
+                    let old = old_snapshot.unwrap_or_else(|| snapshot.clone());
+                    let patch = Patch::new(vec![PatchEdit {
+                        old: 0..old.len_bytes(),
+                        new: 0..snapshot.len_bytes(),
+                    }]);
+                    DocumentEvent::Edited {
                         path,
+                        old,
                         snapshot: snapshot.clone(),
+                        patch: Arc::new(patch),
+                        origin: None,
                     }
                 });
                 for view in doc.views() {
@@ -665,71 +861,25 @@ impl Documents {
                 doc.set_state(DocState::Ready, cx);
                 parse = true;
             }
-            Ok(JobOutput::Reloaded(buffer, Ok((reload, stamp))))
-                if unchanged(doc, &buffer, &reload) =>
-            {
-                // `touch` or a rewrite with the same text: nothing to show,
-                // and no new revision for the views to redo.
-                doc.buffer = Some(buffer);
-                doc.stamp = Some(stamp);
-                // A deleted file came back as it was: listeners that let
-                // it go take it up again.
-                if doc.state == DocState::Deleted
-                    && let Some(snapshot) = doc.snapshot.clone()
-                {
-                    cx.emit(DocumentEvent::Reloaded {
-                        path: key.clone(),
-                        snapshot,
-                    });
-                }
-                doc.set_state(DocState::Ready, cx);
-            }
-            Ok(JobOutput::Reloaded(buffer, Ok((reload, stamp)))) => {
-                tracing::debug!(path = %key.display(), "document reloaded");
-                let snapshot = buffer.snapshot();
-                let old = doc.snapshot.clone();
-                take_buffer(doc, buffer, stamp);
-                let patch = old
-                    .as_ref()
-                    .map(|old| Patch::from_reload(old, &snapshot, &reload));
-                // The old tree, edited to the new text, keeps the colours
-                // until the new parse lands; views edit their own copy.
-                doc.syntax = match (doc.syntax.take(), old) {
-                    (Some(syntax), Some(old)) => {
-                        let patch = patch.expect("set with old");
-                        catch_panic("edit syntax", || syntax.edited(&old, &snapshot, &patch))
-                            .ok()
-                            .map(Arc::new)
-                    }
-                    _ => None,
-                };
-                for view in doc.views() {
-                    let snapshot = snapshot.clone();
-                    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
-                }
-                cx.emit(DocumentEvent::Reloaded {
-                    path: key.clone(),
-                    snapshot,
-                });
-                doc.set_state(DocState::Ready, cx);
-                parse = true;
+            Ok(JobOutput::Reloaded(Ok(reloaded))) => {
+                doc.stamp = Some(reloaded.stamp);
+                self.finish_reload(key, reloaded, cx);
             }
             Ok(JobOutput::Loaded(Err(err))) => {
                 let state = failure_state(doc, err);
                 doc.set_state(state, cx);
             }
-            Ok(JobOutput::Reloaded(buffer, Err(err))) => {
-                doc.buffer = Some(buffer);
+            Ok(JobOutput::Reloaded(Err(err))) => {
                 let state = failure_state(doc, err);
                 doc.set_state(state, cx);
             }
-            Err(err) => {
-                // The job panicked and its buffer went with it.
-                doc.buffer = None;
-                doc.set_state(DocState::Error(err), cx);
-            }
+            // The job panicked; a loaded buffer is still here.
+            Err(err) => doc.set_state(DocState::Error(err), cx),
         }
-        let again = std::mem::take(&mut doc.dirty);
+        let Some(doc) = self.docs.get_mut(key) else {
+            return;
+        };
+        let again = std::mem::take(&mut doc.reload_again);
         if parse {
             self.parse(key, true, cx);
         }
@@ -737,6 +887,79 @@ impl Documents {
             self.start_job(key, cx);
         }
         cx.notify();
+    }
+
+    /// Applies a reload's result to the document at `key` (spec §7.1):
+    /// - the same bytes as last loaded or saved: nothing changes;
+    /// - unsaved changes: the text is left alone and the document is in
+    ///   conflict with the disk;
+    /// - the buffer changed since the job took its snapshot: the job runs
+    ///   again against the new text;
+    /// - else the diff is applied as one undo step of its own (which parses
+    ///   the new text), and the text counts as saved.
+    fn finish_reload(&mut self, key: &Arc<Path>, reloaded: Reloaded, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get_mut(key) else {
+            return;
+        };
+        let Some(buffer) = doc.buffer.as_mut() else {
+            return;
+        };
+        let was_deleted = doc.state == DocState::Deleted;
+        let Reloaded {
+            decoded,
+            base_version,
+            edits,
+            ..
+        } = reloaded;
+        if decoded.hash == doc.base_hash {
+            // `touch`, a rewrite with the same bytes, or our own save.
+            set_conflict(doc, key, false, cx);
+            doc.set_state(DocState::Ready, cx);
+            if was_deleted && let Some(snapshot) = doc.snapshot.clone() {
+                cx.emit(DocumentEvent::Edited {
+                    path: key.clone(),
+                    old: snapshot.clone(),
+                    snapshot,
+                    patch: Arc::new(Patch::default()),
+                    origin: None,
+                });
+            }
+            return;
+        }
+        if buffer.is_dirty() {
+            set_conflict(doc, key, true, cx);
+            doc.set_state(DocState::Ready, cx);
+            return;
+        }
+        if buffer.version() != base_version {
+            // Edited (and undone back to clean) while the job ran: diff again.
+            doc.reload_again = true;
+            return;
+        }
+        tracing::debug!(path = %key.display(), "document reloaded");
+        let old = buffer.snapshot();
+        buffer.push_stop();
+        let patch = buffer.edit(edits);
+        buffer.push_stop();
+        buffer.set_disk_state(&decoded);
+        let saved = buffer.history_state();
+        buffer.set_saved(saved);
+        doc.base_hash = decoded.hash;
+        doc.encoding = buffer.encoding().name();
+        doc.line_ending = buffer.line_ending();
+        set_conflict(doc, key, false, cx);
+        doc.set_state(DocState::Ready, cx);
+        let changed = !patch.is_empty();
+        if !changed && was_deleted {
+            cx.emit(DocumentEvent::Edited {
+                path: key.clone(),
+                old: old.clone(),
+                snapshot: old.clone(),
+                patch: Arc::new(Patch::default()),
+                origin: None,
+            });
+        }
+        self.commit_edit(key, old, &patch, false, None, cx);
     }
 
     /// Parses the current text: within [`SYNC_PARSE_BUDGET`] here when
@@ -835,21 +1058,23 @@ impl Documents {
     }
 }
 
-/// Whether a reload left the text exactly as shown: no changed lines, the
-/// same length, encoding and line ending.
-fn unchanged(doc: &Document, buffer: &Buffer, reload: &Reload) -> bool {
-    reload.start_row == reload.old_end_row
-        && reload.old_end_row == reload.new_end_row
-        && doc
-            .snapshot
-            .as_ref()
-            .is_some_and(|s| s.len_bytes() == buffer.snapshot().len_bytes())
-        && buffer.encoding().name() == doc.encoding
-        && buffer.line_ending() == doc.line_ending
+/// Sets whether `doc` is in conflict with the disk, telling listeners
+/// when that changes.
+fn set_conflict(doc: &mut Document, key: &Arc<Path>, conflict: bool, cx: &mut Context<Documents>) {
+    if doc.conflict != conflict {
+        doc.conflict = conflict;
+        cx.emit(DocumentEvent::ConflictChanged {
+            path: key.clone(),
+            conflict,
+        });
+    }
 }
 
 fn take_buffer(doc: &mut Document, buffer: Buffer, stamp: Stamp) {
     doc.snapshot = Some(buffer.snapshot());
+    doc.version = buffer.version();
+    doc.base_hash = buffer.disk_hash();
+    doc.conflict = false;
     doc.encoding = buffer.encoding().name();
     doc.line_ending = buffer.line_ending();
     doc.buffer = Some(buffer);
@@ -947,10 +1172,26 @@ fn run_job(path: &Path, job: Job) -> JobOutput {
             read(path)
                 .and_then(|(bytes, stamp)| Ok((Buffer::from_bytes(&bytes, force_text)?, stamp))),
         ),
-        Job::Reload(mut buffer) => {
-            let result = read(path).and_then(|(bytes, stamp)| Ok((buffer.reload(&bytes)?, stamp)));
-            JobOutput::Reloaded(buffer, result)
-        }
+        Job::Reload {
+            force_text,
+            base,
+            base_version,
+            base_hash,
+        } => JobOutput::Reloaded(read(path).and_then(|(bytes, stamp)| {
+            let decoded = decode_file(&bytes, force_text)?;
+            // The same bytes need no diff: nothing will change.
+            let edits = if decoded.hash == base_hash {
+                Vec::new()
+            } else {
+                diff_edits(&base, &decoded.text)
+            };
+            Ok(Reloaded {
+                decoded,
+                base_version,
+                edits,
+                stamp,
+            })
+        })),
     }
 }
 

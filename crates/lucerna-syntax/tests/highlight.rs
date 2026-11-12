@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lucerna_syntax::{HighlightSpan, Language, LanguageRegistry, ParseOutcome, SyntaxState};
-use lucerna_text::{Buffer, BufferSnapshot, Patch};
+use lucerna_text::{Buffer, BufferSnapshot, decode_file, diff_edits};
 
 fn snapshot(text: &str) -> BufferSnapshot {
     Buffer::from_bytes(text.as_bytes(), false)
@@ -250,10 +250,11 @@ fn edited_state_highlights_the_new_text_until_reparsed() {
     let old = buffer.snapshot();
     let mut state = SyntaxState::new(language("a.rs"), bundled()).unwrap();
     assert_eq!(state.parse(&old, None), ParseOutcome::Done);
-    let reload = buffer.reload(new_text.as_bytes()).unwrap();
+    let decoded = decode_file(new_text.as_bytes(), false).unwrap();
+    let patch = buffer.edit(diff_edits(&old, &decoded.text));
     let new = buffer.snapshot();
 
-    let edited = state.edited(&old, &new, &Patch::from_reload(&old, &new, &reload));
+    let edited = state.edited(&old, &new, &patch);
     assert!(edited.tree().is_some());
     let spans = edited.highlights(&new, 0..new.line_count(), &|_| true);
     assert!(
@@ -275,9 +276,10 @@ fn highlights_after_reload(old_text: &str, new_text: &str) -> (Vec<HighlightSpan
     let old = buffer.snapshot();
     let mut state = SyntaxState::new(language("a.rs"), bundled()).unwrap();
     assert_eq!(state.parse(&old, None), ParseOutcome::Done);
-    let reload = buffer.reload(new_text.as_bytes()).unwrap();
+    let decoded = decode_file(new_text.as_bytes(), false).unwrap();
+    let patch = buffer.edit(diff_edits(&old, &decoded.text));
     let new = buffer.snapshot();
-    let edited = state.edited(&old, &new, &Patch::from_reload(&old, &new, &reload));
+    let edited = state.edited(&old, &new, &patch);
     let spans = edited.highlights(&new, 0..new.line_count(), &|_| true);
     (spans, new.len_bytes())
 }

@@ -2,8 +2,10 @@
 //! loads, live reloads from synthetic worktree events, the deleted and
 //! error states, and the status bar.
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -14,7 +16,7 @@ use lucerna_syntax::LanguageRegistry;
 use lucerna_text::{LoadError, Point};
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::{AppState, DocState, Documents, OpenMode, Workbench};
+use lucerna_workbench::{AppState, DocState, DocumentEvent, Documents, OpenMode, Workbench};
 use tempfile::TempDir;
 
 fn init(cx: &mut TestAppContext) {
@@ -198,7 +200,7 @@ fn modify_reload_keeps_scroll_when_change_below(cx: &mut TestAppContext) {
     let (wb, cx) = workbench(dir.path(), cx);
     let view = open(&wb, "f.txt", cx);
     view.update(cx, |v, cx| v.set_scroll_top_row(50, cx));
-    // One selection above the change survives; the changed row's does not.
+    // A selection away from the change stays on its text.
     view.update(cx, |v, cx| v.select(pt(60, 0)..pt(61, 2), cx));
 
     let new = lines(200).replace("line 150\n", "changed 150\n");
@@ -216,8 +218,8 @@ fn modify_reload_keeps_scroll_when_change_below(cx: &mut TestAppContext) {
     changed(&wb, "f.txt", ChangeKind::Modified, cx);
     assert_eq!(
         view.read_with(cx, |v, _| v.selection()),
-        None,
-        "a selection over changed rows is cleared"
+        Some(pt(149, 0)..pt(151, 1)),
+        "a selection over changed rows follows the text around it"
     );
     assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 50);
 }
@@ -625,4 +627,262 @@ fn failed_grammar_shows_plain_text_not_loading(cx: &mut TestAppContext) {
     );
     assert_eq!(text(&view, cx), "hello\nworld\n");
     view.read_with(cx, |v, _| assert!(v.syntax().is_none()));
+}
+
+fn edit_at(
+    wb: &Entity<Workbench>,
+    view: &Entity<CodeView>,
+    path: &str,
+    range: std::ops::Range<usize>,
+    text: &str,
+    cx: &mut VisualTestContext,
+) {
+    let docs = documents(wb, cx);
+    let origin = view.entity_id();
+    let edit = (range, Arc::<str>::from(text));
+    docs.update(cx, |d, cx| {
+        d.apply_edits(Path::new(path), vec![edit], None, None, origin, cx)
+    })
+    .expect("the document is loaded");
+    settle(cx);
+}
+
+fn is_dirty(wb: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) -> bool {
+    let docs = documents(wb, cx);
+    cx.update(|_, cx| docs.read(cx).is_dirty(Path::new(path)))
+}
+
+fn has_conflict(wb: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) -> bool {
+    let docs = documents(wb, cx);
+    cx.update(|_, cx| docs.read(cx).has_conflict(Path::new(path)))
+}
+
+/// Every event `Documents` emits from now on.
+fn record_events(
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+) -> (Rc<RefCell<Vec<DocumentEvent>>>, gpui::Subscription) {
+    let docs = documents(wb, cx);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let sub = cx.update(|_, cx| {
+        let events = events.clone();
+        cx.subscribe(&docs, move |_, ev: &DocumentEvent, _| {
+            events.borrow_mut().push(ev.clone())
+        })
+    });
+    (events, sub)
+}
+
+#[gpui::test]
+fn clean_reload_is_undoable(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("f.txt");
+    fs::write(&file, "a\nb\nc\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "f.txt", cx);
+
+    fs::write(&file, "a\nB\nc\nd\n").unwrap();
+    changed(&wb, "f.txt", ChangeKind::Modified, cx);
+    assert_eq!(text(&view, cx), "a\nB\nc\nd\n");
+    assert!(!is_dirty(&wb, "f.txt", cx), "a reload leaves the doc clean");
+
+    let docs = documents(&wb, cx);
+    let undone = docs.update(cx, |d, cx| d.undo(Path::new("f.txt"), cx));
+    assert!(undone.is_some(), "the reload is one undo step");
+    settle(cx);
+    assert_eq!(text(&view, cx), "a\nb\nc\n");
+    assert!(
+        is_dirty(&wb, "f.txt", cx),
+        "the text no longer matches disk"
+    );
+    let redone = docs.update(cx, |d, cx| d.redo(Path::new("f.txt"), cx));
+    assert!(redone.is_some());
+    settle(cx);
+    assert_eq!(text(&view, cx), "a\nB\nc\nd\n");
+    assert!(!is_dirty(&wb, "f.txt", cx));
+}
+
+#[gpui::test]
+fn reload_keeps_cursor_on_same_line(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("f.txt");
+    fs::write(&file, lines(20)).unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "f.txt", cx);
+    view.update(cx, |v, cx| v.set_cursor(pt(10, 3), cx));
+
+    let mut new: Vec<String> = (0..20).map(|i| format!("line {i}\n")).collect();
+    new.insert(2, "inserted\n".into());
+    fs::write(&file, new.concat()).unwrap();
+    changed(&wb, "f.txt", ChangeKind::Modified, cx);
+    assert_eq!(text(&view, cx), new.concat());
+    assert_eq!(view.read_with(cx, |v, _| v.cursor()), pt(11, 3));
+}
+
+#[gpui::test]
+fn dirty_doc_is_not_reloaded_and_conflicts(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("f.txt");
+    fs::write(&file, "one\ntwo\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "f.txt", cx);
+    edit_at(&wb, &view, "f.txt", 0..0, "x", cx);
+    assert!(is_dirty(&wb, "f.txt", cx));
+    let (events, _sub) = record_events(&wb, cx);
+
+    fs::write(&file, "one\nTWO\n").unwrap();
+    changed(&wb, "f.txt", ChangeKind::Modified, cx);
+    assert_eq!(text(&view, cx), "xone\ntwo\n", "the buffer is left alone");
+    assert!(has_conflict(&wb, "f.txt", cx));
+    let conflicts: Vec<bool> = events
+        .borrow()
+        .iter()
+        .filter_map(|ev| match ev {
+            DocumentEvent::ConflictChanged { conflict, .. } => Some(*conflict),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(conflicts, [true]);
+    assert!(
+        !events
+            .borrow()
+            .iter()
+            .any(|ev| matches!(ev, DocumentEvent::Edited { .. })),
+        "nothing was edited"
+    );
+}
+
+#[gpui::test]
+fn same_bytes_event_is_ignored(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("f.txt");
+    fs::write(&file, "same\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "f.txt", cx);
+    let (events, _sub) = record_events(&wb, cx);
+
+    fs::write(&file, "same\n").unwrap();
+    changed(&wb, "f.txt", ChangeKind::Modified, cx);
+    assert_eq!(text(&view, cx), "same\n");
+    assert!(
+        !events
+            .borrow()
+            .iter()
+            .any(|ev| matches!(ev, DocumentEvent::Edited { .. })),
+        "{:?}",
+        events.borrow()
+    );
+    assert!(!has_conflict(&wb, "f.txt", cx));
+}
+
+#[gpui::test]
+fn reload_racing_an_edit_keeps_the_edit(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("f.txt");
+    fs::write(&file, "one\ntwo\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "f.txt", cx);
+
+    // The reload job starts but does not run yet.
+    fs::write(&file, "one\nTWO\n").unwrap();
+    let change = Change {
+        path: p("f.txt"),
+        kind: ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    let docs = documents(&wb, cx);
+    let origin = view.entity_id();
+    docs.update(cx, |d, cx| {
+        d.apply_edits(
+            Path::new("f.txt"),
+            vec![(0..0, Arc::from("x"))],
+            None,
+            None,
+            origin,
+            cx,
+        )
+    })
+    .expect("the document is loaded");
+    settle(cx);
+
+    assert_eq!(text(&view, cx), "xone\ntwo\n", "the user's edit survives");
+    assert!(is_dirty(&wb, "f.txt", cx));
+    assert!(has_conflict(&wb, "f.txt", cx));
+}
+
+#[gpui::test]
+fn edit_emits_dirty_changed_once(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("f.txt"), "abc\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "f.txt", cx);
+    let (events, _sub) = record_events(&wb, cx);
+
+    edit_at(&wb, &view, "f.txt", 0..0, "x", cx);
+    edit_at(&wb, &view, "f.txt", 1..1, "y", cx);
+    assert_eq!(text(&view, cx), "xyabc\n");
+    let dirty: Vec<bool> = events
+        .borrow()
+        .iter()
+        .filter_map(|ev| match ev {
+            DocumentEvent::DirtyChanged { dirty, .. } => Some(*dirty),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dirty, [true]);
+    let edited = events
+        .borrow()
+        .iter()
+        .filter(|ev| matches!(ev, DocumentEvent::Edited { origin: Some(o), .. } if *o == view.entity_id()))
+        .count();
+    assert_eq!(edited, 2);
+}
+
+/// A reload diffed against text that changed (and changed back to clean)
+/// while it ran is diffed again, not applied to the wrong text.
+#[gpui::test]
+fn reload_racing_an_undone_edit_runs_again(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("f.txt");
+    fs::write(&file, "one\ntwo\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "f.txt", cx);
+
+    fs::write(&file, "one\nTWO\n").unwrap();
+    let change = Change {
+        path: p("f.txt"),
+        kind: ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    let docs = documents(&wb, cx);
+    let origin = view.entity_id();
+    docs.update(cx, |d, cx| {
+        d.apply_edits(
+            Path::new("f.txt"),
+            vec![(0..0, Arc::from("x"))],
+            None,
+            None,
+            origin,
+            cx,
+        );
+        d.undo(Path::new("f.txt"), cx)
+    })
+    .expect("the edit is undone");
+    assert!(!is_dirty(&wb, "f.txt", cx));
+    settle(cx);
+
+    assert_eq!(text(&view, cx), "one\nTWO\n");
+    assert!(!is_dirty(&wb, "f.txt", cx));
+    assert!(!has_conflict(&wb, "f.txt", cx));
 }

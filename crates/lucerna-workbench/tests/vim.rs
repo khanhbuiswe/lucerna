@@ -11,7 +11,7 @@ use gpui::{
 };
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
-use lucerna_text::{Buffer, BufferSnapshot, Point};
+use lucerna_text::{Buffer, BufferSnapshot, Point, diff_edits};
 use lucerna_theme::ThemeRegistry;
 use lucerna_vim::Mode;
 use lucerna_workbench::code_view::CodeView;
@@ -189,11 +189,14 @@ fn set_user_settings(json: &str, cx: &mut VisualTestContext) {
     draw(cx);
 }
 
+/// Shows `new` in `view` (which shows `old`) as `Documents` reloads it: a
+/// line diff applied as an edit.
 fn reload(view: &Entity<CodeView>, old: &str, new: &str, cx: &mut VisualTestContext) {
     let mut buffer = Buffer::from_bytes(old.as_bytes(), false).unwrap();
-    let reload = buffer.reload(new.as_bytes()).unwrap();
+    let before = buffer.snapshot();
+    let patch = buffer.edit(diff_edits(&before, new));
     let snapshot = buffer.snapshot();
-    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    view.update(cx, |v, cx| v.apply_edit(&before, snapshot, &patch, cx));
     draw(cx);
 }
 

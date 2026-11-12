@@ -8,10 +8,27 @@ use std::sync::Arc;
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::{LanguageRegistry, SyntaxState};
-use lucerna_text::{Buffer, BufferSnapshot, Point};
+use lucerna_text::{Buffer, BufferSnapshot, Point, Reload, decode_file, diff_edits};
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{AppState, OpenMode, Workbench};
+
+/// Reloads `buffer` with `bytes` the way `Documents` does (a line diff
+/// applied as an edit) and shows the result in `view`; returns the changed
+/// rows.
+fn reload_into(
+    view: &Entity<CodeView>,
+    buffer: &mut Buffer,
+    bytes: &[u8],
+    cx: &mut VisualTestContext,
+) -> Reload {
+    let old = buffer.snapshot();
+    let decoded = decode_file(bytes, false).unwrap();
+    let patch = buffer.edit(diff_edits(&old, &decoded.text));
+    let snapshot = buffer.snapshot();
+    view.update(cx, |v, cx| v.apply_edit(&old, snapshot.clone(), &patch, cx));
+    patch.reload(&old, &snapshot)
+}
 
 fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
@@ -509,9 +526,7 @@ fn reload_keeps_scroll_and_selection(cx: &mut TestAppContext) {
     });
 
     let new = format!("{}{old}", "added\n".repeat(5));
-    let reload = buffer.reload(new.as_bytes()).unwrap();
-    let snapshot = buffer.snapshot();
-    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    reload_into(&view, &mut buffer, new.as_bytes(), cx);
     draw(cx);
     assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 55);
     assert_eq!(
@@ -542,9 +557,7 @@ fn reload_remaps_folds(cx: &mut TestAppContext) {
     });
 
     // The second header changes; the first fold is above the change.
-    let reload = buffer.reload(b"a {\n  1\n}\nB {\n  2\n}\nc\n").unwrap();
-    let snapshot = buffer.snapshot();
-    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    reload_into(&view, &mut buffer, b"a {\n  1\n}\nB {\n  2\n}\nc\n", cx);
     cx.run_until_parked();
     draw(cx);
     view.read_with(cx, |v, _| {
@@ -553,11 +566,12 @@ fn reload_remaps_folds(cx: &mut TestAppContext) {
     });
 
     // Lines inserted above shift a closed fold down with its header.
-    let reload = buffer
-        .reload(b"new\nnew\na {\n  1\n}\nB {\n  2\n}\nc\n")
-        .unwrap();
-    let snapshot = buffer.snapshot();
-    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    reload_into(
+        &view,
+        &mut buffer,
+        b"new\nnew\na {\n  1\n}\nB {\n  2\n}\nc\n",
+        cx,
+    );
     cx.run_until_parked();
     view.read_with(cx, |v, _| {
         assert!(v.is_folded(2), "the fold moved down two lines");
@@ -749,9 +763,7 @@ fn reload_emits_event(cx: &mut TestAppContext) {
         .detach();
     });
     let before = view.read_with(cx, |v, _| v.selection_generation());
-    let reload = buffer.reload(b"a\nB\nc\n").unwrap();
-    let snapshot = buffer.snapshot();
-    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    let reload = reload_into(&view, &mut buffer, b"a\nB\nc\n", cx);
     cx.run_until_parked();
     assert_eq!(*events.borrow(), vec![reload]);
     assert!(view.read_with(cx, |v, _| v.selection_generation()) > before);
@@ -896,15 +908,11 @@ fn block_selection_reload_and_empty(cx: &mut TestAppContext) {
     view.update(cx, |v, cx| {
         v.set_block_selection(Some(vec![pt(0, 1)..pt(0, 3), pt(1, 1)..pt(1, 3)]), cx)
     });
-    let reload = buffer.reload(b"abcd\nefgh\nIJKL\n").unwrap();
-    let snapshot = buffer.snapshot();
-    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    reload_into(&view, &mut buffer, b"abcd\nefgh\nIJKL\n", cx);
     assert_eq!(
         view.read_with(cx, |v, _| v.copy_selection()).as_deref(),
         Some("bc\nfg")
     );
-    let reload = buffer.reload(b"abcd\nEFGH\nIJKL\n").unwrap();
-    let snapshot = buffer.snapshot();
-    view.update(cx, |v, cx| v.apply_reload(snapshot, reload, cx));
+    reload_into(&view, &mut buffer, b"abcd\nEFGH\nIJKL\n", cx);
     assert_eq!(view.read_with(cx, |v, _| v.copy_selection()), None);
 }
