@@ -785,6 +785,10 @@ impl Workbench {
             self.documents
                 .update(cx, |documents, cx| documents.languages_changed(cx));
         }
+        // `editor.detectIndentation`, `editor.tabSize` or
+        // `editor.insertSpaces` may have changed.
+        self.documents
+            .update(cx, |documents, cx| documents.settings_changed(cx));
         // `session.trustAllWorktrees` may have changed.
         self.apply_trust(cx);
         // `breadcrumbs.*` may have changed.

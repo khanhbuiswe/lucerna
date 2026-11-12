@@ -8,7 +8,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{Entity, EntityInputHandler as _, Focusable as _, TestAppContext, VisualTestContext};
+use gpui::{
+    BorrowAppContext as _, Entity, EntityInputHandler as _, Focusable as _, TestAppContext,
+    VisualTestContext,
+};
 use lucerna_editor::{Goal, Selection, SelectionSet};
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Context, Keymap, Layer, SettingsStore, parse_when};
@@ -854,6 +857,47 @@ fn reload_redetects_indentation(cx: &mut TestAppContext) {
     assert_eq!(indentation_status(&wb, cx), "Spaces: 2");
     reload(&wb, &dir, "a\n\tb\n\tc\n", cx);
     assert_eq!(indentation_status(&wb, cx), "Tab Size: 4");
+}
+
+fn set_user_settings(json: &str, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        cx.update_global::<AppState, _>(|state, _| {
+            state.settings.set_layer(Layer::User, json).unwrap();
+        });
+    });
+    settle(cx);
+}
+
+/// Final review, finding 2: a settings change re-runs detection with the
+/// new defaults (VS Code `ModelService._updateModelOptions`), so a file
+/// with no indentation follows `editor.tabSize` live.
+#[gpui::test]
+fn tab_size_change_applies_to_open_file_without_indentation(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.tabSize": 4 }"#));
+    let (_dir, wb, view, cx) = editor("a\nb\n", cx);
+    assert_eq!(indentation_status(&wb, cx), "Spaces: 4");
+    set_user_settings(r#"{ "editor.tabSize": 2 }"#, cx);
+    assert_eq!(indentation_status(&wb, cx), "Spaces: 2");
+    assert_eq!(view.read_with(cx, |v, _| v.tab_size()), 2);
+    keys("cmd-down tab", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\n  ");
+}
+
+/// Turning `editor.detectIndentation` off under a `"[lang]"` override
+/// drops the detected indentation of open files of that language.
+#[gpui::test]
+fn detect_indentation_off_in_language_override_applies_live(cx: &mut TestAppContext) {
+    let text = "fn a() {\n  b();\n  if c {\n    d();\n  }\n}\n";
+    init(cx, Some(r#"{ "editor.tabSize": 4 }"#));
+    let (_dir, wb, view, cx) = editor_file("main.rs", text, cx);
+    assert_eq!(indentation_status(&wb, cx), "Spaces: 2");
+    set_user_settings(
+        r#"{ "editor.tabSize": 4, "[rust]": { "editor.detectIndentation": false } }"#,
+        cx,
+    );
+    assert_eq!(indentation_status(&wb, cx), "Spaces: 4");
+    keys("cmd-down tab", cx);
+    assert_eq!(text_of(&view, cx), format!("{text}    "));
 }
 
 #[gpui::test]

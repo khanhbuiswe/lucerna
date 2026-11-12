@@ -245,8 +245,12 @@ struct Document {
     encoding: &'static str,
     line_ending: LineEnding,
     language: Option<Arc<Language>>,
-    /// Detected from the text on load and reload (`editor.detectIndentation`).
+    /// Detected from the text on load and reload (`editor.detectIndentation`),
+    /// and again when the settings it reads change.
     indentation: Option<Indentation>,
+    /// The `editor.detectIndentation` and default indentation the last
+    /// detection used; a settings change re-runs detection when they differ.
+    indentation_inputs: Option<(bool, Indentation)>,
     syntax: Option<Arc<SyntaxState>>,
     force_text: bool,
     stamp: Option<Stamp>,
@@ -436,6 +440,7 @@ impl Documents {
                         line_ending: LineEnding::Lf,
                         language,
                         indentation: None,
+                        indentation_inputs: None,
                         syntax: None,
                         force_text: false,
                         stamp: None,
@@ -458,6 +463,21 @@ impl Documents {
         }
         cx.notify();
         view
+    }
+
+    /// After a settings change: detects the indentation of every loaded
+    /// document again with the new defaults, as VS Code's
+    /// `ModelService._updateModelOptions` does, when
+    /// `editor.detectIndentation`, `editor.tabSize` or `editor.insertSpaces`
+    /// changed for its language.
+    pub fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        for doc in self.docs.values_mut() {
+            if doc.indentation_inputs.is_some()
+                && doc.indentation_inputs != Some(indentation_inputs(doc, cx))
+            {
+                detect_indentation(doc, cx);
+            }
+        }
     }
 
     /// The language registry was replaced: every open document looks its
@@ -1928,6 +1948,22 @@ fn failure_state(doc: &Document, err: LoadError) -> DocState {
 /// hands it to the views. Runs on the main thread: it scans at most 10 000
 /// lines.
 fn detect_indentation(doc: &mut Document, cx: &mut App) {
+    let inputs = indentation_inputs(doc, cx);
+    doc.indentation_inputs = Some(inputs);
+    let (detect, default) = inputs;
+    doc.indentation = match (&doc.snapshot, detect) {
+        (Some(snapshot), true) => Some(indentation::guess(snapshot, default)),
+        _ => None,
+    };
+    for view in doc.views() {
+        let detected = doc.indentation;
+        view.update(cx, |v, cx| v.set_indentation(detected, cx));
+    }
+}
+
+/// `editor.detectIndentation` and the default indentation (`editor.insertSpaces`,
+/// `editor.tabSize`) for the document's language.
+fn indentation_inputs(doc: &Document, cx: &App) -> (bool, Indentation) {
     let language = doc.language_id();
     let settings = &cx.global::<AppState>().settings;
     let detect = settings
@@ -1942,14 +1978,7 @@ fn detect_indentation(doc: &mut Document, cx: &mut App) {
             .unwrap_or(4)
             .max(1),
     };
-    doc.indentation = match (&doc.snapshot, detect) {
-        (Some(snapshot), true) => Some(indentation::guess(snapshot, default)),
-        _ => None,
-    };
-    for view in doc.views() {
-        let detected = doc.indentation;
-        view.update(cx, |v, cx| v.set_indentation(detected, cx));
-    }
+    (detect, default)
 }
 
 /// Shows the document as plain text.
