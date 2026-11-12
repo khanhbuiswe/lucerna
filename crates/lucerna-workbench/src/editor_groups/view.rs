@@ -25,7 +25,7 @@ use crate::symbols::breadcrumbs::{
 };
 use crate::ui::{
     BLOCKS_ICON, CLOSE_ICON, GRID, PATH_BAR_HEIGHT, SEARCH_ICON, TAB_HEIGHT, TAB_PADDING_X,
-    UI_FONT_SIZE_SMALL,
+    UI_FONT_SIZE, UI_FONT_SIZE_SMALL,
 };
 
 /// Square slot that holds a tab's close button, kept even while the
@@ -691,7 +691,7 @@ impl Render for EditorGroupsView {
             };
             let body = match body {
                 Some(body) => body.into_any_element(),
-                None => empty_hint(ui, cx).into_any_element(),
+                None => empty_hint(ui, cx),
             };
             let sash = (gi + 1 < count).then(|| {
                 div()
@@ -767,37 +767,55 @@ pub(crate) fn path_bar_text(path: &Path, root: Option<&Path>, home: Option<&Path
     crate::workspace_state::tilde_path(path, home)
 }
 
-/// Shown in a group with no tabs: the app name and the shortcuts to find
-/// something to open, labelled from the user's keymap.
-fn empty_hint(ui: &UiColors, cx: &App) -> impl IntoElement + use<> {
-    let keymap = &cx.global::<AppState>().keymap;
-    let lines = [
-        ("Go to file", "workbench.action.quickOpen"),
-        ("Find in project", "workbench.action.findInFiles"),
-    ]
-    .into_iter()
-    .filter_map(|(label, command)| {
-        let keys = keymap.label_for(command)?;
-        Some(
-            div()
-                .flex()
-                .flex_row()
-                .gap(px(3. * GRID))
-                .child(label)
-                .child(keys),
-        )
+/// Commands listed in the empty editor area, in display order.
+const WATERMARK_COMMANDS: [(&str, &str); 5] = [
+    ("Show All Commands", "workbench.action.showCommands"),
+    ("Go to File", "workbench.action.quickOpen"),
+    ("Find in Files", "workbench.action.findInFiles"),
+    ("Toggle Sidebar", "workbench.action.toggleSidebarVisibility"),
+    ("Open Recent", "workbench.action.openRecent"),
+];
+
+/// Shown in a group with no tabs: a two-column list of commands with the
+/// user's current shortcuts (labels right-aligned, keys left-aligned).
+/// Commands without a key are skipped. `workbench.tips.enabled = false`
+/// leaves just the area background.
+fn empty_hint(ui: &UiColors, cx: &App) -> gpui::AnyElement {
+    let state = cx.global::<AppState>();
+    let enabled = state
+        .settings
+        .get::<bool>("workbench.tips.enabled", None)
+        .unwrap_or(true);
+    if !enabled {
+        return div().size_full().into_any_element();
+    }
+    let rows: Vec<_> = WATERMARK_COMMANDS
+        .into_iter()
+        .filter_map(|(label, command)| Some((label, command, state.keymap.label_for(command)?)))
+        .collect();
+    let labels = rows
+        .iter()
+        .map(|(label, _, _)| div().flex().justify_end().whitespace_nowrap().child(*label));
+    let keys = rows.iter().map(|(_, command, keys)| {
+        let command = *command;
+        div()
+            .debug_selector(move || format!("editor-empty-hint-{command}"))
+            .whitespace_nowrap()
+            .child(keys.clone())
     });
     div()
         .debug_selector(|| "editor-empty-hint".into())
         .flex()
-        .flex_col()
+        .flex_row()
         .size_full()
         .justify_center()
         .items_center()
-        .gap(px(GRID))
+        .gap(px(3. * GRID))
+        .text_size(px(UI_FONT_SIZE))
         .text_color(color(ui.text_muted))
-        .child(div().mb(px(2. * GRID)).text_size(px(20.)).child("Lucerna"))
-        .children(lines)
+        .child(div().flex().flex_col().gap(px(GRID)).children(labels))
+        .child(div().flex().flex_col().gap(px(GRID)).children(keys))
+        .into_any_element()
 }
 
 #[cfg(test)]
