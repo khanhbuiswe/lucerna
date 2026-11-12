@@ -1,6 +1,8 @@
 //! Copy, cut and paste over selections.
 //!
-//! Adapted from microsoft/vscode src/vs/editor/common/cursor/cursorCopyPasteCommands (MIT)
+//! Adapted from microsoft/vscode src/vs/editor/common/cursor/cursorTypeEditOperations.ts (paste) (MIT)
+//! Adapted from microsoft/vscode src/vs/editor/common/cursor/cursorDeleteOperations.ts (cut) (MIT)
+//! Adapted from microsoft/vscode src/vs/editor/common/viewModel/viewModelImpl.ts (copy) (MIT)
 
 use std::ops::Range;
 
@@ -20,10 +22,10 @@ pub struct ClipboardText {
     pub whole_line: bool,
 }
 
-type Source = (u64, Range<usize>);
+/// `(selection id, range to copy, range to delete)`.
+type Source = (u64, Range<usize>, Range<usize>);
 
-/// `(selection id, range to copy and delete)` per selection, one per distinct line
-/// for empty selections.
+/// One source per selection, one per distinct line for empty selections.
 fn sources(ctx: Ctx, set: &SelectionSet) -> (Vec<Source>, bool) {
     let snap = ctx.snapshot;
     let mut out = Vec::new();
@@ -32,7 +34,7 @@ fn sources(ctx: Ctx, set: &SelectionSet) -> (Vec<Source>, bool) {
     for s in set.all() {
         if !s.is_empty() {
             whole = false;
-            out.push((s.id, s.range()));
+            out.push((s.id, s.range(), s.range()));
         } else if ctx.config.empty_selection_clipboard {
             let row = snap.offset_to_point(s.head).row;
             if last_row == Some(row) {
@@ -45,7 +47,14 @@ fn sources(ctx: Ctx, set: &SelectionSet) -> (Vec<Source>, bool) {
             } else {
                 snap.len_bytes()
             };
-            out.push((s.id, start..end));
+            // The last line takes the break before it, so the line goes away.
+            let del_start =
+                if row > 0 && start < end && !snap.text_for_range(start..end).ends_with('\n') {
+                    start - 1
+                } else {
+                    start
+                };
+            out.push((s.id, start..end, del_start..end));
         }
     }
     let whole = whole && !out.is_empty();
@@ -55,7 +64,7 @@ fn sources(ctx: Ctx, set: &SelectionSet) -> (Vec<Source>, bool) {
 fn collect(snap: &BufferSnapshot, ranges: &[Source], whole: bool) -> ClipboardText {
     let mut pieces: Vec<String> = ranges
         .iter()
-        .map(|(_, r)| snap.text_for_range(r.clone()).to_string())
+        .map(|(_, r, _)| snap.text_for_range(r.clone()).to_string())
         .collect();
     if whole {
         for p in &mut pieces {
@@ -81,37 +90,30 @@ pub fn cut(ctx: Ctx, set: &SelectionSet) -> (EditPlan, ClipboardText) {
     let clip = collect(ctx.snapshot, &ranges, whole);
     let mut items: Vec<Item> = ranges
         .into_iter()
-        .map(|(id, range)| Item {
+        .map(|(id, _, range)| Item {
             id,
             range,
             text: String::new(),
             place: Place::End,
         })
         .collect();
-    // Selections skipped as duplicates on one line still need a cursor.
+    // Every other selection (a duplicate line, or an empty one with
+    // `empty_selection_clipboard` off) still needs a cursor.
     for s in set.all() {
-        if !items.iter().any(|i| i.id == s.id) && ctx.config.empty_selection_clipboard {
-            let row = ctx.snapshot.offset_to_point(s.head).row;
-            let start = row_start(ctx.snapshot, row);
-            items.push(Item {
-                id: s.id,
-                range: start..start,
-                text: String::new(),
-                place: Place::End,
-            });
+        if items.iter().any(|i| i.id == s.id) {
+            continue;
         }
-    }
-    if items.is_empty() {
-        items = set
-            .all()
-            .iter()
-            .map(|s| Item {
-                id: s.id,
-                range: s.head..s.head,
-                text: String::new(),
-                place: Place::End,
-            })
-            .collect();
+        let at = if ctx.config.empty_selection_clipboard {
+            row_start(ctx.snapshot, ctx.snapshot.offset_to_point(s.head).row)
+        } else {
+            s.head
+        };
+        items.push(Item {
+            id: s.id,
+            range: at..at,
+            text: String::new(),
+            place: Place::End,
+        });
     }
     (
         build(items, set.primary().id, EditKind::Other, true, true),
@@ -218,6 +220,27 @@ mod tests {
             (render_plan(snap, &p), c)
         });
         assert_eq!(out, "|");
+    }
+
+    #[test]
+    fn cut_last_line_takes_the_break_before_it() {
+        let (out, c) = ctx_run("a\nb|", |c, s, snap| {
+            let (p, c) = cut(c, s);
+            (render_plan(snap, &p), c)
+        });
+        assert_eq!(out, "a|");
+        assert_eq!((c.text.as_str(), c.whole_line), ("b\n", true));
+    }
+
+    #[test]
+    fn cut_keeps_empty_selections_when_clipboard_line_is_off() {
+        let out = ctx_run("«a»b|c", |c, s, snap| {
+            let mut cfg = c.config.clone();
+            cfg.empty_selection_clipboard = false;
+            let (p, _) = cut(Ctx { config: &cfg, ..c }, s);
+            render_plan(snap, &p)
+        });
+        assert_eq!(out, "|b|c");
     }
 
     #[test]

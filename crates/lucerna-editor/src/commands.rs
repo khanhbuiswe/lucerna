@@ -2,11 +2,13 @@
 //! every selection to an edit and returns an `EditPlan`.
 //!
 //! Word deletes follow microsoft/vscode `deleteWordLeft` / `deleteWordRight`
-//! (WordStart / WordEnd boundaries); the rest follows `cursorTypeOperations.ts`
+//! (WordStart / WordEnd boundaries); the rest follows `cursorTypeEditOperations.ts`
 //! and `cursorDeleteOperations.ts`.
 //!
 //! Adapted from microsoft/vscode src/vs/editor/common/cursor/cursorDeleteOperations.ts (MIT)
 //! Adapted from microsoft/vscode src/vs/editor/common/cursor/cursorTypeEditOperations.ts (MIT)
+//! Adapted from microsoft/vscode src/vs/editor/contrib/wordOperations/browser/wordOperations.ts (MIT)
+//! Adapted from microsoft/vscode src/vs/editor/common/commands/shiftCommand.ts (MIT)
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -275,11 +277,16 @@ pub fn delete_left(ctx: Ctx, set: &SelectionSet) -> EditPlan {
         let p = snap.offset_to_point(o);
         let line = snap.line(p.row);
         let col = (p.column as usize).min(line.len());
-        // Inside leading spaces: back to the previous tab stop.
-        if col > 0 && line[..col].bytes().all(|b| b == b' ') {
-            let ts = ctx.config.tab_size.max(1) as usize;
-            let target = ((col - 1) / ts) * ts;
-            return o - (col - target)..o;
+        // Inside leading whitespace: back to the previous tab stop, by
+        // visible column.
+        if col > 0 && line[..col].bytes().all(|b| b == b' ' || b == b'\t') {
+            let ts = ctx.config.tab_size.max(1);
+            let target = ((display_col(&line[..col], ts) - 1) / ts) * ts;
+            let keep = (0..=col)
+                .rev()
+                .find(|&q| display_col(&line[..q], ts) <= target)
+                .unwrap_or(0);
+            return o - (col - keep)..o;
         }
         prev_boundary(snap, o)..o
     })
@@ -300,6 +307,13 @@ pub fn delete_word_left(ctx: Ctx, set: &SelectionSet) -> EditPlan {
             // Start of a line: only the line break goes.
             return o.saturating_sub(1)..o;
         }
+        // Two or more blanks before the cursor: delete just that run.
+        let line = snap.line(p.row);
+        let before = &line[..(p.column as usize).min(line.len())];
+        let blanks = before.len() - before.trim_end_matches([' ', '\t']).len();
+        if blanks >= 2 {
+            return o - blanks..o;
+        }
         words::word_start_left(snap, o, &ctx.config.word_separators, false)..o
     })
 }
@@ -311,6 +325,13 @@ pub fn delete_word_right(ctx: Ctx, set: &SelectionSet) -> EditPlan {
         let p = snap.offset_to_point(o);
         if p.column as usize >= snap.line(p.row).len() {
             return o..next_boundary(snap, o);
+        }
+        // Two or more blanks after the cursor: delete just that run.
+        let line = snap.line(p.row);
+        let after = &line[p.column as usize..];
+        let blanks = after.len() - after.trim_start_matches([' ', '\t']).len();
+        if blanks >= 2 {
+            return o..o + blanks;
         }
         o..words::word_end_right(snap, o, &ctx.config.word_separators)
     })
@@ -404,12 +425,43 @@ pub fn line_break_insert(ctx: Ctx, set: &SelectionSet) -> EditPlan {
     build(items, set.primary().id, EditKind::Other, true, true)
 }
 
-fn indent_unit(ctx: Ctx) -> String {
+/// `cols` visible columns of indent in the configured style.
+fn indent_string(ctx: Ctx, cols: u32) -> String {
+    let ts = ctx.config.tab_size.max(1);
     if ctx.config.insert_spaces {
-        " ".repeat(ctx.config.tab_size.max(1) as usize)
+        " ".repeat(cols as usize)
     } else {
-        "\t".to_string()
+        "\t".repeat((cols / ts) as usize) + &" ".repeat((cols % ts) as usize)
     }
+}
+
+/// Snaps each touched line's indent to the next (or previous) indent stop,
+/// rewritten in the configured style (like VS Code's `ShiftCommand`).
+fn shift_edits(ctx: Ctx, set: &SelectionSet, outdent: bool) -> Vec<(Range<usize>, Arc<str>)> {
+    let snap = ctx.snapshot;
+    let ts = ctx.config.tab_size.max(1);
+    rows_of(ctx, set)
+        .into_iter()
+        .filter_map(|row| {
+            let line = snap.line(row);
+            let lead = leading_whitespace(&line);
+            let vis = display_col(lead, ts);
+            let desired = if outdent {
+                if vis == 0 {
+                    return None;
+                }
+                ((vis - 1) / ts) * ts
+            } else {
+                if line.is_empty() {
+                    return None;
+                }
+                (vis / ts + 1) * ts
+            };
+            let new = indent_string(ctx, desired);
+            let at = row_start(snap, row);
+            (new != lead).then(|| (at..at + lead.len(), Arc::from(new.as_str())))
+        })
+        .collect()
 }
 
 /// The rows a selection touches: a selection ending at column 0 of a later
@@ -437,7 +489,7 @@ fn rows_of(ctx: Ctx, set: &SelectionSet) -> Vec<u32> {
 
 /// With an empty selection, inserts up to the next tab stop. A selection on
 /// one line is replaced by the indent. When any selection spans lines, every
-/// touched line is indented by one unit (empty lines are skipped).
+/// touched line is indented to the next indent stop (empty lines are skipped).
 pub fn tab(ctx: Ctx, set: &SelectionSet) -> EditPlan {
     let snap = ctx.snapshot;
     let multi = set.all().iter().any(|s| {
@@ -445,15 +497,7 @@ pub fn tab(ctx: Ctx, set: &SelectionSet) -> EditPlan {
         snap.offset_to_point(r.start).row != snap.offset_to_point(r.end).row
     });
     if multi {
-        let unit: Arc<str> = indent_unit(ctx).into();
-        let edits = rows_of(ctx, set)
-            .into_iter()
-            .filter(|&row| !snap.line(row).is_empty())
-            .map(|row| {
-                let at = row_start(snap, row);
-                (at..at, unit.clone())
-            })
-            .collect();
+        let edits = shift_edits(ctx, set, false);
         return build_mapped(set, edits, EditKind::Other);
     }
     let items = set
@@ -481,31 +525,9 @@ pub fn tab(ctx: Ctx, set: &SelectionSet) -> EditPlan {
     build(items, set.primary().id, EditKind::Other, true, true)
 }
 
-/// Removes up to one indent unit from the start of each touched line.
+/// Moves each touched line's indent back to the previous indent stop.
 pub fn outdent(ctx: Ctx, set: &SelectionSet) -> EditPlan {
-    let snap = ctx.snapshot;
-    let ts = ctx.config.tab_size.max(1);
-    let edits = rows_of(ctx, set)
-        .into_iter()
-        .filter_map(|row| {
-            let line = snap.line(row);
-            let (mut col, mut bytes) = (0, 0);
-            for c in line.chars() {
-                match c {
-                    ' ' => col += 1,
-                    '\t' => col = (col / ts + 1) * ts,
-                    _ => break,
-                }
-                bytes += 1;
-                if col >= ts {
-                    break;
-                }
-            }
-            let at = row_start(snap, row);
-            (bytes > 0).then(|| (at..at + bytes, Arc::from("")))
-        })
-        .collect();
-    build_mapped(set, edits, EditKind::Other)
+    build_mapped(set, shift_edits(ctx, set, true), EditKind::Other)
 }
 
 #[cfg(test)]
@@ -687,12 +709,38 @@ mod tests {
 
     #[test]
     fn outdent_cases() {
-        assert_eq!(run("      a|b", outdent), "  a|b");
+        assert_eq!(run("      a|b", outdent), "    a|b");
         assert_eq!(run("  a|b", outdent), "a|b");
         assert_eq!(run("\ta|b", outdent), "a|b");
         assert_eq!(run("a|b", outdent), "a|b");
         assert_eq!(run("    «a\n    b»", outdent), "«a\nb»");
         assert_eq!(run("    a|\n    b|", outdent), "a|\nb|");
         assert_eq!(run("  |  a", outdent), "|a");
+        assert_eq!(run("        a|b", outdent), "    a|b");
+    }
+
+    #[test]
+    fn shift_normalises_indent() {
+        assert_eq!(run("«  a\nb»", tab), "«    a\n    b»");
+        assert_eq!(run("«\ta\nb»", tab), "«        a\n    b»");
+        assert_eq!(run("«  a\n\tb»", tab), "«    a\n        b»");
+        assert_eq!(run("«\t  a\nb»", outdent), "«    a\nb»");
+    }
+
+    #[test]
+    fn word_delete_whitespace_heuristics() {
+        assert_eq!(run("foo    |", delete_word_left), "foo|");
+        assert_eq!(run("|   foo", delete_word_right), "|foo");
+        assert_eq!(run("foo |", delete_word_left), "|");
+        assert_eq!(run("| foo", delete_word_right), "|");
+        assert_eq!(run("a\t |b", delete_word_left), "a|b");
+        assert_eq!(run("a|  ", delete_word_right), "a|");
+    }
+
+    #[test]
+    fn delete_left_visible_tab_stop() {
+        assert_eq!(run("\t  |x", delete_left), "\t|x");
+        assert_eq!(run("\t|x", delete_left), "|x");
+        assert_eq!(run("  \t|x", delete_left), "|x");
     }
 }
