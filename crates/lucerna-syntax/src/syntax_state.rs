@@ -355,8 +355,9 @@ impl SyntaxState {
     /// language's `indents.scm` (spec §3.3). A row inside an `@indent` node
     /// that starts at or after the previous non-blank row is indented; a row
     /// starting with the `@end` node of an `@indent` node that started
-    /// before that row, or with an `@outdent` node, is outdented. `None`
-    /// without a tree, without the query, or with no previous non-blank row.
+    /// before that row, or with an `@outdent` node, is outdented; both is
+    /// `Same`. `None` when neither applies, without a tree, without the
+    /// query, or with no previous non-blank row.
     pub fn indent_suggestion(&self, snapshot: &BufferSnapshot, row: u32) -> Option<IndentDelta> {
         if row >= snapshot.line_count() {
             return None;
@@ -400,7 +401,8 @@ impl SyntaxState {
     }
 
     /// The delta of a row whose text starts at `at` (`empty`: a row with no
-    /// text, at `at`) from the row `basis`.
+    /// text, at `at`) from the row `basis`; `None` when no capture indents
+    /// or outdents it.
     fn indent_delta(
         &self,
         snapshot: &BufferSnapshot,
@@ -448,11 +450,14 @@ impl SyntaxState {
                 }
             }
         }
-        Some(match (indents, outdents) {
-            (true, false) => IndentDelta::Indent,
-            (false, true) => IndentDelta::Outdent,
-            _ => IndentDelta::Same,
-        })
+        match (indents, outdents) {
+            (true, false) => Some(IndentDelta::Indent),
+            (false, true) => Some(IndentDelta::Outdent),
+            (true, true) => Some(IndentDelta::Same),
+            // Nothing in the query speaks for the row: callers keep their
+            // own rule (the brackets, or the kept indent).
+            (false, false) => None,
+        }
     }
 
     /// Like [`crate::matching_bracket`], but uses the tree when there is one,

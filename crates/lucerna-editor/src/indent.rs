@@ -9,8 +9,9 @@ use lucerna_syntax::{BracketPair, IndentDelta, Scope};
 use crate::commands::{display_col, indent_string, leading_whitespace, row_start};
 use crate::plan::{AutoIndent, Ctx};
 
-/// How far back a closer looks for its opener.
+/// How far back a closer looks for its opener: bytes and rows.
 const SCAN_LIMIT: usize = 1 << 20;
+const SCAN_ROWS: u32 = 5_000;
 
 /// What Enter over a range inserts.
 pub(crate) struct Enter {
@@ -22,14 +23,13 @@ pub(crate) struct Enter {
 }
 
 /// `base` moved by `delta`, in visible columns, written in the configured
-/// style: one unit (`tabSize` spaces, or a tab to the next stop) in, or
-/// back to the previous indent stop.
+/// style: in to the next indent stop (VS Code normalises `indent + '\t'`),
+/// or back to the previous one.
 fn shifted(ctx: Ctx, base: &str, delta: IndentDelta) -> String {
     let ts = ctx.config.tab_size.max(1);
     let width = display_col(base, ts);
     let cols = match delta {
         IndentDelta::Same => width,
-        IndentDelta::Indent if ctx.config.insert_spaces => width + ts,
         IndentDelta::Indent => (width / ts + 1) * ts,
         IndentDelta::Outdent => width.saturating_sub(1) / ts * ts,
     };
@@ -67,7 +67,7 @@ pub(crate) fn enter(ctx: Ctx, range: Range<usize>, trim: bool) -> Enter {
     };
     let mut indent = keep.to_string();
     // The opener line's indent, for a closer moved to its own line.
-    let mut closer: Option<&str> = None;
+    let mut closer: Option<String> = None;
     if mode >= AutoIndent::Brackets {
         let before = line[..col].trim_end_matches([' ', '\t']);
         let q = snap.offset_to_point(range.end);
@@ -80,7 +80,7 @@ pub(crate) fn enter(ctx: Ctx, range: Range<usize>, trim: bool) -> Enter {
         {
             indent = shifted(ctx, keep, IndentDelta::Indent);
             if after.starts_with(pair.end.as_str()) {
-                closer = Some(keep);
+                closer = Some(shifted(ctx, keep, IndentDelta::Same));
             }
         }
     }
@@ -100,7 +100,7 @@ pub(crate) fn enter(ctx: Ctx, range: Range<usize>, trim: bool) -> Enter {
     let cursor = text.len();
     if let Some(closer) = closer {
         text.push('\n');
-        text.push_str(closer);
+        text.push_str(&closer);
     }
     // A whitespace-only line with the cursor at its end loses that
     // whitespace; the indent is re-inserted after the break.
@@ -138,6 +138,12 @@ pub(crate) fn closer_indent(ctx: Ctx, offset: usize, ch: &str) -> Option<(Range<
         .iter()
         .find(|p| p.start != p.end && p.end == ch)?;
     let snap = ctx.snapshot;
+    // Not inside a string or comment (VS Code's `ignoreBracketsInToken`).
+    if let Some(syntax) = ctx.syntax.filter(|s| s.tree().is_some())
+        && syntax.scope_at(snap, offset) != Scope::Code
+    {
+        return None;
+    }
     let p = snap.offset_to_point(offset);
     let line = snap.line(p.row);
     let prefix = &line[..(p.column as usize).min(line.len())];
@@ -163,7 +169,10 @@ pub(crate) fn closer_indent(ctx: Ctx, offset: usize, ch: &str) -> Option<(Range<
 fn matching_open(ctx: Ctx, offset: usize, pair: &BracketPair) -> Option<usize> {
     let snap = ctx.snapshot;
     let syntax = ctx.syntax.filter(|s| s.tree().is_some());
-    let limit = offset.saturating_sub(SCAN_LIMIT);
+    let row = snap.offset_to_point(offset).row;
+    let limit = offset
+        .saturating_sub(SCAN_LIMIT)
+        .max(row_start(snap, row.saturating_sub(SCAN_ROWS)));
     let mut depth = 0usize;
     let mut pos = offset;
     loop {
@@ -302,7 +311,8 @@ mod tests {
     fn enter_after_open_brace_indents() {
         assert_eq!(enter_plain("fn a() {|"), "fn a() {\n    |");
         // Blanks after the opener are ignored.
-        assert_eq!(enter_plain("  f(  |"), "  f(  \n      |");
+        // To the next indent stop, as VS Code normalises `indent + '\t'`.
+        assert_eq!(enter_plain("  f(  |"), "  f(  \n    |");
         assert_eq!(enter_plain("a [|b"), "a [\n    |b");
         // Not after other chars.
         assert_eq!(enter_plain("    a;|"), "    a;\n    |");
@@ -311,6 +321,8 @@ mod tests {
         config.insert_spaces = false;
         assert_eq!(plain("\tif {|", &config, newline), "\tif {\n\t\t|");
         assert_eq!(plain("  if {|", &config, newline), "  if {\n\t|");
+        // The split's closer line too.
+        assert_eq!(plain("    {|}", &config, newline), "    {\n\t\t|\n\t}");
     }
 
     #[test]
@@ -377,6 +389,50 @@ mod tests {
     }
 
     #[test]
+    fn typing_closer_keeps_strings_and_comments() {
+        let close = |c: Ctx, s: &SelectionSet| typed(c, s, "}");
+        // A multi-line string: its whitespace is text.
+        assert_eq!(
+            rust(
+                "fn a() {\n    let s = \"x {\n        |\n\";\n}",
+                None,
+                &test_config(),
+                close
+            ),
+            "fn a() {\n    let s = \"x {\n        }|\n\";\n}"
+        );
+        // A block comment (`*` is a marker in marked text: built by hand).
+        let text = "fn a() {\n    /* {\n        \n    */\n}";
+        let at = text.find("        \n").unwrap() + 8;
+        let snapshot = lucerna_text::Buffer::from_bytes(text.as_bytes(), false)
+            .unwrap()
+            .snapshot();
+        let set = SelectionSet::from_selections(
+            vec![crate::selection::Selection {
+                id: 0,
+                anchor: at,
+                head: at,
+                goal: crate::selection::Goal::None,
+            }],
+            0,
+            false,
+        );
+        let language = LanguageRegistry::bundled()
+            .language_by_name("Rust")
+            .unwrap();
+        let syntax = parsed(language.clone(), &snapshot);
+        let config = test_config();
+        let ctx = Ctx {
+            snapshot: &snapshot,
+            config: &config,
+            language: Some(language.editing()),
+            syntax: Some(&syntax),
+        };
+        let plan = typed(ctx, &set, "}");
+        assert_eq!(plan.edits, [(at..at, "}".into())]);
+    }
+
+    #[test]
     fn typing_closer_ends_the_undo_step() {
         let (snapshot, set) = marked("{\n    |");
         let config = test_config();
@@ -417,11 +473,8 @@ mod tests {
             syntax.indent_suggestion(&snapshot, 1),
             Some(IndentDelta::Indent)
         );
-        // A blank row inside it stays at the level of `x;`.
-        assert_eq!(
-            syntax.indent_suggestion(&snapshot, 2),
-            Some(IndentDelta::Same)
-        );
+        // A blank row inside it: no capture speaks for it.
+        assert_eq!(syntax.indent_suggestion(&snapshot, 2), None);
         // `}` closes the level.
         assert_eq!(
             syntax.indent_suggestion(&snapshot, 3),
@@ -457,6 +510,16 @@ mod tests {
             rust(src, None, &test_config(), newline),
             "fn a() {\n    x;\n    |}"
         );
+        // A row the query says nothing about keeps the bracket rule.
+        assert_eq!(
+            rust(
+                "fn a() {\n    foo(|",
+                Some(INDENTS),
+                &test_config(),
+                newline
+            ),
+            "fn a() {\n    foo(\n        |"
+        );
         // Between braces: the middle line by the query, the closer back.
         assert_eq!(
             rust("fn a() {|}", Some(INDENTS), &test_config(), newline),
@@ -468,8 +531,8 @@ mod tests {
     fn newline_multi_cursor_brackets() {
         assert_eq!(
             enter_plain("  a {|\nb (|\nc|"),
-            "  a {\n      |\nb (\n    |\nc\n|"
+            "  a {\n    |\nb (\n    |\nc\n|"
         );
-        assert_eq!(enter_plain("{|}\n  [|]"), "{\n    |\n}\n  [\n      |\n  ]");
+        assert_eq!(enter_plain("{|}\n  [|]"), "{\n    |\n}\n  [\n    |\n  ]");
     }
 }
