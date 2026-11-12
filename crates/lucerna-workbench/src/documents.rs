@@ -853,11 +853,18 @@ impl Documents {
     ) -> Option<StartedWrite> {
         let check = !overwrite && !self.overwrites(key, cx);
         let doc = self.docs.get_mut(key)?;
-        // A file that failed to load (or reload) shows no editable text.
-        if !matches!(doc.state, DocState::Ready | DocState::Deleted) {
+        // Only a file that never loaded has no text to save (a failed
+        // reload keeps the text, see `reload_failed`).
+        let Some(buffer) = doc
+            .buffer
+            .as_mut()
+            .filter(|_| matches!(doc.state, DocState::Ready | DocState::Deleted))
+        else {
+            let reason = WriteError::Io("the file's text is not loaded".into());
+            status_message::show(save::failure_message(key, &reason), cx);
             return None;
-        }
-        doc.buffer.as_mut()?.push_stop();
+        };
+        buffer.push_stop();
         if opts.participants {
             let language = doc.language_id();
             let participants = save::participants(
@@ -1525,11 +1532,9 @@ impl Documents {
                 let state = failure_state(doc, err);
                 doc.set_state(state, cx);
             }
-            Ok(JobOutput::Reloaded(_, Err(err))) => {
-                let state = failure_state(doc, err);
-                doc.set_state(state, cx);
-            }
+            Ok(JobOutput::Reloaded(_, Err(err))) => reload_failed(doc, key, err, cx),
             // The job panicked; a loaded buffer is still here.
+            Err(err) if doc.buffer.is_some() => reload_failed(doc, key, err, cx),
             Err(err) => doc.set_state(DocState::Error(err), cx),
         }
         let Some(doc) = self.docs.get_mut(key) else {
@@ -1794,6 +1799,31 @@ fn set_conflict(doc: &mut Document, key: &Arc<Path>, conflict: bool, cx: &mut Co
             conflict,
         });
     }
+}
+
+/// A reload of `doc` failed with `err`. Without text, the document shows
+/// the error. A file gone from disk marks the text deleted. Else the text
+/// (which may hold unsaved changes) stays shown, editable and savable: the
+/// document is in conflict with the disk, and the status bar says why.
+fn reload_failed(doc: &mut Document, key: &Arc<Path>, err: LoadError, cx: &mut Context<Documents>) {
+    if doc.buffer.is_none() || err == LoadError::NotFound {
+        let state = failure_state(doc, err);
+        if doc.state != state {
+            doc.set_state(state, cx);
+        }
+        return;
+    }
+    tracing::warn!(path = %key.display(), %err, "reload failed; text kept");
+    let was_deleted = doc.state == DocState::Deleted;
+    set_conflict(doc, key, true, cx);
+    if doc.state != DocState::Ready {
+        doc.set_state(DocState::Ready, cx);
+    }
+    if was_deleted {
+        announce_return(doc, key, cx);
+    }
+    let name = save::display_name(key);
+    status_message::show(format!("Failed to reload '{name}': {err}"), cx);
 }
 
 /// Puts a save or revert of `doc` in line: returns the sender to drop when

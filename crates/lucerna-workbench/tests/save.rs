@@ -643,6 +643,83 @@ fn deleted_file_returning_while_dirty_is_announced(cx: &mut TestAppContext) {
     );
 }
 
+/// Final review, finding 2: a dirty file rewritten on disk into something
+/// that cannot be read as text keeps its text, stays editable, and saves
+/// after the conflict prompt's Overwrite.
+fn rewritten_unreadable(rewrite: impl FnOnce(&Path), cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    rewrite(&dir.path().join("file.txt"));
+    changed(&wb, "file.txt", ChangeKind::Modified, cx);
+    let docs = documents(&wb, cx);
+    let state = docs.read_with(cx, |d, _| d.state(Path::new("file.txt")).cloned());
+    assert_eq!(state, Some(DocState::Ready));
+    assert_eq!(text_of(&view, cx), "xabc\n");
+    assert!(has_conflict(&wb, "file.txt", cx));
+    let message = message(cx).expect("a status message");
+    assert!(
+        message.starts_with("Failed to reload 'file.txt': "),
+        "{message}"
+    );
+    input("y", cx);
+    assert_eq!(text_of(&view, cx), "xyabc\n", "still editable");
+    keys("cmd-s", cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((CONFLICT_MESSAGE.to_string(), String::new()))
+    );
+    cx.simulate_prompt_answer("Overwrite");
+    settle(cx);
+    assert_eq!(disk(&dir, "file.txt"), "xyabc\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+    assert!(!has_conflict(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn dirty_file_rewritten_as_binary_keeps_its_text(cx: &mut TestAppContext) {
+    rewritten_unreadable(|path| fs::write(path, b"\0\x01\x02binary\0").unwrap(), cx);
+}
+
+#[gpui::test]
+fn dirty_file_rewritten_oversize_keeps_its_text(cx: &mut TestAppContext) {
+    rewritten_unreadable(
+        |path| {
+            // Sparse: over the open limit without writing it.
+            let file = fs::File::create(path).unwrap();
+            file.set_len(lucerna_text::MAX_OPEN_BYTES + 1).unwrap();
+        },
+        cx,
+    );
+}
+
+/// A clean file rewritten as binary keeps its text too, in conflict.
+#[gpui::test]
+fn clean_file_rewritten_as_binary_keeps_its_text(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    external_write(&wb, &dir, "\0\0bin", cx);
+    assert_eq!(text_of(&view, cx), "abc\n");
+    assert!(has_conflict(&wb, "file.txt", cx));
+    // Text again: taken, and the conflict ends.
+    external_write(&wb, &dir, "new\n", cx);
+    assert_eq!(text_of(&view, cx), "new\n");
+    assert!(!has_conflict(&wb, "file.txt", cx));
+}
+
+/// A save refused (no text loaded) says so in the status bar.
+#[gpui::test]
+fn refused_save_reports(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, _view, cx) = editor("\0\0bin", cx);
+    run(&wb, "workbench.action.files.save", cx);
+    let message = message(cx).expect("a status message");
+    assert!(
+        message.starts_with("Failed to save 'file.txt': "),
+        "{message}"
+    );
+}
+
 /// Starts a save of `file.txt` without waiting for it.
 fn start_save(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> gpui::Task<SaveResult> {
     let docs = documents(wb, cx);
