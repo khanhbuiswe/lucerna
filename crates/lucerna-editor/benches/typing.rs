@@ -6,7 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use lucerna_editor::{Ctx, EditConfig, EditKind, Goal, Selection, SelectionSet, commands};
+use lucerna_editor::{
+    AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, EditConfig, EditKind, Goal,
+    Selection, SelectionSet, commands,
+};
 use lucerna_text::Buffer;
 
 /// 10,000 lines of Rust-like text.
@@ -21,7 +24,12 @@ fn config() -> EditConfig {
     EditConfig {
         tab_size: 4,
         insert_spaces: true,
-        keep_indent: true,
+        auto_indent: AutoIndent::Full,
+        auto_closing_brackets: AutoClosing::LanguageDefined,
+        auto_closing_quotes: AutoClosing::LanguageDefined,
+        auto_closing_overtype: AutoClosingEdit::Auto,
+        auto_closing_delete: AutoClosingEdit::Auto,
+        auto_surround: AutoSurround::LanguageDefined,
         trim_auto_whitespace: true,
         word_separators: Arc::from("`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?"),
         empty_selection_clipboard: true,
@@ -55,6 +63,8 @@ fn type_x(buffer: &mut Buffer, set: &SelectionSet, config: &EditConfig) {
     let ctx = Ctx {
         snapshot: &snapshot,
         config,
+        language: None,
+        syntax: None,
     };
     let plan = commands::insert(ctx, set, "x", EditKind::TypingOther);
     buffer.start_transaction(None);

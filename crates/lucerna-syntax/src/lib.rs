@@ -22,7 +22,7 @@ pub use registry::{
     ExtensionLanguage, GrammarError, GrammarKey, Language, LanguageOrigin, LanguageRegistry,
 };
 pub use symbols::{FlatSymbol, Symbol, SymbolKind, SymbolTree};
-pub use syntax_state::{HighlightSpan, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
+pub use syntax_state::{HighlightSpan, ParseOutcome, SYNC_PARSE_BUDGET, Scope, SyntaxState};
 
 /// The byte offset where `row` starts; rows past the end give the length.
 pub(crate) fn row_start(snapshot: &BufferSnapshot, row: u32) -> usize {

@@ -10,6 +10,7 @@ repository.workspace = true
 test-util = []
 
 [dependencies]
+lucerna-syntax.workspace = true
 lucerna-text.workspace = true
 unicode-segmentation.workspace = true
 

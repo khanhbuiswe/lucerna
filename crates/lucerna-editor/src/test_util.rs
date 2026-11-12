@@ -4,6 +4,7 @@
 
 use lucerna_text::{Buffer, BufferSnapshot};
 
+use crate::plan::{AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround};
 use crate::selection::{Goal, Selection, SelectionSet};
 
 pub fn marked(src: &str) -> (BufferSnapshot, SelectionSet) {
@@ -111,7 +112,12 @@ pub fn test_config() -> crate::plan::EditConfig {
     crate::plan::EditConfig {
         tab_size: 4,
         insert_spaces: true,
-        keep_indent: true,
+        auto_indent: AutoIndent::Full,
+        auto_closing_brackets: AutoClosing::LanguageDefined,
+        auto_closing_quotes: AutoClosing::LanguageDefined,
+        auto_closing_overtype: AutoClosingEdit::Auto,
+        auto_closing_delete: AutoClosingEdit::Auto,
+        auto_surround: AutoSurround::LanguageDefined,
         trim_auto_whitespace: true,
         word_separators: "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?".into(),
         empty_selection_clipboard: true,

@@ -6,7 +6,11 @@ use std::sync::Arc;
 
 use gpui::{App, ClipboardItem, Context, WeakEntity};
 use lucerna_editor::clipboard::{self, ClipboardText};
-use lucerna_editor::{Ctx, EditConfig, EditKind, EditPlan, SelectionSet, should_stop_between};
+use lucerna_editor::{
+    AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, EditConfig, EditKind, EditPlan,
+    SelectionSet, should_stop_between,
+};
+use lucerna_syntax::Language;
 use lucerna_text::SelectionsToken;
 use serde::{Deserialize, Serialize};
 
@@ -46,8 +50,43 @@ impl CodeView {
             insert_spaces: settings
                 .get("editor.insertSpaces", language)
                 .unwrap_or(true),
-            // `editor.autoIndent` arrives in 4.2; until then, always keep.
-            keep_indent: true,
+            auto_indent: setting_enum(settings, "editor.autoIndent", language, AutoIndent::parse)
+                .unwrap_or(AutoIndent::Full),
+            auto_closing_brackets: setting_enum(
+                settings,
+                "editor.autoClosingBrackets",
+                language,
+                AutoClosing::parse,
+            )
+            .unwrap_or(AutoClosing::LanguageDefined),
+            auto_closing_quotes: setting_enum(
+                settings,
+                "editor.autoClosingQuotes",
+                language,
+                AutoClosing::parse,
+            )
+            .unwrap_or(AutoClosing::LanguageDefined),
+            auto_closing_overtype: setting_enum(
+                settings,
+                "editor.autoClosingOvertype",
+                language,
+                AutoClosingEdit::parse,
+            )
+            .unwrap_or(AutoClosingEdit::Auto),
+            auto_closing_delete: setting_enum(
+                settings,
+                "editor.autoClosingDelete",
+                language,
+                AutoClosingEdit::parse,
+            )
+            .unwrap_or(AutoClosingEdit::Auto),
+            auto_surround: setting_enum(
+                settings,
+                "editor.autoSurround",
+                language,
+                AutoSurround::parse,
+            )
+            .unwrap_or(AutoSurround::LanguageDefined),
             trim_auto_whitespace: settings
                 .get("editor.trimAutoWhitespace", language)
                 .unwrap_or(true),
@@ -58,6 +97,17 @@ impl CodeView {
                 .get("editor.emptySelectionClipboard", language)
                 .unwrap_or(true),
         }
+    }
+
+    /// The document's language, for its editing data: the one its syntax
+    /// parsed with, else the registry's entry for the view's language id.
+    pub fn edit_language(&self, cx: &App) -> Option<Arc<Language>> {
+        if let Some(syntax) = &self.syntax {
+            return Some(syntax.language().clone());
+        }
+        let id = self.language_id.as_deref()?;
+        let languages = &cx.global::<AppState>().languages;
+        languages.languages().iter().find(|l| &*l.id == id).cloned()
     }
 
     /// Applies `plan` to the document as part of the current undo step, or
@@ -151,12 +201,15 @@ impl CodeView {
             return false;
         }
         let config = self.edit_config(cx);
+        let language = self.edit_language(cx);
         let plan = self.contained(
             "edit command",
             |v| {
                 let ctx = Ctx {
                     snapshot: &v.snapshot,
                     config: &config,
+                    language: language.as_deref().map(Language::editing),
+                    syntax: v.syntax.as_deref(),
                 };
                 f(ctx, &v.selections)
             },
@@ -250,6 +303,8 @@ impl CodeView {
         let ctx = Ctx {
             snapshot: &self.snapshot,
             config,
+            language: None,
+            syntax: None,
         };
         let clip = clipboard::copy(ctx, &self.selections);
         (!clip.text.is_empty()).then_some(clip)
@@ -270,12 +325,15 @@ impl CodeView {
             return self.copy(cx);
         }
         let config = self.edit_config(cx);
+        let language = self.edit_language(cx);
         let cut = self.contained(
             "cut",
             |v| {
                 let ctx = Ctx {
                     snapshot: &v.snapshot,
                     config: &config,
+                    language: language.as_deref().map(Language::editing),
+                    syntax: v.syntax.as_deref(),
                 };
                 clipboard::cut(ctx, &v.selections)
             },
@@ -320,4 +378,15 @@ fn clipboard_item(clip: ClipboardText) -> ClipboardItem {
         whole_line: clip.whole_line,
     };
     ClipboardItem::new_string_with_json_metadata(clip.text, meta)
+}
+
+/// A string setting parsed into an enum; `None` when unset or unknown, so
+/// the caller falls back to the default.
+fn setting_enum<T>(
+    settings: &lucerna_settings::SettingsStore,
+    key: &str,
+    language: Option<&str>,
+    parse: fn(&str) -> Option<T>,
+) -> Option<T> {
+    parse(&settings.get::<String>(key, language)?)
 }

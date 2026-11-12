@@ -32,6 +32,15 @@ pub struct HighlightSpan {
     pub capture: Arc<str>,
 }
 
+/// What kind of text an offset sits in; smart typing skips auto-closing
+/// quotes in strings and comments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Code,
+    String,
+    Comment,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseOutcome {
     Done,
@@ -312,6 +321,25 @@ impl SyntaxState {
             }
         }
         resolve(spans)
+    }
+
+    /// The scope at `offset`: the innermost highlight capture covering it
+    /// decides (`string*` is a string, `comment*` a comment). No tree, or
+    /// no capture, is code.
+    pub fn scope_at(&self, snapshot: &BufferSnapshot, offset: usize) -> Scope {
+        if self.tree.is_none() {
+            return Scope::Code;
+        }
+        let row = snapshot
+            .offset_to_point(offset.min(snapshot.len_bytes()))
+            .row;
+        // Outer spans come before inner ones: the last covering span wins.
+        let spans = self.highlights(snapshot, row..row + 1, &|_| true);
+        match spans.iter().rfind(|s| s.range.contains(&offset)) {
+            Some(s) if s.capture.starts_with("string") => Scope::String,
+            Some(s) if s.capture.starts_with("comment") => Scope::Comment,
+            _ => Scope::Code,
+        }
     }
 
     /// Like [`crate::matching_bracket`], but uses the tree when there is one,

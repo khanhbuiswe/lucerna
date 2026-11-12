@@ -164,6 +164,8 @@ mod tests {
             Ctx {
                 snapshot: &snap,
                 config: &cfg,
+                language: None,
+                syntax: None,
             },
             &set,
             &snap,

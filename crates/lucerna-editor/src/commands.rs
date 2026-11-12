@@ -16,7 +16,7 @@ use std::sync::Arc;
 use lucerna_text::{Bias, BufferSnapshot, Patch, PatchEdit, Point};
 use unicode_segmentation::GraphemeCursor;
 
-use crate::plan::{Ctx, EditPlan};
+use crate::plan::{AutoIndent, Ctx, EditPlan};
 use crate::selection::{Goal, Selection, SelectionSet};
 use crate::undo_stops::{EditKind, should_stop_between, typing_kind};
 use crate::words;
@@ -368,7 +368,7 @@ fn newline_edit(ctx: Ctx, range: Range<usize>, trim: bool) -> (Range<usize>, Str
     let p = snap.offset_to_point(range.start);
     let line = snap.line(p.row);
     let col = (p.column as usize).min(line.len());
-    let indent = if ctx.config.keep_indent {
+    let indent = if ctx.config.auto_indent >= AutoIndent::Keep {
         let lead = leading_whitespace(&line);
         &lead[..lead.len().min(col)]
     } else {
@@ -542,6 +542,8 @@ mod tests {
             Ctx {
                 snapshot: &snapshot,
                 config: &config,
+                language: None,
+                syntax: None,
             },
             &set,
         );
@@ -567,6 +569,8 @@ mod tests {
         let ctx = Ctx {
             snapshot: &snap,
             config: &cfg,
+            language: None,
+            syntax: None,
         };
         let p = insert(ctx, &set, "x", EditKind::TypingOther);
         assert_eq!(
@@ -603,6 +607,8 @@ mod tests {
         let ctx = Ctx {
             snapshot: &snap,
             config: &cfg,
+            language: None,
+            syntax: None,
         };
         assert!(delete_left(ctx, &set).edits.is_empty());
         let (snap, set) = marked("a\n|b");
@@ -610,6 +616,8 @@ mod tests {
             Ctx {
                 snapshot: &snap,
                 config: &cfg,
+                language: None,
+                syntax: None,
             },
             &set,
         );
@@ -659,11 +667,13 @@ mod tests {
     fn newline_without_keep_indent() {
         let (snap, set) = marked("    ab|c");
         let mut cfg = test_config();
-        cfg.keep_indent = false;
+        cfg.auto_indent = AutoIndent::None;
         let p = newline(
             Ctx {
                 snapshot: &snap,
                 config: &cfg,
+                language: None,
+                syntax: None,
             },
             &set,
         );
@@ -695,6 +705,8 @@ mod tests {
             Ctx {
                 snapshot: &snap,
                 config: &cfg,
+                language: None,
+                syntax: None,
             },
             &set,
         );

@@ -916,3 +916,26 @@ fn block_selection_reload_and_empty(cx: &mut TestAppContext) {
     reload_into(&view, &mut buffer, b"abcd\nEFGH\nIJKL\n", cx);
     assert_eq!(view.read_with(cx, |v, _| v.copy_selection()), None);
 }
+
+#[gpui::test]
+fn edit_config_reads_auto_settings(cx: &mut TestAppContext) {
+    use lucerna_editor::{AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround};
+    init(
+        cx,
+        Some(
+            r#"{ "editor.autoIndent": "keep", "editor.autoClosingBrackets": "never",
+                 "editor.autoClosingQuotes": "bogus" }"#,
+        ),
+    );
+    let (view, cx) = code_view("fn main() {}\n", cx);
+    let config = view.read_with(cx, |v, cx| v.edit_config(cx));
+    assert_eq!(config.auto_indent, AutoIndent::Keep);
+    assert_eq!(config.auto_closing_brackets, AutoClosing::Never);
+    // Unknown values and unset keys fall back to the defaults.
+    assert_eq!(config.auto_closing_quotes, AutoClosing::LanguageDefined);
+    assert_eq!(config.auto_closing_overtype, AutoClosingEdit::Auto);
+    assert_eq!(config.auto_closing_delete, AutoClosingEdit::Auto);
+    assert_eq!(config.auto_surround, AutoSurround::LanguageDefined);
+    let language = view.read_with(cx, |v, cx| v.edit_language(cx));
+    assert!(language.is_some_and(|l| !l.editing().brackets.is_empty()));
+}

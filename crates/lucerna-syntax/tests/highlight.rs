@@ -426,3 +426,16 @@ fn cancelled_reparse_keeps_the_old_tree() {
         ParseOutcome::Done
     );
 }
+
+#[test]
+fn scope_at_string_and_comment() {
+    use lucerna_syntax::Scope;
+    let text = "let s = \"ab\"; // c";
+    let (state, snap) = parsed("main.rs", text);
+    let at = |needle: &str, extra: usize| text.find(needle).unwrap() + extra;
+    assert_eq!(state.scope_at(&snap, at("ab", 1)), Scope::String);
+    assert_eq!(state.scope_at(&snap, at("// c", 3)), Scope::Comment);
+    assert_eq!(state.scope_at(&snap, 0), Scope::Code);
+    let bare = SyntaxState::new(language("main.rs"), bundled()).unwrap();
+    assert_eq!(bare.scope_at(&snap, at("ab", 1)), Scope::Code);
+}
