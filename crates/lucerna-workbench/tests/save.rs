@@ -872,7 +872,10 @@ fn close_dirty_tab_prompts_save(cx: &mut TestAppContext) {
 #[gpui::test]
 fn close_dirty_tab_dont_save_discards(cx: &mut TestAppContext) {
     init(cx, None);
-    let (dir, wb, cx) = dirty_editor(cx);
+    let (dir, wb, old_view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    // A view held elsewhere does not keep the document (and its history)
+    // alive.
     close_active(&wb, cx);
     cx.simulate_prompt_answer("Don't Save");
     settle(cx);
@@ -889,6 +892,7 @@ fn close_dirty_tab_dont_save_discards(cx: &mut TestAppContext) {
     keys("cmd-z", cx);
     assert_eq!(text_of(&view, cx), "abc\n", "with no history");
     assert!(!is_dirty(&wb, "file.txt", cx));
+    drop(old_view);
 }
 
 #[gpui::test]
@@ -1062,4 +1066,123 @@ fn editing_a_preview_pins_it(cx: &mut TestAppContext) {
             ("other.txt".to_string(), false)
         ]]
     );
+}
+
+/// Types `y` at the start of `file.txt` right after its next save
+/// lands, before whoever waits on the save goes on.
+fn edit_after_next_save(
+    wb: &Entity<Workbench>,
+    view: &Entity<CodeView>,
+    cx: &mut VisualTestContext,
+) -> gpui::Subscription {
+    let docs = documents(wb, cx);
+    let id = view.entity_id();
+    let fired = Rc::new(std::cell::Cell::new(false));
+    cx.update(|_, cx| {
+        cx.subscribe(&docs, move |docs, ev: &DocumentEvent, cx| {
+            if matches!(ev, DocumentEvent::Saved { .. }) && !fired.replace(true) {
+                cx.defer(move |cx| {
+                    docs.update(cx, |d, cx| {
+                        d.apply_edits(
+                            Path::new("file.txt"),
+                            vec![(0..0, Arc::from("y"))],
+                            None,
+                            None,
+                            id,
+                            cx,
+                        )
+                    })
+                    .expect("loaded");
+                });
+            }
+        })
+    })
+}
+
+#[gpui::test]
+fn close_save_keeps_tab_when_edited_during_the_save(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    let _edit = edit_after_next_save(&wb, &view, cx);
+    close_active(&wb, cx);
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+    assert_eq!(text_of(&view, cx), "yxabc\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert_eq!(
+        tabs(&wb, cx).concat().len(),
+        1,
+        "the later edit keeps the tab"
+    );
+}
+
+#[gpui::test]
+fn quit_save_all_aborts_when_edited_during_the_save(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    let _edit = edit_after_next_save(&wb, &view, cx);
+    let quit = confirm_quit(&wb, cx);
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    assert!(!quit_answer(quit), "the later edit stops the quit");
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn close_save_cancelled_at_the_conflict_keeps_tab(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = conflicted(cx);
+    close_active(&wb, cx);
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((CONFLICT_MESSAGE.to_string(), String::new()))
+    );
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(tabs(&wb, cx).concat().len(), 1);
+    assert_eq!(disk(&dir, "file.txt"), "disk\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn quit_save_all_cancelled_at_the_conflict_aborts(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = conflicted(cx);
+    let quit = confirm_quit(&wb, cx);
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert!(!quit_answer(quit));
+    assert_eq!(disk(&dir, "file.txt"), "disk\n");
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn close_save_that_fails_keeps_tab(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    init(cx, None);
+    let dir = TempDir::new().unwrap();
+    let ro = dir.path().join("ro");
+    fs::create_dir(&ro).unwrap();
+    fs::write(ro.join("f.txt"), "abc\n").unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    open(&wb, "ro/f.txt", cx);
+    input("x", cx);
+    fs::set_permissions(&ro, fs::Permissions::from_mode(0o555)).unwrap();
+    close_active(&wb, cx);
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(tabs(&wb, cx).concat().len(), 1);
+    assert!(is_dirty(&wb, "ro/f.txt", cx));
+    assert!(message(cx).is_some_and(|m| m.starts_with("Failed to save 'f.txt': ")));
 }

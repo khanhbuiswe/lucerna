@@ -166,8 +166,8 @@ impl EditorGroupsView {
     /// Closes tab `id` for the user (the tab's ×, a middle click,
     /// `workbench.action.closeActiveEditor`). When it is the last tab
     /// showing a document with unsaved changes, asks first (spec §6.3):
-    /// Save closes it once saved, Don't Save closes it and so drops the
-    /// document with its history, Cancel keeps it.
+    /// Save closes it once saved (and still clean), Don't Save closes it
+    /// and drops the document with its history, Cancel keeps it.
     pub fn request_close(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let Some((path, documents)) = self.last_tab_of_dirty(id, cx) else {
             self.update_model(cx, |m| m.close(id));
@@ -175,14 +175,23 @@ impl EditorGroupsView {
         };
         let answer = save::prompt_unsaved(&save::display_name(&path), window, cx);
         cx.spawn_in(window, async move |view, cx| {
-            let close = match SaveChoice::of(answer.await) {
-                SaveChoice::Save => save::save_each(documents, vec![path], cx).await,
-                SaveChoice::DontSave => true,
-                SaveChoice::Cancel => false,
-            };
-            if close {
-                view.update(cx, |view, cx| view.update_model(cx, |m| m.close(id)))
-                    .ok();
+            match SaveChoice::of(answer.await) {
+                SaveChoice::Save => {
+                    // An edit typed while the save wrote is not saved: the
+                    // tab stays, still dirty.
+                    let saved = save::save_each(documents.clone(), vec![path.clone()], cx).await
+                        && !documents.read_with(cx, |d, _| d.is_dirty(&path));
+                    if saved {
+                        view.update(cx, |view, cx| view.update_model(cx, |m| m.close(id)))
+                            .ok();
+                    }
+                }
+                SaveChoice::DontSave => {
+                    view.update(cx, |view, cx| view.update_model(cx, |m| m.close(id)))
+                        .ok();
+                    documents.update(cx, |d, cx| d.discard(&path, cx));
+                }
+                SaveChoice::Cancel => {}
             }
         })
         .detach();

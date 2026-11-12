@@ -1159,7 +1159,8 @@ impl Workbench {
 
     /// Asks whether to save the documents with unsaved changes before the
     /// app quits or the window closes (spec §6.3): `true` to go on. Save
-    /// All saves each one and goes on only if all were saved, Don't Save
+    /// All saves each one and goes on only if all were saved and nothing
+    /// is dirty afterwards, Don't Save
     /// goes on, Cancel (or a dismissed prompt) stops. Nothing dirty: `true`
     /// at once.
     pub fn confirm_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
@@ -1179,7 +1180,10 @@ impl Workbench {
             let go_on = match SaveChoice::of(answer.await) {
                 SaveChoice::Save => {
                     let paths = documents.read_with(cx, |d, _| d.dirty_paths());
-                    save::save_each(documents, paths, cx).await
+                    // An edit typed while the saves wrote is not saved:
+                    // stop rather than lose it.
+                    save::save_each(documents.clone(), paths, cx).await
+                        && documents.read_with(cx, |d, _| d.dirty_paths().is_empty())
                 }
                 SaveChoice::DontSave => true,
                 SaveChoice::Cancel => false,

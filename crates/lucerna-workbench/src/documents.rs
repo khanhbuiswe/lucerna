@@ -1274,6 +1274,17 @@ impl Documents {
         })
     }
 
+    /// Drops the document at `path` with its text and history now, even
+    /// while a view of it lives on (the close prompt's Don't Save), sending
+    /// [`DocumentEvent::Closed`] if it was opened. The next open reads the
+    /// disk.
+    pub fn discard(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let key = self.key(path);
+        if self.docs.remove(&key).is_some_and(|doc| doc.announced) {
+            cx.emit(DocumentEvent::Closed { path: key });
+        }
+    }
+
     /// Drops documents whose every view has closed, sending
     /// [`DocumentEvent::Closed`] for those that were opened. The workbench
     /// calls it after each draw.
