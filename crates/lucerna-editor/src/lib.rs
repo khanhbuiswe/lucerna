@@ -1,6 +1,8 @@
 //! Editing core: selections, edit plans and the undo-stop rule. Pure logic
 //! over `lucerna-text`; no UI dependencies.
 
+pub mod clipboard;
+pub mod commands;
 mod motion;
 mod plan;
 mod selection;
