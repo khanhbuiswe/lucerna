@@ -15,7 +15,7 @@ pub struct Indentation {
 /// Lines looked at, from the top.
 const MAX_LINES: u32 = 10_000;
 /// Candidate tab sizes, in order of preference (even sizes first).
-const TAB_SIZE_GUESSES: [usize; 6] = [2, 4, 6, 8, 3, 5];
+const TAB_SIZE_GUESSES: [usize; 7] = [2, 4, 6, 8, 3, 5, 7];
 const MAX_TAB_SIZE_GUESS: usize = 8;
 
 /// The difference in indentation of two lines, in spaces.
@@ -186,7 +186,14 @@ mod tests {
         assert_eq!(guess_text(""), DEFAULT);
         // One tab-indented line among many 4-space ones.
         let text = "a\n    b\n    c\n\td\n    e\n        f\n";
-        assert_eq!(guess_text(text), DEFAULT);
+        let two = Indentation {
+            insert_spaces: true,
+            tab_size: 2,
+        };
+        let snapshot = Buffer::from_bytes(text.as_bytes(), false)
+            .unwrap()
+            .snapshot();
+        assert_eq!(guess(&snapshot, two), spaces(4));
         let text = "a\n  b\n  c\n\td\n  e\n    f\n";
         assert_eq!(
             guess_text(text),
@@ -199,9 +206,53 @@ mod tests {
         assert_eq!(guess_text(" a\n b\n  c\n d\n"), DEFAULT);
     }
 
+    /// A file whose spaces diffs are `n2` twos then `n4` fours (even
+    /// counts: each block goes out to its width and back).
+    fn diffs(n2: usize, n4: usize) -> String {
+        let block = |width: usize, n: usize| {
+            (0..n)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        " ".repeat(width)
+                    } else {
+                        String::new()
+                    }
+                })
+                .map(|pad| format!("{pad}x\n"))
+                .collect::<String>()
+                + "y\n"
+        };
+        // The closing `y` of a block is one more diff of its width.
+        block(2, n2 - 1) + &block(4, n4 - 1)
+    }
+
+    fn spaces(tab_size: u32) -> Indentation {
+        Indentation {
+            insert_spaces: true,
+            tab_size,
+        }
+    }
+
+    #[test]
+    fn two_needs_two_thirds_of_fours_to_win() {
+        // VS Code: `diff[2] >= diff[4] * 2 / 3`.
+        assert_eq!(guess_text(&diffs(6, 10)), spaces(4));
+        assert_eq!(guess_text(&diffs(8, 10)), spaces(2));
+        assert_eq!(guess_text(&diffs(10, 6)), spaces(2));
+    }
+
+    #[test]
+    fn guess_seven() {
+        let text = "a\n       b\n       c\nd\n       e\nf\n";
+        assert_eq!(guess_text(text), spaces(7));
+    }
+
     #[test]
     fn alignment_does_not_count() {
-        let text = "const a = 1,\n      b = 2;\nx();\n";
-        assert_eq!(guess_text(text), DEFAULT);
+        // Default (true, 4): the aligned `b` (6 spaces) is skipped, so the
+        // real 2-space nesting decides.
+        let aligned = "const a = 1,\n      b = 2;\n".repeat(3);
+        let text = format!("{aligned}fn f() {{\n  g();\n  h();\n}}\n");
+        assert_eq!(guess_text(&text), spaces(2));
     }
 }
