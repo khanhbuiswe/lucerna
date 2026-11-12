@@ -14,8 +14,8 @@ use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::future::{self, Either};
 use gpui::{
-    App, AppContext as _, Bounds, Entity, Global, KeyBinding, Menu, MenuItem, PathPromptOptions,
-    Window, WindowBounds, WindowHandle, WindowOptions, actions, px, size,
+    App, AppContext as _, Bounds, Entity, Global, PathPromptOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, px, size,
 };
 use gpui_platform::application;
 use lucerna_extension::store::Store;
@@ -23,6 +23,7 @@ use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::{Associations, LanguageRegistry};
 use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 
+use crate::app_menu;
 use crate::extensions::{
     ExtensionService, WasmGrammarValidator, extension_languages, extensions_root,
 };
@@ -161,6 +162,8 @@ impl Router {
         };
         if let Some(handle) = handle {
             this.borrow_mut().shown = Some(Shown::Workbench(open, handle));
+            // The menu bar enables the workbench's items.
+            app_menu::refresh(cx);
             record_recent(entry, cx);
         }
     }
@@ -268,15 +271,19 @@ impl Router {
 }
 
 /// Adds `entry` to the recent list in the background, when the app has a
-/// data directory.
+/// data directory, then rebuilds the menu bar's Open Recent.
 fn record_recent(entry: RecentEntry, cx: &mut App) {
     let Some(data_dir) = app_data_dir(cx) else {
         return;
     };
-    cx.background_spawn(async move {
-        if let Err(err) = recent::record(&data_dir, entry) {
+    cx.spawn(async move |cx| {
+        let recorded = cx
+            .background_spawn(async move { recent::record(&data_dir, entry) })
+            .await;
+        if let Err(err) = recorded {
             tracing::warn!(%err, "could not update the recent list");
         }
+        cx.update(app_menu::refresh);
     })
     .detach();
 }
@@ -324,7 +331,7 @@ fn start(cx: &mut App) {
         data_dir: default_data_dir(),
     });
     cx.set_global(Spawner::default());
-    install_app_menu(cx);
+    app_menu::install(cx);
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
             cx.quit();
@@ -486,39 +493,6 @@ pub fn router_shown_root_for_test(cx: &mut App) -> Option<PathBuf> {
         Some(Shown::Workbench(open, _)) => Some(open.root().to_path_buf()),
         _ => None,
     }
-}
-
-actions!(lucerna, [Quit, Hide, Minimize]);
-
-/// The macOS app menu: Lucerna → Hide (⌘H), Quit (⌘Q), and Window →
-/// Minimize (⌘M). The menu shows the shortcuts GPUI's keymap binds to its
-/// actions; ⌘Q also resolves through the user keymap to
-/// `workbench.action.quit`. Both quit the same way: each window first asks
-/// about unsaved changes, then the layout is saved by the workbench's
-/// `on_app_quit` hook.
-fn install_app_menu(cx: &mut App) {
-    cx.on_action(|_: &Quit, cx| crate::workbench::quit(cx));
-    cx.on_action(|_: &Hide, cx| cx.hide());
-    cx.on_action(|_: &Minimize, cx| {
-        if let Some(window) = cx.active_window() {
-            window
-                .update(cx, |_, window, _| window.minimize_window())
-                .ok();
-        }
-    });
-    cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-h", Hide, None),
-        KeyBinding::new("cmd-m", Minimize, None),
-    ]);
-    cx.set_menus([
-        Menu::new("Lucerna").items([
-            MenuItem::action("Hide Lucerna", Hide),
-            MenuItem::separator(),
-            MenuItem::action("Quit Lucerna", Quit),
-        ]),
-        Menu::new("Window").items([MenuItem::action("Minimize", Minimize)]),
-    ]);
 }
 
 /// The built-in defaults plus the installed extensions, read from the

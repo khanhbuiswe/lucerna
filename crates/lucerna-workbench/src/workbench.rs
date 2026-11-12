@@ -278,26 +278,7 @@ impl Workbench {
         let focus = cx.focus_handle();
         let editor_focus = cx.focus_handle();
         window.focus(&editor_focus, cx);
-        let mut commands = CommandRegistry::default();
-        register_shell_commands(&mut commands);
-        editor_groups::register_commands(&mut commands);
-        code_view::register_commands(&mut commands);
-        quick_open::register_commands(&mut commands);
-        find_widget::register_commands(&mut commands);
-        search_view::register_commands(&mut commands);
-        references_view::register_commands(&mut commands);
-        config_files::register_commands(&mut commands);
-        theme_picker::register_commands(&mut commands);
-        open_commands::register_commands(&mut commands);
-        trust::register_commands(&mut commands);
-        lsp_status::register_commands(&mut commands);
-        diagnostics_status::register_commands(&mut commands);
-        crate::hover::register_commands(&mut commands);
-        crate::goto::register_commands(&mut commands);
-        crate::extensions::register_commands(&mut commands);
-        crate::symbols::register_commands(&mut commands);
-        crate::editing::register_commands(&mut commands);
-        crate::save::register_commands(&mut commands);
+        let commands = default_registry();
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
             let root = root.clone();
@@ -1088,6 +1069,12 @@ impl Workbench {
         &self.language_servers
     }
 
+    /// The IDs of the commands every workbench has
+    /// ([`default_registry`]), ordered by ID; no window needed.
+    pub fn command_ids() -> Vec<&'static str> {
+        default_registry().ids().collect()
+    }
+
     pub fn commands(&self) -> &CommandRegistry {
         &self.commands
     }
@@ -1813,6 +1800,33 @@ pub(crate) fn quit(cx: &mut App) {
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+/// The commands every workbench registers, as [`Workbench::new`] builds
+/// them; the menu bar reads their IDs without a window.
+pub(crate) fn default_registry() -> CommandRegistry {
+    let mut commands = CommandRegistry::default();
+    register_shell_commands(&mut commands);
+    editor_groups::register_commands(&mut commands);
+    code_view::register_commands(&mut commands);
+    quick_open::register_commands(&mut commands);
+    find_widget::register_commands(&mut commands);
+    search_view::register_commands(&mut commands);
+    references_view::register_commands(&mut commands);
+    config_files::register_commands(&mut commands);
+    theme_picker::register_commands(&mut commands);
+    open_commands::register_commands(&mut commands);
+    trust::register_commands(&mut commands);
+    lsp_status::register_commands(&mut commands);
+    diagnostics_status::register_commands(&mut commands);
+    crate::hover::register_commands(&mut commands);
+    crate::goto::register_commands(&mut commands);
+    crate::extensions::register_commands(&mut commands);
+    crate::symbols::register_commands(&mut commands);
+    crate::editing::register_commands(&mut commands);
+    crate::save::register_commands(&mut commands);
+    crate::about::register_commands(&mut commands);
+    commands
 }
 
 fn register_shell_commands(commands: &mut CommandRegistry) {

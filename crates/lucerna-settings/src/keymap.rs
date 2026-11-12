@@ -210,14 +210,22 @@ impl Keymap {
         }
     }
 
-    /// Label of the last-defined binding for `command`, e.g. `"⌘P"` or `"⌘K ⌘T"`.
-    pub fn label_for(&self, command: &str) -> Option<String> {
-        let b = &self
-            .entries
+    /// The bindings for `command`, the last-defined first, as
+    /// [`Keymap::label_for`] and [`Keymap::resolve`] rank them.
+    pub fn bindings_for<'a>(
+        &'a self,
+        command: &'a str,
+    ) -> impl Iterator<Item = &'a KeyBinding> + 'a {
+        self.entries
             .iter()
             .rev()
-            .find(|e| e.binding.command == command)?
-            .binding;
+            .map(|e| &e.binding)
+            .filter(move |b| b.command == command)
+    }
+
+    /// Label of the last-defined binding for `command`, e.g. `"⌘P"` or `"⌘K ⌘T"`.
+    pub fn label_for(&self, command: &str) -> Option<String> {
+        let b = self.bindings_for(command).next()?;
         Some(
             b.keys
                 .iter()
@@ -260,4 +268,27 @@ fn parse_entry(item: &Value) -> Result<(Entry, bool), SettingsError> {
         },
         removal,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bindings_for_lists_later_bindings_first() {
+        let defaults = r#"[
+            { "key": "cmd+p", "command": "a" },
+            { "key": "cmd+e", "command": "b" },
+            { "key": "ctrl+p", "command": "a", "when": "editorFocus" }
+        ]"#;
+        let user = r#"[{ "key": "cmd+shift+o", "command": "a" }]"#;
+        let (keymap, error) = Keymap::load(defaults, Some(user));
+        assert!(error.is_none());
+        let keys: Vec<String> = keymap
+            .bindings_for("a")
+            .map(|b| b.keys.iter().map(Keystroke::label).collect())
+            .collect();
+        assert_eq!(keys, ["⇧⌘O", "⌃P", "⌘P"]);
+        assert_eq!(keymap.bindings_for("missing").count(), 0);
+    }
 }

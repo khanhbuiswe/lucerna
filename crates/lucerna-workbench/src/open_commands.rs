@@ -254,7 +254,7 @@ impl Workbench {
     /// Opens a chosen recent entry unless it vanished since the list
     /// loaded; then says so and forgets it. A folder replaces this window
     /// (or opens beside it when `new_window`); a file opens as a tab.
-    fn open_recent_entry(
+    pub(crate) fn open_recent_entry(
         &mut self,
         entry: RecentEntry,
         new_window: bool,

@@ -14,6 +14,7 @@ use gpui::{
 };
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
 
+use crate::app_menu;
 use crate::icons;
 use crate::keys;
 use crate::layout::{color, title_bar};
@@ -241,7 +242,7 @@ impl WelcomeView {
             PICKER_NEXT => self.step_picker(1, cx),
             PICKER_PREVIOUS => self.step_picker(-1, cx),
             CLEAR_RECENT => self.clear_recent(window, cx),
-            ABOUT => {}
+            ABOUT => crate::about::show(window, cx),
             QUIT => cx.emit(WelcomeEvent::Quit),
             _ => return false,
         }
@@ -345,7 +346,12 @@ impl WelcomeView {
 
     /// Opens `entry` unless it vanished since the list loaded; then drops
     /// it and shows a warning instead.
-    fn open_entry(&mut self, entry: RecentEntry, new_window: bool, cx: &mut Context<Self>) {
+    pub(crate) fn open_entry(
+        &mut self,
+        entry: RecentEntry,
+        new_window: bool,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx| {
             let exists = {
                 let entry = entry.clone();
@@ -369,7 +375,7 @@ impl WelcomeView {
     }
 
     /// Drops `path` from the page and, in the background, from the stored
-    /// list.
+    /// list; then rebuilds the menu bar's Open Recent.
     fn forget(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if let Some(recent) = &mut self.recent {
             recent.retain(|e| e.path != path);
@@ -379,10 +385,17 @@ impl WelcomeView {
         let Some(dir) = self.data_dir.clone() else {
             return;
         };
-        cx.background_spawn(async move {
-            if let Err(err) = recent::remove(&dir, &path) {
+        cx.spawn(async move |_, cx| {
+            let removed = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move { recent::remove(&dir, &path) }
+                })
+                .await;
+            if let Err(err) = removed {
                 tracing::warn!(%err, path = %path.display(), "could not update the recent list");
             }
+            cx.update(app_menu::refresh);
         })
         .detach();
     }

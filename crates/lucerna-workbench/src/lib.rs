@@ -1,8 +1,9 @@
 //! Lucerna workbench UI: the GPUI shell (Zed-style chrome), command
 //! registry and key dispatch.
 
+mod about;
 pub mod app;
-mod app_menu;
+pub mod app_menu;
 mod app_state;
 pub mod code_view;
 mod commands;
