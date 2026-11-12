@@ -221,7 +221,7 @@ non-blank character of the next line.
 | `editor.cursorBlinking` | `"blink"` | Cursor blink style |
 | `editor.cursorStyle` | `"line"` | Cursor shape |
 | `editor.emptySelectionClipboard` | `true` | Copy or cut the whole line when nothing is selected |
-| `editor.autoIndent` | `"full"` | Auto-indent on Enter and paste: `none`, `keep`, `brackets`, `advanced` or `full` |
+| `editor.autoIndent` | `"full"` | Auto-indent on Enter: `none`, `keep`, `brackets`, `advanced` or `full` |
 | `editor.detectIndentation` | `true` | Detect tabs or spaces and the tab size from the file |
 | `editor.autoClosingBrackets` | `"languageDefined"` | Close brackets: `always`, `languageDefined`, `beforeWhitespace` or `never` |
 | `editor.autoClosingQuotes` | `"languageDefined"` | Close quotes, same values |

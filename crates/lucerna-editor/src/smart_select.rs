@@ -1,7 +1,7 @@
 //! Smart select: grow each selection to the next larger word, syntax node,
 //! line or the whole buffer (`editor.action.smartSelect.expand`).
 //!
-//! Follows microsoft/vscode src/vs/editor/contrib/smartSelect/browser/smartSelect.ts
+//! Behaviour modelled on microsoft/vscode src/vs/editor/contrib/smartSelect/browser/smartSelect.ts
 //! and wordSelections.ts (MIT): the word at the cursor comes first, then the
 //! syntax ranges, then the line.
 
