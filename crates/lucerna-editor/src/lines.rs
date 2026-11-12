@@ -13,6 +13,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use lucerna_text::{Bias, BufferSnapshot};
+use unicode_segmentation::UnicodeSegmentation as _;
 
 use crate::commands::{
     Item, Place, build, build_mapped, leading_whitespace, mk_patch, row_start, shift_edits,
@@ -173,7 +174,8 @@ pub fn delete_lines(ctx: Ctx, set: &SelectionSet) -> EditPlan {
     for block in touched_blocks(ctx, set) {
         let (r0, r1) = (block.rows.start, block.rows.end - 1);
         let first = &set.all()[block.members[0]];
-        let col = snap.offset_to_point(first.head).column as usize;
+        // A char column, as VS Code keeps the position's column.
+        let col = snap.char_column(snap.offset_to_point(first.head)) as usize;
         let id = block_id(set, &block);
         let (range, row, bias) = if r1 + 1 < count {
             (
@@ -191,11 +193,10 @@ pub fn delete_lines(ctx: Ctx, set: &SelectionSet) -> EditPlan {
         } else {
             (0..snap.len_bytes(), 0, Bias::Left)
         };
-        let target = row_start(snap, row) + col.min(snap.line(row).len());
         let target = if range.start == 0 && range.end == snap.len_bytes() {
             0
         } else {
-            snap.floor_char_boundary(target)
+            row_start(snap, row) + offset_at_char_column(&snap.line(row), col)
         };
         edits.push((range, Arc::from("")));
         targets.push((id, target, bias));
@@ -216,7 +217,20 @@ pub fn delete_lines(ctx: Ctx, set: &SelectionSet) -> EditPlan {
     finish(set, edits, sels)
 }
 
-/// Inserts an empty line after (or before) each selection's row, with the
+/// The byte offset of char column `col` in `line` (clamped to its end),
+/// moved forward to a grapheme boundary.
+fn offset_at_char_column(line: &str, col: usize) -> usize {
+    let mut chars = 0;
+    for (at, g) in line.grapheme_indices(true) {
+        if chars >= col {
+            return at;
+        }
+        chars += g.chars().count();
+    }
+    line.len()
+}
+
+/// Inserts an empty line after (or before) each selection's head row, with the
 /// indent Enter would give, and puts the cursor there. Before row 0 the new
 /// line is empty; elsewhere it is "after the row above", as in VS Code.
 pub fn insert_line(ctx: Ctx, set: &SelectionSet, after: bool) -> EditPlan {
@@ -225,10 +239,8 @@ pub fn insert_line(ctx: Ctx, set: &SelectionSet, after: bool) -> EditPlan {
         .all()
         .iter()
         .map(|s| {
-            let r = s.range();
-            let row = snap
-                .offset_to_point(if after { r.end } else { r.start })
-                .row;
+            // The head's row (VS Code's `positionLineNumber`).
+            let row = snap.offset_to_point(s.head).row;
             let (at, text, cursor) = match (after, row) {
                 (false, 0) => (0, "\n".to_string(), 0),
                 _ => {
@@ -442,6 +454,16 @@ mod tests {
         assert_eq!(del("a|\nb\nc|\nd"), "b|\nd|");
     }
 
+    /// Final review, finding 6: the cursor keeps its char column, not its
+    /// byte column, on multibyte text.
+    #[test]
+    fn delete_lines_keeps_char_column_on_multibyte_text() {
+        let del = |s| run(s, delete_lines);
+        assert_eq!(del("ab|\nđếx"), "đế|x");
+        assert_eq!(del("ẫb|\nxyz"), "xy|z");
+        assert_eq!(del("x\nViệt|"), "x|");
+    }
+
     #[test]
     fn insert_line_after_keeps_indent() {
         let after = |s| run(s, |c, s| insert_line(c, s, true));
@@ -460,6 +482,16 @@ mod tests {
         let before = |s| run(s, |c, s| insert_line(c, s, false));
         assert_eq!(before("a\nb|"), "a\n|\nb");
         assert_eq!(before("a|\nb"), "|\na\nb");
+    }
+
+    /// Final review, finding 6: the head's row decides, as VS Code's
+    /// `positionLineNumber` does.
+    #[test]
+    fn insert_line_uses_head_row() {
+        let after = |s| run(s, |c, s| insert_line(c, s, true));
+        let before = |s| run(s, |c, s| insert_line(c, s, false));
+        assert_eq!(after("»a\nb«\nc"), "a\n|\nb\nc");
+        assert_eq!(before("a\n«b\nc»"), "a\nb\n|\nc");
     }
 
     #[test]
