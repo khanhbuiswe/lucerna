@@ -791,3 +791,53 @@ fn panicking_edit_or_motion_is_contained(cx: &mut TestAppContext) {
     assert_eq!(cursor(&view, cx), pt(0, 2));
     assert!(is_dirty(&wb, cx));
 }
+
+fn indentation_status(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> String {
+    let (docs, view) = (documents(wb, cx), active_view(wb, cx));
+    cx.update(|_, cx| docs.read(cx).status(view.read(cx)))
+        .expect("a loaded document has a status")
+        .indentation
+}
+
+#[gpui::test]
+fn detected_indentation_drives_tab_and_status(cx: &mut TestAppContext) {
+    let text = "fn a() {\n  b();\n  if c {\n    d();\n  }\n}\n";
+    init(cx, Some(r#"{ "editor.tabSize": 4 }"#));
+    let (_dir, wb, view, cx) = editor(text, cx);
+    assert_eq!(indentation_status(&wb, cx), "Spaces: 2");
+    assert_eq!(view.read_with(cx, |v, _| v.tab_size()), 2);
+    keys("cmd-down tab", cx);
+    assert_eq!(text_of(&view, cx), format!("{text}  "));
+}
+
+#[gpui::test]
+fn detect_indentation_off_follows_settings(cx: &mut TestAppContext) {
+    let text = "fn a() {\n  b();\n  if c {\n    d();\n  }\n}\n";
+    init(
+        cx,
+        Some(r#"{ "editor.tabSize": 4, "editor.detectIndentation": false }"#),
+    );
+    let (_dir, wb, view, cx) = editor(text, cx);
+    assert_eq!(indentation_status(&wb, cx), "Spaces: 4");
+    keys("cmd-down tab", cx);
+    assert_eq!(text_of(&view, cx), format!("{text}    "));
+}
+
+#[gpui::test]
+fn tab_indented_file_shows_tab_size_and_inserts_tabs(cx: &mut TestAppContext) {
+    let text = "fn a() {\n\tb();\n\tif c {\n\t\td();\n\t}\n}\n";
+    init(cx, None);
+    let (_dir, wb, view, cx) = editor(text, cx);
+    assert_eq!(indentation_status(&wb, cx), "Tab Size: 4");
+    keys("cmd-down tab", cx);
+    assert_eq!(text_of(&view, cx), format!("{text}\t"));
+}
+
+#[gpui::test]
+fn reload_redetects_indentation(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor("a\n  b\n  c\n", cx);
+    assert_eq!(indentation_status(&wb, cx), "Spaces: 2");
+    reload(&wb, &dir, "a\n\tb\n\tc\n", cx);
+    assert_eq!(indentation_status(&wb, cx), "Tab Size: 4");
+}

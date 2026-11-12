@@ -47,9 +47,7 @@ impl CodeView {
         let language = self.language_id.as_deref();
         EditConfig {
             tab_size: self.config.tab_size,
-            insert_spaces: settings
-                .get("editor.insertSpaces", language)
-                .unwrap_or(true),
+            insert_spaces: self.config.insert_spaces,
             auto_indent: setting_enum(settings, "editor.autoIndent", language, AutoIndent::parse)
                 .unwrap_or(AutoIndent::Full),
             auto_closing_brackets: setting_enum(

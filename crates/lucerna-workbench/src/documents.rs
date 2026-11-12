@@ -26,6 +26,7 @@ use gpui::{
     App, AppContext, Context, Entity, EntityId, EventEmitter, IntoElement, ParentElement,
     PromptLevel, Render, Styled, Task, WeakEntity, Window, div, prelude::*, px,
 };
+use lucerna_editor::indentation::{self, Indentation};
 use lucerna_project::{ChangeKind, WorktreeEvent};
 use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{
@@ -76,6 +77,8 @@ pub struct DocumentStatus {
     pub line_ending: &'static str,
     /// The language's display name, or `Plain Text`.
     pub language: Arc<str>,
+    /// `Spaces: {n}` or `Tab Size: {n}`: the indentation in effect.
+    pub indentation: String,
 }
 
 /// What happened to a document, for listeners such as the language
@@ -242,6 +245,8 @@ struct Document {
     encoding: &'static str,
     line_ending: LineEnding,
     language: Option<Arc<Language>>,
+    /// Detected from the text on load and reload (`editor.detectIndentation`).
+    indentation: Option<Indentation>,
     syntax: Option<Arc<SyntaxState>>,
     force_text: bool,
     stamp: Option<Stamp>,
@@ -381,6 +386,7 @@ impl Documents {
                 let state = doc.state.clone();
                 let (snapshot, syntax) = (doc.snapshot.clone(), doc.syntax.clone());
                 let language_id = doc.language.as_ref().map(|l| l.id.clone());
+                let indentation = doc.indentation;
                 let takes_pending = snapshot.is_some() && !passive;
                 let go_to = takes_pending.then(|| doc.pending_go_to.take()).flatten();
                 let scroll = takes_pending
@@ -388,6 +394,7 @@ impl Documents {
                     .flatten();
                 view.update(cx, |v, cx| {
                     v.set_language_id(language_id, cx);
+                    v.set_indentation(indentation, cx);
                     if let Some(snapshot) = snapshot {
                         v.set_buffer(snapshot, cx);
                         v.set_syntax(syntax, cx);
@@ -428,6 +435,7 @@ impl Documents {
                         encoding: "UTF-8",
                         line_ending: LineEnding::Lf,
                         language,
+                        indentation: None,
                         syntax: None,
                         force_text: false,
                         stamp: None,
@@ -1360,6 +1368,12 @@ impl Documents {
         cx.notify();
     }
 
+    /// The indentation detected for the document at `path`, when
+    /// `editor.detectIndentation` holds for its language.
+    pub fn indentation(&self, path: &Path) -> Option<Indentation> {
+        self.docs.get(&self.key(path))?.indentation
+    }
+
     /// The status-bar segments for `view`, once its document has text.
     pub fn status(&self, view: &CodeView) -> Option<DocumentStatus> {
         let doc = self.docs.get(&self.key(view.path()))?;
@@ -1378,6 +1392,11 @@ impl Documents {
                 .language
                 .as_ref()
                 .map_or_else(|| Arc::from("Plain Text"), |l| l.name.clone()),
+            indentation: if view.insert_spaces() {
+                format!("Spaces: {}", view.tab_size())
+            } else {
+                format!("Tab Size: {}", view.tab_size())
+            },
         })
     }
 
@@ -1483,6 +1502,7 @@ impl Documents {
                 // Now with the first line, for `first_line_pattern`.
                 doc.language = language_for(&self.root, key, Some(&snapshot), cx);
                 sync_language_id(doc, cx);
+                detect_indentation(doc, cx);
                 let (path, language_id) = (key.clone(), doc.language_id());
                 // A document loaded again (after an error, or as text) was
                 // already announced: it changed rather than opened.
@@ -1662,6 +1682,9 @@ impl Documents {
         }
         self.commit_edit(key, old, &patch, was_dirty, None, cx);
         self.default_line_ending(key, cx);
+        if let Some(doc) = self.docs.get_mut(key) {
+            detect_indentation(doc, cx);
+        }
     }
 
     /// A file with no line break at all says nothing of its line ending:
@@ -1900,6 +1923,35 @@ fn failure_state(doc: &Document, err: LoadError) -> DocState {
     }
 }
 
+/// Guesses the document's indentation from its text when
+/// `editor.detectIndentation` holds for its language (else none), and
+/// hands it to the views. Runs on the main thread: it scans at most 10 000
+/// lines.
+fn detect_indentation(doc: &mut Document, cx: &mut App) {
+    let language = doc.language_id();
+    let settings = &cx.global::<AppState>().settings;
+    let detect = settings
+        .get("editor.detectIndentation", language.as_deref())
+        .unwrap_or(true);
+    let default = Indentation {
+        insert_spaces: settings
+            .get("editor.insertSpaces", language.as_deref())
+            .unwrap_or(true),
+        tab_size: settings
+            .get::<u32>("editor.tabSize", language.as_deref())
+            .unwrap_or(4)
+            .max(1),
+    };
+    doc.indentation = match (&doc.snapshot, detect) {
+        (Some(snapshot), true) => Some(indentation::guess(snapshot, default)),
+        _ => None,
+    };
+    for view in doc.views() {
+        let detected = doc.indentation;
+        view.update(cx, |v, cx| v.set_indentation(detected, cx));
+    }
+}
+
 /// Shows the document as plain text.
 fn clear_syntax(doc: &mut Document, cx: &mut App) {
     if doc.syntax.take().is_some() {
@@ -2021,8 +2073,8 @@ fn contain<T>(f: impl FnOnce() -> T) -> Result<T, LoadError> {
         .map_err(|message| LoadError::Io(format!("internal error: {message}")))
 }
 
-/// The status-bar segments of the active document: cursor, encoding, line
-/// ending and language.
+/// The status-bar segments of the active document: cursor, indentation,
+/// encoding, line ending and language.
 pub(crate) struct DocumentStatusItem {
     groups: Entity<EditorGroupsView>,
     documents: Entity<Documents>,
@@ -2052,6 +2104,11 @@ impl Render for DocumentStatusItem {
                     div()
                         .debug_selector(|| "status-cursor".into())
                         .child(status.cursor),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "status-indentation".into())
+                        .child(status.indentation),
                 )
                 .child(status.encoding)
                 .child(status.line_ending)

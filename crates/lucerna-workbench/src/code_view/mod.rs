@@ -30,6 +30,7 @@ use gpui::{
     IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
     Window, div, prelude::*, px,
 };
+use lucerna_editor::indentation::Indentation;
 use lucerna_editor::{EditKind, Goal, Motion, Selection, SelectionSet, autoclose, move_selections};
 use lucerna_lsp::diagnostics::Diagnostic;
 use lucerna_syntax::{SyntaxState, indent_folds};
@@ -74,7 +75,10 @@ struct Config {
     line_height: f32,
     minimap: bool,
     render_whitespace: bool,
+    /// `editor.tabSize`, or the detected indentation's.
     tab_size: u32,
+    /// `editor.insertSpaces`, or the detected indentation's.
+    insert_spaces: bool,
     max_bytes: u64,
     max_lines: u32,
     /// `editor.cursorSurroundingLines`: rows kept between the cursor and
@@ -96,7 +100,11 @@ struct Config {
 impl Config {
     /// The settings for a view of `language` (a language id such as
     /// `"rust"`), so `"[rust]": {...}` overrides apply.
-    fn read(language: Option<&str>, cx: &App) -> (Config, f32, bool) {
+    fn read(
+        language: Option<&str>,
+        detected: Option<Indentation>,
+        cx: &App,
+    ) -> (Config, f32, bool) {
         let settings = &cx.global::<AppState>().settings;
         let config = Config {
             font_family: crate::fonts::editor_font_family(language, cx),
@@ -107,10 +115,23 @@ impl Config {
             render_whitespace: settings
                 .get::<String>("editor.renderWhitespace", language)
                 .is_some_and(|w| w == "all"),
-            tab_size: settings
-                .get::<u32>("editor.tabSize", language)
-                .unwrap_or(4)
-                .max(1),
+            tab_size: detected.map_or_else(
+                || {
+                    settings
+                        .get::<u32>("editor.tabSize", language)
+                        .unwrap_or(4)
+                        .max(1)
+                },
+                |i| i.tab_size.max(1),
+            ),
+            insert_spaces: detected.map_or_else(
+                || {
+                    settings
+                        .get("editor.insertSpaces", language)
+                        .unwrap_or(true)
+                },
+                |i| i.insert_spaces,
+            ),
             max_bytes: settings
                 .get("lucerna.largeFile.maxBytes", language)
                 .unwrap_or(20 * 1024 * 1024),
@@ -218,6 +239,8 @@ pub struct CodeView {
     path: Arc<Path>,
     /// The id of the file's language, for `"[lang]"` settings overrides.
     language_id: Option<Arc<str>>,
+    /// The document's detected indentation, over the settings.
+    indentation: Option<Indentation>,
     focus: FocusHandle,
     snapshot: BufferSnapshot,
     /// Bumped by every new snapshot; keys every cache.
@@ -335,7 +358,7 @@ impl CodeView {
             .languages
             .language_for_file(&path, "")
             .map(|lang| lang.id.clone());
-        let (config, font_size, word_wrap) = Config::read(language_id.as_deref(), cx);
+        let (config, font_size, word_wrap) = Config::read(language_id.as_deref(), None, cx);
         let snapshot = Buffer::from_bytes(b"", false)
             .expect("empty text decodes")
             .snapshot();
@@ -343,6 +366,7 @@ impl CodeView {
         CodeView {
             path,
             language_id,
+            indentation: None,
             focus: cx.focus_handle(),
             snapshot,
             revision: 0,
@@ -598,7 +622,8 @@ impl CodeView {
     /// large-file limits. Font-size zoom and the wrap toggle survive
     /// unless their setting changed, and the top visible row stays. Called on every [`AppState`] change.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
-        let (config, font_size, word_wrap) = Config::read(self.language_id.as_deref(), cx);
+        let (config, font_size, word_wrap) =
+            Config::read(self.language_id.as_deref(), self.indentation, cx);
         let old_line_height = self.line_height();
         let mut changed = false;
         let mut wrap_changed = false;
@@ -1250,9 +1275,28 @@ impl CodeView {
         .filter(|&at| at < self.snapshot.len_bytes())
     }
 
+    /// The tab size in effect: the document's detected indentation, else
     /// `editor.tabSize` for this view's language.
     pub fn tab_size(&self) -> u32 {
         self.config.tab_size
+    }
+
+    /// Whether indenting inserts spaces: detected, else `editor.insertSpaces`.
+    pub fn insert_spaces(&self) -> bool {
+        self.config.insert_spaces
+    }
+
+    /// Sets the document's detected indentation (`None`: follow the
+    /// settings); it drives rendering and editing like the settings do.
+    pub(crate) fn set_indentation(
+        &mut self,
+        indentation: Option<Indentation>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.indentation != indentation {
+            self.indentation = indentation;
+            self.reload_config(cx);
+        }
     }
 
     pub fn word_wrap(&self) -> bool {
