@@ -7,15 +7,19 @@
 //! highlighting, folding or minimap.
 
 mod cache;
+mod caret;
 mod diagnostics;
 mod element;
+mod frame_layout;
 mod layout;
 mod link;
 mod minimap;
 mod selection;
 
+use std::cell::Cell;
 use std::ops::Range;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
@@ -23,6 +27,7 @@ use gpui::{
     IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
     Window, div, prelude::*, px,
 };
+use lucerna_editor::{Goal, Motion, Selection, SelectionSet, move_selections};
 use lucerna_lsp::diagnostics::Diagnostic;
 use lucerna_syntax::{SyntaxState, indent_folds};
 use lucerna_text::{Bias, Buffer, BufferSnapshot, LoadError, Patch, Point, Reload};
@@ -34,8 +39,9 @@ pub use layout::{
 pub(crate) use selection::word_at;
 
 use self::cache::Caches;
+use self::caret::{Caret, CaretStyle};
 use self::element::{CodeElement, Frame};
-use self::selection::Selection;
+use self::frame_layout::FrameLayout;
 use crate::documents::{DocState, Documents};
 use crate::editor_groups::{EditorGroupsView, Tab};
 use crate::find_widget::FindWidget;
@@ -49,6 +55,9 @@ use crate::{AppState, CommandRegistry, Workbench};
 
 /// The status-bar text shown while the active view is a large file.
 pub const LARGE_FILE_STATUS: &str = "Large file: highlighting disabled";
+
+/// `editor.wordSeparators` until the setting has a default.
+const DEFAULT_WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
 const MIN_FONT_SIZE: f32 = 6.;
 const MAX_FONT_SIZE: f32 = 40.;
@@ -73,6 +82,12 @@ struct Config {
     /// `lucerna.diagnostics.inline.enabled`.
     inline_diagnostics: bool,
     hover: HoverConfig,
+    /// `editor.cursorBlinking` is not `solid`.
+    cursor_blinking: bool,
+    /// `editor.cursorStyle`.
+    cursor_style: CaretStyle,
+    /// `editor.wordSeparators`.
+    word_separators: String,
 }
 
 impl Config {
@@ -109,6 +124,17 @@ impl Config {
                 .get("lucerna.diagnostics.inline.enabled", language)
                 .unwrap_or(false),
             hover: HoverConfig::read(settings, language),
+            cursor_blinking: settings
+                .get::<String>("editor.cursorBlinking", language)
+                .is_none_or(|b| b != "solid"),
+            cursor_style: CaretStyle::from_setting(
+                &settings
+                    .get::<String>("editor.cursorStyle", language)
+                    .unwrap_or_default(),
+            ),
+            word_separators: settings
+                .get("editor.wordSeparators", language)
+                .unwrap_or_else(|| DEFAULT_WORD_SEPARATORS.to_string()),
         };
         let font_size = settings
             .get::<f32>("editor.fontSize", language)
@@ -189,13 +215,20 @@ pub struct CodeView {
     scroll_x: f32,
     /// Widest line laid out since the text, wrap or font last changed.
     max_line_width: f32,
-    selection: Option<Selection>,
-    /// A rectangular selection, one range per row; replaces `selection`
-    /// while set.
+    /// The cursors and selections; never empty.
+    selections: SelectionSet,
+    /// A rectangular selection, one range per row (vim's visual block);
+    /// shown instead of `selections` while set.
     block_selection: Option<Vec<Range<Point>>>,
     /// Bumped by every selection change, whatever made it.
     selection_generation: u64,
     cursor_overlay: Option<CursorOverlay>,
+    /// The caret's blink.
+    caret: Caret,
+    /// Shared with the document's other views: set by a selection change
+    /// so the next edit starts a new undo step (see
+    /// [`Documents::apply_edits`]).
+    stop_requested: Option<Rc<Cell<bool>>>,
     /// Both brackets of the pair next to the cursor, as byte offsets.
     brackets: Option<[usize; 2]>,
     drag: Option<Drag>,
@@ -285,10 +318,12 @@ impl CodeView {
             scroll: Scroll::default(),
             scroll_x: 0.,
             max_line_width: 0.,
-            selection: None,
+            selections: SelectionSet::cursor(0),
             block_selection: None,
             selection_generation: 0,
             cursor_overlay: None,
+            caret: Caret::default(),
+            stop_requested: None,
             brackets: None,
             drag: None,
             folds: FoldState::default(),
@@ -372,8 +407,15 @@ impl CodeView {
         }
     }
 
-    pub(crate) fn set_documents(&mut self, documents: WeakEntity<Documents>) {
+    /// Ties the view to its document: `stop_requested` is the document's
+    /// flag for "a selection changed since the last edit".
+    pub(crate) fn set_documents(
+        &mut self,
+        documents: WeakEntity<Documents>,
+        stop_requested: Rc<Cell<bool>>,
+    ) {
         self.documents = Some(documents);
+        self.stop_requested = Some(stop_requested);
     }
 
     /// Shows `snapshot` from the top, dropping the selection, folds and
@@ -384,7 +426,7 @@ impl CodeView {
         self.syntax = None;
         self.scroll = Scroll::default();
         self.scroll_x = 0.;
-        self.selection = None;
+        self.selections = SelectionSet::cursor(0);
         self.block_selection = None;
         self.selection_generation += 1;
         self.brackets = None;
@@ -415,10 +457,9 @@ impl CodeView {
             offset: 0.,
         };
         self.hover.hide(cx);
-        self.selection = self.selection.map(|s| Selection {
-            anchor: map(s.anchor),
-            head: map(s.head),
-        });
+        let mut selections = self.selections.clone();
+        selections.remap(patch);
+        selections.clamp(&snapshot);
         // A rectangle stays one only while no edit reaches into it.
         self.block_selection = self
             .block_selection
@@ -437,7 +478,6 @@ impl CodeView {
                     .map(|r| map(r.start)..map(r.end))
                     .collect()
             });
-        self.selection_generation += 1;
         let (matches, active) = remap_ranges(&self.match_highlights, self.active_match, patch);
         let diagnostics: Arc<[Diagnostic]> = self
             .diagnostics
@@ -459,9 +499,11 @@ impl CodeView {
         self.active_match = active;
         self.folds.remap(&reload, rows);
         self.scroll.top_row = self.folds.prev_visible(self.scroll.top_row);
-        self.update_brackets();
+        // Emitted before the selection change notifies, so listeners (vim)
+        // see the event before they see the bumped selection generation.
         cx.emit(CodeViewEvent::Reloaded { reload });
-        cx.notify();
+        // Following the text is no cursor move: no undo stop.
+        self.set_selections_inner(selections, false, false, cx);
     }
 
     /// Sets the parsed syntax of the current snapshot; `None` shows plain
@@ -847,24 +889,140 @@ impl CodeView {
         self.frame.as_ref().map_or(0, |f| f.visible_rows())
     }
 
-    /// The selected range, start before end; `None` when nothing is
-    /// selected.
+    /// The primary selection's range, start before end; `None` when it
+    /// is empty.
     pub fn selection(&self) -> Option<Range<Point>> {
-        self.selection.filter(|s| !s.is_empty()).map(|s| s.range())
+        let primary = self.selections.primary();
+        (!primary.is_empty()).then(|| {
+            let range = primary.range();
+            self.snapshot.offset_to_point(range.start)..self.snapshot.offset_to_point(range.end)
+        })
     }
 
     /// The cursor: the painted cursor overlay (vim's) when there is one,
-    /// else the moving end of the selection. The status bar, find and the
-    /// bracket highlight follow it.
+    /// else the moving end of the primary selection. The status bar, find
+    /// and the bracket highlight follow it.
     pub fn cursor(&self) -> Point {
         self.cursor_overlay
             .map_or_else(|| self.selection_head(), |o| o.at)
     }
 
-    /// The moving end of the selection, whatever the overlay shows.
+    /// The moving end of the primary selection, whatever the overlay
+    /// shows.
     pub fn selection_head(&self) -> Point {
-        self.selection
-            .map_or(Point { row: 0, column: 0 }, |s| s.head)
+        self.snapshot
+            .offset_to_point(self.selections.primary().head)
+    }
+
+    /// Every cursor and selection.
+    pub fn selections(&self) -> &SelectionSet {
+        &self.selections
+    }
+
+    /// Replaces the selections, dropping any block selection; with
+    /// `autoscroll`, scrolls the primary cursor into view. Every call is
+    /// a cursor move, so the next edit starts a new undo step.
+    pub fn set_selections(&mut self, set: SelectionSet, autoscroll: bool, cx: &mut Context<Self>) {
+        self.set_goto_message(None, cx);
+        self.block_selection = None;
+        self.set_selections_inner(set, autoscroll, true, cx);
+    }
+
+    /// Replaces the selections (clamped to the text) and restarts the
+    /// caret blink. `stop` asks the document for an undo stop before the
+    /// next edit; following an edit or restoring an undo step does not.
+    fn set_selections_inner(
+        &mut self,
+        mut set: SelectionSet,
+        autoscroll: bool,
+        stop: bool,
+        cx: &mut Context<Self>,
+    ) {
+        set.clamp(&self.snapshot);
+        self.selections = set;
+        self.selection_generation += 1;
+        self.caret.reset(cx);
+        if stop && let Some(flag) = &self.stop_requested {
+            flag.set(true);
+        }
+        self.update_brackets();
+        if autoscroll {
+            self.autoscroll();
+        }
+        cx.notify();
+    }
+
+    /// Opens any fold hiding the primary cursor and scrolls it into view.
+    fn autoscroll(&mut self) {
+        let row = self.selection_head().row;
+        while let Some(header) = self.folds.hiding_header(row) {
+            self.folds.toggle(header, &self.fold_ranges);
+        }
+        match self.visible_rows() {
+            0 => self.center_after_layout(row),
+            visible => self.scroll_into_view(row, visible),
+        }
+    }
+
+    /// Moves every cursor by `motion`; with `extend`, their anchors stay
+    /// (shift).
+    pub fn move_cursor(&mut self, motion: Motion, extend: bool, cx: &mut Context<Self>) {
+        let layout = FrameLayout {
+            folds: &self.folds,
+            wrap_chars: self.wrap_chars(),
+            tab_size: self.config.tab_size,
+            page_rows: self.visible_rows().saturating_sub(1).max(1),
+        };
+        let set = move_selections(
+            &self.snapshot,
+            &self.selections,
+            motion,
+            extend,
+            &layout,
+            &self.config.word_separators,
+        );
+        self.set_selections(set, true, cx);
+    }
+
+    /// Selects the whole text.
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        let set = self.single(0, self.snapshot.len_bytes());
+        self.set_selections(set, false, cx);
+    }
+
+    /// One selection from `anchor` to `head` (byte offsets), keeping the
+    /// primary's id.
+    fn single(&self, anchor: usize, head: usize) -> SelectionSet {
+        let id = self.selections.primary().id;
+        SelectionSet::from_selections(
+            vec![Selection {
+                id,
+                anchor,
+                head,
+                goal: Goal::None,
+            }],
+            id,
+            false,
+        )
+    }
+
+    /// The byte offset of `p`, moved back to a char boundary within its
+    /// line.
+    fn offset_of(&self, p: Point) -> usize {
+        selection::boundary_offset(&self.snapshot, p)
+    }
+
+    /// Selects from `anchor` to `head` as the only selection.
+    fn set_selection_points(&mut self, anchor: Point, head: Point, cx: &mut Context<Self>) {
+        let set = self.single(self.offset_of(anchor), self.offset_of(head));
+        self.set_selections(set, false, cx);
+    }
+
+    /// The caret is in the on half of its blink (always, with
+    /// `editor.cursorBlinking: "solid"`). Painted only while the view has
+    /// focus and no cursor overlay is set.
+    pub fn caret_visible(&self) -> bool {
+        self.caret.visible()
     }
 
     /// Whether a rectangular selection is shown.
@@ -872,49 +1030,38 @@ impl CodeView {
         self.block_selection.is_some()
     }
 
-    /// Selects `range`; its end becomes the cursor.
+    /// Selects `range` as the only selection; its end becomes the cursor.
     pub fn select(&mut self, range: Range<Point>, cx: &mut Context<Self>) {
-        self.set_selection(
-            Selection {
-                anchor: range.start,
-                head: range.end,
-            },
-            cx,
-        );
+        self.set_selection_points(range.start, range.end, cx);
     }
 
-    /// Sets the selection, dropping any block selection.
-    fn set_selection(&mut self, selection: Selection, cx: &mut Context<Self>) {
-        self.set_goto_message(None, cx);
-        self.selection = Some(selection);
-        self.block_selection = None;
-        self.selection_generation += 1;
-        self.update_brackets();
-        cx.notify();
-    }
-
-    /// Drops the selection and block selection; the cursor stays where it
-    /// was.
+    /// Collapses every selection to its cursor and drops the block
+    /// selection.
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
-        self.selection = self.selection.map(|s| Selection::cursor(s.head));
-        self.block_selection = None;
-        self.selection_generation += 1;
-        self.update_brackets();
-        cx.notify();
+        let collapsed = self
+            .selections
+            .all()
+            .iter()
+            .map(|s| Selection {
+                anchor: s.head,
+                ..*s
+            })
+            .collect();
+        let set = SelectionSet::from_selections(collapsed, self.selections.primary().id, true);
+        self.set_selections(set, false, cx);
     }
 
     /// Selects a rectangle given as one range per row, collapsing the
-    /// normal selection to its head; `None` or no ranges clears it.
+    /// selections to the primary cursor; `None` or no ranges clears it.
     pub fn set_block_selection(
         &mut self,
         ranges: Option<Vec<Range<Point>>>,
         cx: &mut Context<Self>,
     ) {
-        self.selection = self.selection.map(|s| Selection::cursor(s.head));
+        let head = self.selections.primary().head;
+        let set = self.single(head, head);
+        self.set_selections_inner(set, false, true, cx);
         self.block_selection = ranges.filter(|r| !r.is_empty());
-        self.selection_generation += 1;
-        self.update_brackets();
-        cx.notify();
     }
 
     /// Counts selection changes from any source (API, mouse, new text), so
@@ -928,7 +1075,8 @@ impl CodeView {
         self.cursor_overlay
     }
 
-    /// Paints `overlay` as the cursor; `None` paints no cursor.
+    /// Paints `overlay` as the cursor instead of the caret; `None` paints
+    /// the caret again.
     pub fn set_cursor_overlay(&mut self, overlay: Option<CursorOverlay>, cx: &mut Context<Self>) {
         if self.cursor_overlay != overlay {
             self.set_goto_message(None, cx);
@@ -948,19 +1096,17 @@ impl CodeView {
                 .collect();
             return Some(rows.join("\n"));
         }
-        let range = self.selection()?;
-        Some(selection::text_for(&self.snapshot, range))
+        let range = self.selections.primary().range();
+        (!range.is_empty()).then(|| self.snapshot.text_for_range(range))
     }
 
     /// Finds the pair of the bracket next to the cursor; uses the syntax
     /// tree when there is one, so brackets in strings are skipped.
     fn update_brackets(&mut self) {
-        let shown = self.selection.is_some() || self.cursor_overlay.is_some();
-        self.brackets = shown.then(|| self.cursor()).and_then(|cursor| {
-            let at = selection::boundary_offset(&self.snapshot, cursor);
-            let partner = self.matching_bracket(at)?;
-            Some([self.matching_bracket(partner)?, partner])
-        });
+        let at = selection::boundary_offset(&self.snapshot, self.cursor());
+        self.brackets = self
+            .matching_bracket(at)
+            .and_then(|partner| Some([self.matching_bracket(partner)?, partner]));
     }
 
     /// The offset of the bracket paired with the one at (or just before)
@@ -1049,7 +1195,7 @@ impl CodeView {
         while let Some(header) = self.folds.hiding_header(p.row) {
             self.folds.toggle(header, &self.fold_ranges);
         }
-        self.set_selection(Selection::cursor(p), cx);
+        self.set_selection_points(p, p, cx);
         p
     }
 
@@ -1247,12 +1393,15 @@ impl Render for CodeView {
         if self._focus_out.is_none() {
             let focus = self.focus.clone();
             self._focus_out = Some(cx.on_focus_out(&focus, window, |v, _, _, cx| {
+                v.caret.stop();
                 v.hover.hide(cx);
                 v.set_goto_message(None, cx);
                 // Its release (⌘-Tab away) may never reach the view.
                 v.link_modifiers_changed(false, cx);
             }));
         }
+        let focused = self.focus.is_focused(window) && self.cursor_overlay.is_none();
+        self.caret.ensure(focused, self.config.cursor_blinking, cx);
         if self.painted_revision != self.revision {
             self.painted_revision = self.revision;
             tracing::debug!(

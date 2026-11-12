@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::code_view::{self, CodeView, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
-use crate::documents::{DocumentStatusItem, Documents};
+use crate::documents::{DocState, DocumentStatusItem, Documents};
 use crate::editor_groups::{
     self, EditorGroups, EditorGroupsView, GroupId, OpenMode, TabId, TabItem,
 };
@@ -282,6 +282,7 @@ impl Workbench {
         crate::goto::register_commands(&mut commands);
         crate::extensions::register_commands(&mut commands);
         crate::symbols::register_commands(&mut commands);
+        crate::editing::register_commands(&mut commands);
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
             let root = root.clone();
@@ -1263,10 +1264,28 @@ impl Workbench {
             .context_stack()
             .iter()
             .any(|c| c.contains(TEXT_INPUT_KEY_CONTEXT));
+        // Only a code view takes text: not the Search or References tab.
+        let code_view = self.active_code_view(cx);
         flag(
             "editorTextFocus",
-            self.editor_focus.contains_focused(window, cx) && !text_input,
+            self.editor_focus.contains_focused(window, cx) && !text_input && code_view.is_some(),
         );
+        if let Some(view) = &code_view {
+            let v = view.read(cx);
+            let readonly =
+                !matches!(v.doc_state(), DocState::Ready | DocState::Deleted) || v.is_passive();
+            flag("editorReadonly", readonly);
+            let selections = v.selections();
+            flag(
+                "editorHasSelection",
+                selections.all().iter().any(|s| !s.is_empty()),
+            );
+            flag("editorHasMultipleSelections", selections.len() > 1);
+            flag(
+                "activeEditorIsDirty",
+                self.documents.read(cx).is_dirty(v.path()),
+            );
+        }
         flag("findWidgetVisible", self.find_widget_visible(cx));
         flag(
             "lspHoverVisible",

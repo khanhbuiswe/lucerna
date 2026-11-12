@@ -17,9 +17,10 @@ use lucerna_text::Point;
 use lucerna_theme::{Theme, UiColors};
 
 use super::cache::ShapeKey;
+use super::caret::CaretStyle;
 use super::diagnostics::MarkStyle;
 use super::layout::{FoldState, char_columns, display_lines_with_tab_size, row_range, row_start};
-use super::selection::{self, Selection};
+use super::selection;
 use super::{CodeView, Drag, hsla, link};
 use crate::AppState;
 use crate::hover::PopoverAnchor;
@@ -156,7 +157,12 @@ pub(crate) struct Frame {
     /// chevron, painted). All of them take clicks; only those shown while
     /// the gutter is hovered, or folded, are painted.
     chevrons: Vec<(Pixels, u32, ShapedLine, bool)>,
-    selection: Option<Selection>,
+    /// The non-empty selections touching the rows on screen.
+    selections: Vec<std::ops::Range<Point>>,
+    /// The cells of the carets to paint (every cursor on screen), while
+    /// the view has focus, no cursor overlay is set and the blink is on.
+    carets: Vec<std::ops::Range<Point>>,
+    caret_style: CaretStyle,
     /// The block selection's ranges, one per row.
     block_selection: Vec<std::ops::Range<Point>>,
     /// The cell of the cursor overlay: the char under it on one row, empty
@@ -218,6 +224,7 @@ struct FrameColors {
     active_match: Hsla,
     hover: Hsla,
     cursor: Hsla,
+    caret: Hsla,
     scrollbar_thumb: Hsla,
     fade: Hsla,
     strike: Hsla,
@@ -586,10 +593,18 @@ impl CodeView {
         };
         let text_x = text_bounds.left() + padding - px(self.scroll_x);
 
-        let cursor_overlay = self.cursor_overlay_cell();
+        let cursor_overlay = self.cursor_overlay.and_then(|o| self.cell_at(o.at));
         let cursor_row = match &cursor_overlay {
             Some(cell) => Some(cell.start.row),
-            None => self.selection.map(|s| s.head.row),
+            None => Some(self.selection_head().row),
+        };
+        let show_carets =
+            self.cursor_overlay.is_none() && self.caret.visible() && self.focus.is_focused(window);
+        let (selections, carets) = match (frame_rows.first(), frame_rows.last()) {
+            (Some(first), Some(last)) => {
+                self.visible_selections(first.buffer_row..last.buffer_row + 1, show_carets)
+            }
+            _ => (Vec::new(), Vec::new()),
         };
         let highlighted_lines = frame_rows
             .iter()
@@ -693,7 +708,9 @@ impl CodeView {
             rows: frame_rows,
             numbers,
             chevrons,
-            selection: self.selection,
+            selections,
+            carets,
+            caret_style: self.config.cursor_style,
             block_selection: self.block_selection.clone().unwrap_or_default(),
             cursor_overlay,
             matches,
@@ -716,6 +733,7 @@ impl CodeView {
                 active_match: hsla(ui.editor_foreground).opacity(ACTIVE_MATCH_ALPHA),
                 hover: hsla(ui.element_hover),
                 cursor: hsla(ui.editor_foreground).opacity(CURSOR_ALPHA),
+                caret: hsla(ui.editor_foreground),
                 scrollbar_thumb: hsla(ui.scrollbar_thumb),
                 fade: hsla(ui.editor_background).opacity(FADE_ALPHA),
                 strike: hsla(ui.editor_foreground),
@@ -851,10 +869,38 @@ impl CodeView {
         marks
     }
 
-    /// The cell the cursor overlay covers: from its column, moved back to
-    /// a char boundary within the line, to the end of the char there.
-    fn cursor_overlay_cell(&self) -> Option<std::ops::Range<Point>> {
-        let at = self.cursor_overlay?.at;
+    /// The non-empty selections (none while a block selection shows) and
+    /// the caret cells (with `carets`) on buffer `rows`.
+    fn visible_selections(
+        &self,
+        rows: std::ops::Range<u32>,
+        carets: bool,
+    ) -> (Vec<std::ops::Range<Point>>, Vec<std::ops::Range<Point>>) {
+        let start = row_start(&self.snapshot, rows.start);
+        let end = row_start(&self.snapshot, rows.end);
+        let all = self.selections.all();
+        // Sorted and non-overlapping: their ends are sorted too.
+        let first = all.partition_point(|s| s.range().end < start);
+        let mut ranges = Vec::new();
+        let mut cells = Vec::new();
+        for s in all[first..].iter().take_while(|s| s.range().start <= end) {
+            let range = s.range();
+            if !s.is_empty() && self.block_selection.is_none() {
+                ranges.push(
+                    self.snapshot.offset_to_point(range.start)
+                        ..self.snapshot.offset_to_point(range.end),
+                );
+            }
+            if carets && (start..=end).contains(&s.head) {
+                cells.extend(self.cell_at(self.snapshot.offset_to_point(s.head)));
+            }
+        }
+        (ranges, cells)
+    }
+
+    /// The cell of the char at `at`: from its column, moved back to a char
+    /// boundary within the line, to the end of the char there.
+    fn cell_at(&self, at: Point) -> Option<std::ops::Range<Point>> {
         if at.row >= self.snapshot.line_count() {
             return None;
         }
@@ -1049,7 +1095,7 @@ impl CodeView {
         {
             // The cursor goes to the click first, so the answer is for
             // where the cursor is; a drag from here still selects.
-            self.set_selection(Selection::cursor(p), cx);
+            self.select(p..p, cx);
             self.link_mouse_down(Some((p, ev.modifiers.alt)));
             self.drag = Some(Drag::Text);
             return;
@@ -1057,45 +1103,31 @@ impl CodeView {
         let Some(p) = frame.point_at(ev.position) else {
             return;
         };
-        let selection = match ev.click_count {
-            0 | 1 => match self.selection {
-                Some(s) if ev.modifiers.shift => Selection { head: p, ..s },
-                _ => Selection::cursor(p),
-            },
-            2 => {
-                let word = selection::word_at(&self.snapshot, p);
-                Selection {
-                    anchor: word.start,
-                    head: word.end,
-                }
-            }
-            _ => {
-                let line = selection::line_at(&self.snapshot, p.row);
-                Selection {
-                    anchor: line.start,
-                    head: line.end,
-                }
-            }
+        let range = match ev.click_count {
+            0 | 1 if ev.modifiers.shift => self.selection_anchor()..p,
+            0 | 1 => p..p,
+            2 => selection::word_at(&self.snapshot, p),
+            _ => selection::line_at(&self.snapshot, p.row),
         };
-        self.set_selection(selection, cx);
+        self.select(range, cx);
         self.drag = Some(Drag::Text);
     }
 
     fn mouse_drag(&mut self, position: gpui::Point<Pixels>, cx: &mut gpui::Context<Self>) {
-        let (Some(frame), Some(selection)) = (self.frame.clone(), self.selection) else {
+        let Some(frame) = self.frame.clone() else {
             return;
         };
         if let Some(p) = frame.point_at(position)
-            && p != selection.head
+            && p != self.selection_head()
         {
-            self.set_selection(
-                Selection {
-                    head: p,
-                    ..selection
-                },
-                cx,
-            );
+            self.select(self.selection_anchor()..p, cx);
         }
+    }
+
+    /// The fixed end of the primary selection.
+    fn selection_anchor(&self) -> Point {
+        self.snapshot
+            .offset_to_point(self.selections.primary().anchor)
     }
 
     fn scroll_wheel(&mut self, ev: &ScrollEvent, cx: &mut gpui::Context<Self>) {

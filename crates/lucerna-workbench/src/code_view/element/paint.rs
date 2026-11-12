@@ -14,6 +14,7 @@ use super::{
     SCROLLBAR_MARK_HEIGHT,
 };
 use crate::code_view::MarkStyle;
+use crate::code_view::caret::CaretStyle;
 use crate::ui::SCROLLBAR_WIDTH;
 
 pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
@@ -54,8 +55,8 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
                 }
             }
         }
-        if let Some(selection) = frame.selection.filter(|s| !s.is_empty()) {
-            for bounds in range_bounds(frame, selection.range()) {
+        for range in &frame.selections {
+            for bounds in range_bounds(frame, range.clone()) {
                 window.paint_quad(fill(bounds, colors.selection));
             }
         }
@@ -73,6 +74,15 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
         {
             window.paint_quad(fill(bounds, colors.cursor));
         }
+        if frame.caret_style == CaretStyle::Block {
+            for bounds in frame
+                .carets
+                .iter()
+                .filter_map(|c| cell_bounds(frame, c.clone()))
+            {
+                window.paint_quad(fill(bounds, colors.cursor));
+            }
+        }
         // Rows do not overlap: one draw order for all their glyphs.
         window.paint_layer(text, |window| {
             for row in &frame.rows {
@@ -86,6 +96,7 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
         if let Some((dot, arrow)) = &frame.whitespace {
             paint_whitespace(frame, dot, arrow, window, cx);
         }
+        paint_carets(frame, window);
         paint_marks(frame, window);
         for inline in &frame.diagnostics.inline {
             let background = inline.color.opacity(INLINE_BACKGROUND_ALPHA);
@@ -193,6 +204,33 @@ fn paint_marks(frame: &Frame, window: &mut Window) {
                 )),
             }
         }
+    }
+}
+
+/// The carets over the text, in `editor.cursorStyle`; a block one is
+/// painted under the text instead, so the char stays readable.
+fn paint_carets(frame: &Frame, window: &mut Window) {
+    let color = frame.colors.caret;
+    for bounds in frame
+        .carets
+        .iter()
+        .filter_map(|c| cell_bounds(frame, c.clone()))
+    {
+        let caret = match frame.caret_style {
+            CaretStyle::Block => continue,
+            CaretStyle::BlockOutline => {
+                window.paint_quad(outline(bounds, color, gpui::BorderStyle::Solid));
+                continue;
+            }
+            CaretStyle::Line(width) => {
+                Bounds::new(bounds.origin, size(px(width as f32), bounds.size.height))
+            }
+            CaretStyle::Underline(height) => Bounds::new(
+                point(bounds.left(), bounds.bottom() - px(height as f32)),
+                size(bounds.size.width, px(height as f32)),
+            ),
+        };
+        window.paint_quad(fill(caret, color));
     }
 }
 

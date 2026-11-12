@@ -9,10 +9,12 @@
 //! absolute paths as given, relative ones joined onto the workbench root,
 //! so a tab's path and a worktree change's root-relative path meet.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -178,6 +180,10 @@ struct Document {
     pending_go_to: Option<Point>,
     /// [`DocumentEvent::Opened`] was sent.
     announced: bool,
+    /// Set by any view's selection change: the next edit starts a new
+    /// undo step. A flag rather than a call, since views change their
+    /// selections from inside `Documents` too.
+    stop_requested: Rc<Cell<bool>>,
 }
 
 impl Document {
@@ -253,9 +259,14 @@ impl Documents {
         self.collect_closed(cx);
         let key = self.key(&path);
         let documents = cx.weak_entity();
+        let stop_requested = self
+            .docs
+            .get(&key)
+            .map(|d| d.stop_requested.clone())
+            .unwrap_or_default();
         let view = cx.new(|cx| {
             let mut view = CodeView::new(path, cx);
-            view.set_documents(documents);
+            view.set_documents(documents, stop_requested.clone());
             view.set_passive(passive);
             view
         });
@@ -323,6 +334,7 @@ impl Documents {
                         parse: None,
                         pending_go_to: self.pending_go_to.remove(&key),
                         announced: false,
+                        stop_requested,
                     },
                 );
                 self.start_job(&key, cx);
@@ -433,7 +445,12 @@ impl Documents {
         cx: &mut Context<Self>,
     ) -> Option<Patch> {
         let key = self.key(path);
-        let buffer = self.docs.get_mut(&key)?.buffer.as_mut()?;
+        let doc = self.docs.get_mut(&key)?;
+        let stop = doc.stop_requested.take();
+        let buffer = doc.buffer.as_mut()?;
+        if stop {
+            buffer.push_stop();
+        }
         let old = buffer.snapshot();
         let was_dirty = buffer.is_dirty();
         // An edit from a stale range must not split a char or run past

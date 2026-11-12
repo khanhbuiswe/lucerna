@@ -7,6 +7,8 @@
   "editor.renderWhitespace": "none",
   "editor.tabSize": 4,
   "editor.cursorSurroundingLines": 0,
+  "editor.cursorBlinking": "blink",
+  "editor.cursorStyle": "line",
   "files.exclude": { "**/.git": true, "**/.DS_Store": true },
   "search.exclude": { "**/node_modules": true, "**/target": true },
   "search.searchEditor.defaultNumberOfContextLines": 1,

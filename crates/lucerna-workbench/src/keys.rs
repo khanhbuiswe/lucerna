@@ -185,6 +185,48 @@ mod tests {
             (event("-", None, ctrl()), "ctrl+-"),
             (event("_", None, ctrl()), "ctrl+shift+-"),
         ];
+        // Cursor movement.
+        for (key, plain, shifted) in [
+            ("left", "left", "shift+left"),
+            ("right", "right", "shift+right"),
+            ("up", "up", "shift+up"),
+            ("down", "down", "shift+down"),
+            ("home", "home", "shift+home"),
+            ("end", "end", "shift+end"),
+            ("pageup", "pageup", "shift+pageup"),
+            ("pagedown", "pagedown", "shift+pagedown"),
+        ] {
+            rows.push((event(key, None, Modifiers::none()), plain));
+            rows.push((event(key, None, Modifiers::shift()), shifted));
+        }
+        for (key, with_cmd, with_cmd_shift) in [
+            ("left", "cmd+left", "shift+cmd+left"),
+            ("right", "cmd+right", "shift+cmd+right"),
+            ("up", "cmd+up", "shift+cmd+up"),
+            ("down", "cmd+down", "shift+cmd+down"),
+        ] {
+            rows.push((event(key, None, cmd()), with_cmd));
+            rows.push((event(key, None, cmd_shift()), with_cmd_shift));
+        }
+        for (key, with_alt, with_alt_shift) in [
+            ("left", "alt+left", "shift+alt+left"),
+            ("right", "alt+right", "shift+alt+right"),
+        ] {
+            rows.push((event(key, None, alt()), with_alt));
+            rows.push((event(key, None, alt_shift()), with_alt_shift));
+        }
+        for letter in ["a", "b", "e", "f", "n", "p"] {
+            let binding: &'static str = match letter {
+                "a" => "ctrl+a",
+                "b" => "ctrl+b",
+                "e" => "ctrl+e",
+                "f" => "ctrl+f",
+                "n" => "ctrl+n",
+                _ => "ctrl+p",
+            };
+            rows.push((event(letter, None, ctrl()), binding));
+        }
+        rows.push((event("a", None, cmd()), "cmd+a"));
         for (digit, binding) in [
             ("1", "cmd+1"),
             ("2", "cmd+2"),

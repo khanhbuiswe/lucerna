@@ -8,6 +8,7 @@ mod commands;
 mod config_files;
 mod diagnostics_status;
 mod documents;
+mod editing;
 mod editor_groups;
 mod excerpt_list;
 mod explorer;

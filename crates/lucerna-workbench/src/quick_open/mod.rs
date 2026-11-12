@@ -117,7 +117,8 @@ impl Workbench {
         let commands = self
             .commands()
             .all()
-            .filter(|(id, _)| !HIDDEN_COMMANDS.contains(id))
+            // Commands without a title are for keys only.
+            .filter(|(id, title)| !title.is_empty() && !HIDDEN_COMMANDS.contains(id))
             .map(|(id, title)| CommandItem {
                 id: id.to_string(),
                 title: title.to_string(),

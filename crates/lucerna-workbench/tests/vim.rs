@@ -516,7 +516,7 @@ fn modified_keys_go_to_keymap(cx: &mut TestAppContext) {
     let view = open(&wb, "a.rs", "a\nb\nc\nd\n", cx);
     let wrap = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.word_wrap());
     keys("j", cx);
-    keys("alt-down shift-down ctrl-down", cx);
+    keys("alt-down ctrl-down", cx);
     assert_eq!(cursor(&view, cx), pt(1, 0), "modified arrows are not vim's");
     keys("alt-up", cx);
     assert!(wrap(cx), "the user binding on alt+up ran");
@@ -524,6 +524,13 @@ fn modified_keys_go_to_keymap(cx: &mut TestAppContext) {
     assert!(!wrap(cx), "alt+z toggles wrap back");
     keys("down", cx);
     assert_eq!(cursor(&view, cx), pt(2, 0), "a plain arrow is vim's j");
+    // shift+down is the keymap's cursorDownSelect; vim follows the view.
+    keys("shift-down", cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.selection()),
+        Some(pt(2, 0)..pt(3, 0))
+    );
+    assert_eq!(cursor(&view, cx), pt(3, 0));
 }
 
 #[gpui::test]

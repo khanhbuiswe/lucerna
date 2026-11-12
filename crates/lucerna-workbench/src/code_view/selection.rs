@@ -1,44 +1,11 @@
-//! The selection, kept in buffer [`Point`]s, and the char-boundary-safe
-//! text operations on it.
+//! Char-boundary-safe text operations on [`Point`] ranges: selected text,
+//! words and lines for double and triple clicks.
 
 use std::ops::Range;
 
 use lucerna_text::{BufferSnapshot, Point};
 
 use super::layout::{MAX_RENDERED_LINE_CHARS, line_prefix, row_range};
-
-/// Where a selection started and where it ends; `head` is the cursor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Selection {
-    pub anchor: Point,
-    pub head: Point,
-}
-
-impl Selection {
-    pub fn cursor(at: Point) -> Selection {
-        Selection {
-            anchor: at,
-            head: at,
-        }
-    }
-
-    /// Start to end, whichever way it was made.
-    pub fn range(&self) -> Range<Point> {
-        if cmp(self.anchor, self.head).is_le() {
-            self.anchor..self.head
-        } else {
-            self.head..self.anchor
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.anchor == self.head
-    }
-}
-
-pub(crate) fn cmp(a: Point, b: Point) -> std::cmp::Ordering {
-    (a.row, a.column).cmp(&(b.row, b.column))
-}
 
 /// The text of `range`, with both ends moved back to char boundaries.
 pub(crate) fn text_for(snapshot: &BufferSnapshot, range: Range<Point>) -> String {
@@ -163,16 +130,5 @@ mod tests {
         assert_eq!(boundary_offset(&s, pt(0, 99)), 6);
         assert_eq!(boundary_offset(&s, pt(9, 0)), s.len_bytes());
         assert_eq!(text_for(&s, pt(0, 2)..pt(1, 2)), "éllo\nne");
-    }
-
-    #[test]
-    fn selection_range_is_ordered() {
-        let sel = Selection {
-            anchor: pt(3, 1),
-            head: pt(1, 4),
-        };
-        assert_eq!(sel.range(), pt(1, 4)..pt(3, 1));
-        assert!(!sel.is_empty());
-        assert!(Selection::cursor(pt(2, 2)).is_empty());
     }
 }

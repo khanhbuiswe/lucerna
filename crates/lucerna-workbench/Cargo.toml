@@ -13,6 +13,7 @@ gpui.workspace = true
 gpui_platform.workspace = true
 jsonc-parser.workspace = true
 lsp-types.workspace = true
+lucerna-editor.workspace = true
 lucerna-extension.workspace = true
 lucerna-lsp.workspace = true
 lucerna-project.workspace = true
