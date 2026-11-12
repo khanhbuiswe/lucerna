@@ -7,8 +7,9 @@ use gpui::{Entity, TestAppContext, VisualTestContext};
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
-use lucerna_workbench::app_menu::{self, RunCommand};
-use lucerna_workbench::{AppState, Workbench};
+use lucerna_workbench::app_menu::{self, DisabledCommand, RunCommand};
+use lucerna_workbench::recent::RecentStore;
+use lucerna_workbench::{AppState, WelcomeView, Workbench};
 
 const TOGGLE_SIDEBAR: &str = "workbench.action.toggleSidebarVisibility";
 
@@ -74,4 +75,28 @@ fn menu_binding_does_not_double_run(cx: &mut TestAppContext) {
         !sidebar_visible(&wb, cx),
         "cmd-b ran an even number of times"
     );
+}
+
+/// AppKit enables a menu item when GPUI says its action is available, so
+/// what a Welcome window cannot run uses an action nothing handles.
+#[gpui::test]
+fn welcome_window_cannot_run_workbench_items(cx: &mut TestAppContext) {
+    init(cx);
+    cx.set_global(RecentStore { data_dir: None });
+    let (_, cx) = cx.add_window_view(WelcomeView::new);
+    cx.run_until_parked();
+    let (disabled, open_recent) = cx.update(|_, cx| {
+        let save = DisabledCommand {
+            id: "workbench.action.files.save".into(),
+        };
+        let open_recent = RunCommand {
+            id: "workbench.action.openRecent".into(),
+        };
+        (
+            cx.is_action_available(&save),
+            cx.is_action_available(&open_recent),
+        )
+    });
+    assert!(!disabled);
+    assert!(open_recent);
 }

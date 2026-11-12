@@ -27,6 +27,16 @@ pub struct RunCommand {
     pub id: SharedString,
 }
 
+/// A command item the active window cannot run, such as Save in a
+/// Welcome window. No listener handles it, so GPUI reports it unavailable
+/// and AppKit, which validates items itself, shows it disabled.
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = lucerna)]
+#[schemars(crate = "gpui::private::schemars")]
+pub struct DisabledCommand {
+    pub id: SharedString,
+}
+
 /// Opens a File ▸ Open Recent entry in the active window, as choosing it
 /// on the Welcome screen or in the Open Recent picker does.
 #[derive(Clone, PartialEq, Action)]
@@ -388,12 +398,13 @@ fn command_item(
     if !input.commands.contains(&id) {
         return None;
     }
-    let action = RunCommand { id: id.into() };
-    let item = match os {
-        Some(os) => MenuItem::os_action(title, action, os),
-        None => MenuItem::action(title, action),
-    };
     let enabled = input.window == WindowKind::Workbench || WELCOME_COMMANDS.contains(&id);
+    let item = match (os, enabled) {
+        (Some(os), true) => MenuItem::os_action(title, RunCommand { id: id.into() }, os),
+        (None, true) => MenuItem::action(title, RunCommand { id: id.into() }),
+        (Some(os), false) => MenuItem::os_action(title, DisabledCommand { id: id.into() }, os),
+        (None, false) => MenuItem::action(title, DisabledCommand { id: id.into() }),
+    };
     Some(item.disabled(!enabled))
 }
 
@@ -600,8 +611,9 @@ pub(crate) fn refresh(cx: &mut App) {
 }
 
 /// GPUI's keymap: the app's fixed keys (⌘Q, ⌘H, ⌥⌘H, ⌘M), then each menu
-/// command's key from the Lucerna keymap in [`MENU_CONTEXT`], so the menu
-/// shows it without running it a second time.
+/// command's key from the Lucerna keymap in [`MENU_CONTEXT`], for both
+/// [`RunCommand`] and [`DisabledCommand`], so the menu shows it without
+/// running it a second time.
 fn bind_keys(cx: &mut App) {
     cx.clear_key_bindings();
     cx.bind_keys([
@@ -617,15 +629,19 @@ fn bind_keys(cx: &mut App) {
     let context = KeyBindingContextPredicate::parse(MENU_CONTEXT)
         .ok()
         .map(Rc::new);
-    let bindings: Vec<KeyBinding> = keys
-        .into_iter()
-        .filter_map(|(id, keystroke)| {
-            let action = Box::new(RunCommand { id: id.into() });
-            KeyBinding::load(&keystroke, action, context.clone(), false, None, cx)
-                .inspect_err(|err| tracing::warn!(%err, id, "cannot show the key in the menu"))
-                .ok()
-        })
-        .collect();
+    let mut bindings = Vec::new();
+    for (id, keystroke) in keys {
+        let actions: [Box<dyn Action>; 2] = [
+            Box::new(RunCommand { id: id.into() }),
+            Box::new(DisabledCommand { id: id.into() }),
+        ];
+        for action in actions {
+            match KeyBinding::load(&keystroke, action, context.clone(), false, None, cx) {
+                Ok(binding) => bindings.push(binding),
+                Err(err) => tracing::warn!(%err, id, "cannot show the key in the menu"),
+            }
+        }
+    }
     cx.bind_keys(bindings);
 }
 
@@ -824,6 +840,18 @@ mod tests {
         let menus = build_menus(&input(&commands, Platform::Mac, &[], WindowKind::Welcome));
         let file = menu(&menus, "File");
         assert!(item(file, "Save").is_disabled());
+        match item(file, "Save") {
+            MenuItem::Action { action, .. } => assert!(action.partial_eq(&DisabledCommand {
+                id: "workbench.action.files.save".into()
+            })),
+            _ => panic!("Save is an action"),
+        }
+        match item(file, "Open…") {
+            MenuItem::Action { action, .. } => assert!(action.partial_eq(&RunCommand {
+                id: "workbench.action.files.openFileFolder".into()
+            })),
+            _ => panic!("Open… is an action"),
+        }
         assert!(!item(file, "Open…").is_disabled());
         assert!(!item(file, "Open Recent").is_disabled());
         assert!(!item(submenu(file, "Open Recent"), "More…").is_disabled());
