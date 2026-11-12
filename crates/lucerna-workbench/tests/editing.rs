@@ -883,3 +883,31 @@ fn cmd_slash_toggles(cx: &mut TestAppContext) {
     keys("cmd-down shift-alt-a", cx);
     assert_eq!(text_of(&view, cx), "// a\nb\n/*  */");
 }
+
+#[gpui::test]
+fn alt_down_moves_line(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("a\nb\nc", cx);
+    keys("alt-down", cx);
+    assert_eq!(text_of(&view, cx), "b\na\nc");
+    // The cursor moved with its line.
+    assert_eq!(cursor(&view, cx), pt(1, 0));
+    keys("alt-up alt-up", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nc");
+    // One undo step per command.
+    keys("alt-down cmd-z", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nc");
+}
+
+#[gpui::test]
+fn cmd_shift_k_deletes_line(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, view, cx) = editor("a\nb\nc\n", cx);
+    keys("down cmd-shift-k", cx);
+    assert_eq!(text_of(&view, cx), "a\nc\n");
+    assert_eq!(cursor(&view, cx), pt(1, 0));
+    keys("cmd-enter", cx);
+    assert_eq!(text_of(&view, cx), "a\nc\n\n");
+    run(&wb, "editor.action.trimTrailingWhitespace", cx);
+    assert_eq!(text_of(&view, cx), "a\nc\n\n");
+}

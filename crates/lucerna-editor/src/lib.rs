@@ -19,3 +19,4 @@ pub mod autoclose;
 pub mod comment;
 mod indent;
 pub mod indentation;
+pub mod lines;

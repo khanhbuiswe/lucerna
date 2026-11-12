@@ -4,7 +4,7 @@
 
 use gpui::{Context, Focusable as _, Window};
 use lucerna_editor::{Ctx, EditPlan, Motion, SelectionSet};
-use lucerna_editor::{commands, comment};
+use lucerna_editor::{commands, comment, lines};
 
 use crate::code_view::CodeView;
 use crate::{CommandHandler, CommandRegistry, Workbench};
@@ -139,6 +139,64 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         ),
     ];
     for (id, title, handler) in comments {
+        commands.register(id, title, handler);
+    }
+    let lines: [(&'static str, &'static str, CommandHandler); 11] = [
+        (
+            "editor.action.moveLinesUpAction",
+            "Move Line Up",
+            |wb, _, _, cx| edit(wb, cx, |c, s| lines::move_lines(c, s, true)),
+        ),
+        (
+            "editor.action.moveLinesDownAction",
+            "Move Line Down",
+            |wb, _, _, cx| edit(wb, cx, |c, s| lines::move_lines(c, s, false)),
+        ),
+        (
+            "editor.action.copyLinesUpAction",
+            "Copy Line Up",
+            |wb, _, _, cx| edit(wb, cx, |c, s| lines::copy_lines(c, s, true)),
+        ),
+        (
+            "editor.action.copyLinesDownAction",
+            "Copy Line Down",
+            |wb, _, _, cx| edit(wb, cx, |c, s| lines::copy_lines(c, s, false)),
+        ),
+        (
+            "editor.action.deleteLines",
+            "Delete Line",
+            |wb, _, _, cx| edit(wb, cx, lines::delete_lines),
+        ),
+        (
+            "editor.action.insertLineAfter",
+            "Insert Line Below",
+            |wb, _, _, cx| edit(wb, cx, |c, s| lines::insert_line(c, s, true)),
+        ),
+        (
+            "editor.action.insertLineBefore",
+            "Insert Line Above",
+            |wb, _, _, cx| edit(wb, cx, |c, s| lines::insert_line(c, s, false)),
+        ),
+        (
+            "editor.action.indentLines",
+            "Indent Line",
+            |wb, _, _, cx| edit(wb, cx, lines::indent_lines),
+        ),
+        (
+            "editor.action.outdentLines",
+            "Outdent Line",
+            |wb, _, _, cx| edit(wb, cx, lines::outdent_lines),
+        ),
+        ("editor.action.joinLines", "Join Lines", |wb, _, _, cx| {
+            edit(wb, cx, lines::join_lines)
+        }),
+        (
+            "editor.action.trimTrailingWhitespace",
+            "Trim Trailing Whitespace",
+            |wb, _, _, cx| edit(wb, cx, lines::trim_trailing_whitespace),
+        ),
+    ];
+    for (id, title, handler) in lines {
         commands.register(id, title, handler);
     }
     // VS Code's `type` command: `{"text": "\n"}` is Enter.

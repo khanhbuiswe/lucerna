@@ -121,7 +121,7 @@ pub(crate) fn build(
 
 /// A plan from line-granular edits (sorted, non-overlapping); selections
 /// keep their extent and map through the patch.
-fn build_mapped(
+pub(crate) fn build_mapped(
     set: &SelectionSet,
     edits: Vec<(Range<usize>, Arc<str>)>,
     kind: EditKind,
@@ -461,7 +461,11 @@ pub(crate) fn indent_string(ctx: Ctx, cols: u32) -> String {
 
 /// Snaps each touched line's indent to the next (or previous) indent stop,
 /// rewritten in the configured style (like VS Code's `ShiftCommand`).
-fn shift_edits(ctx: Ctx, set: &SelectionSet, outdent: bool) -> Vec<(Range<usize>, Arc<str>)> {
+pub(crate) fn shift_edits(
+    ctx: Ctx,
+    set: &SelectionSet,
+    outdent: bool,
+) -> Vec<(Range<usize>, Arc<str>)> {
     let snap = ctx.snapshot;
     let ts = ctx.config.tab_size.max(1);
     rows_of(ctx, set)

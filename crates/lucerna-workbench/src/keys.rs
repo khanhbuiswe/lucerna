@@ -257,6 +257,16 @@ mod tests {
             (event("enter", Some("\n"), Modifiers::none()), "enter"),
             (event("/", None, cmd()), "cmd+/"),
             (event("a", Some("Å"), alt_shift()), "shift+alt+a"),
+            (event("up", None, alt()), "alt+up"),
+            (event("down", None, alt()), "alt+down"),
+            (event("up", None, alt_shift()), "shift+alt+up"),
+            (event("down", None, alt_shift()), "shift+alt+down"),
+            (event("k", None, cmd_shift()), "cmd+shift+k"),
+            (event("enter", Some("\n"), cmd()), "cmd+enter"),
+            (event("enter", Some("\n"), cmd_shift()), "cmd+shift+enter"),
+            (event("]", None, cmd()), "cmd+]"),
+            (event("[", None, cmd()), "cmd+["),
+            (event("j", None, ctrl()), "ctrl+j"),
         ]);
         for (digit, binding) in [
             ("1", "cmd+1"),
