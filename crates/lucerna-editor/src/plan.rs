@@ -23,6 +23,26 @@ pub struct EditPlan {
     pub autoclose: Vec<Range<usize>>,
 }
 
+impl EditPlan {
+    /// A plan with no undo stops and no auto-closed pairs. Callers outside
+    /// this crate (the IME, Vim) build plans with this, then set the fields
+    /// they need, so new fields do not break them.
+    pub fn new(
+        edits: Vec<(Range<usize>, Arc<str>)>,
+        selections: SelectionSet,
+        kind: EditKind,
+    ) -> EditPlan {
+        EditPlan {
+            edits,
+            selections,
+            kind,
+            stop_before: false,
+            stop_after: false,
+            autoclose: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EditConfig {
     pub tab_size: u32,
@@ -105,5 +125,30 @@ setting_enum! {
         Quotes = "quotes",
         Brackets = "brackets",
         Never = "never",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::selection::{Goal, Selection};
+
+    #[test]
+    fn new_plan_has_no_stops_and_no_pairs() {
+        let set = SelectionSet::from_selections(
+            vec![Selection {
+                id: 0,
+                anchor: 1,
+                head: 1,
+                goal: Goal::None,
+            }],
+            0,
+            true,
+        );
+        let plan = EditPlan::new(vec![(0..0, Arc::from("x"))], set, EditKind::TypingOther);
+        assert!(!plan.stop_before && !plan.stop_after);
+        assert!(plan.autoclose.is_empty());
+        assert_eq!(plan.kind, EditKind::TypingOther);
+        assert_eq!(plan.edits.len(), 1);
     }
 }

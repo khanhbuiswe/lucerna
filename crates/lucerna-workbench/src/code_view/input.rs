@@ -154,16 +154,13 @@ impl CodeView {
             marked.push(start..start + text.len());
             shift += text.len() as isize - range.len() as isize;
         }
-        let plan = EditPlan {
-            edits: ranges.into_iter().map(|r| (r, text.clone())).collect(),
-            selections: SelectionSet::from_selections(selections, primary, false),
-            // Typing: one step with the typing around it, and no stop
-            // inside a composition (`should_stop_between` is false).
-            kind: EditKind::TypingOther,
-            stop_before: false,
-            stop_after: false,
-            autoclose: Vec::new(),
-        };
+        // Typing: one step with the typing around it, and no stop inside a
+        // composition (`should_stop_between` is false).
+        let plan = EditPlan::new(
+            ranges.into_iter().map(|r| (r, text.clone())).collect(),
+            SelectionSet::from_selections(selections, primary, false),
+            EditKind::TypingOther,
+        );
         (plan, marked)
     }
 }
