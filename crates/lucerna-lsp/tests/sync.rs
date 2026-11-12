@@ -10,7 +10,7 @@ use lsp_types::{
 use lucerna_lsp::sync::{DocumentSync, WatchedFiles, too_large_for_lsp};
 use lucerna_lsp::test_support::FakeServer;
 use lucerna_lsp::{LanguageServer, ServerKey, initialize_params};
-use lucerna_text::{Buffer, BufferSnapshot};
+use lucerna_text::{Buffer, BufferSnapshot, Patch, PatchEdit};
 use serde_json::{Value, json};
 
 fn snap(text: &str) -> BufferSnapshot {
@@ -89,8 +89,8 @@ fn change_bumps_version_full_and_incremental() {
     let mut sync = DocumentSync::default();
     let path = Path::new(FILE);
     sync.open(path, "rust", &snap("one\n"), &full_servers);
-    sync.change(path, &snap("two\n"), &full_servers);
-    sync.change(path, &snap("three\n"), &full_servers);
+    sync.change(path, &snap("two\n"), None, &full_servers);
+    sync.change(path, &snap("three\n"), None, &full_servers);
     assert_eq!(sync.version(path, &full_servers[0].0), Some(2));
     let got = notes(&full);
     assert_eq!(got[1].0, "textDocument/didChange");
@@ -110,7 +110,7 @@ fn change_bumps_version_full_and_incremental() {
     let inc_servers = started(&inc);
     let mut sync = DocumentSync::default();
     sync.open(path, "rust", &snap("ab\nc😀"), &inc_servers);
-    sync.change(path, &snap("new text"), &inc_servers);
+    sync.change(path, &snap("new text"), None, &inc_servers);
     let got = notes(&inc);
     assert_eq!(
         got[1].1["contentChanges"],
@@ -123,7 +123,7 @@ fn change_bumps_version_full_and_incremental() {
         }])
     );
     // The next change is relative to the previously sent snapshot.
-    sync.change(path, &snap("x"), &inc_servers);
+    sync.change(path, &snap("x"), None, &inc_servers);
     let got = notes(&inc);
     assert_eq!(
         got[2].1["contentChanges"][0]["range"]["end"],
@@ -140,7 +140,7 @@ fn change_bumps_version_full_and_incremental() {
     let servers = started(&opts);
     let mut sync = DocumentSync::default();
     sync.open(path, "rust", &snap("a"), &servers);
-    sync.change(path, &snap("b"), &servers);
+    sync.change(path, &snap("b"), None, &servers);
     assert!(notes(&opts)[1].1["contentChanges"][0]["range"].is_object());
 
     // Close sends didClose once and forgets the file.
@@ -153,7 +153,7 @@ fn change_bumps_version_full_and_incremental() {
     assert_eq!(closes, 1);
     assert_eq!(sync.version(path, &servers[0].0), None);
     // Changes to a closed file are ignored.
-    sync.change(path, &snap("c"), &servers);
+    sync.change(path, &snap("c"), None, &servers);
     assert_eq!(notes(&opts).len(), 3);
 }
 
@@ -166,7 +166,7 @@ fn none_sync_sends_nothing() {
     let mut sync = DocumentSync::default();
     let path = Path::new(FILE);
     sync.open(path, "rust", &snap("a"), &servers);
-    sync.change(path, &snap("b"), &servers);
+    sync.change(path, &snap("b"), None, &servers);
     let got = notes(&fake);
     assert_eq!(got.len(), 1, "only didOpen: {got:?}");
     assert_eq!(sync.version(path, &servers[0].0), Some(0));
@@ -318,4 +318,96 @@ fn watched_event_reported_once_across_overlapping_watchers() {
     );
     let events = watched.events_for(&[(PathBuf::from("/proj/src/a.rs"), FileChangeType::CHANGED)]);
     assert_eq!(events[&k].len(), 1);
+}
+
+fn save_caps(save: Option<lsp_types::TextDocumentSyncSaveOptions>) -> ServerCapabilities {
+    sync_caps(TextDocumentSyncCapability::Options(
+        TextDocumentSyncOptions {
+            change: Some(TextDocumentSyncKind::INCREMENTAL),
+            save,
+            ..Default::default()
+        },
+    ))
+}
+
+#[test]
+fn incremental_change_ranges_utf16() {
+    let fake = FakeServer::new().capabilities(save_caps(None));
+    let servers = started(&fake);
+    let mut sync = DocumentSync::default();
+    let path = Path::new(FILE);
+    // "aé\nb": é is 2 bytes (offsets 1..3), the newline is at 3, b at 4.
+    sync.open(path, "rust", &snap("aé\nb"), &servers);
+    let patch = Patch::new(vec![
+        PatchEdit {
+            old: 3..3,
+            new: 3..4,
+        },
+        PatchEdit {
+            old: 4..5,
+            new: 5..5,
+        },
+    ]);
+    sync.change(path, &snap("aéX\n"), Some(&patch), &servers);
+    let got = notes(&fake);
+    assert_eq!(got[1].1["textDocument"]["version"], 1);
+    assert_eq!(
+        got[1].1["contentChanges"],
+        json!([
+            { "range": { "start": { "line": 1, "character": 0 },
+                         "end": { "line": 1, "character": 1 } }, "text": "" },
+            { "range": { "start": { "line": 0, "character": 2 },
+                         "end": { "line": 0, "character": 2 } }, "text": "X" },
+        ])
+    );
+}
+
+#[test]
+fn full_server_gets_full_text() {
+    let fake = FakeServer::new();
+    let servers = started(&fake);
+    let mut sync = DocumentSync::default();
+    let path = Path::new(FILE);
+    sync.open(path, "rust", &snap("ab"), &servers);
+    let patch = Patch::new(vec![PatchEdit {
+        old: 1..1,
+        new: 1..2,
+    }]);
+    sync.change(path, &snap("aXb"), Some(&patch), &servers);
+    assert_eq!(
+        notes(&fake)[1].1["contentChanges"],
+        json!([{ "text": "aXb" }])
+    );
+}
+
+#[test]
+fn did_save_respects_include_text() {
+    use lsp_types::{SaveOptions, TextDocumentSyncSaveOptions as Save};
+    let path = Path::new(FILE);
+    let saved = |save: Option<Save>| {
+        let fake = FakeServer::new().capabilities(save_caps(save));
+        let servers = started(&fake);
+        let mut sync = DocumentSync::default();
+        sync.open(path, "rust", &snap("a"), &servers);
+        sync.did_save(path, &snap("b"), &servers);
+        notes(&fake)
+            .into_iter()
+            .filter(|(m, _)| m == "textDocument/didSave")
+            .map(|(_, p)| p)
+            .collect::<Vec<_>>()
+    };
+    assert!(saved(None).is_empty());
+    assert!(saved(Some(Save::Supported(false))).is_empty());
+    let got = saved(Some(Save::Supported(true)));
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0]["textDocument"]["uri"], "file:///proj/a.rs");
+    assert!(got[0].get("text").is_none());
+    let got = saved(Some(Save::SaveOptions(SaveOptions {
+        include_text: Some(true),
+    })));
+    assert_eq!(got[0]["text"], "b");
+    let got = saved(Some(Save::SaveOptions(SaveOptions {
+        include_text: Some(false),
+    })));
+    assert!(got[0].get("text").is_none());
 }

@@ -57,7 +57,10 @@ fn client_capabilities() -> ClientCapabilities {
             ..Default::default()
         }),
         text_document: Some(TextDocumentClientCapabilities {
-            synchronization: Some(TextDocumentSyncClientCapabilities::default()),
+            synchronization: Some(TextDocumentSyncClientCapabilities {
+                did_save: Some(true),
+                ..Default::default()
+            }),
             definition: goto(),
             type_definition: goto(),
             implementation: goto(),

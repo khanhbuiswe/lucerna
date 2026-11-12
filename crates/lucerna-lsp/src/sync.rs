@@ -6,14 +6,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use globset::{Glob, GlobBuilder, GlobMatcher};
-use lsp_types::notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument};
+use lsp_types::notification::{
+    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
+};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    FileChangeType, FileEvent, FileSystemWatcher, GlobPattern, OneOf,
+    DidSaveTextDocumentParams, FileChangeType, FileEvent, FileSystemWatcher, GlobPattern, OneOf,
     TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-    TextDocumentSyncCapability, TextDocumentSyncKind, VersionedTextDocumentIdentifier, WatchKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions,
+    VersionedTextDocumentIdentifier, WatchKind,
 };
-use lucerna_text::BufferSnapshot;
+use lucerna_text::{BufferSnapshot, Patch};
 
 use crate::client::LanguageServer;
 use crate::position::{PositionEncoding, path_to_uri, to_lsp, uri_to_path};
@@ -46,6 +49,22 @@ fn sync_kind(server: &LanguageServer) -> TextDocumentSyncKind {
             options.change.unwrap_or(TextDocumentSyncKind::NONE)
         }
         None => TextDocumentSyncKind::NONE,
+    }
+}
+
+/// `None` when the server does not want `didSave`, else whether it wants
+/// the text with it.
+fn save_options(server: &LanguageServer) -> Option<bool> {
+    let caps = server.capabilities()?;
+    let Some(TextDocumentSyncCapability::Options(options)) = &caps.text_document_sync else {
+        return None;
+    };
+    match options.save.as_ref()? {
+        TextDocumentSyncSaveOptions::Supported(false) => None,
+        TextDocumentSyncSaveOptions::Supported(true) => Some(false),
+        TextDocumentSyncSaveOptions::SaveOptions(options) => {
+            Some(options.include_text == Some(true))
+        }
     }
 }
 
@@ -91,22 +110,51 @@ impl DocumentSync {
     }
 
     /// `didChange` for servers that have the file open and want changes.
-    /// Incremental servers get one change replacing the whole old text.
-    pub fn change(&mut self, path: &Path, snapshot: &BufferSnapshot, servers: Servers<'_>) {
+    /// With a `patch` and an incremental server, one event per edit, last to
+    /// first: later edits do not shift earlier positions, so each range is
+    /// computed against the old snapshot and is exact for the server at that
+    /// moment. Without a patch an incremental server gets one event
+    /// replacing the whole old text.
+    pub fn change(
+        &mut self,
+        path: &Path,
+        snapshot: &BufferSnapshot,
+        patch: Option<&Patch>,
+        servers: Servers<'_>,
+    ) {
         for (key, server) in servers {
             let Some(doc) = self.docs.get_mut(&(path.to_path_buf(), key.clone())) else {
                 continue;
             };
-            let change = match sync_kind(server) {
-                TextDocumentSyncKind::FULL => TextDocumentContentChangeEvent {
+            let changes = match sync_kind(server) {
+                TextDocumentSyncKind::FULL => vec![TextDocumentContentChangeEvent {
                     range: None,
                     range_length: None,
                     text: whole_text(snapshot),
-                },
-                TextDocumentSyncKind::INCREMENTAL => TextDocumentContentChangeEvent {
-                    range: Some(full_range(&doc.snapshot, server.encoding())),
-                    range_length: None,
-                    text: whole_text(snapshot),
+                }],
+                TextDocumentSyncKind::INCREMENTAL => match patch {
+                    Some(patch) => {
+                        let enc = server.encoding();
+                        let old = &doc.snapshot;
+                        patch
+                            .edits()
+                            .iter()
+                            .rev()
+                            .map(|edit| TextDocumentContentChangeEvent {
+                                range: Some(lsp_types::Range::new(
+                                    to_lsp(old, old.offset_to_point(edit.old.start), enc),
+                                    to_lsp(old, old.offset_to_point(edit.old.end), enc),
+                                )),
+                                range_length: None,
+                                text: snapshot.text_for_range(edit.new.clone()),
+                            })
+                            .collect()
+                    }
+                    None => vec![TextDocumentContentChangeEvent {
+                        range: Some(full_range(&doc.snapshot, server.encoding())),
+                        range_length: None,
+                        text: whole_text(snapshot),
+                    }],
                 },
                 _ => continue,
             };
@@ -117,7 +165,26 @@ impl DocumentSync {
                     uri: path_to_uri(path),
                     version: doc.version,
                 },
-                content_changes: vec![change],
+                content_changes: changes,
+            });
+        }
+    }
+
+    /// `didSave` for servers that have the file open and asked for it; the
+    /// text is included only when the server wants it.
+    pub fn did_save(&mut self, path: &Path, snapshot: &BufferSnapshot, servers: Servers<'_>) {
+        for (key, server) in servers {
+            if !self.docs.contains_key(&(path.to_path_buf(), key.clone())) {
+                continue;
+            }
+            let Some(include_text) = save_options(server) else {
+                continue;
+            };
+            server.notify::<DidSaveTextDocument>(DidSaveTextDocumentParams {
+                text_document: TextDocumentIdentifier {
+                    uri: path_to_uri(path),
+                },
+                text: include_text.then(|| whole_text(snapshot)),
             });
         }
     }

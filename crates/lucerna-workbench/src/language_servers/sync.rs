@@ -126,7 +126,7 @@ impl LanguageServers {
                 } else {
                     let servers = self.running_for(path);
                     if !servers.is_empty() {
-                        self.sync.change(path, snapshot, &servers);
+                        self.sync.change(path, snapshot, None, &servers);
                         cx.emit(LanguageServersEvent::DocumentChanged(path.clone()));
                     }
                 }

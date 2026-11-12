@@ -159,7 +159,7 @@ fn initialize_params_lists_read_only_capabilities() {
         json!([1, 2])
     );
     assert_eq!(td["synchronization"].get("willSave"), None);
-    assert_eq!(td["synchronization"].get("didSave"), None);
+    assert_eq!(td["synchronization"]["didSave"], true);
     let ws = &params["capabilities"]["workspace"];
     assert_eq!(ws["configuration"], true);
     assert_eq!(ws["workspaceFolders"], true);
