@@ -178,30 +178,50 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             }
         },
     );
-    // Selection arrives with the mouse handling (Task 10); until then
-    // there is never a selection, so these do nothing.
+    // ⌘C runs only with a selection (`terminalTextSelected`); run another
+    // way without one, it does nothing. The selection stays (spec §6.5).
     commands.register(
         "workbench.action.terminal.copySelection",
         "Terminal: Copy Selection",
-        |_, _, _, _| {},
+        |wb, _, _, cx| {
+            if let Some(view) = wb.active_terminal_view(cx) {
+                view.update(cx, |view, cx| {
+                    view.copy_selection(cx);
+                });
+            }
+        },
     );
     commands.register(
         "workbench.action.terminal.selectAll",
         "Terminal: Select All",
-        |_, _, _, _| {},
+        |wb, _, _, cx| {
+            if let Some(view) = wb.active_terminal_view(cx) {
+                view.update(cx, |view, cx| {
+                    view.terminal().select_all();
+                    cx.notify();
+                });
+            }
+        },
     );
     commands.register(
         "workbench.action.terminal.clearSelection",
         "Terminal: Clear Selection",
-        |_, _, _, _| {},
+        |wb, _, _, cx| {
+            if let Some(view) = wb.active_terminal_view(cx) {
+                view.update(cx, |view, cx| {
+                    view.terminal().clear_selection();
+                    cx.notify();
+                });
+            }
+        },
     );
+    // A paste of several lines may ask first (`enableMultiLinePasteWarning`).
     commands.register(
         "workbench.action.terminal.paste",
         "Terminal: Paste into Active Terminal",
         |wb, _, _, cx| {
-            let text = cx.read_from_clipboard().and_then(|item| item.text());
-            if let (Some(view), Some(text)) = (wb.active_terminal_view(cx), text) {
-                view.update(cx, |view, cx| view.paste_text(&text, cx));
+            if let Some(view) = wb.active_terminal_view(cx) {
+                view.update(cx, |view, cx| view.paste_from_clipboard(cx));
             }
         },
     );

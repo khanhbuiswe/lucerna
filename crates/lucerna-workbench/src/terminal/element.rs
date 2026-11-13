@@ -6,10 +6,11 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, ElementInputHandler, Entity, Font, FontFeatures,
-    FontStyle, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point,
-    Rgba, ShapedLine, SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle,
-    Window, fill, outline, point, px, relative, size,
+    App, Bounds, ContentMask, DispatchPhase, Element, ElementId, ElementInputHandler, Entity, Font,
+    FontFeatures, FontStyle, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba,
+    ScrollEvent, ShapedLine, SharedString, StrikethroughStyle, Style, TextAlign, TextRun,
+    UnderlineStyle, Window, fill, outline, point, px, relative, size,
 };
 use lucerna_terminal::{
     CellFlags, CursorShape, LineLayout, Rgba8, Snapshot, TerminalPalette, Underline, layout_line,
@@ -67,9 +68,56 @@ struct CursorPaint {
     glyph: Option<(Point<Pixels>, ShapedLine)>,
 }
 
+/// Where the grid's cells sit in the window. Painting and mouse hit
+/// testing both use it, so a click lands on the cell drawn under it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CellGeometry {
+    /// Top-left of cell (0, 0): one cell in from the left edge, and below
+    /// the leftover height while following the output.
+    pub origin: Point<Pixels>,
+    pub cell_w: Pixels,
+    pub cell_h: Pixels,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+impl CellGeometry {
+    /// `cols` cells of screen row `row` from column `col`.
+    pub fn cells(&self, row: u16, col: u16, cols: u16) -> Bounds<Pixels> {
+        Bounds::new(
+            point(
+                self.origin.x + self.cell_w * col as f32,
+                self.origin.y + self.cell_h * row as f32,
+            ),
+            size(self.cell_w * cols as f32, self.cell_h),
+        )
+    }
+
+    /// The screen cell under `pos`, clamped to the grid, and whether `pos`
+    /// is on its right half (where a selection ends after the cell).
+    pub fn cell_at(&self, pos: Point<Pixels>) -> (u16, u16, bool) {
+        let x = f32::from(pos.x - self.origin.x) / f32::from(self.cell_w);
+        let y = f32::from(pos.y - self.origin.y) / f32::from(self.cell_h);
+        let last_col = self.cols.saturating_sub(1) as f32;
+        let last_row = self.rows.saturating_sub(1) as f32;
+        let col = x.floor().clamp(0., last_col);
+        let row = y.floor().clamp(0., last_row);
+        let right = if x < 0. {
+            false
+        } else if x >= last_col + 1. {
+            true
+        } else {
+            x - col >= 0.5
+        };
+        (row as u16, col as u16, right)
+    }
+}
+
 /// What prepaint laid out and paint draws.
 pub(crate) struct Frame {
     bounds: Bounds<Pixels>,
+    pub(super) geometry: CellGeometry,
+    hitbox: Hitbox,
     line_height: Pixels,
     pub(super) background: Rgba,
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
@@ -110,6 +158,10 @@ impl Frame {
                 .sum::<usize>();
         }
         out
+    }
+
+    pub(super) fn selection_rect_count(&self) -> usize {
+        self.selection.len()
     }
 
     pub(super) fn cursor_selector(&self) -> Option<&'static str> {
@@ -322,15 +374,14 @@ impl TerminalView {
             bounds.top()
         };
         let origin = point(snap(bounds.left() + cell_w, scale), snap(top, scale));
-        let cell = |row: u16, col: u16, cols: u16| {
-            Bounds::new(
-                point(
-                    origin.x + cell_w * col as f32,
-                    origin.y + cell_h * row as f32,
-                ),
-                size(cell_w * cols as f32, cell_h),
-            )
+        let geometry = CellGeometry {
+            origin,
+            cell_w,
+            cell_h,
+            rows: snapshot.rows,
+            cols: snapshot.cols,
         };
+        let cell = |row: u16, col: u16, cols: u16| geometry.cells(row, col, cols);
 
         let shaper = Shaper {
             font: &font,
@@ -375,8 +426,11 @@ impl TerminalView {
             .as_deref()
             .zip(cursor_cell)
             .map(|(text, at)| marked_paint(text, at, &shaper, &palette, window));
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let frame = Rc::new(Frame {
             bounds,
+            geometry,
+            hitbox,
             line_height: cell_h,
             background: rgba(palette.background),
             backgrounds,
@@ -589,6 +643,7 @@ impl Element for TerminalElement {
             view.frames_drawn += 1;
             view.input_handler_installed = focused;
         });
+        register_mouse(&self.view, frame, window);
         let frame = &**frame;
         let lh = frame.line_height;
         window.paint_quad(fill(frame.bounds, Hsla::from(frame.background)));
@@ -635,9 +690,88 @@ impl Element for TerminalElement {
     }
 }
 
+/// Mouse listeners for this frame: presses and the wheel only over the
+/// grid, drags and releases wherever the mouse goes once a press began
+/// here.
+fn register_mouse(view: &Entity<TerminalView>, frame: &Rc<Frame>, window: &mut Window) {
+    let hitbox = frame.hitbox.clone();
+    window.on_mouse_event({
+        let (view, hitbox) = (view.clone(), hitbox.clone());
+        move |ev: &MouseDownEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
+                view.update(cx, |v, cx| v.mouse_down(ev, window, cx));
+                cx.stop_propagation();
+            }
+        }
+    });
+    window.on_mouse_event({
+        let (view, hitbox) = (view.clone(), hitbox.clone());
+        move |ev: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let pressed = view.read(cx).mouse_pressed();
+            if pressed || hitbox.is_hovered(window) {
+                view.update(cx, |v, cx| v.mouse_move(ev, cx));
+            }
+        }
+    });
+    window.on_mouse_event({
+        let view = view.clone();
+        move |ev: &MouseUpEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble && view.read(cx).mouse_pressed() {
+                view.update(cx, |v, cx| v.mouse_up(ev, cx));
+            }
+        }
+    });
+    window.on_mouse_event({
+        let view = view.clone();
+        move |ev: &ScrollEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
+                view.update(cx, |v, cx| v.scroll_wheel(ev, cx));
+                cx.stop_propagation();
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn geometry() -> CellGeometry {
+        CellGeometry {
+            origin: point(px(10.), px(4.)),
+            cell_w: px(10.),
+            cell_h: px(20.),
+            rows: 3,
+            cols: 5,
+        }
+    }
+
+    #[test]
+    fn cell_at_maps_pixels_to_cells_and_sides() {
+        let g = geometry();
+        assert_eq!(g.cell_at(point(px(12.), px(5.))), (0, 0, false));
+        assert_eq!(g.cell_at(point(px(18.), px(5.))), (0, 0, true));
+        assert_eq!(g.cell_at(point(px(31.), px(45.))), (2, 2, false));
+        // Outside the grid: clamped, past the right edge ends after it.
+        assert_eq!(g.cell_at(point(px(0.), px(-30.))), (0, 0, false));
+        assert_eq!(g.cell_at(point(px(500.), px(500.))), (2, 4, true));
+    }
+
+    #[test]
+    fn cells_and_cell_at_agree() {
+        let g = geometry();
+        let b = g.cells(1, 3, 1);
+        assert_eq!(g.cell_at(b.origin + point(px(1.), px(1.))), (1, 3, false));
+        assert_eq!(
+            g.cell_at(b.center()),
+            (1, 3, true),
+            "half way is the right side"
+        );
+        assert_eq!(b.size, size(px(10.), px(20.)));
+    }
 
     fn b(w: f32, h: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(0.), px(0.)), size(px(w), px(h)))

@@ -3,6 +3,7 @@
 
 pub(crate) mod commands;
 pub(crate) mod element;
+pub(crate) mod mouse;
 pub(crate) mod panel;
 pub(crate) mod settings;
 pub(crate) mod view;

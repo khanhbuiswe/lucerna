@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg, State};
 use alacritty_terminal::grid::{Dimensions, Scroll as AlacScroll};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use alacritty_terminal::tty;
@@ -29,6 +31,9 @@ pub struct Terminal {
     /// UI operations applied under the lock `snapshot` takes anyway.
     pending: Mutex<Vec<Op>>,
     child: Option<Child>,
+    /// `scrolling_history` given at start, kept to rebuild alacritty's
+    /// config when the word separators change.
+    scrollback: usize,
     #[cfg(feature = "test-support")]
     parser: Mutex<alacritty_terminal::vte::ansi::Processor>,
     /// A fake terminal's event channel: `feed` sends a `Wakeup` on it.
@@ -37,10 +42,43 @@ pub struct Terminal {
 }
 
 enum Op {
-    Resize { rows: u16, cols: u16 },
+    Resize {
+        rows: u16,
+        cols: u16,
+    },
     Scroll(Scroll),
     Clear,
+    SelectStart {
+        row: u16,
+        col: u16,
+        side_right: bool,
+        kind: SelectKind,
+    },
+    SelectUpdate {
+        row: u16,
+        col: u16,
+        side_right: bool,
+    },
+    SelectAll,
+    ClearSelection,
+    WordSeparators(String),
 }
+
+/// How a selection grows from where it starts (spec §6.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectKind {
+    /// A drag: from the press to the mouse, cell by cell.
+    Simple,
+    /// A double click: whole words, split at the word separators.
+    Word,
+    /// A triple click: whole logical lines, wrapped rows included.
+    Line,
+    /// An ⌥ drag: a rectangle of columns.
+    Block,
+}
+
+/// VS Code's `terminal.integrated.wordSeparators` default.
+pub const DEFAULT_WORD_SEPARATORS: &str = " ()[]{}',\"`─‘’“”|";
 
 struct Child {
     /// Unknown only if Windows could not report it.
@@ -190,11 +228,7 @@ fn new_term(
         pty_open: Mutex::new(true),
         exit_code: Mutex::new(None),
     });
-    let config = Config {
-        scrolling_history: scrollback.min(MAX_SCROLLBACK),
-        osc52: Osc52::OnlyCopy,
-        ..Config::default()
-    };
+    let config = term_config(scrollback, DEFAULT_WORD_SEPARATORS);
     let grid = GridSize {
         rows: size.num_lines as usize,
         cols: size.num_cols as usize,
@@ -205,6 +239,15 @@ fn new_term(
     };
     let term = Arc::new(FairMutex::new(Term::new(config, &grid, listener)));
     (term, shared)
+}
+
+fn term_config(scrollback: usize, word_separators: &str) -> Config {
+    Config {
+        scrolling_history: scrollback.min(MAX_SCROLLBACK),
+        osc52: Osc52::OnlyCopy,
+        semantic_escape_chars: word_separators.to_string(),
+        ..Config::default()
+    }
 }
 
 /// The command line to run. Unix removes variables with `env -u`, because
@@ -282,6 +325,7 @@ impl Terminal {
                 #[cfg(unix)]
                 fd,
             }),
+            scrollback: opts.scrollback,
             #[cfg(feature = "test-support")]
             parser: Mutex::default(),
             #[cfg(feature = "test-support")]
@@ -314,6 +358,7 @@ impl Terminal {
             shared,
             pending: Mutex::new(Vec::new()),
             child: None,
+            scrollback,
             parser: Mutex::default(),
             fake_events: Some(tx),
         };
@@ -409,11 +454,60 @@ impl Terminal {
 
     /// Whether some text is selected.
     pub fn has_selection(&self) -> bool {
-        self.term
-            .lock()
-            .selection
-            .as_ref()
-            .is_some_and(|s| !s.is_empty())
+        let mut term = self.term.lock();
+        self.apply_pending(&mut term);
+        term.selection.as_ref().is_some_and(|s| !s.is_empty())
+    }
+
+    /// Starts a new selection at screen cell `row`/`col`, replacing any
+    /// other; `side_right` when the mouse is on the cell's right half. A
+    /// `Simple` or `Block` one stays empty until [`Terminal::select_update`].
+    pub fn select_start(&self, row: u16, col: u16, side_right: bool, kind: SelectKind) {
+        lock(&self.pending).push(Op::SelectStart {
+            row,
+            col,
+            side_right,
+            kind,
+        });
+    }
+
+    /// Moves the selection's moving end to screen cell `row`/`col`.
+    pub fn select_update(&self, row: u16, col: u16, side_right: bool) {
+        lock(&self.pending).push(Op::SelectUpdate {
+            row,
+            col,
+            side_right,
+        });
+    }
+
+    /// Selects the scrollback and the screen.
+    pub fn select_all(&self) {
+        lock(&self.pending).push(Op::SelectAll);
+    }
+
+    pub fn clear_selection(&self) {
+        lock(&self.pending).push(Op::ClearSelection);
+    }
+
+    /// The selected text, rows joined with `\n` (wrapped rows joined
+    /// without one); `None` when nothing is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        let mut term = self.term.lock();
+        self.apply_pending(&mut term);
+        let selection = term.selection.as_ref().filter(|s| !s.is_empty())?;
+        let lines = selection.ty == SelectionType::Lines;
+        let mut text = term.selection_to_string()?;
+        // A line selection copies like VS Code's: no newline after the last.
+        if lines && text.ends_with('\n') {
+            text.pop();
+        }
+        Some(text)
+    }
+
+    /// The characters a word selection stops at
+    /// (`terminal.integrated.wordSeparators`).
+    pub fn set_word_separators(&self, seps: &str) {
+        lock(&self.pending).push(Op::WordSeparators(seps.to_string()));
     }
 
     /// Copies the visible screen under one short lock, applying queued UI
@@ -452,9 +546,61 @@ impl Terminal {
                     Scroll::Bottom => AlacScroll::Bottom,
                 }),
                 Op::Clear => clear_keeping_cursor_line(term),
+                Op::SelectStart {
+                    row,
+                    col,
+                    side_right,
+                    kind,
+                } => {
+                    let ty = match kind {
+                        SelectKind::Simple => SelectionType::Simple,
+                        SelectKind::Word => SelectionType::Semantic,
+                        SelectKind::Line => SelectionType::Lines,
+                        SelectKind::Block => SelectionType::Block,
+                    };
+                    let point = screen_point(term, row, col);
+                    term.selection = Some(Selection::new(ty, point, side(side_right)));
+                }
+                Op::SelectUpdate {
+                    row,
+                    col,
+                    side_right,
+                } => {
+                    let point = screen_point(term, row, col);
+                    if let Some(selection) = term.selection.as_mut() {
+                        selection.update(point, side(side_right));
+                    }
+                }
+                Op::SelectAll => {
+                    let start = Point::new(term.topmost_line(), Column(0));
+                    let end = Point::new(term.bottommost_line(), term.last_column());
+                    let mut selection = Selection::new(SelectionType::Simple, start, Side::Left);
+                    selection.update(end, Side::Right);
+                    term.selection = Some(selection);
+                }
+                Op::ClearSelection => term.selection = None,
+                Op::WordSeparators(seps) => {
+                    if term.semantic_escape_chars() != seps {
+                        term.set_options(term_config(self.scrollback, &seps));
+                    }
+                }
             }
         }
     }
+}
+
+fn side(right: bool) -> Side {
+    if right { Side::Right } else { Side::Left }
+}
+
+/// The buffer point under screen cell `row`/`col` at the current scroll
+/// position, clamped to the screen.
+fn screen_point(term: &Term<Listener>, row: u16, col: u16) -> Point {
+    let rows = term.screen_lines().max(1) as i32;
+    let cols = term.columns().max(1);
+    let row = (row as i32).min(rows - 1);
+    let line = row - term.grid().display_offset() as i32;
+    Point::new(Line(line), Column((col as usize).min(cols - 1)))
 }
 
 fn clear_keeping_cursor_line(term: &mut Term<Listener>) {

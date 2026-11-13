@@ -139,6 +139,94 @@ pub(crate) fn palette(cx: &App) -> TerminalPalette {
     }
 }
 
+/// What a right click does (`terminal.integrated.rightClickBehavior`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RightClick {
+    /// Selects the word under the mouse. `default` (a context menu in VS
+    /// Code) acts like this until Lucerna has one.
+    SelectWord,
+    /// Copies the selection and clears it, or pastes when there is none.
+    CopyPaste,
+    Paste,
+    Nothing,
+}
+
+/// When a paste of several lines asks first
+/// (`terminal.integrated.enableMultiLinePasteWarning`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasteWarning {
+    /// Unless the app turned on bracketed paste.
+    Auto,
+    Always,
+    Never,
+}
+
+/// The mouse and clipboard settings of spec §6.5, with VS Code's defaults.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MouseSettings {
+    pub word_separators: String,
+    pub copy_on_selection: bool,
+    pub right_click: RightClick,
+    pub option_click_forces_selection: bool,
+    pub wheel_sensitivity: f32,
+    pub fast_scroll_sensitivity: f32,
+    pub paste_warning: PasteWarning,
+}
+
+pub(crate) fn mouse_settings(cx: &App) -> MouseSettings {
+    let settings = &cx.global::<AppState>().settings;
+    let key = |name: &str| format!("terminal.integrated.{name}");
+    let sensitivity = |name: &str, default: f32| {
+        settings
+            .get::<f32>(&key(name), None)
+            .filter(|v| v.is_finite() && *v > 0.)
+            .unwrap_or(default)
+    };
+    let right_click = match settings
+        .get::<String>(&key("rightClickBehavior"), None)
+        .as_deref()
+    {
+        Some("copyPaste") => RightClick::CopyPaste,
+        Some("paste") => RightClick::Paste,
+        Some("nothing") => RightClick::Nothing,
+        Some("selectWord" | "default") => RightClick::SelectWord,
+        _ => default_right_click(),
+    };
+    let paste_warning =
+        match settings.get::<serde_json::Value>(&key("enableMultiLinePasteWarning"), None) {
+            Some(serde_json::Value::String(s)) if s == "always" => PasteWarning::Always,
+            Some(serde_json::Value::String(s)) if s == "never" => PasteWarning::Never,
+            // The old boolean form, as VS Code migrates it.
+            Some(serde_json::Value::Bool(false)) => PasteWarning::Never,
+            _ => PasteWarning::Auto,
+        };
+    MouseSettings {
+        word_separators: settings
+            .get::<String>(&key("wordSeparators"), None)
+            .unwrap_or_else(|| lucerna_terminal::DEFAULT_WORD_SEPARATORS.to_string()),
+        copy_on_selection: settings
+            .get::<bool>(&key("copyOnSelection"), None)
+            .unwrap_or(false),
+        right_click,
+        option_click_forces_selection: settings
+            .get::<bool>(&key("macOptionClickForcesSelection"), None)
+            .unwrap_or(false),
+        wheel_sensitivity: sensitivity("mouseWheelScrollSensitivity", 1.),
+        fast_scroll_sensitivity: sensitivity("fastScrollSensitivity", 5.),
+        paste_warning,
+    }
+}
+
+/// VS Code's per-platform `rightClickBehavior` default: `selectWord` on
+/// macOS, `copyPaste` on Windows, `default` (a word, here) elsewhere.
+fn default_right_click() -> RightClick {
+    if cfg!(target_os = "windows") {
+        RightClick::CopyPaste
+    } else {
+        RightClick::SelectWord
+    }
+}
+
 /// How a new terminal in `cwd` starts: the `$SHELL` (a login shell on
 /// macOS), Lucerna's environment plus the terminal variables.
 ///

@@ -19,7 +19,9 @@ use gpui::{
 use lucerna_terminal::{Batch, Scroll, Terminal, TerminalEvent, TerminalOptions, TitleState};
 
 use super::element::{Frame, TerminalElement};
+use super::mouse::MouseState;
 use super::settings::spawn_options;
+use crate::ui;
 
 /// How long events are gathered after the first one before the view
 /// handles them together (spec §5.1).
@@ -74,7 +76,7 @@ pub enum TerminalViewEvent {
 }
 
 pub struct TerminalView {
-    terminal: Terminal,
+    pub(super) terminal: Terminal,
     pub(super) focus: FocusHandle,
     title_state: TitleState,
     /// Bells rung since the view was made; Task 12 acts on them.
@@ -94,6 +96,9 @@ pub struct TerminalView {
     /// The last paint gave the window this view's input handler, so typed
     /// text arrives through it rather than as key-downs.
     pub(super) input_handler_installed: bool,
+    pub(super) mouse: MouseState,
+    /// A paste of several lines waiting for the user to confirm it.
+    pub(super) pending_paste: Option<String>,
     _events: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -125,6 +130,8 @@ impl TerminalView {
             palette: None,
             marked: None,
             input_handler_installed: false,
+            mouse: MouseState::default(),
+            pending_paste: None,
             _events: Self::pump_events(events, cx),
             _subscriptions: subscriptions,
         }
@@ -187,8 +194,10 @@ impl TerminalView {
                     self.exited = Some(code);
                     redraw = true;
                 }
-                // OSC 52 writes reach the clipboard with the copy commands.
-                TerminalEvent::ClipboardStore(_) => {}
+                // OSC 52 writes (reads are refused in the terminal crate).
+                TerminalEvent::ClipboardStore(text) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
             }
         }
         if redraw {
@@ -294,6 +303,20 @@ impl TerminalView {
         self.last_frame.as_ref()?.cursor_selector()
     }
 
+    /// Where screen cell `row`/`col` was drawn in the last frame.
+    #[doc(hidden)]
+    pub fn cell_bounds(&self, row: u16, col: u16) -> Option<Bounds<Pixels>> {
+        Some(self.last_frame.as_ref()?.geometry.cells(row, col, 1))
+    }
+
+    /// How many selection rectangles the last frame drew.
+    #[doc(hidden)]
+    pub fn painted_selection_rects(&self) -> usize {
+        self.last_frame
+            .as_ref()
+            .map_or(0, |f| f.selection_rect_count())
+    }
+
     /// The background the last frame was filled with.
     #[doc(hidden)]
     pub fn painted_background(&self) -> Option<gpui::Rgba> {
@@ -371,7 +394,7 @@ impl EntityInputHandler for TerminalView {
 
     fn paste(&mut self, item: ClipboardItem, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = item.text() {
-            self.paste_text(&text, cx);
+            self.request_paste(text, cx);
         }
     }
 
@@ -404,11 +427,63 @@ impl Focusable for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let warning = self
+            .pending_paste
+            .as_deref()
+            .map(|text| paste_warning(text, cx));
         div()
             .id("terminal-view")
             .debug_selector(|| "terminal-view".into())
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .child(TerminalElement::new(cx.entity()))
+            .children(warning)
     }
+}
+
+/// The multi-line paste warning: a small popover at the top right with
+/// the line count and Paste / Cancel.
+fn paste_warning(text: &str, cx: &mut Context<TerminalView>) -> gpui::AnyElement {
+    let lines = text.lines().count().max(1);
+    let ui_colors = &cx.global::<crate::AppState>().theme.ui;
+    let muted = crate::layout::color(ui_colors.text_muted);
+    let card = ui::popover(cx)
+        .debug_selector(|| "terminal-paste-warning".into())
+        .w(gpui::px(280.))
+        .p(gpui::px(3. * ui::GRID))
+        .gap(gpui::px(2. * ui::GRID))
+        .occlude()
+        .child(
+            div()
+                .text_size(gpui::px(ui::UI_FONT_SIZE_SMALL))
+                .child(format!("Paste {lines} lines into the terminal?")),
+        )
+        .child(
+            div()
+                .text_size(gpui::px(ui::UI_FONT_SIZE_SMALL))
+                .text_color(muted)
+                .child("Each line may run as a command."),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap(gpui::px(2. * ui::GRID))
+                .child(
+                    ui::text_button("terminal-paste-cancel", "Cancel", cx)
+                        .on_click(cx.listener(|view, _, _, cx| view.resolve_paste(false, cx))),
+                )
+                .child(
+                    ui::primary_text_button("terminal-paste-confirm", "Paste", cx)
+                        .on_click(cx.listener(|view, _, _, cx| view.resolve_paste(true, cx))),
+                ),
+        );
+    div()
+        .absolute()
+        .top(gpui::px(2. * ui::GRID))
+        .right(gpui::px(2. * ui::GRID))
+        .child(card)
+        .into_any_element()
 }

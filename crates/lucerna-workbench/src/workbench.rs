@@ -2062,6 +2062,13 @@ impl Workbench {
             cx.stop_propagation();
             return;
         };
+        // The multi-line paste warning takes enter and escape, and keeps
+        // other keys from the shell while it shows.
+        let key = ev.keystroke.key.as_str();
+        if view.update(cx, |view, cx| view.paste_warning_key(key, cx)) {
+            cx.stop_propagation();
+            return;
+        }
         let meta = option_is_meta(cx);
         if view.read(cx).input_handler_takes(ev, meta) {
             return;

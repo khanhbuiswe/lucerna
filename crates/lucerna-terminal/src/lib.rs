@@ -26,4 +26,4 @@ pub use snapshot::{
     Cell, CellFlags, CursorShape, CursorState, GridPoint, Modes, NamedColor, Scroll,
     SelectionRange, Snapshot, TermColor,
 };
-pub use terminal::Terminal;
+pub use terminal::{DEFAULT_WORD_SEPARATORS, SelectKind, Terminal};
