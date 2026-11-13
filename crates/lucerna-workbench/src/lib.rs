@@ -45,6 +45,7 @@ mod startup;
 pub mod status_message;
 mod symbols;
 pub mod tasks;
+mod terminal;
 mod text_input;
 mod theme_picker;
 mod trust;
@@ -77,6 +78,7 @@ pub use language_servers::{
     HoverInfo, LanguageServers, LanguageServersEvent, ServerStatus, SlotState,
 };
 pub use layout::StatusBarSide;
+pub use layout::panel::{PanelPosition, PanelState};
 pub use layout::title_bar::window_options;
 pub use locations_picker::{
     EXCERPT_CHARS as LOCATION_EXCERPT_CHARS, LocationsPicker, LocationsPickerEvent,
@@ -99,6 +101,9 @@ pub use symbols::{
     BREADCRUMBS_BATCH, BreadcrumbMode, EMPTY_SYMBOLS_TTL, FilePathMode, MAX_WORKSPACE_SYMBOLS,
     SYMBOLS_DEBOUNCE, Segment, SymbolPathMode, SymbolSource, SymbolState,
     WORKSPACE_SYMBOLS_DEBOUNCE, WorkspaceSymbolItem, breadcrumb_segments,
+};
+pub use terminal::{
+    PanelEvent, TabState, TerminalPanel, TerminalTab, TerminalView, tab_title as terminal_tab_title,
 };
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};

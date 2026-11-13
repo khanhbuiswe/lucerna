@@ -28,6 +28,7 @@ use crate::explorer::ExplorerView;
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
 use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;
+use crate::layout::panel::{self, EDITOR_MIN_SIZE, PanelPosition, PanelSash, PanelState};
 use crate::layout::sidebar::SidebarSash;
 use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
@@ -47,6 +48,7 @@ use crate::search_view::{self, SearchView};
 use crate::symbols::SymbolSource;
 use crate::symbols::breadcrumbs::Breadcrumbs;
 use crate::tasks::try_spawn_guarded;
+use crate::terminal::{PanelEvent, TerminalPanel};
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
 use crate::trust::{self, Trust};
@@ -173,6 +175,10 @@ pub struct Workbench {
     active_view: Option<WeakEntity<CodeView>>,
     sidebar_visible: bool,
     sidebar_width: Pixels,
+    /// Where the bottom / right panel is, its sizes and whether it shows.
+    panel: PanelState,
+    /// The panel's terminals; kept while the panel is hidden.
+    terminal_panel: Entity<TerminalPanel>,
     explorer_view: Option<AnyView>,
     editor_groups: Entity<EditorGroupsView>,
     editor_area: Option<AnyView>,
@@ -446,6 +452,21 @@ impl Workbench {
                 search_view.update(cx, |view, cx| view.run_search(cx));
             }
         }
+        let panel_state = match &restored {
+            Some(state) => state.panel.clone().sanitized(),
+            None => PanelState {
+                position: PanelPosition::from_setting(cx),
+                ..PanelState::default()
+            },
+        };
+        let terminal_panel = cx.new(|cx| {
+            let mut panel = TerminalPanel::new(cx);
+            // A panel shown when the window closed shows a new terminal.
+            if panel_state.visible {
+                panel.add_tab(None, cx);
+            }
+            panel
+        });
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let lone = single_file_path.is_some();
@@ -552,6 +573,8 @@ impl Workbench {
                 .try_global::<ConfigState>()
                 .map_or(0, |state| state.last_changed().0),
             _subscriptions: subscriptions,
+            panel: panel_state,
+            terminal_panel: terminal_panel.clone(),
             commands: Rc::new(commands),
             focus,
             sidebar_focus: cx.focus_handle(),
@@ -610,6 +633,10 @@ impl Workbench {
         if let Some(store) = store {
             workbench.start_persistence(store, restored.as_ref(), cx);
         }
+        workbench._subscriptions.extend([
+            cx.observe(&terminal_panel, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&terminal_panel, window, Self::on_terminal_panel_event),
+        ]);
         let documents = workbench.documents.clone();
         let trust_events = workbench.start_trust(&documents, window, cx);
         workbench._subscriptions.push(trust_events);
@@ -684,6 +711,7 @@ impl Workbench {
             scroll,
             group_widths: groups.group_widths().to_vec(),
             search: self.search_view.read(cx).state(cx),
+            panel: self.panel.clone(),
         };
         if let Some(p) = &mut self.persistence {
             p.scroll_rows = state.scroll.clone();
@@ -1515,6 +1543,143 @@ impl Workbench {
         self.run_command(command, None, window, cx);
     }
 
+    /// Where the panel is, its sizes and whether it shows.
+    pub fn panel_state(&self) -> &PanelState {
+        &self.panel
+    }
+
+    /// The panel's terminals.
+    pub fn terminal_panel(&self) -> &Entity<TerminalPanel> {
+        &self.terminal_panel
+    }
+
+    fn panel_has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.terminal_panel
+            .read(cx)
+            .focus_handle()
+            .contains_focused(window, cx)
+    }
+
+    /// `workbench.action.togglePanel`: hides the shown panel, or shows it.
+    pub fn toggle_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel.visible {
+            self.hide_panel(window, cx);
+        } else {
+            self.show_panel(window, cx);
+        }
+    }
+
+    /// Shows the panel and focuses it, opening a terminal when it has none.
+    pub fn show_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal_panel.read(cx).tab_count() == 0 {
+            self.terminal_panel
+                .update(cx, |panel, cx| panel.add_tab(None, cx));
+        }
+        self.panel.visible = true;
+        let focus = self.terminal_panel.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
+        self.layout_changed(cx);
+        cx.notify();
+    }
+
+    /// Hides the panel, keeping its terminals running. Focus in it goes
+    /// back to the editor area.
+    pub fn hide_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.panel.visible {
+            return;
+        }
+        if self.panel_has_focus(window, cx) {
+            self.focus_editor_area(window, cx);
+        }
+        self.panel.visible = false;
+        self.layout_changed(cx);
+        cx.notify();
+    }
+
+    /// `workbench.action.toggleMaximizedPanel`: the panel takes the editor
+    /// area's place, or goes back to its size. A hidden panel shows
+    /// maximized.
+    pub fn toggle_maximized_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel.visible {
+            self.panel.maximized = !self.panel.maximized;
+            if self.panel.maximized {
+                let focus = self.terminal_panel.read(cx).focus_handle().clone();
+                window.focus(&focus, cx);
+            }
+        } else {
+            self.panel.maximized = true;
+            self.show_panel(window, cx);
+        }
+        self.layout_changed(cx);
+        cx.notify();
+    }
+
+    /// Moves the panel under the editor area or right of it.
+    pub fn set_panel_position(&mut self, position: PanelPosition, cx: &mut Context<Self>) {
+        if self.panel.position != position {
+            self.panel.position = position;
+            self.layout_changed(cx);
+            cx.notify();
+        }
+    }
+
+    /// The ＋ button: a new terminal, shown and focused.
+    pub(crate) fn new_terminal_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal_panel
+            .update(cx, |panel, cx| panel.add_tab(None, cx));
+        self.show_panel(window, cx);
+    }
+
+    fn on_terminal_panel_event(
+        &mut self,
+        _: &Entity<TerminalPanel>,
+        event: &PanelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            PanelEvent::Empty => {
+                let hide = cx
+                    .global::<AppState>()
+                    .settings
+                    .get::<bool>("terminal.integrated.hideOnLastClosed", None)
+                    .unwrap_or(true);
+                if hide {
+                    self.hide_panel(window, cx);
+                }
+            }
+        }
+    }
+
+    /// The sash dragged to `position` in `row`, the bounds of the sidebar,
+    /// editor area and panel together.
+    fn drag_panel_sash(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        row: gpui::Bounds<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        match self.panel.position {
+            PanelPosition::Bottom => {
+                let size = row.bottom() - position.y;
+                self.panel.bottom_height =
+                    panel::clamp_size(PanelPosition::Bottom, size, row.size.height);
+            }
+            PanelPosition::Right => {
+                let sidebar = if self.sidebar_visible {
+                    self.sidebar_width
+                } else {
+                    px(0.)
+                };
+                let size = row.right() - position.x;
+                self.panel.right_width =
+                    panel::clamp_size(PanelPosition::Right, size, row.size.width - sidebar);
+            }
+        }
+        self.layout_changed(cx);
+        cx.notify();
+    }
+
     pub fn focus_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.sidebar_focus, cx);
         cx.notify();
@@ -1849,6 +2014,7 @@ pub(crate) fn quit(cx: &mut App) {
 pub(crate) fn default_registry() -> CommandRegistry {
     let mut commands = CommandRegistry::default();
     register_shell_commands(&mut commands);
+    panel::register_commands(&mut commands);
     editor_groups::register_commands(&mut commands);
     code_view::register_commands(&mut commands);
     quick_open::register_commands(&mut commands);
@@ -1915,6 +2081,7 @@ impl Render for Workbench {
         let sidebar_slot = self.explorer_view.clone();
         let editor_area = div()
             .id("editor-area")
+            .debug_selector(|| "editor-area".into())
             .track_focus(&self.editor_focus)
             .flex()
             .flex_1()
@@ -1928,6 +2095,35 @@ impl Render for Workbench {
                     .text_color(color(ui.text_muted))
                     .child("Lucerna")
             });
+
+        // The panel: under the editor area, in its column, or right of it,
+        // in the row with the sidebar. Maximized, it takes the editor
+        // area's place.
+        let shown_panel = self.panel.visible.then_some(&self.panel);
+        let panel_at = |position| shown_panel.filter(|p| p.position == position);
+        let editor_column = match (panel_at(PanelPosition::Bottom), shown_panel) {
+            (Some(state), _) => {
+                let panel = panel::render(state, &self.terminal_panel, cx);
+                Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .when(!state.maximized, |column| {
+                            column.child(editor_area.min_h(px(EDITOR_MIN_SIZE)))
+                        })
+                        .child(panel)
+                        .into_any_element(),
+                )
+            }
+            (None, Some(state)) if state.maximized => None,
+            (None, Some(_)) => Some(editor_area.min_w(px(EDITOR_MIN_SIZE)).into_any_element()),
+            (None, None) => Some(editor_area.into_any_element()),
+        };
+        let right_panel = panel_at(PanelPosition::Right)
+            .map(|state| panel::render(state, &self.terminal_panel, cx));
 
         let status_message = crate::status_message::current(cx);
         div()
@@ -1968,13 +2164,18 @@ impl Render for Workbench {
                             ui,
                         ))
                     })
-                    .child(editor_area),
+                    .children(editor_column)
+                    .children(right_panel)
+                    .on_drag_move(cx.listener(|wb, ev: &DragMoveEvent<PanelSash>, _, cx| {
+                        wb.drag_panel_sash(ev.event.position, ev.bounds, cx);
+                    })),
             )
             .child(status_bar::render(
                 panel_toggles::render(
                     self.sidebar_visible,
                     search_active,
                     extensions_open,
+                    self.panel.visible,
                     self.extension_badge(cx),
                     cx,
                 ),

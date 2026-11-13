@@ -62,6 +62,9 @@ pub const PACKAGE: &[u8] = lucide!("package");
 pub const TYPE: &[u8] = lucide!("type");
 pub const CIRCLE: &[u8] = lucide!("circle");
 pub const HISTORY: &[u8] = lucide!("history");
+pub const PLUS: &[u8] = lucide!("plus");
+pub const MAXIMIZE_2: &[u8] = lucide!("maximize-2");
+pub const MINIMIZE_2: &[u8] = lucide!("minimize-2");
 
 /// The one-color Lucerna mark (`assets/brand/mark-mono.svg` at the
 /// repository root): draw it as an `svg` tinted with the theme's text
@@ -118,6 +121,9 @@ pub const ALL: &[(&str, &[u8])] = &[
     ("type", TYPE),
     ("circle", CIRCLE),
     ("history", HISTORY),
+    ("plus", PLUS),
+    ("maximize-2", MAXIMIZE_2),
+    ("minimize-2", MINIMIZE_2),
 ];
 
 /// The bundled SVG for a Lucide icon name.

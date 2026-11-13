@@ -2,27 +2,15 @@
 //! so there is no header), with a drag sash on its right edge.
 
 use gpui::{
-    AnyView, App, Context, FocusHandle, IntoElement, ParentElement, Pixels, Render, Styled, Window,
-    div, prelude::*, px,
+    AnyView, Axis, FocusHandle, IntoElement, ParentElement, Pixels, Styled, div, prelude::*, px,
 };
 use lucerna_theme::UiColors;
 
 use super::color;
-
-const SASH_WIDTH: Pixels = px(4.);
+use crate::ui::{SASH_SIZE, sash};
 
 /// Drag payload while the sash is being dragged.
 pub(crate) struct SidebarSash;
-
-/// GPUI requires a view to draw under the cursor while dragging; the sash
-/// drag draws nothing.
-pub(crate) struct SashGhost;
-
-impl Render for SashGhost {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        gpui::Empty
-    }
-}
 
 pub(crate) fn render(
     width: Pixels,
@@ -45,14 +33,8 @@ pub(crate) fn render(
         .border_color(color(ui.border))
         .child(div().flex_1().min_h_0().overflow_hidden().children(slot))
         .child(
-            div()
-                .id("sidebar-sash")
-                .absolute()
+            sash("sidebar-sash", Axis::Horizontal, px(SASH_SIZE), SidebarSash)
                 .top_0()
-                .right_0()
-                .w(SASH_WIDTH)
-                .h_full()
-                .cursor_col_resize()
-                .on_drag(SidebarSash, |_, _, _, cx: &mut App| cx.new(|_| SashGhost)),
+                .right_0(),
         )
 }

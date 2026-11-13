@@ -42,6 +42,9 @@
   "files.associations": {},
   "extensions.autoCheckUpdates": true,
   "workbench.editor.enablePreview": true,
+  // Where the panel (the terminal) opens: "bottom" (under the editor area) or "right".
+  "workbench.panel.defaultLocation": "bottom",
+  "terminal.integrated.hideOnLastClosed": true,
   "explorer.autoReveal": true,
   "explorer.decorations.externalChanges": true,
   "lucerna.largeFile.maxBytes": 20971520,

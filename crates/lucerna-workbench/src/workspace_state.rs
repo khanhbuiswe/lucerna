@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::editor_groups::{EXTENSIONS_TAB_STATE, GroupsState, SEARCH_TAB_STATE};
+use crate::layout::panel::PanelState;
 
 /// The file format version; a file of any other version is set aside.
 pub(crate) const STATE_VERSION: u32 = 1;
@@ -35,6 +36,10 @@ pub struct WorkspaceState {
     /// before they were saved.
     #[serde(default)]
     pub search: SearchState,
+    /// The bottom / right panel; the default (hidden, at the bottom) in
+    /// files from before it was saved.
+    #[serde(default)]
+    pub panel: PanelState,
 }
 
 /// What the Search tab keeps across restarts: the query, its toggles, the

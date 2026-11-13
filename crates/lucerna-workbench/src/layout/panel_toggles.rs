@@ -1,8 +1,9 @@
-//! The Explorer, Search and Extensions buttons at the status bar's left
-//! end. They replace the activity bar: the Explorer button shows or hides
-//! the sidebar. The Search button opens (or focuses) the Search tab. The
-//! Extensions button opens (or focuses) the Extensions tab, shows the
-//! number of available updates and spins while an install runs.
+//! The Explorer, Search, Extensions and Terminal buttons at the status
+//! bar's left end. They replace the activity bar: the Explorer button shows
+//! or hides the sidebar. The Search button opens (or focuses) the Search
+//! tab. The Extensions button opens (or focuses) the Extensions tab, shows
+//! the number of available updates and spins while an install runs. The
+//! Terminal button shows or hides the panel.
 
 use std::time::Duration;
 
@@ -12,18 +13,19 @@ use gpui::{
 };
 
 use crate::extensions::ExtensionService;
-use crate::icons::LOADER_CIRCLE;
+use crate::icons::{LOADER_CIRCLE, TERMINAL};
 use crate::layout::color;
-use crate::ui::{BLOCKS_ICON, FILES_ICON, GRID, SEARCH_ICON, icon_button};
+use crate::ui::{BLOCKS_ICON, FILES_ICON, GRID, SEARCH_ICON, icon_button, tooltip};
 use crate::{AppState, Workbench};
 
 /// `search_active`: the Search tab is the focused group's active tab;
-/// `extensions_open`: the Extensions tab is open (each button shows
-/// active).
+/// `extensions_open`: the Extensions tab is open; `panel_visible`: the
+/// panel shows (each button shows active).
 pub(crate) fn render(
     sidebar_visible: bool,
     search_active: bool,
     extensions_open: bool,
+    panel_visible: bool,
     badge: Option<String>,
     cx: &mut Context<Workbench>,
 ) -> impl IntoElement {
@@ -40,6 +42,18 @@ pub(crate) fn render(
         .on_click(cx.listener(|wb, _, window, cx| {
             wb.run_command("workbench.view.extensions", None, window, cx);
         }));
+    let terminal = icon_button("panel-toggle-terminal", TERMINAL, panel_visible, cx)
+        .debug_selector(|| "panel-toggle-terminal".into())
+        .tooltip(tooltip("Terminal (⌃`)"))
+        .on_click(cx.listener(|wb, _, window, cx| {
+            wb.run_command("workbench.action.togglePanel", None, window, cx);
+        }));
+    // Marks the active state for tests, which cannot read colors.
+    let terminal = div()
+        .when(panel_visible, |d| {
+            d.debug_selector(|| "panel-toggle-terminal-active".into())
+        })
+        .child(terminal);
     let ui = &cx.global::<AppState>().theme.ui;
     let (badge_bg, badge_fg, icon_muted) = (
         color(ui.element_selected),
@@ -102,4 +116,5 @@ pub(crate) fn render(
                 .children(badge)
                 .children(spinner),
         )
+        .child(terminal)
 }

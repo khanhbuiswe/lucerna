@@ -678,6 +678,7 @@ fn sidebar_has_only_explorer(cx: &mut TestAppContext) {
         scroll: Default::default(),
         group_widths: Vec::new(),
         search: Default::default(),
+        panel: Default::default(),
     };
     save_state(&state_path(data.path(), dir.path()), &state).unwrap();
     let (root, data_dir) = (dir.path().to_path_buf(), data.path().to_path_buf());
@@ -1091,6 +1092,7 @@ fn saved_search(key: &Path, data: &Path, search: SearchState, with_tab: bool) {
         scroll: Default::default(),
         group_widths: Vec::new(),
         search,
+        panel: Default::default(),
     };
     save_state(&state_path(data, key), &state).unwrap();
 }

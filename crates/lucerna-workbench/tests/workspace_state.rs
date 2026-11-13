@@ -43,6 +43,7 @@ fn sample(paths: &[&Path]) -> WorkspaceState {
         scroll: paths.iter().map(|p| (p.to_path_buf(), 7)).collect(),
         group_widths: vec![0.25, 0.75],
         search: Default::default(),
+        panel: Default::default(),
     }
 }
 
