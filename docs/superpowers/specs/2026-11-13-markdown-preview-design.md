@@ -264,7 +264,7 @@ Mở rộng `parse_markdown`, giữ API hover:
   `Parser::into_offset_iter()` rồi đổi offset byte → dòng bằng một bảng vị
   trí `\n` dựng một lần. Khối lồng không cần dòng.
 - `MAX_MARKDOWN_BYTES` (100 KB) giữ cho hover. Preview dùng giới hạn riêng
-  **5 MB**; lớn hơn thì preview hiện thông báo "File quá lớn để xem trước"
+  **5 MB**; lớn hơn thì preview hiện thông báo "File too large to preview"
   kèm nút Show Source, không parse.
 
 ### 5.2 Renderer
@@ -347,7 +347,7 @@ thêm crate):
   vùng đó hoặc không tồn tại → khung alt text như trên.
 - Cache ảnh theo view (`RetainAllImageCache` hoặc tương đương), thả ra khi
   tab đóng. Ảnh trên 20 MB (kích thước file) không tải, hiện alt text kèm
-  "Ảnh quá lớn".
+  "Image too large".
 
 Link: hôm nay `link_target` chỉ nhận URL tuyệt đối (`url::Url::parse`), nên
 link tương đối và `mailto:` đều trượt, và `open_markdown_link` luôn gọi

@@ -581,7 +581,7 @@ impl MarkdownPreview {
                 .with_fallback(image_placeholder_builder(alt, None, n, cx))
                 .into_any_element(),
             Some(ImageSrc::Blocked("too-large")) => {
-                image_placeholder(alt, Some("Ảnh quá lớn"), n, cx)
+                image_placeholder(alt, Some("Image too large"), n, cx)
             }
             _ => image_placeholder(alt, None, n, cx),
         })
@@ -607,7 +607,7 @@ impl MarkdownPreview {
         })
     }
 
-    /// "File quá lớn để xem trước" with a button to the source.
+    /// "File too large to preview" with a button to the source.
     fn render_too_large(&self, cx: &mut Context<Self>) -> AnyElement {
         let workbench = self.workbench.clone();
         let button = text_button("md-preview-show-source", "Show Source", cx).on_click(
@@ -622,7 +622,7 @@ impl MarkdownPreview {
                 });
             },
         );
-        notice("md-preview-too-large", "File quá lớn để xem trước", cx)
+        notice("md-preview-too-large", "File too large to preview", cx)
             .child(button)
             .into_any_element()
     }
