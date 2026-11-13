@@ -179,6 +179,10 @@ pub struct Workbench {
     panel: PanelState,
     /// The panel's terminals; kept while the panel is hidden.
     terminal_panel: Entity<TerminalPanel>,
+    /// The focused group and its active tab as last seen: when they
+    /// change under a maximized panel, the panel goes back to its size so
+    /// the editor shows (as VS Code does).
+    shown_editor: (usize, Option<TabId>),
     explorer_view: Option<AnyView>,
     editor_groups: Entity<EditorGroupsView>,
     editor_area: Option<AnyView>,
@@ -575,6 +579,7 @@ impl Workbench {
             _subscriptions: subscriptions,
             panel: panel_state,
             terminal_panel: terminal_panel.clone(),
+            shown_editor: (0, None),
             commands: Rc::new(commands),
             focus,
             sidebar_focus: cx.focus_handle(),
@@ -633,7 +638,15 @@ impl Workbench {
         if let Some(store) = store {
             workbench.start_persistence(store, restored.as_ref(), cx);
         }
+        workbench.shown_editor = workbench.shown_editor(cx);
+        if workbench.panel.visible && workbench.panel.maximized {
+            // The editor area is not drawn: the panel takes the focus.
+            let focus = terminal_panel.read(cx).focus_handle().clone();
+            window.focus(&focus, cx);
+        }
+        let groups = workbench.editor_groups.clone();
         workbench._subscriptions.extend([
+            cx.observe(&groups, |wb, _, cx| wb.editor_groups_changed(cx)),
             cx.observe(&terminal_panel, |_, _, cx| cx.notify()),
             cx.subscribe_in(&terminal_panel, window, Self::on_terminal_panel_event),
         ]);
@@ -1628,6 +1641,25 @@ impl Workbench {
         self.terminal_panel
             .update(cx, |panel, cx| panel.add_tab(None, cx));
         self.show_panel(window, cx);
+    }
+
+    fn shown_editor(&self, cx: &App) -> (usize, Option<TabId>) {
+        let model = self.editor_groups.read(cx).model();
+        (model.active_group(), model.active_tab().map(|t| t.id))
+    }
+
+    /// A file opened, or another tab or group became active: a maximized
+    /// panel goes back to its size, so the editor it shows is seen.
+    fn editor_groups_changed(&mut self, cx: &mut Context<Self>) {
+        let shown = self.shown_editor(cx);
+        if std::mem::replace(&mut self.shown_editor, shown) == shown {
+            return;
+        }
+        if self.panel.visible && self.panel.maximized && shown.1.is_some() {
+            self.panel.maximized = false;
+            self.layout_changed(cx);
+            cx.notify();
+        }
     }
 
     fn on_terminal_panel_event(

@@ -538,3 +538,61 @@ fn long_tab_titles_are_cut() {
     assert!(cut.ends_with('…'));
     assert_eq!(terminal_tab_title(&"đ".repeat(24)), "đ".repeat(24));
 }
+
+#[gpui::test]
+fn opening_a_file_while_maximized_restores_the_editor(cx: &mut TestAppContext) {
+    init(cx);
+    let (wb, cx) = open(cx);
+    for position in ["Bottom", "Right"] {
+        run(
+            &wb,
+            &format!("workbench.action.positionPanel{position}"),
+            cx,
+        );
+        if !panel(&wb, cx).visible {
+            run(&wb, "workbench.action.togglePanel", cx);
+        }
+        run(&wb, "workbench.action.toggleMaximizedPanel", cx);
+        assert!(cx.debug_bounds("editor-area").is_none(), "{position}");
+        let file: Arc<Path> = Arc::from(Path::new(&format!("/tmp/project/{position}.rs")));
+        wb.update(cx, |wb, cx| {
+            wb.open_path(file, lucerna_workbench::OpenMode::Pinned, cx)
+        });
+        draw(cx);
+        assert!(!panel(&wb, cx).maximized, "{position}");
+        assert!(panel(&wb, cx).visible, "{position}");
+        assert!(cx.debug_bounds("editor-area").is_some(), "{position}");
+    }
+}
+
+#[gpui::test]
+fn restored_maximized_panel_holds_focus(cx: &mut TestAppContext) {
+    init(cx);
+    let project = Project::new();
+    let state: WorkspaceState = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "sidebar_visible": true,
+        "sidebar_width": 260.0,
+        "sidebar_view": "explorer",
+        "groups": { "groups": [], "active_group": 0 },
+        "scroll": {},
+        "panel": {
+            "visible": true,
+            "position": "bottom",
+            "bottom_height": 320.0,
+            "right_width": 640.0,
+            "maximized": true
+        },
+    }))
+    .unwrap();
+    save_state(&project.state_file(), &state).unwrap();
+    let (wb, cx) = project.open(cx);
+    draw(cx);
+    assert!(panel(&wb, cx).maximized);
+    assert!(cx.debug_bounds("editor-area").is_none());
+    let focused = cx.update(|window, cx| {
+        let focus = wb.read(cx).terminal_panel().read(cx).focus_handle().clone();
+        focus.contains_focused(window, cx)
+    });
+    assert!(focused, "the shown terminal panel has the focus");
+}
