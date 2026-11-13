@@ -15,7 +15,7 @@ use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::Point;
 use lucerna_theme::ThemeRegistry;
-use lucerna_vim::Mode;
+use lucerna_vim::{Key, Mode};
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{AppState, OpenMode, Workbench};
 use tempfile::TempDir;
@@ -368,13 +368,22 @@ fn cmd_c_line_then_p_is_linewise(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn readonly_preview_dd_does_nothing(cx: &mut TestAppContext) {
-    let (_dir, _wb, view, cx) = vim_editor("one\ntwo\n", cx);
-    view.update(cx, |v, _| v.set_passive(true));
-    assert!(view.read_with(cx, |v, _| v.is_readonly()));
-    keys("d d x", cx);
-    assert_eq!(text_of(&view, cx), "one\ntwo\n");
+    let (_dir, wb, _view, cx) = vim_editor("one\ntwo\n", cx);
+    let docs = cx.update(|_, cx| wb.read(cx).documents().clone());
+    let preview = docs.update(cx, |d, cx| {
+        d.open_preview(Arc::from(Path::new("file.txt")), cx)
+    });
+    draw(cx);
+    assert!(preview.read_with(cx, |v, _| v.is_readonly()));
+    let vim = cx.update(|_, cx| wb.read(cx).vim().clone());
+    let feed = |keys: &[Key], cx: &mut VisualTestContext| {
+        vim.update(cx, |vim, cx| vim.feed_keys(&preview, keys, cx));
+        draw(cx);
+    };
+    feed(&[Key::Char('d'), Key::Char('d'), Key::Char('x')], cx);
+    assert_eq!(text_of(&preview, cx), "one\ntwo\n");
     // `y` still works.
-    keys("y y", cx);
+    feed(&[Key::Char('y'), Key::Char('y')], cx);
     assert_eq!(clipboard(cx).map(|c| c.0).as_deref(), Some("one\n"));
 }
 
@@ -399,4 +408,105 @@ fn joinspaces_setting_is_read(cx: &mut TestAppContext) {
     let (_dir, _wb, view, cx) = vim_editor_with(settings, "end.\nnext\n", cx);
     keys("shift-j", cx);
     assert_eq!(text_of(&view, cx), "end. next\n");
+}
+
+#[gpui::test]
+fn mark_at_column_0_follows_its_line(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("a\nb\nc\nd\n", cx);
+    keys("2 j m a", cx);
+    // `kdd` then `u`: the line comes back above the mark's line.
+    keys("k d d u", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nc\nd\n");
+    keys("g g ` a", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+    // `P` of a line above the marked line pushes the mark down.
+    keys("g g y y j j shift-p", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\na\nc\nd\n");
+    keys("g g ` a", cx);
+    assert_eq!(cursor(&view, cx), pt(3, 0));
+}
+
+#[gpui::test]
+fn unmarked_replacement_at_caret_records_backspaces(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("x\ny\n", cx);
+    keys("i", cx);
+    commit(&view, "chao", cx);
+    // An IME that does not mark replaces `ao` before the caret by `ào`.
+    view.update_in(cx, |v, window, cx| {
+        v.replace_text_in_range(Some(2..4), "ào", window, cx)
+    });
+    draw(cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "chàox\ny\n");
+    keys("j 0 .", cx);
+    assert_eq!(text_of(&view, cx), "chàox\nchàoy\n");
+}
+
+#[gpui::test]
+fn unmarked_replacement_away_from_caret_breaks_the_record(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("x\ny\n", cx);
+    keys("i", cx);
+    commit(&view, "ab", cx);
+    // A replacement of the first char, not before the caret.
+    view.update_in(cx, |v, window, cx| {
+        v.replace_text_in_range(Some(0..1), "A", window, cx)
+    });
+    draw(cx);
+    commit(&view, "c", cx);
+    keys("escape", cx);
+    // The caret followed the replaced text.
+    assert_eq!(text_of(&view, cx), "Acbx\ny\n");
+    // Only the typing after the break repeats.
+    keys("j 0 .", cx);
+    assert_eq!(text_of(&view, cx), "Acbx\ncy\n");
+}
+
+#[gpui::test]
+fn paste_in_insert_breaks_the_record(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("x\ny\n", cx);
+    cx.write_to_clipboard(ClipboardItem::new_string("ZZ".into()));
+    keys("i", cx);
+    commit(&view, "ab", cx);
+    keys("cmd-v", cx);
+    commit(&view, "c", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "abZZcx\ny\n");
+    // `.` does not replay `abc` as if nothing was pasted.
+    keys("j 0 .", cx);
+    assert_eq!(text_of(&view, cx), "abZZcx\ncy\n");
+}
+
+#[gpui::test]
+fn use_system_clipboard_true_writes_deletes(cx: &mut TestAppContext) {
+    let settings = r#"{ "vim.enabled": true, "vim.useSystemClipboard": true }"#;
+    let (_dir, _wb, _view, cx) = vim_editor_with(settings, "one\ntwo\n", cx);
+    keys("d d", cx);
+    assert_eq!(clipboard(cx).map(|c| c.0).as_deref(), Some("one\n"));
+}
+
+#[gpui::test]
+fn invalid_use_system_clipboard_is_on_yank(cx: &mut TestAppContext) {
+    let settings = r#"{ "vim.enabled": true, "vim.useSystemClipboard": "sometimes" }"#;
+    let (_dir, _wb, _view, cx) = vim_editor_with(settings, "one\ntwo\n", cx);
+    keys("y y", cx);
+    assert_eq!(clipboard(cx).map(|c| c.0).as_deref(), Some("one\n"));
+    keys("j d d", cx);
+    assert_eq!(clipboard(cx).map(|c| c.0).as_deref(), Some("one\n"));
+}
+
+#[gpui::test]
+fn dot_stops_when_its_insert_does_not_start(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("f(a)\nno pair\n", cx);
+    keys("l l c i (", cx);
+    commit(&view, "b", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "f(b)\nno pair\n");
+    // No `(` pair on the second line: `ci(` fails, and its typing and
+    // Escape are dropped.
+    keys("j 0 .", cx);
+    assert_eq!(text_of(&view, cx), "f(b)\nno pair\n");
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    // The undo step of the first change is intact.
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "f(a)\nno pair\n");
 }

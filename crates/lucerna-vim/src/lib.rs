@@ -24,7 +24,6 @@ use std::sync::Arc;
 use lucerna_editor::{Ctx, EditPlan};
 use lucerna_text::BufferSnapshot;
 
-pub use marks::map_point;
 pub use register::{Clipboard, ClipboardMode, RegContent, RegKind};
 pub use repeat::{ReplayStep, Typed};
 pub use state::{Vim, VimGlobals};

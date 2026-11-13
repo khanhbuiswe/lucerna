@@ -100,9 +100,37 @@ impl CodeView {
         let Some((plan, marked)) = built else {
             return false;
         };
-        let applied = self.transact(plan, cx);
+        let applied = self.typing(|v| v.transact(plan, cx));
         self.marked = (applied && mark && !text.is_empty()).then_some(marked);
         applied
+    }
+
+    /// For vim's record of typing (`.`): the input is about to replace
+    /// `range_utf16`, which no composition marks, so it replaces text that
+    /// was already recorded. When the range ends at the caret that is
+    /// recorded as one Backspace per char, and the new text may follow as
+    /// typed; anywhere else the record breaks, and the new text is not
+    /// recorded (returns false).
+    fn record_unmarked_replacement(
+        &mut self,
+        range_utf16: &Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.typed_events {
+            return true;
+        }
+        let target = self.range_from_utf16(range_utf16);
+        let primary = self.selections.primary();
+        if primary.is_empty() && target.end == primary.head {
+            let chars = self.snapshot.text_for_range(target).chars().count();
+            for _ in 0..chars {
+                self.emit_typed(lucerna_vim::Typed::DeleteLeft, cx);
+            }
+            true
+        } else {
+            self.record_breaks += 1;
+            false
+        }
     }
 
     /// The edit replacing `ranges` with `text` (see `replace_ranges`), and
@@ -225,8 +253,16 @@ impl EntityInputHandler for CodeView {
             }
             self.type_text(text, cx);
         } else {
-            // An IME commit: its final text is one typing operation.
-            if self.replace_ranges(range_utf16, text, None, false, cx) && !text.is_empty() {
+            // An IME commit (its final text is one typing operation), or a
+            // replacement of text already there (press and hold, an IME
+            // that does not mark).
+            let record = match (&self.marked, &range_utf16) {
+                (Some(_), _) => !std::mem::take(&mut self.composition_unrecorded),
+                (None, Some(range)) => self.record_unmarked_replacement(range, cx),
+                (None, None) => true,
+            };
+            if self.replace_ranges(range_utf16, text, None, false, cx) && record && !text.is_empty()
+            {
                 self.emit_typed(lucerna_vim::Typed::Text(text.to_string()), cx);
             }
             self.unmark();
@@ -247,6 +283,13 @@ impl EntityInputHandler for CodeView {
         if !self.takes_text() {
             self.unmark();
             return;
+        }
+        // A composition that starts over text already there (recorded).
+        if self.marked.is_none() {
+            self.composition_unrecorded = match &range_utf16 {
+                Some(range) => !self.record_unmarked_replacement(range, cx),
+                None => false,
+            };
         }
         self.replace_ranges(range_utf16, text, new_selected_range_utf16, true, cx);
     }

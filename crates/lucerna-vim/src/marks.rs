@@ -63,9 +63,9 @@ impl VimGlobals {
     }
 
     /// Moves the marks of `path` through an edit: `patch` turned `old`
-    /// into `snapshot`. Each mark keeps its place in the text
-    /// ([`Patch::map_offset`], left bias), so `dd` above a mark pulls it
-    /// up a row; a mark inside deleted text goes to where it was.
+    /// into `snapshot`. Each mark stays on its line, so `dd` above a mark
+    /// pulls it up a row and `P` above it pushes it down; a mark whose
+    /// line was deleted goes to the line that took its place.
     pub fn remap_marks_patch(
         &mut self,
         path: &Path,
@@ -79,8 +79,19 @@ impl VimGlobals {
         let Some(marks) = self.marks.get_mut(path) else {
             return;
         };
+        // A mark follows its line, as in Vim: lines inserted at the line's
+        // start (`P`, `O`, a reload) push it down. Its column stays,
+        // clamped onto a char.
         let map = |p: Point| {
-            let p = map_point(old, patch, snapshot, p, Bias::Left);
+            let start = Point {
+                row: p.row,
+                column: 0,
+            };
+            let row = patch.map_point(old, snapshot, start, Bias::Right).row;
+            let p = Point {
+                row,
+                column: p.column,
+            };
             let text = line(snapshot, p.row);
             let mut column = p.column.min(last_char_col(&text)) as usize;
             while !text.is_char_boundary(column) {
@@ -96,30 +107,6 @@ impl VimGlobals {
         }
         marks.visual = marks.visual.map(|(a, b)| (map(a), map(b)));
     }
-}
-
-/// `p` in `old` moved through `patch` into `snapshot`: to the start of
-/// the replacement when it lies in replaced text, else by
-/// [`Patch::map_offset`] with `bias` (which side of text inserted right at
-/// it it ends up on). The column is not clamped to a char: callers clamp
-/// for their mode.
-pub fn map_point(
-    old: &BufferSnapshot,
-    patch: &Patch,
-    snapshot: &BufferSnapshot,
-    p: Point,
-    bias: Bias,
-) -> Point {
-    let row = p.row.min(old.line_count().saturating_sub(1));
-    let column = p.column.min(old.line(row).len() as u32);
-    let offset = old.point_to_offset(Point { row, column });
-    let edits = patch.edits();
-    let i = edits.partition_point(|e| e.old.end <= offset);
-    let new = match edits.get(i) {
-        Some(e) if e.old.start <= offset && offset < e.old.end => e.new.start,
-        _ => patch.map_offset(offset, bias),
-    };
-    snapshot.offset_to_point(new)
 }
 
 #[cfg(test)]
@@ -310,9 +297,19 @@ mod tests {
     }
 
     #[test]
+    fn patch_remap_pushes_mark_down_for_lines_inserted_at_its_line() {
+        // `P` of a line above a mark at column 0.
+        assert_eq!(edited(p(1, 0), "a\nb\nc\n", vec![(2..2, "x\n")]), p(2, 0));
+        // `kdd` then `u`: the undo inserts the line back at the mark's
+        // line start.
+        assert_eq!(edited(p(1, 0), "a\nc\n", vec![(2..2, "b\n")]), p(2, 0));
+    }
+
+    #[test]
     fn patch_remap_keeps_column_within_line() {
-        // An insertion before the mark on its row shifts its column.
-        assert_eq!(edited(p(0, 2), "abcd\n", vec![(0..0, "xy")]), p(0, 4));
+        // An insertion before the mark on its row leaves its column, as
+        // in Vim.
+        assert_eq!(edited(p(0, 2), "abcd\n", vec![(0..0, "xy")]), p(0, 2));
         // A mark inside deleted text goes to the deletion point, clamped
         // onto a char.
         assert_eq!(edited(p(0, 3), "abcd\nx\n", vec![(1..4, "")]), p(0, 0));

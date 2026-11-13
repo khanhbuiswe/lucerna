@@ -147,6 +147,7 @@ impl CodeView {
         let Some(update) = update else {
             return false;
         };
+        self.break_record();
         self.take_update(update, cx);
         // The new pairs, in the new text; the selections keep those they
         // are inside.
@@ -225,14 +226,16 @@ impl CodeView {
     pub fn type_text(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
         self.unmark();
         let prev = self.last_kind;
-        let applied = if text == "\n" {
-            self.edit(cx, lucerna_editor::commands::newline)
-        } else {
-            let regions = self.autoclose_regions.clone();
-            self.edit(cx, |ctx, set| {
-                lucerna_editor::commands::insert(ctx, set, text, prev, &regions)
-            })
-        };
+        let applied = self.typing(|v| {
+            if text == "\n" {
+                v.edit(cx, lucerna_editor::commands::newline)
+            } else {
+                let regions = v.autoclose_regions.clone();
+                v.edit(cx, |ctx, set| {
+                    lucerna_editor::commands::insert(ctx, set, text, prev, &regions)
+                })
+            }
+        });
         if applied {
             let typed = if text == "\n" {
                 Typed::Newline
@@ -248,8 +251,10 @@ impl CodeView {
     pub fn delete_left(&mut self, cx: &mut Context<Self>) -> bool {
         self.unmark();
         let regions = self.autoclose_regions.clone();
-        let applied = self.edit(cx, |ctx, set| {
-            lucerna_editor::commands::delete_left(ctx, set, &regions)
+        let applied = self.typing(|v| {
+            v.edit(cx, |ctx, set| {
+                lucerna_editor::commands::delete_left(ctx, set, &regions)
+            })
         });
         if applied {
             self.emit_typed(Typed::DeleteLeft, cx);
@@ -260,7 +265,7 @@ impl CodeView {
     /// The `tab` command: indent, or insert a tab or spaces.
     pub fn tab(&mut self, cx: &mut Context<Self>) -> bool {
         self.unmark();
-        let applied = self.edit(cx, lucerna_editor::commands::tab);
+        let applied = self.typing(|v| v.edit(cx, lucerna_editor::commands::tab));
         if applied {
             self.emit_typed(Typed::Tab, cx);
         }
@@ -294,6 +299,8 @@ impl CodeView {
         else {
             return false;
         };
+        // An undo during the Insert session is not typing.
+        self.break_record();
         self.take_update(update, cx);
         self.autoclose_regions.clear();
         let restored = selections.and_then(|s| s.downcast_ref::<SelectionSet>().cloned());

@@ -1102,7 +1102,8 @@ fn normal_mode_still_eats_letters(cx: &mut TestAppContext) {
     let (_dir, wb, view, cx) = vim_editor("abc\n", cx);
     keys("i x escape", cx);
     assert_eq!(text_of(&view, cx), "xabc\n");
-    keys("h l backspace", cx);
+    // `Q` is bound to nothing in Normal mode, and still does not type.
+    keys("shift-q backspace", cx);
     assert_eq!(text_of(&view, cx), "xabc\n");
     view.update_in(cx, |v, window, cx| {
         use gpui::EntityInputHandler as _;

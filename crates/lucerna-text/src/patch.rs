@@ -77,6 +77,29 @@ impl Patch {
         }
     }
 
+    /// Where the point `p` of `old` lands in `new` (the text after this
+    /// patch): the start of the replacement when it lies at the start of
+    /// or inside replaced text, else [`Patch::map_offset`] with `bias`,
+    /// which says on which side of text inserted right at it it ends up. A
+    /// column past its line end counts as the line end.
+    pub fn map_point(
+        &self,
+        old: &BufferSnapshot,
+        new: &BufferSnapshot,
+        p: crate::Point,
+        bias: Bias,
+    ) -> crate::Point {
+        let row = p.row.min(old.line_count().saturating_sub(1));
+        let column = p.column.min(old.line(row).len() as u32);
+        let offset = old.point_to_offset(crate::Point { row, column });
+        let i = self.edits.partition_point(|e| e.old.end <= offset);
+        let mapped = match self.edits.get(i) {
+            Some(e) if e.old.start <= offset && offset < e.old.end => e.new.start,
+            _ => self.map_offset(offset, bias),
+        };
+        new.offset_to_point(mapped)
+    }
+
     /// The patch equivalent to applying `self`, then `later` (whose old
     /// coordinates are `self`'s new coordinates).
     pub fn compose(&self, later: &Patch) -> Patch {
@@ -196,6 +219,31 @@ mod tests {
         assert_eq!(p.map_offset(3, Bias::Right), 7);
         assert_eq!(p.map_offset(2, Bias::Right), 7);
         assert_eq!(p.map_offset(4, Bias::Left), 7);
+    }
+
+    #[test]
+    fn map_point_inserted_replaced_and_clamped() {
+        let mut buffer = Buffer::from_bytes(b"ab\ncd\n", false).unwrap();
+        let old = buffer.snapshot();
+        let p = buffer.edit(
+            [
+                (3..3, std::sync::Arc::from("x\n")),
+                (0..1, std::sync::Arc::from("")),
+            ]
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>(),
+        );
+        let new = buffer.snapshot();
+        assert_eq!(new.text_for_range(0..new.len_bytes()), "b\nx\ncd\n");
+        let pt = |row, column| crate::Point { row, column };
+        // Text inserted right at the point: before it or after it.
+        assert_eq!(p.map_point(&old, &new, pt(1, 0), Bias::Right), pt(2, 0));
+        assert_eq!(p.map_point(&old, &new, pt(1, 0), Bias::Left), pt(1, 0));
+        // At the start of replaced text: the start of the replacement.
+        assert_eq!(p.map_point(&old, &new, pt(0, 0), Bias::Right), pt(0, 0));
+        // Past the line end counts as the line end.
+        assert_eq!(p.map_point(&old, &new, pt(0, 9), Bias::Left), pt(0, 1));
     }
 
     #[test]

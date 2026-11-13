@@ -211,6 +211,10 @@ non-blank character of the next line.
 | `vim.wrapscan` | `true` | Searches wrap around the end of the file |
 | `vim.startofline` | `true` | `gg`, `G`, `H`, `M`, `L` go to the first non-blank character |
 | `vim.scroll` | `0` | Lines for `Ctrl+d` / `Ctrl+u`; `0` means half a page |
+| `vim.useSystemClipboard` | `"onYank"` | `"onYank"`: yanks go to the clipboard and `p` pastes it when it changed since; `true`: every write to `"` goes to the clipboard; `false`: only `"+` / `"*` |
+| `vim.joinspaces` | `true` | `J` puts two spaces after `.`, `!` and `?` |
+| `vim.changeWordIncludesWhitespace` | `false` | `cw` on a word also changes the whitespace after it, like `dw` |
+| `vim.tildeop` | `false` | `~` is an operator like `g~` |
 | `editor.cursorSurroundingLines` | `0` | Lines kept around the cursor when it moves |
 
 ### Editing settings

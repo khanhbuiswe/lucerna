@@ -296,8 +296,18 @@ pub struct CodeView {
     /// vim's Insert session wants [`CodeViewEvent::Typed`] for each typing
     /// operation.
     typed_events: bool,
-    /// Bumped by every cursor move (keys, mouse, API), not by an edit.
-    move_generation: u64,
+    /// Bumped by every cursor move (keys, mouse, API) and, while
+    /// `typed_events` is on, by every edit that is not typing: what the
+    /// Insert session did can no longer be replayed as typing.
+    record_breaks: u64,
+    /// Set while a typing path (`type_text`, `delete_left`, `tab`, the
+    /// input handler) applies its edit.
+    typing: bool,
+    /// The composition in progress replaced text away from the caret: its
+    /// commit is not recorded as typing (the record broke).
+    composition_unrecorded: bool,
+    /// The last edit shown: the text before it and the patch.
+    last_edit: Option<(BufferSnapshot, Arc<Patch>)>,
     /// The IME composition in progress: one byte range per selection, in
     /// selection order. The composed text is in the buffer, underlined.
     marked: Option<Vec<Range<usize>>>,
@@ -413,7 +423,10 @@ impl CodeView {
             last_kind: EditKind::Other,
             suppress_stops: false,
             typed_events: false,
-            move_generation: 0,
+            record_breaks: 0,
+            typing: false,
+            composition_unrecorded: false,
+            last_edit: None,
             marked: None,
             cursor_undo: VecDeque::new(),
             smart_select_stack: Vec::new(),
@@ -611,11 +624,13 @@ impl CodeView {
         self.cursor_redo.clear();
         // Emitted before the selection change notifies, so listeners (vim)
         // see the event before they see the bumped selection generation.
+        let patch = Arc::new(patch.clone());
+        self.last_edit = Some((old.clone(), patch.clone()));
         cx.emit(CodeViewEvent::Reloaded {
             reload,
             old: old.clone(),
             snapshot: self.snapshot.clone(),
-            patch: Arc::new(patch.clone()),
+            patch,
             revision: self.revision,
         });
         // Following the text is no cursor move: no undo stop.
@@ -862,8 +877,7 @@ impl CodeView {
         self.passive
     }
 
-    #[doc(hidden)]
-    pub fn set_passive(&mut self, passive: bool) {
+    pub(crate) fn set_passive(&mut self, passive: bool) {
         self.passive = passive;
     }
 
@@ -1092,7 +1106,7 @@ impl CodeView {
         self.selection_generation += 1;
         self.caret.reset(cx);
         if change != SelectionChange::Edit {
-            self.move_generation += 1;
+            self.record_breaks += 1;
             // A cursor move ends the typing run and any composition.
             self.last_kind = EditKind::Other;
             self.marked = None;
@@ -1319,15 +1333,49 @@ impl CodeView {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Self, &mut Context<Self>) -> R,
     ) -> R {
+        let opened = self.begin_group(cx);
+        let result = f(self, cx);
+        self.end_group(opened, keep_open, cx);
+        result
+    }
+
+    /// [`CodeView::transact_group`] in two halves, for a caller that cannot
+    /// run its work inside a closure: returns whether this call opened the
+    /// step (false inside one already open).
+    pub(crate) fn begin_group(&mut self, cx: &mut Context<Self>) -> bool {
         if self.suppress_stops {
-            return f(self, cx);
+            return false;
         }
         self.set_suppress_stops(true, cx);
-        let result = f(self, cx);
-        if !keep_open {
+        true
+    }
+
+    /// Closes the step [`CodeView::begin_group`] opened, unless
+    /// `keep_open`.
+    pub(crate) fn end_group(&mut self, opened: bool, keep_open: bool, cx: &mut Context<Self>) {
+        if opened && !keep_open {
             self.set_suppress_stops(false, cx);
         }
+    }
+
+    /// Runs a typing path's edit: no record break for it.
+    pub(crate) fn typing<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = std::mem::replace(&mut self.typing, true);
+        let result = f(self);
+        self.typing = outer;
         result
+    }
+
+    /// An edit other than typing during vim's Insert session.
+    pub(crate) fn break_record(&mut self) {
+        if self.typed_events && !self.typing {
+            self.record_breaks += 1;
+        }
+    }
+
+    /// The text before the last edit shown and its patch.
+    pub(crate) fn last_edit(&self) -> Option<&(BufferSnapshot, Arc<Patch>)> {
+        self.last_edit.as_ref()
     }
 
     /// Turns [`CodeViewEvent::Typed`] on (vim's Insert session) or off.
@@ -1342,9 +1390,10 @@ impl CodeView {
         }
     }
 
-    /// Bumped by every cursor move (keys, mouse, API) but not by edits.
-    pub(crate) fn move_generation(&self) -> u64 {
-        self.move_generation
+    /// Bumped by every cursor move (keys, mouse, API) and by every edit
+    /// that is not typing during vim's Insert session.
+    pub(crate) fn record_breaks(&self) -> u64 {
+        self.record_breaks
     }
 
     /// Paints `overlay` as the cursor instead of the caret; `None` paints
@@ -1872,14 +1921,7 @@ fn hsla(c: lucerna_theme::Rgba) -> gpui::Hsla {
 /// inserted moves past it, like a cursor typing; one at the start of or
 /// inside replaced text goes to the start of the replacement.
 fn map_point(old: &BufferSnapshot, new: &BufferSnapshot, patch: &Patch, p: Point) -> Point {
-    let offset = old.point_to_offset(p);
-    let edits = patch.edits();
-    let i = edits.partition_point(|e| e.old.end <= offset);
-    let inside = edits
-        .get(i)
-        .is_some_and(|e| e.old.start <= offset && offset < e.old.end);
-    let bias = if inside { Bias::Left } else { Bias::Right };
-    new.offset_to_point(patch.map_offset(offset, bias))
+    patch.map_point(old, new, p, Bias::Right)
 }
 
 /// Byte ranges (sorted, non-overlapping) shifted by `patch`; a range an

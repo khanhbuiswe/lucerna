@@ -4,7 +4,7 @@
 //! keeps both in step when the view changes on its own (mouse, go to,
 //! reload).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
@@ -21,7 +21,7 @@ use lucerna_text::{Bias, BufferSnapshot, Patch, Point, Reload};
 use lucerna_vim::{
     Action, Clipboard, ClipboardMode, FoldAction, InsertAt, Key, Mode, Outcome, ReplayStep,
     SearchQuery, Settings, Typed, ViewInfo, Vim, VimGlobals, VimSelection, block_ranges,
-    exclusive_range, map_point,
+    exclusive_range,
 };
 
 use crate::AppState;
@@ -52,8 +52,9 @@ struct ViewState {
     /// The view's `revision` (its text) vim's cursor and anchor are in: an
     /// edit reported for a later revision moves them.
     revision: u64,
-    /// The view's `move_generation` when last seen in Insert mode: a
-    /// cursor move there breaks the typing record of `.`.
+    /// The view's `record_breaks` when last seen in Insert mode: a
+    /// cursor move or an edit other than typing there breaks the typing
+    /// record of `.`.
     moves: u64,
     _subscriptions: [Subscription; 3],
 }
@@ -121,6 +122,9 @@ pub struct VimLayer {
     /// Set when a replay met a typing step outside Insert mode: the rest
     /// is dropped.
     replay_stopped: bool,
+    /// Per file, the edits vim made whose marks it already moved, oldest
+    /// first: their reports, still to come, must not move them again.
+    own_edits: HashMap<Arc<Path>, VecDeque<Arc<Patch>>>,
     /// Bumped by every key; a background search re-feeds its key only
     /// while no other key arrived.
     key_generation: u64,
@@ -152,6 +156,7 @@ impl VimLayer {
             match_cache: HashMap::new(),
             replaying: false,
             replay_stopped: false,
+            own_edits: HashMap::new(),
             key_generation: 0,
             _retry: None,
             search: None,
@@ -224,6 +229,19 @@ impl VimLayer {
             self.start_search(view, backward, window, cx);
         }
         consumed
+    }
+
+    /// Feeds `keys` to the vim of `view` as [`VimLayer::handle_key`]
+    /// would, for tests of views that never take the focus (a preview).
+    #[doc(hidden)]
+    pub fn feed_keys(&mut self, view: &Entity<CodeView>, keys: &[Key], cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
+        for &key in keys {
+            self.key_generation += 1;
+            self.feed(key, view, Retry::Async, cx);
+        }
     }
 
     /// The command the last key asked for; the caller runs it.
@@ -384,6 +402,7 @@ impl VimLayer {
             self._retry = None;
             self.end_search(cx);
             self.match_cache.clear();
+            self.own_edits.clear();
             // Marks are not kept up to date while off.
             self.globals = VimGlobals::default();
             for (_, state) in self.views.drain() {
@@ -424,7 +443,7 @@ impl VimLayer {
                 v.selection_head(),
                 v.selection_generation(),
                 v.revision(),
-                v.move_generation(),
+                v.record_breaks(),
             )
         };
         let subscriptions = [
@@ -500,18 +519,17 @@ impl VimLayer {
         let id = view.entity_id();
         self.match_cache.remove(&id);
         let path = view.read(cx).path().clone();
-        // Every view of the file reports the edit; the drawn one (a tab of
-        // the groups, not a closed view still alive) with the lowest id
-        // moves the marks.
-        let lead = self
-            .group_views(cx)
-            .iter()
-            .filter(|v| self.views.contains_key(&v.entity_id()) && v.read(cx).path() == &path)
-            .map(|v| v.entity_id())
-            .min();
-        if lead == Some(id) {
-            self.globals
-                .remap_marks_patch(&path, edit.old, edit.patch, edit.snapshot);
+        if self.lead_view(&path, cx) == Some(id) {
+            let own = self.own_edits.get_mut(&path);
+            match own {
+                // Vim moved the marks when it made this edit.
+                Some(own) if own.front().is_some_and(|p| **p == *edit.patch) => {
+                    own.pop_front();
+                }
+                _ => self
+                    .globals
+                    .remap_marks_patch(&path, edit.old, edit.patch, edit.snapshot),
+            }
         }
         // The open `/` starts from (or goes back to) its origin on the
         // same line; the column is clamped where the origin is used.
@@ -532,7 +550,7 @@ impl VimLayer {
         // Like the view's own cursor: after text inserted right at it.
         state
             .vim
-            .remap_points(|p| map_point(old, patch, new, p, Bias::Right));
+            .remap_points(|p| patch.map_point(old, new, p, Bias::Right));
         state.vim.clamp(new);
         let v = view.read(cx);
         if state.vim.mode() == Mode::Insert {
@@ -566,6 +584,28 @@ impl VimLayer {
         cx.notify();
     }
 
+    /// The view whose edit reports move the marks of `path`: every view of
+    /// the file reports each edit, and one of them must move them once.
+    /// The tab of the groups with the lowest id (not a closed view still
+    /// alive), else, for a file in no tab (a preview), the tracked view
+    /// with the lowest id.
+    fn lead_view(&self, path: &Path, cx: &App) -> Option<EntityId> {
+        let of_path = |v: &Entity<CodeView>| &**v.read(cx).path() == path;
+        let tab = self
+            .group_views(cx)
+            .iter()
+            .filter(|v| self.views.contains_key(&v.entity_id()) && of_path(v))
+            .map(|v| v.entity_id())
+            .min();
+        tab.or_else(|| {
+            self.views
+                .iter()
+                .filter(|(_, s)| s.view.upgrade().is_some_and(|v| of_path(&v)))
+                .map(|(id, _)| *id)
+                .min()
+        })
+    }
+
     /// The selection was changed outside vim (a click, go to): back to
     /// Normal mode at the view's cursor.
     fn view_changed(&mut self, view: Entity<CodeView>, cx: &mut Context<Self>) {
@@ -581,8 +621,8 @@ impl VimLayer {
         if state.vim.mode() == Mode::Insert {
             // Typing, arrow keys and clicks move the caret; the mode stays.
             // A move other than by typing starts a new record for `.`.
-            if v.move_generation() != state.moves {
-                state.moves = v.move_generation();
+            if v.record_breaks() != state.moves {
+                state.moves = v.record_breaks();
                 state.vim.break_insert_record();
             }
             follow_selection(&mut state.vim, v);
@@ -880,6 +920,11 @@ impl VimLayer {
             .views
             .get(&id)
             .is_some_and(|s| s.vim.mode() == Mode::Insert);
+        // Every edit of one feed is one undo step.
+        let group = actions
+            .iter()
+            .any(|a| matches!(a, Action::Edit(_)))
+            .then(|| view.update(cx, |v, cx| v.begin_group(cx)));
         for action in actions {
             match action {
                 Action::ScrollTopRow(row) => {
@@ -897,9 +942,11 @@ impl VimLayer {
                     }));
                 }
                 Action::Edit(plan) => {
-                    view.update(cx, |v, cx| {
-                        v.transact_group(keep_open, cx, |v, cx| v.transact(plan, cx))
-                    });
+                    let before = view.read(cx).revision();
+                    view.update(cx, |v, cx| v.transact(plan, cx));
+                    if view.read(cx).revision() != before {
+                        self.marks_follow_own_edit(view, cx);
+                    }
                     // Vim placed its cursor in the new text.
                     if let Some(state) = self.views.get_mut(&id) {
                         let v = view.read(cx);
@@ -959,6 +1006,9 @@ impl VimLayer {
                 Action::EnterInsert(at) => insert = Some(at),
             }
         }
+        if let Some(opened) = group {
+            view.update(cx, |v, cx| v.end_group(opened, keep_open, cx));
+        }
         if let Some(at) = insert {
             self.start_insert(view, at, cx);
             cx.notify();
@@ -984,6 +1034,26 @@ impl VimLayer {
         };
         cx.notify();
         synced
+    }
+
+    /// Moves the marks of `view`'s file through the edit vim just applied
+    /// to it, at once: a later key of the same replay may set a mark in the
+    /// new text before the edit's report arrives, and that report then
+    /// leaves the marks alone.
+    fn marks_follow_own_edit(&mut self, view: &Entity<CodeView>, cx: &App) {
+        let v = view.read(cx);
+        let Some((old, patch)) = v.last_edit() else {
+            return;
+        };
+        let path = v.path().clone();
+        self.globals
+            .remap_marks_patch(&path, old, patch, v.snapshot());
+        let own = self.own_edits.entry(path).or_default();
+        // Reports always come; this only bounds a queue that went astray.
+        if own.len() >= 256 {
+            own.clear();
+        }
+        own.push_back(patch.clone());
     }
 
     /// Starts an Insert session in `view`: one undo step from here to
@@ -1035,7 +1105,7 @@ impl VimLayer {
         state.generation = generation;
         let v = view.read(cx);
         state.revision = v.revision();
-        state.moves = v.move_generation();
+        state.moves = v.record_breaks();
         follow_selection(&mut state.vim, v);
     }
 
