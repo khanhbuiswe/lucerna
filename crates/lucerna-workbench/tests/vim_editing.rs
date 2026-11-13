@@ -705,3 +705,35 @@ fn c_slash_typing_escape_is_one_undo_step(cx: &mut TestAppContext) {
     keys("u", cx);
     assert_eq!(text_of(&view, cx), "ab foo\ncd foo\n");
 }
+
+#[gpui::test]
+fn d_slash_in_large_file_dropped_by_an_outside_edit(cx: &mut TestAppContext) {
+    // An outside edit (an agent, another view) lands while the background
+    // search of a `d/` runs: the matches are stale, and the operator must
+    // not stay armed for the next key.
+    let filler = "x".repeat(99) + "\n";
+    let text = format!("abc foo\n{}foo\n", filler.repeat(11_000));
+    assert!(text.len() > lucerna_workbench::BACKGROUND_SEARCH_BYTES);
+    let (_dir, wb, view, cx) = vim_editor(&text, cx);
+    keys("d /", cx);
+    type_text("foo", cx);
+    // Enter starts the background search; the edit comes before it ends
+    // (no parking in between).
+    cx.update(|window, cx| window.dispatch_keystroke(gpui::Keystroke::parse("enter").unwrap(), cx));
+    let origin = wb.entity_id();
+    let documents = wb.read_with(cx, |wb, _| wb.documents().clone());
+    documents.update(cx, |d, cx| {
+        let edit = (0..0, Arc::<str>::from("Z"));
+        d.apply_edits(Path::new("file.txt"), vec![edit], None, None, origin, cx)
+            .expect("the file is loaded");
+    });
+    draw(cx);
+    let edited = format!("Z{text}");
+    assert_eq!(text_of(&view, cx), edited);
+    keys("w", cx);
+    assert_eq!(text_of(&view, cx), edited);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    let id = view.entity_id();
+    let pending = cx.update(|_, cx| wb.read(cx).vim().read(cx).indicator_text(id));
+    assert_eq!(pending.as_deref(), Some("-- NORMAL --"));
+}

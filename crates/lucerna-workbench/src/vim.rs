@@ -780,7 +780,16 @@ impl VimLayer {
                         self.cache_matches(view, query, cx);
                         self.run(redo, view, Retry::No, cx);
                     }
-                    Retry::No => tracing::warn!("vim: matches still missing after a search"),
+                    Retry::No => {
+                        // Vim restored the state before the key, a
+                        // pending operator included: drop it, so the next
+                        // key can never become its motion.
+                        tracing::warn!("vim: matches still missing after a search");
+                        if let Some(state) = self.views.get_mut(&id) {
+                            state.vim.search_dismissed();
+                        }
+                        cx.notify();
+                    }
                 }
                 true
             }
@@ -833,6 +842,17 @@ impl VimLayer {
                     return;
                 }
                 this.retry_view = None;
+                if view.read(cx).revision() != revision {
+                    // The text changed under the search (an agent's
+                    // reload, another view's edit): the matches are
+                    // stale. What waited for them is dropped, as when
+                    // another key comes first.
+                    if let Some(state) = this.views.get_mut(&id) {
+                        state.vim.search_dismissed();
+                    }
+                    cx.notify();
+                    return;
+                }
                 this.match_cache.insert(
                     id,
                     MatchCache {
