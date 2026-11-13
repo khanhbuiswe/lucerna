@@ -9,6 +9,7 @@ mod motion;
 mod object;
 mod operator;
 mod register;
+mod repeat;
 mod scroll;
 mod search;
 mod state;
@@ -24,6 +25,7 @@ use lucerna_editor::{Ctx, EditPlan};
 use lucerna_text::BufferSnapshot;
 
 pub use register::{Clipboard, ClipboardMode, RegContent, RegKind};
+pub use repeat::{ReplayStep, Typed};
 pub use state::{Vim, VimGlobals};
 pub use visual::{VimSelection, block_ranges, exclusive_range, yank_text};
 
@@ -220,4 +222,12 @@ pub enum Outcome {
     /// The matches for the query are not ready. The state is unchanged and
     /// the same key should be fed again once they are.
     Retry(SearchQuery),
+    /// Run these steps in order, all in one undo group: feed each
+    /// [`ReplayStep::Key`] (and apply its actions) before the next step,
+    /// and type each [`ReplayStep::Type`] through the editor's typing path
+    /// without calling [`Vim::record_typed`]. A key fed here may itself
+    /// return `Replay` (a counted insert at Escape): run those steps in
+    /// place, before the rest. `.` and the Escape that ends a counted
+    /// insert (`3ifoo<Esc>`) return it.
+    Replay(Vec<ReplayStep>),
 }

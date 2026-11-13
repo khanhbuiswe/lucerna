@@ -13,6 +13,7 @@ use crate::motion::{self, FindChar, Goal, WordMotion};
 use crate::object::{self, Object};
 use crate::operator::{self, MotionKind, OpRange, Operator, PendingOp};
 use crate::register::{Registers, WriteKind};
+use crate::repeat::{LastChange, ReplayStep, Shape, Typed};
 use crate::scroll::{self, Screen, ScrollKind};
 use crate::search;
 use crate::visual::{self, VimSelection};
@@ -35,6 +36,8 @@ pub struct VimGlobals {
     /// The last search and whether it went backward, for `n` and `N`.
     pub(crate) last_search: Option<(SearchQuery, bool)>,
     pub(crate) registers: Registers,
+    /// The last change, for `.`.
+    pub(crate) last_change: Option<LastChange>,
     /// The system clipboard as the workbench last read it.
     clipboard: Option<Clipboard>,
 }
@@ -104,11 +107,27 @@ pub struct Vim {
     /// typed after it.
     op: Option<PendingOp>,
     /// The count of the `i a I A o O` that began the Insert session:
-    /// `3ifoo<Esc>` types the text twice more at Escape.
-    /// Task 7's replay must `take()` it at Escape so a later Insert session
-    /// does not inherit it.
-    #[allow(dead_code)] // read by the counted-insert replay
+    /// `3ifoo<Esc>` types the text twice more at Escape, which `take()`s
+    /// it so a later Insert session does not inherit it.
     insert_count: Option<u32>,
+    /// The Insert session began with `o` or `O`: each repeat of a counted
+    /// insert starts on a new line.
+    insert_lines: bool,
+    /// The keys of the command being typed, without the register and the
+    /// counts, for `.`.
+    cmd_keys: Vec<Key>,
+    /// The change that ended in this Insert session, recording its typing
+    /// until Escape.
+    recording: Option<LastChange>,
+    /// The command of `recording` changed the text itself (`c`, `o`), so
+    /// it is a change even when nothing is typed.
+    recorded_edit: bool,
+    /// A change [`Vim::break_insert_record`] finished, saved as the last
+    /// change on the next feed.
+    unsaved_change: Option<LastChange>,
+    /// The typing a `.` replay will do in the Insert session it opens:
+    /// the replay does not report it, so it is recorded from here.
+    replay_typed: Option<Vec<Typed>>,
 }
 
 impl Vim {
@@ -125,6 +144,12 @@ impl Vim {
             register: None,
             op: None,
             insert_count: None,
+            insert_lines: false,
+            cmd_keys: Vec::new(),
+            recording: None,
+            recorded_edit: false,
+            unsaved_change: None,
+            replay_typed: None,
         }
     }
 
@@ -137,10 +162,172 @@ impl Vim {
         settings: &Settings,
     ) -> Outcome {
         self.clamp(view.snapshot());
+        if let Some(change) = self.unsaved_change.take() {
+            globals.last_change = Some(change);
+        }
         let saved = self.clone();
         let outcome = self.step(key, view, globals, settings);
         self.finish(&saved, saved.cursor, &outcome, view, globals);
+        if !matches!(outcome, Outcome::Retry(_)) {
+            self.record(key, &saved, &outcome, view, globals);
+        }
         outcome
+    }
+
+    /// The workbench calls this for each typing event of an Insert session
+    /// vim opened (not for a replay's typing), for `.`.
+    pub fn record_typed(&mut self, t: Typed) {
+        if self.mode == Mode::Insert
+            && let Some(change) = &mut self.recording
+        {
+            change.typed.push(t);
+        }
+    }
+
+    /// The caret moved in Insert mode other than by typing (an arrow key,
+    /// a click): the change so far is finished, and the typing from here
+    /// on is a new one, repeated by `.` as an `i`. A counted insert no
+    /// longer repeats.
+    pub fn break_insert_record(&mut self) {
+        if self.mode != Mode::Insert {
+            return;
+        }
+        self.insert_count = None;
+        if let Some(change) = self.recording.take()
+            && (self.recorded_edit || !change.typed.is_empty())
+        {
+            self.unsaved_change = Some(change);
+        }
+        self.recording = Some(LastChange {
+            register: None,
+            count: None,
+            keys: vec![Key::Char('i')],
+            shape: None,
+            insert: true,
+            typed: Vec::new(),
+        });
+        self.recorded_edit = false;
+    }
+
+    /// After `key` (fed with the state `saved` before it): collects the
+    /// keys of the command being typed and, once it is done, records it as
+    /// the last change if it changed the text. A command that enters
+    /// Insert is recorded at Escape, with the typing.
+    fn record(
+        &mut self,
+        key: Key,
+        saved: &Vim,
+        outcome: &Outcome,
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+    ) {
+        if saved.mode == Mode::Insert {
+            if self.mode != Mode::Insert
+                && let Some(change) = self.recording.take()
+                && (self.recorded_edit || !change.typed.is_empty())
+            {
+                g.registers.set_dot(change.inserted_text());
+                g.last_change = Some(change);
+            }
+            return;
+        }
+        let count_key = saved.prefix.is_none()
+            && matches!(key, Key::Char(c) if c.to_digit(10)
+                .is_some_and(|d| d != 0 || saved.count.is_some()));
+        let register_key = saved.prefix == Some('"')
+            || (saved.prefix.is_none() && saved.op.is_none() && key == Key::Char('"'));
+        if !count_key && !register_key {
+            self.cmd_keys.push(key);
+        }
+        if !self.pending.is_empty() || self.op.is_some() || self.prefix.is_some() {
+            return;
+        }
+        let keys = std::mem::take(&mut self.cmd_keys);
+        // `.` itself returns a replay and is not recorded.
+        let Outcome::Handled(actions) = outcome else {
+            return;
+        };
+        let edited = actions.iter().any(|a| matches!(a, Action::Edit(_)));
+        let entered = self.mode == Mode::Insert;
+        if !edited && !entered {
+            return;
+        }
+        let (count, register) = match &saved.op {
+            Some(p) => (
+                match (p.count, saved.count) {
+                    (None, None) => None,
+                    (a, b) => Some(
+                        (u64::from(a.unwrap_or(1)) * u64::from(b.unwrap_or(1)))
+                            .min(u64::from(MAX_COUNT)) as u32,
+                    ),
+                },
+                p.register,
+            ),
+            None => (saved.count, saved.register),
+        };
+        let shape = if matches!(saved.mode, Mode::Visual | Mode::VisualLine) {
+            saved
+                .selection(view.snapshot(), view.tab_size())
+                .and_then(|sel| Shape::of(&sel, view.snapshot()))
+        } else {
+            None
+        };
+        let mut change = LastChange {
+            register,
+            count,
+            keys,
+            shape,
+            insert: entered,
+            typed: Vec::new(),
+        };
+        if entered {
+            change.typed = self.replay_typed.take().unwrap_or_default();
+            self.recording = Some(change);
+            self.recorded_edit = edited
+                || actions.iter().any(|a| {
+                    matches!(
+                        a,
+                        Action::EnterInsert(InsertAt::LineBelow | InsertAt::LineAbove)
+                    )
+                });
+        } else {
+            self.replay_typed = None;
+            g.last_change = Some(change);
+        }
+    }
+
+    /// `.`: the steps that repeat the last change, `count` replacing its
+    /// count.
+    fn dot(&mut self, count: Option<u32>, view: &dyn ViewInfo, g: &VimGlobals) -> Outcome {
+        let Some(change) = &g.last_change else {
+            return Outcome::Handled(vec![]);
+        };
+        if view.edit_ctx().is_none() {
+            return Outcome::Handled(vec![]);
+        }
+        self.replay_typed = change.insert.then(|| change.typed.clone());
+        Outcome::Replay(change.replay(count))
+    }
+
+    /// Escape in Insert mode. After a counted insert, first the steps that
+    /// type the text `count - 1` more times (each on a new line after `o`
+    /// or `O`), then Escape again.
+    fn escape_insert(&mut self, view: &dyn ViewInfo) -> Outcome {
+        let typed = self.recording.as_ref().map_or(&[][..], |r| &r.typed[..]);
+        match self.insert_count.take() {
+            Some(n) if self.insert_lines || !typed.is_empty() => {
+                let mut steps = Vec::new();
+                for _ in 1..n {
+                    if self.insert_lines {
+                        steps.push(ReplayStep::Type(Typed::Newline));
+                    }
+                    steps.extend(typed.iter().cloned().map(ReplayStep::Type));
+                }
+                steps.push(ReplayStep::Key(Key::Escape));
+                Outcome::Replay(steps)
+            }
+            _ => self.exit_insert(view),
+        }
     }
 
     /// After a command: syncs the anchor, restores `saved` on a retry, and
@@ -334,7 +521,7 @@ impl Vim {
         if self.mode == Mode::Insert {
             // Every other key types.
             return match key {
-                Key::Escape => self.exit_insert(view),
+                Key::Escape => self.escape_insert(view),
                 _ => Outcome::Unhandled,
             };
         }
@@ -371,6 +558,7 @@ impl Vim {
                         self.scroll(view, ScrollKind::Page(rows), c == 'f', settings)
                     }
                     'v' => self.switch_mode(Mode::VisualBlock, view, globals),
+                    'r' if self.mode == Mode::Normal => self.undo_redo(Action::Redo(n), view),
                     'o' | 'i' if self.mode == Mode::Normal => {
                         Outcome::Handled(vec![Action::RunCommand(if c == 'o' {
                             "workbench.action.navigateBack"
@@ -443,6 +631,7 @@ impl Vim {
         };
         self.mode = Mode::Insert;
         self.insert_count = count.filter(|&n| n > 1);
+        self.insert_lines = matches!(at, InsertAt::LineBelow | InsertAt::LineAbove);
         self.cursor = Point { row, column };
         self.anchor = self.cursor;
         self.goal = None;
@@ -798,6 +987,8 @@ impl Vim {
                 };
                 self.put(how, register, n, view, globals, settings)
             }
+            'u' if !visual => self.undo_redo(Action::Undo(n), view),
+            '.' if !visual => self.dot(explicit, view, globals),
             'h' => self.move_horizontal(Point {
                 row,
                 column: motion::left(&text, col, n),
@@ -1410,6 +1601,14 @@ impl Vim {
             actions.push(Action::CursorMoved { jump: false });
         }
         Outcome::Handled(actions)
+    }
+
+    /// `u` and `Ctrl+r`; nothing in a read-only view.
+    fn undo_redo(&self, action: Action, view: &dyn ViewInfo) -> Outcome {
+        if view.edit_ctx().is_none() {
+            return Outcome::Handled(vec![]);
+        }
+        Outcome::Handled(vec![action])
     }
 
     /// `r{c}` (`\n` for Enter) on `n` chars.

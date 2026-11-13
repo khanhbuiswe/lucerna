@@ -602,6 +602,11 @@ impl VimLayer {
                 cx.notify();
                 false
             }
+            // Run from Task 8 of vim editing (V2a).
+            Ok(Outcome::Replay(_)) => {
+                tracing::debug!("vim: replays are not run yet");
+                true
+            }
             Ok(Outcome::Retry(query)) => {
                 if may_retry {
                     self.search_then_run(redo, view, query, cx);

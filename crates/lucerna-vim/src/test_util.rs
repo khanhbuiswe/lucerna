@@ -1,4 +1,15 @@
 //! String-based test helpers: `|` marks the cursor.
+//!
+//! [`run_edit`] (and the `assert_edit` helpers) drive vim the way the
+//! workbench does. While vim is in Insert mode, the keys type instead of
+//! going to vim, through the editor's typing path (`commands::insert`
+//! and friends), and each is recorded with [`Vim::record_typed`]: a char
+//! types itself (`Typed::Text` of that one char, so auto-close runs),
+//! `<CR>` is `Typed::Newline`, `<BS>` `Typed::DeleteLeft` and `<Tab>`
+//! `Typed::Tab`. `<Esc>` and ctrl keys still go to vim. An
+//! [`Outcome::Replay`] runs its steps at once, in one undo step, without
+//! recording the typing. A command that enters Insert and the typing up
+//! to Escape are one undo step too.
 
 use std::ops::Range;
 use std::path::Path;
@@ -8,7 +19,10 @@ use lucerna_editor::{Ctx, EditConfig};
 use lucerna_text::{Buffer, BufferSnapshot, Point};
 
 use crate::classify::{CharClass, class};
-use crate::{Action, InsertAt, Key, Outcome, SearchQuery, Settings, ViewInfo, Vim, VimGlobals};
+use crate::{
+    Action, InsertAt, Key, Outcome, ReplayStep, SearchQuery, Settings, Typed, ViewInfo, Vim,
+    VimGlobals,
+};
 
 pub(crate) struct TestView {
     pub path: Arc<Path>,
@@ -31,6 +45,15 @@ pub(crate) struct TestView {
     /// Undo steps, oldest first, and redo steps, latest undone last.
     undo: Vec<UndoStep>,
     redo: Vec<UndoStep>,
+    /// An open undo group: edits until it closes are one step.
+    group: Option<Group>,
+}
+
+/// Undo steps from `start` on merge into one that begins at `before`.
+struct Group {
+    depth: u32,
+    start: usize,
+    before: (BufferSnapshot, Point),
 }
 
 /// One feed's edits: the text and vim's cursor before and after.
@@ -64,6 +87,7 @@ impl TestView {
             node_queries: std::cell::Cell::new(0),
             undo: Vec::new(),
             redo: Vec::new(),
+            group: None,
         }
     }
 
@@ -167,12 +191,64 @@ impl TestView {
     /// one undo step.
     fn commit(&mut self, edited: &mut Option<usize>, before: &(BufferSnapshot, Point)) {
         let Some(head) = edited.take() else { return };
-        let after = self.snapshot.offset_to_point(head);
+        let after = (self.snapshot.clone(), self.snapshot.offset_to_point(head));
+        self.redo.clear();
+        if let Some(g) = &self.group {
+            if self.undo.len() > g.start {
+                self.undo.last_mut().expect("a grouped step").after = after;
+                return;
+            }
+            let before = g.before.clone();
+            self.undo.push(UndoStep { before, after });
+            return;
+        }
         self.undo.push(UndoStep {
             before: before.clone(),
-            after: (self.snapshot.clone(), after),
+            after,
         });
-        self.redo.clear();
+    }
+
+    /// Opens an undo group (or nests in the open one) that starts with the
+    /// text and `cursor` as they are now.
+    pub fn begin_group(&mut self, cursor: Point) {
+        match &mut self.group {
+            Some(g) => g.depth += 1,
+            None => {
+                self.group = Some(Group {
+                    depth: 1,
+                    start: self.undo.len(),
+                    before: (self.snapshot.clone(), cursor),
+                })
+            }
+        }
+    }
+
+    pub fn end_group(&mut self) {
+        if let Some(g) = &mut self.group {
+            g.depth -= 1;
+            if g.depth == 0 {
+                self.group = None;
+            }
+        }
+    }
+
+    /// Types `typed` at vim's cursor the way the editor does, and moves
+    /// vim's cursor to the caret after it. Auto-closed pairs are not
+    /// tracked, so typing over a closer types a new one.
+    pub fn type_typed(&mut self, vim: &mut Vim, typed: &Typed) {
+        use lucerna_editor::{EditKind, SelectionSet, commands};
+        let Some(ctx) = self.edit_ctx() else { return };
+        let at = self.snapshot.point_to_offset(vim.cursor());
+        let set = SelectionSet::cursor(at);
+        let plan = match typed {
+            Typed::Text(text) => commands::insert(ctx, &set, text, EditKind::Other, &[]),
+            Typed::Newline => commands::newline(ctx, &set),
+            Typed::DeleteLeft => commands::delete_left(ctx, &set, &[]),
+            Typed::Tab => commands::tab(ctx, &set),
+        };
+        let head = plan.selections.primary().head;
+        self.apply(vim, &[Action::Edit(plan)]);
+        vim.set_cursor(self.snapshot.offset_to_point(head));
     }
 
     /// The text with `|` inserted at `cursor`.
@@ -312,7 +388,8 @@ impl ViewInfo for TestView {
     }
 }
 
-/// Parses `keys`: plain chars, `<C-x>`, `<Esc>`, `<CR>`, `<BS>`, `<lt>`.
+/// Parses `keys`: plain chars, `<C-x>`, `<Esc>`, `<CR>`, `<BS>`, `<lt>`,
+/// and `<Tab>` (a tab char, which only Insert mode types).
 pub(crate) fn parse_keys(keys: &str) -> Vec<Key> {
     let mut out = Vec::new();
     let mut chars = keys.chars();
@@ -326,6 +403,7 @@ pub(crate) fn parse_keys(keys: &str) -> Vec<Key> {
             "Esc" => Key::Escape,
             "CR" => Key::Enter,
             "BS" => Key::Backspace,
+            "Tab" => Key::Char('\t'),
             "lt" => Key::Char('<'),
             _ => match name.strip_prefix("C-") {
                 Some(rest) if rest.chars().count() == 1 => Key::Ctrl(rest.chars().next().unwrap()),
@@ -436,13 +514,73 @@ pub(crate) fn run_edit_with(
     let mut vim = Vim::new(view.cursor);
     let mut globals = VimGlobals::default();
     let mut actions = Vec::new();
+    let mut run = Run {
+        view: &mut view,
+        vim: &mut vim,
+        globals: &mut globals,
+        settings: &settings,
+        actions: &mut actions,
+    };
     for key in parse_keys(keys) {
-        if let Outcome::Handled(done) = vim.feed(key, &view, &mut globals, &settings) {
-            view.apply(&mut vim, &done);
-            actions.extend(done);
-        }
+        run.key(key, false);
     }
     (view.marked(vim.cursor()), actions)
+}
+
+/// What [`run_edit_with`] drives.
+struct Run<'a> {
+    view: &'a mut TestView,
+    vim: &'a mut Vim,
+    globals: &'a mut VimGlobals,
+    settings: &'a Settings,
+    actions: &'a mut Vec<Action>,
+}
+
+impl Run<'_> {
+    /// One key: typed in Insert mode (recorded unless `replaying`), else
+    /// fed to vim with its actions applied and its replay run.
+    fn key(&mut self, key: Key, replaying: bool) {
+        let insert = self.vim.mode() == crate::Mode::Insert;
+        let typed = match key {
+            Key::Char('\t') => Some(Typed::Tab),
+            Key::Char(c) => Some(Typed::Text(c.to_string())),
+            Key::Enter => Some(Typed::Newline),
+            Key::Backspace => Some(Typed::DeleteLeft),
+            _ => None,
+        };
+        if insert && let Some(typed) = typed {
+            self.view.type_typed(self.vim, &typed);
+            if !replaying {
+                self.vim.record_typed(typed);
+            }
+            return;
+        }
+        let from = self.vim.cursor();
+        match self.vim.feed(key, self.view, self.globals, self.settings) {
+            Outcome::Handled(done) => {
+                let entered = !insert && self.vim.mode() == crate::Mode::Insert;
+                if entered {
+                    self.view.begin_group(from);
+                }
+                self.view.apply(self.vim, &done);
+                self.actions.extend(done);
+                if insert && self.vim.mode() != crate::Mode::Insert {
+                    self.view.end_group();
+                }
+            }
+            Outcome::Replay(steps) => {
+                self.view.begin_group(from);
+                for step in steps {
+                    match step {
+                        ReplayStep::Key(k) => self.key(k, true),
+                        ReplayStep::Type(t) => self.view.type_typed(self.vim, &t),
+                    }
+                }
+                self.view.end_group();
+            }
+            Outcome::Unhandled | Outcome::Retry(_) => {}
+        }
+    }
 }
 
 #[track_caller]

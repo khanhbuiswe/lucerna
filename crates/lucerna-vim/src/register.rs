@@ -69,7 +69,6 @@ impl Registers {
     }
 
     /// Sets the `.` register: the last inserted text.
-    #[allow(dead_code)] // filled by dot-repeat
     pub(crate) fn set_dot(&mut self, text: String) {
         self.dot = Some(text);
     }
