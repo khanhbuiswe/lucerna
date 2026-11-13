@@ -12,6 +12,7 @@ test-util = []
 [dependencies]
 lucerna-syntax.workspace = true
 lucerna-text.workspace = true
+similar.workspace = true
 unicode-segmentation.workspace = true
 
 [dev-dependencies]

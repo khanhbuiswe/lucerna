@@ -108,6 +108,11 @@ impl Buffer {
         self.history.set_saved(state);
     }
 
+    /// No history state counts as saved: dirty until the next `set_saved`.
+    pub fn clear_saved(&mut self) {
+        self.history.clear_saved();
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.history.is_dirty()
     }
@@ -262,6 +267,18 @@ pub struct BufferSnapshot {
 }
 
 impl BufferSnapshot {
+    /// `text` must already be LF-normalised.
+    pub fn from_text(text: &str) -> BufferSnapshot {
+        BufferSnapshot {
+            rope: Rope::from_str(text),
+        }
+    }
+
+    /// Content equality without copying the text.
+    pub fn text_eq(&self, other: &BufferSnapshot) -> bool {
+        self.rope == other.rope
+    }
+
     /// An empty file has one line; a trailing newline does not add one.
     pub fn line_count(&self) -> u32 {
         let lines = self.rope.len_lines();
@@ -383,6 +400,21 @@ mod tests {
     fn all_text(b: &Buffer) -> String {
         let s = b.snapshot();
         s.text_for_range(0..s.len_bytes())
+    }
+
+    #[test]
+    fn from_text_round_trips() {
+        let s = BufferSnapshot::from_text("a\nb");
+        assert_eq!(s.text_for_range(0..3), "a\nb");
+        assert_eq!(s.line_count(), 2);
+    }
+
+    #[test]
+    fn text_eq_compares_content() {
+        let a = BufferSnapshot::from_text("a\nb");
+        assert!(a.text_eq(&BufferSnapshot::from_text("a\nb")));
+        assert!(!a.text_eq(&BufferSnapshot::from_text("a\nc")));
+        assert!(!a.text_eq(&BufferSnapshot::from_text("a\n")));
     }
 
     #[test]

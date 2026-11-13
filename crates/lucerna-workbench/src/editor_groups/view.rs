@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, ClickEvent, Context, DragMoveEvent, Entity, IntoElement, MouseButton,
+    AnyView, App, ClickEvent, Context, Div, DragMoveEvent, Entity, IntoElement, MouseButton,
     ParentElement, Pixels, Render, SharedString, Styled, Window, div, prelude::*, px, relative,
     svg,
 };
@@ -15,7 +15,8 @@ use lucerna_theme::{Rgba, UiColors};
 
 use super::model::{EditorGroups, GroupsState, Tab, TabId, TabItem};
 use crate::AppState;
-use crate::documents::{DocState, Documents};
+use crate::conflict_bar::{self, BarActions};
+use crate::documents::{DiskNotice, DocState, Documents};
 use crate::icons;
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
@@ -24,8 +25,8 @@ use crate::symbols::breadcrumbs::{
     BreadcrumbSettings, Crumbs, breadcrumb_segments, breadcrumbs_row, segments_text,
 };
 use crate::ui::{
-    BLOCKS_ICON, CLOSE_ICON, GRID, PATH_BAR_HEIGHT, SEARCH_ICON, TAB_HEIGHT, TAB_PADDING_X,
-    UI_FONT_SIZE_SMALL,
+    BLOCKS_ICON, CLOSE_ICON, ClickHandler, GRID, PATH_BAR_HEIGHT, SEARCH_ICON, TAB_HEIGHT,
+    TAB_PADDING_X, UI_FONT_SIZE_SMALL,
 };
 
 /// Square slot that holds a tab's close button, kept even while the
@@ -195,6 +196,69 @@ impl EditorGroupsView {
             }
         })
         .detach();
+    }
+
+    /// Close on a deleted file's bar: closes tab `id` without asking and
+    /// drops the document at `path` (with its unsaved text and history)
+    /// when no other tab shows it, as Don't Save does.
+    fn close_deleted(&mut self, id: TabId, path: &Path, cx: &mut Context<Self>) {
+        self.update_model(cx, |m| m.close(id));
+        let shown = self
+            .model
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .any(|t| t.path().is_some_and(|p| **p == *path));
+        if !shown && let Some(documents) = self.documents.clone() {
+            documents.update(cx, |d, cx| d.discard(path, cx));
+        }
+    }
+
+    /// The conflict or deleted-file bar (spec §7.3) for group `group`,
+    /// whose active tab is `tab`; `None` unless it is a file tab whose
+    /// document has a [`DiskNotice`].
+    fn disk_bar(&self, group: usize, tab: &Tab, cx: &mut Context<Self>) -> Option<Div> {
+        let path = tab.path()?.clone();
+        let documents = self.documents.clone()?;
+        let notice = documents.read(cx).disk_notice(&path)?;
+        let id = tab.id;
+        let actions = match notice {
+            DiskNotice::Conflict { .. } => {
+                let (docs, p) = (documents.clone(), path.clone());
+                let reload: ClickHandler = Box::new(move |_, _, cx| {
+                    docs.update(cx, |d, cx| d.revert(&p, cx).detach());
+                });
+                let (docs, p) = (documents, path.clone());
+                let keep_mine: ClickHandler = Box::new(move |_, _, cx| {
+                    docs.update(cx, |d, cx| d.keep_mine(&p, cx));
+                });
+                BarActions {
+                    primary: reload,
+                    secondary: keep_mine,
+                }
+            }
+            DiskNotice::Deleted => {
+                let p = path.clone();
+                let close = cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.close_deleted(id, &p, cx);
+                });
+                let (docs, p) = (documents, path.clone());
+                let keep: ClickHandler = Box::new(move |_, _, cx| {
+                    docs.update(cx, |d, cx| d.keep_deleted(&p, cx));
+                });
+                BarActions {
+                    primary: Box::new(close),
+                    secondary: keep,
+                }
+            }
+        };
+        Some(conflict_bar::render(
+            group,
+            &save::display_name(&path),
+            &notice,
+            actions,
+            cx,
+        ))
     }
 
     /// The path and documents of tab `id` when it shows a document with
@@ -689,6 +753,9 @@ impl Render for EditorGroupsView {
                     )
                 }),
             };
+            let disk_bar = active_tabs[gi]
+                .as_ref()
+                .and_then(|tab| self.disk_bar(gi, tab, cx));
             let body = match body {
                 Some(body) => body.into_any_element(),
                 None => empty_hint(ui, cx).into_any_element(),
@@ -726,6 +793,7 @@ impl Render for EditorGroupsView {
                     )
                     .child(tab_bar)
                     .children(path_bar)
+                    .children(disk_bar)
                     .child(div().flex_1().min_h_0().overflow_hidden().child(body))
                     .children(sash),
             );

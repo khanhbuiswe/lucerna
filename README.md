@@ -21,9 +21,11 @@ there is nothing new to learn.
 Claude / Codex (app or CLI) writes  →  Lucerna shows  →  you review
 ```
 
-> **Status:** Phases 4.1 (the editing core) and 4.2 (smart typing) are done: Lucerna edits and
-> saves files. Auto-merge with a conflict bar, multi-cursor, completion, rename and format
-> (4.3 to 4.6) are not done yet. Known limits: quitting from the Dock or at logout cannot show the save prompt
+> **Status:** Phases 4.1 (the editing core), 4.2 (smart typing) and 4.4 (conflicts with agents) are
+> done. Lucerna edits and saves files. When an agent rewrites a file you are editing,
+> non-overlapping changes merge into your unsaved text automatically, and overlapping ones show a
+> conflict bar with Reload / Keep Mine. Multi-cursor, completion, rename and format (4.3, 4.5,
+> 4.6) are not done yet. Known limits: quitting from the Dock or at logout cannot show the save prompt
 > (a GPUI limitation at the pinned revision), and there is no hot exit yet. It runs on **macOS** today. **Linux and Windows** are planned, and GPUI already
 > supports both. See [Roadmap](#roadmap).
 
@@ -236,6 +238,7 @@ non-blank character of the next line.
 | `files.autoSave` | `"off"` | When to save automatically |
 | `files.autoSaveDelay` | `1000` | Milliseconds before an auto save |
 | `files.saveConflictResolution` | `"askUser"` | What to do when the file changed on disk |
+| `lucerna.externalChanges.autoMerge` | `true` | Merge an agent's non-overlapping changes into unsaved text |
 
 ## Extensions
 
