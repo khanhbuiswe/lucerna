@@ -249,9 +249,7 @@ pub(crate) const ANSI_NAMES: [&str; 8] = [
 
 impl TerminalColors {
     /// Default ANSI table for a theme that lacks `terminal.ansi.*` keys.
-    // The values are VS Code's default terminal ANSI colors, from
-    // microsoft/vscode src/vs/workbench/contrib/terminal/common/terminalColorRegistry.ts
-    // (MIT, Copyright (c) Microsoft Corporation).
+    // Adapted from microsoft/vscode src/vs/workbench/contrib/terminal/common/terminalColorRegistry.ts (MIT)
     pub fn fallback_ansi(appearance: Appearance) -> [Rgba; 16] {
         let table: [&str; 16] = match appearance {
             Appearance::Dark => [
@@ -261,8 +259,8 @@ impl TerminalColors {
             ],
             Appearance::Light => [
                 "#000000", "#cd3131", "#107c10", "#949800", "#0451a5", "#bc05bc", "#0598bc",
-                "#555555", "#666666", "#cd3131", "#14ce14", "#b5ba00", "#0451a5", "#bc05bc",
-                "#0598bc", "#a5a5a5",
+                "#555555", "#666666", "#f14c4c", "#14ce14", "#b5ba00", "#3b8eea", "#d670d6",
+                "#29b8db", "#a5a5a5",
             ],
         };
         table.map(|h| Rgba::parse_hex(h).expect("valid fallback hex"))

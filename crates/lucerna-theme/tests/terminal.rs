@@ -122,3 +122,22 @@ fn builtin_themes_parse() {
         assert!(t.terminal.foreground.a > 0.0, "{name}");
     }
 }
+
+#[test]
+fn fallback_ansi_matches_vscode_reference() {
+    // microsoft/vscode terminalColorRegistry.ts defaults (`light` and `dark`).
+    let dark = [
+        "#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
+        "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#e5e5e5",
+    ];
+    let light = [
+        "#000000", "#cd3131", "#107c10", "#949800", "#0451a5", "#bc05bc", "#0598bc", "#555555",
+        "#666666", "#f14c4c", "#14ce14", "#b5ba00", "#3b8eea", "#d670d6", "#29b8db", "#a5a5a5",
+    ];
+    for (appearance, table) in [(Appearance::Dark, dark), (Appearance::Light, light)] {
+        let got = lucerna_theme::TerminalColors::fallback(appearance).ansi;
+        for (i, h) in table.iter().enumerate() {
+            assert_eq!(got[i], hex(h), "{appearance:?} ansi[{i}]");
+        }
+    }
+}

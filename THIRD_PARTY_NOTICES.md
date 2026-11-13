@@ -140,8 +140,8 @@ Each file carries a comment of the form
 | `crates/lucerna-editor/src/indent.rs` | `src/vs/editor/common/cursor/cursorTypeEditOperations.ts` |
 | `crates/lucerna-editor/src/indentation.rs` | `src/vs/editor/common/model/indentationGuesser.ts` |
 | `crates/lucerna-editor/src/comment.rs` | `src/vs/editor/contrib/comment/browser/lineCommentCommand.ts`, `src/vs/editor/contrib/comment/browser/blockCommentCommand.ts` |
-| `crates/lucerna-theme/src/lib.rs` (default terminal ANSI colors, `TerminalColors::fallback_ansi`) | `src/vs/workbench/contrib/terminal/common/terminalColorRegistry.ts` |
 | `crates/lucerna-editor/src/lines.rs` | `src/vs/editor/contrib/linesOperations/browser/linesOperations.ts`, `src/vs/editor/contrib/linesOperations/browser/moveLinesCommand.ts`, `src/vs/editor/contrib/linesOperations/browser/copyLinesCommand.ts` |
+| `crates/lucerna-theme/src/lib.rs` (default terminal ANSI colors, `TerminalColors::fallback_ansi`) | `src/vs/workbench/contrib/terminal/common/terminalColorRegistry.ts` |
 
 ```
 MIT License
