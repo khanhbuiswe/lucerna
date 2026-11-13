@@ -215,7 +215,25 @@ pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 pub fn trash(path: &Path) -> Result<(), TrashError> {
-    trash::delete(path).map_err(|e| TrashError(e.to_string()))
+    trash_context()
+        .delete(path)
+        .map_err(|e| TrashError(e.to_string()))
+}
+
+/// On macOS the crate's default asks Finder over AppleScript, which pops an
+/// automation permission prompt and fails for good if it is denied. Ask
+/// NSFileManager (`trashItemAtURL`) directly instead.
+#[cfg(target_os = "macos")]
+fn trash_context() -> trash::TrashContext {
+    use trash::macos::{DeleteMethod, TrashContextExtMacos};
+    let mut ctx = trash::TrashContext::default();
+    ctx.set_delete_method(DeleteMethod::NsFileManager);
+    ctx
+}
+
+#[cfg(not(target_os = "macos"))]
+fn trash_context() -> trash::TrashContext {
+    trash::TrashContext::default()
 }
 
 pub fn delete_permanently(path: &Path) -> io::Result<()> {
@@ -235,5 +253,17 @@ pub fn stem_range(name: &str, is_dir: bool) -> Range<usize> {
     match name.rfind('.') {
         Some(i) if i > 0 => 0..i,
         _ => 0..name.len(),
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    #[test]
+    fn macos_trash_uses_file_manager_not_finder() {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        assert!(matches!(
+            super::trash_context().delete_method(),
+            DeleteMethod::NsFileManager
+        ));
     }
 }
