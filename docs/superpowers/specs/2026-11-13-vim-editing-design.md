@@ -189,8 +189,8 @@ V1 chỉ dời mark khi file được reload. V2 dời mark theo `Patch` của *
 | Kiểu | Motion |
 |---|---|
 | Theo dòng | `j k gg G H M L`, `'x`, `N%`, `+ - <CR>` |
-| Inclusive | `$ e E ge gE f t %`, `` `x `` |
-| Exclusive | `w W b B h l 0 ^ { } F T n N * #`, `/` và `?` |
+| Inclusive | `$ e E ge gE f t %` |
+| Exclusive | `w W b B h l 0 ^ { } F T n N * #`, `` `x ``, `/` và `?` |
 
 **Toán tử với `/` và `?`** (`d/foo<CR>`, `c?bar<CR>`): toán tử được giữ chờ trong lúc find widget mở (cơ chế `VimSearch` của V1). Enter thì hoàn tất toán tử với match tìm được. Esc thì hủy cả hai.
 
@@ -285,7 +285,7 @@ Các luật của Vim:
     - Text có `\n` hoặc kiểu theo dòng thì dịch vòng `1`–`9` và ghi vào `1`.
     - Ngược lại ghi `-`.
     - Nếu đã chỉ định register tên thì ghi register đó và `"`, và không động tới vòng số hay `-`.
-  - **Nối `A`–`Z`:** kiểu thành theo dòng nếu phần thêm vào theo dòng. Text là `cũ + ("\n" nếu theo dòng) + mới`.
+  - **Nối `A`–`Z`:** kiểu thành theo dòng nếu phần thêm vào theo dòng. Text là `cũ + ("\n" nếu theo dòng và `cũ` chưa kết thúc bằng `\n`) + mới`.
   - **`_`:** không ghi gì, kể cả `"`.
 - **Clipboard theo `vim.useSystemClipboard`:**
 
