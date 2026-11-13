@@ -1028,6 +1028,8 @@ pub struct MarkdownStyle {
     pub code_scroll_x: bool,
     /// Width in px of the bar left of quotes and alerts.
     pub quote_bar: f32,
+    /// The background of code blocks and table headers.
+    pub code_background: CodeBackground,
     /// Draws images; `None` draws placeholders.
     pub images: Option<ImageLookup>,
 }
@@ -1046,6 +1048,7 @@ impl MarkdownStyle {
             code_padding: (8., 6.),
             code_scroll_x: true,
             quote_bar: 2.,
+            code_background: CodeBackground::Editor,
             images: None,
         }
     }
@@ -1062,15 +1065,26 @@ impl MarkdownStyle {
             code_padding: (12., 12.),
             code_scroll_x: true,
             quote_bar: 3.,
+            code_background: CodeBackground::Elevated,
             images,
         }
     }
 }
 
-/// The background of code blocks and table headers: the one hover already
-/// used for code.
-fn code_background(ui: &lucerna_theme::UiColors) -> gpui::Rgba {
-    color(ui.editor_background)
+/// Which theme color backs code blocks and table headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeBackground {
+    /// `editor_background`: what hover popovers use.
+    Editor,
+    /// `elevated_surface_background`: contrasts with the editor page.
+    Elevated,
+}
+
+fn code_background(style: &MarkdownStyle, ui: &lucerna_theme::UiColors) -> gpui::Rgba {
+    color(match style.code_background {
+        CodeBackground::Editor => ui.editor_background,
+        CodeBackground::Elevated => ui.elevated_surface_background,
+    })
 }
 
 /// A bordered stand-in for an image that is not drawn: an icon, the alt
@@ -1332,27 +1346,28 @@ impl Renderer<'_> {
         let columns = aligns.len().max(head.len());
         let id = self.tables;
         self.tables += 1;
-        // Cells in document order (image numbering), then laid out by
-        // column so that each column takes the width of its widest cell.
-        let mut by_column: Vec<Vec<AnyElement>> = (0..columns).map(|_| Vec::new()).collect();
+        // One grid, cells added row by row: a row is as tall as its
+        // tallest cell, a column as wide as its widest.
         let last_row = rows.len();
+        let last_column = columns.saturating_sub(1);
+        let mut cells = Vec::with_capacity(columns * (rows.len() + 1));
         for (r, row) in std::iter::once(head)
             .chain(rows.iter().map(Vec::as_slice))
             .enumerate()
         {
-            for (c, column) in by_column.iter_mut().enumerate() {
+            for c in 0..columns {
                 let inlines: &[Inline] = row.get(c).map(Vec::as_slice).unwrap_or(&[]);
                 let cell = self.text(inlines, size, r == 0, false);
                 let align = aligns.get(c).copied().unwrap_or(Align::None);
-                column.push(
+                cells.push(
                     div()
                         .debug_selector(move || format!("md-table-cell-{r}-{c}"))
                         .px(px(10.))
                         .py(px(6.))
-                        .when(r == 0, |d| d.bg(code_background(ui)))
-                        .when(r < last_row, |d| {
-                            d.border_b_1().border_color(color(ui.border_variant))
-                        })
+                        .border_color(color(ui.border_variant))
+                        .when(r == 0, |d| d.bg(code_background(self.style, ui)))
+                        .when(r < last_row, |d| d.border_b_1())
+                        .when(c < last_column, |d| d.border_r_1())
                         .map(|d| match align {
                             Align::Center => d.text_center(),
                             Align::Right => d.text_right(),
@@ -1363,23 +1378,15 @@ impl Renderer<'_> {
                 );
             }
         }
-        let last_column = columns.saturating_sub(1);
         let table = div()
-            .flex()
-            .flex_none()
+            .grid()
+            .grid_cols_max_content(columns as u16)
+            .w_full()
             .border_1()
             .border_color(color(ui.border_variant))
             .rounded(px(4.))
             .overflow_hidden()
-            .children(by_column.into_iter().enumerate().map(|(c, cells)| {
-                div()
-                    .flex()
-                    .flex_col()
-                    .when(c < last_column, |d| {
-                        d.border_r_1().border_color(color(ui.border_variant))
-                    })
-                    .children(cells)
-            }));
+            .children(cells);
         div()
             .id(self.id("md-table-scroll", id))
             .flex()
@@ -1601,7 +1608,7 @@ impl Renderer<'_> {
             .w_full()
             .when(scroll, |d| d.overflow_x_scroll())
             .rounded(px(GRID))
-            .bg(code_background(ui))
+            .bg(code_background(self.style, ui))
             .child(
                 div()
                     .px(px(px_))

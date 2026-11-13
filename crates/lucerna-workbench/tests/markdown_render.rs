@@ -44,7 +44,7 @@ struct Host {
 impl Render for Host {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = MarkdownStyle::preview(14., 1.6, self.images.clone());
-        div().flex().flex_col().children(
+        div().flex().flex_col().w(px(400.)).children(
             (0..self.blocks.blocks().len())
                 .map(|root| render_block(&self.blocks, root, &style, Rc::new(|_, _, _| {}), cx)),
         )
@@ -115,4 +115,17 @@ fn inline_image_in_link_goes_through_lookup(cx: &mut TestAppContext) {
             "{seen:?}"
         );
     }
+}
+
+#[gpui::test]
+fn table_rows_align_when_cells_wrap(cx: &mut TestAppContext) {
+    let long = "word ".repeat(60);
+    let source = format!("| a | b |\n|--|--|\n| {long} | short |\n");
+    let cx = host(&source, None, cx);
+    let a = cx.debug_bounds("md-table-cell-1-0").expect("cell 1-0");
+    let b = cx.debug_bounds("md-table-cell-1-1").expect("cell 1-1");
+    // The long cell wrapped (one line is about 35 px).
+    assert!(a.size.height > px(100.), "{:?}", a.size);
+    assert_eq!(a.origin.y, b.origin.y);
+    assert_eq!(a.size.height, b.size.height);
 }
