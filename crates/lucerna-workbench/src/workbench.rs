@@ -49,6 +49,7 @@ use crate::symbols::SymbolSource;
 use crate::symbols::breadcrumbs::Breadcrumbs;
 use crate::tasks::try_spawn_guarded;
 use crate::terminal::commands::{allow_chords, key_bytes, option_is_meta, skips_shell};
+use crate::terminal::settings::{ConfirmOnExit, confirm_on_exit};
 use crate::terminal::view::{default_spawner, spawn_view};
 use crate::terminal::{LinkTarget, PanelEvent, TerminalPanel, TerminalSpawner, TerminalView};
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
@@ -1245,12 +1246,15 @@ impl Workbench {
     /// app quits or the window closes (spec §6.3): `true` to go on. Save
     /// All saves each one and goes on only if all were saved and nothing
     /// is dirty afterwards, Don't Save
-    /// goes on, Cancel (or a dismissed prompt) stops. Nothing dirty: `true`
-    /// at once.
+    /// goes on, Cancel (or a dismissed prompt) stops. Then, when
+    /// `terminal.integrated.confirmOnExit` asks about running terminals
+    /// (terminal spec §6.1), whether to terminate them. Nothing to ask:
+    /// `true` at once.
     pub fn confirm_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
         let documents = self.documents.clone();
         let paths = documents.read(cx).dirty_paths();
-        if paths.is_empty() {
+        let terminals = self.terminals_to_confirm(cx);
+        if paths.is_empty() && terminals == 0 {
             return Task::ready(true);
         }
         // The prompt is already up for an earlier quit or close.
@@ -1258,30 +1262,67 @@ impl Workbench {
             return Task::ready(false);
         }
         self.confirming_quit = true;
-        let names: Vec<String> = paths.iter().map(|p| save::display_name(p)).collect();
-        let answer = save::prompt_unsaved_all(&names, window, cx);
+        let unsaved = (!paths.is_empty()).then(|| {
+            let names: Vec<String> = paths.iter().map(|p| save::display_name(p)).collect();
+            save::prompt_unsaved_all(&names, window, cx)
+        });
         cx.spawn_in(window, async move |wb, cx| {
-            let go_on = match SaveChoice::of(answer.await) {
-                SaveChoice::Save => {
-                    let paths = documents.read_with(cx, |d, _| d.dirty_paths());
-                    // An edit typed while the saves wrote is not saved:
-                    // stop rather than lose it.
-                    save::save_each(documents.clone(), paths, cx).await
-                        && documents.read_with(cx, |d, _| d.dirty_paths().is_empty())
-                }
-                SaveChoice::DontSave => true,
-                SaveChoice::Cancel => false,
+            let mut go_on = match unsaved {
+                None => true,
+                Some(answer) => match SaveChoice::of(answer.await) {
+                    SaveChoice::Save => {
+                        let paths = documents.read_with(cx, |d, _| d.dirty_paths());
+                        // An edit typed while the saves wrote is not saved:
+                        // stop rather than lose it.
+                        save::save_each(documents.clone(), paths, cx).await
+                            && documents.read_with(cx, |d, _| d.dirty_paths().is_empty())
+                    }
+                    SaveChoice::DontSave => true,
+                    SaveChoice::Cancel => false,
+                },
             };
+            if go_on && terminals > 0 {
+                let answer = wb.update_in(cx, |_, window, cx| {
+                    prompt_terminate_terminals(terminals, window, cx)
+                });
+                go_on = match answer {
+                    Ok(answer) => answer.await == Ok(0),
+                    Err(_) => false,
+                };
+            }
             wb.update(cx, |wb, _| wb.confirming_quit = false).ok();
             go_on
         })
     }
 
-    /// The window's close button: closes at once when nothing is dirty;
+    /// How many terminals `terminal.integrated.confirmOnExit` asks about
+    /// before the app quits or the window closes: every running one with
+    /// `always`, those running something other than their shell (as of the
+    /// last poll) with `hasChildProcesses`, none with `never`.
+    fn terminals_to_confirm(&self, cx: &App) -> usize {
+        let mode = confirm_on_exit(cx);
+        if mode == ConfirmOnExit::Never {
+            return 0;
+        }
+        self.terminal_panel
+            .read(cx)
+            .tabs()
+            .iter()
+            .filter_map(|tab| tab.view.as_ref())
+            .map(|view| view.read(cx))
+            .filter(|view| match mode {
+                ConfirmOnExit::Always => view.exited().is_none(),
+                _ => view.has_child_process(),
+            })
+            .count()
+    }
+
+    /// The window's close button: closes at once when nothing is dirty
+    /// and no terminal needs confirming;
     /// otherwise asks ([`Workbench::confirm_quit`]) and closes the window
     /// itself if told to go on.
     fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.documents.read(cx).dirty_paths().is_empty() {
+        if self.documents.read(cx).dirty_paths().is_empty() && self.terminals_to_confirm(cx) == 0 {
             self.save_workspace_state(cx);
             return true;
         }
@@ -1676,7 +1717,10 @@ impl Workbench {
     /// Starts a terminal in the workspace root and adds its tab; a terminal
     /// that cannot start gets a tab showing why.
     fn open_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> u64 {
-        match spawn_view(&self.terminal_spawner, &self.root, &self.root, window, cx) {
+        // Never asks for trust (spec §6.3): Restricted Mode only drops the
+        // Workspace layer of the shell settings.
+        let restricted = self.is_restricted(cx);
+        match spawn_view(&self.terminal_spawner, &self.root, restricted, window, cx) {
             Ok(view) => self
                 .terminal_panel
                 .update(cx, |panel, cx| panel.add_tab(Some(view), cx)),
@@ -2123,18 +2167,32 @@ impl Workbench {
                 self.pending_chord = chord;
             }
             _ if cmd => cx.stop_propagation(),
-            _ => self.send_key_to_terminal(ev, cx),
+            _ => self.send_key_to_terminal(ev, window, cx),
         }
     }
 
     /// Encodes `ev` for the active terminal's mode and sends it. Text the
     /// view's input handler will receive (typed characters, IME input) is
     /// left to it, so it reaches the shell once.
-    fn send_key_to_terminal(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn send_key_to_terminal(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(view) = self.active_terminal_view(cx) else {
             cx.stop_propagation();
             return;
         };
+        // A tab kept after its process failed closes on the next key,
+        // which goes nowhere (spec §6.1).
+        if view.read(cx).exited().is_some() {
+            cx.stop_propagation();
+            self.kill_terminal(window, cx);
+            return;
+        }
+        self.terminal_panel
+            .update(cx, |panel, cx| panel.key_typed(cx));
         // The multi-line paste warning takes enter and escape, and keeps
         // other keys from the shell while it shows.
         let key = ev.keystroke.key.as_str();
@@ -2253,6 +2311,27 @@ fn pump_open_file_changes(cx: &mut Context<Workbench>) -> (Option<OpenFileWatche
             (None, Task::ready(()))
         }
     }
+}
+
+/// VS Code's `confirmOnExit` prompt for `count` running terminals; the
+/// answer is 0 for Terminate.
+fn prompt_terminate_terminals(
+    count: usize,
+    window: &mut Window,
+    cx: &mut App,
+) -> futures::channel::oneshot::Receiver<usize> {
+    let message = if count == 1 {
+        "Do you want to terminate the active terminal session?".to_string()
+    } else {
+        format!("Do you want to terminate the {count} active terminal sessions?")
+    };
+    window.prompt(
+        gpui::PromptLevel::Warning,
+        &message,
+        None,
+        &["Terminate", "Cancel"],
+        cx,
+    )
 }
 
 /// Quits the app once every workbench window agreed to

@@ -18,7 +18,10 @@ use lucerna_terminal::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use super::settings::{TerminalFont, bold_is_bright, minimum_contrast, palette, terminal_font};
+use super::settings::{
+    InactiveCursor, TerminalFont, bold_is_bright, inactive_cursor, minimum_contrast, palette,
+    terminal_font,
+};
 use super::view::TerminalView;
 use crate::AppState;
 
@@ -57,7 +60,8 @@ enum CursorKind {
     Block,
     Bar,
     Underline,
-    /// Any shape while the view is not focused (`cursorStyleInactive`).
+    /// The default shape while the view is not focused
+    /// (`cursorStyleInactive`).
     Outline,
 }
 
@@ -441,7 +445,12 @@ impl TerminalView {
 
         let selection = selection_rects(&snapshot, &cell);
         let focused = self.focus.is_focused(window);
-        let cursor = cursor_paint(&snapshot, &palette, focused, &shaper, &cell, window);
+        let shape = if focused {
+            None
+        } else {
+            Some(inactive_cursor(cx))
+        };
+        let cursor = cursor_paint(&snapshot, &palette, shape, &shaper, &cell, window);
         let cursor_cell = snapshot.cursor.map(|c| cell(c.row, c.col, 1));
         let marked = self
             .marked
@@ -552,7 +561,7 @@ fn marked_paint(
 fn cursor_paint(
     snapshot: &Snapshot,
     palette: &TerminalPalette,
-    focused: bool,
+    inactive: Option<InactiveCursor>,
     shaper: &Shaper<'_>,
     cell: &impl Fn(u16, u16, u16) -> Bounds<Pixels>,
     window: &mut Window,
@@ -565,12 +574,15 @@ fn cursor_paint(
     let wide = under.is_some_and(|c| c.flags.contains(CellFlags::WIDE));
     let full = cell(cursor.row, cursor.col, if wide { 2 } else { 1 });
     let thickness = px(CURSOR_THICKNESS);
-    let kind = match (focused, cursor.shape) {
-        (_, CursorShape::Hidden) => return None,
-        (false, _) => CursorKind::Outline,
-        (true, CursorShape::Block) => CursorKind::Block,
-        (true, CursorShape::Bar) => CursorKind::Bar,
-        (true, CursorShape::Underline) => CursorKind::Underline,
+    // `inactive` is the unfocused view's shape, whatever the app chose.
+    let kind = match (inactive, cursor.shape) {
+        (_, CursorShape::Hidden) | (Some(InactiveCursor::Hidden), _) => return None,
+        (Some(InactiveCursor::Outline), _) => CursorKind::Outline,
+        (Some(InactiveCursor::Block), _) | (None, CursorShape::Block) => CursorKind::Block,
+        (Some(InactiveCursor::Bar), _) | (None, CursorShape::Bar) => CursorKind::Bar,
+        (Some(InactiveCursor::Underline), _) | (None, CursorShape::Underline) => {
+            CursorKind::Underline
+        }
     };
     let bounds = match kind {
         CursorKind::Block | CursorKind::Outline => full,

@@ -237,3 +237,44 @@ fn fake_with_events_reports_wakeup_and_title() {
     );
     assert_eq!(got.last(), Some(&TerminalEvent::Wakeup), "{got:?}");
 }
+
+#[test]
+fn default_cursor_shape_until_the_app_sets_one() {
+    let term = Terminal::fake(4, 10, 100);
+    term.set_default_cursor_shape(CursorShape::Bar);
+    assert_eq!(term.snapshot().cursor.unwrap().shape, CursorShape::Bar);
+    // DECSCUSR 4 (steady underline) wins, and 0 goes back to the setting.
+    term.feed(b"\x1b[4 q");
+    assert_eq!(
+        term.snapshot().cursor.unwrap().shape,
+        CursorShape::Underline
+    );
+    term.feed(b"\x1b[0 q");
+    assert_eq!(term.snapshot().cursor.unwrap().shape, CursorShape::Bar);
+    // Hidden is the app's to choose: the setting keeps the last shape.
+    term.set_default_cursor_shape(CursorShape::Hidden);
+    assert_eq!(term.snapshot().cursor.unwrap().shape, CursorShape::Bar);
+}
+
+#[test]
+fn scrollback_changes_live_and_is_capped() {
+    let term = Terminal::fake(2, 10, 100);
+    term.feed("x\r\n".repeat(50).as_bytes());
+    assert_eq!(term.snapshot().history_len, 49);
+    term.set_scrollback(10);
+    assert_eq!(term.snapshot().history_len, 10);
+    term.set_scrollback(1_000_000);
+    term.feed("x\r\n".repeat(150_000).as_bytes());
+    assert_eq!(term.snapshot().history_len, 100_000);
+}
+
+#[test]
+fn write_output_draws_into_the_grid() {
+    let term = Terminal::fake(3, 20, 100);
+    term.write_output(b"hello\r\nworld");
+    let snap = term.snapshot();
+    assert_eq!(row_text(&snap, 0).trim_end(), "hello");
+    assert_eq!(row_text(&snap, 1).trim_end(), "world");
+    // Nothing goes to the child.
+    assert!(written(&term).is_empty());
+}

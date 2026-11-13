@@ -20,6 +20,7 @@ use lucerna_terminal::{
     LinkKind, ResolveCtx, Resolved, ViewStamp, foreground_process, link_at, resolve_path,
 };
 
+use super::settings::home_dir;
 use super::view::{TerminalView, TerminalViewEvent};
 use crate::AppState;
 use crate::layout::color;
@@ -140,9 +141,9 @@ pub(crate) struct LinkState {
     /// The `request` number of the click in `opening`.
     open_request: u64,
     cache: HashMap<CacheKey, (Instant, Option<Resolved>)>,
-    /// The foreground process's cwd, when known: polled here at most every
-    /// [`CWD_POLL`] while links are looked up (Task 12's title poll may
-    /// also set it).
+    /// The foreground process's cwd, when known: from the view's process
+    /// poll, or polled here at most every [`CWD_POLL`] while links are
+    /// looked up.
     pub(crate) cwd_now: Option<PathBuf>,
     cwd_polled: Option<Instant>,
     /// How many times `link_at` ran, for tests.
@@ -150,6 +151,15 @@ pub(crate) struct LinkState {
     /// Replaces [`SCAN_BUDGET`] in tests, where a loaded machine running a
     /// debug build can miss 1 ms.
     budget: Option<Duration>,
+}
+
+impl LinkState {
+    /// The view's process poll read `cwd` at `at`: links use it, and need
+    /// not poll again before [`CWD_POLL`] passed.
+    pub(crate) fn note_polled_cwd(&mut self, cwd: PathBuf, at: Instant) {
+        self.cwd_now = Some(cwd);
+        self.cwd_polled = Some(at);
+    }
 }
 
 /// What links read from settings.
@@ -219,13 +229,6 @@ pub(crate) fn file_url_to_path(url: &str) -> Option<PathBuf> {
 }
 
 /// The user's home folder, for `~/` paths.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-}
-
 impl TerminalView {
     /// A link is underlined.
     pub(crate) fn link_shown(&self) -> bool {

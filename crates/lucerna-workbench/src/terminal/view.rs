@@ -7,7 +7,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
@@ -17,17 +17,22 @@ use gpui::{
     FocusHandle, Focusable, Global, IntoElement, KeyDownEvent, ParentElement, Pixels, Point,
     Render, SharedString, Styled, Subscription, Task, UTF16Selection, Window, div, prelude::*,
 };
-use lucerna_terminal::{Batch, Scroll, Terminal, TerminalEvent, TerminalOptions, TitleState};
+use lucerna_terminal::{
+    Batch, ProcessInfo, Scroll, Terminal, TerminalEvent, TerminalOptions, TitleState, display_name,
+    foreground_process,
+};
 
 use super::element::{Frame, TerminalElement};
 use super::links::{LinkState, LinkTarget};
 use super::mouse::MouseState;
-use super::settings::spawn_options;
+use super::settings::{bell_enabled, cursor_style, mouse_settings, scrollback, spawn_plan};
 use crate::ui;
 
 /// How long events are gathered after the first one before the view
 /// handles them together (spec §5.1).
 const BATCH_WINDOW: Duration = Duration::from_millis(4);
+/// The foreground process is asked for at most this often (spec §6.6).
+const PROCESS_POLL: Duration = Duration::from_millis(500);
 
 /// Starts a terminal. The workbench holds one; the default runs
 /// [`Terminal::spawn`], tests install a fake.
@@ -56,24 +61,39 @@ pub(crate) fn default_spawner(cx: &App) -> TerminalSpawner {
     }
 }
 
-/// Starts a terminal in `cwd` with `spawner` and makes its view; the error
-/// text when it could not start. `root` is the workspace folder links
-/// resolve against last.
+/// Starts a terminal for the workspace at `root` with `spawner`, as the
+/// settings say (their Workspace layer skipped when `restricted`), and
+/// makes its view; the error text when it could not start. Links resolve
+/// against `root` last.
 pub(crate) fn spawn_view(
     spawner: &TerminalSpawner,
-    cwd: &Path,
     root: &Path,
+    restricted: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> Result<Entity<TerminalView>, SharedString> {
-    match spawner(spawn_options(cwd)) {
+    let plan = spawn_plan(root, restricted, cx);
+    let cwd = plan.options.cwd.clone();
+    match spawner(plan.options) {
         Ok((terminal, events)) => Ok(cx.new(|cx| {
             let mut view = TerminalView::new(terminal, events, window, cx);
-            view.cwd_start = cwd.to_path_buf();
+            view.cwd_start = cwd;
             view.root = root.to_path_buf();
+            if let Some(warning) = plan.warning {
+                view.write_notice(&warning, true, cx);
+            }
             view
         })),
         Err(error) => Err(format!("The terminal could not start: {error}").into()),
+    }
+}
+
+/// The line written when the process exits with a non-zero code, or with
+/// none (killed by a signal), as spec §6.1 words it.
+fn exit_line(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!("[Tiến trình kết thúc với mã {code}]"),
+        None => "[Tiến trình kết thúc]".to_string(),
     }
 }
 
@@ -84,6 +104,12 @@ pub enum TerminalViewEvent {
     TitleChanged(SharedString),
     /// A ⌘+clicked file or folder link, for the workbench to open.
     OpenLink(LinkTarget),
+    /// The process exited with this code (`None`: a signal killed it).
+    Exited(Option<i32>),
+    /// The bell rang, with `terminal.integrated.enableBell` on.
+    Bell,
+    /// The foreground process or its folder changed (the tab's tooltip).
+    ProcessChanged,
 }
 
 pub struct TerminalView {
@@ -96,7 +122,19 @@ pub struct TerminalView {
     pub(super) links: LinkState,
     pub(super) focus: FocusHandle,
     title_state: TitleState,
-    /// Bells rung since the view was made; Task 12 acts on them.
+    /// The last OSC title, to tell a new title from alacritty repeating
+    /// the current one when its config changes.
+    osc_title: Option<String>,
+    /// The title last told to the tab.
+    title: String,
+    /// The foreground process at the last poll.
+    foreground: Option<ProcessInfo>,
+    /// The poll waiting for its turn or running, and whether a wakeup
+    /// came while it ran.
+    poll: Option<Task<()>>,
+    poll_again: bool,
+    last_poll: Option<Instant>,
+    /// Bells rung since the view was made.
     bells: u64,
     /// The exit code once the process has exited (`Some(None)`: killed by
     /// a signal).
@@ -134,17 +172,27 @@ impl TerminalView {
         let subscriptions = vec![
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
+            cx.observe_global::<crate::AppState>(|view, cx| {
+                view.apply_settings(cx);
+                cx.notify();
+            }),
         ];
         // The first hover must not spend its 1 ms compiling the patterns.
         cx.background_spawn(async { lucerna_terminal::warm_link_patterns() })
             .detach();
-        TerminalView {
+        let view = TerminalView {
             terminal: Arc::new(terminal),
             cwd_start: PathBuf::new(),
             root: PathBuf::new(),
             links: LinkState::default(),
             focus,
             title_state: TitleState::default(),
+            osc_title: None,
+            title: String::new(),
+            foreground: None,
+            poll: None,
+            poll_again: false,
+            last_poll: None,
             bells: 0,
             exited: None,
             grid: (snapshot.rows, snapshot.cols),
@@ -157,7 +205,18 @@ impl TerminalView {
             pending_paste: None,
             _events: Self::pump_events(events, cx),
             _subscriptions: subscriptions,
-        }
+        };
+        view.apply_settings(cx);
+        view
+    }
+
+    /// Hands the settings an open terminal follows to its terminal
+    /// (spec §8.2); the font and colours are read at every layout.
+    fn apply_settings(&self, cx: &App) {
+        self.terminal.set_scrollback(scrollback(cx));
+        self.terminal.set_default_cursor_shape(cursor_style(cx));
+        self.terminal
+            .set_word_separators(&mouse_settings(cx).word_separators);
     }
 
     /// Handles the first event at once, then gathers the next ones for
@@ -207,14 +266,32 @@ impl TerminalView {
             match event {
                 TerminalEvent::Wakeup => redraw = true,
                 TerminalEvent::Title(title) => {
-                    // The foreground process is polled later (Task 11).
-                    self.title_state.on_osc_title(title, None);
-                    let title = self.title_state.tab_title(None);
-                    cx.emit(TerminalViewEvent::TitleChanged(title.into()));
+                    if title != self.osc_title {
+                        self.osc_title = title.clone();
+                        // Which process set it is learnt at the next poll
+                        // (`TitleState::observe`), which this asks for.
+                        self.title_state.on_osc_title(title, None);
+                        redraw = true;
+                    }
+                    self.update_title(cx);
                 }
-                TerminalEvent::Bell => self.bells += 1,
+                TerminalEvent::Bell => {
+                    self.bells += 1;
+                    if bell_enabled(cx) {
+                        cx.emit(TerminalViewEvent::Bell);
+                    }
+                }
                 TerminalEvent::Exited(code) => {
-                    self.exited = Some(code);
+                    if self.exited.is_none() {
+                        self.exited = Some(code);
+                        self.poll = None;
+                        if code != Some(0) {
+                            self.write_notice(&exit_line(code), false, cx);
+                            // The cursor of a finished process means nothing.
+                            self.terminal.write_output(b"\x1b[?25l");
+                        }
+                        cx.emit(TerminalViewEvent::Exited(code));
+                    }
                     redraw = true;
                 }
                 // OSC 52 writes (reads are refused in the terminal crate).
@@ -224,8 +301,109 @@ impl TerminalView {
             }
         }
         if redraw {
+            self.request_poll(cx);
             cx.notify();
         }
+    }
+
+    /// Writes `text` into the grid on a line of its own, in the theme's
+    /// `text_muted` colour, followed by a new line when `newline`. For
+    /// Lucerna's own lines: the exit line and the `cwd` warning.
+    pub(super) fn write_notice(&self, text: &str, newline: bool, cx: &App) {
+        let muted = cx.global::<crate::AppState>().theme.ui.text_muted;
+        let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
+        let at_line_start = self.terminal.snapshot().cursor.is_none_or(|c| c.col == 0);
+        let mut out = String::new();
+        if !at_line_start {
+            out.push_str("\r\n");
+        }
+        out.push_str(&format!(
+            "\x1b[38;2;{};{};{}m{text}\x1b[0m",
+            byte(muted.r),
+            byte(muted.g),
+            byte(muted.b)
+        ));
+        if newline {
+            out.push_str("\r\n");
+        }
+        self.terminal.write_output(out.as_bytes());
+    }
+
+    /// Asks for the foreground process after a wakeup: at once when the
+    /// last poll is [`PROCESS_POLL`] old, else when it will be; one poll
+    /// at a time, on a background thread (spec §6.6).
+    fn request_poll(&mut self, cx: &mut Context<Self>) {
+        if self.exited.is_some() {
+            return;
+        }
+        if self.poll.is_some() {
+            self.poll_again = true;
+            return;
+        }
+        let executor = cx.background_executor().clone();
+        let now = executor.now();
+        let wait = self.last_poll.map_or(Duration::ZERO, |at| {
+            PROCESS_POLL.saturating_sub(now.saturating_duration_since(at))
+        });
+        let terminal = self.terminal.clone();
+        self.poll = Some(cx.spawn(async move |this, cx| {
+            if !wait.is_zero() {
+                executor.timer(wait).await;
+            }
+            let info = executor
+                .spawn(async move { foreground_process(&terminal) })
+                .await;
+            this.update(cx, |view, cx| view.polled(info, cx)).ok();
+        }));
+    }
+
+    fn polled(&mut self, info: Option<ProcessInfo>, cx: &mut Context<Self>) {
+        self.poll = None;
+        let now = cx.background_executor().now();
+        self.last_poll = Some(now);
+        // Before `tab_title`: a title set while the pid was unknown belongs
+        // to the process seen now (`TitleState`'s contract).
+        self.title_state.observe(info.as_ref().map(|i| i.pid));
+        if let Some(cwd) = info.as_ref().and_then(|i| i.cwd.clone()) {
+            self.links.note_polled_cwd(cwd, now);
+        }
+        if self.foreground != info {
+            self.foreground = info;
+            cx.emit(TerminalViewEvent::ProcessChanged);
+        }
+        self.update_title(cx);
+        if std::mem::take(&mut self.poll_again) {
+            self.request_poll(cx);
+        }
+    }
+
+    /// Tells the tab its title when it changed.
+    fn update_title(&mut self, cx: &mut Context<Self>) {
+        let title = self.title_state.tab_title(self.foreground.as_ref());
+        if title != self.title {
+            self.title = title.clone();
+            cx.emit(TerminalViewEvent::TitleChanged(title.into()));
+        }
+    }
+
+    /// The tab's tooltip: the foreground process's name and folder.
+    pub fn process_tooltip(&self) -> Option<String> {
+        let info = self.foreground.as_ref()?;
+        let name = display_name(info);
+        Some(match &info.cwd {
+            Some(cwd) => format!("{name}\n{}", cwd.display()),
+            None => name,
+        })
+    }
+
+    /// Something other than the shell runs in the foreground (as of the
+    /// last poll), for `confirmOnExit: hasChildProcesses`.
+    pub fn has_child_process(&self) -> bool {
+        self.exited.is_none()
+            && self
+                .foreground
+                .as_ref()
+                .is_some_and(|f| Some(f.pid) != self.terminal.child_pid())
     }
 
     pub fn terminal(&self) -> &Terminal {
@@ -301,6 +479,14 @@ impl TerminalView {
     /// Bells the terminal has rung.
     pub fn bells(&self) -> u64 {
         self.bells
+    }
+
+    /// Stands in for a poll of the foreground process, for tests.
+    #[doc(hidden)]
+    pub fn set_foreground_process(&mut self, info: Option<ProcessInfo>, cx: &mut Context<Self>) {
+        self.foreground = info;
+        cx.emit(TerminalViewEvent::ProcessChanged);
+        self.update_title(cx);
     }
 
     /// The exit code once the process exited; `Some(None)` when a signal

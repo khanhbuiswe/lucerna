@@ -16,12 +16,14 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use alacritty_terminal::tty;
-use alacritty_terminal::vte::ansi::{ClearMode, Handler, Rgb};
+use alacritty_terminal::vte::ansi::{
+    ClearMode, CursorShape as AlacCursorShape, CursorStyle, Handler, Rgb,
+};
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use crate::events::TerminalEvent;
 use crate::options::{MAX_SCROLLBACK, TerminalOptions};
-use crate::snapshot::{self, Scroll, Snapshot, ViewStamp};
+use crate::snapshot::{self, CursorShape, Scroll, Snapshot, ViewStamp};
 
 /// A running terminal. Dropping it hangs up the PTY, which sends SIGHUP to
 /// the shell and its foreground job.
@@ -31,10 +33,11 @@ pub struct Terminal {
     /// UI operations applied under the lock `snapshot` takes anyway.
     pending: Mutex<Vec<Op>>,
     child: Option<Child>,
-    /// `scrolling_history` given at start, kept to rebuild alacritty's
-    /// config when the word separators change.
-    scrollback: usize,
-    #[cfg(feature = "test-support")]
+    /// What alacritty's config was last built from; a setter that changes
+    /// it queues a rebuild.
+    config: Mutex<TermSettings>,
+    /// Parses text Lucerna writes into the grid itself (`write_output`),
+    /// and a fake terminal's fed bytes.
     parser: Mutex<alacritty_terminal::vte::ansi::Processor>,
     /// A fake terminal's event channel: `feed` sends a `Wakeup` on it.
     #[cfg(feature = "test-support")]
@@ -49,7 +52,25 @@ enum Op {
     SelectUpdate(ScreenCell),
     SelectAll,
     ClearSelection,
-    WordSeparators(String),
+    Config(TermSettings),
+}
+
+/// The settings alacritty's [`Config`] is built from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TermSettings {
+    scrollback: usize,
+    word_separators: String,
+    cursor: CursorShape,
+}
+
+impl TermSettings {
+    fn new(scrollback: usize) -> Self {
+        TermSettings {
+            scrollback: scrollback.min(MAX_SCROLLBACK),
+            word_separators: DEFAULT_WORD_SEPARATORS.to_string(),
+            cursor: CursorShape::Block,
+        }
+    }
 }
 
 /// A screen cell named by the UI, and the screen it was read off (`None`:
@@ -226,7 +247,7 @@ fn new_term(
         pty_open: Mutex::new(true),
         exit_code: Mutex::new(None),
     });
-    let config = term_config(scrollback, DEFAULT_WORD_SEPARATORS);
+    let config = term_config(&TermSettings::new(scrollback));
     let grid = GridSize {
         rows: size.num_lines as usize,
         cols: size.num_cols as usize,
@@ -239,11 +260,20 @@ fn new_term(
     (term, shared)
 }
 
-fn term_config(scrollback: usize, word_separators: &str) -> Config {
+fn term_config(settings: &TermSettings) -> Config {
+    let shape = match settings.cursor {
+        CursorShape::Bar => AlacCursorShape::Beam,
+        CursorShape::Underline => AlacCursorShape::Underline,
+        CursorShape::Block | CursorShape::Hidden => AlacCursorShape::Block,
+    };
     Config {
-        scrolling_history: scrollback.min(MAX_SCROLLBACK),
+        scrolling_history: settings.scrollback.min(MAX_SCROLLBACK),
         osc52: Osc52::OnlyCopy,
-        semantic_escape_chars: word_separators.to_string(),
+        semantic_escape_chars: settings.word_separators.clone(),
+        default_cursor_style: CursorStyle {
+            shape,
+            blinking: false,
+        },
         ..Config::default()
     }
 }
@@ -323,8 +353,7 @@ impl Terminal {
                 #[cfg(unix)]
                 fd,
             }),
-            scrollback: opts.scrollback,
-            #[cfg(feature = "test-support")]
+            config: Mutex::new(TermSettings::new(opts.scrollback)),
             parser: Mutex::default(),
             #[cfg(feature = "test-support")]
             fake_events: None,
@@ -356,7 +385,7 @@ impl Terminal {
             shared,
             pending: Mutex::new(Vec::new()),
             child: None,
-            scrollback,
+            config: Mutex::new(TermSettings::new(scrollback)),
             parser: Mutex::default(),
             fake_events: Some(tx),
         };
@@ -366,11 +395,7 @@ impl Terminal {
     /// Parses `bytes` as if the child wrote them.
     #[cfg(feature = "test-support")]
     pub fn feed(&self, bytes: &[u8]) {
-        {
-            let mut term = self.term.lock();
-            self.apply_pending(&mut term);
-            lock(&self.parser).advance(&mut *term, bytes);
-        }
+        self.write_output(bytes);
         if let Some(tx) = &self.fake_events {
             let _ = tx.unbounded_send(TerminalEvent::Wakeup);
         }
@@ -542,7 +567,43 @@ impl Terminal {
     /// The characters a word selection stops at
     /// (`terminal.integrated.wordSeparators`).
     pub fn set_word_separators(&self, seps: &str) {
-        lock(&self.pending).push(Op::WordSeparators(seps.to_string()));
+        self.update_config(|c| c.word_separators = seps.to_string());
+    }
+
+    /// Scrollback lines (`terminal.integrated.scrollback`), clamped to
+    /// [`MAX_SCROLLBACK`]. Fewer lines drop the oldest ones.
+    pub fn set_scrollback(&self, lines: usize) {
+        self.update_config(|c| c.scrollback = lines.min(MAX_SCROLLBACK));
+    }
+
+    /// The cursor shape while the app has not asked for one
+    /// (`terminal.integrated.cursorStyle`). An app still sets its own with
+    /// DECSCUSR, and `CSI 0 SP q` goes back to this one. `Hidden` is
+    /// ignored: hiding is the app's (DECTCEM).
+    pub fn set_default_cursor_shape(&self, shape: CursorShape) {
+        if shape != CursorShape::Hidden {
+            self.update_config(|c| c.cursor = shape);
+        }
+    }
+
+    /// Changes the config settings and queues a rebuild when they changed.
+    fn update_config(&self, change: impl FnOnce(&mut TermSettings)) {
+        let mut config = lock(&self.config);
+        let mut next = config.clone();
+        change(&mut next);
+        if next != *config {
+            *config = next.clone();
+            lock(&self.pending).push(Op::Config(next));
+        }
+    }
+
+    /// Parses `bytes` into the grid as if the child wrote them: Lucerna's
+    /// own lines, such as the exit line. Locks the terminal as briefly as
+    /// [`Terminal::snapshot`] does.
+    pub fn write_output(&self, bytes: &[u8]) {
+        let mut term = self.term.lock();
+        self.apply_pending(&mut term);
+        lock(&self.parser).advance(&mut *term, bytes);
     }
 
     /// Copies the visible screen under one short lock, applying queued UI
@@ -605,11 +666,7 @@ impl Terminal {
                     term.selection = Some(selection);
                 }
                 Op::ClearSelection => term.selection = None,
-                Op::WordSeparators(seps) => {
-                    if term.semantic_escape_chars() != seps {
-                        term.set_options(term_config(self.scrollback, &seps));
-                    }
-                }
+                Op::Config(settings) => term.set_options(term_config(&settings)),
             }
         }
     }

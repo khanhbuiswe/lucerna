@@ -112,6 +112,12 @@ impl TerminalPanel {
                 TerminalViewEvent::OpenLink(target) => {
                     cx.emit(PanelEvent::OpenLink(target.clone()))
                 }
+                // Spec §6.1: a clean exit closes the tab; anything else
+                // keeps it, with the exit line, until a key is typed.
+                TerminalViewEvent::Exited(Some(0)) => panel.close_tab(id, cx),
+                TerminalViewEvent::Exited(_) => panel.set_state(id, TabState::Failed, cx),
+                TerminalViewEvent::Bell => panel.set_state(id, TabState::Bell, cx),
+                TerminalViewEvent::ProcessChanged => cx.notify(),
             });
             self.view_events.insert(id, subscription);
         }
@@ -146,6 +152,27 @@ impl TerminalPanel {
         self.active = self.tabs.len() - 1;
         cx.notify();
         id
+    }
+
+    /// Marks the tab `id`. A failed tab stays failed.
+    fn set_state(&mut self, id: u64, state: TabState, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id)
+            && tab.state != state
+            && tab.state != TabState::Failed
+        {
+            tab.state = state;
+            cx.notify();
+        }
+    }
+
+    /// A key was typed into the shown tab: its bell mark goes (spec §6.8).
+    pub fn key_typed(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get_mut(self.active)
+            && tab.state == TabState::Bell
+        {
+            tab.state = TabState::Normal;
+            cx.notify();
+        }
     }
 
     fn set_title(&mut self, id: u64, title: SharedString, cx: &mut Context<Self>) {
@@ -293,7 +320,11 @@ pub(crate) fn tab_elements(panel: &Entity<TerminalPanel>, cx: &App) -> Vec<AnyEl
             };
             let (on_hover, on_click, on_middle, on_drop) =
                 (panel.clone(), panel.clone(), panel.clone(), panel.clone());
-            ui::tab(
+            let tooltip = tab
+                .view
+                .as_ref()
+                .and_then(|view| view.read(cx).process_tooltip());
+            let tab = ui::tab(
                 ui::TabProps {
                     id: ("terminal-tab", id).into(),
                     selector: format!("terminal-tab-{i}"),
@@ -324,8 +355,11 @@ pub(crate) fn tab_elements(panel: &Entity<TerminalPanel>, cx: &App) -> Vec<AnyEl
             .drag_over::<TabDrag>(move |s, _, _, _| s.bg(drop_bg))
             .on_drop(move |drag: &TabDrag, _, cx| {
                 on_drop.update(cx, |p, cx| p.move_tab(drag.index, i, cx));
-            })
-            .into_any_element()
+            });
+            match tooltip {
+                Some(text) => tab.tooltip(ui::tooltip(text)).into_any_element(),
+                None => tab.into_any_element(),
+            }
         })
         .collect()
 }

@@ -2,10 +2,12 @@
 //! its palette (§7.1) and how its shell starts (§6.2).
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gpui::{App, FontWeight, Pixels, SharedString, px};
-use lucerna_terminal::{Rgba8, TerminalOptions, TerminalPalette, build_env, resolve_shell};
+use lucerna_terminal::{
+    CursorShape, MAX_SCROLLBACK, Rgba8, TerminalOptions, TerminalPalette, build_env, resolve_shell,
+};
 
 use crate::AppState;
 use crate::fonts::editor_font_family;
@@ -14,8 +16,8 @@ use crate::fonts::editor_font_family;
 const DEFAULT_LINE_HEIGHT: f32 = 1.2;
 /// `editor.fontSize` when even that is unset.
 const FALLBACK_FONT_SIZE: f32 = 14.;
-/// `terminal.integrated.scrollback` (spec §9.2); the setting comes later.
-const SCROLLBACK: usize = 10_000;
+/// `terminal.integrated.scrollback` when unset (spec §9.2).
+const DEFAULT_SCROLLBACK: usize = 10_000;
 /// The grid a terminal starts with, until its first layout measures it.
 const INITIAL_ROWS: u16 = 24;
 const INITIAL_COLS: u16 = 80;
@@ -227,40 +229,268 @@ fn default_right_click() -> RightClick {
     }
 }
 
-/// How a new terminal in `cwd` starts: the `$SHELL` (a login shell on
-/// macOS), Lucerna's environment plus the terminal variables.
-///
-/// Profiles, `terminal.integrated.env.<os>` and `cwd` come with the
-/// settings and Restricted Mode, so both env layers are empty for now.
-pub(crate) fn spawn_options(cwd: &Path) -> TerminalOptions {
-    let (program, args) = resolve_shell(None, None, std::env::var_os("SHELL").as_deref());
-    let setting_env: HashMap<String, Option<String>> = HashMap::new();
-    let profile_env: HashMap<String, Option<String>> = HashMap::new();
+/// How a new terminal starts, and the warning to write into it first.
+pub(crate) struct SpawnPlan {
+    pub options: TerminalOptions,
+    /// The `cwd` setting named a folder that does not exist.
+    pub warning: Option<String>,
+}
+
+/// This platform's suffix of the per-OS settings (`env.osx`, …).
+fn os_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "osx"
+    } else if cfg!(windows) {
+        "windows"
+    } else {
+        "linux"
+    }
+}
+
+/// The settings that pick a program and its environment (spec §6.3): in
+/// Restricted Mode (`restricted`) the Workspace layer is skipped, since a
+/// strange repository could point the shell at its own binary.
+fn shell_setting(key: &str, restricted: bool, cx: &App) -> Option<serde_json::Value> {
+    let settings = &cx.global::<AppState>().settings;
+    let key = format!("terminal.integrated.{key}");
+    if restricted {
+        settings.get_trusted(&key, None)
+    } else {
+        settings.get(&key, None)
+    }
+}
+
+/// An `env` object: strings set a variable, `null` removes it; other
+/// values are skipped.
+fn env_layer(value: Option<&serde_json::Value>) -> HashMap<String, Option<String>> {
+    let Some(serde_json::Value::Object(map)) = value else {
+        return HashMap::new();
+    };
+    map.iter()
+        .filter_map(|(key, value)| match value {
+            serde_json::Value::String(s) => Some((key.clone(), Some(s.clone()))),
+            serde_json::Value::Null => Some((key.clone(), None)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The profile `defaultProfile.<os>` names in `profiles.<os>`: its program
+/// (the first existing entry when `path` is a list), arguments and env.
+struct Profile {
+    path: Option<PathBuf>,
+    args: Option<Vec<String>>,
+    env: HashMap<String, Option<String>>,
+}
+
+fn default_profile(restricted: bool, cx: &App) -> Option<Profile> {
+    let os = os_key();
+    let name = shell_setting(&format!("defaultProfile.{os}"), restricted, cx)?;
+    let name = name.as_str()?;
+    let profiles = shell_setting(&format!("profiles.{os}"), restricted, cx)?;
+    let profile = profiles.get(name)?.as_object()?;
+    let path = match profile.get("path") {
+        Some(serde_json::Value::String(p)) => Some(PathBuf::from(p)),
+        Some(serde_json::Value::Array(paths)) => {
+            let paths: Vec<PathBuf> = paths
+                .iter()
+                .filter_map(|p| p.as_str().map(PathBuf::from))
+                .collect();
+            paths
+                .iter()
+                .find(|p| p.is_file())
+                .or(paths.first())
+                .cloned()
+        }
+        _ => None,
+    };
+    let args = profile.get("args").and_then(|args| {
+        args.as_array().map(|args| {
+            args.iter()
+                .filter_map(|a| a.as_str().map(str::to_string))
+                .collect()
+        })
+    });
+    Some(Profile {
+        path,
+        args,
+        env: env_layer(profile.get("env")),
+    })
+}
+
+/// `terminal.integrated.cwd` against `root`: empty is `root`, relative is
+/// under it, `~` is home. A folder that does not exist gives home and a
+/// warning.
+fn start_folder(root: &Path, restricted: bool, cx: &App) -> (PathBuf, Option<String>) {
+    let setting = shell_setting("cwd", restricted, cx)
+        .and_then(|v| v.as_str().map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty());
+    let Some(setting) = setting else {
+        return (root.to_path_buf(), None);
+    };
+    let home = home_dir();
+    let path = match (setting.strip_prefix('~'), &home) {
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
+            home.join(rest.trim_start_matches('/'))
+        }
+        _ => root.join(&setting),
+    };
+    // One `stat`, only for a configured folder: the root is known to exist.
+    if path.is_dir() {
+        return (path, None);
+    }
+    let fallback = home.unwrap_or_else(|| root.to_path_buf());
+    let warning = format!(
+        "The terminal.integrated.cwd folder {} does not exist; starting in {}.",
+        path.display(),
+        fallback.display()
+    );
+    (fallback, Some(warning))
+}
+
+/// The user's home folder.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+}
+
+/// `terminal.integrated.scrollback`, at most [`MAX_SCROLLBACK`].
+pub(crate) fn scrollback(cx: &App) -> usize {
+    cx.global::<AppState>()
+        .settings
+        .get::<f64>("terminal.integrated.scrollback", None)
+        .filter(|v| v.is_finite() && *v >= 0.)
+        .map_or(DEFAULT_SCROLLBACK, |v| {
+            v.min(MAX_SCROLLBACK as f64) as usize
+        })
+}
+
+/// `terminal.integrated.cursorStyle`: the shape until an app sets one.
+pub(crate) fn cursor_style(cx: &App) -> CursorShape {
+    match cx
+        .global::<AppState>()
+        .settings
+        .get::<String>("terminal.integrated.cursorStyle", None)
+        .as_deref()
+    {
+        Some("line") => CursorShape::Bar,
+        Some("underline") => CursorShape::Underline,
+        _ => CursorShape::Block,
+    }
+}
+
+/// The cursor drawn while the terminal is not focused
+/// (`terminal.integrated.cursorStyleInactive`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InactiveCursor {
+    Outline,
+    Block,
+    Bar,
+    Underline,
+    Hidden,
+}
+
+pub(crate) fn inactive_cursor(cx: &App) -> InactiveCursor {
+    match cx
+        .global::<AppState>()
+        .settings
+        .get::<String>("terminal.integrated.cursorStyleInactive", None)
+        .as_deref()
+    {
+        Some("block") => InactiveCursor::Block,
+        Some("line") => InactiveCursor::Bar,
+        Some("underline") => InactiveCursor::Underline,
+        Some("none") => InactiveCursor::Hidden,
+        _ => InactiveCursor::Outline,
+    }
+}
+
+/// `terminal.integrated.enableBell`.
+pub(crate) fn bell_enabled(cx: &App) -> bool {
+    cx.global::<AppState>()
+        .settings
+        .get::<bool>("terminal.integrated.enableBell", None)
+        .unwrap_or(false)
+}
+
+/// When quitting or closing the window asks first
+/// (`terminal.integrated.confirmOnExit`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfirmOnExit {
+    Never,
+    Always,
+    HasChildProcesses,
+}
+
+pub(crate) fn confirm_on_exit(cx: &App) -> ConfirmOnExit {
+    match cx
+        .global::<AppState>()
+        .settings
+        .get::<String>("terminal.integrated.confirmOnExit", None)
+        .as_deref()
+    {
+        Some("always") => ConfirmOnExit::Always,
+        Some("hasChildProcesses") => ConfirmOnExit::HasChildProcesses,
+        _ => ConfirmOnExit::Never,
+    }
+}
+
+/// How a new terminal for the workspace at `root` starts (spec §6.2): the
+/// default profile or `$SHELL` (a login shell on macOS), in the `cwd`
+/// setting's folder, with Lucerna's environment, then `env.<os>`, then the
+/// profile's `env`, then the terminal variables. `restricted`: Restricted
+/// Mode, where the Workspace layer of these settings is ignored.
+pub(crate) fn spawn_plan(root: &Path, restricted: bool, cx: &App) -> SpawnPlan {
+    let profile = default_profile(restricted, cx);
+    let (program, args) = match &profile {
+        Some(p) => resolve_shell(
+            p.path.as_deref(),
+            p.args.clone(),
+            std::env::var_os("SHELL").as_deref(),
+        ),
+        None => resolve_shell(None, None, std::env::var_os("SHELL").as_deref()),
+    };
+    let setting_env =
+        env_layer(shell_setting(&format!("env.{}", os_key()), restricted, cx).as_ref());
+    let profile_env = profile.map(|p| p.env).unwrap_or_default();
+    let detect_locale = cx
+        .global::<AppState>()
+        .settings
+        .get::<String>("terminal.integrated.detectLocale", None)
+        .is_none_or(|v| v != "off");
     let mut env: HashMap<String, Option<String>> = build_env(
         std::env::vars(),
         &setting_env,
         &profile_env,
         env!("CARGO_PKG_VERSION"),
-        true,
+        detect_locale,
     )
     .into_iter()
     .map(|(k, v)| (k, Some(v)))
     .collect();
+    // `build_env` drops removed variables; the spawner also needs them
+    // named, to take them out of the inherited environment.
     for (key, value) in setting_env.iter().chain(&profile_env) {
-        if value.is_none() {
+        if value.is_none() && !env.contains_key(key) {
             env.insert(key.clone(), None);
         }
     }
-    TerminalOptions {
-        program,
-        args,
-        cwd: cwd.to_path_buf(),
-        env,
-        rows: INITIAL_ROWS,
-        cols: INITIAL_COLS,
-        cell_width: 8,
-        cell_height: 16,
-        scrollback: SCROLLBACK,
+    let (cwd, warning) = start_folder(root, restricted, cx);
+    SpawnPlan {
+        options: TerminalOptions {
+            program,
+            args,
+            cwd,
+            env,
+            rows: INITIAL_ROWS,
+            cols: INITIAL_COLS,
+            cell_width: 8,
+            cell_height: 16,
+            scrollback: scrollback(cx),
+        },
+        warning,
     }
 }
 
