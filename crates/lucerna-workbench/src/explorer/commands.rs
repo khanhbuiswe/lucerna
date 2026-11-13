@@ -6,18 +6,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{App, ClipboardItem};
+use lucerna_project::EntryKind;
 use serde_json::Value;
 
 use crate::system_shell::system_shell;
-use crate::{CommandRegistry, OpenMode, Workbench, status_message};
+use crate::{CommandRegistry, OpenMode, SelectedKind, Workbench, status_message};
 
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "explorer.openToSide",
         "Explorer: Open to the Side",
         |wb, args, _, cx| {
-            let (target, is_dir) = command_target(wb, args, cx);
-            if !is_dir {
+            let (target, kind) = target_kind(wb, args, cx);
+            if kind == Some(false) {
                 wb.open_path(Arc::from(target), OpenMode::ToSide, cx);
             }
         },
@@ -43,17 +44,18 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
                     .map_or_else(|| wb.root().to_path_buf(), Path::to_path_buf)
             };
             let key = if cfg!(target_os = "macos") {
-                ("terminal.external.osxExec", "Terminal.app")
+                "terminal.external.osxExec"
             } else if cfg!(target_os = "windows") {
-                ("terminal.external.windowsExec", "cmd.exe")
+                "terminal.external.windowsExec"
             } else {
-                ("terminal.external.linuxExec", "x-terminal-emulator")
+                "terminal.external.linuxExec"
             };
+            // The bundled defaults always provide a value.
             let exec = cx
                 .global::<crate::AppState>()
                 .settings
-                .get::<String>(key.0, None)
-                .unwrap_or_else(|| key.1.to_string());
+                .get::<String>(key, None)
+                .unwrap_or_default();
             if let Err(e) = system_shell(cx).open_terminal(&dir, &exec) {
                 status_message::show(format!("Couldn't open the terminal: {e}"), cx);
             }
@@ -91,17 +93,40 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 
 /// The path a command acts on and whether it is a folder: `args.path`
 /// (absolute, or relative to the root) when present, else the selection.
+/// A path the worktree does not know counts as a file.
 pub(crate) fn command_target(wb: &Workbench, args: Option<&Value>, cx: &App) -> (PathBuf, bool) {
-    let target = match args
+    let (target, kind) = target_kind(wb, args, cx);
+    (target, kind == Some(true))
+}
+
+/// Like [`command_target`], with `None` for a path the worktree does not
+/// know. Reads the Explorer and the worktree snapshot only, never the disk.
+fn target_kind(wb: &Workbench, args: Option<&Value>, cx: &App) -> (PathBuf, Option<bool>) {
+    let given = args
         .and_then(|a| a.get("path"))
         .and_then(Value::as_str)
-        .map(Path::new)
-    {
-        Some(path) => wb.root().join(path),
-        None => wb.explorer().read(cx).selected_abs_path(),
+        .map(Path::new);
+    let Some(path) = given else {
+        let explorer = wb.explorer().read(cx);
+        let is_dir = matches!(
+            explorer.selected_kind(),
+            SelectedKind::Dir | SelectedKind::Root
+        );
+        return (explorer.selected_abs_path(), Some(is_dir));
     };
-    let is_dir = target.is_dir();
-    (target, is_dir)
+    let target = wb.root().join(path);
+    let kind = match target.strip_prefix(wb.root()) {
+        Ok(rel) if rel.as_os_str().is_empty() => Some(true),
+        Ok(rel) => wb
+            .worktree()
+            .snapshot()
+            .children(rel.parent().unwrap_or(Path::new("")))
+            .iter()
+            .find(|entry| &*entry.path == rel)
+            .map(|entry| entry.kind == EntryKind::Dir),
+        Err(_) => None,
+    };
+    (target, kind)
 }
 
 /// `target` relative to `root` with its components joined by `separator`;

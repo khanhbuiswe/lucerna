@@ -266,3 +266,65 @@ fn args_path_overrides_selection(cx: &mut TestAppContext) {
         Some(root_of(&wb, cx).join("b.rs").to_string_lossy().into_owned())
     );
 }
+
+#[gpui::test]
+fn copy_relative_path_respects_separator_setting(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(
+            r#"{ "session.trustAllWorktrees": true, "explorer.copyRelativePathSeparator": "\\" }"#,
+        ),
+    );
+    let dir = project();
+    let (_wb, cx) = open(dir.path(), cx);
+    click("explorer-row-src", cx);
+    click("explorer-row-src/main.rs", cx);
+    cx.simulate_keystrokes("alt-cmd-shift-c");
+    assert_eq!(clipboard(cx), Some("src\\main.rs".to_string()));
+}
+
+#[gpui::test]
+fn open_to_side_ignores_missing_path(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command(
+                "explorer.openToSide",
+                Some(&json!({"path": "nope.rs"})),
+                window,
+                cx,
+            )
+        })
+    });
+    draw(cx);
+    let (groups, tabs) = cx.update(|_, cx| {
+        let model = wb.read(cx).editor_groups().read(cx).model();
+        (
+            model.groups().len(),
+            model.groups().iter().map(|g| g.tabs.len()).sum::<usize>(),
+        )
+    });
+    assert_eq!((groups, tabs), (1, 0));
+}
+
+/// A command run from the menu may update the Explorer itself (Rename and
+/// New File will): it must not hit the Explorer's own update.
+#[gpui::test]
+fn menu_command_may_update_the_explorer(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    static RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    wb.update(cx, |wb, _| {
+        wb.commands_mut()
+            .register("copyFilePath", "", |wb, _, _, cx| {
+                wb.explorer().update(cx, |_, cx| cx.notify());
+                RAN.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+    });
+    right_click("explorer-row-a.rs", cx);
+    click("context-menu-item-copyFilePath", cx);
+    assert!(RAN.load(std::sync::atomic::Ordering::SeqCst));
+}
