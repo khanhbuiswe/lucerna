@@ -859,6 +859,8 @@ impl Vim {
                 row: from.row.saturating_add(n - 1).min(last),
                 column: 0,
             };
+            // `v`/`V` are ignored here: a doubled operator always takes
+            // whole lines, so a forced kind has no motion end to act on.
             let Some(r) = operator::motion_range(snapshot, from, to, MotionKind::Linewise, None)
             else {
                 return Outcome::Handled(vec![]);
@@ -878,10 +880,7 @@ impl Vim {
                 .and_then(|t| t.chars().next())
             {
                 None => {
-                    if view.edit_ctx().is_none() {
-                        return Outcome::Handled(vec![]);
-                    }
-                    return self.enter_insert(view, InsertAt::Before);
+                    return self.change_nothing(view);
                 }
                 Some(ch) if !ch.is_whitespace() => {
                     let to = operator::change_word_end(snapshot, from, big, n);
@@ -889,7 +888,7 @@ impl Vim {
                         operator::motion_range(snapshot, from, to, MotionKind::Inclusive, p.force);
                     return match r {
                         Some(r) => self.finish_op(p, r, None, view, g, s),
-                        None => Outcome::Handled(vec![]),
+                        None => self.change_nothing(view),
                     };
                 }
                 Some(_) => {}
@@ -915,6 +914,10 @@ impl Vim {
             Err(retry) => return retry,
         };
         let Some(r) = operator::motion_range(snapshot, from, to, kind, p.force) else {
+            // The motion worked but covers nothing: `c` still inserts.
+            if p.op == Operator::Change {
+                return self.change_nothing(view);
+            }
             return Outcome::Handled(vec![]);
         };
         // A yank keeps the cursor when the motion went forward, else it goes
@@ -984,7 +987,7 @@ impl Vim {
             },
             Some(p @ ('\'' | '`')) => g.marks.get(view.path()).and_then(|m| m.get(c)).map(|to| {
                 let to = clamp_point(snapshot, to);
-                (to, if p == '`' { Inclusive } else { Linewise })
+                (to, if p == '`' { Exclusive } else { Linewise })
             }),
             Some(_) => None,
             None => match c {
@@ -1039,6 +1042,15 @@ impl Vim {
         })
     }
 
+    /// `c` over an empty range: Insert at the cursor with no edit; nothing
+    /// in a read-only view.
+    fn change_nothing(&mut self, view: &dyn ViewInfo) -> Outcome {
+        if view.edit_ctx().is_none() {
+            return Outcome::Handled(vec![]);
+        }
+        self.enter_insert(view, InsertAt::Before)
+    }
+
     /// Runs the operator of `p` on `r`. `yank_cursor` is where a yank
     /// leaves the cursor, when not at the range start.
     fn finish_op(
@@ -1050,6 +1062,7 @@ impl Vim {
         g: &mut VimGlobals,
         s: &Settings,
     ) -> Outcome {
+        let linewise = r.kind == MotionKind::Linewise;
         let Some((mut actions, cursor, mode)) =
             crate::edit::run_operator(p.op, r, view, g, s, p.register)
         else {
@@ -1057,6 +1070,12 @@ impl Vim {
         };
         let cursor = match (p.op, yank_cursor) {
             (Operator::Yank, Some(at)) => at,
+            // Without `startofline`, linewise `d` keeps the column; vim's
+            // cursor is clamped to the new text once the edit is applied.
+            (Operator::Delete, _) if linewise && !s.startofline => Point {
+                row: cursor.row,
+                column: self.cursor.column,
+            },
             _ => cursor,
         };
         let edited = actions.iter().any(|a| matches!(a, Action::Edit(_)));

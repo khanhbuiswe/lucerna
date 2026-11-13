@@ -439,4 +439,80 @@ mod tests {
         let reg = g.read_register(None, ClipboardMode::Never, std::path::Path::new("x"));
         assert_eq!(reg.map(|r| r.text), Some("a\n".to_string()));
     }
+
+    #[test]
+    fn change_over_an_empty_range_still_inserts() {
+        for (start, keys) in [("a\n|\nb", "c$"), ("a\n|\nb", "cl"), ("|abc", "c0")] {
+            let (text, actions) = run_edit(start, keys);
+            assert_eq!(text, start, "{keys}");
+            assert_eq!(
+                actions,
+                vec![
+                    Action::EnterInsert(InsertAt::Before),
+                    Action::ModeChanged(Mode::Insert)
+                ],
+                "{keys}"
+            );
+        }
+    }
+
+    #[test]
+    fn linewise_delete_keeps_column_without_startofline() {
+        let s = Settings {
+            startofline: false,
+            ..Settings::default()
+        };
+        assert_edit_with(s, |_| {}, "abc|d\n  efgh\nx", "dd", "  e|fgh\nx");
+        assert_edit("abc|d\n  efgh\nx", "dd", "  |efgh\nx");
+    }
+
+    #[test]
+    fn backtick_mark_is_exclusive() {
+        assert_edit("ab|cdef", "ma0d`a", "|cdef");
+        assert_edit("ab|cdef", "mal$d`a", "ab|f");
+    }
+
+    /// Feeds `keys` from `start` and returns the globals.
+    fn registers_after(start: &str, keys: &str) -> crate::VimGlobals {
+        let mut g = crate::VimGlobals::default();
+        let mut view = crate::test_util::TestView::new(start);
+        let mut vim = crate::Vim::new(view.cursor);
+        for k in crate::test_util::parse_keys(keys) {
+            if let crate::Outcome::Handled(a) = vim.feed(k, &view, &mut g, &Settings::default()) {
+                view.apply(&mut vim, &a);
+            }
+        }
+        g
+    }
+
+    fn reg(g: &crate::VimGlobals, name: char) -> Option<String> {
+        g.read_register(Some(name), ClipboardMode::Never, std::path::Path::new("x"))
+            .map(|r| r.text)
+    }
+
+    #[test]
+    fn operators_write_registers() {
+        // `dd` fills `1` and shifts the ring.
+        let g = registers_after("|a\nb\nc", "dddd");
+        assert_eq!(reg(&g, '1').as_deref(), Some("b\n"));
+        assert_eq!(reg(&g, '2').as_deref(), Some("a\n"));
+        assert_eq!(reg(&g, '-'), None);
+        // A small delete goes to `-`, not the ring.
+        let g = registers_after("|one two", "dw");
+        assert_eq!(reg(&g, '-').as_deref(), Some("one "));
+        assert_eq!(reg(&g, '1'), None);
+        // A named register skips the ring and `-`.
+        let g = registers_after("|a\nb", "\"add");
+        assert_eq!(reg(&g, 'a').as_deref(), Some("a\n"));
+        assert_eq!(reg(&g, '1'), None);
+        assert_eq!(reg(&g, '-'), None);
+        // The black hole writes nothing.
+        let g = registers_after("|a\nb", "\"_dd");
+        assert_eq!(reg(&g, '"'), None);
+        assert_eq!(reg(&g, '1'), None);
+        // `c` writes like a delete, not a yank.
+        let g = registers_after("|one two", "cw");
+        assert_eq!(reg(&g, '-').as_deref(), Some("one"));
+        assert_eq!(reg(&g, '0'), None);
+    }
 }

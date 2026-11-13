@@ -93,8 +93,13 @@ impl Registers {
             Some(c) if c.is_ascii_uppercase() => {
                 let low = c.to_ascii_lowercase();
                 if let Some(old) = self.regs.get(&low) {
+                    // A linewise append starts on a new line.
                     let linewise = content.kind == RegKind::Linewise;
-                    let sep = if linewise { "\n" } else { "" };
+                    let sep = if linewise && !old.text.ends_with('\n') {
+                        "\n"
+                    } else {
+                        ""
+                    };
                     content.text = format!("{}{sep}{}", old.text, content.text);
                 }
                 self.regs.insert(low, content.clone());
@@ -337,6 +342,14 @@ mod tests {
         assert_eq!(get(&r, 'a'), Some(lw("tes\ntest2\n")));
         assert_eq!(get(&r, '"'), Some(lw("tes\ntest2\n")));
         assert_eq!(get(&r, '0'), None);
+    }
+
+    #[test]
+    fn uppercase_linewise_after_linewise_adds_no_blank_line() {
+        let mut r = Registers::default();
+        r.write(Some('a'), lw("a\n"), Yank, Never, None);
+        r.write(Some('A'), lw("b\n"), Yank, Never, None);
+        assert_eq!(get(&r, 'a'), Some(lw("a\nb\n")));
     }
 
     #[test]
