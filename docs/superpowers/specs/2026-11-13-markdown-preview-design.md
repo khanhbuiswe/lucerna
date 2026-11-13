@@ -442,3 +442,24 @@ Ghi số đo vào phần cuối spec này hoặc vào ghi chú merge.
 - Overdraw của `gpui::list` và cách đo chiều cao item lần đầu.
 - Thứ tự task trong plan; gợi ý: parser → renderer dùng chung → view và
   tab → association → cuộn đồng bộ → ảnh/link → Open in Browser → đo.
+
+## 10. Số đo
+
+Đo ngày 2026-11-13, cùng profile `release`, build bằng `cargo build --release -p lucerna`
+(không dùng `scripts/bundle-app.sh` vì nó giả định `target/` trong repo, còn target dir
+được chia sẻ giữa các worktree). Mốc là `7b79e1b` (chỉ có spec và plan), đầu tính năng là `b7f54ef`.
+
+| Mục | Kết quả |
+|---|---|
+| `luc` mốc `7b79e1b` | 48 792 336 byte |
+| `luc` đầu tính năng `b7f54ef` | 49 215 760 byte |
+| Chênh lệch | **+423 424 byte (413 KB)**: vượt ngân sách 300 KB, dưới trần cứng 500 KB |
+| `git diff 7b79e1b HEAD -- Cargo.lock` | rỗng, không có crate mới |
+| Parse `parse_markdown_document`, 5014 dòng, 191 KB | trung vị 2,2 ms, tối đa 3,0 ms (ngân sách 30 ms), `tests/perf.rs::parse_5000_lines` |
+| RAM A: tab mã nguồn (bản sao `.txt` của spec phase 1) | footprint 107 MB (RSS 113,6 MB) |
+| RAM B: cùng nội dung mở ở preview (`.md`) | footprint 109 MB (RSS 117,4 MB), B − A = +2 MB, trong ngân sách 10 MB |
+| RAM C: file md có 3 ảnh PNG 700×700 (mỗi ảnh 1,4 MB) | footprint 124 MB (RSS 130,2 MB), +15 MB so với B, ảnh giải nén khoảng 5,9 MB |
+
+Ghi chú: mỗi ca là một tiến trình `luc <file>` chạy riêng, đo sau 10 s (`footprint <pid>`).
+CLI chỉ mở được một file, nên C không có sẵn tab B; "trở về gần A sau khi đóng tab"
+chưa đo, cần chạy tay: mở C, đóng tab, đợi 10 s, đo lại. Chênh 413 KB gồm parser, renderer, tab preview, ảnh/link và Open in Browser.
