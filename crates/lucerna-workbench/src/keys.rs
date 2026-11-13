@@ -126,6 +126,15 @@ mod tests {
         }
     }
 
+    fn alt_shift_cmd() -> Modifiers {
+        Modifiers {
+            alt: true,
+            shift: true,
+            platform: true,
+            ..Modifiers::none()
+        }
+    }
+
     fn ctrl_shift_cmd() -> Modifiers {
         Modifiers {
             control: true,
@@ -277,6 +286,8 @@ mod tests {
             (event("up", None, alt_shift()), "shift+alt+up"),
             (event("down", None, alt_shift()), "shift+alt+down"),
             (event("k", None, cmd_shift()), "cmd+shift+k"),
+            (event("enter", Some("\n"), ctrl()), "ctrl+enter"),
+            (event("c", None, alt_shift_cmd()), "alt+cmd+shift+c"),
             (event("enter", Some("\n"), cmd()), "cmd+enter"),
             (event("enter", Some("\n"), cmd_shift()), "cmd+shift+enter"),
             (event("]", None, cmd()), "cmd+]"),

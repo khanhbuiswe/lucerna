@@ -45,6 +45,7 @@ mod search_view;
 mod startup;
 pub mod status_message;
 mod symbols;
+pub mod system_shell;
 pub mod tasks;
 mod text_input;
 mod theme_picker;

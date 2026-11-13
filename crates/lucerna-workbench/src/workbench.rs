@@ -1880,6 +1880,7 @@ pub(crate) fn default_registry() -> CommandRegistry {
     crate::editing::register_commands(&mut commands);
     crate::save::register_commands(&mut commands);
     crate::about::register_commands(&mut commands);
+    crate::explorer::register_commands(&mut commands);
     commands
 }
 

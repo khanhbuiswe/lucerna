@@ -132,7 +132,6 @@ impl ExplorerView {
 
     /// Absolute path of the selection: the root itself for `Root` (in
     /// single-file mode the lone file).
-    #[allow(dead_code)] // used by the context menu commands
     pub(crate) fn selected_abs_path(&self) -> PathBuf {
         match self.model.selection() {
             Selection::Path(path) => self.root.join(path),
@@ -309,8 +308,22 @@ impl ExplorerView {
                     cx.notify();
                 }
                 if let Some(command) = command {
+                    // The explorer is being updated, so commands cannot
+                    // read it: hand them the menu's target as `path`.
+                    let mut args = command
+                        .args
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    if let Some(map) = args.as_object_mut() {
+                        map.entry("path").or_insert_with(|| {
+                            this.selected_abs_path()
+                                .to_string_lossy()
+                                .into_owned()
+                                .into()
+                        });
+                    }
                     let _ = this.workbench.update(cx, |wb, cx| {
-                        wb.run_command(command.command, command.args.as_ref(), window, cx)
+                        wb.run_command(command.command, Some(&args), window, cx)
                     });
                 }
             },
