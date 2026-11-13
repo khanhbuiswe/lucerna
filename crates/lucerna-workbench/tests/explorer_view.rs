@@ -604,6 +604,21 @@ const FOLDER_MENU: [&str; 5] = [
     "copyRelativeFilePath",
 ];
 
+/// Without this an opened file in a temp dir raises the workspace trust
+/// modal, which (rightly) takes the focus.
+const TRUSTED: &str = r#"{ "session.trustAllWorktrees": true }"#;
+
+#[gpui::test]
+fn file_click_keeps_explorer_focus(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-a.rs", cx);
+    assert_eq!(tabs(&wb, cx), [(PathBuf::from("a.rs"), false)]);
+    assert!(key(&wb, "filesExplorerFocus", cx));
+    assert!(!key(&wb, "editorFocus", cx));
+}
+
 #[gpui::test]
 fn right_click_file_shows_file_menu(cx: &mut TestAppContext) {
     init(cx, None);
@@ -685,13 +700,10 @@ fn right_click_elsewhere_replaces_menu(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn shift_f10_opens_menu_below_selected_row(cx: &mut TestAppContext) {
-    init(cx, None);
+    init(cx, Some(TRUSTED));
     let dir = project();
     let (wb, cx) = open(dir.path(), cx);
     click("explorer-row-a.rs", cx);
-    // Opening the file leaves focus outside the sidebar; put it back.
-    cx.update(|w, cx| wb.update(cx, |wb, cx| wb.focus_sidebar(w, cx)));
-    draw(cx);
     cx.simulate_keystrokes("shift-f10");
     draw(cx);
     assert_eq!(menu_commands(&wb, cx), FILE_MENU);

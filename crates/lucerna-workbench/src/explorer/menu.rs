@@ -1,5 +1,6 @@
 //! The Explorer's context menu: which entries a row of each kind shows.
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{Context, FocusHandle};
 
 use super::model::SelectedKind;
@@ -40,5 +41,3 @@ pub(super) fn build_menu(
         .entry("Copy Path", "copyFilePath")
         .entry("Copy Relative Path", "copyRelativeFilePath")
 }
-
-use gpui::prelude::FluentBuilder as _;

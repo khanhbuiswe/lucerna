@@ -33,6 +33,17 @@ const ROW_PADDING: f32 = 2. * GRID;
 const CHEVRON_SIZE: f32 = 12.;
 const TYPE_ICON_SIZE: f32 = 14.;
 
+/// Left padding of a row at `depth`, before its chevron or icon.
+fn row_indent(depth: u16) -> f32 {
+    ROW_PADDING + INDENT * f32::from(depth)
+}
+
+/// Where a row's label starts, from the row's left edge: after the
+/// indent, the chevron slot of a directory and the icon slot.
+fn label_x(depth: u16, is_dir: bool) -> f32 {
+    row_indent(depth) + if is_dir { ICON_SLOT + GRID } else { 0. } + ICON_SLOT + GRID
+}
+
 /// The file tree in the sidebar's Explorer slot.
 pub struct ExplorerView {
     model: ExplorerModel,
@@ -320,13 +331,6 @@ impl ExplorerView {
     fn selected_row_anchor(&self) -> Point<Pixels> {
         let list = self.scroll.0.borrow().base_handle.clone();
         let (bounds, offset) = (list.bounds(), list.offset());
-        let label_x = |depth: u16, dir: bool| {
-            ROW_PADDING
-                + INDENT * f32::from(depth)
-                + if dir { ICON_SLOT + GRID } else { 0. }
-                + ICON_SLOT
-                + GRID
-        };
         let rows = self.model.visible_rows();
         let ix = match self.model.selection() {
             Selection::Path(path) => rows.iter().position(|row| row.path == *path),
@@ -444,7 +448,7 @@ impl ExplorerView {
                         .debug_selector(move || format!("explorer-guide-{}-{k}", path.display()))
                         .absolute()
                         .top_0()
-                        .left(px(ROW_PADDING + INDENT * f32::from(k) + ICON_SLOT / 2.))
+                        .left(px(row_indent(k) + ICON_SLOT / 2.))
                         .w(px(1.))
                         .h_full()
                         .bg(color(ui.border_variant))
@@ -459,7 +463,7 @@ impl ExplorerView {
                     .gap(px(GRID))
                     .h(px(TREE_ROW_HEIGHT))
                     .w_full()
-                    .pl(px(ROW_PADDING + INDENT * f32::from(row.depth)))
+                    .pl(px(row_indent(row.depth)))
                     .pr(px(2. * GRID))
                     .cursor_pointer()
                     .when(selected, |d| d.bg(color(ui.element_selected)))
