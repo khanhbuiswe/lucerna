@@ -1,6 +1,6 @@
 # Context menu của Explorer — thiết kế
 
-Ngày: 2026-11-13. Trạng thái: bản nháp, chờ duyệt.
+Ngày: 2026-11-13. Trạng thái: đã duyệt.
 
 ## Ý định
 
