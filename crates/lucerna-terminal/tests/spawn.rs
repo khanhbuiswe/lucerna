@@ -253,3 +253,34 @@ fn exited_terminal_closes_its_pty_at_once() {
     assert!(term.child_pid().is_some());
     drop(term);
 }
+
+#[test]
+fn foreground_is_child_shell() {
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let mut o = opts("/bin/sh", &["-c", "sleep 2"]);
+    o.cwd = dir.clone();
+    let (term, _rx) = Terminal::spawn(o).unwrap();
+    // The shell may not have exec'd yet; poll until a process reports in.
+    let deadline = Instant::now() + TIMEOUT;
+    let info = loop {
+        if let Some(i) = lucerna_terminal::foreground_process(&term)
+            && i.cwd.is_some()
+        {
+            break i;
+        }
+        assert!(Instant::now() < deadline, "no foreground process");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        info.name == "sleep" || info.name == "sh",
+        "name: {}",
+        info.name
+    );
+    assert_eq!(
+        info.cwd
+            .as_deref()
+            .map(|p| std::fs::canonicalize(p).unwrap()),
+        Some(dir)
+    );
+    assert!(info.pid > 0);
+}
