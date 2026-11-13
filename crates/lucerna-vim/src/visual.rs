@@ -188,6 +188,13 @@ pub(crate) fn line_end(s: &BufferSnapshot, row: u32) -> usize {
     end
 }
 
+/// The empty row after a final line break, which `line_count` leaves out;
+/// `None` when the buffer is empty or does not end in `\n`.
+pub(crate) fn phantom_row(s: &BufferSnapshot) -> Option<u32> {
+    let len = s.len_bytes();
+    (len > 0 && s.byte_at(len - 1) == b'\n').then(|| s.line_count())
+}
+
 /// The offset of the row after `row`, or the end of the buffer.
 pub(crate) fn next_row_start(s: &BufferSnapshot, row: u32) -> usize {
     if row + 1 < s.line_count() {

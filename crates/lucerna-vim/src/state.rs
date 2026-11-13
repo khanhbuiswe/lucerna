@@ -105,6 +105,8 @@ pub struct Vim {
     op: Option<PendingOp>,
     /// The count of the `i a I A o O` that began the Insert session:
     /// `3ifoo<Esc>` types the text twice more at Escape.
+    /// Task 7's replay must `take()` it at Escape so a later Insert session
+    /// does not inherit it.
     #[allow(dead_code)] // read by the counted-insert replay
     insert_count: Option<u32>,
 }
@@ -295,6 +297,12 @@ impl Vim {
     /// (char) mode also allows the line break, where `$` puts the head, and
     /// Insert mode the line end, where `A` types.
     fn clamp_in_mode(&self, snapshot: &BufferSnapshot, p: Point) -> Point {
+        if visual::phantom_row(snapshot) == Some(p.row) {
+            return Point {
+                row: p.row,
+                column: 0,
+            };
+        }
         if matches!(self.mode, Mode::Visual | Mode::Insert) {
             let row = p.row.min(snapshot.line_count().saturating_sub(1));
             let len = visual::line_len(snapshot, row);
@@ -1615,8 +1623,16 @@ fn object_bounds(s: &BufferSnapshot, r: &OpRange) -> (Point, Point) {
 }
 
 /// `p` moved onto a char: the row into the buffer, the column onto a char
-/// boundary at or before the last char of the (capped) line.
+/// boundary at or before the last char of the (capped) line. A point
+/// already on the empty row after a final line break stays there (at
+/// column 0): `o` on the last line opens it. Motions never go there.
 fn clamp_point(snapshot: &BufferSnapshot, p: Point) -> Point {
+    if visual::phantom_row(snapshot) == Some(p.row) {
+        return Point {
+            row: p.row,
+            column: 0,
+        };
+    }
     let row = p.row.min(snapshot.line_count().saturating_sub(1));
     let text = line(snapshot, row);
     let mut column = p.column.min(last_char_col(&text)) as usize;
@@ -2050,6 +2066,45 @@ mod tests {
         feed_keys(&mut vim, &view, "2s");
         assert_eq!(vim.mode(), Mode::Insert);
         assert_eq!(vim.insert_count, None);
+    }
+
+    #[test]
+    fn o_escape_on_the_last_line_stays_on_the_new_row() {
+        use crate::test_util::{assert_edit, assert_keys};
+        assert_edit("t|t", "o<Esc>", "tt\n|");
+        // `k` leaves it; `j` and `G` never reach it.
+        assert_edit("t|t", "o<Esc>k", "|tt\n");
+        assert_keys("a\n|b\n", "j", "a\n|b\n");
+        assert_keys("|a\nb\n", "G", "a\n|b\n");
+        // A point past it clamps to the last real line.
+        let view = TestView::new("a\n|b\n");
+        let mut vim = Vim::new(pt(5, 3));
+        vim.clamp(&view.snapshot);
+        assert_eq!(vim.cursor(), pt(1, 0));
+    }
+
+    #[test]
+    fn enter_at_the_end_then_escape_stays_on_the_new_row() {
+        let mut view = TestView::new("t|t");
+        let mut vim = Vim::new(view.cursor);
+        let mut g = crate::VimGlobals::default();
+        feed_with(&mut vim, &view, &mut g, "A");
+        // The view types Enter: the caret moves to the new empty row.
+        view.snapshot = lucerna_text::BufferSnapshot::from_text("tt\n");
+        vim.set_cursor(pt(1, 0));
+        vim.clamp(&view.snapshot);
+        assert_eq!(vim.cursor(), pt(1, 0));
+        feed_with(&mut vim, &view, &mut g, "<Esc>");
+        assert_eq!(vim.mode(), Mode::Normal);
+        assert_eq!(vim.cursor(), pt(1, 0));
+    }
+
+    #[test]
+    fn dd_on_the_last_real_line_keeps_the_final_line_break() {
+        use crate::test_util::assert_edit;
+        assert_edit("a\n|b\n", "dd", "|a\n");
+        assert_edit("|a\n", "dd", "|");
+        assert_edit("a\n|b", "dd", "|a");
     }
 
     fn pt(row: u32, column: u32) -> Point {

@@ -14,7 +14,7 @@ use crate::classify::{last_char_col, line};
 use crate::motion;
 use crate::operator::{MotionKind, OpRange, Operator, row_start};
 use crate::register::WriteKind;
-use crate::visual::line_end;
+use crate::visual::{self, line_end};
 use crate::{Action, InsertAt, Mode, RegContent, RegKind, Settings, ViewInfo, VimGlobals};
 
 /// [`apply_operator`] on the view's text, or `None` when the view is
@@ -196,6 +196,16 @@ fn linewise_delete(snap: &BufferSnapshot, first: u32, last: u32) -> (Range<usize
             row_start(snap, first)..row_start(snap, last + 1),
             fnb(last + 1),
         )
+    } else if visual::phantom_row(snap) == Some(last + 1) {
+        // The last real rows of a buffer that ends in a line break: the
+        // break before them stays, and the cursor goes to the new last
+        // real row rather than the empty row after it.
+        let cursor = if first > 0 {
+            fnb(first - 1)
+        } else {
+            Point { row: 0, column: 0 }
+        };
+        (row_start(snap, first)..snap.len_bytes(), cursor)
     } else if first > 0 {
         (line_end(snap, first - 1)..snap.len_bytes(), fnb(first - 1))
     } else {
@@ -455,7 +465,7 @@ fn advance(p: Point, text: &str) -> Point {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_util::{assert_edit, assert_edit_with, run_edit};
+    use crate::test_util::{assert_edit, assert_edit_with, run_edit, run_edit_with};
     use crate::{Action, InsertAt, Mode, Settings};
 
     // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'D'" (with a count)
@@ -483,11 +493,9 @@ mod tests {
     }
 
     // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'x' and paste it"
-    // A line follows: `o` on the last line opens the row after a trailing
-    // line break, which Lucerna's line model does not count as a line, so
-    // Escape clamps the cursor back up.
     #[test]
     fn x_then_paste_on_new_line() {
+        assert_edit("t|ext", "2xo<Esc>p", "tt\ne|x");
         assert_edit("t|ext\nend", "2xo<Esc>p", "tt\ne|x\nend");
     }
 
@@ -660,9 +668,34 @@ mod tests {
         assert_edit("a|b", "\"qp", "a|b");
     }
 
+    // On the last line there is no next line to land on: `gp` leaves the
+    // cursor at the start of the last pasted line.
+    #[test]
+    fn gp_linewise_on_last_line_cursor_on_last_pasted_line() {
+        assert_edit("a\n|b", "yygp", "a\nb\n|b");
+        assert_edit("a\n|b", "yy2gp", "a\nb\nb\n|b");
+    }
+
+    #[test]
+    fn readonly_s_and_c_stay_in_normal() {
+        for keys in ["s", "S", "C", "2s"] {
+            let (_, actions) =
+                run_edit_with(Settings::default(), |v| v.readonly = true, "a|b\ncd", keys);
+            assert!(
+                !actions.iter().any(|a| matches!(
+                    a,
+                    Action::EnterInsert(_) | Action::ModeChanged(Mode::Insert) | Action::Edit(_)
+                )),
+                "{keys}: {actions:?}"
+            );
+        }
+    }
+
     #[test]
     fn readonly_view_does_not_edit() {
-        for keys in ["x", "J", "~", "rz", "yyp", "D"] {
+        for keys in [
+            "x", "X", "s", "S", "C", "J", "gJ", "~", "rz", "r<CR>", "yyp", "yyP", "yygp", "D",
+        ] {
             assert_edit_with(
                 Settings::default(),
                 |v| v.readonly = true,
