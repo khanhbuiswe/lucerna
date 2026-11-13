@@ -1085,7 +1085,19 @@ impl Vim {
             .then(|| self.selection(s, tab))
             .flatten()
             .map(|sel| visual::bounds(&sel, s, tab));
-        let at = |p: Point, count: u32| object::object_range(s, p, obj, around, count, view);
+        let at = |p: Point, count: u32| {
+            let mut r = object::object_range(s, p, obj, around, count, view)?;
+            if r.kind == MotionKind::Linewise && obj != Object::Paragraph {
+                // `vi{` over rows of their own selects them charwise, up
+                // to and including the last one's line break.
+                let last = s.offset_to_point(r.range.end).row;
+                r = OpRange {
+                    range: r.range.start..visual::next_row_start(s, last),
+                    kind: MotionKind::Exclusive,
+                };
+            }
+            Some(r)
+        };
         let Some(mut r) = at(self.cursor, n) else {
             return Outcome::Handled(vec![]);
         };

@@ -8,7 +8,7 @@ use lucerna_text::{BufferSnapshot, Point};
 use crate::ViewInfo;
 use crate::classify::{CharClass, class, line};
 use crate::operator::{MotionKind, OpRange, row_start};
-use crate::visual::{line_end, next_row_start};
+use crate::visual::{line_end, line_len, next_row_start};
 
 /// How far from the cursor bracket and tag objects look, in bytes.
 const SCAN_WINDOW: usize = 1 << 20;
@@ -60,7 +60,8 @@ impl Object {
 
 /// The range `obj` covers at `cursor`; `around` is `a…`, else `i…`.
 ///
-/// Paragraphs are linewise (from the start of the first row to the end of
+/// Paragraphs, and the inner part of a bracket pair that stands on rows of
+/// its own, are linewise (from the start of the first row to the end of
 /// the last row's text); every other object is the exact bytes, which may
 /// be empty (`i(` on `()`). `None` when there is no such object.
 pub(crate) fn object_range(
@@ -80,10 +81,10 @@ pub(crate) fn object_range(
         Object::Word | Object::BigWord => {
             word(s, cursor, obj == Object::BigWord, around, count).map(chars)
         }
-        Object::Paren => bracket(s, cursor, (b'(', b')'), around, count, view).map(chars),
-        Object::Brace => bracket(s, cursor, (b'{', b'}'), around, count, view).map(chars),
-        Object::Bracket => bracket(s, cursor, (b'[', b']'), around, count, view).map(chars),
-        Object::Angle => bracket(s, cursor, (b'<', b'>'), around, count, view).map(chars),
+        Object::Paren => bracket(s, cursor, (b'(', b')'), around, count, view),
+        Object::Brace => bracket(s, cursor, (b'{', b'}'), around, count, view),
+        Object::Bracket => bracket(s, cursor, (b'[', b']'), around, count, view),
+        Object::Angle => bracket(s, cursor, (b'<', b'>'), around, count, view),
         Object::DoubleQuote => quote(s, cursor, '"', around, count).map(chars),
         Object::SingleQuote => quote(s, cursor, '\'', around, count).map(chars),
         Object::BackQuote => quote(s, cursor, '`', around, count).map(chars),
@@ -102,235 +103,51 @@ pub(crate) fn object_range(
 // ---------------------------------------------------------------------------
 // Words
 
-/// A position walked char by char across rows, the way Vim walks words: a
-/// row's end (its line break) is a position of its own, of class
-/// [`CharClass::Space`].
-struct Walk<'a> {
-    s: &'a BufferSnapshot,
-    big: bool,
-    last_row: u32,
-    row: u32,
-    col: usize,
-    text: String,
-}
-
-/// What a step did: stayed in the row (`Same`), landed on the row's end
-/// (`Eol`), went to the next or previous row (`Row`), or could not move.
+/// What a run of the text around the cursor is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Step {
-    Same,
-    Eol,
-    Row,
-    Stuck,
+enum Run {
+    /// Chars of one class: a word, or a run of punctuation (`iskeyword`).
+    Text,
+    /// Spaces and tabs within one row.
+    Blank,
+    /// A line break.
+    Break,
 }
 
-impl<'a> Walk<'a> {
-    fn new(s: &'a BufferSnapshot, p: Point, big: bool) -> Walk<'a> {
-        let mut w = Walk {
-            s,
-            big,
-            last_row: s.line_count().saturating_sub(1),
-            row: u32::MAX,
-            col: 0,
-            text: String::new(),
+/// `text` cut into runs, each a byte range and its kind.
+fn runs(text: &str, big: bool) -> Vec<(Range<usize>, Run)> {
+    let mut out: Vec<(Range<usize>, Run)> = Vec::new();
+    let mut prev: Option<(Run, CharClass)> = None;
+    for (i, c) in text.char_indices() {
+        let end = i + c.len_utf8();
+        let here = match c {
+            '\n' => (Run::Break, CharClass::Space),
+            // `\r` before `\n` belongs to the break.
+            '\r' if text[end..].starts_with('\n') => (Run::Break, CharClass::Space),
+            c if c.is_whitespace() => (Run::Blank, CharClass::Space),
+            c => (Run::Text, class(c, big)),
         };
-        w.goto(p);
-        w
+        let joins = prev == Some(here) && here.0 != Run::Break
+            || (here.0 == Run::Break && c == '\n' && text[..i].ends_with('\r'));
+        match out.last_mut() {
+            Some(last) if joins => last.0.end = end,
+            _ => out.push((i..end, here.0)),
+        }
+        prev = Some(here);
     }
-
-    fn goto(&mut self, p: Point) {
-        if p.row != self.row {
-            self.row = p.row;
-            self.text = line(self.s, p.row);
-        }
-        let mut col = (p.column as usize).min(self.text.len());
-        while !self.text.is_char_boundary(col) {
-            col -= 1;
-        }
-        self.col = col;
-    }
-
-    fn pos(&self) -> Point {
-        Point {
-            row: self.row,
-            column: self.col as u32,
-        }
-    }
-
-    fn cls(&self) -> CharClass {
-        self.text[self.col..]
-            .chars()
-            .next()
-            .map_or(CharClass::Space, |c| class(c, self.big))
-    }
-
-    fn on_empty_line(&self) -> bool {
-        self.text.is_empty()
-    }
-
-    fn inc(&mut self) -> Step {
-        if let Some(c) = self.text[self.col..].chars().next() {
-            self.col += c.len_utf8();
-            return if self.col < self.text.len() {
-                Step::Same
-            } else {
-                Step::Eol
-            };
-        }
-        if self.row < self.last_row {
-            self.goto(Point {
-                row: self.row + 1,
-                column: 0,
-            });
-            return Step::Row;
-        }
-        Step::Stuck
-    }
-
-    fn dec(&mut self) -> Step {
-        if let Some(c) = self.text[..self.col].chars().next_back() {
-            self.col -= c.len_utf8();
-            return Step::Same;
-        }
-        if self.row > 0 {
-            self.goto(Point {
-                row: self.row - 1,
-                column: u32::MAX,
-            });
-            return Step::Row;
-        }
-        Step::Stuck
-    }
-
-    /// Like [`Walk::inc`], but steps over a row's end onto the next row.
-    fn incl(&mut self) -> Step {
-        let r = self.inc();
-        if r == Step::Eol {
-            return self.inc();
-        }
-        r
-    }
-
-    /// Like [`Walk::dec`], but steps over the previous row's end onto its
-    /// last char.
-    fn decl(&mut self) -> Step {
-        let r = self.dec();
-        if r == Step::Row && self.col > 0 {
-            return self.dec();
-        }
-        r
-    }
-
-    /// One char left within the row; false at column 0.
-    fn oneleft(&mut self) -> bool {
-        self.col > 0 && self.dec() == Step::Same
-    }
-
-    /// Back to the first char of the run of this class, within the row.
-    fn back_in_line(&mut self) {
-        let start = self.cls();
-        while self.col > 0 {
-            self.dec();
-            if self.cls() != start {
-                self.inc();
-                break;
-            }
-        }
-    }
-
-    /// To the start of the next word, stopping at a row's end (Vim's
-    /// `fwd_word` with `eol`) and on an empty row. False when it cannot
-    /// leave the end of the buffer.
-    fn fwd_word(&mut self) -> bool {
-        let start = self.cls();
-        let last_row = self.row == self.last_row;
-        match self.inc() {
-            Step::Stuck => return false,
-            Step::Eol | Step::Row if last_row => return false,
-            Step::Eol | Step::Row => return true,
-            Step::Same => {}
-        }
-        if start != CharClass::Space {
-            while self.cls() == start {
-                if self.inc() != Step::Same {
-                    return true;
-                }
-            }
-        }
-        while self.cls() == CharClass::Space {
-            if self.col == 0 && self.on_empty_line() {
-                break;
-            }
-            if self.inc() != Step::Same {
-                return true;
-            }
-        }
-        true
-    }
-
-    /// To the end of the word (Vim's `end_word` with `stop` and `empty`):
-    /// a cursor already on a word's end stays; from white space, to the end
-    /// of the next word, or onto an empty row.
-    fn end_word(&mut self) -> bool {
-        let start = self.cls();
-        if self.inc() == Step::Stuck {
-            return false;
-        }
-        if self.cls() == start && start != CharClass::Space {
-            if !self.skip(start) {
-                return false;
-            }
-        } else if start == CharClass::Space {
-            while self.cls() == CharClass::Space {
-                if self.col == 0 && self.on_empty_line() {
-                    return true;
-                }
-                if self.inc() == Step::Stuck {
-                    return false;
-                }
-            }
-            if !self.skip(self.cls()) {
-                return false;
-            }
-        }
-        self.dec();
-        true
-    }
-
-    /// Forward past the run of class `c`; false at the end of the buffer.
-    fn skip(&mut self, c: CharClass) -> bool {
-        while self.cls() == c {
-            if self.inc() == Step::Stuck {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// The buffer offset of the position, a row's end being its line break.
-    fn offset(&self) -> usize {
-        if self.col >= self.text.len() {
-            line_end(self.s, self.row)
-        } else {
-            self.s.point_to_offset(self.pos())
-        }
-    }
-
-    /// The offset after the char at the position (after the line break at
-    /// a row's end).
-    fn offset_after(&self) -> usize {
-        match self.text[self.col..].chars().next() {
-            Some(c) => self.s.point_to_offset(self.pos()) + c.len_utf8(),
-            None => next_row_start(self.s, self.row),
-        }
-    }
+    out
 }
 
-/// `iw` `aw` `iW` `aW`, as Vim's `current_word` defines them: `iw` is the
-/// run of word, punctuation or white space under the cursor; `aw` adds the
-/// white space after (or the one before when there is none after, unless
-/// it is the indent); on white space `aw` is the white space and the next
-/// word. A count takes more runs, across rows.
+/// `iw` `aw` `iW` `aW` (`:h iw`, `:h aw`). The text is a sequence of runs:
+/// words (a word or a run of punctuation), blanks within a row, and line
+/// breaks.
+/// - `iw` takes `count` runs from the one under the cursor, blanks
+///   counting as words and line breaks passed over.
+/// - `aw` on a word takes `count` words, each with the blanks after it on
+///   its row. When the last has none, the blanks before the first join,
+///   unless they are the row's indent.
+/// - `aw` on blanks takes them and the `count` words after them.
+/// - On an empty row both give an empty range.
 fn word(
     s: &BufferSnapshot,
     cursor: Point,
@@ -338,64 +155,54 @@ fn word(
     around: bool,
     count: u32,
 ) -> Option<Range<usize>> {
-    let mut w = Walk::new(s, cursor, big);
-    w.back_in_line();
-    let mut start = w.pos();
-    let mut include_white = false;
-    if (w.cls() == CharClass::Space) == around {
-        if !w.end_word() {
-            return None;
-        }
-    } else {
-        w.fwd_word();
-        if w.col == 0 {
-            w.decl();
-        } else {
-            w.oneleft();
-        }
-        include_white = around;
+    let base = row_start(s, cursor.row);
+    if line_len(s, cursor.row) == 0 {
+        return Some(base..base);
     }
-    let mut inclusive = true;
-    let mut left = count - 1;
-    while left > 0 {
-        inclusive = true;
-        if w.incl() == Step::Stuck {
-            return None;
-        }
-        if around != (w.cls() == CharClass::Space) {
-            if !w.fwd_word() && left > 1 {
-                return None;
-            }
-            // Ending just past a line break: the next row's first char is
-            // not taken.
-            if !w.oneleft() {
-                inclusive = false;
-            }
-        } else if !w.end_word() {
-            return None;
-        }
-        left -= 1;
-    }
-    if include_white && (w.cls() != CharClass::Space || (w.col == 0 && !inclusive)) {
-        // No white space after: take the white space before, unless it is
-        // the indent.
-        let end = w.pos();
-        w.goto(start);
-        if w.oneleft() {
-            w.back_in_line();
-            if w.cls() == CharClass::Space && w.col > 0 {
-                start = w.pos();
-            }
-        }
-        w.goto(end);
-    }
-    let from = s.point_to_offset(start);
-    let to = if inclusive {
-        w.offset_after()
-    } else {
-        w.offset()
+    // Every unit lies within a few rows, past blank-only ones.
+    let last_row = s.line_count().saturating_sub(1);
+    let rows = count.saturating_mul(2).saturating_add(64);
+    let end_row = cursor.row.saturating_add(rows).min(last_row);
+    let text = s.text_for_range(base..next_row_start(s, end_row));
+    let runs = runs(&text, big);
+    let cur = s.point_to_offset(cursor) - base;
+    let k = runs.iter().position(|(r, _)| cur < r.end)?;
+    let count = count as usize;
+    // The indices of the runs after `k` (and `k` itself) that are not
+    // line breaks, or only words.
+    let from_k = |only_text: bool| {
+        runs.iter()
+            .enumerate()
+            .skip(k)
+            .filter(move |(_, (_, kind))| {
+                if only_text {
+                    *kind == Run::Text
+                } else {
+                    *kind != Run::Break
+                }
+            })
+            .map(|(i, _)| i)
     };
-    Some(from..to.max(from))
+    let (start, end) = if !around {
+        let last = from_k(false).nth(count - 1)?;
+        (runs[k].0.start, runs[last].0.end)
+    } else if runs[k].1 != Run::Text {
+        let last = from_k(true).nth(count - 1)?;
+        (runs[k].0.start, runs[last].0.end)
+    } else {
+        let last = from_k(true).nth(count - 1)?;
+        match runs.get(last + 1) {
+            Some((blank, Run::Blank)) => (runs[k].0.start, blank.end),
+            _ => {
+                let before = k
+                    .checked_sub(1)
+                    .filter(|&b| runs[b].1 == Run::Blank && b > 0 && runs[b - 1].1 != Run::Break);
+                let start = before.map_or(runs[k].0.start, |b| runs[b].0.start);
+                (start, runs[last].0.end)
+            }
+        }
+    };
+    Some(base + start..base + end)
 }
 
 // ---------------------------------------------------------------------------
@@ -404,8 +211,8 @@ fn word(
 /// Whether the node starting at `start` reads as a string or a comment. A
 /// node here is only a byte range, so its text decides:
 /// - a string starts with a quote, after at most two ASCII letters (`r"`,
-///   `b'`, `f"`, `rb"`), and ends with that quote, perhaps followed by `#`s
-///   (a Rust raw string). Requiring the closing quote keeps out nodes that
+///   `b'`, `f"`, `rb"`) and any `#`s (`r#"`), and ends with that quote,
+///   perhaps followed by `#`s (a Rust raw string `r#"…"#`). Requiring the closing quote keeps out nodes that
 ///   merely start with a quote, such as a loop with a `'label:`;
 /// - a comment starts with `//`, `/*`, `--` or `#`, except `#[` and `#!`
 ///   (Rust attributes).
@@ -424,6 +231,9 @@ fn is_string_or_comment(s: &BufferSnapshot, node: &Range<usize>) -> bool {
     }
     let mut i = node.start;
     while i < node.start + 2 && at(i).is_some_and(|c| c.is_ascii_alphabetic()) {
+        i += 1;
+    }
+    while at(i) == Some(b'#') {
         i += 1;
     }
     let Some(q @ (b'"' | b'\'' | b'`')) = at(i) else {
@@ -448,19 +258,40 @@ struct Brackets<'a> {
     /// The cursor's offset: a string or comment holding it is searched
     /// like plain text.
     cursor: usize,
+    /// The strings and comments found so far, so a scan that comes back
+    /// over one skips it without asking the tree again.
+    found: std::cell::RefCell<Vec<Range<usize>>>,
+    /// Tree queries made; past [`MAX_NODE_QUERIES`] the scan is text-only.
+    queries: std::cell::Cell<u32>,
 }
+
+/// The most syntax-tree queries one bracket object makes. Each query walks
+/// the tree, so a scan over thousands of brackets stops asking and treats
+/// the rest as plain text.
+const MAX_NODE_QUERIES: u32 = 2_000;
 
 impl Brackets<'_> {
     /// The string or comment node the bracket at window index `i` lies
     /// strictly inside, unless that node also holds the cursor.
     fn skipped(&self, i: usize) -> Option<Range<usize>> {
         let at = self.lo + i;
-        self.view.enclosing_nodes(at..at + 1).into_iter().find(|n| {
-            n.start < at
-                && at < n.end
-                && !(n.start <= self.cursor && self.cursor < n.end)
-                && is_string_or_comment(self.s, n)
-        })
+        let skips = |n: &Range<usize>| {
+            n.start < at && at < n.end && !(n.start <= self.cursor && self.cursor < n.end)
+        };
+        if let Some(n) = self.found.borrow().iter().find(|n| skips(n)) {
+            return Some(n.clone());
+        }
+        if self.queries.get() >= MAX_NODE_QUERIES {
+            return None;
+        }
+        self.queries.set(self.queries.get() + 1);
+        let n = self
+            .view
+            .enclosing_nodes(at..at + 1)
+            .into_iter()
+            .find(|n| skips(n) && is_string_or_comment(self.s, n))?;
+        self.found.borrow_mut().push(n.clone());
+        Some(n)
     }
 
     /// The unmatched opening bracket at or before window index `from`.
@@ -549,9 +380,12 @@ impl Brackets<'_> {
 
 /// `i(` `a(` and the other bracket pairs: the pair around the cursor,
 /// `count` levels out, else the next pair after it (as VSCodeVim does).
-/// The inner part of a pair that spans rows drops the white space (line
-/// breaks included) at its start and end, so the row of the closing
-/// bracket is not taken.
+///
+/// The inner part follows Vim on rows: when the opening bracket ends its
+/// row, the part starts at the next row's start (the line break is not
+/// taken); when, in addition, the closing bracket has only white space
+/// before it on its row, the part is the rows in between, linewise, so
+/// `di{` leaves `{\n}` and `ci{` works like `cc`.
 fn bracket(
     s: &BufferSnapshot,
     cursor: Point,
@@ -559,7 +393,7 @@ fn bracket(
     around: bool,
     count: u32,
     view: &dyn ViewInfo,
-) -> Option<Range<usize>> {
+) -> Option<OpRange> {
     let at = s.point_to_offset(cursor);
     let lo = s.floor_char_boundary(at.saturating_sub(SCAN_WINDOW));
     let hi = s.floor_char_boundary(at.saturating_add(SCAN_WINDOW));
@@ -570,27 +404,43 @@ fn bracket(
         bytes: s.text_for_range(lo..hi).into_bytes(),
         pair,
         cursor: at,
+        found: Default::default(),
+        queries: Default::default(),
     };
     let cur = at - lo;
     let (open, close) = brackets
         .enclosing(cur, count)
         .or_else(|| brackets.next_pair(cur))?;
+    let chars = |range: Range<usize>| {
+        Some(OpRange {
+            range,
+            kind: MotionKind::Exclusive,
+        })
+    };
     if around {
-        return Some(lo + open..lo + close + 1);
+        return chars(lo + open..lo + close + 1);
     }
-    let inner = &brackets.bytes[open + 1..close];
-    if !inner.contains(&b'\n') {
-        return Some(lo + open + 1..lo + close);
+    let (open, close) = (lo + open, lo + close);
+    let open_row = s.offset_to_point(open).row;
+    let close_at = s.offset_to_point(close);
+    let blank = |r: Range<usize>| s.text_for_range(r).trim().is_empty();
+    let opener_ends_row = close_at.row > open_row && blank(open + 1..line_end(s, open_row));
+    if !opener_ends_row {
+        return chars(open + 1..close);
     }
-    let lead = inner.iter().take_while(|b| b.is_ascii_whitespace()).count();
-    let trail = inner
-        .iter()
-        .rev()
-        .take_while(|b| b.is_ascii_whitespace())
-        .count();
-    let from = lo + open + 1 + lead;
-    let to = (lo + close - trail).max(from);
-    Some(from..to)
+    let first = open_row + 1;
+    let closer_starts_row = blank(row_start(s, close_at.row)..close);
+    if closer_starts_row && close_at.row > first {
+        return Some(OpRange {
+            range: row_start(s, first)..line_end(s, close_at.row - 1),
+            kind: MotionKind::Linewise,
+        });
+    }
+    if closer_starts_row {
+        // `{\n}`: nothing in between.
+        return chars(open + 1..open + 1);
+    }
+    chars(row_start(s, first)..close)
 }
 
 // ---------------------------------------------------------------------------
@@ -685,29 +535,37 @@ fn tag_end(bytes: &[u8], from: usize) -> Option<usize> {
 /// An element: its opening tag's range and its closing tag's range.
 type Element = (Range<usize>, Range<usize>);
 
+/// The most bytes read from the start of an element node for its opening
+/// tag, and from its end for its closing tag.
+const TAG_HEAD: usize = 4096;
+const TAG_TAIL: usize = 256;
+
 /// The element a syntax node covers, if its text is `<name …>…</name>`.
+/// Only the node's head and tail are read, and nodes larger than
+/// [`SCAN_WINDOW`] are passed over, so ancestors up to the root cost little.
 fn element_node(s: &BufferSnapshot, node: &Range<usize>) -> Option<Element> {
     // A tree a parse behind the text may hold ranges that no longer fit.
     let fits = |at: usize| at <= s.len_bytes() && s.floor_char_boundary(at) == at;
-    if node.start >= node.end || !fits(node.start) || !fits(node.end) {
+    if node.start >= node.end
+        || node.end - node.start > SCAN_WINDOW
+        || !fits(node.start)
+        || !fits(node.end)
+    {
         return None;
     }
-    let bytes = s.text_for_range(node.clone()).into_bytes();
-    let name = tag_name_len(bytes.get(1..)?);
-    if bytes[0] != b'<' || name == 0 {
+    let head_end = s.floor_char_boundary((node.start + TAG_HEAD).min(node.end));
+    let head = s.text_for_range(node.start..head_end).into_bytes();
+    let name = tag_name_len(head.get(1..)?);
+    if head[0] != b'<' || name == 0 {
         return None;
     }
-    let open_end = tag_end(&bytes, 1 + name)?;
-    let name = &bytes[1..1 + name];
-    let body = bytes.strip_suffix(b">")?;
-    let body = body.trim_ascii_end();
-    let close_start = body.strip_suffix(name)?.strip_suffix(b"</")?.len();
-    (close_start >= open_end).then(|| {
-        (
-            node.start..node.start + open_end,
-            node.start + close_start..node.end,
-        )
-    })
+    let open_end = node.start + tag_end(&head, 1 + name)?;
+    let name = &head[1..1 + name];
+    let tail_start = s.floor_char_boundary(node.end.saturating_sub(TAG_TAIL).max(node.start));
+    let tail = s.text_for_range(tail_start..node.end).into_bytes();
+    let body = tail.strip_suffix(b">")?.trim_ascii_end();
+    let close_start = tail_start + body.strip_suffix(name)?.strip_suffix(b"</")?.len();
+    (close_start >= open_end).then_some((node.start..open_end, close_start..node.end))
 }
 
 /// Every element in `bytes`, from a scan that pairs opening and closing
@@ -1083,9 +941,71 @@ mod tests {
     }
 
     #[test]
-    fn multiline_brace_inner_drops_surrounding_whitespace() {
+    fn multiline_brace_inner_is_linewise() {
+        assert_edit("{\n    fo|o\n}", "di{", "{\n|}");
+        assert_edit("x {\n    a|b\n    cd\n  }\ny", "di{", "x {\n  |}\ny");
+        // `ci{` works like `cc`: one open row, indent kept.
         assert_edit("fn f() {\n    a|b\n    cd\n}", "ci{", "fn f() {\n    |\n}");
         assert_edit("{\n  x|\n}", "da{", "|");
+        // `yi{` yanks whole rows.
+        let mut g = crate::VimGlobals::default();
+        let mut view = crate::test_util::TestView::new("{\n    fo|o\n}");
+        let mut vim = crate::Vim::new(view.cursor);
+        for k in crate::test_util::parse_keys("yi{") {
+            if let crate::Outcome::Handled(a) = vim.feed(k, &view, &mut g, &Settings::default()) {
+                view.apply(&mut vim, &a);
+            }
+        }
+        let reg = g.read_register(None, crate::ClipboardMode::Never, std::path::Path::new("x"));
+        assert_eq!(
+            reg.map(|r| (r.text, r.kind)),
+            Some(("    foo\n".to_string(), crate::RegKind::Linewise))
+        );
+    }
+
+    #[test]
+    fn multiline_paren_starts_at_next_row() {
+        // The `)` shares its row: from the next row's start, indent kept.
+        assert_edit("f(\n  |b)", "di(", "f(\n|)");
+        // The opener does not end its row: the exact inner part.
+        assert_edit("f(a|,\n  b)", "di(", "f(|)");
+        // Nothing between `{` and `}` on the next row.
+        let (text, actions) = run_edit("|{\n}", "di{");
+        assert_eq!(text, "|{\n}");
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn iw_on_an_empty_line_is_empty() {
+        let (text, actions) = run_edit("a\n|\nb", "diw");
+        assert_eq!(text, "a\n|\nb");
+        assert!(actions.is_empty(), "{actions:?}");
+        let (text, actions) = run_edit("a\n|\nb", "ciw");
+        assert_eq!(text, "a\n|\nb");
+        assert!(!actions.iter().any(|a| matches!(a, Action::Edit(_))));
+        assert!(actions.contains(&Action::ModeChanged(Mode::Insert)));
+    }
+
+    #[test]
+    fn bracket_scan_caps_tree_queries() {
+        let start = format!("{} |x", "()".repeat(5_000));
+        let mut view = crate::test_util::TestView::new(&start);
+        view.nodes.push(0..view.snapshot.len_bytes());
+        let mut vim = crate::Vim::new(view.cursor);
+        crate::test_util::feed_keys(&mut vim, &view, "di(");
+        let queries = view.node_queries.get();
+        assert!(queries <= 2_000, "{queries} tree queries");
+        // A string found once is not asked about again.
+        let start = format!("({}|)", "\"((\" ".repeat(50));
+        let mut view = crate::test_util::TestView::new(&start);
+        for i in 0..50 {
+            let at = 1 + 5 * i;
+            view.nodes.push(at..at + 4);
+        }
+        view.nodes.push(0..view.snapshot.len_bytes());
+        let mut vim = crate::Vim::new(view.cursor);
+        crate::test_util::feed_keys(&mut vim, &view, "di(");
+        assert!(view.node_queries.get() <= 52, "{}", view.node_queries.get());
     }
 
     #[test]
@@ -1164,6 +1084,32 @@ mod tests {
         assert_eq!(
             sel_after("f((a|b))", "vi(i("),
             (char_sel(p(0, 2), p(0, 5)), Mode::Visual)
+        );
+    }
+
+    #[test]
+    fn vi_brace_over_rows_is_charwise() {
+        assert_eq!(
+            sel_after("{\n  a|b\n  c\n}", "vi{"),
+            (
+                Some(VimSelection::Char {
+                    start: p(1, 0),
+                    end_inclusive: p(2, 3)
+                }),
+                Mode::Visual
+            )
+        );
+    }
+
+    #[test]
+    fn raw_strings_are_strings() {
+        let start = "f(r#\")\"#, |x)";
+        assert_edit_with(
+            Settings::default(),
+            |v| v.nodes.push(2..8),
+            start,
+            "di(",
+            "f(|)",
         );
     }
 

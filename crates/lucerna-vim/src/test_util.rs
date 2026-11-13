@@ -26,6 +26,8 @@ pub(crate) struct TestView {
     pub config: EditConfig,
     /// Syntax nodes for `enclosing_nodes`, as byte ranges.
     pub nodes: Vec<Range<usize>>,
+    /// How many times `enclosing_nodes` was called.
+    pub node_queries: std::cell::Cell<usize>,
     /// Undo steps, oldest first, and redo steps, latest undone last.
     undo: Vec<UndoStep>,
     redo: Vec<UndoStep>,
@@ -59,6 +61,7 @@ impl TestView {
             readonly: false,
             config: lucerna_editor::test_util::test_config(),
             nodes: Vec::new(),
+            node_queries: std::cell::Cell::new(0),
             undo: Vec::new(),
             redo: Vec::new(),
         }
@@ -259,6 +262,7 @@ impl ViewInfo for TestView {
     /// The `nodes` that contain `range` (and are not equal to it unless it
     /// is empty), innermost first, like `SyntaxState::enclosing_nodes`.
     fn enclosing_nodes(&self, range: Range<usize>) -> Vec<Range<usize>> {
+        self.node_queries.set(self.node_queries.get() + 1);
         let mut out: Vec<Range<usize>> = self
             .nodes
             .iter()
