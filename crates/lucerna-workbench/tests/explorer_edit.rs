@@ -15,7 +15,9 @@ use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::{AppState, Selection, Workbench};
 use tempfile::TempDir;
 
-const TRUSTED: &str = r#"{ "session.trustAllWorktrees": true }"#;
+/// Trusted, so opening a file raises no trust modal; no language servers,
+/// whose threads would make the GPUI test scheduler non-deterministic.
+const TRUSTED: &str = r#"{ "session.trustAllWorktrees": true, "lucerna.lsp.enabled": false }"#;
 
 fn init(cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
@@ -408,29 +410,13 @@ fn create_error_shows_status(cx: &mut TestAppContext) {
 #[gpui::test]
 fn scrolling_edit_row_out_of_view_keeps_editing(cx: &mut TestAppContext) {
     init(cx);
-    let dir = tempfile::tempdir().unwrap();
-    for i in 0..300 {
-        std::fs::write(dir.path().join(format!("f{i:03}.txt")), "").unwrap();
-    }
+    let dir = long_project();
     let (wb, cx) = open(dir.path(), cx);
     click("explorer-root", cx);
     run(&wb, "explorer.newFile", cx);
     type_text(cx, "half.rs");
     assert!(cx.debug_bounds("explorer-edit-input").is_some());
-    let list = cx.debug_bounds("explorer-list").unwrap();
-    cx.simulate_event(gpui::ScrollEvent {
-        position: list.center(),
-        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-5000.))),
-        modifiers: Modifiers::none(),
-        touch_phase: gpui::TouchPhase::Moved,
-        source: gpui::ScrollSource::Pointer,
-    });
-    draw(cx);
-    draw(cx);
-    assert!(
-        cx.debug_bounds("explorer-edit-input").is_none(),
-        "the edit row scrolled out of the list"
-    );
+    scroll_list_away(cx);
     assert!(editing(&wb, cx));
     assert!(!dir.path().join("half.rs").exists());
 }
@@ -464,4 +450,67 @@ fn deleting_parent_cancels_edit(cx: &mut TestAppContext) {
     assert!(!editing(&wb, cx));
     assert!(cx.debug_bounds("explorer-edit-input").is_none());
     assert!(!root.join("src").exists());
+}
+
+/// A project of 300 files, so the Explorer list scrolls.
+fn long_project() -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..300 {
+        std::fs::write(dir.path().join(format!("f{i:03}.txt")), "").unwrap();
+    }
+    dir
+}
+
+/// Scrolls the Explorer list far down, so a row at the top is not drawn.
+fn scroll_list_away(cx: &mut VisualTestContext) {
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    cx.simulate_event(gpui::ScrollEvent {
+        position: list.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-5000.))),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui::TouchPhase::Moved,
+        source: gpui::ScrollSource::Pointer,
+    });
+    draw(cx);
+    draw(cx);
+    assert!(
+        cx.debug_bounds("explorer-edit-input").is_none(),
+        "the edit row scrolled out of the list"
+    );
+}
+
+/// A row scrolled out of the list gets no blur when the focus moves on
+/// later; the edit must still end then.
+#[gpui::test]
+fn scrolled_out_edit_ends_when_focus_moves_elsewhere(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = long_project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-root", cx);
+    run(&wb, "explorer.newFile", cx);
+    type_text(cx, "kept.rs");
+    scroll_list_away(cx);
+    assert!(editing(&wb, cx));
+    click_editor_area(cx);
+    let root = root_of(&wb, cx);
+    wait_until(cx, |_| root.join("kept.rs").is_file());
+    wait_until(cx, |cx| !editing(&wb, cx));
+    run(&wb, "filesExplorer.openContextMenu", cx);
+    let open = cx.update(|_, cx| wb.read(cx).explorer().read(cx).context_menu_open());
+    assert!(open, "Explorer commands run again");
+}
+
+#[gpui::test]
+fn scrolled_out_edit_with_error_cancels_when_focus_moves(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = long_project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-root", cx);
+    run(&wb, "explorer.newFile", cx);
+    type_text(cx, "f000.txt");
+    scroll_list_away(cx);
+    click_editor_area(cx);
+    draw(cx);
+    assert!(!editing(&wb, cx));
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 300);
 }

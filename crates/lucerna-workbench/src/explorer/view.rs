@@ -90,6 +90,9 @@ pub struct ExplorerView {
     focus: FocusHandle,
     name_edit: Option<NameEdit>,
     pending_reveal: Option<PendingReveal>,
+    /// The input of an edit ended because its folder vanished: if it still
+    /// held the focus, the next frame gives the focus to the sidebar.
+    refocus_sidebar: Option<FocusHandle>,
     _active_tab: Subscription,
 }
 
@@ -121,6 +124,7 @@ impl ExplorerView {
             focus,
             name_edit: None,
             pending_reveal: None,
+            refocus_sidebar: None,
             _active_tab: cx.observe(editor_groups, |this, groups, cx| {
                 this.sync_active_tab(&groups, cx)
             }),
@@ -268,13 +272,17 @@ impl ExplorerView {
     }
 
     /// As VS Code: losing focus keeps a valid name and drops any other.
+    /// Runs on the input's blur and, since a row scrolled out of the list
+    /// gets no blur when the focus later moves on, after every frame too.
     fn name_blurred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(edit) = &self.name_edit else {
             return;
         };
         // Still focused: the row was only not drawn (scrolled out of the
-        // list), which GPUI reports as a blur.
-        if edit.busy || edit.input.focus_handle(cx).is_focused(window) {
+        // list), which GPUI reports as a blur. An inactive window keeps
+        // the focus it will get back.
+        if edit.busy || edit.input.focus_handle(cx).is_focused(window) || !window.is_window_active()
+        {
             return;
         }
         let text = edit.input.read(cx).text().to_string();
@@ -462,8 +470,10 @@ impl ExplorerView {
         self.model.set_snapshot(snapshot);
         // The model dropped an edit whose folder is gone: drop its input
         // (and blur listener) too, without creating anything.
-        if self.model.edit().is_none() {
-            self.name_edit = None;
+        if self.model.edit().is_none()
+            && let Some(edit) = self.name_edit.take()
+        {
+            self.refocus_sidebar = Some(edit.input.focus_handle(cx));
         }
         self.reveal_pending();
         match ev {
@@ -1070,7 +1080,19 @@ impl UniformListDecoration for ScrollbarThumb {
 }
 
 impl Render for ExplorerView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(input) = self.refocus_sidebar.take()
+            && input.is_focused(window)
+        {
+            cx.defer_in(window, |this, window, cx| this.focus_sidebar(window, cx));
+        }
+        if self
+            .name_edit
+            .as_ref()
+            .is_some_and(|e| !e.busy && !e.input.focus_handle(cx).is_focused(window))
+        {
+            cx.defer_in(window, |this, window, cx| this.name_blurred(window, cx));
+        }
         let thumb = color(cx.global::<AppState>().theme.ui.scrollbar_thumb);
         div()
             .debug_selector(|| "explorer".into())
