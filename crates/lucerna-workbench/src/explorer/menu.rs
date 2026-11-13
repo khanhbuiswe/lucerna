@@ -17,16 +17,19 @@ const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
 
 /// The menu for a resource of `kind`, in the order of the spec's table.
 /// Entries that do not apply are left out. `single_file` marks the lone-file
-/// mode, whose `kind` is already `File`; it is kept for the entries that
-/// edit the tree, which that mode never shows.
+/// mode, which never shows the entries that edit the tree.
 pub(super) fn build_menu(
     kind: SelectedKind,
-    _single_file: bool,
+    single_file: bool,
     owner: FocusHandle,
     cx: &mut Context<ContextMenu>,
 ) -> ContextMenu {
     let is_file = kind == SelectedKind::File;
     ContextMenu::new(owner, cx)
+        .when(!is_file && !single_file, |m| {
+            m.entry("New File…", "explorer.newFile")
+                .entry("New Folder…", "explorer.newFolder")
+        })
         .separator()
         .when(is_file, |m| {
             m.entry("Open to the Side", "explorer.openToSide")

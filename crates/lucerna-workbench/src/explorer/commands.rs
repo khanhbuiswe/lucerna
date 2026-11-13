@@ -1,6 +1,8 @@
-//! Explorer commands: Open to the Side, Reveal in Finder, Open in
-//! Terminal, Find in Folder, Copy Path and Copy Relative Path. Each acts
-//! on `args.path` when given, else on the Explorer's selection.
+//! Explorer commands: New File, New Folder, Open to the Side, Reveal in
+//! Finder, Open in Terminal, Find in Folder, Copy Path and Copy Relative
+//! Path. Each acts on `args.path` when given, else on the Explorer's
+//! selection (New File and New Folder always on the selection). None runs
+//! while a name is being typed in the tree.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,13 +12,38 @@ use lucerna_project::EntryKind;
 use serde_json::Value;
 
 use crate::system_shell::system_shell;
-use crate::{CommandRegistry, OpenMode, SelectedKind, Workbench, status_message};
+use crate::{CommandRegistry, EditKind, OpenMode, SelectedKind, Workbench, status_message};
 
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
+    commands.register(
+        "explorer.newFile",
+        "File: New File…",
+        |wb, _, window, cx| {
+            if !editing(wb, cx) {
+                wb.explorer().clone().update(cx, |explorer, cx| {
+                    explorer.start_new(EditKind::NewFile, window, cx)
+                });
+            }
+        },
+    );
+    commands.register(
+        "explorer.newFolder",
+        "File: New Folder…",
+        |wb, _, window, cx| {
+            if !editing(wb, cx) {
+                wb.explorer().clone().update(cx, |explorer, cx| {
+                    explorer.start_new(EditKind::NewFolder, window, cx)
+                });
+            }
+        },
+    );
     commands.register(
         "explorer.openToSide",
         "Explorer: Open to the Side",
         |wb, args, _, cx| {
+            if editing(wb, cx) {
+                return;
+            }
             let (target, kind) = target_kind(wb, args, cx);
             if kind == Some(false) {
                 wb.open_path(Arc::from(target), OpenMode::ToSide, cx);
@@ -27,6 +54,9 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "filesExplorer.findInFolder",
         "Explorer: Find in Folder…",
         |wb, args, window, cx| {
+            if editing(wb, cx) {
+                return;
+            }
             let (target, is_dir) = command_target(wb, args, cx);
             if !is_dir {
                 return;
@@ -49,6 +79,9 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "revealFileInOS",
         "File: Reveal in Finder",
         |wb, args, _, cx| {
+            if editing(wb, cx) {
+                return;
+            }
             let (target, _) = command_target(wb, args, cx);
             system_shell(cx).reveal(&target, cx);
         },
@@ -57,6 +90,9 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "openInTerminal",
         "Explorer: Open in Terminal",
         |wb, args, _, cx| {
+            if editing(wb, cx) {
+                return;
+            }
             let (target, is_dir) = command_target(wb, args, cx);
             let dir = if is_dir {
                 target
@@ -87,6 +123,9 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "copyFilePath",
         "File: Copy Path of Active File",
         |wb, args, _, cx| {
+            if editing(wb, cx) {
+                return;
+            }
             let (target, _) = command_target(wb, args, cx);
             cx.write_to_clipboard(ClipboardItem::new_string(
                 target.to_string_lossy().into_owned(),
@@ -97,6 +136,9 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "copyRelativeFilePath",
         "File: Copy Relative Path of Active File",
         |wb, args, _, cx| {
+            if editing(wb, cx) {
+                return;
+            }
             let (target, _) = command_target(wb, args, cx);
             let setting = cx
                 .global::<crate::AppState>()
@@ -111,6 +153,12 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         },
     );
+}
+
+/// A name is being typed in the Explorer: its commands do nothing. Keys
+/// are already off (`!textInputFocus`), but that key is a frame late.
+pub(crate) fn editing(wb: &Workbench, cx: &App) -> bool {
+    wb.explorer().read(cx).editing()
 }
 
 /// The path a command acts on and whether it is a folder: `args.path`

@@ -1926,9 +1926,11 @@ fn register_shell_commands(commands: &mut CommandRegistry) {
         "filesExplorer.openContextMenu",
         "Explorer: Open Context Menu",
         |wb, _, window, cx| {
-            wb.explorer.clone().update(cx, |explorer, cx| {
-                explorer.open_context_menu(None, window, cx)
-            })
+            if !crate::explorer::editing(wb, cx) {
+                wb.explorer.clone().update(cx, |explorer, cx| {
+                    explorer.open_context_menu(None, window, cx)
+                })
+            }
         },
     );
 }

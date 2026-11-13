@@ -21,6 +21,28 @@ pub struct Row {
     pub kind: EntryKind,
     /// Only directories are ever expanded.
     pub expanded: bool,
+    /// The row whose name is being typed: the placeholder row of New
+    /// File/Folder (whose `path` is its parent directory) or the renamed
+    /// entry.
+    pub edit: bool,
+}
+
+/// What the name being typed in the tree is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditKind {
+    NewFile,
+    NewFolder,
+    Rename,
+}
+
+/// A name being typed in the tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditState {
+    pub kind: EditKind,
+    /// Root-relative directory the name is in; empty for the root.
+    pub parent: Arc<Path>,
+    /// Root-relative entry being renamed.
+    pub original: Option<Arc<Path>>,
 }
 
 /// What the Explorer has selected: the project root or one of its rows.
@@ -46,6 +68,7 @@ pub struct ExplorerModel {
     rows: Vec<Row>,
     /// When each recently changed path last changed.
     changed: HashMap<Arc<Path>, Instant>,
+    edit: Option<EditState>,
 }
 
 impl ExplorerModel {
@@ -57,6 +80,7 @@ impl ExplorerModel {
             expanded: HashSet::new(),
             rows: Vec::new(),
             changed: HashMap::new(),
+            edit: None,
         };
         model.rebuild();
         model
@@ -123,6 +147,42 @@ impl ExplorerModel {
         self.fix_selection();
     }
 
+    /// Starts typing a name: expands `edit.parent` (and its ancestors) so
+    /// the edited row is visible.
+    pub fn start_edit(&mut self, edit: EditState) {
+        for dir in edit.parent.ancestors() {
+            if !dir.as_os_str().is_empty() && is_dir(&self.snapshot, dir) {
+                self.expanded.insert(Arc::from(dir));
+            }
+        }
+        self.edit = Some(edit);
+        self.rebuild();
+    }
+
+    pub fn edit(&self) -> Option<&EditState> {
+        self.edit.as_ref()
+    }
+
+    pub fn end_edit(&mut self) {
+        if self.edit.take().is_some() {
+            self.rebuild();
+        }
+    }
+
+    /// Whether the tree has `path` (root-relative); the root always.
+    pub fn contains(&self, path: &Path) -> bool {
+        path.as_os_str().is_empty() || self.snapshot.contains(path)
+    }
+
+    /// Expands `dir` (no-op when it is not a directory or already expanded).
+    pub fn expand(&mut self, dir: &Path) {
+        if is_dir(&self.snapshot, dir) && self.expanded.insert(Arc::from(dir)) {
+            self.rebuild();
+        }
+    }
+
+    /// The rows in tree order; while a New File/Folder name is typed, its
+    /// placeholder row too.
     pub fn visible_rows(&self) -> &[Row] {
         &self.rows
     }
@@ -184,6 +244,24 @@ impl ExplorerModel {
     }
 
     fn push_children(&self, dir: &Path, depth: u16, rows: &mut Vec<Row>) {
+        let new_kind = match &self.edit {
+            Some(e) if &*e.parent == dir => match e.kind {
+                EditKind::NewFile => Some(EntryKind::File),
+                EditKind::NewFolder => Some(EntryKind::Dir),
+                EditKind::Rename => None,
+            },
+            _ => None,
+        };
+        if let Some(kind) = new_kind {
+            rows.push(Row {
+                path: Arc::from(dir),
+                depth,
+                kind,
+                expanded: false,
+                edit: true,
+            });
+        }
+        let renamed = self.edit.as_ref().and_then(|e| e.original.as_deref());
         for entry in self.snapshot.children(dir) {
             let expanded = entry.kind == EntryKind::Dir && self.expanded.contains(&entry.path);
             rows.push(Row {
@@ -191,6 +269,7 @@ impl ExplorerModel {
                 depth,
                 kind: entry.kind,
                 expanded,
+                edit: renamed == Some(&*entry.path),
             });
             if expanded {
                 self.push_children(&entry.path, depth + 1, rows);

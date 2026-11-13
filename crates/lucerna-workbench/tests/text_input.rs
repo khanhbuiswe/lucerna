@@ -253,3 +253,14 @@ fn set_text_moves_caret_to_end(cx: &mut TestAppContext) {
     assert_eq!(selection(&input, cx), 1..1);
     assert_eq!(changes.borrow().last().map(String::as_str), Some(">"));
 }
+
+#[gpui::test]
+fn select_range_selects_bytes(cx: &mut TestAppContext) {
+    let (input, _, cx) = setup(cx);
+    input.update_in(cx, |input, window, cx| {
+        input.set_text("foo.rs", window, cx);
+        input.select_range(0..3, window, cx);
+    });
+    draw(cx);
+    assert_eq!(selection(&input, cx), 0..3);
+}

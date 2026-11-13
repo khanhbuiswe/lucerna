@@ -5,7 +5,9 @@ mod menu;
 mod model;
 mod view;
 
-pub use model::{CHANGE_DECORATION, ExplorerModel, Row, SelectedKind, Selection};
+pub use model::{
+    CHANGE_DECORATION, EditKind, EditState, ExplorerModel, Row, SelectedKind, Selection,
+};
 pub use view::ExplorerView;
 
-pub(crate) use commands::register_commands;
+pub(crate) use commands::{editing, register_commands};

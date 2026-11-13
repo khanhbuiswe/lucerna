@@ -133,10 +133,10 @@
   { "key": "cmd+k f", "command": "workbench.action.closeFolder" },
   { "key": "ctrl+r", "command": "workbench.action.quickOpenNavigateNextInRecentFilesPicker", "when": "inRecentPicker" },
   { "key": "ctrl+shift+r", "command": "workbench.action.quickOpenNavigatePreviousInRecentFilesPicker", "when": "inRecentPicker" },
-  { "key": "shift+f10", "command": "filesExplorer.openContextMenu", "when": "filesExplorerFocus" },
-  { "key": "ctrl+enter", "command": "explorer.openToSide", "when": "filesExplorerFocus && !explorerResourceIsFolder" },
-  { "key": "alt+shift+f", "command": "filesExplorer.findInFolder", "when": "filesExplorerFocus && explorerResourceIsFolder" },
-  { "key": "alt+cmd+r", "command": "revealFileInOS", "when": "filesExplorerFocus" },
-  { "key": "alt+cmd+c", "command": "copyFilePath", "when": "filesExplorerFocus" },
-  { "key": "alt+cmd+shift+c", "command": "copyRelativeFilePath", "when": "filesExplorerFocus" }
+  { "key": "shift+f10", "command": "filesExplorer.openContextMenu", "when": "filesExplorerFocus && !textInputFocus" },
+  { "key": "ctrl+enter", "command": "explorer.openToSide", "when": "filesExplorerFocus && !explorerResourceIsFolder && !textInputFocus" },
+  { "key": "alt+shift+f", "command": "filesExplorer.findInFolder", "when": "filesExplorerFocus && explorerResourceIsFolder && !textInputFocus" },
+  { "key": "alt+cmd+r", "command": "revealFileInOS", "when": "filesExplorerFocus && !textInputFocus" },
+  { "key": "alt+cmd+c", "command": "copyFilePath", "when": "filesExplorerFocus && !textInputFocus" },
+  { "key": "alt+cmd+shift+c", "command": "copyRelativeFilePath", "when": "filesExplorerFocus && !textInputFocus" }
 ]

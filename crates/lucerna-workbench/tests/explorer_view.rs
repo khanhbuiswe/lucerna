@@ -596,7 +596,9 @@ const FILE_MENU: [&str; 5] = [
     "copyFilePath",
     "copyRelativeFilePath",
 ];
-const FOLDER_MENU: [&str; 5] = [
+const FOLDER_MENU: [&str; 7] = [
+    "explorer.newFile",
+    "explorer.newFolder",
     "revealFileInOS",
     "openInTerminal",
     "filesExplorer.findInFolder",

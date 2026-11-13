@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lucerna_project::{Entry, EntryKind, WorktreeSnapshot};
-use lucerna_workbench::{ExplorerModel, Row, SelectedKind, Selection};
+use lucerna_workbench::{EditKind, EditState, ExplorerModel, Row, SelectedKind, Selection};
 
 fn p(path: &str) -> Arc<Path> {
     Arc::from(Path::new(path))
@@ -61,6 +61,7 @@ fn root_children_visible_collapsed() {
             depth: 0,
             kind: EntryKind::Dir,
             expanded: false,
+            edit: false,
         }
     );
     assert_eq!(model.visible_rows()[2].kind, EntryKind::File);
@@ -222,4 +223,52 @@ fn select_hidden_path_is_kept_until_tree_changes() {
     assert_eq!(model.selection(), &Selection::Path(p("src/main.rs")));
     model.reveal(Path::new("src/main.rs"));
     assert_eq!(model.selection(), &Selection::Path(p("src/main.rs")));
+}
+
+#[test]
+fn new_file_edit_row_is_first_child() {
+    use EntryKind::*;
+    let mut model = ExplorerModel::new(snapshot(&[
+        ("src", Dir),
+        ("src/main.rs", File),
+        ("a.rs", File),
+        ("b.rs", File),
+    ]));
+    model.start_edit(EditState {
+        kind: EditKind::NewFile,
+        parent: p("src"),
+        original: None,
+    });
+    let rows = model.visible_rows();
+    let paths: Vec<_> = rows
+        .iter()
+        .map(|r| {
+            if r.edit {
+                "<edit>".to_string()
+            } else {
+                r.path.to_string_lossy().into_owned()
+            }
+        })
+        .collect();
+    assert_eq!(paths, ["src", "<edit>", "src/main.rs", "a.rs", "b.rs"]);
+    assert_eq!((rows[1].depth, rows[1].kind), (1, File));
+    assert!(rows[0].expanded);
+    assert_eq!(model.edit().map(|e| e.kind), Some(EditKind::NewFile));
+    model.end_edit();
+    assert!(model.edit().is_none());
+    assert!(model.visible_rows().iter().all(|r| !r.edit));
+}
+
+#[test]
+fn new_folder_edit_row_on_root_is_first() {
+    let mut model = ExplorerModel::new(project());
+    model.start_edit(EditState {
+        kind: EditKind::NewFolder,
+        parent: p(""),
+        original: None,
+    });
+    let first = &model.visible_rows()[0];
+    assert!(first.edit);
+    assert_eq!((first.depth, first.kind), (0, EntryKind::Dir));
+    assert_eq!(model.visible_rows().len(), 4);
 }

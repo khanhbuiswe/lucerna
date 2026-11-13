@@ -73,7 +73,10 @@ pub use excerpt_list::model::{
     FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
     Row as SearchRow,
 };
-pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row, SelectedKind, Selection};
+pub use explorer::{
+    CHANGE_DECORATION, EditKind, EditState, ExplorerModel, ExplorerView, Row, SelectedKind,
+    Selection,
+};
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
 pub use language_servers::{
     HoverInfo, LanguageServers, LanguageServersEvent, ServerStatus, SlotState,

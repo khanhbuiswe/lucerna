@@ -7,22 +7,25 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollStrategy,
-    Stateful, Styled, Subscription, Task, UniformListDecoration, UniformListScrollHandle,
-    WeakEntity, Window, div, prelude::*, px, uniform_list,
+    AnchoredPositionMode, AnyElement, App, Bounds, ClickEvent, Context, Div, Entity, FocusHandle,
+    Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement,
+    Pixels, Point, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
+    UniformListDecoration, UniformListScrollHandle, WeakEntity, Window, anchored, deferred, div,
+    point, prelude::*, px, uniform_list,
 };
+use lucerna_project::fs_ops::{self, NameError};
 use lucerna_project::{ChangeKind, EntryKind, WorktreeEvent, WorktreeSnapshot};
 use lucerna_theme::{IconSource, ResolvedIcons};
 
 use super::menu::build_menu;
-use super::model::{ExplorerModel, Row, SelectedKind, Selection};
+use super::model::{EditKind, EditState, ExplorerModel, Row, SelectedKind, Selection};
 use crate::layout::color;
+use crate::text_input::TextInput;
 use crate::ui::{
     ContextMenu, DeployedMenu, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE,
-    deploy_context_menu, file_icon_sized, render_deployed, thumb_geometry,
+    UI_FONT_SIZE_SMALL, deploy_context_menu, file_icon_sized, render_deployed, thumb_geometry,
 };
-use crate::{AppState, EditorGroupsView, OpenMode, Workbench};
+use crate::{AppState, EditorGroupsView, OpenMode, Workbench, status_message};
 
 /// Indentation per tree level: one icon slot, so each level's indent
 /// guide runs under its parent's chevron.
@@ -42,6 +45,24 @@ fn row_indent(depth: u16) -> f32 {
 /// indent, the chevron slot of a directory and the icon slot.
 fn label_x(depth: u16, is_dir: bool) -> f32 {
     row_indent(depth) + if is_dir { ICON_SLOT + GRID } else { 0. } + ICON_SLOT + GRID
+}
+
+/// The name being typed in the tree (the model holds where).
+struct NameEdit {
+    input: Entity<TextInput>,
+    /// Why the name cannot be used, shown under the input.
+    error: Option<String>,
+    /// The file system operation is running; the input takes no new confirm.
+    busy: bool,
+    /// Confirms or cancels when the input loses focus.
+    _blur: Subscription,
+}
+
+/// A path just created: once the worktree has it, select it, reveal it and,
+/// for a folder, expand it.
+struct PendingReveal {
+    path: Arc<Path>,
+    expand: bool,
 }
 
 /// The file tree in the sidebar's Explorer slot.
@@ -67,6 +88,8 @@ pub struct ExplorerView {
     menu_generation: u64,
     /// The sidebar's focus handle: menus give focus back to it.
     focus: FocusHandle,
+    name_edit: Option<NameEdit>,
+    pending_reveal: Option<PendingReveal>,
     _active_tab: Subscription,
 }
 
@@ -96,6 +119,8 @@ impl ExplorerView {
             context_menu: None,
             menu_generation: 0,
             focus,
+            name_edit: None,
+            pending_reveal: None,
             _active_tab: cx.observe(editor_groups, |this, groups, cx| {
                 this.sync_active_tab(&groups, cx)
             }),
@@ -148,6 +173,250 @@ impl ExplorerView {
         &self.model
     }
 
+    /// Whether a name is being typed in the tree.
+    pub fn editing(&self) -> bool {
+        self.model.edit().is_some()
+    }
+
+    /// The error shown under the name being typed, if any.
+    pub fn edit_error(&self) -> Option<&str> {
+        self.name_edit.as_ref()?.error.as_deref()
+    }
+
+    /// The input of the name being typed, if any.
+    pub fn name_input(&self) -> Option<&Entity<TextInput>> {
+        self.name_edit.as_ref().map(|e| &e.input)
+    }
+
+    /// New File… / New Folder…: types the name in a placeholder row inside
+    /// the selected folder, or the selected file's folder.
+    pub fn start_new(&mut self, kind: EditKind, window: &mut Window, cx: &mut Context<Self>) {
+        if self.single_file || self.editing() || kind == EditKind::Rename {
+            return;
+        }
+        let parent: Arc<Path> = match (self.model.selection().clone(), self.model.selected_kind()) {
+            (Selection::Path(path), SelectedKind::Dir) => path,
+            (Selection::Path(path), _) => Arc::from(path.parent().unwrap_or(Path::new(""))),
+            (Selection::Root, _) => Arc::from(Path::new("")),
+        };
+        self.model.start_edit(EditState {
+            kind,
+            parent,
+            original: None,
+        });
+        let view = cx.entity().downgrade();
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new(cx);
+            input.on_change(move |text, _, cx| {
+                let _ = view.update(cx, |this, cx| this.name_changed(text, cx));
+            });
+            input
+        });
+        let focus = input.focus_handle(cx);
+        let blur = cx.on_blur(&focus, window, |this, window, cx| {
+            this.name_blurred(window, cx)
+        });
+        window.focus(&focus, cx);
+        self.name_edit = Some(NameEdit {
+            input,
+            error: None,
+            busy: false,
+            _blur: blur,
+        });
+        if let Some(ix) = self.model.visible_rows().iter().position(|r| r.edit) {
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        }
+        cx.notify();
+    }
+
+    /// Checks `name` against the tree (never the disk) as it is typed.
+    fn validate_name(&self, name: &str) -> Option<Result<PathBuf, NameError>> {
+        let edit = self.model.edit()?;
+        Some(fs_ops::validate_new_name(
+            &edit.parent,
+            name,
+            edit.original.as_deref(),
+            |path| self.model.contains(path),
+        ))
+    }
+
+    fn name_changed(&mut self, text: &str, cx: &mut Context<Self>) {
+        let error = match self.validate_name(text) {
+            Some(Err(e)) => Some(e.to_string()),
+            _ => None,
+        };
+        if let Some(edit) = &mut self.name_edit {
+            edit.error = error;
+            cx.notify();
+        }
+    }
+
+    fn name_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let m = &ev.keystroke.modifiers;
+        if m.platform || m.control || m.alt || m.shift || m.function {
+            return;
+        }
+        match ev.keystroke.key.as_str() {
+            "enter" => self.confirm_name(window, cx),
+            "escape" => self.end_name_edit(true, window, cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// As VS Code: losing focus keeps a valid name and drops any other.
+    fn name_blurred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = &self.name_edit else {
+            return;
+        };
+        if edit.busy {
+            return;
+        }
+        let text = edit.input.read(cx).text().to_string();
+        match self.validate_name(&text) {
+            Some(Ok(_)) => self.confirm_name(window, cx),
+            _ => self.end_name_edit(false, window, cx),
+        }
+    }
+
+    /// Ends the name edit; `refocus` gives the focus back to the Explorer.
+    fn end_name_edit(&mut self, refocus: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Dropping the edit first drops its blur listener.
+        self.name_edit = None;
+        self.model.end_edit();
+        if refocus {
+            self.focus_sidebar(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Creates the typed file or folder in the background, unless the name
+    /// has an error.
+    fn confirm_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name_edit) = &self.name_edit else {
+            return;
+        };
+        if name_edit.busy {
+            return;
+        }
+        let text = name_edit.input.read(cx).text().to_string();
+        let Some(result) = self.validate_name(&text) else {
+            return;
+        };
+        let target = match result {
+            Ok(target) => target,
+            Err(e) => {
+                if let Some(name_edit) = &mut self.name_edit {
+                    name_edit.error = Some(e.to_string());
+                }
+                cx.notify();
+                return;
+            }
+        };
+        let Some(edit) = self.model.edit().cloned() else {
+            return;
+        };
+        let folder = match edit.kind {
+            EditKind::NewFile => false,
+            EditKind::NewFolder => true,
+            EditKind::Rename => return,
+        };
+        // Every path this creates, so the watcher's events for them are
+        // not marked as another program's. Recorded before the operation
+        // starts: the watcher may report it before the result comes back.
+        let created: Vec<Arc<Path>> = target
+            .ancestors()
+            .take_while(|a| **a != *edit.parent)
+            .filter(|a| !self.model.contains(a))
+            .map(Arc::from)
+            .collect();
+        let _ = self
+            .workbench
+            .update(cx, |wb, _| wb.expect_own_changes(created));
+        if let Some(name_edit) = &mut self.name_edit {
+            name_edit.busy = true;
+        }
+        let abs = self.root.join(&target);
+        let op = cx.background_spawn(async move {
+            if folder {
+                fs_ops::create_dir(&abs)
+            } else {
+                fs_ops::create_file(&abs)
+            }
+        });
+        let target: Arc<Path> = Arc::from(target);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = op.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.created(target, folder, result, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// The end of [`Self::confirm_name`]'s operation.
+    fn created(
+        &mut self,
+        target: Arc<Path>,
+        folder: bool,
+        result: std::io::Result<()>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(name_edit) = &mut self.name_edit else {
+            return;
+        };
+        let focused = name_edit.input.focus_handle(cx).is_focused(window);
+        let name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match result {
+            // Someone else created it after the check: keep the name to fix.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && focused => {
+                name_edit.busy = false;
+                name_edit.error = Some(NameError::Exists(name).to_string());
+                cx.notify();
+            }
+            Err(e) => {
+                self.end_name_edit(focused, window, cx);
+                let kind = if folder { "folder" } else { "file" };
+                status_message::show(format!("Unable to create {kind} '{name}': {e}"), cx);
+            }
+            Ok(()) => {
+                self.end_name_edit(focused, window, cx);
+                self.model.select(Selection::Path(target.clone()));
+                self.pending_reveal = Some(PendingReveal {
+                    path: target.clone(),
+                    expand: folder,
+                });
+                self.reveal_pending();
+                if !folder {
+                    let _ = self
+                        .workbench
+                        .update(cx, |wb, cx| wb.open_path(target, OpenMode::Pinned, cx));
+                }
+            }
+        }
+    }
+
+    /// Selects, reveals and expands a just-created path once the tree has it.
+    fn reveal_pending(&mut self) {
+        let Some(pending) = self
+            .pending_reveal
+            .take_if(|p| self.model.contains(&p.path))
+        else {
+            return;
+        };
+        if let Some(ix) = self.model.reveal(&pending.path) {
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        }
+        if pending.expand {
+            self.model.expand(&pending.path);
+        }
+        self.model.select(Selection::Path(pending.path));
+    }
+
     /// The icon the active icon theme gives the visible row at `path`
     /// (root-relative); `None` when no such row is shown.
     pub fn row_icon(&self, path: &Path, cx: &App) -> Option<IconSource> {
@@ -170,6 +439,7 @@ impl ExplorerView {
         cx: &mut Context<Self>,
     ) {
         self.model.set_snapshot(snapshot);
+        self.reveal_pending();
         match ev {
             WorktreeEvent::Changed(changes) => {
                 let paths: Vec<Arc<Path>> = changes
@@ -360,6 +630,7 @@ impl ExplorerView {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
+        self.pending_reveal = None;
         self.model.select(selection);
         self.open_context_menu(Some(ev.position), window, cx);
     }
@@ -380,6 +651,7 @@ impl ExplorerView {
     }
 
     fn root_clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_reveal = None;
         self.model.select(Selection::Root);
         self.focus_sidebar(window, cx);
         cx.notify();
@@ -393,6 +665,7 @@ impl ExplorerView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_reveal = None;
         self.model.select(Selection::Path(path.clone()));
         self.focus_sidebar(window, cx);
         if kind == EntryKind::Dir {
@@ -426,6 +699,9 @@ impl ExplorerView {
         let rows = &rows[range.start.min(end)..end];
         rows.iter()
             .map(|row| {
+                if row.edit {
+                    return self.render_edit_row(row, cx);
+                }
                 let path = row.path.clone();
                 let kind = row.kind;
                 let selected =
@@ -448,14 +724,8 @@ impl ExplorerView {
                 let right_path = row.path.clone();
                 let guides = (0..row.depth).map(|k| {
                     let path = row.path.clone();
-                    div()
+                    indent_guide(k, ui.border_variant)
                         .debug_selector(move || format!("explorer-guide-{}-{k}", path.display()))
-                        .absolute()
-                        .top_0()
-                        .left(px(row_indent(k) + ICON_SLOT / 2.))
-                        .w(px(1.))
-                        .h_full()
-                        .bg(color(ui.border_variant))
                 });
                 div()
                     .id(row.path.clone())
@@ -540,6 +810,94 @@ impl ExplorerView {
 }
 
 impl ExplorerView {
+    /// The row whose name is being typed: indent, icons, then the input in
+    /// the name's place, and any error in a box just below the row.
+    fn render_edit_row(&self, row: &Row, cx: &mut Context<Self>) -> Stateful<Div> {
+        let state = cx.global::<AppState>();
+        let ui = state.theme.ui.clone();
+        let icons = state.icons.clone();
+        let el = div().id("explorer-edit-row");
+        let Some(edit) = &self.name_edit else {
+            return el;
+        };
+        let is_dir = row.kind == EntryKind::Dir;
+        let placeholder = self
+            .model
+            .edit()
+            .is_some_and(|e| e.kind != EditKind::Rename);
+        let icon = if placeholder {
+            // The icon of the name typed so far.
+            let text = edit.input.read(cx).text();
+            let name = text.rsplit('/').next().unwrap_or("");
+            if is_dir {
+                icons.directory(name, false)
+            } else {
+                icons.file(Path::new(name))
+            }
+        } else {
+            row_icon(&icons, row)
+        };
+        let error = edit.error.clone().map(|error| {
+            let width = self.scroll.0.borrow().base_handle.bounds().size.width;
+            let message = div()
+                .debug_selector(|| "explorer-edit-error".into())
+                .when(width > px(0.), |d| d.w(width))
+                .px(px(2. * GRID))
+                .py(px(GRID))
+                .border_1()
+                .border_color(color(ui.error))
+                .bg(color(ui.elevated_surface_background))
+                .text_size(px(UI_FONT_SIZE_SMALL))
+                .text_color(color(ui.text))
+                .whitespace_normal()
+                .child(error);
+            // Anchored to the row's top-left corner, drawn over the rows below.
+            div().absolute().top_0().left_0().child(
+                deferred(
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .position(point(px(0.), px(TREE_ROW_HEIGHT)))
+                        .child(message),
+                )
+                .with_priority(1),
+            )
+        });
+        el.debug_selector(|| "explorer-edit-row".into())
+            .relative()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(GRID))
+            .h(px(TREE_ROW_HEIGHT))
+            .w_full()
+            .pl(px(row_indent(row.depth)))
+            .on_key_down(cx.listener(Self::name_key_down))
+            // Not the list's: that would select the root.
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .children((0..row.depth).map(|k| indent_guide(k, ui.border_variant)))
+            .when(is_dir, |d| {
+                let chevron = icons.chevron(false);
+                d.child(icon_slot(&chevron, CHEVRON_SIZE, ui.icon_muted))
+            })
+            .child(icon_slot(&icon, TYPE_ICON_SIZE, ui.icon_muted))
+            .child(
+                div()
+                    .debug_selector(|| "explorer-edit-input".into())
+                    .flex()
+                    .items_center()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .px(px(GRID / 2.))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(color(ui.border_focused))
+                    .bg(color(ui.editor_background))
+                    .child(edit.input.clone()),
+            )
+            .children(error)
+    }
+
     /// The always-expanded root: an open folder and the project's name.
     /// Clicking it selects the root.
     fn render_root(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -603,6 +961,18 @@ impl ExplorerView {
                     .child(self.root_label.clone()),
             )
     }
+}
+
+/// The indent guide of tree level `k`: a vertical line under that level's
+/// chevron.
+fn indent_guide(k: u16, tint: lucerna_theme::Rgba) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .left(px(row_indent(k) + ICON_SLOT / 2.))
+        .w(px(1.))
+        .h_full()
+        .bg(color(tint))
 }
 
 /// The icon of a tree row, through the active icon theme.
