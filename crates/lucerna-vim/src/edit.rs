@@ -116,35 +116,9 @@ pub(crate) fn apply_operator(
             (actions, cursor, Mode::Insert)
         }
         Operator::Indent | Operator::Outdent => {
-            let at = row_start(snap, first);
-            let sel = Selection {
-                id: 0,
-                anchor: at,
-                head: line_end(snap, last),
-                goal: Goal::None,
-            };
-            let set = SelectionSet::from_selections(vec![sel], 0, false);
-            let mut plan = if op == Operator::Indent {
-                indent_lines(ctx, &set)
-            } else {
-                outdent_lines(ctx, &set)
-            };
-            // The first non-blank of the first row, after the shift.
-            let text = line(snap, first);
-            let old = leading_whitespace(&text);
-            let new = plan
-                .edits
-                .iter()
-                .find(|(range, _)| range.start == at)
-                .map_or(old, |(_, t)| t.len() as u32);
-            let column = if text.len() as u32 == old {
-                new.saturating_sub(1)
-            } else {
-                new
-            };
-            plan.selections = SelectionSet::cursor(at + column as usize);
+            let (plan, cursor) = shift_rows(ctx, first, last, op == Operator::Outdent, 1);
             edit(&mut actions, plan);
-            (actions, Point { row: first, column }, Mode::Normal)
+            (actions, cursor, Mode::Normal)
         }
         Operator::Lower | Operator::Upper | Operator::ToggleCase => {
             let case = match op {
@@ -160,7 +134,7 @@ pub(crate) fn apply_operator(
 }
 
 /// Writes the text of `r` to `register`; the clipboard write that is due.
-fn write(
+pub(crate) fn write(
     r: &OpRange,
     snap: &BufferSnapshot,
     g: &mut VimGlobals,
@@ -180,6 +154,74 @@ fn write(
         kind: kind_reg,
     };
     g.write_register(register, content, kind, s.use_system_clipboard)
+}
+
+/// `>` and `<`: shifts rows `first..=last` by `levels` indent levels, the
+/// way the editor's indent and outdent commands do once per level. The
+/// cursor goes to the first non-blank of the first row (onto the last
+/// char of indent when the row is blank).
+pub(crate) fn shift_rows(
+    ctx: Ctx,
+    first: u32,
+    last: u32,
+    outdent: bool,
+    levels: u32,
+) -> (EditPlan, Point) {
+    let snap = ctx.snapshot;
+    let at = row_start(snap, first);
+    // Shift a copy of just these rows, then replace each row's indent.
+    let mut rows = BufferSnapshot::from_text(&snap.text_for_range(at..line_end(snap, last)));
+    for _ in 0..levels.max(1) {
+        let c = Ctx {
+            snapshot: &rows,
+            config: ctx.config,
+            language: None,
+            syntax: None,
+        };
+        let sel = Selection {
+            id: 0,
+            anchor: 0,
+            head: rows.len_bytes(),
+            goal: Goal::None,
+        };
+        let set = SelectionSet::from_selections(vec![sel], 0, false);
+        let plan = if outdent {
+            outdent_lines(c, &set)
+        } else {
+            indent_lines(c, &set)
+        };
+        if plan.edits.is_empty() {
+            break;
+        }
+        let mut text = rows.text_for_range(0..rows.len_bytes());
+        for (range, new) in plan.edits.iter().rev() {
+            text.replace_range(range.clone(), new);
+        }
+        rows = BufferSnapshot::from_text(&text);
+    }
+    let mut edits = Vec::new();
+    for row in first..=last {
+        let old = line(snap, row);
+        let new = line(&rows, row - first);
+        let (old_lead, new_lead) = (leading_whitespace(&old), leading_whitespace(&new));
+        if old[..old_lead as usize] != new[..new_lead as usize] {
+            let start = row_start(snap, row);
+            edits.push((
+                start..start + old_lead as usize,
+                new[..new_lead as usize].to_string(),
+            ));
+        }
+    }
+    let text = line(snap, first);
+    let old = leading_whitespace(&text);
+    let new = leading_whitespace(&line(&rows, 0));
+    let column = if text.len() as u32 == old {
+        new.saturating_sub(1)
+    } else {
+        new
+    };
+    let plan = replace_ranges(ctx, edits, at + column as usize, EditKind::Other);
+    (plan, Point { row: first, column })
 }
 
 /// What deleting rows `first..=last` removes, and where the cursor goes
@@ -368,6 +410,32 @@ pub(crate) fn join_lines(
     ))
 }
 
+/// Visual `r{c}`: replaces every char of `range` but the line breaks with
+/// `ch`. The cursor stays at the range start. `None` when nothing changes.
+pub(crate) fn replace_selection(
+    ctx: Ctx,
+    range: Range<usize>,
+    ch: char,
+) -> Option<(EditPlan, Point)> {
+    let snap = ctx.snapshot;
+    let text = snap.text_for_range(range.clone());
+    let mut edits = Vec::new();
+    let mut at = range.start;
+    for part in text.split_inclusive('\n') {
+        let body = part.trim_end_matches(['\n', '\r']);
+        let new: String = body.graphemes(true).map(|_| ch).collect();
+        if new != body {
+            edits.push((at..at + body.len(), new));
+        }
+        at += part.len();
+    }
+    if edits.is_empty() {
+        return None;
+    }
+    let plan = replace_ranges(ctx, edits, range.start, EditKind::Other);
+    Some((plan, snap.offset_to_point(range.start)))
+}
+
 /// How `p` and its variants put text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Put {
@@ -449,6 +517,83 @@ pub(crate) fn put(
     Some((plan, cursor))
 }
 
+/// Visual `p`/`P`: puts `n` copies of `content` in place of `sel`. Lines
+/// over a charwise selection go on lines of their own; charwise text over
+/// lines takes their place as a line. The cursor follows `p` (§6.3): the
+/// first non-blank of the first pasted line for lines, else the last
+/// pasted char, or the start of multi-line text.
+pub(crate) fn put_over(
+    ctx: Ctx,
+    sel: &OpRange,
+    content: &RegContent,
+    n: u32,
+) -> Option<(EditPlan, Point)> {
+    let snap = ctx.snapshot;
+    if content.text.is_empty() {
+        return None;
+    }
+    let n = n.max(1) as usize;
+    let lines = || {
+        let mut body = content.text.clone();
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.repeat(n)
+    };
+    let fnb = |body: &str| motion::first_non_blank(body.lines().next().unwrap_or("")) as usize;
+    let charwise_cursor = |text: &str| {
+        if text.contains('\n') {
+            0
+        } else {
+            text.len() - text.chars().next_back().map_or(0, char::len_utf8)
+        }
+    };
+    let (del, text, cursor_in) = if sel.kind == MotionKind::Linewise {
+        let first = snap.offset_to_point(sel.range.start).row;
+        let last = snap.offset_to_point(sel.range.end).row;
+        let del = row_start(snap, first)..visual::next_row_start(snap, last);
+        let (mut body, cursor_in) = match content.kind {
+            RegKind::Linewise => {
+                let body = lines();
+                let cursor_in = fnb(&body);
+                (body, cursor_in)
+            }
+            RegKind::Charwise => {
+                let text = content.text.repeat(n);
+                let cursor_in = charwise_cursor(&text);
+                (text + "\n", cursor_in)
+            }
+        };
+        // The last row of a buffer without a final line break.
+        if del.end == sel.range.end {
+            body.pop();
+        }
+        (del, body, cursor_in)
+    } else {
+        match content.kind {
+            RegKind::Charwise => {
+                let text = content.text.repeat(n);
+                let cursor_in = charwise_cursor(&text);
+                (sel.range.clone(), text, cursor_in)
+            }
+            RegKind::Linewise => {
+                let body = lines();
+                let cursor_in = 1 + fnb(&body);
+                (sel.range.clone(), format!("\n{body}"), cursor_in)
+            }
+        }
+    };
+    let start = snap.offset_to_point(del.start);
+    let cursor = advance(start, &text[..cursor_in]);
+    let plan = replace_ranges(
+        ctx,
+        vec![(del.clone(), text)],
+        del.start + cursor_in,
+        EditKind::Other,
+    );
+    Some((plan, cursor))
+}
+
 /// `p` moved past `text`.
 fn advance(p: Point, text: &str) -> Point {
     match text.rfind('\n') {
@@ -465,7 +610,7 @@ fn advance(p: Point, text: &str) -> Point {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_util::{assert_edit, assert_edit_with, run_edit, run_edit_with};
+    use crate::test_util::{assert_edit, assert_edit_with, run_edit, run_edit_with, run_keys};
     use crate::{Action, InsertAt, Mode, Settings};
 
     // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'D'" (with a count)
@@ -689,6 +834,165 @@ mod tests {
                 "{keys}: {actions:?}"
             );
         }
+    }
+
+    // Adapted from VSCodeVim test/mode/modeVisualLine.test.ts: "Vp updates register content"
+    #[test]
+    fn visual_line_p_updates_register() {
+        assert_edit("|hello\nworld", "ddVpP", "|world\nhello");
+    }
+
+    // Adapted from VSCodeVim test/mode/modeVisualLine.test.ts: "Vp places the cursor on first non-whitespace character on line"
+    #[test]
+    fn visual_line_p_cursor_on_first_non_blank() {
+        assert_edit("begin\n| middle\nend", "yyjVp", "begin\n middle\n |middle");
+    }
+
+    #[test]
+    fn visual_d_charwise_across_lines() {
+        assert_edit("a|bc\ndef", "vjd", "a|f");
+        assert_edit("a|bc\ndef", "vjx", "a|f");
+        // The deleted text is in `"`.
+        assert_edit("a|bc\ndef", "vjd$p", "af|bc\nde");
+    }
+
+    #[test]
+    fn visual_line_d_puts_the_cursor_on_the_next_line() {
+        assert_edit("a\n|b\nc\n  d", "Vjd", "a\n  |d");
+    }
+
+    #[test]
+    fn visual_capital_d_and_x_delete_lines() {
+        assert_edit("a\nb|c\nde\nf", "vjD", "a\n|f");
+        assert_edit("a\nb|c\nde\nf", "vX", "a\n|de\nf");
+    }
+
+    #[test]
+    fn visual_line_indent_two_lines() {
+        assert_edit("|a\nb\nc", "Vj>", "    |a\n    b\nc");
+        assert_edit("    |a\n    b\nc", "Vj<lt>", "|a\nb\nc");
+    }
+
+    #[test]
+    fn visual_indent_with_a_count_shifts_that_many_levels() {
+        assert_edit("|a\nb\nc", "vj2>", "        |a\n        b\nc");
+        assert_edit("          |a\nb", "V3<lt>", "|a\nb");
+    }
+
+    #[test]
+    fn visual_case_operators() {
+        assert_edit("|ab cd", "veU", "|AB cd");
+        assert_edit("|AB cd", "veu", "|ab cd");
+        assert_edit("a|Bc\ndE", "vj~", "a|bC\nDe");
+        assert_edit("ab\n|cd", "VU", "ab\n|CD");
+    }
+
+    #[test]
+    fn visual_r_replaces_every_char_but_line_breaks() {
+        assert_edit("|abc", "vlr*", "|**c");
+        assert_edit("a|bc\nde", "vjr-", "a|--\n--");
+        assert_edit("ab\n|cd\nef", "Vjrx", "ab\n|xx\nxx");
+    }
+
+    #[test]
+    fn visual_join() {
+        assert_edit("|a\nb\nc", "VjJ", "a| b\nc");
+        assert_edit("|a\n b\nc", "vjgJ", "a| b\nc");
+        // One row joins with the next.
+        assert_edit("|a\nb\nc", "VJ", "a| b\nc");
+    }
+
+    #[test]
+    fn visual_change_enters_insert() {
+        let (text, actions) = run_edit("a|bc d", "vec");
+        assert_eq!(text, "a| d");
+        assert!(matches!(
+            actions[actions.len() - 3..],
+            [
+                Action::Edit(_),
+                Action::EnterInsert(InsertAt::Before),
+                Action::ModeChanged(Mode::Insert)
+            ]
+        ));
+        assert_edit("a|bc d", "vls", "a| d");
+        // Linewise: the indent stays.
+        assert_edit("ab\n  c|d\nef", "vS", "ab\n  |\nef");
+        assert_edit("ab\n  c|d\nef", "vjC", "ab\n  |");
+        assert_edit("ab\n  c|d\nef", "vR", "ab\n  |\nef");
+        assert_edit("ab\n  c|d\nef", "Vc", "ab\n  |\nef");
+    }
+
+    #[test]
+    fn visual_capital_y_yanks_lines() {
+        assert_edit("a|b\ncd", "vYjp", "ab\ncd\n|ab");
+    }
+
+    #[test]
+    fn visual_p_writes_the_old_selection_and_capital_p_does_not() {
+        assert_edit("|ab cd", "yiwwvep0P", "c|dab ab");
+        assert_edit("|ab cd", "yiwwveP0P", "a|bab ab");
+    }
+
+    #[test]
+    fn visual_p_mixed_kinds() {
+        // Lines over a charwise selection go on lines of their own.
+        assert_edit("|ab\ncdef", "yyjlvlp", "ab\nc\n|ab\nf");
+        // Charwise text over lines takes their place.
+        assert_edit("|ab\ncd", "yiwjVp", "ab\na|b");
+        // A count repeats the text.
+        assert_edit("|ab cd", "yiwwve2p", "ab aba|b");
+    }
+
+    #[test]
+    fn visual_operators_update_the_marks() {
+        assert_edit("|abcd", "vlU$`<lt>", "|ABcd");
+        assert_edit("|abcd", "vlU$`>", "A|Bcd");
+    }
+
+    #[test]
+    fn visual_block_operators_do_nothing() {
+        for keys in [
+            "<C-v>jd", "<C-v>jx", "<C-v>jc", "<C-v>j>", "<C-v>jU", "<C-v>jrx", "<C-v>jp",
+        ] {
+            let (_, vim, actions) =
+                run_keys(Settings::default(), |_| {}, "|ab\ncd", &format!("yl{keys}"));
+            assert!(
+                !actions.iter().any(|a| matches!(a, Action::Edit(_))),
+                "{keys}: {actions:?}"
+            );
+            assert_eq!(vim.mode(), Mode::VisualBlock, "{keys}");
+        }
+    }
+
+    #[test]
+    fn readonly_visual_operators_leave_visual_without_editing() {
+        for keys in [
+            "vd", "vx", "vD", "vc", "vs", "vS", "vR", "v>", "vU", "v~", "vrx", "vJ", "Vp", "VP",
+            "vlc",
+        ] {
+            let (_, vim, actions) = run_keys(
+                Settings::default(),
+                |v| v.readonly = true,
+                "a|b\ncd",
+                &format!("yl{keys}"),
+            );
+            assert!(
+                !actions.iter().any(|a| matches!(
+                    a,
+                    Action::Edit(_) | Action::EnterInsert(_) | Action::ModeChanged(Mode::Insert)
+                )),
+                "{keys}: {actions:?}"
+            );
+            assert_eq!(vim.mode(), Mode::Normal, "{keys}");
+            // At the selection start: column 0 for whole lines.
+            let column = if keys.starts_with('V') { 0 } else { 1 };
+            assert_eq!(vim.cursor().column, column, "{keys}");
+        }
+        // `y` still yanks.
+        let (_, vim, actions) =
+            run_keys(Settings::default(), |v| v.readonly = true, "a|b\ncd", "vy");
+        assert_eq!(vim.mode(), Mode::Normal);
+        assert!(actions.contains(&Action::ModeChanged(Mode::Normal)));
     }
 
     #[test]

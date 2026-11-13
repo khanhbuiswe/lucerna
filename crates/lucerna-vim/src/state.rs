@@ -382,6 +382,11 @@ impl Vim {
                 }
             }
             Key::Enter => {
+                if self.prefix == Some('r') && self.mode != Mode::Normal {
+                    // Visual `r<CR>` is not supported: it cancels.
+                    self.clear_pending();
+                    return Outcome::Handled(vec![]);
+                }
                 if self.prefix == Some('r') {
                     let n = self.take_count();
                     return self.replace('\n', n, view);
@@ -499,18 +504,33 @@ impl Vim {
         actions
     }
 
-    /// Visual `y`: copies the selection and returns to Normal at its start.
+    /// Visual `y` (`Y`: `linewise`, whole rows): copies the selection and
+    /// returns to Normal at its start.
     fn yank(
         &mut self,
         view: &dyn ViewInfo,
         globals: &mut VimGlobals,
         settings: &Settings,
         register: Option<char>,
+        linewise: bool,
     ) -> Outcome {
         let snapshot = view.snapshot();
-        let Some(sel) = self.end_visual(view, globals) else {
+        let Some(mut sel) = self.end_visual(view, globals) else {
             return Outcome::Handled(vec![]);
         };
+        if let (
+            true,
+            VimSelection::Char {
+                start,
+                end_inclusive,
+            },
+        ) = (linewise, &sel)
+        {
+            sel = VimSelection::Line {
+                start_row: start.row,
+                end_row: end_inclusive.row,
+            };
+        }
         let text = visual::yank_text(&sel, snapshot, view.tab_size());
         let kind = if matches!(sel, crate::VimSelection::Line { .. }) {
             RegKind::Linewise
@@ -591,7 +611,7 @@ impl Vim {
         let object_prefix = matches!(c, 'i' | 'a')
             && (self.op.is_some() || !matches!(self.mode, Mode::Normal | Mode::Insert));
         // `r` waits for the char to put; under an operator it cancels.
-        let replace_prefix = c == 'r' && self.mode == Mode::Normal && self.op.is_none();
+        let replace_prefix = c == 'r' && self.op.is_none();
         if self.prefix.is_none()
             && (object_prefix
                 || replace_prefix
@@ -614,6 +634,9 @@ impl Vim {
         let n = self.take_count();
         if let Some(p @ ('i' | 'a')) = prefix {
             return self.visual_object(c, p == 'a', n, view);
+        }
+        if prefix == Some('r') && self.mode != Mode::Normal {
+            return self.visual_op('r', Some(c), explicit, register, view, globals, settings);
         }
         if prefix == Some('r') {
             return self.replace(c, n, view);
@@ -660,7 +683,10 @@ impl Vim {
                 'd' => self.run_command("editor.action.revealDefinition"),
                 'D' => self.run_command("editor.action.revealDeclaration"),
                 'h' => self.run_command("editor.action.showHover"),
-                'J' if self.mode == Mode::Normal => {
+                'J' if self.mode != Mode::Normal => {
+                    self.visual_op('J', Some('g'), explicit, register, view, globals, settings)
+                }
+                'J' => {
                     let row = self.cursor.row;
                     self.edit_with(view, |ctx| {
                         crate::edit::join_lines(ctx, row, n, false, false)
@@ -722,7 +748,13 @@ impl Vim {
                 self.anchor = self.cursor;
                 self.move_to(to, None)
             }
-            'y' if visual => self.yank(view, globals, settings, register),
+            'y' if visual => self.yank(view, globals, settings, register, false),
+            'd' | 'x' | 'D' | 'X' | 'c' | 's' | 'C' | 'S' | 'R' | 'Y' | '>' | '<' | '~' | 'u'
+            | 'U' | 'J' | 'p' | 'P'
+                if visual =>
+            {
+                self.visual_op(c, None, explicit, register, view, globals, settings)
+            }
             'd' | 'c' | 'y' | '>' | '<' if self.mode == Mode::Normal => {
                 let op = match c {
                     'd' => Operator::Delete,
@@ -1236,6 +1268,146 @@ impl Vim {
             text: c.to_string(),
         };
         self.op_key(p, None, None, motion, view, g, s)
+    }
+
+    /// An operator key in Visual or Visual Line mode (spec §7): `d x D X
+    /// c s C S R Y > < ~ u U J p P`, `r` with `arg` the char to put, and
+    /// `J` with `arg` `g` for `gJ`. It acts on the selection, writes the
+    /// `<` and `>` marks and goes back to Normal (Insert for a change) with
+    /// the cursor at the selection start. Visual Block keeps its selection:
+    /// only `y` works there. A read-only view only leaves the visual mode.
+    #[allow(clippy::too_many_arguments)]
+    fn visual_op(
+        &mut self,
+        c: char,
+        arg: Option<char>,
+        count: Option<u32>,
+        register: Option<char>,
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+        s: &Settings,
+    ) -> Outcome {
+        if self.mode == Mode::VisualBlock {
+            return Outcome::Handled(vec![]);
+        }
+        if c == 'Y' {
+            return self.yank(view, g, s, register, true);
+        }
+        let snapshot = view.snapshot();
+        let tab = view.tab_size();
+        let Some(sel) = self.end_visual(view, g) else {
+            return Outcome::Handled(vec![]);
+        };
+        let (start, end) = visual::bounds(&sel, snapshot, tab);
+        self.cursor = clamp_point(snapshot, start);
+        self.anchor = self.cursor;
+        self.goal = None;
+        let linewise =
+            matches!(sel, VimSelection::Line { .. }) || matches!(c, 'D' | 'X' | 'C' | 'S' | 'R');
+        let r = if linewise {
+            OpRange {
+                range: operator::row_start(snapshot, start.row)
+                    ..visual::line_end(snapshot, end.row),
+                kind: MotionKind::Linewise,
+            }
+        } else {
+            let range = visual::exclusive_range(&sel, snapshot).unwrap_or(start..start);
+            OpRange {
+                range: snapshot.point_to_offset(range.start)..snapshot.point_to_offset(range.end),
+                kind: MotionKind::Inclusive,
+            }
+        };
+        if view.edit_ctx().is_none() {
+            return self.left_visual(Outcome::Handled(vec![]));
+        }
+        let n = count.unwrap_or(1);
+        let (first, last) = (start.row, end.row);
+        let out = match c {
+            '>' | '<' => self.edit_with(view, |ctx| {
+                Some(crate::edit::shift_rows(ctx, first, last, c == '<', n))
+            }),
+            'r' => {
+                let ch = arg.unwrap_or(' ');
+                let range = r.range.clone();
+                self.edit_with(view, |ctx| crate::edit::replace_selection(ctx, range, ch))
+            }
+            'J' => {
+                let spaces = arg.is_none();
+                let js = s.joinspaces;
+                let rows = last - first + 1;
+                self.edit_with(view, |ctx| {
+                    crate::edit::join_lines(ctx, first, rows, spaces, js)
+                })
+            }
+            'p' | 'P' => {
+                let Some(content) = g.read_register(register, s.use_system_clipboard, view.path())
+                else {
+                    return self.left_visual(Outcome::Handled(vec![]));
+                };
+                let built = view
+                    .edit_ctx()
+                    .and_then(|ctx| crate::edit::put_over(ctx, &r, &content, n));
+                let Some((plan, cursor)) = built else {
+                    return self.left_visual(Outcome::Handled(vec![]));
+                };
+                let mut actions = Vec::new();
+                // `p` puts the old selection in `"`; `P` leaves it alone.
+                if c == 'p' && (linewise || !r.range.is_empty()) {
+                    actions.extend(crate::edit::write(
+                        &r,
+                        snapshot,
+                        g,
+                        s,
+                        None,
+                        WriteKind::Delete,
+                    ));
+                }
+                actions.push(Action::Edit(plan));
+                self.cursor = cursor;
+                self.anchor = cursor;
+                Outcome::Handled(actions)
+            }
+            _ => {
+                let op = match c {
+                    'd' | 'x' | 'D' | 'X' => Operator::Delete,
+                    'c' | 's' | 'C' | 'S' | 'R' => Operator::Change,
+                    '~' => Operator::ToggleCase,
+                    'u' => Operator::Lower,
+                    _ => Operator::Upper,
+                };
+                if r.range.is_empty() && !linewise {
+                    // The empty row after a final line break.
+                    return if op == Operator::Change {
+                        self.change_nothing(view)
+                    } else {
+                        self.left_visual(Outcome::Handled(vec![]))
+                    };
+                }
+                let p = PendingOp {
+                    op,
+                    count: None,
+                    register,
+                    force: None,
+                    text: c.to_string(),
+                };
+                self.finish_op(p, r, None, view, g, s)
+            }
+        };
+        self.left_visual(out)
+    }
+
+    /// The actions of a visual operator that ended in Normal mode: the
+    /// mode change, then one cursor move.
+    fn left_visual(&self, out: Outcome) -> Outcome {
+        let Outcome::Handled(mut actions) = out else {
+            return out;
+        };
+        if self.mode == Mode::Normal {
+            actions.retain(|a| !matches!(a, Action::CursorMoved { .. }));
+            actions.push(Action::ModeChanged(Mode::Normal));
+            actions.push(Action::CursorMoved { jump: false });
+        }
+        Outcome::Handled(actions)
     }
 
     /// `r{c}` (`\n` for Enter) on `n` chars.
