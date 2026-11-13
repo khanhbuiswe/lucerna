@@ -231,6 +231,8 @@ pub enum Outcome {
     /// an operator, `d/foo<CR>`) calls [`Vim::search_submitted`] with its
     /// query from vim's cursor, finding the matches at once: answer its
     /// [`Outcome::Retry`] by searching synchronously, with no find widget.
+    /// When [`Vim::operator_pending`] is false there (the keys before it
+    /// failed), stop: drop it and every step after it.
     ///
     /// - **Stop** when a `Type` step comes while vim is not in Insert mode
     ///   (the command that should have entered it failed, e.g. `ci(` with

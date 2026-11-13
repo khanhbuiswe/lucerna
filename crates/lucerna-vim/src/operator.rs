@@ -367,6 +367,10 @@ mod tests {
         // `y` leaves the cursor; `n` goes on with the pattern.
         assert_edit("|a foo b foo", "y/foo<CR>n", "a |foo b foo");
         assert_edit("|a foo b foo", "y/foo<CR>nn", "a foo b |foo");
+        // Multibyte matches and text, both ways.
+        assert_edit("|ab é c", "d/é<CR>", "|é c");
+        assert_edit("é ñ|b", "d?é<CR>", "|b");
+        assert_edit("|ñé x é", "d/é<CR>w.", "é |é");
     }
 
     #[test]

@@ -646,6 +646,8 @@ impl Run<'_> {
                         // failed: the replay stops.
                         ReplayStep::Type(_) if self.vim.mode() != crate::Mode::Insert => break,
                         ReplayStep::Type(t) => self.view.type_typed(self.vim, &t),
+                        // As in the workbench: no operator, no search.
+                        ReplayStep::Search { .. } if !self.vim.operator_pending() => break,
                         ReplayStep::Search {
                             pattern,
                             backward,

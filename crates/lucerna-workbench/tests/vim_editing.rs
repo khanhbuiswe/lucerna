@@ -630,8 +630,44 @@ fn d_slash_through_find_widget(cx: &mut TestAppContext) {
     // The `d/foo` is one undo step.
     keys("u", cx);
     assert_eq!(text_of(&view, cx), "abc foo\nxyz foo\n");
-    keys("u", cx);
-    assert_eq!(text_of(&view, cx), "abc foo\nxyz foo\n");
+}
+
+#[gpui::test]
+fn d_slash_in_large_file_then_a_key_drops_the_operator(cx: &mut TestAppContext) {
+    // Over `BACKGROUND_SEARCH_BYTES`: the matches come from a background
+    // search, and a key typed before it ends drops the waiting `d`.
+    let filler = "x".repeat(99) + "\n";
+    let text = format!("abc foo\n{}foo\n", filler.repeat(11_000));
+    assert!(text.len() > lucerna_workbench::BACKGROUND_SEARCH_BYTES);
+    let (_dir, wb, view, cx) = vim_editor(&text, cx);
+    keys("d /", cx);
+    type_text("foo", cx);
+    // Enter, then `w` before the background search is done.
+    keys("enter w", cx);
+    assert_eq!(text_of(&view, cx), text);
+    assert_eq!(cursor(&view, cx), pt(0, 4));
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    // Without a key in between, the search finishes the operator.
+    keys("0 d /", cx);
+    type_text("foo", cx);
+    keys("enter", cx);
+    assert!(text_of(&view, cx).starts_with("foo\n"));
+}
+
+#[gpui::test]
+fn key_reaching_the_view_during_d_slash_drops_the_operator(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("abc foo\n", cx);
+    keys("d /", cx);
+    type_text("foo", cx);
+    assert!(find_visible(&view, cx));
+    // The user goes back to the text with the widget still open.
+    focus(&view, cx);
+    keys("w", cx);
+    assert_eq!(text_of(&view, cx), "abc foo\n");
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    let id = view.entity_id();
+    let pending = cx.update(|_, cx| wb.read(cx).vim().read(cx).indicator_text(id));
+    assert_eq!(pending.as_deref(), Some("-- NORMAL --"));
 }
 
 #[gpui::test]

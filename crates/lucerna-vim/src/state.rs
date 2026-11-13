@@ -451,8 +451,12 @@ impl Vim {
     /// Runs the operator `p` waiting for a `/` or `?` on the text from the
     /// cursor to the nth match of `query` (an exclusive motion), `n` the
     /// counts before and after the operator. The search is remembered for
-    /// `n` and highlighted, as a plain `/`. An empty pattern or no match
-    /// cancels the operator.
+    /// `n` and highlighted, as a plain `/`. No match cancels the operator.
+    ///
+    /// Two deviations from Vim, consistent with V1 and the other operator
+    /// motions: no `''` mark is set (Vim sets it for `/` even under an
+    /// operator), and an empty pattern (`d/<CR>`) cancels instead of
+    /// reusing the last one.
     fn search_op(
         &mut self,
         p: PendingOp,
@@ -501,6 +505,12 @@ impl Vim {
             actions.push(Action::Highlight(query));
         }
         outcome
+    }
+
+    /// An operator waits for its motion (`d`, or `d/` waiting for the
+    /// search). A replay's [`ReplayStep::Search`] needs one.
+    pub fn operator_pending(&self) -> bool {
+        self.op.is_some()
     }
 
     pub fn mode(&self) -> Mode {

@@ -129,6 +129,10 @@ pub struct VimLayer {
     /// while no other key arrived.
     key_generation: u64,
     _retry: Option<Task<()>>,
+    /// The view whose key or search `_retry` will run again. Its vim was
+    /// restored to the state before it, which may hold an operator (`d/`
+    /// waiting for its search, the `d` of `dn`).
+    retry_view: Option<EntityId>,
     /// The open `/` or `?`, if any.
     search: Option<VimSearch>,
     /// Set by [`Action::RunCommand`]: the workbench runs it once the key
@@ -159,6 +163,7 @@ impl VimLayer {
             own_edits: HashMap::new(),
             key_generation: 0,
             _retry: None,
+            retry_view: None,
             search: None,
             run_command: None,
             open_search: None,
@@ -221,7 +226,7 @@ impl VimLayer {
             return false;
         }
         self.key_generation += 1;
-        self._retry = None;
+        self.abandon_retry();
         self.open_search = None;
         self.run_command = None;
         let consumed = self.feed(key, view, Retry::Async, cx);
@@ -240,7 +245,21 @@ impl VimLayer {
         }
         for &key in keys {
             self.key_generation += 1;
+            self.abandon_retry();
             self.feed(key, view, Retry::Async, cx);
+        }
+    }
+
+    /// Drops the background search a key or a submitted search waits for,
+    /// since another key or search came first. What that key started is
+    /// dropped too: the operator restored with the state before it would
+    /// otherwise take the new key as its motion (`d/foo<CR>w` as `dw`).
+    fn abandon_retry(&mut self) {
+        self._retry = None;
+        if let Some(id) = self.retry_view.take()
+            && let Some(state) = self.views.get_mut(&id)
+        {
+            state.vim.search_dismissed();
         }
     }
 
@@ -317,7 +336,7 @@ impl VimLayer {
                 find.update(cx, |find, _| find.set_vim(false));
                 find_widget::close(&view, window, cx);
                 self.key_generation += 1;
-                self._retry = None;
+                self.abandon_retry();
                 let redo = Redo::Search {
                     query,
                     backward: search.backward,
@@ -402,6 +421,7 @@ impl VimLayer {
         self.enabled = enabled;
         if !enabled {
             self._retry = None;
+            self.retry_view = None;
             self.end_search(cx);
             self.match_cache.clear();
             self.own_edits.clear();
@@ -802,6 +822,7 @@ impl VimLayer {
             guarded("vim search", || search(&snapshot, &pattern)).unwrap_or_else(|| Arc::from([]))
         });
         let view = view.downgrade();
+        self.retry_view = Some(id);
         self._retry = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
             let matches = result.await;
             this.update(cx, |this, cx| {
@@ -811,6 +832,7 @@ impl VimLayer {
                 if this.key_generation != generation || !this.enabled {
                     return;
                 }
+                this.retry_view = None;
                 this.match_cache.insert(
                     id,
                     MatchCache {
@@ -843,7 +865,8 @@ impl VimLayer {
     /// Runs the steps of an [`Outcome::Replay`] in order, as one undo
     /// step: keys go through [`VimLayer::feed`] (searches run at once),
     /// an operator's search step through [`Vim::search_submitted`] from
-    /// vim's cursor (at once, no widget), and typing goes through the
+    /// vim's cursor (at once, no widget; with no operator pending it drops
+    /// the rest), and typing goes through the
     /// view's typing path, unrecorded. A typing
     /// step outside Insert mode (the command that should have entered it
     /// failed) drops the rest. A key may return a replay of its own (a
@@ -878,8 +901,16 @@ impl VimLayer {
                     whole_word,
                 } => {
                     // An operator's `/` or `?`: searched at once, from vim's
-                    // cursor, with no find widget.
-                    let Some(origin) = self.views.get(&id).map(|s| s.vim.cursor()) else {
+                    // cursor, with no find widget. Without the operator
+                    // (its keys failed) the replay stops rather than run a
+                    // plain search.
+                    let origin = self
+                        .views
+                        .get(&id)
+                        .filter(|s| s.vim.operator_pending())
+                        .map(|s| s.vim.cursor());
+                    let Some(origin) = origin else {
+                        self.replay_stopped = true;
                         break;
                     };
                     let query = SearchQuery {

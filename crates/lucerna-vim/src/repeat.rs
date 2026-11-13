@@ -384,6 +384,72 @@ mod tests {
     }
 
     #[test]
+    fn search_operator_repeats_with_the_original_flags() {
+        let mut view = TestView::new("|a foo Foo\nb foo Foo");
+        let mut vim = Vim::new(view.cursor);
+        let mut g = VimGlobals::default();
+        let s = Settings::default();
+        let query = SearchQuery {
+            pattern: "Foo".into(),
+            is_regex: true,
+            case_sensitive: true,
+            whole_word: true,
+        };
+        for k in parse_keys("d/") {
+            vim.feed(k, &view, &mut g, &s);
+        }
+        let Outcome::Handled(a) =
+            vim.search_submitted(query.clone(), false, vim.cursor(), &view, &mut g, &s)
+        else {
+            panic!()
+        };
+        view.apply(&mut vim, &a);
+        assert_eq!(view.marked(vim.cursor()), "|Foo\nb foo Foo");
+        for k in parse_keys("j0") {
+            if let Outcome::Handled(a) = vim.feed(k, &view, &mut g, &s) {
+                view.apply(&mut vim, &a);
+            }
+        }
+        let Outcome::Replay(steps) = vim.feed(Key::Char('.'), &view, &mut g, &s) else {
+            panic!()
+        };
+        assert_eq!(
+            steps.last(),
+            Some(&ReplayStep::Search {
+                pattern: "Foo".into(),
+                backward: false,
+                is_regex: true,
+                case_sensitive: true,
+                whole_word: true,
+            })
+        );
+        for step in steps {
+            let out = match step {
+                ReplayStep::Key(k) => vim.feed(k, &view, &mut g, &s),
+                ReplayStep::Search { backward, .. } => {
+                    vim.search_submitted(query.clone(), backward, vim.cursor(), &view, &mut g, &s)
+                }
+                ReplayStep::Type(_) => panic!(),
+            };
+            if let Outcome::Handled(a) = out {
+                view.apply(&mut vim, &a);
+            }
+        }
+        // Case-sensitive: the lowercase `foo` is skipped.
+        assert_eq!(view.marked(vim.cursor()), "Foo\n|Foo");
+    }
+
+    #[test]
+    fn operator_pending_reports_a_waiting_operator() {
+        let view = TestView::new("|a foo");
+        let mut vim = Vim::new(view.cursor);
+        assert!(!vim.operator_pending());
+        let mut g = VimGlobals::default();
+        vim.feed(Key::Char('d'), &view, &mut g, &Settings::default());
+        assert!(vim.operator_pending());
+    }
+
+    #[test]
     fn insert_replay_carries_the_typing_then_escape() {
         let mut view = TestView::new("|x");
         let mut vim = Vim::new(view.cursor);
