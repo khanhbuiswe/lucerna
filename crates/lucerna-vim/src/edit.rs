@@ -8,7 +8,9 @@ use lucerna_editor::lines::{indent_lines, outdent_lines};
 use lucerna_editor::{Ctx, EditKind, EditPlan, Goal, Selection, SelectionSet};
 use lucerna_text::{BufferSnapshot, Point};
 
-use crate::classify::line;
+use unicode_segmentation::UnicodeSegmentation as _;
+
+use crate::classify::{last_char_col, line};
 use crate::motion;
 use crate::operator::{MotionKind, OpRange, Operator, row_start};
 use crate::register::WriteKind;
@@ -219,4 +221,455 @@ fn charwise_cursor(snap: &BufferSnapshot, range: &Range<usize>) -> Point {
 /// The byte length of `text`'s leading spaces and tabs.
 fn leading_whitespace(text: &str) -> u32 {
     (text.len() - text.trim_start_matches([' ', '\t']).len()) as u32
+}
+
+/// `r{c}`: replaces `n` chars from `at` with `ch`, or with one line break
+/// for `\n`. `None` when fewer than `n` chars are left on the line. The
+/// cursor is on the last replaced char (the start of the next line for a
+/// line break).
+pub(crate) fn replace_chars(ctx: Ctx, at: Point, ch: char, n: u32) -> Option<(EditPlan, Point)> {
+    let snap = ctx.snapshot;
+    let text = line(snap, at.row);
+    let col = at.column as usize;
+    let rest = text.get(col..)?;
+    let chars: Vec<char> = rest.chars().take(n as usize).collect();
+    if chars.len() < n as usize || n == 0 {
+        return None;
+    }
+    let len: usize = chars.iter().map(|c| c.len_utf8()).sum();
+    let start = snap.point_to_offset(at);
+    let (new, cursor) = if ch == '\n' {
+        let cursor = Point {
+            row: at.row + 1,
+            column: 0,
+        };
+        ("\n".to_string(), cursor)
+    } else {
+        let last = (n as usize - 1) * ch.len_utf8();
+        let cursor = Point {
+            row: at.row,
+            column: at.column + last as u32,
+        };
+        (ch.to_string().repeat(n as usize), cursor)
+    };
+    let post = start
+        + if ch == '\n' {
+            1
+        } else {
+            new.len() - ch.len_utf8()
+        };
+    let plan = replace_ranges(ctx, vec![(start..start + len, new)], post, EditKind::Other);
+    Some((plan, cursor))
+}
+
+/// `~` (without `tildeop`): toggles the case of `n` chars from `at`, not
+/// past the line end. The cursor goes right past them, staying on the
+/// line. `None` on an empty line.
+pub(crate) fn toggle_chars(ctx: Ctx, at: Point, n: u32) -> Option<(EditPlan, Point)> {
+    let snap = ctx.snapshot;
+    let text = line(snap, at.row);
+    let col = at.column as usize;
+    let len: usize = text
+        .get(col..)?
+        .chars()
+        .take(n as usize)
+        .map(char::len_utf8)
+        .sum();
+    if len == 0 {
+        return None;
+    }
+    let start = snap.point_to_offset(at);
+    let range = start..start + len;
+    let mut plan = change_case(ctx, std::slice::from_ref(&range), Case::Toggle, start);
+    let new = plan
+        .edits
+        .first()
+        .map_or_else(|| text[col..col + len].to_string(), |(_, t)| t.to_string());
+    let new_line = format!("{}{new}{}", &text[..col], &text[col + len..]);
+    let column = ((col + new.len()) as u32).min(last_char_col(&new_line));
+    plan.selections = SelectionSet::cursor(start - col + column as usize);
+    Some((
+        plan,
+        Point {
+            row: at.row,
+            column,
+        },
+    ))
+}
+
+/// `J` (`spaces`) and `gJ`: joins `count` lines (at least two) from
+/// `row`. `J` drops the next line's indent and puts one space between
+/// (two after `.!?` with `joinspaces`), none when the text so far is empty
+/// or ends in whitespace, the next line is blank or starts with `)`. `gJ`
+/// keeps everything and adds nothing. The cursor goes to the last join.
+/// `None` on the last line.
+pub(crate) fn join_lines(
+    ctx: Ctx,
+    row: u32,
+    count: u32,
+    spaces: bool,
+    joinspaces: bool,
+) -> Option<(EditPlan, Point)> {
+    let snap = ctx.snapshot;
+    let last = row
+        .saturating_add(count.max(2) - 1)
+        .min(snap.line_count().saturating_sub(1));
+    if last <= row {
+        return None;
+    }
+    let first_line = snap.text_for_range(row_start(snap, row)..line_end(snap, row));
+    let mut len = first_line.len();
+    let mut tail = first_line.chars().next_back();
+    let mut cursor = len;
+    let mut edits = Vec::new();
+    for r in row + 1..=last {
+        let start = row_start(snap, r);
+        let text = snap.text_for_range(start..line_end(snap, r));
+        let skip = if spaces {
+            leading_whitespace(&text) as usize
+        } else {
+            0
+        };
+        let content = &text[skip..];
+        let sep = if !spaces
+            || content.is_empty()
+            || tail.is_none_or(char::is_whitespace)
+            || content.starts_with(')')
+        {
+            ""
+        } else if joinspaces && matches!(tail, Some('.' | '!' | '?')) {
+            "  "
+        } else {
+            " "
+        };
+        edits.push((line_end(snap, r - 1)..start + skip, sep.to_string()));
+        cursor = len;
+        len += sep.len() + content.len();
+        tail = content.chars().next_back().or(tail);
+    }
+    let at = row_start(snap, row);
+    let plan = replace_ranges(ctx, edits, at + cursor, EditKind::Other);
+    Some((
+        plan,
+        Point {
+            row,
+            column: cursor as u32,
+        },
+    ))
+}
+
+/// How `p` and its variants put text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Put {
+    /// `P`/`gP`: before the cursor (above the line for lines).
+    pub before: bool,
+    /// `gp`/`gP`: the cursor goes just after the pasted text.
+    pub after: bool,
+}
+
+/// `p P gp gP`: puts `n` copies of `content` at `at` (spec §6.3). The
+/// cursor: charwise one-line on the last pasted char, multi-line at the
+/// start; linewise on the first non-blank of the first pasted line; with
+/// `after`, just past the text (column 0 of the next line for lines).
+pub(crate) fn put(
+    ctx: Ctx,
+    at: Point,
+    content: &RegContent,
+    n: u32,
+    how: Put,
+) -> Option<(EditPlan, Point)> {
+    let snap = ctx.snapshot;
+    if content.text.is_empty() {
+        return None;
+    }
+    let n = n.max(1) as usize;
+    let (offset, text, cursor_in) = match content.kind {
+        RegKind::Charwise => {
+            let here = snap.point_to_offset(at);
+            let offset = if how.before {
+                here
+            } else {
+                let text = line(snap, at.row);
+                here + text
+                    .get(at.column as usize..)
+                    .and_then(|rest| rest.graphemes(true).next())
+                    .map_or(0, str::len)
+            };
+            let text = content.text.repeat(n);
+            let cursor_in = if how.after {
+                text.len()
+            } else if text.contains('\n') {
+                0
+            } else {
+                text.len() - text.chars().next_back().map_or(0, char::len_utf8)
+            };
+            (offset, text, cursor_in)
+        }
+        RegKind::Linewise => {
+            let mut body = content.text.clone();
+            if !body.ends_with('\n') {
+                body.push('\n');
+            }
+            let body = body.repeat(n);
+            let fnb = motion::first_non_blank(body.lines().next().unwrap_or("")) as usize;
+            if how.before || at.row + 1 < snap.line_count() {
+                let row = if how.before { at.row } else { at.row + 1 };
+                let cursor_in = if how.after { body.len() } else { fnb };
+                (row_start(snap, row), body, cursor_in)
+            } else {
+                // The last line has no line break to paste after: add one
+                // before the text instead of leaving a blank line after it.
+                let text = format!("\n{}", &body[..body.len() - 1]);
+                let cursor_in = if how.after {
+                    text.rfind('\n').map_or(0, |i| i + 1)
+                } else {
+                    1 + fnb
+                };
+                (line_end(snap, at.row), text, cursor_in)
+            }
+        }
+    };
+    let cursor = advance(snap.offset_to_point(offset), &text[..cursor_in]);
+    let plan = replace_ranges(
+        ctx,
+        vec![(offset..offset, text)],
+        offset + cursor_in,
+        EditKind::Other,
+    );
+    Some((plan, cursor))
+}
+
+/// `p` moved past `text`.
+fn advance(p: Point, text: &str) -> Point {
+    match text.rfind('\n') {
+        Some(i) => Point {
+            row: p.row + text.matches('\n').count() as u32,
+            column: (text.len() - i - 1) as u32,
+        },
+        None => Point {
+            row: p.row,
+            column: p.column + text.len() as u32,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_util::{assert_edit, assert_edit_with, run_edit};
+    use crate::{Action, InsertAt, Mode, Settings};
+
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'D'" (with a count)
+    #[test]
+    fn counted_d_capital() {
+        assert_edit("o|ne\ntwo\nthree\nfour", "3D", "|o\nfour");
+    }
+
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'r' with a count"
+    #[test]
+    fn r_with_count() {
+        assert_edit("123|456\n789", "2ra", "123a|a6\n789");
+    }
+
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Does nothing when r with a count goes past the line end"
+    #[test]
+    fn r_count_past_line_end_does_nothing() {
+        assert_edit("123|456\n789", "4ra", "123|456\n789");
+    }
+
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'r <CR>' with a count"
+    #[test]
+    fn r_enter_with_count() {
+        assert_edit("abc|defg\n12345", "3r<CR>", "abc\n|g\n12345");
+    }
+
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'x' and paste it"
+    // A line follows: `o` on the last line opens the row after a trailing
+    // line break, which Lucerna's line model does not count as a line, so
+    // Escape clamps the cursor back up.
+    #[test]
+    fn x_then_paste_on_new_line() {
+        assert_edit("t|ext\nend", "2xo<Esc>p", "tt\ne|x\nend");
+    }
+
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'x' with a count past the line end"
+    #[test]
+    fn x_count_stops_at_line_end() {
+        assert_edit("one t|wo\nthree four", "1000x", "one |t\nthree four");
+    }
+
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle '~' with a count"
+    #[test]
+    fn tilde_with_count() {
+        assert_edit("|teXt", "4~", "TEx|T");
+    }
+
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'S' with a count"
+    #[test]
+    fn s_capital_with_count() {
+        assert_edit(" one\n tw|o\n three", "2S", " one\n |");
+    }
+
+    // Adapted from VSCodeVim test/normalModeTests/commands.test.ts: "J with a count"
+    #[test]
+    fn j_capital_with_count() {
+        assert_edit("|one\ntwo\nthree\nfour", "3J", "one two| three\nfour");
+    }
+
+    // Adapted from VSCodeVim test/normalModeTests/commands.test.ts: "J after a period (joinspaces)"
+    #[test]
+    fn j_capital_joinspaces() {
+        assert_edit("one.\ntw|o", "kJ", "one.|  two");
+    }
+
+    // Adapted from VSCodeVim test/normalModeTests/commands.test.ts: "J before a closing parenthesis"
+    #[test]
+    fn j_capital_before_close_paren() {
+        assert_edit("one(\n)tw|o", "kJ", "one(|)two");
+    }
+
+    // Adapted from VSCodeVim test/normalModeTests/commands.test.ts: "J with a whitespace-only next line"
+    #[test]
+    fn j_capital_whitespace_only_next_line() {
+        assert_edit("on|e\n ", "J", "on|e");
+    }
+
+    // Adapted from VSCodeVim test/normalModeTests/commands.test.ts: "gJ with a count"
+    #[test]
+    fn g_j_capital_with_count() {
+        assert_edit("|one\n two \nthree\nfour", "3gJ", "one two |three\nfour");
+    }
+
+    #[test]
+    fn j_capital_without_joinspaces() {
+        let s = Settings {
+            joinspaces: false,
+            ..Settings::default()
+        };
+        assert_edit_with(s, |_| {}, "one.\ntw|o", "kJ", "one.| two");
+    }
+
+    #[test]
+    fn tildeop_makes_tilde_an_operator() {
+        let s = Settings {
+            tildeop: true,
+            ..Settings::default()
+        };
+        assert_edit_with(s, |_| {}, "|ab cd", "~w", "|AB cd");
+    }
+
+    // Adapted from VSCodeVim test/register/register.test.ts: "Can put the numbered registers"
+    #[test]
+    fn numbered_registers_put() {
+        assert_edit(
+            "|test1\ntest2\ntest3\n",
+            "dddddd\"1p\"2p\"3p",
+            "\ntest3\ntest2\n|test1",
+        );
+    }
+
+    // Adapted from VSCodeVim test/register/register.test.ts: "Can put the small delete register"
+    #[test]
+    fn small_delete_register_put() {
+        assert_edit("|test1\ntest2\ntest3", "2xj\"-p", "st1\ntt|eest2\ntest3");
+    }
+
+    // Adapted from VSCodeVim test/register/register.test.ts: "Can put the yank register"
+    #[test]
+    fn yank_register_put() {
+        assert_edit(
+            "|test1\ntest2\ntest3",
+            "yyjyyggdd\"0P",
+            "|test2\ntest2\ntest3",
+        );
+    }
+
+    // Adapted from VSCodeVim test/register/register.test.ts: "The black hole register leaves the unnamed register alone"
+    #[test]
+    fn black_hole_keeps_unnamed() {
+        assert_edit("|asdf\nqwer", "yyj\"_ddkp", "asdf\n|asdf");
+    }
+
+    // Adapted from VSCodeVim test/operator/put.test.ts: "p with a count"
+    #[test]
+    fn p_charwise_with_count() {
+        assert_edit("|XYZone two three", "d3lw2p", "one tXYZXY|Zwo three");
+    }
+
+    // Adapted from VSCodeVim test/operator/put.test.ts: "gp with a count"
+    #[test]
+    fn gp_linewise_with_count() {
+        assert_edit(
+            "|abc\none\ntwo\nthree",
+            "ddj2gp",
+            "one\ntwo\nabc\nabc\n|three",
+        );
+    }
+
+    #[test]
+    fn p_linewise_on_last_line_without_newline() {
+        assert_edit("a\n|b", "yyp", "a\nb\n|b");
+    }
+
+    #[test]
+    fn p_charwise_multiline_puts_cursor_at_start() {
+        assert_edit("|ab\ncd", "vjyGp", "ab\nc|ab\ncd");
+    }
+
+    #[test]
+    fn capital_p_linewise_cursor_on_first_non_blank() {
+        assert_edit("  |ab\ncd", "yyjP", "  ab\n  |ab\ncd");
+    }
+
+    #[test]
+    fn g_capital_p_charwise_cursor_after_paste() {
+        assert_edit("|ab cd", "yiwwgP", "ab ab|cd");
+    }
+
+    #[test]
+    fn x_and_capital_x_write_small_delete() {
+        assert_edit("ab|cd", "X$p", "acd|b");
+        assert_edit("ab|cd", "x$p", "abd|c");
+        assert_edit("|abc", "X", "|abc");
+    }
+
+    #[test]
+    fn s_and_c_capital_enter_insert() {
+        let (text, actions) = run_edit("a|bcd", "2s");
+        assert_eq!(text, "a|d");
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                Action::Edit(_),
+                Action::EnterInsert(InsertAt::Before),
+                Action::ModeChanged(Mode::Insert)
+            ]
+        ));
+        let (text, _) = run_edit("a|bcd", "C");
+        assert_eq!(text, "a|");
+        let (text, _) = run_edit("|", "s");
+        assert_eq!(text, "|");
+    }
+
+    #[test]
+    fn y_capital_yanks_the_line() {
+        assert_edit("a|b\ncd", "Yjp", "ab\ncd\n|ab");
+    }
+
+    #[test]
+    fn paste_from_an_empty_register_does_nothing() {
+        assert_edit("a|b", "\"qp", "a|b");
+    }
+
+    #[test]
+    fn readonly_view_does_not_edit() {
+        for keys in ["x", "J", "~", "rz", "yyp", "D"] {
+            assert_edit_with(
+                Settings::default(),
+                |v| v.readonly = true,
+                "a|b\ncd",
+                keys,
+                "a|b\ncd",
+            );
+        }
+    }
 }

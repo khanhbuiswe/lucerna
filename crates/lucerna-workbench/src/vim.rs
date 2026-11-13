@@ -996,6 +996,9 @@ fn read_settings(cx: &App) -> (bool, Settings) {
         use_system_clipboard: defaults.use_system_clipboard,
         // Read from `vim.changeWordIncludesWhitespace` with the other V2a keys.
         change_word_includes_whitespace: defaults.change_word_includes_whitespace,
+        // Read from `vim.joinspaces` and `vim.tildeop` with the other V2a keys.
+        joinspaces: defaults.joinspaces,
+        tildeop: defaults.tildeop,
     };
     (enabled, settings)
 }

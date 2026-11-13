@@ -8,7 +8,7 @@ use lucerna_editor::{Ctx, EditConfig};
 use lucerna_text::{Buffer, BufferSnapshot, Point};
 
 use crate::classify::{CharClass, class};
-use crate::{Action, Key, Outcome, SearchQuery, Settings, ViewInfo, Vim, VimGlobals};
+use crate::{Action, InsertAt, Key, Outcome, SearchQuery, Settings, ViewInfo, Vim, VimGlobals};
 
 pub(crate) struct TestView {
     pub path: Arc<Path>,
@@ -120,6 +120,42 @@ impl TestView {
                     }
                 }
                 Action::ScrollTopRow(row) => self.top_row = *row,
+                // Like the workbench, `o` and `O` open a line that keeps
+                // the indent, and the caret goes there.
+                Action::EnterInsert(at @ (InsertAt::LineBelow | InsertAt::LineAbove)) => {
+                    let row = vim.cursor().row;
+                    let line = self.snapshot.line(row).to_string();
+                    let indent = &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
+                    let (offset, text, caret) = if *at == InsertAt::LineBelow {
+                        let end = self.snapshot.point_to_offset(Point {
+                            row,
+                            column: line.len() as u32,
+                        });
+                        (
+                            end,
+                            format!("\n{indent}"),
+                            Point {
+                                row: row + 1,
+                                column: indent.len() as u32,
+                            },
+                        )
+                    } else {
+                        let start = self.snapshot.point_to_offset(Point { row, column: 0 });
+                        (
+                            start,
+                            format!("{indent}\n"),
+                            Point {
+                                row,
+                                column: indent.len() as u32,
+                            },
+                        )
+                    };
+                    let mut all = self.snapshot.text_for_range(0..self.snapshot.len_bytes());
+                    all.insert_str(offset, &text);
+                    self.snapshot = BufferSnapshot::from_text(&all);
+                    edited = Some(self.snapshot.point_to_offset(caret));
+                    vim.set_cursor(caret);
+                }
                 _ => {}
             }
         }
@@ -439,7 +475,7 @@ mod tests {
     fn run_edit_matches_navigation() {
         for (start, keys, end) in [
             ("a|bc def", "w", "abc |def"),
-            ("abc\nd|ef", "kx<Esc>", "a|bc\ndef"),
+            ("abc\nd|ef", "kQ<Esc>", "a|bc\ndef"),
             ("one |two", "vey<Esc>", "one |two"),
             ("a<b|", "F<lt>", "a|<b"),
         ] {

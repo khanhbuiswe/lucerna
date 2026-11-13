@@ -48,7 +48,6 @@ impl VimGlobals {
 
     /// Reads register `name` (`None` is `"`). `%` is the file at `path`
     /// and `/` the last search pattern; the rest go to [`Registers`].
-    #[allow(dead_code)] // used by paste
     pub(crate) fn read_register(
         &self,
         name: Option<char>,
@@ -104,6 +103,10 @@ pub struct Vim {
     /// An operator waiting for its motion; `count` then holds the count
     /// typed after it.
     op: Option<PendingOp>,
+    /// The count of the `i a I A o O` that began the Insert session:
+    /// `3ifoo<Esc>` types the text twice more at Escape.
+    #[allow(dead_code)] // read by the counted-insert replay
+    insert_count: Option<u32>,
 }
 
 impl Vim {
@@ -119,6 +122,7 @@ impl Vim {
             search_count: None,
             register: None,
             op: None,
+            insert_count: None,
         }
     }
 
@@ -370,6 +374,10 @@ impl Vim {
                 }
             }
             Key::Enter => {
+                if self.prefix == Some('r') {
+                    let n = self.take_count();
+                    return self.replace('\n', n, view);
+                }
                 if self.prefix.is_some() {
                     self.clear_pending();
                     return Outcome::Handled(vec![]);
@@ -400,7 +408,7 @@ impl Vim {
 
     /// `i a I A o O`: enters Insert mode. The cursor goes where the text
     /// will be typed, except for `o` and `O`, whose new line the view opens.
-    fn enter_insert(&mut self, view: &dyn ViewInfo, at: InsertAt) -> Outcome {
+    fn enter_insert(&mut self, view: &dyn ViewInfo, at: InsertAt, count: Option<u32>) -> Outcome {
         let snapshot = view.snapshot();
         let row = self.cursor.row;
         let text = line(snapshot, row);
@@ -421,6 +429,7 @@ impl Vim {
             InsertAt::LineEnd => visual::line_len(snapshot, row),
         };
         self.mode = Mode::Insert;
+        self.insert_count = count.filter(|&n| n > 1);
         self.cursor = Point { row, column };
         self.anchor = self.cursor;
         self.goal = None;
@@ -573,8 +582,11 @@ impl Vim {
         // object.
         let object_prefix = matches!(c, 'i' | 'a')
             && (self.op.is_some() || !matches!(self.mode, Mode::Normal | Mode::Insert));
+        // `r` waits for the char to put; under an operator it cancels.
+        let replace_prefix = c == 'r' && self.mode == Mode::Normal && self.op.is_none();
         if self.prefix.is_none()
             && (object_prefix
+                || replace_prefix
                 || matches!(
                     c,
                     'g' | 'z' | 'f' | 'F' | 't' | 'T' | 'm' | '\'' | '`' | ']' | '['
@@ -594,6 +606,9 @@ impl Vim {
         let n = self.take_count();
         if let Some(p @ ('i' | 'a')) = prefix {
             return self.visual_object(c, p == 'a', n, view);
+        }
+        if prefix == Some('r') {
+            return self.replace(c, n, view);
         }
         if let Some(p @ ('f' | 'F' | 't' | 'T')) = prefix {
             let find = FindChar {
@@ -637,6 +652,19 @@ impl Vim {
                 'd' => self.run_command("editor.action.revealDefinition"),
                 'D' => self.run_command("editor.action.revealDeclaration"),
                 'h' => self.run_command("editor.action.showHover"),
+                'J' if self.mode == Mode::Normal => {
+                    let row = self.cursor.row;
+                    self.edit_with(view, |ctx| {
+                        crate::edit::join_lines(ctx, row, n, false, false)
+                    })
+                }
+                'p' | 'P' if self.mode == Mode::Normal => {
+                    let how = crate::edit::Put {
+                        before: c == 'P',
+                        after: true,
+                    };
+                    self.put(how, register, n, view, globals, settings)
+                }
                 'u' | 'U' | '~' if self.mode == Mode::Normal => {
                     let op = match c {
                         'u' => Operator::Lower,
@@ -706,7 +734,29 @@ impl Vim {
                     'o' => InsertAt::LineBelow,
                     _ => InsertAt::LineAbove,
                 };
-                self.enter_insert(view, at)
+                self.enter_insert(view, at, explicit)
+            }
+            'x' | 'X' | 's' | 'S' | 'C' | 'D' | 'Y' if !visual => {
+                self.shortcut_op(c, explicit, register, view, globals, settings)
+            }
+            '~' if !visual && settings.tildeop => {
+                self.start_op(Operator::ToggleCase, explicit, register, "~")
+            }
+            '~' if !visual => {
+                let at = self.cursor;
+                self.edit_with(view, |ctx| crate::edit::toggle_chars(ctx, at, n))
+            }
+            'J' if !visual => {
+                let row = self.cursor.row;
+                let js = settings.joinspaces;
+                self.edit_with(view, |ctx| crate::edit::join_lines(ctx, row, n, true, js))
+            }
+            'p' | 'P' if !visual => {
+                let how = crate::edit::Put {
+                    before: c == 'P',
+                    after: false,
+                };
+                self.put(how, register, n, view, globals, settings)
             }
             'h' => self.move_horizontal(Point {
                 row,
@@ -1150,13 +1200,91 @@ impl Vim {
         Outcome::Handled(actions)
     }
 
+    /// `x X s S C D Y`: the operator they stand for (`dl dh cl cc c$ d$
+    /// yy`), so the register rules stay in one place.
+    fn shortcut_op(
+        &mut self,
+        c: char,
+        count: Option<u32>,
+        register: Option<char>,
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+        s: &Settings,
+    ) -> Outcome {
+        let (op, motion) = match c {
+            'x' => (Operator::Delete, 'l'),
+            'X' => (Operator::Delete, 'h'),
+            's' => (Operator::Change, 'l'),
+            'S' => (Operator::Change, 'c'),
+            'C' => (Operator::Change, '$'),
+            'D' => (Operator::Delete, '$'),
+            _ => (Operator::Yank, 'y'),
+        };
+        let p = PendingOp {
+            op,
+            count,
+            register,
+            force: None,
+            text: c.to_string(),
+        };
+        self.op_key(p, None, None, motion, view, g, s)
+    }
+
+    /// `r{c}` (`\n` for Enter) on `n` chars.
+    fn replace(&mut self, c: char, n: u32, view: &dyn ViewInfo) -> Outcome {
+        let at = self.cursor;
+        self.edit_with(view, |ctx| crate::edit::replace_chars(ctx, at, c, n))
+    }
+
+    /// `p P gp gP` from `register`; nothing when it is empty.
+    fn put(
+        &mut self,
+        how: crate::edit::Put,
+        register: Option<char>,
+        n: u32,
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+        s: &Settings,
+    ) -> Outcome {
+        let Some(content) = g.read_register(register, s.use_system_clipboard, view.path()) else {
+            return Outcome::Handled(vec![]);
+        };
+        let at = self.cursor;
+        self.edit_with(view, |ctx| crate::edit::put(ctx, at, &content, n, how))
+    }
+
+    /// Applies the plan `build` makes (with the cursor after it) and stays
+    /// in Normal mode; nothing when the view is read-only or `build` finds
+    /// nothing to do.
+    fn edit_with(
+        &mut self,
+        view: &dyn ViewInfo,
+        build: impl FnOnce(lucerna_editor::Ctx) -> Option<(lucerna_editor::EditPlan, Point)>,
+    ) -> Outcome {
+        let Some((plan, cursor)) = view.edit_ctx().and_then(build) else {
+            return Outcome::Handled(vec![]);
+        };
+        let mut actions = Vec::new();
+        if !plan.edits.is_empty() {
+            actions.push(Action::Edit(plan));
+        }
+        if actions.is_empty() && cursor == self.cursor {
+            return Outcome::Handled(actions);
+        }
+        actions.push(Action::CursorMoved { jump: false });
+        self.cursor = cursor;
+        self.anchor = cursor;
+        self.goal = None;
+        Outcome::Handled(actions)
+    }
+
     /// `c` over an empty range: Insert at the cursor with no edit; nothing
     /// in a read-only view.
     fn change_nothing(&mut self, view: &dyn ViewInfo) -> Outcome {
         if view.edit_ctx().is_none() {
             return Outcome::Handled(vec![]);
         }
-        self.enter_insert(view, InsertAt::Before)
+        self.enter_insert(view, InsertAt::Before, None)
     }
 
     /// Runs the operator of `p` on `r`. `yank_cursor` is where a yank
@@ -1191,6 +1319,7 @@ impl Vim {
             actions.push(Action::CursorMoved { jump: false });
         }
         self.mode = mode;
+        self.insert_count = None;
         self.cursor = cursor;
         self.anchor = cursor;
         self.goal = None;
@@ -1512,7 +1641,7 @@ mod tests {
         let view = TestView::new("a|bc");
         let mut vim = Vim::new(view.cursor);
         assert_eq!(
-            feed_keys(&mut vim, &view, "x"),
+            feed_keys(&mut vim, &view, "Q"),
             vec![Outcome::Handled(vec![])]
         );
         assert_eq!(vim.cursor(), Point { row: 0, column: 1 });
@@ -1524,7 +1653,7 @@ mod tests {
         let mut vim = Vim::new(view.cursor);
         feed_keys(&mut vim, &view, "3");
         assert_eq!(vim.pending(), "3");
-        feed_keys(&mut vim, &view, "xj");
+        feed_keys(&mut vim, &view, "Qj");
         assert_eq!(vim.pending(), "");
         assert_eq!(vim.cursor(), Point { row: 1, column: 0 });
     }
@@ -1655,13 +1784,13 @@ mod tests {
         let view = TestView::new("|abc\nxy");
         let mut vim = Vim::new(view.cursor);
         vim.set_cursor(Point { row: 9, column: 9 });
-        feed_keys(&mut vim, &view, "x");
+        feed_keys(&mut vim, &view, "Q");
         assert_eq!(vim.cursor(), Point { row: 1, column: 1 });
         feed_keys(&mut vim, &view, "3");
         vim.reset(Point { row: 0, column: 7 });
         assert_eq!(vim.pending(), "");
         assert_eq!(vim.mode(), Mode::Normal);
-        feed_keys(&mut vim, &view, "x");
+        feed_keys(&mut vim, &view, "Q");
         assert_eq!(vim.cursor(), Point { row: 0, column: 2 });
     }
 
@@ -1902,6 +2031,25 @@ mod tests {
         ));
         assert_eq!(r(&g, '/'), Some("foo".into()));
         assert_eq!(r(&g, ':'), None);
+    }
+
+    #[test]
+    fn insert_keys_keep_their_count_for_the_replay() {
+        for keys in ["3i", "3a", "3I", "3A", "3o", "3O"] {
+            let view = TestView::new("a|b");
+            let mut vim = Vim::new(view.cursor);
+            feed_keys(&mut vim, &view, keys);
+            assert_eq!(vim.insert_count, Some(3), "{keys}");
+        }
+        let view = TestView::new("a|bc");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "i");
+        assert_eq!(vim.insert_count, None);
+        // `s` takes its count as chars, not as repeats.
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "2s");
+        assert_eq!(vim.mode(), Mode::Insert);
+        assert_eq!(vim.insert_count, None);
     }
 
     fn pt(row: u32, column: u32) -> Point {

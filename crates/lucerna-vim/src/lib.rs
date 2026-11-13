@@ -106,6 +106,10 @@ pub struct Settings {
     pub use_system_clipboard: ClipboardMode,
     /// `vim.changeWordIncludesWhitespace`: `cw` on a word acts like `dw`.
     pub change_word_includes_whitespace: bool,
+    /// `vim.joinspaces`: `J` puts two spaces after `.`, `!` and `?`.
+    pub joinspaces: bool,
+    /// `vim.tildeop`: `~` is an operator like `g~`.
+    pub tildeop: bool,
 }
 
 impl Default for Settings {
@@ -118,6 +122,8 @@ impl Default for Settings {
             scrolloff: 0,
             use_system_clipboard: ClipboardMode::OnYank,
             change_word_includes_whitespace: false,
+            joinspaces: true,
+            tildeop: false,
         }
     }
 }

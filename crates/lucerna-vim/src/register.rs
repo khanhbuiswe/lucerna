@@ -155,7 +155,6 @@ impl Registers {
 
     /// The content of register `name` (`None` is `"`). `%` and `/` live
     /// outside the registers: see `VimGlobals::read_register`.
-    #[allow(dead_code)] // used by paste
     pub(crate) fn read(
         &self,
         name: Option<char>,
