@@ -1,4 +1,5 @@
 {
+  "explorer.confirmDelete": true,
   "explorer.copyRelativePathSeparator": "auto",
   "terminal.external.osxExec": "Terminal.app",
   "terminal.external.linuxExec": "x-terminal-emulator",

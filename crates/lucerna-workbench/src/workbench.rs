@@ -871,6 +871,36 @@ impl Workbench {
         cx.notify();
     }
 
+    /// After Lucerna deleted `path` (absolute): the tabs of files at it or
+    /// under it close, except those with unsaved changes, which stay to be
+    /// marked deleted when the watcher reports the removal.
+    pub(crate) fn paths_deleted(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let path = self.absolute_path(path);
+        let documents = self.documents.read(cx);
+        let closing: Vec<TabId> = self
+            .editor_groups
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter(|t| {
+                t.path()
+                    .is_some_and(|p| p.starts_with(&path) && !documents.is_dirty(p))
+            })
+            .map(|t| t.id)
+            .collect();
+        if !closing.is_empty() {
+            self.update_editor_groups(cx, |m| {
+                for id in closing {
+                    m.close(id);
+                }
+            });
+        }
+        self.refresh_watched_open_files(cx);
+        cx.notify();
+    }
+
     /// Hands a worktree event to every view that follows the tree. Called
     /// for each event the worktree sends; tests call it directly.
     pub fn on_worktree_event(&mut self, ev: &WorktreeEvent, cx: &mut Context<Self>) {

@@ -1,7 +1,8 @@
-//! Inline name editing in the Explorer: New File… and New Folder….
+//! Editing the tree from the Explorer: New File…, New Folder…, Rename…
+//! and Delete.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -12,6 +13,7 @@ use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
+use lucerna_workbench::system_shell::{SystemShell, SystemShellGlobal};
 use lucerna_workbench::{AppState, Selection, Workbench};
 use tempfile::TempDir;
 
@@ -20,10 +22,14 @@ use tempfile::TempDir;
 const TRUSTED: &str = r#"{ "session.trustAllWorktrees": true, "lucerna.lsp.enabled": false }"#;
 
 fn init(cx: &mut TestAppContext) {
+    init_with(TRUSTED, cx);
+}
+
+fn init_with(user_settings: &str, cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     assert!(error.is_none(), "keymap error: {error:?}");
     let mut settings = SettingsStore::with_defaults();
-    settings.set_layer(Layer::User, TRUSTED).unwrap();
+    settings.set_layer(Layer::User, user_settings).unwrap();
     let themes = ThemeRegistry::builtin();
     let theme = themes.get_or_default("One Dark");
     cx.set_global(AppState {
@@ -809,4 +815,239 @@ fn rename_onto_open_deleted_file_shows_error(cx: &mut TestAppContext) {
     keys("enter", cx);
     assert!(editing(&wb, cx));
     assert!(dir.path().join("a.rs").exists());
+}
+
+/// Records `trash` calls. On success it removes the path, as the Trash
+/// would; on failure it leaves it.
+struct TrashShell {
+    trashed: Arc<Mutex<Vec<PathBuf>>>,
+    fail: bool,
+}
+
+impl SystemShell for TrashShell {
+    fn reveal(&self, _path: &Path, _cx: &gpui::App) {}
+
+    fn open_terminal(&self, _dir: &Path, _exec: &str) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn trash(&self, path: &Path) -> Result<(), String> {
+        self.trashed.lock().unwrap().push(path.to_path_buf());
+        if self.fail {
+            return Err("no Trash on this volume".to_string());
+        }
+        lucerna_project::fs_ops::delete_permanently(path).map_err(|e| e.to_string())
+    }
+}
+
+fn install_trash(fail: bool, cx: &mut TestAppContext) -> Arc<Mutex<Vec<PathBuf>>> {
+    let trashed = Arc::new(Mutex::new(Vec::new()));
+    cx.set_global(SystemShellGlobal(Arc::new(TrashShell {
+        trashed: trashed.clone(),
+        fail,
+    })));
+    trashed
+}
+
+const CONFIRM_OFF: &str = r#"{ "session.trustAllWorktrees": true, "lucerna.lsp.enabled": false, "explorer.confirmDelete": false }"#;
+
+#[gpui::test]
+fn delete_asks_then_trashes(cx: &mut TestAppContext) {
+    init(cx);
+    let trashed = install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-backspace", cx);
+    assert!(cx.has_pending_prompt());
+    assert!(trashed.lock().unwrap().is_empty());
+    cx.simulate_prompt_answer("Move to Trash");
+    draw(cx);
+    wait_until(cx, |_| !trashed.lock().unwrap().is_empty());
+    assert_eq!(*trashed.lock().unwrap(), [root.join("a.rs")]);
+    assert!(!root.join("a.rs").exists());
+}
+
+#[gpui::test]
+fn cancel_keeps_file(cx: &mut TestAppContext) {
+    init(cx);
+    let trashed = install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-backspace", cx);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    draw(cx);
+    cx.run_until_parked();
+    assert!(trashed.lock().unwrap().is_empty());
+    assert!(root.join("a.rs").is_file());
+}
+
+#[gpui::test]
+fn confirm_off_skips_prompt(cx: &mut TestAppContext) {
+    init_with(CONFIRM_OFF, cx);
+    let trashed = install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-backspace", cx);
+    assert!(!cx.has_pending_prompt());
+    wait_until(cx, |_| !trashed.lock().unwrap().is_empty());
+    assert_eq!(*trashed.lock().unwrap(), [root.join("a.rs")]);
+}
+
+#[gpui::test]
+fn trash_failure_offers_permanent_delete(cx: &mut TestAppContext) {
+    init(cx);
+    let trashed = install_trash(true, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-backspace", cx);
+    cx.simulate_prompt_answer("Move to Trash");
+    draw(cx);
+    wait_until(cx, |cx| cx.has_pending_prompt());
+    assert_eq!(*trashed.lock().unwrap(), [root.join("a.rs")]);
+    // The Trash failed: nothing is gone until the user says so.
+    assert!(root.join("a.rs").is_file());
+    cx.simulate_prompt_answer("Delete Permanently");
+    draw(cx);
+    wait_until(cx, |_| !root.join("a.rs").exists());
+}
+
+#[gpui::test]
+fn trash_failure_cancel_keeps_file(cx: &mut TestAppContext) {
+    init(cx);
+    let trashed = install_trash(true, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-backspace", cx);
+    cx.simulate_prompt_answer("Move to Trash");
+    draw(cx);
+    wait_until(cx, |cx| cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    draw(cx);
+    cx.run_until_parked();
+    assert_eq!(trashed.lock().unwrap().len(), 1);
+    assert!(root.join("a.rs").is_file());
+}
+
+#[gpui::test]
+fn delete_permanently_always_asks(cx: &mut TestAppContext) {
+    init_with(CONFIRM_OFF, cx);
+    let trashed = install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("alt-cmd-backspace", cx);
+    assert!(cx.has_pending_prompt());
+    assert!(root.join("a.rs").is_file());
+    cx.simulate_prompt_answer("Delete");
+    draw(cx);
+    wait_until(cx, |_| !root.join("a.rs").exists());
+    // Permanently: never through the Trash.
+    assert!(trashed.lock().unwrap().is_empty());
+}
+
+#[gpui::test]
+fn delete_closes_clean_tabs_keeps_dirty(cx: &mut TestAppContext) {
+    init(cx);
+    install_trash(false, cx);
+    let dir = project();
+    std::fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    let view = open_file(&wb, "src/main.rs", cx);
+    cx.update(|window, cx| {
+        let focus = gpui::Focusable::focus_handle(view.read(cx), cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    type_text(cx, "xy");
+    open_file(&wb, "src/lib.rs", cx);
+    assert_eq!(tabs(&wb, cx).len(), 2);
+
+    click("explorer-row-src", cx);
+    keys("cmd-backspace", cx);
+    cx.simulate_prompt_answer("Move to Trash");
+    draw(cx);
+    wait_until(cx, |_| !root.join("src").exists());
+    wait_until(cx, |cx| tabs(&wb, cx).len() == 1);
+    assert_eq!(tabs(&wb, cx), [(PathBuf::from("src/main.rs"), true)]);
+
+    wait_until(cx, |cx| {
+        wb.read_with(cx, |wb, _| {
+            !wb.worktree().snapshot().contains(Path::new("src"))
+        })
+    });
+    let changes = ["src", "src/main.rs", "src/lib.rs"]
+        .iter()
+        .map(|p| Change {
+            path: Arc::from(Path::new(p)),
+            kind: ChangeKind::Removed,
+        })
+        .collect();
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(changes), cx)
+    });
+    draw(cx);
+    let main = root.join("src/main.rs");
+    let state = wb.read_with(cx, |wb, cx| wb.documents().read(cx).state(&main).cloned());
+    assert_eq!(state, Some(lucerna_workbench::DocState::Deleted));
+    assert!(wb.read_with(cx, |wb, cx| wb.documents().read(cx).is_dirty(&main)));
+}
+
+#[gpui::test]
+fn selection_moves_to_parent_after_delete(cx: &mut TestAppContext) {
+    init(cx);
+    install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-src", cx);
+    assert!(expanded(&wb, "src", cx));
+    click("explorer-row-src/main.rs", cx);
+    keys("cmd-backspace", cx);
+    cx.simulate_prompt_answer("Move to Trash");
+    draw(cx);
+    wait_until(cx, |_| !root.join("src/main.rs").exists());
+    wait_until(cx, |cx| {
+        selection(&wb, cx) == Selection::Path(Arc::from(Path::new("src")))
+    });
+}
+
+#[gpui::test]
+fn delete_is_not_offered_for_root(cx: &mut TestAppContext) {
+    init_with(CONFIRM_OFF, cx);
+    let trashed = install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-a.rs", cx);
+    assert!(
+        cx.debug_bounds("context-menu-item-moveFileToTrash")
+            .is_some()
+    );
+    assert!(cx.debug_bounds("context-menu-item-deleteFile").is_none());
+    keys("escape", cx);
+    right_click("explorer-root", cx);
+    assert!(
+        cx.debug_bounds("context-menu-item-moveFileToTrash")
+            .is_none()
+    );
+    keys("escape", cx);
+    click("explorer-root", cx);
+    keys("cmd-backspace", cx);
+    run(&wb, "moveFileToTrash", cx);
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert!(trashed.lock().unwrap().is_empty());
+    assert!(dir.path().exists());
 }

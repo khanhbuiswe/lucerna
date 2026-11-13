@@ -46,5 +46,6 @@ pub(super) fn build_menu(
         .separator()
         .when(kind != SelectedKind::Root && !single_file, |m| {
             m.entry("Rename…", "renameFile")
+                .entry("Delete", "moveFileToTrash")
         })
 }

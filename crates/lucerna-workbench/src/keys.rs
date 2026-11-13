@@ -270,6 +270,7 @@ mod tests {
             ),
             (event("backspace", None, alt()), "alt+backspace"),
             (event("backspace", None, cmd()), "cmd+backspace"),
+            (event("backspace", None, alt_cmd()), "alt+cmd+backspace"),
             (event("delete", None, Modifiers::none()), "delete"),
             (event("delete", None, alt()), "alt+delete"),
             (event("delete", None, cmd()), "cmd+delete"),

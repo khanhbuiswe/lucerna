@@ -47,6 +47,10 @@ impl SystemShell for RecordingShell {
             Ok(())
         }
     }
+
+    fn trash(&self, path: &Path) -> Result<(), String> {
+        Err(format!("unexpected trash of {}", path.display()))
+    }
 }
 
 fn install_shell(fail: bool, cx: &mut TestAppContext) -> Arc<Mutex<Vec<Call>>> {

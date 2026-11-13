@@ -589,13 +589,14 @@ fn menu_commands(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Stri
     })
 }
 
-const FILE_MENU: [&str; 6] = [
+const FILE_MENU: [&str; 7] = [
     "explorer.openToSide",
     "revealFileInOS",
     "openInTerminal",
     "copyFilePath",
     "copyRelativeFilePath",
     "renameFile",
+    "moveFileToTrash",
 ];
 /// Single-file mode: nothing that edits the tree.
 const SINGLE_FILE_MENU: [&str; 5] = [
@@ -614,7 +615,7 @@ const ROOT_MENU: [&str; 7] = [
     "copyFilePath",
     "copyRelativeFilePath",
 ];
-const FOLDER_MENU: [&str; 8] = [
+const FOLDER_MENU: [&str; 9] = [
     "explorer.newFile",
     "explorer.newFolder",
     "revealFileInOS",
@@ -623,6 +624,7 @@ const FOLDER_MENU: [&str; 8] = [
     "copyFilePath",
     "copyRelativeFilePath",
     "renameFile",
+    "moveFileToTrash",
 ];
 
 /// Without this an opened file in a temp dir raises the workspace trust
@@ -781,4 +783,16 @@ fn single_file_menu_is_read_only(cx: &mut TestAppContext) {
     right_click_at(Point::new(list.center().x, list.bottom() - px(10.)), cx);
     assert_eq!(menu_commands(&wb, cx), SINGLE_FILE_MENU);
     assert_eq!(selection(&wb, cx), Selection::Path(p("notes.md")));
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    // Nor by key or command: the lone file is never deleted from here.
+    cx.simulate_keystrokes("cmd-backspace alt-cmd-backspace");
+    for command in ["moveFileToTrash", "deleteFile"] {
+        cx.update(|window, cx| {
+            wb.update(cx, |wb, cx| wb.run_command(command, None, window, cx));
+        });
+    }
+    draw(cx);
+    assert!(!cx.has_pending_prompt());
+    assert!(file.is_file());
 }

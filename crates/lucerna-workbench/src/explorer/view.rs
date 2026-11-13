@@ -232,6 +232,23 @@ impl ExplorerView {
         self.begin_edit(edit, "", 0..0, window, cx);
     }
 
+    /// After `rel` was deleted: a selection at it or under it moves to its
+    /// parent folder.
+    pub(crate) fn select_parent_of(&mut self, rel: &Path, cx: &mut Context<Self>) {
+        let Selection::Path(selected) = self.model.selection() else {
+            return;
+        };
+        if !selected.starts_with(rel) {
+            return;
+        }
+        let selection = match rel.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => Selection::Path(Arc::from(parent)),
+            _ => Selection::Root,
+        };
+        self.model.select(selection);
+        cx.notify();
+    }
+
     /// Rename…: types the selected entry's new name in its own row, the
     /// name before its last extension selected. Not for the root, nor in
     /// single-file mode.
