@@ -446,8 +446,9 @@ impl Workbench {
         }
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
+            let lone = single_file_path.is_some();
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
-            cx.new(|cx| ExplorerView::new(root, snapshot, workbench, &groups, cx))
+            cx.new(|cx| ExplorerView::new(root, lone, snapshot, workbench, &groups, cx))
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
@@ -739,11 +740,12 @@ impl Workbench {
         paths
     }
 
-    /// The opened folder's name, as the title bar shows it.
+    /// The opened folder's name, as the title bar shows it; in
+    /// single-file mode, the file's name.
     pub fn root_name(&self) -> String {
-        self.root
-            .file_name()
-            .unwrap_or(self.root.as_os_str())
+        let path = self.single_file.as_deref().unwrap_or(&self.root);
+        path.file_name()
+            .unwrap_or(path.as_os_str())
             .to_string_lossy()
             .into_owned()
     }

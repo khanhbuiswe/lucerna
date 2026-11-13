@@ -37,15 +37,16 @@ quét, không theo dõi, sidebar và Quick Open chỉ có file đó, Search tắ
 
 - `resolve_target`: file luôn trả `single_file: true`, `root` = thư mục cha.
   Bỏ tìm `.git` và điều kiện `$HOME`/`/`. Thư mục vẫn mở như cũ.
-- Sidebar: dòng gốc hiện tên file thay vì tên thư mục cha. Thanh tiêu đề
-  cũng hiện tên file. (Đề xuất của Claude, đã duyệt.)
+- Sidebar: ở chế độ một file không vẽ dòng gốc (thư mục), chỉ còn dòng
+  của file, như Zed. Thanh tiêu đề hiện tên file. (Bản duyệt đầu ghi
+  "dòng gốc hiện tên file"; đổi khi lập kế hoạch vì sẽ lặp tên hai lần.)
 - Mở thêm file: Open File… trong ứng dụng mở tab ở cửa sổ này (như nay);
   Finder/`luc` mở cửa sổ mới (như nay, `open_requests::route`).
 - Restricted Mode: tin cậy vẫn theo thư mục chứa file.
 - Recent: file lẻ ghi là `RecentKind::File` (đã có).
 - Test: sửa test luật repo git trong `target.rs` và `tests/cli.rs`; thêm
   test file trong thư mục thường (kiểu `~/Downloads`) và file trong repo
-  đều mở lẻ; test nhãn gốc sidebar và tiêu đề là tên file.
+  đều mở lẻ; test không có dòng gốc và tiêu đề là tên file.
 
 ## Không làm
 
