@@ -68,10 +68,23 @@ impl TestView {
     /// clamped to the new text afterwards.
     pub fn apply(&mut self, vim: &mut Vim, actions: &[Action]) {
         let before = (self.snapshot.clone(), vim.cursor());
+        debug_assert!(
+            actions
+                .iter()
+                .filter(|a| matches!(a, Action::Edit(_)))
+                .count()
+                <= 1,
+            "a feed emits at most one Action::Edit: {actions:?}"
+        );
         let mut edited = None;
         for action in actions {
             match action {
                 Action::Edit(plan) => {
+                    debug_assert!(
+                        plan.edits.windows(2).all(|w| w[0].0.end <= w[1].0.start),
+                        "edits must be ascending and non-overlapping: {:?}",
+                        plan.edits
+                    );
                     let mut text = self.snapshot.text_for_range(0..self.snapshot.len_bytes());
                     for (range, new) in plan.edits.iter().rev() {
                         text.replace_range(range.clone(), new);
@@ -79,6 +92,9 @@ impl TestView {
                     self.snapshot = BufferSnapshot::from_text(&text);
                     edited = Some(plan.selections.primary().head);
                 }
+                // Undo puts vim's cursor back where it was before the
+                // command (the view's selections before it, like
+                // VSCodeVim's cursorsAtStart); redo at the plan's head.
                 Action::Undo(n) => {
                     self.commit(&mut edited, &before);
                     for _ in 0..*n {
@@ -436,6 +452,20 @@ mod tests {
         // Nothing left to redo; undo past the start stays at the start.
         view.apply(&mut vim, &[Action::Redo(1), Action::Undo(5)]);
         assert_eq!(view.marked(vim.cursor()), "abc\nde|f");
+    }
+
+    #[test]
+    fn applies_several_edits_in_one_plan() {
+        let mut view = TestView::new("abcd|ef");
+        let mut vim = Vim::new(view.cursor);
+        let plan = EditPlan::new(
+            vec![(0..1, Arc::from("XY")), (4..5, Arc::from(""))],
+            SelectionSet::cursor(5),
+            EditKind::Other,
+        );
+        view.apply(&mut vim, &[Action::Edit(plan)]);
+        // Vim keeps its own cursor (offset 4), clamped to the new text.
+        assert_eq!(view.marked(vim.cursor()), "XYbc|df");
     }
 
     #[test]

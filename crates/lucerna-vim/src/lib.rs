@@ -174,7 +174,9 @@ pub enum Action {
     /// a line) and takes the keys until Escape.
     EnterInsert(InsertAt),
     /// Apply this plan to the view's document. Every edit from one key
-    /// forms one undo step; vim's cursor is clamped afterwards.
+    /// forms one undo step; vim's cursor is clamped afterwards. A feed
+    /// emits at most one `Edit`: every plan is built against the text
+    /// before the feed, so a command combines its edits into one plan.
     Edit(EditPlan),
     /// Undo this many steps of the document.
     Undo(u32),
