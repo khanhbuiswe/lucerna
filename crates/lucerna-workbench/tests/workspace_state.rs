@@ -13,8 +13,9 @@ use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, EXTENSIONS_TAB_STATE, GroupState, GroupsState, OpenMode, SEARCH_TAB_STATE,
-    SearchState, SidebarView, Workbench, WorkspaceState, load_state, save_state, state_path,
+    AppState, EXTENSIONS_TAB_STATE, GroupState, GroupsState, MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
+    MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode, SEARCH_TAB_STATE, SearchState, SidebarView, TabItem,
+    Workbench, WorkspaceState, load_state, save_state, state_path,
 };
 use tempfile::TempDir;
 
@@ -150,6 +151,43 @@ fn search_tab_survives_without_missing_files() {
         "the Search and Extensions tabs are not files"
     );
     assert_eq!(state.groups.groups[1].active, Some(0));
+}
+
+/// `prefix` followed by `path`, as a preview tab is saved.
+fn preview_state(prefix: &str, path: &Path) -> PathBuf {
+    PathBuf::from(format!("{prefix}{}", path.display()))
+}
+
+/// Spec §4.4: preview tabs are saved as a prefix and the file's path; they
+/// come back while the file exists, keeping their prefix, and go with it.
+#[test]
+fn preview_tabs_survive_without_missing_files() {
+    let dir = TempDir::new().unwrap();
+    let (a, gone) = (dir.path().join("a.md"), dir.path().join("gone.md"));
+    fs::write(&a, "# a").unwrap();
+    for prefix in [
+        MARKDOWN_PREVIEW_STATE_PREFIX,
+        MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
+    ] {
+        let mut state = sample(&[&a, &a]);
+        state.groups.groups[1].tabs = vec![
+            (preview_state(prefix, &gone), false),
+            (preview_state(prefix, &a), true),
+            // From an old file: relative, resolved against the root.
+            (preview_state(prefix, Path::new("a.md")), false),
+        ];
+        state.groups.groups[1].active = Some(1);
+        let state = state.without_missing_files(dir.path());
+        assert_eq!(
+            state.groups.groups[1].tabs,
+            vec![
+                (preview_state(prefix, &a), true),
+                (preview_state(prefix, &a), false),
+            ],
+            "{prefix}: kept while the file exists, dropped when it is gone"
+        );
+        assert_eq!(state.groups.groups[1].active, Some(0), "{prefix}");
+    }
 }
 
 fn init(cx: &mut TestAppContext) {
@@ -568,4 +606,59 @@ fn old_state_without_search_field_loads() {
     fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
     let state = load_state(&path).expect("a file without `search` still loads");
     assert_eq!(state.search, SearchState::default());
+}
+
+/// Spec §4.4: a static and a dynamic Markdown preview are saved by the
+/// workbench and come back as the same kind of tab.
+#[gpui::test]
+fn preview_tabs_saved_and_restored(cx: &mut TestAppContext) {
+    init(cx);
+    let project = Project::new();
+    let (a, b) = (project.file("a.md"), project.file("b.md"));
+    fs::write(&a, "# a\n").unwrap();
+    fs::write(&b, "# b\n").unwrap();
+    let items = |wb: &Entity<Workbench>, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            wb.read(cx)
+                .editor_groups()
+                .read(cx)
+                .model()
+                .groups()
+                .iter()
+                .map(|g| g.tabs.iter().map(|t| t.item.clone()).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        })
+    };
+    let before = {
+        let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
+        // `.md` opens as a static preview by default.
+        let path: Arc<Path> = Arc::from(a.as_path());
+        wb.update(cx, |wb, cx| wb.open_path(path, OpenMode::Pinned, cx));
+        settle(cx);
+        wb.update(cx, |wb, cx| {
+            wb.update_editor_groups(cx, |m| {
+                m.open_dynamic_preview(Arc::from(b.as_path()));
+            })
+        });
+        settle(cx);
+        let before = items(&wb, cx);
+        assert!(
+            before
+                .iter()
+                .flatten()
+                .any(|i| matches!(i, TabItem::MarkdownPreview(_))),
+            "{before:?}"
+        );
+        assert!(
+            before
+                .iter()
+                .flatten()
+                .any(|i| matches!(i, TabItem::MarkdownPreviewDynamic(_))),
+            "{before:?}"
+        );
+        wb.update(cx, |wb, cx| wb.save_workspace_state(cx));
+        before
+    };
+    let (wb, cx) = workbench(project.root.path(), project.data.path(), cx);
+    assert_eq!(items(&wb, cx), before, "the same kinds of tab come back");
 }

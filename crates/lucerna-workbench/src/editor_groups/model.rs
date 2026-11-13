@@ -701,19 +701,34 @@ fn saved_item(path: &Path) -> TabItem {
         TabItem::Extensions
     } else if path == Path::new(SEARCH_TAB_STATE) {
         TabItem::Search
-    } else if let Some(rest) = path
-        .to_str()
-        .and_then(|p| p.strip_prefix(MARKDOWN_PREVIEW_STATE_PREFIX))
-    {
-        TabItem::MarkdownPreview(Arc::from(Path::new(rest)))
-    } else if let Some(rest) = path
-        .to_str()
-        .and_then(|p| p.strip_prefix(MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX))
-    {
-        TabItem::MarkdownPreviewDynamic(Arc::from(Path::new(rest)))
+    } else if let Some((prefix, rest)) = split_preview_state(path) {
+        if prefix == MARKDOWN_PREVIEW_STATE_PREFIX {
+            TabItem::MarkdownPreview(Arc::from(rest))
+        } else {
+            TabItem::MarkdownPreviewDynamic(Arc::from(rest))
+        }
     } else {
         TabItem::File(Arc::from(path))
     }
+}
+
+/// A saved preview tab split into its prefix
+/// ([`MARKDOWN_PREVIEW_STATE_PREFIX`] or
+/// [`MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX`]) and the path of the file it
+/// shows; `None` for any other saved tab, and for a path that is not UTF-8.
+pub(crate) fn split_preview_state(path: &Path) -> Option<(&'static str, &Path)> {
+    let text = path.to_str()?;
+    // The dynamic prefix first: the static one is not a prefix of it, but
+    // checking the longer one first keeps that from mattering.
+    [
+        MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
+        MARKDOWN_PREVIEW_STATE_PREFIX,
+    ]
+    .into_iter()
+    .find_map(|prefix| {
+        text.strip_prefix(prefix)
+            .map(|rest| (prefix, Path::new(rest)))
+    })
 }
 
 /// How a tab is saved: its path, [`EXTENSIONS_TAB_STATE`],
@@ -732,7 +747,8 @@ fn saved_path(item: &TabItem) -> Option<PathBuf> {
     }
 }
 
-fn prefixed(prefix: &str, path: &Path) -> PathBuf {
+/// `prefix` followed by `path`, as a saved tab path.
+pub(crate) fn prefixed(prefix: &str, path: &Path) -> PathBuf {
     let mut saved = std::ffi::OsString::from(prefix);
     saved.push(path.as_os_str());
     PathBuf::from(saved)
