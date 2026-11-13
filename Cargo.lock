@@ -3418,6 +3418,7 @@ dependencies = [
 name = "lucerna-vim"
 version = "0.1.0"
 dependencies = [
+ "lucerna-editor",
  "lucerna-text",
  "unicode-segmentation",
 ]

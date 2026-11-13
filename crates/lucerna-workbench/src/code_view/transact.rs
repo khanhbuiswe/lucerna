@@ -384,7 +384,7 @@ impl CodeView {
 
 /// The clipboard item of `clip`: its text, with the pieces and the
 /// whole-line flag as JSON metadata.
-fn clipboard_item(clip: ClipboardText) -> ClipboardItem {
+pub(crate) fn clipboard_item(clip: ClipboardText) -> ClipboardItem {
     let meta = ClipboardMetadata {
         pieces: clip.pieces,
         whole_line: clip.whole_line,

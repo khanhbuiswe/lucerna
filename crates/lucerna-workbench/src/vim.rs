@@ -10,10 +10,13 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
 use gpui::{
-    App, AppContext as _, ClipboardItem, Context, Entity, EntityId, KeyDownEvent, Subscription,
-    Task, WeakEntity, Window,
+    App, AppContext as _, Context, Entity, EntityId, KeyDownEvent, Subscription, Task, WeakEntity,
+    Window,
 };
+use lucerna_editor::clipboard::ClipboardText;
+use lucerna_editor::{Ctx, EditConfig};
 use lucerna_settings::{Context as WhenContext, WhenExpr, parse_when};
+use lucerna_syntax::Language;
 use lucerna_text::{BufferSnapshot, Point, Reload};
 use lucerna_vim::{
     Action, FoldAction, InsertAt, Key, Mode, Outcome, SearchQuery, Settings, ViewInfo, Vim,
@@ -21,7 +24,9 @@ use lucerna_vim::{
 };
 
 use crate::AppState;
-use crate::code_view::{CodeView, CodeViewEvent, CursorOverlay, CursorShape, FoldOp};
+use crate::code_view::{
+    CodeView, CodeViewEvent, CursorOverlay, CursorShape, FoldOp, clipboard_item,
+};
 use crate::documents::DocState;
 use crate::editor_groups::EditorGroupsView;
 use crate::find_widget::{
@@ -546,6 +551,7 @@ impl VimLayer {
         }
         let outcome = {
             let v = view.read(cx);
+            let edit = (!v.is_readonly()).then(|| (v.edit_config(cx), v.edit_language(cx)));
             let Some(state) = self.views.get_mut(&id) else {
                 return false;
             };
@@ -556,6 +562,7 @@ impl VimLayer {
             let info = Info {
                 view: v,
                 cache: self.match_cache.get(&id),
+                edit,
             };
             let (vim, globals, settings) = (&mut state.vim, &mut self.globals, &self.settings);
             match &redo {
@@ -694,7 +701,18 @@ impl VimLayer {
                     let this = if jump { Reveal::Jump } else { Reveal::Scroll };
                     reveal = Some(reveal.map_or(this, |r: Reveal| if jump { this } else { r }));
                 }
-                Action::Yank(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+                Action::WriteClipboard { text, linewise } => {
+                    cx.write_to_clipboard(clipboard_item(ClipboardText {
+                        text,
+                        pieces: None,
+                        whole_line: linewise,
+                    }));
+                }
+                // Applied from Task 8 of vim editing (V2a); nothing emits
+                // them yet.
+                Action::Edit(_) | Action::Undo(_) | Action::Redo(_) => {
+                    tracing::debug!("vim: edit actions are not applied yet");
+                }
                 Action::Highlight(query) => {
                     if let Some(matches) = self.matches_for(view, &query, cx) {
                         view.update(cx, |v, cx| v.set_match_highlights(matches, None, cx));
@@ -1016,6 +1034,8 @@ fn row_on_screen(v: &CodeView, row: u32) -> bool {
 struct Info<'a> {
     view: &'a CodeView,
     cache: Option<&'a MatchCache>,
+    /// The view's editing config and language; `None` when read-only.
+    edit: Option<(EditConfig, Option<Arc<Language>>)>,
 }
 
 impl ViewInfo for Info<'_> {
@@ -1051,5 +1071,15 @@ impl ViewInfo for Info<'_> {
         self.cache
             .filter(|c| c.revision == self.view.revision() && c.query == *query)
             .map(|c| c.matches.clone())
+    }
+
+    fn edit_ctx(&self) -> Option<Ctx<'_>> {
+        let (config, language) = self.edit.as_ref()?;
+        Some(Ctx {
+            snapshot: self.view.snapshot(),
+            config,
+            language: language.as_deref().map(Language::editing),
+            syntax: self.view.syntax().map(|s| &**s),
+        })
     }
 }

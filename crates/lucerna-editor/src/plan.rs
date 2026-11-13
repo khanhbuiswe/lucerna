@@ -11,7 +11,7 @@ use crate::undo_stops::EditKind;
 
 /// What a command wants to do to the buffer. Edits are in pre-edit
 /// coordinates; `selections` are in post-edit coordinates.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EditPlan {
     pub edits: Vec<(Range<usize>, Arc<str>)>,
     pub selections: SelectionSet,

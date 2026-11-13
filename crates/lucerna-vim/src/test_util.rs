@@ -4,6 +4,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
+use lucerna_editor::{Ctx, EditConfig};
 use lucerna_text::{Buffer, BufferSnapshot, Point};
 
 use crate::classify::{CharClass, class};
@@ -20,6 +21,18 @@ pub(crate) struct TestView {
     pub tab_size: u32,
     /// Makes `matches` return `None`, like a search still running.
     pub searching: bool,
+    /// Makes `edit_ctx` return `None`, like a read-only view.
+    pub readonly: bool,
+    pub config: EditConfig,
+    /// Undo steps, oldest first, and redo steps, latest undone last.
+    undo: Vec<UndoStep>,
+    redo: Vec<UndoStep>,
+}
+
+/// One feed's edits: the text and vim's cursor before and after.
+struct UndoStep {
+    before: (BufferSnapshot, Point),
+    after: (BufferSnapshot, Point),
 }
 
 impl TestView {
@@ -41,7 +54,67 @@ impl TestView {
             hidden: Vec::new(),
             tab_size: 4,
             searching: false,
+            readonly: false,
+            config: lucerna_editor::test_util::test_config(),
+            undo: Vec::new(),
+            redo: Vec::new(),
         }
+    }
+
+    /// Carries out the actions of one feed the way the workbench does:
+    /// every `Edit` changes the text (all of them one undo step), `Undo`
+    /// and `Redo` walk the history and put the cursor where the step
+    /// started or ended, and `ScrollTopRow` moves the view. Vim's cursor is
+    /// clamped to the new text afterwards.
+    pub fn apply(&mut self, vim: &mut Vim, actions: &[Action]) {
+        let before = (self.snapshot.clone(), vim.cursor());
+        let mut edited = None;
+        for action in actions {
+            match action {
+                Action::Edit(plan) => {
+                    let mut text = self.snapshot.text_for_range(0..self.snapshot.len_bytes());
+                    for (range, new) in plan.edits.iter().rev() {
+                        text.replace_range(range.clone(), new);
+                    }
+                    self.snapshot = BufferSnapshot::from_text(&text);
+                    edited = Some(plan.selections.primary().head);
+                }
+                Action::Undo(n) => {
+                    self.commit(&mut edited, &before);
+                    for _ in 0..*n {
+                        let Some(step) = self.undo.pop() else { break };
+                        (self.snapshot, _) = step.before.clone();
+                        vim.reset(step.before.1);
+                        self.redo.push(step);
+                    }
+                }
+                Action::Redo(n) => {
+                    self.commit(&mut edited, &before);
+                    for _ in 0..*n {
+                        let Some(step) = self.redo.pop() else { break };
+                        (self.snapshot, _) = step.after.clone();
+                        vim.reset(step.after.1);
+                        self.undo.push(step);
+                    }
+                }
+                Action::ScrollTopRow(row) => self.top_row = *row,
+                _ => {}
+            }
+        }
+        self.commit(&mut edited, &before);
+        vim.clamp(&self.snapshot);
+    }
+
+    /// Records the pending edits (whose plan left the cursor at `head`) as
+    /// one undo step.
+    fn commit(&mut self, edited: &mut Option<usize>, before: &(BufferSnapshot, Point)) {
+        let Some(head) = edited.take() else { return };
+        let after = self.snapshot.offset_to_point(head);
+        self.undo.push(UndoStep {
+            before: before.clone(),
+            after: (self.snapshot.clone(), after),
+        });
+        self.redo.clear();
     }
 
     /// The text with `|` inserted at `cursor`.
@@ -154,9 +227,18 @@ impl ViewInfo for TestView {
         }
         Some(found.into())
     }
+
+    fn edit_ctx(&self) -> Option<Ctx<'_>> {
+        (!self.readonly).then_some(Ctx {
+            snapshot: &self.snapshot,
+            config: &self.config,
+            language: None,
+            syntax: None,
+        })
+    }
 }
 
-/// Parses `keys`: plain chars, `<C-x>`, `<Esc>`, `<CR>`, `<lt>`.
+/// Parses `keys`: plain chars, `<C-x>`, `<Esc>`, `<CR>`, `<BS>`, `<lt>`.
 pub(crate) fn parse_keys(keys: &str) -> Vec<Key> {
     let mut out = Vec::new();
     let mut chars = keys.chars();
@@ -169,6 +251,7 @@ pub(crate) fn parse_keys(keys: &str) -> Vec<Key> {
         out.push(match name.as_str() {
             "Esc" => Key::Escape,
             "CR" => Key::Enter,
+            "BS" => Key::Backspace,
             "lt" => Key::Char('<'),
             _ => match name.strip_prefix("C-") {
                 Some(rest) if rest.chars().count() == 1 => Key::Ctrl(rest.chars().next().unwrap()),
@@ -259,4 +342,107 @@ pub(crate) fn run_keys(
         }
     }
     (view, vim, actions)
+}
+
+/// Feeds `keys` one at a time from `start`, applying each key's edits
+/// before the next (see [`TestView::apply`]). Returns the text with `|` at
+/// vim's cursor, and every emitted action.
+pub(crate) fn run_edit(start: &str, keys: &str) -> (String, Vec<Action>) {
+    run_edit_with(Settings::default(), |_| {}, start, keys)
+}
+
+pub(crate) fn run_edit_with(
+    settings: Settings,
+    view_setup: impl FnOnce(&mut TestView),
+    start: &str,
+    keys: &str,
+) -> (String, Vec<Action>) {
+    let mut view = TestView::new(start);
+    view_setup(&mut view);
+    let mut vim = Vim::new(view.cursor);
+    let mut globals = VimGlobals::default();
+    let mut actions = Vec::new();
+    for key in parse_keys(keys) {
+        if let Outcome::Handled(done) = vim.feed(key, &view, &mut globals, &settings) {
+            view.apply(&mut vim, &done);
+            actions.extend(done);
+        }
+    }
+    (view.marked(vim.cursor()), actions)
+}
+
+#[track_caller]
+pub(crate) fn assert_edit(start: &str, keys: &str, end: &str) {
+    assert_edit_with(Settings::default(), |_| {}, start, keys, end);
+}
+
+#[track_caller]
+pub(crate) fn assert_edit_with(
+    settings: Settings,
+    view_setup: impl FnOnce(&mut TestView),
+    start: &str,
+    keys: &str,
+    end: &str,
+) {
+    let (text, _) = run_edit_with(settings, view_setup, start, keys);
+    assert_eq!(text, end, "keys {keys:?} from {start:?}");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use lucerna_editor::{EditKind, EditPlan, SelectionSet};
+
+    use super::*;
+
+    /// V1 keys emit no edits: `run_edit` ends where `assert_keys` does.
+    #[test]
+    fn run_edit_matches_navigation() {
+        for (start, keys, end) in [
+            ("a|bc def", "w", "abc |def"),
+            ("abc\nd|ef", "kx<Esc>", "a|bc\ndef"),
+            ("one |two", "vey<Esc>", "one |two"),
+            ("a<b|", "F<lt>", "a|<b"),
+        ] {
+            assert_keys(start, keys, end);
+            assert_edit(start, keys, end);
+            let (_, actions) = run_edit(start, keys);
+            assert!(!actions.iter().any(|a| matches!(a, Action::Edit(_))));
+        }
+    }
+
+    #[test]
+    fn parses_backspace() {
+        assert_eq!(parse_keys("a<BS>"), [Key::Char('a'), Key::Backspace]);
+    }
+
+    #[test]
+    fn edits_apply_then_clamp_and_undo_redo() {
+        let mut view = TestView::new("abc\nde|f");
+        let mut vim = Vim::new(view.cursor);
+        // Delete "def" and the line break before it.
+        let plan = EditPlan::new(
+            vec![(3..7, Arc::from(""))],
+            SelectionSet::cursor(2),
+            EditKind::Other,
+        );
+        view.apply(&mut vim, &[Action::Edit(plan)]);
+        assert_eq!(view.marked(vim.cursor()), "ab|c");
+        view.apply(&mut vim, &[Action::Undo(1)]);
+        assert_eq!(view.marked(vim.cursor()), "abc\nde|f");
+        view.apply(&mut vim, &[Action::Redo(1)]);
+        assert_eq!(view.marked(vim.cursor()), "ab|c");
+        // Nothing left to redo; undo past the start stays at the start.
+        view.apply(&mut vim, &[Action::Redo(1), Action::Undo(5)]);
+        assert_eq!(view.marked(vim.cursor()), "abc\nde|f");
+    }
+
+    #[test]
+    fn readonly_view_has_no_edit_ctx() {
+        let mut view = TestView::new("|abc");
+        assert!(view.edit_ctx().is_some());
+        view.readonly = true;
+        assert!(view.edit_ctx().is_none());
+    }
 }

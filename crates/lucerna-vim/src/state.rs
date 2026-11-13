@@ -320,6 +320,7 @@ impl Vim {
                 self.next_line_start(view, n)
             }
             Key::Char(c) => self.char(c, view, globals, settings),
+            Key::Backspace => Outcome::Unhandled,
         }
     }
 
@@ -425,11 +426,12 @@ impl Vim {
             return Outcome::Handled(vec![]);
         };
         let text = visual::yank_text(&sel, snapshot, view.tab_size());
+        let linewise = matches!(sel, crate::VimSelection::Line { .. });
         self.cursor = clamp_point(snapshot, visual::bounds(&sel, snapshot, view.tab_size()).0);
         self.anchor = self.cursor;
         self.goal = None;
         Outcome::Handled(vec![
-            Action::Yank(text),
+            Action::WriteClipboard { text, linewise },
             Action::ModeChanged(Mode::Normal),
             Action::CursorMoved { jump: false },
         ])

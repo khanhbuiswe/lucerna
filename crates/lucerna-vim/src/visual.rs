@@ -231,12 +231,18 @@ mod tests {
     /// The yanked text and the cursor after `keys`; asserts the actions
     /// `y` emits.
     fn yank(start: &str, keys: &str) -> (String, Point) {
+        let (text, _, cursor) = yank_kind(start, keys);
+        (text, cursor)
+    }
+
+    /// The yanked text, whether it is linewise, and the cursor after `keys`.
+    fn yank_kind(start: &str, keys: &str) -> (String, bool, Point) {
         let (_, vim, actions) = run_keys(Settings::default(), |_| {}, start, keys);
         let at = actions
             .iter()
-            .position(|a| matches!(a, Action::Yank(_)))
+            .position(|a| matches!(a, Action::WriteClipboard { .. }))
             .expect("no yank");
-        let Action::Yank(text) = &actions[at] else {
+        let Action::WriteClipboard { text, linewise } = &actions[at] else {
             unreachable!()
         };
         assert_eq!(
@@ -247,7 +253,28 @@ mod tests {
             ]
         );
         assert_eq!(vim.mode(), Mode::Normal);
-        (text.clone(), vim.cursor())
+        (text.clone(), *linewise, vim.cursor())
+    }
+
+    #[test]
+    fn visual_yank_writes_charwise_clipboard() {
+        assert_eq!(
+            yank_kind("a|bc\ndef", "vjy"),
+            ("bc\nde".into(), false, p(0, 1))
+        );
+    }
+
+    #[test]
+    fn visual_line_yank_writes_linewise_clipboard() {
+        assert_eq!(
+            yank_kind("a|bc\ndef", "Vjy"),
+            ("abc\ndef\n".into(), true, p(0, 0))
+        );
+    }
+
+    #[test]
+    fn visual_block_yank_is_not_linewise() {
+        assert!(!yank_kind("a|bc\ndef", "<C-v>jy").1);
     }
 
     // Adapted from VSCodeVim test/mode/modeVisualLine.test.ts: "Exiting via <Esc> returns cursor to original column"

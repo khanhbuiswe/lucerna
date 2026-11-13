@@ -41,6 +41,7 @@ pub use layout::{
     DisplayLine, FoldState, MAX_RENDERED_LINE_CHARS, display_lines, display_lines_with_tab_size,
 };
 pub(crate) use selection::word_at;
+pub(crate) use transact::clipboard_item;
 
 use self::cache::Caches;
 use self::caret::{Caret, CaretStyle};

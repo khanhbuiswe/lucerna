@@ -16,6 +16,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
+use lucerna_editor::{Ctx, EditPlan};
 use lucerna_text::BufferSnapshot;
 
 pub use state::{Vim, VimGlobals};
@@ -28,6 +29,8 @@ pub enum Key {
     Ctrl(char),
     Escape,
     Enter,
+    /// Not handled by vim yet: it falls through to the keymap.
+    Backspace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,11 +144,14 @@ pub trait ViewInfo {
     /// Every match of `query` as sorted byte ranges; `None` while a
     /// background search is still running.
     fn matches(&self, query: &SearchQuery) -> Option<Arc<[Range<usize>]>>;
+    /// What edit plans are built against; `None` for a read-only view,
+    /// which gets no [`Action::Edit`].
+    fn edit_ctx(&self) -> Option<Ctx<'_>>;
 }
 
 /// A side effect for the view to carry out. The cursor itself is read back
 /// from [`Vim::cursor`] after every key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// The cursor or selection changed; `jump` centres it if off-screen.
     CursorMoved {
@@ -156,7 +162,6 @@ pub enum Action {
         backward: bool,
     },
     Highlight(SearchQuery),
-    Yank(String),
     Fold {
         row: u32,
         action: FoldAction,
@@ -168,9 +173,22 @@ pub enum Action {
     /// ([`Vim::cursor`] for all but `LineBelow` and `LineAbove`, which open
     /// a line) and takes the keys until Escape.
     EnterInsert(InsertAt),
+    /// Apply this plan to the view's document. Every edit from one key
+    /// forms one undo step; vim's cursor is clamped afterwards.
+    Edit(EditPlan),
+    /// Undo this many steps of the document.
+    Undo(u32),
+    /// Redo this many steps of the document.
+    Redo(u32),
+    /// Put `text` on the system clipboard; `linewise` marks it as whole
+    /// lines for the editor's paste.
+    WriteClipboard {
+        text: String,
+        linewise: bool,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     /// The key was consumed; stop propagation.
     Handled(Vec<Action>),
