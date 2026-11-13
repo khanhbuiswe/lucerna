@@ -994,6 +994,8 @@ fn read_settings(cx: &App) -> (bool, Settings) {
             .unwrap_or(defaults.scrolloff),
         // Read from `vim.useSystemClipboard` once the workbench wires registers.
         use_system_clipboard: defaults.use_system_clipboard,
+        // Read from `vim.changeWordIncludesWhitespace` with the other V2a keys.
+        change_word_includes_whitespace: defaults.change_word_includes_whitespace,
     };
     (enabled, settings)
 }

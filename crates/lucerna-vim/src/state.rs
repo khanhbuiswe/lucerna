@@ -10,6 +10,7 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use crate::classify::{self, display_col, last_char_col, line};
 use crate::marks::FileMarks;
 use crate::motion::{self, FindChar, Goal, WordMotion};
+use crate::operator::{self, MotionKind, OpRange, Operator, PendingOp};
 use crate::register::{Registers, WriteKind};
 use crate::scroll::{self, Screen, ScrollKind};
 use crate::search;
@@ -99,6 +100,9 @@ pub struct Vim {
     search_count: Option<u32>,
     /// The register chosen with `"x` for the next command.
     register: Option<char>,
+    /// An operator waiting for its motion; `count` then holds the count
+    /// typed after it.
+    op: Option<PendingOp>,
 }
 
 impl Vim {
@@ -113,6 +117,7 @@ impl Vim {
             prefix: None,
             search_count: None,
             register: None,
+            op: None,
         }
     }
 
@@ -323,7 +328,7 @@ impl Vim {
         match key {
             Key::Escape => self.escape(view, globals),
             Key::Ctrl(c) => {
-                let cancelled = self.prefix.is_some();
+                let cancelled = self.prefix.is_some() || self.op.is_some();
                 let explicit = self.count;
                 let n = self.take_count();
                 if cancelled {
@@ -367,6 +372,11 @@ impl Vim {
                 if self.prefix.is_some() {
                     self.clear_pending();
                     return Outcome::Handled(vec![]);
+                }
+                if let Some(p) = self.op.take() {
+                    let post = self.count;
+                    self.clear_pending();
+                    return self.op_key(p, None, post, '\n', view, globals, settings);
                 }
                 let n = self.take_count();
                 self.next_line_start(view, n)
@@ -538,6 +548,10 @@ impl Vim {
             return Outcome::Handled(vec![]);
         }
         if self.prefix.is_none() && c == '"' {
+            if self.op.is_some() {
+                self.clear_pending();
+                return Outcome::Handled(vec![]);
+            }
             self.prefix = Some('"');
             self.set_pending("\"");
             return Outcome::Handled(vec![]);
@@ -567,6 +581,10 @@ impl Vim {
         let prefix = self.prefix;
         let explicit = self.count;
         let register = self.register;
+        if let Some(p) = self.op.take() {
+            self.clear_pending();
+            return self.op_key(p, prefix, explicit, c, view, globals, settings);
+        }
         let n = self.take_count();
         if let Some(p @ ('f' | 'F' | 't' | 'T')) = prefix {
             let find = FindChar {
@@ -610,6 +628,14 @@ impl Vim {
                 'd' => self.run_command("editor.action.revealDefinition"),
                 'D' => self.run_command("editor.action.revealDeclaration"),
                 'h' => self.run_command("editor.action.showHover"),
+                'u' | 'U' | '~' if self.mode == Mode::Normal => {
+                    let op = match c {
+                        'u' => Operator::Lower,
+                        'U' => Operator::Upper,
+                        _ => Operator::ToggleCase,
+                    };
+                    self.start_op(op, explicit, register, &format!("g{c}"))
+                }
                 _ => Outcome::Handled(vec![]),
             };
         }
@@ -652,6 +678,16 @@ impl Vim {
                 self.move_to(to, None)
             }
             'y' if visual => self.yank(view, globals, settings, register),
+            'd' | 'c' | 'y' | '>' | '<' if self.mode == Mode::Normal => {
+                let op = match c {
+                    'd' => Operator::Delete,
+                    'c' => Operator::Change,
+                    'y' => Operator::Yank,
+                    '>' => Operator::Indent,
+                    _ => Operator::Outdent,
+                };
+                self.start_op(op, explicit, register, &c.to_string())
+            }
             'i' | 'a' | 'I' | 'A' | 'o' | 'O' if !visual => {
                 let at = match c {
                     'i' => InsertAt::Before,
@@ -743,6 +779,295 @@ impl Vim {
             }
             _ => Outcome::Handled(vec![]),
         }
+    }
+
+    /// `d c y > < gu gU g~`: waits for a motion, keeping the count and the
+    /// register typed before.
+    fn start_op(
+        &mut self,
+        op: Operator,
+        count: Option<u32>,
+        register: Option<char>,
+        keys: &str,
+    ) -> Outcome {
+        let text = format!(
+            "{}{}{keys}",
+            register.map_or(String::new(), |r| format!("\"{r}")),
+            count.map_or(String::new(), |n| n.to_string()),
+        );
+        self.op = Some(PendingOp {
+            op,
+            count,
+            register,
+            force: None,
+            text,
+        });
+        self.set_pending("");
+        Outcome::Handled(vec![])
+    }
+
+    /// A key after an operator (`c`, with `prefix` before it and `post`
+    /// the count typed after the operator; `\n` is Enter): `v`/`V`, the
+    /// doubled operator, or a motion. Anything else cancels.
+    #[allow(clippy::too_many_arguments)]
+    fn op_key(
+        &mut self,
+        mut p: PendingOp,
+        prefix: Option<char>,
+        post: Option<u32>,
+        c: char,
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+        s: &Settings,
+    ) -> Outcome {
+        if prefix.is_none() && matches!(c, 'v' | 'V') {
+            p.force = Some(if c == 'V' {
+                MotionKind::Linewise
+            } else {
+                MotionKind::Exclusive
+            });
+            p.text.push(c);
+            self.op = Some(p);
+            self.count = post;
+            self.set_pending("");
+            return Outcome::Handled(vec![]);
+        }
+        let count = match (p.count, post) {
+            (None, None) => None,
+            (a, b) => Some(
+                (u64::from(a.unwrap_or(1)) * u64::from(b.unwrap_or(1))).min(MAX_COUNT as u64)
+                    as u32,
+            ),
+        };
+        let n = count.unwrap_or(1);
+        let snapshot = view.snapshot();
+        let from = self.cursor;
+        let doubled = matches!(
+            (p.op, prefix, c),
+            (Operator::Delete, None, 'd')
+                | (Operator::Change, None, 'c')
+                | (Operator::Yank, None, 'y')
+                | (Operator::Indent, None, '>')
+                | (Operator::Outdent, None, '<')
+                | (Operator::Lower, None | Some('g'), 'u')
+                | (Operator::Upper, None | Some('g'), 'U')
+                | (Operator::ToggleCase, None | Some('g'), '~')
+        );
+        if doubled {
+            let last = snapshot.line_count().saturating_sub(1);
+            let to = Point {
+                row: from.row.saturating_add(n - 1).min(last),
+                column: 0,
+            };
+            let Some(r) = operator::motion_range(snapshot, from, to, MotionKind::Linewise, None)
+            else {
+                return Outcome::Handled(vec![]);
+            };
+            return self.finish_op(p, r, Some(from), view, g, s);
+        }
+        let big = c == 'W';
+        // `cw` on a non-blank is `ce`; on an empty line it changes nothing.
+        if p.op == Operator::Change
+            && prefix.is_none()
+            && matches!(c, 'w' | 'W')
+            && !s.change_word_includes_whitespace
+        {
+            let text = line(snapshot, from.row);
+            match text
+                .get(from.column as usize..)
+                .and_then(|t| t.chars().next())
+            {
+                None => {
+                    if view.edit_ctx().is_none() {
+                        return Outcome::Handled(vec![]);
+                    }
+                    return self.enter_insert(view, InsertAt::Before);
+                }
+                Some(ch) if !ch.is_whitespace() => {
+                    let to = operator::change_word_end(snapshot, from, big, n);
+                    let r =
+                        operator::motion_range(snapshot, from, to, MotionKind::Inclusive, p.force);
+                    return match r {
+                        Some(r) => self.finish_op(p, r, None, view, g, s),
+                        None => Outcome::Handled(vec![]),
+                    };
+                }
+                Some(_) => {}
+            }
+        }
+        // `dw` on an empty line deletes it.
+        if p.op == Operator::Delete
+            && prefix.is_none()
+            && matches!(c, 'w' | 'W')
+            && n == 1
+            && p.force.is_none()
+            && visual::line_len(snapshot, from.row) == 0
+        {
+            let r = operator::motion_range(snapshot, from, from, MotionKind::Linewise, None);
+            return match r {
+                Some(r) => self.finish_op(p, r, None, view, g, s),
+                None => Outcome::Handled(vec![]),
+            };
+        }
+        let (to, kind) = match self.op_target(prefix, c, count, n, view, g, s) {
+            Ok(Some(target)) => target,
+            Ok(None) => return Outcome::Handled(vec![]),
+            Err(retry) => return retry,
+        };
+        let Some(r) = operator::motion_range(snapshot, from, to, kind, p.force) else {
+            return Outcome::Handled(vec![]);
+        };
+        // A yank keeps the cursor when the motion went forward, else it goes
+        // to the motion's end.
+        let forward = (to.row, to.column) >= (from.row, from.column);
+        let yank_cursor = if forward { from } else { to };
+        self.finish_op(p, r, Some(yank_cursor), view, g, s)
+    }
+
+    /// Where the motion `c` (after `prefix`) goes from the cursor, without
+    /// moving it, and its kind. `Ok(None)`: not a motion, or it failed.
+    #[allow(clippy::too_many_arguments)]
+    fn op_target(
+        &self,
+        prefix: Option<char>,
+        c: char,
+        count: Option<u32>,
+        n: u32,
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+        s: &Settings,
+    ) -> Result<Option<(Point, MotionKind)>, Outcome> {
+        use MotionKind::{Exclusive, Inclusive, Linewise};
+        let snapshot = view.snapshot();
+        let from = self.cursor;
+        let text = line(snapshot, from.row);
+        let at = |column| {
+            Some(Point {
+                row: from.row,
+                column,
+            })
+        };
+        let find = |find: FindChar, repeat: bool| {
+            let column = motion::find_char(&text, from.column, find, n, repeat)?;
+            let kind = if find.forward { Inclusive } else { Exclusive };
+            Some((at(column)?, kind))
+        };
+        // Runs the Normal-mode motion on a copy of the state.
+        let probe = |prefix: Option<char>, count: Option<u32>, key: Key, g: &mut VimGlobals| {
+            let mut probe = self.clone();
+            probe.op = None;
+            probe.pending.clear();
+            probe.register = None;
+            probe.count = count;
+            probe.prefix = prefix;
+            match probe.step(key, view, g, s) {
+                Outcome::Retry(q) => Err(Outcome::Retry(q)),
+                _ => Ok(probe.cursor),
+            }
+        };
+        // A motion that cannot move fails.
+        let moved = |to: Point, kind| (to != from).then_some((to, kind));
+        Ok(match prefix {
+            Some(p @ ('f' | 'F' | 't' | 'T')) => {
+                let f = FindChar {
+                    ch: c,
+                    forward: matches!(p, 'f' | 't'),
+                    till: matches!(p, 't' | 'T'),
+                };
+                g.last_find = Some(f);
+                find(f, false)
+            }
+            Some('g') => match c {
+                'g' => Some((probe(Some('g'), count, Key::Char(c), g)?, Linewise)),
+                'e' | 'E' => Some((probe(Some('g'), count, Key::Char(c), g)?, Inclusive)),
+                _ => None,
+            },
+            Some(p @ ('\'' | '`')) => g.marks.get(view.path()).and_then(|m| m.get(c)).map(|to| {
+                let to = clamp_point(snapshot, to);
+                (to, if p == '`' { Inclusive } else { Linewise })
+            }),
+            Some(_) => None,
+            None => match c {
+                'h' | 'b' | 'B' | '^' => Some((probe(None, count, Key::Char(c), g)?, Exclusive)),
+                '0' => Some((probe(None, None, Key::Char(c), g)?, Exclusive)),
+                'l' => {
+                    // Unlike the motion, `l` here may reach the line end.
+                    let mut column = from.column as usize;
+                    for ch in text.get(column..).unwrap_or("").chars().take(n as usize) {
+                        column += ch.len_utf8();
+                    }
+                    at(column as u32).map(|to| (to, Exclusive))
+                }
+                'w' | 'W' => Some((
+                    operator::word_end_for_operator(snapshot, from, c == 'W', n),
+                    Exclusive,
+                )),
+                '$' | 'e' | 'E' => Some((probe(None, count, Key::Char(c), g)?, Inclusive)),
+                'G' | 'H' | 'M' | 'L' => Some((probe(None, count, Key::Char(c), g)?, Linewise)),
+                'j' | 'k' => moved(probe(None, count, Key::Char(c), g)?, Linewise),
+                '\n' => moved(probe(None, count, Key::Enter, g)?, Linewise),
+                '%' => match count {
+                    Some(n) if n > 100 => None,
+                    Some(_) => Some((probe(None, count, Key::Char(c), g)?, Linewise)),
+                    None => moved(probe(None, None, Key::Char(c), g)?, Inclusive),
+                },
+                '{' | '}' => {
+                    let down = c == '}';
+                    let (row, boundary) = motion::paragraph(snapshot, from.row, n, down);
+                    Some(if boundary {
+                        (Point { row, column: 0 }, Exclusive)
+                    } else if down {
+                        // The last paragraph: up to the end of the buffer.
+                        let column = last_char_col(&line(snapshot, row));
+                        (Point { row, column }, Inclusive)
+                    } else {
+                        (Point { row: 0, column: 0 }, Exclusive)
+                    })
+                }
+                'n' | 'N' | '*' | '#' => moved(probe(None, count, Key::Char(c), g)?, Exclusive),
+                ';' | ',' => {
+                    let Some(mut f) = g.last_find else {
+                        return Ok(None);
+                    };
+                    if c == ',' {
+                        f.forward = !f.forward;
+                    }
+                    find(f, true)
+                }
+                _ => None,
+            },
+        })
+    }
+
+    /// Runs the operator of `p` on `r`. `yank_cursor` is where a yank
+    /// leaves the cursor, when not at the range start.
+    fn finish_op(
+        &mut self,
+        p: PendingOp,
+        r: OpRange,
+        yank_cursor: Option<Point>,
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+        s: &Settings,
+    ) -> Outcome {
+        let Some((mut actions, cursor, mode)) =
+            crate::edit::run_operator(p.op, r, view, g, s, p.register)
+        else {
+            return Outcome::Handled(vec![]);
+        };
+        let cursor = match (p.op, yank_cursor) {
+            (Operator::Yank, Some(at)) => at,
+            _ => cursor,
+        };
+        let edited = actions.iter().any(|a| matches!(a, Action::Edit(_)));
+        if mode == Mode::Normal && (edited || cursor != self.cursor) {
+            actions.push(Action::CursorMoved { jump: false });
+        }
+        self.mode = mode;
+        self.cursor = cursor;
+        self.anchor = cursor;
+        self.goal = None;
+        Outcome::Handled(actions)
     }
 
     /// A command key of normal mode (`gd`, `]d`...); not bound in Visual.
@@ -990,13 +1315,18 @@ impl Vim {
         self.count = None;
         self.prefix = None;
         self.register = None;
+        self.op = None;
     }
 
-    /// The indicator text: `"x`, then the count, then `extra`.
+    /// The indicator text: `"x`, then the count, then `extra`; or the
+    /// pending operator's keys, then the count after it, then `extra`.
     fn set_pending(&mut self, extra: &str) {
+        let head = match &self.op {
+            Some(p) => p.text.clone(),
+            None => self.register.map_or(String::new(), |r| format!("\"{r}")),
+        };
         self.pending = format!(
-            "{}{}{extra}",
-            self.register.map_or(String::new(), |r| format!("\"{r}")),
+            "{head}{}{extra}",
             self.count.map_or(String::new(), |n| n.to_string()),
         );
     }

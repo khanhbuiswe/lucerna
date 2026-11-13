@@ -3,8 +3,10 @@
 //! It knows nothing about the UI; the view is reached through [`ViewInfo`].
 
 mod classify;
+mod edit;
 mod marks;
 mod motion;
+mod operator;
 mod register;
 mod scroll;
 mod search;
@@ -101,6 +103,8 @@ pub struct Settings {
     pub scrolloff: u32,
     /// `vim.useSystemClipboard`
     pub use_system_clipboard: ClipboardMode,
+    /// `vim.changeWordIncludesWhitespace`: `cw` on a word acts like `dw`.
+    pub change_word_includes_whitespace: bool,
 }
 
 impl Default for Settings {
@@ -112,6 +116,7 @@ impl Default for Settings {
             scroll: 0,
             scrolloff: 0,
             use_system_clipboard: ClipboardMode::OnYank,
+            change_word_includes_whitespace: false,
         }
     }
 }

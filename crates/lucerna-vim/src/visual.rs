@@ -177,7 +177,7 @@ pub(crate) fn line_len(s: &BufferSnapshot, row: u32) -> u32 {
 }
 
 /// The buffer offset where `row`'s text ends, before its line break.
-fn line_end(s: &BufferSnapshot, row: u32) -> usize {
+pub(crate) fn line_end(s: &BufferSnapshot, row: u32) -> usize {
     let start = s.point_to_offset(Point { row, column: 0 });
     let mut end = next_row_start(s, row);
     for eol in *b"\n\r" {
@@ -189,7 +189,7 @@ fn line_end(s: &BufferSnapshot, row: u32) -> usize {
 }
 
 /// The offset of the row after `row`, or the end of the buffer.
-fn next_row_start(s: &BufferSnapshot, row: u32) -> usize {
+pub(crate) fn next_row_start(s: &BufferSnapshot, row: u32) -> usize {
     if row + 1 < s.line_count() {
         s.point_to_offset(Point {
             row: row + 1,

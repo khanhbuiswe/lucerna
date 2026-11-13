@@ -38,7 +38,6 @@ pub struct Clipboard {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WriteKind {
     Yank,
-    #[allow(dead_code)] // used by operators
     Delete,
 }
 
