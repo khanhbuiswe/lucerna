@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use gpui::{Bounds, Context, EntityInputHandler, Pixels, UTF16Selection, Window};
 use lucerna_editor::{EditKind, EditPlan, Goal, Selection, SelectionSet};
+use unicode_segmentation::UnicodeSegmentation as _;
 
 use super::CodeView;
 
@@ -105,34 +106,6 @@ impl CodeView {
         applied
     }
 
-    /// For vim's record of typing (`.`): the input is about to replace
-    /// `range_utf16`, which no composition marks, so it replaces text that
-    /// was already recorded. When the range ends at the caret that is
-    /// recorded as one Backspace per char, and the new text may follow as
-    /// typed; anywhere else the record breaks, and the new text is not
-    /// recorded (returns false).
-    fn record_unmarked_replacement(
-        &mut self,
-        range_utf16: &Range<usize>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.typed_events {
-            return true;
-        }
-        let target = self.range_from_utf16(range_utf16);
-        let primary = self.selections.primary();
-        if primary.is_empty() && target.end == primary.head {
-            let chars = self.snapshot.text_for_range(target).chars().count();
-            for _ in 0..chars {
-                self.emit_typed(lucerna_vim::Typed::DeleteLeft, cx);
-            }
-            true
-        } else {
-            self.record_breaks += 1;
-            false
-        }
-    }
-
     /// The edit replacing `ranges` with `text` (see `replace_ranges`), and
     /// the ranges of the new text.
     fn input_plan(
@@ -191,6 +164,57 @@ impl CodeView {
         );
         (plan, marked)
     }
+
+    /// For vim's record of typing (`.`): how to record the input that
+    /// replaces `range_utf16`, which no composition marks, so it replaces
+    /// text that was already recorded. Read before the replacement.
+    fn unmarked_record(&self, range_utf16: &Range<usize>) -> UnmarkedRecord {
+        if !self.typed_events {
+            return UnmarkedRecord::Backspaces(0);
+        }
+        let target = self.range_from_utf16(range_utf16);
+        let primary = self.selections.primary();
+        let end = self.snapshot.offset_to_point(target.end);
+        let line = self.snapshot.line(end.row);
+        let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+        // Backspace removes one grapheme, except in the leading whitespace,
+        // where it goes back to a tab stop: only a range before the caret
+        // and past the indentation replays as Backspaces.
+        if primary.is_empty() && target.end == primary.head && end.column as usize > indent {
+            let text = self.snapshot.text_for_range(target);
+            UnmarkedRecord::Backspaces(text.graphemes(true).count())
+        } else {
+            UnmarkedRecord::Break
+        }
+    }
+
+    /// Records `record` once its replacement was applied; returns whether
+    /// the new text may follow as typed.
+    fn record_unmarked(&mut self, record: UnmarkedRecord, cx: &mut Context<Self>) -> bool {
+        match record {
+            UnmarkedRecord::Backspaces(count) => {
+                for _ in 0..count {
+                    self.emit_typed(lucerna_vim::Typed::DeleteLeft, cx);
+                }
+                true
+            }
+            UnmarkedRecord::Break => {
+                if self.typed_events {
+                    self.record_breaks += 1;
+                }
+                false
+            }
+        }
+    }
+}
+
+/// How an input that replaces recorded text is recorded for `.`.
+#[derive(Debug, Clone, Copy)]
+enum UnmarkedRecord {
+    /// One Backspace per grapheme it replaces; the new text follows.
+    Backspaces(usize),
+    /// The record breaks; the new text is not recorded.
+    Break,
 }
 
 impl EntityInputHandler for CodeView {
@@ -256,14 +280,19 @@ impl EntityInputHandler for CodeView {
             // An IME commit (its final text is one typing operation), or a
             // replacement of text already there (press and hold, an IME
             // that does not mark).
-            let record = match (&self.marked, &range_utf16) {
-                (Some(_), _) => !std::mem::take(&mut self.composition_unrecorded),
-                (None, Some(range)) => self.record_unmarked_replacement(range, cx),
-                (None, None) => true,
+            let unmarked = match (&self.marked, &range_utf16) {
+                (None, Some(range)) => Some(self.unmarked_record(range)),
+                _ => None,
             };
-            if self.replace_ranges(range_utf16, text, None, false, cx) && record && !text.is_empty()
-            {
-                self.emit_typed(lucerna_vim::Typed::Text(text.to_string()), cx);
+            let unrecorded = std::mem::take(&mut self.composition_unrecorded);
+            if self.replace_ranges(range_utf16, text, None, false, cx) {
+                let record = match unmarked {
+                    Some(record) => self.record_unmarked(record, cx),
+                    None => !unrecorded,
+                };
+                if record && !text.is_empty() {
+                    self.emit_typed(lucerna_vim::Typed::Text(text.to_string()), cx);
+                }
             }
             self.unmark();
         }
@@ -285,13 +314,18 @@ impl EntityInputHandler for CodeView {
             return;
         }
         // A composition that starts over text already there (recorded).
+        let unmarked = match (&self.marked, &range_utf16) {
+            (None, Some(range)) => Some(self.unmarked_record(range)),
+            _ => None,
+        };
         if self.marked.is_none() {
-            self.composition_unrecorded = match &range_utf16 {
-                Some(range) => !self.record_unmarked_replacement(range, cx),
-                None => false,
-            };
+            self.composition_unrecorded = false;
         }
-        self.replace_ranges(range_utf16, text, new_selected_range_utf16, true, cx);
+        if self.replace_ranges(range_utf16, text, new_selected_range_utf16, true, cx)
+            && let Some(record) = unmarked
+        {
+            self.composition_unrecorded = !self.record_unmarked(record, cx);
+        }
     }
 
     /// Where the IME puts its candidate window: the start of the primary

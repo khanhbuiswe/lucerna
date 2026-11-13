@@ -510,3 +510,60 @@ fn dot_stops_when_its_insert_does_not_start(cx: &mut TestAppContext) {
     keys("u", cx);
     assert_eq!(text_of(&view, cx), "f(a)\nno pair\n");
 }
+
+#[gpui::test]
+fn mark_comes_back_with_its_deleted_line(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("a\nb\nc\nd\n", cx);
+    keys("2 j m a d d", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nd\n");
+    keys("u g g ` a", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+}
+
+#[gpui::test]
+fn join_and_enter_move_mark_with_its_char(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("ab\ncd\n", cx);
+    keys("j l m a k shift-j", cx);
+    assert_eq!(text_of(&view, cx), "ab cd\n");
+    keys("0 ` a", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 4));
+    // Enter before the mark on its line: the mark goes to the second line.
+    keys("0 l a", cx);
+    keys("enter escape", cx);
+    assert_eq!(text_of(&view, cx), "ab\n cd\n");
+    keys("g g ` a", cx);
+    assert_eq!(cursor(&view, cx), pt(1, 2));
+}
+
+#[gpui::test]
+fn unmarked_replacement_in_indent_breaks_the_record(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("x\ny\n", cx);
+    keys("i", cx);
+    commit(&view, "  ", cx);
+    // The two spaces before the caret, in the indentation, replaced.
+    view.update_in(cx, |v, window, cx| {
+        v.replace_text_in_range(Some(0..2), "--", window, cx)
+    });
+    draw(cx);
+    commit(&view, "q", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "--qx\ny\n");
+    keys("j 0 .", cx);
+    assert_eq!(text_of(&view, cx), "--qx\nqy\n");
+}
+
+#[gpui::test]
+fn unmarked_replacement_counts_graphemes(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("x\ny\n", cx);
+    keys("i", cx);
+    // `e` with a combining acute accent: one grapheme, two chars.
+    commit(&view, "ae\u{301}", cx);
+    view.update_in(cx, |v, window, cx| {
+        v.replace_text_in_range(Some(1..3), "é", window, cx)
+    });
+    draw(cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "aéx\ny\n");
+    keys("j 0 .", cx);
+    assert_eq!(text_of(&view, cx), "aéx\naéy\n");
+}

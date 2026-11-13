@@ -521,10 +521,14 @@ impl VimLayer {
         let path = view.read(cx).path().clone();
         if self.lead_view(&path, cx) == Some(id) {
             let own = self.own_edits.get_mut(&path);
-            match own {
-                // Vim moved the marks when it made this edit.
-                Some(own) if own.front().is_some_and(|p| **p == *edit.patch) => {
-                    own.pop_front();
+            let at = own
+                .as_ref()
+                .and_then(|own| own.iter().position(|p| **p == *edit.patch));
+            match (own, at) {
+                // Vim moved the marks when it made this edit; any queued
+                // before it went astray.
+                (Some(own), Some(at)) => {
+                    own.drain(..=at);
                 }
                 _ => self
                     .globals

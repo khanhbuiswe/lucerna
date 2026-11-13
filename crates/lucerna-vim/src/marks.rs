@@ -14,6 +14,12 @@ pub struct FileMarks {
     pub(crate) last_jump: Option<Point>,
     /// The last visual selection (`<` and `>`), written by visual mode.
     pub(crate) visual: Option<(Point, Point)>,
+    /// Per mark (the letters, `''`, then the two ends of the visual
+    /// marks), where it went when an edit deleted its whole line. While the
+    /// mark is still there, text inserted right at its line start (an
+    /// undo of that deletion) goes after it: the mark comes back with its
+    /// line. A mark set anew elsewhere no longer matches.
+    displaced: [Option<Point>; 29],
 }
 
 fn key(p: Point) -> (u32, u32) {
@@ -79,33 +85,119 @@ impl VimGlobals {
         let Some(marks) = self.marks.get_mut(path) else {
             return;
         };
-        // A mark follows its line, as in Vim: lines inserted at the line's
-        // start (`P`, `O`, a reload) push it down. Its column stays,
-        // clamped onto a char.
-        let map = |p: Point| {
-            let start = Point {
-                row: p.row,
-                column: 0,
-            };
-            let row = patch.map_point(old, snapshot, start, Bias::Right).row;
-            let p = Point {
-                row,
-                column: p.column,
-            };
-            let text = line(snapshot, p.row);
-            let mut column = p.column.min(last_char_col(&text)) as usize;
-            while !text.is_char_boundary(column) {
-                column -= 1;
-            }
-            Point {
-                row: p.row,
-                column: column as u32,
-            }
+        let FileMarks {
+            letters,
+            last_jump,
+            visual,
+            displaced,
+        } = marks;
+        let (va, vb) = match visual {
+            Some((a, b)) => (Some(*a), Some(*b)),
+            None => (None, None),
         };
-        for mark in marks.letters.iter_mut().chain([&mut marks.last_jump]) {
-            *mark = mark.map(map);
+        let mut slots: Vec<Option<Point>> = letters.to_vec();
+        slots.extend([*last_jump, va, vb]);
+        for (mark, displaced) in slots.iter_mut().zip(displaced.iter_mut()) {
+            let Some(p) = *mark else {
+                *displaced = None;
+                continue;
+            };
+            let was_displaced = *displaced == Some(p);
+            let (to, state) = remap_mark(old, patch, snapshot, p, was_displaced);
+            *mark = Some(to);
+            *displaced = match state {
+                Displaced::Now => Some(to),
+                Displaced::Ended => None,
+                // Any edit that moves a displaced mark ends it.
+                Displaced::Unchanged => (was_displaced && to == p).then_some(to),
+            };
         }
-        marks.visual = marks.visual.map(|(a, b)| (map(a), map(b)));
+        letters.copy_from_slice(&slots[..26]);
+        *last_jump = slots[26];
+        if visual.is_some() {
+            *visual = slots[27].zip(slots[28]);
+        }
+    }
+}
+
+/// What an edit did to a mark's displacement.
+enum Displaced {
+    /// The edit deleted the mark's whole line.
+    Now,
+    /// The mark's line came back (or the mark moved on).
+    Ended,
+    Unchanged,
+}
+
+/// `p`, a mark of `old`, through `patch` into `new`, and what the edit did
+/// to its displacement.
+///
+/// A mark follows its line, as in Vim: `dd` above it pulls it up, lines
+/// inserted at its line's start (`P`, `O`, a reload) push it down, and
+/// edits within its line leave its column. An edit that joins or splits
+/// the mark's line (`J`, Enter) moves it with its char instead.
+fn remap_mark(
+    old: &BufferSnapshot,
+    patch: &Patch,
+    new: &BufferSnapshot,
+    p: Point,
+    displaced: bool,
+) -> (Point, Displaced) {
+    let row = p.row.min(old.line_count().saturating_sub(1));
+    let start = old.point_to_offset(Point { row, column: 0 });
+    // The line's end, before its line break.
+    let end = start + old.line(row).len();
+    let len = old.len_bytes();
+    let edits = patch.edits();
+    // Replaced text that covers the line start and the line break: the
+    // whole line is gone. The mark goes where the text was.
+    if let Some(e) = edits.iter().find(|e| {
+        e.old.start <= start && start < e.old.end && (e.old.end > end || e.old.end == len)
+    }) {
+        let at = new.offset_to_point(e.new.start);
+        return (clamp_mark(new, at, p.column), Displaced::Now);
+    }
+    // Edits on the line itself (not text inserted at its start, which is
+    // above it) that change where lines break.
+    let reshapes = edits.iter().any(|e| {
+        let on_line = (e.old.end > start && e.old.start <= end)
+            || (e.old.is_empty() && start < e.old.start && e.old.start <= end);
+        // The line break before the line was replaced by text: the line
+        // was joined to the one above (`J`).
+        let joined =
+            e.old.start < start && start <= e.old.end && new.offset_to_point(e.new.end).column != 0;
+        joined || on_line && (e.old.end > end || new.text_for_range(e.new.clone()).contains('\n'))
+    });
+    // The undo of the deletion that displaced the mark puts its line back
+    // right at the mark: the mark stays at the start of it.
+    let comes_back = displaced
+        && edits
+            .iter()
+            .any(|e| e.old.is_empty() && e.old.start == start && !e.new.is_empty());
+    let bias = if comes_back { Bias::Left } else { Bias::Right };
+    let state = if comes_back {
+        Displaced::Ended
+    } else {
+        Displaced::Unchanged
+    };
+    let new_start = patch.map_point(old, new, Point { row, column: 0 }, bias);
+    if reshapes {
+        let to = patch.map_point(old, new, p, Bias::Left);
+        return (clamp_mark(new, to, to.column), Displaced::Ended);
+    }
+    (clamp_mark(new, new_start, p.column), state)
+}
+
+/// `column` on the row of `at`, clamped onto a char of it.
+fn clamp_mark(new: &BufferSnapshot, at: Point, column: u32) -> Point {
+    let text = line(new, at.row);
+    let mut column = column.min(last_char_col(&text)) as usize;
+    while !text.is_char_boundary(column) {
+        column -= 1;
+    }
+    Point {
+        row: at.row,
+        column: column as u32,
     }
 }
 
@@ -303,6 +395,35 @@ mod tests {
         // `kdd` then `u`: the undo inserts the line back at the mark's
         // line start.
         assert_eq!(edited(p(1, 0), "a\nc\n", vec![(2..2, "b\n")]), p(2, 0));
+    }
+
+    #[test]
+    fn patch_remap_brings_mark_back_with_its_undeleted_line() {
+        let path: std::sync::Arc<std::path::Path> = std::sync::Arc::from(std::path::Path::new("a"));
+        let mut buffer = lucerna_text::Buffer::from_bytes(b"a\nb\nc\nd\n", false).unwrap();
+        let mut globals = VimGlobals::default();
+        let mut m = FileMarks::default();
+        m.letters[0] = Some(p(2, 0));
+        globals.marks.insert(path.clone(), m);
+        let mut edit = |globals: &mut VimGlobals, r: std::ops::Range<usize>, t: &str| {
+            let before = buffer.snapshot();
+            let patch = buffer.edit([(r, std::sync::Arc::from(t))]);
+            globals.remap_marks_patch(&path, &before, &patch, &buffer.snapshot());
+            globals.marks[&path].letters[0].unwrap()
+        };
+        // `dd` on the mark's line, then `u`: the mark is back on `c`.
+        assert_eq!(edit(&mut globals, 4..6, ""), p(2, 0));
+        assert_eq!(edit(&mut globals, 4..4, "c\n"), p(2, 0));
+        // Then a line put above it pushes it down again.
+        assert_eq!(edit(&mut globals, 4..4, "x\n"), p(3, 0));
+    }
+
+    #[test]
+    fn patch_remap_joins_and_splits_move_mark_with_its_char() {
+        // `J` from the line above: the mark stays on `d`.
+        assert_eq!(edited(p(1, 1), "ab\ncd\n", vec![(2..3, " ")]), p(0, 4));
+        // Enter before the mark on its line.
+        assert_eq!(edited(p(0, 3), "abcd\n", vec![(1..1, "\n")]), p(1, 2));
     }
 
     #[test]
