@@ -199,7 +199,7 @@ fn shows_keybinding_label(cx: &mut TestAppContext) {
         cx,
         Some(r#"[{ "key": "alt+cmd+c", "command": "copyFilePath" }]"#),
     );
-    let (_, _, cx) = open(cx);
+    let (host, _, cx) = open(cx);
     let label = cx.update(|_, cx| {
         cx.global::<AppState>()
             .keymap
@@ -207,6 +207,9 @@ fn shows_keybinding_label(cx: &mut TestAppContext) {
             .unwrap()
     });
     assert!(!label.is_empty());
+    let menu = host.read_with(cx, |host, _| host.deployed.as_ref().unwrap().menu.clone());
+    let shown = menu.read_with(cx, |menu, cx| menu.shortcut_label(0, cx));
+    assert_eq!(shown, Some(label));
     // The label is drawn inside the bound entry, and only there.
     let item = cx.debug_bounds("context-menu-item-copyFilePath").unwrap();
     let shortcut = cx
@@ -217,4 +220,18 @@ fn shows_keybinding_label(cx: &mut TestAppContext) {
         cx.debug_bounds("context-menu-shortcut-renameFile")
             .is_none()
     );
+}
+
+#[gpui::test]
+fn hover_moves_selection(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (host, _, cx) = open(cx);
+    let menu = menu(&host, cx);
+    let position = cx
+        .debug_bounds("context-menu-item-copyFilePath")
+        .unwrap()
+        .center();
+    cx.simulate_mouse_move(position, None, Modifiers::none());
+    draw(cx);
+    assert_eq!(menu.read_with(cx, |m, _| m.selected()), Some(0));
 }

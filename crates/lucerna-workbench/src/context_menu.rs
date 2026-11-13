@@ -165,6 +165,15 @@ impl ContextMenu {
         &self.items
     }
 
+    /// The keybinding label shown for the entry at `ix`, if its command
+    /// is bound.
+    pub fn shortcut_label(&self, ix: usize, cx: &gpui::App) -> Option<String> {
+        match self.items.get(ix)? {
+            MenuItem::Entry { command, .. } => cx.global::<AppState>().keymap.label_for(command),
+            MenuItem::Separator => None,
+        }
+    }
+
     pub fn selected(&self) -> Option<usize> {
         self.selected
     }
@@ -262,7 +271,7 @@ impl Render for ContextMenu {
                     disabled,
                     ..
                 } => {
-                    let shortcut = cx.global::<AppState>().keymap.label_for(command);
+                    let shortcut = self.shortcut_label(ix, cx);
                     let selector = format!("context-menu-item-{command}");
                     let row: Stateful<Div> = div()
                         .id(("context-menu-item", ix))
@@ -293,7 +302,12 @@ impl Render for ContextMenu {
                             .when(self.selected == Some(ix), |row| {
                                 row.bg(color(ui.ghost_element_hover))
                             })
-                            .hover(|style| style.bg(color(ui.ghost_element_hover)))
+                            .on_hover(cx.listener(move |menu, hovered: &bool, _, cx| {
+                                if *hovered && menu.selected != Some(ix) {
+                                    menu.selected = Some(ix);
+                                    cx.notify();
+                                }
+                            }))
                             .on_click(cx.listener(move |menu, _, _, cx| menu.confirm(ix, cx)))
                             .into_any_element()
                     }
@@ -304,6 +318,7 @@ impl Render for ContextMenu {
             .id("context-menu")
             .debug_selector(|| "context-menu".into())
             .track_focus(&self.focus)
+            .max_w(window.viewport_size().width)
             .w_auto()
             .min_w(px(MENU_MIN_WIDTH))
             .max_h(max_height)
