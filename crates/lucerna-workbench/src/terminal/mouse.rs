@@ -6,7 +6,8 @@ use gpui::{
     MouseUpEvent, Pixels, Point, ScrollDelta, ScrollEvent, Window,
 };
 use lucerna_terminal::{
-    Modes, MouseAction, MouseButtonKind, Scroll, SelectKind, alternate_scroll, mouse_report,
+    Modes, MouseAction, MouseButtonKind, Scroll, SelectKind, ViewStamp, alternate_scroll,
+    mouse_report,
 };
 
 use super::settings::{MouseSettings, PasteWarning, RightClick, mouse_settings};
@@ -30,6 +31,9 @@ pub(crate) enum Press {
     Selecting {
         from: Point<Pixels>,
         cell: (u16, u16, bool),
+        /// The screen `cell` was read off, so a start deferred past the
+        /// threshold still lands on the text pressed.
+        stamp: ViewStamp,
         kind: SelectKind,
         started: bool,
     },
@@ -72,6 +76,21 @@ impl TerminalView {
         Some(self.last_frame.as_ref()?.geometry.cell_at(pos))
     }
 
+    /// The painted screen the mouse points at.
+    fn stamp(&self) -> ViewStamp {
+        self.last_frame
+            .as_ref()
+            .map(|f| f.stamp)
+            .unwrap_or_default()
+    }
+
+    /// The modes of the painted screen. Read from the last frame, never
+    /// from the terminal, so mouse events do not wait on its lock while
+    /// the I/O thread parses a flood.
+    pub(crate) fn painted_mode(&self) -> Modes {
+        self.last_frame.as_ref().map_or(Modes::empty(), |f| f.mode)
+    }
+
     /// The report for a mouse event at `cell`, sent to the app; whether
     /// the app took the mouse.
     fn report(
@@ -81,7 +100,7 @@ impl TerminalView {
         cell: (u16, u16),
         m: &Modifiers,
     ) -> bool {
-        let mode = self.terminal.mode();
+        let mode = self.painted_mode();
         match mouse_report(
             button, action, cell.0, cell.1, m.shift, m.alt, m.control, mode,
         ) {
@@ -104,7 +123,7 @@ impl TerminalView {
             return;
         };
         let settings = mouse_settings(cx);
-        let mode = self.terminal.mode();
+        let mode = self.painted_mode();
         if mode.intersects(Modes::MOUSE_MODE) && !forces_selection(&ev.modifiers, &settings) {
             if let Some(button) = button_kind(ev.button) {
                 self.report(button, MouseAction::Press, (cell.0, cell.1), &ev.modifiers);
@@ -125,6 +144,8 @@ impl TerminalView {
 
     fn left_down(&mut self, ev: &MouseDownEvent, cell: (u16, u16, bool), settings: &MouseSettings) {
         let (row, col, right) = cell;
+        let stamp = self.stamp();
+        let painted_selection = self.last_frame.as_ref().is_some_and(|f| f.has_selection);
         let term = &self.terminal;
         let kind = match ev.click_count {
             n if n >= 3 => SelectKind::Line,
@@ -135,11 +156,11 @@ impl TerminalView {
         let started = match kind {
             SelectKind::Word | SelectKind::Line => {
                 term.set_word_separators(&settings.word_separators);
-                term.select_start(row, col, right, kind);
+                term.select_start_in(stamp, row, col, right, kind);
                 true
             }
-            _ if ev.modifiers.shift && term.has_selection() => {
-                term.select_update(row, col, right);
+            _ if ev.modifiers.shift && painted_selection => {
+                term.select_update_in(stamp, row, col, right);
                 true
             }
             _ => {
@@ -150,6 +171,7 @@ impl TerminalView {
         self.mouse.press = Some(Press::Selecting {
             from: ev.position,
             cell,
+            stamp,
             kind,
             started,
         });
@@ -164,8 +186,13 @@ impl TerminalView {
         match settings.right_click {
             RightClick::SelectWord => {
                 self.terminal.set_word_separators(&settings.word_separators);
-                self.terminal
-                    .select_start(cell.0, cell.1, cell.2, SelectKind::Word);
+                self.terminal.select_start_in(
+                    self.stamp(),
+                    cell.0,
+                    cell.1,
+                    cell.2,
+                    SelectKind::Word,
+                );
                 self.selection_made(settings, cx);
             }
             RightClick::CopyPaste => {
@@ -197,6 +224,7 @@ impl TerminalView {
             Some(Press::Selecting {
                 from,
                 cell: start,
+                stamp,
                 kind,
                 started,
             }) => {
@@ -206,21 +234,25 @@ impl TerminalView {
                     if distance < DRAG_THRESHOLD {
                         return;
                     }
-                    self.terminal.select_start(start.0, start.1, start.2, kind);
+                    self.terminal
+                        .select_start_in(stamp, start.0, start.1, start.2, kind);
                     self.mouse.press = Some(Press::Selecting {
                         from,
                         cell: start,
+                        stamp,
                         kind,
                         started: true,
                     });
                 }
-                self.terminal.select_update(cell.0, cell.1, cell.2);
+                self.terminal
+                    .select_update_in(self.stamp(), cell.0, cell.1, cell.2);
                 cx.notify();
             }
             None => {
-                let mode = self.terminal.mode();
                 let here = (cell.0, cell.1);
-                if mode.contains(Modes::MOUSE_MOTION) && self.mouse.hover_cell != Some(here) {
+                if self.mouse.hover_cell != Some(here)
+                    && self.painted_mode().contains(Modes::MOUSE_MOTION)
+                {
                     self.mouse.hover_cell = Some(here);
                     self.report(
                         MouseButtonKind::None,
@@ -288,7 +320,7 @@ impl TerminalView {
         if lines == 0 {
             return;
         }
-        let mode = self.terminal.mode();
+        let mode = frame.mode;
         if mode.intersects(Modes::MOUSE_MODE) && !ev.modifiers.shift {
             let (row, col, _) = frame.geometry.cell_at(ev.position);
             let button = if lines > 0 {

@@ -99,3 +99,28 @@ fn selection_in_scrolled_view_uses_screen_rows() {
     t.select_start(0, 0, false, SelectKind::Line);
     assert_eq!(t.selection_text().as_deref(), Some("one"));
 }
+
+#[test]
+fn stamped_selection_follows_output_at_the_bottom() {
+    let t = Terminal::fake(3, 10, 100);
+    t.feed(b"a\r\nb\r\nc");
+    let stamp = t.snapshot().stamp();
+    // Two lines scroll `a` and `b` into history before the op applies.
+    t.feed(b"\r\nd\r\ne");
+    t.select_start_in(stamp, 0, 0, false, SelectKind::Line);
+    assert_eq!(t.selection_text().as_deref(), Some("a"));
+    t.select_update_in(stamp, 1, 0, true);
+    assert_eq!(t.selection_text().as_deref(), Some("a\nb"));
+}
+
+#[test]
+fn stamped_selection_while_scrolled_up() {
+    let t = Terminal::fake(3, 10, 100);
+    t.feed(b"zero\r\none\r\ntwo\r\nthree\r\nfour");
+    t.scroll(Scroll::Lines(1));
+    let stamp = t.snapshot().stamp();
+    // Scrolled up, the view stays put as output arrives.
+    t.feed(b"\r\nfive\r\nsix");
+    t.select_start_in(stamp, 0, 0, false, SelectKind::Line);
+    assert_eq!(t.selection_text().as_deref(), Some("one"));
+}

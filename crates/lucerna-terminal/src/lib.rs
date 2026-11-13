@@ -24,6 +24,6 @@ pub use resolve::{ResolveCtx, Resolved, resolve_path};
 pub use runs::{BgRect, BlockRect, LineLayout, RunStyle, TextRun, Underline, layout_line};
 pub use snapshot::{
     Cell, CellFlags, CursorShape, CursorState, GridPoint, Modes, NamedColor, Scroll,
-    SelectionRange, Snapshot, TermColor,
+    SelectionRange, Snapshot, TermColor, ViewStamp,
 };
 pub use terminal::{DEFAULT_WORD_SEPARATORS, SelectKind, Terminal};

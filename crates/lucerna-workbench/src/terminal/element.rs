@@ -13,7 +13,8 @@ use gpui::{
     UnderlineStyle, Window, fill, outline, point, px, relative, size,
 };
 use lucerna_terminal::{
-    CellFlags, CursorShape, LineLayout, Rgba8, Snapshot, TerminalPalette, Underline, layout_line,
+    CellFlags, CursorShape, LineLayout, Modes, Rgba8, Snapshot, TerminalPalette, Underline,
+    ViewStamp, layout_line,
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -117,6 +118,12 @@ impl CellGeometry {
 pub(crate) struct Frame {
     bounds: Bounds<Pixels>,
     pub(super) geometry: CellGeometry,
+    /// The painted screen's place in the buffer, its modes and whether it
+    /// showed a selection: the mouse reads these instead of locking the
+    /// terminal, and names cells of this screen.
+    pub(super) stamp: ViewStamp,
+    pub(super) mode: Modes,
+    pub(super) has_selection: bool,
     hitbox: Hitbox,
     line_height: Pixels,
     pub(super) background: Rgba,
@@ -430,6 +437,9 @@ impl TerminalView {
         let frame = Rc::new(Frame {
             bounds,
             geometry,
+            stamp: snapshot.stamp(),
+            mode: snapshot.mode,
+            has_selection: snapshot.selection.is_some(),
             hitbox,
             line_height: cell_h,
             background: rgba(palette.background),

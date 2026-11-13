@@ -578,3 +578,48 @@ fn selection_is_painted(cx: &mut TestAppContext) {
     drag(at(&view, 0, 0, 1., cx), at(&view, 0, 4, 6., cx), NONE, cx);
     assert_eq!(view.read_with(cx, |v, _| v.painted_selection_rects()), 1);
 }
+
+/// Output that scrolls the screen between the painted frame and the drag
+/// (the view follows the bottom) must not move the selection off the text
+/// that was under the mouse.
+#[gpui::test]
+fn drag_selects_painted_text_while_output_scrolls(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_, cx, view) = with_terminal(cx);
+    let rows = view.read_with(cx, |v, _| v.grid_size().0);
+    // Fill the screen so new lines scroll it, with `target` on row 1.
+    let mut text = b"first\r\ntarget word".to_vec();
+    for i in 2..rows {
+        text.extend_from_slice(format!("\r\nfill {i}").as_bytes());
+    }
+    feed(&view, &text, cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.painted_row_text(1)),
+        "target word"
+    );
+    let from = at(&view, 1, 0, 1., cx);
+    let to = at(&view, 1, 5, 6., cx);
+    press(from, MouseButton::Left, NONE, 1, cx);
+    // Three lines arrive before the next frame is painted.
+    view.read_with(cx, |v, _| v.terminal().feed(b"\r\nnew 1\r\nnew 2\r\nnew 3"));
+    cx.simulate_mouse_move(to, MouseButton::Left, NONE);
+    release(to, MouseButton::Left, NONE, cx);
+    assert_eq!(selection(&view, cx).as_deref(), Some("target"));
+}
+
+/// The mouse reads the terminal's modes from the painted frame, so a hover
+/// never waits on the terminal lock: a mode the app set after the last
+/// frame takes effect once it is drawn.
+#[gpui::test]
+fn hover_reads_mode_from_painted_frame(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_, cx, view) = with_terminal(cx);
+    view.read_with(cx, |v, _| v.terminal().feed(b"\x1b[?1003h\x1b[?1006h"));
+    let pos = at(&view, 0, 1, 2., cx);
+    cx.simulate_mouse_move(pos, None, NONE);
+    assert_eq!(written(&view, cx), "", "not painted yet");
+    draw(cx);
+    let pos = at(&view, 0, 2, 2., cx);
+    cx.simulate_mouse_move(pos, None, NONE);
+    assert_eq!(written(&view, cx), "\x1b[<35;3;1M");
+}

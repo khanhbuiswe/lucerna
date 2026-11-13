@@ -30,6 +30,27 @@ pub struct Snapshot {
     pub history_len: usize,
 }
 
+impl Snapshot {
+    /// Where this snapshot's screen sat in the buffer, for selection
+    /// points taken from it ([`crate::Terminal::select_start_in`]).
+    pub fn stamp(&self) -> ViewStamp {
+        ViewStamp {
+            display_offset: self.display_offset,
+            history_len: self.history_len,
+        }
+    }
+}
+
+/// The scroll position and history length of a painted screen. Screen
+/// rows read off that screen still name the same text after more output,
+/// shifted by how much history grew since. Once the scrollback is full
+/// the history stops growing and the shift cannot be told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewStamp {
+    pub display_offset: usize,
+    pub history_len: usize,
+}
+
 /// One screen cell.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cell {

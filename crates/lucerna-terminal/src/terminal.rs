@@ -21,7 +21,7 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use crate::events::TerminalEvent;
 use crate::options::{MAX_SCROLLBACK, TerminalOptions};
-use crate::snapshot::{self, Scroll, Snapshot};
+use crate::snapshot::{self, Scroll, Snapshot, ViewStamp};
 
 /// A running terminal. Dropping it hangs up the PTY, which sends SIGHUP to
 /// the shell and its foreground job.
@@ -42,26 +42,24 @@ pub struct Terminal {
 }
 
 enum Op {
-    Resize {
-        rows: u16,
-        cols: u16,
-    },
+    Resize { rows: u16, cols: u16 },
     Scroll(Scroll),
     Clear,
-    SelectStart {
-        row: u16,
-        col: u16,
-        side_right: bool,
-        kind: SelectKind,
-    },
-    SelectUpdate {
-        row: u16,
-        col: u16,
-        side_right: bool,
-    },
+    SelectStart { at: ScreenCell, kind: SelectKind },
+    SelectUpdate(ScreenCell),
     SelectAll,
     ClearSelection,
     WordSeparators(String),
+}
+
+/// A screen cell named by the UI, and the screen it was read off (`None`:
+/// the screen as it is when the op applies).
+#[derive(Debug, Clone, Copy)]
+struct ScreenCell {
+    row: u16,
+    col: u16,
+    side_right: bool,
+    stamp: Option<ViewStamp>,
 }
 
 /// How a selection grows from where it starts (spec §6.5).
@@ -463,21 +461,58 @@ impl Terminal {
     /// other; `side_right` when the mouse is on the cell's right half. A
     /// `Simple` or `Block` one stays empty until [`Terminal::select_update`].
     pub fn select_start(&self, row: u16, col: u16, side_right: bool, kind: SelectKind) {
-        lock(&self.pending).push(Op::SelectStart {
+        self.push_select_start(None, row, col, side_right, kind);
+    }
+
+    /// [`Terminal::select_start`] at a cell of the screen `stamp` was taken
+    /// from (a painted snapshot), so output that scrolled the screen since
+    /// does not move the selection off the text that was there.
+    pub fn select_start_in(
+        &self,
+        stamp: ViewStamp,
+        row: u16,
+        col: u16,
+        side_right: bool,
+        kind: SelectKind,
+    ) {
+        self.push_select_start(Some(stamp), row, col, side_right, kind);
+    }
+
+    fn push_select_start(
+        &self,
+        stamp: Option<ViewStamp>,
+        row: u16,
+        col: u16,
+        side_right: bool,
+        kind: SelectKind,
+    ) {
+        let at = ScreenCell {
             row,
             col,
             side_right,
-            kind,
-        });
+            stamp,
+        };
+        lock(&self.pending).push(Op::SelectStart { at, kind });
     }
 
     /// Moves the selection's moving end to screen cell `row`/`col`.
     pub fn select_update(&self, row: u16, col: u16, side_right: bool) {
-        lock(&self.pending).push(Op::SelectUpdate {
+        self.push_select_update(None, row, col, side_right);
+    }
+
+    /// [`Terminal::select_update`] at a cell of the screen `stamp` was
+    /// taken from; see [`Terminal::select_start_in`].
+    pub fn select_update_in(&self, stamp: ViewStamp, row: u16, col: u16, side_right: bool) {
+        self.push_select_update(Some(stamp), row, col, side_right);
+    }
+
+    fn push_select_update(&self, stamp: Option<ViewStamp>, row: u16, col: u16, side_right: bool) {
+        lock(&self.pending).push(Op::SelectUpdate(ScreenCell {
             row,
             col,
             side_right,
-        });
+            stamp,
+        }));
     }
 
     /// Selects the scrollback and the screen.
@@ -546,29 +581,20 @@ impl Terminal {
                     Scroll::Bottom => AlacScroll::Bottom,
                 }),
                 Op::Clear => clear_keeping_cursor_line(term),
-                Op::SelectStart {
-                    row,
-                    col,
-                    side_right,
-                    kind,
-                } => {
+                Op::SelectStart { at, kind } => {
                     let ty = match kind {
                         SelectKind::Simple => SelectionType::Simple,
                         SelectKind::Word => SelectionType::Semantic,
                         SelectKind::Line => SelectionType::Lines,
                         SelectKind::Block => SelectionType::Block,
                     };
-                    let point = screen_point(term, row, col);
-                    term.selection = Some(Selection::new(ty, point, side(side_right)));
+                    let point = screen_point(term, at);
+                    term.selection = Some(Selection::new(ty, point, side(at.side_right)));
                 }
-                Op::SelectUpdate {
-                    row,
-                    col,
-                    side_right,
-                } => {
-                    let point = screen_point(term, row, col);
+                Op::SelectUpdate(at) => {
+                    let point = screen_point(term, at);
                     if let Some(selection) = term.selection.as_mut() {
-                        selection.update(point, side(side_right));
+                        selection.update(point, side(at.side_right));
                     }
                 }
                 Op::SelectAll => {
@@ -593,14 +619,26 @@ fn side(right: bool) -> Side {
     if right { Side::Right } else { Side::Left }
 }
 
-/// The buffer point under screen cell `row`/`col` at the current scroll
-/// position, clamped to the screen.
-fn screen_point(term: &Term<Listener>, row: u16, col: u16) -> Point {
+/// The buffer point under a screen cell. With a stamp, the cell is read
+/// off that screen: lines that went into history since moved its text up
+/// by as many lines. Without one, the screen as it is now. Clamped to the
+/// buffer.
+fn screen_point(term: &Term<Listener>, at: ScreenCell) -> Point {
     let rows = term.screen_lines().max(1) as i32;
     let cols = term.columns().max(1);
-    let row = (row as i32).min(rows - 1);
-    let line = row - term.grid().display_offset() as i32;
-    Point::new(Line(line), Column((col as usize).min(cols - 1)))
+    let row = (at.row as i32).min(rows - 1);
+    let line = match at.stamp {
+        Some(stamp) => {
+            let grown = term.history_size() as i64 - stamp.history_len as i64;
+            row as i64 - stamp.display_offset as i64 - grown
+        }
+        None => (row - term.grid().display_offset() as i32) as i64,
+    };
+    let line = line.clamp(
+        term.topmost_line().0 as i64,
+        term.bottommost_line().0 as i64,
+    );
+    Point::new(Line(line as i32), Column((at.col as usize).min(cols - 1)))
 }
 
 fn clear_keeping_cursor_line(term: &mut Term<Listener>) {
