@@ -241,3 +241,29 @@ fn keymap_has_phase3_bindings() {
         "references-view.prev"
     );
 }
+
+#[test]
+fn markdown_bindings_parse() {
+    let (km, error) = Keymap::load(Keymap::default_bindings(), None);
+    assert!(error.is_none(), "{error:?}");
+    let mut source = Context::default();
+    source.set("editorLangId", ContextValue::Str("markdown".into()));
+    assert_eq!(
+        command(km.resolve(&keys("cmd+shift+v"), &source)),
+        "markdown.togglePreview"
+    );
+    assert_eq!(
+        command(km.resolve(&keys("cmd+k v"), &source)),
+        "markdown.showPreviewToSide"
+    );
+    let mut preview = Context::default();
+    preview.set("activeEditor", ContextValue::Str("markdownPreview".into()));
+    assert_eq!(
+        command(km.resolve(&keys("cmd+shift+v"), &preview)),
+        "markdown.togglePreview"
+    );
+    // Elsewhere the keys do nothing.
+    let mut rust = Context::default();
+    rust.set("editorLangId", ContextValue::Str("rust".into()));
+    assert_eq!(km.resolve(&keys("cmd+shift+v"), &rust), Resolution::NoMatch);
+}

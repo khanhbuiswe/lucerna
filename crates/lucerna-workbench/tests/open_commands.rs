@@ -19,7 +19,7 @@ use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::process::{SpawnRequest, Spawner};
 use lucerna_workbench::recent::{RecentStore, load, recent_path};
 use lucerna_workbench::{
-    AppState, OpenMode, WelcomeView, Workbench, WorkbenchEvent, status_message,
+    AppState, OpenMode, WelcomeView, Workbench, WorkbenchEvent, browser_url, status_message,
 };
 
 const CLEAR_MESSAGE: &str = "Do you want to clear all recently opened folders?";
@@ -438,4 +438,37 @@ fn welcome_ctrl_r_in_picker_moves_selection(cx: &mut TestAppContext) {
     });
     // Wrapped from the first row to the last.
     assert_eq!(selected, 1);
+}
+
+#[test]
+fn open_in_browser_url_is_file_url() {
+    assert_eq!(
+        browser_url(Path::new("/tmp/a b.html")).as_deref(),
+        Some("file:///tmp/a%20b.html")
+    );
+    assert_eq!(browser_url(Path::new("a.html")), None);
+}
+
+/// The palette rows after opening `name` as the active tab.
+fn palette_rows_with(name: &str, cx: &mut TestAppContext) -> Vec<String> {
+    let fixture = Fixture::new(&[]);
+    std::fs::write(fixture.path("root").join(name), "x").unwrap();
+    init(&fixture, false, cx);
+    let (wb, cx) = workbench(&fixture, cx);
+    let path = fixture.path("root").join(name);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(path.as_path()), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+    cx.update(|window, cx| wb.update(cx, |wb, cx| wb.show_quick_open(">", window, cx)));
+    settle(cx);
+    cx.update(|_, cx| wb.read(cx).quick_open().unwrap().read(cx).row_texts())
+}
+
+#[gpui::test]
+fn open_in_browser_listed_only_for_html(cx: &mut TestAppContext) {
+    let html = palette_rows_with("a.html", cx);
+    assert!(html.iter().any(|r| r == "Open in Browser"), "{html:?}");
+    let rs = palette_rows_with("a.rs", cx);
+    assert!(rs.iter().all(|r| r != "Open in Browser"), "{rs:?}");
 }

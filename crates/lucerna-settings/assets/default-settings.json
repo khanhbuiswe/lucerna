@@ -73,5 +73,20 @@
   "breadcrumbs.enabled": true,
   "breadcrumbs.filePath": "on",
   "breadcrumbs.symbolPath": "on",
-  "breadcrumbs.icons": true
+  "breadcrumbs.icons": true,
+  "markdown.preview.fontSize": 14,
+  "markdown.preview.lineHeight": 1.6,
+  "markdown.preview.fontFamily": "",
+  "markdown.preview.scrollPreviewWithEditor": true,
+  "markdown.preview.scrollEditorWithPreview": true,
+  "markdown.preview.doubleClickToSwitchToEditor": true,
+  // Where a link to another Markdown file opens: "inPreview" or "inEditor".
+  "markdown.preview.openMarkdownLinks": "inPreview",
+  // Which editor opens a file, by glob. A glob without "/" matches the file name; one with "/"
+  // matches the root-relative path, else the absolute path (such as "/notes/**/*.md").
+  // "vscode.markdown.preview.editor": the Markdown preview. "default": the source.
+  "workbench.editorAssociations": {
+    "*.md": "vscode.markdown.preview.editor",
+    "*.markdown": "vscode.markdown.preview.editor"
+  }
 }

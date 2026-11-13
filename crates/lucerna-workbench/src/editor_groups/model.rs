@@ -40,16 +40,46 @@ pub enum TabItem {
     /// The language server Health tab (`lucerna.lsp.health`). At most one
     /// in all groups; never a preview, never saved.
     LspHealth,
+    /// The rendered Markdown preview of this file, pinned to it. Any number
+    /// may be open, like file tabs; saved.
+    MarkdownPreview(Arc<Path>),
+    /// The Markdown preview that follows the file being edited. At most
+    /// one in all groups (whatever its path); saved.
+    MarkdownPreviewDynamic(Arc<Path>),
 }
 
 impl TabItem {
-    /// The Extensions page, the Search, References or Health tab or a
-    /// server log: at most one in all groups, never a preview and never
-    /// split.
+    /// The Extensions page, the Search, References or Health tab, a
+    /// server log or the dynamic preview: at most one in all groups, never
+    /// a preview and never split.
     pub fn is_singleton(&self) -> bool {
-        !matches!(self, TabItem::File(_))
+        !matches!(self, TabItem::File(_) | TabItem::MarkdownPreview(_))
+    }
+
+    /// Whether `self` and `other` take the same singleton slot: any two
+    /// dynamic previews do whatever their paths, anything else when equal.
+    pub fn same_slot(&self, other: &TabItem) -> bool {
+        match (self, other) {
+            (TabItem::MarkdownPreviewDynamic(_), TabItem::MarkdownPreviewDynamic(_)) => true,
+            _ => self == other,
+        }
     }
 }
+
+/// Whether a tab shows a file's source or its rendered preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileView {
+    Source,
+    Preview,
+}
+
+/// How a static Markdown preview is saved in [`GroupState::tabs`]: this
+/// prefix followed by the absolute path of the file.
+pub const MARKDOWN_PREVIEW_STATE_PREFIX: &str = "lucerna:markdown-preview:";
+
+/// How the dynamic Markdown preview is saved: this prefix followed by the
+/// absolute path of the file it shows.
+pub const MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX: &str = "lucerna:markdown-preview-dynamic:";
 
 /// How the Extensions tab is saved in [`GroupState::tabs`], in place of a
 /// path. It is relative, so it never names a file a tab opened (those are
@@ -81,24 +111,31 @@ pub struct Tab {
 }
 
 impl Tab {
-    /// The file the tab shows; `None` for the Extensions page, the Search,
-    /// References and Health tabs and server logs.
+    /// The file the tab shows or previews statically; `None` for the
+    /// Extensions page, the Search, References and Health tabs, server logs
+    /// and the dynamic preview (which follows whichever file is active).
     pub fn path(&self) -> Option<&Arc<Path>> {
         match &self.item {
-            TabItem::File(path) => Some(path),
+            TabItem::File(path) | TabItem::MarkdownPreview(path) => Some(path),
             _ => None,
         }
     }
 
-    /// The tab bar's label: the file name, "Extensions", "Search",
-    /// "<server> Log", "References" or "Language Servers".
+    /// The file a Markdown preview tab (static or dynamic) renders.
+    pub fn previewed_path(&self) -> Option<&Arc<Path>> {
+        match &self.item {
+            TabItem::MarkdownPreview(path) | TabItem::MarkdownPreviewDynamic(path) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// The tab bar's label: the file name, "Preview <file name>" for the
+    /// dynamic preview, "Extensions", "Search", "<server> Log",
+    /// "References" or "Language Servers".
     pub fn title(&self) -> String {
         match &self.item {
-            TabItem::File(path) => path
-                .file_name()
-                .unwrap_or(path.as_os_str())
-                .to_string_lossy()
-                .into_owned(),
+            TabItem::File(path) | TabItem::MarkdownPreview(path) => file_name(path),
+            TabItem::MarkdownPreviewDynamic(path) => format!("Preview {}", file_name(path)),
             TabItem::Extensions => EXTENSIONS_TAB_TITLE.to_string(),
             TabItem::Search => SEARCH_TAB_TITLE.to_string(),
             TabItem::LspLog(server) => format!("{server} Log"),
@@ -106,6 +143,13 @@ impl Tab {
             TabItem::LspHealth => LSP_HEALTH_TAB_TITLE.to_string(),
         }
     }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// A group's identity for its lifetime: unlike its index, it does not
@@ -180,6 +224,21 @@ impl EditorGroups {
     /// Opens `path` in the active group (or, for [`OpenMode::ToSide`], the
     /// group to its right), activates it, and returns its tab.
     pub fn open(&mut self, path: Arc<Path>, mode: OpenMode, preview_enabled: bool) -> TabId {
+        self.open_file(path, FileView::Source, mode, preview_enabled, false)
+    }
+
+    /// Like [`EditorGroups::open`], showing `view` of the file. With
+    /// `reuse_any` a target group that already shows the file either way
+    /// (source or static preview) activates that tab, the active one first,
+    /// then by recency, instead of adding another.
+    pub fn open_file(
+        &mut self,
+        path: Arc<Path>,
+        view: FileView,
+        mode: OpenMode,
+        preview_enabled: bool,
+        reuse_any: bool,
+    ) -> TabId {
         if mode == OpenMode::ToSide {
             let right = self.active_group + 1;
             if right == self.groups.len() {
@@ -192,10 +251,24 @@ impl EditorGroups {
         let id = self.new_id();
         let group = &mut self.groups[self.active_group];
 
-        let item = TabItem::File(path);
-        if let Some(tab) = group.tabs.iter_mut().find(|t| t.item == item) {
-            let existing = tab.id;
-            if mode != OpenMode::Preview {
+        let item = match view {
+            FileView::Source => TabItem::File(path.clone()),
+            FileView::Preview => TabItem::MarkdownPreview(path.clone()),
+        };
+        let shows_file = |t: &Tab| matches!(&t.item, TabItem::File(p) | TabItem::MarkdownPreview(p) if *p == path);
+        let existing = if reuse_any {
+            group
+                .active
+                .into_iter()
+                .chain(group.mru.iter().copied())
+                .find(|&id| group.tabs.iter().any(|t| t.id == id && shows_file(t)))
+        } else {
+            group.tabs.iter().find(|t| t.item == item).map(|t| t.id)
+        };
+        if let Some(existing) = existing {
+            if mode != OpenMode::Preview
+                && let Some(tab) = group.tabs.iter_mut().find(|t| t.id == existing)
+            {
                 tab.pinned = true;
             }
             group.activate(existing);
@@ -273,6 +346,93 @@ impl EditorGroups {
         self.find_item(&TabItem::LspHealth)
     }
 
+    /// Replaces tab `id` with a tab showing `item` in the same place, with
+    /// the same pin state, active when `id` was. When the group already has
+    /// a tab showing `item`, closes `id` and activates that one instead.
+    /// Returns the resulting tab, or `None` when no tab has that id.
+    pub fn replace_item(&mut self, id: TabId, item: TabItem) -> Option<TabId> {
+        let g = self.group_of(id)?;
+        let group = &mut self.groups[g];
+        if let Some(other) = group.tabs.iter().find(|t| t.id != id && t.item == item) {
+            let other = other.id;
+            self.close(id);
+            self.activate(other);
+            return Some(other);
+        }
+        let new = self.new_id();
+        let group = &mut self.groups[g];
+        let i = group.position(id)?;
+        group.tabs[i] = Tab {
+            id: new,
+            item,
+            pinned: group.tabs[i].pinned,
+        };
+        for m in &mut group.mru {
+            if *m == id {
+                *m = new;
+            }
+        }
+        if group.active == Some(id) {
+            group.active = Some(new);
+        }
+        Some(new)
+    }
+
+    /// Shows the dynamic Markdown preview of `path`: retargets and
+    /// activates it in its group wherever it is (the active group stays),
+    /// or opens it pinned in the group right of the active one (created if
+    /// needed) and leaves focus in the group it came from.
+    pub fn open_dynamic_preview(&mut self, path: Arc<Path>) -> TabId {
+        if let Some((g, id)) = self.dynamic_preview().map(|(g, t)| (g, t.id)) {
+            self.retarget_dynamic(path);
+            self.groups[g].activate(id);
+            return id;
+        }
+        let origin = self.active_group;
+        let id = self.open_singleton_at(origin + 1, TabItem::MarkdownPreviewDynamic(path));
+        self.active_group = origin;
+        id
+    }
+
+    /// Points the dynamic preview at `path`. Returns `false` when there is
+    /// none or it already shows `path`.
+    pub fn retarget_dynamic(&mut self, path: Arc<Path>) -> bool {
+        let tab = self
+            .groups
+            .iter_mut()
+            .flat_map(|g| g.tabs.iter_mut())
+            .find(|t| matches!(t.item, TabItem::MarkdownPreviewDynamic(_)));
+        match tab {
+            Some(tab) if tab.item != TabItem::MarkdownPreviewDynamic(path.clone()) => {
+                tab.item = TabItem::MarkdownPreviewDynamic(path);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The dynamic Markdown preview tab and the index of its group.
+    pub fn dynamic_preview(&self) -> Option<(usize, &Tab)> {
+        self.groups.iter().enumerate().find_map(|(g, group)| {
+            group
+                .tabs
+                .iter()
+                .find(|t| matches!(t.item, TabItem::MarkdownPreviewDynamic(_)))
+                .map(|t| (g, t))
+        })
+    }
+
+    /// Opens `item` pinned in group `index` (appending a group when it is
+    /// the one past the end), activating it and making that group active.
+    fn open_singleton_at(&mut self, index: usize, item: TabItem) -> TabId {
+        if index == self.groups.len() {
+            let group = self.new_group();
+            self.groups.push(group);
+        }
+        self.active_group = index;
+        self.open_singleton(item)
+    }
+
     fn open_singleton(&mut self, item: TabItem) -> TabId {
         if let Some(id) = self.find_item(&item) {
             self.activate(id);
@@ -293,7 +453,7 @@ impl EditorGroups {
         self.groups
             .iter()
             .flat_map(|g| &g.tabs)
-            .find(|t| t.item == *item)
+            .find(|t| t.item.same_slot(item))
             .map(|t| t.id)
     }
 
@@ -429,7 +589,8 @@ impl EditorGroups {
             let mut group = model.new_group();
             for (path, pinned) in &saved.tabs {
                 let item = saved_item(path);
-                let seen = singletons.contains(&item) || group.tabs.iter().any(|t| t.item == item);
+                let seen = singletons.iter().any(|s| s.same_slot(&item))
+                    || group.tabs.iter().any(|t| t.item.same_slot(&item));
                 if seen {
                     continue;
                 }
@@ -458,7 +619,7 @@ impl EditorGroups {
                 .active
                 .and_then(|i| saved.tabs.get(i))
                 .map(|(path, _)| saved_item(path))
-                .and_then(|item| group.tabs.iter().find(|t| t.item == item));
+                .and_then(|item| group.tabs.iter().find(|t| t.item.same_slot(&item)));
             if let Some(id) = saved_active.or(group.tabs.last()).map(|t| t.id) {
                 group.activate(id);
             }
@@ -540,19 +701,55 @@ fn saved_item(path: &Path) -> TabItem {
         TabItem::Extensions
     } else if path == Path::new(SEARCH_TAB_STATE) {
         TabItem::Search
+    } else if let Some((prefix, rest)) = split_preview_state(path) {
+        if prefix == MARKDOWN_PREVIEW_STATE_PREFIX {
+            TabItem::MarkdownPreview(Arc::from(rest))
+        } else {
+            TabItem::MarkdownPreviewDynamic(Arc::from(rest))
+        }
     } else {
         TabItem::File(Arc::from(path))
     }
 }
 
-/// How a tab is saved: its path, [`EXTENSIONS_TAB_STATE`] or
-/// [`SEARCH_TAB_STATE`]; `None` for a server log, the References tab or
+/// A saved preview tab split into its prefix
+/// ([`MARKDOWN_PREVIEW_STATE_PREFIX`] or
+/// [`MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX`]) and the path of the file it
+/// shows; `None` for any other saved tab, and for a path that is not UTF-8.
+pub(crate) fn split_preview_state(path: &Path) -> Option<(&'static str, &Path)> {
+    let text = path.to_str()?;
+    // The dynamic prefix first: the static one is not a prefix of it, but
+    // checking the longer one first keeps that from mattering.
+    [
+        MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
+        MARKDOWN_PREVIEW_STATE_PREFIX,
+    ]
+    .into_iter()
+    .find_map(|prefix| {
+        text.strip_prefix(prefix)
+            .map(|rest| (prefix, Path::new(rest)))
+    })
+}
+
+/// How a tab is saved: its path, [`EXTENSIONS_TAB_STATE`],
+/// [`SEARCH_TAB_STATE`] or a preview prefix and the path; `None` for a server log, the References tab or
 /// the Health tab, which are not saved.
 fn saved_path(item: &TabItem) -> Option<PathBuf> {
     match item {
         TabItem::File(path) => Some(path.to_path_buf()),
         TabItem::Extensions => Some(PathBuf::from(EXTENSIONS_TAB_STATE)),
         TabItem::Search => Some(PathBuf::from(SEARCH_TAB_STATE)),
+        TabItem::MarkdownPreview(path) => Some(prefixed(MARKDOWN_PREVIEW_STATE_PREFIX, path)),
+        TabItem::MarkdownPreviewDynamic(path) => {
+            Some(prefixed(MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, path))
+        }
         TabItem::LspLog(_) | TabItem::References | TabItem::LspHealth => None,
     }
+}
+
+/// `prefix` followed by `path`, as a saved tab path.
+pub(crate) fn prefixed(prefix: &str, path: &Path) -> PathBuf {
+    let mut saved = std::ffi::OsString::from(prefix);
+    saved.push(path.as_os_str());
+    PathBuf::from(saved)
 }

@@ -282,6 +282,7 @@ pub static MENUS: &[MenuSpec] = &[
             Entry::Separator,
             command("Toggle Sidebar", "workbench.action.toggleSidebarVisibility"),
             command("Split Editor", "workbench.action.splitEditor"),
+            command("Open Preview to the Side", "markdown.showPreviewToSide"),
             Entry::Separator,
             command("Word Wrap", "editor.action.toggleWordWrap"),
             command("Zoom In", "editor.action.fontZoomIn"),

@@ -7,7 +7,10 @@ use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{Context, IntoElement, Render, TestAppContext, VisualTestContext, Window};
+use gpui::{
+    Context, InteractiveElement, IntoElement, ParentElement, Render, Styled, TestAppContext,
+    VisualTestContext, Window, div, px,
+};
 use lucerna_project::WorktreeEvent;
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
@@ -49,7 +52,12 @@ struct Host(Arc<MarkdownBlocks>);
 
 impl Render for Host {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        render_markdown(&self.0, cx)
+        div().flex().flex_col().items_start().child(
+            div()
+                .debug_selector(|| "md-root".to_owned())
+                .w(px(320.))
+                .child(render_markdown(&self.0, cx)),
+        )
     }
 }
 
@@ -87,6 +95,14 @@ fn renders_without_panic_and_highlights_rust_block(cx: &mut TestAppContext) {
         assert_eq!(blocks.code_runs(1, cx).unwrap().1.len(), 1);
         assert!(blocks.code_runs(2, cx).is_none());
     });
+}
+
+#[gpui::test]
+fn hover_layout_unchanged(cx: &mut TestAppContext) {
+    let (_blocks, cx) = host(DOC, None, cx);
+    let bounds = cx.debug_bounds("md-root").expect("md-root");
+    // Measured at eecc032, before the per-block renderer: 280 px at 320 px wide.
+    assert_eq!(bounds.size.height, px(280.));
 }
 
 #[gpui::test]

@@ -223,6 +223,10 @@ pub enum CodeViewEvent {
     /// session, for `.`: typed chars or an IME commit's final text, Enter,
     /// Backspace or Tab. Only while [`CodeView::set_typed_events`] is on.
     Typed(lucerna_vim::Typed),
+    /// The topmost visible buffer row (folds skipped) changed: the user
+    /// scrolled, the view followed the cursor or an edit, or
+    /// [`CodeView::set_scroll_top_row`] was called.
+    ScrolledTo(u32),
 }
 
 /// What changed the selections, which decides the undo stop and the
@@ -336,6 +340,8 @@ pub struct CodeView {
     frame: Option<Arc<Frame>>,
     /// A row to center once the viewport size is known.
     pending_center: Option<u32>,
+    /// The top row last sent as [`CodeViewEvent::ScrolledTo`].
+    reported_top_row: Option<u32>,
     /// The file's state; errors replace the text with a message.
     doc_state: DocState,
     /// Where the error actions ("Retry", "Open as text") go.
@@ -441,6 +447,7 @@ impl CodeView {
             caches: Caches::default(),
             frame: None,
             pending_center: None,
+            reported_top_row: None,
             doc_state: DocState::Ready,
             documents: None,
             match_highlights: Arc::from([]),
@@ -992,7 +999,20 @@ impl CodeView {
             offset: 0.,
         };
         self.pending_center = None;
+        self.report_scroll(cx);
         cx.notify();
+    }
+
+    /// Emits [`CodeViewEvent::ScrolledTo`] when the top row is not the one
+    /// last reported. Called where the top row settles: an explicit
+    /// scroll, the wheel, and each layout (which applies the scrolls that
+    /// follow the cursor or an edit).
+    pub(crate) fn report_scroll(&mut self, cx: &mut Context<Self>) {
+        let top = self.scroll.top_row;
+        if self.reported_top_row != Some(top) {
+            self.reported_top_row = Some(top);
+            cx.emit(CodeViewEvent::ScrolledTo(top));
+        }
     }
 
     /// The overlay scrollbar thumb as last painted, in window coordinates;

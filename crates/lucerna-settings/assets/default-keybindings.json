@@ -132,5 +132,7 @@
   { "key": "cmd+o", "command": "workbench.action.files.openFileFolder" },
   { "key": "cmd+k f", "command": "workbench.action.closeFolder" },
   { "key": "ctrl+r", "command": "workbench.action.quickOpenNavigateNextInRecentFilesPicker", "when": "inRecentPicker" },
-  { "key": "ctrl+shift+r", "command": "workbench.action.quickOpenNavigatePreviousInRecentFilesPicker", "when": "inRecentPicker" }
+  { "key": "ctrl+shift+r", "command": "workbench.action.quickOpenNavigatePreviousInRecentFilesPicker", "when": "inRecentPicker" },
+  { "key": "cmd+shift+v", "command": "markdown.togglePreview", "when": "editorLangId == markdown || activeEditor == 'markdownPreview'" },
+  { "key": "cmd+k v", "command": "markdown.showPreviewToSide", "when": "editorLangId == markdown" }
 ]
