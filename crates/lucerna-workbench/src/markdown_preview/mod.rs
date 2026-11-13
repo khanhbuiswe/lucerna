@@ -2,9 +2,14 @@
 //! root blocks as the items of a `gpui::list`, following the file's
 //! document as it is edited or rewritten on disk (spec §5.4): parses run on
 //! a background thread, at most one per [`REPARSE_DELAY`], and keep the
-//! source line at the top of the view.
+//! text at the top of the view there (moved by the edits above it, or at
+//! the same line after a whole rewrite). A preview shown beside an editor of
+//! its file scrolls with it ([`sync`], spec §4.5).
 
 mod sync;
+
+pub(crate) use sync::ScrollSync;
+pub use sync::{item_to_line, line_to_item};
 
 use std::path::Path;
 use std::rc::Rc;
@@ -12,15 +17,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, Entity, IntoElement, ListAlignment, ListOffset, ListState,
-    ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, div, list, prelude::*,
-    px,
+    AnyElement, App, Context, Entity, EventEmitter, IntoElement, ListAlignment, ListOffset,
+    ListState, ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, div, list,
+    prelude::*, px,
 };
 use lucerna_text::{BufferSnapshot, LoadError};
 
 use crate::AppState;
 use crate::code_view::CodeView;
-use crate::documents::{DocState, Documents};
+use crate::documents::{DocState, DocumentEvent, Documents};
 use crate::layout::color;
 use crate::markdown::{
     LinkHandler, MarkdownBlocks, MarkdownStyle, open_markdown_link, parse_markdown_document,
@@ -49,6 +54,14 @@ const LIST_OVERDRAW: f32 = 50. * GRID;
 /// The command the too-large notice runs.
 const SHOW_SOURCE: &str = "markdown.showSource";
 
+/// What a [`MarkdownPreview`] tells its scroll-sync links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkdownPreviewEvent {
+    /// The user scrolled the preview (wheel or trackpad); a scroll the
+    /// code asked for is not reported.
+    Scrolled,
+}
+
 /// A rendered view of a markdown file. It keeps the file's document open
 /// (and reloaded from disk) through a passive code view it never draws.
 pub struct MarkdownPreview {
@@ -76,6 +89,14 @@ pub struct MarkdownPreview {
     /// The document's state when last checked.
     state: Option<DocState>,
     list_state: ListState,
+    /// The source line to show at the top once the blocks are parsed, or
+    /// once the top block is measured (its offset into the block needs
+    /// the block's height): retried each frame until then.
+    pending_line: Option<f32>,
+    /// The top line of the view moved through the edits made since the
+    /// blocks shown were parsed: where the text at the top now is, which
+    /// the next blocks show at the top.
+    anchor: Option<f32>,
 }
 
 impl MarkdownPreview {
@@ -91,6 +112,37 @@ impl MarkdownPreview {
         // load, a deletion) is checked against the revision shown.
         cx.observe(&documents, |preview, _, cx| preview.documents_changed(cx))
             .detach();
+        // A document dropped while the preview shows it (the close
+        // prompt's Don't Save) is opened again from disk; each edit moves
+        // the anchor with the text above it.
+        cx.subscribe(
+            &documents,
+            |preview, _, event: &DocumentEvent, cx| match event {
+                DocumentEvent::Closed { .. } => preview.reopen_if_dropped(cx),
+                DocumentEvent::Edited {
+                    path,
+                    old,
+                    snapshot,
+                    patch,
+                    ..
+                } if *path == preview.documents.read(cx).key(&preview.path) => {
+                    let line = preview.anchor.unwrap_or_else(|| preview.top_line());
+                    preview.anchor = Some(sync::map_line(patch, old, snapshot, line));
+                }
+                _ => {}
+            },
+        )
+        .detach();
+        let list_state = ListState::new(0, ListAlignment::Top, px(LIST_OVERDRAW));
+        // Runs inside the list's own update: read it once that is over.
+        let this = cx.weak_entity();
+        list_state.set_scroll_handler(move |_, _, cx| {
+            let this = this.clone();
+            cx.defer(move |cx| {
+                this.update(cx, |preview, cx| preview.user_scrolled(cx))
+                    .ok();
+            });
+        });
         let mut preview = MarkdownPreview {
             path,
             dynamic,
@@ -105,7 +157,9 @@ impl MarkdownPreview {
             parses_started: 0,
             too_large: false,
             state: None,
-            list_state: ListState::new(0, ListAlignment::Top, px(LIST_OVERDRAW)),
+            list_state,
+            pending_line: None,
+            anchor: None,
         };
         preview.documents_changed(cx);
         preview
@@ -138,7 +192,26 @@ impl MarkdownPreview {
         self.epoch += 1;
         self.too_large = false;
         self.state = None;
+        self.pending_line = None;
+        self.anchor = None;
         self.list_state.reset(0);
+        self.documents_changed(cx);
+    }
+
+    /// Opens the document again when it was dropped under the preview: the
+    /// new document starts its revisions over, so the old ones are
+    /// forgotten (the blocks stay shown until the new text is parsed).
+    fn reopen_if_dropped(&mut self, cx: &mut Context<Self>) {
+        if self.documents.read(cx).state(&self.path).is_some() {
+            return;
+        }
+        let path = self.path.clone();
+        self._source = self.documents.update(cx, |d, cx| d.open_preview(path, cx));
+        self.revision = None;
+        self.requested = None;
+        self.pending = None;
+        self.epoch += 1;
+        self.anchor = None;
         self.documents_changed(cx);
     }
 
@@ -152,31 +225,80 @@ impl MarkdownPreview {
         &self.list_state
     }
 
-    /// The source line (0-based) of the block at the top of the view.
+    /// The source line (0-based, fractional) at the top of the view: the
+    /// top block's lines, scaled by how far into the block the view is
+    /// scrolled ([`line_to_item`]). A line still waiting to be shown
+    /// counts as shown.
     pub fn top_line(&self) -> f32 {
-        let top = self.list_state.logical_scroll_top().item_ix;
-        self.blocks
-            .as_ref()
-            .and_then(|b| b.root_lines().get(top))
-            .map_or(0., |lines| lines.start as f32)
+        if let Some(line) = self.pending_line {
+            return line;
+        }
+        let Some(blocks) = &self.blocks else {
+            return 0.;
+        };
+        let top = self.list_state.logical_scroll_top();
+        let height = self
+            .list_state
+            .bounds_for_item(top.item_ix)
+            .map_or(0., |b| f32::from(b.size.height));
+        let fraction = if height > 0. {
+            f32::from(top.offset_in_item) / height
+        } else {
+            0.
+        };
+        item_to_line(
+            blocks.root_lines(),
+            blocks.line_count(),
+            top.item_ix,
+            fraction,
+        )
     }
 
-    /// Scrolls the block holding source line `line` (0-based) to the top.
+    /// Scrolls source line `line` (0-based, fractional) to the top: its
+    /// block, offset by the line's fraction of the block's height. Before
+    /// the blocks are parsed, or while the block is not measured, the
+    /// line waits and is shown on a later frame.
     pub fn scroll_to_line(&mut self, line: f32, cx: &mut Context<Self>) {
+        self.anchor = None;
+        self.show_line(line, cx);
+    }
+
+    /// Scrolls `line` to the top, now or once it can be placed.
+    fn show_line(&mut self, line: f32, cx: &mut Context<Self>) {
+        self.pending_line = (!self.apply_line(line)).then_some(line);
+        cx.notify();
+    }
+
+    /// Scrolls `line` to the top; `false` when it could not be placed
+    /// exactly yet (no blocks, or its block not measured).
+    fn apply_line(&self, line: f32) -> bool {
         let Some(blocks) = &self.blocks else {
-            return;
+            return false;
         };
-        // The last block starting at or before the line: a line between
-        // blocks (a blank one) belongs to the block above.
-        let item_ix = blocks
-            .root_lines()
-            .partition_point(|lines| lines.start as f32 <= line)
-            .saturating_sub(1);
+        let (item_ix, fraction) = line_to_item(blocks.root_lines(), blocks.line_count(), line);
         self.list_state.scroll_to(ListOffset {
             item_ix,
             offset_in_item: px(0.),
         });
-        cx.notify();
+        if fraction == 0. {
+            return true;
+        }
+        let Some(bounds) = self.list_state.bounds_for_item(item_ix) else {
+            return false;
+        };
+        self.list_state.scroll_to(ListOffset {
+            item_ix,
+            offset_in_item: bounds.size.height * fraction,
+        });
+        true
+    }
+
+    /// The user scrolled: a line still waiting gives way, and the links
+    /// hear of it.
+    fn user_scrolled(&mut self, cx: &mut Context<Self>) {
+        self.pending_line = None;
+        self.anchor = None;
+        cx.emit(MarkdownPreviewEvent::Scrolled);
     }
 
     /// The number of parses started so far (for tests).
@@ -254,20 +376,23 @@ impl MarkdownPreview {
     }
 
     /// Shows the blocks parsed from `revision` (`None`: the file is too
-    /// large), unless newer ones are shown, keeping the source line at the
-    /// top of the view.
+    /// large), unless newer ones are shown, keeping the text at the top of
+    /// the view (the anchor), within its block too.
     fn show(&mut self, revision: u64, blocks: Option<Arc<MarkdownBlocks>>, cx: &mut Context<Self>) {
         if self.revision.is_some_and(|shown| shown > revision) {
             return;
         }
-        let top = self.top_line();
+        let top = self.anchor.unwrap_or_else(|| self.top_line());
+        // Edits made since this text was read move the anchor on.
+        if self.documents.read(cx).revision_of(&self.path) == Some(revision) {
+            self.anchor = None;
+        }
         self.revision = Some(revision);
         self.too_large = blocks.is_none();
         self.blocks = blocks;
         let count = self.blocks.as_ref().map_or(0, |b| b.blocks().len());
         self.list_state.reset(count);
-        self.scroll_to_line(top, cx);
-        cx.notify();
+        self.show_line(top, cx);
     }
 
     /// The preview's style, from the `markdown.preview.*` settings.
@@ -343,8 +468,10 @@ fn load_error_message(err: &LoadError) -> String {
     }
 }
 
+impl EventEmitter<MarkdownPreviewEvent> for MarkdownPreview {}
+
 impl Render for MarkdownPreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = &cx.global::<AppState>().theme.ui;
         let root = div()
             .id("markdown-preview")
@@ -370,6 +497,14 @@ impl Render for MarkdownPreview {
             // Still loading: an empty page, no spinner.
             return root;
         };
+        // The line waiting for its block's height: the last frame
+        // measured the block (now at the top) unless it is still loading.
+        if let Some(line) = self.pending_line.take()
+            && !self.apply_line(line)
+        {
+            self.pending_line = Some(line);
+            window.request_animation_frame();
+        }
         let style = Self::style(cx);
         let on_link = self.link_handler();
         let last = blocks.blocks().len().saturating_sub(1);

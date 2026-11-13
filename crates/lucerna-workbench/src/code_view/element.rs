@@ -766,6 +766,7 @@ impl CodeView {
             },
         });
         self.frame = Some(frame.clone());
+        self.report_scroll(cx);
         frame
     }
 
@@ -1177,6 +1178,7 @@ impl CodeView {
         if !self.word_wrap {
             self.scroll_x = (self.scroll_x - f32::from(delta.x)).max(0.);
         }
+        self.report_scroll(cx);
         cx.notify();
     }
 }

@@ -37,7 +37,7 @@ use crate::locations_picker::ShownLocationsPicker;
 use crate::lsp_health::LspHealthView;
 use crate::lsp_log::LspLogs;
 use crate::lsp_status::{self, LspStatusItem};
-use crate::markdown_preview::MarkdownPreview;
+use crate::markdown_preview::{MarkdownPreview, ScrollSync};
 use crate::nav_history::{NavEntry, NavHistory};
 use crate::open_commands::{self, ShownRecentPicker};
 use crate::open_files::{OpenFileWatcher, matching_files};
@@ -176,6 +176,9 @@ pub struct Workbench {
     sidebar_width: Pixels,
     explorer_view: Option<AnyView>,
     editor_groups: Entity<EditorGroupsView>,
+    /// Scrolls each shown Markdown preview with the shown editors of its
+    /// file in other groups.
+    scroll_sync: ScrollSync,
     editor_area: Option<AnyView>,
     status_left: Vec<AnyView>,
     status_right: Vec<AnyView>,
@@ -473,6 +476,9 @@ impl Workbench {
             cx.observe_in(&editor_groups, window, |wb, _, window, cx| {
                 wb.active_tabs_changed(window, cx)
             }),
+            cx.observe_in(&editor_groups, window, |wb, groups, window, cx| {
+                wb.scroll_sync.refresh(&groups, &wb.root, window, cx)
+            }),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
             // VS Code: a preview tab whose file gets unsaved changes is
             // pinned, so opening another file never replaces it.
@@ -586,6 +592,7 @@ impl Workbench {
             extensions_page,
             editor_area: Some(editor_groups.clone().into()),
             editor_groups,
+            scroll_sync: ScrollSync::default(),
             status_left: Vec::new(),
             status_right: Vec::new(),
             pending_chord: Vec::new(),
@@ -627,6 +634,11 @@ impl Workbench {
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, lsp_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
+        // A restored layout may already show a preview beside its editor.
+        cx.defer_in(window, |wb, window, cx| {
+            let groups = wb.editor_groups.clone();
+            wb.scroll_sync.refresh(&groups, &wb.root, window, cx);
+        });
         workbench
     }
 

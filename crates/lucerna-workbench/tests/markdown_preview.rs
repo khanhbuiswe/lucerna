@@ -4,13 +4,14 @@
 //! a debounce, keeping the reading position.
 
 use std::fs;
+use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
+use gpui::{BorrowAppContext as _, Entity, Focusable as _, TestAppContext, VisualTestContext};
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
-use lucerna_settings::{Keymap, SettingsStore};
+use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
@@ -292,4 +293,178 @@ fn typing_updates_without_save(cx: &mut TestAppContext) {
     draw(cx);
     let text = blocks_text(&preview, cx).expect("parsed");
     assert!(text.contains("zzzhello"), "{text}");
+}
+
+/// 200 headings, each with a paragraph: `# h{i}` on line `4 i`, its
+/// paragraph on `4 i + 2`.
+fn long_doc() -> String {
+    (0..200).map(|i| format!("# h{i}\n\npara\n\n")).collect()
+}
+
+/// `file.md` as source in group 0 and its preview in group 1.
+fn side_by_side<'a>(
+    text: &str,
+    cx: &'a mut TestAppContext,
+) -> (
+    TempDir,
+    Entity<Workbench>,
+    Entity<CodeView>,
+    Entity<MarkdownPreview>,
+    &'a mut VisualTestContext,
+) {
+    let (dir, wb, cx) = open(text, cx);
+    let (view, _) = open_source(&wb, cx);
+    let preview = open_preview_with(&wb, &dir, OpenMode::ToSide, cx);
+    (dir, wb, view, preview, cx)
+}
+
+fn set_user_settings(json: &str, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        cx.update_global::<AppState, _>(|state, _| {
+            state.settings.set_layer(Layer::User, json).unwrap();
+        });
+    });
+    draw(cx);
+}
+
+/// The source lines of the block at the top of the preview.
+fn top_block_lines(preview: &Entity<MarkdownPreview>, cx: &mut VisualTestContext) -> Range<u32> {
+    preview.read_with(cx, |p, _| {
+        let item = p.list_state().logical_scroll_top().item_ix;
+        p.blocks().expect("parsed").root_lines()[item].clone()
+    })
+}
+
+/// Scrolls the preview by `dy` px with the wheel.
+fn wheel_preview(dy: f32, cx: &mut VisualTestContext) {
+    draw(cx);
+    let bounds = cx.debug_bounds("markdown-preview").expect("drawn");
+    cx.simulate_event(gpui::ScrollEvent {
+        position: bounds.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-dy))),
+        ..Default::default()
+    });
+    draw(cx);
+}
+
+#[gpui::test]
+fn editor_scroll_moves_side_preview(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, preview, cx) = side_by_side(&long_doc(), cx);
+    view.update(cx, |v, cx| v.set_scroll_top_row(150, cx));
+    draw(cx);
+    let lines = top_block_lines(&preview, cx);
+    assert!(lines.start <= 150 && 150 < lines.end + 2, "{lines:?}");
+    // Halfway between the paragraph on 150 and the heading on 152.
+    view.update(cx, |v, cx| v.set_scroll_top_row(151, cx));
+    draw(cx);
+    let top = preview.read_with(cx, |p, _| p.top_line());
+    assert!((top - 151.).abs() < 0.1, "top line {top}");
+}
+
+#[gpui::test]
+fn preview_scroll_moves_side_editor(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, preview, cx) = side_by_side(&long_doc(), cx);
+    wheel_preview(300., cx);
+    let top = preview.read_with(cx, |p, _| p.top_line());
+    assert!(top > 2., "the preview scrolled: {top}");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.scroll_top_row()),
+        top.floor() as u32
+    );
+    // The editor's echo does not pull the preview back to a block start.
+    assert_eq!(preview.read_with(cx, |p, _| p.top_line()), top);
+}
+
+#[gpui::test]
+fn setting_off_stops_sync(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, preview, cx) = side_by_side(&long_doc(), cx);
+    set_user_settings(
+        r#"{ "markdown.preview.scrollPreviewWithEditor": false,
+             "markdown.preview.scrollEditorWithPreview": false }"#,
+        cx,
+    );
+    view.update(cx, |v, cx| v.set_scroll_top_row(150, cx));
+    draw(cx);
+    assert_eq!(top_block_lines(&preview, cx).start, 0);
+    wheel_preview(300., cx);
+    assert!(preview.read_with(cx, |p, _| p.top_line()) > 2.);
+    assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 150);
+}
+
+#[gpui::test]
+fn reparse_keeps_text_not_index(cx: &mut TestAppContext) {
+    init(cx);
+    // Paragraphs `p{i}` (1 line) between 8-line code blocks: block 2 i is
+    // `p{i}`, block 2 i + 1 a code block.
+    let code = format!("```\n{}```\n", "x\n".repeat(6));
+    let text: String = (0..30).map(|i| format!("p{i}\n\n{code}\n")).collect();
+    let (dir, wb, cx) = open(&text, cx);
+    let preview = open_preview(&wb, &dir, cx);
+    // `p15` is block 30.
+    let line = preview.read_with(cx, |p, _| p.blocks().unwrap().root_lines()[30].start);
+    preview.update(cx, |p, cx| p.scroll_to_line(line as f32, cx));
+    draw(cx);
+    rewrite(&wb, &dir, &format!("p-new\n\n{code}\n{text}"), cx);
+    cx.executor().advance_clock(REPARSE_DELAY);
+    draw(cx);
+    let (item, source) = preview.read_with(cx, |p, _| {
+        let item = p.list_state().logical_scroll_top().item_ix;
+        let blocks = p.blocks().unwrap();
+        (item, format!("{:?}", blocks.blocks()[item]))
+    });
+    // Two blocks (11 lines) were added above: the same index would show
+    // `p14`.
+    assert_eq!(item, 32);
+    assert!(source.contains("p15"), "{source}");
+}
+
+#[gpui::test]
+fn reparse_keeps_offset_in_tall_block(cx: &mut TestAppContext) {
+    init(cx);
+    let body: String = (0..40).map(|i| format!("line {i}\n")).collect();
+    let rest: String = (0..60).map(|i| format!("para {i}\n\n")).collect();
+    let text = format!("# a\n\n```\n{body}```\n\n{rest}");
+    let (dir, wb, cx) = open(&text, cx);
+    let preview = open_preview(&wb, &dir, cx);
+    // Halfway into the code block (lines 2..44, the next block on 45).
+    preview.update(cx, |p, cx| p.scroll_to_line(23., cx));
+    draw(cx);
+    let before = preview.read_with(cx, |p, _| {
+        (p.list_state().logical_scroll_top(), p.top_line())
+    });
+    assert_eq!(before.0.item_ix, 1);
+    assert!(before.0.offset_in_item > gpui::px(0.));
+    assert!((before.1 - 23.).abs() < 0.1, "{}", before.1);
+    rewrite(&wb, &dir, &format!("{text}\nmore\n"), cx);
+    cx.executor().advance_clock(REPARSE_DELAY);
+    draw(cx);
+    let after = preview.read_with(cx, |p, _| p.top_line());
+    assert!((after - 23.).abs() < 0.1, "top line {after}");
+}
+
+#[gpui::test]
+fn revision_reset_after_discard_still_updates(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open("# v0\n", cx);
+    let preview = open_preview(&wb, &dir, cx);
+    // Push the document's revision up.
+    for i in 1..=4 {
+        rewrite(&wb, &dir, &format!("# v{i}\n"), cx);
+        cx.executor().advance_clock(REPARSE_DELAY);
+        draw(cx);
+    }
+    let text = blocks_text(&preview, cx).expect("parsed");
+    assert!(text.contains("v4"), "{text}");
+    let docs = cx.update(|_, cx| wb.read(cx).documents().clone());
+    let path = dir.path().join("file.md");
+    docs.update(cx, |d, cx| d.discard(&path, cx));
+    draw(cx);
+    rewrite(&wb, &dir, "# after discard\n", cx);
+    cx.executor().advance_clock(REPARSE_DELAY);
+    draw(cx);
+    let text = blocks_text(&preview, cx).expect("parsed");
+    assert!(text.contains("after discard"), "{text}");
 }

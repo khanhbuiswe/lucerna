@@ -430,7 +430,7 @@ impl Documents {
 
     /// The key for `path`: as given when absolute, else joined onto the
     /// root.
-    fn key(&self, path: &Path) -> Arc<Path> {
+    pub(crate) fn key(&self, path: &Path) -> Arc<Path> {
         Arc::from(absolute_path(&self.root, path))
     }
 

@@ -86,7 +86,10 @@ pub use locations_picker::{
 pub use lsp_health::LspHealthView;
 pub use lsp_log::LspLogView;
 pub use lsp_status::{LspStatusItem, ServerRow, StatusDot};
-pub use markdown_preview::{MAX_PREVIEW_BYTES, MarkdownPreview, REPARSE_DELAY};
+pub use markdown_preview::{
+    MAX_PREVIEW_BYTES, MarkdownPreview, MarkdownPreviewEvent, REPARSE_DELAY, item_to_line,
+    line_to_item,
+};
 pub use nav_history::{NavEntry, NavHistory};
 pub use open_commands::WorkbenchEvent;
 pub use open_files::OpenFileWatcher;
