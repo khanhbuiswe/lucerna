@@ -23,9 +23,32 @@ pub fn first_match(query: &SearchQuery, line: &str) -> Option<Range<usize>> {
         .map(|m| m.range())
 }
 
-/// Comma-separated globs, trimmed, empty ones dropped.
+/// Comma-separated globs, trimmed, empty ones dropped. As VS Code's
+/// `splitGlobAware`, a comma inside a class (`[,]`) or braces (`{a,b}`)
+/// does not split.
 pub fn globs(text: &str) -> Vec<String> {
-    text.split(',')
+    let mut parts = Vec::new();
+    let (mut start, mut braces) = (0, 0usize);
+    // Inside `[...]`, and the index where its first character sits (a `]`
+    // there is literal).
+    let mut class: Option<usize> = None;
+    for (i, c) in text.char_indices() {
+        match (c, class) {
+            (']', Some(first)) if i != first => class = None,
+            (_, Some(_)) => {}
+            ('[', None) => class = Some(i + 1),
+            ('{', None) => braces += 1,
+            ('}', None) => braces = braces.saturating_sub(1),
+            (',', None) if braces == 0 => {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+        .into_iter()
         .map(str::trim)
         .filter(|g| !g.is_empty())
         .map(str::to_owned)
@@ -80,5 +103,12 @@ mod tests {
     fn globs_split_on_commas() {
         assert_eq!(globs(" src/**, *.rs ,,"), vec!["src/**", "*.rs"]);
         assert!(globs("").is_empty());
+    }
+
+    /// As VS Code's `splitGlobAware`: commas in a class or braces stay.
+    #[test]
+    fn globs_keep_commas_in_classes_and_braces() {
+        assert_eq!(globs("a[,]b/**, {x,y}.rs"), vec!["a[,]b/**", "{x,y}.rs"]);
+        assert_eq!(globs("[]],[,]"), vec!["[]]", "[,]"]);
     }
 }

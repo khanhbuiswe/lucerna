@@ -90,14 +90,8 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             if !is_dir {
                 return;
             }
-            let include = target
-                .strip_prefix(wb.root())
-                .map(|rel| {
-                    rel.components()
-                        .map(|c| c.as_os_str().to_string_lossy())
-                        .collect::<Vec<_>>()
-                        .join("/")
-                })
+            let include = root_relative(wb.root(), &target, "/")
+                .map(|rel| folder_include(&rel))
                 .unwrap_or_default();
             wb.search_view()
                 .update(cx, |view, cx| view.set_include(&include, window, cx));
@@ -467,6 +461,18 @@ fn target_kind(wb: &Workbench, args: Option<&Value>, cx: &App) -> (PathBuf, Opti
     (target, kind)
 }
 
+/// `target` relative to `root` with its components joined by `separator`
+/// (empty for the root itself); `None` when it is not under `root`.
+fn root_relative(root: &Path, target: &Path, separator: &str) -> Option<String> {
+    let rest = target.strip_prefix(root).ok()?;
+    Some(
+        rest.components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(separator),
+    )
+}
+
 /// `target` relative to `root` with its components joined by `separator`;
 /// the root itself is `root_name`.
 pub(crate) fn relative_path_text(
@@ -475,15 +481,37 @@ pub(crate) fn relative_path_text(
     separator: &str,
     root_name: &str,
 ) -> String {
-    match target.strip_prefix(root) {
-        Ok(rest) if rest.as_os_str().is_empty() => root_name.to_string(),
-        Ok(rest) => rest
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join(separator),
-        Err(_) => target.to_string_lossy().into_owned(),
+    match root_relative(root, target, separator) {
+        Some(rest) if rest.is_empty() => root_name.to_string(),
+        Some(rest) => rest,
+        None => target.to_string_lossy().into_owned(),
     }
+}
+
+/// Find in Folder's include for the root-relative folder `rel` (`/`
+/// separated): the folder as typed when it is a plain path (which also
+/// covers what is under it), else with glob characters and commas wrapped
+/// in a class (`[slug]` → `[[]slug[]]`), a leading `!` or `#` escaped (the
+/// include is a gitignore-style line) and `/**` appended.
+fn folder_include(rel: &str) -> String {
+    const SPECIAL: [char; 7] = ['[', ']', '{', '}', '*', '?', ','];
+    let leading = rel.starts_with(['!', '#']);
+    if rel.is_empty() || (!leading && !rel.contains(SPECIAL)) {
+        return rel.to_string();
+    }
+    let mut out = String::with_capacity(rel.len() + 8);
+    if leading {
+        out.push('\\');
+    }
+    for c in rel.chars() {
+        if SPECIAL.contains(&c) {
+            out.extend(['[', c, ']']);
+        } else {
+            out.push(c);
+        }
+    }
+    out.push_str("/**");
+    out
 }
 
 #[cfg(test)]
@@ -495,6 +523,17 @@ mod tests {
         let (root, file) = (Path::new("/p"), Path::new("/p/src/a.rs"));
         assert_eq!(relative_path_text(root, file, "/", "p"), "src/a.rs");
         assert_eq!(relative_path_text(root, file, "\\", "p"), "src\\a.rs");
+    }
+
+    #[test]
+    fn folder_include_escapes_glob_characters() {
+        assert_eq!(folder_include("src/app"), "src/app");
+        assert_eq!(folder_include(""), "");
+        assert_eq!(folder_include("app/[slug]"), "app/[[]slug[]]/**");
+        assert_eq!(folder_include("[...id]"), "[[]...id[]]/**");
+        assert_eq!(folder_include("a,b/{x}*?"), "a[,]b/[{]x[}][*][?]/**");
+        assert_eq!(folder_include("!x"), "\\!x/**");
+        assert_eq!(folder_include("#x"), "\\#x/**");
     }
 
     #[test]

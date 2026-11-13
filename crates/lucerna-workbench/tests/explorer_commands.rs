@@ -404,3 +404,56 @@ fn find_in_folder_searches_only_that_folder(cx: &mut TestAppContext) {
     });
     assert_eq!(files, vec![PathBuf::from("src/main.rs")]);
 }
+
+/// Runs Find in Folder on `folder` (root-relative), searches `main` and
+/// returns the files found.
+fn find_in(wb: &Entity<Workbench>, folder: &str, cx: &mut VisualTestContext) -> Vec<PathBuf> {
+    let args = json!({ "path": folder });
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command("filesExplorer.findInFolder", Some(&args), window, cx)
+        })
+    });
+    draw(cx);
+    cx.simulate_input("main");
+    cx.executor().advance_clock(Duration::from_millis(150));
+    draw(cx);
+    cx.update(|_, cx| {
+        let search = wb.read(cx).search_view().read(cx);
+        let mut files: Vec<PathBuf> = search
+            .results(cx)
+            .files()
+            .iter()
+            .map(|f| f.path.to_path_buf())
+            .collect();
+        files.sort();
+        files
+    })
+}
+
+/// Glob characters and commas in a folder name are escaped: `[slug]`
+/// is that folder, not a class matching `s`, `l`, `u` or `g`.
+#[gpui::test]
+fn find_in_folder_escapes_glob_characters(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = tempfile::tempdir().unwrap();
+    for file in [
+        "app/[slug]/page.rs",
+        "app/s/other.rs",
+        "a,b/x.rs",
+        "a/y.rs",
+        "b/z.rs",
+        "{x}/w.rs",
+    ] {
+        let path = dir.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "fn main() {}\n").unwrap();
+    }
+    let (wb, cx) = open(dir.path(), cx);
+    assert_eq!(
+        find_in(&wb, "app/[slug]", cx),
+        [PathBuf::from("app/[slug]/page.rs")]
+    );
+    assert_eq!(find_in(&wb, "a,b", cx), [PathBuf::from("a,b/x.rs")]);
+    assert_eq!(find_in(&wb, "{x}", cx), [PathBuf::from("{x}/w.rs")]);
+}
