@@ -255,8 +255,10 @@ impl Vim {
         // A command finished back in Normal mode without entering Insert:
         // a `.` replay that would have typed failed (`ci(` with no pair),
         // so its typing must not reach a later Insert session. The keys
-        // that rebuild a Visual shape leave vim in Visual and keep it.
-        if self.mode == Mode::Normal {
+        // that rebuild a Visual shape leave vim in Visual and keep it, and
+        // a count or `"x` key (which leaves them pending anyway) is not a
+        // finished command.
+        if self.mode == Mode::Normal && !count_key && !register_key {
             self.replay_typed = None;
         }
         let edited = actions.iter().any(|a| matches!(a, Action::Edit(_)));

@@ -265,6 +265,13 @@ mod tests {
     }
 
     #[test]
+    fn counted_and_register_insert_changes_repeat_twice() {
+        assert_edit("|a b c d e f", "2cwX<Esc>w.w.", "X X |X");
+        assert_edit("|a b c", "\"acwY<Esc>w.w.", "Y Y |Y");
+        assert_edit("|a b c", "\"a2cwY<Esc>w.", "Y |Y");
+    }
+
+    #[test]
     fn repeat_change_and_operators() {
         assert_edit("|one two three", "cwX<Esc>w.", "X |X three");
         assert_edit("|abc abc", "x.", "|c abc");
