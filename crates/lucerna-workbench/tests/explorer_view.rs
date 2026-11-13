@@ -549,3 +549,203 @@ fn single_file_root_is_the_file(cx: &mut TestAppContext) {
     assert!(!key(&wb, "explorerResourceIsFolder", cx));
     assert!(!key(&wb, "explorerResourceIsRoot", cx));
 }
+
+fn right_click_at(position: Point<Pixels>, cx: &mut VisualTestContext) {
+    cx.simulate_event(MouseDownEvent {
+        position,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Right,
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        position,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Right,
+        click_count: 1,
+    });
+    draw(cx);
+}
+
+fn right_click(selector: &'static str, cx: &mut VisualTestContext) {
+    let position = center(selector, cx);
+    right_click_at(position, cx);
+}
+
+fn menu_commands(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<String> {
+    cx.update(|_, cx| {
+        let explorer = wb.read(cx).explorer().read(cx);
+        let Some(menu) = explorer.context_menu() else {
+            return Vec::new();
+        };
+        menu.read(cx)
+            .items()
+            .iter()
+            .filter_map(|item| match item {
+                ui::MenuItem::Entry { command, .. } => Some(command.to_string()),
+                ui::MenuItem::Separator => None,
+            })
+            .collect()
+    })
+}
+
+const FILE_MENU: [&str; 5] = [
+    "explorer.openToSide",
+    "revealFileInOS",
+    "openInTerminal",
+    "copyFilePath",
+    "copyRelativeFilePath",
+];
+const FOLDER_MENU: [&str; 5] = [
+    "revealFileInOS",
+    "openInTerminal",
+    "filesExplorer.findInFolder",
+    "copyFilePath",
+    "copyRelativeFilePath",
+];
+
+#[gpui::test]
+fn right_click_file_shows_file_menu(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-a.rs", cx);
+    assert_eq!(selection(&wb, cx), Selection::Path(p("a.rs")));
+    assert_eq!(menu_commands(&wb, cx), FILE_MENU);
+}
+
+#[gpui::test]
+fn right_click_folder_shows_folder_menu(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-src", cx);
+    assert_eq!(selection(&wb, cx), Selection::Path(p("src")));
+    assert_eq!(menu_commands(&wb, cx), FOLDER_MENU);
+}
+
+#[gpui::test]
+fn right_click_root_row_is_root_menu(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-root", cx);
+    assert_eq!(selection(&wb, cx), Selection::Root);
+    assert_eq!(menu_commands(&wb, cx), FOLDER_MENU);
+}
+
+#[gpui::test]
+fn right_click_empty_space_is_root_menu(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-a.rs", cx);
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    right_click_at(Point::new(list.center().x, list.bottom() - px(10.)), cx);
+    assert_eq!(selection(&wb, cx), Selection::Root);
+    assert_eq!(menu_commands(&wb, cx), FOLDER_MENU);
+}
+
+#[gpui::test]
+fn menu_row_gets_outline(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    assert!(cx.debug_bounds("explorer-row-outline-a.rs").is_none());
+    right_click("explorer-row-a.rs", cx);
+    assert!(cx.debug_bounds("explorer-row-outline-a.rs").is_some());
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(menu_commands(&wb, cx).is_empty());
+    assert!(cx.debug_bounds("explorer-row-outline-a.rs").is_none());
+}
+
+#[gpui::test]
+fn explorer_keys_off_while_menu_open(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-a.rs", cx);
+    assert!(!key(&wb, "filesExplorerFocus", cx));
+    assert!(key(&wb, "contextMenuVisible", cx));
+}
+
+#[gpui::test]
+fn right_click_elsewhere_replaces_menu(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-a.rs", cx);
+    right_click("explorer-row-b.rs", cx);
+    assert_eq!(selection(&wb, cx), Selection::Path(p("b.rs")));
+    assert!(cx.debug_bounds("context-menu").is_some());
+    assert!(cx.debug_bounds("explorer-row-outline-a.rs").is_none());
+    assert!(cx.debug_bounds("explorer-row-outline-b.rs").is_some());
+}
+
+#[gpui::test]
+fn shift_f10_opens_menu_below_selected_row(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-a.rs", cx);
+    // Opening the file leaves focus outside the sidebar; put it back.
+    cx.update(|w, cx| wb.update(cx, |wb, cx| wb.focus_sidebar(w, cx)));
+    draw(cx);
+    cx.simulate_keystrokes("shift-f10");
+    draw(cx);
+    assert_eq!(menu_commands(&wb, cx), FILE_MENU);
+    let row = cx.debug_bounds("explorer-row-a.rs").unwrap();
+    let menu = cx.debug_bounds("context-menu").unwrap();
+    assert!(menu.top() >= row.bottom(), "{menu:?} vs {row:?}");
+}
+
+#[gpui::test]
+fn menu_stays_inside_window(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (_wb, cx) = open(dir.path(), cx);
+    cx.simulate_resize(gpui::size(px(400.), px(300.)));
+    draw(cx);
+    // The bottom right corner of the sidebar's list, as near to the window
+    // corner as the Explorer reaches.
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    right_click_at(
+        Point::new(list.right() - px(1.), list.bottom() - px(1.)),
+        cx,
+    );
+    let menu = cx.debug_bounds("context-menu").expect("menu is drawn");
+    assert!(menu.left() >= px(8.) && menu.top() >= px(8.), "{menu:?}");
+    assert!(
+        menu.right() <= px(392.) && menu.bottom() <= px(292.),
+        "{menu:?}"
+    );
+}
+
+#[gpui::test]
+fn single_file_menu_is_read_only(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Downloads");
+    std::fs::create_dir(&root).unwrap();
+    let file = root.join("notes.md");
+    std::fs::write(&file, "hi\n").unwrap();
+    let (wb, cx) = {
+        let file = file.clone();
+        cx.add_window_view(move |window, cx| Workbench::single_file(root, &file, None, window, cx))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| wb.worktree().snapshot().scan_complete()) {
+        assert!(Instant::now() < deadline, "worktree scan did not finish");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    draw(cx);
+    right_click("explorer-row-notes.md", cx);
+    assert_eq!(menu_commands(&wb, cx), FILE_MENU);
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    right_click_at(Point::new(list.center().x, list.bottom() - px(10.)), cx);
+    assert_eq!(menu_commands(&wb, cx), FILE_MENU);
+    assert_eq!(selection(&wb, cx), Selection::Path(p("notes.md")));
+}

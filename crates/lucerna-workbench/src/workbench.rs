@@ -446,11 +446,13 @@ impl Workbench {
                 search_view.update(cx, |view, cx| view.run_search(cx));
             }
         }
+        let sidebar_focus = cx.focus_handle();
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let lone = single_file_path.is_some();
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
-            cx.new(|cx| ExplorerView::new(root, lone, snapshot, workbench, &groups, cx))
+            let focus = sidebar_focus.clone();
+            cx.new(|cx| ExplorerView::new(root, lone, snapshot, workbench, &groups, focus, cx))
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
@@ -554,7 +556,7 @@ impl Workbench {
             _subscriptions: subscriptions,
             commands: Rc::new(commands),
             focus,
-            sidebar_focus: cx.focus_handle(),
+            sidebar_focus,
             editor_focus,
             active_view: None,
             sidebar_visible: restored.as_ref().is_none_or(|s| s.sidebar_visible),
@@ -1894,6 +1896,15 @@ fn register_shell_commands(commands: &mut CommandRegistry) {
         "workbench.view.explorer",
         "View: Show Explorer",
         |wb, _, window, cx| wb.show_sidebar_view(SidebarView::Explorer, window, cx),
+    );
+    commands.register(
+        "filesExplorer.openContextMenu",
+        "Explorer: Open Context Menu",
+        |wb, _, window, cx| {
+            wb.explorer.clone().update(cx, |explorer, cx| {
+                explorer.open_context_menu(None, window, cx)
+            })
+        },
     );
 }
 

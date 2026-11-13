@@ -1,5 +1,6 @@
 //! The Explorer: the project's file tree in the sidebar.
 
+mod menu;
 mod model;
 mod view;
 

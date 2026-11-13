@@ -176,6 +176,7 @@ mod tests {
             (event("j", None, cmd_shift()), "shift+cmd+j"),
             (event("f4", None, Modifiers::none()), "f4"),
             (event("f4", None, Modifiers::shift()), "shift+f4"),
+            (event("f10", None, Modifiers::shift()), "shift+f10"),
             (event("f12", None, Modifiers::none()), "f12"),
             (event("f12", None, alt()), "alt+f12"),
             (event("f12", None, cmd()), "cmd+f12"),
