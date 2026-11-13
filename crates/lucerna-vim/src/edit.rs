@@ -115,9 +115,13 @@ pub(crate) fn apply_operator(
             (actions, cursor, Mode::Insert)
         }
         Operator::Indent | Operator::Outdent => {
-            let (plan, cursor) = shift_rows(ctx, first, last, op == Operator::Outdent, 1);
-            edit(&mut actions, plan);
-            (actions, cursor, Mode::Normal)
+            match shift_rows(ctx, first, last, op == Operator::Outdent, 1) {
+                Some((plan, cursor)) => {
+                    edit(&mut actions, plan);
+                    (actions, cursor, Mode::Normal)
+                }
+                None => (actions, start, Mode::Normal),
+            }
         }
         Operator::Lower | Operator::Upper | Operator::ToggleCase => {
             let case = match op {
@@ -162,13 +166,17 @@ pub(crate) fn write(
 /// row), computed in one pass so a huge count stays linear. The cursor
 /// goes to the first non-blank of the first row (onto the last char of
 /// indent when the row is blank).
+///
+/// `None`, with no edit, when a row's new indent would pass
+/// [`MAX_INDENT_COLUMNS`] or all of them [`MAX_EDIT_BYTES`]
+/// (`ggVG99999>`).
 pub(crate) fn shift_rows(
     ctx: Ctx,
     first: u32,
     last: u32,
     outdent: bool,
     levels: u32,
-) -> (EditPlan, Point) {
+) -> Option<(EditPlan, Point)> {
     let snap = ctx.snapshot;
     let ts = ctx.config.tab_size.max(1);
     let levels = levels.max(1);
@@ -181,6 +189,7 @@ pub(crate) fn shift_rows(
     };
     let mut edits = Vec::new();
     let mut first_lead = None;
+    let mut total = 0usize;
     for row in first..=last {
         let text = line(snap, row);
         let lead = &text[..leading_whitespace(&text) as usize];
@@ -198,6 +207,10 @@ pub(crate) fn shift_rows(
         } else {
             (vis / ts).saturating_add(levels).saturating_mul(ts)
         };
+        total = total.saturating_add(cols as usize);
+        if cols > MAX_INDENT_COLUMNS || total > MAX_EDIT_BYTES {
+            return None;
+        }
         let new = if outdent && vis == 0 {
             lead.to_string()
         } else {
@@ -219,7 +232,20 @@ pub(crate) fn shift_rows(
     };
     let at = row_start(snap, first);
     let plan = replace_ranges(ctx, edits, at + column as usize, EditKind::Other);
-    (plan, Point { row: first, column })
+    Some((plan, Point { row: first, column }))
+}
+
+/// The most bytes one command may insert; a count past it (`99999p` of a
+/// big register) does nothing rather than run out of memory.
+const MAX_EDIT_BYTES: usize = 64 << 20;
+
+/// The widest indent `>` may give a row, in columns.
+const MAX_INDENT_COLUMNS: u32 = 10_000;
+
+/// `n` copies of `text` (plus the line break a linewise put may add to
+/// each) would pass [`MAX_EDIT_BYTES`].
+fn too_many_copies(text: &str, n: usize) -> bool {
+    (text.len() + 1).saturating_mul(n) > MAX_EDIT_BYTES
 }
 
 /// What deleting rows `first..=last` removes, and where the cursor goes
@@ -455,10 +481,10 @@ pub(crate) fn put(
     how: Put,
 ) -> Option<(EditPlan, Point)> {
     let snap = ctx.snapshot;
-    if content.text.is_empty() {
+    let n = n.max(1) as usize;
+    if content.text.is_empty() || too_many_copies(&content.text, n) {
         return None;
     }
-    let n = n.max(1) as usize;
     let (offset, text, cursor_in) = match content.kind {
         RegKind::Charwise => {
             let here = snap.point_to_offset(at);
@@ -527,10 +553,10 @@ pub(crate) fn put_over(
     n: u32,
 ) -> Option<(EditPlan, Point)> {
     let snap = ctx.snapshot;
-    if content.text.is_empty() {
+    let n = n.max(1) as usize;
+    if content.text.is_empty() || too_many_copies(&content.text, n) {
         return None;
     }
-    let n = n.max(1) as usize;
     let lines = || {
         let mut body = content.text.clone();
         if !body.ends_with('\n') {
@@ -754,6 +780,40 @@ mod tests {
             "ddj2gp",
             "one\ntwo\nabc\nabc\n|three",
         );
+    }
+
+    fn no_edit(start: &str, keys: &str) {
+        let (end, actions) = run_edit(start, keys);
+        assert_eq!(end.replace('|', ""), start.replace('|', ""), "{keys}");
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Edit(_))),
+            "{keys} edited"
+        );
+    }
+
+    #[test]
+    fn put_past_the_size_cap_does_nothing() {
+        // 1001 bytes x 99_999 copies is over 64 MiB.
+        let start = format!("|{}\nb", "x".repeat(1000));
+        no_edit(&start, "yy99999p");
+        no_edit(&start, "y$99999P");
+        no_edit(&start, "yyjV99999p");
+        // Under the cap the copies go in.
+        let (end, _) = run_edit(&start, "yy9p");
+        assert_eq!(end.matches('x').count(), 10 * 1000);
+    }
+
+    #[test]
+    fn shift_past_the_size_cap_does_nothing() {
+        let start = format!("|{}", "a\n".repeat(20));
+        // 99_999 levels is over 10_000 columns on one row.
+        no_edit(&start, "ggVG99999>");
+        // 2_500 levels of 4 columns over 7_000 rows is over 64 MiB.
+        let start = format!("|{}", "a\n".repeat(7000));
+        no_edit(&start, "ggVG2500>");
+        // Under the caps it shifts.
+        let (end, _) = run_edit("|a\nb", "ggVG3>");
+        assert_eq!(end, "            |a\n            b");
     }
 
     #[test]
@@ -1019,8 +1079,10 @@ mod tests {
 
     #[test]
     fn visual_shift_with_a_huge_count_is_direct() {
-        let (text, _) = run_edit("|a\nb\nc", "Vjj99999>");
-        let width = 99_999 * 4;
+        // Past 10_000 columns the shift does nothing.
+        no_edit("|a\nb\nc", "Vjj99999>");
+        let (text, _) = run_edit("|a\nb\nc", "Vjj2500>");
+        let width = 2_500 * 4;
         for (row, line) in text.replace('|', "").lines().enumerate() {
             assert_eq!(line.len(), width + 1, "row {row}");
             assert!(line[..width].bytes().all(|b| b == b' '));

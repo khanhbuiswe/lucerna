@@ -345,19 +345,18 @@ impl Vim {
     /// or `O`), then Escape again.
     fn escape_insert(&mut self, view: &dyn ViewInfo) -> Outcome {
         let typed = self.recording.as_ref().map_or(&[][..], |r| &r.typed[..]);
-        match self.insert_count.take() {
+        let steps = match self.insert_count.take() {
             Some(n) if self.insert_lines || !typed.is_empty() => {
-                let mut steps = Vec::new();
-                for _ in 1..n {
-                    if self.insert_lines {
-                        steps.push(ReplayStep::Type(Typed::Newline));
-                    }
-                    steps.extend(typed.iter().cloned().map(ReplayStep::Type));
-                }
+                insert_copies(typed, self.insert_lines, n as usize - 1)
+            }
+            _ => None,
+        };
+        match steps {
+            Some(mut steps) => {
                 steps.push(ReplayStep::Key(Key::Escape));
                 Outcome::Replay(steps)
             }
-            _ => self.exit_insert(view),
+            None => self.exit_insert(view),
         }
     }
 
@@ -1653,7 +1652,7 @@ impl Vim {
         let (first, last) = (start.row, end.row);
         let out = match c {
             '>' | '<' => self.edit_with(view, |ctx| {
-                Some(crate::edit::shift_rows(ctx, first, last, c == '<', n))
+                crate::edit::shift_rows(ctx, first, last, c == '<', n)
             }),
             'r' => {
                 let Some(ch) = arg else {
@@ -2154,6 +2153,89 @@ fn clamp_point(snapshot: &BufferSnapshot, p: Point) -> Point {
         row,
         column: column as u32,
     }
+}
+
+/// The most bytes the copies of a counted insert may type; past it the
+/// copies are dropped (`99999ifoo<Esc>` types `foo` once).
+const MAX_INSERT_COPY_BYTES: usize = 16 << 20;
+
+/// The most line breaks the copies of a counted insert type through Enter
+/// (one edit each, keeping the indentation); past it the copies are one
+/// literal insert.
+const MAX_INSERT_COPY_BREAKS: usize = 10_000;
+
+/// The typing steps of `copies` more copies of the Insert session `typed`
+/// (each after a line break when `lines`, for `o` and `O`), or `None` when
+/// they would type more than [`MAX_INSERT_COPY_BYTES`].
+///
+/// A session of plain text and Enter (the usual one) is typed as few
+/// steps as possible, so the cost does not grow with the square of the
+/// count: adjacent text joins into one step, typed literally (a step of
+/// more than one char gets no auto-close, as in Vim), and each Enter stays
+/// its own step to keep the indentation, or, past
+/// [`MAX_INSERT_COPY_BREAKS`] of them, becomes a plain `\n` in one literal
+/// step. A session with Backspace or Tab replays step by step.
+fn insert_copies(typed: &[Typed], lines: bool, copies: usize) -> Option<Vec<ReplayStep>> {
+    let copy_bytes = usize::from(lines)
+        + typed
+            .iter()
+            .map(|t| match t {
+                Typed::Text(text) => text.len(),
+                Typed::Newline | Typed::Tab => 1,
+                Typed::DeleteLeft => 0,
+            })
+            .sum::<usize>();
+    if copy_bytes.saturating_mul(copies) > MAX_INSERT_COPY_BYTES {
+        return None;
+    }
+    let plain = typed
+        .iter()
+        .all(|t| matches!(t, Typed::Text(_) | Typed::Newline));
+    if !plain {
+        let mut steps = Vec::new();
+        for _ in 0..copies {
+            if lines {
+                steps.push(ReplayStep::Type(Typed::Newline));
+            }
+            steps.extend(typed.iter().cloned().map(ReplayStep::Type));
+        }
+        return Some(steps);
+    }
+    let breaks = usize::from(lines) + typed.iter().filter(|t| matches!(t, Typed::Newline)).count();
+    let mut copy = String::new();
+    if lines {
+        copy.push('\n');
+    }
+    for t in typed {
+        match t {
+            Typed::Text(text) => copy.push_str(text),
+            _ => copy.push('\n'),
+        }
+    }
+    if breaks.saturating_mul(copies) > MAX_INSERT_COPY_BREAKS || breaks == 0 {
+        return Some(vec![ReplayStep::Type(Typed::Text(copy.repeat(copies)))]);
+    }
+    // Text runs between the Enters, joined across copies.
+    let mut steps = Vec::new();
+    let mut run = String::new();
+    for _ in 0..copies {
+        for part in copy.split_inclusive('\n') {
+            match part.strip_suffix('\n') {
+                Some(text) => {
+                    run.push_str(text);
+                    if !run.is_empty() {
+                        steps.push(ReplayStep::Type(Typed::Text(std::mem::take(&mut run))));
+                    }
+                    steps.push(ReplayStep::Type(Typed::Newline));
+                }
+                None => run.push_str(part),
+            }
+        }
+    }
+    if !run.is_empty() {
+        steps.push(ReplayStep::Type(Typed::Text(run)));
+    }
+    Some(steps)
 }
 
 #[cfg(test)]

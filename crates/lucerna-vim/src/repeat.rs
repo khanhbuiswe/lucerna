@@ -607,4 +607,85 @@ mod tests {
         // The count does not leak into the next Insert session.
         assert_edit("|", "3ia<Esc>ib<Esc>", "aa|ba");
     }
+
+    /// The steps of the Escape that ends `count` + `keys` (an insert
+    /// command) after typing `typed`.
+    fn escape_steps(start: &str, keys: &str, typed: &[Typed]) -> Outcome {
+        let view = TestView::new(start);
+        let mut vim = Vim::new(view.cursor);
+        let mut g = VimGlobals::default();
+        let settings = Settings::default();
+        for k in parse_keys(keys) {
+            vim.feed(k, &view, &mut g, &settings);
+        }
+        for t in typed {
+            vim.record_typed(t.clone());
+        }
+        vim.feed(Key::Escape, &view, &mut g, &settings)
+    }
+
+    #[test]
+    fn counted_insert_types_its_copies_as_one_step() {
+        let out = escape_steps(
+            "|",
+            "5000i",
+            &[Typed::Text("fo".into()), Typed::Text("o".into())],
+        );
+        assert_eq!(
+            out,
+            Outcome::Replay(vec![
+                ReplayStep::Type(Typed::Text("foo".repeat(4999))),
+                ReplayStep::Key(Key::Escape),
+            ])
+        );
+        let (text, _) = run_edit("|", "5000ifoo<Esc>");
+        assert_eq!(text.len(), 3 * 5000 + 1);
+        let (text, _) = run_edit("|", "5000ifoo<Esc>.");
+        assert_eq!(text.len(), 3 * 10_000 + 1);
+    }
+
+    #[test]
+    fn counted_insert_with_line_breaks_keeps_enter_and_joins_the_text() {
+        let typed = [
+            Typed::Text("a".into()),
+            Typed::Newline,
+            Typed::Text("b".into()),
+        ];
+        let out = escape_steps("|", "3i", &typed);
+        assert_eq!(
+            out,
+            Outcome::Replay(vec![
+                ReplayStep::Type(Typed::Text("a".into())),
+                ReplayStep::Type(Typed::Newline),
+                ReplayStep::Type(Typed::Text("ba".into())),
+                ReplayStep::Type(Typed::Newline),
+                ReplayStep::Type(Typed::Text("b".into())),
+                ReplayStep::Key(Key::Escape),
+            ])
+        );
+        // Enter keeps the indentation of each copy.
+        assert_edit("  |a", "3ofoo<Esc>", "  a\n  foo\n  foo\n  fo|o");
+    }
+
+    #[test]
+    fn counted_insert_with_many_line_breaks_is_one_literal_step() {
+        let out = escape_steps("|a", "20000o", &[Typed::Text("foo".into())]);
+        assert_eq!(
+            out,
+            Outcome::Replay(vec![
+                ReplayStep::Type(Typed::Text("\nfoo".repeat(19_999))),
+                ReplayStep::Key(Key::Escape),
+            ])
+        );
+    }
+
+    #[test]
+    fn counted_insert_past_the_size_cap_types_no_copies() {
+        // 200 bytes x 99_998 copies (the count's maximum) is over 16 MiB.
+        let text = "x".repeat(200);
+        let out = escape_steps("|", "99999i", &[Typed::Text(text.clone())]);
+        assert!(!matches!(out, Outcome::Replay(_)), "{out:?}");
+        let (end, _) = run_edit("|", &format!("99999i{text}<Esc>"));
+        assert_eq!(end.len(), 200 + 1);
+    }
 }
