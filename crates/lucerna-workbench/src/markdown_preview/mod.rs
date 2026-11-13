@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, IntoElement, ListAlignment, ListOffset,
-    ListState, ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, div, list,
-    prelude::*, px,
+    ListState, ParentElement, Pixels, Render, SharedString, Styled, Task, WeakEntity, Window, div,
+    list, prelude::*, px,
 };
 use lucerna_text::{BufferSnapshot, LoadError};
 
@@ -97,6 +97,10 @@ pub struct MarkdownPreview {
     /// blocks shown were parsed: where the text at the top now is, which
     /// the next blocks show at the top.
     anchor: Option<f32>,
+    /// The height the top block had before the blocks were replaced:
+    /// stands in for the new block's until it is measured, so the first
+    /// frame after a reparse already shows the old offset into the block.
+    stand_in_height: Option<Pixels>,
 }
 
 impl MarkdownPreview {
@@ -160,6 +164,7 @@ impl MarkdownPreview {
             list_state,
             pending_line: None,
             anchor: None,
+            stand_in_height: None,
         };
         preview.documents_changed(cx);
         preview
@@ -194,6 +199,7 @@ impl MarkdownPreview {
         self.state = None;
         self.pending_line = None;
         self.anchor = None;
+        self.stand_in_height = None;
         self.list_state.reset(0);
         self.documents_changed(cx);
     }
@@ -260,17 +266,29 @@ impl MarkdownPreview {
     /// line waits and is shown on a later frame.
     pub fn scroll_to_line(&mut self, line: f32, cx: &mut Context<Self>) {
         self.anchor = None;
+        self.stand_in_height = None;
         self.show_line(line, cx);
     }
 
     /// Scrolls `line` to the top, now or once it can be placed.
     fn show_line(&mut self, line: f32, cx: &mut Context<Self>) {
-        self.pending_line = (!self.apply_line(line)).then_some(line);
+        self.place_line(line);
         cx.notify();
     }
 
+    /// Scrolls `line` to the top, or keeps it waiting for a later frame.
+    fn place_line(&mut self, line: f32) {
+        if self.apply_line(line) {
+            self.pending_line = None;
+            self.stand_in_height = None;
+        } else {
+            self.pending_line = Some(line);
+        }
+    }
+
     /// Scrolls `line` to the top; `false` when it could not be placed
-    /// exactly yet (no blocks, or its block not measured).
+    /// exactly yet (no blocks, or its block not measured: then the stand-in
+    /// height, if any, places it for now).
     fn apply_line(&self, line: f32) -> bool {
         let Some(blocks) = &self.blocks else {
             return false;
@@ -283,14 +301,18 @@ impl MarkdownPreview {
         if fraction == 0. {
             return true;
         }
-        let Some(bounds) = self.list_state.bounds_for_item(item_ix) else {
-            return false;
+        let (height, measured) = match self.list_state.bounds_for_item(item_ix) {
+            Some(bounds) => (bounds.size.height, true),
+            None => match self.stand_in_height {
+                Some(height) => (height, false),
+                None => return false,
+            },
         };
         self.list_state.scroll_to(ListOffset {
             item_ix,
-            offset_in_item: bounds.size.height * fraction,
+            offset_in_item: height * fraction,
         });
-        true
+        measured
     }
 
     /// The user scrolled: a line still waiting gives way, and the links
@@ -298,6 +320,7 @@ impl MarkdownPreview {
     fn user_scrolled(&mut self, cx: &mut Context<Self>) {
         self.pending_line = None;
         self.anchor = None;
+        self.stand_in_height = None;
         cx.emit(MarkdownPreviewEvent::Scrolled);
     }
 
@@ -383,6 +406,12 @@ impl MarkdownPreview {
             return;
         }
         let top = self.anchor.unwrap_or_else(|| self.top_line());
+        // `reset` forgets every height: keep the top block's for the
+        // first frame.
+        let top_ix = self.list_state.logical_scroll_top().item_ix;
+        if let Some(bounds) = self.list_state.bounds_for_item(top_ix) {
+            self.stand_in_height = Some(bounds.size.height);
+        }
         // Edits made since this text was read move the anchor on.
         if self.documents.read(cx).revision_of(&self.path) == Some(revision) {
             self.anchor = None;
@@ -499,11 +528,11 @@ impl Render for MarkdownPreview {
         };
         // The line waiting for its block's height: the last frame
         // measured the block (now at the top) unless it is still loading.
-        if let Some(line) = self.pending_line.take()
-            && !self.apply_line(line)
-        {
-            self.pending_line = Some(line);
-            window.request_animation_frame();
+        if let Some(line) = self.pending_line {
+            self.place_line(line);
+            if self.pending_line.is_some() {
+                window.request_animation_frame();
+            }
         }
         let style = Self::style(cx);
         let on_link = self.link_handler();

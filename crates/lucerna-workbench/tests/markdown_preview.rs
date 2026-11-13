@@ -446,6 +446,37 @@ fn reparse_keeps_offset_in_tall_block(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn reparse_first_frame_keeps_offset(cx: &mut TestAppContext) {
+    init(cx);
+    let body: String = (0..40).map(|i| format!("line {i}\n")).collect();
+    let rest: String = (0..60).map(|i| format!("para {i}\n\n")).collect();
+    let text = format!("# a\n\n```\n{body}```\n\n{rest}");
+    let (dir, wb, cx) = open(&text, cx);
+    let preview = open_preview(&wb, &dir, cx);
+    preview.update(cx, |p, cx| p.scroll_to_line(23., cx));
+    draw(cx);
+    let before = preview.read_with(cx, |p, _| p.list_state().logical_scroll_top());
+    assert!(before.offset_in_item > gpui::px(0.));
+    // An edit below the view: the block heights do not change.
+    rewrite(&wb, &dir, &format!("{text}\nmore\n"), cx);
+    cx.executor().advance_clock(REPARSE_DELAY);
+    cx.run_until_parked();
+    // The new blocks are shown and not laid out yet: the first frame lays
+    // them out from this scroll position, so it must already be the old
+    // one (the block is not measured, its old height stands in).
+    let drift = |at: gpui::ListOffset| {
+        assert_eq!(at.item_ix, before.item_ix);
+        (f32::from(at.offset_in_item) - f32::from(before.offset_in_item)).abs()
+    };
+    let shown = preview.read_with(cx, |p, _| p.list_state().logical_scroll_top());
+    assert!(drift(shown) < 0.5, "{before:?} → {shown:?}");
+    // The first frame's render keeps it while the block is measured.
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let drawn = preview.read_with(cx, |p, _| p.list_state().logical_scroll_top());
+    assert!(drift(drawn) < 0.5, "{before:?} → {drawn:?}");
+}
+
+#[gpui::test]
 fn revision_reset_after_discard_still_updates(cx: &mut TestAppContext) {
     init(cx);
     let (dir, wb, cx) = open("# v0\n", cx);
