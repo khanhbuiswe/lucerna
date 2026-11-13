@@ -9,7 +9,10 @@
 
 use std::path::{Path, PathBuf};
 
+use gpui::App;
 use url::Url;
+
+use crate::process::{self, SpawnRequest};
 
 /// What the current window shows, for [`route`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +29,11 @@ impl OpenWindow {
             root,
             single_file: None,
         }
+    }
+
+    /// The window's folder; a single file's parent.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
     }
 
     /// A window showing `file` alone.
@@ -76,19 +84,8 @@ pub fn route(path: &Path, window: Option<&OpenWindow>) -> Route {
 }
 
 /// Starts `luc <path>` in its own process, as typing it again would.
-pub(crate) fn spawn_process(path: &Path) {
-    let exe = match std::env::current_exe() {
-        Ok(exe) => exe,
-        Err(err) => {
-            tracing::error!(%err, "could not find the luc executable");
-            return;
-        }
-    };
-    match std::process::Command::new(exe).arg(path).spawn() {
-        Ok(mut child) => {
-            // Reap it when it exits, so it does not linger as a zombie.
-            std::thread::spawn(move || child.wait());
-        }
-        Err(err) => tracing::error!(%err, path = %path.display(), "could not start luc"),
+pub(crate) fn spawn_process(path: &Path, cx: &App) {
+    if let Err(err) = process::spawn(&SpawnRequest::Path(path.to_path_buf()), cx) {
+        tracing::error!(%err, path = %path.display(), "could not start luc");
     }
 }

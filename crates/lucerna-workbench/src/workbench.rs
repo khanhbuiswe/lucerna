@@ -38,6 +38,7 @@ use crate::lsp_health::LspHealthView;
 use crate::lsp_log::LspLogs;
 use crate::lsp_status::{self, LspStatusItem};
 use crate::nav_history::{NavEntry, NavHistory};
+use crate::open_commands::{self, ShownRecentPicker};
 use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
 use crate::references_view::{self, ReferencesView};
@@ -146,6 +147,8 @@ pub struct Workbench {
     /// `false` in single-file mode: the worktree neither scans nor
     /// watches, so every open file is followed by the open-file watcher.
     scanning: bool,
+    /// The file of single-file mode, absolute; `None` for a folder.
+    single_file: Option<PathBuf>,
     /// Follows open files the worktree does not; `None` on the test
     /// scheduler or when it could not start.
     open_file_watcher: Option<OpenFileWatcher>,
@@ -193,6 +196,10 @@ pub struct Workbench {
     nav_history: HashMap<GroupId, NavHistory>,
     /// The shown theme picker.
     pub(crate) theme_picker: Option<ShownThemePicker>,
+    /// The shown Open Recent picker.
+    pub(crate) recent_picker: Option<ShownRecentPicker>,
+    /// Loads the recent list for the Open Recent picker about to show.
+    pub(crate) recent_picker_loading: Option<Task<()>>,
     /// The shown locations picker (several definitions, references…).
     pub(crate) locations_picker: Option<ShownLocationsPicker>,
     /// Folder trust: the trust store's answer and the trust modal.
@@ -273,25 +280,7 @@ impl Workbench {
         let focus = cx.focus_handle();
         let editor_focus = cx.focus_handle();
         window.focus(&editor_focus, cx);
-        let mut commands = CommandRegistry::default();
-        register_shell_commands(&mut commands);
-        editor_groups::register_commands(&mut commands);
-        code_view::register_commands(&mut commands);
-        quick_open::register_commands(&mut commands);
-        find_widget::register_commands(&mut commands);
-        search_view::register_commands(&mut commands);
-        references_view::register_commands(&mut commands);
-        config_files::register_commands(&mut commands);
-        theme_picker::register_commands(&mut commands);
-        trust::register_commands(&mut commands);
-        lsp_status::register_commands(&mut commands);
-        diagnostics_status::register_commands(&mut commands);
-        crate::hover::register_commands(&mut commands);
-        crate::goto::register_commands(&mut commands);
-        crate::extensions::register_commands(&mut commands);
-        crate::symbols::register_commands(&mut commands);
-        crate::editing::register_commands(&mut commands);
-        crate::save::register_commands(&mut commands);
+        let commands = default_registry();
         let documents = cx.new(|_| Documents::new(root.clone()));
         let language_servers = {
             let root = root.clone();
@@ -418,6 +407,7 @@ impl Workbench {
         };
         let scan_started = std::time::Instant::now();
         let scanning = single_file.is_none();
+        let single_file_path = single_file.as_ref().map(|rel| root.join(rel));
         let worktree = match single_file {
             Some(file) => Worktree::without_scan(root.clone(), vec![file]),
             None => Worktree::start(root.clone(), scan_options.clone()),
@@ -546,6 +536,7 @@ impl Workbench {
             languages_generation: cx.global::<AppState>().languages_generation,
             _worktree_events: worktree_events,
             scanning,
+            single_file: single_file_path,
             open_file_watcher,
             watched_open_files: Vec::new(),
             _open_file_events: open_file_events,
@@ -593,6 +584,8 @@ impl Workbench {
             recent_files: RecentFiles::default(),
             nav_history: HashMap::new(),
             theme_picker: None,
+            recent_picker: None,
+            recent_picker_loading: None,
             locations_picker: None,
             trust,
             auto_save: Default::default(),
@@ -736,6 +729,14 @@ impl Workbench {
     /// The opened folder.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// What this window shows, which Open Recent leaves out: the folder,
+    /// and in single-file mode the file too.
+    pub fn opened_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.root.clone()];
+        paths.extend(self.single_file.clone());
+        paths
     }
 
     /// The opened folder's name, as the title bar shows it.
@@ -1084,6 +1085,12 @@ impl Workbench {
         &self.language_servers
     }
 
+    /// The IDs of the commands every workbench has
+    /// ([`default_registry`]), ordered by ID; no window needed.
+    pub fn command_ids() -> Vec<&'static str> {
+        default_registry().ids().collect()
+    }
+
     pub fn commands(&self) -> &CommandRegistry {
         &self.commands
     }
@@ -1344,14 +1351,16 @@ impl Workbench {
             "extensionsViewletFocus",
             self.extensions_focused(window, cx),
         );
-        // The theme and locations pickers are quick picks too: Escape
-        // closes them.
+        // The theme, locations and recent pickers are quick picks too:
+        // Escape closes them.
         flag(
             "inQuickOpen",
             self.quick_open.is_some()
                 || self.theme_picker.is_some()
-                || self.locations_picker.is_some(),
+                || self.locations_picker.is_some()
+                || self.recent_picker.is_some(),
         );
+        flag("inRecentPicker", self.recent_picker.is_some());
         // As of the last frame: GPUI knows key contexts only once drawn.
         flag(
             "textInputFocus",
@@ -1486,20 +1495,25 @@ impl Workbench {
     }
 
     /// Closes every modal overlay (Quick Open, the locations picker, the
-    /// theme picker, reverting its preview, and the trust modal). Each
-    /// `show_*` calls it first, so at most one is ever shown and one Esc
-    /// never has to close two.
+    /// theme picker, reverting its preview, the Open Recent picker and the
+    /// trust modal). Each `show_*` calls it first, so at most one is ever
+    /// shown and one Esc never has to close two.
     pub(crate) fn close_modal_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_quick_open(window, cx);
         self.close_locations_picker(window, cx);
         self.close_theme_picker(true, window, cx);
+        self.close_recent_picker(window, cx);
         self.close_trust_modal(window, cx);
     }
 
-    /// Whether Quick Open, the theme picker or the trust modal is shown: a
-    /// late go-to answer then does not open the locations picker over it.
+    /// Whether Quick Open, the theme picker, the Open Recent picker or the
+    /// trust modal is shown: a late go-to answer then does not open the
+    /// locations picker over it.
     pub(crate) fn other_modal_overlay_shown(&self) -> bool {
-        self.quick_open.is_some() || self.theme_picker.is_some() || self.trust_modal().is_some()
+        self.quick_open.is_some()
+            || self.theme_picker.is_some()
+            || self.recent_picker.is_some()
+            || self.trust_modal().is_some()
     }
 
     /// Focuses the active tab's code view, or the editor area when the
@@ -1781,16 +1795,18 @@ fn pump_open_file_changes(cx: &mut Context<Workbench>) -> (Option<OpenFileWatche
 /// ([`Workbench::confirm_quit`], one window after another). Quitting runs
 /// the `on_app_quit` hooks, which save the layout.
 pub(crate) fn quit(cx: &mut App) {
+    // Not `downcast`: a Welcome window that became a workbench keeps the
+    // handle type it opened with. Updating a window of another root fails.
     let windows: Vec<WindowHandle<Workbench>> = cx
         .windows()
         .into_iter()
-        .filter_map(|w| w.downcast::<Workbench>())
+        .map(|w| WindowHandle::new(w.window_id()))
         .collect();
     cx.spawn(async move |cx| {
         for handle in windows {
             let Ok(confirm) = handle.update(cx, |wb, window, cx| wb.confirm_quit(window, cx))
             else {
-                // The window closed meanwhile.
+                // The window closed meanwhile, or shows Welcome.
                 continue;
             };
             if !confirm.await {
@@ -1800,6 +1816,33 @@ pub(crate) fn quit(cx: &mut App) {
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+/// The commands every workbench registers, as [`Workbench::new`] builds
+/// them; the menu bar reads their IDs without a window.
+pub(crate) fn default_registry() -> CommandRegistry {
+    let mut commands = CommandRegistry::default();
+    register_shell_commands(&mut commands);
+    editor_groups::register_commands(&mut commands);
+    code_view::register_commands(&mut commands);
+    quick_open::register_commands(&mut commands);
+    find_widget::register_commands(&mut commands);
+    search_view::register_commands(&mut commands);
+    references_view::register_commands(&mut commands);
+    config_files::register_commands(&mut commands);
+    theme_picker::register_commands(&mut commands);
+    open_commands::register_commands(&mut commands);
+    trust::register_commands(&mut commands);
+    lsp_status::register_commands(&mut commands);
+    diagnostics_status::register_commands(&mut commands);
+    crate::hover::register_commands(&mut commands);
+    crate::goto::register_commands(&mut commands);
+    crate::extensions::register_commands(&mut commands);
+    crate::symbols::register_commands(&mut commands);
+    crate::editing::register_commands(&mut commands);
+    crate::save::register_commands(&mut commands);
+    crate::about::register_commands(&mut commands);
+    commands
 }
 
 fn register_shell_commands(commands: &mut CommandRegistry) {
@@ -1922,6 +1965,10 @@ impl Render for Workbench {
             )
             .children(
                 self.theme_picker()
+                    .map(|picker| popover_overlay(picker.clone())),
+            )
+            .children(
+                self.recent_picker()
                     .map(|picker| popover_overlay(picker.clone())),
             )
             .children(

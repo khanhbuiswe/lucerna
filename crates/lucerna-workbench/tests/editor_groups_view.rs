@@ -399,3 +399,60 @@ fn unfocused_group_active_tab_is_dimmed(cx: &mut TestAppContext) {
     assert_eq!(inactive, ui.text_muted);
     assert_eq!(unfocused2, unfocused);
 }
+
+#[gpui::test]
+fn empty_hint_lists_commands_with_their_keys(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_wb, cx) = open(cx);
+    draw(cx);
+    assert!(cx.debug_bounds("editor-empty-hint").is_some());
+    for selector in [
+        "editor-empty-hint-workbench.action.showCommands",
+        "editor-empty-hint-workbench.action.quickOpen",
+        "editor-empty-hint-workbench.action.findInFiles",
+        "editor-empty-hint-workbench.action.toggleSidebarVisibility",
+    ] {
+        assert!(cx.debug_bounds(selector).is_some(), "missing {selector}");
+    }
+    // `openRecent` has a row only when the keymap binds it.
+    let bound = cx.update(|_, cx| {
+        cx.global::<AppState>()
+            .keymap
+            .label_for("workbench.action.openRecent")
+            .is_some()
+    });
+    assert_eq!(
+        cx.debug_bounds("editor-empty-hint-workbench.action.openRecent")
+            .is_some(),
+        bound
+    );
+}
+
+#[gpui::test]
+fn empty_hint_skips_unbound_commands(cx: &mut TestAppContext) {
+    init(cx, None);
+    let keymap = Keymap::load(
+        Keymap::default_bindings(),
+        Some(r#"[{ "key": "cmd+p", "command": "-workbench.action.quickOpen" }]"#),
+    )
+    .0;
+    cx.update(|cx| cx.global_mut::<AppState>().keymap = keymap);
+    let (_wb, cx) = open(cx);
+    draw(cx);
+    assert!(
+        cx.debug_bounds("editor-empty-hint-workbench.action.quickOpen")
+            .is_none()
+    );
+    assert!(
+        cx.debug_bounds("editor-empty-hint-workbench.action.showCommands")
+            .is_some()
+    );
+}
+
+#[gpui::test]
+fn tips_disabled_hides_the_watermark(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"workbench.tips.enabled": false}"#));
+    let (_wb, cx) = open(cx);
+    draw(cx);
+    assert!(cx.debug_bounds("editor-empty-hint").is_none());
+}

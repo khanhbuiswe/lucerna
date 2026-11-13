@@ -193,6 +193,11 @@ mod tests {
             (event(">", None, cmd()), "shift+cmd+."),
             (event("-", None, ctrl()), "ctrl+-"),
             (event("_", None, ctrl()), "ctrl+shift+-"),
+            // Open Recent, Open…, and the second stroke of `cmd+k f`.
+            (event("r", None, ctrl()), "ctrl+r"),
+            (event("r", None, ctrl_shift()), "ctrl+shift+r"),
+            (event("o", None, cmd()), "cmd+o"),
+            (event("f", Some("f"), Modifiers::none()), "f"),
         ];
         // Cursor movement.
         for (key, plain, shifted) in [

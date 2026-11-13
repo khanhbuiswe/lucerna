@@ -1,6 +1,10 @@
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
+use gpui::TestAppContext;
 use lucerna_workbench::open_requests::{OpenWindow, Route, file_paths, route};
+use lucerna_workbench::process::{SpawnRequest, Spawner, spawn};
 
 #[test]
 fn file_paths_keeps_file_urls_and_decodes_them() {
@@ -54,4 +58,19 @@ fn route_into_a_single_file_window_matches_only_that_file() {
         route(Path::new("/home/me/other.txt"), Some(&window)),
         Route::NewProcess
     );
+}
+
+#[gpui::test]
+fn spawner_global_receives_requests(cx: &mut TestAppContext) {
+    let requests: Rc<RefCell<Vec<SpawnRequest>>> = Rc::default();
+    let sink = requests.clone();
+    let result = cx.update(|cx| {
+        cx.set_global(Spawner(Rc::new(move |request: &SpawnRequest| {
+            sink.borrow_mut().push(request.clone());
+            Ok(())
+        })));
+        spawn(&SpawnRequest::Welcome, cx)
+    });
+    assert!(result.is_ok());
+    assert_eq!(*requests.borrow(), vec![SpawnRequest::Welcome]);
 }

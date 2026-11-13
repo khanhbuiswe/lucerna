@@ -1,7 +1,9 @@
 //! Lucerna workbench UI: the GPUI shell (Zed-style chrome), command
 //! registry and key dispatch.
 
+mod about;
 pub mod app;
+pub mod app_menu;
 mod app_state;
 pub mod code_view;
 mod commands;
@@ -29,12 +31,17 @@ mod lsp_log;
 mod lsp_status;
 pub mod markdown;
 mod nav_history;
+mod open_commands;
 mod open_files;
 pub mod open_requests;
+pub mod process;
 mod quick_open;
+pub mod recent;
+mod recent_picker;
 mod references_view;
 mod save;
 mod search_view;
+mod startup;
 pub mod status_message;
 mod symbols;
 pub mod tasks;
@@ -44,6 +51,7 @@ mod trust;
 pub mod ui;
 mod vim;
 mod vim_indicator;
+mod welcome;
 mod workbench;
 mod workspace_state;
 
@@ -81,9 +89,11 @@ pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
 };
+pub use recent_picker::{RecentPicker, RecentPickerEvent};
 pub use references_view::{ReferencesView, find_references_in_tab};
 pub use save::{SaveOptions, SaveReason};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
+pub use startup::{Startup, startup_choice};
 pub use symbols::{
     BREADCRUMBS_BATCH, BreadcrumbMode, EMPTY_SYMBOLS_TTL, FilePathMode, MAX_WORKSPACE_SYMBOLS,
     SYMBOLS_DEBOUNCE, Segment, SymbolPathMode, SymbolSource, SymbolState,
@@ -93,6 +103,7 @@ pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};
 pub use trust::{TrustModal, TrustModalEvent, TrustStore};
 pub use vim::VimLayer;
+pub use welcome::{WELCOME_COMMANDS, WelcomeEvent, WelcomeView};
 pub use workbench::{SidebarView, Workbench};
 pub use workspace_state::{
     SearchState, WorkspaceState, WorkspaceStateStore, default_data_dir, load_state, save_state,

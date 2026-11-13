@@ -15,7 +15,7 @@ use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
     AppState, ConfigPaths, ConfigState, ConfigWatcher, OpenMode, ThemePicker, Workbench,
-    reload_config, watch_config,
+    reload_config, status_message, watch_config,
 };
 use tempfile::TempDir;
 
@@ -508,7 +508,7 @@ fn config_paths_layout() {
     assert_eq!(paths.user_dir, PathBuf::from("/u"));
     assert_eq!(
         paths.workspace_settings,
-        PathBuf::from("/r/.lucerna/settings.json")
+        Some(PathBuf::from("/r/.lucerna/settings.json"))
     );
     assert_eq!(paths.user_settings(), PathBuf::from("/u/settings.json"));
     assert_eq!(paths.keybindings(), PathBuf::from("/u/keybindings.json"));
@@ -616,4 +616,60 @@ fn settings_change_keeps_scroll_position(cx: &mut TestAppContext) {
         cx,
     );
     assert_eq!(cx.update(|_, cx| view.read(cx).scroll_top_row()), 120);
+}
+
+#[gpui::test]
+fn user_only_loads_user_settings_without_a_workspace_layer(cx: &mut TestAppContext) {
+    let user = tempfile::tempdir().unwrap();
+    std::fs::write(
+        user.path().join("settings.json"),
+        "{\"workbench.colorTheme\":\"One Light\"}",
+    )
+    .unwrap();
+    init_with(ConfigPaths::user_only_with_user_dir(user.path()), cx);
+    let (_wb, cx) = cx.add_window_view(|_, _| gpui::Empty);
+    assert_eq!(theme_name(cx), "One Light");
+    assert!(error_texts(cx).is_empty());
+}
+
+#[gpui::test]
+fn workspace_settings_command_without_a_folder_reports_it(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    let user = dirs.user.path().to_path_buf();
+    cx.update(|_, cx| watch_config(ConfigPaths::user_only_with_user_dir(user), cx));
+    let before = active_tab_path(&wb, cx);
+    wb.update_in(cx, |wb, window, cx| {
+        wb.run_command(
+            "workbench.action.openWorkspaceSettingsFile",
+            None,
+            window,
+            cx,
+        )
+    });
+    draw(cx);
+    let message = cx.update(|_, cx| status_message::current(cx).map(|m| m.to_string()));
+    assert_eq!(message.as_deref(), Some("No folder is open"));
+    assert_eq!(active_tab_path(&wb, cx), before);
+    assert!(!dirs.root.path().join(".lucerna").exists());
+}
+
+#[gpui::test]
+fn user_only_reloads_user_settings_and_ignores_workspace_paths(cx: &mut TestAppContext) {
+    let user = tempfile::tempdir().unwrap();
+    let settings = user.path().join("settings.json");
+    init_with(ConfigPaths::user_only_with_user_dir(user.path()), cx);
+    let (_wb, cx) = cx.add_window_view(|_, _| gpui::Empty);
+    assert_eq!(theme_name(cx), "One Dark");
+
+    let stray = user.path().join("x/.lucerna/settings.json");
+    cx.update(|_, cx| reload_config(&[stray], cx));
+    draw(cx);
+    assert_eq!(theme_name(cx), "One Dark");
+    assert!(error_texts(cx).is_empty());
+
+    write(&settings, "{\"workbench.colorTheme\":\"One Light\"}", cx);
+    assert_eq!(theme_name(cx), "One Light");
+    assert!(error_texts(cx).is_empty());
 }

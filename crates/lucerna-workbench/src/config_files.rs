@@ -22,6 +22,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::extensions::service;
 use crate::layout::color;
+use crate::status_message;
 use crate::tasks::{spawn_guarded, try_spawn_guarded};
 use crate::{AppState, CommandRegistry, OpenMode, Workbench};
 
@@ -40,8 +41,8 @@ const KEYBINDINGS_TEMPLATE: &str = "// Lucerna user keybindings\n[\n]\n";
 pub struct ConfigPaths {
     /// `~/.config/lucerna`: `settings.json`, `keybindings.json`, `themes/`.
     pub user_dir: PathBuf,
-    /// `<root>/.lucerna/settings.json`.
-    pub workspace_settings: PathBuf,
+    /// `<root>/.lucerna/settings.json`; `None` while no folder is open.
+    pub workspace_settings: Option<PathBuf>,
 }
 
 impl ConfigPaths {
@@ -56,7 +57,23 @@ impl ConfigPaths {
     pub fn with_user_dir(user_dir: impl Into<PathBuf>, root: &Path) -> ConfigPaths {
         ConfigPaths {
             user_dir: user_dir.into(),
-            workspace_settings: root.join(".lucerna").join("settings.json"),
+            workspace_settings: Some(root.join(".lucerna").join("settings.json")),
+        }
+    }
+
+    /// The user directory under `$HOME` and no workspace layer: for a
+    /// window with no folder open (the Welcome screen).
+    pub fn user_only() -> ConfigPaths {
+        let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        ConfigPaths::user_only_with_user_dir(home.join(".config").join("lucerna"))
+    }
+
+    /// Like [`ConfigPaths::user_only`] with another user directory; for
+    /// tests.
+    pub fn user_only_with_user_dir(user_dir: impl Into<PathBuf>) -> ConfigPaths {
+        ConfigPaths {
+            user_dir: user_dir.into(),
+            workspace_settings: None,
         }
     }
 
@@ -73,16 +90,19 @@ impl ConfigPaths {
         self.user_dir.join("themes")
     }
 
-    /// `<root>/.lucerna`.
-    pub fn workspace_dir(&self) -> &Path {
-        self.workspace_settings
-            .parent()
-            .expect("workspace settings live in a directory")
+    /// `<root>/.lucerna`; `None` while no folder is open.
+    pub fn workspace_dir(&self) -> Option<&Path> {
+        self.workspace_settings.as_deref().map(|path| {
+            path.parent()
+                .expect("workspace settings live in a directory")
+        })
     }
 
     /// The directories the watcher follows.
     fn watched_dirs(&self) -> Vec<PathBuf> {
-        vec![self.user_dir.clone(), self.workspace_dir().to_path_buf()]
+        let mut dirs = vec![self.user_dir.clone()];
+        dirs.extend(self.workspace_dir().map(Path::to_path_buf));
+        dirs
     }
 }
 
@@ -256,7 +276,9 @@ fn load(files: impl IntoIterator<Item = ConfigFile>, initial: bool, cx: &mut App
         match file {
             ConfigFile::UserSettings => load_settings(file, Layer::User, paths.user_settings(), cx),
             ConfigFile::WorkspaceSettings => {
-                load_settings(file, Layer::Workspace, paths.workspace_settings.clone(), cx)
+                if let Some(path) = paths.workspace_settings.clone() {
+                    load_settings(file, Layer::Workspace, path, cx);
+                }
             }
             ConfigFile::Keybindings => {
                 let path = paths.keybindings();
@@ -391,7 +413,7 @@ pub(crate) fn apply_configured_theme(cx: &mut App) {
 fn classify(paths: &ConfigPaths, changed: &[PathBuf]) -> BTreeSet<ConfigFile> {
     let user_dir = real_path(&paths.user_dir);
     let themes = user_dir.join("themes");
-    let workspace_dir = real_path(paths.workspace_dir());
+    let workspace_dir = paths.workspace_dir().map(real_path);
     let mut files = BTreeSet::new();
     for path in changed {
         let path = real_path(path);
@@ -402,7 +424,9 @@ fn classify(paths: &ConfigPaths, changed: &[PathBuf]) -> BTreeSet<ConfigFile> {
                 ConfigFile::Themes,
             ]);
         }
-        if workspace_dir.starts_with(&path) || path == workspace_dir.join("settings.json") {
+        if let Some(workspace_dir) = &workspace_dir
+            && (workspace_dir.starts_with(&path) || path == workspace_dir.join("settings.json"))
+        {
             files.insert(ConfigFile::WorkspaceSettings);
         }
         if path == user_dir.join("settings.json") {
@@ -580,7 +604,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         |wb, _, window, cx| {
             open_config_file(
                 wb,
-                ConfigPaths::user_settings,
+                |paths| Some(paths.user_settings()),
                 USER_SETTINGS_TEMPLATE,
                 window,
                 cx,
@@ -593,7 +617,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         |wb, _, window, cx| {
             open_config_file(
                 wb,
-                ConfigPaths::keybindings,
+                |paths| Some(paths.keybindings()),
                 KEYBINDINGS_TEMPLATE,
                 window,
                 cx,
@@ -624,7 +648,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 /// directory) from `template` first when it does not exist.
 fn open_config_file(
     wb: &mut Workbench,
-    path: impl FnOnce(&ConfigPaths) -> PathBuf,
+    path: impl FnOnce(&ConfigPaths) -> Option<PathBuf>,
     template: &str,
     window: &mut Window,
     cx: &mut Context<Workbench>,
@@ -633,7 +657,10 @@ fn open_config_file(
         tracing::warn!("watch_config was not called: no configuration files to open");
         return;
     };
-    let path = path(&state.paths);
+    let Some(path) = path(&state.paths) else {
+        status_message::show("No folder is open", cx);
+        return;
+    };
     match create_if_missing(&path, template) {
         Ok(true) => {
             if let Some(watcher) = &state.watcher {
@@ -753,7 +780,7 @@ mod tests {
             [ConfigFile::Themes]
         );
         assert_eq!(
-            files(std::slice::from_ref(&paths.workspace_settings)),
+            files(&[paths.workspace_settings.clone().unwrap()]),
             [ConfigFile::WorkspaceSettings]
         );
         assert_eq!(
@@ -766,6 +793,15 @@ mod tests {
         );
         assert!(files(&[root.path().join("a.txt")]).is_empty());
         assert!(files(&[user.path().join("other.json")]).is_empty());
+    }
+
+    #[test]
+    fn files_ignore_workspace_without_folder() {
+        let user = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::user_only_with_user_dir(user.path());
+        let changed = [user.path().join("x/.lucerna/settings.json")];
+        assert!(!classify(&paths, &changed).contains(&ConfigFile::WorkspaceSettings));
+        assert!(paths.workspace_dir().is_none());
     }
 
     #[test]

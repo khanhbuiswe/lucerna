@@ -43,6 +43,11 @@ impl CommandRegistry {
         true
     }
 
+    /// The registered ids, in order.
+    pub fn ids(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.commands.keys().copied()
+    }
+
     /// `(id, title)` pairs, ordered by id.
     pub fn all(&self) -> impl Iterator<Item = (&str, &str)> {
         self.commands.iter().map(|(id, c)| (*id, c.title))

@@ -1,11 +1,16 @@
 //! The 34 px integrated title bar: macOS traffic lights inset into the
 //! window, then the root folder's name, its git branch and, in Restricted
 //! Mode, the "Restricted Mode" button. Dragging it moves the window and a
-//! double-click zooms it.
+//! double-click zooms it. A plain variant shows only a title, for the
+//! Welcome screen.
+
+use std::cell::Cell;
+use std::rc::Rc;
 
 use gpui::{
-    Bounds, Context, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
-    Pixels, Styled, TitlebarOptions, WindowBounds, WindowOptions, div, point, prelude::*, px, svg,
+    Bounds, Context, Div, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
+    Pixels, Stateful, Styled, TitlebarOptions, WindowBounds, WindowOptions, div, point, prelude::*,
+    px, svg,
 };
 use lucerna_theme::UiColors;
 
@@ -33,13 +38,10 @@ pub fn window_options(bounds: Bounds<Pixels>) -> WindowOptions {
     }
 }
 
-pub(crate) fn render(
-    root_name: String,
-    branch: Option<String>,
-    restricted: bool,
-    ui: &UiColors,
-    cx: &mut Context<Workbench>,
-) -> impl IntoElement {
+/// The bar both title bars share: 34 px, the traffic lights' inset, the
+/// title bar colors, and a double-click that zooms the window. The caller
+/// adds the drag (see [`render`]).
+fn bar(ui: &UiColors) -> Stateful<Div> {
     div()
         .id("title-bar")
         .debug_selector(|| "title-bar".into())
@@ -54,6 +56,52 @@ pub(crate) fn render(
         .bg(color(ui.title_bar_background))
         .border_b_1()
         .border_color(color(ui.border_variant))
+        .on_click(|ev, window, _| {
+            if ev.click_count() == 2 {
+                window.zoom_window();
+            }
+        })
+}
+
+/// A title bar with only `title`, centered, for a window without a
+/// workbench (the Welcome screen). `pressed` is the owner's "a press began
+/// on the bar" flag, which the drag needs between events.
+pub(crate) fn render_plain(
+    title: &str,
+    pressed: Rc<Cell<bool>>,
+    ui: &UiColors,
+) -> impl IntoElement + use<> {
+    let down = pressed.clone();
+    let up = pressed.clone();
+    bar(ui)
+        .justify_center()
+        // Balances the inset so the title sits at the window's center.
+        .pr(TRAFFIC_LIGHTS_INSET)
+        .on_mouse_down(MouseButton::Left, move |_, _, _| down.set(true))
+        .on_mouse_up(MouseButton::Left, move |_, _, _| up.set(false))
+        .on_mouse_move(move |ev: &MouseMoveEvent, window, _| {
+            if pressed.take() && ev.pressed_button == Some(MouseButton::Left) {
+                window.start_window_move();
+            }
+        })
+        .child(
+            div()
+                .debug_selector(|| "title-bar-title".into())
+                .min_w_0()
+                .truncate()
+                .text_color(color(ui.text))
+                .child(title.to_string()),
+        )
+}
+
+pub(crate) fn render(
+    root_name: String,
+    branch: Option<String>,
+    restricted: bool,
+    ui: &UiColors,
+    cx: &mut Context<Workbench>,
+) -> impl IntoElement {
+    bar(ui)
         // Start the native move on the first drag motion, not on mouse
         // down, so a double-click still reaches `on_click`.
         .on_mouse_down(
@@ -72,11 +120,6 @@ pub(crate) fn render(
                 window.start_window_move();
             }
         }))
-        .on_click(|ev, window, _| {
-            if ev.click_count() == 2 {
-                window.zoom_window();
-            }
-        })
         .child(
             div()
                 .debug_selector(|| "title-bar-root".into())

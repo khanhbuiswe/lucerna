@@ -163,6 +163,86 @@ pub fn icon_button(
         )
 }
 
+/// A section title for a page or list: `title` in capitals (caption size,
+/// editor font, `text.muted`), then a 1 px `border.variant` rule filling the
+/// rest of the row.
+pub fn section_header(title: &str, cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .flex()
+        .items_center()
+        .gap(px(2. * GRID))
+        .w_full()
+        .child(
+            div()
+                .flex_none()
+                .font_family(crate::fonts::editor_font_family(None, cx))
+                .text_size(px(UI_FONT_SIZE_CAPTION))
+                .text_color(color(ui.text_muted))
+                .child(title.to_uppercase()),
+        )
+        .child(div().flex_1().h(px(1.)).bg(color(ui.border_variant)))
+}
+
+/// A full-width button row 7 grid units tall: a 14 px `icon` in
+/// `icon.muted`, then `label` (cut off when long), then `keys` at the right
+/// when given. `focused` takes the `element.selected` background; otherwise
+/// the row shows `ghost_element.hover` on hover. It only builds the row:
+/// add `on_click`, and any further children (a description, a remove
+/// button) after the label. A row that adds its own children passes
+/// `keys: None` and draws its shortcut itself, so the order stays name,
+/// description, shortcut, button.
+pub fn list_button(
+    id: impl Into<ElementId>,
+    icon: &'static [u8],
+    label: SharedString,
+    keys: Option<String>,
+    focused: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let hover = color(ui.ghost_element_hover);
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2. * GRID))
+        .w_full()
+        .h(px(7. * GRID))
+        .px(px(2. * GRID))
+        .rounded(px(GRID))
+        .overflow_hidden()
+        .cursor_pointer()
+        .text_color(color(ui.text))
+        .when(focused, |row| row.bg(color(ui.element_selected)))
+        .when(!focused, |row| row.hover(move |s| s.bg(hover)))
+        .child(
+            svg()
+                .data(icon)
+                .size(px(FILE_ICON_SIZE))
+                .flex_none()
+                .text_color(color(ui.icon_muted)),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_size(px(UI_FONT_SIZE))
+                .child(label),
+        )
+        .when_some(keys, |row, keys| {
+            row.child(
+                div()
+                    .flex_none()
+                    .ml_auto()
+                    .text_size(px(UI_FONT_SIZE_STATUS))
+                    .text_color(color(ui.text_muted))
+                    .child(keys),
+            )
+        })
+}
+
 /// A tooltip showing `text`, for an element's `tooltip`: small text on
 /// `elevated_surface.background`, bordered like a [`popover`].
 pub fn tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView {
