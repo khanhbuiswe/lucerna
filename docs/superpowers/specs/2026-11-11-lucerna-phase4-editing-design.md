@@ -319,7 +319,7 @@ Lucerna:
 
 **Hợp đồng cho V2** (để V2 không phải sửa lại mô hình):
 1. Mọi thay đổi văn bản của V2 là `EditPlan` dựng bằng hàm của `lucerna-editor` (xóa khoảng, chèn, thay, thụt lề, đổi hoa thường); text object dùng `enclosing_nodes` và hàm từ / câu / đoạn của `lucerna-editor`.
-2. `CodeView::transact_group(|cx| …)` cho phép V2 gom nhiều `EditPlan` (ví dụ `3dd`, `ciw` + chữ gõ) thành một bước undo (`group_until`).
+2. `CodeView::transact_group(|cx| …)` cho phép V2 gom nhiều `EditPlan` (ví dụ `3dd`, `ciw` + chữ gõ) thành một bước undo (`group_until`). Đã có: `CodeView::transact_group<R>(keep_open: bool, cx, f: impl FnOnce(&mut Self, &mut Context<Self>) -> R) -> R`; `keep_open` giữ bước mở cho lệnh kết thúc ở Insert, và bên trong một bước đã mở thì `f` chỉ nhập vào bước đó.
 3. `.` được V2 cài bằng cách ghi lại phím của lần thay đổi cuối (kể cả chữ gõ trong Insert), như Vim; editor không cần ghi nhớ gì thêm.
 4. Register thuộc `VimGlobals`; register không tên đồng bộ với clipboard hệ thống theo `vim.useSystemClipboard` (V2).
 5. Selection của Vim chuyển sang `SelectionSet` (visual block là nhiều selection), nên multi-cursor và Vim dùng chung cách vẽ.

@@ -184,6 +184,11 @@ VSCodeVim test files:
 - `test/mode/normalModeTests/motions.test.ts`
 - `test/mode/normalModeTests/matchingBracket.test.ts`
 - `test/register/repeatableMovement.test.ts`
+- `test/register/register.test.ts`
+- `test/operator/put.test.ts`
+- `test/mode/normalModeTests/dot.test.ts`
+- `test/mode/normalModeTests/undo.test.ts`
+- `test/normalModeTests/commands.test.ts`
 
 ```
 MIT License
