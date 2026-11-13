@@ -25,7 +25,7 @@ use crate::editor_groups::OpenMode;
 use crate::icons;
 use crate::layout::color;
 use crate::tasks::catch_panic;
-use crate::ui::{GRID, UI_FONT_FAMILY, UI_FONT_SIZE_SMALL, checkbox};
+use crate::ui::{GRID, UI_FONT_FAMILY, UI_FONT_SIZE_SMALL, checkbox, tooltip};
 use crate::workbench::Workbench;
 
 /// Longer sources are cut here, on a char boundary.
@@ -315,34 +315,39 @@ fn count_code(blocks: &[Block]) -> usize {
         .sum()
 }
 
-/// The number of images in `blocks`, in the order they are drawn.
+/// The number of images in `blocks`.
 fn count_images(blocks: &[Block]) -> usize {
-    fn inline(inlines: &[Inline]) -> usize {
-        inlines
-            .iter()
-            .map(|i| match i {
-                Inline::Image { .. } => 1,
-                Inline::Strong(c) | Inline::Emph(c) | Inline::Strike(c) => inline(c),
-                Inline::Link { children, .. } => inline(children),
-                _ => 0,
-            })
-            .sum()
+    let mut count = 0;
+    visit_image_urls(blocks, &mut |_| count += 1);
+    count
+}
+
+/// Calls `f` with the URL of each image in `blocks`, in the order they are
+/// drawn (nested blocks, table cells and links included).
+pub(crate) fn visit_image_urls(blocks: &[Block], f: &mut impl FnMut(&str)) {
+    fn inline(inlines: &[Inline], f: &mut impl FnMut(&str)) {
+        for i in inlines {
+            match i {
+                Inline::Image { url, .. } => f(url),
+                Inline::Strong(c) | Inline::Emph(c) | Inline::Strike(c) => inline(c, f),
+                Inline::Link { children, .. } => inline(children, f),
+                _ => {}
+            }
+        }
     }
-    blocks
-        .iter()
-        .map(|block| match block {
-            Block::Image { .. } => 1,
-            Block::Paragraph(i) | Block::Heading(_, i) => inline(i),
-            Block::Quote(inner) | Block::Alert { blocks: inner, .. } => count_images(inner),
-            Block::List { items, .. } => items.iter().map(|i| count_images(&i.blocks)).sum(),
+    for block in blocks {
+        match block {
+            Block::Image { url, .. } => f(url),
+            Block::Paragraph(i) | Block::Heading(_, i) => inline(i, f),
+            Block::Quote(inner) | Block::Alert { blocks: inner, .. } => visit_image_urls(inner, f),
+            Block::List { items, .. } => items.iter().for_each(|i| visit_image_urls(&i.blocks, f)),
             Block::Table { head, rows, .. } => head
                 .iter()
                 .chain(rows.iter().flatten())
-                .map(|cell| inline(cell))
-                .sum(),
-            Block::Code { .. } | Block::Rule => 0,
-        })
-        .sum()
+                .for_each(|cell| inline(cell, f)),
+            Block::Code { .. } | Block::Rule => {}
+        }
+    }
 }
 
 fn code_font_family(cx: &App) -> SharedString {
@@ -925,7 +930,7 @@ fn align(a: Alignment) -> Align {
 }
 
 /// The text of `inlines` without any formatting (an image's alt text).
-fn plain_text(inlines: &[Inline]) -> String {
+pub(crate) fn plain_text(inlines: &[Inline]) -> String {
     let mut out = String::new();
     for inline in inlines {
         match inline {
@@ -967,7 +972,7 @@ pub fn link_target(url: &str) -> Option<LinkTarget> {
 }
 
 /// `L10`, `L10,5`, `L10:5` or `L10C5` as a 0-based point.
-fn line_fragment(fragment: &str) -> Point {
+pub(crate) fn line_fragment(fragment: &str) -> Point {
     let zero = Point { row: 0, column: 0 };
     let Some(rest) = fragment.strip_prefix('L') else {
         return zero;
@@ -1091,33 +1096,53 @@ fn code_background(style: &MarkdownStyle, ui: &lucerna_theme::UiColors) -> gpui:
     })
 }
 
-/// A bordered stand-in for an image that is not drawn: an icon, the alt
-/// text and an optional note (why there is no image).
-pub(crate) fn image_placeholder(alt: &str, note: Option<&str>, cx: &App) -> AnyElement {
+/// A bordered stand-in for image `n` (document order) when it is not
+/// drawn: an icon, the alt text and an optional note (why there is no
+/// image).
+pub(crate) fn image_placeholder(alt: &str, note: Option<&str>, n: usize, cx: &App) -> AnyElement {
+    image_placeholder_builder(alt, note, n, cx)()
+}
+
+/// Builds [`image_placeholder`] later, without the app (an image that
+/// fails to load draws it in its place).
+pub(crate) fn image_placeholder_builder(
+    alt: &str,
+    note: Option<&str>,
+    n: usize,
+    cx: &App,
+) -> impl Fn() -> AnyElement + 'static {
     let ui = &cx.global::<AppState>().theme.ui;
-    let label = if alt.is_empty() { "image" } else { alt };
-    div()
-        .debug_selector(|| "md-image-alt".to_owned())
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(6.))
-        .px(px(8.))
-        .py(px(4.))
-        .rounded(px(4.))
-        .border_1()
-        .border_color(color(ui.border_variant))
-        .text_color(color(ui.text_muted))
-        .child(
-            svg()
-                .data(icons::IMAGE)
-                .size(px(14.))
-                .flex_none()
-                .text_color(color(ui.icon)),
-        )
-        .child(label.to_owned())
-        .when_some(note.map(str::to_owned), |d, note| d.child(note))
-        .into_any_element()
+    let (border, text, icon) = (
+        color(ui.border_variant),
+        color(ui.text_muted),
+        color(ui.icon),
+    );
+    let label = if alt.is_empty() { "image" } else { alt }.to_owned();
+    let note = note.map(str::to_owned);
+    move || {
+        div()
+            .debug_selector(move || format!("md-image-alt-{n}"))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .px(px(8.))
+            .py(px(4.))
+            .rounded(px(4.))
+            .border_1()
+            .border_color(border)
+            .text_color(text)
+            .child(
+                svg()
+                    .data(icons::IMAGE)
+                    .size(px(14.))
+                    .flex_none()
+                    .text_color(icon),
+            )
+            .child(label.clone())
+            .when_some(note.clone(), |d, note| d.child(note))
+            .into_any_element()
+    }
 }
 
 /// Renders `blocks`; clicking a web link opens the browser. The default
@@ -1174,6 +1199,7 @@ pub fn render_block(
         images: blocks.image_index_start(root),
         tasks: 0,
         tables: 0,
+        links: 0,
     };
     let element = renderer.block(block, style.text_size, false);
     div()
@@ -1201,8 +1227,10 @@ struct Renderer<'a> {
     images: usize,
     /// Task list items drawn so far in this block.
     tasks: usize,
-    /// Tables and clickable images drawn so far in this block (ids).
+    /// Tables drawn so far in this block (ids).
     tables: usize,
+    /// Clickable images drawn so far in this block (ids).
+    links: usize,
 }
 
 /// The font and color a run of inlines is drawn with.
@@ -1406,7 +1434,7 @@ impl Renderer<'_> {
         self.images += 1;
         match &self.style.images {
             Some(lookup) => lookup(url, alt, n, self.cx),
-            None => image_placeholder(alt, None, self.cx),
+            None => image_placeholder(alt, None, n, self.cx),
         }
     }
 
@@ -1458,11 +1486,13 @@ impl Renderer<'_> {
     /// Makes `element` clickable when it sits inside a link.
     fn linked(&mut self, element: AnyElement, link: Option<String>) -> AnyElement {
         let Some(url) = link else { return element };
-        self.tables += 1;
+        self.links += 1;
         let on_link = self.on_link.clone();
+        let tip = url.clone();
         div()
-            .id(self.id("md-image-link", self.tables))
+            .id(self.id("md-image-link", self.links))
             .cursor_pointer()
+            .tooltip(tooltip(tip))
             .on_click(move |_, window, cx| on_link(&url, window, cx))
             .child(element)
             .into_any_element()
@@ -1477,12 +1507,24 @@ impl Renderer<'_> {
         }
         self.texts += 1;
         let (ranges, urls): (Vec<_>, Vec<_>) = chunk.links.into_iter().unzip();
+        let urls = Rc::new(urls);
         let on_link = self.on_link.clone();
-        el.child(
-            InteractiveText::new(self.id("md-text", self.texts), styled)
-                .on_click(ranges, move |ix, window, cx| on_link(&urls[ix], window, cx)),
-        )
-        .into_any_element()
+        let (root, n) = (self.root, self.texts);
+        // The URL of the link under the pointer, as a tooltip.
+        let tips = (ranges.clone(), urls.clone());
+        let clicked = urls.clone();
+        el.debug_selector(move || format!("md-text-{root}-{n}"))
+            .child(
+                InteractiveText::new(self.id("md-text", n), styled)
+                    .on_click(ranges, move |ix, window, cx| {
+                        on_link(&clicked[ix], window, cx)
+                    })
+                    .tooltip(move |index, window, cx| {
+                        let ix = tips.0.iter().position(|r| r.contains(&index))?;
+                        Some(tooltip(tips.1[ix].clone())(window, cx))
+                    }),
+            )
+            .into_any_element()
     }
 
     fn flatten(&self, inlines: &[Inline], style: InlineStyle, link: Option<&str>, out: &mut Flat) {

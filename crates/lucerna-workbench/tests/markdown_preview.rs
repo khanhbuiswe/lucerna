@@ -785,3 +785,89 @@ fn path_bar_button_opens_preview(cx: &mut TestAppContext) {
     draw(cx);
     assert_eq!(group_tabs(&wb, 0, cx).1, Some(TabItem::File(file)));
 }
+
+/// Clicks the start of the first linked text of the first block.
+fn click_link(cx: &mut VisualTestContext) {
+    draw(cx);
+    let bounds = cx.debug_bounds("md-text-0-1").expect("the link is drawn");
+    let at = bounds.origin + gpui::point(gpui::px(3.), bounds.size.height / 2.);
+    cx.simulate_click(at, gpui::Modifiers::default());
+    draw(cx);
+}
+
+#[gpui::test]
+fn local_image_drawn(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open(
+        "![pic](img/a.svg)\n\n![gone](img/none.png)\n\n![wide](img/wide.svg)\n",
+        cx,
+    );
+    fs::create_dir(dir.path().join("img")).unwrap();
+    let svg = |w: u32, h: u32| {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}"><rect width="{w}" height="{h}" fill="red"/></svg>"#
+        )
+    };
+    fs::write(dir.path().join("img/a.svg"), svg(40, 20)).unwrap();
+    fs::write(dir.path().join("img/wide.svg"), svg(4000, 1000)).unwrap();
+    let preview = open_preview(&wb, &dir, cx);
+    draw(cx);
+    let image = cx.debug_bounds("md-image-0").expect("the image is drawn");
+    assert_eq!(image.size.width, gpui::px(40.));
+    assert_eq!(image.size.height, gpui::px(20.));
+    assert!(cx.debug_bounds("md-image-alt-0").is_none());
+    assert!(cx.debug_bounds("md-image-alt-1").is_some(), "missing: alt");
+    // Wider than the column: shrunk to it, keeping its shape.
+    let wide = cx.debug_bounds("md-image-2").expect("drawn");
+    assert!(wide.size.width <= gpui::px(800.), "{wide:?}");
+    let ratio = f32::from(wide.size.width) / f32::from(wide.size.height);
+    assert!((ratio - 4.).abs() < 0.1, "{wide:?}");
+    // Refresh drops the cache; the image loads again.
+    preview.update(cx, |p, cx| p.refresh(cx));
+    draw(cx);
+    assert!(cx.debug_bounds("md-image-0").is_some());
+}
+
+#[gpui::test]
+fn anchor_link_scrolls(cx: &mut TestAppContext) {
+    init(cx);
+    let text = format!("[go](#target-here)\n\n{0}## Target here\n\n{0}", long_doc());
+    let (dir, wb, cx) = open(&text, cx);
+    let preview = open_preview(&wb, &dir, cx);
+    assert_eq!(top_block_lines(&preview, cx).start, 0);
+    click_link(cx);
+    let heading = 2 + 4 * 200;
+    assert_eq!(top_block_lines(&preview, cx).start, heading);
+}
+
+#[gpui::test]
+fn md_link_opens_preview_tab(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open("[b](sub/b.md#second)\n", cx);
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    let b_text = format!("# first\n\n{0}## Second\n\n{0}", long_doc());
+    fs::write(dir.path().join("sub/b.md"), b_text).unwrap();
+    open_preview(&wb, &dir, cx);
+    click_link(cx);
+    let (tabs, active) = group_tabs(&wb, 0, cx);
+    assert_eq!(
+        active,
+        Some(TabItem::MarkdownPreview(abs(&dir, "sub/b.md")))
+    );
+    assert_eq!(tabs.len(), 2, "{tabs:?}");
+    let preview = active_body::<MarkdownPreview>(&wb, cx);
+    draw(cx);
+    assert_eq!(top_block_lines(&preview, cx).start, 2 + 4 * 200);
+
+    // `inEditor`: the source.
+    set_user_settings(r#"{"markdown.preview.openMarkdownLinks": "inEditor"}"#, cx);
+    wb.update(cx, |wb, cx| {
+        let first = wb.editor_groups().read(cx).model().groups()[0].tabs[0].id;
+        wb.update_editor_groups(cx, |m| m.activate(first));
+    });
+    click_link(cx);
+    assert_eq!(
+        group_tabs(&wb, 0, cx).1,
+        Some(TabItem::File(abs(&dir, "sub/b.md")))
+    );
+}

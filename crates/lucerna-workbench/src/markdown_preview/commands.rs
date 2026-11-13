@@ -1,17 +1,17 @@
 //! The Markdown preview's commands (spec §4.2), which editor a file opens
 //! in (`workbench.editorAssociations`, spec §4.1), the dynamic preview
-//! following the active markdown file and a double-click on a block
-//! opening its source (spec §4.4, §4.5).
+//! following the active markdown file, a double-click on a block opening
+//! its source and what a clicked link opens (spec §4.4, §4.5, §5.6).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use gpui::{App, Context, Entity, EntityId, Window};
+use gpui::{App, Context, Entity, EntityId, WeakEntity, Window};
 use lucerna_syntax::Associations;
 use lucerna_text::Point;
 
-use super::MarkdownPreview;
+use super::{LinkAction, MarkdownPreview};
 use crate::code_view::CodeView;
 use crate::editor_groups::{FileView, OpenMode, TabId, TabItem};
 use crate::{AppState, CommandRegistry, Workbench};
@@ -24,6 +24,10 @@ pub(crate) const EDITOR_ASSOCIATIONS: &str = "workbench.editorAssociations";
 
 /// The setting that lets a double-click on a block open the source.
 const DOUBLE_CLICK_TO_SWITCH: &str = "markdown.preview.doubleClickToSwitchToEditor";
+
+/// Where a link to another markdown file opens: `"inPreview"` or
+/// `"inEditor"`.
+const OPEN_MARKDOWN_LINKS: &str = "markdown.preview.openMarkdownLinks";
 
 /// The language id of markdown files.
 const MARKDOWN: &str = "markdown";
@@ -412,5 +416,76 @@ pub(crate) fn double_clicked(
             wb.focus_editor_area(window, cx);
         }
         _ => {}
+    }
+}
+
+/// Follows a link clicked in `preview` (spec §5.6): web and `mailto:` links
+/// go to the browser, `#slug` scrolls the preview, another markdown file
+/// opens as the Explorer opens it (`markdown.preview.openMarkdownLinks`:
+/// `"inEditor"` opens its source) or, from the dynamic preview, becomes
+/// the file it shows; `#L10` opens the source at that line, and other
+/// files open as the Explorer opens them.
+pub(crate) fn follow_link(
+    wb: &mut Workbench,
+    preview: WeakEntity<MarkdownPreview>,
+    action: LinkAction,
+    window: &mut Window,
+    cx: &mut Context<Workbench>,
+) {
+    match action {
+        LinkAction::Web(url) => cx.open_url(&url),
+        LinkAction::Anchor(slug) => {
+            preview.update(cx, |p, cx| p.scroll_to_slug(&slug, cx)).ok();
+        }
+        LinkAction::Markdown { path, slug } => {
+            let path: Arc<Path> = Arc::from(path);
+            let in_editor = cx
+                .global::<AppState>()
+                .settings
+                .get::<String>(OPEN_MARKDOWN_LINKS, None)
+                .is_some_and(|v| v == "inEditor");
+            if in_editor {
+                wb.open_source(path, OpenMode::Preview, cx);
+                wb.focus_editor_area(window, cx);
+                return;
+            }
+            let dynamic = preview.upgrade().filter(|p| p.read(cx).is_dynamic());
+            let target = match dynamic {
+                Some(dynamic) => {
+                    let id = wb
+                        .editor_groups()
+                        .read(cx)
+                        .model()
+                        .dynamic_preview()
+                        .map(|(_, tab)| tab.id);
+                    wb.update_editor_groups(cx, |m| m.retarget_dynamic(path.clone()));
+                    if let Some(id) = id {
+                        show_dynamic(wb, id, path, None, window, cx);
+                    }
+                    Some(dynamic)
+                }
+                None => {
+                    wb.open_path(path, OpenMode::Preview, cx);
+                    let groups = wb.editor_groups().clone();
+                    let opened = groups
+                        .update(cx, |view, cx| view.ensure_active_body(window, cx))
+                        .and_then(|body| body.downcast::<MarkdownPreview>().ok());
+                    wb.focus_editor_area(window, cx);
+                    opened
+                }
+            };
+            if let (Some(target), Some(slug)) = (target, slug) {
+                target.update(cx, |p, cx| p.scroll_to_slug(&slug, cx));
+            }
+        }
+        LinkAction::Source { path, point } => {
+            wb.jump_to(Arc::from(path), point, OpenMode::Preview, cx);
+            wb.focus_editor_area(window, cx);
+        }
+        LinkAction::File(path) => {
+            wb.open_path(Arc::from(path), OpenMode::Preview, cx);
+            wb.focus_editor_area(window, cx);
+        }
+        LinkAction::None => {}
     }
 }

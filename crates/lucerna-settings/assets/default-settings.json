@@ -80,6 +80,8 @@
   "markdown.preview.scrollPreviewWithEditor": true,
   "markdown.preview.scrollEditorWithPreview": true,
   "markdown.preview.doubleClickToSwitchToEditor": true,
+  // Where a link to another Markdown file opens: "inPreview" or "inEditor".
+  "markdown.preview.openMarkdownLinks": "inPreview",
   // Which editor opens a file, by glob (root-relative path, or file name for a glob without "/").
   // "vscode.markdown.preview.editor": the Markdown preview. "default": the source.
   "workbench.editorAssociations": {

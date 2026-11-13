@@ -6,9 +6,11 @@
 //! the same line after a whole rewrite). A preview shown beside an editor of
 //! its file scrolls with it ([`sync`], spec §4.5). Its commands, the
 //! editor associations and the dynamic preview following the active file
-//! are in [`commands`].
+//! are in [`commands`]. Images load from the workspace only, and links open
+//! what they point at ([`resolve`], spec §5.6).
 
 mod commands;
+mod resolve;
 mod sync;
 
 pub use commands::{
@@ -16,9 +18,13 @@ pub use commands::{
     TOGGLE_PREVIEW, editor_for,
 };
 pub(crate) use commands::{associated_editor, follow_active, is_markdown, register_commands};
+pub use resolve::{
+    ImageContext, ImageSrc, LinkAction, MAX_IMAGE_BYTES, heading_slugs, resolve_image, resolve_link,
+};
 pub(crate) use sync::ScrollSync;
 pub use sync::{item_to_line, line_to_item};
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -27,7 +33,8 @@ use std::time::Duration;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     KeyDownEvent, ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, Render, SharedString, Styled, Task, WeakEntity, Window, div, list, prelude::*, px,
+    Pixels, Render, RetainAllImageCache, SharedString, Styled, StyledImage, Task, WeakEntity,
+    Window, div, img, list, prelude::*, px,
 };
 use lucerna_text::{BufferSnapshot, LoadError};
 
@@ -36,8 +43,8 @@ use crate::code_view::CodeView;
 use crate::documents::{DocState, DocumentEvent, Documents};
 use crate::layout::color;
 use crate::markdown::{
-    LinkHandler, MarkdownBlocks, MarkdownStyle, open_markdown_link, parse_markdown_document,
-    render_block,
+    ImageLookup, LinkHandler, MarkdownBlocks, MarkdownStyle, image_placeholder,
+    image_placeholder_builder, parse_markdown_document, render_block,
 };
 use crate::ui::{GRID, UI_FONT_FAMILY, text_button};
 use crate::workbench::Workbench;
@@ -67,12 +74,22 @@ pub enum MarkdownPreviewEvent {
     Scrolled,
 }
 
+/// What a background parse hands back: the blocks and where each of their
+/// image URLs resolved to.
+struct Parsed {
+    blocks: Arc<MarkdownBlocks>,
+    images: Arc<HashMap<String, ImageSrc>>,
+}
+
 /// A rendered view of a markdown file. It keeps the file's document open
 /// (and reloaded from disk) through a passive code view it never draws.
 pub struct MarkdownPreview {
     path: Arc<Path>,
     /// Follows the active markdown editor (`MarkdownPreviewDynamic`).
     dynamic: bool,
+    /// The workspace root (the file's folder in single-file mode): links
+    /// and images starting with `/` start there.
+    root: Arc<Path>,
     documents: Entity<Documents>,
     workbench: WeakEntity<Workbench>,
     /// Taken when the preview is clicked or its tab becomes active; the
@@ -81,6 +98,14 @@ pub struct MarkdownPreview {
     /// Holds the document open; never drawn.
     _source: Entity<CodeView>,
     blocks: Option<Arc<MarkdownBlocks>>,
+    /// Where the image URLs of `blocks` resolved to.
+    images: Arc<HashMap<String, ImageSrc>>,
+    /// The images loaded for this view; dropped with it, replaced by
+    /// [`MarkdownPreview::refresh`].
+    image_cache: Entity<RetainAllImageCache>,
+    /// The heading to scroll to once the blocks are parsed (a link to
+    /// `file.md#slug`).
+    pending_slug: Option<String>,
     /// The document revision `blocks` (or `too_large`) was made from.
     revision: Option<u64>,
     /// The revision of the last text handed to a parse, shown or not.
@@ -115,6 +140,7 @@ impl MarkdownPreview {
     pub fn new(
         path: Arc<Path>,
         dynamic: bool,
+        root: Arc<Path>,
         documents: Entity<Documents>,
         workbench: WeakEntity<Workbench>,
         cx: &mut Context<Self>,
@@ -158,11 +184,15 @@ impl MarkdownPreview {
         let mut preview = MarkdownPreview {
             path,
             dynamic,
+            root,
             documents,
             workbench,
             focus_handle: cx.focus_handle(),
             _source: source,
             blocks: None,
+            images: Arc::default(),
+            image_cache: RetainAllImageCache::new(cx),
+            pending_slug: None,
             revision: None,
             requested: None,
             pending: None,
@@ -200,6 +230,8 @@ impl MarkdownPreview {
             .update(cx, |d, cx| d.open_preview(path.clone(), cx));
         self.path = path;
         self.blocks = None;
+        self.images = Arc::default();
+        self.pending_slug = None;
         self.revision = None;
         self.requested = None;
         self.pending = None;
@@ -324,10 +356,31 @@ impl MarkdownPreview {
         measured
     }
 
+    /// Scrolls the heading with GitHub slug `slug` to the top; before the
+    /// blocks are parsed, once they are. A slug no heading has does
+    /// nothing.
+    pub fn scroll_to_slug(&mut self, slug: &str, cx: &mut Context<Self>) {
+        if self.blocks.is_none() {
+            self.pending_slug = Some(slug.to_owned());
+            return;
+        }
+        if let Some(line) = self.slug_line(slug) {
+            self.scroll_to_line(line, cx);
+        }
+    }
+
+    /// The first source line of the heading with slug `slug`.
+    fn slug_line(&self, slug: &str) -> Option<f32> {
+        let blocks = self.blocks.as_ref()?;
+        let (_, ix) = heading_slugs(blocks).into_iter().find(|(s, _)| s == slug)?;
+        Some(blocks.root_lines().get(ix)?.start as f32)
+    }
+
     /// The user scrolled: a line still waiting gives way, and the links
     /// hear of it.
     fn user_scrolled(&mut self, cx: &mut Context<Self>) {
         self.pending_line = None;
+        self.pending_slug = None;
         self.anchor = None;
         self.stand_in_height = None;
         cx.emit(MarkdownPreviewEvent::Scrolled);
@@ -375,10 +428,11 @@ impl MarkdownPreview {
         self.parses_started
     }
 
-    /// Parses the document again now, without waiting for a change.
-    // Task 8: also drops the view's image cache, so changed images load
-    // again (`markdown.preview.refresh`, spec §5.4).
+    /// Parses the document again now, without waiting for a change, and
+    /// drops the loaded images, so images changed on disk load again
+    /// (`markdown.preview.refresh`, spec §5.4).
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.image_cache = RetainAllImageCache::new(cx);
         self.pending = None;
         self.parse_now(cx);
     }
@@ -430,13 +484,14 @@ impl MarkdownPreview {
         }
         self.parses_started += 1;
         let epoch = self.epoch;
-        let parse = cx.background_spawn(async move { parse_snapshot(snapshot) });
+        let images = ImageContext::for_file(&self.path, &self.root);
+        let parse = cx.background_spawn(async move { parse_snapshot(snapshot, &images) });
         cx.spawn(async move |preview, cx| {
-            let blocks = parse.await;
+            let parsed = parse.await;
             preview
                 .update(cx, |preview, cx| {
                     if preview.epoch == epoch {
-                        preview.show(revision, Some(Arc::new(blocks)), cx);
+                        preview.show(revision, Some(parsed), cx);
                     }
                 })
                 .ok();
@@ -446,12 +501,13 @@ impl MarkdownPreview {
 
     /// Shows the blocks parsed from `revision` (`None`: the file is too
     /// large), unless newer ones are shown, keeping the text at the top of
-    /// the view (the anchor), within its block too.
-    fn show(&mut self, revision: u64, blocks: Option<Arc<MarkdownBlocks>>, cx: &mut Context<Self>) {
+    /// the view (the anchor), within its block too; or showing the heading
+    /// a link asked for.
+    fn show(&mut self, revision: u64, parsed: Option<Parsed>, cx: &mut Context<Self>) {
         if self.revision.is_some_and(|shown| shown > revision) {
             return;
         }
-        let top = self.anchor.unwrap_or_else(|| self.top_line());
+        let mut top = self.anchor.unwrap_or_else(|| self.top_line());
         // `reset` forgets every height: keep the top block's for the
         // first frame.
         let top_ix = self.list_state.logical_scroll_top().item_ix;
@@ -463,10 +519,22 @@ impl MarkdownPreview {
             self.anchor = None;
         }
         self.revision = Some(revision);
-        self.too_large = blocks.is_none();
+        self.too_large = parsed.is_none();
+        let (blocks, images) =
+            parsed.map_or((None, Arc::default()), |p| (Some(p.blocks), p.images));
         self.blocks = blocks;
+        self.images = images;
         let count = self.blocks.as_ref().map_or(0, |b| b.blocks().len());
         self.list_state.reset(count);
+        if let Some(line) = self
+            .pending_slug
+            .take()
+            .and_then(|slug| self.slug_line(&slug))
+        {
+            top = line;
+            self.anchor = None;
+            self.stand_in_height = None;
+        }
         self.show_line(top, cx);
     }
 
@@ -488,13 +556,42 @@ impl MarkdownPreview {
         style
     }
 
-    /// Clicked links: as in hover popovers.
-    fn link_handler(&self) -> LinkHandler {
-        let workbench = self.workbench.clone();
-        Rc::new(move |url, _, cx| {
-            workbench
-                .update(cx, |wb, cx| open_markdown_link(url, wb, cx))
-                .ok();
+    /// Draws the images of the blocks shown: local files through `img()`
+    /// with the view's cache, as wide as they are up to the column's
+    /// width; the others as their alt text.
+    fn image_lookup(&self) -> ImageLookup {
+        let (images, cache) = (self.images.clone(), self.image_cache.clone());
+        Rc::new(move |url, alt, n, cx| match images.get(url) {
+            Some(ImageSrc::Local(path)) => img(path.clone())
+                .debug_selector(move || format!("md-image-{n}"))
+                .image_cache(&cache)
+                .max_w_full()
+                .with_fallback(image_placeholder_builder(alt, None, n, cx))
+                .into_any_element(),
+            Some(ImageSrc::Blocked("too-large")) => {
+                image_placeholder(alt, Some("Ảnh quá lớn"), n, cx)
+            }
+            _ => image_placeholder(alt, None, n, cx),
+        })
+    }
+
+    /// Clicked links (spec §5.6), resolved against the previewed file:
+    /// see [`commands::follow_link`].
+    fn link_handler(&self, cx: &Context<Self>) -> LinkHandler {
+        let (workbench, preview) = (self.workbench.clone(), cx.weak_entity());
+        let root = self.root.clone();
+        let base_dir: Arc<Path> = Arc::from(self.path.parent().unwrap_or(&self.root));
+        Rc::new(move |url, window, cx| {
+            let action = resolve_link(url, &base_dir, &root);
+            let (workbench, preview) = (workbench.clone(), preview.clone());
+            // Not inside the click: the link may replace this tab.
+            window.defer(cx, move |window, cx| {
+                workbench
+                    .update(cx, |wb, cx| {
+                        commands::follow_link(wb, preview, action, window, cx)
+                    })
+                    .ok();
+            });
         })
     }
 
@@ -519,10 +616,16 @@ impl MarkdownPreview {
     }
 }
 
-/// Parses the whole text of `snapshot`; runs on a background thread.
-fn parse_snapshot(snapshot: BufferSnapshot) -> MarkdownBlocks {
+/// Parses the whole text of `snapshot` and resolves its image URLs
+/// against `images` (which reads the disk); runs on a background thread.
+fn parse_snapshot(snapshot: BufferSnapshot, images: &ImageContext) -> Parsed {
     let source = snapshot.text_for_range(0..snapshot.len_bytes());
-    parse_markdown_document(&source, None)
+    let blocks = parse_markdown_document(&source, None);
+    let images = resolve::resolve_images(&blocks, images);
+    Parsed {
+        blocks: Arc::new(blocks),
+        images: Arc::new(images),
+    }
 }
 
 /// A centred, muted message, as the code view shows load errors.
@@ -597,8 +700,9 @@ impl Render for MarkdownPreview {
                 window.request_animation_frame();
             }
         }
-        let style = Self::style(cx);
-        let on_link = self.link_handler();
+        let mut style = Self::style(cx);
+        style.images = Some(self.image_lookup());
+        let on_link = self.link_handler(cx);
         let last = blocks.blocks().len().saturating_sub(1);
         let (workbench, preview) = (self.workbench.clone(), cx.entity_id());
         let items = list(self.list_state.clone(), move |ix, _, cx| {

@@ -345,6 +345,7 @@ impl Workbench {
             let references = references_view.clone();
             let health = lsp_health.clone();
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
+            let preview_root: Arc<Path> = Arc::from(root.as_path());
             groups.set_tab_body_factory(
                 Rc::new(move |tab, _, cx| {
                     let path = match &tab.item {
@@ -352,9 +353,11 @@ impl Workbench {
                         TabItem::MarkdownPreview(path) | TabItem::MarkdownPreviewDynamic(path) => {
                             let dynamic = matches!(tab.item, TabItem::MarkdownPreviewDynamic(_));
                             let (path, docs) = (path.clone(), docs.clone());
-                            let workbench = workbench.clone();
+                            let (workbench, root) = (workbench.clone(), preview_root.clone());
                             return cx
-                                .new(|cx| MarkdownPreview::new(path, dynamic, docs, workbench, cx))
+                                .new(|cx| {
+                                    MarkdownPreview::new(path, dynamic, root, docs, workbench, cx)
+                                })
                                 .into();
                         }
                         TabItem::Extensions => {

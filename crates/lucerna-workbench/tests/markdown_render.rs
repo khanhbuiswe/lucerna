@@ -89,7 +89,7 @@ fn task_list_draws_checkboxes(cx: &mut TestAppContext) {
 #[gpui::test]
 fn image_without_context_shows_alt(cx: &mut TestAppContext) {
     let cx = host("![a cat](cat.png)\n", None, cx);
-    assert!(cx.debug_bounds("md-image-alt").is_some());
+    assert!(cx.debug_bounds("md-image-alt-0").is_some());
 }
 
 #[gpui::test]
