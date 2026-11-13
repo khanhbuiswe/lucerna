@@ -345,10 +345,56 @@ mod tests {
     fn escape_and_invalid_keys_cancel() {
         assert_edit("|abc def", "d<Esc>w", "abc |def");
         assert_edit("|abc def", "dxw", "abc |def");
-        // `/` comes later; for now it cancels. An unknown text object
-        // cancels too.
-        assert_edit("|abc def", "d/", "|abc def");
+        // An unknown text object cancels.
         assert_edit("|abc def", "diqw", "abc |def");
+    }
+
+    #[test]
+    fn operator_with_search_motion() {
+        assert_edit("|abc foo", "d/foo<CR>", "|foo");
+        // Then `.` searches again from the cursor.
+        assert_edit("|abc foo\nxyz foo", "d/foo<CR>jl.", "foo\nx|foo");
+        // Backward, ending in Insert.
+        assert_edit("bar x|yz", "c?bar<CR>Q<Esc>", "|Qyz");
+        // The count picks the nth match.
+        assert_edit("|a foo b foo c", "2d/foo<CR>", "|foo c");
+        assert_edit("|a foo b foo c", "d2/foo<CR>", "|foo c");
+        // `v` makes it inclusive.
+        assert_edit("|a foo", "dv/foo<CR>", "|oo");
+        // The exclusive rule: a match at the start of a line from the
+        // first non-blank deletes whole lines.
+        assert_edit("|abc\nbar", "d/bar<CR>", "|bar");
+        // `y` leaves the cursor; `n` goes on with the pattern.
+        assert_edit("|a foo b foo", "y/foo<CR>n", "a |foo b foo");
+        assert_edit("|a foo b foo", "y/foo<CR>nn", "a foo b |foo");
+    }
+
+    #[test]
+    fn operator_with_search_cancels() {
+        // Esc in the search cancels the operator too.
+        assert_edit("|abc foo", "d/foo<Esc>", "|abc foo");
+        assert_edit("|abc foo", "d/foo<Esc>w", "abc |foo");
+        assert_edit("|abc foo", "c/foo<Esc>w", "abc |foo");
+        // No match: nothing changes and `.` still repeats the `x`.
+        assert_edit("|abcd zz", "xd/q<CR>.", "|cd zz");
+        // Read-only: no edit.
+        let (text, actions) = run_edit_with(
+            Settings::default(),
+            |v| v.readonly = true,
+            "|abc foo",
+            "d/foo<CR>",
+        );
+        assert_eq!(text, "|abc foo");
+        assert!(!actions.iter().any(|a| matches!(a, Action::Edit(_))));
+    }
+
+    #[test]
+    fn operator_with_search_repeats_and_undoes_as_one_step() {
+        assert_edit("|ab foo\ncd foo", "c/foo<CR>X<Esc>j0.", "Xfoo\n|Xfoo");
+        assert_edit("|abc foo", "d/foo<CR>u", "|abc foo");
+        assert_edit("|a foo\nb foo", "d/foo<CR>j.u", "foo\n|b foo");
+        // `3.` replaces the count.
+        assert_edit("|a x b x c x d x", "d/x<CR>w3.", "x |x");
     }
 
     #[test]

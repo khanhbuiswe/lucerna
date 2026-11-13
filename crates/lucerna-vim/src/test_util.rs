@@ -11,6 +11,12 @@
 //! recording the typing, and stops at a `Type` step that comes outside
 //! Insert mode. A command that enters Insert and the typing up
 //! to Escape are one undo step too.
+//!
+//! After a key that opens the search (`/`, `?`), the keys type the
+//! pattern like the find widget: `<CR>` submits it with
+//! [`Vim::search_submitted`] (a literal, case-insensitive query from vim's
+//! cursor when the search opened), `<Esc>` dismisses it like the
+//! workbench, `<BS>` deletes a char.
 
 use std::ops::Range;
 use std::path::Path;
@@ -521,6 +527,7 @@ pub(crate) fn run_edit_with(
         globals: &mut globals,
         settings: &settings,
         actions: &mut actions,
+        search: None,
     };
     for key in parse_keys(keys) {
         run.key(key, false);
@@ -535,12 +542,47 @@ struct Run<'a> {
     globals: &'a mut VimGlobals,
     settings: &'a Settings,
     actions: &'a mut Vec<Action>,
+    /// The open search: its direction, the pattern typed so far, and
+    /// vim's cursor when it opened.
+    search: Option<(bool, String, Point)>,
+}
+
+/// The literal, case-insensitive query the test search submits.
+pub(crate) fn literal(pattern: &str) -> SearchQuery {
+    SearchQuery {
+        pattern: pattern.into(),
+        is_regex: false,
+        case_sensitive: false,
+        whole_word: false,
+    }
 }
 
 impl Run<'_> {
     /// One key: typed in Insert mode (recorded unless `replaying`), else
     /// fed to vim with its actions applied and its replay run.
     fn key(&mut self, key: Key, replaying: bool) {
+        if let Some((backward, pattern, origin)) = &mut self.search {
+            match key {
+                Key::Char(c) => pattern.push(c),
+                Key::Backspace => {
+                    pattern.pop();
+                }
+                Key::Enter => {
+                    let (backward, pattern, origin) = (*backward, literal(pattern), *origin);
+                    self.search = None;
+                    self.submit(pattern, backward, origin);
+                }
+                Key::Escape => {
+                    let origin = *origin;
+                    self.search = None;
+                    self.vim.search_dismissed();
+                    self.vim.set_cursor(origin);
+                    self.vim.clamp(&self.view.snapshot);
+                }
+                Key::Ctrl(_) => {}
+            }
+            return;
+        }
         let insert = self.vim.mode() == crate::Mode::Insert;
         let typed = match key {
             Key::Char('\t') => Some(Typed::Tab),
@@ -557,13 +599,39 @@ impl Run<'_> {
             return;
         }
         let from = self.vim.cursor();
-        match self.vim.feed(key, self.view, self.globals, self.settings) {
+        let out = self.vim.feed(key, self.view, self.globals, self.settings);
+        self.outcome(out, insert, from);
+    }
+
+    /// Submits the search `query` from `origin`, as the workbench does on
+    /// Enter in the find widget or for a replay's search step.
+    fn submit(&mut self, query: SearchQuery, backward: bool, origin: Point) {
+        let out = self.vim.search_submitted(
+            query,
+            backward,
+            origin,
+            self.view,
+            self.globals,
+            self.settings,
+        );
+        self.outcome(out, false, origin);
+    }
+
+    /// Carries out what a key or a submitted search returned; `insert`:
+    /// vim was in Insert mode before, with its cursor at `from`.
+    fn outcome(&mut self, out: Outcome, insert: bool, from: Point) {
+        match out {
             Outcome::Handled(done) => {
                 let entered = !insert && self.vim.mode() == crate::Mode::Insert;
                 if entered {
                     self.view.begin_group(from);
                 }
                 self.view.apply(self.vim, &done);
+                for a in &done {
+                    if let Action::OpenSearch { backward } = a {
+                        self.search = Some((*backward, String::new(), self.vim.cursor()));
+                    }
+                }
                 self.actions.extend(done);
                 if insert && self.vim.mode() != crate::Mode::Insert {
                     self.view.end_group();
@@ -578,6 +646,22 @@ impl Run<'_> {
                         // failed: the replay stops.
                         ReplayStep::Type(_) if self.vim.mode() != crate::Mode::Insert => break,
                         ReplayStep::Type(t) => self.view.type_typed(self.vim, &t),
+                        ReplayStep::Search {
+                            pattern,
+                            backward,
+                            is_regex,
+                            case_sensitive,
+                            whole_word,
+                        } => {
+                            let query = SearchQuery {
+                                pattern,
+                                is_regex,
+                                case_sensitive,
+                                whole_word,
+                            };
+                            let origin = self.vim.cursor();
+                            self.submit(query, backward, origin);
+                        }
                     }
                 }
                 self.view.end_group();

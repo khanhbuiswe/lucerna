@@ -327,6 +327,8 @@ impl VimLayer {
             }
             FindWidgetEvent::Dismissed => {
                 if let Some(state) = self.views.get_mut(&id) {
+                    // An operator waiting for the search (`d/`) is dropped.
+                    state.vim.search_dismissed();
                     state.vim.set_cursor(search.origin);
                     // The origin may be past the text after a reload.
                     state.vim.clamp(view.read(cx).snapshot());
@@ -677,8 +679,12 @@ impl VimLayer {
         if matches!(redo, Redo::Key(_)) && self.searching(id) {
             // A key reached the view while its `/` widget is open: the
             // user left the widget, so the search is over and the
-            // selection the view has now is the user's.
+            // selection the view has now is the user's, and an operator
+            // waiting for the search (`d/`) is dropped.
             self.end_search(cx);
+            if let Some(state) = self.views.get_mut(&id) {
+                state.vim.search_dismissed();
+            }
         }
         let outcome = {
             let v = view.read(cx);
@@ -835,8 +841,10 @@ impl VimLayer {
     }
 
     /// Runs the steps of an [`Outcome::Replay`] in order, as one undo
-    /// step: keys go through [`VimLayer::feed`] (searches run at once), and
-    /// typing goes through the view's typing path, unrecorded. A typing
+    /// step: keys go through [`VimLayer::feed`] (searches run at once),
+    /// an operator's search step through [`Vim::search_submitted`] from
+    /// vim's cursor (at once, no widget), and typing goes through the
+    /// view's typing path, unrecorded. A typing
     /// step outside Insert mode (the command that should have entered it
     /// failed) drops the rest. A key may return a replay of its own (a
     /// counted insert ends): it runs here, in place.
@@ -861,6 +869,31 @@ impl VimLayer {
             match step {
                 ReplayStep::Key(key) => {
                     self.feed(key, view, Retry::Sync, cx);
+                }
+                ReplayStep::Search {
+                    pattern,
+                    backward,
+                    is_regex,
+                    case_sensitive,
+                    whole_word,
+                } => {
+                    // An operator's `/` or `?`: searched at once, from vim's
+                    // cursor, with no find widget.
+                    let Some(origin) = self.views.get(&id).map(|s| s.vim.cursor()) else {
+                        break;
+                    };
+                    let query = SearchQuery {
+                        pattern,
+                        is_regex,
+                        case_sensitive,
+                        whole_word,
+                    };
+                    let redo = Redo::Search {
+                        query,
+                        backward,
+                        origin,
+                    };
+                    self.run(redo, view, Retry::Sync, cx);
                 }
                 ReplayStep::Type(typed) => {
                     let insert = self

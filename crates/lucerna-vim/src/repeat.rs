@@ -3,9 +3,9 @@
 
 use lucerna_text::{BufferSnapshot, Point};
 
-use crate::Key;
 use crate::classify::line;
 use crate::visual::VimSelection;
+use crate::{Key, SearchQuery};
 
 /// One typing event of an Insert session, as the editor carried it out.
 /// A replay sends it back through the same typing path, so auto-close and
@@ -30,6 +30,17 @@ pub enum ReplayStep {
     /// Type this through the editor's typing path, without calling
     /// [`crate::Vim::record_typed`].
     Type(Typed),
+    /// The search of an operator's `/` or `?` motion (`d/foo<CR>`): call
+    /// [`crate::Vim::search_submitted`] with this query, `backward`, and
+    /// vim's cursor as the origin, finding the matches at once and opening
+    /// no find widget. The flags are those of the original search.
+    Search {
+        pattern: String,
+        backward: bool,
+        is_regex: bool,
+        case_sensitive: bool,
+        whole_word: bool,
+    },
 }
 
 /// The selection a Visual change acted on, rebuilt from the cursor when
@@ -125,8 +136,13 @@ pub(crate) struct LastChange {
     /// The command's count: the product of the counts before and after an
     /// operator.
     pub count: Option<u32>,
-    /// The command's keys, without the register and the counts.
+    /// The command's keys, without the register and the counts (and
+    /// without the `/` or `?` of a search motion).
     pub keys: Vec<Key>,
+    /// The query and direction of an operator's `/` or `?` motion, run
+    /// after `keys` with no find widget. The whole query is kept, so the
+    /// repeat uses the flags (regex, case, whole word) of the original.
+    pub search: Option<(SearchQuery, bool)>,
     /// The selection of a Visual change.
     pub shape: Option<Shape>,
     /// The command ended in Insert: the typing until Escape.
@@ -164,6 +180,15 @@ impl LastChange {
         }
         keys.extend(&self.keys);
         let mut steps: Vec<ReplayStep> = keys.into_iter().map(ReplayStep::Key).collect();
+        if let Some((query, backward)) = &self.search {
+            steps.push(ReplayStep::Search {
+                pattern: query.pattern.clone(),
+                backward: *backward,
+                is_regex: query.is_regex,
+                case_sensitive: query.case_sensitive,
+                whole_word: query.whole_word,
+            });
+        }
         if self.insert {
             steps.extend(self.typed.iter().cloned().map(ReplayStep::Type));
             steps.push(ReplayStep::Key(Key::Escape));
@@ -180,7 +205,7 @@ mod tests {
     use crate::test_util::{
         TestView, assert_edit, assert_edit_with, parse_keys, run_edit, run_edit_with,
     };
-    use crate::{Action, Outcome, Settings, Vim, VimGlobals};
+    use crate::{Action, Outcome, SearchQuery, Settings, Vim, VimGlobals};
 
     fn tabs(view: &mut TestView) {
         view.config = EditConfig {
@@ -316,6 +341,46 @@ mod tests {
             .map(ReplayStep::Key)
             .collect();
         assert_eq!(out, Outcome::Replay(keys));
+    }
+
+    #[test]
+    fn search_operator_replays_its_search() {
+        let mut view = TestView::new("|ab foo");
+        let mut vim = Vim::new(view.cursor);
+        let mut g = VimGlobals::default();
+        let s = Settings::default();
+        for k in parse_keys("\"a2d/") {
+            if let Outcome::Handled(a) = vim.feed(k, &view, &mut g, &s) {
+                view.apply(&mut vim, &a);
+            }
+        }
+        assert_eq!(vim.pending(), "\"a2d/");
+        let query = SearchQuery {
+            pattern: "o".into(),
+            is_regex: false,
+            case_sensitive: true,
+            whole_word: false,
+        };
+        let Outcome::Handled(a) =
+            vim.search_submitted(query, false, vim.cursor(), &view, &mut g, &s)
+        else {
+            panic!()
+        };
+        view.apply(&mut vim, &a);
+        assert_eq!(view.marked(vim.cursor()), "|o");
+        let out = vim.feed(Key::Char('.'), &view, &mut g, &s);
+        let mut steps: Vec<ReplayStep> = parse_keys("\"a2d")
+            .into_iter()
+            .map(ReplayStep::Key)
+            .collect();
+        steps.push(ReplayStep::Search {
+            pattern: "o".into(),
+            backward: false,
+            is_regex: false,
+            case_sensitive: true,
+            whole_word: false,
+        });
+        assert_eq!(out, Outcome::Replay(steps));
     }
 
     #[test]

@@ -227,7 +227,10 @@ pub enum Outcome {
     /// and type each [`ReplayStep::Type`] through the editor's typing path
     /// (with the view's live auto-closed regions, so type-over and pair
     /// deletion behave as when typed) without calling
-    /// [`Vim::record_typed`].
+    /// [`Vim::record_typed`]. A [`ReplayStep::Search`] (the `/` or `?` of
+    /// an operator, `d/foo<CR>`) calls [`Vim::search_submitted`] with its
+    /// query from vim's cursor, finding the matches at once: answer its
+    /// [`Outcome::Retry`] by searching synchronously, with no find widget.
     ///
     /// - **Stop** when a `Type` step comes while vim is not in Insert mode
     ///   (the command that should have entered it failed, e.g. `ci(` with

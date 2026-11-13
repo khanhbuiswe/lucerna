@@ -597,3 +597,75 @@ fn unmarked_replacement_starting_in_indent_breaks_the_record(cx: &mut TestAppCon
     keys("j 0 .", cx);
     assert_eq!(text_of(&view, cx), " -Aqx\nqy\n");
 }
+
+/// Types `text` into the focused text input (the find widget's).
+fn type_text(text: &str, cx: &mut VisualTestContext) {
+    cx.simulate_input(text);
+    draw(cx);
+}
+
+fn find_visible(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> bool {
+    view.read_with(cx, |v, _| v.find_widget().is_some())
+}
+
+#[gpui::test]
+fn d_slash_through_find_widget(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("abc foo\nxyz foo\n", cx);
+    keys("d /", cx);
+    assert!(find_visible(&view, cx));
+    type_text("foo", cx);
+    // The incremental search does not edit.
+    assert_eq!(text_of(&view, cx), "abc foo\nxyz foo\n");
+    keys("enter", cx);
+    assert!(!find_visible(&view, cx));
+    assert_eq!(text_of(&view, cx), "foo\nxyz foo\n");
+    assert_eq!(cursor(&view, cx), pt(0, 0));
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    // `.` reruns the search with no widget, as one undo step.
+    keys("j l .", cx);
+    assert!(!find_visible(&view, cx));
+    assert_eq!(text_of(&view, cx), "foo\nxfoo\n");
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "foo\nxyz foo\n");
+    // The `d/foo` is one undo step.
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "abc foo\nxyz foo\n");
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "abc foo\nxyz foo\n");
+}
+
+#[gpui::test]
+fn c_slash_then_escape_cancels(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("abc foo\n", cx);
+    keys("c /", cx);
+    type_text("foo", cx);
+    keys("escape", cx);
+    assert!(!find_visible(&view, cx));
+    assert_eq!(text_of(&view, cx), "abc foo\n");
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    assert_eq!(cursor(&view, cx), pt(0, 0));
+    // The operator is gone: `w` only moves.
+    keys("w", cx);
+    assert_eq!(text_of(&view, cx), "abc foo\n");
+    assert_eq!(cursor(&view, cx), pt(0, 4));
+}
+
+#[gpui::test]
+fn c_slash_typing_escape_is_one_undo_step(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("ab foo\ncd foo\n", cx);
+    keys("c /", cx);
+    type_text("foo", cx);
+    keys("enter", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    assert_eq!(text_of(&view, cx), "foo\ncd foo\n");
+    commit(&view, "X", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "Xfoo\ncd foo\n");
+    keys("j 0 .", cx);
+    assert_eq!(text_of(&view, cx), "Xfoo\nXfoo\n");
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "Xfoo\ncd foo\n");
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "ab foo\ncd foo\n");
+}

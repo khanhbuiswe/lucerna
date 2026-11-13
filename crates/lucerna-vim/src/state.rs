@@ -202,6 +202,7 @@ impl Vim {
             register: None,
             count: None,
             keys: vec![Key::Char('i')],
+            search: None,
             shape: None,
             insert: true,
             typed: Vec::new(),
@@ -261,6 +262,22 @@ impl Vim {
         if self.mode == Mode::Normal && !count_key && !register_key {
             self.replay_typed = None;
         }
+        self.save_change(keys, None, saved, actions, view, g);
+    }
+
+    /// Records the command whose `keys` (and the `search` of a `/` or `?`
+    /// motion) just ran from the state `saved`, returning `actions`, as the
+    /// last change when it changed the text. One that entered Insert is
+    /// recorded at Escape, with the typing.
+    fn save_change(
+        &mut self,
+        keys: Vec<Key>,
+        search: Option<(SearchQuery, bool)>,
+        saved: &Vim,
+        actions: &[Action],
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+    ) {
         let edited = actions.iter().any(|a| matches!(a, Action::Edit(_)));
         let entered = self.mode == Mode::Insert;
         if !edited && !entered {
@@ -290,6 +307,7 @@ impl Vim {
             register,
             count,
             keys,
+            search,
             shape,
             insert: entered,
             typed: Vec::new(),
@@ -388,6 +406,23 @@ impl Vim {
         let saved = self.clone();
         let origin = self.clamp_in_mode(view.snapshot(), origin);
         self.cursor = origin;
+        if let Some(p) = self.op.take() {
+            let outcome = self.search_op(p, query.clone(), backward, view, g, s);
+            self.finish(&saved, origin, &outcome, view, g);
+            if let Outcome::Handled(actions) = &outcome {
+                // The keys of a typed `d/` end with the `/`; a replay feeds
+                // only `d` and then searches.
+                let mut keys = std::mem::take(&mut self.cmd_keys);
+                if matches!(keys.last(), Some(Key::Char('/' | '?'))) {
+                    keys.pop();
+                }
+                if self.mode == Mode::Normal {
+                    self.replay_typed = None;
+                }
+                self.save_change(keys, Some((query, backward)), &saved, actions, view, g);
+            }
+            return outcome;
+        }
         let n = self.search_count.take().unwrap_or(1);
         let outcome = if query.pattern.is_empty() {
             Outcome::Handled(vec![])
@@ -401,6 +436,70 @@ impl Vim {
             }
         };
         self.finish(&saved, origin, &outcome, view, g);
+        outcome
+    }
+
+    /// The find widget of a `/` or `?` closed without a search (Esc, or
+    /// the user left it): the operator waiting for it (`d/`) and the count
+    /// typed before it are dropped.
+    pub fn search_dismissed(&mut self) {
+        self.clear_pending();
+        self.search_count = None;
+        self.cmd_keys.clear();
+    }
+
+    /// Runs the operator `p` waiting for a `/` or `?` on the text from the
+    /// cursor to the nth match of `query` (an exclusive motion), `n` the
+    /// counts before and after the operator. The search is remembered for
+    /// `n` and highlighted, as a plain `/`. An empty pattern or no match
+    /// cancels the operator.
+    fn search_op(
+        &mut self,
+        p: PendingOp,
+        query: SearchQuery,
+        backward: bool,
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+        s: &Settings,
+    ) -> Outcome {
+        let n = match (p.count, self.count) {
+            (None, None) => 1,
+            (a, b) => {
+                (u64::from(a.unwrap_or(1)) * u64::from(b.unwrap_or(1))).min(MAX_COUNT as u64) as u32
+            }
+        };
+        self.clear_pending();
+        self.search_count = None;
+        if query.pattern.is_empty() {
+            return Outcome::Handled(vec![]);
+        }
+        let Some(matches) = view.matches(&query) else {
+            return Outcome::Retry(query);
+        };
+        g.last_search = Some((query.clone(), backward));
+        let snapshot = view.snapshot();
+        let from = self.cursor;
+        let at = snapshot.point_to_offset(from);
+        let Some(start) = search::nth_match(&matches, at, backward, n, s.wrapscan) else {
+            return Outcome::Handled(vec![Action::Highlight(query)]);
+        };
+        let to = snapshot.offset_to_point(start);
+        let change = p.op == Operator::Change;
+        let mut outcome =
+            match operator::motion_range(snapshot, from, to, MotionKind::Exclusive, p.force) {
+                Some(r) => {
+                    // A yank keeps the cursor when the match is ahead.
+                    let forward = (to.row, to.column) >= (from.row, from.column);
+                    let yank_cursor = if forward { from } else { to };
+                    self.finish_op(p, r, Some(yank_cursor), view, g, s)
+                }
+                // The match is under the cursor: `c` still inserts.
+                None if change => self.change_nothing(view),
+                None => Outcome::Handled(vec![]),
+            };
+        if let Outcome::Handled(actions) = &mut outcome {
+            actions.push(Action::Highlight(query));
+        }
         outcome
     }
 
@@ -1142,6 +1241,14 @@ impl Vim {
             self.count = post;
             self.set_pending("");
             return Outcome::Handled(vec![]);
+        }
+        if prefix.is_none() && matches!(c, '/' | '?') {
+            // The operator waits for the search: `search_submitted` runs
+            // it, `search_dismissed` drops it.
+            self.op = Some(p);
+            self.count = post;
+            self.set_pending(&c.to_string());
+            return Outcome::Handled(vec![Action::OpenSearch { backward: c == '?' }]);
         }
         let count = match (p.count, post) {
             (None, None) => None,
