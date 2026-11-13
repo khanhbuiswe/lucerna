@@ -214,3 +214,12 @@ fn selection_falls_back_to_visible_ancestor() {
     model.set_snapshot(snapshot(&[("Cargo.toml", EntryKind::File)]));
     assert_eq!(model.selection(), &Selection::Root);
 }
+
+#[test]
+fn select_hidden_path_is_kept_until_tree_changes() {
+    let mut model = ExplorerModel::new(project());
+    model.select(Selection::Path(p("src/main.rs")));
+    assert_eq!(model.selection(), &Selection::Path(p("src/main.rs")));
+    model.reveal(Path::new("src/main.rs"));
+    assert_eq!(model.selection(), &Selection::Path(p("src/main.rs")));
+}

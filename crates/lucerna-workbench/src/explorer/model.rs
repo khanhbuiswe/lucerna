@@ -75,13 +75,15 @@ impl ExplorerModel {
         &self.selection
     }
 
-    /// Selects `sel`; a path that is not a visible row falls back to its
-    /// nearest visible ancestor, else the root.
+    /// Selects `sel` as given, even when it is not a visible row yet (e.g.
+    /// before `reveal` expands its folders). The next `toggle` or
+    /// `set_snapshot` moves a still-hidden selection to its nearest visible
+    /// ancestor, else the root.
     pub fn select(&mut self, sel: Selection) {
         self.selection = sel;
-        self.fix_selection();
     }
 
+    /// A path that is not a visible row reports `File`.
     pub fn selected_kind(&self) -> SelectedKind {
         match &self.selection {
             Selection::Root => SelectedKind::Root,
