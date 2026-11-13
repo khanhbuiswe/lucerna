@@ -1,0 +1,143 @@
+# Builds Lucerna.app on GitHub and attaches it to a GitHub Release.
+#
+# A pushed `v*` tag builds, packs and publishes the release. A manual run
+# (workflow_dispatch) builds and packs only, and keeps the zip as a workflow
+# artifact, so the pipeline can be tried without publishing anything.
+#
+# The app is signed ad hoc by scripts/bundle-app.sh and is not notarized. The
+# "Sign and notarize" step is ready for a Developer ID: it runs only when the
+# APPLE_* secrets are set. See docs/releasing.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bundle-macos:
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      contents: write # gh release create
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+      # The tag must name the version in Cargo.toml, so the app's
+      # CFBundleShortVersionString matches the release.
+      - name: Read version
+        id: version
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "::error::no version in Cargo.toml"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip=Lucerna-$version-macos-aarch64.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Build Lucerna.app
+        run: scripts/bundle-app.sh
+
+      # Replaces the ad hoc signature with a Developer ID one, notarizes the
+      # app and staples the ticket. Skipped unless every APPLE_* secret is set.
+      - name: Sign and notarize
+        if: >-
+          env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' &&
+          env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_ID != '' &&
+          env.APPLE_TEAM_ID != '' && env.APPLE_APP_PASSWORD != ''
+        env:
+          APP: target/release/Lucerna.app
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 16)
+          cert="$RUNNER_TEMP/certificate.p12"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          # Put the signing keychain first in the search list, keeping the others.
+          # shellcheck disable=SC2046 # one word per existing keychain path
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$cert"
+
+          codesign --force --timestamp --options runtime \
+            --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$APP/Contents/MacOS/luc"
+          codesign --force --timestamp --options runtime \
+            --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+          submission="$RUNNER_TEMP/notarize.zip"
+          ditto -c -k --keepParent "$APP" "$submission"
+          xcrun notarytool submit "$submission" --wait \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+          xcrun stapler staple "$APP"
+          spctl --assess --type execute --verbose "$APP"
+
+          security delete-keychain "$keychain"
+
+      - name: Pack zip
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent target/release/Lucerna.app "dist/${{ steps.version.outputs.zip }}"
+          shasum -a 256 "dist/${{ steps.version.outputs.zip }}" | tee "dist/${{ steps.version.outputs.zip }}.sha256"
+
+      - name: Keep zip as workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.zip }}
+          path: dist/
+          retention-days: 7
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZIP: ${{ steps.version.outputs.zip }}
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "Lucerna $GITHUB_REF_NAME for macOS (Apple silicon)."
+            echo
+            if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+              echo "This build is signed ad hoc and not notarized. The first time you open it,"
+              echo "right-click Lucerna.app and choose **Open**, or run:"
+              echo
+              echo '```sh'
+              echo 'xattr -dr com.apple.quarantine /Applications/Lucerna.app'
+              echo '```'
+            fi
+          } > "$notes"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Lucerna $GITHUB_REF_NAME" \
+            --notes-file "$notes" \
+            --verify-tag \
+            "dist/$ZIP" "dist/$ZIP.sha256"
