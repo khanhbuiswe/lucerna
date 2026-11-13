@@ -39,8 +39,9 @@ pub(crate) enum Shape {
     /// `v` within one row: this many chars.
     Chars(u32),
     /// `v` over `rows` rows, ending on the char `end_col` chars into the
-    /// last one.
-    CharRows { rows: u32, end_col: u32 },
+    /// last one, or on its line break (`v$`) when `None`. A one-row `v$`
+    /// is `rows: 1`.
+    CharRows { rows: u32, end_col: Option<u32> },
     /// `V` over this many rows.
     Lines(u32),
 }
@@ -53,11 +54,13 @@ impl Shape {
             let col = (p.column as usize).min(text.len());
             text.get(..col).map_or(0, |t| t.chars().count()) as u32
         };
+        // The selection ends on the line break.
+        let eol = |p: Point| p.column as usize >= crate::visual::line_len(s, p.row) as usize;
         match *sel {
             VimSelection::Char {
                 start,
                 end_inclusive,
-            } if start.row == end_inclusive.row => Some(Shape::Chars(
+            } if start.row == end_inclusive.row && !eol(end_inclusive) => Some(Shape::Chars(
                 chars_before(end_inclusive) - chars_before(start) + 1,
             )),
             VimSelection::Char {
@@ -65,7 +68,7 @@ impl Shape {
                 end_inclusive,
             } => Some(Shape::CharRows {
                 rows: end_inclusive.row - start.row + 1,
-                end_col: chars_before(end_inclusive),
+                end_col: (!eol(end_inclusive)).then(|| chars_before(end_inclusive)),
             }),
             VimSelection::Line { start_row, end_row } => {
                 Some(Shape::Lines(end_row - start_row + 1))
@@ -85,8 +88,13 @@ impl Shape {
             Shape::CharRows { rows, end_col } => {
                 keys.push(Key::Char('v'));
                 push_counted(&mut keys, rows - 1, 'j');
-                keys.push(Key::Char('0'));
-                push_counted(&mut keys, end_col, 'l');
+                match end_col {
+                    Some(col) => {
+                        keys.push(Key::Char('0'));
+                        push_counted(&mut keys, col, 'l');
+                    }
+                    None => keys.push(Key::Char('$')),
+                }
             }
             Shape::Lines(rows) => {
                 keys.push(Key::Char('V'));
@@ -238,6 +246,22 @@ mod tests {
         assert_edit("|ab\ncde\nfgh\nijk\nlm", "vjlldj.", "\n|\nlm");
         // Counted visual `>` repeats with its count.
         assert_edit_with(Settings::default(), tabs, "|a\nb", "v2>j.", "\t\ta\n\t\t|b");
+    }
+
+    #[test]
+    fn repeat_visual_to_the_line_end() {
+        assert_edit("|ab\ncd\nef", "v$d.", "|ef");
+        assert_edit("|a\nbb\nc\nd\ne", "vj$d.", "|e");
+        // From the middle of a row, `$` still reaches its line break.
+        assert_edit("x|abc\nd\nef\ng", "v$dj.", "xd\ne|g");
+    }
+
+    #[test]
+    fn failed_insert_command_in_a_replay_types_nothing() {
+        // `.` repeats `ci(` where there is no pair: nothing is typed.
+        assert_edit("(|x) y", "ci(foo<Esc>$.", "(foo) |y");
+        // The unused typing does not leak into the next Insert session.
+        assert_edit("(|x) y", "ci(foo<Esc>$.iz<Esc>0.", "|z(foo) zy");
     }
 
     #[test]

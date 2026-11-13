@@ -8,7 +8,8 @@
 //! `<CR>` is `Typed::Newline`, `<BS>` `Typed::DeleteLeft` and `<Tab>`
 //! `Typed::Tab`. `<Esc>` and ctrl keys still go to vim. An
 //! [`Outcome::Replay`] runs its steps at once, in one undo step, without
-//! recording the typing. A command that enters Insert and the typing up
+//! recording the typing, and stops at a `Type` step that comes outside
+//! Insert mode. A command that enters Insert and the typing up
 //! to Escape are one undo step too.
 
 use std::ops::Range;
@@ -573,6 +574,9 @@ impl Run<'_> {
                 for step in steps {
                     match step {
                         ReplayStep::Key(k) => self.key(k, true),
+                        // The command that should have entered Insert
+                        // failed: the replay stops.
+                        ReplayStep::Type(_) if self.vim.mode() != crate::Mode::Insert => break,
                         ReplayStep::Type(t) => self.view.type_typed(self.vim, &t),
                     }
                 }

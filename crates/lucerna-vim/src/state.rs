@@ -213,6 +213,11 @@ impl Vim {
     /// keys of the command being typed and, once it is done, records it as
     /// the last change if it changed the text. A command that enters
     /// Insert is recorded at Escape, with the typing.
+    ///
+    /// Every fed key goes through here, a replay's too: a replay is
+    /// recorded like typed keys, which is how `N.` and `"1p.` update the
+    /// record. V2b macros (`@a`) must not overwrite the last change this
+    /// way and need a flag that turns this off while a macro runs.
     fn record(
         &mut self,
         key: Key,
@@ -247,6 +252,13 @@ impl Vim {
         let Outcome::Handled(actions) = outcome else {
             return;
         };
+        // A command finished back in Normal mode without entering Insert:
+        // a `.` replay that would have typed failed (`ci(` with no pair),
+        // so its typing must not reach a later Insert session. The keys
+        // that rebuild a Visual shape leave vim in Visual and keep it.
+        if self.mode == Mode::Normal {
+            self.replay_typed = None;
+        }
         let edited = actions.iter().any(|a| matches!(a, Action::Edit(_)));
         let entered = self.mode == Mode::Insert;
         if !edited && !entered {
@@ -291,7 +303,6 @@ impl Vim {
                     )
                 });
         } else {
-            self.replay_typed = None;
             g.last_change = Some(change);
         }
     }

@@ -225,9 +225,19 @@ pub enum Outcome {
     /// Run these steps in order, all in one undo group: feed each
     /// [`ReplayStep::Key`] (and apply its actions) before the next step,
     /// and type each [`ReplayStep::Type`] through the editor's typing path
-    /// without calling [`Vim::record_typed`]. A key fed here may itself
-    /// return `Replay` (a counted insert at Escape): run those steps in
-    /// place, before the rest. `.` and the Escape that ends a counted
-    /// insert (`3ifoo<Esc>`) return it.
+    /// (with the view's live auto-closed regions, so type-over and pair
+    /// deletion behave as when typed) without calling
+    /// [`Vim::record_typed`].
+    ///
+    /// - **Stop** when a `Type` step comes while vim is not in Insert mode
+    ///   (the command that should have entered it failed, e.g. `ci(` with
+    ///   no pair): drop it and every step after it.
+    /// - A key fed here may itself return `Replay` (a counted insert at
+    ///   Escape): run those steps in place, before the rest.
+    /// - `.` returns it, and so does the user's own Escape that ends a
+    ///   counted insert (`3ifoo<Esc>`), outside any `.`. That one runs
+    ///   inside the Insert session's undo group, still open (its last
+    ///   step, Escape, ends the session), and its typing is not recorded
+    ///   either: the record already holds one copy.
     Replay(Vec<ReplayStep>),
 }
