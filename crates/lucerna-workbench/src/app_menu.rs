@@ -326,6 +326,10 @@ pub static MENUS: &[MenuSpec] = &[
         entries: &[
             command("Show All Commands", "workbench.action.showCommands"),
             command("Open Logs Folder", "lucerna.openLogsFolder"),
+            command(
+                "Third-Party Licenses",
+                "workbench.action.openThirdPartyLicenses",
+            ),
         ],
     },
 ];
@@ -818,6 +822,12 @@ mod tests {
         let edit = titles(menu(&mac(&without), "Edit"));
         assert!(!edit.iter().any(|t| t == "Toggle Line Comment"));
         assert_ne!(edit.last().map(String::as_str), Some("—"));
+    }
+
+    #[test]
+    fn help_lists_third_party_licenses() {
+        let menus = mac(&Workbench::command_ids());
+        assert!(titles(menu(&menus, "Help")).contains(&"Third-Party Licenses".to_string()));
     }
 
     #[test]

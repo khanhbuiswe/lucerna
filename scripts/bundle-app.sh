@@ -8,7 +8,8 @@
 #              ($LUC_BIN_DIR, default ~/.local/bin)
 #
 # Uses only tools that ship with macOS: sips renders the SVG icon, iconutil
-# packs the .icns, plutil checks the plist, codesign signs ad hoc.
+# packs the .icns, plutil checks the plist, codesign signs ad hoc, python3
+# writes the license notices.
 # Research and choices: docs/research/2026-11-09-app-bundle.md.
 set -eu
 
@@ -67,6 +68,10 @@ sed -e "s/@VERSION@/$version/g" -e "s/@BUILD@/$build/g" \
 plutil -lint -s "$contents/Info.plist"
 printf 'APPL????' > "$contents/PkgInfo"
 cp "$target/$profile/luc" "$contents/MacOS/luc"
+# Third-party license notices, which the licenses of the bundled crates,
+# fonts and icons require to ship with the binary. Help: Third-Party
+# Licenses opens this file.
+python3 -I scripts/gen-licenses.py "$contents/Resources/licenses.md"
 
 # The icon: the 1024 px tile shrunk to Apple's 824 px icon grid, centred on
 # a transparent 1024 px canvas, then every size iconutil expects.
