@@ -1327,7 +1327,9 @@ impl Vim {
                 Some(crate::edit::shift_rows(ctx, first, last, c == '<', n))
             }),
             'r' => {
-                let ch = arg.unwrap_or(' ');
+                let Some(ch) = arg else {
+                    return self.left_visual(Outcome::Handled(vec![]));
+                };
                 let range = r.range.clone();
                 self.edit_with(view, |ctx| crate::edit::replace_selection(ctx, range, ch))
             }

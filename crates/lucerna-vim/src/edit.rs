@@ -4,8 +4,7 @@ use std::ops::Range;
 
 use lucerna_editor::case::{Case, change_case};
 use lucerna_editor::edit::replace_ranges;
-use lucerna_editor::lines::{indent_lines, outdent_lines};
-use lucerna_editor::{Ctx, EditKind, EditPlan, Goal, Selection, SelectionSet};
+use lucerna_editor::{Ctx, EditKind, EditPlan, SelectionSet};
 use lucerna_text::{BufferSnapshot, Point};
 
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -156,10 +155,13 @@ pub(crate) fn write(
     g.write_register(register, content, kind, s.use_system_clipboard)
 }
 
-/// `>` and `<`: shifts rows `first..=last` by `levels` indent levels, the
-/// way the editor's indent and outdent commands do once per level. The
-/// cursor goes to the first non-blank of the first row (onto the last
-/// char of indent when the row is blank).
+/// `>` and `<`: shifts rows `first..=last` by `levels` indent levels, as
+/// the editor's indent and outdent commands do once per level (each
+/// non-empty row snaps to the next or previous tab stop, written in the
+/// configured style; an empty row is indented only when it is the only
+/// row), computed in one pass so a huge count stays linear. The cursor
+/// goes to the first non-blank of the first row (onto the last char of
+/// indent when the row is blank).
 pub(crate) fn shift_rows(
     ctx: Ctx,
     first: u32,
@@ -168,58 +170,54 @@ pub(crate) fn shift_rows(
     levels: u32,
 ) -> (EditPlan, Point) {
     let snap = ctx.snapshot;
-    let at = row_start(snap, first);
-    // Shift a copy of just these rows, then replace each row's indent.
-    let mut rows = BufferSnapshot::from_text(&snap.text_for_range(at..line_end(snap, last)));
-    for _ in 0..levels.max(1) {
-        let c = Ctx {
-            snapshot: &rows,
-            config: ctx.config,
-            language: None,
-            syntax: None,
-        };
-        let sel = Selection {
-            id: 0,
-            anchor: 0,
-            head: rows.len_bytes(),
-            goal: Goal::None,
-        };
-        let set = SelectionSet::from_selections(vec![sel], 0, false);
-        let plan = if outdent {
-            outdent_lines(c, &set)
+    let ts = ctx.config.tab_size.max(1);
+    let levels = levels.max(1);
+    let indent = |cols: u32| {
+        if ctx.config.insert_spaces {
+            " ".repeat(cols as usize)
         } else {
-            indent_lines(c, &set)
-        };
-        if plan.edits.is_empty() {
-            break;
+            "\t".repeat((cols / ts) as usize) + &" ".repeat((cols % ts) as usize)
         }
-        let mut text = rows.text_for_range(0..rows.len_bytes());
-        for (range, new) in plan.edits.iter().rev() {
-            text.replace_range(range.clone(), new);
-        }
-        rows = BufferSnapshot::from_text(&text);
-    }
+    };
     let mut edits = Vec::new();
+    let mut first_lead = None;
     for row in first..=last {
-        let old = line(snap, row);
-        let new = line(&rows, row - first);
-        let (old_lead, new_lead) = (leading_whitespace(&old), leading_whitespace(&new));
-        if old[..old_lead as usize] != new[..new_lead as usize] {
+        let text = line(snap, row);
+        let lead = &text[..leading_whitespace(&text) as usize];
+        let vis = lead.chars().fold(0u32, |col, c| {
+            if c == '\t' {
+                (col / ts + 1) * ts
+            } else {
+                col + 1
+            }
+        });
+        let cols = if outdent {
+            (vis.div_ceil(ts).saturating_sub(levels)).saturating_mul(ts)
+        } else if text.is_empty() && first != last {
+            0
+        } else {
+            (vis / ts).saturating_add(levels).saturating_mul(ts)
+        };
+        let new = if outdent && vis == 0 {
+            lead.to_string()
+        } else {
+            indent(cols)
+        };
+        if row == first {
+            first_lead = Some((text.len() as u32, lead.len() as u32, new.len() as u32));
+        }
+        if new != lead {
             let start = row_start(snap, row);
-            edits.push((
-                start..start + old_lead as usize,
-                new[..new_lead as usize].to_string(),
-            ));
+            edits.push((start..start + lead.len(), new));
         }
     }
-    let text = line(snap, first);
-    let old = leading_whitespace(&text);
-    let new = leading_whitespace(&line(&rows, 0));
-    let column = if text.len() as u32 == old {
+    let (len, old, new) = first_lead.unwrap_or((0, 0, 0));
+    let column = if len == old {
         new.saturating_sub(1)
     } else {
         new
     };
+    let at = row_start(snap, first);
     let plan = replace_ranges(ctx, edits, at + column as usize, EditKind::Other);
     (plan, Point { row: first, column })
 }
@@ -951,17 +949,101 @@ mod tests {
 
     #[test]
     fn visual_block_operators_do_nothing() {
-        for keys in [
-            "<C-v>jd", "<C-v>jx", "<C-v>jc", "<C-v>j>", "<C-v>jU", "<C-v>jrx", "<C-v>jp",
-        ] {
-            let (_, vim, actions) =
-                run_keys(Settings::default(), |_| {}, "|ab\ncd", &format!("yl{keys}"));
+        let (view, before, _) = run_keys(Settings::default(), |_| {}, "|ab\ncd", "yl<C-v>j");
+        let selection = before.selection(&view.snapshot, view.tab_size);
+        assert!(selection.is_some());
+        for key in ["d", "x", "c", ">", "U", "rx", "p", "D", "J", "Y", "~", "u"] {
+            let keys = format!("yl<C-v>j{key}");
+            let (view, vim, actions) = run_keys(Settings::default(), |_| {}, "|ab\ncd", &keys);
             assert!(
                 !actions.iter().any(|a| matches!(a, Action::Edit(_))),
                 "{keys}: {actions:?}"
             );
             assert_eq!(vim.mode(), Mode::VisualBlock, "{keys}");
+            assert_eq!(
+                vim.selection(&view.snapshot, view.tab_size),
+                selection,
+                "{keys}"
+            );
         }
+    }
+
+    #[test]
+    fn visual_dollar_takes_the_line_break() {
+        assert_edit("|ab\ncd", "v$d", "|cd");
+        let (text, actions) = run_edit("|ab\ncd", "v$c");
+        assert_eq!(text, "|cd");
+        assert!(actions.contains(&Action::ModeChanged(Mode::Insert)));
+        // The last line has no line break: only its text goes, and the
+        // cursor stays on the row that is left.
+        assert_edit("ab\n|cd", "v$d", "ab\n|");
+        assert_edit("ab\n|cd", "vld", "ab\n|");
+    }
+
+    #[test]
+    fn visual_multibyte_last_char() {
+        assert_edit("|aé b", "vld", "| b");
+        assert_edit("|aé b", "vlU", "|AÉ b");
+        assert_edit("|aé b", "vlr*", "|** b");
+        assert_edit("|aé b", "vlc", "| b");
+    }
+
+    #[test]
+    fn visual_backward_selection() {
+        assert_edit("ab|cd", "vhd", "a|d");
+        assert_edit("ab\nc|d", "vkd", "|a");
+        assert_edit("ab|cd", "vhU", "a|BCd");
+    }
+
+    #[test]
+    fn visual_on_the_phantom_row() {
+        let (text, actions) = run_edit("ab\n|", "vd");
+        assert_eq!(text, "ab\n|");
+        assert!(!actions.iter().any(|a| matches!(a, Action::Edit(_))));
+        let (text, actions) = run_edit("ab\n|", "vc");
+        assert_eq!(text, "ab\n|");
+        assert!(!actions.iter().any(|a| matches!(a, Action::Edit(_))));
+        assert!(actions.contains(&Action::ModeChanged(Mode::Insert)));
+        assert_edit("ab\n|", "Vd", "|ab");
+    }
+
+    #[test]
+    fn visual_operators_use_the_register_prefix() {
+        assert_edit("|ab cd", "v\"ad$\"ap", "b cd|a");
+        // `"_` leaves `"` alone.
+        assert_edit("|ab cd", "yiwwv\"_d0P", "a|bab d");
+        assert_edit("|ab cd", "yiwwvd0P", "|cab d");
+        // A named linewise register with a count over lines.
+        assert_edit("|ab\ncd\nef", "\"ayyjV\"a2p", "ab\n|ab\nab\nef");
+    }
+
+    #[test]
+    fn visual_shift_with_a_huge_count_is_direct() {
+        let (text, _) = run_edit("|a\nb\nc", "Vjj99999>");
+        let width = 99_999 * 4;
+        for (row, line) in text.replace('|', "").lines().enumerate() {
+            assert_eq!(line.len(), width + 1, "row {row}");
+            assert!(line[..width].bytes().all(|b| b == b' '));
+        }
+        assert_edit("    |a\n        b", "Vj99999<lt>", "|a\nb");
+    }
+
+    #[test]
+    fn shift_keeps_the_editor_rules() {
+        // Empty rows of several are skipped; a lone empty row is indented.
+        assert_edit("|a\n\nb", "Vjj>", "    |a\n\n    b");
+        assert_edit("a\n|\nb", "V2>", "a\n       | \nb");
+        // Rows snap to the tab stops.
+        assert_edit("  |a\n     b", "Vj>", "    |a\n        b");
+        assert_edit("  |a\n     b", "Vj<lt>", "|a\n    b");
+        let s = Settings::default();
+        assert_edit_with(
+            s,
+            |v| v.config.insert_spaces = false,
+            "|a\n  b",
+            "Vj2>",
+            "\t\t|a\n\t\tb",
+        );
     }
 
     #[test]
