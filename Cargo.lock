@@ -3442,6 +3442,7 @@ dependencies = [
  "futures",
  "libc",
  "lucerna-terminal",
+ "regex",
  "tempfile",
 ]
 

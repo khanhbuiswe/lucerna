@@ -18,6 +18,8 @@ pub struct Snapshot {
     pub cols: u16,
     /// Visible rows only, `rows × cols`.
     pub cells: Vec<Vec<Cell>>,
+    /// `wrapped[i]`: row `i` continues into row `i + 1` (soft wrap).
+    pub wrapped: Vec<bool>,
     /// `None` when the app hid the cursor (DECTCEM) or it is scrolled out of view.
     pub cursor: Option<CursorState>,
     pub selection: Option<SelectionRange>,
@@ -356,11 +358,15 @@ pub(crate) fn take<T: EventListener>(term: &Term<T>) -> Snapshot {
     let offset = content.display_offset;
 
     let mut cells: Vec<Vec<Cell>> = (0..rows).map(|_| Vec::with_capacity(cols)).collect();
+    let mut wrapped = vec![false; rows];
     let mut last_link = None;
     for indexed in content.display_iter {
         let row = indexed.point.line.0 + offset as i32;
-        if let Some(line) = usize::try_from(row).ok().and_then(|r| cells.get_mut(r)) {
-            line.push(cell(indexed.cell, &mut last_link));
+        if let Some(r) = usize::try_from(row).ok().filter(|r| *r < rows) {
+            cells[r].push(cell(indexed.cell, &mut last_link));
+            if indexed.cell.flags.contains(Flags::WRAPLINE) {
+                wrapped[r] = true;
+            }
         }
     }
 
@@ -383,6 +389,7 @@ pub(crate) fn take<T: EventListener>(term: &Term<T>) -> Snapshot {
         rows: rows as u16,
         cols: cols as u16,
         cells,
+        wrapped,
         cursor,
         selection: content.selection.map(|s| SelectionRange {
             start: grid_point(s.start),
@@ -416,5 +423,14 @@ mod tests {
             assert!(m.intersects(Modes::MOUSE_MODE));
         }
         assert!(!Modes::SGR_MOUSE.intersects(Modes::MOUSE_MODE));
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn long_line_sets_wrapped() {
+        let t = crate::Terminal::fake(3, 10, 0);
+        t.feed(b"abcdefghijklmno\r\nxyz");
+        let snap = t.snapshot();
+        assert_eq!(snap.wrapped, vec![true, false, false]);
     }
 }
