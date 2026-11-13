@@ -130,10 +130,15 @@ pub(crate) struct LinkState {
     /// The latest position a throttled move left for the trailing scan.
     pending_pos: Option<Point<Pixels>>,
     trailing: Option<Task<()>>,
-    /// The resolution in flight; dropping it cancels it.
+    /// The hover resolution in flight; dropping it cancels it.
     resolving: Option<Task<()>>,
-    /// Numbers resolutions, so only the latest one is applied.
+    /// The resolution of a ⌘+clicked path. Kept apart from `resolving`, so
+    /// letting go of ⌘ or moving on right after the click does not drop it.
+    opening: Option<Task<()>>,
+    /// Numbers resolutions, so only the latest one of each kind is applied.
     request: u64,
+    /// The `request` number of the click in `opening`.
+    open_request: u64,
     cache: HashMap<CacheKey, (Instant, Option<Resolved>)>,
     /// The foreground process's cwd, when known: polled here at most every
     /// [`CWD_POLL`] while links are looked up (Task 12's title poll may
@@ -277,20 +282,22 @@ impl TerminalView {
         self.set_shown(None, cx);
     }
 
-    /// The modifiers changed while the view is focused: pressing the link
-    /// modifier over the grid looks for a link at once, releasing it hides
-    /// the link.
+    /// The modifiers changed (heard at the workbench root, focused or
+    /// not): the link modifier going down over the grid looks for a link
+    /// at once; going up hides the link and drops a pending trailing scan.
+    /// `visible`: the panel shows this view.
     pub(crate) fn link_modifiers_changed(
         &mut self,
         m: &Modifiers,
         pos: Point<Pixels>,
+        visible: bool,
         cx: &mut Context<Self>,
     ) {
         if !link_modifier(m) {
             if self.link_active() {
                 self.release_link(cx);
             }
-        } else if !self.mouse_pressed() {
+        } else if visible && !self.mouse_pressed() {
             self.scan_link(pos, cx);
         }
     }
@@ -510,7 +517,7 @@ impl TerminalView {
             }
         });
         let (start, end, stamp) = (c.start, c.end, c.stamp);
-        self.links.resolving = Some(cx.spawn(async move |this, cx| {
+        let slot = cx.spawn(async move |this, cx| {
             let (polled, cwd, resolved) = task.await;
             let _ = this.update(cx, |view, cx| {
                 if polled.is_some() {
@@ -520,17 +527,21 @@ impl TerminalView {
                 view.links
                     .cache
                     .insert((raw, line, col, cwd), (at, resolved.clone()));
+                let target = resolved.map(LinkTarget::from_resolved);
+                if open {
+                    if view.links.open_request == request {
+                        view.links.opening = None;
+                        if let Some(target) = target {
+                            view.open_link(target, cx);
+                        }
+                    }
+                    return;
+                }
                 if view.links.request != request {
                     return;
                 }
                 view.links.resolving = None;
-                let Some(resolved) = resolved else {
-                    return;
-                };
-                let target = LinkTarget::from_resolved(resolved);
-                if open {
-                    view.open_link(target, cx);
-                } else {
+                if let Some(target) = target {
                     let shown = ShownLink {
                         start,
                         end,
@@ -540,7 +551,13 @@ impl TerminalView {
                     view.set_shown(Some(shown), cx);
                 }
             });
-        }));
+        });
+        if open {
+            self.links.open_request = request;
+            self.links.opening = Some(slot);
+        } else {
+            self.links.resolving = Some(slot);
+        }
     }
 
     /// Opens `target`: a URL in the browser, a file or folder through the

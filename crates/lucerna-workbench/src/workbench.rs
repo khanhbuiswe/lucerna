@@ -9,8 +9,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, ParentElement, Pixels, Render, Styled, Subscription, Task, WeakEntity, Window,
-    WindowHandle, div, prelude::*, px,
+    KeyDownEvent, ModifiersChangedEvent, ParentElement, Pixels, Render, Styled, Subscription, Task,
+    WeakEntity, Window, WindowHandle, div, prelude::*, px,
 };
 use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::code_view::{self, CodeView, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
-use crate::documents::{DocumentEvent, DocumentStatusItem, Documents};
+use crate::documents::{DocumentEvent, DocumentStatusItem, Documents, GoTo};
 use crate::editor_groups::{
     self, EditorGroups, EditorGroupsView, GroupId, OpenMode, TabId, TabItem,
 };
@@ -1309,6 +1309,18 @@ impl Workbench {
         point: Point,
         cx: &mut Context<Self>,
     ) {
+        self.open_path_at_target(path, mode, GoTo::Byte(point), cx);
+    }
+
+    /// [`Workbench::open_path_at`] for a [`GoTo`], which may count its
+    /// column in characters.
+    fn open_path_at_target(
+        &mut self,
+        path: Arc<Path>,
+        mode: OpenMode,
+        to: GoTo,
+        cx: &mut Context<Self>,
+    ) {
         let path = self.absolute_path(&path);
         self.open_path(path.clone(), mode, cx);
         // An already-drawn tab has its view; a new one gets it on draw.
@@ -1318,8 +1330,8 @@ impl Workbench {
             .active_body()
             .and_then(|v| v.downcast::<CodeView>().ok());
         self.documents.update(cx, |docs, cx| match view {
-            Some(view) => docs.go_to(&view, point, cx),
-            None => docs.go_to_when_opened(&path, point),
+            Some(view) => docs.go_to_target(&view, to, cx),
+            None => docs.go_to_when_opened(&path, to),
         });
     }
 
@@ -1778,6 +1790,24 @@ impl Workbench {
         }
     }
 
+    /// The modifiers changed: the shown terminal looks for a link under
+    /// the mouse when ⌘ goes down and hides it when ⌘ goes up.
+    fn terminal_modifiers_changed(
+        &mut self,
+        modifiers: &gpui::Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.active_terminal_view(cx) else {
+            return;
+        };
+        let pos = window.mouse_position();
+        let shown = self.panel.visible;
+        view.update(cx, |view, cx| {
+            view.link_modifiers_changed(modifiers, pos, shown, cx)
+        });
+    }
+
     /// A terminal link was ⌘+clicked (spec §6.7): a file opens in the
     /// editor at its line and column, as Quick Open does; a folder in the
     /// workspace is revealed in the Explorer; one outside it does nothing.
@@ -1789,12 +1819,24 @@ impl Workbench {
     ) {
         match target {
             LinkTarget::File { path, line, col } => {
-                // Terminal positions are 1-based; `Point` is 0-based.
-                let point = Point {
-                    row: line.unwrap_or(1).saturating_sub(1),
-                    column: col.unwrap_or(1).saturating_sub(1),
-                };
-                self.jump_to(Arc::from(path.as_path()), point, OpenMode::Preview, cx);
+                // Terminal positions are 1-based and count characters (as
+                // rustc, tsc and gcc print them); `Point` is 0-based bytes,
+                // so the column is converted once the text is loaded.
+                let row = line.unwrap_or(1).saturating_sub(1);
+                let col = col.unwrap_or(1).saturating_sub(1);
+                let path = self.absolute_path(&Arc::from(path.as_path()));
+                // History records the row; the column is approximate until
+                // the text is known.
+                self.record_nav(
+                    &NavEntry {
+                        path: path.clone(),
+                        point: Point { row, column: col },
+                        scroll_top_row: 0,
+                    },
+                    cx,
+                );
+                let to = GoTo::Chars { row, col };
+                self.open_path_at_target(path, OpenMode::Preview, to, cx);
             }
             LinkTarget::Dir(dir) => {
                 if dir.strip_prefix(&self.root).is_err() {
@@ -2362,6 +2404,11 @@ impl Render for Workbench {
             .id("workbench")
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::dispatch_key))
+            // At the root, so the terminal hears ⌘ go up and down wherever
+            // the focus is (gpui sends modifier changes along the focus path).
+            .on_modifiers_changed(cx.listener(|wb, ev: &ModifiersChangedEvent, window, cx| {
+                wb.terminal_modifiers_changed(&ev.modifiers, window, cx)
+            }))
             .on_drag_move(cx.listener(|wb, ev: &DragMoveEvent<SidebarSash>, _, cx| {
                 // The sidebar starts at the window's left edge.
                 wb.set_sidebar_width(ev.event.position.x - ev.bounds.left(), cx)

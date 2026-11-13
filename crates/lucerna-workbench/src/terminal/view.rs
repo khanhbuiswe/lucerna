@@ -458,11 +458,6 @@ impl Render for TerminalView {
             .id("terminal-view")
             .debug_selector(|| "terminal-view".into())
             .track_focus(&self.focus)
-            .on_modifiers_changed(cx.listener(
-                |view, ev: &gpui::ModifiersChangedEvent, window, cx| {
-                    view.link_modifiers_changed(&ev.modifiers, window.mouse_position(), cx)
-                },
-            ))
             .relative()
             .size_full()
             .child(TerminalElement::new(cx.entity()))

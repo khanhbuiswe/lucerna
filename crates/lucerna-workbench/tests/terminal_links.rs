@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Entity, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, TestAppContext,
-    VisualTestContext, point, px,
+    Entity, Focusable, InputEvent, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, TestAppContext, VisualTestContext, point, px,
 };
 use lucerna_project::WorktreeEvent;
 use lucerna_settings::{Keymap, Layer, SettingsStore};
@@ -413,4 +413,104 @@ fn hover_throttled(cx: &mut TestAppContext) {
     draw(cx);
     assert!(scans(&view, cx) - before <= 2);
     assert!(underlined(cx));
+}
+
+#[gpui::test]
+fn column_counts_characters_on_utf8_lines(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    // `ê` is two bytes: character 7 (`=`) starts at byte 7, not 6.
+    std::fs::write(dir.path().join("src/u.rs"), "let ê = 1;\n").unwrap();
+    let (wb, cx, view) = with_terminal(dir.path(), cx);
+    feed(&view, "src/u.rs:1:7\r\nsrc/u.rs:1:9", cx);
+
+    // Not loaded yet: the jump waits for the text.
+    click(at(&view, 0, 2, cx), link_mods(), cx);
+    let expected = TextPoint { row: 0, column: 7 };
+    assert_eq!(cursor(&wb, expected, cx), expected);
+
+    // Loaded: the jump applies at once.
+    click(at(&view, 1, 2, cx), link_mods(), cx);
+    let expected = TextPoint { row: 0, column: 9 };
+    assert_eq!(cursor(&wb, expected, cx), expected);
+}
+
+#[gpui::test]
+fn releasing_cmd_clears_link_when_unfocused(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx, view) = with_terminal(dir.path(), cx);
+    feed(&view, "https://example.com/a-rather-long-path-here", cx);
+    cx.update(|window, cx| wb.update(cx, |wb, cx| wb.focus_editor_area(window, cx)));
+    draw(cx);
+    let focused = cx.update(|window, cx| view.read(cx).focus_handle(cx).is_focused(window));
+    assert!(!focused, "the terminal is not focused");
+
+    hover(at(&view, 0, 2, cx), link_mods(), cx);
+    assert!(underlined(cx));
+    // A second move inside the throttle leaves a trailing scan pending.
+    let far = at(&view, 0, 30, cx);
+    cx.simulate_mouse_move(far, None, link_mods());
+    let scans = view.read_with(cx, |v, _| v.link_scans());
+
+    cx.simulate_modifiers_change(Modifiers::none());
+    draw(cx);
+    assert!(!underlined(cx), "releasing ⌘ clears the link");
+    cx.executor().advance_clock(Duration::from_millis(200));
+    draw(cx);
+    assert!(!underlined(cx));
+    assert_eq!(
+        view.read_with(cx, |v, _| v.link_scans()),
+        scans,
+        "the pending trailing scan was cancelled"
+    );
+}
+
+#[gpui::test]
+fn click_survives_a_plain_move(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx, view) = with_terminal(dir.path(), cx);
+    feed(&view, "src/lib.rs:2", cx);
+    let pos = at(&view, 0, 3, cx);
+    // ⌘+click starts a resolve; the mouse moves on without ⌘ before it
+    // ends (all in one turn, so no background work runs in between).
+    let away = pos + point(px(40.), px(0.));
+    cx.update(|window, cx| {
+        let mods = link_mods();
+        let events = [
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position: pos,
+                modifiers: mods,
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position: pos,
+                modifiers: mods,
+                click_count: 1,
+            }
+            .to_platform_input(),
+            MouseMoveEvent {
+                position: away,
+                modifiers: Modifiers::none(),
+                pressed_button: None,
+            }
+            .to_platform_input(),
+            ModifiersChangedEvent {
+                modifiers: Modifiers::none(),
+                capslock: Default::default(),
+            }
+            .to_platform_input(),
+        ];
+        for event in events {
+            window.dispatch_event(event, cx);
+        }
+    });
+    draw(cx);
+    let tab = active_tab(&wb, cx).expect("the clicked file opened");
+    assert_eq!(tab.file_name().unwrap(), "lib.rs");
 }
