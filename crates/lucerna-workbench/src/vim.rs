@@ -992,6 +992,8 @@ fn read_settings(cx: &App) -> (bool, Settings) {
         scrolloff: store
             .get("editor.cursorSurroundingLines", None)
             .unwrap_or(defaults.scrolloff),
+        // Read from `vim.useSystemClipboard` once the workbench wires registers.
+        use_system_clipboard: defaults.use_system_clipboard,
     };
     (enabled, settings)
 }

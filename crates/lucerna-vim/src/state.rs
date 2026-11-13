@@ -10,10 +10,12 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use crate::classify::{self, display_col, last_char_col, line};
 use crate::marks::FileMarks;
 use crate::motion::{self, FindChar, Goal, WordMotion};
+use crate::register::{Registers, WriteKind};
 use crate::scroll::{self, Screen, ScrollKind};
 use crate::search;
 use crate::visual::{self, VimSelection};
 use crate::{Action, FoldAction, InsertAt, Key, Mode, Outcome, SearchQuery, Settings, ViewInfo};
+use crate::{Clipboard, ClipboardMode, RegContent, RegKind};
 
 /// The largest count; more digits are ignored.
 const MAX_COUNT: u32 = 99_999;
@@ -30,6 +32,53 @@ pub struct VimGlobals {
     pub(crate) marks: HashMap<Arc<Path>, FileMarks>,
     /// The last search and whether it went backward, for `n` and `N`.
     pub(crate) last_search: Option<(SearchQuery, bool)>,
+    pub(crate) registers: Registers,
+    /// The system clipboard as the workbench last read it.
+    clipboard: Option<Clipboard>,
+}
+
+impl VimGlobals {
+    /// The workbench calls this before every feed with the current
+    /// clipboard (`None` when it cannot be read).
+    pub fn set_clipboard(&mut self, clip: Option<Clipboard>) {
+        self.clipboard = clip;
+    }
+
+    /// Reads register `name` (`None` is `"`). `%` is the file at `path`
+    /// and `/` the last search pattern; the rest go to [`Registers`].
+    #[allow(dead_code)] // used by paste
+    pub(crate) fn read_register(
+        &self,
+        name: Option<char>,
+        mode: ClipboardMode,
+        path: &Path,
+    ) -> Option<RegContent> {
+        let charwise = |text: String| RegContent {
+            text,
+            kind: RegKind::Charwise,
+        };
+        match name {
+            Some('%') => Some(charwise(path.to_string_lossy().into_owned())),
+            Some('/') => self
+                .last_search
+                .as_ref()
+                .map(|(q, _)| charwise(q.pattern.clone())),
+            _ => self.registers.read(name, mode, self.clipboard.as_ref()),
+        }
+    }
+
+    /// Writes `content` to register `name`; the clipboard write that is
+    /// due is returned.
+    pub(crate) fn write_register(
+        &mut self,
+        name: Option<char>,
+        content: RegContent,
+        kind: WriteKind,
+        mode: ClipboardMode,
+    ) -> Option<Action> {
+        self.registers
+            .write(name, content, kind, mode, self.clipboard.as_ref())
+    }
 }
 
 /// The vim state of one view.
@@ -48,6 +97,8 @@ pub struct Vim {
     prefix: Option<char>,
     /// The count typed before `/` or `?`, used when the search is submitted.
     search_count: Option<u32>,
+    /// The register chosen with `"x` for the next command.
+    register: Option<char>,
 }
 
 impl Vim {
@@ -61,6 +112,7 @@ impl Vim {
             count: None,
             prefix: None,
             search_count: None,
+            register: None,
         }
     }
 
@@ -420,21 +472,36 @@ impl Vim {
     }
 
     /// Visual `y`: copies the selection and returns to Normal at its start.
-    fn yank(&mut self, view: &dyn ViewInfo, globals: &mut VimGlobals) -> Outcome {
+    fn yank(
+        &mut self,
+        view: &dyn ViewInfo,
+        globals: &mut VimGlobals,
+        settings: &Settings,
+        register: Option<char>,
+    ) -> Outcome {
         let snapshot = view.snapshot();
         let Some(sel) = self.end_visual(view, globals) else {
             return Outcome::Handled(vec![]);
         };
         let text = visual::yank_text(&sel, snapshot, view.tab_size());
-        let linewise = matches!(sel, crate::VimSelection::Line { .. });
+        let kind = if matches!(sel, crate::VimSelection::Line { .. }) {
+            RegKind::Linewise
+        } else {
+            RegKind::Charwise
+        };
         self.cursor = clamp_point(snapshot, visual::bounds(&sel, snapshot, view.tab_size()).0);
         self.anchor = self.cursor;
         self.goal = None;
-        Outcome::Handled(vec![
-            Action::WriteClipboard { text, linewise },
-            Action::ModeChanged(Mode::Normal),
-            Action::CursorMoved { jump: false },
-        ])
+        let mut actions = Vec::new();
+        actions.extend(globals.write_register(
+            register,
+            RegContent { text, kind },
+            WriteKind::Yank,
+            settings.use_system_clipboard,
+        ));
+        actions.push(Action::ModeChanged(Mode::Normal));
+        actions.push(Action::CursorMoved { jump: false });
+        Outcome::Handled(actions)
     }
 
     /// Leaves the visual mode: writes the `<` and `>` marks, puts the
@@ -467,7 +534,24 @@ impl Vim {
         {
             let count = self.count.unwrap_or(0).saturating_mul(10).saturating_add(d);
             self.count = Some(count.min(MAX_COUNT));
-            self.pending = self.count.unwrap_or_default().to_string();
+            self.set_pending("");
+            return Outcome::Handled(vec![]);
+        }
+        if self.prefix.is_none() && c == '"' {
+            self.prefix = Some('"');
+            self.set_pending("\"");
+            return Outcome::Handled(vec![]);
+        }
+        if self.prefix == Some('"') {
+            // A valid name is kept for the next command; anything else
+            // cancels.
+            if Registers::is_valid_name(c) {
+                self.prefix = None;
+                self.register = Some(c);
+                self.set_pending("");
+            } else {
+                self.clear_pending();
+            }
             return Outcome::Handled(vec![]);
         }
         if self.prefix.is_none()
@@ -477,11 +561,12 @@ impl Vim {
             )
         {
             self.prefix = Some(c);
-            self.pending = format!("{}{c}", self.count.map_or(String::new(), |n| n.to_string()));
+            self.set_pending(&c.to_string());
             return Outcome::Handled(vec![]);
         }
         let prefix = self.prefix;
         let explicit = self.count;
+        let register = self.register;
         let n = self.take_count();
         if let Some(p @ ('f' | 'F' | 't' | 'T')) = prefix {
             let find = FindChar {
@@ -566,7 +651,7 @@ impl Vim {
                 self.anchor = self.cursor;
                 self.move_to(to, None)
             }
-            'y' if visual => self.yank(view, globals),
+            'y' if visual => self.yank(view, globals, settings, register),
             'i' | 'a' | 'I' | 'A' | 'o' | 'O' if !visual => {
                 let at = match c {
                     'i' => InsertAt::Before,
@@ -904,6 +989,16 @@ impl Vim {
         self.pending.clear();
         self.count = None;
         self.prefix = None;
+        self.register = None;
+    }
+
+    /// The indicator text: `"x`, then the count, then `extra`.
+    fn set_pending(&mut self, extra: &str) {
+        self.pending = format!(
+            "{}{}{extra}",
+            self.register.map_or(String::new(), |r| format!("\"{r}")),
+            self.count.map_or(String::new(), |n| n.to_string()),
+        );
     }
 }
 
@@ -1226,6 +1321,104 @@ mod tests {
         assert_eq!(vim.cursor(), pt(0, 3));
         feed_keys(&mut vim, &view, "<Esc>");
         assert_eq!(vim.cursor(), pt(0, 2));
+    }
+
+    fn feed_with(vim: &mut Vim, view: &TestView, globals: &mut crate::VimGlobals, keys: &str) {
+        feed_keys_with_view(vim, view, globals, keys);
+    }
+
+    fn feed_keys_with_view(
+        vim: &mut Vim,
+        view: &TestView,
+        globals: &mut crate::VimGlobals,
+        keys: &str,
+    ) -> Vec<Outcome> {
+        let settings = crate::Settings::default();
+        crate::test_util::parse_keys(keys)
+            .into_iter()
+            .map(|k| vim.feed(k, view, globals, &settings))
+            .collect()
+    }
+
+    #[test]
+    fn register_prefix_shows_in_pending_and_is_used_once() {
+        use crate::{RegContent, RegKind};
+        let view = TestView::new("|abc def");
+        let mut vim = Vim::new(view.cursor);
+        let mut g = crate::VimGlobals::default();
+        feed_with(&mut vim, &view, &mut g, "vl\"");
+        assert_eq!(vim.pending(), "\"");
+        feed_with(&mut vim, &view, &mut g, "a");
+        assert_eq!(vim.pending(), "\"a");
+        feed_with(&mut vim, &view, &mut g, "y");
+        assert_eq!(vim.pending(), "");
+        let get = |g: &crate::VimGlobals, n| {
+            g.read_register(
+                Some(n),
+                crate::ClipboardMode::Never,
+                std::path::Path::new("x"),
+            )
+        };
+        assert_eq!(
+            get(&g, 'a'),
+            Some(RegContent {
+                text: "ab".into(),
+                kind: RegKind::Charwise
+            })
+        );
+        assert_eq!(get(&g, '0'), None);
+        // The register was spent: the next yank goes to `0`.
+        feed_with(&mut vim, &view, &mut g, "vy");
+        assert_eq!(get(&g, '0').map(|c| c.text), Some("a".into()));
+        assert_eq!(get(&g, 'a').map(|c| c.text), Some("ab".into()));
+    }
+
+    #[test]
+    fn register_prefix_cancels_on_invalid_name_and_escape() {
+        let view = TestView::new("|abc");
+        let mut vim = Vim::new(view.cursor);
+        let mut g = crate::VimGlobals::default();
+        feed_with(&mut vim, &view, &mut g, "\"!");
+        assert_eq!(vim.pending(), "");
+        feed_with(&mut vim, &view, &mut g, "\"a<Esc>");
+        assert_eq!(vim.pending(), "");
+        feed_with(&mut vim, &view, &mut g, "vy");
+        assert_eq!(
+            g.read_register(None, crate::ClipboardMode::Never, std::path::Path::new("x"))
+                .map(|c| c.text),
+            Some("a".into())
+        );
+        assert_eq!(
+            g.read_register(
+                Some('a'),
+                crate::ClipboardMode::Never,
+                std::path::Path::new("x")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn percent_and_slash_registers_read_path_and_search() {
+        let mut g = crate::VimGlobals::default();
+        let p = std::path::Path::new("src/main.rs");
+        let r = |g: &crate::VimGlobals, n| {
+            g.read_register(Some(n), crate::ClipboardMode::Never, p)
+                .map(|c| c.text)
+        };
+        assert_eq!(r(&g, '%'), Some("src/main.rs".into()));
+        assert_eq!(r(&g, '/'), None);
+        g.last_search = Some((
+            crate::SearchQuery {
+                pattern: "foo".into(),
+                is_regex: false,
+                case_sensitive: false,
+                whole_word: false,
+            },
+            false,
+        ));
+        assert_eq!(r(&g, '/'), Some("foo".into()));
+        assert_eq!(r(&g, ':'), None);
     }
 
     fn pt(row: u32, column: u32) -> Point {

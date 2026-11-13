@@ -5,6 +5,7 @@
 mod classify;
 mod marks;
 mod motion;
+mod register;
 mod scroll;
 mod search;
 mod state;
@@ -19,6 +20,7 @@ use std::sync::Arc;
 use lucerna_editor::{Ctx, EditPlan};
 use lucerna_text::BufferSnapshot;
 
+pub use register::{Clipboard, ClipboardMode, RegContent, RegKind};
 pub use state::{Vim, VimGlobals};
 pub use visual::{VimSelection, block_ranges, exclusive_range, yank_text};
 
@@ -97,6 +99,8 @@ pub struct Settings {
     pub scroll: u32,
     /// `editor.cursorSurroundingLines`
     pub scrolloff: u32,
+    /// `vim.useSystemClipboard`
+    pub use_system_clipboard: ClipboardMode,
 }
 
 impl Default for Settings {
@@ -107,6 +111,7 @@ impl Default for Settings {
             startofline: true,
             scroll: 0,
             scrolloff: 0,
+            use_system_clipboard: ClipboardMode::OnYank,
         }
     }
 }
