@@ -107,7 +107,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         ("deleteAllRight", |wb, _, _, cx| {
             edit(wb, cx, commands::delete_all_right)
         }),
-        ("tab", |wb, _, _, cx| edit(wb, cx, commands::tab)),
+        ("tab", |wb, _, _, cx| {
+            with_view(wb, cx, |v, cx| {
+                v.tab(cx);
+            })
+        }),
         ("outdent", |wb, _, _, cx| edit(wb, cx, commands::outdent)),
         ("lineBreakInsert", |wb, _, _, cx| {
             edit(wb, cx, commands::line_break_insert)

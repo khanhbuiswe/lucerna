@@ -1,0 +1,402 @@
+//! Vim editing inside the workbench: one undo step per command, typing
+//! recorded for `.`, edits moving marks and the cursors of other views,
+//! the clipboard rules and the V2a settings.
+
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+
+use gpui::{
+    ClipboardItem, Entity, EntityInputHandler as _, Focusable as _, TestAppContext,
+    VisualTestContext,
+};
+use lucerna_project::{Change, ChangeKind, WorktreeEvent};
+use lucerna_settings::{Keymap, Layer, SettingsStore};
+use lucerna_syntax::LanguageRegistry;
+use lucerna_text::Point;
+use lucerna_theme::ThemeRegistry;
+use lucerna_vim::Mode;
+use lucerna_workbench::code_view::CodeView;
+use lucerna_workbench::{AppState, OpenMode, Workbench};
+use tempfile::TempDir;
+
+const VIM_ON: &str = r#"{ "vim.enabled": true }"#;
+
+fn init(cx: &mut TestAppContext, user_settings: &str) {
+    let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
+    assert!(error.is_none(), "keymap error: {error:?}");
+    let mut settings = SettingsStore::with_defaults();
+    settings.set_layer(Layer::User, user_settings).unwrap();
+    let themes = ThemeRegistry::builtin();
+    let theme = themes.get_or_default("One Dark");
+    cx.set_global(AppState {
+        settings,
+        keymap,
+        themes,
+        theme,
+        theme_generation: 0,
+        languages: Arc::new(LanguageRegistry::bundled()),
+        languages_generation: 0,
+        icon_themes: lucerna_theme::IconThemeRegistry::build(&[]).0,
+        icons: lucerna_theme::IconThemeRegistry::build(&[])
+            .0
+            .resolve("Lucide"),
+    });
+}
+
+fn pt(row: u32, column: u32) -> Point {
+    Point { row, column }
+}
+
+fn draw(cx: &mut VisualTestContext) {
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+}
+
+fn active_view(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<CodeView> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .expect("the active tab has a body")
+            .downcast::<CodeView>()
+            .expect("tab bodies are code views")
+    })
+}
+
+fn focus(view: &Entity<CodeView>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        let focus = view.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+}
+
+/// A workbench with `settings` on a temporary folder holding `file.txt`
+/// with `text`, the file open and its view focused.
+fn vim_editor_with<'a>(
+    settings: &str,
+    text: &str,
+    cx: &'a mut TestAppContext,
+) -> (
+    TempDir,
+    Entity<Workbench>,
+    Entity<CodeView>,
+    &'a mut VisualTestContext,
+) {
+    init(cx, settings);
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("file.txt"), text).unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("file.txt")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    let view = active_view(&wb, cx);
+    focus(&view, cx);
+    (dir, wb, view, cx)
+}
+
+fn vim_editor<'a>(
+    text: &str,
+    cx: &'a mut TestAppContext,
+) -> (
+    TempDir,
+    Entity<Workbench>,
+    Entity<CodeView>,
+    &'a mut VisualTestContext,
+) {
+    vim_editor_with(VIM_ON, text, cx)
+}
+
+fn keys(keystrokes: &str, cx: &mut VisualTestContext) {
+    cx.simulate_keystrokes(keystrokes);
+    draw(cx);
+}
+
+fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
+    let ran =
+        cx.update(|window, cx| wb.update(cx, |wb, cx| wb.run_command(command, None, window, cx)));
+    assert!(ran, "{command} is registered");
+    draw(cx);
+}
+
+fn text_of(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> String {
+    view.read_with(cx, |v, _| {
+        let s = v.snapshot();
+        s.text_for_range(0..s.len_bytes())
+    })
+}
+
+fn cursor(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> Point {
+    view.read_with(cx, |v, _| v.cursor())
+}
+
+fn selection(
+    view: &Entity<CodeView>,
+    cx: &mut VisualTestContext,
+) -> Option<std::ops::Range<Point>> {
+    view.read_with(cx, |v, _| v.selection())
+}
+
+fn mode(
+    wb: &Entity<Workbench>,
+    view: &Entity<CodeView>,
+    cx: &mut VisualTestContext,
+) -> Option<Mode> {
+    let id = view.entity_id();
+    cx.update(|_, cx| wb.read(cx).vim().read(cx).mode_for(id))
+}
+
+/// Types `text` as the platform input handler commits it.
+fn commit(view: &Entity<CodeView>, text: &str, cx: &mut VisualTestContext) {
+    view.update_in(cx, |v, window, cx| {
+        v.replace_text_in_range(None, text, window, cx)
+    });
+    draw(cx);
+}
+
+fn clipboard(cx: &mut VisualTestContext) -> Option<(String, Option<serde_json::Value>)> {
+    let item = cx.read_from_clipboard()?;
+    let meta = item
+        .metadata()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+    Some((item.text()?, meta))
+}
+
+/// Writes `text` to `file.txt` on disk and tells the workbench, as the
+/// file watcher would.
+fn change_on_disk(wb: &Entity<Workbench>, dir: &TempDir, text: &str, cx: &mut VisualTestContext) {
+    fs::write(dir.path().join("file.txt"), text).unwrap();
+    let change = Change {
+        path: Arc::from(Path::new("file.txt")),
+        kind: ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    draw(cx);
+}
+
+#[gpui::test]
+fn three_dd_is_one_undo_step(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("a\nb\nc\nd\n", cx);
+    keys("3 d d", cx);
+    assert_eq!(text_of(&view, cx), "d\n");
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nc\nd\n");
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nc\nd\n");
+    // And redo brings the three lines' deletion back as one step.
+    keys("ctrl-r", cx);
+    assert_eq!(text_of(&view, cx), "d\n");
+}
+
+#[gpui::test]
+fn ciw_typing_escape_is_one_undo_step(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("one two\n", cx);
+    keys("w c i w", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    assert_eq!(text_of(&view, cx), "one \n");
+    commit(&view, "f", cx);
+    commit(&view, "oo", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "one foo\n");
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "one two\n");
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "one two\n");
+}
+
+#[gpui::test]
+fn ime_commit_records_final_text_for_dot(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("one two\n", cx);
+    keys("c i w", cx);
+    view.update_in(cx, |v, window, cx| {
+        v.replace_and_mark_text_in_range(None, "chà", None, window, cx);
+        v.replace_text_in_range(None, "chào", window, cx);
+    });
+    draw(cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "chào two\n");
+    keys("w .", cx);
+    assert_eq!(text_of(&view, cx), "chào chào\n");
+    // The replay is one undo step.
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "chào two\n");
+}
+
+#[gpui::test]
+fn dot_repeats_typing_with_enter_and_backspace(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("a\nb\n", cx);
+    // `A`, typed `xq`, Backspace, `y`, Enter, `z`.
+    keys("shift-a", cx);
+    commit(&view, "x", cx);
+    commit(&view, "q", cx);
+    keys("backspace", cx);
+    commit(&view, "y", cx);
+    keys("enter", cx);
+    commit(&view, "z", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "axy\nz\nb\n");
+    keys("j j .", cx);
+    assert_eq!(text_of(&view, cx), "axy\nz\nbxy\nz\n");
+}
+
+#[gpui::test]
+fn counted_insert_is_one_undo_step(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("x\n", cx);
+    keys("3 i", cx);
+    commit(&view, "ab", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "abababx\n");
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "x\n");
+}
+
+#[gpui::test]
+fn arrow_key_in_insert_starts_a_new_record(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("abc\nabc\n", cx);
+    keys("i", cx);
+    commit(&view, "x", cx);
+    keys("right", cx);
+    commit(&view, "y", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "xaybc\nabc\n");
+    // `.` repeats only the typing after the arrow key, as an `i`.
+    keys("j 0 .", cx);
+    assert_eq!(text_of(&view, cx), "xaybc\nyabc\n");
+}
+
+#[gpui::test]
+fn dot_after_external_reload_uses_new_text(cx: &mut TestAppContext) {
+    let (dir, wb, view, cx) = vim_editor("alpha beta gamma\n", cx);
+    keys("d w", cx);
+    assert_eq!(text_of(&view, cx), "beta gamma\n");
+    run(&wb, "workbench.action.files.save", cx);
+    change_on_disk(&wb, &dir, "top line\nbeta gamma\n", cx);
+    assert_eq!(text_of(&view, cx), "top line\nbeta gamma\n");
+    // The cursor stayed on `beta`, now on row 1.
+    assert_eq!(cursor(&view, cx), pt(1, 0));
+    keys(".", cx);
+    assert_eq!(text_of(&view, cx), "top line\ngamma\n");
+}
+
+#[gpui::test]
+fn edit_in_one_view_remaps_other_view_and_marks(cx: &mut TestAppContext) {
+    let text: String = (0..8).map(|i| format!("line {i}\n")).collect();
+    let (_dir, wb, view_a, cx) = vim_editor(&text, cx);
+    run(&wb, "workbench.action.splitEditor", cx);
+    let view_b = active_view(&wb, cx);
+    assert_ne!(view_a.entity_id(), view_b.entity_id(), "split made a view");
+    focus(&view_b, cx);
+    keys("5 j l m a v l", cx);
+    assert_eq!(cursor(&view_b, cx), pt(5, 2));
+    assert_eq!(mode(&wb, &view_b, cx), Some(Mode::Visual));
+
+    run(&wb, "workbench.action.focusFirstEditorGroup", cx);
+    assert_eq!(active_view(&wb, cx), view_a);
+    keys("g g j d d", cx);
+    assert!(!text_of(&view_a, cx).contains("line 1\n"));
+    // B's visual selection and its mark stay on `line 5`, a row up.
+    assert_eq!(mode(&wb, &view_b, cx), Some(Mode::Visual));
+    assert_eq!(selection(&view_b, cx), Some(pt(4, 1)..pt(4, 3)));
+
+    run(&wb, "workbench.action.focusSecondEditorGroup", cx);
+    assert_eq!(active_view(&wb, cx), view_b);
+    keys("escape g g ` a", cx);
+    assert_eq!(cursor(&view_b, cx), pt(4, 1));
+    keys("u", cx);
+    assert_eq!(text_of(&view_b, cx), text);
+    keys("g g ` a", cx);
+    assert_eq!(cursor(&view_b, cx), pt(5, 1));
+}
+
+#[gpui::test]
+fn clipboard_rules_end_to_end(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("one\ntwo\nthree\n", cx);
+    keys("y y", cx);
+    let (text, meta) = clipboard(cx).expect("yy wrote the clipboard");
+    assert_eq!(text, "one\n");
+    assert_eq!(meta.unwrap()["wholeLine"], serde_json::Value::Bool(true));
+
+    // A delete writes the register, not the clipboard.
+    keys("j d d", cx);
+    assert_eq!(text_of(&view, cx), "one\nthree\n");
+    assert_eq!(clipboard(cx).map(|c| c.0).as_deref(), Some("one\n"));
+    // `p` pastes the deleted line: the clipboard did not change since.
+    keys("p", cx);
+    assert_eq!(text_of(&view, cx), "one\nthree\ntwo\n");
+
+    // Something copied elsewhere is what `p` pastes, charwise.
+    cx.write_to_clipboard(ClipboardItem::new_string("zzz".into()));
+    keys("g g p", cx);
+    assert_eq!(text_of(&view, cx), "ozzzne\nthree\ntwo\n");
+}
+
+#[gpui::test]
+fn use_system_clipboard_false_keeps_yank_off_clipboard(cx: &mut TestAppContext) {
+    let settings = r#"{ "vim.enabled": true, "vim.useSystemClipboard": false }"#;
+    let (_dir, _wb, view, cx) = vim_editor_with(settings, "one\ntwo\n", cx);
+    cx.write_to_clipboard(ClipboardItem::new_string("outside".into()));
+    keys("y y", cx);
+    assert_eq!(clipboard(cx).map(|c| c.0).as_deref(), Some("outside"));
+    // `"+` still reaches it.
+    keys("j \" + y y", cx);
+    assert_eq!(clipboard(cx).map(|c| c.0).as_deref(), Some("two\n"));
+    // The unnamed register is the internal one.
+    keys("p", cx);
+    assert_eq!(text_of(&view, cx), "one\ntwo\ntwo\n");
+}
+
+#[gpui::test]
+fn cmd_c_line_then_p_is_linewise(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("one\ntwo\n", cx);
+    run(&wb, "editor.action.clipboardCopyAction", cx);
+    let (text, meta) = clipboard(cx).expect("the copy wrote the clipboard");
+    assert_eq!(text, "one\n");
+    assert_eq!(meta.unwrap()["wholeLine"], serde_json::Value::Bool(true));
+    keys("p", cx);
+    assert_eq!(text_of(&view, cx), "one\none\ntwo\n");
+    assert_eq!(cursor(&view, cx), pt(1, 0));
+}
+
+#[gpui::test]
+fn readonly_preview_dd_does_nothing(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("one\ntwo\n", cx);
+    view.update(cx, |v, _| v.set_passive(true));
+    assert!(view.read_with(cx, |v, _| v.is_readonly()));
+    keys("d d x", cx);
+    assert_eq!(text_of(&view, cx), "one\ntwo\n");
+    // `y` still works.
+    keys("y y", cx);
+    assert_eq!(clipboard(cx).map(|c| c.0).as_deref(), Some("one\n"));
+}
+
+#[gpui::test]
+fn u_moves_cursor_to_change_start(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("one two three\nfour\n", cx);
+    keys("w d w", cx);
+    assert_eq!(text_of(&view, cx), "one three\nfour\n");
+    keys("j $", cx);
+    assert_eq!(cursor(&view, cx), pt(1, 3));
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "one two three\nfour\n");
+    assert_eq!(cursor(&view, cx), pt(0, 4));
+    keys("ctrl-r", cx);
+    assert_eq!(text_of(&view, cx), "one three\nfour\n");
+    assert_eq!(cursor(&view, cx), pt(0, 4));
+}
+
+#[gpui::test]
+fn joinspaces_setting_is_read(cx: &mut TestAppContext) {
+    let settings = r#"{ "vim.enabled": true, "vim.joinspaces": false }"#;
+    let (_dir, _wb, view, cx) = vim_editor_with(settings, "end.\nnext\n", cx);
+    keys("shift-j", cx);
+    assert_eq!(text_of(&view, cx), "end. next\n");
+}

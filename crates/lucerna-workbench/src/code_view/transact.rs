@@ -12,6 +12,7 @@ use lucerna_editor::{
 };
 use lucerna_syntax::Language;
 use lucerna_text::SelectionsToken;
+use lucerna_vim::Typed;
 use serde::{Deserialize, Serialize};
 
 use super::{CodeView, DEFAULT_WORD_SEPARATORS, SelectionChange};
@@ -23,9 +24,9 @@ use crate::tasks::catch_panic;
 /// several selections, and whether it is a whole line.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ClipboardMetadata {
-    pieces: Option<Vec<String>>,
-    whole_line: bool,
+pub(crate) struct ClipboardMetadata {
+    pub(crate) pieces: Option<Vec<String>>,
+    pub(crate) whole_line: bool,
 }
 
 impl CodeView {
@@ -224,23 +225,46 @@ impl CodeView {
     pub fn type_text(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
         self.unmark();
         let prev = self.last_kind;
-        if text == "\n" {
+        let applied = if text == "\n" {
             self.edit(cx, lucerna_editor::commands::newline)
         } else {
             let regions = self.autoclose_regions.clone();
             self.edit(cx, |ctx, set| {
                 lucerna_editor::commands::insert(ctx, set, text, prev, &regions)
             })
+        };
+        if applied {
+            let typed = if text == "\n" {
+                Typed::Newline
+            } else {
+                Typed::Text(text.to_string())
+            };
+            self.emit_typed(typed, cx);
         }
+        applied
     }
 
     /// `deleteLeft`: an empty auto-closed pair goes as a whole.
     pub fn delete_left(&mut self, cx: &mut Context<Self>) -> bool {
         self.unmark();
         let regions = self.autoclose_regions.clone();
-        self.edit(cx, |ctx, set| {
+        let applied = self.edit(cx, |ctx, set| {
             lucerna_editor::commands::delete_left(ctx, set, &regions)
-        })
+        });
+        if applied {
+            self.emit_typed(Typed::DeleteLeft, cx);
+        }
+        applied
+    }
+
+    /// The `tab` command: indent, or insert a tab or spaces.
+    pub fn tab(&mut self, cx: &mut Context<Self>) -> bool {
+        self.unmark();
+        let applied = self.edit(cx, lucerna_editor::commands::tab);
+        if applied {
+            self.emit_typed(Typed::Tab, cx);
+        }
+        applied
     }
 
     /// Whether an IME composition is in progress.

@@ -475,6 +475,14 @@ impl Vim {
         self.anchor.row = f(self.anchor.row);
     }
 
+    /// Moves the cursor and the anchor to the points `f` gives (an edit
+    /// moved the text), keeping the mode and the goal. The points are
+    /// clamped on the next [`Vim::feed`] or [`Vim::clamp`].
+    pub fn remap_points(&mut self, f: impl Fn(Point) -> Point) {
+        self.cursor = f(self.cursor);
+        self.anchor = f(self.anchor);
+    }
+
     /// The pending keys for the indicator, e.g. "5", "g", "2f".
     pub fn pending(&self) -> &str {
         &self.pending

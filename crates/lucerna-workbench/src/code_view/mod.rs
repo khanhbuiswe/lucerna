@@ -41,7 +41,7 @@ pub use layout::{
     DisplayLine, FoldState, MAX_RENDERED_LINE_CHARS, display_lines, display_lines_with_tab_size,
 };
 pub(crate) use selection::word_at;
-pub(crate) use transact::clipboard_item;
+pub(crate) use transact::{ClipboardMetadata, clipboard_item};
 
 use self::cache::Caches;
 use self::caret::{Caret, CaretStyle};
@@ -207,11 +207,22 @@ pub struct CursorOverlay {
     pub shape: CursorShape,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum CodeViewEvent {
     /// Emitted by [`CodeView::apply_edit`] once the new text is shown,
-    /// with the rows the edit changed.
-    Reloaded { reload: Reload },
+    /// with the rows the edit changed, the text before and after it, the
+    /// edit itself and the view's [`CodeView::revision`] after it.
+    Reloaded {
+        reload: Reload,
+        old: BufferSnapshot,
+        snapshot: BufferSnapshot,
+        patch: Arc<Patch>,
+        revision: u64,
+    },
+    /// One typing operation (not one buffer change) during vim's Insert
+    /// session, for `.`: typed chars or an IME commit's final text, Enter,
+    /// Backspace or Tab. Only while [`CodeView::set_typed_events`] is on.
+    Typed(lucerna_vim::Typed),
 }
 
 /// What changed the selections, which decides the undo stop and the
@@ -282,6 +293,11 @@ pub struct CodeView {
     /// vim's Insert session: no automatic undo stops (edit kinds, cursor
     /// moves), so the whole session is one step.
     suppress_stops: bool,
+    /// vim's Insert session wants [`CodeViewEvent::Typed`] for each typing
+    /// operation.
+    typed_events: bool,
+    /// Bumped by every cursor move (keys, mouse, API), not by an edit.
+    move_generation: u64,
     /// The IME composition in progress: one byte range per selection, in
     /// selection order. The composed text is in the buffer, underlined.
     marked: Option<Vec<Range<usize>>>,
@@ -396,6 +412,8 @@ impl CodeView {
             stop_requested: None,
             last_kind: EditKind::Other,
             suppress_stops: false,
+            typed_events: false,
+            move_generation: 0,
             marked: None,
             cursor_undo: VecDeque::new(),
             smart_select_stack: Vec::new(),
@@ -593,7 +611,13 @@ impl CodeView {
         self.cursor_redo.clear();
         // Emitted before the selection change notifies, so listeners (vim)
         // see the event before they see the bumped selection generation.
-        cx.emit(CodeViewEvent::Reloaded { reload });
+        cx.emit(CodeViewEvent::Reloaded {
+            reload,
+            old: old.clone(),
+            snapshot: self.snapshot.clone(),
+            patch: Arc::new(patch.clone()),
+            revision: self.revision,
+        });
         // Following the text is no cursor move: no undo stop.
         self.set_selections_inner(selections, false, SelectionChange::Edit, cx);
     }
@@ -838,7 +862,8 @@ impl CodeView {
         self.passive
     }
 
-    pub(crate) fn set_passive(&mut self, passive: bool) {
+    #[doc(hidden)]
+    pub fn set_passive(&mut self, passive: bool) {
         self.passive = passive;
     }
 
@@ -1067,6 +1092,7 @@ impl CodeView {
         self.selection_generation += 1;
         self.caret.reset(cx);
         if change != SelectionChange::Edit {
+            self.move_generation += 1;
             // A cursor move ends the typing run and any composition.
             self.last_kind = EditKind::Other;
             self.marked = None;
@@ -1275,6 +1301,50 @@ impl CodeView {
             let path = self.path.clone();
             documents.update(cx, |docs, _| docs.push_stop(&path));
         }
+    }
+
+    /// Whether vim's Insert session (or a vim command) holds the undo
+    /// stops: see [`CodeView::set_suppress_stops`].
+    pub fn suppresses_stops(&self) -> bool {
+        self.suppress_stops
+    }
+
+    /// Runs `f` as one undo step: a stop before, no stops while it runs, a
+    /// stop after unless `keep_open` (a command that ends in Insert mode:
+    /// the Insert session's Escape closes the step). Inside a step that is
+    /// already open (an Insert session, a `.` replay) `f` just joins it.
+    pub fn transact_group<R>(
+        &mut self,
+        keep_open: bool,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Self, &mut Context<Self>) -> R,
+    ) -> R {
+        if self.suppress_stops {
+            return f(self, cx);
+        }
+        self.set_suppress_stops(true, cx);
+        let result = f(self, cx);
+        if !keep_open {
+            self.set_suppress_stops(false, cx);
+        }
+        result
+    }
+
+    /// Turns [`CodeViewEvent::Typed`] on (vim's Insert session) or off.
+    pub(crate) fn set_typed_events(&mut self, on: bool) {
+        self.typed_events = on;
+    }
+
+    /// Emits [`CodeViewEvent::Typed`] when vim's Insert session wants it.
+    pub(crate) fn emit_typed(&mut self, typed: lucerna_vim::Typed, cx: &mut Context<Self>) {
+        if self.typed_events {
+            cx.emit(CodeViewEvent::Typed(typed));
+        }
+    }
+
+    /// Bumped by every cursor move (keys, mouse, API) but not by edits.
+    pub(crate) fn move_generation(&self) -> u64 {
+        self.move_generation
     }
 
     /// Paints `overlay` as the cursor instead of the caret; `None` paints

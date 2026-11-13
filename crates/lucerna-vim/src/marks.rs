@@ -1,6 +1,6 @@
 //! Marks: `m{a-z}`, `'x`, `` `x ``, `''` and `` `` ``, kept per file.
 
-use lucerna_text::{BufferSnapshot, Point, Reload};
+use lucerna_text::{Bias, BufferSnapshot, Patch, Point, Reload};
 use std::path::Path;
 
 use crate::VimGlobals;
@@ -61,6 +61,65 @@ impl VimGlobals {
         }
         marks.visual = marks.visual.map(|(a, b)| (map(a), map(b)));
     }
+
+    /// Moves the marks of `path` through an edit: `patch` turned `old`
+    /// into `snapshot`. Each mark keeps its place in the text
+    /// ([`Patch::map_offset`], left bias), so `dd` above a mark pulls it
+    /// up a row; a mark inside deleted text goes to where it was.
+    pub fn remap_marks_patch(
+        &mut self,
+        path: &Path,
+        old: &BufferSnapshot,
+        patch: &Patch,
+        snapshot: &BufferSnapshot,
+    ) {
+        if patch.is_empty() {
+            return;
+        }
+        let Some(marks) = self.marks.get_mut(path) else {
+            return;
+        };
+        let map = |p: Point| {
+            let p = map_point(old, patch, snapshot, p, Bias::Left);
+            let text = line(snapshot, p.row);
+            let mut column = p.column.min(last_char_col(&text)) as usize;
+            while !text.is_char_boundary(column) {
+                column -= 1;
+            }
+            Point {
+                row: p.row,
+                column: column as u32,
+            }
+        };
+        for mark in marks.letters.iter_mut().chain([&mut marks.last_jump]) {
+            *mark = mark.map(map);
+        }
+        marks.visual = marks.visual.map(|(a, b)| (map(a), map(b)));
+    }
+}
+
+/// `p` in `old` moved through `patch` into `snapshot`: to the start of
+/// the replacement when it lies in replaced text, else by
+/// [`Patch::map_offset`] with `bias` (which side of text inserted right at
+/// it it ends up on). The column is not clamped to a char: callers clamp
+/// for their mode.
+pub fn map_point(
+    old: &BufferSnapshot,
+    patch: &Patch,
+    snapshot: &BufferSnapshot,
+    p: Point,
+    bias: Bias,
+) -> Point {
+    let row = p.row.min(old.line_count().saturating_sub(1));
+    let column = p.column.min(old.line(row).len() as u32);
+    let offset = old.point_to_offset(Point { row, column });
+    let edits = patch.edits();
+    let i = edits.partition_point(|e| e.old.end <= offset);
+    let new = match edits.get(i) {
+        Some(e) if e.old.start <= offset && offset < e.old.end => e.new.start,
+        _ => patch.map_offset(offset, bias),
+    };
+    snapshot.offset_to_point(new)
 }
 
 #[cfg(test)]
@@ -219,6 +278,44 @@ mod tests {
             new_end_row: 2,
         };
         assert_eq!(reloaded(p(1, 5), "aa\nbbbbbb", "aa\nq", reload), p(1, 0));
+    }
+
+    /// Mark `a` at `mark` in `old`, after the edit `edits` (pre-edit
+    /// offsets).
+    fn edited(mark: Point, old: &str, edits: Vec<(std::ops::Range<usize>, &str)>) -> Point {
+        let mut buffer = lucerna_text::Buffer::from_bytes(old.as_bytes(), false).unwrap();
+        let before = buffer.snapshot();
+        let patch = buffer.edit(
+            edits
+                .into_iter()
+                .map(|(r, t)| (r, std::sync::Arc::from(t)))
+                .collect::<Vec<_>>(),
+        );
+        let path: std::sync::Arc<std::path::Path> = std::sync::Arc::from(std::path::Path::new("a"));
+        let mut globals = VimGlobals::default();
+        let mut m = FileMarks::default();
+        m.letters[0] = Some(mark);
+        globals.marks.insert(path.clone(), m);
+        globals.remap_marks_patch(&path, &before, &patch, &buffer.snapshot());
+        globals.marks[&path].letters[0].unwrap()
+    }
+
+    #[test]
+    fn patch_remap_pulls_mark_up_for_deleted_line_above() {
+        // `dd` on row 1 of five rows: the mark on row 3 moves to row 2.
+        assert_eq!(
+            edited(p(3, 1), "a\nb\ncc\ndd\ne\n", vec![(2..4, "")]),
+            p(2, 1)
+        );
+    }
+
+    #[test]
+    fn patch_remap_keeps_column_within_line() {
+        // An insertion before the mark on its row shifts its column.
+        assert_eq!(edited(p(0, 2), "abcd\n", vec![(0..0, "xy")]), p(0, 4));
+        // A mark inside deleted text goes to the deletion point, clamped
+        // onto a char.
+        assert_eq!(edited(p(0, 3), "abcd\nx\n", vec![(1..4, "")]), p(0, 0));
     }
 
     #[test]

@@ -225,7 +225,10 @@ impl EntityInputHandler for CodeView {
             }
             self.type_text(text, cx);
         } else {
-            self.replace_ranges(range_utf16, text, None, false, cx);
+            // An IME commit: its final text is one typing operation.
+            if self.replace_ranges(range_utf16, text, None, false, cx) && !text.is_empty() {
+                self.emit_typed(lucerna_vim::Typed::Text(text.to_string()), cx);
+            }
             self.unmark();
         }
         window.notify_text_input_changed(&self.focus);

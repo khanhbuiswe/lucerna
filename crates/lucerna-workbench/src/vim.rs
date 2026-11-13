@@ -17,15 +17,16 @@ use lucerna_editor::clipboard::ClipboardText;
 use lucerna_editor::{Ctx, EditConfig};
 use lucerna_settings::{Context as WhenContext, WhenExpr, parse_when};
 use lucerna_syntax::Language;
-use lucerna_text::{BufferSnapshot, Point, Reload};
+use lucerna_text::{Bias, BufferSnapshot, Patch, Point, Reload};
 use lucerna_vim::{
-    Action, FoldAction, InsertAt, Key, Mode, Outcome, SearchQuery, Settings, ViewInfo, Vim,
-    VimGlobals, VimSelection, block_ranges, exclusive_range,
+    Action, Clipboard, ClipboardMode, FoldAction, InsertAt, Key, Mode, Outcome, ReplayStep,
+    SearchQuery, Settings, Typed, ViewInfo, Vim, VimGlobals, VimSelection, block_ranges,
+    exclusive_range, map_point,
 };
 
 use crate::AppState;
 use crate::code_view::{
-    CodeView, CodeViewEvent, CursorOverlay, CursorShape, FoldOp, clipboard_item,
+    ClipboardMetadata, CodeView, CodeViewEvent, CursorOverlay, CursorShape, FoldOp, clipboard_item,
 };
 use crate::documents::DocState;
 use crate::editor_groups::EditorGroupsView;
@@ -48,7 +49,24 @@ struct ViewState {
     /// The view's `selection_generation` after vim last wrote to it; any
     /// other value means someone else moved the selection.
     generation: u64,
+    /// The view's `revision` (its text) vim's cursor and anchor are in: an
+    /// edit reported for a later revision moves them.
+    revision: u64,
+    /// The view's `move_generation` when last seen in Insert mode: a
+    /// cursor move there breaks the typing record of `.`.
+    moves: u64,
     _subscriptions: [Subscription; 3],
+}
+
+/// How [`VimLayer::run`] answers an [`Outcome::Retry`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Retry {
+    /// Search now for a small file, in the background for a large one.
+    Async,
+    /// Search now whatever the size: a replay runs its keys in order.
+    Sync,
+    /// The search already ran.
+    No,
 }
 
 /// The matches of one query in one revision of a view's text.
@@ -97,9 +115,12 @@ pub struct VimLayer {
     globals: VimGlobals,
     views: HashMap<EntityId, ViewState>,
     match_cache: HashMap<EntityId, MatchCache>,
-    /// The last reload whose marks were remapped, per file: every view of
-    /// a file reports the same reload, but the marks move only once.
-    last_remap: HashMap<Arc<Path>, (Reload, u32)>,
+    /// Set while an [`Outcome::Replay`] runs: its typing is not recorded
+    /// and its undo step stays open until it ends.
+    replaying: bool,
+    /// Set when a replay met a typing step outside Insert mode: the rest
+    /// is dropped.
+    replay_stopped: bool,
     /// Bumped by every key; a background search re-feeds its key only
     /// while no other key arrived.
     key_generation: u64,
@@ -129,7 +150,8 @@ impl VimLayer {
             globals: VimGlobals::default(),
             views: HashMap::new(),
             match_cache: HashMap::new(),
-            last_remap: HashMap::new(),
+            replaying: false,
+            replay_stopped: false,
             key_generation: 0,
             _retry: None,
             search: None,
@@ -197,7 +219,7 @@ impl VimLayer {
         self._retry = None;
         self.open_search = None;
         self.run_command = None;
-        let consumed = self.feed(key, view, true, cx);
+        let consumed = self.feed(key, view, Retry::Async, cx);
         if let Some(backward) = self.open_search.take() {
             self.start_search(view, backward, window, cx);
         }
@@ -283,7 +305,7 @@ impl VimLayer {
                     backward: search.backward,
                     origin: search.origin,
                 };
-                self.run(redo, &view, true, cx);
+                self.run(redo, &view, Retry::Async, cx);
             }
             FindWidgetEvent::Dismissed => {
                 if let Some(state) = self.views.get_mut(&id) {
@@ -362,7 +384,6 @@ impl VimLayer {
             self._retry = None;
             self.end_search(cx);
             self.match_cache.clear();
-            self.last_remap.clear();
             // Marks are not kept up to date while off.
             self.globals = VimGlobals::default();
             for (_, state) in self.views.drain() {
@@ -376,6 +397,7 @@ impl VimLayer {
                 let visual = !matches!(state.vim.mode(), Mode::Normal | Mode::Insert);
                 view.update(cx, |v, cx| {
                     v.set_cursor_overlay(None, cx);
+                    v.set_typed_events(false);
                     v.set_suppress_stops(false, cx);
                     if visual || v.has_block_selection() {
                         v.select(at..at, cx);
@@ -396,9 +418,14 @@ impl VimLayer {
         if self.views.contains_key(&id) {
             return;
         }
-        let (cursor, generation) = {
+        let (cursor, generation, revision, moves) = {
             let v = view.read(cx);
-            (v.selection_head(), v.selection_generation())
+            (
+                v.selection_head(),
+                v.selection_generation(),
+                v.revision(),
+                v.move_generation(),
+            )
         };
         let subscriptions = [
             cx.subscribe(view, Self::view_event),
@@ -420,53 +447,106 @@ impl VimLayer {
                 vim,
                 view: view.downgrade(),
                 generation,
+                revision,
+                moves,
                 _subscriptions: subscriptions,
             },
         );
     }
 
-    /// A reload: marks follow the moved lines, the cursor is kept on the
-    /// text and the selection is drawn again.
-    ///
-    /// `CodeView::apply_edit` bumps the selection generation and emits
-    /// `Reloaded` before it notifies, so this runs (and stores the new
-    /// generation) before [`VimLayer::view_changed`] would take the bump
-    /// for an outside change and drop the visual mode.
+    /// A typing operation of the Insert session goes to the record of
+    /// `.`; an edit moves the marks and the cursors.
     fn view_event(
         &mut self,
         view: Entity<CodeView>,
         event: &CodeViewEvent,
         cx: &mut Context<Self>,
     ) {
-        let CodeViewEvent::Reloaded { reload } = *event;
+        match event {
+            CodeViewEvent::Typed(typed) => {
+                if let Some(state) = self.views.get_mut(&view.entity_id()) {
+                    state.vim.record_typed(typed.clone());
+                }
+            }
+            CodeViewEvent::Reloaded {
+                reload,
+                old,
+                snapshot,
+                patch,
+                revision,
+            } => {
+                let edit = Edit {
+                    reload: *reload,
+                    old,
+                    snapshot,
+                    patch,
+                    revision: *revision,
+                };
+                self.view_edited(&view, edit, cx);
+            }
+        }
+    }
+
+    /// The text of `view` changed (an edit from any view of the file, an
+    /// undo, a reload): the file's marks move once per edit, and vim's
+    /// cursor follows the text unless vim already placed it in the new
+    /// text (the edit was vim's own).
+    ///
+    /// `CodeView::apply_edit` bumps the selection generation and emits
+    /// `Reloaded` before it notifies, so this runs (and stores the new
+    /// generation) before [`VimLayer::view_changed`] would take the bump
+    /// for an outside change and drop the visual mode.
+    fn view_edited(&mut self, view: &Entity<CodeView>, edit: Edit, cx: &mut Context<Self>) {
         let id = view.entity_id();
         self.match_cache.remove(&id);
-        let v = view.read(cx);
-        let snapshot = v.snapshot();
-        let key = (reload, snapshot.line_count());
-        if self.last_remap.get(v.path()) != Some(&key) {
-            self.globals.remap_marks(v.path(), &reload, snapshot);
-            self.last_remap.insert(v.path().clone(), key);
+        let path = view.read(cx).path().clone();
+        // Every view of the file reports the edit; the drawn one (a tab of
+        // the groups, not a closed view still alive) with the lowest id
+        // moves the marks.
+        let lead = self
+            .group_views(cx)
+            .iter()
+            .filter(|v| self.views.contains_key(&v.entity_id()) && v.read(cx).path() == &path)
+            .map(|v| v.entity_id())
+            .min();
+        if lead == Some(id) {
+            self.globals
+                .remap_marks_patch(&path, edit.old, edit.patch, edit.snapshot);
         }
         // The open `/` starts from (or goes back to) its origin on the
         // same line; the column is clamped where the origin is used.
         if let Some(search) = self.search.as_mut()
             && search.view.entity_id() == id
         {
-            search.origin.row = reload.adjust_row(search.origin.row, snapshot.line_count());
+            let lines = edit.snapshot.line_count();
+            search.origin.row = edit.reload.adjust_row(search.origin.row, lines);
         }
         let Some(state) = self.views.get_mut(&id) else {
             return;
         };
-        // Like the view's own cursor and selection, both ends stay on
-        // their lines.
-        let lines = snapshot.line_count();
-        state.vim.remap_rows(|row| reload.adjust_row(row, lines));
-        state.vim.clamp(snapshot);
+        if state.revision >= edit.revision {
+            return;
+        }
+        state.revision = edit.revision;
+        let (old, patch, new) = (edit.old, edit.patch, edit.snapshot);
+        // Like the view's own cursor: after text inserted right at it.
+        state
+            .vim
+            .remap_points(|p| map_point(old, patch, new, p, Bias::Right));
+        state.vim.clamp(new);
+        let v = view.read(cx);
         if state.vim.mode() == Mode::Insert {
             // The edit is (most likely) the user typing: the caret is the
             // view's, and `view_changed` follows it.
-        } else if state.vim.mode() == Mode::Normal {
+            cx.notify();
+            return;
+        }
+        if edit.revision != v.revision() {
+            // A later edit is still to be reported, and draws then.
+            state.generation = v.selection_generation();
+            return;
+        }
+        if state.vim.mode() == Mode::Normal {
             // A selection the view kept (its rows did not change) moved
             // the same way as the cursor and stays: it may be one made with
             // the mouse. A dropped one is replaced by vim's cursor, so the
@@ -481,7 +561,7 @@ impl VimLayer {
                 v.selection_generation()
             });
         } else {
-            self.sync_view(&view, Reveal::None, cx);
+            self.sync_view(view, Reveal::None, cx);
         }
         cx.notify();
     }
@@ -500,8 +580,14 @@ impl VimLayer {
         let ready = takes_keys(v);
         if state.vim.mode() == Mode::Insert {
             // Typing, arrow keys and clicks move the caret; the mode stays.
+            // A move other than by typing starts a new record for `.`.
+            if v.move_generation() != state.moves {
+                state.moves = v.move_generation();
+                state.vim.break_insert_record();
+            }
             follow_selection(&mut state.vim, v);
             state.generation = v.selection_generation();
+            state.revision = v.revision();
             cx.notify();
             return;
         }
@@ -509,6 +595,7 @@ impl VimLayer {
             state.vim.reset(v.selection_head());
             state.vim.clamp(v.snapshot());
             state.generation = v.selection_generation();
+            state.revision = v.revision();
         } else if !ready || v.cursor_overlay().is_some() {
             return;
         }
@@ -521,24 +608,24 @@ impl VimLayer {
         cx.notify();
     }
 
-    /// Feeds `key`; `may_retry` allows one search for a [`Outcome::Retry`].
+    /// Feeds `key`; `retry` says how to answer an [`Outcome::Retry`].
     fn feed(
         &mut self,
         key: Key,
         view: &Entity<CodeView>,
-        may_retry: bool,
+        retry: Retry,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.run(Redo::Key(key), view, may_retry, cx)
+        self.run(Redo::Key(key), view, retry, cx)
     }
 
-    /// Feeds a key or runs a submitted search; `may_retry` allows one
-    /// search for a [`Outcome::Retry`].
+    /// Feeds a key or runs a submitted search; `retry` says how to answer
+    /// an [`Outcome::Retry`].
     fn run(
         &mut self,
         redo: Redo,
         view: &Entity<CodeView>,
-        may_retry: bool,
+        retry: Retry,
         cx: &mut Context<Self>,
     ) -> bool {
         let id = view.entity_id();
@@ -558,7 +645,16 @@ impl VimLayer {
             if v.selection_generation() != state.generation {
                 follow_selection(&mut state.vim, v);
                 state.generation = v.selection_generation();
+                state.revision = v.revision();
             }
+            // Registers compare the clipboard with what they last wrote;
+            // it is read only for the keys that may write or read `"`.
+            let reads = match &redo {
+                Redo::Key(key) => may_use_register(&state.vim, *key),
+                Redo::Search { .. } => !state.vim.pending().is_empty(),
+            };
+            self.globals
+                .set_clipboard(if reads { read_clipboard(cx) } else { None });
             let info = Info {
                 view: v,
                 cache: self.match_cache.get(&id),
@@ -592,6 +688,7 @@ impl VimLayer {
                     let v = view.read(cx);
                     state.vim.reset(v.selection_head());
                     state.vim.clamp(v.snapshot());
+                    state.revision = v.revision();
                 }
                 self.sync_view(view, Reveal::None, cx);
                 cx.notify();
@@ -602,16 +699,18 @@ impl VimLayer {
                 cx.notify();
                 false
             }
-            // Run from Task 8 of vim editing (V2a).
-            Ok(Outcome::Replay(_)) => {
-                tracing::debug!("vim: replays are not run yet");
+            Ok(Outcome::Replay(steps)) => {
+                self.replay(view, steps, cx);
                 true
             }
             Ok(Outcome::Retry(query)) => {
-                if may_retry {
-                    self.search_then_run(redo, view, query, cx);
-                } else {
-                    tracing::warn!("vim: matches still missing after a search");
+                match retry {
+                    Retry::Async => self.search_then_run(redo, view, query, cx),
+                    Retry::Sync => {
+                        self.cache_matches(view, query, cx);
+                        self.run(redo, view, Retry::No, cx);
+                    }
+                    Retry::No => tracing::warn!("vim: matches still missing after a search"),
                 }
                 true
             }
@@ -643,16 +742,8 @@ impl VimLayer {
             (v.snapshot().clone(), v.revision())
         };
         if snapshot.len_bytes() <= BACKGROUND_SEARCH_BYTES {
-            let matches = search(&snapshot, &query);
-            self.match_cache.insert(
-                id,
-                MatchCache {
-                    revision,
-                    query,
-                    matches,
-                },
-            );
-            self.run(redo, view, false, cx);
+            self.cache_matches(view, query, cx);
+            self.run(redo, view, Retry::No, cx);
             return;
         }
         let generation = self.key_generation;
@@ -678,10 +769,96 @@ impl VimLayer {
                         matches,
                     },
                 );
-                this.run(redo, &view, false, cx);
+                this.run(redo, &view, Retry::No, cx);
             })
             .ok();
         }));
+    }
+
+    /// Finds the matches of `query` in `view` now, whatever the file's
+    /// size, and caches them.
+    fn cache_matches(&mut self, view: &Entity<CodeView>, query: SearchQuery, cx: &App) {
+        let v = view.read(cx);
+        let matches = search(v.snapshot(), &query);
+        self.match_cache.insert(
+            view.entity_id(),
+            MatchCache {
+                revision: v.revision(),
+                query,
+                matches,
+            },
+        );
+    }
+
+    /// Runs the steps of an [`Outcome::Replay`] in order, as one undo
+    /// step: keys go through [`VimLayer::feed`] (searches run at once), and
+    /// typing goes through the view's typing path, unrecorded. A typing
+    /// step outside Insert mode (the command that should have entered it
+    /// failed) drops the rest. A key may return a replay of its own (a
+    /// counted insert ends): it runs here, in place.
+    ///
+    /// The user's Escape that ends a counted insert replays too; the
+    /// Insert session's step is then still open and the replay joins it.
+    fn replay(&mut self, view: &Entity<CodeView>, steps: Vec<ReplayStep>, cx: &mut Context<Self>) {
+        let id = view.entity_id();
+        let outermost = !self.replaying;
+        if outermost {
+            self.replaying = true;
+            self.replay_stopped = false;
+            view.update(cx, |v, cx| {
+                v.set_typed_events(false);
+                v.set_suppress_stops(true, cx);
+            });
+        }
+        for step in steps {
+            if self.replay_stopped {
+                break;
+            }
+            match step {
+                ReplayStep::Key(key) => {
+                    self.feed(key, view, Retry::Sync, cx);
+                }
+                ReplayStep::Type(typed) => {
+                    let insert = self
+                        .views
+                        .get(&id)
+                        .is_some_and(|s| s.vim.mode() == Mode::Insert);
+                    if !insert {
+                        self.replay_stopped = true;
+                        break;
+                    }
+                    view.update(cx, |v, cx| match typed {
+                        Typed::Text(text) => v.type_text(&text, cx),
+                        Typed::Newline => v.type_text("\n", cx),
+                        Typed::DeleteLeft => v.delete_left(cx),
+                        Typed::Tab => v.tab(cx),
+                    });
+                }
+            }
+        }
+        if !outermost {
+            return;
+        }
+        self.replaying = false;
+        self.replay_stopped = false;
+        let insert = self
+            .views
+            .get(&id)
+            .is_some_and(|s| s.vim.mode() == Mode::Insert);
+        if insert {
+            // The replay left an Insert session open: the user types on in
+            // it, recorded, until Escape closes the step.
+            view.update(cx, |v, _| v.set_typed_events(true));
+            if let Some(state) = self.views.get_mut(&id) {
+                let v = view.read(cx);
+                follow_selection(&mut state.vim, v);
+                state.generation = v.selection_generation();
+                state.revision = v.revision();
+            }
+        } else {
+            self.sync_view(view, Reveal::Scroll, cx);
+        }
+        cx.notify();
     }
 
     /// Carries out vim's actions on `view`, then draws vim's cursor and
@@ -697,6 +874,12 @@ impl VimLayer {
         let mut reveal = None;
         let mut redraw = false;
         let mut insert = None;
+        // A command that ends in Insert mode keeps its undo step open until
+        // the Insert session's Escape.
+        let keep_open = self
+            .views
+            .get(&id)
+            .is_some_and(|s| s.vim.mode() == Mode::Insert);
         for action in actions {
             match action {
                 Action::ScrollTopRow(row) => {
@@ -713,10 +896,38 @@ impl VimLayer {
                         whole_line: linewise,
                     }));
                 }
-                // Applied from Task 8 of vim editing (V2a); nothing emits
-                // them yet.
-                Action::Edit(_) | Action::Undo(_) | Action::Redo(_) => {
-                    tracing::debug!("vim: edit actions are not applied yet");
+                Action::Edit(plan) => {
+                    view.update(cx, |v, cx| {
+                        v.transact_group(keep_open, cx, |v, cx| v.transact(plan, cx))
+                    });
+                    // Vim placed its cursor in the new text.
+                    if let Some(state) = self.views.get_mut(&id) {
+                        let v = view.read(cx);
+                        state.vim.clamp(v.snapshot());
+                        state.revision = v.revision();
+                    }
+                    redraw = true;
+                }
+                Action::Undo(count) | Action::Redo(count) => {
+                    let undo = matches!(action, Action::Undo(_));
+                    // The step's selections come back: vim's cursor before
+                    // the command, the start of a visual selection.
+                    let at = view.update(cx, |v, cx| {
+                        for _ in 0..count {
+                            if !v.undo(undo, cx) {
+                                break;
+                            }
+                        }
+                        v.selection()
+                            .map_or_else(|| v.selection_head(), |r| r.start)
+                    });
+                    if let Some(state) = self.views.get_mut(&id) {
+                        let v = view.read(cx);
+                        state.vim.reset(at);
+                        state.vim.clamp(v.snapshot());
+                        state.revision = v.revision();
+                    }
+                    redraw = true;
                 }
                 Action::Highlight(query) => {
                     if let Some(matches) = self.matches_for(view, &query, cx) {
@@ -780,6 +991,7 @@ impl VimLayer {
     /// or a line `o` / `O` opens with `commands::newline` (keeping the
     /// indent).
     fn start_insert(&mut self, view: &Entity<CodeView>, at: InsertAt, cx: &mut Context<Self>) {
+        let replaying = self.replaying;
         let Some(state) = self.views.get_mut(&view.entity_id()) else {
             return;
         };
@@ -816,10 +1028,15 @@ impl VimLayer {
                     v.set_cursor(p, cx)
                 }
             }
+            // The user's typing is recorded for `.`; a replay's is not.
+            v.set_typed_events(!replaying);
             v.selection_generation()
         });
         state.generation = generation;
-        follow_selection(&mut state.vim, view.read(cx));
+        let v = view.read(cx);
+        state.revision = v.revision();
+        state.moves = v.move_generation();
+        follow_selection(&mut state.vim, v);
     }
 
     /// The matches of `query` in `view`: cached, or found now when the
@@ -856,6 +1073,7 @@ impl VimLayer {
     /// Draws vim's cursor and selection in `view` and remembers the
     /// selection generation that results.
     fn sync_view(&mut self, view: &Entity<CodeView>, reveal: Reveal, cx: &mut Context<Self>) {
+        let replaying = self.replaying;
         let Some(state) = self.views.get_mut(&view.entity_id()) else {
             return;
         };
@@ -883,10 +1101,15 @@ impl VimLayer {
                 }
             }
             v.set_cursor_overlay(Some(block_cursor(at)), cx);
-            // Leaving Insert mode ends its undo step.
-            v.set_suppress_stops(false, cx);
+            // Leaving Insert mode ends its undo step, unless a replay
+            // (one step as a whole) is running.
+            if !replaying {
+                v.set_typed_events(false);
+                v.set_suppress_stops(false, cx);
+            }
             v.selection_generation()
         });
+        state.revision = view.read(cx).revision();
     }
 }
 
@@ -997,15 +1220,59 @@ fn read_settings(cx: &App) -> (bool, Settings) {
         scrolloff: store
             .get("editor.cursorSurroundingLines", None)
             .unwrap_or(defaults.scrolloff),
-        // Read from `vim.useSystemClipboard` once the workbench wires registers.
-        use_system_clipboard: defaults.use_system_clipboard,
-        // Read from `vim.changeWordIncludesWhitespace` with the other V2a keys.
-        change_word_includes_whitespace: defaults.change_word_includes_whitespace,
-        // Read from `vim.joinspaces` and `vim.tildeop` with the other V2a keys.
-        joinspaces: defaults.joinspaces,
-        tildeop: defaults.tildeop,
+        use_system_clipboard: clipboard_mode(
+            store.get::<serde_json::Value>("vim.useSystemClipboard", None),
+        ),
+        change_word_includes_whitespace: store
+            .get("vim.changeWordIncludesWhitespace", None)
+            .unwrap_or(defaults.change_word_includes_whitespace),
+        joinspaces: store
+            .get("vim.joinspaces", None)
+            .unwrap_or(defaults.joinspaces),
+        tildeop: store.get("vim.tildeop", None).unwrap_or(defaults.tildeop),
     };
     (enabled, settings)
+}
+
+/// `vim.useSystemClipboard`: `true`, `false` or `"onYank"`; anything else
+/// is `"onYank"`.
+fn clipboard_mode(value: Option<serde_json::Value>) -> ClipboardMode {
+    match value {
+        Some(serde_json::Value::Bool(true)) => ClipboardMode::Always,
+        Some(serde_json::Value::Bool(false)) => ClipboardMode::Never,
+        _ => ClipboardMode::OnYank,
+    }
+}
+
+/// Whether `key` may write or read the unnamed register: an operator,
+/// `x`, a paste, a register name, or any key while one is pending.
+fn may_use_register(vim: &Vim, key: Key) -> bool {
+    !vim.pending().is_empty()
+        || matches!(
+            key,
+            Key::Char('p' | 'P' | 'x' | 'X' | 'd' | 'c' | 's' | 'S' | 'C' | 'D' | 'y' | 'Y' | '"')
+        )
+}
+
+/// The system clipboard as registers see it: its text, and whether the
+/// editor copied it as a whole line.
+fn read_clipboard(cx: &App) -> Option<Clipboard> {
+    let item = cx.read_from_clipboard()?;
+    let text = item.text()?;
+    let whole_line = item
+        .metadata()
+        .and_then(|m| serde_json::from_str::<ClipboardMetadata>(m).ok())
+        .is_some_and(|m| m.whole_line);
+    Some(Clipboard { text, whole_line })
+}
+
+/// One edit as a code view reported it.
+struct Edit<'a> {
+    reload: Reload,
+    old: &'a BufferSnapshot,
+    snapshot: &'a BufferSnapshot,
+    patch: &'a Patch,
+    revision: u64,
 }
 
 /// Every match of `query`; an invalid regex finds nothing.

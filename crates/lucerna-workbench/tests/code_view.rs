@@ -757,8 +757,9 @@ fn reload_emits_event(cx: &mut TestAppContext) {
     cx.update(|_, cx| {
         let events = events.clone();
         cx.subscribe(&view, move |_, event: &CodeViewEvent, _| {
-            let CodeViewEvent::Reloaded { reload } = event;
-            events.borrow_mut().push(*reload);
+            if let CodeViewEvent::Reloaded { reload, .. } = event {
+                events.borrow_mut().push(*reload);
+            }
         })
         .detach();
     });
