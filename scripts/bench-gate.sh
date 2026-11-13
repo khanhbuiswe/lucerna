@@ -5,7 +5,7 @@
 # Usage: scripts/bench-gate.sh [criterion-dir] [threshold-percent]
 set -eu
 
-dir=${1:-target/criterion}
+dir=${1:-"$("$(dirname "$0")"/target-dir.sh)/criterion"}
 threshold=${2:-15}
 status=0
 checked=0

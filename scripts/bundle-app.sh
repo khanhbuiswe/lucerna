@@ -25,6 +25,8 @@ done
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+# Where cargo puts builds: not always ./target (see scripts/target-dir.sh).
+target=$(scripts/target-dir.sh)
 
 # Disk is tight: a release build removes the debug build and vice versa, so
 # only one profile's artifacts are ever on disk. Skipped while another cargo
@@ -33,12 +35,12 @@ case $profile in
   release) other=debug ;;
   *) other=release ;;
 esac
-if [ -d "target/$other" ]; then
+if [ -d "$target/$other" ]; then
   if pgrep -x cargo >/dev/null 2>&1; then
-    echo "bundle-app: another cargo is running; keeping target/$other" >&2
+    echo "bundle-app: another cargo is running; keeping $target/$other" >&2
   else
-    echo "bundle-app: removing the old $other build (target/$other)"
-    rm -rf "target/$other"
+    echo "bundle-app: removing the old $other build ($target/$other)"
+    rm -rf "${target:?}/$other"
   fi
 fi
 
@@ -51,7 +53,7 @@ fi
 version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
 [ -n "$version" ] || { echo "bundle-app: no version in Cargo.toml" >&2; exit 1; }
 
-app="target/$profile/Lucerna.app"
+app="$target/$profile/Lucerna.app"
 contents="$app/Contents"
 rm -rf "$app"
 mkdir -p "$contents/MacOS" "$contents/Resources"
@@ -64,7 +66,7 @@ sed -e "s/@VERSION@/$version/g" -e "s/@BUILD@/$build/g" \
   > "$contents/Info.plist"
 plutil -lint -s "$contents/Info.plist"
 printf 'APPL????' > "$contents/PkgInfo"
-cp "target/$profile/luc" "$contents/MacOS/luc"
+cp "$target/$profile/luc" "$contents/MacOS/luc"
 
 # The icon: the 1024 px tile shrunk to Apple's 824 px icon grid, centred on
 # a transparent 1024 px canvas, then every size iconutil expects.
@@ -101,7 +103,7 @@ EOF
   # under target/ for "Open With" and the default app, since all share one
   # bundle ID. Keep only the installed one registered.
   lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-  for copy in target/release/Lucerna.app target/debug/Lucerna.app; do
+  for copy in "$target/release/Lucerna.app" "$target/debug/Lucerna.app"; do
     [ -d "$copy" ] && "$lsregister" -u "$copy" 2>/dev/null || true
   done
   "$lsregister" -f "$dest"
