@@ -78,7 +78,8 @@
   "terminal.integrated.scrollback": 10000,
   "terminal.integrated.copyOnSelection": false,
   // "selectWord" | "copyPaste" | "paste" | "nothing" | "default" (as selectWord).
-  "terminal.integrated.rightClickBehavior": "selectWord",
+  // null: the platform's default (selectWord on macOS and Linux, copyPaste on Windows).
+  "terminal.integrated.rightClickBehavior": null,
   "terminal.integrated.macOptionIsMeta": false,
   "terminal.integrated.macOptionClickForcesSelection": false,
   "terminal.integrated.mouseWheelScrollSensitivity": 1,

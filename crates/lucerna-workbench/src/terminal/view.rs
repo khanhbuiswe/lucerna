@@ -361,9 +361,22 @@ impl TerminalView {
         self.poll = None;
         let now = cx.background_executor().now();
         self.last_poll = Some(now);
+        self.foreground_seen(info, now, cx);
+        if std::mem::take(&mut self.poll_again) {
+            self.request_poll(cx);
+        }
+    }
+
+    /// What a poll found in the foreground at `now`.
+    fn foreground_seen(&mut self, info: Option<ProcessInfo>, now: Instant, cx: &mut Context<Self>) {
+        let pid = info.as_ref().map(|i| i.pid);
         // Before `tab_title`: a title set while the pid was unknown belongs
         // to the process seen now (`TitleState`'s contract).
-        self.title_state.observe(info.as_ref().map(|i| i.pid));
+        self.title_state.observe(pid);
+        // Another process: the same title set again is new, from it.
+        if pid != self.foreground.as_ref().map(|f| f.pid) {
+            self.osc_title = None;
+        }
         if let Some(cwd) = info.as_ref().and_then(|i| i.cwd.clone()) {
             self.links.note_polled_cwd(cwd, now);
         }
@@ -372,9 +385,6 @@ impl TerminalView {
             cx.emit(TerminalViewEvent::ProcessChanged);
         }
         self.update_title(cx);
-        if std::mem::take(&mut self.poll_again) {
-            self.request_poll(cx);
-        }
     }
 
     /// Tells the tab its title when it changed.
@@ -484,9 +494,8 @@ impl TerminalView {
     /// Stands in for a poll of the foreground process, for tests.
     #[doc(hidden)]
     pub fn set_foreground_process(&mut self, info: Option<ProcessInfo>, cx: &mut Context<Self>) {
-        self.foreground = info;
-        cx.emit(TerminalViewEvent::ProcessChanged);
-        self.update_title(cx);
+        let now = cx.background_executor().now();
+        self.foreground_seen(info, now, cx);
     }
 
     /// The exit code once the process exited; `Some(None)` when a signal

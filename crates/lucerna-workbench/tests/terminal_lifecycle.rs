@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::channel::mpsc::{UnboundedSender, unbounded};
-use gpui::{BorrowAppContext, Entity, TestAppContext, VisualTestContext};
+use gpui::{BorrowAppContext, Entity, Focusable, TestAppContext, VisualTestContext};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_terminal::{ProcessInfo, Terminal, TerminalEvent, TerminalOptions};
@@ -238,11 +238,31 @@ fn untrusted_opens_without_trust_modal(cx: &mut TestAppContext) {
 fn zero_exit_closes_tab(cx: &mut TestAppContext) {
     let fakes = init("{}", cx);
     let (wb, cx) = open(Path::new("/tmp/project"), cx);
+    let first = new_terminal(&wb, cx);
     new_terminal(&wb, cx);
+    // The focused tab exits: the tab shown next takes the focus.
     emit(&fakes, TerminalEvent::Exited(Some(0)), cx);
+    assert_eq!(tab_count(&wb, cx), 1);
+    assert_eq!(active_view(&wb, cx), first);
+    assert!(
+        cx.update(|window, cx| first.read(cx).focus_handle(cx).is_focused(window)),
+        "the next terminal has the focus"
+    );
+
+    let tx = fakes.borrow().events[0].clone();
+    tx.unbounded_send(TerminalEvent::Exited(Some(0))).unwrap();
+    settle(cx);
     assert_eq!(tab_count(&wb, cx), 0);
-    // The last tab closed: the panel hides (`hideOnLastClosed`).
+    // The last tab closed: the panel hides (`hideOnLastClosed`) and the
+    // focus goes back to the editor area.
     assert!(!wb.read_with(cx, |wb, _| wb.panel_state().visible));
+    let editor_focus = cx.update(|window, cx| {
+        let keys = wb.read(cx).context_keys(window, cx);
+        lucerna_settings::parse_when("editorFocus")
+            .unwrap()
+            .eval(&keys)
+    });
+    assert!(editor_focus, "the editor area has the focus");
 }
 
 #[gpui::test]
@@ -434,7 +454,34 @@ fn title_from_osc_then_process(cx: &mut TestAppContext) {
     cx.executor().advance_clock(Duration::from_millis(600));
     settle(cx);
     assert_eq!(tab_title(&wb, cx), "✳ Fix bug");
+
+    // The poll sees the process that set it: the title stays. Another
+    // process in the foreground: the old title goes, its name shows.
+    let view = active_view(&wb, cx);
+    let process = |pid: u32, name: &str| ProcessInfo {
+        pid,
+        name: name.into(),
+        argv: vec![name.into()],
+        cwd: None,
+    };
+    view.update(cx, |v, cx| {
+        v.set_foreground_process(Some(process(10, "claude")), cx)
+    });
+    settle(cx);
+    assert_eq!(tab_title(&wb, cx), "✳ Fix bug");
+    view.update(cx, |v, cx| {
+        v.set_foreground_process(Some(process(20, "vim")), cx)
+    });
+    settle(cx);
+    assert_eq!(tab_title(&wb, cx), "vim");
+    // The same title again, from the new process, names the tab again.
+    emit(&fakes, TerminalEvent::Title(Some("✳ Fix bug".into())), cx);
+    assert_eq!(tab_title(&wb, cx), "✳ Fix bug");
+
     emit(&fakes, TerminalEvent::Title(None), cx);
+    assert_eq!(tab_title(&wb, cx), "vim");
+    view.update(cx, |v, cx| v.set_foreground_process(None, cx));
+    settle(cx);
     assert_eq!(tab_title(&wb, cx), "Terminal");
 }
 

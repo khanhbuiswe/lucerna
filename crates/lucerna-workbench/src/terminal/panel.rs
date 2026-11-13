@@ -47,6 +47,9 @@ pub enum PanelEvent {
     Empty,
     /// A terminal's file or folder link was ⌘+clicked.
     OpenLink(LinkTarget),
+    /// The process of tab `id` exited with code 0: the workbench closes
+    /// the tab, moving the focus on as `kill` does.
+    ExitedCleanly(u64),
 }
 
 pub struct TerminalPanel {
@@ -114,7 +117,7 @@ impl TerminalPanel {
                 }
                 // Spec §6.1: a clean exit closes the tab; anything else
                 // keeps it, with the exit line, until a key is typed.
-                TerminalViewEvent::Exited(Some(0)) => panel.close_tab(id, cx),
+                TerminalViewEvent::Exited(Some(0)) => cx.emit(PanelEvent::ExitedCleanly(id)),
                 TerminalViewEvent::Exited(_) => panel.set_state(id, TabState::Failed, cx),
                 TerminalViewEvent::Bell => panel.set_state(id, TabState::Bell, cx),
                 TerminalViewEvent::ProcessChanged => cx.notify(),

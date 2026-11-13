@@ -184,16 +184,11 @@ pub(crate) fn mouse_settings(cx: &App) -> MouseSettings {
             .filter(|v| v.is_finite() && *v > 0.)
             .unwrap_or(default)
     };
-    let right_click = match settings
-        .get::<String>(&key("rightClickBehavior"), None)
-        .as_deref()
-    {
-        Some("copyPaste") => RightClick::CopyPaste,
-        Some("paste") => RightClick::Paste,
-        Some("nothing") => RightClick::Nothing,
-        Some("selectWord" | "default") => RightClick::SelectWord,
-        _ => default_right_click(),
-    };
+    let right_click = right_click_from(
+        settings
+            .get::<String>(&key("rightClickBehavior"), None)
+            .as_deref(),
+    );
     let paste_warning =
         match settings.get::<serde_json::Value>(&key("enableMultiLinePasteWarning"), None) {
             Some(serde_json::Value::String(s)) if s == "always" => PasteWarning::Always,
@@ -216,6 +211,18 @@ pub(crate) fn mouse_settings(cx: &App) -> MouseSettings {
         wheel_sensitivity: sensitivity("mouseWheelScrollSensitivity", 1.),
         fast_scroll_sensitivity: sensitivity("fastScrollSensitivity", 5.),
         paste_warning,
+    }
+}
+
+/// A `rightClickBehavior` value; unset or unknown is the platform's
+/// default.
+fn right_click_from(value: Option<&str>) -> RightClick {
+    match value {
+        Some("copyPaste") => RightClick::CopyPaste,
+        Some("paste") => RightClick::Paste,
+        Some("nothing") => RightClick::Nothing,
+        Some("selectWord" | "default") => RightClick::SelectWord,
+        _ => default_right_click(),
     }
 }
 
@@ -507,6 +514,19 @@ mod tests {
         assert_eq!(w(600.into()), Some(FontWeight(600.)));
         assert_eq!(w(0.into()), None);
         assert_eq!(w("heavy".into()), None);
+    }
+
+    #[test]
+    fn right_click_default_is_per_platform() {
+        // The bundled default leaves it unset, so each platform gets its
+        // own (VS Code: selectWord on macOS, copyPaste on Windows).
+        let store = lucerna_settings::SettingsStore::with_defaults();
+        let value = store.get::<String>("terminal.integrated.rightClickBehavior", None);
+        assert_eq!(value, None);
+        assert_eq!(right_click_from(value.as_deref()), default_right_click());
+        assert_eq!(right_click_from(Some("bogus")), default_right_click());
+        assert_eq!(right_click_from(Some("paste")), RightClick::Paste);
+        assert_eq!(right_click_from(Some("default")), RightClick::SelectWord);
     }
 
     #[test]

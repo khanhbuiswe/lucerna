@@ -1759,19 +1759,28 @@ impl Workbench {
     /// terminal (which hangs up its shell). The focus moves to the tab
     /// shown next.
     pub fn kill_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let had_focus = self.panel_has_focus(window, cx);
-        let panel = self.terminal_panel.clone();
-        let Some(id) = panel
-            .read(cx)
-            .active()
-            .map(|index| panel.read(cx).tabs()[index].id)
-        else {
+        let panel = self.terminal_panel.read(cx);
+        let Some(id) = panel.active().map(|index| panel.tabs()[index].id) else {
             return;
         };
+        self.close_terminal_tab(id, window, cx);
+    }
+
+    /// Closes tab `id`. With the focus in the panel, the tab shown next
+    /// takes it, or the editor area when none is left: the closed view's
+    /// focus handle goes with it.
+    fn close_terminal_tab(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let had_focus = self.panel_has_focus(window, cx);
+        let panel = self.terminal_panel.clone();
         panel.update(cx, |panel, cx| panel.close_tab(id, cx));
-        if had_focus && self.panel.visible && panel.read(cx).tab_count() > 0 {
+        if !had_focus {
+            return;
+        }
+        if self.panel.visible && panel.read(cx).tab_count() > 0 {
             let focus = panel.read(cx).focus_target(cx);
             window.focus(&focus, cx);
+        } else if panel.read(cx).tab_count() == 0 {
+            self.focus_editor_area(window, cx);
         }
     }
 
@@ -1831,6 +1840,7 @@ impl Workbench {
                 }
             }
             PanelEvent::OpenLink(target) => self.open_terminal_link(target, window, cx),
+            PanelEvent::ExitedCleanly(id) => self.close_terminal_tab(*id, window, cx),
         }
     }
 
