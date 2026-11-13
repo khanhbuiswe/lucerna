@@ -1,18 +1,22 @@
 //! The Markdown preview (spec §5.3): a tab that draws a markdown file's
 //! root blocks as the items of a `gpui::list`, following the file's
-//! document as it is edited or rewritten on disk.
+//! document as it is edited or rewritten on disk (spec §5.4): parses run on
+//! a background thread, at most one per [`REPARSE_DELAY`], and keep the
+//! source line at the top of the view.
 
 mod sync;
 
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     AnyElement, App, Context, Entity, IntoElement, ListAlignment, ListOffset, ListState,
-    ParentElement, Render, SharedString, Styled, WeakEntity, Window, div, list, prelude::*, px,
+    ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, div, list, prelude::*,
+    px,
 };
-use lucerna_text::LoadError;
+use lucerna_text::{BufferSnapshot, LoadError};
 
 use crate::AppState;
 use crate::code_view::CodeView;
@@ -28,6 +32,10 @@ use crate::workbench::Workbench;
 /// Files larger than this are not parsed: the preview offers the source
 /// instead.
 pub const MAX_PREVIEW_BYTES: usize = 5 * 1024 * 1024;
+
+/// How long after a change to the text the preview parses it again; the
+/// changes in between are taken in by that one parse.
+pub const REPARSE_DELAY: Duration = Duration::from_millis(200);
 
 /// The widest the content column gets, in px.
 const CONTENT_MAX_WIDTH: f32 = 800.;
@@ -54,6 +62,15 @@ pub struct MarkdownPreview {
     blocks: Option<Arc<MarkdownBlocks>>,
     /// The document revision `blocks` (or `too_large`) was made from.
     revision: Option<u64>,
+    /// The revision of the last text handed to a parse, shown or not.
+    requested: Option<u64>,
+    /// The timer of the next parse, while one is waiting.
+    pending: Option<Task<()>>,
+    /// Bumped when the previewed file changes, so parses of the old file
+    /// are dropped.
+    epoch: u64,
+    /// Parses started, for tests.
+    parses_started: u64,
     /// The file is over [`MAX_PREVIEW_BYTES`]; `blocks` is `None`.
     too_large: bool,
     /// The document's state when last checked.
@@ -72,7 +89,7 @@ impl MarkdownPreview {
         let source = documents.update(cx, |d, cx| d.open_preview(path.clone(), cx));
         // Every change to the documents (an edit, a reload, the first
         // load, a deletion) is checked against the revision shown.
-        cx.observe(&documents, |preview, _, cx| preview.refresh(cx))
+        cx.observe(&documents, |preview, _, cx| preview.documents_changed(cx))
             .detach();
         let mut preview = MarkdownPreview {
             path,
@@ -82,11 +99,15 @@ impl MarkdownPreview {
             _source: source,
             blocks: None,
             revision: None,
+            requested: None,
+            pending: None,
+            epoch: 0,
+            parses_started: 0,
             too_large: false,
             state: None,
             list_state: ListState::new(0, ListAlignment::Top, px(LIST_OVERDRAW)),
         };
-        preview.refresh(cx);
+        preview.documents_changed(cx);
         preview
     }
 
@@ -112,10 +133,13 @@ impl MarkdownPreview {
         self.path = path;
         self.blocks = None;
         self.revision = None;
+        self.requested = None;
+        self.pending = None;
+        self.epoch += 1;
         self.too_large = false;
         self.state = None;
         self.list_state.reset(0);
-        self.refresh(cx);
+        self.documents_changed(cx);
     }
 
     /// The parsed blocks shown; `None` before the first load and for a
@@ -155,38 +179,94 @@ impl MarkdownPreview {
         cx.notify();
     }
 
-    /// Parses the document again when its text changed since the last
-    /// parse; redraws when the text or the document's state changed.
-    fn refresh(&mut self, cx: &mut Context<Self>) {
+    /// The number of parses started so far (for tests).
+    pub fn parses_started(&self) -> u64 {
+        self.parses_started
+    }
+
+    /// Parses the document again now, without waiting for a change.
+    // Task 8: also drops the view's image cache, so changed images load
+    // again (`markdown.preview.refresh`, spec §5.4).
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.pending = None;
+        self.parse_now(cx);
+    }
+
+    /// Redraws when the document's state changed; when its text changed,
+    /// parses it now the first time, later once [`REPARSE_DELAY`] has
+    /// passed (a change while that wait runs joins it).
+    fn documents_changed(&mut self, cx: &mut Context<Self>) {
         let docs = self.documents.read(cx);
         let state = docs.state(&self.path).cloned();
         let revision = docs.revision_of(&self.path);
-        let snapshot = (revision != self.revision)
-            .then(|| docs.snapshot_of(&self.path))
-            .flatten();
         if state != self.state {
             self.state = state;
             cx.notify();
         }
-        if revision == self.revision {
+        if revision.is_none() || revision == self.requested || self.pending.is_some() {
             return;
         }
-        self.revision = revision;
-        let Some(snapshot) = snapshot else {
-            cx.notify();
+        if self.requested.is_none() {
+            self.parse_now(cx);
+            return;
+        }
+        self.pending = Some(cx.spawn(async move |preview, cx| {
+            cx.background_executor().timer(REPARSE_DELAY).await;
+            preview
+                .update(cx, |preview, cx| {
+                    preview.pending = None;
+                    if preview.documents.read(cx).revision_of(&preview.path) != preview.requested {
+                        preview.parse_now(cx);
+                    }
+                })
+                .ok();
+        }));
+    }
+
+    /// Parses the document's current text on a background thread; a file
+    /// over [`MAX_PREVIEW_BYTES`] shows the notice instead.
+    fn parse_now(&mut self, cx: &mut Context<Self>) {
+        let docs = self.documents.read(cx);
+        let (Some(revision), Some(snapshot)) =
+            (docs.revision_of(&self.path), docs.snapshot_of(&self.path))
+        else {
             return;
         };
-        self.too_large = snapshot.len_bytes() > MAX_PREVIEW_BYTES;
-        self.blocks = (!self.too_large).then(|| {
-            let source = snapshot.text_for_range(0..snapshot.len_bytes());
-            Arc::new(parse_markdown_document(&source, None))
-        });
-        let count = self.blocks.as_ref().map_or(0, |b| b.blocks().len());
-        let top = self.list_state.logical_scroll_top();
-        self.list_state.reset(count);
-        if top.item_ix < count {
-            self.list_state.scroll_to(top);
+        self.requested = Some(revision);
+        if snapshot.len_bytes() > MAX_PREVIEW_BYTES {
+            self.show(revision, None, cx);
+            return;
         }
+        self.parses_started += 1;
+        let epoch = self.epoch;
+        let parse = cx.background_spawn(async move { parse_snapshot(snapshot) });
+        cx.spawn(async move |preview, cx| {
+            let blocks = parse.await;
+            preview
+                .update(cx, |preview, cx| {
+                    if preview.epoch == epoch {
+                        preview.show(revision, Some(Arc::new(blocks)), cx);
+                    }
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Shows the blocks parsed from `revision` (`None`: the file is too
+    /// large), unless newer ones are shown, keeping the source line at the
+    /// top of the view.
+    fn show(&mut self, revision: u64, blocks: Option<Arc<MarkdownBlocks>>, cx: &mut Context<Self>) {
+        if self.revision.is_some_and(|shown| shown > revision) {
+            return;
+        }
+        let top = self.top_line();
+        self.revision = Some(revision);
+        self.too_large = blocks.is_none();
+        self.blocks = blocks;
+        let count = self.blocks.as_ref().map_or(0, |b| b.blocks().len());
+        self.list_state.reset(count);
+        self.scroll_to_line(top, cx);
         cx.notify();
     }
 
@@ -232,6 +312,12 @@ impl MarkdownPreview {
             .child(button)
             .into_any_element()
     }
+}
+
+/// Parses the whole text of `snapshot`; runs on a background thread.
+fn parse_snapshot(snapshot: BufferSnapshot) -> MarkdownBlocks {
+    let source = snapshot.text_for_range(0..snapshot.len_bytes());
+    parse_markdown_document(&source, None)
 }
 
 /// A centred, muted message, as the code view shows load errors.

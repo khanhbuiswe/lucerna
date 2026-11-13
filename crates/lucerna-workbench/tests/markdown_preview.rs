@@ -1,10 +1,12 @@
 //! The Markdown preview tab: it draws the file's blocks, keeps the
-//! document open when the source tab closes, and shows the too-large
-//! notice and the deleted-file bar.
+//! document open when the source tab closes, shows the too-large notice
+//! and the deleted-file bar, and follows edits and rewrites on disk after
+//! a debounce, keeping the reading position.
 
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
@@ -13,7 +15,8 @@ use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, FileView, MAX_PREVIEW_BYTES, MarkdownPreview, OpenMode, TabId, Workbench,
+    AppState, FileView, MAX_PREVIEW_BYTES, MarkdownPreview, OpenMode, REPARSE_DELAY, TabId,
+    Workbench,
 };
 use tempfile::TempDir;
 
@@ -86,11 +89,21 @@ fn open_preview(
     dir: &TempDir,
     cx: &mut VisualTestContext,
 ) -> Entity<MarkdownPreview> {
+    open_preview_with(wb, dir, OpenMode::Pinned, cx)
+}
+
+/// Opens the static preview of `file.md` as `mode` says.
+fn open_preview_with(
+    wb: &Entity<Workbench>,
+    dir: &TempDir,
+    mode: OpenMode,
+    cx: &mut VisualTestContext,
+) -> Entity<MarkdownPreview> {
     let path: Arc<Path> = Arc::from(dir.path().join("file.md"));
     let groups = cx.update(|_, cx| wb.read(cx).editor_groups().clone());
     groups.update(cx, |groups, cx| {
         groups.update_model(cx, |m| {
-            m.open_file(path, FileView::Preview, OpenMode::Pinned, true, false)
+            m.open_file(path, FileView::Preview, mode, true, false)
         })
     });
     draw(cx);
@@ -111,6 +124,24 @@ fn drawn(selector: &'static str, cx: &mut VisualTestContext) -> bool {
 
 fn blocks_text(preview: &Entity<MarkdownPreview>, cx: &mut VisualTestContext) -> Option<String> {
     preview.read_with(cx, |p, _| p.blocks().map(|b| format!("{:?}", b.blocks())))
+}
+
+/// Another program writes `text` to `file.md`, and the watcher reports it;
+/// the reload runs, the clock does not move.
+fn rewrite(wb: &Entity<Workbench>, dir: &TempDir, text: &str, cx: &mut VisualTestContext) {
+    fs::write(dir.path().join("file.md"), text).unwrap();
+    let change = Change {
+        path: Arc::from(Path::new("file.md")),
+        kind: ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    cx.run_until_parked();
+}
+
+fn parses(preview: &Entity<MarkdownPreview>, cx: &mut VisualTestContext) -> u64 {
+    preview.read_with(cx, |p, _| p.parses_started())
 }
 
 /// `file.md` was edited (`zzz` typed) and its preview opened in the same
@@ -187,5 +218,78 @@ fn deleted_file_shows_disk_bar(cx: &mut TestAppContext) {
     draw(cx);
     assert!(drawn("deleted-bar-close-0", cx));
     let text = blocks_text(&preview, cx).expect("the last text stays");
+    assert!(text.contains("zzzhello"), "{text}");
+}
+
+#[gpui::test]
+fn rewrite_on_disk_updates_preview(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open("# Old\n", cx);
+    let preview = open_preview(&wb, &dir, cx);
+    rewrite(&wb, &dir, "# New title\n", cx);
+    let text = blocks_text(&preview, cx).expect("parsed");
+    assert!(text.contains("Old"), "not before the debounce: {text}");
+    cx.executor().advance_clock(REPARSE_DELAY);
+    draw(cx);
+    let text = blocks_text(&preview, cx).expect("parsed");
+    assert!(text.contains("New title"), "{text}");
+}
+
+#[gpui::test]
+fn burst_of_writes_parses_last_once(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open("# Start\n", cx);
+    let preview = open_preview(&wb, &dir, cx);
+    let before = parses(&preview, cx);
+    for i in 1..=5 {
+        rewrite(&wb, &dir, &format!("# Write {i}{}\n", "!".repeat(i)), cx);
+        cx.executor().advance_clock(Duration::from_millis(20));
+    }
+    cx.executor().advance_clock(REPARSE_DELAY);
+    draw(cx);
+    assert_eq!(parses(&preview, cx), before + 1);
+    let text = blocks_text(&preview, cx).expect("parsed");
+    assert!(text.contains("Write 5"), "{text}");
+}
+
+#[gpui::test]
+fn rewrite_keeps_reading_position(cx: &mut TestAppContext) {
+    init(cx);
+    let text: String = (0..200).map(|i| format!("# h{i}\n\npara\n\n")).collect();
+    let (dir, wb, cx) = open(&text, cx);
+    let preview = open_preview(&wb, &dir, cx);
+    // `# h120` starts on line 480.
+    preview.update(cx, |p, cx| p.scroll_to_line(480., cx));
+    draw(cx);
+    assert_eq!(preview.read_with(cx, |p, _| p.top_line()), 480.);
+    rewrite(&wb, &dir, &format!("# new\n\n{text}"), cx);
+    cx.executor().advance_clock(REPARSE_DELAY);
+    draw(cx);
+    // The file grew by two lines: `# h119` starts on line 478, its
+    // paragraph on 480, `# h120` on 482.
+    let (item, line) = preview.read_with(cx, |p, _| {
+        (p.list_state().logical_scroll_top().item_ix, p.top_line())
+    });
+    assert_ne!(item, 0);
+    assert!((478. ..=482.).contains(&line), "top line {line}");
+}
+
+#[gpui::test]
+fn typing_updates_without_save(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open("hello\n", cx);
+    let (view, _) = open_source(&wb, cx);
+    let preview = open_preview_with(&wb, &dir, OpenMode::ToSide, cx);
+    cx.update(|window, cx| {
+        let focus = view.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    cx.simulate_input("zzz");
+    draw(cx);
+    let text = blocks_text(&preview, cx).expect("parsed");
+    assert!(!text.contains("zzz"), "not before the debounce: {text}");
+    cx.executor().advance_clock(REPARSE_DELAY);
+    draw(cx);
+    let text = blocks_text(&preview, cx).expect("parsed");
     assert!(text.contains("zzzhello"), "{text}");
 }
