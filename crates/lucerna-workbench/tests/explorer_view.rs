@@ -628,8 +628,9 @@ const FOLDER_MENU: [&str; 9] = [
 ];
 
 /// Without this an opened file in a temp dir raises the workspace trust
-/// modal, which (rightly) takes the focus.
-const TRUSTED: &str = r#"{ "session.trustAllWorktrees": true }"#;
+/// modal, which (rightly) takes the focus. No language servers: their
+/// threads upset the GPUI test scheduler.
+const TRUSTED: &str = r#"{ "session.trustAllWorktrees": true, "lucerna.lsp.enabled": false }"#;
 
 #[gpui::test]
 fn file_click_keeps_explorer_focus(cx: &mut TestAppContext) {

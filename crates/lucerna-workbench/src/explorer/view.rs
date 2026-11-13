@@ -232,18 +232,41 @@ impl ExplorerView {
         self.begin_edit(edit, "", 0..0, window, cx);
     }
 
-    /// After `rel` was deleted: a selection at it or under it moves to its
-    /// parent folder.
-    pub(crate) fn select_parent_of(&mut self, rel: &Path, cx: &mut Context<Self>) {
+    /// Selects `selection` (the target of a menu command run with
+    /// `args.path`).
+    pub(crate) fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        self.pending_reveal = None;
+        self.model.select(selection);
+        cx.notify();
+    }
+
+    /// Before the tree drops `rel`, just deleted: a selection at it or under
+    /// it moves to its next sibling, else its previous sibling, else its
+    /// parent folder, as VS Code focuses a neighbour.
+    pub(crate) fn select_neighbour_of(&mut self, rel: &Path, cx: &mut Context<Self>) {
         let Selection::Path(selected) = self.model.selection() else {
             return;
         };
         if !selected.starts_with(rel) {
             return;
         }
-        let selection = match rel.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => Selection::Path(Arc::from(parent)),
-            _ => Selection::Root,
+        let parent = rel.parent().unwrap_or(Path::new(""));
+        let siblings: Vec<&Arc<Path>> = self
+            .model
+            .visible_rows()
+            .iter()
+            .filter(|r| !r.edit && r.path.parent() == Some(parent))
+            .map(|r| &r.path)
+            .collect();
+        let neighbour = siblings.iter().position(|p| &***p == rel).and_then(|ix| {
+            siblings
+                .get(ix + 1)
+                .or_else(|| ix.checked_sub(1).and_then(|prev| siblings.get(prev)))
+        });
+        let selection = match neighbour {
+            Some(path) => Selection::Path((*path).clone()),
+            None if parent.as_os_str().is_empty() => Selection::Root,
+            None => Selection::Path(Arc::from(parent)),
         };
         self.model.select(selection);
         cx.notify();
@@ -846,7 +869,13 @@ impl ExplorerView {
         let position = position.unwrap_or_else(|| self.selected_row_anchor());
         let kind = self.selected_kind();
         let (single_file, owner) = (self.single_file, self.focus.clone());
-        let menu = cx.new(|cx| build_menu(kind, single_file, owner, cx));
+        let path = self
+            .selected_abs_path()
+            .strip_prefix(&self.root)
+            .ok()
+            .filter(|rel| !rel.as_os_str().is_empty())
+            .map(|rel| rel.to_string_lossy().into_owned());
+        let menu = cx.new(|cx| build_menu(kind, single_file, path, owner, cx));
         self.menu_generation += 1;
         let generation = self.menu_generation;
         let replacing = self.context_menu.is_some();

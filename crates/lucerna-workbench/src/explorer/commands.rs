@@ -5,7 +5,10 @@
 //! Rename always on the selection). None runs while a name is being typed
 //! in the tree.
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{App, AsyncWindowContext, ClipboardItem, Context, PromptLevel, WeakEntity, Window};
@@ -13,7 +16,9 @@ use lucerna_project::{EntryKind, fs_ops};
 use serde_json::Value;
 
 use crate::system_shell::system_shell;
-use crate::{CommandRegistry, EditKind, OpenMode, SelectedKind, Workbench, status_message};
+use crate::{
+    CommandRegistry, EditKind, OpenMode, SelectedKind, Selection, Workbench, status_message,
+};
 
 const TRASH_ANSWERS: [&str; 2] = ["Move to Trash", "Cancel"];
 const TRASH_FAILED_ANSWERS: [&str; 2] = ["Delete Permanently", "Cancel"];
@@ -23,8 +28,8 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "explorer.newFile",
         "File: New File…",
-        |wb, _, window, cx| {
-            if !editing(wb, cx) {
+        |wb, args, window, cx| {
+            if !editing(wb, cx) && select_target(wb, args, cx) {
                 wb.explorer().clone().update(cx, |explorer, cx| {
                     explorer.start_new(EditKind::NewFile, window, cx)
                 });
@@ -34,16 +39,16 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "explorer.newFolder",
         "File: New Folder…",
-        |wb, _, window, cx| {
-            if !editing(wb, cx) {
+        |wb, args, window, cx| {
+            if !editing(wb, cx) && select_target(wb, args, cx) {
                 wb.explorer().clone().update(cx, |explorer, cx| {
                     explorer.start_new(EditKind::NewFolder, window, cx)
                 });
             }
         },
     );
-    commands.register("renameFile", "File: Rename…", |wb, _, window, cx| {
-        if !editing(wb, cx) {
+    commands.register("renameFile", "File: Rename…", |wb, args, window, cx| {
+        if !editing(wb, cx) && select_target(wb, args, cx) {
             wb.explorer()
                 .clone()
                 .update(cx, |explorer, cx| explorer.start_rename(window, cx));
@@ -198,6 +203,9 @@ fn delete(
         Ok(rel) if !rel.as_os_str().is_empty() => Arc::from(rel),
         _ => return,
     };
+    let Some(in_flight) = InFlight::begin(wb, &target) else {
+        return;
+    };
     let name = crate::save::display_name(&target);
     let confirm = permanent
         || cx
@@ -230,6 +238,7 @@ fn delete(
         }
     });
     cx.spawn_in(window, async move |wb, cx| {
+        let _in_flight = in_flight;
         if let Some(answer) = answer
             && answer.await != Ok(0)
         {
@@ -248,7 +257,7 @@ fn delete(
             Ok(()) => {
                 wb.paths_deleted(&deleted.target, cx);
                 wb.explorer().clone().update(cx, |explorer, cx| {
-                    explorer.select_parent_of(&deleted.rel, cx)
+                    explorer.select_neighbour_of(&deleted.rel, cx)
                 });
             }
             Err(e) => {
@@ -258,6 +267,39 @@ fn delete(
         });
     })
     .detach();
+}
+
+/// Marks a Delete of `path` as running, from its first prompt to its end
+/// (also when its task is dropped).
+struct InFlight {
+    set: Rc<RefCell<HashSet<PathBuf>>>,
+    path: PathBuf,
+}
+
+impl InFlight {
+    /// `None` when a Delete of `path`, or of a path inside or around it, is
+    /// already running.
+    fn begin(wb: &Workbench, path: &Path) -> Option<Self> {
+        let set = wb.deletes_in_flight.clone();
+        let busy = set
+            .borrow()
+            .iter()
+            .any(|p| p.starts_with(path) || path.starts_with(p));
+        if busy {
+            return None;
+        }
+        set.borrow_mut().insert(path.to_path_buf());
+        Some(Self {
+            set,
+            path: path.to_path_buf(),
+        })
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.set.borrow_mut().remove(&self.path);
+    }
 }
 
 /// What [`delete`] removes.
@@ -296,7 +338,7 @@ async fn trash(
                     "Unable to move '{}' to the Trash. Do you want to permanently delete instead?",
                     deleted.name
                 ),
-                None,
+                Some(&format!("This action is irreversible!\n{e}")),
                 &TRASH_FAILED_ANSWERS[..],
                 cx,
             )
@@ -339,6 +381,29 @@ async fn run_off_thread(
     wb.update(cx, |wb, _| wb.expect_own_changes([deleted.rel.clone()]))
         .ok()?;
     Some(cx.background_executor().spawn(async move { op() }).await)
+}
+
+/// New File, New Folder and Rename type in the tree at the selection:
+/// with `args.path` (the menu's row) that path is selected first. `false`
+/// when the worktree does not know it (the row vanished), so the command
+/// does nothing.
+fn select_target(wb: &mut Workbench, args: Option<&Value>, cx: &mut Context<Workbench>) -> bool {
+    if args.and_then(|a| a.get("path")).is_none() {
+        return true;
+    }
+    let (target, kind) = target_kind(wb, args, cx);
+    if kind.is_none() {
+        return false;
+    }
+    let selection = match target.strip_prefix(wb.root()) {
+        Ok(rel) if rel.as_os_str().is_empty() => Selection::Root,
+        Ok(rel) => Selection::Path(Arc::from(rel)),
+        Err(_) => return false,
+    };
+    wb.explorer()
+        .clone()
+        .update(cx, |explorer, cx| explorer.select(selection, cx));
+    true
 }
 
 /// A name is being typed in the Explorer: its commands do nothing. Keys

@@ -104,6 +104,9 @@ pub struct Workbench {
     /// Root-relative paths Lucerna itself just created, renamed or deleted,
     /// and when; the Explorer does not mark them as changed by another program.
     own_changes: HashMap<Arc<Path>, Instant>,
+    /// Absolute paths a Delete is asking about or deleting; another Delete
+    /// of them (or of a path inside or around them) is ignored meanwhile.
+    pub(crate) deletes_in_flight: Rc<std::cell::RefCell<HashSet<PathBuf>>>,
     /// The options of the scan, from `files.exclude`.
     scan_options: ScanOptions,
     /// Re-themes and rescans when [`AppState`] changes.
@@ -551,6 +554,7 @@ impl Workbench {
             scan_progress_logged: false,
             scan_complete_logged: false,
             own_changes: HashMap::new(),
+            deletes_in_flight: Rc::default(),
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
@@ -1803,6 +1807,12 @@ impl Workbench {
             resolution = keymap.resolve(&chord, &ctx);
         }
         match resolution {
+            // A held Delete key would delete one entry after another.
+            Resolution::Command { command, .. }
+                if ev.is_held && matches!(command.as_str(), "moveFileToTrash" | "deleteFile") =>
+            {
+                cx.stop_propagation();
+            }
             Resolution::Command { command, args } => {
                 if command != SHOW_HOVER {
                     hide_hover(cx);

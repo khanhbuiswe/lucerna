@@ -1051,3 +1051,218 @@ fn delete_is_not_offered_for_root(cx: &mut TestAppContext) {
     assert!(trashed.lock().unwrap().is_empty());
     assert!(dir.path().exists());
 }
+
+fn run_with(
+    wb: &Entity<Workbench>,
+    command: &'static str,
+    args: serde_json::Value,
+    cx: &mut VisualTestContext,
+) {
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command(command, Some(&args), window, cx)
+        });
+    });
+    draw(cx);
+}
+
+/// Removes `path` (top-level) on disk and delivers its `Removed` event.
+fn remove_and_deliver(wb: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) {
+    let root = root_of(wb, cx);
+    let abs = root.join(path);
+    if abs.exists() {
+        lucerna_project::fs_ops::delete_permanently(&abs).unwrap();
+    }
+    wait_until(cx, |cx| {
+        wb.read_with(cx, |wb, _| {
+            !wb.worktree().snapshot().contains(Path::new(path))
+        })
+    });
+    let removed = Change {
+        path: Arc::from(Path::new(path)),
+        kind: ChangeKind::Removed,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![removed]), cx)
+    });
+    draw(cx);
+}
+
+/// The menu's Delete acts on the row it was opened for: when that row
+/// vanished meanwhile it does nothing, rather than delete whatever the
+/// selection moved to.
+#[gpui::test]
+fn menu_delete_of_vanished_entry_does_nothing(cx: &mut TestAppContext) {
+    init(cx);
+    let trashed = install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-src", cx);
+    click("explorer-row-src/main.rs", cx);
+    right_click("explorer-row-src/main.rs", cx);
+    assert!(
+        cx.debug_bounds("context-menu-item-moveFileToTrash")
+            .is_some()
+    );
+    let root = root_of(&wb, cx);
+    std::fs::remove_file(root.join("src/main.rs")).unwrap();
+    wait_until(cx, |cx| {
+        wb.read_with(cx, |wb, _| {
+            !wb.worktree().snapshot().contains(Path::new("src/main.rs"))
+        })
+    });
+    let removed = Change {
+        path: Arc::from(Path::new("src/main.rs")),
+        kind: ChangeKind::Removed,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![removed]), cx)
+    });
+    draw(cx);
+    // The selection fell back to the folder.
+    assert_eq!(
+        selection(&wb, cx),
+        Selection::Path(Arc::from(Path::new("src")))
+    );
+    click("context-menu-item-moveFileToTrash", cx);
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert!(trashed.lock().unwrap().is_empty());
+    assert!(root.join("src").is_dir());
+}
+
+#[gpui::test]
+fn selection_moves_to_next_sibling_after_delete(cx: &mut TestAppContext) {
+    init_with(CONFIRM_OFF, cx);
+    install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-backspace", cx);
+    wait_until(cx, |_| !root.join("a.rs").exists());
+    wait_until(cx, |cx| {
+        selection(&wb, cx) == Selection::Path(Arc::from(Path::new("b.rs")))
+    });
+}
+
+#[gpui::test]
+fn selection_moves_to_previous_sibling_after_delete(cx: &mut TestAppContext) {
+    init_with(CONFIRM_OFF, cx);
+    install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-b.rs", cx);
+    keys("cmd-backspace", cx);
+    wait_until(cx, |_| !root.join("b.rs").exists());
+    wait_until(cx, |cx| {
+        selection(&wb, cx) == Selection::Path(Arc::from(Path::new("a.rs")))
+    });
+}
+
+/// A held Delete key does not go on deleting the next entries.
+#[gpui::test]
+fn held_delete_key_deletes_once(cx: &mut TestAppContext) {
+    init_with(CONFIRM_OFF, cx);
+    let trashed = install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-backspace", cx);
+    wait_until(cx, |_| !root.join("a.rs").exists());
+    remove_and_deliver(&wb, "a.rs", cx);
+    assert_eq!(
+        selection(&wb, cx),
+        Selection::Path(Arc::from(Path::new("b.rs")))
+    );
+    for keystroke in ["cmd-backspace", "alt-cmd-backspace"] {
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(keystroke).unwrap(),
+            is_held: true,
+            prefer_character_input: false,
+        });
+        draw(cx);
+    }
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(trashed.lock().unwrap().len(), 1);
+    assert!(root.join("b.rs").is_file());
+}
+
+/// Delete never reaches the root, a path outside it or one the worktree
+/// does not know, whatever `args.path` says, nor runs while a name is typed.
+#[gpui::test]
+fn delete_guards_hold_for_every_route(cx: &mut TestAppContext) {
+    init_with(CONFIRM_OFF, cx);
+    let trashed = install_trash(false, cx);
+    let dir = project();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("x"), "x").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    let paths = [
+        String::new(),
+        ".".to_string(),
+        root.to_string_lossy().into_owned(),
+        "../x".to_string(),
+        outside.path().join("x").to_string_lossy().into_owned(),
+    ];
+    for command in ["moveFileToTrash", "deleteFile"] {
+        for path in &paths {
+            run_with(&wb, command, serde_json::json!({ "path": path }), cx);
+            cx.run_until_parked();
+            assert!(!cx.has_pending_prompt(), "{command} {path:?}");
+        }
+    }
+    click("explorer-row-src", cx);
+    run(&wb, "explorer.newFile", cx);
+    assert!(editing(&wb, cx));
+    for command in ["moveFileToTrash", "deleteFile"] {
+        run_with(&wb, command, serde_json::json!({ "path": "a.rs" }), cx);
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt(), "{command} while editing");
+    }
+    assert!(trashed.lock().unwrap().is_empty());
+    assert_eq!(names(&root), ["a.rs", "b.rs", "src"]);
+    assert!(outside.path().join("x").is_file());
+}
+
+/// A second Delete of a path whose Delete is still running is ignored.
+#[gpui::test]
+fn second_delete_while_in_flight_is_ignored(cx: &mut TestAppContext) {
+    init(cx);
+    let trashed = install_trash(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    run_with(
+        &wb,
+        "moveFileToTrash",
+        serde_json::json!({ "path": "a.rs" }),
+        cx,
+    );
+    assert!(cx.has_pending_prompt());
+    run_with(
+        &wb,
+        "moveFileToTrash",
+        serde_json::json!({ "path": "a.rs" }),
+        cx,
+    );
+    run_with(&wb, "deleteFile", serde_json::json!({ "path": "a.rs" }), cx);
+    cx.simulate_prompt_answer("Move to Trash");
+    draw(cx);
+    wait_until(cx, |_| !root.join("a.rs").exists());
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(*trashed.lock().unwrap(), [root.join("a.rs")]);
+    // Once done, another Delete runs again.
+    run_with(
+        &wb,
+        "moveFileToTrash",
+        serde_json::json!({ "path": "b.rs" }),
+        cx,
+    );
+    assert!(cx.has_pending_prompt());
+}
