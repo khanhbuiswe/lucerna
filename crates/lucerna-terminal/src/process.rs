@@ -57,6 +57,15 @@ impl TitleState {
         self.title = title;
     }
 
+    /// Feed the latest foreground pid. A title recorded while the pid was unknown
+    /// is adopted by the first known pid seen afterwards. Call it on every poll,
+    /// before `tab_title`.
+    pub fn observe(&mut self, fg_pid: Option<u32>) {
+        if self.title.is_some() && self.pid.is_none() {
+            self.pid = fg_pid;
+        }
+    }
+
     /// Tab name: the OSC title while the process that set it is still in the
     /// foreground, else the process name, else `Terminal`; at most 24 chars.
     pub fn tab_title(&self, fg: Option<&ProcessInfo>) -> String {
@@ -64,7 +73,11 @@ impl TitleState {
             .title
             .as_deref()
             .filter(|t| !t.trim().is_empty())
-            .filter(|_| fg.map(|f| f.pid) == self.pid);
+            .filter(|_| match (self.pid, fg) {
+                // Only two known, different pids prove the title is stale.
+                (Some(owner), Some(f)) => owner == f.pid,
+                _ => true,
+            });
         let name = match (title, fg) {
             (Some(t), _) => t.to_string(),
             (None, Some(info)) => display_name(info),
@@ -390,6 +403,33 @@ mod tests {
         assert!(s.ends_with('…'));
         t.on_osc_title(Some("ế".repeat(24)), None);
         assert_eq!(t.tab_title(None), "ế".repeat(24));
+    }
+
+    #[test]
+    fn unknown_current_fg_keeps_title_known_other_drops_it() {
+        let mut t = TitleState::default();
+        t.on_osc_title(Some("✳ a".into()), Some(10));
+        assert_eq!(t.tab_title(None), "✳ a");
+        assert_eq!(t.tab_title(Some(&info(11, "vim", &["vim"]))), "vim");
+    }
+
+    #[test]
+    fn title_with_unknown_owner_adopts_first_known_pid() {
+        let mut t = TitleState::default();
+        t.on_osc_title(Some("✳ a".into()), None);
+        t.observe(Some(10));
+        assert_eq!(t.tab_title(Some(&info(10, "node", &[]))), "✳ a");
+        t.observe(Some(11));
+        assert_eq!(t.tab_title(Some(&info(11, "vim", &["vim"]))), "vim");
+    }
+
+    #[test]
+    fn unknown_owner_and_unknown_fg_do_not_decide() {
+        let mut t = TitleState::default();
+        t.on_osc_title(Some("✳ a".into()), None);
+        assert_eq!(t.tab_title(None), "✳ a");
+        t.observe(None);
+        assert_eq!(t.tab_title(None), "✳ a");
     }
 
     #[test]
