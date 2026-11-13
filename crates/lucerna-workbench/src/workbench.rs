@@ -917,7 +917,9 @@ impl Workbench {
         }
     }
 
-    /// Every open tab's path, once per path.
+    /// Every open tab's path, once per path, with the file the dynamic
+    /// Markdown preview shows (it has no path of its own, but its file must
+    /// stay watched).
     fn open_tab_paths(&self, cx: &App) -> Vec<PathBuf> {
         let mut paths: Vec<PathBuf> = self
             .editor_groups
@@ -925,7 +927,11 @@ impl Workbench {
             .model()
             .groups()
             .iter()
-            .flat_map(|g| g.tabs.iter().filter_map(|t| t.path()))
+            .flat_map(|g| {
+                g.tabs
+                    .iter()
+                    .filter_map(|t| t.path().or(t.previewed_path()))
+            })
             .map(|p| p.to_path_buf())
             .collect();
         paths.sort();

@@ -17,8 +17,8 @@ use lucerna_text::Point;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, ConfigPaths, FileView, OpenFileWatcher, OpenMode, TabItem, Workbench, editor_for,
-    reload_config, watch_config,
+    AppState, ConfigPaths, FileView, MarkdownPreview, OpenFileWatcher, OpenMode, REPARSE_DELAY,
+    TabItem, Workbench, editor_for, reload_config, watch_config,
 };
 use tempfile::TempDir;
 
@@ -433,4 +433,44 @@ fn editor_for_matches_relative_and_absolute_globs() {
         editor_for(abs, rel, &map(&[("*.md", "other.editor")])),
         FileView::Source
     );
+}
+
+/// A gitignored Markdown file shown only in the dynamic preview is still
+/// watched, so an outside rewrite reaches the preview.
+#[gpui::test]
+fn dynamic_preview_of_ignored_file_follows_writes(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let notes = dirs.root.path().join("notes.md");
+    std::fs::write(dirs.root.path().join(".gitignore"), "notes.md\n").unwrap();
+    std::fs::write(&notes, "# Old\n").unwrap();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| {
+            m.open_dynamic_preview(Arc::from(notes.as_path()));
+        })
+    });
+    draw(cx);
+    assert_eq!(
+        wb.read_with(cx, |wb, _| wb.watched_open_files().to_vec()),
+        vec![notes.clone()],
+        "no tab has the file's path, but the dynamic preview shows it"
+    );
+
+    std::fs::write(&notes, "# New title\n").unwrap();
+    let changed = notes.canonicalize().unwrap();
+    wb.update(cx, |wb, cx| wb.on_open_file_changes(&[changed], cx));
+    cx.executor().advance_clock(REPARSE_DELAY);
+    draw(cx);
+    let preview = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        let id = groups.model().dynamic_preview().unwrap().1.id;
+        groups
+            .body_of(id)
+            .unwrap()
+            .downcast::<MarkdownPreview>()
+            .unwrap()
+    });
+    let text = preview.read_with(cx, |p, _| p.blocks().map(|b| format!("{:?}", b.blocks())));
+    assert!(text.unwrap().contains("New title"));
 }
