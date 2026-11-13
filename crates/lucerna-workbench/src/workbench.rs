@@ -244,11 +244,11 @@ impl Workbench {
         Self::build(root, None, Some(store), window, cx)
     }
 
-    /// Single-file mode (R27), for a loose file whose folder `root` (its
-    /// parent, such as `$HOME`) is not a project: `root` is never scanned
-    /// or watched, the tree and Quick Open list only `file`, and open
-    /// files are followed one by one. Keeps the layout in `data_dir` when
-    /// given, as [`Workbench::with_data_dir`] does. Does not open `file`.
+    /// Single-file mode, for a file opened alone as Zed opens one: `root`
+    /// (its folder) is never scanned or watched, the tree and Quick Open
+    /// list only `file`, and open files are followed one by one. Keeps the
+    /// layout in `data_dir`, keyed by `file`, when given. Does not open
+    /// `file`.
     pub fn single_file(
         root: PathBuf,
         file: &Path,
@@ -260,7 +260,9 @@ impl Workbench {
             Ok(rel) => Arc::from(rel),
             Err(_) => Arc::from(Path::new(file.file_name().unwrap_or(file.as_os_str()))),
         };
-        let store = data_dir.map(|dir| WorkspaceStateStore::new(dir, root.clone()));
+        // Keyed by the file, not its folder: lone files beside each other,
+        // and the folder opened as a project, keep their own tabs.
+        let store = data_dir.map(|dir| WorkspaceStateStore::new(dir, file.to_path_buf()));
         Self::build(root, Some(rel), store, window, cx)
     }
 
@@ -446,8 +448,9 @@ impl Workbench {
         }
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
+            let lone = single_file_path.is_some();
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
-            cx.new(|cx| ExplorerView::new(root, snapshot, workbench, &groups, cx))
+            cx.new(|cx| ExplorerView::new(root, lone, snapshot, workbench, &groups, cx))
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
@@ -742,11 +745,17 @@ impl Workbench {
         paths
     }
 
-    /// The opened folder's name, as the title bar shows it.
+    /// Whether the window shows one file alone (single-file mode).
+    pub fn is_single_file(&self) -> bool {
+        self.single_file.is_some()
+    }
+
+    /// The opened folder's name, as the title bar shows it; in
+    /// single-file mode, the file's name.
     pub fn root_name(&self) -> String {
-        self.root
-            .file_name()
-            .unwrap_or(self.root.as_os_str())
+        let path = self.single_file.as_deref().unwrap_or(&self.root);
+        path.file_name()
+            .unwrap_or(path.as_os_str())
             .to_string_lossy()
             .into_owned()
     }

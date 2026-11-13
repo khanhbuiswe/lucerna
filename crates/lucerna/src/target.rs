@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 pub struct Target {
     pub root: PathBuf,
     pub file: Option<PathBuf>,
-    /// The file is opened alone: `root` (its parent) is not scanned or
-    /// watched, so a loose file in `$HOME` does not scan the home folder.
+    /// The file is opened alone, as in Zed and VS Code: `root` (its
+    /// parent) is not scanned or watched, and the sidebar lists only the
+    /// file. Always set for a file.
     pub single_file: bool,
 }
 
@@ -20,15 +21,6 @@ impl Target {
         Target {
             root,
             file: None,
-            single_file: false,
-        }
-    }
-
-    /// A file shown inside the scanned folder `root`.
-    pub fn file(root: PathBuf, file: PathBuf) -> Target {
-        Target {
-            root,
-            file: Some(file),
             single_file: false,
         }
     }
@@ -58,16 +50,18 @@ pub fn resolve_target(path: Option<PathBuf>) -> Result<Target, String> {
 ///
 /// - `None`: the current directory.
 /// - A directory: that directory.
-/// - A file: the nearest ancestor holding `.git`, else the file's parent.
-///   When there is no git root and the parent is `home` or `/` (R27), the
-///   file opens alone ([`Target::single_file`]): scanning all of `$HOME`
-///   for one loose file would be slow and pointless.
+/// - A file: the file alone ([`Target::single_file`]), rooted at its
+///   parent, as Zed and VS Code open one. Neither its folder nor the git
+///   repository holding it is scanned (see
+///   `docs/superpowers/specs/2026-11-13-single-file-open-design.md`).
+///
+/// `home` is no longer consulted; it stays so callers need not change.
 ///
 /// # Errors
 /// `path not found: …` when the path does not exist.
 pub fn resolve_target_with_home(
     path: Option<PathBuf>,
-    home: Option<&Path>,
+    _home: Option<&Path>,
 ) -> Result<Target, String> {
     let path = match path {
         Some(path) => path,
@@ -81,14 +75,9 @@ pub fn resolve_target_with_home(
         return Ok(Target::folder(canonical));
     }
     let parent = canonical.parent().unwrap_or(Path::new("/"));
-    if let Some(git_root) = parent.ancestors().find(|dir| dir.join(".git").exists()) {
-        return Ok(Target::file(git_root.to_path_buf(), canonical));
-    }
-    let home = home.and_then(|h| std::fs::canonicalize(h).ok());
-    let single_file = parent == Path::new("/") || home.as_deref() == Some(parent);
     Ok(Target {
         root: parent.to_path_buf(),
         file: Some(canonical),
-        single_file,
+        single_file: true,
     })
 }

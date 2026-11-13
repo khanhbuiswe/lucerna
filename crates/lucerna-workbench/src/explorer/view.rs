@@ -35,6 +35,9 @@ const TYPE_ICON_SIZE: f32 = 14.;
 pub struct ExplorerView {
     model: ExplorerModel,
     root_label: String,
+    /// Single-file mode: the tree holds only the file, and the folder row
+    /// is not drawn, as Zed shows a lone file.
+    single_file: bool,
     /// Tab paths may be absolute; the tree is relative to this.
     root: PathBuf,
     workbench: WeakEntity<Workbench>,
@@ -50,6 +53,7 @@ pub struct ExplorerView {
 impl ExplorerView {
     pub(crate) fn new(
         root: PathBuf,
+        single_file: bool,
         snapshot: WorktreeSnapshot,
         workbench: WeakEntity<Workbench>,
         editor_groups: &Entity<EditorGroupsView>,
@@ -62,6 +66,7 @@ impl ExplorerView {
                 .unwrap_or(root.as_os_str())
                 .to_string_lossy()
                 .into_owned(),
+            single_file,
             root,
             workbench,
             scroll: UniformListScrollHandle::new(),
@@ -424,7 +429,7 @@ impl Render for ExplorerView {
             .size_full()
             .flex()
             .flex_col()
-            .child(self.render_root(cx))
+            .when(!self.single_file, |el| el.child(self.render_root(cx)))
             .child(
                 div()
                     .debug_selector(|| "explorer-list".into())

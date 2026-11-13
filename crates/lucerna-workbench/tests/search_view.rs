@@ -1070,7 +1070,7 @@ fn tab_title_follows_query(cx: &mut TestAppContext) {
 }
 
 /// A state file with a Search tab and the given search inputs.
-fn saved_search(root: &Path, data: &Path, search: SearchState, with_tab: bool) {
+fn saved_search(key: &Path, data: &Path, search: SearchState, with_tab: bool) {
     let tabs = if with_tab {
         vec![(PathBuf::from(SEARCH_TAB_STATE), true)]
     } else {
@@ -1092,7 +1092,7 @@ fn saved_search(root: &Path, data: &Path, search: SearchState, with_tab: bool) {
         group_widths: Vec::new(),
         search,
     };
-    save_state(&state_path(data, root), &state).unwrap();
+    save_state(&state_path(data, key), &state).unwrap();
 }
 
 fn needle_state(query: &str) -> SearchState {
@@ -1145,8 +1145,10 @@ fn restored_search_in_single_file_mode_does_not_search(cx: &mut TestAppContext) 
     init(cx);
     let dir = project(&[("a.txt", "needle\n"), ("b.txt", "needle\n")]);
     let data = TempDir::new().unwrap();
-    saved_search(dir.path(), data.path(), needle_state("needle"), true);
-    let (root, file) = (dir.path().to_path_buf(), dir.path().join("a.txt"));
+    // Single-file state is keyed by the file.
+    let a = dir.path().join("a.txt");
+    saved_search(&a, data.path(), needle_state("needle"), true);
+    let (root, file) = (dir.path().to_path_buf(), a);
     let data_dir = data.path().to_path_buf();
     let (wb, cx) = cx.add_window_view(move |window, cx| {
         Workbench::single_file(root, &file, Some(data_dir), window, cx)
