@@ -377,10 +377,14 @@ impl MarkdownPreview {
         }
     }
 
-    /// The first source line of the heading with slug `slug`.
+    /// The first source line of the heading with slug `slug`, matched
+    /// ignoring case (slugs are lower case; `#Install` finds "Install").
     fn slug_line(&self, slug: &str) -> Option<f32> {
         let blocks = self.blocks.as_ref()?;
-        let (_, ix) = heading_slugs(blocks).into_iter().find(|(s, _)| s == slug)?;
+        let slug = slug.to_lowercase();
+        let (_, ix) = heading_slugs(blocks)
+            .into_iter()
+            .find(|(s, _)| *s == slug)?;
         Some(blocks.root_lines().get(ix)?.start as f32)
     }
 

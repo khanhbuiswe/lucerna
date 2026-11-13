@@ -910,6 +910,18 @@ fn anchor_link_scrolls(cx: &mut TestAppContext) {
     assert_eq!(top_block_lines(&preview, cx).start, heading);
 }
 
+/// Hand-written anchors often keep the heading's case: `#Install` finds
+/// "Install", whose slug is `install`.
+#[gpui::test]
+fn anchor_link_ignores_case(cx: &mut TestAppContext) {
+    init(cx);
+    let text = format!("[go](#Install)\n\n{0}## Install\n\n{0}", long_doc());
+    let (dir, wb, cx) = open(&text, cx);
+    let preview = open_preview(&wb, &dir, cx);
+    click_link(cx);
+    assert_eq!(top_block_lines(&preview, cx).start, 2 + 4 * 200);
+}
+
 #[gpui::test]
 fn md_link_opens_preview_tab(cx: &mut TestAppContext) {
     init(cx);
