@@ -422,6 +422,17 @@ impl ExplorerView {
         }
     }
 
+    /// The sidebar is being hidden: cancels a name being typed and closes
+    /// the menu, neither of which may hold the focus undrawn.
+    pub(crate) fn dismiss_transient(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing() || self.name_edit.is_some() {
+            self.end_name_edit(false, window, cx);
+        }
+        if self.context_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// Ends the name edit; `refocus` gives the focus back to the Explorer.
     fn end_name_edit(&mut self, refocus: bool, window: &mut Window, cx: &mut Context<Self>) {
         // Dropping the edit first drops its blur listener.

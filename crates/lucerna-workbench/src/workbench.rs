@@ -1593,10 +1593,17 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Shows or hides the sidebar. Hiding it moves focus out of it.
+    /// Shows or hides the sidebar. Hiding it cancels a name being typed in
+    /// the Explorer, closes its menu and moves focus out of it.
     pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sidebar_visible && self.sidebar_focus.contains_focused(window, cx) {
-            self.focus_editor_area(window, cx);
+        if self.sidebar_visible {
+            let focused = self.sidebar_focus.contains_focused(window, cx);
+            self.explorer
+                .clone()
+                .update(cx, |explorer, cx| explorer.dismiss_transient(window, cx));
+            if focused {
+                self.focus_editor_area(window, cx);
+            }
         }
         self.sidebar_visible = !self.sidebar_visible;
         self.layout_changed(cx);
@@ -2010,6 +2017,7 @@ fn register_shell_commands(commands: &mut CommandRegistry) {
         "Explorer: Open Context Menu",
         |wb, _, window, cx| {
             if !crate::explorer::editing(wb, cx) {
+                crate::explorer::show_explorer(wb, window, cx);
                 wb.explorer.clone().update(cx, |explorer, cx| {
                     explorer.open_context_menu(None, window, cx)
                 })

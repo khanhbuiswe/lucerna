@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Entity, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, TestAppContext,
-    VisualTestContext,
+    Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
+    TestAppContext, VisualTestContext,
 };
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
@@ -1265,4 +1265,94 @@ fn second_delete_while_in_flight_is_ignored(cx: &mut TestAppContext) {
         cx,
     );
     assert!(cx.has_pending_prompt());
+}
+
+fn sidebar_visible(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> bool {
+    wb.read_with(cx, |wb, _| wb.sidebar_visible())
+}
+
+fn menu_open(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| wb.read(cx).explorer().read(cx).context_menu_open())
+}
+
+/// What the command left holding the focus is drawn: the name input or
+/// the menu.
+fn input_focused(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|window, cx| {
+        let explorer = wb.read(cx).explorer().read(cx);
+        explorer
+            .name_input()
+            .is_some_and(|input| input.focus_handle(cx).is_focused(window))
+    })
+}
+
+/// From the palette with the sidebar hidden, the commands that type in
+/// the tree or open its menu show the Explorer first (VS Code focuses it).
+#[gpui::test]
+fn explorer_commands_show_hidden_sidebar(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-a.rs", cx);
+    for command in [
+        "explorer.newFile",
+        "explorer.newFolder",
+        "renameFile",
+        "filesExplorer.openContextMenu",
+    ] {
+        run(&wb, "workbench.action.toggleSidebarVisibility", cx);
+        assert!(!sidebar_visible(&wb, cx), "{command}");
+        run(&wb, command, cx);
+        draw(cx);
+        assert!(sidebar_visible(&wb, cx), "{command} shows the sidebar");
+        if command == "filesExplorer.openContextMenu" {
+            assert!(menu_open(&wb, cx));
+            assert!(cx.debug_bounds("context-menu").is_some());
+        } else {
+            assert!(editing(&wb, cx), "{command}");
+            assert!(cx.debug_bounds("explorer-edit-input").is_some());
+            assert!(input_focused(&wb, cx), "{command} focuses the input");
+        }
+        // Hiding the sidebar again ends what the command started.
+        run(&wb, "workbench.action.toggleSidebarVisibility", cx);
+        assert!(!editing(&wb, cx), "{command}: hiding ends the edit");
+        assert!(!menu_open(&wb, cx), "{command}: hiding closes the menu");
+        run(&wb, "workbench.action.toggleSidebarVisibility", cx);
+    }
+}
+
+#[gpui::test]
+fn hiding_sidebar_cancels_name_edit(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    right_click("explorer-row-src", cx);
+    click("context-menu-item-explorer.newFile", cx);
+    type_text(cx, "kept.rs");
+    run(&wb, "workbench.action.toggleSidebarVisibility", cx);
+    draw(cx);
+    assert!(!editing(&wb, cx));
+    assert!(!root.join("src/kept.rs").exists(), "cancelled, not created");
+    assert!(key(&wb, "editorFocus", cx), "the focus leaves the sidebar");
+}
+
+#[gpui::test]
+fn hiding_sidebar_closes_menu(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-a.rs", cx);
+    assert!(menu_open(&wb, cx));
+    run(&wb, "workbench.action.toggleSidebarVisibility", cx);
+    assert!(!menu_open(&wb, cx));
+    assert!(cx.debug_bounds("context-menu").is_none());
+    assert!(!key(&wb, "contextMenuVisible", cx));
+}
+
+fn key(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) -> bool {
+    cx.update(|w, cx| {
+        let ctx = wb.read(cx).context_keys(w, cx);
+        lucerna_settings::parse_when(name).unwrap().eval(&ctx)
+    })
 }

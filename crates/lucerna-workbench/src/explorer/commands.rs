@@ -17,7 +17,8 @@ use serde_json::Value;
 
 use crate::system_shell::system_shell;
 use crate::{
-    CommandRegistry, EditKind, OpenMode, SelectedKind, Selection, Workbench, status_message,
+    CommandRegistry, EditKind, OpenMode, SelectedKind, Selection, SidebarView, Workbench,
+    status_message,
 };
 
 const TRASH_ANSWERS: [&str; 2] = ["Move to Trash", "Cancel"];
@@ -30,6 +31,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "File: New File…",
         |wb, args, window, cx| {
             if !editing(wb, cx) && select_target(wb, args, cx) {
+                show_explorer(wb, window, cx);
                 wb.explorer().clone().update(cx, |explorer, cx| {
                     explorer.start_new(EditKind::NewFile, window, cx)
                 });
@@ -41,6 +43,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "File: New Folder…",
         |wb, args, window, cx| {
             if !editing(wb, cx) && select_target(wb, args, cx) {
+                show_explorer(wb, window, cx);
                 wb.explorer().clone().update(cx, |explorer, cx| {
                     explorer.start_new(EditKind::NewFolder, window, cx)
                 });
@@ -49,6 +52,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     );
     commands.register("renameFile", "File: Rename…", |wb, args, window, cx| {
         if !editing(wb, cx) && select_target(wb, args, cx) {
+            show_explorer(wb, window, cx);
             wb.explorer()
                 .clone()
                 .update(cx, |explorer, cx| explorer.start_rename(window, cx));
@@ -404,6 +408,15 @@ fn select_target(wb: &mut Workbench, args: Option<&Value>, cx: &mut Context<Work
         .clone()
         .update(cx, |explorer, cx| explorer.select(selection, cx));
     true
+}
+
+/// Commands that type in the tree or open its menu, run from the palette
+/// with the sidebar hidden, show the Explorer first (VS Code focuses it):
+/// an input or menu that is never drawn must not hold the focus.
+pub(crate) fn show_explorer(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>) {
+    if !wb.sidebar_visible() {
+        wb.show_sidebar_view(SidebarView::Explorer, window, cx);
+    }
 }
 
 /// A name is being typed in the Explorer: its commands do nothing. Keys

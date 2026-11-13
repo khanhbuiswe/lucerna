@@ -10,4 +10,4 @@ pub use model::{
 };
 pub use view::ExplorerView;
 
-pub(crate) use commands::{editing, register_commands};
+pub(crate) use commands::{editing, register_commands, show_explorer};
