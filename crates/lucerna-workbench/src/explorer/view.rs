@@ -15,10 +15,10 @@ use gpui::{
 use lucerna_project::{ChangeKind, EntryKind, WorktreeEvent, WorktreeSnapshot};
 use lucerna_theme::{IconSource, ResolvedIcons};
 
-use super::model::{ExplorerModel, Row};
+use super::model::{ExplorerModel, Row, SelectedKind, Selection};
 use crate::layout::color;
 use crate::ui::{
-    GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE, file_icon_sized, thumb_geometry,
+    DeployedMenu, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE, file_icon_sized, thumb_geometry,
 };
 use crate::{AppState, EditorGroupsView, OpenMode, Workbench};
 
@@ -47,6 +47,8 @@ pub struct ExplorerView {
     active: Option<Arc<Path>>,
     /// Repaints when the soonest change decoration expires.
     expiry: Option<Task<()>>,
+    /// The open context menu; deployed by right-click (not yet wired).
+    context_menu: Option<DeployedMenu>,
     _active_tab: Subscription,
 }
 
@@ -72,6 +74,7 @@ impl ExplorerView {
             scroll: UniformListScrollHandle::new(),
             active: None,
             expiry: None,
+            context_menu: None,
             _active_tab: cx.observe(editor_groups, |this, groups, cx| {
                 this.sync_active_tab(&groups, cx)
             }),
@@ -81,6 +84,35 @@ impl ExplorerView {
     /// The root row's label: the project folder's name, as on disk.
     pub fn root_label(&self) -> &str {
         &self.root_label
+    }
+
+    pub fn selection(&self) -> &Selection {
+        self.model.selection()
+    }
+
+    /// Whether the Explorer's context menu is open.
+    pub fn context_menu_open(&self) -> bool {
+        self.context_menu.is_some()
+    }
+
+    /// The selected resource's kind (see [`ExplorerModel::selected_kind`]).
+    pub fn selected_kind(&self) -> SelectedKind {
+        self.model.selected_kind()
+    }
+
+    /// Absolute path of the selection: the root itself for `Root` (in
+    /// single-file mode the lone file).
+    #[allow(dead_code)] // used by the context menu commands
+    pub(crate) fn selected_abs_path(&self) -> PathBuf {
+        match self.model.selection() {
+            Selection::Path(path) => self.root.join(path),
+            Selection::Root if self.single_file => self
+                .model
+                .visible_rows()
+                .first()
+                .map_or_else(|| self.root.clone(), |row| self.root.join(&*row.path)),
+            Selection::Root => self.root.clone(),
+        }
     }
 
     pub fn model(&self) -> &ExplorerModel {
@@ -173,9 +205,12 @@ impl ExplorerView {
         if !enabled {
             return;
         }
+        // Reveal first: `select` keeps a hidden path, but its kind is only
+        // known once the row is visible.
         if let Some(ix) = self.model.reveal(path) {
             self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
         }
+        self.model.select(Selection::Path(Arc::from(path)));
     }
 
     fn relative(&self, path: &Arc<Path>) -> Arc<Path> {
@@ -203,13 +238,28 @@ impl ExplorerView {
         }));
     }
 
+    fn focus_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self
+            .workbench
+            .update(cx, |wb, cx| wb.focus_sidebar(window, cx));
+    }
+
+    fn root_clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.model.select(Selection::Root);
+        self.focus_sidebar(window, cx);
+        cx.notify();
+    }
+
     fn row_clicked(
         &mut self,
         path: Arc<Path>,
         kind: EntryKind,
         ev: &ClickEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.model.select(Selection::Path(path.clone()));
+        self.focus_sidebar(window, cx);
         if kind == EntryKind::Dir {
             // The second click of a double click would undo the first.
             if ev.click_count() == 1 {
@@ -242,7 +292,8 @@ impl ExplorerView {
             .map(|row| {
                 let path = row.path.clone();
                 let kind = row.kind;
-                let selected = self.active.as_deref() == Some(&*row.path);
+                let selected =
+                    matches!(self.model.selection(), Selection::Path(p) if *p == row.path);
                 let changed = self.model.is_recently_changed(&row.path, now);
                 let name = row
                     .path
@@ -256,6 +307,7 @@ impl ExplorerView {
                 // closures in test builds, so release frames skip the
                 // per-row and per-guide `format!`.
                 let selector_path = row.path.clone();
+                let selected_path = row.path.clone();
                 let guides = (0..row.depth).map(|k| {
                     let path = row.path.clone();
                     div()
@@ -282,10 +334,21 @@ impl ExplorerView {
                     .cursor_pointer()
                     .when(selected, |d| d.bg(color(ui.element_selected)))
                     .when(!selected, |d| d.hover(move |s| s.bg(hover)))
-                    .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
-                        this.row_clicked(path.clone(), kind, ev, cx)
+                    .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                        this.row_clicked(path.clone(), kind, ev, window, cx)
                     }))
                     .children(guides)
+                    .when(selected, |d| {
+                        // Test-only marker: the selected row carries it.
+                        d.child(
+                            div()
+                                .debug_selector(move || {
+                                    format!("explorer-row-selected-{}", selected_path.display())
+                                })
+                                .absolute()
+                                .size_0(),
+                        )
+                    })
                     // Directories: chevron, then folder. Files: their type
                     // icon alone, in the chevron's slot.
                     .when(is_dir, |d| {
@@ -321,13 +384,17 @@ impl ExplorerView {
 
 impl ExplorerView {
     /// The always-expanded root: an open folder and the project's name.
-    /// Clicking it does nothing.
-    fn render_root(&self, cx: &App) -> impl IntoElement {
+    /// Clicking it selects the root.
+    fn render_root(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = *self.model.selection() == Selection::Root;
+        let hover = color(cx.global::<AppState>().theme.ui.ghost_element_hover);
         let state = cx.global::<AppState>();
         let ui = &state.theme.ui;
         let root_icon = state.icons.directory(&self.root_label, true);
         div()
+            .id("explorer-root")
             .debug_selector(|| "explorer-root".into())
+            .relative()
             .flex()
             .flex_none()
             .flex_row()
@@ -338,6 +405,19 @@ impl ExplorerView {
             .pr(px(2. * GRID))
             .text_size(px(UI_FONT_SIZE))
             .text_color(color(ui.text))
+            .cursor_pointer()
+            .when(selected, |d| {
+                d.bg(color(ui.element_selected)).child(
+                    div()
+                        .debug_selector(|| "explorer-root-selected".into())
+                        .absolute()
+                        .size_0(),
+                )
+            })
+            .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.root_clicked(window, cx)
+            }))
             .child(
                 icon_slot(&root_icon, TYPE_ICON_SIZE, ui.icon_muted)
                     .debug_selector(|| "explorer-root-icon".into()),

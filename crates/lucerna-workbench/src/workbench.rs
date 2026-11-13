@@ -24,7 +24,7 @@ use crate::documents::{DocumentEvent, DocumentStatusItem, Documents};
 use crate::editor_groups::{
     self, EditorGroups, EditorGroupsView, GroupId, OpenMode, TabId, TabItem,
 };
-use crate::explorer::ExplorerView;
+use crate::explorer::{ExplorerView, SelectedKind};
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
 use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;
@@ -1371,6 +1371,16 @@ impl Workbench {
         flag("sideBarVisible", self.sidebar_visible);
         flag("sideBarFocus", sidebar_focus);
         flag("explorerViewletFocus", sidebar_focus);
+        let explorer = self.explorer.read(cx);
+        let menu_open = explorer.context_menu_open();
+        let kind = explorer.selected_kind();
+        flag("filesExplorerFocus", sidebar_focus && !menu_open);
+        flag(
+            "explorerResourceIsFolder",
+            matches!(kind, SelectedKind::Dir | SelectedKind::Root),
+        );
+        flag("explorerResourceIsRoot", kind == SelectedKind::Root);
+        flag("contextMenuVisible", menu_open);
         flag("searchViewletFocus", self.search_focused(window, cx));
         flag("referencesViewFocus", self.references_view_focus(cx));
         flag(

@@ -14,7 +14,7 @@ use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
-use lucerna_workbench::{AppState, OpenMode, Workbench, ui};
+use lucerna_workbench::{AppState, OpenMode, Selection, Workbench, ui};
 use tempfile::TempDir;
 
 fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
@@ -437,4 +437,63 @@ fn single_file_shows_only_the_file(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("explorer-row-notes.md").is_some());
     assert!(cx.debug_bounds("explorer-row-other.md").is_none());
     assert_eq!(wb.read_with(cx, |wb, _| wb.root_name()), "notes.md");
+}
+
+fn selection(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Selection {
+    cx.update(|_, cx| wb.read(cx).explorer().read(cx).selection().clone())
+}
+
+fn key(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) -> bool {
+    cx.update(|w, cx| {
+        let ctx = wb.read(cx).context_keys(w, cx);
+        lucerna_settings::parse_when(name).unwrap().eval(&ctx)
+    })
+}
+
+#[gpui::test]
+fn left_click_selects_and_focuses_sidebar(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-src", cx);
+    assert_eq!(selection(&wb, cx), Selection::Path(p("src")));
+    assert!(key(&wb, "filesExplorerFocus", cx));
+    assert!(key(&wb, "explorerResourceIsFolder", cx));
+    assert!(!key(&wb, "explorerResourceIsRoot", cx));
+    assert!(!key(&wb, "contextMenuVisible", cx));
+}
+
+#[gpui::test]
+fn click_root_row_selects_root(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-a.rs", cx);
+    click("explorer-root", cx);
+    assert_eq!(selection(&wb, cx), Selection::Root);
+    assert!(key(&wb, "explorerResourceIsRoot", cx));
+    assert!(key(&wb, "explorerResourceIsFolder", cx));
+}
+
+#[gpui::test]
+fn selection_follows_active_tab(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    wb.update(cx, |wb, cx| wb.open_path(p("b.rs"), OpenMode::Pinned, cx));
+    draw(cx);
+    assert_eq!(selection(&wb, cx), Selection::Path(p("b.rs")));
+}
+
+#[gpui::test]
+fn selected_row_is_highlighted(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (_wb, cx) = open(dir.path(), cx);
+    click("explorer-row-a.rs", cx);
+    assert!(cx.debug_bounds("explorer-row-selected-a.rs").is_some());
+    assert!(cx.debug_bounds("explorer-row-selected-b.rs").is_none());
+    click("explorer-root", cx);
+    assert!(cx.debug_bounds("explorer-row-selected-a.rs").is_none());
+    assert!(cx.debug_bounds("explorer-root-selected").is_some());
 }
