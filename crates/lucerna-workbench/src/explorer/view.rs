@@ -240,15 +240,17 @@ impl ExplorerView {
         cx.notify();
     }
 
-    /// Before the tree drops `rel`, just deleted: a selection at it or under
-    /// it moves to its next sibling, else its previous sibling, else its
-    /// parent folder, as VS Code focuses a neighbour.
-    pub(crate) fn select_neighbour_of(&mut self, rel: &Path, cx: &mut Context<Self>) {
+    /// Where the selection goes once `rel` is deleted: its next sibling,
+    /// else its previous sibling, else its parent folder, as VS Code
+    /// focuses a neighbour. `None` when the selection is not at or under
+    /// `rel`. Read before the delete runs: the watcher may drop `rel` from
+    /// the tree (moving the selection up) before the delete's result.
+    pub(crate) fn neighbour_after_delete(&self, rel: &Path) -> Option<Selection> {
         let Selection::Path(selected) = self.model.selection() else {
-            return;
+            return None;
         };
         if !selected.starts_with(rel) {
-            return;
+            return None;
         }
         let parent = rel.parent().unwrap_or(Path::new(""));
         let siblings: Vec<&Arc<Path>> = self
@@ -263,10 +265,37 @@ impl ExplorerView {
                 .get(ix + 1)
                 .or_else(|| ix.checked_sub(1).and_then(|prev| siblings.get(prev)))
         });
-        let selection = match neighbour {
+        Some(match neighbour {
             Some(path) => Selection::Path((*path).clone()),
             None if parent.as_os_str().is_empty() => Selection::Root,
             None => Selection::Path(Arc::from(parent)),
+        })
+    }
+
+    /// `rel` was deleted: selects `neighbour` (from
+    /// [`Self::neighbour_after_delete`]) while the selection is still at or
+    /// under `rel`, or where the tree moved it (an ancestor of `rel`). A
+    /// neighbour gone meanwhile gives way to its nearest remaining folder.
+    pub(crate) fn select_after_delete(
+        &mut self,
+        rel: &Path,
+        neighbour: Selection,
+        cx: &mut Context<Self>,
+    ) {
+        let moved_by_delete = match self.model.selection() {
+            Selection::Root => true,
+            Selection::Path(selected) => selected.starts_with(rel) || rel.starts_with(selected),
+        };
+        if !moved_by_delete {
+            return;
+        }
+        let selection = match neighbour {
+            Selection::Path(path) if !self.model.contains(&path) => path
+                .ancestors()
+                .skip(1)
+                .find(|a| !a.as_os_str().is_empty() && self.model.contains(a))
+                .map_or(Selection::Root, |a| Selection::Path(Arc::from(a))),
+            other => other,
         };
         self.model.select(selection);
         cx.notify();

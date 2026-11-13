@@ -1356,3 +1356,57 @@ fn key(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) -> bool {
         lucerna_settings::parse_when(name).unwrap().eval(&ctx)
     })
 }
+
+/// Trashes whatever is still there and always succeeds, so a test can
+/// remove the file (and report it) before the delete's result arrives.
+struct LenientTrashShell;
+
+impl SystemShell for LenientTrashShell {
+    fn reveal(&self, _path: &Path, _cx: &gpui::App) {}
+
+    fn open_terminal(&self, _dir: &Path, _exec: &str) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn trash(&self, path: &Path) -> Result<(), String> {
+        let _ = lucerna_project::fs_ops::delete_permanently(path);
+        Ok(())
+    }
+}
+
+/// The watcher's Removed can arrive before the delete's result: the tree
+/// then moves the selection to the parent first, and the delete must still
+/// select the neighbour.
+#[gpui::test]
+fn removed_event_before_result_still_selects_next_sibling(cx: &mut TestAppContext) {
+    init(cx);
+    cx.set_global(SystemShellGlobal(Arc::new(LenientTrashShell)));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-backspace", cx);
+    assert!(cx.has_pending_prompt());
+    std::fs::remove_file(root.join("a.rs")).unwrap();
+    wait_until(cx, |cx| {
+        wb.read_with(cx, |wb, _| {
+            !wb.worktree().snapshot().contains(Path::new("a.rs"))
+        })
+    });
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(
+            &WorktreeEvent::Changed(vec![Change {
+                path: Arc::from(Path::new("a.rs")),
+                kind: ChangeKind::Removed,
+            }]),
+            cx,
+        )
+    });
+    draw(cx);
+    assert_eq!(selection(&wb, cx), Selection::Root, "the tree moved it up");
+    cx.simulate_prompt_answer("Move to Trash");
+    draw(cx);
+    wait_until(cx, |cx| {
+        selection(&wb, cx) == Selection::Path(Arc::from(Path::new("b.rs")))
+    });
+}

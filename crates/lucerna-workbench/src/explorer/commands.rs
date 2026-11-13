@@ -210,6 +210,8 @@ fn delete(
     let Some(in_flight) = InFlight::begin(wb, &target) else {
         return;
     };
+    // Before the operation: the watcher may drop it from the tree first.
+    let neighbour = wb.explorer().read(cx).neighbour_after_delete(&rel);
     let name = crate::save::display_name(&target);
     let confirm = permanent
         || cx
@@ -260,9 +262,11 @@ fn delete(
         let _ = wb.update(cx, |wb, cx| match result {
             Ok(()) => {
                 wb.paths_deleted(&deleted.target, cx);
-                wb.explorer().clone().update(cx, |explorer, cx| {
-                    explorer.select_neighbour_of(&deleted.rel, cx)
-                });
+                if let Some(neighbour) = neighbour {
+                    wb.explorer().clone().update(cx, |explorer, cx| {
+                        explorer.select_after_delete(&deleted.rel, neighbour, cx)
+                    });
+                }
             }
             Err(e) => {
                 wb.forget_own_changes(std::slice::from_ref(&deleted.rel));
