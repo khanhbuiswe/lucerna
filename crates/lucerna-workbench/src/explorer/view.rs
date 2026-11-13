@@ -93,25 +93,30 @@ impl ExplorerView {
         Some(row_icon(&cx.global::<AppState>().icons, row))
     }
 
-    /// Takes the worktree's latest `snapshot` and, when `decorate` is set,
-    /// marks added and modified paths as recently changed.
+    /// Takes the worktree's latest `snapshot` and marks the added and
+    /// modified paths that `decorate` (given a root-relative path) accepts
+    /// as recently changed. The active tab's file is never marked.
     pub(crate) fn on_worktree_event(
         &mut self,
         ev: &WorktreeEvent,
         snapshot: WorktreeSnapshot,
-        decorate: bool,
+        decorate: &dyn Fn(&Path) -> bool,
         cx: &mut Context<Self>,
     ) {
         self.model.set_snapshot(snapshot);
         match ev {
-            WorktreeEvent::Changed(changes) if decorate => {
+            WorktreeEvent::Changed(changes) => {
                 let paths: Vec<Arc<Path>> = changes
                     .iter()
                     .filter(|c| c.kind != ChangeKind::Removed)
+                    .filter(|c| self.active.as_deref() != Some(&*c.path))
+                    .filter(|c| decorate(&c.path))
                     .map(|c| c.path.clone())
                     .collect();
-                self.model.mark_changed(&paths, Instant::now());
-                self.schedule_expiry(cx);
+                if !paths.is_empty() {
+                    self.model.mark_changed(&paths, Instant::now());
+                    self.schedule_expiry(cx);
+                }
             }
             // The active tab may have been opened before the tree had it.
             WorktreeEvent::ScanComplete => {
@@ -121,6 +126,18 @@ impl ExplorerView {
             }
             _ => {}
         }
+        cx.notify();
+    }
+
+    /// Marks `path` (absolute or root-relative) as changed on disk by
+    /// another program, unless it is the active tab's file.
+    pub(crate) fn mark_external_change(&mut self, path: &Arc<Path>, cx: &mut Context<Self>) {
+        let path = self.relative(path);
+        if self.active.as_ref() == Some(&path) {
+            return;
+        }
+        self.model.mark_changed(&[path], Instant::now());
+        self.schedule_expiry(cx);
         cx.notify();
     }
 

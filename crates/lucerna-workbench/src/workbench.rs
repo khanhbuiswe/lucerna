@@ -1,6 +1,6 @@
 //! The root view: shell layout, view slots and VS Code–style key dispatch.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -467,10 +467,13 @@ impl Workbench {
             cx.observe_global::<ConfigState>(Self::config_files_changed),
             // VS Code: a preview tab whose file gets unsaved changes is
             // pinned, so opening another file never replaces it.
-            cx.subscribe(&documents, |wb, _, ev: &DocumentEvent, cx| {
-                if let DocumentEvent::DirtyChanged { dirty: true, .. } = ev {
-                    wb.pin_dirty_previews(cx);
+            cx.subscribe(&documents, |wb, _, ev: &DocumentEvent, cx| match ev {
+                DocumentEvent::DirtyChanged { dirty: true, .. } => wb.pin_dirty_previews(cx),
+                DocumentEvent::ChangedOnDisk { path } if decorates_external_changes(cx) => {
+                    wb.explorer
+                        .update(cx, |explorer, cx| explorer.mark_external_change(path, cx));
                 }
+                _ => {}
             }),
             crate::status_message::observe(cx, |_, cx| cx.notify()),
             // The first window's hook shuts every window's servers down
@@ -818,13 +821,27 @@ impl Workbench {
             _ => {}
         }
         let snapshot = self.worktree.snapshot();
-        let decorate = cx
-            .global::<AppState>()
-            .settings
-            .get::<bool>("explorer.decorations.externalChanges", None)
-            .unwrap_or(true);
+        let decorate = decorates_external_changes(cx);
+        // Open documents tell our own saves from other programs' writes
+        // once they reload (`DocumentEvent::ChangedOnDisk`).
+        let followed: HashSet<Arc<Path>> = match ev {
+            WorktreeEvent::Changed(changes) => {
+                let documents = self.documents.read(cx);
+                changes
+                    .iter()
+                    .filter(|c| documents.follows_disk(&c.path))
+                    .map(|c| c.path.clone())
+                    .collect()
+            }
+            _ => HashSet::new(),
+        };
         self.explorer.update(cx, |explorer, cx| {
-            explorer.on_worktree_event(ev, snapshot, decorate, cx)
+            explorer.on_worktree_event(
+                ev,
+                snapshot,
+                &|path| decorate && !followed.contains(path),
+                cx,
+            )
         });
         self.documents
             .update(cx, |documents, cx| documents.on_worktree_event(ev, cx));
@@ -1985,4 +2002,13 @@ impl Render for Workbench {
                     .map(|toast| crate::extensions::toast_element(toast, cx)),
             )
     }
+}
+
+/// `explorer.decorations.externalChanges`: whether the Explorer marks files
+/// that other programs changed.
+fn decorates_external_changes(cx: &App) -> bool {
+    cx.global::<AppState>()
+        .settings
+        .get::<bool>("explorer.decorations.externalChanges", None)
+        .unwrap_or(true)
 }

@@ -136,7 +136,9 @@ impl LanguageServers {
                 self.find_servers(path, cx);
             }
             // The servers parse for themselves.
-            DocumentEvent::Parsed { .. } | DocumentEvent::FocusLost { .. } => {}
+            DocumentEvent::Parsed { .. }
+            | DocumentEvent::FocusLost { .. }
+            | DocumentEvent::ChangedOnDisk { .. } => {}
         }
     }
 

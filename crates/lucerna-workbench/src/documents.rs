@@ -114,6 +114,10 @@ pub enum DocumentEvent {
     /// The file changed on disk while the text had unsaved changes (or that
     /// state ended); the text was left alone.
     ConflictChanged { path: Arc<Path>, conflict: bool },
+    /// A reload found the file's content different from the text's base:
+    /// another program changed it (never sent for our own saves, or for a
+    /// rewrite with the same bytes).
+    ChangedOnDisk { path: Arc<Path> },
     /// A view of the document lost focus to something outside it (not to
     /// its own find widget or hover); `files.autoSave: onFocusChange`.
     FocusLost { path: Arc<Path> },
@@ -645,6 +649,15 @@ impl Documents {
             .filter(|(_, doc)| doc.announced && doc.views().next().is_some())
             .map(|(key, _)| key.clone())
             .collect()
+    }
+
+    /// Whether the document at `path` is open with its text loaded, so its
+    /// reloads tell real disk changes from our own saves
+    /// ([`DocumentEvent::ChangedOnDisk`]).
+    pub fn follows_disk(&self, path: &Path) -> bool {
+        self.docs
+            .get(&self.key(path))
+            .is_some_and(|doc| doc.buffer.is_some())
     }
 
     /// The state of the document at `path`, if it is open.
@@ -1867,6 +1880,7 @@ impl Documents {
             doc.reload_again = true;
             return;
         }
+        cx.emit(DocumentEvent::ChangedOnDisk { path: key.clone() });
         match outcome {
             ReloadOutcome::Apply(edits) => {
                 tracing::debug!(path = %key.display(), "document reloaded");
