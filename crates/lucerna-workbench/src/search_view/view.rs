@@ -217,6 +217,15 @@ impl SearchView {
         cx.notify();
     }
 
+    /// Sets "files to include" and shows the filters row, without moving
+    /// focus (Find in Folder fills it, then focuses the query).
+    pub fn set_include(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.filters_shown = true;
+        self.include
+            .update(cx, |input, cx| input.set_text(text, window, cx));
+        cx.notify();
+    }
+
     pub fn query_input(&self) -> &Entity<TextInput> {
         &self.query
     }

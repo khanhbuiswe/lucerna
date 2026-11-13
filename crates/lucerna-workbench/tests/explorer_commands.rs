@@ -6,15 +6,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Entity, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, TestAppContext,
-    VisualTestContext,
+    Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
+    TestAppContext, VisualTestContext,
 };
 use lucerna_project::WorktreeEvent;
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::system_shell::{SystemShell, SystemShellGlobal};
-use lucerna_workbench::{AppState, Workbench};
+use lucerna_workbench::{AppState, TabItem, Workbench};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -327,4 +327,52 @@ fn menu_command_may_update_the_explorer(cx: &mut TestAppContext) {
     right_click("explorer-row-a.rs", cx);
     click("context-menu-item-copyFilePath", cx);
     assert!(RAN.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+fn include_text(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> String {
+    cx.update(|_, cx| {
+        let search = wb.read(cx).search_view().read(cx);
+        search.include_input().read(cx).text().to_string()
+    })
+}
+
+#[gpui::test]
+fn find_in_folder_fills_include_and_focuses_query(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-src", cx);
+    click("context-menu-item-filesExplorer.findInFolder", cx);
+    let search_active = cx.update(|_, cx| {
+        let model = wb.read(cx).editor_groups().read(cx).model();
+        model
+            .active_tab()
+            .is_some_and(|t| t.item == TabItem::Search)
+    });
+    assert!(search_active);
+    assert_eq!(include_text(&wb, cx), "src");
+    let focused = cx.update(|window, cx| {
+        let search = wb.read(cx).search_view().read(cx);
+        search
+            .query_input()
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    });
+    assert!(focused);
+}
+
+#[gpui::test]
+fn find_in_folder_on_root_clears_include(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    cx.update(|window, cx| {
+        let search = wb.read(cx).search_view().clone();
+        search.update(cx, |s, cx| s.set_include("x", window, cx));
+    });
+    assert_eq!(include_text(&wb, cx), "x");
+    right_click("explorer-root", cx);
+    click("context-menu-item-filesExplorer.findInFolder", cx);
+    assert_eq!(include_text(&wb, cx), "");
 }

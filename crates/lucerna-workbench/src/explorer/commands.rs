@@ -1,5 +1,5 @@
 //! Explorer commands that only read: Open to the Side, Reveal in Finder,
-//! Open in Terminal, Copy Path and Copy Relative Path. Each acts on
+//! Open in Terminal, Find in Folder, Copy Path and Copy Relative Path. Each acts on
 //! `args.path` when given, else on the Explorer's selection.
 
 use std::path::{Path, PathBuf};
@@ -21,6 +21,28 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             if kind == Some(false) {
                 wb.open_path(Arc::from(target), OpenMode::ToSide, cx);
             }
+        },
+    );
+    commands.register(
+        "filesExplorer.findInFolder",
+        "Explorer: Find in Folder…",
+        |wb, args, window, cx| {
+            let (target, is_dir) = command_target(wb, args, cx);
+            if !is_dir {
+                return;
+            }
+            let include = target
+                .strip_prefix(wb.root())
+                .map(|rel| {
+                    rel.components()
+                        .map(|c| c.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/")
+                })
+                .unwrap_or_default();
+            wb.search_view()
+                .update(cx, |view, cx| view.set_include(&include, window, cx));
+            wb.open_search(window, cx);
         },
     );
     commands.register(
