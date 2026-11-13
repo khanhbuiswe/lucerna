@@ -266,6 +266,32 @@ fn deleted_file_shows_disk_bar(cx: &mut TestAppContext) {
     assert!(text.contains("zzzhello"), "{text}");
 }
 
+/// Spec §5.3: the dynamic preview shows the same bar as the source tab.
+#[gpui::test]
+fn deleted_file_shows_disk_bar_in_dynamic_preview(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open("hello\n", cx);
+    open_source(&wb, cx);
+    // Unsaved text, so the deleted file's tabs stay with a bar.
+    cx.simulate_input("zzz");
+    draw(cx);
+    run(&wb, "markdown.showPreviewToSide", cx);
+    fs::remove_file(dir.path().join("file.md")).unwrap();
+    let change = Change {
+        path: Arc::from(Path::new("file.md")),
+        kind: ChangeKind::Removed,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    draw(cx);
+    assert!(drawn("deleted-bar-close-0", cx), "the source tab's bar");
+    assert!(
+        drawn("deleted-bar-close-1", cx),
+        "the dynamic preview's bar"
+    );
+}
+
 #[gpui::test]
 fn rewrite_on_disk_updates_preview(cx: &mut TestAppContext) {
     init(cx);

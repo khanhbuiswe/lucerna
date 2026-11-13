@@ -222,10 +222,11 @@ impl EditorGroupsView {
     }
 
     /// The conflict or deleted-file bar (spec §7.3) for group `group`,
-    /// whose active tab is `tab`; `None` unless it is a file tab whose
-    /// document has a [`DiskNotice`].
+    /// whose active tab is `tab`; `None` unless it is a file tab or a
+    /// Markdown preview (static or dynamic) whose document has a
+    /// [`DiskNotice`].
     fn disk_bar(&self, group: usize, tab: &Tab, cx: &mut Context<Self>) -> Option<Div> {
-        let path = tab.path()?.clone();
+        let path = tab.path().or(tab.previewed_path())?.clone();
         let documents = self.documents.clone()?;
         let notice = documents.read(cx).disk_notice(&path)?;
         let id = tab.id;
@@ -790,6 +791,9 @@ impl Render for EditorGroupsView {
                     .text_size(px(UI_FONT_SIZE_SMALL))
                     .text_color(color(ui.text_muted))
             };
+            let md_button = active_tabs[gi]
+                .as_ref()
+                .and_then(|tab| self.markdown_button(gi, tab, cx));
             let path_bar = match self.crumbs(gi, &crumbs_settings, cx) {
                 Some(crumbs) => {
                     let row = breadcrumbs_row(gi, &crumbs, crumbs_settings.icons, ui).on_click(
@@ -802,7 +806,15 @@ impl Render for EditorGroupsView {
                     Some(bar().child(row))
                 }
                 None => self.path_bar_text(gi).map(|text| {
-                    bar().pl(px(TAB_PADDING_X)).child(
+                    // The Markdown button, when there is one, ends the row
+                    // with its own padding.
+                    let bar = bar().pl(px(TAB_PADDING_X));
+                    let bar = if md_button.is_none() {
+                        bar.pr(px(TAB_PADDING_X))
+                    } else {
+                        bar
+                    };
+                    bar.child(
                         div()
                             .flex_1()
                             .min_w_0()
@@ -813,9 +825,6 @@ impl Render for EditorGroupsView {
                     )
                 }),
             };
-            let md_button = active_tabs[gi]
-                .as_ref()
-                .and_then(|tab| self.markdown_button(gi, tab, cx));
             let path_bar = path_bar.map(|bar| bar.children(md_button));
             let disk_bar = active_tabs[gi]
                 .as_ref()
