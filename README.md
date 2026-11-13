@@ -366,4 +366,6 @@ Lucerna is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-A
 
 Bundled third-party assets keep their own licenses. These include the Lilex and IBM Plex fonts (OFL-1.1),
 Lucide icons (ISC), the One theme (MIT), tree-sitter grammars and GPUI (Apache-2.0).
-See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for a summary. The app carries the full
+license text of every bundled crate and asset: open it with Help › Third-Party Licenses, or the Licenses
+button in About. `scripts/bundle-app.sh` writes it with `scripts/gen-licenses.py`.
