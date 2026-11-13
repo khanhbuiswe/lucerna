@@ -150,12 +150,19 @@ fn remap_mark(
     let len = old.len_bytes();
     let edits = patch.edits();
     // Replaced text that covers the line start and the line break: the
-    // whole line is gone. The mark goes where the text was.
+    // mark goes to the start of the replacement. Only a deletion (`dd`)
+    // displaces it; a line rewritten in place (an agent's edit, `Vp`) is
+    // still the mark's line.
     if let Some(e) = edits.iter().find(|e| {
         e.old.start <= start && start < e.old.end && (e.old.end > end || e.old.end == len)
     }) {
         let at = new.offset_to_point(e.new.start);
-        return (clamp_mark(new, at, p.column), Displaced::Now);
+        let state = if e.new.is_empty() {
+            Displaced::Now
+        } else {
+            Displaced::Ended
+        };
+        return (clamp_mark(new, at, p.column), state);
     }
     // Edits on the line itself (not text inserted at its start, which is
     // above it) that change where lines break.
@@ -415,6 +422,26 @@ mod tests {
         assert_eq!(edit(&mut globals, 4..6, ""), p(2, 0));
         assert_eq!(edit(&mut globals, 4..4, "c\n"), p(2, 0));
         // Then a line put above it pushes it down again.
+        assert_eq!(edit(&mut globals, 4..4, "x\n"), p(3, 0));
+    }
+
+    #[test]
+    fn rewritten_line_is_not_displaced() {
+        let path: std::sync::Arc<std::path::Path> = std::sync::Arc::from(std::path::Path::new("a"));
+        let mut buffer = lucerna_text::Buffer::from_bytes(b"a\nb\nc\nd\n", false).unwrap();
+        let mut globals = VimGlobals::default();
+        let mut m = FileMarks::default();
+        m.letters[0] = Some(p(2, 0));
+        globals.marks.insert(path.clone(), m);
+        let mut edit = |globals: &mut VimGlobals, r: std::ops::Range<usize>, t: &str| {
+            let before = buffer.snapshot();
+            let patch = buffer.edit([(r, std::sync::Arc::from(t))]);
+            globals.remap_marks_patch(&path, &before, &patch, &buffer.snapshot());
+            globals.marks[&path].letters[0].unwrap()
+        };
+        // A reload rewrites the mark's line (`c` to `C`, as a line diff).
+        assert_eq!(edit(&mut globals, 4..6, "C\n"), p(2, 0));
+        // Then a line inserted above it pushes it down with its line.
         assert_eq!(edit(&mut globals, 4..4, "x\n"), p(3, 0));
     }
 

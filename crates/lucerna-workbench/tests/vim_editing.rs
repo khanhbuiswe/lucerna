@@ -567,3 +567,33 @@ fn unmarked_replacement_counts_graphemes(cx: &mut TestAppContext) {
     keys("j 0 .", cx);
     assert_eq!(text_of(&view, cx), "aéx\naéy\n");
 }
+
+#[gpui::test]
+fn mark_follows_a_line_an_agent_rewrote(cx: &mut TestAppContext) {
+    let (dir, wb, view, cx) = vim_editor("a\nb\nc\nd\n", cx);
+    keys("2 j m a", cx);
+    change_on_disk(&wb, &dir, "a\nb\nC\nd\n", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nC\nd\n");
+    change_on_disk(&wb, &dir, "a\nb\nnew\nC\nd\n", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nnew\nC\nd\n");
+    keys("g g ` a", cx);
+    assert_eq!(cursor(&view, cx), pt(3, 0));
+}
+
+#[gpui::test]
+fn unmarked_replacement_starting_in_indent_breaks_the_record(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("x\ny\n", cx);
+    keys("i", cx);
+    commit(&view, "  a", cx);
+    // ` a` (from inside the indentation) replaced, with the caret at col 3.
+    view.update_in(cx, |v, window, cx| {
+        v.replace_text_in_range(Some(1..3), "-A", window, cx)
+    });
+    draw(cx);
+    commit(&view, "q", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), " -Aqx\ny\n");
+    // Only the typing after the break repeats.
+    keys("j 0 .", cx);
+    assert_eq!(text_of(&view, cx), " -Aqx\nqy\n");
+}

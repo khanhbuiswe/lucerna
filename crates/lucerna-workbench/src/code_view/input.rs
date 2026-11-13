@@ -174,13 +174,19 @@ impl CodeView {
         }
         let target = self.range_from_utf16(range_utf16);
         let primary = self.selections.primary();
+        let start = self.snapshot.offset_to_point(target.start);
         let end = self.snapshot.offset_to_point(target.end);
         let line = self.snapshot.line(end.row);
         let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
         // Backspace removes one grapheme, except in the leading whitespace,
-        // where it goes back to a tab stop: only a range before the caret
-        // and past the indentation replays as Backspaces.
-        if primary.is_empty() && target.end == primary.head && end.column as usize > indent {
+        // where it goes back to a tab stop: only a range on one line, before
+        // the caret and past the indentation replays as Backspaces.
+        if primary.is_empty()
+            && target.end == primary.head
+            && start.row == end.row
+            && start.column as usize >= indent
+            && end.column as usize > indent
+        {
             let text = self.snapshot.text_for_range(target);
             UnmarkedRecord::Backspaces(text.graphemes(true).count())
         } else {
