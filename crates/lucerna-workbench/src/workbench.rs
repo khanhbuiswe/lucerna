@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use gpui::{
@@ -90,6 +90,9 @@ struct Persistence {
     _subscriptions: Vec<Subscription>,
 }
 
+/// How long a path from [`Workbench::expect_own_changes`] is remembered.
+const OWN_CHANGE_TTL: Duration = Duration::from_secs(5);
+
 pub struct Workbench {
     root: PathBuf,
     /// The one background scan of `root`; every view reads the tree from it.
@@ -98,6 +101,9 @@ pub struct Workbench {
     scan_started: std::time::Instant,
     scan_progress_logged: bool,
     scan_complete_logged: bool,
+    /// Root-relative paths Lucerna itself just created, renamed or deleted,
+    /// and when; the Explorer does not mark them as changed by another program.
+    own_changes: HashMap<Arc<Path>, Instant>,
     /// The options of the scan, from `files.exclude`.
     scan_options: ScanOptions,
     /// Re-themes and rescans when [`AppState`] changes.
@@ -538,6 +544,7 @@ impl Workbench {
             scan_started,
             scan_progress_logged: false,
             scan_complete_logged: false,
+            own_changes: HashMap::new(),
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
@@ -816,6 +823,16 @@ impl Workbench {
         &self.explorer
     }
 
+    /// Remembers root-relative paths Lucerna itself just changed, so their
+    /// watcher events are not decorated as another program's. A directory
+    /// also covers the paths under it. Entries expire after
+    /// [`OWN_CHANGE_TTL`].
+    pub fn expect_own_changes(&mut self, rel_paths: impl IntoIterator<Item = Arc<Path>>) {
+        let now = Instant::now();
+        self.own_changes
+            .extend(rel_paths.into_iter().map(|p| (p, now)));
+    }
+
     /// Hands a worktree event to every view that follows the tree. Called
     /// for each event the worktree sends; tests call it directly.
     pub fn on_worktree_event(&mut self, ev: &WorktreeEvent, cx: &mut Context<Self>) {
@@ -835,12 +852,19 @@ impl Workbench {
         let decorate = decorates_external_changes(cx);
         // Open documents tell our own saves from other programs' writes
         // once they reload (`DocumentEvent::ChangedOnDisk`).
+        let now = Instant::now();
+        self.own_changes
+            .retain(|_, at| now.duration_since(*at) < OWN_CHANGE_TTL);
+        let own = &self.own_changes;
         let followed: HashSet<Arc<Path>> = match ev {
             WorktreeEvent::Changed(changes) => {
                 let documents = self.documents.read(cx);
                 changes
                     .iter()
-                    .filter(|c| documents.follows_disk(&c.path))
+                    .filter(|c| {
+                        documents.follows_disk(&c.path)
+                            || c.path.ancestors().any(|a| own.contains_key(a))
+                    })
                     .map(|c| c.path.clone())
                     .collect()
             }
