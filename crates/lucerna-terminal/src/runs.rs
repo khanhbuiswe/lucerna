@@ -223,10 +223,14 @@ pub fn layout_line(
         let plain_space = ch == ' ' && !has_zw && underline == Underline::None && !strike;
 
         let continues = open
-            && out
-                .runs
-                .last()
-                .is_some_and(|r| r.col + r.cells == this_col && (plain_space || r.style == style));
+            && out.runs.last().is_some_and(|r| {
+                r.col + r.cells == this_col
+                    && (r.style == style
+                        // A plain space only joins runs that draw no line.
+                        || (plain_space
+                            && r.style.underline == Underline::None
+                            && !r.style.strike))
+            });
         if continues {
             let run = out.runs.last_mut().expect("open run");
             run.text.push(ch);
@@ -444,5 +448,39 @@ mod tests {
         r[1].flags = CellFlags::HIDDEN;
         let l = layout(&r);
         assert_eq!(l.runs[0].text, "a");
+    }
+
+    fn underlined(mut c: Cell) -> Cell {
+        c.flags = CellFlags::UNDERLINE;
+        c
+    }
+
+    #[test]
+    fn plain_space_does_not_inherit_underline() {
+        let r = vec![underlined(cell('a')), cell(' '), underlined(cell('b'))];
+        let l = layout(&r);
+        assert_eq!(l.runs.len(), 2);
+        assert_eq!((l.runs[0].col, l.runs[0].text.as_str()), (0, "a"));
+        assert_eq!((l.runs[1].col, l.runs[1].text.as_str()), (2, "b"));
+    }
+
+    #[test]
+    fn trailing_plain_space_after_underline_is_not_underlined() {
+        let r = vec![underlined(cell('a')), cell(' '), cell(' ')];
+        let l = layout(&r);
+        assert_eq!(l.runs.len(), 1);
+        assert_eq!((l.runs[0].text.as_str(), l.runs[0].cells), ("a", 1));
+    }
+
+    #[test]
+    fn underlined_space_is_drawn() {
+        let r = vec![
+            underlined(cell('a')),
+            underlined(cell(' ')),
+            underlined(cell('b')),
+        ];
+        let l = layout(&r);
+        assert_eq!(l.runs.len(), 1);
+        assert_eq!(l.runs[0].text, "a b");
     }
 }
