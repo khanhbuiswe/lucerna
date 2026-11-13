@@ -462,4 +462,18 @@ Ghi số đo vào phần cuối spec này hoặc vào ghi chú merge.
 
 Ghi chú: mỗi ca là một tiến trình `luc <file>` chạy riêng, đo sau 10 s (`footprint <pid>`).
 CLI chỉ mở được một file, nên C không có sẵn tab B; "trở về gần A sau khi đóng tab"
-chưa đo, cần chạy tay: mở C, đóng tab, đợi 10 s, đo lại. Chênh 413 KB gồm parser, renderer, tab preview, ảnh/link và Open in Browser.
+chưa đo, cần chạy tay: mở C, đóng tab, đợi 10 s, đo lại.
+
+Nguyên nhân chênh 413 KB (so `size -m` và `nm -m` của hai binary, tên symbol giải bằng
+`c++filt`, gộp theo module): `__text` +207 KB, bảng unwind/exception (`__eh_frame`,
+`__gcc_except_tab`, `__unwind_info`) +62 KB, `__DATA_CONST` +16 KB, còn khoảng +115 KB là
+bảng symbol trong `__LINKEDIT` (binary không strip; +936 symbol, bảng tên +106 KB). Trong
+`__text`, các hàm có tên chứa `markdown_preview`/`MarkdownPreview` chiếm 118 KB: code của
+module (+54 KB: view, `ScrollSync`, `follow_link`, `resolve_link`, lệnh) cùng các bản
+generic của gpui sinh cho `MarkdownPreview` (`Context::spawn`/`listener`/`subscribe`,
+drop glue của `Div`). Phần mở rộng parser/renderer trong `markdown.rs` thêm khoảng 28 KB
+(`parse` +13 KB, `Renderer::block` +10 KB). Phần còn lại là inline xếp lại giữa các crate
+(ví dụ `lsp_types` −15 KB, `serde_json::value` +19 KB), cộng lại gần bằng không.
+`pulldown_cmark` không lớn thêm (−2,6 KB), không có crate hay feature mới, không thấy một
+generic nào bị nhân bản bất thường, nên không tối ưu. Vượt ngân sách 300 KB nhưng dưới trần
+500 KB: cần người dùng chấp nhận trước khi merge.
