@@ -455,6 +455,9 @@ fn left_click_selects_and_focuses_sidebar(cx: &mut TestAppContext) {
     init(cx, None);
     let dir = project();
     let (wb, cx) = open(dir.path(), cx);
+    cx.update(|w, cx| wb.update(cx, |wb, cx| wb.focus_editor_area(w, cx)));
+    draw(cx);
+    assert!(!key(&wb, "filesExplorerFocus", cx));
     click("explorer-row-src", cx);
     assert_eq!(selection(&wb, cx), Selection::Path(p("src")));
     assert!(key(&wb, "filesExplorerFocus", cx));
@@ -496,4 +499,53 @@ fn selected_row_is_highlighted(cx: &mut TestAppContext) {
     click("explorer-root", cx);
     assert!(cx.debug_bounds("explorer-row-selected-a.rs").is_none());
     assert!(cx.debug_bounds("explorer-root-selected").is_some());
+}
+
+#[gpui::test]
+fn scan_complete_keeps_user_selection(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    wb.update(cx, |wb, cx| wb.open_path(p("a.rs"), OpenMode::Pinned, cx));
+    draw(cx);
+    click("explorer-row-b.rs", cx);
+    assert_eq!(selection(&wb, cx), Selection::Path(p("b.rs")));
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::ScanComplete, cx)
+    });
+    draw(cx);
+    assert_eq!(selection(&wb, cx), Selection::Path(p("b.rs")));
+}
+
+#[gpui::test]
+fn auto_reveal_off_selection_stays(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "explorer.autoReveal": false }"#));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let before = selection(&wb, cx);
+    wb.update(cx, |wb, cx| wb.open_path(p("b.rs"), OpenMode::Pinned, cx));
+    draw(cx);
+    assert_eq!(selection(&wb, cx), before);
+}
+
+#[gpui::test]
+fn single_file_root_is_the_file(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Downloads");
+    std::fs::create_dir(&root).unwrap();
+    let file = root.join("notes.md");
+    std::fs::write(&file, "hi\n").unwrap();
+    let (wb, cx) = {
+        let file = file.clone();
+        cx.add_window_view(move |window, cx| Workbench::single_file(root, &file, None, window, cx))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| wb.worktree().snapshot().scan_complete()) {
+        assert!(Instant::now() < deadline, "worktree scan did not finish");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    draw(cx);
+    assert!(!key(&wb, "explorerResourceIsFolder", cx));
+    assert!(!key(&wb, "explorerResourceIsRoot", cx));
 }

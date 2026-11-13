@@ -18,7 +18,8 @@ use lucerna_theme::{IconSource, ResolvedIcons};
 use super::model::{ExplorerModel, Row, SelectedKind, Selection};
 use crate::layout::color;
 use crate::ui::{
-    DeployedMenu, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE, file_icon_sized, thumb_geometry,
+    DeployedMenu, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE, file_icon_sized,
+    thumb_geometry,
 };
 use crate::{AppState, EditorGroupsView, OpenMode, Workbench};
 
@@ -96,8 +97,12 @@ impl ExplorerView {
     }
 
     /// The selected resource's kind (see [`ExplorerModel::selected_kind`]).
+    /// In single-file mode `Root` is the lone file.
     pub fn selected_kind(&self) -> SelectedKind {
-        self.model.selected_kind()
+        match self.model.selected_kind() {
+            SelectedKind::Root if self.single_file => SelectedKind::File,
+            kind => kind,
+        }
     }
 
     /// Absolute path of the selection: the root itself for `Root` (in
@@ -158,7 +163,7 @@ impl ExplorerView {
             // The active tab may have been opened before the tree had it.
             WorktreeEvent::ScanComplete => {
                 if let Some(path) = self.active.clone() {
-                    self.auto_reveal(&path, cx);
+                    self.auto_reveal(&path, false, cx);
                 }
             }
             _ => {}
@@ -191,12 +196,14 @@ impl ExplorerView {
         self.active = active.clone();
         if let Some(path) = active {
             self.model.clear_changed(&path);
-            self.auto_reveal(&path, cx);
+            self.auto_reveal(&path, true, cx);
         }
         cx.notify();
     }
 
-    fn auto_reveal(&mut self, path: &Path, cx: &mut Context<Self>) {
+    /// Reveals `path`; selects it when `force`, else only when the selection
+    /// is the root or already `path` (a late scan must not undo a click).
+    fn auto_reveal(&mut self, path: &Path, force: bool, cx: &mut Context<Self>) {
         let enabled = cx
             .global::<AppState>()
             .settings
@@ -210,7 +217,13 @@ impl ExplorerView {
         if let Some(ix) = self.model.reveal(path) {
             self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
         }
-        self.model.select(Selection::Path(Arc::from(path)));
+        let keep = match self.model.selection() {
+            Selection::Root => true,
+            Selection::Path(p) => &**p == path,
+        };
+        if force || keep {
+            self.model.select(Selection::Path(Arc::from(path)));
+        }
     }
 
     fn relative(&self, path: &Arc<Path>) -> Arc<Path> {
@@ -339,7 +352,8 @@ impl ExplorerView {
                     }))
                     .children(guides)
                     .when(selected, |d| {
-                        // Test-only marker: the selected row carries it.
+                        // Marker for tests: a 0-size node that exists in release builds too
+                        // (only its selector is test-only).
                         d.child(
                             div()
                                 .debug_selector(move || {
@@ -415,9 +429,7 @@ impl ExplorerView {
                 )
             })
             .when(!selected, |d| d.hover(move |s| s.bg(hover)))
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.root_clicked(window, cx)
-            }))
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.root_clicked(window, cx)))
             .child(
                 icon_slot(&root_icon, TYPE_ICON_SIZE, ui.icon_muted)
                     .debug_selector(|| "explorer-root-icon".into()),
