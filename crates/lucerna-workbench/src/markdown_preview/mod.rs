@@ -209,6 +209,11 @@ impl MarkdownPreview {
         preview
     }
 
+    /// The images loaded for this view (for tests).
+    pub fn image_cache(&self) -> &Entity<RetainAllImageCache> {
+        &self.image_cache
+    }
+
     /// The previewed file.
     pub fn path(&self) -> &Arc<Path> {
         &self.path
@@ -231,6 +236,9 @@ impl MarkdownPreview {
         self.path = path;
         self.blocks = None;
         self.images = Arc::default();
+        // The old file's images go with it: a dynamic preview following
+        // files would otherwise keep every image it has shown.
+        self.image_cache = RetainAllImageCache::new(cx);
         self.pending_slug = None;
         self.revision = None;
         self.requested = None;

@@ -871,3 +871,39 @@ fn md_link_opens_preview_tab(cx: &mut TestAppContext) {
         Some(TabItem::File(abs(&dir, "sub/b.md")))
     );
 }
+
+#[gpui::test]
+fn set_path_drops_image_cache(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open("# a\n", cx);
+    fs::write(dir.path().join("b.md"), "# b\n").unwrap();
+    let preview = open_preview(&wb, &dir, cx);
+    let before = preview.read_with(cx, |p, _| p.image_cache().entity_id());
+    preview.update(cx, |p, cx| p.set_path(abs(&dir, "b.md"), cx));
+    let after = preview.read_with(cx, |p, _| p.image_cache().entity_id());
+    assert_ne!(before, after);
+}
+
+#[gpui::test]
+fn folder_and_dead_links_open_nothing(cx: &mut TestAppContext) {
+    for text in [
+        "[x](sub/)\n",
+        "[x](.)\n",
+        "[x](gone.txt)\n",
+        "[x](gone.md)\n",
+    ] {
+        let cx = &mut *cx;
+        init(cx);
+        let (dir, wb, cx) = open(text, cx);
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        open_preview(&wb, &dir, cx);
+        click_link(cx);
+        let (tabs, active) = group_tabs(&wb, 0, cx);
+        assert_eq!(tabs.len(), 1, "{text}: {tabs:?}");
+        assert_eq!(
+            active,
+            Some(TabItem::MarkdownPreview(abs(&dir, "file.md"))),
+            "{text}"
+        );
+    }
+}

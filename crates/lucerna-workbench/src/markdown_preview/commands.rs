@@ -424,7 +424,8 @@ pub(crate) fn double_clicked(
 /// opens as the Explorer opens it (`markdown.preview.openMarkdownLinks`:
 /// `"inEditor"` opens its source) or, from the dynamic preview, becomes
 /// the file it shows; `#L10` opens the source at that line, and other
-/// files open as the Explorer opens them.
+/// files open as the Explorer opens them. A link to a folder or to a file
+/// that does not exist does nothing.
 pub(crate) fn follow_link(
     wb: &mut Workbench,
     preview: WeakEntity<MarkdownPreview>,
@@ -432,6 +433,12 @@ pub(crate) fn follow_link(
     window: &mut Window,
     cx: &mut Context<Workbench>,
 ) {
+    // One stat, on a click: no tab for a folder or a dead link.
+    if let LinkAction::Markdown { path, .. } | LinkAction::File(path) = &action
+        && !path.is_file()
+    {
+        return;
+    }
     match action {
         LinkAction::Web(url) => cx.open_url(&url),
         LinkAction::Anchor(slug) => {
