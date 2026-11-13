@@ -198,6 +198,9 @@ mod tests {
             (event("r", None, ctrl_shift()), "ctrl+shift+r"),
             (event("o", None, cmd()), "cmd+o"),
             (event("f", Some("f"), Modifiers::none()), "f"),
+            // Markdown preview: toggle, and the second stroke of `cmd+k v`.
+            (event("v", None, cmd_shift()), "cmd+shift+v"),
+            (event("v", Some("v"), Modifiers::none()), "v"),
         ];
         // Cursor movement.
         for (key, plain, shifted) in [
