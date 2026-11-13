@@ -57,6 +57,11 @@ pub struct UiColors {
     pub border: Rgba,
     pub text: Rgba,
     pub text_muted: Rgba,
+    /// `text.disabled`: text of an entry that cannot be used, such as a
+    /// greyed-out menu item.
+    pub text_disabled: Rgba,
+    /// `border.focused`: the border of a focused control.
+    pub border_focused: Rgba,
     /// `text.accent`: text that stands out, such as a tab's unsaved dot.
     pub text_accent: Rgba,
     pub element_selected: Rgba,
@@ -183,6 +188,8 @@ impl UiColors {
             border,
             text: fg,
             text_muted: muted,
+            text_disabled: muted,
+            border_focused: border,
             text_accent: pick("#74ade8ff", "#5c78e2ff"),
             element_selected: sel,
             element_background: title_bar,

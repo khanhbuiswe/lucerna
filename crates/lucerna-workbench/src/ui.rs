@@ -9,6 +9,9 @@ use gpui::{
 use lucerna_theme::IconSource;
 
 use crate::AppState;
+pub use crate::context_menu::{
+    ContextMenu, DeployedMenu, MenuCommand, MenuItem, deploy_context_menu, render_deployed,
+};
 use crate::icons;
 use crate::layout::color;
 use crate::text_input::TextInput;

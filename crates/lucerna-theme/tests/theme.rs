@@ -365,3 +365,35 @@ fn cursor_falls_back_to_editor_foreground() {
     assert_eq!(ui.cursor, Rgba::parse_hex("#abcdefff").unwrap());
     assert_eq!(ui.selection, Rgba::parse_hex("#11223344").unwrap());
 }
+
+#[test]
+fn zed_theme_reads_text_disabled_and_border_focused() {
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "t.json",
+        r##"{"name":"F","themes":[{"name":"Keys","appearance":"dark","style":{
+            "text.disabled":"#111111ff","border.focused":"#222222ff"}}]}"##,
+    );
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
+    let ui = &reg.get("Keys").unwrap().ui;
+    assert_eq!(ui.text_disabled, Rgba::parse_hex("#111111ff").unwrap());
+    assert_eq!(ui.border_focused, Rgba::parse_hex("#222222ff").unwrap());
+}
+
+#[test]
+fn missing_disabled_and_focused_fall_back() {
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "t.json",
+        r##"{"name":"F","themes":[{"name":"Bare","appearance":"dark","style":{
+            "text.muted":"#333333ff","border":"#444444ff"}}]}"##,
+    );
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
+    let ui = &reg.get("Bare").unwrap().ui;
+    assert_eq!(ui.text_disabled, ui.text_muted);
+    assert_eq!(ui.border_focused, ui.border);
+}
