@@ -1,0 +1,24 @@
+[package]
+name = "lucerna-terminal"
+description = "Lucerna: integrated terminal core over a PTY (gpui-free)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
+futures.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[features]
+test-support = []
+
+[dev-dependencies]
+lucerna-terminal = { path = ".", features = ["test-support"] }
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
