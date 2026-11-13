@@ -656,6 +656,14 @@ impl Documents {
                     DocState::Deleted | DocState::Error(LoadError::NotFound)
                 );
             let reparse = language_changed || doc.parse.is_some();
+            // Only an open tab of a file that is gone can hold the name
+            // (the rename never replaces a file, and the Explorer refuses
+            // it): it goes, before the moved document opens there.
+            if let Some(stale) = self.docs.remove(&new)
+                && stale.announced
+            {
+                cx.emit(DocumentEvent::Closed { path: new.clone() });
+            }
             if doc.announced {
                 cx.emit(DocumentEvent::Closed { path: old.clone() });
                 if let Some(snapshot) = doc.snapshot.clone() {
@@ -668,13 +676,7 @@ impl Documents {
                     doc.announced = false;
                 }
             }
-            if let Some(stale) = self.docs.insert(new.clone(), doc) {
-                // Only an open tab of a file that is gone can hold the
-                // name (the rename never replaces a file): it goes.
-                if stale.announced {
-                    cx.emit(DocumentEvent::Closed { path: new.clone() });
-                }
-            }
+            self.docs.insert(new.clone(), doc);
             if restart_job {
                 self.start_job(&new, cx);
             }
@@ -901,6 +903,25 @@ impl Documents {
     pub(crate) fn has_document_under(&self, path: &Path) -> bool {
         let path = self.key(path);
         self.docs.keys().any(|k| k.starts_with(&path))
+    }
+
+    /// Resolves once every save (or revert) asked for so far of the
+    /// documents at `path` or under it has ended, so a rename does not race
+    /// a write that would bring the old file back.
+    pub(crate) fn saves_done_under(&self, path: &Path) -> impl Future<Output = ()> + use<> {
+        let path = self.key(path);
+        let pending: Vec<Shared<oneshot::Receiver<()>>> = self
+            .docs
+            .iter()
+            .filter(|(k, _)| k.starts_with(&path))
+            .filter_map(|(_, d)| d.last_save.clone())
+            .filter(|p| p.clone().now_or_never().is_none())
+            .collect();
+        async move {
+            for save in pending {
+                save.await.ok();
+            }
+        }
     }
 
     /// The id of the language of the document at `path`.

@@ -747,3 +747,66 @@ fn menu_has_rename_except_on_root(cx: &mut TestAppContext) {
     right_click("explorer-root", cx);
     assert!(cx.debug_bounds("context-menu-item-renameFile").is_none());
 }
+
+/// A folder cannot move into itself: the error shows while typing, and a
+/// blur with that name cancels instead of trying (and looping) forever.
+#[gpui::test]
+fn rename_into_itself_shows_error_and_blur_cancels(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-src", cx);
+    keys("enter", cx);
+    type_text(cx, "src/x");
+    let error = cx.update(|_, cx| {
+        wb.read(cx)
+            .explorer()
+            .read(cx)
+            .edit_error()
+            .map(str::to_string)
+    });
+    assert!(
+        error.as_deref().is_some_and(|e| e.contains("is not valid")),
+        "{error:?}"
+    );
+    click_editor_area(cx);
+    // Settles: no redraw loop keeps the edit alive.
+    cx.run_until_parked();
+    draw(cx);
+    cx.run_until_parked();
+    assert!(!editing(&wb, cx));
+    assert_eq!(names(dir.path()), ["a.rs", "b.rs", "src"]);
+    assert_eq!(names(&dir.path().join("src")), ["main.rs"]);
+}
+
+/// The tab of a deleted file holds its name: renaming another file onto
+/// it is refused while typing, so two tabs never share a path.
+#[gpui::test]
+fn rename_onto_open_deleted_file_shows_error(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    open_file(&wb, "b.rs", cx);
+    std::fs::remove_file(dir.path().join("b.rs")).unwrap();
+    wait_until(cx, |cx| {
+        wb.read_with(cx, |wb, _| {
+            !wb.worktree().snapshot().contains(Path::new("b.rs"))
+        })
+    });
+    let removed = Change {
+        path: Arc::from(Path::new("b.rs")),
+        kind: ChangeKind::Removed,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![removed]), cx)
+    });
+    draw(cx);
+    click("explorer-row-a.rs", cx);
+    keys("enter", cx);
+    type_text(cx, "b");
+    let error = cx.update(|_, cx| wb.read(cx).explorer().read(cx).edit_error().is_some());
+    assert!(error);
+    keys("enter", cx);
+    assert!(editing(&wb, cx));
+    assert!(dir.path().join("a.rs").exists());
+}

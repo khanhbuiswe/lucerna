@@ -458,7 +458,13 @@ impl Workbench {
             let lone = single_file_path.is_some();
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
             let focus = sidebar_focus.clone();
-            cx.new(|cx| ExplorerView::new(root, lone, snapshot, workbench, &groups, focus, cx))
+            let docs = documents.downgrade();
+            cx.new(|cx| {
+                let mut explorer =
+                    ExplorerView::new(root, lone, snapshot, workbench, &groups, focus, cx);
+                explorer.set_documents(docs);
+                explorer
+            })
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);

@@ -25,7 +25,7 @@ use crate::ui::{
     ContextMenu, DeployedMenu, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE,
     UI_FONT_SIZE_SMALL, deploy_context_menu, file_icon_sized, render_deployed, thumb_geometry,
 };
-use crate::{AppState, EditorGroupsView, OpenMode, Workbench, status_message};
+use crate::{AppState, Documents, EditorGroupsView, OpenMode, Workbench, status_message};
 
 /// Indentation per tree level: one icon slot, so each level's indent
 /// guide runs under its parent's chevron.
@@ -58,6 +58,18 @@ struct NameEdit {
     _blur: Subscription,
 }
 
+/// A rename started by `confirm_rename`, for its end (`renamed`).
+struct Rename {
+    abs_from: PathBuf,
+    abs_to: PathBuf,
+    /// The new path, root-relative.
+    target: Arc<Path>,
+    /// The paths given to `Workbench::expect_own_changes`.
+    expected: Vec<Arc<Path>>,
+    /// The renamed folder was expanded: expand it at its new path.
+    expand: bool,
+}
+
 /// A path just created: once the worktree has it, select it, reveal it and,
 /// for a folder, expand it.
 struct PendingReveal {
@@ -75,6 +87,9 @@ pub struct ExplorerView {
     /// Tab paths may be absolute; the tree is relative to this.
     root: PathBuf,
     workbench: WeakEntity<Workbench>,
+    /// Read when validating a rename: a name an open document holds is
+    /// taken.
+    documents: WeakEntity<Documents>,
     scroll: UniformListScrollHandle,
     /// The active tab of the active group, root-relative; its row is
     /// highlighted.
@@ -116,6 +131,7 @@ impl ExplorerView {
             single_file,
             root,
             workbench,
+            documents: WeakEntity::new_invalid(),
             scroll: UniformListScrollHandle::new(),
             active: None,
             expiry: None,
@@ -129,6 +145,11 @@ impl ExplorerView {
                 this.sync_active_tab(&groups, cx)
             }),
         }
+    }
+
+    /// The open documents, read when validating a rename.
+    pub(crate) fn set_documents(&mut self, documents: WeakEntity<Documents>) {
+        self.documents = documents;
     }
 
     /// The root row's label: the project folder's name, as on disk.
@@ -279,18 +300,42 @@ impl ExplorerView {
     }
 
     /// Checks `name` against the tree (never the disk) as it is typed.
-    fn validate_name(&self, name: &str) -> Option<Result<PathBuf, NameError>> {
+    /// A rename also refuses a target inside the entry itself (`src` to
+    /// `src/x`) and a name an open document holds (the tab of a file that
+    /// is gone), so two tabs never share a path.
+    fn validate_name(&self, name: &str, cx: &App) -> Option<Result<PathBuf, NameError>> {
         let edit = self.model.edit()?;
-        Some(fs_ops::validate_new_name(
-            &edit.parent,
-            name,
-            edit.original.as_deref(),
-            |path| self.model.contains(path),
-        ))
+        let result =
+            fs_ops::validate_new_name(&edit.parent, name, edit.original.as_deref(), |path| {
+                self.model.contains(path)
+            });
+        let (Ok(target), Some(original)) = (&result, edit.original.as_deref()) else {
+            return Some(result);
+        };
+        if target == original {
+            return Some(result);
+        }
+        let shown = || {
+            target
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        if target.starts_with(original) {
+            return Some(Err(NameError::Invalid(shown())));
+        }
+        let held = self
+            .documents
+            .upgrade()
+            .is_some_and(|d| d.read(cx).has_document_under(&self.root.join(target)));
+        if held {
+            return Some(Err(NameError::Exists(shown())));
+        }
+        Some(result)
     }
 
     fn name_changed(&mut self, text: &str, cx: &mut Context<Self>) {
-        let error = match self.validate_name(text) {
+        let error = match self.validate_name(text, cx) {
             Some(Err(e)) => Some(e.to_string()),
             _ => None,
         };
@@ -331,7 +376,7 @@ impl ExplorerView {
             return;
         }
         let text = edit.input.read(cx).text().to_string();
-        match self.validate_name(&text) {
+        match self.validate_name(&text, cx) {
             Some(Ok(_)) => self.confirm_name(window, cx),
             _ => self.end_name_edit(false, window, cx),
         }
@@ -358,11 +403,16 @@ impl ExplorerView {
             return;
         }
         let text = name_edit.input.read(cx).text().to_string();
-        let Some(result) = self.validate_name(&text) else {
+        let Some(result) = self.validate_name(&text, cx) else {
             return;
         };
         let target = match result {
             Ok(target) => target,
+            // Nobody can fix the name: drop it, as a blur does.
+            Err(_) if !self.name_focused(window, cx) => {
+                self.end_name_edit(false, window, cx);
+                return;
+            }
             Err(e) => {
                 if let Some(name_edit) = &mut self.name_edit {
                     name_edit.error = Some(e.to_string());
@@ -439,29 +489,7 @@ impl ExplorerView {
             self.end_name_edit(focused, window, cx);
             return;
         }
-        let name = target
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
         let (abs_from, abs_to) = (self.root.join(&original), self.root.join(&target));
-        // Into itself (`src` to `src/x`), or onto an open tab of a file
-        // that is gone, whose document holds the name.
-        let refused = if target.starts_with(&original) {
-            Some(NameError::Invalid(name.clone()))
-        } else {
-            let open = self
-                .workbench
-                .upgrade()
-                .is_some_and(|wb| wb.read(cx).documents().read(cx).has_document_under(&abs_to));
-            open.then(|| NameError::Exists(name.clone()))
-        };
-        if let Some(error) = refused {
-            if let Some(name_edit) = &mut self.name_edit {
-                name_edit.error = Some(error.to_string());
-            }
-            cx.notify();
-            return;
-        }
         // The old and new paths, and the folders a multi-level name adds,
         // so the watcher's events for them are not marked as another
         // program's. Recorded before the operation starts: the watcher may
@@ -484,15 +512,29 @@ impl ExplorerView {
             .visible_rows()
             .iter()
             .any(|r| r.path == original && r.expanded);
+        // A save of a document in it still running would write the old
+        // path again after the rename: let it end first.
+        let saves = self
+            .documents
+            .upgrade()
+            .map(|d| d.read(cx).saves_done_under(&abs_from));
         let (from, to) = (abs_from.clone(), abs_to.clone());
-        let op = cx.background_spawn(async move { fs_ops::rename(&from, &to) });
-        let target: Arc<Path> = Arc::from(target);
+        let rename = Rename {
+            abs_from,
+            abs_to,
+            target: Arc::from(target),
+            expected,
+            expand,
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let result = op.await;
+            if let Some(saves) = saves {
+                saves.await;
+            }
+            let result = cx
+                .background_spawn(async move { fs_ops::rename(&from, &to) })
+                .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.renamed(
-                    abs_from, abs_to, target, expected, expand, result, window, cx,
-                )
+                this.renamed(rename, result, window, cx)
             });
         })
         .detach();
@@ -501,18 +543,20 @@ impl ExplorerView {
     /// The end of [`Self::confirm_rename`]'s operation. On success the
     /// documents, tabs and history follow first, before the watcher's
     /// event for it can arrive.
-    #[allow(clippy::too_many_arguments)]
     fn renamed(
         &mut self,
-        abs_from: PathBuf,
-        abs_to: PathBuf,
-        target: Arc<Path>,
-        expected: Vec<Arc<Path>>,
-        expand: bool,
+        rename: Rename,
         result: std::io::Result<()>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Rename {
+            abs_from,
+            abs_to,
+            target,
+            expected,
+            expand,
+        } = rename;
         let focused = self.name_focused(window, cx);
         let name = target
             .file_name()
