@@ -1,6 +1,7 @@
 //! Project model: background, gitignore-aware worktree scanning.
 
 mod coalesce;
+pub mod fs_ops;
 mod fuzzy;
 mod ignored;
 mod search;
