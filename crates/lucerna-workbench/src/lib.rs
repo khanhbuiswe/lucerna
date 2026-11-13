@@ -93,7 +93,7 @@ pub use markdown_preview::{
     line_to_item, resolve_image, resolve_link,
 };
 pub use nav_history::{NavEntry, NavHistory};
-pub use open_commands::WorkbenchEvent;
+pub use open_commands::{OPEN_IN_BROWSER, WorkbenchEvent, browser_url};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,

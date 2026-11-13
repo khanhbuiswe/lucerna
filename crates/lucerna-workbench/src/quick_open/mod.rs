@@ -115,9 +115,10 @@ impl Workbench {
             self.close_quick_open(window, cx);
         }
         let keymap = &cx.global::<AppState>().keymap;
+        let ctx = self.context_keys(window, cx);
         let commands = self
             .commands()
-            .all()
+            .listed(&ctx)
             // Commands without a title are for keys only.
             .filter(|(id, title)| !title.is_empty() && !HIDDEN_COMMANDS.contains(id))
             .map(|(id, title)| CommandItem {

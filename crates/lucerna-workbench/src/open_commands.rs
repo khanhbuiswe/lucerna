@@ -6,7 +6,7 @@
 //! process, since a process shows one window. A file opens as a tab here,
 //! as VS Code does.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
@@ -42,7 +42,41 @@ pub(crate) struct ShownRecentPicker {
     focus_before: Option<FocusHandle>,
 }
 
+/// Runs "Open in Browser"; the palette lists it only for these files.
+pub const OPEN_IN_BROWSER: &str = "workbench.action.openInBrowser";
+
+const OPEN_IN_BROWSER_WHEN: &str = "resourceExtname == .html || resourceExtname == .htm";
+
+/// The `file://` URL a browser opens for the HTML file at `path`; `None`
+/// for a path that is not a file (relative).
+pub fn browser_url(path: &Path) -> Option<String> {
+    url::Url::from_file_path(path).ok().map(String::from)
+}
+
+/// Whether `path` names an HTML file (extension `html` or `htm`, any case).
+fn is_html(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+}
+
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
+    commands.register_when(
+        OPEN_IN_BROWSER,
+        "Open in Browser",
+        OPEN_IN_BROWSER_WHEN,
+        |wb, _, _, cx| {
+            let path = wb
+                .editor_groups()
+                .read(cx)
+                .model()
+                .active_tab()
+                .and_then(|tab| tab.path().cloned());
+            if let Some(url) = path.filter(|p| is_html(p)).and_then(|p| browser_url(&p)) {
+                cx.open_url(&url);
+            }
+        },
+    );
     commands.register(
         "workbench.action.openRecent",
         "File: Open Recent…",
