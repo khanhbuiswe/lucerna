@@ -175,20 +175,19 @@ Each adapted test carries a comment of the form
 `// Adapted from VSCodeVim <file>: "<test title>"`. The cases came from these
 VSCodeVim test files:
 
-- `test/motion.test.ts`
 - `test/marks.test.ts`
-- `test/search/search.test.ts`
+- `test/motion.test.ts`
 - `test/mode/modeNormal.test.ts`
 - `test/mode/modeVisualLine.test.ts`
 - `test/mode/normalModeTests/commands.test.ts`
-- `test/mode/normalModeTests/motions.test.ts`
-- `test/mode/normalModeTests/matchingBracket.test.ts`
-- `test/register/repeatableMovement.test.ts`
-- `test/register/register.test.ts`
-- `test/operator/put.test.ts`
 - `test/mode/normalModeTests/dot.test.ts`
+- `test/mode/normalModeTests/matchingBracket.test.ts`
+- `test/mode/normalModeTests/motions.test.ts`
 - `test/mode/normalModeTests/undo.test.ts`
-- `test/normalModeTests/commands.test.ts`
+- `test/operator/put.test.ts`
+- `test/register/register.test.ts`
+- `test/register/repeatableMovement.test.ts`
+- `test/search/search.test.ts`
 
 ```
 MIT License

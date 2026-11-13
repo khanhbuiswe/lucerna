@@ -1,6 +1,6 @@
 [package]
 name = "lucerna-vim"
-description = "Lucerna: vim navigation state machine (no UI)"
+description = "Lucerna: Vim modal editing state machine (no UI)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

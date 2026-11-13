@@ -611,80 +611,80 @@ mod tests {
     use crate::test_util::{assert_edit, assert_edit_with, run_edit, run_edit_with, run_keys};
     use crate::{Action, InsertAt, Mode, Settings};
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'D'" (with a count)
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'D' with count 3"
     #[test]
     fn counted_d_capital() {
         assert_edit("o|ne\ntwo\nthree\nfour", "3D", "|o\nfour");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'r' with a count"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle '<Count>r'"
     #[test]
     fn r_with_count() {
         assert_edit("123|456\n789", "2ra", "123a|a6\n789");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Does nothing when r with a count goes past the line end"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle '<Count>r'"
     #[test]
     fn r_count_past_line_end_does_nothing() {
         assert_edit("123|456\n789", "4ra", "123|456\n789");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'r <CR>' with a count"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle '<Count>r\n'"
     #[test]
     fn r_enter_with_count() {
         assert_edit("abc|defg\n12345", "3r<CR>", "abc\n|g\n12345");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'x' and paste it"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'Nx' and paste"
     #[test]
     fn x_then_paste_on_new_line() {
         assert_edit("t|ext", "2xo<Esc>p", "tt\ne|x");
         assert_edit("t|ext\nend", "2xo<Esc>p", "tt\ne|x\nend");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'x' with a count past the line end"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "'x' with count does not go over EOL"
     #[test]
     fn x_count_stops_at_line_end() {
         assert_edit("one t|wo\nthree four", "1000x", "one |t\nthree four");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle '~' with a count"
+    // Adapted from VSCodeVim test/mode/normalModeTests/dot.test.ts: "Can repeat '~' with <num>"
     #[test]
     fn tilde_with_count() {
         assert_edit("|teXt", "4~", "TEx|T");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'S' with a count"
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can do S"
     #[test]
     fn s_capital_with_count() {
         assert_edit(" one\n tw|o\n three", "2S", " one\n |");
     }
 
-    // Adapted from VSCodeVim test/normalModeTests/commands.test.ts: "J with a count"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'J' with count"
     #[test]
     fn j_capital_with_count() {
         assert_edit("|one\ntwo\nthree\nfour", "3J", "one two| three\nfour");
     }
 
-    // Adapted from VSCodeVim test/normalModeTests/commands.test.ts: "J after a period (joinspaces)"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'J' with line ending with '.'"
     #[test]
     fn j_capital_joinspaces() {
         assert_edit("one.\ntw|o", "kJ", "one.|  two");
     }
 
-    // Adapted from VSCodeVim test/normalModeTests/commands.test.ts: "J before a closing parenthesis"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'J' with ')' first character on next line"
     #[test]
     fn j_capital_before_close_paren() {
         assert_edit("one(\n)tw|o", "kJ", "one(|)two");
     }
 
-    // Adapted from VSCodeVim test/normalModeTests/commands.test.ts: "J with a whitespace-only next line"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'J' with only white space on next line"
     #[test]
     fn j_capital_whitespace_only_next_line() {
         assert_edit("on|e\n ", "J", "on|e");
     }
 
-    // Adapted from VSCodeVim test/normalModeTests/commands.test.ts: "gJ with a count"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'gJ' with count when line has whitespaces"
     #[test]
     fn g_j_capital_with_count() {
         assert_edit("|one\n two \nthree\nfour", "3gJ", "one two |three\nfour");
@@ -708,7 +708,7 @@ mod tests {
         assert_edit_with(s, |_| {}, "|ab cd", "~w", "|AB cd");
     }
 
-    // Adapted from VSCodeVim test/register/register.test.ts: "Can put the numbered registers"
+    // Adapted from VSCodeVim test/register/register.test.ts: "Register '1'-'9' stores delete content"
     #[test]
     fn numbered_registers_put() {
         assert_edit(
@@ -718,13 +718,13 @@ mod tests {
         );
     }
 
-    // Adapted from VSCodeVim test/register/register.test.ts: "Can put the small delete register"
+    // Adapted from VSCodeVim test/register/register.test.ts: "`x` sets small delete register"
     #[test]
     fn small_delete_register_put() {
         assert_edit("|test1\ntest2\ntest3", "2xj\"-p", "st1\ntt|eest2\ntest3");
     }
 
-    // Adapted from VSCodeVim test/register/register.test.ts: "Can put the yank register"
+    // Adapted from VSCodeVim test/register/register.test.ts: "Yank stores text in Register '0'"
     #[test]
     fn yank_register_put() {
         assert_edit(
@@ -734,19 +734,19 @@ mod tests {
         );
     }
 
-    // Adapted from VSCodeVim test/register/register.test.ts: "The black hole register leaves the unnamed register alone"
+    // Adapted from VSCodeVim test/register/register.test.ts: "Can use black hole register"
     #[test]
     fn black_hole_keeps_unnamed() {
         assert_edit("|asdf\nqwer", "yyj\"_ddkp", "asdf\n|asdf");
     }
 
-    // Adapted from VSCodeVim test/operator/put.test.ts: "p with a count"
+    // Adapted from VSCodeVim test/operator/put.test.ts: "Yank character-wise, <count>p"
     #[test]
     fn p_charwise_with_count() {
         assert_edit("|XYZone two three", "d3lw2p", "one tXYZXY|Zwo three");
     }
 
-    // Adapted from VSCodeVim test/operator/put.test.ts: "gp with a count"
+    // Adapted from VSCodeVim test/operator/put.test.ts: "Yank line-wise, <count>gp"
     #[test]
     fn gp_linewise_with_count() {
         assert_edit(

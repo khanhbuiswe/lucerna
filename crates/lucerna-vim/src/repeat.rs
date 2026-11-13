@@ -214,8 +214,8 @@ mod tests {
         };
     }
 
-    // Adapted from VSCodeVim test/mode/normalModeTests/dot.test.ts: "Repeat
-    // with count replaces the count of the change"
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can repeat dw
+    // with count"
     #[test]
     fn repeat_count_replaces_the_recorded_count() {
         assert_edit("one |two three four five", "dw2.", "one |five");
@@ -226,7 +226,7 @@ mod tests {
         assert_edit("|a b c d e f g h", "dw3..", "|h");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle dot
+    // Adapted from VSCodeVim test/mode/normalModeTests/dot.test.ts: "Can handle dot
     // with A"
     #[test]
     fn repeat_append() {
@@ -234,15 +234,15 @@ mod tests {
     }
 
     // Adapted from VSCodeVim test/mode/normalModeTests/dot.test.ts:
-    // "Repeat insert with count"; the start has a real second line, since
+    // "Repeatable dot with insert mode"; the start has a real second line, since
     // `j` never reaches the empty row after a final line break.
     #[test]
     fn repeat_insert_with_count_multiplies_the_insert() {
         assert_edit("|\n\n", "ivar<Esc>j4.", "var\nvarvarvarva|r\n");
     }
 
-    // Adapted from VSCodeVim test/mode/normalModeTests/dot.test.ts: "Repeat
-    // with numbered registers"
+    // Adapted from VSCodeVim test/mode/normalModeTests/dot.test.ts: "Can repeat
+    // insertion with increasing numbered register"
     #[test]
     fn repeat_steps_through_numbered_registers() {
         assert_edit("|1 2 3", "\"1daw..\"1p..", "1 2 |3");
@@ -250,8 +250,8 @@ mod tests {
         assert_edit("|ab", "\"ax.\"ap", "|b");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can repeat
-    // shift in visual line mode"
+    // Adapted from VSCodeVim test/mode/normalModeTests/dot.test.ts: "Can repeat
+    // actions that require selections"
     #[test]
     fn repeat_visual_line_shift() {
         assert_edit_with(
@@ -552,7 +552,7 @@ mod tests {
     }
 
     // Adapted from VSCodeVim test/mode/normalModeTests/undo.test.ts: "Can handle
-    // <C-r>"
+    // undo delete with count and redo"
     #[test]
     fn undo_with_count_then_redo() {
         assert_edit(
@@ -562,8 +562,6 @@ mod tests {
         );
     }
 
-    // Adapted from VSCodeVim test/mode/normalModeTests/undo.test.ts: "Can handle undo
-    // delete with visual mode"
     #[test]
     fn undo_visual_delete() {
         assert_edit(

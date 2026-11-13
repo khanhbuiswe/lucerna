@@ -827,13 +827,13 @@ mod tests {
         assert_edit("|one \"two\"", "ci\"", "one \"|\"");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'ca\"' starting inside the quoted word"
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "'ca\"' includes trailing whitespace"
     #[test]
     fn ca_quote_takes_trailing_space() {
         assert_edit("one \"t|wo\" three", "ca\"", "one |three");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'c2i\"' starting inside the quoted word"
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "'c2i\"' includes quotes, but not trailing whitespace"
     #[test]
     fn c2i_quote_takes_the_quotes() {
         assert_edit("one \"t|wo\" \nthree", "c2i\"", "one | \nthree");
@@ -845,7 +845,7 @@ mod tests {
         assert_edit("one two th|ree, four ", "daw", "one two|, four ");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'd2aw' on word at end of line"
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'daw' on word with numeric prefix and across lines"
     #[test]
     fn d2aw_across_lines() {
         assert_edit(
@@ -855,31 +855,31 @@ mod tests {
         );
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'cit' on a matching tag"
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can do cit on a matching tag"
     #[test]
     fn cit_on_matching_tag() {
         assert_edit("<blink>he|llo</blink>", "cit", "<blink>|</blink>");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'cat' on a matching tag"
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can do cat on a matching tag"
     #[test]
     fn cat_on_matching_tag() {
         assert_edit("one <blink>he|llo</blink> two", "cat", "one | two");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'dip' on empty lines"
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle dip on empty lines"
     #[test]
     fn dip_on_empty_lines() {
         assert_edit("foo\n\n|\n\nfun", "dip", "foo\n|fun");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'dap' on paragraph"
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle dap"
     #[test]
     fn dap_takes_trailing_blank_lines() {
         assert_edit("foo\n\nbar baz\nbar |baz\n\nfun", "dap", "foo\n\n|fun");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'das' on the first sentence"
+    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Select sentence with trailing spaces"
     #[test]
     fn das_first_sentence() {
         assert_edit(

@@ -124,7 +124,7 @@ mod tests {
         view.marked(vim.cursor())
     }
 
-    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can run a * search"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can handle *"
     #[test]
     fn star_jumps_to_next_whole_word() {
         assert_keys(
@@ -268,7 +268,7 @@ mod tests {
         assert_eq!(view.marked(vim.cursor()), "a a a |a a");
     }
 
-    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can run a search with count exceeding max number of matches and wrapscan"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can run a forward search with count exceeding max number of matches and wrapscan"
     #[test]
     fn submitted_count_exceeding_matches_wraps() {
         let view = TestView::new("|one two two two");

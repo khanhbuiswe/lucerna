@@ -743,7 +743,8 @@ mod tests {
         assert_keys(&start, "1%", &want.join("\n"));
     }
 
-    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can handle 'f' then ','"
+    // Adapted from VSCodeVim test/mode/normalModeTests/motions.test.ts: "Can handle 'f' and find back search"
+    // and "Can handle 'f' and multiple back searches"
     #[test]
     fn find_and_reverse_repeat() {
         assert_keys("text tex|t", "fe,", "text t|ext");
@@ -814,7 +815,8 @@ mod tests {
         );
     }
 
-    // Adapted from VSCodeVim test/mode/normalModeTests/matchingBracket.test.ts: "% matches the nearest bracket"
+    // Adapted from VSCodeVim test/mode/normalModeTests/matchingBracket.test.ts: "before opening parenthesis",
+    // "nested parenthesis end" and "parentheses after >"; the unmatched cases are ours
     #[test]
     fn percent_matches_brackets() {
         assert_keys("|one (two)", "%", "one (two|)");

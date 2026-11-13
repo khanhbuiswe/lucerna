@@ -1,5 +1,6 @@
-//! Vim navigation for a read-only code view: a key-driven state machine
-//! that keeps its own cursor and reports side effects as [`Action`]s.
+//! Vim modal editing state machine (no UI): it keeps its own cursor,
+//! registers and marks, and reports side effects, edits included, as
+//! [`Action`]s.
 //! It knows nothing about the UI; the view is reached through [`ViewInfo`].
 
 mod classify;

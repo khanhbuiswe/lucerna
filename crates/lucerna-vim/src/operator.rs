@@ -263,7 +263,7 @@ mod tests {
         assert_edit("|ABC DEF", "guw", "|abc DEF");
     }
 
-    // Adapted from VSCodeVim test/mode/modeNormal.test.ts: "Can handle 'g~~'"
+    // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'g~~'"
     #[test]
     fn g_tilde_tilde() {
         assert_edit("oNe\nTw|O\ntHrEe", "g~~", "oNe\n|tWo\ntHrEe");
