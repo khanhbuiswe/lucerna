@@ -224,6 +224,12 @@ pub fn link_at(
     None
 }
 
+/// Compiles the link patterns, so the first `link_at` does not spend its
+/// budget on that and miss a link. Call it once off the UI thread.
+pub fn warm_link_patterns() {
+    let _ = (url_re(), python_re(), path_re(), ext_re());
+}
+
 /// A path needs a directory separator or a file extension, and a word
 /// character: that rules out `...`, `1.2.3` and plain words.
 fn looks_like_path(path: &str) -> bool {
@@ -321,6 +327,19 @@ mod tests {
             line,
             col,
         }
+    }
+
+    #[test]
+    fn warm_patterns_compile() {
+        warm_link_patterns();
+        assert_eq!(
+            at("at src/lib.rs:3:2", 5),
+            Some(Link {
+                kind: path("src/lib.rs", Some(3), Some(2)),
+                start: (0, 3),
+                end: (0, 16),
+            })
+        );
     }
 
     #[test]

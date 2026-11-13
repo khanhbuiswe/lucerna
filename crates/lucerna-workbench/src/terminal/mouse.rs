@@ -119,6 +119,14 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus, cx);
+        // ⌘+click on a link opens it, and nothing else happens: no
+        // selection, no report to an app that took the mouse.
+        if ev.button == MouseButton::Left
+            && super::links::link_modifier(&ev.modifiers)
+            && self.link_click(ev.position, cx)
+        {
+            return;
+        }
         let Some(cell) = self.cell_at(ev.position) else {
             return;
         };
@@ -249,6 +257,7 @@ impl TerminalView {
                 cx.notify();
             }
             None => {
+                self.link_mouse_move(ev.position, &ev.modifiers, cx);
                 let here = (cell.0, cell.1);
                 if self.mouse.hover_cell != Some(here)
                     && self.painted_mode().contains(Modes::MOUSE_MOTION)

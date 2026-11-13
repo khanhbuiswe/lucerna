@@ -259,19 +259,24 @@ struct Tooltip {
 
 impl Render for Tooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui = &cx.global::<AppState>().theme.ui;
-        div()
-            .px(px(2. * GRID))
-            .py(px(GRID))
-            .rounded(px(GRID))
-            .border_1()
-            .border_color(color(ui.border))
-            .bg(color(ui.elevated_surface_background))
-            .text_size(px(UI_FONT_SIZE_STATUS))
-            .text_color(color(ui.text))
-            .shadow_md()
-            .child(self.text.clone())
+        tooltip_box(cx).child(self.text.clone())
     }
+}
+
+/// The box a [`tooltip`] draws, for tooltips placed by hand (the
+/// terminal's link tooltip): add the text as children.
+pub fn tooltip_box(cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .px(px(2. * GRID))
+        .py(px(GRID))
+        .rounded(px(GRID))
+        .border_1()
+        .border_color(color(ui.border))
+        .bg(color(ui.elevated_surface_background))
+        .text_size(px(UI_FONT_SIZE_STATUS))
+        .text_color(color(ui.text))
+        .shadow_md()
 }
 
 /// A small bordered text button, 24 px tall; its id and debug selector are

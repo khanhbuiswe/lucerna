@@ -16,7 +16,7 @@ mod terminal;
 pub use color::{Rgba8, TerminalPalette, contrast_ratio, ensure_contrast, resolve_color};
 pub use events::{Batch, MAX_BATCH_EVENTS, TerminalEvent};
 pub use input::{KeyInput, key_to_bytes};
-pub use links::{Link, LinkKind, link_at};
+pub use links::{Link, LinkKind, link_at, warm_link_patterns};
 pub use mouse::{MouseAction, MouseButtonKind, alternate_scroll, mouse_report};
 pub use options::{MAX_SCROLLBACK, TerminalOptions, build_env, resolve_shell};
 pub use process::{ProcessInfo, TitleState, display_name, foreground_process};

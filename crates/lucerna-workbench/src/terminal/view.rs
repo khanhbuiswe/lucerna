@@ -4,8 +4,9 @@
 
 use std::io;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -19,6 +20,7 @@ use gpui::{
 use lucerna_terminal::{Batch, Scroll, Terminal, TerminalEvent, TerminalOptions, TitleState};
 
 use super::element::{Frame, TerminalElement};
+use super::links::{LinkState, LinkTarget};
 use super::mouse::MouseState;
 use super::settings::spawn_options;
 use crate::ui;
@@ -55,15 +57,22 @@ pub(crate) fn default_spawner(cx: &App) -> TerminalSpawner {
 }
 
 /// Starts a terminal in `cwd` with `spawner` and makes its view; the error
-/// text when it could not start.
+/// text when it could not start. `root` is the workspace folder links
+/// resolve against last.
 pub(crate) fn spawn_view(
     spawner: &TerminalSpawner,
     cwd: &Path,
+    root: &Path,
     window: &mut Window,
     cx: &mut App,
 ) -> Result<Entity<TerminalView>, SharedString> {
     match spawner(spawn_options(cwd)) {
-        Ok((terminal, events)) => Ok(cx.new(|cx| TerminalView::new(terminal, events, window, cx))),
+        Ok((terminal, events)) => Ok(cx.new(|cx| {
+            let mut view = TerminalView::new(terminal, events, window, cx);
+            view.cwd_start = cwd.to_path_buf();
+            view.root = root.to_path_buf();
+            view
+        })),
         Err(error) => Err(format!("The terminal could not start: {error}").into()),
     }
 }
@@ -73,10 +82,18 @@ pub(crate) fn spawn_view(
 pub enum TerminalViewEvent {
     /// The tab's title changed to this.
     TitleChanged(SharedString),
+    /// A ⌘+clicked file or folder link, for the workbench to open.
+    OpenLink(LinkTarget),
 }
 
 pub struct TerminalView {
-    pub(super) terminal: Terminal,
+    /// Shared with background threads that ask for its foreground process.
+    pub(super) terminal: Arc<Terminal>,
+    /// The folder the terminal started in, and the workspace root: where
+    /// relative link paths are looked for after the current cwd.
+    pub(super) cwd_start: PathBuf,
+    pub(super) root: PathBuf,
+    pub(super) links: LinkState,
     pub(super) focus: FocusHandle,
     title_state: TitleState,
     /// Bells rung since the view was made; Task 12 acts on them.
@@ -118,8 +135,14 @@ impl TerminalView {
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
         ];
+        // The first hover must not spend its 1 ms compiling the patterns.
+        cx.background_spawn(async { lucerna_terminal::warm_link_patterns() })
+            .detach();
         TerminalView {
-            terminal,
+            terminal: Arc::new(terminal),
+            cwd_start: PathBuf::new(),
+            root: PathBuf::new(),
+            links: LinkState::default(),
             focus,
             title_state: TitleState::default(),
             bells: 0,
@@ -435,9 +458,15 @@ impl Render for TerminalView {
             .id("terminal-view")
             .debug_selector(|| "terminal-view".into())
             .track_focus(&self.focus)
+            .on_modifiers_changed(cx.listener(
+                |view, ev: &gpui::ModifiersChangedEvent, window, cx| {
+                    view.link_modifiers_changed(&ev.modifiers, window.mouse_position(), cx)
+                },
+            ))
             .relative()
             .size_full()
             .child(TerminalElement::new(cx.entity()))
+            .children(self.link_overlay(cx))
             .children(warning)
     }
 }

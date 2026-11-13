@@ -50,7 +50,7 @@ use crate::symbols::breadcrumbs::Breadcrumbs;
 use crate::tasks::try_spawn_guarded;
 use crate::terminal::commands::{allow_chords, key_bytes, option_is_meta, skips_shell};
 use crate::terminal::view::{default_spawner, spawn_view};
-use crate::terminal::{PanelEvent, TerminalPanel, TerminalSpawner, TerminalView};
+use crate::terminal::{LinkTarget, PanelEvent, TerminalPanel, TerminalSpawner, TerminalView};
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
 use crate::trust::{self, Trust};
@@ -1664,7 +1664,7 @@ impl Workbench {
     /// Starts a terminal in the workspace root and adds its tab; a terminal
     /// that cannot start gets a tab showing why.
     fn open_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> u64 {
-        match spawn_view(&self.terminal_spawner, &self.root, window, cx) {
+        match spawn_view(&self.terminal_spawner, &self.root, &self.root, window, cx) {
             Ok(view) => self
                 .terminal_panel
                 .update(cx, |panel, cx| panel.add_tab(Some(view), cx)),
@@ -1774,6 +1774,37 @@ impl Workbench {
                     self.hide_panel(window, cx);
                 }
             }
+            PanelEvent::OpenLink(target) => self.open_terminal_link(target, window, cx),
+        }
+    }
+
+    /// A terminal link was ⌘+clicked (spec §6.7): a file opens in the
+    /// editor at its line and column, as Quick Open does; a folder in the
+    /// workspace is revealed in the Explorer; one outside it does nothing.
+    fn open_terminal_link(
+        &mut self,
+        target: &LinkTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            LinkTarget::File { path, line, col } => {
+                // Terminal positions are 1-based; `Point` is 0-based.
+                let point = Point {
+                    row: line.unwrap_or(1).saturating_sub(1),
+                    column: col.unwrap_or(1).saturating_sub(1),
+                };
+                self.jump_to(Arc::from(path.as_path()), point, OpenMode::Preview, cx);
+            }
+            LinkTarget::Dir(dir) => {
+                if dir.strip_prefix(&self.root).is_err() {
+                    return;
+                }
+                self.show_sidebar_view(SidebarView::Explorer, window, cx);
+                self.explorer
+                    .update(cx, |explorer, cx| explorer.reveal_path(dir, cx));
+            }
+            LinkTarget::Url(_) => {}
         }
     }
 

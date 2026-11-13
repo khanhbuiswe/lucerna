@@ -10,6 +10,7 @@ use gpui::{
     div, prelude::*, px, svg,
 };
 
+use super::links::LinkTarget;
 use super::view::{TerminalView, TerminalViewEvent};
 use crate::AppState;
 use crate::icons;
@@ -40,10 +41,12 @@ pub struct TerminalTab {
     pub error: Option<SharedString>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PanelEvent {
     /// The last tab closed.
     Empty,
+    /// A terminal's file or folder link was ⌘+clicked.
+    OpenLink(LinkTarget),
 }
 
 pub struct TerminalPanel {
@@ -106,6 +109,9 @@ impl TerminalPanel {
         if let Some(view) = view {
             let subscription = cx.subscribe(&view, move |panel, _, event, cx| match event {
                 TerminalViewEvent::TitleChanged(title) => panel.set_title(id, title.clone(), cx),
+                TerminalViewEvent::OpenLink(target) => {
+                    cx.emit(PanelEvent::OpenLink(target.clone()))
+                }
             });
             self.view_events.insert(id, subscription);
         }

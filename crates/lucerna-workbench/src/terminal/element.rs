@@ -6,14 +6,14 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, ContentMask, DispatchPhase, Element, ElementId, ElementInputHandler, Entity, Font,
-    FontFeatures, FontStyle, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
-    IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba,
-    ScrollEvent, ShapedLine, SharedString, StrikethroughStyle, Style, TextAlign, TextRun,
-    UnderlineStyle, Window, fill, outline, point, px, relative, size,
+    App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
+    Entity, Font, FontFeatures, FontStyle, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
+    InspectorElementId, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, Rgba, ScrollEvent, ShapedLine, SharedString, StrikethroughStyle, Style,
+    TextAlign, TextRun, UnderlineStyle, Window, fill, outline, point, px, relative, size,
 };
 use lucerna_terminal::{
-    CellFlags, CursorShape, LineLayout, Modes, Rgba8, Snapshot, TerminalPalette, Underline,
+    Cell, CellFlags, CursorShape, LineLayout, Modes, Rgba8, Snapshot, TerminalPalette, Underline,
     ViewStamp, layout_line,
 };
 use unicode_width::UnicodeWidthChar;
@@ -94,6 +94,17 @@ impl CellGeometry {
         )
     }
 
+    /// The grid's cells together.
+    pub fn grid_bounds(&self) -> Bounds<Pixels> {
+        Bounds::new(
+            self.origin,
+            size(
+                self.cell_w * self.cols as f32,
+                self.cell_h * self.rows as f32,
+            ),
+        )
+    }
+
     /// The screen cell under `pos`, clamped to the grid, and whether `pos`
     /// is on its right half (where a selection ends after the cell).
     pub fn cell_at(&self, pos: Point<Pixels>) -> (u16, u16, bool) {
@@ -116,7 +127,7 @@ impl CellGeometry {
 
 /// What prepaint laid out and paint draws.
 pub(crate) struct Frame {
-    bounds: Bounds<Pixels>,
+    pub(super) bounds: Bounds<Pixels>,
     pub(super) geometry: CellGeometry,
     /// The painted screen's place in the buffer, its modes and whether it
     /// showed a selection: the mouse reads these instead of locking the
@@ -124,6 +135,10 @@ pub(crate) struct Frame {
     pub(super) stamp: ViewStamp,
     pub(super) mode: Modes,
     pub(super) has_selection: bool,
+    /// The painted cells and which rows wrap, so link hover scans what is
+    /// on screen without locking the terminal.
+    pub(super) cells: Vec<Vec<Cell>>,
+    pub(super) wrapped: Vec<bool>,
     hitbox: Hitbox,
     line_height: Pixels,
     pub(super) background: Rgba,
@@ -434,12 +449,15 @@ impl TerminalView {
             .zip(cursor_cell)
             .map(|(text, at)| marked_paint(text, at, &shaper, &palette, window));
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let stamp = snapshot.stamp();
         let frame = Rc::new(Frame {
             bounds,
             geometry,
-            stamp: snapshot.stamp(),
+            stamp,
             mode: snapshot.mode,
             has_selection: snapshot.selection.is_some(),
+            cells: snapshot.cells,
+            wrapped: snapshot.wrapped,
             hitbox,
             line_height: cell_h,
             background: rgba(palette.background),
@@ -453,6 +471,7 @@ impl TerminalView {
             marked,
         });
         self.last_frame = Some(frame.clone());
+        self.links_frame_changed(stamp);
         frame
     }
 }
@@ -649,10 +668,14 @@ impl Element for TerminalElement {
                 cx,
             );
         }
-        self.view.update(cx, |view, _| {
+        let link_shown = self.view.update(cx, |view, _| {
             view.frames_drawn += 1;
             view.input_handler_installed = focused;
+            view.link_shown()
         });
+        if link_shown {
+            window.set_cursor_style(CursorStyle::PointingHand, &frame.hitbox);
+        }
         register_mouse(&self.view, frame, window);
         let frame = &**frame;
         let lh = frame.line_height;
@@ -723,9 +746,12 @@ fn register_mouse(view: &Entity<TerminalView>, frame: &Rc<Frame>, window: &mut W
             let pressed = view.read(cx).mouse_pressed();
             if pressed || hitbox.is_hovered(window) {
                 view.update(cx, |v, cx| v.mouse_move(ev, cx));
+            } else if view.read(cx).link_active() {
+                view.update(cx, |v, cx| v.release_link(cx));
             }
         }
     });
+
     window.on_mouse_event({
         let view = view.clone();
         move |ev: &MouseUpEvent, phase, _, cx| {
