@@ -13,7 +13,7 @@ set -eu
 
 limit_gb=${1:-5}
 root=$(cd "$(dirname "$0")/.." && pwd)
-target=${CARGO_TARGET_DIR:-"$root/target"}
+target=$("$root/scripts/target-dir.sh")
 limit_kb=$((limit_gb * 1024 * 1024))
 
 size_kb() { du -sk "$1" 2>/dev/null | cut -f1; }

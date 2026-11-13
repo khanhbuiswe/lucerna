@@ -26,9 +26,11 @@ done
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+# Where cargo puts builds: not always ./target (see scripts/target-dir.sh).
+target=$(scripts/target-dir.sh)
 
-app="target/$profile/Lucerna.app"
-dmg="target/$profile/Lucerna.dmg"
+app="$target/$profile/Lucerna.app"
+dmg="$target/$profile/Lucerna.dmg"
 volume=Lucerna
 lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
