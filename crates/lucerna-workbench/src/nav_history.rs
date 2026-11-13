@@ -73,6 +73,18 @@ impl NavHistory {
     }
 }
 
+impl NavHistory {
+    /// After `from` was renamed to `to`: entries in or under `from` point
+    /// at the moved path.
+    pub fn retarget(&mut self, from: &Path, to: &Path) {
+        for entry in self.back.iter_mut().chain(self.forward.iter_mut()) {
+            if let Some(moved) = crate::workspace_state::moved_path(&entry.path, from, to) {
+                entry.path = Arc::from(moved);
+            }
+        }
+    }
+}
+
 /// Pops the newest entry `keep` accepts, discarding rejected ones above it.
 fn pop_kept(
     stack: &mut Vec<NavEntry>,
@@ -103,6 +115,16 @@ mod tests {
             point: Point { row, column: 0 },
             scroll_top_row: row.saturating_sub(5),
         }
+    }
+
+    #[test]
+    fn retarget_follows_a_renamed_folder() {
+        let mut h = NavHistory::default();
+        h.record(at("/r/src/a", 0), &at("/r/srcx", 0));
+        h.retarget(Path::new("/r/src"), Path::new("/r/lib"));
+        assert_eq!(h.back(at("/r/srcx", 0)), Some(at("/r/lib/a", 0)));
+        h.retarget(Path::new("/r/srcx"), Path::new("/r/y"));
+        assert_eq!(h.forward(at("/r/lib/a", 0)), Some(at("/r/y", 0)));
     }
 
     #[test]

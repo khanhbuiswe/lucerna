@@ -138,5 +138,6 @@
   { "key": "alt+shift+f", "command": "filesExplorer.findInFolder", "when": "filesExplorerFocus && explorerResourceIsFolder && !textInputFocus" },
   { "key": "alt+cmd+r", "command": "revealFileInOS", "when": "filesExplorerFocus && !textInputFocus" },
   { "key": "alt+cmd+c", "command": "copyFilePath", "when": "filesExplorerFocus && !textInputFocus" },
-  { "key": "alt+cmd+shift+c", "command": "copyRelativeFilePath", "when": "filesExplorerFocus && !textInputFocus" }
+  { "key": "alt+cmd+shift+c", "command": "copyRelativeFilePath", "when": "filesExplorerFocus && !textInputFocus" },
+  { "key": "enter", "command": "renameFile", "when": "filesExplorerFocus && !explorerResourceIsRoot && !textInputFocus" }
 ]

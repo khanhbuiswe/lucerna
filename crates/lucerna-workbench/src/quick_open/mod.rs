@@ -45,6 +45,18 @@ impl RecentFiles {
         self.paths.truncate(RECENT_FILES_LIMIT);
     }
 
+    /// After `from` was renamed to `to`: paths in or under `from` become
+    /// the moved paths, keeping their place.
+    pub(crate) fn retarget(&mut self, from: &Path, to: &Path) {
+        for path in &mut self.paths {
+            if let Some(moved) = crate::workspace_state::moved_path(path, from, to) {
+                *path = Arc::from(moved);
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        self.paths.retain(|p| seen.insert(p.clone()));
+    }
+
     /// Newest first.
     pub fn paths(&self) -> &[Arc<Path>] {
         &self.paths

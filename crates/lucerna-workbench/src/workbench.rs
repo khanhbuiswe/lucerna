@@ -841,6 +841,30 @@ impl Workbench {
         }
     }
 
+    /// After Lucerna renamed `from` to `to` (absolute) on disk: open
+    /// documents, tabs, recent files and Go Back / Go Forward places at
+    /// `from` or under it follow to the new path. Called right after the
+    /// rename, before the watcher reports it.
+    pub(crate) fn paths_renamed(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
+        let (from, to) = (self.absolute_path(from), self.absolute_path(to));
+        self.documents
+            .update(cx, |documents, cx| documents.rename(&from, &to, cx));
+        self.update_editor_groups(cx, |m| m.retarget(&from, &to));
+        self.recent_files.retarget(&from, &to);
+        for history in self.nav_history.values_mut() {
+            history.retarget(&from, &to);
+        }
+        if self
+            .marker_hover
+            .as_ref()
+            .is_some_and(|(path, _)| path.starts_with(&from))
+        {
+            self.marker_hover = None;
+        }
+        self.refresh_watched_open_files(cx);
+        cx.notify();
+    }
+
     /// Hands a worktree event to every view that follows the tree. Called
     /// for each event the worktree sends; tests call it directly.
     pub fn on_worktree_event(&mut self, ev: &WorktreeEvent, cx: &mut Context<Self>) {
@@ -1408,7 +1432,12 @@ impl Workbench {
         let explorer = self.explorer.read(cx);
         let menu_open = explorer.context_menu_open();
         let kind = explorer.selected_kind();
-        flag("filesExplorerFocus", sidebar_focus && !menu_open);
+        // Not while a name is typed in the tree: `textInputFocus` is a
+        // frame late when the input just took the focus.
+        flag(
+            "filesExplorerFocus",
+            sidebar_focus && !menu_open && !explorer.editing(),
+        );
         flag(
             "explorerResourceIsFolder",
             matches!(kind, SelectedKind::Dir | SelectedKind::Root),

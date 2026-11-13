@@ -43,4 +43,8 @@ pub(super) fn build_menu(
         .separator()
         .entry("Copy Path", "copyFilePath")
         .entry("Copy Relative Path", "copyRelativeFilePath")
+        .separator()
+        .when(kind != SelectedKind::Root && !single_file, |m| {
+            m.entry("Rename…", "renameFile")
+        })
 }

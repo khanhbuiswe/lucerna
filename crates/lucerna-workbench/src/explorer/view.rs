@@ -203,14 +203,59 @@ impl ExplorerView {
             (Selection::Path(path), _) => Arc::from(path.parent().unwrap_or(Path::new(""))),
             (Selection::Root, _) => Arc::from(Path::new("")),
         };
-        self.model.start_edit(EditState {
+        let edit = EditState {
             kind,
             parent,
             original: None,
-        });
+        };
+        self.begin_edit(edit, "", 0..0, window, cx);
+    }
+
+    /// Rename…: types the selected entry's new name in its own row, the
+    /// name before its last extension selected. Not for the root, nor in
+    /// single-file mode.
+    pub fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.single_file || self.editing() {
+            return;
+        }
+        let Selection::Path(path) = self.model.selection().clone() else {
+            return;
+        };
+        let Some(row) = self.model.visible_rows().iter().find(|r| r.path == path) else {
+            return;
+        };
+        let is_dir = row.kind == EntryKind::Dir;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let edit = EditState {
+            kind: EditKind::Rename,
+            parent: Arc::from(path.parent().unwrap_or(Path::new(""))),
+            original: Some(path.clone()),
+        };
+        let selected = fs_ops::stem_range(&name, is_dir);
+        self.begin_edit(edit, &name, selected, window, cx);
+    }
+
+    /// Shows the name input for `edit`, holding `text` with `selected`
+    /// (bytes) selected, and gives it the focus.
+    fn begin_edit(
+        &mut self,
+        edit: EditState,
+        text: &str,
+        selected: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.model.start_edit(edit);
         let view = cx.entity().downgrade();
         let input = cx.new(|cx| {
             let mut input = TextInput::new(cx);
+            if !text.is_empty() {
+                input.set_text(text, window, cx);
+                input.select_range(selected, window, cx);
+            }
             input.on_change(move |text, _, cx| {
                 let _ = view.update(cx, |this, cx| this.name_changed(text, cx));
             });
@@ -335,7 +380,12 @@ impl ExplorerView {
         let folder = match edit.kind {
             EditKind::NewFile => false,
             EditKind::NewFolder => true,
-            EditKind::Rename => return,
+            EditKind::Rename => {
+                if let Some(original) = edit.original {
+                    self.confirm_rename(original, target, window, cx);
+                }
+                return;
+            }
         };
         // Every path this creates, so the watcher's events for them are
         // not marked as another program's. Recorded before the operation
@@ -373,6 +423,143 @@ impl ExplorerView {
             });
         })
         .detach();
+    }
+
+    /// Renames `original` to `target` (both root-relative, `target`
+    /// validated) in the background. An unchanged name just ends the edit.
+    fn confirm_rename(
+        &mut self,
+        original: Arc<Path>,
+        target: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if *target == *original {
+            let focused = self.name_focused(window, cx);
+            self.end_name_edit(focused, window, cx);
+            return;
+        }
+        let name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (abs_from, abs_to) = (self.root.join(&original), self.root.join(&target));
+        // Into itself (`src` to `src/x`), or onto an open tab of a file
+        // that is gone, whose document holds the name.
+        let refused = if target.starts_with(&original) {
+            Some(NameError::Invalid(name.clone()))
+        } else {
+            let open = self
+                .workbench
+                .upgrade()
+                .is_some_and(|wb| wb.read(cx).documents().read(cx).has_document_under(&abs_to));
+            open.then(|| NameError::Exists(name.clone()))
+        };
+        if let Some(error) = refused {
+            if let Some(name_edit) = &mut self.name_edit {
+                name_edit.error = Some(error.to_string());
+            }
+            cx.notify();
+            return;
+        }
+        // The old and new paths, and the folders a multi-level name adds,
+        // so the watcher's events for them are not marked as another
+        // program's. Recorded before the operation starts: the watcher may
+        // report it before the result comes back.
+        let mut expected: Vec<Arc<Path>> = vec![original.clone()];
+        expected.extend(
+            target
+                .ancestors()
+                .take_while(|a| !a.as_os_str().is_empty() && !self.model.contains(a))
+                .map(Arc::from),
+        );
+        let _ = self
+            .workbench
+            .update(cx, |wb, _| wb.expect_own_changes(expected.iter().cloned()));
+        if let Some(name_edit) = &mut self.name_edit {
+            name_edit.busy = true;
+        }
+        let expand = self
+            .model
+            .visible_rows()
+            .iter()
+            .any(|r| r.path == original && r.expanded);
+        let (from, to) = (abs_from.clone(), abs_to.clone());
+        let op = cx.background_spawn(async move { fs_ops::rename(&from, &to) });
+        let target: Arc<Path> = Arc::from(target);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = op.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.renamed(
+                    abs_from, abs_to, target, expected, expand, result, window, cx,
+                )
+            });
+        })
+        .detach();
+    }
+
+    /// The end of [`Self::confirm_rename`]'s operation. On success the
+    /// documents, tabs and history follow first, before the watcher's
+    /// event for it can arrive.
+    #[allow(clippy::too_many_arguments)]
+    fn renamed(
+        &mut self,
+        abs_from: PathBuf,
+        abs_to: PathBuf,
+        target: Arc<Path>,
+        expected: Vec<Arc<Path>>,
+        expand: bool,
+        result: std::io::Result<()>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focused = self.name_focused(window, cx);
+        let name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match result {
+            Err(e) => {
+                let _ = self
+                    .workbench
+                    .update(cx, |wb, _| wb.forget_own_changes(&expected));
+                if e.kind() == std::io::ErrorKind::AlreadyExists && focused {
+                    // Someone else took the name after the check: keep the
+                    // name to fix.
+                    if let Some(name_edit) = &mut self.name_edit {
+                        name_edit.busy = false;
+                        name_edit.error = Some(NameError::Exists(name).to_string());
+                    }
+                    cx.notify();
+                } else {
+                    self.end_name_edit(focused, window, cx);
+                    let old = abs_from
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    status_message::show(format!("Unable to rename '{old}': {e}"), cx);
+                }
+            }
+            Ok(()) => {
+                let _ = self
+                    .workbench
+                    .update(cx, |wb, cx| wb.paths_renamed(&abs_from, &abs_to, cx));
+                self.end_name_edit(focused, window, cx);
+                self.model.select(Selection::Path(target.clone()));
+                self.pending_reveal = Some(PendingReveal {
+                    path: target,
+                    expand,
+                });
+                self.reveal_pending();
+            }
+        }
+    }
+
+    /// Whether the name input has the focus.
+    fn name_focused(&self, window: &Window, cx: &App) -> bool {
+        self.name_edit
+            .as_ref()
+            .is_some_and(|e| e.input.focus_handle(cx).is_focused(window))
     }
 
     /// The end of [`Self::confirm_name`]'s operation.

@@ -55,7 +55,7 @@ impl Render for Host {
     }
 }
 
-/// A host with the menu `Copy Path`, separator, `Rename…` (disabled)
+/// A host with the menu `Copy Path`, separator, `New File…` (disabled)
 /// deployed at (50, 50).
 fn open(cx: &mut TestAppContext) -> (Entity<Host>, Closed, &mut VisualTestContext) {
     let closed = Closed::default();
@@ -75,7 +75,7 @@ fn open(cx: &mut TestAppContext) -> (Entity<Host>, Closed, &mut VisualTestContex
             ContextMenu::new(owner, cx)
                 .entry("Copy Path", "copyFilePath")
                 .separator()
-                .entry("Rename…", "renameFile")
+                .entry("New File…", "explorer.newFile")
                 .disabled_when(true)
         });
         host.deployed = Some(deploy_context_menu(
@@ -170,7 +170,7 @@ fn disabled_entry_does_nothing_on_click(cx: &mut TestAppContext) {
     init(cx, None);
     let (_, closed, cx) = open(cx);
     let position = cx
-        .debug_bounds("context-menu-item-renameFile")
+        .debug_bounds("context-menu-item-explorer.newFile")
         .unwrap()
         .center();
     cx.simulate_click(position, Modifiers::none());
@@ -217,7 +217,7 @@ fn shows_keybinding_label(cx: &mut TestAppContext) {
         .expect("shortcut label drawn");
     assert!(item.contains(&shortcut.center()));
     assert!(
-        cx.debug_bounds("context-menu-shortcut-renameFile")
+        cx.debug_bounds("context-menu-shortcut-explorer.newFile")
             .is_none()
     );
 }

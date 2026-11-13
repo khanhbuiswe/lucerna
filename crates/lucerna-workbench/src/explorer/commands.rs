@@ -1,7 +1,8 @@
-//! Explorer commands: New File, New Folder, Open to the Side, Reveal in
-//! Finder, Open in Terminal, Find in Folder, Copy Path and Copy Relative
-//! Path. Each acts on `args.path` when given, else on the Explorer's
-//! selection (New File and New Folder always on the selection). None runs
+//! Explorer commands: New File, New Folder, Rename, Open to the Side,
+//! Reveal in Finder, Open in Terminal, Find in Folder, Copy Path and Copy
+//! Relative Path. Each acts on `args.path` when given, else on the
+//! Explorer's selection (New File, New Folder and Rename always on the
+//! selection). None runs
 //! while a name is being typed in the tree.
 
 use std::path::{Path, PathBuf};
@@ -37,6 +38,13 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             }
         },
     );
+    commands.register("renameFile", "File: Rename…", |wb, _, window, cx| {
+        if !editing(wb, cx) {
+            wb.explorer()
+                .clone()
+                .update(cx, |explorer, cx| explorer.start_rename(window, cx));
+        }
+    });
     commands.register(
         "explorer.openToSide",
         "Explorer: Open to the Side",

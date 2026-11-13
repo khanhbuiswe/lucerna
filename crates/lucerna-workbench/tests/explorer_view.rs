@@ -589,14 +589,23 @@ fn menu_commands(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Stri
     })
 }
 
-const FILE_MENU: [&str; 5] = [
+const FILE_MENU: [&str; 6] = [
+    "explorer.openToSide",
+    "revealFileInOS",
+    "openInTerminal",
+    "copyFilePath",
+    "copyRelativeFilePath",
+    "renameFile",
+];
+/// Single-file mode: nothing that edits the tree.
+const SINGLE_FILE_MENU: [&str; 5] = [
     "explorer.openToSide",
     "revealFileInOS",
     "openInTerminal",
     "copyFilePath",
     "copyRelativeFilePath",
 ];
-const FOLDER_MENU: [&str; 7] = [
+const ROOT_MENU: [&str; 7] = [
     "explorer.newFile",
     "explorer.newFolder",
     "revealFileInOS",
@@ -604,6 +613,16 @@ const FOLDER_MENU: [&str; 7] = [
     "filesExplorer.findInFolder",
     "copyFilePath",
     "copyRelativeFilePath",
+];
+const FOLDER_MENU: [&str; 8] = [
+    "explorer.newFile",
+    "explorer.newFolder",
+    "revealFileInOS",
+    "openInTerminal",
+    "filesExplorer.findInFolder",
+    "copyFilePath",
+    "copyRelativeFilePath",
+    "renameFile",
 ];
 
 /// Without this an opened file in a temp dir raises the workspace trust
@@ -648,7 +667,7 @@ fn right_click_root_row_is_root_menu(cx: &mut TestAppContext) {
     let (wb, cx) = open(dir.path(), cx);
     right_click("explorer-root", cx);
     assert_eq!(selection(&wb, cx), Selection::Root);
-    assert_eq!(menu_commands(&wb, cx), FOLDER_MENU);
+    assert_eq!(menu_commands(&wb, cx), ROOT_MENU);
 }
 
 #[gpui::test]
@@ -660,7 +679,7 @@ fn right_click_empty_space_is_root_menu(cx: &mut TestAppContext) {
     let list = cx.debug_bounds("explorer-list").unwrap();
     right_click_at(Point::new(list.center().x, list.bottom() - px(10.)), cx);
     assert_eq!(selection(&wb, cx), Selection::Root);
-    assert_eq!(menu_commands(&wb, cx), FOLDER_MENU);
+    assert_eq!(menu_commands(&wb, cx), ROOT_MENU);
 }
 
 #[gpui::test]
@@ -755,11 +774,11 @@ fn single_file_menu_is_read_only(cx: &mut TestAppContext) {
     }
     draw(cx);
     right_click("explorer-row-notes.md", cx);
-    assert_eq!(menu_commands(&wb, cx), FILE_MENU);
+    assert_eq!(menu_commands(&wb, cx), SINGLE_FILE_MENU);
     cx.simulate_keystrokes("escape");
     draw(cx);
     let list = cx.debug_bounds("explorer-list").unwrap();
     right_click_at(Point::new(list.center().x, list.bottom() - px(10.)), cx);
-    assert_eq!(menu_commands(&wb, cx), FILE_MENU);
+    assert_eq!(menu_commands(&wb, cx), SINGLE_FILE_MENU);
     assert_eq!(selection(&wb, cx), Selection::Path(p("notes.md")));
 }

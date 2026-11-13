@@ -504,3 +504,26 @@ fn restore_keeps_first_search_tab() {
     assert!(restored.extensions_tab().is_some());
     assert_eq!(active_path(&restored).as_deref(), Some("b.rs"));
 }
+
+#[test]
+fn retarget_moves_file_and_children() {
+    let mut g = EditorGroups::default();
+    let a = g.open(p("/r/a.rs"), OpenMode::Pinned, true);
+    let x = g.open(p("/r/src/x.rs"), OpenMode::Pinned, true);
+    let srcx = g.open(p("/r/srcx.rs"), OpenMode::Preview, true);
+    assert!(g.retarget(Path::new("/r/src"), Path::new("/r/lib")));
+    assert_eq!(
+        tabs(&g, 0),
+        owned(&[
+            ("/r/a.rs", true),
+            ("/r/lib/x.rs", true),
+            ("/r/srcx.rs", false)
+        ])
+    );
+    let ids: Vec<_> = g.groups()[0].tabs.iter().map(|t| t.id).collect();
+    assert_eq!(ids, vec![a, x, srcx]);
+    // A file itself.
+    assert!(g.retarget(Path::new("/r/a.rs"), Path::new("/r/b.rs")));
+    assert_eq!(tabs(&g, 0)[0], ("/r/b.rs".to_string(), true));
+    assert!(!g.retarget(Path::new("/r/none"), Path::new("/r/other")));
+}

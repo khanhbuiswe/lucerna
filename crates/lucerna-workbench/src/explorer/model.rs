@@ -93,8 +93,11 @@ impl ExplorerModel {
         self.snapshot = snapshot;
         let snapshot = &self.snapshot;
         self.expanded.retain(|dir| is_dir(snapshot, dir));
-        // A name typed in a folder that is gone has nowhere to go.
-        if self.edit.as_ref().is_some_and(|e| !self.is_dir(&e.parent)) {
+        // A name typed in a folder that is gone has nowhere to go; an
+        // entry being renamed that is gone has nothing to rename.
+        if self.edit.as_ref().is_some_and(|e| {
+            !self.is_dir(&e.parent) || e.original.as_deref().is_some_and(|o| !self.contains(o))
+        }) {
             self.edit = None;
         }
         self.rebuild();

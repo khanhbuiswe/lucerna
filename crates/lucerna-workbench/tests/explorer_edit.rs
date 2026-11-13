@@ -514,3 +514,236 @@ fn scrolled_out_edit_with_error_cancels_when_focus_moves(cx: &mut TestAppContext
     assert!(!editing(&wb, cx));
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 300);
 }
+
+fn input_state(
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+) -> (String, std::ops::Range<usize>) {
+    cx.update(|_, cx| {
+        let explorer = wb.read(cx).explorer().read(cx);
+        let input = explorer.name_input().expect("a name input").read(cx);
+        (input.text().to_string(), input.selected_range())
+    })
+}
+
+/// The names in `dir`, as on disk.
+fn names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn open_file(
+    wb: &Entity<Workbench>,
+    path: &str,
+    cx: &mut VisualTestContext,
+) -> Entity<lucerna_workbench::code_view::CodeView> {
+    wb.update(cx, |wb, cx| {
+        wb.open_path(
+            Arc::from(Path::new(path)),
+            lucerna_workbench::OpenMode::Pinned,
+            cx,
+        )
+    });
+    draw(cx);
+    let root = root_of(wb, cx);
+    let abs = root.join(path);
+    wait_until(cx, |cx| {
+        wb.read_with(cx, |wb, cx| {
+            wb.documents().read(cx).snapshot_of(&abs).is_some()
+        })
+    });
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .expect("a tab body")
+            .downcast()
+            .expect("a code view")
+    })
+}
+
+#[gpui::test]
+fn rename_selects_stem(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-a.rs", cx);
+    keys("enter", cx);
+    assert!(editing(&wb, cx));
+    assert_eq!(input_state(&wb, cx), ("a.rs".to_string(), 0..1));
+}
+
+#[gpui::test]
+fn rename_keeps_unsaved_edits(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    let view = open_file(&wb, "a.rs", cx);
+    cx.update(|window, cx| {
+        let focus = gpui::Focusable::focus_handle(view.read(cx), cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    type_text(cx, "xy");
+    let cursor = view.read_with(cx, |v, _| v.cursor());
+    assert_eq!(cursor.column, 2);
+    let a = root.join("a.rs");
+    let dirty = |path: &Path, cx: &mut VisualTestContext| {
+        wb.read_with(cx, |wb, cx| wb.documents().read(cx).is_dirty(path))
+    };
+    assert!(dirty(&a, cx));
+
+    click("explorer-row-a.rs", cx);
+    keys("enter", cx);
+    type_text(cx, "c");
+    keys("enter", cx);
+    let c = root.join("c.rs");
+    wait_until(cx, |_| c.is_file());
+    wait_until(cx, |cx| !editing(&wb, cx));
+    assert_eq!(tabs(&wb, cx), [(PathBuf::from("c.rs"), true)]);
+    assert!(dirty(&c, cx));
+    assert_eq!(view.read_with(cx, |v, _| v.cursor()), cursor);
+    assert_eq!(&*view.read_with(cx, |v, _| v.path().clone()), c.as_path());
+
+    let changes = vec![
+        Change {
+            path: Arc::from(Path::new("a.rs")),
+            kind: ChangeKind::Removed,
+        },
+        Change {
+            path: Arc::from(Path::new("c.rs")),
+            kind: ChangeKind::Added,
+        },
+    ];
+    wait_until(cx, |cx| {
+        wb.read_with(cx, |wb, _| {
+            wb.worktree().snapshot().contains(Path::new("c.rs"))
+        })
+    });
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(changes), cx)
+    });
+    draw(cx);
+    let state = wb.read_with(cx, |wb, cx| wb.documents().read(cx).state(&c).cloned());
+    assert_eq!(state, Some(lucerna_workbench::DocState::Ready));
+    assert_eq!(
+        selection(&wb, cx),
+        Selection::Path(Arc::from(Path::new("c.rs")))
+    );
+
+    keys("cmd-s", cx);
+    wait_until(cx, |_| {
+        std::fs::read_to_string(&c).unwrap().starts_with("xy")
+    });
+    assert!(!a.exists());
+}
+
+#[gpui::test]
+fn rename_folder_moves_open_tabs(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    open_file(&wb, "src/main.rs", cx);
+    click("explorer-row-src", cx);
+    keys("enter", cx);
+    assert_eq!(input_state(&wb, cx), ("src".to_string(), 0..3));
+    type_text(cx, "lib");
+    keys("enter", cx);
+    wait_until(cx, |_| root.join("lib/main.rs").is_file());
+    wait_until(cx, |cx| !editing(&wb, cx));
+    assert_eq!(tabs(&wb, cx), [(PathBuf::from("lib/main.rs"), true)]);
+    let lib_main = root.join("lib/main.rs");
+    let views = wb.read_with(cx, |wb, cx| {
+        wb.documents().read(cx).views_of(&lib_main).len()
+    });
+    assert_eq!(views, 1);
+}
+
+#[gpui::test]
+fn rename_to_existing_shows_error(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-a.rs", cx);
+    keys("enter", cx);
+    type_text(cx, "b");
+    let error = cx.update(|_, cx| {
+        wb.read(cx)
+            .explorer()
+            .read(cx)
+            .edit_error()
+            .map(str::to_string)
+    });
+    assert!(
+        error
+            .as_deref()
+            .is_some_and(|e| e.contains("A file or folder b.rs already exists")),
+        "{error:?}"
+    );
+    keys("enter", cx);
+    assert!(editing(&wb, cx));
+    assert_eq!(names(dir.path()), ["a.rs", "b.rs", "src"]);
+}
+
+#[gpui::test]
+fn case_only_rename(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-a.rs", cx);
+    keys("enter", cx);
+    type_text(cx, "A");
+    assert!(
+        cx.update(|_, cx| wb.read(cx).explorer().read(cx).edit_error().is_none()),
+        "a case-only rename is allowed"
+    );
+    keys("enter", cx);
+    wait_until(cx, |_| names(dir.path()) == ["A.rs", "b.rs", "src"]);
+    wait_until(cx, |cx| !editing(&wb, cx));
+}
+
+#[gpui::test]
+fn unchanged_name_just_ends(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-row-a.rs", cx);
+    keys("enter", cx);
+    keys("enter", cx);
+    assert!(!editing(&wb, cx));
+    assert_eq!(names(dir.path()), ["a.rs", "b.rs", "src"]);
+}
+
+#[gpui::test]
+fn enter_on_root_does_nothing(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-root", cx);
+    keys("enter", cx);
+    assert!(!editing(&wb, cx));
+    run(&wb, "renameFile", cx);
+    assert!(!editing(&wb, cx));
+}
+
+#[gpui::test]
+fn menu_has_rename_except_on_root(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (_wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-a.rs", cx);
+    assert!(cx.debug_bounds("context-menu-item-renameFile").is_some());
+    keys("escape", cx);
+    right_click("explorer-row-src", cx);
+    assert!(cx.debug_bounds("context-menu-item-renameFile").is_some());
+    keys("escape", cx);
+    right_click("explorer-root", cx);
+    assert!(cx.debug_bounds("context-menu-item-renameFile").is_none());
+}

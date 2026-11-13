@@ -97,6 +97,18 @@ pub(crate) fn absolute_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
+/// Where `path` is after `from` was renamed to `to`: `to` for `from`
+/// itself, `to/<rest>` for a path under it (whole components only, so
+/// `/r/srcx` is not under `/r/src`), else `None`.
+pub(crate) fn moved_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    let rest = path.strip_prefix(from).ok()?;
+    if rest.as_os_str().is_empty() {
+        Some(to.to_path_buf())
+    } else {
+        Some(to.join(rest))
+    }
+}
+
 /// `<data_dir>/workspaces/<hex sha256 of the canonical root>.json`. A root
 /// that cannot be canonicalised (say, deleted) is hashed as given.
 pub fn state_path(data_dir: &Path, root: &Path) -> PathBuf {
