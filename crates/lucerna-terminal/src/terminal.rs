@@ -401,6 +401,21 @@ impl Terminal {
         lock(&self.pending).push(Op::Clear);
     }
 
+    /// The terminal's modes (alt screen, app cursor…), without copying the
+    /// screen.
+    pub fn mode(&self) -> crate::snapshot::Modes {
+        snapshot::modes(*self.term.lock().mode())
+    }
+
+    /// Whether some text is selected.
+    pub fn has_selection(&self) -> bool {
+        self.term
+            .lock()
+            .selection
+            .as_ref()
+            .is_some_and(|s| !s.is_empty())
+    }
+
     /// Copies the visible screen under one short lock, applying queued UI
     /// operations first.
     pub fn snapshot(&self) -> Snapshot {

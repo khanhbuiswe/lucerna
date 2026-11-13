@@ -6,9 +6,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, Entity, Font, FontFeatures, FontStyle,
-    GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba,
-    ShapedLine, SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle,
+    App, Bounds, ContentMask, Element, ElementId, ElementInputHandler, Entity, Font, FontFeatures,
+    FontStyle, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point,
+    Rgba, ShapedLine, SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle,
     Window, fill, outline, point, px, relative, size,
 };
 use lucerna_terminal::{
@@ -79,6 +79,17 @@ pub(crate) struct Frame {
     rows: Vec<Vec<Piece>>,
     blocks: Vec<(Bounds<Pixels>, Hsla)>,
     cursor: Option<CursorPaint>,
+    /// The cursor's cell, where the IME's candidate window opens.
+    pub(super) cursor_cell: Option<Bounds<Pixels>>,
+    /// An IME composition, drawn over the cursor cell and underlined.
+    marked: Option<MarkedPaint>,
+}
+
+/// A composition in progress: its background and its shaped text.
+struct MarkedPaint {
+    background: Bounds<Pixels>,
+    origin: Point<Pixels>,
+    line: ShapedLine,
 }
 
 impl Frame {
@@ -358,6 +369,12 @@ impl TerminalView {
         let selection = selection_rects(&snapshot, &cell);
         let focused = self.focus.is_focused(window);
         let cursor = cursor_paint(&snapshot, &palette, focused, &shaper, &cell, window);
+        let cursor_cell = snapshot.cursor.map(|c| cell(c.row, c.col, 1));
+        let marked = self
+            .marked
+            .as_deref()
+            .zip(cursor_cell)
+            .map(|(text, at)| marked_paint(text, at, &shaper, &palette, window));
         let frame = Rc::new(Frame {
             bounds,
             line_height: cell_h,
@@ -368,6 +385,8 @@ impl TerminalView {
             rows,
             blocks,
             cursor,
+            cursor_cell,
+            marked,
         });
         self.last_frame = Some(frame.clone());
         frame
@@ -415,6 +434,36 @@ fn selection_rects(
         }
     }
     out
+}
+
+/// The composition at the cursor cell: the terminal's colours, underlined,
+/// on the background so it hides the cells it covers.
+fn marked_paint(
+    text: &str,
+    at: Bounds<Pixels>,
+    shaper: &Shaper<'_>,
+    palette: &TerminalPalette,
+    window: &mut Window,
+) -> MarkedPaint {
+    let run = lucerna_terminal::TextRun {
+        col: 0,
+        cells: 0,
+        text: text.to_string(),
+        style: lucerna_terminal::RunStyle {
+            fg: palette.foreground,
+            bold: false,
+            italic: false,
+            underline: Underline::Single,
+            strike: false,
+        },
+    };
+    let line = shaper.shape(text, &run, false, window);
+    let width = line.width.max(at.size.width);
+    MarkedPaint {
+        background: Bounds::new(at.origin, size(width, at.size.height)),
+        origin: at.origin,
+        line,
+    }
 }
 
 fn cursor_paint(
@@ -526,7 +575,20 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.view.update(cx, |view, _| view.frames_drawn += 1);
+        // Typed text and IME compositions reach the view through this.
+        let focus = self.view.read(cx).focus.clone();
+        let focused = focus.is_focused(window);
+        if focused {
+            window.handle_input(
+                &focus,
+                ElementInputHandler::new(frame.bounds, self.view.clone()),
+                cx,
+            );
+        }
+        self.view.update(cx, |view, _| {
+            view.frames_drawn += 1;
+            view.input_handler_installed = focused;
+        });
         let frame = &**frame;
         let lh = frame.line_height;
         window.paint_quad(fill(frame.bounds, Hsla::from(frame.background)));
@@ -561,6 +623,12 @@ impl Element for TerminalElement {
                     if let Some((origin, line)) = &cursor.glyph {
                         let _ = line.paint(*origin, lh, TextAlign::Left, None, window, cx);
                     }
+                }
+                if let Some(marked) = &frame.marked {
+                    window.paint_quad(fill(marked.background, Hsla::from(frame.background)));
+                    let _ = marked
+                        .line
+                        .paint(marked.origin, lh, TextAlign::Left, None, window, cx);
                 }
             },
         );

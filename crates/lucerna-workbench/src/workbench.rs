@@ -48,8 +48,9 @@ use crate::search_view::{self, SearchView};
 use crate::symbols::SymbolSource;
 use crate::symbols::breadcrumbs::Breadcrumbs;
 use crate::tasks::try_spawn_guarded;
+use crate::terminal::commands::{allow_chords, key_bytes, option_is_meta, skips_shell};
 use crate::terminal::view::{default_spawner, spawn_view};
-use crate::terminal::{PanelEvent, TerminalPanel, TerminalSpawner};
+use crate::terminal::{PanelEvent, TerminalPanel, TerminalSpawner, TerminalView};
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
 use crate::trust::{self, Trust};
@@ -1411,6 +1412,23 @@ impl Workbench {
             self.editor_focus.contains_focused(window, cx),
         );
         flag("sideBarVisible", self.sidebar_visible);
+        flag("isMac", cfg!(target_os = "macos"));
+        flag("isLinux", cfg!(target_os = "linux"));
+        flag("isWindows", cfg!(target_os = "windows"));
+        let terminal_focus = self.terminal_has_focus(window, cx);
+        flag("terminalFocus", terminal_focus);
+        let terminal = self
+            .active_terminal_view(cx)
+            .filter(|_| terminal_focus)
+            .map(|view| view.read(cx).terminal());
+        flag(
+            "terminalTextSelected",
+            terminal.is_some_and(|t| t.has_selection()),
+        );
+        flag(
+            "terminalAltBufferActive",
+            terminal.is_some_and(|t| t.mode().contains(lucerna_terminal::Modes::ALT_SCREEN)),
+        );
         flag("sideBarFocus", sidebar_focus);
         flag("explorerViewletFocus", sidebar_focus);
         flag("searchViewletFocus", self.search_focused(window, cx));
@@ -1658,6 +1676,62 @@ impl Workbench {
         }
     }
 
+    /// The shown tab's terminal, if it is running.
+    pub fn active_terminal_view(&self, cx: &App) -> Option<Entity<TerminalView>> {
+        let panel = self.terminal_panel.read(cx);
+        panel.tabs().get(panel.active()?)?.view.clone()
+    }
+
+    /// The focus is in the shown panel (`terminalFocus`).
+    fn terminal_has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.panel.visible && self.panel_has_focus(window, cx)
+    }
+
+    /// `workbench.action.terminal.toggleTerminal` (⌃`, spec §6.1): a hidden
+    /// panel shows with its terminal focused (one is made when there is
+    /// none); a shown one takes the focus; with the focus in it, it hides
+    /// and the focus goes back to the editor area.
+    pub fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal_has_focus(window, cx) {
+            self.hide_panel(window, cx);
+        } else {
+            self.show_panel(window, cx);
+        }
+    }
+
+    /// `workbench.action.terminal.kill`: closes the shown tab, dropping its
+    /// terminal (which hangs up its shell). The focus moves to the tab
+    /// shown next.
+    pub fn kill_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let had_focus = self.panel_has_focus(window, cx);
+        let panel = self.terminal_panel.clone();
+        let Some(id) = panel
+            .read(cx)
+            .active()
+            .map(|index| panel.read(cx).tabs()[index].id)
+        else {
+            return;
+        };
+        panel.update(cx, |panel, cx| panel.close_tab(id, cx));
+        if had_focus && self.panel.visible && panel.read(cx).tab_count() > 0 {
+            let focus = panel.read(cx).focus_target(cx);
+            window.focus(&focus, cx);
+        }
+    }
+
+    /// `focusNext` / `focusPrevious`: shows the tab `delta` places away,
+    /// wrapping around, and focuses it.
+    pub fn focus_terminal_by(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.terminal_panel.clone();
+        let count = panel.read(cx).tab_count();
+        let Some(active) = panel.read(cx).active() else {
+            return;
+        };
+        let next = (active as isize + delta).rem_euclid(count as isize) as usize;
+        panel.update(cx, |panel, cx| panel.activate(next, cx));
+        self.show_panel(window, cx);
+    }
+
     /// Replaces what starts new terminals; see [`TerminalSpawner`].
     pub fn set_terminal_spawner(&mut self, spawner: TerminalSpawner) {
         self.terminal_spawner = spawner;
@@ -1882,15 +1956,19 @@ impl Workbench {
                 view.update(cx, |v, cx| v.hover_mut().hide(cx));
             }
         };
-        if vim::dispatch(
-            &self.vim,
-            &self.editor_groups,
-            ev,
-            &ctx,
-            chord_pending,
-            window,
-            cx,
-        ) {
+        // Vim never takes the terminal's keys (spec §6.4).
+        let terminal_focus = self.terminal_has_focus(window, cx);
+        if !terminal_focus
+            && vim::dispatch(
+                &self.vim,
+                &self.editor_groups,
+                ev,
+                &ctx,
+                chord_pending,
+                window,
+                cx,
+            )
+        {
             hide_hover(cx);
             cx.stop_propagation();
             // `gd`, `]d`, `ctrl-o`...: after the hover is hidden, so
@@ -1909,6 +1987,13 @@ impl Workbench {
             // VS Code: a key that breaks a chord is tried again on its own.
             chord = vec![stroke];
             resolution = keymap.resolve(&chord, &ctx);
+        }
+        if terminal_focus {
+            self.dispatch_terminal_key(ev, chord, resolution, window, cx);
+            if had_pending || !self.pending_chord.is_empty() {
+                cx.notify();
+            }
+            return;
         }
         match resolution {
             Resolution::Command { command, args } => {
@@ -1929,6 +2014,57 @@ impl Workbench {
         }
         if had_pending || !self.pending_chord.is_empty() {
             cx.notify();
+        }
+    }
+}
+
+impl Workbench {
+    /// A key pressed while the terminal has focus (spec §6.4): a command
+    /// in the skip-shell list runs; on macOS a key with ⌘ runs its command
+    /// or is dropped, since a shell cannot receive ⌘; a chord's first key
+    /// waits for the next one while `allowChords` is on; anything else is
+    /// encoded for the shell.
+    fn dispatch_terminal_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        chord: Vec<Keystroke>,
+        resolution: Resolution,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let cmd = cfg!(target_os = "macos") && ev.keystroke.modifiers.platform;
+        match resolution {
+            Resolution::Command { command, args } if cmd || skips_shell(&command, cx) => {
+                cx.stop_propagation();
+                if !self.run_command(&command, args.as_ref(), window, cx) {
+                    tracing::debug!(command, "key bound to an unregistered command");
+                }
+            }
+            Resolution::Pending if allow_chords(cx) => {
+                cx.stop_propagation();
+                self.pending_chord = chord;
+            }
+            _ if cmd => cx.stop_propagation(),
+            _ => self.send_key_to_terminal(ev, cx),
+        }
+    }
+
+    /// Encodes `ev` for the active terminal's mode and sends it. Text the
+    /// view's input handler will receive (typed characters, IME input) is
+    /// left to it, so it reaches the shell once.
+    fn send_key_to_terminal(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(view) = self.active_terminal_view(cx) else {
+            cx.stop_propagation();
+            return;
+        };
+        let meta = option_is_meta(cx);
+        if view.read(cx).input_handler_takes(ev, meta) {
+            return;
+        }
+        cx.stop_propagation();
+        let mode = view.read(cx).terminal().mode();
+        if let Some(bytes) = key_bytes(ev, mode, meta) {
+            view.update(cx, |view, cx| view.write_input(&bytes, cx));
         }
     }
 }
@@ -2067,6 +2203,7 @@ pub(crate) fn default_registry() -> CommandRegistry {
     let mut commands = CommandRegistry::default();
     register_shell_commands(&mut commands);
     panel::register_commands(&mut commands);
+    crate::terminal::commands::register_commands(&mut commands);
     editor_groups::register_commands(&mut commands);
     code_view::register_commands(&mut commands);
     quick_open::register_commands(&mut commands);

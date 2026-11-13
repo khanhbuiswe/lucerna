@@ -103,9 +103,9 @@ pub use symbols::{
     WORKSPACE_SYMBOLS_DEBOUNCE, WorkspaceSymbolItem, breadcrumb_segments,
 };
 pub use terminal::{
-    PanelEvent, TabState, TerminalFont, TerminalPanel, TerminalSpawner, TerminalTab, TerminalView,
-    TerminalViewEvent, set_default_terminal_spawner, tab_title as terminal_tab_title,
-    terminal_font,
+    DEFAULT_COMMANDS_TO_SKIP_SHELL, PanelEvent, TabState, TerminalFont, TerminalPanel,
+    TerminalSpawner, TerminalTab, TerminalView, TerminalViewEvent, set_default_terminal_spawner,
+    skips_shell, tab_title as terminal_tab_title, terminal_font,
 };
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};

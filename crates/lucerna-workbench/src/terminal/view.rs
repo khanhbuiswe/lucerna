@@ -3,6 +3,7 @@
 //! [`TerminalElement`](super::element::TerminalElement).
 
 use std::io;
+use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
@@ -11,10 +12,11 @@ use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::future::{Either, select};
 use gpui::{
-    App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Global, IntoElement,
-    ParentElement, Render, SharedString, Styled, Subscription, Task, Window, div, prelude::*,
+    App, AppContext, Bounds, ClipboardItem, Context, Entity, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, Global, IntoElement, KeyDownEvent, ParentElement, Pixels, Point,
+    Render, SharedString, Styled, Subscription, Task, UTF16Selection, Window, div, prelude::*,
 };
-use lucerna_terminal::{Batch, Terminal, TerminalEvent, TerminalOptions, TitleState};
+use lucerna_terminal::{Batch, Scroll, Terminal, TerminalEvent, TerminalOptions, TitleState};
 
 use super::element::{Frame, TerminalElement};
 use super::settings::spawn_options;
@@ -87,6 +89,11 @@ pub struct TerminalView {
     pub(super) last_frame: Option<Rc<Frame>>,
     /// The palette and the theme generation it was built for.
     pub(super) palette: Option<(u64, Rc<lucerna_terminal::TerminalPalette>)>,
+    /// An IME composition in progress: drawn at the cursor, not yet sent.
+    pub(super) marked: Option<String>,
+    /// The last paint gave the window this view's input handler, so typed
+    /// text arrives through it rather than as key-downs.
+    pub(super) input_handler_installed: bool,
     _events: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -116,6 +123,8 @@ impl TerminalView {
             frames_drawn: 0,
             last_frame: None,
             palette: None,
+            marked: None,
+            input_handler_installed: false,
             _events: Self::pump_events(events, cx),
             _subscriptions: subscriptions,
         }
@@ -191,6 +200,62 @@ impl TerminalView {
         &self.terminal
     }
 
+    /// Sends typed bytes to the shell and follows the output again
+    /// (spec §6.5: typing jumps to the bottom).
+    pub fn write_input(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.terminal.input(bytes);
+        self.terminal.scroll(Scroll::Bottom);
+        cx.notify();
+    }
+
+    /// Pastes `text` (bracketed when the app asked for it) and follows the
+    /// output again.
+    pub fn paste_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            return;
+        }
+        self.terminal.paste(text);
+        self.terminal.scroll(Scroll::Bottom);
+        cx.notify();
+    }
+
+    /// The IME composition in progress, if any.
+    pub fn marked_text(&self) -> Option<&str> {
+        self.marked.as_deref()
+    }
+
+    /// Whether `ev` is left to the input handler: during an IME
+    /// composition every key is, and otherwise a key that types text
+    /// (GPUI's `key_char`, without ctrl or cmd, and without alt when alt is
+    /// meta). Only once a paint installed the handler; before that the
+    /// workbench encodes the key itself.
+    pub(crate) fn input_handler_takes(&self, ev: &KeyDownEvent, option_is_meta: bool) -> bool {
+        if !self.input_handler_installed {
+            return false;
+        }
+        if self.marked.is_some() {
+            return true;
+        }
+        let m = &ev.keystroke.modifiers;
+        if m.control || m.platform || m.function || (m.alt && option_is_meta) {
+            return false;
+        }
+        ev.keystroke
+            .key_char
+            .as_deref()
+            .is_some_and(|t| !t.is_empty() && !t.chars().any(char::is_control))
+    }
+
+    /// The UTF-16 length of the marked text.
+    fn marked_len_utf16(&self) -> usize {
+        self.marked
+            .as_deref()
+            .map_or(0, |t| t.encode_utf16().count())
+    }
+
     /// Rows and columns last sent to the terminal.
     pub fn grid_size(&self) -> (u16, u16) {
         self.grid
@@ -233,6 +298,101 @@ impl TerminalView {
     #[doc(hidden)]
     pub fn painted_background(&self) -> Option<gpui::Rgba> {
         Some(self.last_frame.as_ref()?.background)
+    }
+}
+
+/// The input handler sees only the composition: the shell owns the line,
+/// so there is no text before or after the cursor to report.
+impl EntityInputHandler for TerminalView {
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        let marked: Vec<u16> = self.marked.as_deref()?.encode_utf16().collect();
+        let start = range_utf16.start.min(marked.len());
+        let end = range_utf16.end.clamp(start, marked.len());
+        *adjusted_range = Some(start..end);
+        Some(String::from_utf16_lossy(&marked[start..end]))
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let end = self.marked_len_utf16();
+        Some(UTF16Selection {
+            range: end..end,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        self.marked.as_ref().map(|_| 0..self.marked_len_utf16())
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if self.marked.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Typed text and the end of a composition go to the shell as UTF-8.
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.marked.take().is_some() {
+            cx.notify();
+        }
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        self.write_input(text.as_bytes(), cx);
+    }
+
+    /// A composition in progress is only drawn; nothing reaches the shell.
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        new_text: &str,
+        _: Option<Range<usize>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.marked = (!new_text.is_empty()).then(|| new_text.to_string());
+        cx.notify();
+    }
+
+    fn paste(&mut self, item: ClipboardItem, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = item.text() {
+            self.paste_text(&text, cx);
+        }
+    }
+
+    /// The cursor cell, so the IME's candidate window opens at it.
+    fn bounds_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        self.last_frame.as_ref()?.cursor_cell
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
     }
 }
 

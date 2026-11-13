@@ -84,7 +84,10 @@ fn layout_text<'a>(k: &KeyInput<'a>) -> Option<std::borrow::Cow<'a, str>> {
 fn ctrl_byte(c: char) -> Option<u8> {
     Some(match c.to_ascii_lowercase() {
         c @ 'a'..='z' => c as u8 - b'a' + 1,
-        '@' | '2' => 0x00,
+        // X's control mapping (`c & 0x1f`) for the backtick key: ⌃` is NUL
+        // and ⌃~ is RS.
+        '@' | '2' | '`' => 0x00,
+        '~' => 0x1e,
         '[' | '3' => 0x1b,
         '\\' | '4' => 0x1c,
         ']' | '5' => 0x1d,
@@ -285,6 +288,21 @@ mod tests {
                 ..key("/")
             })),
             "\x1f"
+        );
+        assert_eq!(
+            s(enc(KeyInput {
+                ctrl: true,
+                ..key("`")
+            })),
+            "\x00"
+        );
+        assert_eq!(
+            s(enc(KeyInput {
+                ctrl: true,
+                shift: true,
+                ..key("~")
+            })),
+            "\x1e"
         );
     }
 

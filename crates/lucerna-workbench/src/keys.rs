@@ -299,6 +299,20 @@ mod tests {
         ] {
             rows.push((event(digit, None, cmd()), binding));
         }
+        // Terminal. macOS reports ⌃⇧` as ⌃ + `~`, ⌘⇧] as ⌘ + `}`.
+        rows.extend([
+            (event("`", None, ctrl()), "ctrl+`"),
+            (event("~", None, ctrl()), "ctrl+shift+`"),
+            (event("j", None, cmd()), "cmd+j"),
+            (event("}", None, cmd()), "cmd+shift+]"),
+            (event("{", None, cmd()), "cmd+shift+["),
+            (event("pageup", None, alt_cmd()), "alt+cmd+pageup"),
+            (event("pagedown", None, alt_cmd()), "alt+cmd+pagedown"),
+            (event("home", None, cmd()), "cmd+home"),
+            (event("end", None, cmd()), "cmd+end"),
+            (event("c", None, ctrl_shift()), "ctrl+shift+c"),
+            (event("v", None, ctrl_shift()), "ctrl+shift+v"),
+        ]);
         rows
     }
 

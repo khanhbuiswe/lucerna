@@ -3,13 +3,13 @@
 //! or hides the sidebar. The Search button opens (or focuses) the Search
 //! tab. The Extensions button opens (or focuses) the Extensions tab, shows
 //! the number of available updates and spins while an install runs. The
-//! Terminal button shows or hides the panel.
+//! Terminal button runs ⌃` (`workbench.action.terminal.toggleTerminal`).
 
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, Context, IntoElement, ParentElement, Styled, Transformation, div,
-    percentage, prelude::*, px, svg,
+    Animation, AnimationExt, Context, IntoElement, MouseButton, ParentElement, Styled,
+    Transformation, div, percentage, prelude::*, px, svg,
 };
 
 use crate::extensions::ExtensionService;
@@ -45,8 +45,11 @@ pub(crate) fn render(
     let terminal = icon_button("panel-toggle-terminal", TERMINAL, panel_visible, cx)
         .debug_selector(|| "panel-toggle-terminal".into())
         .tooltip(tooltip("Terminal (⌃`)"))
+        // Keeps the focus where it is, so a click with the terminal
+        // focused hides it, as ⌃` does.
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(cx.listener(|wb, _, window, cx| {
-            wb.run_command("workbench.action.togglePanel", None, window, cx);
+            wb.run_command("workbench.action.terminal.toggleTerminal", None, window, cx);
         }));
     // Marks the active state for tests, which cannot read colors.
     let terminal = div()
