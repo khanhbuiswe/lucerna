@@ -9,13 +9,16 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    AnyElement, App, Context, ElementId, InteractiveText, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, StyledText, TextRun, UnderlineStyle, Window, div, font,
-    prelude::*, px,
+    AnyElement, App, Context, ElementId, FontWeight, InteractiveText, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextRun,
+    UnderlineStyle, Window, div, font, prelude::*, px,
 };
 use lucerna_syntax::{Language, LanguageRegistry, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{Buffer, Point};
-use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    Alignment, BlockQuoteKind, CodeBlockKind, Event, MetadataBlockKind, Options, Parser, Tag,
+    TagEnd,
+};
 
 use crate::AppState;
 use crate::editor_groups::OpenMode;
@@ -34,6 +37,15 @@ const MAX_BLOCK_DEPTH: usize = 16;
 /// Same for emphasis and links.
 const MAX_INLINE_DEPTH: usize = 32;
 
+/// The pulldown-cmark extensions on, for hover and the preview alike.
+/// Front matter is parsed so it can be left out.
+pub const PARSE_OPTIONS: Options = Options::ENABLE_TABLES
+    .union(Options::ENABLE_STRIKETHROUGH)
+    .union(Options::ENABLE_TASKLISTS)
+    .union(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS)
+    .union(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS)
+    .union(Options::ENABLE_GFM);
+
 /// Tabs in code blocks are shown as this many spaces.
 const TAB_WIDTH: usize = 4;
 
@@ -47,12 +59,68 @@ pub enum Block {
         language: Option<String>,
         text: String,
     },
+    /// `start` is the first number of an ordered list; `None` for a
+    /// bullet list.
     List {
-        ordered: bool,
-        items: Vec<Vec<Block>>,
+        start: Option<u64>,
+        items: Vec<ListItem>,
     },
     Quote(Vec<Block>),
+    /// A GitHub alert: `> [!NOTE]` and its siblings.
+    Alert {
+        kind: AlertKind,
+        blocks: Vec<Block>,
+    },
+    Table {
+        aligns: Vec<Align>,
+        head: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
+    },
+    /// A paragraph that holds nothing but one image.
+    Image {
+        url: String,
+        alt: String,
+    },
     Rule,
+}
+
+/// One list item: `checked` is set for task list items (`- [x]`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListItem {
+    pub checked: Option<bool>,
+    pub blocks: Vec<Block>,
+}
+
+/// The alignment of a table column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    None,
+    Left,
+    Center,
+    Right,
+}
+
+/// The kind of a GitHub alert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl AlertKind {
+    /// The bold title of the alert.
+    pub fn title(self) -> &'static str {
+        match self {
+            AlertKind::Note => "Note",
+            AlertKind::Tip => "Tip",
+            AlertKind::Important => "Important",
+            AlertKind::Warning => "Warning",
+            AlertKind::Caution => "Caution",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,8 +128,10 @@ pub enum Inline {
     Text(String),
     Strong(Vec<Inline>),
     Emph(Vec<Inline>),
+    Strike(Vec<Inline>),
     Code(String),
     Link { url: String, children: Vec<Inline> },
+    Image { url: String, alt: String },
     SoftBreak,
     HardBreak,
 }
@@ -82,6 +152,13 @@ struct CachedRuns {
 /// Parsed markdown: built once, rendered many times.
 pub struct MarkdownBlocks {
     blocks: Vec<Block>,
+    /// Source lines of each root block (0-based, end excluded), parallel
+    /// to `blocks`.
+    root_lines: Vec<Range<u32>>,
+    /// Lines of the source.
+    line_count: u32,
+    /// For each root block, the index of its first code block.
+    code_starts: Vec<usize>,
     fallback_language: Option<String>,
     /// By code block, numbered in document order.
     code_runs: Mutex<HashMap<usize, CachedRuns>>,
@@ -99,6 +176,28 @@ impl std::fmt::Debug for MarkdownBlocks {
 impl MarkdownBlocks {
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
+    }
+
+    /// The source lines of each root block, parallel to [`Self::blocks`]
+    /// (0-based, the end line not included).
+    pub fn root_lines(&self) -> &[Range<u32>] {
+        &self.root_lines
+    }
+
+    /// The number of lines of the source: its `\n` count, plus one when
+    /// the text does not end with one.
+    pub fn line_count(&self) -> u32 {
+        self.line_count
+    }
+
+    /// The `code_runs` index of the first code block in root block `root`
+    /// (nested blocks included); the total count when `root` is past the
+    /// end.
+    pub fn code_index_start(&self, root: usize) -> usize {
+        self.code_starts
+            .get(root)
+            .copied()
+            .unwrap_or_else(|| count_code(&self.blocks))
     }
 
     /// The language id of fences that name none (or an unknown one).
@@ -169,24 +268,38 @@ fn nth_code(blocks: &[Block], index: usize) -> Option<(Option<&str>, &str)> {
                     }
                     *seen += 1;
                 }
-                Block::Quote(inner) => {
+                Block::Quote(inner) | Block::Alert { blocks: inner, .. } => {
                     if let Some(found) = walk(inner, seen, index) {
                         return Some(found);
                     }
                 }
                 Block::List { items, .. } => {
                     for item in items {
-                        if let Some(found) = walk(item, seen, index) {
+                        if let Some(found) = walk(&item.blocks, seen, index) {
                             return Some(found);
                         }
                     }
                 }
+                // Table cells hold inlines only.
                 _ => {}
             }
         }
         None
     }
     walk(blocks, &mut 0, index)
+}
+
+/// The number of code blocks in `blocks`, nested ones included.
+fn count_code(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .map(|block| match block {
+            Block::Code { .. } => 1,
+            Block::Quote(inner) | Block::Alert { blocks: inner, .. } => count_code(inner),
+            Block::List { items, .. } => items.iter().map(|i| count_code(&i.blocks)).sum(),
+            _ => 0,
+        })
+        .sum()
 }
 
 fn code_font_family(cx: &App) -> SharedString {
@@ -294,6 +407,7 @@ pub fn resolve_language(
 
 // ---- Parsing ----
 
+/// Parses `source` cut at [`MAX_MARKDOWN_BYTES`] (hover).
 pub fn parse_markdown(source: &str, fallback_language: Option<&str>) -> MarkdownBlocks {
     // pulldown-cmark ends a fence left open by the cut at the end of the
     // input, so the cut text still forms one code block.
@@ -301,25 +415,108 @@ pub fn parse_markdown(source: &str, fallback_language: Option<&str>) -> Markdown
     while !source.is_char_boundary(cut) {
         cut -= 1;
     }
+    parse(&source[..cut], fallback_language)
+}
+
+/// Parses all of `source`: the caller limits its size (the preview).
+pub fn parse_markdown_document(source: &str, fallback_language: Option<&str>) -> MarkdownBlocks {
+    parse(source, fallback_language)
+}
+
+fn parse(source: &str, fallback_language: Option<&str>) -> MarkdownBlocks {
     let mut builder = Builder::default();
-    for event in Parser::new(&source[..cut]) {
+    // Open block tags: a root block ends when this returns to 0.
+    let mut depth = 0usize;
+    for (event, range) in Parser::new_ext(source, PARSE_OPTIONS).into_offset_iter() {
+        match &event {
+            Event::Start(tag) if !is_inline_tag(tag) => {
+                if depth == 0 {
+                    builder.root_range = range.clone();
+                }
+                depth += 1;
+            }
+            Event::End(tag) if !is_inline_end(tag) => depth = depth.saturating_sub(1),
+            Event::Rule if depth == 0 => builder.root_range = range.clone(),
+            _ => {}
+        }
         builder.event(event);
     }
+    let (blocks, root_ranges) = builder.finish();
+    let newlines: Vec<usize> = source.match_indices('\n').map(|(i, _)| i).collect();
+    let line_of = |byte: usize| newlines.partition_point(|&n| n < byte) as u32;
+    let root_lines = root_ranges
+        .iter()
+        .map(|r| {
+            let start = line_of(r.start);
+            let last = line_of(r.end.saturating_sub(1).max(r.start));
+            start..(last + 1)
+        })
+        .collect();
+    let mut total = 0;
+    let code_starts = blocks
+        .iter()
+        .map(|b| {
+            let start = total;
+            total += count_code(std::slice::from_ref(b));
+            start
+        })
+        .collect();
+    let line_count =
+        newlines.len() as u32 + u32::from(!source.is_empty() && !source.ends_with('\n'));
     MarkdownBlocks {
-        blocks: builder.finish(),
+        blocks,
+        root_lines,
+        line_count,
+        code_starts,
         fallback_language: fallback_language.map(str::to_owned),
         code_runs: Mutex::new(HashMap::new()),
     }
 }
 
+fn is_inline_tag(tag: &Tag) -> bool {
+    matches!(
+        tag,
+        Tag::Emphasis
+            | Tag::Strong
+            | Tag::Strikethrough
+            | Tag::Superscript
+            | Tag::Subscript
+            | Tag::Link { .. }
+            | Tag::Image { .. }
+    )
+}
+
+fn is_inline_end(tag: &TagEnd) -> bool {
+    matches!(
+        tag,
+        TagEnd::Emphasis
+            | TagEnd::Strong
+            | TagEnd::Strikethrough
+            | TagEnd::Superscript
+            | TagEnd::Subscript
+            | TagEnd::Link
+            | TagEnd::Image
+    )
+}
+
 enum Frame {
     Root(Vec<Block>),
-    Quote(Vec<Block>),
+    Quote(Vec<Block>, Option<AlertKind>),
     List {
-        ordered: bool,
-        items: Vec<Vec<Block>>,
+        start: Option<u64>,
+        items: Vec<ListItem>,
     },
-    Item(Vec<Block>),
+    Item {
+        checked: Option<bool>,
+        blocks: Vec<Block>,
+    },
+    Table {
+        aligns: Vec<Align>,
+        head: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
+        /// The cells of the row being read.
+        row: Vec<Vec<Inline>>,
+    },
 }
 
 enum Span {
@@ -327,9 +524,11 @@ enum Span {
     Base,
     Strong,
     Emph,
+    Strike,
     Link(String),
-    /// Images show their alt text.
-    Image,
+    Image(String),
+    /// The inlines of a table cell.
+    Cell,
 }
 
 #[derive(Default)]
@@ -345,6 +544,12 @@ struct Builder {
     container_real: Vec<bool>,
     /// The same for open emphasis, strong, link and image tags.
     span_real: Vec<bool>,
+    /// Inside front matter, whose text is dropped.
+    metadata: bool,
+    /// Byte range of the root block being read.
+    root_range: Range<usize>,
+    /// Byte ranges of the root blocks, parallel to the root frame.
+    root_ranges: Vec<Range<usize>>,
 }
 
 impl Builder {
@@ -352,10 +557,16 @@ impl Builder {
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
+            Event::Text(_) if self.metadata => {}
             Event::Text(text) => match &mut self.code {
                 Some((_, code)) => code.push_str(&text.replace('\t', &" ".repeat(TAB_WIDTH))),
                 None => self.inline(Inline::Text(text.into_string())),
             },
+            Event::TaskListMarker(done) => {
+                if let Some(Frame::Item { checked, .. }) = self.frames.last_mut() {
+                    *checked = Some(done);
+                }
+            }
             Event::Code(code) => self.inline(Inline::Code(code.into_string())),
             Event::SoftBreak => self.inline(Inline::SoftBreak),
             Event::HardBreak => self.inline(Inline::HardBreak),
@@ -363,7 +574,7 @@ impl Builder {
                 self.flush_implicit();
                 self.block(Block::Rule);
             }
-            // Raw HTML, footnotes, math, task markers: not shown.
+            // Raw HTML, footnotes, math: not shown.
             _ => {}
         }
     }
@@ -378,10 +589,36 @@ impl Builder {
                 self.flush_implicit();
                 self.spans.push((Span::Base, Vec::new()));
             }
-            Tag::BlockQuote(_) => {
+            Tag::BlockQuote(kind) => {
                 self.flush_implicit();
                 if self.open_container() {
-                    self.frames.push(Frame::Quote(Vec::new()));
+                    self.frames
+                        .push(Frame::Quote(Vec::new(), kind.map(alert_kind)));
+                }
+            }
+            Tag::MetadataBlock(MetadataBlockKind::YamlStyle | MetadataBlockKind::PlusesStyle) => {
+                self.flush_implicit();
+                self.metadata = true;
+            }
+            Tag::Table(aligns) => {
+                self.flush_implicit();
+                if self.open_container() {
+                    self.frames.push(Frame::Table {
+                        aligns: aligns.into_iter().map(align).collect(),
+                        head: Vec::new(),
+                        rows: Vec::new(),
+                        row: Vec::new(),
+                    });
+                }
+            }
+            Tag::TableHead | Tag::TableRow => {
+                if let Some(Frame::Table { row, .. }) = self.frames.last_mut() {
+                    row.clear();
+                }
+            }
+            Tag::TableCell => {
+                if matches!(self.frames.last(), Some(Frame::Table { .. })) {
+                    self.spans.push((Span::Cell, Vec::new()));
                 }
             }
             Tag::CodeBlock(kind) => {
@@ -399,7 +636,7 @@ impl Builder {
                 self.flush_implicit();
                 if self.open_container() {
                     self.frames.push(Frame::List {
-                        ordered: first.is_some(),
+                        start: first,
                         items: Vec::new(),
                     });
                 }
@@ -409,13 +646,17 @@ impl Builder {
                 let real = matches!(self.frames.last(), Some(Frame::List { .. }));
                 self.container_real.push(real);
                 if real {
-                    self.frames.push(Frame::Item(Vec::new()));
+                    self.frames.push(Frame::Item {
+                        checked: None,
+                        blocks: Vec::new(),
+                    });
                 }
             }
             Tag::Strong => self.open_span(Span::Strong),
             Tag::Emphasis => self.open_span(Span::Emph),
+            Tag::Strikethrough => self.open_span(Span::Strike),
             Tag::Link { dest_url, .. } => self.open_span(Span::Link(dest_url.into_string())),
-            Tag::Image { .. } => self.open_span(Span::Image),
+            Tag::Image { dest_url, .. } => self.open_span(Span::Image(dest_url.into_string())),
             _ => {}
         }
     }
@@ -423,10 +664,8 @@ impl Builder {
     fn end(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Paragraph => {
-                if let Some((_, inlines)) = self.spans.pop()
-                    && !inlines.is_empty()
-                {
-                    self.block(Block::Paragraph(inlines));
+                if let Some((_, inlines)) = self.spans.pop() {
+                    self.paragraph(inlines);
                 }
             }
             TagEnd::Heading(level) => {
@@ -437,9 +676,40 @@ impl Builder {
             TagEnd::BlockQuote(_) => {
                 self.flush_implicit();
                 if self.close_container()
-                    && let Some(Frame::Quote(blocks)) = self.frames.pop()
+                    && let Some(Frame::Quote(blocks, kind)) = self.frames.pop()
                 {
-                    self.block(Block::Quote(blocks));
+                    self.block(match kind {
+                        Some(kind) => Block::Alert { kind, blocks },
+                        None => Block::Quote(blocks),
+                    });
+                }
+            }
+            TagEnd::MetadataBlock(_) => self.metadata = false,
+            TagEnd::Table => {
+                if self.close_container()
+                    && let Some(Frame::Table {
+                        aligns, head, rows, ..
+                    }) = self.frames.pop()
+                {
+                    self.block(Block::Table { aligns, head, rows });
+                }
+            }
+            TagEnd::TableHead => {
+                if let Some(Frame::Table { head, row, .. }) = self.frames.last_mut() {
+                    *head = std::mem::take(row);
+                }
+            }
+            TagEnd::TableRow => {
+                if let Some(Frame::Table { rows, row, .. }) = self.frames.last_mut() {
+                    rows.push(std::mem::take(row));
+                }
+            }
+            TagEnd::TableCell => {
+                if matches!(self.frames.last(), Some(Frame::Table { .. }))
+                    && let Some((_, cell)) = self.spans.pop()
+                    && let Some(Frame::Table { row, .. }) = self.frames.last_mut()
+                {
+                    row.push(cell);
                 }
             }
             TagEnd::CodeBlock => {
@@ -449,21 +719,25 @@ impl Builder {
             }
             TagEnd::List(_) => {
                 if self.close_container()
-                    && let Some(Frame::List { ordered, items }) = self.frames.pop()
+                    && let Some(Frame::List { start, items }) = self.frames.pop()
                 {
-                    self.block(Block::List { ordered, items });
+                    self.block(Block::List { start, items });
                 }
             }
             TagEnd::Item => {
                 self.flush_implicit();
                 if self.close_container()
-                    && let Some(Frame::Item(blocks)) = self.frames.pop()
+                    && let Some(Frame::Item { checked, blocks }) = self.frames.pop()
                     && let Some(Frame::List { items, .. }) = self.frames.last_mut()
                 {
-                    items.push(blocks);
+                    items.push(ListItem { checked, blocks });
                 }
             }
-            TagEnd::Strong | TagEnd::Emphasis | TagEnd::Link | TagEnd::Image => {
+            TagEnd::Strong
+            | TagEnd::Emphasis
+            | TagEnd::Strikethrough
+            | TagEnd::Link
+            | TagEnd::Image => {
                 if !self.span_real.pop().unwrap_or(true) {
                     return;
                 }
@@ -471,8 +745,13 @@ impl Builder {
                     match span {
                         Span::Strong => self.inline(Inline::Strong(children)),
                         Span::Emph => self.inline(Inline::Emph(children)),
+                        Span::Strike => self.inline(Inline::Strike(children)),
                         Span::Link(url) => self.inline(Inline::Link { url, children }),
-                        Span::Image | Span::Base => {
+                        Span::Image(url) => {
+                            let alt = plain_text(&children);
+                            self.inline(Inline::Image { url, alt });
+                        }
+                        Span::Base | Span::Cell => {
                             for child in children {
                                 self.inline(child);
                             }
@@ -524,29 +803,87 @@ impl Builder {
             return;
         }
         self.implicit = false;
-        if let Some((_, inlines)) = self.spans.pop()
-            && !inlines.is_empty()
-        {
-            self.block(Block::Paragraph(inlines));
+        if let Some((_, inlines)) = self.spans.pop() {
+            self.paragraph(inlines);
+        }
+    }
+
+    /// A paragraph; one holding nothing but an image becomes an image
+    /// block, an empty one is dropped.
+    fn paragraph(&mut self, inlines: Vec<Inline>) {
+        let mut shown = inlines.iter().filter(|i| match i {
+            Inline::Text(t) => !t.trim().is_empty(),
+            Inline::SoftBreak => false,
+            _ => true,
+        });
+        match (shown.next(), shown.next()) {
+            (None, _) => {}
+            (Some(Inline::Image { url, alt }), None) => {
+                let block = Block::Image {
+                    url: url.clone(),
+                    alt: alt.clone(),
+                };
+                self.block(block);
+            }
+            _ => self.block(Block::Paragraph(inlines)),
         }
     }
 
     fn block(&mut self, block: Block) {
         match self.frames.last_mut() {
-            Some(Frame::Quote(blocks) | Frame::Item(blocks) | Frame::Root(blocks)) => {
-                blocks.push(block)
+            Some(Frame::Quote(blocks, _) | Frame::Item { blocks, .. }) => blocks.push(block),
+            Some(Frame::Root(blocks)) => {
+                blocks.push(block);
+                self.root_ranges.push(self.root_range.clone());
             }
-            _ => self.frames.insert(0, Frame::Root(vec![block])),
+            _ => {
+                self.frames.insert(0, Frame::Root(vec![block]));
+                self.root_ranges.push(self.root_range.clone());
+            }
         }
     }
 
-    fn finish(mut self) -> Vec<Block> {
+    fn finish(mut self) -> (Vec<Block>, Vec<Range<usize>>) {
         self.flush_implicit();
         match self.frames.into_iter().next() {
-            Some(Frame::Root(blocks)) => blocks,
-            _ => Vec::new(),
+            Some(Frame::Root(blocks)) => (blocks, self.root_ranges),
+            _ => (Vec::new(), Vec::new()),
         }
     }
+}
+
+fn alert_kind(kind: BlockQuoteKind) -> AlertKind {
+    match kind {
+        BlockQuoteKind::Note => AlertKind::Note,
+        BlockQuoteKind::Tip => AlertKind::Tip,
+        BlockQuoteKind::Important => AlertKind::Important,
+        BlockQuoteKind::Warning => AlertKind::Warning,
+        BlockQuoteKind::Caution => AlertKind::Caution,
+    }
+}
+
+fn align(a: Alignment) -> Align {
+    match a {
+        Alignment::None => Align::None,
+        Alignment::Left => Align::Left,
+        Alignment::Center => Align::Center,
+        Alignment::Right => Align::Right,
+    }
+}
+
+/// The text of `inlines` without any formatting (an image's alt text).
+fn plain_text(inlines: &[Inline]) -> String {
+    let mut out = String::new();
+    for inline in inlines {
+        match inline {
+            Inline::Text(t) | Inline::Code(t) => out.push_str(t),
+            Inline::Strong(c) | Inline::Emph(c) | Inline::Strike(c) => out.push_str(&plain_text(c)),
+            Inline::Link { children, .. } => out.push_str(&plain_text(children)),
+            Inline::Image { alt, .. } => out.push_str(alt),
+            Inline::SoftBreak | Inline::HardBreak => out.push(' '),
+        }
+    }
+    out
 }
 
 // ---- Links ----
@@ -664,6 +1001,7 @@ struct InlineStyle {
     code: bool,
     link: bool,
     muted: bool,
+    strike: bool,
 }
 
 /// Heading sizes by level: slightly above body text.
@@ -690,15 +1028,16 @@ impl Renderer<'_> {
             Block::Paragraph(inlines) => self.text(inlines, size, false, muted),
             Block::Heading(level, inlines) => self.text(inlines, heading_size(*level), true, muted),
             Block::Code { .. } => self.code(),
-            Block::List { ordered, items } => div()
+            Block::List { start, items } => div()
                 .flex()
                 .flex_col()
                 .gap(px(2.))
                 .children(items.iter().enumerate().map(|(i, item)| {
-                    let marker = if *ordered {
-                        format!("{}.", i + 1)
-                    } else {
-                        "•".to_owned()
+                    let marker = match (start, item.checked) {
+                        (_, Some(true)) => "[x]".to_owned(),
+                        (_, Some(false)) => "[ ]".to_owned(),
+                        (Some(first), None) => format!("{}.", first + i as u64),
+                        (None, None) => "•".to_owned(),
                     };
                     div()
                         .flex()
@@ -711,10 +1050,29 @@ impl Renderer<'_> {
                                 .flex()
                                 .flex_col()
                                 .gap(px(4.))
-                                .children(self.blocks(item, size, muted)),
+                                .children(self.blocks(&item.blocks, size, muted)),
                         )
                 }))
                 .into_any_element(),
+            Block::Alert { kind, blocks } => div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .pl(px(8.))
+                .border_l_2()
+                .border_color(color(ui.border))
+                .child(div().font_weight(FontWeight::BOLD).child(kind.title()))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .text_color(color(ui.text_muted))
+                        .children(self.blocks(blocks, size, true)),
+                )
+                .into_any_element(),
+            // Drawn by the preview.
+            Block::Table { .. } | Block::Image { .. } => div().into_any_element(),
             Block::Quote(inner) => div()
                 .flex()
                 .flex_col()
@@ -743,6 +1101,7 @@ impl Renderer<'_> {
             code: false,
             link: false,
             muted,
+            strike: false,
         };
         self.flatten(inlines, style, None, &mut flat);
         if flat.text.is_empty() {
@@ -800,7 +1159,10 @@ impl Renderer<'_> {
                     color: None,
                     wavy: false,
                 }),
-                strikethrough: None,
+                strikethrough: style.strike.then(|| StrikethroughStyle {
+                    thickness: px(1.),
+                    color: None,
+                }),
             });
             if let Some(url) = link {
                 match out.links.last_mut() {
@@ -842,6 +1204,16 @@ impl Renderer<'_> {
                     link,
                     out,
                 ),
+                Inline::Strike(children) => self.flatten(
+                    children,
+                    InlineStyle {
+                        strike: true,
+                        ..style
+                    },
+                    link,
+                    out,
+                ),
+                Inline::Image { alt, .. } => push(out, alt, style),
                 Inline::Link { url, children } => self.flatten(
                     children,
                     InlineStyle {
@@ -897,6 +1269,13 @@ mod tests {
     use super::*;
     use lucerna_text::Point;
     use std::path::PathBuf;
+
+    fn item(blocks: Vec<Block>) -> ListItem {
+        ListItem {
+            checked: None,
+            blocks,
+        }
+    }
 
     fn text(s: &str) -> Inline {
         Inline::Text(s.into())
@@ -992,24 +1371,26 @@ mod tests {
         assert_eq!(
             blocks,
             vec![Block::List {
-                ordered: false,
+                start: None,
                 items: vec![
-                    vec![
+                    item(vec![
                         Block::Paragraph(vec![text("a")]),
                         Block::List {
-                            ordered: false,
+                            start: None,
                             items: vec![
-                                vec![Block::Paragraph(vec![text("b")])],
-                                vec![Block::Paragraph(vec![text("c")])],
+                                item(vec![Block::Paragraph(vec![text("b")])]),
+                                item(vec![Block::Paragraph(vec![text("c")])]),
                             ],
                         },
-                    ],
-                    vec![Block::Paragraph(vec![text("d")])],
+                    ]),
+                    item(vec![Block::Paragraph(vec![text("d")])]),
                 ],
             }]
         );
         let ordered = parse("1. x\n2. y\n");
-        assert!(matches!(&ordered[..], [Block::List { ordered: true, items }] if items.len() == 2));
+        assert!(
+            matches!(&ordered[..], [Block::List { start: Some(1), items }] if items.len() == 2)
+        );
     }
 
     #[test]
@@ -1070,7 +1451,9 @@ mod tests {
             .iter()
             .map(|b| match b {
                 Block::Quote(inner) => 1 + depth(inner),
-                Block::List { items, .. } => 1 + items.iter().map(|i| depth(i)).max().unwrap_or(0),
+                Block::List { items, .. } => {
+                    1 + items.iter().map(|i| depth(&i.blocks)).max().unwrap_or(0)
+                }
                 _ => 0,
             })
             .max()
@@ -1081,7 +1464,7 @@ mod tests {
         blocks.iter().any(|b| match b {
             Block::Paragraph(inlines) => inlines.iter().any(|i| i == &text(needle)),
             Block::Quote(inner) => contains_text(inner, needle),
-            Block::List { items, .. } => items.iter().any(|i| contains_text(i, needle)),
+            Block::List { items, .. } => items.iter().any(|i| contains_text(&i.blocks, needle)),
             _ => false,
         })
     }
