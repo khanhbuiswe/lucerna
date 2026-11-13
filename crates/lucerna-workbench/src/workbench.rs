@@ -342,7 +342,11 @@ impl Workbench {
             groups.set_tab_body_factory(
                 Rc::new(move |tab, _, cx| {
                     let path = match &tab.item {
-                        TabItem::File(path) => path.clone(),
+                        // Until the preview view exists, previews show the
+                        // source.
+                        TabItem::File(path)
+                        | TabItem::MarkdownPreview(path)
+                        | TabItem::MarkdownPreviewDynamic(path) => path.clone(),
                         TabItem::Extensions => {
                             page.update(cx, |page, cx| page.shown(cx));
                             return page.clone().into();

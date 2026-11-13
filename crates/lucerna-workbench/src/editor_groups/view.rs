@@ -589,7 +589,9 @@ impl Render for EditorGroupsView {
                     TabItem::LspLog(_) => Some(icons::ZAP),
                     TabItem::References => Some(icons::FILE_CODE),
                     TabItem::LspHealth => Some(icons::ZAP),
-                    TabItem::File(_) => None,
+                    TabItem::File(_)
+                    | TabItem::MarkdownPreview(_)
+                    | TabItem::MarkdownPreviewDynamic(_) => None,
                 };
                 let icon = icon.map(|icon| {
                     svg()

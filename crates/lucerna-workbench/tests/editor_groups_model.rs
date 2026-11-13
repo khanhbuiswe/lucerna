@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lucerna_workbench::{
-    EXTENSIONS_TAB_STATE, EditorGroups, GroupState, GroupsState, OpenMode, SEARCH_TAB_STATE,
-    TabItem,
+    EXTENSIONS_TAB_STATE, EditorGroups, FileView, GroupState, GroupsState,
+    MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
+    SEARCH_TAB_STATE, TabItem,
 };
 
 fn p(name: &str) -> Arc<Path> {
@@ -503,4 +504,169 @@ fn restore_keeps_first_search_tab() {
     assert_eq!(search, [(0, true)]);
     assert!(restored.extensions_tab().is_some());
     assert_eq!(active_path(&restored).as_deref(), Some("b.rs"));
+}
+
+fn items(groups: &EditorGroups, g: usize) -> Vec<TabItem> {
+    groups.groups()[g]
+        .tabs
+        .iter()
+        .map(|t| t.item.clone())
+        .collect()
+}
+
+#[test]
+fn plain_open_reuses_source_tab() {
+    let mut g = EditorGroups::default();
+    let a = g.open(p("a.md"), OpenMode::Pinned, true);
+    let b = g.open_file(p("a.md"), FileView::Preview, OpenMode::Preview, true, true);
+    assert_eq!(a, b);
+    assert_eq!(items(&g, 0), vec![TabItem::File(p("a.md"))]);
+}
+
+#[test]
+fn plain_open_reuses_static_preview() {
+    let mut g = EditorGroups::default();
+    let a = g.open_file(p("a.md"), FileView::Preview, OpenMode::Pinned, true, false);
+    g.open(p("b.md"), OpenMode::Pinned, true);
+    let again = g.open_file(p("a.md"), FileView::Source, OpenMode::Preview, true, true);
+    assert_eq!(a, again);
+    assert_eq!(g.active_tab().unwrap().id, a);
+    assert_eq!(g.groups()[0].tabs.len(), 2);
+}
+
+#[test]
+fn point_open_adds_source_next_to_preview() {
+    let mut g = EditorGroups::default();
+    g.open_file(p("a.md"), FileView::Preview, OpenMode::Pinned, true, false);
+    g.open(p("a.md"), OpenMode::Pinned, true);
+    assert_eq!(
+        items(&g, 0),
+        vec![
+            TabItem::MarkdownPreview(p("a.md")),
+            TabItem::File(p("a.md"))
+        ]
+    );
+}
+
+#[test]
+fn replace_item_keeps_slot_and_pin() {
+    let mut g = EditorGroups::default();
+    g.open(p("a.md"), OpenMode::Pinned, true);
+    let mid = g.open(p("b.md"), OpenMode::Preview, true);
+    g.open(p("c.md"), OpenMode::Pinned, true);
+    g.activate(mid);
+    let new = g
+        .replace_item(mid, TabItem::MarkdownPreview(p("b.md")))
+        .unwrap();
+    assert_eq!(
+        g.groups()[0].tabs[1].item,
+        TabItem::MarkdownPreview(p("b.md"))
+    );
+    assert!(!g.groups()[0].tabs[1].pinned);
+    assert_eq!(g.active_tab().unwrap().id, new);
+    assert!(g.groups()[0].mru.contains(&new) && !g.groups()[0].mru.contains(&mid));
+}
+
+#[test]
+fn replace_item_into_existing_closes_old() {
+    let mut g = EditorGroups::default();
+    let src = g.open(p("a.md"), OpenMode::Pinned, true);
+    let prev = g.open_file(p("a.md"), FileView::Preview, OpenMode::Pinned, true, false);
+    g.activate(src);
+    let got = g.replace_item(src, TabItem::MarkdownPreview(p("a.md")));
+    assert_eq!(got, Some(prev));
+    assert_eq!(items(&g, 0), vec![TabItem::MarkdownPreview(p("a.md"))]);
+    assert_eq!(g.active_tab().unwrap().id, prev);
+}
+
+#[test]
+fn dynamic_preview_is_singleton_and_keeps_focus() {
+    let mut g = EditorGroups::default();
+    g.open(p("a.md"), OpenMode::Pinned, true);
+    let id = g.open_dynamic_preview(p("a.md"));
+    assert_eq!(g.open_dynamic_preview(p("b.md")), id);
+    assert_eq!(g.groups().len(), 2);
+    assert_eq!(
+        items(&g, 1),
+        vec![TabItem::MarkdownPreviewDynamic(p("b.md"))]
+    );
+    assert_eq!(g.groups()[1].tabs[0].title(), "Preview b.md");
+    assert!(g.groups()[1].tabs[0].pinned);
+    assert_eq!(g.active_group(), 0);
+    assert_eq!(g.dynamic_preview().map(|(i, t)| (i, t.id)), Some((1, id)));
+    assert!(!g.retarget_dynamic(p("b.md")));
+    assert!(g.retarget_dynamic(p("c.md")));
+}
+
+#[test]
+fn previews_saved_and_restored() {
+    let mut g = EditorGroups::default();
+    g.open_file(
+        p("/x/a.md"),
+        FileView::Preview,
+        OpenMode::Pinned,
+        true,
+        false,
+    );
+    g.open_dynamic_preview(p("/x/b.md"));
+    let state = g.state();
+    let saved: Vec<_> = state.groups.iter().flat_map(|g| &g.tabs).collect();
+    assert_eq!(
+        saved[0].0,
+        PathBuf::from(format!("{MARKDOWN_PREVIEW_STATE_PREFIX}/x/a.md"))
+    );
+    assert_eq!(
+        saved[1].0,
+        PathBuf::from(format!("{MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX}/x/b.md"))
+    );
+    let restored = EditorGroups::restore(&state);
+    assert_eq!(
+        items(&restored, 0),
+        vec![TabItem::MarkdownPreview(p("/x/a.md"))]
+    );
+    assert_eq!(
+        items(&restored, 1),
+        vec![TabItem::MarkdownPreviewDynamic(p("/x/b.md"))]
+    );
+
+    let two = GroupsState {
+        groups: vec![GroupState {
+            tabs: vec![
+                (
+                    PathBuf::from(format!("{MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX}/x/b.md")),
+                    true,
+                ),
+                (
+                    PathBuf::from(format!("{MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX}/x/c.md")),
+                    true,
+                ),
+            ],
+            active: Some(1),
+        }],
+        active_group: 0,
+    };
+    let restored = EditorGroups::restore(&two);
+    assert_eq!(
+        items(&restored, 0),
+        vec![TabItem::MarkdownPreviewDynamic(p("/x/b.md"))]
+    );
+}
+
+#[test]
+fn static_preview_has_path_dynamic_has_not() {
+    let mut g = EditorGroups::default();
+    let s = g.open_file(p("a.md"), FileView::Preview, OpenMode::Pinned, true, false);
+    let d = g.open_dynamic_preview(p("a.md"));
+    let tab = |id| {
+        g.groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .find(|t| t.id == id)
+            .unwrap()
+    };
+    assert_eq!(tab(s).path(), Some(&p("a.md")));
+    assert_eq!(tab(s).previewed_path(), Some(&p("a.md")));
+    assert_eq!(tab(s).title(), "a.md");
+    assert_eq!(tab(d).path(), None);
+    assert_eq!(tab(d).previewed_path(), Some(&p("a.md")));
 }

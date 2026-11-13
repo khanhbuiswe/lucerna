@@ -64,7 +64,8 @@ pub use config_files::{
 pub use diagnostics_status::DiagnosticsStatusItem;
 pub use documents::{DiskNotice, DocState, DocumentEvent, DocumentStatus, Documents};
 pub use editor_groups::{
-    EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode,
+    EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, FileView, Group, GroupState, GroupsState,
+    MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
     SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
 };
 pub use excerpt_list::model::{

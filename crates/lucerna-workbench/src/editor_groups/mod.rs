@@ -4,7 +4,8 @@ mod model;
 mod view;
 
 pub use model::{
-    EXTENSIONS_TAB_STATE, EditorGroups, Group, GroupId, GroupState, GroupsState, OpenMode,
+    EXTENSIONS_TAB_STATE, EditorGroups, FileView, Group, GroupId, GroupState, GroupsState,
+    MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
     SEARCH_TAB_STATE, Tab, TabId, TabItem,
 };
 pub(crate) use view::path_bar_text;
