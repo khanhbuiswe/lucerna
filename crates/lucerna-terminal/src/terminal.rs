@@ -44,9 +44,6 @@ struct Child {
     pid: Option<u32>,
     #[cfg(unix)]
     fd: std::os::fd::RawFd,
-    /// The I/O thread. It owns the PTY, so joining it and dropping the result
-    /// closes the PTY and reaps the child.
-    io_thread: JoinHandle<(EventLoop<tty::Pty, Listener>, State)>,
 }
 
 /// Where bytes for the child go.
@@ -64,6 +61,10 @@ struct Shared {
     size: Mutex<WindowSize>,
     /// The child has exited and may have been reaped: its pid is stale.
     exited: AtomicBool,
+    /// The I/O thread still owns an open PTY. Cleared, under this lock,
+    /// before the PTY is dropped; `hang_up` holds the lock while it uses the
+    /// fd, so it never touches a closed or reused one.
+    pty_open: Mutex<bool>,
     /// Exit code from `ChildExit`, reported once the final output is parsed.
     exit_code: Mutex<Option<i32>>,
 }
@@ -183,6 +184,7 @@ fn new_term(
         sink: OnceLock::new(),
         size: Mutex::new(size),
         exited: AtomicBool::new(false),
+        pty_open: Mutex::new(true),
         exit_code: Mutex::new(None),
     });
     let config = Config {
@@ -266,6 +268,7 @@ impl Terminal {
         let event_loop = EventLoop::new(term.clone(), event_proxy, pty, true, false)?;
         let _ = shared.sink.set(Sink::Pty(event_loop.channel()));
         let io_thread = event_loop.spawn();
+        spawn_reaper(io_thread, shared.clone())?;
 
         let terminal = Terminal {
             term,
@@ -275,7 +278,6 @@ impl Terminal {
                 pid,
                 #[cfg(unix)]
                 fd,
-                io_thread,
             }),
             #[cfg(feature = "test-support")]
             parser: Mutex::default(),
@@ -304,6 +306,12 @@ impl Terminal {
         let mut term = self.term.lock();
         self.apply_pending(&mut term);
         lock(&self.parser).advance(&mut *term, bytes);
+    }
+
+    /// The PTY has been closed and the child reaped (or never existed).
+    #[cfg(feature = "test-support")]
+    pub fn pty_closed(&self) -> bool {
+        !*lock(&self.shared.pty_open) || self.child.is_none()
     }
 
     /// Everything sent to the PTY so far (fake terminals only).
@@ -379,7 +387,9 @@ impl Terminal {
     /// The PTY's controller side, while the terminal has one.
     #[cfg(unix)]
     pub fn pty_fd(&self) -> Option<std::os::fd::RawFd> {
-        self.child.as_ref().map(|c| c.fd)
+        let child = self.child.as_ref()?;
+        let open = !self.shared.exited.load(Ordering::SeqCst) && *lock(&self.shared.pty_open);
+        open.then_some(child.fd)
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -425,32 +435,58 @@ impl Drop for Terminal {
             return;
         };
         #[cfg(unix)]
-        if !self.shared.exited.load(Ordering::SeqCst) {
-            hang_up(child.pid, child.fd);
+        {
+            let open = lock(&self.shared.pty_open);
+            if *open && !self.shared.exited.load(Ordering::SeqCst) {
+                hang_up(child.pid, child.fd);
+            }
         }
-        let sender = match self.shared.sink.get() {
-            Some(Sink::Pty(sender)) => Some(sender.clone()),
-            _ => None,
+        #[cfg(not(unix))]
+        let _ = child;
+        let Some(Sink::Pty(sender)) = self.shared.sink.get() else {
+            return;
         };
-        // Closing the PTY waits for the child, so do it off the UI thread.
+        if !*lock(&self.shared.pty_open) {
+            return;
+        }
         // The I/O thread keeps reading meanwhile: an exiting child can block
-        // until its last output is read, and then the loop ends by itself.
-        let io_thread = child.io_thread;
+        // until its last output is read, and then the loop ends by itself and
+        // the reaper closes the PTY. Stop it only if the child lingers.
+        let sender = sender.clone();
+        let shared = self.shared.clone();
         let _ = thread::Builder::new()
             .name("terminal hangup".into())
             .spawn(move || {
                 let deadline = Instant::now() + HANGUP_GRACE;
-                while !io_thread.is_finished() && Instant::now() < deadline {
+                while *lock(&shared.pty_open) && Instant::now() < deadline {
                     thread::sleep(Duration::from_millis(10));
                 }
-                if !io_thread.is_finished()
-                    && let Some(sender) = sender
-                {
+                if *lock(&shared.pty_open) {
                     let _ = sender.send(Msg::Shutdown);
                 }
-                drop(io_thread.join());
             });
     }
+}
+
+/// Joins the I/O thread as soon as its loop ends, whether the child exited
+/// or `Drop` asked it to stop, and drops the `EventLoop`. That closes the PTY
+/// and lets alacritty's `Pty::drop` signal and wait for the child right
+/// after it was reaped, instead of hours later when the pid may belong to
+/// another process.
+fn spawn_reaper(
+    io_thread: JoinHandle<(EventLoop<tty::Pty, Listener>, State)>,
+    shared: Arc<Shared>,
+) -> io::Result<()> {
+    thread::Builder::new()
+        .name("terminal reaper".into())
+        .spawn(move || {
+            let result = io_thread.join();
+            *lock(&shared.pty_open) = false;
+            // May block in `wait()` for a child that ignores SIGHUP, so the
+            // lock is not held here.
+            drop(result);
+        })
+        .map(drop)
 }
 
 /// Sends SIGHUP to the shell's process group and to the terminal's foreground
@@ -458,8 +494,8 @@ impl Drop for Terminal {
 /// waiting on a foreground command would otherwise linger until it returns.
 #[cfg(unix)]
 fn hang_up(pid: Option<u32>, fd: std::os::fd::RawFd) {
-    // SAFETY: plain syscalls on a pid we spawned (not yet reaped, checked by
-    // the caller) and a PTY fd the I/O thread keeps open until shutdown.
+    // SAFETY: plain syscalls on a pid we spawned and have not reaped, and a
+    // PTY fd kept open while the caller holds `pty_open` (both checked there).
     unsafe {
         let foreground = libc::tcgetpgrp(fd);
         if foreground > 0 {

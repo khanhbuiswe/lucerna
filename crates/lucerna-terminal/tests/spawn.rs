@@ -232,3 +232,24 @@ fn input_reaches_the_child() {
     );
     assert!(screen_text(&term.snapshot()).contains("got abc"));
 }
+
+#[test]
+fn exited_terminal_closes_its_pty_at_once() {
+    let (term, mut rx) = Terminal::spawn(opts("/bin/sh", &["-c", "exit 0"])).unwrap();
+    assert!(term.pty_fd().is_some() || term.pty_closed());
+    assert_eq!(
+        wait_for(&mut rx, is_exit, TIMEOUT),
+        Some(TerminalEvent::Exited(Some(0)))
+    );
+    // A stale fd must never reach tcgetpgrp.
+    assert_eq!(term.pty_fd(), None);
+    // The PTY is closed and the child reaped while the tab stays open, so
+    // closing it later signals nothing.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !term.pty_closed() {
+        assert!(Instant::now() < deadline, "PTY still open 2 s after exit");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(term.child_pid().is_some());
+    drop(term);
+}
