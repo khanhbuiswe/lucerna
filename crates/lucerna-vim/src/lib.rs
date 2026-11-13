@@ -6,6 +6,7 @@ mod classify;
 mod edit;
 mod marks;
 mod motion;
+mod object;
 mod operator;
 mod register;
 mod scroll;
@@ -157,6 +158,10 @@ pub trait ViewInfo {
     /// What edit plans are built against; `None` for a read-only view,
     /// which gets no [`Action::Edit`].
     fn edit_ctx(&self) -> Option<Ctx<'_>>;
+    /// The byte ranges of the syntax nodes that contain `range`, innermost
+    /// first; empty without a syntax tree. Text objects use them to skip
+    /// brackets in strings and comments and to find tags.
+    fn enclosing_nodes(&self, range: Range<usize>) -> Vec<Range<usize>>;
 }
 
 /// A side effect for the view to carry out. The cursor itself is read back

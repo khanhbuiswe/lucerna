@@ -1086,4 +1086,10 @@ impl ViewInfo for Info<'_> {
             syntax: self.view.syntax().map(|s| &**s),
         })
     }
+
+    fn enclosing_nodes(&self, range: Range<usize>) -> Vec<Range<usize>> {
+        self.view
+            .syntax()
+            .map_or_else(Vec::new, |s| s.enclosing_nodes(range))
+    }
 }

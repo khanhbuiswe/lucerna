@@ -345,9 +345,10 @@ mod tests {
     fn escape_and_invalid_keys_cancel() {
         assert_edit("|abc def", "d<Esc>w", "abc |def");
         assert_edit("|abc def", "dxw", "abc |def");
-        // Text objects and `/` come later; for now they cancel.
-        assert_edit("|abc def", "di", "|abc def");
+        // `/` comes later; for now it cancels. An unknown text object
+        // cancels too.
         assert_edit("|abc def", "d/", "|abc def");
+        assert_edit("|abc def", "diqw", "abc |def");
     }
 
     #[test]

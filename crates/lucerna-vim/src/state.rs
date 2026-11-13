@@ -10,6 +10,7 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use crate::classify::{self, display_col, last_char_col, line};
 use crate::marks::FileMarks;
 use crate::motion::{self, FindChar, Goal, WordMotion};
+use crate::object::{self, Object};
 use crate::operator::{self, MotionKind, OpRange, Operator, PendingOp};
 use crate::register::{Registers, WriteKind};
 use crate::scroll::{self, Screen, ScrollKind};
@@ -568,11 +569,16 @@ impl Vim {
             }
             return Outcome::Handled(vec![]);
         }
+        // `i` or `a` after an operator or in Visual mode starts a text
+        // object.
+        let object_prefix = matches!(c, 'i' | 'a')
+            && (self.op.is_some() || !matches!(self.mode, Mode::Normal | Mode::Insert));
         if self.prefix.is_none()
-            && matches!(
-                c,
-                'g' | 'z' | 'f' | 'F' | 't' | 'T' | 'm' | '\'' | '`' | ']' | '['
-            )
+            && (object_prefix
+                || matches!(
+                    c,
+                    'g' | 'z' | 'f' | 'F' | 't' | 'T' | 'm' | '\'' | '`' | ']' | '['
+                ))
         {
             self.prefix = Some(c);
             self.set_pending(&c.to_string());
@@ -586,6 +592,9 @@ impl Vim {
             return self.op_key(p, prefix, explicit, c, view, globals, settings);
         }
         let n = self.take_count();
+        if let Some(p @ ('i' | 'a')) = prefix {
+            return self.visual_object(c, p == 'a', n, view);
+        }
         if let Some(p @ ('f' | 'F' | 't' | 'T')) = prefix {
             let find = FindChar {
                 ch: c,
@@ -842,6 +851,23 @@ impl Vim {
         let n = count.unwrap_or(1);
         let snapshot = view.snapshot();
         let from = self.cursor;
+        if let Some(pre @ ('i' | 'a')) = prefix {
+            // A text object; `v`/`V` before it are ignored.
+            let r = Object::from_key(c)
+                .and_then(|obj| object::object_range(snapshot, from, obj, pre == 'a', n, view));
+            return match r {
+                None => Outcome::Handled(vec![]),
+                Some(r) if r.range.is_empty() && r.kind != MotionKind::Linewise => {
+                    // `ci(` on `()`: Insert between the brackets.
+                    if p.op == Operator::Change && view.edit_ctx().is_some() {
+                        self.cursor = snapshot.offset_to_point(r.range.start);
+                        return self.change_nothing(view);
+                    }
+                    Outcome::Handled(vec![])
+                }
+                Some(r) => self.finish_op(p, r, None, view, g, s),
+            };
+        }
         let doubled = matches!(
             (p.op, prefix, c),
             (Operator::Delete, None, 'd')
@@ -1040,6 +1066,76 @@ impl Vim {
                 _ => None,
             },
         })
+    }
+
+    /// `i…`/`a…` in a visual mode: selects the object at the head, or
+    /// grows a selection of more than one char to take it in. A selection
+    /// that already holds the object grows to the next one: the next outer
+    /// pair for brackets and tags, the object after the selection for the
+    /// rest. Paragraphs switch to VisualLine and the rest to Visual.
+    fn visual_object(&mut self, c: char, around: bool, n: u32, view: &dyn ViewInfo) -> Outcome {
+        let Some(obj) = Object::from_key(c) else {
+            return Outcome::Handled(vec![]);
+        };
+        let s = view.snapshot();
+        let tab = view.tab_size();
+        // The selection's first and last positions, when it spans more
+        // than one char.
+        let sel = (self.anchor != self.cursor)
+            .then(|| self.selection(s, tab))
+            .flatten()
+            .map(|sel| visual::bounds(&sel, s, tab));
+        let at = |p: Point, count: u32| object::object_range(s, p, obj, around, count, view);
+        let Some(mut r) = at(self.cursor, n) else {
+            return Outcome::Handled(vec![]);
+        };
+        let key = |p: Point| (p.row, p.column);
+        if let Some((first, last)) = sel {
+            let (a, b) = object_bounds(s, &r);
+            if key(first) <= key(a) && key(b) <= key(last) {
+                let next = if obj.nests() {
+                    at(self.cursor, n.saturating_add(1))
+                } else {
+                    // The position after the selection's last char.
+                    let one = VimSelection::Char {
+                        start: last,
+                        end_inclusive: last,
+                    };
+                    visual::exclusive_range(&one, s)
+                        .map(|r| r.end)
+                        .filter(|&p| s.point_to_offset(p) < s.len_bytes())
+                        .and_then(|p| at(p, n))
+                };
+                match next {
+                    Some(next) => r = next,
+                    None => return Outcome::Handled(vec![]),
+                }
+            }
+        }
+        let linewise = r.kind == MotionKind::Linewise;
+        if r.range.is_empty() && !linewise {
+            return Outcome::Handled(vec![]);
+        }
+        let (mut start, mut end) = object_bounds(s, &r);
+        if let Some((first, last)) = sel {
+            start = std::cmp::min_by_key(start, first, |p| key(*p));
+            end = std::cmp::max_by_key(end, last, |p| key(*p));
+        }
+        let mode = if linewise {
+            Mode::VisualLine
+        } else {
+            Mode::Visual
+        };
+        let mut actions = Vec::new();
+        if mode != self.mode {
+            actions.push(Action::ModeChanged(mode));
+        }
+        self.mode = mode;
+        self.anchor = start;
+        self.cursor = end;
+        self.goal = None;
+        actions.push(Action::CursorMoved { jump: false });
+        Outcome::Handled(actions)
     }
 
     /// `c` over an empty range: Insert at the cursor with no edit; nothing
@@ -1349,6 +1445,32 @@ impl Vim {
             self.count.map_or(String::new(), |n| n.to_string()),
         );
     }
+}
+
+/// The first and last positions of a text object's range: for a linewise
+/// one, column 0 of its first and last rows; for a charwise one, its first
+/// char and its last (a row's length when that is the line break).
+fn object_bounds(s: &BufferSnapshot, r: &OpRange) -> (Point, Point) {
+    let start = s.offset_to_point(r.range.start);
+    if r.kind == MotionKind::Linewise {
+        let row = s.offset_to_point(r.range.end).row;
+        return (
+            Point {
+                row: start.row,
+                column: 0,
+            },
+            Point { row, column: 0 },
+        );
+    }
+    let last = s.offset_to_point(s.floor_char_boundary(r.range.end.saturating_sub(1)));
+    let column = last.column.min(visual::line_len(s, last.row));
+    (
+        start,
+        Point {
+            row: last.row,
+            column,
+        },
+    )
 }
 
 /// `p` moved onto a char: the row into the buffer, the column onto a char

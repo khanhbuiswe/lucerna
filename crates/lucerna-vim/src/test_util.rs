@@ -24,6 +24,8 @@ pub(crate) struct TestView {
     /// Makes `edit_ctx` return `None`, like a read-only view.
     pub readonly: bool,
     pub config: EditConfig,
+    /// Syntax nodes for `enclosing_nodes`, as byte ranges.
+    pub nodes: Vec<Range<usize>>,
     /// Undo steps, oldest first, and redo steps, latest undone last.
     undo: Vec<UndoStep>,
     redo: Vec<UndoStep>,
@@ -56,6 +58,7 @@ impl TestView {
             searching: false,
             readonly: false,
             config: lucerna_editor::test_util::test_config(),
+            nodes: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
         }
@@ -251,6 +254,21 @@ impl ViewInfo for TestView {
             language: None,
             syntax: None,
         })
+    }
+
+    /// The `nodes` that contain `range` (and are not equal to it unless it
+    /// is empty), innermost first, like `SyntaxState::enclosing_nodes`.
+    fn enclosing_nodes(&self, range: Range<usize>) -> Vec<Range<usize>> {
+        let mut out: Vec<Range<usize>> = self
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.start <= range.start && range.end <= n.end && (**n != range || range.is_empty())
+            })
+            .cloned()
+            .collect();
+        out.sort_by_key(|n| (n.end - n.start, n.start));
+        out
     }
 }
 
