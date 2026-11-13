@@ -32,6 +32,7 @@ pub fn key_to_bytes(k: &KeyInput, mode: Modes, option_is_meta: bool) -> Option<V
     }
 
     let mut out = Vec::new();
+    let mut named = true;
     match k.key {
         "enter" => out.push(b'\r'),
         "tab" if k.shift => return Some(b"\x1b[Z".to_vec()),
@@ -41,6 +42,7 @@ pub fn key_to_bytes(k: &KeyInput, mode: Modes, option_is_meta: bool) -> Option<V
         "space" if k.ctrl => out.push(0),
         "space" => out.push(b' '),
         key => {
+            named = false;
             let mut chars = key.chars();
             let (Some(c), None) = (chars.next(), chars.next()) else {
                 return None;
@@ -59,9 +61,9 @@ pub fn key_to_bytes(k: &KeyInput, mode: Modes, option_is_meta: bool) -> Option<V
             }
         }
     }
-    // Only meta-as-escape prefixes; a plain alt press with the layout's own
-    // composition was returned above.
-    if k.alt && (option_is_meta || k.ctrl) {
+    // Named keys have no layout character to keep, so alt always means ESC;
+    // for characters only meta mode (or ctrl) does.
+    if k.alt && (named || option_is_meta || k.ctrl) {
         out.insert(0, 0x1b);
     }
     Some(out)
@@ -389,6 +391,32 @@ mod tests {
             ..key("c")
         };
         assert_eq!(s(key_to_bytes(&k, Modes::empty(), true)), "\x1b\x03");
+    }
+
+    #[test]
+    fn alt_on_named_keys_sends_esc_without_option_as_meta() {
+        let go = |k: KeyInput| s(key_to_bytes(&k, Modes::empty(), false));
+        assert_eq!(
+            go(KeyInput {
+                alt: true,
+                ..key("backspace")
+            }),
+            "\x1b\x7f"
+        );
+        assert_eq!(
+            go(KeyInput {
+                alt: true,
+                ..key("enter")
+            }),
+            "\x1b\r"
+        );
+        assert_eq!(
+            go(KeyInput {
+                alt: true,
+                ..key("tab")
+            }),
+            "\x1b\t"
+        );
     }
 
     #[test]
