@@ -204,6 +204,24 @@ fn select_path_reports_kind() {
     assert_eq!(model.selected_kind(), SelectedKind::Root);
 }
 
+/// The kind is kept with the rows: a hidden selection reads `File` until
+/// its row shows, and follows a snapshot that changes the entry's kind.
+#[test]
+fn selected_kind_follows_rows() {
+    use EntryKind::*;
+    let mut model = ExplorerModel::new(project());
+    model.select(Selection::Path(p("src/ui")));
+    assert_eq!(model.selected_kind(), SelectedKind::File, "hidden");
+    model.reveal(Path::new("src/ui"));
+    assert_eq!(model.selected_kind(), SelectedKind::Dir);
+    model.select(Selection::Path(p("Cargo.toml")));
+    model.set_snapshot(snapshot(&[("src", Dir), ("Cargo.toml", Dir)]));
+    assert_eq!(model.selected_kind(), SelectedKind::Dir);
+    model.set_snapshot(snapshot(&[("src", Dir)]));
+    assert_eq!(model.selection(), &Selection::Root);
+    assert_eq!(model.selected_kind(), SelectedKind::Root);
+}
+
 #[test]
 fn selection_falls_back_to_visible_ancestor() {
     let mut model = ExplorerModel::new(project());

@@ -1410,3 +1410,57 @@ fn removed_event_before_result_still_selects_next_sibling(cx: &mut TestAppContex
         selection(&wb, cx) == Selection::Path(Arc::from(Path::new("b.rs")))
     });
 }
+
+fn changed(wb: &Entity<Workbench>, path: &str, kind: ChangeKind, cx: &mut VisualTestContext) {
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(
+            &WorktreeEvent::Changed(vec![Change {
+                path: Arc::from(Path::new(path)),
+                kind,
+            }]),
+            cx,
+        )
+    });
+    draw(cx);
+}
+
+fn decorated(wb: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .explorer()
+            .read(cx)
+            .model()
+            .is_recently_changed(Path::new(path), Instant::now())
+    })
+}
+
+/// An own change is forgotten once the worktree reports it: a later
+/// change to the same path by another program is decorated.
+#[gpui::test]
+fn own_change_is_dropped_once_reported(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    wb.update(cx, |wb, _| {
+        wb.expect_own_changes([Arc::from(Path::new("a.rs"))])
+    });
+    changed(&wb, "a.rs", ChangeKind::Modified, cx);
+    assert!(!decorated(&wb, "a.rs", cx), "Lucerna's own change");
+    changed(&wb, "a.rs", ChangeKind::Modified, cx);
+    assert!(decorated(&wb, "a.rs", cx), "another program's change");
+}
+
+/// A Removed report does not end the wait: a rename's or delete's old
+/// path is reported removed, and its new path may still come.
+#[gpui::test]
+fn own_change_survives_removed_report(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    wb.update(cx, |wb, _| {
+        wb.expect_own_changes([Arc::from(Path::new("a.rs"))])
+    });
+    changed(&wb, "a.rs", ChangeKind::Removed, cx);
+    changed(&wb, "a.rs", ChangeKind::Added, cx);
+    assert!(!decorated(&wb, "a.rs", cx));
+}

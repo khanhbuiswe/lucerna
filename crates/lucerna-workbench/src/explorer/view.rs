@@ -648,13 +648,7 @@ impl ExplorerView {
                     .workbench
                     .update(cx, |wb, _| wb.forget_own_changes(&expected));
                 if e.kind() == std::io::ErrorKind::AlreadyExists && focused {
-                    // Someone else took the name after the check: keep the
-                    // name to fix.
-                    if let Some(name_edit) = &mut self.name_edit {
-                        name_edit.busy = false;
-                        name_edit.error = Some(NameError::Exists(name).to_string());
-                    }
-                    cx.notify();
+                    self.keep_editing_taken_name(name, cx);
                 } else {
                     self.end_name_edit(focused, window, cx);
                     let old = abs_from
@@ -679,6 +673,16 @@ impl ExplorerView {
         }
     }
 
+    /// Someone else took `name` after the check: the edit stays open with
+    /// the error, for the name to be fixed.
+    fn keep_editing_taken_name(&mut self, name: String, cx: &mut Context<Self>) {
+        if let Some(name_edit) = &mut self.name_edit {
+            name_edit.busy = false;
+            name_edit.error = Some(NameError::Exists(name).to_string());
+        }
+        cx.notify();
+    }
+
     /// Whether the name input has the focus.
     fn name_focused(&self, window: &Window, cx: &App) -> bool {
         self.name_edit
@@ -701,22 +705,14 @@ impl ExplorerView {
                 .workbench
                 .update(cx, |wb, _| wb.forget_own_changes(&expected));
         }
-        let focused = self
-            .name_edit
-            .as_ref()
-            .is_some_and(|e| e.input.focus_handle(cx).is_focused(window));
+        let focused = self.name_focused(window, cx);
         let name = target
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         match result {
-            // Someone else created it after the check: keep the name to fix.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && focused => {
-                if let Some(name_edit) = &mut self.name_edit {
-                    name_edit.busy = false;
-                    name_edit.error = Some(NameError::Exists(name).to_string());
-                }
-                cx.notify();
+                self.keep_editing_taken_name(name, cx);
             }
             Err(e) => {
                 self.end_name_edit(focused, window, cx);

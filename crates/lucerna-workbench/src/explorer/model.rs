@@ -65,6 +65,9 @@ pub enum SelectedKind {
 
 pub struct ExplorerModel {
     selection: Selection,
+    /// [`Self::selected_kind`], kept in step with `selection` and `rows`:
+    /// the context keys read it on every keystroke.
+    selected_kind: SelectedKind,
     snapshot: WorktreeSnapshot,
     expanded: HashSet<Arc<Path>>,
     rows: Vec<Row>,
@@ -78,6 +81,7 @@ impl ExplorerModel {
     pub fn new(snapshot: WorktreeSnapshot) -> Self {
         let mut model = ExplorerModel {
             selection: Selection::Root,
+            selected_kind: SelectedKind::Root,
             snapshot,
             expanded: HashSet::new(),
             rows: Vec::new(),
@@ -114,17 +118,22 @@ impl ExplorerModel {
     /// ancestor, else the root.
     pub fn select(&mut self, sel: Selection) {
         self.selection = sel;
+        self.update_selected_kind();
     }
 
     /// A path that is not a visible row reports `File`.
     pub fn selected_kind(&self) -> SelectedKind {
-        match &self.selection {
+        self.selected_kind
+    }
+
+    fn update_selected_kind(&mut self) {
+        self.selected_kind = match &self.selection {
             Selection::Root => SelectedKind::Root,
             Selection::Path(path) => match self.rows.iter().find(|row| row.path == *path) {
                 Some(row) if row.kind == EntryKind::Dir => SelectedKind::Dir,
                 _ => SelectedKind::File,
             },
-        }
+        };
     }
 
     fn fix_selection(&mut self) {
@@ -141,6 +150,7 @@ impl ExplorerModel {
             .find(|a| !a.as_os_str().is_empty() && visible(a))
             .map(Arc::from);
         self.selection = nearest.map_or(Selection::Root, Selection::Path);
+        self.update_selected_kind();
     }
 
     /// Expands or collapses `dir`; anything that is not a directory is
@@ -256,6 +266,7 @@ impl ExplorerModel {
         let mut rows = Vec::with_capacity(self.rows.len());
         self.push_children(Path::new(""), 0, &mut rows);
         self.rows = rows;
+        self.update_selected_kind();
     }
 
     fn push_children(&self, dir: &Path, depth: u16, rows: &mut Vec<Row>) {

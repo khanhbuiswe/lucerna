@@ -108,10 +108,11 @@ Menu được vẽ bằng `deferred(anchored().position(pos).child(menu))`. `anc
 - `Enter` chạy mục đang chọn. Bấm chuột trái vào một mục cũng chạy mục đó.
 - `Esc` đóng menu. Bấm chuột ra ngoài menu (cả chuột trái lẫn chuột phải) cũng đóng menu.
 - Chạy một mục thì trước hết đóng menu, trả focus về view đã mở menu, rồi mới chạy lệnh. Như vậy các lệnh cần Explorer đang có focus (như Rename) vẫn chạy đúng.
-- Khi menu đóng mà không chạy lệnh nào, focus quay về view đã mở menu.
+- Khi menu đóng mà không chạy lệnh nào, focus quay về view đã mở menu. Nhưng chỉ khi menu (hoặc không gì cả) còn giữ focus, theo cách của Zed: bấm vào editor để đóng menu thì editor giữ focus, không bị Explorer lấy lại.
+- Menu đóng khi focus rời khỏi nó, ví dụ khi mở Quick Open (`cmd+p`), Command Palette (`cmd+shift+p`) hay ẩn sidebar (`cmd+b`).
 - Bấm chuột phải ở chỗ khác khi menu đang mở thì đóng menu cũ và mở menu mới.
 
-**Phím trong menu đi qua keymap**, giống Quick Open (`inQuickOpen`). Lý do: `Workbench::dispatch_key` bắt mọi phím ở pha capture, trước khi view con nhận được. Có context key mới `contextMenuVisible`. Các phím `up`, `down`, `home`, `end`, `enter`, `escape` có điều kiện `contextMenuVisible` và trỏ tới các lệnh nội bộ của menu (ví dụ `lucerna.contextMenu.selectNext`). Khi menu đang mở, `filesExplorerFocus` là false, để `enter` không chạy Rename và `cmd+backspace` không xóa.
+**Phím trong menu do chính menu xử lý**, trong key handler riêng của menu, giống cách ô nhập của Quick Open nhận phím: `up`, `down`, `home`, `end`, `enter`, `escape`, không kèm phím bổ trợ. Phím có `cmd`, `ctrl`, `alt` hay `shift` đi tiếp ra keymap của workbench. Có context key mới `contextMenuVisible`. Khi menu đang mở, hoặc khi đang nhập tên trong cây, `filesExplorerFocus` là false, để `enter` không chạy Rename và `cmd+backspace` không xóa.
 
 ### 2. Dòng đang chọn và focus của Explorer
 
@@ -122,7 +123,7 @@ Menu được vẽ bằng `deferred(anchored().position(pos).child(menu))`. `anc
 - Bấm chuột trái vào một dòng thì chọn dòng đó, rồi làm như hiện nay (mở file, hoặc mở/đóng thư mục).
 - Bấm chuột phải vào một dòng thì chọn dòng đó và mở menu của nó.
 - Bấm chuột phải vào dòng gốc hoặc chỗ trống dưới cây thì chọn thư mục gốc và mở menu của gốc.
-- Khi tab đang mở đổi (theo `explorer.autoReveal`), dòng đang chọn cũng đi theo tab đó, giống VS Code.
+- Khi tab đang mở đổi, dòng đang chọn cũng đi theo tab đó, giống VS Code. Chỉ khi `explorer.autoReveal` bật; tắt thì dòng đang chọn đứng yên.
 - Khi dòng đang chọn biến mất khỏi cây (bị xóa, hoặc thư mục cha bị đóng), chọn thư mục cha gần nhất còn hiện.
 
 **Cách vẽ:**
@@ -133,8 +134,8 @@ Menu được vẽ bằng `deferred(anchored().position(pos).child(menu))`. `anc
 
 **Focus.** Sidebar đã có focus handle (`sidebar_focus`). Có thêm các context key sau:
 
-- `filesExplorerFocus` = sidebar đang có focus, sidebar đang hiện Explorer, và không có context menu nào đang mở.
-- `explorerViewletFocus` sửa lại cho đúng nghĩa: chỉ đúng khi sidebar đang hiện Explorer. Hiện nay key này bằng `sideBarFocus`, nên vẫn đúng cả khi sidebar đang hiện Extensions.
+- `filesExplorerFocus` = sidebar đang có focus, sidebar đang hiện Explorer, không có context menu nào đang mở và không đang nhập tên trong cây.
+- `explorerViewletFocus` giữ nguyên, bằng `sideBarFocus`: sidebar hiện chỉ chứa Explorer (Search và Extensions đã thành tab), nên hai key trùng nghĩa.
 - `explorerResourceIsFolder` = dòng đang chọn là thư mục, hoặc là gốc.
 - `explorerResourceIsRoot` = đang chọn gốc.
 
@@ -144,7 +145,11 @@ Tên các key theo VS Code. Bấm vào một dòng sẽ đưa focus vào sidebar
 
 ### 3. Lệnh và menu
 
-Mọi lệnh được đăng ký trong `CommandRegistry` với ID của VS Code. Lệnh tác động lên **dòng đang chọn** của Explorer. Khi nhận `args` là `{ "path": … }` thì lệnh tác động lên đường dẫn đó, để dùng lại cho menu tab sau này.
+Mọi lệnh được đăng ký trong `CommandRegistry` với ID của VS Code. Lệnh tác động lên **dòng đang chọn** của Explorer. Khi nhận `args` là `{ "path": … }` thì lệnh tác động lên đường dẫn đó, để dùng lại cho menu tab sau này. Mọi mục của menu đều mang `args.path` của dòng mở menu (gốc là `""`), nên đích của lệnh cố định từ lúc menu mở, kể cả khi dòng biến mất trong lúc menu đang mở.
+
+Tên trong Command Palette: Copy Path và Copy Relative Path là "Explorer: Copy Path" và "Explorer: Copy Relative Path", vì chúng tác động lên dòng đang chọn chứ không phải file đang mở. Reveal dùng nhãn của nền tảng: "File: Reveal in Finder" (macOS), "File: Reveal in File Explorer" (Windows), "File: Open Containing Folder" (Linux).
+
+Chạy New File, New Folder, Rename hay Open Context Menu từ Command Palette khi sidebar đang ẩn thì hiện Explorer trước (VS Code cũng focus Explorer), để ô nhập hay menu không giữ focus mà không được vẽ. Ẩn sidebar thì hủy tên đang nhập và đóng menu.
 
 Menu của một dòng có thứ tự như sau. Mục không áp dụng thì bị ẩn, theo VS Code. Dấu "—" là đường kẻ phân cách.
 
@@ -188,8 +193,11 @@ Cách từng lệnh chạy:
   - Linux: `terminal.external.linuxExec` (mặc định là terminal của hệ, ví dụ `x-terminal-emulator`), spawn với `cwd = dir`.
   - Windows: `terminal.external.windowsExec`, để dành cho bản Windows.
 
-  Nếu lỗi thì báo bằng `status_message`.
+  Lucerna chờ chương trình mở terminal kết thúc (ở luồng nền), giống VS Code. Nếu không chạy được hoặc nó thoát với mã khác 0 (ví dụ `open -a` với tên app sai), báo bằng `status_message`: "Couldn't open the terminal: …".
 - **Find in Folder…:** mở hoặc đưa tab Search lên trước, điền ô include bằng đường dẫn tương đối của thư mục (`src/foo`, giống VS Code; gốc thì để trống), rồi focus vào ô query.
+  - Một mẫu include không có ký tự glob là đường dẫn, và khớp cả `<đường dẫn>/**`, giống VS Code.
+  - Tên thư mục có ký tự đặc biệt thì được escape: `[ ] { } * ? ,` được bọc thành lớp ký tự (`app/[slug]` thành `app/[[]slug[]]`), `!` hay `#` ở đầu được thêm `\`, rồi thêm `/**` ở cuối.
+  - Ô include tách mẫu theo dấu phẩy, trừ dấu phẩy nằm trong `[]` hoặc `{}`, giống `splitGlobAware` của VS Code.
 - **Copy Path:** chép đường dẫn tuyệt đối vào clipboard.
 - **Copy Relative Path:** chép đường dẫn so với gốc. Ngăn cách theo `explorer.copyRelativePathSeparator`: `auto`, `/` hoặc `\`, mặc định `auto` (`/` trên macOS và Linux). Với gốc thì chép tên thư mục gốc, giống VS Code.
 
@@ -232,7 +240,13 @@ EditState {
   - Đổi tên chỉ khác hoa thường (`readme.md` thành `README.md`) phải chạy được trên ổ không phân biệt hoa thường.
   - Đổi tên sang tên đã có thì báo lỗi, không ghi đè.
   - Mọi tab mở file đó, hoặc mở file nằm trong thư mục được đổi tên, chuyển sang đường dẫn mới. Tab giữ nguyên nội dung đang sửa dở, vị trí con trỏ và trạng thái ghim. Ngôn ngữ và LSP được tính lại theo tên mới.
-- **Lỗi khi ghi** (không có quyền, ổ chỉ đọc…): báo bằng `status_message`, dòng ảo đóng lại.
+- **Lỗi khi ghi** (không có quyền, ổ chỉ đọc…): báo bằng `status_message`, dòng ảo đóng lại. Câu báo do Lucerna đặt: "Unable to create {file|folder} '<tên>': <lỗi>" và "Unable to rename '<tên>': <lỗi>". Nếu tên vừa bị chương trình khác chiếm sau lần kiểm tra và ô nhập còn focus, ô nhập ở lại với lỗi trùng tên.
+- **Những trường hợp biên:**
+  - Cửa sổ mất focus (chuyển sang app khác) thì ô nhập vẫn mở, không xác nhận cũng không hủy.
+  - Dòng đang nhập bị cuộn ra khỏi khung nhìn thì ô nhập vẫn giữ. Nó chỉ kết thúc khi focus thật sự chuyển đi nơi khác.
+  - Thư mục cha của dòng đang nhập biến mất (hoặc dòng đang đổi tên biến mất) thì ô nhập đóng, không tạo gì.
+  - Rename chờ các lần lưu đang chạy của tài liệu bên trong xong rồi mới đổi tên, để lần lưu không ghi lại đường dẫn cũ.
+  - Rename từ chối tên mà một tab đang mở giữ (tab của file đã bị xóa trên đĩa), để hai tab không bao giờ chung một đường dẫn.
 
 ### 5. Delete
 
@@ -241,14 +255,18 @@ EditState {
     - Tiêu đề: "Are you sure you want to delete '<tên>'?"
     - Chi tiết: "You can restore this file from the Trash." (với thư mục: "…this folder and its contents…")
     - Nút: `Move to Trash`, `Cancel`.
-  - Sau đó gọi `trash::delete` ở luồng nền.
-  - Nếu không đưa vào Trash được (ổ mạng, ổ ngoài không có Trash…), hỏi tiếp: "Unable to move '<tên>' to the Trash. Do you want to permanently delete instead?" với nút `Delete Permanently` và `Cancel`. Đây là cách VS Code làm.
+  - Sau đó đưa vào Trash ở luồng nền. Trên macOS dùng `NSFileManager` (`trashItemAtURL`) thay cho cách mặc định của crate `trash` là nhờ Finder qua AppleScript: cách đó bật hộp thoại xin quyền điều khiển Finder, và bị từ chối thì mọi lần Delete đều lỗi.
+  - Nếu không đưa vào Trash được (ổ mạng, ổ ngoài không có Trash…), hỏi tiếp: "Unable to move '<tên>' to the Trash. Do you want to permanently delete instead?" với chi tiết "This action is irreversible!" kèm lỗi của hệ điều hành, và nút `Delete Permanently`, `Cancel`. Đây là cách VS Code làm.
 - **`deleteFile`:** luôn hỏi, không phụ thuộc setting: "Are you sure you want to permanently delete '<tên>'?" với chi tiết "This action is irreversible!". Rồi xóa bằng `std::fs::remove_file` hoặc `remove_dir_all`.
+- **Trong lúc xóa:**
+  - Giữ phím Delete không xóa tiếp các dòng kế bên: lệnh Delete thứ hai cho cùng đường dẫn (hoặc đường dẫn bên trong, bên ngoài nó) bị bỏ qua khi lệnh trước chưa xong.
+  - Xóa chờ các lần lưu đang chạy của tài liệu bên trong xong rồi mới chạy, để lần lưu không ghi file trở lại.
+  - Lỗi khi xóa báo bằng `status_message`: "Unable to delete '<tên>': <lỗi>" (câu do Lucerna đặt).
 - **Sau khi xóa:**
   - Tab của file bị xóa, hoặc của file nằm trong thư mục bị xóa, sẽ đóng nếu chưa sửa.
-  - Tab đang có sửa dở thì giữ lại, ở trạng thái "đã bị xóa" như hiện nay (`DocState::Deleted`).
-  - Dòng đang chọn chuyển sang thư mục cha.
-- **Không đánh dấu thao tác của mình:** mọi đường dẫn mà Lucerna vừa tạo, đổi tên hoặc xóa đều được bỏ qua khi Explorer đánh dấu "thay đổi từ bên ngoài". Cơ chế của thao tác lưu (`documents.follows_disk`) chỉ áp dụng cho tài liệu đang mở, nên phải có thêm một danh sách riêng các đường dẫn Lucerna đang chờ thấy thay đổi. Mỗi đường dẫn có thời hạn ngắn và bị xóa khỏi danh sách khi worktree đã báo thay đổi đó.
+  - Tab đang có sửa dở thì giữ lại, ở trạng thái "đã bị xóa" như hiện nay (`DocState::Deleted`). VS Code hỏi riêng khi xóa file đang sửa dở; Lucerna không hỏi thêm.
+  - Dòng đang chọn chuyển sang dòng kế tiếp cùng cấp, không có thì dòng trước, không có nữa thì thư mục cha. VS Code cũng focus một dòng bên cạnh. Dòng này được tính trước khi xóa, vì watcher có thể báo dòng đã mất trước khi lệnh xóa trả kết quả.
+- **Không đánh dấu thao tác của mình:** mọi đường dẫn mà Lucerna vừa tạo, đổi tên hoặc xóa đều được bỏ qua khi Explorer đánh dấu "thay đổi từ bên ngoài". Cơ chế của thao tác lưu (`documents.follows_disk`) chỉ áp dụng cho tài liệu đang mở, nên phải có thêm một danh sách riêng các đường dẫn Lucerna đang chờ thấy thay đổi. Mỗi đường dẫn bị xóa khỏi danh sách khi worktree báo nó được thêm hoặc sửa, và chậm nhất sau một thời hạn ngắn (5 giây). Báo "đã xóa" không làm bỏ đường dẫn, vì đường dẫn cũ của Rename hay Delete được báo như vậy.
 
 ### 6. Settings mới
 
@@ -309,7 +327,15 @@ Tên, mặc định và ngữ nghĩa theo VS Code:
 - Có Delete Permanently (`deleteFile`), nhưng chỉ bằng phím tắt, không có trong menu.
 - `shift+f10` mở menu bằng phím, dùng ID `filesExplorer.openContextMenu`.
 - Dòng đang chọn đi theo tab đang mở. Chưa làm đi trong cây bằng phím mũi tên.
-- Phím trong menu đi qua keymap với `contextMenuVisible`, và `filesExplorerFocus` tắt khi menu đang mở.
-- Sửa `explorerViewletFocus` để chỉ đúng khi sidebar đang hiện Explorer.
+- Phím trong menu do key handler của menu xử lý, có `contextMenuVisible`; `filesExplorerFocus` tắt khi menu đang mở hoặc đang nhập tên. Menu đóng khi focus rời khỏi nó, và chỉ trả focus về Explorer khi menu còn giữ focus.
+- `explorerViewletFocus` giữ nguyên bằng `sideBarFocus`, vì sidebar chỉ chứa Explorer.
+- Dòng đang chọn đi theo tab đang mở chỉ khi `explorer.autoReveal` bật.
+- Lệnh sửa cây và Open Context Menu chạy khi sidebar ẩn thì hiện Explorer trước; ẩn sidebar thì hủy tên đang nhập và đóng menu.
+- Find in Folder escape ký tự glob và dấu phẩy trong tên thư mục; ô include không tách dấu phẩy trong `[]` và `{}`.
+- Open in Terminal chờ chương trình mở terminal và báo lỗi khi nó thoát với mã khác 0.
+- Các câu báo lỗi Lucerna tự đặt: "Unable to create {file|folder} '<tên>': <lỗi>", "Unable to rename '<tên>': <lỗi>", "Unable to delete '<tên>': <lỗi>".
+- Sau khi xóa thì chọn dòng kế tiếp, rồi dòng trước, rồi thư mục cha (thay cho "thư mục cha" ban đầu).
+- Tab đang sửa dở của file bị xóa được giữ lại mà không hỏi thêm, khác VS Code.
+- Trên macOS, Trash dùng `NSFileManager`, không nhờ Finder.
 - Ở chế độ một file, menu chỉ tác động lên file đó và chỉ có các lệnh chỉ đọc.
 - Fallback màu: `text_disabled` lấy `text_muted`, `border_focused` lấy `border`.

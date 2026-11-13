@@ -835,8 +835,9 @@ impl Workbench {
 
     /// Remembers root-relative paths Lucerna itself just changed, so their
     /// watcher events are not decorated as another program's. A directory
-    /// also covers the paths under it. Entries expire after
-    /// [`OWN_CHANGE_TTL`].
+    /// also covers the paths under it. An entry is dropped once the
+    /// worktree reports its path as added or modified, and after
+    /// [`OWN_CHANGE_TTL`] at the latest.
     pub fn expect_own_changes(&mut self, rel_paths: impl IntoIterator<Item = Arc<Path>>) {
         let now = Instant::now();
         self.own_changes
@@ -942,6 +943,14 @@ impl Workbench {
             }
             _ => HashSet::new(),
         };
+        // Reported: forget it, so another program's later change to it is
+        // marked. A removal (a rename's or delete's old path) does not end
+        // the wait; the TTL still bounds every entry.
+        if let WorktreeEvent::Changed(changes) = ev {
+            for change in changes.iter().filter(|c| c.kind != ChangeKind::Removed) {
+                self.own_changes.remove(&change.path);
+            }
+        }
         self.explorer.update(cx, |explorer, cx| {
             explorer.on_worktree_event(
                 ev,
