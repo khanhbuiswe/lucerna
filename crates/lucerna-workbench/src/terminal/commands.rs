@@ -88,12 +88,21 @@ pub(crate) fn allow_chords(cx: &App) -> bool {
         .unwrap_or(true)
 }
 
-/// `terminal.integrated.macOptionIsMeta` (default false, as VS Code).
+/// Whether alt sends ESC + the key: on macOS only with
+/// `terminal.integrated.macOptionIsMeta` (default false, as VS Code), so
+/// ⌥ types the layout's characters; on other platforms always.
 pub(crate) fn option_is_meta(cx: &App) -> bool {
-    cx.global::<AppState>()
+    let setting = cx
+        .global::<AppState>()
         .settings
         .get("terminal.integrated.macOptionIsMeta", None)
-        .unwrap_or(false)
+        .unwrap_or(false);
+    alt_is_meta(cfg!(target_os = "macos"), setting)
+}
+
+/// [`option_is_meta`]'s rule: `macOptionIsMeta` is a macOS setting.
+fn alt_is_meta(is_mac: bool, mac_option_is_meta: bool) -> bool {
+    !is_mac || mac_option_is_meta
 }
 
 /// The bytes the shell gets for `ev` in `mode`; `None` for a key with no
@@ -236,4 +245,18 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::alt_is_meta;
+
+    #[test]
+    fn alt_is_meta_off_macos_whatever_the_setting() {
+        // macOptionIsMeta is a macOS setting; elsewhere alt is always meta.
+        assert!(alt_is_meta(false, false));
+        assert!(alt_is_meta(false, true));
+        assert!(!alt_is_meta(true, false));
+        assert!(alt_is_meta(true, true));
+    }
 }

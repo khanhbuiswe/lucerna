@@ -1989,7 +1989,8 @@ impl Workbench {
             resolution = keymap.resolve(&chord, &ctx);
         }
         if terminal_focus {
-            self.dispatch_terminal_key(ev, chord, resolution, window, cx);
+            let completes_chord = chord.len() > 1;
+            self.dispatch_terminal_key(ev, chord, completes_chord, resolution, window, cx);
             if had_pending || !self.pending_chord.is_empty() {
                 cx.notify();
             }
@@ -2020,7 +2021,8 @@ impl Workbench {
 
 impl Workbench {
     /// A key pressed while the terminal has focus (spec §6.4): a command
-    /// in the skip-shell list runs; on macOS a key with ⌘ runs its command
+    /// in the skip-shell list runs, and so does any command a pending chord
+    /// completes (as VS Code); on macOS a key with ⌘ runs its command
     /// or is dropped, since a shell cannot receive ⌘; a chord's first key
     /// waits for the next one while `allowChords` is on; anything else is
     /// encoded for the shell.
@@ -2028,13 +2030,16 @@ impl Workbench {
         &mut self,
         ev: &KeyDownEvent,
         chord: Vec<Keystroke>,
+        completes_chord: bool,
         resolution: Resolution,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let cmd = cfg!(target_os = "macos") && ev.keystroke.modifiers.platform;
         match resolution {
-            Resolution::Command { command, args } if cmd || skips_shell(&command, cx) => {
+            Resolution::Command { command, args }
+                if completes_chord || cmd || skips_shell(&command, cx) =>
+            {
                 cx.stop_propagation();
                 if !self.run_command(&command, args.as_ref(), window, cx) {
                     tracing::debug!(command, "key bound to an unregistered command");

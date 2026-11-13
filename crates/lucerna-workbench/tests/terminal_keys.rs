@@ -553,3 +553,23 @@ fn status_bar_button_toggles_terminal(cx: &mut TestAppContext) {
     assert!(!panel_visible(&wb, cx));
     assert!(editor_focused(&wb, cx));
 }
+
+#[gpui::test]
+fn completed_chord_runs_its_command(cx: &mut TestAppContext) {
+    // Neither key has ⌘, and selectTheme is not in the skip-shell list:
+    // once the chord is pending, its last key still belongs to the keymap.
+    let chord = r#"[{ "key": "ctrl+k ctrl+t", "command": "workbench.action.selectTheme" }]"#;
+    init(cx, None, Some(chord));
+    let (wb, cx) = with_terminal(cx);
+    keys("ctrl-k", cx);
+    assert!(wb.read_with(cx, |wb, _| wb.pending_chord_label()).is_some());
+    keys("ctrl-t", cx);
+    assert!(
+        written(&wb, cx).is_empty(),
+        "no key of the chord reaches the shell"
+    );
+    assert!(
+        cx.update(|_, cx| wb.read(cx).theme_picker().is_some()),
+        "the chord's command ran"
+    );
+}
