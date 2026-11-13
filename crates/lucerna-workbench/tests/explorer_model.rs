@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lucerna_project::{Entry, EntryKind, WorktreeSnapshot};
-use lucerna_workbench::{ExplorerModel, Row};
+use lucerna_workbench::{ExplorerModel, Row, SelectedKind, Selection};
 
 fn p(path: &str) -> Arc<Path> {
     Arc::from(Path::new(path))
@@ -183,4 +183,34 @@ fn removed_dir_drops_expansion() {
     // The directory comes back collapsed.
     model.set_snapshot(project());
     assert_eq!(outline(&model), ["src", "tests", "Cargo.toml"]);
+}
+
+#[test]
+fn selection_starts_at_root() {
+    let model = ExplorerModel::new(project());
+    assert_eq!(model.selection(), &Selection::Root);
+    assert_eq!(model.selected_kind(), SelectedKind::Root);
+}
+
+#[test]
+fn select_path_reports_kind() {
+    let mut model = ExplorerModel::new(project());
+    model.select(Selection::Path(p("src")));
+    assert_eq!(model.selected_kind(), SelectedKind::Dir);
+    model.select(Selection::Path(p("Cargo.toml")));
+    assert_eq!(model.selected_kind(), SelectedKind::File);
+    model.select(Selection::Root);
+    assert_eq!(model.selected_kind(), SelectedKind::Root);
+}
+
+#[test]
+fn selection_falls_back_to_visible_ancestor() {
+    let mut model = ExplorerModel::new(project());
+    model.toggle(Path::new("src"));
+    model.select(Selection::Path(p("src/main.rs")));
+    assert_eq!(model.selection(), &Selection::Path(p("src/main.rs")));
+    model.toggle(Path::new("src"));
+    assert_eq!(model.selection(), &Selection::Path(p("src")));
+    model.set_snapshot(snapshot(&[("Cargo.toml", EntryKind::File)]));
+    assert_eq!(model.selection(), &Selection::Root);
 }

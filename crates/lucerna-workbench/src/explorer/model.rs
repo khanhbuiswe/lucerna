@@ -23,7 +23,24 @@ pub struct Row {
     pub expanded: bool,
 }
 
+/// What the Explorer has selected: the project root or one of its rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Selection {
+    Root,
+    /// Root-relative.
+    Path(Arc<Path>),
+}
+
+/// The kind of the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectedKind {
+    Root,
+    Dir,
+    File,
+}
+
 pub struct ExplorerModel {
+    selection: Selection,
     snapshot: WorktreeSnapshot,
     expanded: HashSet<Arc<Path>>,
     rows: Vec<Row>,
@@ -35,6 +52,7 @@ impl ExplorerModel {
     /// Every directory starts collapsed.
     pub fn new(snapshot: WorktreeSnapshot) -> Self {
         let mut model = ExplorerModel {
+            selection: Selection::Root,
             snapshot,
             expanded: HashSet::new(),
             rows: Vec::new(),
@@ -50,6 +68,44 @@ impl ExplorerModel {
         let snapshot = &self.snapshot;
         self.expanded.retain(|dir| is_dir(snapshot, dir));
         self.rebuild();
+        self.fix_selection();
+    }
+
+    pub fn selection(&self) -> &Selection {
+        &self.selection
+    }
+
+    /// Selects `sel`; a path that is not a visible row falls back to its
+    /// nearest visible ancestor, else the root.
+    pub fn select(&mut self, sel: Selection) {
+        self.selection = sel;
+        self.fix_selection();
+    }
+
+    pub fn selected_kind(&self) -> SelectedKind {
+        match &self.selection {
+            Selection::Root => SelectedKind::Root,
+            Selection::Path(path) => match self.rows.iter().find(|row| row.path == *path) {
+                Some(row) if row.kind == EntryKind::Dir => SelectedKind::Dir,
+                _ => SelectedKind::File,
+            },
+        }
+    }
+
+    fn fix_selection(&mut self) {
+        let Selection::Path(path) = &self.selection else {
+            return;
+        };
+        let visible = |p: &Path| self.rows.iter().any(|row| &*row.path == p);
+        if visible(path) {
+            return;
+        }
+        let nearest = path
+            .ancestors()
+            .skip(1)
+            .find(|a| !a.as_os_str().is_empty() && visible(a))
+            .map(Arc::from);
+        self.selection = nearest.map_or(Selection::Root, Selection::Path);
     }
 
     /// Expands or collapses `dir`; anything that is not a directory is
@@ -62,6 +118,7 @@ impl ExplorerModel {
             self.expanded.insert(Arc::from(dir));
         }
         self.rebuild();
+        self.fix_selection();
     }
 
     pub fn visible_rows(&self) -> &[Row] {
