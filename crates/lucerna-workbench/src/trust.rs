@@ -382,9 +382,17 @@ impl Workbench {
     ) -> Subscription {
         if let Some(dir) = self.trust.data_dir.clone() {
             let root = self.root().to_path_buf();
+            // A lone file is also trusted inside a trusted folder, such as
+            // its repository opened earlier as a project.
+            let lone = self.is_single_file();
             let read = cx.background_executor().spawn(async move {
                 guarded("trust-load", move || {
-                    TrustStore::load(&dir).is_trusted(&root)
+                    let store = TrustStore::load(&dir);
+                    if lone {
+                        root.ancestors().any(|folder| store.is_trusted(folder))
+                    } else {
+                        store.is_trusted(&root)
+                    }
                 })
                 .unwrap_or(false)
             });

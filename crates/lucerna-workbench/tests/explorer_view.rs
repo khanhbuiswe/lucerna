@@ -411,3 +411,30 @@ fn explorer_falls_back_to_lucide(cx: &mut TestAppContext) {
     click("explorer-row-src", cx);
     assert_eq!(row_icon(&wb, "src", cx), Builtin("folder-open"));
 }
+
+/// A lone file opens alone, as in Zed: no folder row, only the file's row,
+/// and the title bar names the file, not its folder.
+#[gpui::test]
+fn single_file_shows_only_the_file(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Downloads");
+    std::fs::create_dir(&root).unwrap();
+    let file = root.join("notes.md");
+    std::fs::write(&file, "hi\n").unwrap();
+    std::fs::write(root.join("other.md"), "").unwrap();
+    let (wb, cx) = {
+        let file = file.clone();
+        cx.add_window_view(move |window, cx| Workbench::single_file(root, &file, None, window, cx))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| wb.worktree().snapshot().scan_complete()) {
+        assert!(Instant::now() < deadline, "worktree scan did not finish");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    draw(cx);
+    assert!(cx.debug_bounds("explorer-root").is_none(), "no folder row");
+    assert!(cx.debug_bounds("explorer-row-notes.md").is_some());
+    assert!(cx.debug_bounds("explorer-row-other.md").is_none());
+    assert_eq!(wb.read_with(cx, |wb, _| wb.root_name()), "notes.md");
+}

@@ -43,7 +43,7 @@ pub struct Launch {
     pub root: PathBuf,
     /// A file to open as a pinned tab.
     pub file: Option<PathBuf>,
-    /// Open `file` alone: `root` is not scanned or watched (R27).
+    /// Open `file` alone: `root` is not scanned or watched.
     pub single_file: bool,
     /// Called once the first frame of the window is painted.
     pub on_first_frame: Option<Box<dyn FnOnce()>>,

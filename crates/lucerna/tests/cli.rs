@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use lucerna::{Target, prompts_for_folder, resolve_target, resolve_target_with_home};
@@ -37,22 +37,30 @@ fn resolve_dir() {
     );
 }
 
+/// A file opens alone, as in Zed and VS Code: its folder (or repository)
+/// is never scanned, and the root is the file's folder.
+fn lone(file: &Path) -> Target {
+    let file = canonical(file);
+    Target {
+        root: file.parent().unwrap().to_path_buf(),
+        file: Some(file),
+        single_file: true,
+    }
+}
+
 #[test]
-fn resolve_file_in_git_repo_uses_repo_root() {
+fn resolve_file_in_git_repo_opens_alone() {
     let repo = tempfile::tempdir().unwrap();
     fs::create_dir(repo.path().join(".git")).unwrap();
     let nested = repo.path().join("src").join("deep");
     fs::create_dir_all(&nested).unwrap();
     let file = nested.join("main.rs");
     fs::write(&file, "fn main() {}\n").unwrap();
-    assert_eq!(
-        resolve_target(Some(file.clone())),
-        Ok(Target::file(canonical(repo.path()), canonical(file)))
-    );
+    assert_eq!(resolve_target(Some(file.clone())), Ok(lone(&file)));
 }
 
 #[test]
-fn resolve_file_in_git_worktree_uses_dir_with_git_file() {
+fn resolve_file_in_git_worktree_opens_alone() {
     let outer = tempfile::tempdir().unwrap();
     fs::create_dir(outer.path().join(".git")).unwrap();
     let worktree = outer.path().join("worktree");
@@ -65,51 +73,38 @@ fn resolve_file_in_git_worktree_uses_dir_with_git_file() {
     .unwrap();
     let file = nested.join("lib.rs");
     fs::write(&file, "\n").unwrap();
-    assert_eq!(
-        resolve_target(Some(file.clone())),
-        Ok(Target::file(canonical(&worktree), canonical(file)))
-    );
+    assert_eq!(resolve_target(Some(file.clone())), Ok(lone(&file)));
 }
 
+/// A file in a plain folder such as `~/Downloads` opens alone; the folder
+/// is not listed in the sidebar.
 #[test]
-fn resolve_file_outside_git_uses_parent() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("notes.txt");
-    fs::write(&file, "hi\n").unwrap();
-    assert_eq!(
-        resolve_target(Some(file.clone())),
-        Ok(Target::file(canonical(dir.path()), canonical(file)))
-    );
-}
-
-/// R27: a loose file in `$HOME` opens alone; the home folder is not
-/// scanned.
-#[test]
-fn resolve_loose_file_in_home_is_single_file() {
+fn resolve_file_in_plain_folder_opens_alone() {
     let home = tempfile::tempdir().unwrap();
-    let file = home.path().join("notes.md");
+    let downloads = home.path().join("Downloads");
+    fs::create_dir(&downloads).unwrap();
+    let file = downloads.join("notes.md");
     fs::write(&file, "hi\n").unwrap();
     let target = resolve_target_with_home(Some(file.clone()), Some(home.path())).unwrap();
-    assert_eq!(
-        target,
-        Target {
-            root: canonical(home.path()),
-            file: Some(canonical(&file)),
-            single_file: true,
-        }
-    );
-    // A folder below `$HOME`, a git repository in it, and `$HOME` itself
-    // are opened as folders.
+    assert_eq!(target, lone(&file));
+    // A loose file in `$HOME` itself too.
+    let in_home = home.path().join("todo.md");
+    fs::write(&in_home, "").unwrap();
+    let target = resolve_target_with_home(Some(in_home.clone()), Some(home.path())).unwrap();
+    assert_eq!(target, lone(&in_home));
+}
+
+#[test]
+fn resolve_folders_stay_folders() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = home.path().join("repo");
+    fs::create_dir_all(repo.join(".git")).unwrap();
     let sub = home.path().join("sub");
     fs::create_dir(&sub).unwrap();
-    fs::write(sub.join("a.txt"), "").unwrap();
-    let in_sub = resolve_target_with_home(Some(sub.join("a.txt")), Some(home.path())).unwrap();
-    assert!(!in_sub.single_file);
-    fs::create_dir(home.path().join(".git")).unwrap();
-    let in_repo = resolve_target_with_home(Some(file.clone()), Some(home.path())).unwrap();
-    assert!(!in_repo.single_file, "a git root wins");
-    let folder = resolve_target_with_home(Some(home.path().into()), Some(home.path())).unwrap();
-    assert!(!folder.single_file);
+    for dir in [home.path().to_path_buf(), repo, sub] {
+        let target = resolve_target_with_home(Some(dir.clone()), Some(home.path())).unwrap();
+        assert_eq!(target, Target::folder(canonical(&dir)));
+    }
 }
 
 #[test]
