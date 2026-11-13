@@ -833,6 +833,14 @@ impl Workbench {
             .extend(rel_paths.into_iter().map(|p| (p, now)));
     }
 
+    /// Drops paths from [`Workbench::expect_own_changes`] whose operation
+    /// failed, so another program's later change to them is marked.
+    pub fn forget_own_changes(&mut self, rel_paths: &[Arc<Path>]) {
+        for path in rel_paths {
+            self.own_changes.remove(path);
+        }
+    }
+
     /// Hands a worktree event to every view that follows the tree. Called
     /// for each event the worktree sends; tests call it directly.
     pub fn on_worktree_event(&mut self, ev: &WorktreeEvent, cx: &mut Context<Self>) {

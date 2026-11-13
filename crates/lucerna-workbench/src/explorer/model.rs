@@ -22,8 +22,10 @@ pub struct Row {
     /// Only directories are ever expanded.
     pub expanded: bool,
     /// The row whose name is being typed: the placeholder row of New
-    /// File/Folder (whose `path` is its parent directory) or the renamed
-    /// entry.
+    /// File/Folder or the renamed entry. The placeholder's `path` is its
+    /// parent directory, and it always comes right after its parent's row
+    /// (first child), so every lookup by path finds the parent row first;
+    /// for the root (`""`) no row has that path.
     pub edit: bool,
 }
 
@@ -91,6 +93,10 @@ impl ExplorerModel {
         self.snapshot = snapshot;
         let snapshot = &self.snapshot;
         self.expanded.retain(|dir| is_dir(snapshot, dir));
+        // A name typed in a folder that is gone has nowhere to go.
+        if self.edit.as_ref().is_some_and(|e| !self.is_dir(&e.parent)) {
+            self.edit = None;
+        }
         self.rebuild();
         self.fix_selection();
     }
@@ -172,6 +178,12 @@ impl ExplorerModel {
     /// Whether the tree has `path` (root-relative); the root always.
     pub fn contains(&self, path: &Path) -> bool {
         path.as_os_str().is_empty() || self.snapshot.contains(path)
+    }
+
+    /// Whether `path` (root-relative) is a directory of the tree; the root
+    /// always.
+    pub fn is_dir(&self, path: &Path) -> bool {
+        path.as_os_str().is_empty() || is_dir(&self.snapshot, path)
     }
 
     /// Expands `dir` (no-op when it is not a directory or already expanded).

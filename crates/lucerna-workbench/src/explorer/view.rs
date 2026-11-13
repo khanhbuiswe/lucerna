@@ -256,8 +256,11 @@ impl ExplorerView {
         if m.platform || m.control || m.alt || m.shift || m.function {
             return;
         }
+        let busy = self.name_edit.as_ref().is_some_and(|e| e.busy);
         match ev.keystroke.key.as_str() {
             "enter" => self.confirm_name(window, cx),
+            // While the file system works, the result still decides.
+            "escape" if busy => {}
             "escape" => self.end_name_edit(true, window, cx),
             _ => return,
         }
@@ -269,7 +272,9 @@ impl ExplorerView {
         let Some(edit) = &self.name_edit else {
             return;
         };
-        if edit.busy {
+        // Still focused: the row was only not drawn (scrolled out of the
+        // list), which GPUI reports as a blur.
+        if edit.busy || edit.input.focus_handle(cx).is_focused(window) {
             return;
         }
         let text = edit.input.read(cx).text().to_string();
@@ -316,6 +321,9 @@ impl ExplorerView {
         let Some(edit) = self.model.edit().cloned() else {
             return;
         };
+        if !self.model.is_dir(&edit.parent) {
+            return;
+        }
         let folder = match edit.kind {
             EditKind::NewFile => false,
             EditKind::NewFolder => true,
@@ -332,13 +340,18 @@ impl ExplorerView {
             .collect();
         let _ = self
             .workbench
-            .update(cx, |wb, _| wb.expect_own_changes(created));
+            .update(cx, |wb, _| wb.expect_own_changes(created.iter().cloned()));
         if let Some(name_edit) = &mut self.name_edit {
             name_edit.busy = true;
         }
         let abs = self.root.join(&target);
+        let parent_abs = self.root.join(&edit.parent);
         let op = cx.background_spawn(async move {
-            if folder {
+            // Never re-create a parent folder deleted meanwhile: only the
+            // missing levels below it.
+            if !parent_abs.is_dir() {
+                Err(std::io::ErrorKind::NotFound.into())
+            } else if folder {
                 fs_ops::create_dir(&abs)
             } else {
                 fs_ops::create_file(&abs)
@@ -348,7 +361,7 @@ impl ExplorerView {
         cx.spawn_in(window, async move |this, cx| {
             let result = op.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.created(target, folder, result, window, cx)
+                this.created(target, created, folder, result, window, cx)
             });
         })
         .detach();
@@ -358,15 +371,21 @@ impl ExplorerView {
     fn created(
         &mut self,
         target: Arc<Path>,
+        expected: Vec<Arc<Path>>,
         folder: bool,
         result: std::io::Result<()>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(name_edit) = &mut self.name_edit else {
-            return;
-        };
-        let focused = name_edit.input.focus_handle(cx).is_focused(window);
+        if result.is_err() {
+            let _ = self
+                .workbench
+                .update(cx, |wb, _| wb.forget_own_changes(&expected));
+        }
+        let focused = self
+            .name_edit
+            .as_ref()
+            .is_some_and(|e| e.input.focus_handle(cx).is_focused(window));
         let name = target
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -374,8 +393,10 @@ impl ExplorerView {
         match result {
             // Someone else created it after the check: keep the name to fix.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && focused => {
-                name_edit.busy = false;
-                name_edit.error = Some(NameError::Exists(name).to_string());
+                if let Some(name_edit) = &mut self.name_edit {
+                    name_edit.busy = false;
+                    name_edit.error = Some(NameError::Exists(name).to_string());
+                }
                 cx.notify();
             }
             Err(e) => {
@@ -439,6 +460,11 @@ impl ExplorerView {
         cx: &mut Context<Self>,
     ) {
         self.model.set_snapshot(snapshot);
+        // The model dropped an edit whose folder is gone: drop its input
+        // (and blur listener) too, without creating anything.
+        if self.model.edit().is_none() {
+            self.name_edit = None;
+        }
         self.reveal_pending();
         match ev {
             WorktreeEvent::Changed(changes) => {
@@ -850,6 +876,7 @@ impl ExplorerView {
                 .text_size(px(UI_FONT_SIZE_SMALL))
                 .text_color(color(ui.text))
                 .whitespace_normal()
+                .occlude()
                 .child(error);
             // Anchored to the row's top-left corner, drawn over the rows below.
             div().absolute().top_0().left_0().child(

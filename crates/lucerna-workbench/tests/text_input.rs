@@ -264,3 +264,15 @@ fn select_range_selects_bytes(cx: &mut TestAppContext) {
     draw(cx);
     assert_eq!(selection(&input, cx), 0..3);
 }
+
+#[gpui::test]
+fn select_range_snaps_to_char_boundaries(cx: &mut TestAppContext) {
+    let (input, _, cx) = setup(cx);
+    input.update_in(cx, |input, window, cx| {
+        // `ả` is 3 bytes: 1 is inside it.
+        input.set_text("ảnh.rs", window, cx);
+        input.select_range(1..5, window, cx);
+    });
+    draw(cx);
+    assert_eq!(selection(&input, cx), 0..5);
+}

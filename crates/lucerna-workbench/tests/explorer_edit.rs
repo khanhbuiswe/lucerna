@@ -369,6 +369,19 @@ fn explorer_keys_are_ignored_while_editing(cx: &mut TestAppContext) {
     assert!(editing(&wb, cx));
 }
 
+/// Gives a directory back its write permission when dropped, also when the
+/// test panics.
+#[cfg(unix)]
+struct Writable(PathBuf);
+
+#[cfg(unix)]
+impl Drop for Writable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
 #[cfg(unix)]
 #[gpui::test]
 fn create_error_shows_status(cx: &mut TestAppContext) {
@@ -377,15 +390,78 @@ fn create_error_shows_status(cx: &mut TestAppContext) {
     let dir = project();
     let src = dir.path().join("src");
     std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let _writable = Writable(src.clone());
     let (wb, cx) = open(dir.path(), cx);
     right_click("explorer-row-src", cx);
     click("context-menu-item-explorer.newFile", cx);
     type_text(cx, "x.rs");
     keys("enter", cx);
     wait_until(cx, |cx| !editing(&wb, cx));
-    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
     let message = cx.update(|_, cx| lucerna_workbench::status_message::current(cx));
     let message = message.expect("a status message");
     assert!(message.contains("x.rs"), "{message}");
     assert!(!src.join("x.rs").exists());
+}
+
+/// Scrolling the edit row out of the list stops drawing the input, which
+/// GPUI reports as a blur: that must not confirm the half-typed name.
+#[gpui::test]
+fn scrolling_edit_row_out_of_view_keeps_editing(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..300 {
+        std::fs::write(dir.path().join(format!("f{i:03}.txt")), "").unwrap();
+    }
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-root", cx);
+    run(&wb, "explorer.newFile", cx);
+    type_text(cx, "half.rs");
+    assert!(cx.debug_bounds("explorer-edit-input").is_some());
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    cx.simulate_event(gpui::ScrollEvent {
+        position: list.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-5000.))),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui::TouchPhase::Moved,
+        source: gpui::ScrollSource::Pointer,
+    });
+    draw(cx);
+    draw(cx);
+    assert!(
+        cx.debug_bounds("explorer-edit-input").is_none(),
+        "the edit row scrolled out of the list"
+    );
+    assert!(editing(&wb, cx));
+    assert!(!dir.path().join("half.rs").exists());
+}
+
+/// The folder a name is typed in is deleted: the edit ends and the folder
+/// is not re-created.
+#[gpui::test]
+fn deleting_parent_cancels_edit(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-src", cx);
+    click("context-menu-item-explorer.newFile", cx);
+    type_text(cx, "x.rs");
+    let root = root_of(&wb, cx);
+    std::fs::remove_dir_all(root.join("src")).unwrap();
+    wait_until(cx, |cx| {
+        wb.read_with(cx, |wb, _| {
+            !wb.worktree().snapshot().contains(Path::new("src"))
+        })
+    });
+    let removed = Change {
+        path: Arc::from(Path::new("src")),
+        kind: ChangeKind::Removed,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![removed]), cx)
+    });
+    draw(cx);
+    draw(cx);
+    assert!(!editing(&wb, cx));
+    assert!(cx.debug_bounds("explorer-edit-input").is_none());
+    assert!(!root.join("src").exists());
 }
