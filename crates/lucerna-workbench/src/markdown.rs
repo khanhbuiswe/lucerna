@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use gpui::{
     AnyElement, App, Context, ElementId, FontWeight, InteractiveText, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextRun,
-    UnderlineStyle, Window, div, font, prelude::*, px,
+    UnderlineStyle, Window, div, font, prelude::*, px, relative, svg,
 };
 use lucerna_syntax::{Language, LanguageRegistry, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{Buffer, Point};
@@ -22,9 +22,10 @@ use pulldown_cmark::{
 
 use crate::AppState;
 use crate::editor_groups::OpenMode;
+use crate::icons;
 use crate::layout::color;
 use crate::tasks::catch_panic;
-use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE_SMALL};
+use crate::ui::{GRID, UI_FONT_FAMILY, UI_FONT_SIZE_SMALL, checkbox};
 use crate::workbench::Workbench;
 
 /// Longer sources are cut here, on a char boundary.
@@ -159,6 +160,8 @@ pub struct MarkdownBlocks {
     line_count: u32,
     /// For each root block, the index of its first code block.
     code_starts: Vec<usize>,
+    /// For each root block, the index of its first image.
+    image_starts: Vec<usize>,
     fallback_language: Option<String>,
     /// By code block, numbered in document order.
     code_runs: Mutex<HashMap<usize, CachedRuns>>,
@@ -198,6 +201,16 @@ impl MarkdownBlocks {
             .get(root)
             .copied()
             .unwrap_or_else(|| count_code(&self.blocks))
+    }
+
+    /// The index of the first image in root block `root`, in document
+    /// order (nested blocks, table cells and links included); the total
+    /// count when `root` is past the end.
+    pub fn image_index_start(&self, root: usize) -> usize {
+        self.image_starts
+            .get(root)
+            .copied()
+            .unwrap_or_else(|| count_images(&self.blocks))
     }
 
     /// The language id of fences that name none (or an unknown one).
@@ -298,6 +311,36 @@ fn count_code(blocks: &[Block]) -> usize {
             Block::Quote(inner) | Block::Alert { blocks: inner, .. } => count_code(inner),
             Block::List { items, .. } => items.iter().map(|i| count_code(&i.blocks)).sum(),
             _ => 0,
+        })
+        .sum()
+}
+
+/// The number of images in `blocks`, in the order they are drawn.
+fn count_images(blocks: &[Block]) -> usize {
+    fn inline(inlines: &[Inline]) -> usize {
+        inlines
+            .iter()
+            .map(|i| match i {
+                Inline::Image { .. } => 1,
+                Inline::Strong(c) | Inline::Emph(c) | Inline::Strike(c) => inline(c),
+                Inline::Link { children, .. } => inline(children),
+                _ => 0,
+            })
+            .sum()
+    }
+    blocks
+        .iter()
+        .map(|block| match block {
+            Block::Image { .. } => 1,
+            Block::Paragraph(i) | Block::Heading(_, i) => inline(i),
+            Block::Quote(inner) | Block::Alert { blocks: inner, .. } => count_images(inner),
+            Block::List { items, .. } => items.iter().map(|i| count_images(&i.blocks)).sum(),
+            Block::Table { head, rows, .. } => head
+                .iter()
+                .chain(rows.iter().flatten())
+                .map(|cell| inline(cell))
+                .sum(),
+            Block::Code { .. } | Block::Rule => 0,
         })
         .sum()
 }
@@ -461,6 +504,15 @@ fn parse(source: &str, fallback_language: Option<&str>) -> MarkdownBlocks {
             start
         })
         .collect();
+    let mut total = 0;
+    let image_starts = blocks
+        .iter()
+        .map(|b| {
+            let start = total;
+            total += count_images(std::slice::from_ref(b));
+            start
+        })
+        .collect();
     let line_count =
         newlines.len() as u32 + u32::from(!source.is_empty() && !source.ends_with('\n'));
     MarkdownBlocks {
@@ -468,6 +520,7 @@ fn parse(source: &str, fallback_language: Option<&str>) -> MarkdownBlocks {
         root_lines,
         line_count,
         code_starts,
+        image_starts,
         fallback_language: fallback_language.map(str::to_owned),
         code_runs: Mutex::new(HashMap::new()),
     }
@@ -947,6 +1000,108 @@ pub fn open_markdown_link(url: &str, wb: &mut Workbench, cx: &mut Context<Workbe
 
 // ---- Rendering ----
 
+/// Draws an image: gets the URL, the alt text, the image's index in the
+/// rendered blocks (document order) and the app. Supplied by the preview,
+/// which loads files; without one, images are drawn as placeholders.
+pub type ImageLookup = Rc<dyn Fn(&str, &str, usize, &App) -> AnyElement>;
+
+/// Sizes and spacing a markdown render uses: hover popovers and the
+/// preview share the renderer and differ only here.
+#[derive(Clone)]
+pub struct MarkdownStyle {
+    /// Body text size in px.
+    pub text_size: f32,
+    /// Line height as a multiple of the font size.
+    pub line_height: f32,
+    /// Space between root blocks in px ([`render_markdown_with`] only; a
+    /// list of blocks lays them out itself).
+    pub block_gap: f32,
+    /// Font size in px of h1 to h6.
+    pub heading_sizes: [f32; 6],
+    /// A rule under h1 and h2.
+    pub heading_rules: bool,
+    /// Space above and below a heading in px.
+    pub heading_margin: (f32, f32),
+    /// Horizontal and vertical padding of a code block in px.
+    pub code_padding: (f32, f32),
+    /// Long code lines scroll sideways instead of wrapping.
+    pub code_scroll_x: bool,
+    /// Width in px of the bar left of quotes and alerts.
+    pub quote_bar: f32,
+    /// Draws images; `None` draws placeholders.
+    pub images: Option<ImageLookup>,
+}
+
+impl MarkdownStyle {
+    /// Hover popovers: compact text, no rules. Code blocks scroll sideways,
+    /// as they always did there.
+    pub fn hover() -> Self {
+        Self {
+            text_size: UI_FONT_SIZE_SMALL,
+            line_height: std::f32::consts::GOLDEN_RATIO, // gpui's default
+            block_gap: 8.,
+            heading_sizes: [18., 16., 15., 14., 14., 14.],
+            heading_rules: false,
+            heading_margin: (0., 0.),
+            code_padding: (8., 6.),
+            code_scroll_x: true,
+            quote_bar: 2.,
+            images: None,
+        }
+    }
+
+    /// The preview: headings scale with `font_size`.
+    pub fn preview(font_size: f32, line_height: f32, images: Option<ImageLookup>) -> Self {
+        Self {
+            text_size: font_size,
+            line_height,
+            block_gap: 16.,
+            heading_sizes: [2.0, 1.5, 1.25, 1., 1., 1.].map(|k| k * font_size),
+            heading_rules: true,
+            heading_margin: (24., 12.),
+            code_padding: (12., 12.),
+            code_scroll_x: true,
+            quote_bar: 3.,
+            images,
+        }
+    }
+}
+
+/// The background of code blocks and table headers: the one hover already
+/// used for code.
+fn code_background(ui: &lucerna_theme::UiColors) -> gpui::Rgba {
+    color(ui.editor_background)
+}
+
+/// A bordered stand-in for an image that is not drawn: an icon, the alt
+/// text and an optional note (why there is no image).
+pub(crate) fn image_placeholder(alt: &str, note: Option<&str>, cx: &App) -> AnyElement {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let label = if alt.is_empty() { "image" } else { alt };
+    div()
+        .debug_selector(|| "md-image-alt".to_owned())
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .px(px(8.))
+        .py(px(4.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(color(ui.border_variant))
+        .text_color(color(ui.text_muted))
+        .child(
+            svg()
+                .data(icons::IMAGE)
+                .size(px(14.))
+                .flex_none()
+                .text_color(color(ui.icon)),
+        )
+        .child(label.to_owned())
+        .when_some(note.map(str::to_owned), |d, note| d.child(note))
+        .into_any_element()
+}
+
 /// Renders `blocks`; clicking a web link opens the browser. The default
 /// handler ignores file links: use [`render_markdown_with`] for those.
 pub fn render_markdown(blocks: &MarkdownBlocks, cx: &App) -> AnyElement {
@@ -961,36 +1116,75 @@ pub fn render_markdown(blocks: &MarkdownBlocks, cx: &App) -> AnyElement {
     )
 }
 
-/// Renders `blocks`; `on_link` gets the URL of a clicked link.
+/// Renders `blocks` as a hover popover; `on_link` gets the URL of a
+/// clicked link.
 pub fn render_markdown_with(blocks: &MarkdownBlocks, on_link: LinkHandler, cx: &App) -> AnyElement {
-    let mut renderer = Renderer {
-        blocks,
-        cx,
-        on_link,
-        texts: 0,
-        codes: 0,
-    };
-    let children = renderer.blocks(&blocks.blocks, UI_FONT_SIZE_SMALL, false);
+    let style = MarkdownStyle::hover();
     div()
         .flex()
         .flex_col()
-        .gap(px(8.))
+        .gap(px(style.block_gap))
+        .min_w_0()
+        .children(
+            (0..blocks.blocks.len())
+                .map(|root| render_block(blocks, root, &style, on_link.clone(), cx)),
+        )
+        .into_any_element()
+}
+
+/// Renders root block `root` of `blocks` (an empty element when there is
+/// no such block). Code blocks and images are numbered as in the whole
+/// document.
+pub fn render_block(
+    blocks: &MarkdownBlocks,
+    root: usize,
+    style: &MarkdownStyle,
+    on_link: LinkHandler,
+    cx: &App,
+) -> AnyElement {
+    let Some(block) = blocks.blocks.get(root) else {
+        return div().into_any_element();
+    };
+    let mut renderer = Renderer {
+        blocks,
+        cx,
+        style,
+        on_link,
+        root,
+        texts: 0,
+        codes: blocks.code_index_start(root),
+        images: blocks.image_index_start(root),
+        tasks: 0,
+        tables: 0,
+    };
+    let element = renderer.block(block, style.text_size, false);
+    div()
         .min_w_0()
         .font_family(UI_FONT_FAMILY)
-        .text_size(px(UI_FONT_SIZE_SMALL))
+        .text_size(px(style.text_size))
+        .line_height(relative(style.line_height))
         .text_color(color(cx.global::<AppState>().theme.ui.text))
-        .children(children)
+        .child(element)
         .into_any_element()
 }
 
 struct Renderer<'a> {
     blocks: &'a MarkdownBlocks,
     cx: &'a App,
+    style: &'a MarkdownStyle,
     on_link: LinkHandler,
+    /// The root block being drawn: keeps element ids unique per block.
+    root: usize,
     /// Ids for the clickable text elements.
     texts: usize,
     /// Code blocks drawn so far: the next one's index.
     codes: usize,
+    /// Images drawn so far in the document: the next one's index.
+    images: usize,
+    /// Task list items drawn so far in this block.
+    tasks: usize,
+    /// Tables and clickable images drawn so far in this block (ids).
+    tables: usize,
 }
 
 /// The font and color a run of inlines is drawn with.
@@ -1004,17 +1198,12 @@ struct InlineStyle {
     strike: bool,
 }
 
-/// Heading sizes by level: slightly above body text.
-fn heading_size(level: u8) -> f32 {
-    match level {
-        1 => 18.,
-        2 => 16.,
-        3 => 15.,
-        _ => 14.,
-    }
-}
-
 impl Renderer<'_> {
+    /// An element id unique to this block.
+    fn id(&self, kind: &'static str, n: usize) -> ElementId {
+        ElementId::NamedInteger(format!("{kind}-{}", self.root).into(), n as u64)
+    }
+
     fn blocks(&mut self, blocks: &[Block], size: f32, muted: bool) -> Vec<AnyElement> {
         blocks
             .iter()
@@ -1024,42 +1213,18 @@ impl Renderer<'_> {
 
     fn block(&mut self, block: &Block, size: f32, muted: bool) -> AnyElement {
         let ui = &self.cx.global::<AppState>().theme.ui;
+        let bar = self.style.quote_bar;
         match block {
             Block::Paragraph(inlines) => self.text(inlines, size, false, muted),
-            Block::Heading(level, inlines) => self.text(inlines, heading_size(*level), true, muted),
+            Block::Heading(level, inlines) => self.heading(*level, inlines, muted),
             Block::Code { .. } => self.code(),
-            Block::List { start, items } => div()
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .children(items.iter().enumerate().map(|(i, item)| {
-                    let marker = match (start, item.checked) {
-                        (_, Some(true)) => "[x]".to_owned(),
-                        (_, Some(false)) => "[ ]".to_owned(),
-                        (Some(first), None) => format!("{}.", first + i as u64),
-                        (None, None) => "•".to_owned(),
-                    };
-                    div()
-                        .flex()
-                        .gap(px(6.))
-                        .child(div().flex_none().child(marker))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(4.))
-                                .children(self.blocks(&item.blocks, size, muted)),
-                        )
-                }))
-                .into_any_element(),
+            Block::List { start, items } => self.list(*start, items, size, muted),
             Block::Alert { kind, blocks } => div()
                 .flex()
                 .flex_col()
                 .gap(px(4.))
                 .pl(px(8.))
-                .border_l_2()
+                .border_l(px(bar))
                 .border_color(color(ui.border))
                 .child(div().font_weight(FontWeight::BOLD).child(kind.title()))
                 .child(
@@ -1071,14 +1236,14 @@ impl Renderer<'_> {
                         .children(self.blocks(blocks, size, true)),
                 )
                 .into_any_element(),
-            // Drawn by the preview.
-            Block::Table { .. } | Block::Image { .. } => div().into_any_element(),
+            Block::Table { aligns, head, rows } => self.table(aligns, head, rows, size),
+            Block::Image { url, alt } => self.image(url, alt),
             Block::Quote(inner) => div()
                 .flex()
                 .flex_col()
                 .gap(px(4.))
                 .pl(px(8.))
-                .border_l_2()
+                .border_l(px(bar))
                 .border_color(color(ui.border))
                 .text_color(color(ui.text_muted))
                 .children(self.blocks(inner, size, true))
@@ -1092,7 +1257,150 @@ impl Renderer<'_> {
         }
     }
 
-    /// One text element for a paragraph or heading.
+    fn heading(&mut self, level: u8, inlines: &[Inline], muted: bool) -> AnyElement {
+        let ui = &self.cx.global::<AppState>().theme.ui;
+        let size = self.style.heading_sizes[(level.clamp(1, 6) - 1) as usize];
+        let (above, below) = self.style.heading_margin;
+        let rule = self.style.heading_rules && level <= 2;
+        div()
+            .mt(px(above))
+            .mb(px(below))
+            .when(rule, |d| {
+                d.pb(px(4.))
+                    .border_b_1()
+                    .border_color(color(ui.border_variant))
+            })
+            .child(self.text(inlines, size, true, muted))
+            .into_any_element()
+    }
+
+    fn list(
+        &mut self,
+        start: Option<u64>,
+        items: &[ListItem],
+        size: f32,
+        muted: bool,
+    ) -> AnyElement {
+        let mut rows = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let marker = match (start, item.checked) {
+                (_, Some(checked)) => {
+                    let n = self.tasks;
+                    self.tasks += 1;
+                    div()
+                        .debug_selector(move || format!("md-task-{n}"))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .h(px(size * self.style.line_height))
+                        .child(checkbox(checked, self.cx))
+                        .into_any_element()
+                }
+                (Some(first), None) => div()
+                    .flex_none()
+                    .child(format!("{}.", first + i as u64))
+                    .into_any_element(),
+                (None, None) => div().flex_none().child("•").into_any_element(),
+            };
+            let body = div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .children(self.blocks(&item.blocks, size, muted));
+            rows.push(div().flex().gap(px(6.)).child(marker).child(body));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// A bordered table: columns are as wide as their widest cell, and
+    /// the table scrolls sideways on its own when wider than the frame.
+    fn table(
+        &mut self,
+        aligns: &[Align],
+        head: &[Vec<Inline>],
+        rows: &[Vec<Vec<Inline>>],
+        size: f32,
+    ) -> AnyElement {
+        let ui = &self.cx.global::<AppState>().theme.ui;
+        let columns = aligns.len().max(head.len());
+        let id = self.tables;
+        self.tables += 1;
+        // Cells in document order (image numbering), then laid out by
+        // column so that each column takes the width of its widest cell.
+        let mut by_column: Vec<Vec<AnyElement>> = (0..columns).map(|_| Vec::new()).collect();
+        let last_row = rows.len();
+        for (r, row) in std::iter::once(head)
+            .chain(rows.iter().map(Vec::as_slice))
+            .enumerate()
+        {
+            for (c, column) in by_column.iter_mut().enumerate() {
+                let inlines: &[Inline] = row.get(c).map(Vec::as_slice).unwrap_or(&[]);
+                let cell = self.text(inlines, size, r == 0, false);
+                let align = aligns.get(c).copied().unwrap_or(Align::None);
+                column.push(
+                    div()
+                        .debug_selector(move || format!("md-table-cell-{r}-{c}"))
+                        .px(px(10.))
+                        .py(px(6.))
+                        .when(r == 0, |d| d.bg(code_background(ui)))
+                        .when(r < last_row, |d| {
+                            d.border_b_1().border_color(color(ui.border_variant))
+                        })
+                        .map(|d| match align {
+                            Align::Center => d.text_center(),
+                            Align::Right => d.text_right(),
+                            Align::None | Align::Left => d.text_left(),
+                        })
+                        .child(cell)
+                        .into_any_element(),
+                );
+            }
+        }
+        let last_column = columns.saturating_sub(1);
+        let table = div()
+            .flex()
+            .flex_none()
+            .border_1()
+            .border_color(color(ui.border_variant))
+            .rounded(px(4.))
+            .overflow_hidden()
+            .children(by_column.into_iter().enumerate().map(|(c, cells)| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .when(c < last_column, |d| {
+                        d.border_r_1().border_color(color(ui.border_variant))
+                    })
+                    .children(cells)
+            }));
+        div()
+            .id(self.id("md-table-scroll", id))
+            .flex()
+            .w_full()
+            .overflow_x_scroll()
+            .child(table)
+            .into_any_element()
+    }
+
+    /// The next image in the document.
+    fn image(&mut self, url: &str, alt: &str) -> AnyElement {
+        let n = self.images;
+        self.images += 1;
+        match &self.style.images {
+            Some(lookup) => lookup(url, alt, n, self.cx),
+            None => image_placeholder(alt, None, self.cx),
+        }
+    }
+
+    /// One text element for a paragraph, heading or table cell; inline
+    /// images split it into a wrapping row of text and images.
     fn text(&mut self, inlines: &[Inline], size: f32, bold: bool, muted: bool) -> AnyElement {
         let mut flat = Flat::default();
         let style = InlineStyle {
@@ -1104,19 +1412,63 @@ impl Renderer<'_> {
             strike: false,
         };
         self.flatten(inlines, style, None, &mut flat);
-        if flat.text.is_empty() {
-            return div().into_any_element();
+        flat.flush();
+        let mut segs = flat.segs;
+        match segs.len() {
+            0 => div().into_any_element(),
+            1 if matches!(segs[0], Seg::Text(_)) => {
+                let Some(Seg::Text(chunk)) = segs.pop() else {
+                    unreachable!()
+                };
+                self.chunk(chunk, size)
+            }
+            _ => {
+                let children: Vec<AnyElement> = segs
+                    .into_iter()
+                    .map(|seg| match seg {
+                        Seg::Text(chunk) => self.chunk(chunk, size),
+                        Seg::Image { url, alt, link } => {
+                            let image = self.image(&url, &alt);
+                            self.linked(image, link)
+                        }
+                    })
+                    .collect();
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_x(px(4.))
+                    .children(children)
+                    .into_any_element()
+            }
         }
-        let styled = StyledText::new(flat.text).with_runs(flat.runs);
+    }
+
+    /// Makes `element` clickable when it sits inside a link.
+    fn linked(&mut self, element: AnyElement, link: Option<String>) -> AnyElement {
+        let Some(url) = link else { return element };
+        self.tables += 1;
+        let on_link = self.on_link.clone();
+        div()
+            .id(self.id("md-image-link", self.tables))
+            .cursor_pointer()
+            .on_click(move |_, window, cx| on_link(&url, window, cx))
+            .child(element)
+            .into_any_element()
+    }
+
+    /// A run of styled text, with its links clickable.
+    fn chunk(&mut self, chunk: Chunk, size: f32) -> AnyElement {
+        let styled = StyledText::new(chunk.text).with_runs(chunk.runs);
         let el = div().text_size(px(size));
-        if flat.links.is_empty() {
+        if chunk.links.is_empty() {
             return el.child(styled).into_any_element();
         }
         self.texts += 1;
-        let (ranges, urls): (Vec<_>, Vec<_>) = flat.links.into_iter().unzip();
+        let (ranges, urls): (Vec<_>, Vec<_>) = chunk.links.into_iter().unzip();
         let on_link = self.on_link.clone();
         el.child(
-            InteractiveText::new(ElementId::from(("md-text", self.texts)), styled)
+            InteractiveText::new(self.id("md-text", self.texts), styled)
                 .on_click(ranges, move |ix, window, cx| on_link(&urls[ix], window, cx)),
         )
         .into_any_element()
@@ -1147,9 +1499,10 @@ impl Renderer<'_> {
             } else {
                 ui.text
             };
-            let start = out.text.len();
-            out.text.push_str(text);
-            out.runs.push(TextRun {
+            let cur = &mut out.cur;
+            let start = cur.text.len();
+            cur.text.push_str(text);
+            cur.runs.push(TextRun {
                 len: text.len(),
                 font: f,
                 color: color(text_color).into(),
@@ -1165,11 +1518,11 @@ impl Renderer<'_> {
                 }),
             });
             if let Some(url) = link {
-                match out.links.last_mut() {
+                match cur.links.last_mut() {
                     Some((range, last)) if range.end == start && last == url => {
-                        range.end = out.text.len()
+                        range.end = cur.text.len()
                     }
-                    _ => out.links.push((start..out.text.len(), url.to_owned())),
+                    _ => cur.links.push((start..cur.text.len(), url.to_owned())),
                 }
             }
         };
@@ -1213,7 +1566,14 @@ impl Renderer<'_> {
                     link,
                     out,
                 ),
-                Inline::Image { alt, .. } => push(out, alt, style),
+                Inline::Image { url, alt } => {
+                    out.flush();
+                    out.segs.push(Seg::Image {
+                        url: url.clone(),
+                        alt: alt.clone(),
+                        link: link.map(str::to_owned),
+                    });
+                }
                 Inline::Link { url, children } => self.flatten(
                     children,
                     InlineStyle {
@@ -1227,25 +1587,27 @@ impl Renderer<'_> {
         }
     }
 
-    /// The next code block: code font, editor background, no wrap, scrolls
-    /// sideways.
+    /// The next code block: code font, code background, sideways scroll
+    /// or wrapping as the style says.
     fn code(&mut self) -> AnyElement {
         let index = self.codes;
         self.codes += 1;
         let ui = &self.cx.global::<AppState>().theme.ui;
         let (text, runs) = self.blocks.code_runs(index, self.cx).unwrap_or_default();
+        let (px_, py_) = self.style.code_padding;
+        let scroll = self.style.code_scroll_x;
         let code = div()
             .id(("md-code-scroll", index))
             .w_full()
-            .overflow_x_scroll()
-            .rounded(px(4.))
-            .bg(color(ui.editor_background))
+            .when(scroll, |d| d.overflow_x_scroll())
+            .rounded(px(GRID))
+            .bg(code_background(ui))
             .child(
                 div()
-                    .px(px(8.))
-                    .py(px(6.))
-                    .whitespace_nowrap()
-                    .text_size(px(UI_FONT_SIZE_SMALL))
+                    .px(px(px_))
+                    .py(px(py_))
+                    .when(scroll, |d| d.whitespace_nowrap())
+                    .text_size(px(self.style.text_size))
                     .child(StyledText::new(text).with_runs(runs.to_vec())),
             );
         div()
@@ -1256,12 +1618,39 @@ impl Renderer<'_> {
     }
 }
 
+/// A run of text with one style per `runs` entry.
 #[derive(Default)]
-struct Flat {
+struct Chunk {
     text: String,
     runs: Vec<TextRun>,
     /// Byte ranges of `text` and their URLs.
     links: Vec<(Range<usize>, String)>,
+}
+
+enum Seg {
+    Text(Chunk),
+    Image {
+        url: String,
+        alt: String,
+        /// The link the image sits in.
+        link: Option<String>,
+    },
+}
+
+/// Inlines flattened: text runs and the images between them.
+#[derive(Default)]
+struct Flat {
+    cur: Chunk,
+    segs: Vec<Seg>,
+}
+
+impl Flat {
+    /// Closes the text collected so far.
+    fn flush(&mut self) {
+        if !self.cur.text.is_empty() {
+            self.segs.push(Seg::Text(std::mem::take(&mut self.cur)));
+        }
+    }
 }
 
 #[cfg(test)]
