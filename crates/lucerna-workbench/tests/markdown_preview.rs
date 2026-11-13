@@ -194,6 +194,50 @@ fn closing_dirty_source_keeps_preview_quiet(cx: &mut TestAppContext) {
     assert!(drawn("tab-dirty-0-0", cx), "the preview tab shows the dot");
 }
 
+/// Spec §4.1: ⌘S with a preview focused saves the buffer of its file.
+#[gpui::test]
+fn save_from_static_preview_writes_file(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, _source, _preview, cx) = dirty_with_preview(cx);
+    run(&wb, "workbench.action.files.save", cx);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("file.md")).unwrap(),
+        "zzzhello\n"
+    );
+    assert!(!drawn("tab-dirty-0-0", cx), "saved: no dot");
+}
+
+#[gpui::test]
+fn save_and_revert_from_dynamic_preview(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open("hello\n", cx);
+    open_source(&wb, cx);
+    cx.simulate_input("zzz");
+    draw(cx);
+    run(&wb, "markdown.showPreviewToSide", cx);
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.focus_group(1))
+    });
+    draw(cx);
+    run(&wb, "workbench.action.files.save", cx);
+    let file = dir.path().join("file.md");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "zzzhello\n");
+
+    // Revert reads the file back into the buffer the source tab shows.
+    fs::write(&file, "from disk\n").unwrap();
+    run(&wb, "workbench.action.files.revert", cx);
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.focus_group(0))
+    });
+    draw(cx);
+    let source = active_body::<CodeView>(&wb, cx);
+    let text = source.read_with(cx, |v, _| {
+        let s = v.snapshot();
+        s.text_for_range(0..s.len_bytes())
+    });
+    assert_eq!(text, "from disk\n");
+}
+
 #[gpui::test]
 fn too_large_file_shows_notice(cx: &mut TestAppContext) {
     init(cx);
