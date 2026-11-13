@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use gpui::px;
 use gpui::{
-    Entity, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, TestAppContext,
-    VisualTestContext,
+    Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
+    TestAppContext, VisualTestContext,
 };
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
@@ -714,12 +714,26 @@ fn right_click_elsewhere_replaces_menu(cx: &mut TestAppContext) {
     init(cx, None);
     let dir = project();
     let (wb, cx) = open(dir.path(), cx);
+    cx.update(|window, _| window.activate_window());
     right_click("explorer-row-a.rs", cx);
     right_click("explorer-row-b.rs", cx);
+    draw(cx);
     assert_eq!(selection(&wb, cx), Selection::Path(p("b.rs")));
     assert!(cx.debug_bounds("context-menu").is_some());
     assert!(cx.debug_bounds("explorer-row-outline-a.rs").is_none());
     assert!(cx.debug_bounds("explorer-row-outline-b.rs").is_some());
+    // The new menu holds the focus, so it stays open.
+    let focused = cx.update(|window, cx| {
+        let menu = wb
+            .read(cx)
+            .explorer()
+            .read(cx)
+            .context_menu()
+            .unwrap()
+            .clone();
+        menu.read(cx).focus_handle(cx).is_focused(window)
+    });
+    assert!(focused);
 }
 
 #[gpui::test]
@@ -796,4 +810,41 @@ fn single_file_menu_is_read_only(cx: &mut TestAppContext) {
     draw(cx);
     assert!(!cx.has_pending_prompt());
     assert!(file.is_file());
+}
+
+#[gpui::test]
+fn click_in_editor_closes_menu_and_keeps_editor_focus(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    // Focus events only fire in an active window.
+    cx.update(|window, _| window.activate_window());
+    click("explorer-row-a.rs", cx);
+    right_click("explorer-row-b.rs", cx);
+    assert!(key(&wb, "contextMenuVisible", cx));
+    click("editor-groups", cx);
+    draw(cx);
+    assert!(cx.debug_bounds("context-menu").is_none());
+    assert!(!key(&wb, "contextMenuVisible", cx));
+    assert!(
+        key(&wb, "editorFocus", cx),
+        "the click keeps the editor focused"
+    );
+    assert!(!key(&wb, "sideBarFocus", cx));
+}
+
+#[gpui::test]
+fn quick_open_closes_menu(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    cx.update(|window, _| window.activate_window());
+    right_click("explorer-row-a.rs", cx);
+    assert!(key(&wb, "contextMenuVisible", cx));
+    cx.simulate_keystrokes("cmd-p");
+    draw(cx);
+    draw(cx);
+    assert!(key(&wb, "inQuickOpen", cx));
+    assert!(!key(&wb, "contextMenuVisible", cx));
+    assert!(cx.debug_bounds("context-menu").is_none());
 }

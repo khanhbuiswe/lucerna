@@ -3,7 +3,7 @@
 //! escape) or the mouse. Confirming an entry emits [`MenuCommand`] for
 //! the host to run; the menu itself never runs commands.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
@@ -340,9 +340,11 @@ pub struct DeployedMenu {
     _subs: Vec<Subscription>,
 }
 
-/// Focuses `menu` and watches it. When it closes, focus returns to the
-/// owner and `on_close` gets the confirmed command, or `None` when the
-/// menu was dismissed.
+/// Focuses `menu` and watches it. The menu closes when it is dismissed,
+/// an entry is confirmed or the focus leaves it; `on_close` then gets the
+/// confirmed command, or `None`, once. Focus returns to the owner only if
+/// the menu (or nothing) still holds it, so a click into another view
+/// keeps that view focused.
 pub fn deploy_context_menu<V: 'static>(
     menu: gpui::Entity<ContextMenu>,
     position: Point<Pixels>,
@@ -355,6 +357,7 @@ pub fn deploy_context_menu<V: 'static>(
     window.focus(&focus, cx);
     let on_close = Rc::new(on_close);
     let confirmed: Rc<RefCell<Option<MenuCommand>>> = Rc::default();
+    let closed = Rc::new(Cell::new(false));
     let on_command = {
         let confirmed = confirmed.clone();
         cx.subscribe_in(&menu, window, move |_, _, event: &MenuCommand, _, _| {
@@ -362,20 +365,34 @@ pub fn deploy_context_menu<V: 'static>(
         })
     };
     // The command arrives after the dismissal, so close one step later.
-    let on_dismiss = cx.subscribe_in(&menu, window, move |_, _, _: &DismissEvent, window, cx| {
-        let confirmed = confirmed.clone();
-        let owner = owner.clone();
-        let on_close = on_close.clone();
-        cx.defer_in(window, move |view, window, cx| {
-            window.focus(&owner, cx);
-            let command = confirmed.borrow_mut().take();
-            on_close(view, command, window, cx);
-        });
-    });
+    let on_dismiss = {
+        let focus = focus.clone();
+        cx.subscribe_in(&menu, window, move |_, _, _: &DismissEvent, window, cx| {
+            if closed.replace(true) {
+                return;
+            }
+            let (confirmed, owner, focus) = (confirmed.clone(), owner.clone(), focus.clone());
+            let on_close = on_close.clone();
+            cx.defer_in(window, move |view, window, cx| {
+                if focus.contains_focused(window, cx) || window.focused(cx).is_none() {
+                    window.focus(&owner, cx);
+                }
+                let command = confirmed.borrow_mut().take();
+                on_close(view, command, window, cx);
+            });
+        })
+    };
+    // Focus moved elsewhere (another view, a palette): close.
+    let on_blur = {
+        let menu = menu.clone();
+        cx.on_blur(&focus, window, move |_, _, cx| {
+            menu.update(cx, |menu, cx| menu.dismiss(cx));
+        })
+    };
     DeployedMenu {
         menu,
         position,
-        _subs: vec![on_command, on_dismiss],
+        _subs: vec![on_command, on_dismiss, on_blur],
     }
 }
 

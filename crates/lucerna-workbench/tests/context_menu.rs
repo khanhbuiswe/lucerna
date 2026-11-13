@@ -41,6 +41,9 @@ type Closed = Rc<RefCell<Vec<Option<MenuCommand>>>>;
 
 struct Host {
     focus: FocusHandle,
+    /// Another focusable area, as the editor is beside the Explorer: a
+    /// mouse down on it takes the focus.
+    other: FocusHandle,
     deployed: Option<DeployedMenu>,
     closed: Closed,
 }
@@ -51,6 +54,19 @@ impl Render for Host {
             .id("host")
             .size_full()
             .track_focus(&self.focus)
+            .child(
+                div()
+                    .id("other")
+                    .absolute()
+                    .top(px(0.))
+                    .left(px(400.))
+                    .size(px(20.))
+                    .track_focus(&self.other)
+                    .on_mouse_down(gpui::MouseButton::Left, {
+                        let other = self.other.clone();
+                        move |_, window, cx| window.focus(&other, cx)
+                    }),
+            )
             .children(self.deployed.as_ref().map(render_deployed))
     }
 }
@@ -65,10 +81,13 @@ fn open(cx: &mut TestAppContext) -> (Entity<Host>, Closed, &mut VisualTestContex
         window.focus(&focus, cx);
         Host {
             focus,
+            other: cx.focus_handle(),
             deployed: None,
             closed: host_closed,
         }
     });
+    // Focus events only fire in an active window.
+    cx.update(|window, _| window.activate_window());
     host.update_in(cx, |host, window, cx| {
         let owner = host.focus.clone();
         let menu = cx.new(|cx| {
@@ -234,4 +253,34 @@ fn hover_moves_selection(cx: &mut TestAppContext) {
     cx.simulate_mouse_move(position, None, Modifiers::none());
     draw(cx);
     assert_eq!(menu.read_with(cx, |m, _| m.selected()), Some(0));
+}
+
+fn other_focused(host: &Entity<Host>, cx: &mut VisualTestContext) -> bool {
+    let other = host.read_with(cx, |host, _| host.other.clone());
+    cx.update(|window, _| other.is_focused(window))
+}
+
+#[gpui::test]
+fn click_into_another_view_keeps_its_focus(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (host, closed, cx) = open(cx);
+    cx.simulate_click(point(px(410.), px(10.)), Modifiers::none());
+    draw(cx);
+    assert_eq!(*closed.borrow(), vec![None]);
+    assert!(cx.debug_bounds("context-menu").is_none());
+    assert!(other_focused(&host, cx), "the clicked view keeps the focus");
+    assert!(!host_focused(&host, cx));
+}
+
+#[gpui::test]
+fn closes_when_focus_moves_elsewhere(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (host, closed, cx) = open(cx);
+    let other = host.read_with(cx, |host, _| host.other.clone());
+    cx.update(|window, cx| window.focus(&other, cx));
+    draw(cx);
+    draw(cx);
+    assert_eq!(*closed.borrow(), vec![None]);
+    assert!(cx.debug_bounds("context-menu").is_none());
+    assert!(other_focused(&host, cx));
 }

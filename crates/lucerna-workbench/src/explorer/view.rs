@@ -878,8 +878,6 @@ impl ExplorerView {
         let menu = cx.new(|cx| build_menu(kind, single_file, path, owner, cx));
         self.menu_generation += 1;
         let generation = self.menu_generation;
-        let replacing = self.context_menu.is_some();
-        let focus = menu.read(cx).focus_handle(cx);
         self.context_menu = Some(deploy_context_menu(
             menu,
             position,
@@ -902,15 +900,6 @@ impl ExplorerView {
                 }
             },
         ));
-        if replacing {
-            // The replaced menu hands focus back to the owner as it closes;
-            // take it again afterwards.
-            cx.defer_in(window, move |this, window, cx| {
-                if this.menu_generation == generation {
-                    window.focus(&focus, cx);
-                }
-            });
-        }
         cx.notify();
     }
 
