@@ -1032,6 +1032,8 @@ pub struct MarkdownStyle {
     pub code_background: CodeBackground,
     /// Draws images; `None` draws placeholders.
     pub images: Option<ImageLookup>,
+    /// The font of text that is not code.
+    pub font_family: SharedString,
 }
 
 impl MarkdownStyle {
@@ -1050,6 +1052,7 @@ impl MarkdownStyle {
             quote_bar: 2.,
             code_background: CodeBackground::Editor,
             images: None,
+            font_family: UI_FONT_FAMILY.into(),
         }
     }
 
@@ -1067,6 +1070,7 @@ impl MarkdownStyle {
             quote_bar: 3.,
             code_background: CodeBackground::Elevated,
             images,
+            font_family: UI_FONT_FAMILY.into(),
         }
     }
 }
@@ -1174,7 +1178,7 @@ pub fn render_block(
     let element = renderer.block(block, style.text_size, false);
     div()
         .min_w_0()
-        .font_family(UI_FONT_FAMILY)
+        .font_family(style.font_family.clone())
         .text_size(px(style.text_size))
         .line_height(relative(style.line_height))
         .text_color(color(cx.global::<AppState>().theme.ui.text))
@@ -1490,7 +1494,7 @@ impl Renderer<'_> {
             let family: SharedString = if style.code {
                 code_font_family(self.cx)
             } else {
-                UI_FONT_FAMILY.into()
+                self.style.font_family.clone()
             };
             let mut f = font(family);
             if style.bold {

@@ -37,6 +37,7 @@ use crate::locations_picker::ShownLocationsPicker;
 use crate::lsp_health::LspHealthView;
 use crate::lsp_log::LspLogs;
 use crate::lsp_status::{self, LspStatusItem};
+use crate::markdown_preview::MarkdownPreview;
 use crate::nav_history::{NavEntry, NavHistory};
 use crate::open_commands::{self, ShownRecentPicker};
 use crate::open_files::{OpenFileWatcher, matching_files};
@@ -342,11 +343,15 @@ impl Workbench {
             groups.set_tab_body_factory(
                 Rc::new(move |tab, _, cx| {
                     let path = match &tab.item {
-                        // Until the preview view exists, previews show the
-                        // source.
-                        TabItem::File(path)
-                        | TabItem::MarkdownPreview(path)
-                        | TabItem::MarkdownPreviewDynamic(path) => path.clone(),
+                        TabItem::File(path) => path.clone(),
+                        TabItem::MarkdownPreview(path) | TabItem::MarkdownPreviewDynamic(path) => {
+                            let dynamic = matches!(tab.item, TabItem::MarkdownPreviewDynamic(_));
+                            let (path, docs) = (path.clone(), docs.clone());
+                            let workbench = workbench.clone();
+                            return cx
+                                .new(|cx| MarkdownPreview::new(path, dynamic, docs, workbench, cx))
+                                .into();
+                        }
                         TabItem::Extensions => {
                             page.update(cx, |page, cx| page.shown(cx));
                             return page.clone().into();
