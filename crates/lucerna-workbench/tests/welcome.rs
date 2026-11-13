@@ -15,7 +15,9 @@ use lucerna_workbench::app::{self, Launch};
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::process::{SpawnRequest, Spawner};
 use lucerna_workbench::recent::{RecentEntry, RecentKind, RecentStore, load, recent_path};
-use lucerna_workbench::{AppState, OpenMode, WelcomeEvent, WelcomeView, Workbench};
+use lucerna_workbench::{
+    AppState, OpenMode, WelcomeEvent, WelcomeView, Workbench, WorkbenchEvent, status_message,
+};
 
 fn init(user_keymap: Option<&str>, data_dir: Option<PathBuf>, cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), user_keymap);
@@ -568,4 +570,103 @@ fn quit_asks_the_replaced_window_about_unsaved_changes(cx: &mut TestAppContext) 
     );
     cx.simulate_prompt_answer("Cancel");
     settle(cx);
+}
+
+/// Emits [`WorkbenchEvent::Replace`] from `wb`, as Open Folder, Open
+/// Recent and Close Folder do once the save prompt is answered.
+fn emit_replace(wb: &Entity<Workbench>, request: SpawnRequest, cx: &mut TestAppContext) {
+    cx.update(|cx| wb.update(cx, |_, cx| cx.emit(WorkbenchEvent::Replace(request))));
+    cx.run_until_parked();
+}
+
+fn window_id(cx: &mut TestAppContext) -> gpui::WindowId {
+    cx.update(|cx| {
+        let windows = cx.windows();
+        assert_eq!(windows.len(), 1, "one window");
+        windows[0].window_id()
+    })
+}
+
+/// A routed window showing the workbench on `name`.
+fn routed_workbench(
+    fixture: &Fixture,
+    name: &str,
+    cx: &mut TestAppContext,
+) -> (Entity<Workbench>, Spawns) {
+    let (_, view, spawns) = routed_welcome(fixture, cx);
+    emit(&view, vec![open_event(&fixture.path(name), false)], cx);
+    let wb = only_workbench(cx).expect("the root is a workbench");
+    (wb, spawns)
+}
+
+#[gpui::test]
+fn replace_shows_the_folder_in_the_same_window(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&["a", "b"], &[]);
+    let (first, spawns) = routed_workbench(&fixture, "a", cx);
+    let window = window_id(cx);
+    let released = first.downgrade();
+    emit_replace(&first, SpawnRequest::Path(fixture.path("b")), cx);
+    drop(first);
+    cx.run_until_parked();
+    let second = only_workbench(cx).expect("the root is a workbench");
+    assert_eq!(window_id(cx), window, "the same window");
+    assert_eq!(shown_root(cx), Some(canonical(&fixture.path("b"))));
+    assert!(
+        released.upgrade().is_none(),
+        "the old workbench is released"
+    );
+    assert_eq!(
+        stored_entries(&fixture).first().map(|e| e.path.clone()),
+        Some(canonical(&fixture.path("b")))
+    );
+    assert!(spawns.borrow().is_empty(), "no new process");
+
+    // The new workbench is routed too.
+    emit_replace(&second, SpawnRequest::Path(fixture.path("a")), cx);
+    assert_eq!(window_id(cx), window);
+    assert_eq!(shown_root(cx), Some(canonical(&fixture.path("a"))));
+}
+
+#[gpui::test]
+fn replace_with_welcome_keeps_the_window(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&["a", "b"], &[]);
+    let (wb, spawns) = routed_workbench(&fixture, "a", cx);
+    let window = window_id(cx);
+    let released = wb.downgrade();
+    emit_replace(&wb, SpawnRequest::Welcome, cx);
+    drop(wb);
+    cx.run_until_parked();
+    assert_eq!(window_id(cx), window, "the same window");
+    assert_eq!(shown_root(cx), None);
+    assert!(
+        released.upgrade().is_none(),
+        "the old workbench is released"
+    );
+    let view = cx
+        .update(|cx| cx.windows()[0].update(cx, |root, _, _| root.downcast::<WelcomeView>().ok()))
+        .unwrap()
+        .expect("the root is the Welcome view");
+    assert!(spawns.borrow().is_empty(), "no new process");
+
+    // Welcome opens a folder in that window again.
+    emit(&view, vec![open_event(&fixture.path("b"), false)], cx);
+    assert!(only_workbench(cx).is_some());
+    assert_eq!(window_id(cx), window);
+    assert_eq!(shown_root(cx), Some(canonical(&fixture.path("b"))));
+}
+
+#[gpui::test]
+fn replace_with_a_missing_folder_keeps_the_workbench(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&["a"], &[]);
+    let (wb, spawns) = routed_workbench(&fixture, "a", cx);
+    emit_replace(&wb, SpawnRequest::Path(fixture.path("gone")), cx);
+    let still = only_workbench(cx).expect("the root is a workbench");
+    assert_eq!(still.entity_id(), wb.entity_id());
+    assert_eq!(shown_root(cx), Some(canonical(&fixture.path("a"))));
+    let status = cx
+        .update(|cx| status_message::current(cx))
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    assert!(status.starts_with("Could not open "), "{status:?}");
+    assert!(spawns.borrow().is_empty());
 }

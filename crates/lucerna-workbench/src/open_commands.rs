@@ -1,15 +1,17 @@
 //! Opening folders and files from the workbench: Open Recent (`ctrl+r`),
 //! Open…, Open File…, Open Folder…, Close Folder and Clear Recently
-//! Opened. A process shows one window, so another folder opens in a new
-//! `luc` process: in place of this window (spec W8) after the save prompt,
-//! or beside it. A file opens as a tab here, as VS Code does.
+//! Opened. Another folder replaces this window's workbench after the save
+//! prompt (spec W8; the app's router does the swap on
+//! [`WorkbenchEvent::Replace`]), or opens beside it in a new `luc`
+//! process, since a process shows one window. A file opens as a tab here,
+//! as VS Code does.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, PathPromptOptions, PromptLevel, Subscription,
-    Task, Window, prelude::*,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, PathPromptOptions, PromptLevel,
+    Subscription, Task, Window, prelude::*,
 };
 
 use crate::app_menu;
@@ -21,6 +23,17 @@ use crate::{CommandRegistry, OpenMode, RecentPicker, RecentPickerEvent, Workbenc
 
 const CLEAR_MESSAGE: &str = "Do you want to clear all recently opened folders?";
 const CLEAR_ANSWERS: [&str; 2] = ["Clear", "Cancel"];
+
+/// What a [`Workbench`] asks of the window that shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkbenchEvent {
+    /// Show `request` in this window in place of the workbench (spec W8,
+    /// W10). The user already answered the save prompt and the layout is
+    /// saved.
+    Replace(SpawnRequest),
+}
+
+impl EventEmitter<WorkbenchEvent> for Workbench {}
 
 /// The shown Open Recent picker.
 pub(crate) struct ShownRecentPicker {
@@ -132,18 +145,14 @@ fn forget(path: PathBuf, cx: &mut App) {
 
 /// Starts the process `request` describes; on failure says why in the
 /// status bar.
-fn spawn_or_report(request: &SpawnRequest, cx: &mut App) -> bool {
-    match process::spawn(request, cx) {
-        Ok(()) => true,
-        Err(err) => {
-            let what = match request {
-                SpawnRequest::Path(path) => tilde_path(path, std::env::home_dir().as_deref()),
-                SpawnRequest::Welcome => "Lucerna".into(),
-            };
-            tracing::error!(%err, "could not start a new process");
-            status_message::show(format!("Could not open {what}: {err}"), cx);
-            false
-        }
+fn spawn_or_report(request: &SpawnRequest, cx: &mut App) {
+    if let Err(err) = process::spawn(request, cx) {
+        let what = match request {
+            SpawnRequest::Path(path) => tilde_path(path, std::env::home_dir().as_deref()),
+            SpawnRequest::Welcome => "Lucerna".into(),
+        };
+        tracing::error!(%err, "could not start a new process");
+        status_message::show(format!("Could not open {what}: {err}"), cx);
     }
 }
 
@@ -278,9 +287,7 @@ impl Workbench {
                 }
                 let request = SpawnRequest::Path(entry.path.clone());
                 match (entry.kind, new_window) {
-                    (_, true) => {
-                        spawn_or_report(&request, cx);
-                    }
+                    (_, true) => spawn_or_report(&request, cx),
                     (RecentKind::Folder, false) => wb.replace_with(request, window, cx),
                     (RecentKind::File, false) => {
                         wb.open_path(Arc::from(entry.path), OpenMode::Pinned, cx)
@@ -348,11 +355,10 @@ impl Workbench {
         .detach();
     }
 
-    /// Replaces this window with a new process showing `request` (spec
+    /// Replaces this workbench with `request` in the same window (spec
     /// W8, W10): asks to save as closing the window does, saves the
-    /// layout, starts the process, then closes the window. Cancel does
-    /// nothing; a process that does not start keeps the window and says
-    /// why in the status bar.
+    /// layout, then emits [`WorkbenchEvent::Replace`] for the app's router
+    /// to swap the window's root. Cancel does nothing.
     pub(crate) fn replace_with(
         &mut self,
         request: SpawnRequest,
@@ -364,11 +370,9 @@ impl Workbench {
             if !confirm.await {
                 return;
             }
-            wb.update_in(cx, |wb, window, cx| {
+            wb.update(cx, |wb, cx| {
                 wb.save_workspace_state(cx);
-                if spawn_or_report(&request, cx) {
-                    window.remove_window();
-                }
+                cx.emit(WorkbenchEvent::Replace(request));
             })
             .ok();
         })

@@ -85,6 +85,7 @@ pub use lsp_health::LspHealthView;
 pub use lsp_log::LspLogView;
 pub use lsp_status::{LspStatusItem, ServerRow, StatusDot};
 pub use nav_history::{NavEntry, NavHistory};
+pub use open_commands::WorkbenchEvent;
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,

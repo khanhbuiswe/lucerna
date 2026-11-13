@@ -1,7 +1,9 @@
 //! Opening from the workbench: the Open Recent picker (`ctrl-r`), Enter
-//! replacing the window, `⌘Enter` opening a new one, Close Folder going
-//! back to Welcome, Clear Recently Opened, and Open… on a picked path. A
-//! fake process spawner records what a new `luc` would open.
+//! asking to replace the workbench in its window, `⌘Enter` opening a new
+//! one, Close Folder going back to Welcome, Clear Recently Opened, and
+//! Open… on a picked path. A fake process spawner records what a new `luc`
+//! would open; the [`WorkbenchEvent::Replace`] events are recorded too
+//! (the app's router acts on them; `tests/welcome.rs` covers that).
 
 use std::cell::RefCell;
 use std::io;
@@ -16,7 +18,9 @@ use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::process::{SpawnRequest, Spawner};
 use lucerna_workbench::recent::{RecentStore, load, recent_path};
-use lucerna_workbench::{AppState, OpenMode, WelcomeView, Workbench, status_message};
+use lucerna_workbench::{
+    AppState, OpenMode, WelcomeView, Workbench, WorkbenchEvent, status_message,
+};
 
 const CLEAR_MESSAGE: &str = "Do you want to clear all recently opened folders?";
 
@@ -107,6 +111,21 @@ fn workbench<'a>(
     (wb, cx)
 }
 
+type Replaced = Rc<RefCell<Vec<SpawnRequest>>>;
+
+/// Records the workbench's [`WorkbenchEvent::Replace`] requests.
+fn record_replace(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Replaced {
+    let replaced: Replaced = Rc::default();
+    let sink = replaced.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(wb, move |_, event: &WorkbenchEvent, _| match event {
+            WorkbenchEvent::Replace(request) => sink.borrow_mut().push(request.clone()),
+        })
+        .detach();
+    });
+    replaced
+}
+
 fn draw(cx: &mut VisualTestContext) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
 }
@@ -120,12 +139,6 @@ fn settle(cx: &mut VisualTestContext) {
 fn keys(keystrokes: &str, cx: &mut VisualTestContext) {
     cx.simulate_keystrokes(keystrokes);
     settle(cx);
-}
-
-/// Keys that may close the window: no drawing afterwards.
-fn final_keys(keystrokes: &str, cx: &mut VisualTestContext) {
-    cx.simulate_keystrokes(keystrokes);
-    cx.run_until_parked();
 }
 
 fn window_count(cx: &mut VisualTestContext) -> usize {
@@ -229,14 +242,16 @@ fn escape_closes_the_picker(cx: &mut TestAppContext) {
 fn enter_replaces_the_window(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other"]);
     let spawns = init(&fixture, false, cx);
-    let (_wb, cx) = workbench(&fixture, cx);
+    let (wb, cx) = workbench(&fixture, cx);
+    let replaced = record_replace(&wb, cx);
     keys("ctrl-r", cx);
-    final_keys("enter", cx);
+    keys("enter", cx);
     assert_eq!(
-        *spawns.borrow(),
+        *replaced.borrow(),
         vec![SpawnRequest::Path(fixture.path("other"))]
     );
-    assert_eq!(window_count(cx), 0, "the window closed");
+    assert!(spawns.borrow().is_empty(), "no new process");
+    assert_eq!(window_count(cx), 1, "the window stays");
 }
 
 #[gpui::test]
@@ -259,6 +274,7 @@ fn cancel_on_unsaved_prompt_keeps_everything(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other"]);
     let spawns = init(&fixture, false, cx);
     let (wb, cx) = workbench(&fixture, cx);
+    let replaced = record_replace(&wb, cx);
     dirty_file(&wb, &fixture, cx);
     keys("ctrl-r", cx);
     keys("enter", cx);
@@ -266,6 +282,7 @@ fn cancel_on_unsaved_prompt_keeps_everything(cx: &mut TestAppContext) {
     cx.simulate_prompt_answer("Cancel");
     settle(cx);
     assert!(spawns.borrow().is_empty());
+    assert!(replaced.borrow().is_empty());
     assert_eq!(window_count(cx), 1);
 }
 
@@ -275,7 +292,7 @@ fn failed_spawn_keeps_window_and_reports(cx: &mut TestAppContext) {
     let spawns = init(&fixture, true, cx);
     let (_wb, cx) = workbench(&fixture, cx);
     keys("ctrl-r", cx);
-    keys("enter", cx);
+    keys("cmd-enter", cx);
     assert_eq!(spawns.borrow().len(), 1);
     assert_eq!(window_count(cx), 1);
     let status = status(cx);
@@ -284,13 +301,15 @@ fn failed_spawn_keeps_window_and_reports(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn close_folder_spawns_welcome(cx: &mut TestAppContext) {
+fn close_folder_asks_for_welcome(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&[]);
     let spawns = init(&fixture, false, cx);
-    let (_wb, cx) = workbench(&fixture, cx);
-    final_keys("cmd-k f", cx);
-    assert_eq!(*spawns.borrow(), vec![SpawnRequest::Welcome]);
-    assert_eq!(window_count(cx), 0, "the window closed");
+    let (wb, cx) = workbench(&fixture, cx);
+    let replaced = record_replace(&wb, cx);
+    keys("cmd-k f", cx);
+    assert_eq!(*replaced.borrow(), vec![SpawnRequest::Welcome]);
+    assert!(spawns.borrow().is_empty(), "no new process");
+    assert_eq!(window_count(cx), 1, "the window stays");
 }
 
 #[gpui::test]
@@ -358,6 +377,7 @@ fn open_folder_replaces_the_window(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other"]);
     let spawns = init(&fixture, false, cx);
     let (wb, cx) = workbench(&fixture, cx);
+    let replaced = record_replace(&wb, cx);
     let folder = fixture.path("other");
     cx.update(|window, cx| {
         wb.update(cx, |wb, cx| {
@@ -365,8 +385,9 @@ fn open_folder_replaces_the_window(cx: &mut TestAppContext) {
         })
     });
     cx.run_until_parked();
-    assert_eq!(*spawns.borrow(), vec![SpawnRequest::Path(folder)]);
-    assert_eq!(window_count(cx), 0, "the window closed");
+    assert_eq!(*replaced.borrow(), vec![SpawnRequest::Path(folder)]);
+    assert!(spawns.borrow().is_empty(), "no new process");
+    assert_eq!(window_count(cx), 1, "the window stays");
 }
 
 #[gpui::test]

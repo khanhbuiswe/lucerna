@@ -14,8 +14,8 @@ use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::future::{self, Either};
 use gpui::{
-    App, AppContext as _, Bounds, Entity, Global, PathPromptOptions, Window, WindowBounds,
-    WindowHandle, WindowOptions, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, PathPromptOptions, Window,
+    WindowBounds, WindowHandle, WindowOptions, px, size,
 };
 use gpui_platform::application;
 use lucerna_extension::store::Store;
@@ -30,9 +30,10 @@ use crate::extensions::{
 use crate::open_requests::{self, OpenWindow, Route};
 use crate::process::{self, SpawnRequest, Spawner};
 use crate::recent::{self, RecentEntry, RecentKind, RecentStore};
+use crate::workspace_state::tilde_path;
 use crate::{
-    AppState, ConfigPaths, OpenMode, Startup, WelcomeEvent, WelcomeView, Workbench,
-    default_data_dir, startup_choice, watch_config, window_options,
+    AppState, ConfigPaths, OpenMode, Startup, WelcomeEvent, WelcomeView, Workbench, WorkbenchEvent,
+    default_data_dir, startup_choice, status_message, watch_config, window_options,
 };
 
 /// What [`run`] opens.
@@ -119,6 +120,15 @@ enum Shown {
     Workbench(OpenWindow, WindowHandle<Workbench>),
 }
 
+impl Shown {
+    fn window(&self) -> AnyWindowHandle {
+        match self {
+            Shown::Welcome(handle) => **handle,
+            Shown::Workbench(_, handle) => **handle,
+        }
+    }
+}
+
 /// The process's one window, and how to open paths the platform sends.
 struct Router {
     shown: Option<Shown>,
@@ -128,8 +138,9 @@ struct Router {
 }
 
 impl Router {
-    /// Opens the workbench on `launch`: in place of the Welcome screen when
-    /// it shows, else in a new window. Then records it as recently opened.
+    /// Opens the workbench on `launch`: in place of what the window shows
+    /// (the Welcome screen, or a workbench being replaced, spec W8), else
+    /// in a new window. Then records it as recently opened.
     fn open_first(this: &Rc<RefCell<Router>>, launch: Launch, cx: &mut App) {
         let (open, entry) = match (&launch.file, launch.single_file) {
             (Some(file), true) => (
@@ -147,18 +158,17 @@ impl Router {
                 },
             ),
         };
-        let (welcome, user_dir) = {
+        let (shown, user_dir) = {
             let router = this.borrow();
-            let welcome = match router.shown {
-                Some(Shown::Welcome(handle)) => Some(handle),
-                _ => None,
-            };
-            (welcome, router.user_dir.clone())
+            (
+                router.shown.as_ref().map(Shown::window),
+                router.user_dir.clone(),
+            )
         };
         watch_config(ConfigPaths::with_user_dir(user_dir, &launch.root), cx);
-        let handle = match welcome {
-            Some(welcome) => replace_welcome(welcome, launch, cx),
-            None => open_workbench(launch, cx),
+        let handle = match shown {
+            Some(window) => replace_root(this, window, launch, cx),
+            None => open_workbench(this, launch, cx),
         };
         if let Some(handle) = handle {
             this.borrow_mut().shown = Some(Shown::Workbench(open, handle));
@@ -171,14 +181,8 @@ impl Router {
     /// Opens the Welcome screen in a window like the workbench's; quits if
     /// it cannot.
     fn open_welcome(this: &Rc<RefCell<Router>>, cx: &mut App) {
-        let router = this.clone();
         let opened = cx.open_window(maximized_window_options(cx), |window, cx| {
-            let view = cx.new(|cx| WelcomeView::new(window, cx));
-            cx.subscribe(&view, move |_, event: &WelcomeEvent, cx| {
-                Router::on_welcome_event(&router, event, cx)
-            })
-            .detach();
-            view
+            Router::welcome_view(this, window, cx)
         });
         match opened {
             Ok(handle) => {
@@ -189,6 +193,78 @@ impl Router {
                 tracing::error!(%err, "could not open the window");
                 cx.quit();
             }
+        }
+    }
+
+    /// A Welcome view whose events this router handles.
+    fn welcome_view(
+        this: &Rc<RefCell<Router>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<WelcomeView> {
+        let router = this.clone();
+        let view = cx.new(|cx| WelcomeView::new(window, cx));
+        cx.subscribe(&view, move |_, event: &WelcomeEvent, cx| {
+            Router::on_welcome_event(&router, event, cx)
+        })
+        .detach();
+        view
+    }
+
+    fn on_workbench_event(this: &Rc<RefCell<Router>>, event: &WorkbenchEvent, cx: &mut App) {
+        match event {
+            WorkbenchEvent::Replace(SpawnRequest::Path(path)) => {
+                Router::replace_with_folder(this, path, cx)
+            }
+            WorkbenchEvent::Replace(SpawnRequest::Welcome) => {
+                Router::replace_with_welcome(this, cx)
+            }
+        }
+    }
+
+    /// Shows the workbench on `path` in place of the one shown (spec W8).
+    /// A path that cannot be opened keeps the window as it is and says why
+    /// in the status bar.
+    fn replace_with_folder(this: &Rc<RefCell<Router>>, path: &Path, cx: &mut App) {
+        let resolved = std::fs::canonicalize(path)
+            .map_err(|err| err.to_string())
+            .and_then(|path| (this.borrow().resolve)(path));
+        match resolved {
+            Ok(launch) => Router::open_first(this, launch, cx),
+            Err(err) => {
+                tracing::error!(err, path = %path.display(), "could not open");
+                let what = tilde_path(path, std::env::home_dir().as_deref());
+                status_message::show(format!("Could not open {what}: {err}"), cx);
+            }
+        }
+    }
+
+    /// Shows the Welcome screen in place of the workbench (spec W10), on
+    /// the user configuration alone.
+    fn replace_with_welcome(this: &Rc<RefCell<Router>>, cx: &mut App) {
+        let (window, user_dir) = {
+            let router = this.borrow();
+            let Some(shown) = router.shown.as_ref() else {
+                return;
+            };
+            (shown.window(), router.user_dir.clone())
+        };
+        watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
+        let replaced = window.update(cx, |_, window, cx| {
+            let view = window.replace_root(cx, WelcomeView::new);
+            let router = this.clone();
+            cx.subscribe(&view, move |_, event: &WelcomeEvent, cx| {
+                Router::on_welcome_event(&router, event, cx)
+            })
+            .detach();
+        });
+        match replaced {
+            Ok(()) => {
+                this.borrow_mut().shown =
+                    Some(Shown::Welcome(WindowHandle::new(window.window_id())));
+                app_menu::refresh(cx);
+            }
+            Err(err) => tracing::error!(%err, "could not show the Welcome screen"),
         }
     }
 
@@ -354,9 +430,13 @@ fn maximized_window_options(cx: &App) -> WindowOptions {
 }
 
 /// Opens the workbench window on `launch`; quits if it cannot.
-fn open_workbench(launch: Launch, cx: &mut App) -> Option<WindowHandle<Workbench>> {
+fn open_workbench(
+    router: &Rc<RefCell<Router>>,
+    launch: Launch,
+    cx: &mut App,
+) -> Option<WindowHandle<Workbench>> {
     let opened = cx.open_window(maximized_window_options(cx), |window, cx| {
-        build_workbench(launch, window, cx)
+        build_workbench(router, launch, window, cx)
     });
     match opened {
         Ok(handle) => {
@@ -371,16 +451,18 @@ fn open_workbench(launch: Launch, cx: &mut App) -> Option<WindowHandle<Workbench
     }
 }
 
-/// Makes the Welcome window show the workbench on `launch`, keeping its
-/// place and size. `None` when the window closed meanwhile.
-fn replace_welcome(
-    welcome: WindowHandle<WelcomeView>,
+/// Makes `any` (the Welcome window, or a workbench's being replaced) show
+/// the workbench on `launch`, keeping its place and size, without a window
+/// animation. The root it showed is released. `None` when the window
+/// closed meanwhile.
+fn replace_root(
+    router: &Rc<RefCell<Router>>,
+    any: AnyWindowHandle,
     launch: Launch,
     cx: &mut App,
 ) -> Option<WindowHandle<Workbench>> {
-    let any = *welcome;
     match any.update(cx, |_, window, cx| {
-        build_workbench(launch, window, cx);
+        build_workbench(router, launch, window, cx);
         window.activate_window();
         cx.activate(true);
     }) {
@@ -394,8 +476,14 @@ fn replace_welcome(
 }
 
 /// Makes the workbench on `launch` the root of `window`, opens its file,
-/// and runs the startup work once its first frame is presented.
-fn build_workbench(launch: Launch, window: &mut Window, cx: &mut App) -> Entity<Workbench> {
+/// and runs the startup work once its first frame is presented. `router`
+/// handles its [`WorkbenchEvent`]s.
+fn build_workbench(
+    router: &Rc<RefCell<Router>>,
+    launch: Launch,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<Workbench> {
     let Launch {
         root,
         file,
@@ -410,6 +498,11 @@ fn build_workbench(launch: Launch, window: &mut Window, cx: &mut App) -> Entity<
         (_, Some(data_dir)) => Workbench::with_data_dir(root, data_dir, window, cx),
         (_, None) => Workbench::new(root, window, cx),
     });
+    let events = router.clone();
+    cx.subscribe(&workbench, move |_, event: &WorkbenchEvent, cx| {
+        Router::on_workbench_event(&events, event, cx)
+    })
+    .detach();
     if let Some(file) = file {
         let path: Arc<Path> = file.into();
         workbench.update(cx, |wb, cx| wb.open_path(path, OpenMode::Pinned, cx));
