@@ -146,6 +146,8 @@ pub struct TerminalView {
     pub(super) last_frame: Option<Rc<Frame>>,
     /// The palette and the theme generation it was built for.
     pub(super) palette: Option<(u64, Rc<lucerna_terminal::TerminalPalette>)>,
+    /// Glyphs of plain characters, looked up once per font.
+    pub(super) glyphs: super::element::GlyphCache,
     /// An IME composition in progress: drawn at the cursor, not yet sent.
     pub(super) marked: Option<String>,
     /// The last paint gave the window this view's input handler, so typed
@@ -199,6 +201,7 @@ impl TerminalView {
             frames_drawn: 0,
             last_frame: None,
             palette: None,
+            glyphs: Default::default(),
             marked: None,
             input_handler_installed: false,
             mouse: MouseState::default(),

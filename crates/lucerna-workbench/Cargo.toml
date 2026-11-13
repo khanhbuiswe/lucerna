@@ -49,3 +49,9 @@ toml.workspace = true
 [[test]]
 name = "fonts"
 harness = false
+
+# A measurement with the platform's real text system (main thread only, as
+# above); skipped unless run with `--ignored`.
+[[test]]
+name = "terminal_perf"
+harness = false

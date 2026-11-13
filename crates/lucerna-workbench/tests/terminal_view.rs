@@ -174,6 +174,21 @@ fn renders_fed_text(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn plain_wide_and_combining_text_keep_their_columns(cx: &mut TestAppContext) {
+    // Plain runs are drawn from looked-up glyphs, the rest shaped: both
+    // land on their own cells.
+    init(cx);
+    let (_wb, cx, view) = open_terminal(cx);
+    feed(
+        &view,
+        "ab \x1b[1m日本\x1b[0m e\u{301}x \x1b[4mok\x1b[0m".as_bytes(),
+        cx,
+    );
+    settle(cx);
+    assert_eq!(row_text(&view, 0, cx).trim_end(), "ab 日本 e\u{301}x ok");
+}
+
+#[gpui::test]
 fn title_names_the_tab(cx: &mut TestAppContext) {
     init(cx);
     let (wb, cx, view) = open_terminal(cx);
@@ -301,6 +316,50 @@ fn idle_draws_nothing(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(notifies.get(), 0, "an idle terminal asks for no frame");
     assert_eq!(frames(&view, cx), before);
+}
+
+#[gpui::test]
+fn idle_prompt_draws_nothing_for_ten_seconds(cx: &mut TestAppContext) {
+    // Spec §9.2: a terminal at its prompt draws 0 frames a second.
+    init(cx);
+    let (_wb, cx, view) = open_terminal(cx);
+    feed(&view, b"~/project $ ", cx);
+    settle(cx);
+    let (notifies, _sub) = count_notifies(&view, cx);
+    let before = frames(&view, cx);
+    for _ in 0..100 {
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+    }
+    assert_eq!(notifies.get(), 0, "an idle prompt asks for no frame");
+    assert_eq!(frames(&view, cx), before, "and draws none");
+}
+
+#[gpui::test]
+fn hidden_busy_panel_draws_nothing(cx: &mut TestAppContext) {
+    // Spec §9.1: a hidden panel is not drawn, but its output is parsed.
+    init(cx);
+    let (wb, cx, view) = open_terminal(cx);
+    run(&wb, "workbench.action.togglePanel", cx);
+    assert!(cx.debug_bounds("terminal-panel").is_none(), "panel hidden");
+    let before = frames(&view, cx);
+    for i in 0..500 {
+        feed(&view, format!("line {i}\r\n").as_bytes(), cx);
+        if i % 10 == 9 {
+            cx.executor().advance_clock(Duration::from_millis(4));
+            cx.run_until_parked();
+            draw(cx);
+        }
+    }
+    settle(cx);
+    assert_eq!(frames(&view, cx), before, "a hidden terminal is not drawn");
+    let snapshot = view.read_with(cx, |v, _| v.terminal().snapshot());
+    let text: String = snapshot
+        .cells
+        .iter()
+        .map(|row| row.iter().map(|c| c.ch).collect::<String>() + "\n")
+        .collect();
+    assert!(text.contains("line 499"), "output still parsed: {text}");
 }
 
 #[gpui::test]

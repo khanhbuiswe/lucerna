@@ -1,16 +1,24 @@
 //! Draws a terminal's visible grid. Prepaint measures a cell, resizes the
 //! terminal to the bounds, takes one snapshot and lays out each row as
-//! runs (`lucerna_terminal::layout_line`), each shaped once at a forced
-//! cell width; paint draws them in spec §5.2's order.
+//! runs (`lucerna_terminal::layout_line`); paint draws them in spec §5.2's
+//! order.
+//!
+//! A run of plain narrow characters is not shaped: each character's glyph
+//! is looked up once (per font style) and drawn at its cell, which is what
+//! shaping onto a fixed grid with ligatures off gives anyway. Only runs
+//! with wide characters, combining marks or characters no font maps to a
+//! single glyph are shaped, each at a forced cell width.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{
     App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
-    Entity, Font, FontFeatures, FontStyle, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, Rgba, ScrollEvent, ShapedLine, SharedString, StrikethroughStyle, Style,
-    TextAlign, TextRun, UnderlineStyle, Window, fill, outline, point, px, relative, size,
+    Entity, Font, FontFeatures, FontId, FontStyle, FontWeight, GlobalElementId, GlyphId, Hitbox,
+    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollEvent, ShapedLine, SharedString,
+    StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, fill, outline, point,
+    px, relative, size,
 };
 use lucerna_terminal::{
     Cell, CellFlags, CursorShape, LineLayout, Modes, Rgba8, Snapshot, TerminalPalette, Underline,
@@ -46,13 +54,68 @@ impl IntoElement for TerminalElement {
     }
 }
 
-/// One shaped piece of a row, drawn at `origin`.
+/// One piece of a row, drawn at `origin`.
 struct Piece {
     origin: Point<Pixels>,
-    line: ShapedLine,
+    kind: PieceKind,
     /// First column and the text, for tests.
     col: u16,
     text: SharedString,
+}
+
+enum PieceKind {
+    /// Text shaped at a forced cell width.
+    Shaped(Box<ShapedLine>),
+    /// A run of plain narrow characters: each glyph at its cell's offset
+    /// from `origin`, in one colour, with the run's lines.
+    Glyphs {
+        glyphs: Vec<(Pixels, CachedGlyph)>,
+        color: Hsla,
+        width: Pixels,
+        underline: Option<UnderlineStyle>,
+        strike: Option<StrikethroughStyle>,
+    },
+}
+
+/// A character's glyph in one style: the font that has it (the terminal
+/// font or a fallback) and its id.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CachedGlyph {
+    font_id: FontId,
+    id: GlyphId,
+}
+
+/// Glyphs looked up so far for the terminal font; `None` for a character
+/// that does not map to one plain glyph, which is shaped instead.
+#[derive(Default)]
+pub(crate) struct GlyphCache {
+    /// The regular font and the bold weight the glyphs were looked up in.
+    font: Option<(Font, FontWeight)>,
+    map: HashMap<(char, bool, bool), Option<CachedGlyph>>,
+}
+
+/// Distinct characters kept before the cache starts over.
+const GLYPH_CACHE_LIMIT: usize = 8192;
+
+impl GlyphCache {
+    /// Forgets every glyph when the terminal font or its bold weight
+    /// changed.
+    fn for_font(&mut self, font: &Font, bold: FontWeight) {
+        let key = (font.clone(), bold);
+        if self.font.as_ref() != Some(&key) || self.map.len() > GLYPH_CACHE_LIMIT {
+            self.font = Some(key);
+            self.map.clear();
+        }
+    }
+}
+
+/// Where a row's text sits in its cell row.
+#[derive(Clone, Copy)]
+struct TextMetrics {
+    font_size: Pixels,
+    baseline: Pixels,
+    underline: Pixels,
+    strike: Pixels,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,6 +216,7 @@ pub(crate) struct Frame {
     rows: Vec<Vec<Piece>>,
     blocks: Vec<(Bounds<Pixels>, Hsla)>,
     cursor: Option<CursorPaint>,
+    text: TextMetrics,
     /// The cursor's cell, where the IME's candidate window opens.
     pub(super) cursor_cell: Option<Bounds<Pixels>>,
     /// An IME composition, drawn over the cursor cell and underlined.
@@ -261,15 +325,10 @@ impl Shaper<'_> {
         font
     }
 
-    fn shape(
-        &self,
-        text: &str,
-        run: &lucerna_terminal::TextRun,
-        forced: bool,
-        window: &mut Window,
-    ) -> ShapedLine {
-        let color = hsla(run.style.fg);
-        let underline = match run.style.underline {
+    /// GPUI's run for `len` bytes drawn in `style`.
+    fn text_run(&self, style: &lucerna_terminal::RunStyle, len: usize) -> TextRun {
+        let color = hsla(style.fg);
+        let underline = match style.underline {
             Underline::None => None,
             Underline::Curl => Some(UnderlineStyle {
                 thickness: px(1.),
@@ -282,21 +341,113 @@ impl Shaper<'_> {
                 wavy: false,
             }),
         };
-        let runs = [TextRun {
-            len: text.len(),
-            font: self.run_font(run.style.bold, run.style.italic),
+        TextRun {
+            len,
+            font: self.run_font(style.bold, style.italic),
             color,
             background_color: None,
             underline,
-            strikethrough: run.style.strike.then_some(StrikethroughStyle {
+            strikethrough: style.strike.then_some(StrikethroughStyle {
                 thickness: px(1.),
                 color: Some(color),
             }),
-        }];
+        }
+    }
+
+    fn shape(
+        &self,
+        text: &str,
+        run: &lucerna_terminal::TextRun,
+        forced: bool,
+        window: &mut Window,
+    ) -> ShapedLine {
+        let runs = [self.text_run(&run.style, text.len())];
         let text = SharedString::from(text.to_string());
         window
             .text_system()
             .shape_line(text, self.font.size, &runs, forced.then_some(self.cell_w))
+    }
+
+    /// The glyph `c` draws in this style, looked up once.
+    fn glyph(
+        &self,
+        cache: &mut GlyphCache,
+        c: char,
+        bold: bool,
+        italic: bool,
+        window: &mut Window,
+    ) -> Option<CachedGlyph> {
+        *cache.map.entry((c, bold, italic)).or_insert_with(|| {
+            let mut buf = [0u8; 4];
+            let text = c.encode_utf8(&mut buf);
+            let runs = [TextRun {
+                len: text.len(),
+                font: self.run_font(bold, italic),
+                color: Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            let layout = window
+                .text_system()
+                .layout_line(text, self.font.size, &runs, None);
+            match layout.runs.as_slice() {
+                [run] if run.glyphs.len() == 1 && !run.glyphs[0].is_emoji => Some(CachedGlyph {
+                    font_id: run.font_id,
+                    id: run.glyphs[0].id,
+                }),
+                _ => None,
+            }
+        })
+    }
+
+    /// Lays out one run at `y`: as looked-up glyphs when every character
+    /// is a plain narrow one, else shaped.
+    fn run_pieces(
+        &self,
+        run: &lucerna_terminal::TextRun,
+        origin_x: Pixels,
+        y: Pixels,
+        cache: &mut GlyphCache,
+        window: &mut Window,
+        out: &mut Vec<Piece>,
+    ) {
+        let (bold, italic) = (run.style.bold, run.style.italic);
+        let mut glyphs = Vec::with_capacity(run.text.len());
+        let mut plain = true;
+        for (i, c) in run.text.chars().enumerate() {
+            if c.width() != Some(1) {
+                plain = false;
+                break;
+            }
+            if c == ' ' {
+                continue;
+            }
+            match self.glyph(cache, c, bold, italic, window) {
+                Some(g) => glyphs.push((self.cell_w * i as f32, g)),
+                None => {
+                    plain = false;
+                    break;
+                }
+            }
+        }
+        if !plain {
+            self.pieces(run, origin_x, y, window, out);
+            return;
+        }
+        let tr = self.text_run(&run.style, run.text.len());
+        out.push(Piece {
+            origin: point(origin_x + self.cell_w * run.col as f32, y),
+            kind: PieceKind::Glyphs {
+                glyphs,
+                color: tr.color,
+                width: self.cell_w * run.cells as f32,
+                underline: tr.underline,
+                strike: tr.strikethrough,
+            },
+            col: run.col,
+            text: run.text.clone().into(),
+        });
     }
 
     /// Shapes one run into pieces at `y`. Narrow text is forced onto the
@@ -319,7 +470,7 @@ impl Shaper<'_> {
             }
             out.push(Piece {
                 origin: point(origin_x + self.cell_w * at as f32, y),
-                line: self.shape(text, run, forced, window),
+                kind: PieceKind::Shaped(Box::new(self.shape(text, run, forced, window))),
                 col: at,
                 text: text.to_string().into(),
             });
@@ -379,6 +530,17 @@ impl TerminalView {
             .unwrap_or(font.size * 0.6);
         let cell_w = (advance + px(font.letter_spacing)).max(px(1.));
         let cell_h = snap(font.cell_height(), scale).max(px(1.));
+        // Glyphs drawn from the cache sit where a shaped line in the
+        // terminal font would put them.
+        let ascent = text_system.ascent(font_id, font.size);
+        let descent = text_system.descent(font_id, font.size);
+        let padding_top = (cell_h - ascent - descent) / 2.;
+        let text_metrics = TextMetrics {
+            font_size: font.size,
+            baseline: padding_top + ascent,
+            underline: gpui::underline_y_offset(cell_h, ascent, descent),
+            strike: (ascent * 0.5 + padding_top + ascent) * 0.5,
+        };
 
         // `resize` only passes a change on, so a new cell size with the
         // same grid still reaches the app.
@@ -409,6 +571,8 @@ impl TerminalView {
         };
         let cell = |row: u16, col: u16, cols: u16| geometry.cells(row, col, cols);
 
+        let mut glyphs = std::mem::take(&mut self.glyphs);
+        glyphs.for_font(&base, font.bold_weight);
         let shaper = Shaper {
             font: &font,
             base,
@@ -438,10 +602,11 @@ impl TerminalView {
             let y = origin.y + cell_h * r as f32;
             let mut pieces = Vec::with_capacity(runs.len());
             for run in &runs {
-                shaper.pieces(run, origin.x, y, window, &mut pieces);
+                shaper.run_pieces(run, origin.x, y, &mut glyphs, window, &mut pieces);
             }
             rows.push(pieces);
         }
+        self.glyphs = glyphs;
 
         let selection = selection_rects(&snapshot, &cell);
         let focused = self.focus.is_focused(window);
@@ -476,6 +641,7 @@ impl TerminalView {
             rows,
             blocks,
             cursor,
+            text: text_metrics,
             cursor_cell,
             marked,
         });
@@ -703,11 +869,13 @@ impl Element for TerminalElement {
                 for bounds in &frame.selection {
                     window.paint_quad(fill(*bounds, frame.selection_color));
                 }
-                for piece in frame.rows.iter().flatten() {
-                    let _ = piece
-                        .line
-                        .paint(piece.origin, lh, TextAlign::Left, None, window, cx);
-                }
+                // One layer for all the text: thousands of glyphs each
+                // ordered on their own would cost more than drawing them.
+                window.paint_layer(frame.bounds, |window| {
+                    for piece in frame.rows.iter().flatten() {
+                        paint_piece(piece, &frame.text, lh, window, cx);
+                    }
+                });
                 for (bounds, color) in &frame.blocks {
                     window.paint_quad(fill(*bounds, *color));
                 }
@@ -732,6 +900,46 @@ impl Element for TerminalElement {
                 }
             },
         );
+    }
+}
+
+fn paint_piece(
+    piece: &Piece,
+    text: &TextMetrics,
+    line_height: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    match &piece.kind {
+        PieceKind::Shaped(line) => {
+            let _ = line.paint(piece.origin, line_height, TextAlign::Left, None, window, cx);
+        }
+        PieceKind::Glyphs {
+            glyphs,
+            color,
+            width,
+            underline,
+            strike,
+        } => {
+            let baseline = piece.origin.y + text.baseline;
+            for (x, glyph) in glyphs {
+                let _ = window.paint_glyph(
+                    point(piece.origin.x + *x, baseline),
+                    glyph.font_id,
+                    glyph.id,
+                    text.font_size,
+                    *color,
+                );
+            }
+            if let Some(style) = underline {
+                let at = point(piece.origin.x, piece.origin.y + text.underline);
+                window.paint_underline(at, *width, style);
+            }
+            if let Some(style) = strike {
+                let at = point(piece.origin.x, piece.origin.y + text.strike);
+                window.paint_strikethrough(at, *width, style);
+            }
+        }
     }
 }
 
