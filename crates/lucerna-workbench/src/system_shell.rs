@@ -12,7 +12,9 @@ use gpui::{App, Global};
 pub trait SystemShell: Send + Sync + 'static {
     /// Shows `path` selected in the system file manager.
     fn reveal(&self, path: &Path, cx: &App);
-    /// Opens the terminal program `exec` in `dir`.
+    /// Opens the terminal program `exec` in `dir` and waits for the
+    /// launcher to exit: a non-zero exit is an error, as in VS Code. Blocks:
+    /// call it off the UI thread.
     fn open_terminal(&self, dir: &Path, exec: &str) -> std::io::Result<()>;
     /// Moves `path` (a file or a whole folder) to the Trash. Blocks: call
     /// it off the UI thread.
@@ -51,7 +53,22 @@ impl SystemShell for NativeShell {
             command.current_dir(dir);
             command
         };
-        command.spawn().map(drop)
+        // Waiting reaps the child (no zombie per call) and reports a
+        // launcher that failed, e.g. `open -a` with an unknown app.
+        let output = command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.trim();
+        Err(std::io::Error::other(if reason.is_empty() {
+            format!("'{exec}' failed ({})", output.status)
+        } else {
+            reason.to_string()
+        }))
     }
 
     fn trash(&self, path: &Path) -> Result<(), String> {
@@ -65,4 +82,19 @@ pub fn system_shell(cx: &App) -> Arc<dyn SystemShell> {
         || Arc::new(NativeShell) as Arc<dyn SystemShell>,
         |g| g.0.clone(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A terminal program that cannot start (`open -a` exits 1 on macOS)
+    /// is an error, not a silent success.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn missing_terminal_program_is_an_error() {
+        let dir = std::env::temp_dir();
+        let result = NativeShell.open_terminal(&dir, "Lucerna No Such Terminal");
+        assert!(result.is_err(), "{result:?}");
+    }
 }

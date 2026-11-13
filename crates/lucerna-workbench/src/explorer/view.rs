@@ -909,12 +909,12 @@ impl ExplorerView {
         let position = position.unwrap_or_else(|| self.selected_row_anchor());
         let kind = self.selected_kind();
         let (single_file, owner) = (self.single_file, self.focus.clone());
+        // Root-relative; empty for the root itself.
         let path = self
             .selected_abs_path()
             .strip_prefix(&self.root)
-            .ok()
-            .filter(|rel| !rel.as_os_str().is_empty())
-            .map(|rel| rel.to_string_lossy().into_owned());
+            .map(|rel| rel.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let menu = cx.new(|cx| build_menu(kind, single_file, path, owner, cx));
         self.menu_generation += 1;
         let generation = self.menu_generation;

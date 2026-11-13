@@ -100,7 +100,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     );
     commands.register(
         "revealFileInOS",
-        "File: Reveal in Finder",
+        super::menu::REVEAL_TITLE,
         |wb, args, _, cx| {
             if editing(wb, cx) {
                 return;
@@ -137,27 +137,33 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
                 .settings
                 .get::<String>(key, None)
                 .unwrap_or_default();
-            if let Err(e) = system_shell(cx).open_terminal(&dir, &exec) {
-                status_message::show(format!("Couldn't open the terminal: {e}"), cx);
-            }
+            // The launcher is waited for: off the UI thread.
+            let shell = system_shell(cx);
+            let opened = cx
+                .background_executor()
+                .spawn(async move { shell.open_terminal(&dir, &exec) });
+            cx.spawn(async move |_, cx| {
+                if let Err(e) = opened.await {
+                    cx.update(|cx| {
+                        status_message::show(format!("Couldn't open the terminal: {e}"), cx)
+                    });
+                }
+            })
+            .detach();
         },
     );
-    commands.register(
-        "copyFilePath",
-        "File: Copy Path of Active File",
-        |wb, args, _, cx| {
-            if editing(wb, cx) {
-                return;
-            }
-            let (target, _) = command_target(wb, args, cx);
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                target.to_string_lossy().into_owned(),
-            ));
-        },
-    );
+    commands.register("copyFilePath", "Explorer: Copy Path", |wb, args, _, cx| {
+        if editing(wb, cx) {
+            return;
+        }
+        let (target, _) = command_target(wb, args, cx);
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            target.to_string_lossy().into_owned(),
+        ));
+    });
     commands.register(
         "copyRelativeFilePath",
-        "File: Copy Relative Path of Active File",
+        "Explorer: Copy Relative Path",
         |wb, args, _, cx| {
             if editing(wb, cx) {
                 return;
@@ -446,7 +452,12 @@ fn target_kind(wb: &Workbench, args: Option<&Value>, cx: &App) -> (PathBuf, Opti
         );
         return (explorer.selected_abs_path(), Some(is_dir));
     };
-    let target = wb.root().join(path);
+    // `""` is the root itself (joining it would add a trailing separator).
+    let target = if path.as_os_str().is_empty() {
+        wb.root().to_path_buf()
+    } else {
+        wb.root().join(path)
+    };
     let kind = match target.strip_prefix(wb.root()) {
         Ok(rel) if rel.as_os_str().is_empty() => Some(true),
         Ok(rel) => wb

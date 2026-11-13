@@ -457,3 +457,69 @@ fn find_in_folder_escapes_glob_characters(cx: &mut TestAppContext) {
     assert_eq!(find_in(&wb, "a,b", cx), [PathBuf::from("a,b/x.rs")]);
     assert_eq!(find_in(&wb, "{x}", cx), [PathBuf::from("{x}/w.rs")]);
 }
+
+/// The root's menu fixes its target too: every entry carries
+/// `{"path": ""}`, which names the root itself.
+#[gpui::test]
+fn root_menu_entries_carry_root_path(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-root", cx);
+    let args: Vec<Option<serde_json::Value>> = cx.update(|_, cx| {
+        let explorer = wb.read(cx).explorer().read(cx);
+        explorer
+            .context_menu()
+            .unwrap()
+            .read(cx)
+            .items()
+            .iter()
+            .filter_map(|item| match item {
+                lucerna_workbench::ui::MenuItem::Entry { args, .. } => Some(args.clone()),
+                lucerna_workbench::ui::MenuItem::Separator => None,
+            })
+            .collect()
+    });
+    assert!(!args.is_empty());
+    assert!(
+        args.iter().all(|a| a == &Some(json!({ "path": "" }))),
+        "{args:?}"
+    );
+    click("context-menu-item-copyFilePath", cx);
+    assert_eq!(
+        clipboard(cx),
+        Some(root_of(&wb, cx).to_string_lossy().into_owned()),
+        "the root, without a trailing separator"
+    );
+}
+
+/// Palette titles say what the commands act on: the Explorer's selection,
+/// and the platform's file manager.
+#[gpui::test]
+fn palette_titles_name_the_explorer_and_platform(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let title = |id: &str, cx: &mut VisualTestContext| {
+        wb.read_with(cx, |wb, _| {
+            wb.commands()
+                .all()
+                .find(|(i, _)| *i == id)
+                .map(|(_, t)| t.to_string())
+                .unwrap()
+        })
+    };
+    assert_eq!(title("copyFilePath", cx), "Explorer: Copy Path");
+    assert_eq!(
+        title("copyRelativeFilePath", cx),
+        "Explorer: Copy Relative Path"
+    );
+    let reveal = if cfg!(target_os = "macos") {
+        "File: Reveal in Finder"
+    } else if cfg!(target_os = "windows") {
+        "File: Reveal in File Explorer"
+    } else {
+        "File: Open Containing Folder"
+    };
+    assert_eq!(title("revealFileInOS", cx), reveal);
+}
