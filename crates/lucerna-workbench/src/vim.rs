@@ -1403,20 +1403,24 @@ fn clipboard_mode(value: Option<serde_json::Value>) -> ClipboardMode {
 }
 
 /// Whether `key` may write or read the unnamed register: an operator,
-/// `x`, a paste, a register name, or any key while one is pending.
+/// `x`, a paste, a register name (Visual `R` too), or any key while one
+/// is pending.
 fn may_use_register(vim: &Vim, key: Key) -> bool {
     !vim.pending().is_empty()
         || matches!(
             key,
-            Key::Char('p' | 'P' | 'x' | 'X' | 'd' | 'c' | 's' | 'S' | 'C' | 'D' | 'y' | 'Y' | '"')
+            Key::Char(
+                'p' | 'P' | 'x' | 'X' | 'd' | 'c' | 's' | 'S' | 'C' | 'D' | 'y' | 'Y' | 'R' | '"'
+            )
         )
 }
 
-/// The system clipboard as registers see it: its text, and whether the
-/// editor copied it as a whole line.
+/// The system clipboard as registers see it: its text, with `\r\n` and a
+/// lone `\r` as `\n` (as the editor's paste), and whether the editor
+/// copied it as a whole line.
 fn read_clipboard(cx: &App) -> Option<Clipboard> {
     let item = cx.read_from_clipboard()?;
-    let text = item.text()?;
+    let text = item.text()?.replace("\r\n", "\n").replace('\r', "\n");
     let whole_line = item
         .metadata()
         .and_then(|m| serde_json::from_str::<ClipboardMetadata>(m).ok())

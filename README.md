@@ -218,11 +218,12 @@ non-blank character of the next line.
 | Undo | `u`, `Ctrl+r`, with counts |
 | Visual / Visual Line | `d x D X c s C S R y Y > < ~ u U r{c} J gJ p P` |
 
-Clipboard rule for `"onYank"`: every yank also goes to the system clipboard, and `p` pastes the
-clipboard instead of the unnamed register only when the clipboard changed since the last write to
-`"`. So `yy`, copy something elsewhere, `p` pastes the copied text, but `yy`, copy elsewhere, `dd`,
-`p` pastes the deleted line. `"onYank"` is the default here; VSCodeVim defaults
-`vim.useSystemClipboard` to `false`.
+Clipboard rule for `"onYank"`: every yank without a register name also goes to the system clipboard
+(`"ayy` does not, as with Vim's `clipboard=unnamed`), and `p` pastes the clipboard instead of the
+unnamed register only when the clipboard changed since the last write to `"`. So `yy`, copy
+something elsewhere, `p` pastes the copied text, but `yy`, copy elsewhere, `dd`, `p` pastes the
+deleted line. `"onYank"` is the default here; VSCodeVim defaults `vim.useSystemClipboard` to
+`false`.
 
 Known deviations: Visual Block operators come after multi-cursor; macros (`q`, `@`) and `:`
 commands are V2b; an arrow key in Insert breaks the `.` record but keeps one undo step.
@@ -234,7 +235,7 @@ commands are V2b; an arrow key in Insert breaks the `.` record but keeps one und
 | `vim.wrapscan` | `true` | Searches wrap around the end of the file |
 | `vim.startofline` | `true` | `gg`, `G`, `H`, `M`, `L` go to the first non-blank character |
 | `vim.scroll` | `0` | Lines for `Ctrl+d` / `Ctrl+u`; `0` means half a page |
-| `vim.useSystemClipboard` | `"onYank"` | `"onYank"`: yanks go to the clipboard and `p` pastes it when it changed since; `true`: every write to `"` goes to the clipboard; `false`: only `"+` / `"*` |
+| `vim.useSystemClipboard` | `"onYank"` | `"onYank"`: yanks without a register name go to the clipboard and `p` pastes it when it changed since; `true`: every write to `"` goes to the clipboard; `false`: only `"+` / `"*` |
 | `vim.joinspaces` | `true` | `J` puts two spaces after `.`, `!` and `?` |
 | `vim.changeWordIncludesWhitespace` | `false` | `cw` on a word also changes the whitespace after it, like `dw` |
 | `vim.tildeop` | `false` | `~` is an operator like `g~` |

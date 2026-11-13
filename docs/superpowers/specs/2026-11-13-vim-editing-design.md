@@ -291,7 +291,7 @@ Các luật của Vim:
 
   | Giá trị | Ghi clipboard | `"` đọc từ đâu |
   |---|---|---|
-  | `"onYank"` (mặc định) | mọi lần yank vào `"` | clipboard nếu nó **đã đổi kể từ lần ghi `"` gần nhất** (yank hay xóa); ngược lại là register nội bộ |
+  | `"onYank"` (mặc định) | mọi lần yank không chỉ định register (yank vào register có tên như `"ayy` thì không), như `clipboard=unnamed` của Vim | clipboard nếu nó **đã đổi kể từ lần ghi `"` gần nhất** (yank hay xóa); ngược lại là register nội bộ |
   | `true` | mọi lần ghi vào `"` | clipboard |
   | `false` | chỉ khi dùng `"+` hoặc `"*` | register nội bộ |
 

@@ -132,9 +132,11 @@ impl Registers {
             }
         }
         // Every write reaches `"`, so the mode decides the clipboard too.
+        // `onYank` is Vim's `clipboard=unnamed`: a yank into a named
+        // register stays off the clipboard.
         to_clipboard |= match mode {
             ClipboardMode::Always => true,
-            ClipboardMode::OnYank => kind == WriteKind::Yank,
+            ClipboardMode::OnYank => kind == WriteKind::Yank && matches!(name, None | Some('"')),
             ClipboardMode::Never => false,
         };
         if content.kind == RegKind::Linewise {
@@ -243,6 +245,21 @@ mod tests {
         );
         assert_eq!(get(&r, '"'), Some(cw("abc")));
         assert_eq!(get(&r, '0'), Some(cw("abc")));
+    }
+
+    #[test]
+    fn named_yank_leaves_the_clipboard_alone_on_yank() {
+        let mut r = Registers::default();
+        let b = clip("B", false);
+        // Vim's `clipboard=unnamed`: only a yank into `"` reaches it.
+        assert_eq!(r.write(Some('a'), cw("abc"), Yank, OnYank, Some(&b)), None);
+        assert_eq!(get(&r, 'a'), Some(cw("abc")));
+        // The clipboard did not change since: `"` is the named yank.
+        assert_eq!(r.read(None, OnYank, Some(&b)), Some(cw("abc")));
+        let a = r.write(Some('A'), cw("d"), Yank, OnYank, Some(&b));
+        assert_eq!(a, None);
+        let a = r.write(Some('+'), cw("p"), Yank, OnYank, Some(&b));
+        assert!(matches!(a, Some(Action::WriteClipboard { .. })));
     }
 
     #[test]

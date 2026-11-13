@@ -737,3 +737,37 @@ fn d_slash_in_large_file_dropped_by_an_outside_edit(cx: &mut TestAppContext) {
     let pending = cx.update(|_, cx| wb.read(cx).vim().read(cx).indicator_text(id));
     assert_eq!(pending.as_deref(), Some("-- NORMAL --"));
 }
+
+#[gpui::test]
+fn visual_line_change_then_p_puts_the_changed_lines(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("one\ntwo\n", cx);
+    cx.write_to_clipboard(ClipboardItem::new_string("zzz".into()));
+    keys("V R", cx);
+    assert_eq!(text_of(&view, cx), "\ntwo\n");
+    // The clipboard did not change since `R` wrote `"`: `p` puts the line.
+    keys("escape p", cx);
+    assert_eq!(text_of(&view, cx), "\none\ntwo\n");
+}
+
+#[gpui::test]
+fn p_of_a_crlf_clipboard_puts_line_feeds(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("xy\n", cx);
+    cx.write_to_clipboard(ClipboardItem::new_string("a\r\nb\rc".into()));
+    keys("p", cx);
+    assert_eq!(text_of(&view, cx), "xa\nb\ncy\n");
+    // Multi-line text: the cursor goes to its start.
+    assert_eq!(cursor(&view, cx), pt(0, 1));
+}
+
+#[gpui::test]
+fn named_yank_leaves_the_clipboard_alone(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("one\ntwo\n", cx);
+    cx.write_to_clipboard(ClipboardItem::new_string("outside".into()));
+    keys("\" a y y", cx);
+    assert_eq!(clipboard(cx).map(|c| c.0).as_deref(), Some("outside"));
+    // `"` holds the named yank, and the clipboard has not changed since.
+    keys("p", cx);
+    assert_eq!(text_of(&view, cx), "one\none\ntwo\n");
+    keys("\" a p", cx);
+    assert_eq!(text_of(&view, cx), "one\none\none\ntwo\n");
+}
