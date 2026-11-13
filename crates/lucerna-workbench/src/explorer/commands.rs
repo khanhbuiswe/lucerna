@@ -1,6 +1,6 @@
-//! Explorer commands that only read: Open to the Side, Reveal in Finder,
-//! Open in Terminal, Find in Folder, Copy Path and Copy Relative Path. Each acts on
-//! `args.path` when given, else on the Explorer's selection.
+//! Explorer commands: Open to the Side, Reveal in Finder, Open in
+//! Terminal, Find in Folder, Copy Path and Copy Relative Path. Each acts
+//! on `args.path` when given, else on the Explorer's selection.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -376,3 +376,27 @@ fn find_in_folder_on_root_clears_include(cx: &mut TestAppContext) {
     click("context-menu-item-filesExplorer.findInFolder", cx);
     assert_eq!(include_text(&wb, cx), "");
 }
+
+/// The include `src` must search the files under `src`, not just match the
+/// directory entry.
+#[gpui::test]
+fn find_in_folder_searches_only_that_folder(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-src", cx);
+    click("context-menu-item-filesExplorer.findInFolder", cx);
+    cx.simulate_input("main");
+    cx.executor().advance_clock(Duration::from_millis(150));
+    draw(cx);
+    let files = cx.update(|_, cx| {
+        let search = wb.read(cx).search_view().read(cx);
+        search
+            .results(cx)
+            .files()
+            .iter()
+            .map(|f| f.path.to_path_buf())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(files, vec![PathBuf::from("src/main.rs")]);
+}
