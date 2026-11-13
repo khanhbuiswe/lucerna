@@ -197,7 +197,7 @@ fn open_file_watcher_reports_writes_to_watched_files_only() {
     }
 }
 
-/// R27: a file opened alone shows in the tree by itself; its folder is
+/// A file opened alone shows in the tree by itself; its folder is
 /// never scanned, and the file is followed by the open-file watcher.
 #[gpui::test]
 fn single_file_mode_never_scans(cx: &mut TestAppContext) {

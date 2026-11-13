@@ -244,11 +244,11 @@ impl Workbench {
         Self::build(root, None, Some(store), window, cx)
     }
 
-    /// Single-file mode (R27), for a loose file whose folder `root` (its
-    /// parent, such as `$HOME`) is not a project: `root` is never scanned
-    /// or watched, the tree and Quick Open list only `file`, and open
-    /// files are followed one by one. Keeps the layout in `data_dir` when
-    /// given, as [`Workbench::with_data_dir`] does. Does not open `file`.
+    /// Single-file mode, for a file opened alone as Zed opens one: `root`
+    /// (its folder) is never scanned or watched, the tree and Quick Open
+    /// list only `file`, and open files are followed one by one. Keeps the
+    /// layout in `data_dir`, keyed by `file`, when given. Does not open
+    /// `file`.
     pub fn single_file(
         root: PathBuf,
         file: &Path,
@@ -260,7 +260,9 @@ impl Workbench {
             Ok(rel) => Arc::from(rel),
             Err(_) => Arc::from(Path::new(file.file_name().unwrap_or(file.as_os_str()))),
         };
-        let store = data_dir.map(|dir| WorkspaceStateStore::new(dir, root.clone()));
+        // Keyed by the file, not its folder: lone files beside each other,
+        // and the folder opened as a project, keep their own tabs.
+        let store = data_dir.map(|dir| WorkspaceStateStore::new(dir, file.to_path_buf()));
         Self::build(root, Some(rel), store, window, cx)
     }
 
@@ -738,6 +740,11 @@ impl Workbench {
         let mut paths = vec![self.root.clone()];
         paths.extend(self.single_file.clone());
         paths
+    }
+
+    /// Whether the window shows one file alone (single-file mode).
+    pub fn is_single_file(&self) -> bool {
+        self.single_file.is_some()
     }
 
     /// The opened folder's name, as the title bar shows it; in

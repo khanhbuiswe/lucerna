@@ -569,3 +569,31 @@ fn old_state_without_search_field_loads() {
     let state = load_state(&path).expect("a file without `search` still loads");
     assert_eq!(state.search, SearchState::default());
 }
+
+/// A lone file keeps its own state, keyed by the file: not shared with its
+/// folder opened as a project, nor with another lone file beside it.
+#[gpui::test]
+fn single_file_state_is_keyed_by_the_file(cx: &mut TestAppContext) {
+    init(cx);
+    let project = Project::new();
+    let a = project.file("a.txt");
+    let (wb, cx) = {
+        let (root, a, data) = (
+            project.root.path().to_path_buf(),
+            a.clone(),
+            project.data.path().to_path_buf(),
+        );
+        cx.add_window_view(move |window, cx| {
+            Workbench::single_file(root, &a, Some(data), window, cx)
+        })
+    };
+    let tab: Arc<Path> = Arc::from(a.as_path());
+    wb.update(cx, |wb, cx| wb.open_path(tab, OpenMode::Pinned, cx));
+    settle(cx);
+    assert!(cx.simulate_close());
+    assert!(load_state(&state_path(project.data.path(), &a)).is_some());
+    assert!(
+        !project.state_file().exists(),
+        "the folder's state is untouched"
+    );
+}

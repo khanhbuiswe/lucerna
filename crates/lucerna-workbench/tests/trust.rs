@@ -584,3 +584,32 @@ fn user_file_type_server_prompts_for_trust(cx: &mut TestAppContext) {
     open(&wb, "x.rb", cx);
     assert!(shown("trust-modal", cx));
 }
+
+/// A lone file inside a trusted folder is trusted too: the folder was
+/// trusted when it opened as a project, and the file's own folder is
+/// inside it.
+#[gpui::test]
+fn single_file_inside_a_trusted_folder_is_trusted(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    TrustStore::load(data.path())
+        .trust(dir.path(), false)
+        .unwrap();
+    let fake = FakeServer::new();
+    init_with("{}", cx);
+    let (root, file, data_dir) = (
+        dir.path().join("src"),
+        dir.path().join("src/main.rs"),
+        data.path().to_path_buf(),
+    );
+    let (wb, cx) = cx.add_window_view(|window, cx| {
+        Workbench::single_file(root, &file, Some(data_dir), window, cx)
+    });
+    let servers = language_servers(&wb, cx);
+    servers.update(cx, |servers, _| servers.set_launcher(rust_launcher(&fake)));
+    settle(cx);
+
+    assert!(!shown("restricted-mode", cx));
+    open(&wb, "main.rs", cx);
+    assert!(!shown("trust-modal", cx));
+    assert_eq!(sent(&fake, "textDocument/didOpen").len(), 1);
+}
