@@ -4,10 +4,18 @@
 //! a background thread, at most one per [`REPARSE_DELAY`], and keep the
 //! text at the top of the view there (moved by the edits above it, or at
 //! the same line after a whole rewrite). A preview shown beside an editor of
-//! its file scrolls with it ([`sync`], spec §4.5).
+//! its file scrolls with it ([`sync`], spec §4.5). Its commands, the
+//! editor associations and the dynamic preview following the active file
+//! are in [`commands`].
 
+mod commands;
 mod sync;
 
+pub use commands::{
+    PREVIEW_EDITOR_ID, REFRESH_PREVIEW, SHOW_PREVIEW, SHOW_PREVIEW_TO_SIDE, SHOW_SOURCE,
+    TOGGLE_PREVIEW, editor_for,
+};
+pub(crate) use commands::{associated_editor, follow_active, is_markdown, register_commands};
 pub(crate) use sync::ScrollSync;
 pub use sync::{item_to_line, line_to_item};
 
@@ -17,9 +25,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, IntoElement, ListAlignment, ListOffset,
-    ListState, ParentElement, Pixels, Render, SharedString, Styled, Task, WeakEntity, Window, div,
-    list, prelude::*, px,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    KeyDownEvent, ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, ParentElement,
+    Pixels, Render, SharedString, Styled, Task, WeakEntity, Window, div, list, prelude::*, px,
 };
 use lucerna_text::{BufferSnapshot, LoadError};
 
@@ -51,9 +59,6 @@ const PADDING_Y: f32 = 24.;
 /// How far past the viewport the list lays out blocks, in px.
 const LIST_OVERDRAW: f32 = 50. * GRID;
 
-/// The command the too-large notice runs.
-const SHOW_SOURCE: &str = "markdown.showSource";
-
 /// What a [`MarkdownPreview`] tells its scroll-sync links.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkdownPreviewEvent {
@@ -70,6 +75,9 @@ pub struct MarkdownPreview {
     dynamic: bool,
     documents: Entity<Documents>,
     workbench: WeakEntity<Workbench>,
+    /// Taken when the preview is clicked or its tab becomes active; the
+    /// scroll keys work while it is focused.
+    focus_handle: FocusHandle,
     /// Holds the document open; never drawn.
     _source: Entity<CodeView>,
     blocks: Option<Arc<MarkdownBlocks>>,
@@ -152,6 +160,7 @@ impl MarkdownPreview {
             dynamic,
             documents,
             workbench,
+            focus_handle: cx.focus_handle(),
             _source: source,
             blocks: None,
             revision: None,
@@ -324,6 +333,43 @@ impl MarkdownPreview {
         cx.emit(MarkdownPreviewEvent::Scrolled);
     }
 
+    /// The scroll keys (spec §4.2): ↑/↓ a line of text, PageUp/PageDown
+    /// and Space/Shift+Space a page, Home/End and ⌘↑/⌘↓ to the start or
+    /// the end. Other keys go on to the parent.
+    fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let stroke = &ev.keystroke;
+        let mods = stroke.modifiers;
+        if mods.control || mods.alt || mods.function {
+            return;
+        }
+        let style = Self::style(cx);
+        let line = px(style.text_size * style.line_height);
+        let viewport = self.list_state.viewport_bounds().size.height;
+        let page = (viewport - line).max(line);
+        enum Move {
+            By(Pixels),
+            Start,
+            End,
+        }
+        let to = match (stroke.key.as_str(), mods.platform, mods.shift) {
+            ("up", false, false) => Move::By(-line),
+            ("down", false, false) => Move::By(line),
+            ("pageup", false, false) | ("space", false, true) => Move::By(-page),
+            ("pagedown", false, false) | ("space", false, false) => Move::By(page),
+            ("home", false, false) | ("up", true, false) => Move::Start,
+            ("end", false, false) | ("down", true, false) => Move::End,
+            _ => return,
+        };
+        match to {
+            Move::By(distance) => self.list_state.scroll_by(distance),
+            Move::Start => self.list_state.scroll_to(ListOffset::default()),
+            Move::End => self.list_state.scroll_to_end(),
+        }
+        cx.stop_propagation();
+        self.user_scrolled(cx);
+        cx.notify();
+    }
+
     /// The number of parses started so far (for tests).
     pub fn parses_started(&self) -> u64 {
         self.parses_started
@@ -457,9 +503,14 @@ impl MarkdownPreview {
         let workbench = self.workbench.clone();
         let button = text_button("md-preview-show-source", "Show Source", cx).on_click(
             move |_, window, cx| {
-                workbench
-                    .update(cx, |wb, cx| wb.run_command(SHOW_SOURCE, None, window, cx))
-                    .ok();
+                // Not while the preview's own click is being handled: the
+                // command replaces its tab.
+                let workbench = workbench.clone();
+                window.defer(cx, move |window, cx| {
+                    workbench
+                        .update(cx, |wb, cx| wb.run_command(SHOW_SOURCE, None, window, cx))
+                        .ok();
+                });
             },
         );
         notice("md-preview-too-large", "File quá lớn để xem trước", cx)
@@ -499,12 +550,24 @@ fn load_error_message(err: &LoadError) -> String {
 
 impl EventEmitter<MarkdownPreviewEvent> for MarkdownPreview {}
 
+impl Focusable for MarkdownPreview {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for MarkdownPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = &cx.global::<AppState>().theme.ui;
         let root = div()
             .id("markdown-preview")
             .debug_selector(|| "markdown-preview".into())
+            .track_focus(&self.focus_handle)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|preview, _, window, cx| window.focus(&preview.focus_handle, cx)),
+            )
+            .on_key_down(cx.listener(Self::key_down))
             .size_full()
             .bg(color(ui.editor_background));
         if let Some(DocState::Error(err)) = &self.state {
@@ -537,11 +600,31 @@ impl Render for MarkdownPreview {
         let style = Self::style(cx);
         let on_link = self.link_handler();
         let last = blocks.blocks().len().saturating_sub(1);
+        let (workbench, preview) = (self.workbench.clone(), cx.entity_id());
         let items = list(self.list_state.clone(), move |ix, _, cx| {
             let block = render_block(&blocks, ix, &style, on_link.clone(), cx);
+            let line = blocks.root_lines().get(ix).map_or(0, |lines| lines.start);
+            let workbench = workbench.clone();
             // Each item spans the list, so the whole page scrolls; its
             // content sits in the centred column.
             div()
+                .debug_selector(move || format!("md-block-{ix}"))
+                // A double-click opens the source at the block's first
+                // line (`markdown.preview.doubleClickToSwitchToEditor`).
+                .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
+                    if ev.click_count != 2 {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    let workbench = workbench.clone();
+                    window.defer(cx, move |window, cx| {
+                        workbench
+                            .update(cx, |wb, cx| {
+                                commands::double_clicked(wb, preview, line, window, cx)
+                            })
+                            .ok();
+                    });
+                })
                 .w_full()
                 .flex()
                 .justify_center()

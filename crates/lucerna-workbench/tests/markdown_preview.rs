@@ -17,7 +17,7 @@ use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
     AppState, FileView, MAX_PREVIEW_BYTES, MarkdownPreview, OpenMode, REPARSE_DELAY, TabId,
-    Workbench,
+    TabItem, Workbench,
 };
 use tempfile::TempDir;
 
@@ -63,7 +63,7 @@ fn open<'a>(
 /// Opens `file.md` as source, focused; returns its view and tab.
 fn open_source(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> (Entity<CodeView>, TabId) {
     wb.update(cx, |wb, cx| {
-        wb.open_path(Arc::from(Path::new("file.md")), OpenMode::Pinned, cx)
+        wb.open_source(Arc::from(Path::new("file.md")), OpenMode::Pinned, cx)
     });
     draw(cx);
     let (view, id) = cx.update(|_, cx| {
@@ -498,4 +498,290 @@ fn revision_reset_after_discard_still_updates(cx: &mut TestAppContext) {
     draw(cx);
     let text = blocks_text(&preview, cx).expect("parsed");
     assert!(text.contains("after discard"), "{text}");
+}
+
+/// Runs command `id` as the keymap or palette would.
+fn run(wb: &Entity<Workbench>, id: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| wb.update(cx, |wb, cx| assert!(wb.run_command(id, None, window, cx))));
+    draw(cx);
+}
+
+/// The items of group `g`'s tabs with their pin state, and its active tab.
+fn group_tabs(
+    wb: &Entity<Workbench>,
+    g: usize,
+    cx: &mut VisualTestContext,
+) -> (Vec<(TabItem, bool)>, Option<TabItem>) {
+    cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        let group = &groups.model().groups()[g];
+        let tabs = group
+            .tabs
+            .iter()
+            .map(|t| (t.item.clone(), t.pinned))
+            .collect();
+        let active = group
+            .tabs
+            .iter()
+            .find(|t| Some(t.id) == group.active)
+            .map(|t| t.item.clone());
+        (tabs, active)
+    })
+}
+
+fn active_body<T: 'static>(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<T> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .expect("drawn")
+            .downcast::<T>()
+            .unwrap_or_else(|_| panic!("the expected view"))
+    })
+}
+
+fn abs(dir: &TempDir, name: &str) -> Arc<Path> {
+    Arc::from(dir.path().join(name))
+}
+
+#[gpui::test]
+fn toggle_swaps_in_place_and_back(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open(&long_doc(), cx);
+    fs::write(dir.path().join("x.rs"), "fn main() {}\n").unwrap();
+    let (view, source) = open_source(&wb, cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_source(Arc::from(Path::new("x.rs")), OpenMode::Pinned, cx);
+        wb.update_editor_groups(cx, |m| m.activate(source));
+    });
+    draw(cx);
+    view.update(cx, |v, cx| v.set_scroll_top_row(150, cx));
+    draw(cx);
+
+    run(&wb, "markdown.togglePreview", cx);
+    let (tabs, _) = group_tabs(&wb, 0, cx);
+    assert_eq!(
+        tabs[0],
+        (TabItem::MarkdownPreview(abs(&dir, "file.md")), true)
+    );
+    assert_eq!(tabs.len(), 2);
+    let preview = active_body::<MarkdownPreview>(&wb, cx);
+    let lines = top_block_lines(&preview, cx);
+    assert!(lines.start <= 150 && 150 < lines.end + 2, "{lines:?}");
+    assert!(
+        cx.update(|window, cx| preview.read(cx).focus_handle(cx).is_focused(window)),
+        "the preview takes the focus"
+    );
+
+    run(&wb, "markdown.togglePreview", cx);
+    let (tabs, _) = group_tabs(&wb, 0, cx);
+    assert_eq!(tabs[0], (TabItem::File(abs(&dir, "file.md")), true));
+    let editor = active_body::<CodeView>(&wb, cx);
+    let row = editor.read_with(cx, |v, _| v.scroll_top_row()) as i64;
+    assert!((row - 150).abs() <= 2, "top row {row}");
+}
+
+#[gpui::test]
+fn show_to_side_keeps_focus_in_editor(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open(&long_doc(), cx);
+    let (view, _) = open_source(&wb, cx);
+    run(&wb, "markdown.showPreviewToSide", cx);
+    let active = cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).model().active_group());
+    assert_eq!(active, 0);
+    let (_, side) = group_tabs(&wb, 1, cx);
+    assert_eq!(
+        side,
+        Some(TabItem::MarkdownPreviewDynamic(abs(&dir, "file.md")))
+    );
+    assert!(cx.update(|window, cx| view.read(cx).focus_handle(cx).is_focused(window)));
+}
+
+#[gpui::test]
+fn dynamic_follows_active_markdown(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open("# a\n", cx);
+    fs::write(dir.path().join("b.md"), "# b\n").unwrap();
+    fs::write(dir.path().join("x.rs"), "fn main() {}\n").unwrap();
+    open_source(&wb, cx);
+    run(&wb, "markdown.showPreviewToSide", cx);
+    let dynamic = || TabItem::MarkdownPreviewDynamic;
+    let b = abs(&dir, "b.md");
+
+    // The association opens b.md as a preview in group 0.
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("b.md")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    assert_eq!(group_tabs(&wb, 1, cx).1, Some(dynamic()(b.clone())));
+    let preview = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        let id = groups.model().dynamic_preview().unwrap().1.id;
+        groups
+            .body_of(id)
+            .unwrap()
+            .downcast::<MarkdownPreview>()
+            .unwrap()
+    });
+    assert_eq!(preview.read_with(cx, |p, _| p.path().clone()), b);
+
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("x.rs")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    assert_eq!(group_tabs(&wb, 1, cx).1, Some(dynamic()(b.clone())));
+}
+
+#[gpui::test]
+fn double_click_opens_source_at_block(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open(&long_doc(), cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("file.md")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    active_body::<MarkdownPreview>(&wb, cx);
+    let block = cx.debug_bounds("md-block-2").expect("drawn");
+    for click_count in [1, 2] {
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: block.center(),
+            modifiers: gpui::Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            button: gpui::MouseButton::Left,
+            position: block.center(),
+            modifiers: gpui::Modifiers::default(),
+            click_count,
+        });
+    }
+    draw(cx);
+    assert_eq!(
+        group_tabs(&wb, 0, cx).1,
+        Some(TabItem::File(abs(&dir, "file.md")))
+    );
+    let editor = active_body::<CodeView>(&wb, cx);
+    // Block 2 is the heading `# h1` on line 4.
+    assert_eq!(editor.read_with(cx, |v, _| v.cursor().row), 4);
+}
+
+fn holds(wb: &Entity<Workbench>, when: &str, cx: &mut VisualTestContext) -> bool {
+    let ctx = cx.update(|window, cx| wb.read(cx).context_keys(window, cx));
+    lucerna_settings::parse_when(when).unwrap().eval(&ctx)
+}
+
+#[gpui::test]
+fn context_keys_in_preview(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, wb, cx) = open("# a\n", cx);
+    let keys = "editorLangId == markdown && activeEditor == 'markdownPreview' \
+                && resourceExtname == '.md'";
+    open_source(&wb, cx);
+    assert!(!holds(&wb, keys, cx));
+    run(&wb, "markdown.showPreviewToSide", cx);
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.focus_group(1))
+    });
+    draw(cx);
+    assert!(holds(&wb, keys, cx), "dynamic preview");
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.focus_group(0))
+    });
+    draw(cx);
+    run(&wb, "markdown.togglePreview", cx);
+    assert!(holds(&wb, keys, cx), "static preview");
+}
+
+#[gpui::test]
+fn cmd_shift_v_dispatches_toggle(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open(&long_doc(), cx);
+    open_source(&wb, cx);
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    let file = abs(&dir, "file.md");
+    assert_eq!(
+        group_tabs(&wb, 0, cx).1,
+        Some(TabItem::MarkdownPreview(file.clone()))
+    );
+    // The preview has the focus, and the key goes back.
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    assert_eq!(group_tabs(&wb, 0, cx).1, Some(TabItem::File(file)));
+}
+
+#[gpui::test]
+fn scroll_keys_move_focused_preview(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, wb, cx) = open(&long_doc(), cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("file.md")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    let preview = active_body::<MarkdownPreview>(&wb, cx);
+    let top = |cx: &mut VisualTestContext| preview.read_with(cx, |p, _| p.top_line());
+    cx.simulate_keystrokes("pagedown");
+    draw(cx);
+    let paged = top(cx);
+    assert!(paged > 4., "{paged}");
+    cx.simulate_keystrokes("down");
+    draw(cx);
+    assert!(top(cx) > paged);
+    cx.simulate_keystrokes("cmd-up");
+    draw(cx);
+    assert_eq!(top(cx), 0.);
+    cx.simulate_keystrokes("end");
+    draw(cx);
+    assert!(top(cx) > 700., "{}", top(cx));
+}
+
+#[gpui::test]
+fn too_large_show_source_button_opens_source(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open(&"a".repeat(MAX_PREVIEW_BYTES + 1), cx);
+    open_preview(&wb, &dir, cx);
+    draw(cx);
+    let button = cx.debug_bounds("md-preview-show-source").expect("drawn");
+    cx.simulate_click(button.center(), gpui::Modifiers::default());
+    draw(cx);
+    assert_eq!(
+        group_tabs(&wb, 0, cx).1,
+        Some(TabItem::File(abs(&dir, "file.md")))
+    );
+}
+
+#[gpui::test]
+fn path_bar_button_opens_preview(cx: &mut TestAppContext) {
+    init(cx);
+    let (dir, wb, cx) = open("# a\n", cx);
+    fs::write(dir.path().join("x.rs"), "fn main() {}\n").unwrap();
+    let file = abs(&dir, "file.md");
+    wb.update(cx, |wb, cx| {
+        wb.open_source(Arc::from(Path::new("x.rs")), OpenMode::Pinned, cx)
+    });
+    assert!(!drawn("md-preview-toggle-0", cx), "not on a .rs file");
+    open_source(&wb, cx);
+    let button = cx.debug_bounds("md-preview-toggle-0").expect("drawn");
+    cx.simulate_click(button.center(), gpui::Modifiers::default());
+    draw(cx);
+    assert_eq!(
+        group_tabs(&wb, 1, cx).1,
+        Some(TabItem::MarkdownPreviewDynamic(file.clone()))
+    );
+    // Alt: in place.
+    let button = cx.debug_bounds("md-preview-toggle-0").expect("drawn");
+    cx.simulate_click(button.center(), gpui::Modifiers::alt());
+    draw(cx);
+    assert_eq!(
+        group_tabs(&wb, 0, cx).1,
+        Some(TabItem::MarkdownPreview(file.clone()))
+    );
+    // On the preview, back to the source.
+    let button = cx.debug_bounds("md-preview-toggle-0").expect("drawn");
+    cx.simulate_click(button.center(), gpui::Modifiers::default());
+    draw(cx);
+    assert_eq!(group_tabs(&wb, 0, cx).1, Some(TabItem::File(file)));
 }

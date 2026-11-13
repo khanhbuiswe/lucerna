@@ -20,13 +20,14 @@ use crate::documents::{DiskNotice, DocState, Documents};
 use crate::icons;
 use crate::layout::color;
 use crate::layout::sidebar::SashGhost;
+use crate::markdown_preview::{self, SHOW_PREVIEW_TO_SIDE, TOGGLE_PREVIEW};
 use crate::save::{self, SaveChoice};
 use crate::symbols::breadcrumbs::{
     BreadcrumbSettings, Crumbs, breadcrumb_segments, breadcrumbs_row, segments_text,
 };
 use crate::ui::{
     BLOCKS_ICON, CLOSE_ICON, ClickHandler, GRID, PATH_BAR_HEIGHT, SEARCH_ICON, TAB_HEIGHT,
-    TAB_PADDING_X, UI_FONT_SIZE, UI_FONT_SIZE_SMALL,
+    TAB_PADDING_X, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, icon_button, tooltip,
 };
 
 /// Square slot that holds a tab's close button, kept even while the
@@ -55,6 +56,9 @@ pub type TabBodyFactory = Rc<dyn Fn(&Tab, &mut Window, &mut App) -> AnyView>;
 
 /// Called with a group's index when its breadcrumbs row is clicked.
 pub(crate) type BreadcrumbsClick = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
+/// Runs the workbench command with this id.
+pub(crate) type RunCommand = Rc<dyn Fn(&'static str, &mut Window, &mut App)>;
 
 /// The default tab body until the code view exists: the file's path (the
 /// tab title for the Extensions page).
@@ -111,6 +115,8 @@ pub struct EditorGroupsView {
     /// The breadcrumbs of file tabs, as the workbench last computed them.
     breadcrumbs: HashMap<TabId, Crumbs>,
     on_breadcrumbs_click: Option<BreadcrumbsClick>,
+    /// Runs a workbench command for a path bar button.
+    on_command: Option<RunCommand>,
 }
 
 impl Default for EditorGroupsView {
@@ -128,6 +134,7 @@ impl Default for EditorGroupsView {
             references_title: None,
             breadcrumbs: HashMap::new(),
             on_breadcrumbs_click: None,
+            on_command: None,
         }
     }
 }
@@ -308,7 +315,8 @@ impl EditorGroupsView {
             .map(|(_, body)| body)
     }
 
-    pub(crate) fn body_of(&self, id: TabId) -> Option<AnyView> {
+    /// The view made for tab `id`, once it has been drawn (or made).
+    pub fn body_of(&self, id: TabId) -> Option<AnyView> {
         self.bodies.get(&id).cloned()
     }
 
@@ -394,14 +402,14 @@ impl EditorGroupsView {
         self.home = std::env::home_dir();
     }
 
-    /// What the path bar of group `group` shows: its active tab's path
-    /// (see [`path_bar_text`]); `None` when the group has no tab or shows
-    /// the Extensions page.
+    /// What the path bar of group `group` shows: its active tab's path,
+    /// or the file a preview shows (see [`path_bar_text`]); `None` when the
+    /// group has no tab or shows the Extensions page.
     pub fn path_bar_text(&self, group: usize) -> Option<String> {
         let group = self.model.groups().get(group)?;
         let tab = group.tabs.iter().find(|t| Some(t.id) == group.active)?;
         Some(path_bar_text(
-            tab.path()?,
+            tab.path().or(tab.previewed_path())?,
             self.root.as_deref(),
             self.home.as_deref(),
         ))
@@ -432,6 +440,54 @@ impl EditorGroupsView {
 
     pub(crate) fn set_on_breadcrumbs_click(&mut self, on_click: BreadcrumbsClick) {
         self.on_breadcrumbs_click = Some(on_click);
+    }
+
+    /// How the path bar buttons run their commands.
+    pub(crate) fn set_on_command(&mut self, run: RunCommand) {
+        self.on_command = Some(run);
+    }
+
+    /// The button at the right end of group `gi`'s path bar when its
+    /// active tab is a markdown file (spec §4.2): on the source, the eye
+    /// opens the preview to the side (Alt: in place); on a preview, the
+    /// code icon goes back to the source. Tooltips name the user's keys.
+    fn markdown_button(&self, gi: usize, tab: &Tab, cx: &mut Context<Self>) -> Option<Div> {
+        let source = match &tab.item {
+            TabItem::File(path) => {
+                let root = self.root.as_deref().unwrap_or(Path::new(""));
+                if !markdown_preview::is_markdown(root, path, cx) {
+                    return None;
+                }
+                true
+            }
+            TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_) => false,
+            _ => return None,
+        };
+        let (icon, title, key_command) = if source {
+            (icons::EYE, "Open Preview to the Side", SHOW_PREVIEW_TO_SIDE)
+        } else {
+            (icons::FILE_CODE, "Show Source", TOGGLE_PREVIEW)
+        };
+        let tip = match cx.global::<AppState>().keymap.label_for(key_command) {
+            Some(keys) => format!("{title} ({keys})"),
+            None => title.to_string(),
+        };
+        let id = format!("md-preview-toggle-{gi}");
+        let button = icon_button(SharedString::from(id.clone()), icon, false, cx)
+            .debug_selector(move || id.clone())
+            .tooltip(tooltip(tip))
+            // Focus stays in the editor.
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_click(cx.listener(move |view, ev: &ClickEvent, window, cx| {
+                let command = match (source, ev.modifiers().alt) {
+                    (true, false) => SHOW_PREVIEW_TO_SIDE,
+                    _ => TOGGLE_PREVIEW,
+                };
+                if let Some(run) = view.on_command.clone() {
+                    window.defer(cx, move |window, cx| run(command, window, cx));
+                }
+            }));
+        Some(div().flex_none().px(px(GRID)).child(button))
     }
 
     /// The breadcrumbs of group `group` when its active tab is a file and
@@ -746,8 +802,9 @@ impl Render for EditorGroupsView {
                     Some(bar().child(row))
                 }
                 None => self.path_bar_text(gi).map(|text| {
-                    bar().px(px(TAB_PADDING_X)).child(
+                    bar().pl(px(TAB_PADDING_X)).child(
                         div()
+                            .flex_1()
                             .min_w_0()
                             .overflow_hidden()
                             .whitespace_nowrap()
@@ -756,6 +813,10 @@ impl Render for EditorGroupsView {
                     )
                 }),
             };
+            let md_button = active_tabs[gi]
+                .as_ref()
+                .and_then(|tab| self.markdown_button(gi, tab, cx));
+            let path_bar = path_bar.map(|bar| bar.children(md_button));
             let disk_bar = active_tabs[gi]
                 .as_ref()
                 .and_then(|tab| self.disk_bar(gi, tab, cx));

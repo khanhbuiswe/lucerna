@@ -4,6 +4,7 @@
 //! the watchers' batches themselves, as the real ones would; the watcher
 //! thread is tested on its own.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,10 +13,12 @@ use gpui::{Entity, TestAppContext, VisualTestContext};
 use lucerna_project::WorktreeEvent;
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
+use lucerna_text::Point;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, ConfigPaths, OpenFileWatcher, OpenMode, Workbench, reload_config, watch_config,
+    AppState, ConfigPaths, FileView, OpenFileWatcher, OpenMode, TabItem, Workbench, editor_for,
+    reload_config, watch_config,
 };
 use tempfile::TempDir;
 
@@ -230,5 +233,204 @@ fn single_file_mode_never_scans(cx: &mut TestAppContext) {
     assert_eq!(
         wb.read_with(cx, |wb, _| wb.watched_open_files().to_vec()),
         [file]
+    );
+}
+
+/// `README.md` (30 lines), `docs/b.md`, `x.rs` and `y.rs` added to the
+/// project.
+fn md_dirs() -> Dirs {
+    let dirs = Dirs::new();
+    let root = dirs.root.path();
+    let lines: String = (0..30).map(|i| format!("line {i}\n\n")).collect();
+    std::fs::write(root.join("README.md"), lines).unwrap();
+    std::fs::create_dir(root.join("docs")).unwrap();
+    std::fs::write(root.join("docs/b.md"), "# b\n").unwrap();
+    std::fs::write(root.join("x.rs"), "fn x() {}\n").unwrap();
+    std::fs::write(root.join("y.rs"), "fn y() {}\n").unwrap();
+    dirs
+}
+
+/// The active tab's item.
+fn active_item(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> TabItem {
+    cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups.model().active_tab().expect("a tab").item.clone()
+    })
+}
+
+fn open_rel(wb: &Entity<Workbench>, rel: &str, mode: OpenMode, cx: &mut VisualTestContext) {
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new(rel)), mode, cx)
+    });
+    draw(cx);
+}
+
+fn abs(dirs: &Dirs, rel: &str) -> Arc<Path> {
+    Arc::from(dirs.root.path().join(rel))
+}
+
+fn user_settings(dirs: &Dirs, json: &str, cx: &mut VisualTestContext) {
+    std::fs::write(dirs.settings(), json).unwrap();
+    let changed = dirs.settings().canonicalize().unwrap();
+    cx.update(|_, cx| reload_config(&[changed], cx));
+    draw(cx);
+}
+
+#[gpui::test]
+fn md_opens_as_preview_by_default(cx: &mut TestAppContext) {
+    let dirs = md_dirs();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    open_rel(&wb, "README.md", OpenMode::Preview, cx);
+    assert_eq!(
+        active_item(&wb, cx),
+        TabItem::MarkdownPreview(abs(&dirs, "README.md"))
+    );
+}
+
+#[gpui::test]
+fn md_jump_opens_source(cx: &mut TestAppContext) {
+    let dirs = md_dirs();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    let point = Point { row: 10, column: 0 };
+    wb.update(cx, |wb, cx| {
+        wb.open_path_at(
+            Arc::from(Path::new("README.md")),
+            OpenMode::Preview,
+            point,
+            cx,
+        )
+    });
+    draw(cx);
+    assert_eq!(active_item(&wb, cx), TabItem::File(abs(&dirs, "README.md")));
+}
+
+#[gpui::test]
+fn point_less_open_reuses_the_open_source(cx: &mut TestAppContext) {
+    let dirs = md_dirs();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    let point = Point { row: 10, column: 0 };
+    wb.update(cx, |wb, cx| {
+        wb.open_path_at(
+            Arc::from(Path::new("README.md")),
+            OpenMode::Pinned,
+            point,
+            cx,
+        )
+    });
+    draw(cx);
+    open_rel(&wb, "x.rs", OpenMode::Pinned, cx);
+    open_rel(&wb, "README.md", OpenMode::Pinned, cx);
+    assert_eq!(active_item(&wb, cx), TabItem::File(abs(&dirs, "README.md")));
+    let tabs = cx.update(|_, cx| {
+        wb.read(cx).editor_groups().read(cx).model().groups()[0]
+            .tabs
+            .len()
+    });
+    assert_eq!(tabs, 2);
+}
+
+#[gpui::test]
+fn go_back_returns_to_source(cx: &mut TestAppContext) {
+    let dirs = md_dirs();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    open_rel(&wb, "x.rs", OpenMode::Pinned, cx);
+    let jump = |rel: &'static str, row: u32, cx: &mut VisualTestContext| {
+        wb.update(cx, |wb, cx| {
+            let point = Point { row, column: 0 };
+            wb.jump_to(Arc::from(Path::new(rel)), point, OpenMode::Preview, cx)
+        });
+        draw(cx);
+    };
+    jump("README.md", 10, cx);
+    // Replaces README.md's preview tab.
+    jump("y.rs", 0, cx);
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command("workbench.action.navigateBack", None, window, cx)
+        })
+    });
+    draw(cx);
+    assert_eq!(active_item(&wb, cx), TabItem::File(abs(&dirs, "README.md")));
+}
+
+#[gpui::test]
+fn association_default_opens_source(cx: &mut TestAppContext) {
+    let dirs = md_dirs();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    user_settings(
+        &dirs,
+        r#"{ "workbench.editorAssociations": { "*.md": "default" } }"#,
+        cx,
+    );
+    open_rel(&wb, "README.md", OpenMode::Pinned, cx);
+    assert_eq!(active_item(&wb, cx), TabItem::File(abs(&dirs, "README.md")));
+}
+
+#[gpui::test]
+fn association_full_path_glob(cx: &mut TestAppContext) {
+    let dirs = md_dirs();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    user_settings(
+        &dirs,
+        r#"{ "workbench.editorAssociations": {
+               "*.md": "default",
+               "docs/**/*.md": "vscode.markdown.preview.editor" } }"#,
+        cx,
+    );
+    open_rel(&wb, "docs/b.md", OpenMode::Pinned, cx);
+    assert_eq!(
+        active_item(&wb, cx),
+        TabItem::MarkdownPreview(abs(&dirs, "docs/b.md"))
+    );
+    open_rel(&wb, "README.md", OpenMode::Pinned, cx);
+    assert_eq!(active_item(&wb, cx), TabItem::File(abs(&dirs, "README.md")));
+}
+
+#[gpui::test]
+fn rs_unaffected(cx: &mut TestAppContext) {
+    let dirs = md_dirs();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    open_rel(&wb, "x.rs", OpenMode::Preview, cx);
+    assert_eq!(active_item(&wb, cx), TabItem::File(abs(&dirs, "x.rs")));
+}
+
+#[test]
+fn editor_for_matches_relative_and_absolute_globs() {
+    let map = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    let (abs, rel) = (Path::new("/w/docs/a.md"), Path::new("docs/a.md"));
+    let preview = "vscode.markdown.preview.editor";
+    assert_eq!(editor_for(abs, rel, &map(&[])), FileView::Source);
+    assert_eq!(
+        editor_for(abs, rel, &map(&[("*.md", preview)])),
+        FileView::Preview
+    );
+    assert_eq!(
+        editor_for(
+            abs,
+            rel,
+            &map(&[("*.md", preview), ("docs/*.md", "default")])
+        ),
+        FileView::Source,
+        "the longer glob wins"
+    );
+    assert_eq!(
+        editor_for(abs, rel, &map(&[("/w/**/*.md", preview)])),
+        FileView::Preview
+    );
+    assert_eq!(
+        editor_for(abs, rel, &map(&[("*.md", "other.editor")])),
+        FileView::Source
     );
 }

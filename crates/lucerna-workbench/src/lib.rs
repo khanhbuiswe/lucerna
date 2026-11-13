@@ -87,8 +87,9 @@ pub use lsp_health::LspHealthView;
 pub use lsp_log::LspLogView;
 pub use lsp_status::{LspStatusItem, ServerRow, StatusDot};
 pub use markdown_preview::{
-    MAX_PREVIEW_BYTES, MarkdownPreview, MarkdownPreviewEvent, REPARSE_DELAY, item_to_line,
-    line_to_item,
+    MAX_PREVIEW_BYTES, MarkdownPreview, MarkdownPreviewEvent, PREVIEW_EDITOR_ID, REFRESH_PREVIEW,
+    REPARSE_DELAY, SHOW_PREVIEW, SHOW_PREVIEW_TO_SIDE, SHOW_SOURCE, TOGGLE_PREVIEW, editor_for,
+    item_to_line, line_to_item,
 };
 pub use nav_history::{NavEntry, NavHistory};
 pub use open_commands::WorkbenchEvent;

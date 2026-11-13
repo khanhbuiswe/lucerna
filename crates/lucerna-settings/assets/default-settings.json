@@ -78,5 +78,12 @@
   "markdown.preview.lineHeight": 1.6,
   "markdown.preview.fontFamily": "",
   "markdown.preview.scrollPreviewWithEditor": true,
-  "markdown.preview.scrollEditorWithPreview": true
+  "markdown.preview.scrollEditorWithPreview": true,
+  "markdown.preview.doubleClickToSwitchToEditor": true,
+  // Which editor opens a file, by glob (root-relative path, or file name for a glob without "/").
+  // "vscode.markdown.preview.editor": the Markdown preview. "default": the source.
+  "workbench.editorAssociations": {
+    "*.md": "vscode.markdown.preview.editor",
+    "*.markdown": "vscode.markdown.preview.editor"
+  }
 }
