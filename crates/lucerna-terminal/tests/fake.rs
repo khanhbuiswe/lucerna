@@ -221,3 +221,19 @@ fn fake_has_no_child() {
     #[cfg(unix)]
     assert_eq!(term.pty_fd(), None);
 }
+
+#[test]
+fn fake_with_events_reports_wakeup_and_title() {
+    use lucerna_terminal::TerminalEvent;
+    let (term, mut events) = Terminal::fake_with_events(4, 10, 100);
+    term.feed(b"\x1b]0;build\x07hi");
+    let mut got = Vec::new();
+    while let Ok(ev) = events.try_recv() {
+        got.push(ev);
+    }
+    assert!(
+        got.contains(&TerminalEvent::Title(Some("build".into()))),
+        "{got:?}"
+    );
+    assert_eq!(got.last(), Some(&TerminalEvent::Wakeup), "{got:?}");
+}

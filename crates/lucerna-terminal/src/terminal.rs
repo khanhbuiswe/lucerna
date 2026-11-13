@@ -31,6 +31,9 @@ pub struct Terminal {
     child: Option<Child>,
     #[cfg(feature = "test-support")]
     parser: Mutex<alacritty_terminal::vte::ansi::Processor>,
+    /// A fake terminal's event channel: `feed` sends a `Wakeup` on it.
+    #[cfg(feature = "test-support")]
+    fake_events: Option<UnboundedSender<TerminalEvent>>,
 }
 
 enum Op {
@@ -281,6 +284,8 @@ impl Terminal {
             }),
             #[cfg(feature = "test-support")]
             parser: Mutex::default(),
+            #[cfg(feature = "test-support")]
+            fake_events: None,
         };
         Ok((terminal, rx))
     }
@@ -289,23 +294,43 @@ impl Terminal {
     /// `written` returns what would have gone to it.
     #[cfg(feature = "test-support")]
     pub fn fake(rows: u16, cols: u16, scrollback: usize) -> Terminal {
-        let (term, shared) = new_term(window_size(rows, cols, 8, 16), scrollback, unbounded().0);
+        Self::fake_with_events(rows, cols, scrollback).0
+    }
+
+    /// [`Terminal::fake`] with its event channel, as `spawn` returns it:
+    /// `feed` sends a `Wakeup` on the calling thread, and titles set by fed
+    /// bytes arrive too.
+    #[cfg(feature = "test-support")]
+    pub fn fake_with_events(
+        rows: u16,
+        cols: u16,
+        scrollback: usize,
+    ) -> (Terminal, UnboundedReceiver<TerminalEvent>) {
+        let (tx, rx) = unbounded();
+        let (term, shared) = new_term(window_size(rows, cols, 8, 16), scrollback, tx.clone());
         let _ = shared.sink.set(Sink::Fake(Mutex::default()));
-        Terminal {
+        let terminal = Terminal {
             term,
             shared,
             pending: Mutex::new(Vec::new()),
             child: None,
             parser: Mutex::default(),
-        }
+            fake_events: Some(tx),
+        };
+        (terminal, rx)
     }
 
     /// Parses `bytes` as if the child wrote them.
     #[cfg(feature = "test-support")]
     pub fn feed(&self, bytes: &[u8]) {
-        let mut term = self.term.lock();
-        self.apply_pending(&mut term);
-        lock(&self.parser).advance(&mut *term, bytes);
+        {
+            let mut term = self.term.lock();
+            self.apply_pending(&mut term);
+            lock(&self.parser).advance(&mut *term, bytes);
+        }
+        if let Some(tx) = &self.fake_events {
+            let _ = tx.unbounded_send(TerminalEvent::Wakeup);
+        }
     }
 
     /// The PTY has been closed and the child reaped (or never existed).

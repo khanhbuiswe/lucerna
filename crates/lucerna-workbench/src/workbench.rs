@@ -48,7 +48,8 @@ use crate::search_view::{self, SearchView};
 use crate::symbols::SymbolSource;
 use crate::symbols::breadcrumbs::Breadcrumbs;
 use crate::tasks::try_spawn_guarded;
-use crate::terminal::{PanelEvent, TerminalPanel};
+use crate::terminal::view::{default_spawner, spawn_view};
+use crate::terminal::{PanelEvent, TerminalPanel, TerminalSpawner};
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
 use crate::trust::{self, Trust};
@@ -179,6 +180,8 @@ pub struct Workbench {
     panel: PanelState,
     /// The panel's terminals; kept while the panel is hidden.
     terminal_panel: Entity<TerminalPanel>,
+    /// Starts the panel's terminals.
+    terminal_spawner: TerminalSpawner,
     /// The focused group and its active tab as last seen: when they
     /// change under a maximized panel, the panel goes back to its size so
     /// the editor shows (as VS Code does).
@@ -463,14 +466,7 @@ impl Workbench {
                 ..PanelState::default()
             },
         };
-        let terminal_panel = cx.new(|cx| {
-            let mut panel = TerminalPanel::new(cx);
-            // A panel shown when the window closed shows a new terminal.
-            if panel_state.visible {
-                panel.add_tab(None, cx);
-            }
-            panel
-        });
+        let terminal_panel = cx.new(TerminalPanel::new);
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let lone = single_file_path.is_some();
@@ -579,6 +575,7 @@ impl Workbench {
             _subscriptions: subscriptions,
             panel: panel_state,
             terminal_panel: terminal_panel.clone(),
+            terminal_spawner: default_spawner(cx),
             shown_editor: (0, None),
             commands: Rc::new(commands),
             focus,
@@ -639,9 +636,13 @@ impl Workbench {
             workbench.start_persistence(store, restored.as_ref(), cx);
         }
         workbench.shown_editor = workbench.shown_editor(cx);
+        // A panel shown when the window closed shows a new terminal.
+        if workbench.panel.visible {
+            workbench.open_terminal(window, cx);
+        }
         if workbench.panel.visible && workbench.panel.maximized {
             // The editor area is not drawn: the panel takes the focus.
-            let focus = terminal_panel.read(cx).focus_handle().clone();
+            let focus = terminal_panel.read(cx).focus_target(cx);
             window.focus(&focus, cx);
         }
         let groups = workbench.editor_groups.clone();
@@ -1585,11 +1586,10 @@ impl Workbench {
     /// Shows the panel and focuses it, opening a terminal when it has none.
     pub fn show_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.terminal_panel.read(cx).tab_count() == 0 {
-            self.terminal_panel
-                .update(cx, |panel, cx| panel.add_tab(None, cx));
+            self.open_terminal(window, cx);
         }
         self.panel.visible = true;
-        let focus = self.terminal_panel.read(cx).focus_handle().clone();
+        let focus = self.terminal_panel.read(cx).focus_target(cx);
         window.focus(&focus, cx);
         self.layout_changed(cx);
         cx.notify();
@@ -1616,7 +1616,7 @@ impl Workbench {
         if self.panel.visible {
             self.panel.maximized = !self.panel.maximized;
             if self.panel.maximized {
-                let focus = self.terminal_panel.read(cx).focus_handle().clone();
+                let focus = self.terminal_panel.read(cx).focus_target(cx);
                 window.focus(&focus, cx);
             }
         } else {
@@ -1636,11 +1636,31 @@ impl Workbench {
         }
     }
 
-    /// The ＋ button: a new terminal, shown and focused.
+    /// The ＋ button and `workbench.action.terminal.new`: a new terminal,
+    /// shown and focused.
     pub(crate) fn new_terminal_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.terminal_panel
-            .update(cx, |panel, cx| panel.add_tab(None, cx));
+        self.open_terminal(window, cx);
         self.show_panel(window, cx);
+    }
+
+    /// Starts a terminal in the workspace root and adds its tab; a terminal
+    /// that cannot start gets a tab showing why.
+    fn open_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> u64 {
+        match spawn_view(&self.terminal_spawner, &self.root, window, cx) {
+            Ok(view) => self
+                .terminal_panel
+                .update(cx, |panel, cx| panel.add_tab(Some(view), cx)),
+            Err(error) => {
+                tracing::warn!("{error}");
+                self.terminal_panel
+                    .update(cx, |panel, cx| panel.add_failed_tab(error, cx))
+            }
+        }
+    }
+
+    /// Replaces what starts new terminals; see [`TerminalSpawner`].
+    pub fn set_terminal_spawner(&mut self, spawner: TerminalSpawner) {
+        self.terminal_spawner = spawner;
     }
 
     fn shown_editor(&self, cx: &App) -> (usize, Option<TabId>) {

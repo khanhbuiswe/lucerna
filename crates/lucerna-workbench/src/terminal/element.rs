@@ -1,0 +1,590 @@
+//! Draws a terminal's visible grid. Prepaint measures a cell, resizes the
+//! terminal to the bounds, takes one snapshot and lays out each row as
+//! runs (`lucerna_terminal::layout_line`), each shaped once at a forced
+//! cell width; paint draws them in spec §5.2's order.
+
+use std::rc::Rc;
+
+use gpui::{
+    App, Bounds, ContentMask, Element, ElementId, Entity, Font, FontFeatures, FontStyle,
+    GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba,
+    ShapedLine, SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle,
+    Window, fill, outline, point, px, relative, size,
+};
+use lucerna_terminal::{
+    CellFlags, CursorShape, LineLayout, Rgba8, Snapshot, TerminalPalette, Underline, layout_line,
+};
+use unicode_width::UnicodeWidthChar;
+
+use super::settings::{TerminalFont, bold_is_bright, minimum_contrast, palette, terminal_font};
+use super::view::TerminalView;
+use crate::AppState;
+
+/// Width of the bar cursor and height of the underline cursor.
+const CURSOR_THICKNESS: f32 = 2.;
+
+pub(crate) struct TerminalElement {
+    view: Entity<TerminalView>,
+}
+
+impl TerminalElement {
+    pub fn new(view: Entity<TerminalView>) -> Self {
+        TerminalElement { view }
+    }
+}
+
+impl IntoElement for TerminalElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+/// One shaped piece of a row, drawn at `origin`.
+struct Piece {
+    origin: Point<Pixels>,
+    line: ShapedLine,
+    /// First column and the text, for tests.
+    col: u16,
+    text: SharedString,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CursorKind {
+    Block,
+    Bar,
+    Underline,
+    /// Any shape while the view is not focused (`cursorStyleInactive`).
+    Outline,
+}
+
+struct CursorPaint {
+    kind: CursorKind,
+    bounds: Bounds<Pixels>,
+    color: Hsla,
+    /// The character under a block cursor, in the background colour.
+    glyph: Option<(Point<Pixels>, ShapedLine)>,
+}
+
+/// What prepaint laid out and paint draws.
+pub(crate) struct Frame {
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+    pub(super) background: Rgba,
+    backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
+    selection: Vec<Bounds<Pixels>>,
+    selection_color: Hsla,
+    /// Text pieces by screen row.
+    rows: Vec<Vec<Piece>>,
+    blocks: Vec<(Bounds<Pixels>, Hsla)>,
+    cursor: Option<CursorPaint>,
+}
+
+impl Frame {
+    /// The text of screen row `row`, each piece at its column.
+    pub(super) fn row_text(&self, row: usize) -> String {
+        let mut out = String::new();
+        let mut col = 0usize;
+        for piece in self.rows.get(row).into_iter().flatten() {
+            while col < piece.col as usize {
+                out.push(' ');
+                col += 1;
+            }
+            out.push_str(&piece.text);
+            col += piece
+                .text
+                .chars()
+                .map(|c| c.width().unwrap_or(0))
+                .sum::<usize>();
+        }
+        out
+    }
+
+    pub(super) fn cursor_selector(&self) -> Option<&'static str> {
+        Some(match self.cursor.as_ref()?.kind {
+            CursorKind::Block => "terminal-cursor-block",
+            CursorKind::Bar => "terminal-cursor-bar",
+            CursorKind::Underline => "terminal-cursor-underline",
+            CursorKind::Outline => "terminal-cursor-outline",
+        })
+    }
+}
+
+fn rgba(c: Rgba8) -> Rgba {
+    Rgba {
+        r: c.r as f32 / 255.,
+        g: c.g as f32 / 255.,
+        b: c.b as f32 / 255.,
+        a: c.a as f32 / 255.,
+    }
+}
+
+fn hsla(c: Rgba8) -> Hsla {
+    rgba(c).into()
+}
+
+fn base_font(font: &TerminalFont) -> Font {
+    Font {
+        family: font.family.clone(),
+        features: FontFeatures::disable_ligatures(),
+        fallbacks: None,
+        weight: font.weight,
+        style: FontStyle::Normal,
+    }
+}
+
+/// Rounds `v` to the device pixel grid.
+fn snap(v: Pixels, scale: f32) -> Pixels {
+    px((f32::from(v) * scale).round() / scale)
+}
+
+/// Rows and columns that fit `bounds`, one cell kept as the left margin;
+/// `None` when not even one cell fits (a hidden or collapsed panel), so the
+/// terminal keeps its size.
+fn grid_for(bounds: Bounds<Pixels>, cell_w: Pixels, cell_h: Pixels) -> Option<(u16, u16)> {
+    let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+    let (cw, ch) = (f32::from(cell_w), f32::from(cell_h));
+    if w < cw * 2. || h < ch || cw <= 0. || ch <= 0. {
+        return None;
+    }
+    let rows = (h / ch).floor().clamp(1., u16::MAX as f32) as u16;
+    let cols = ((w - cw) / cw).floor().clamp(1., u16::MAX as f32) as u16;
+    Some((rows, cols))
+}
+
+/// Everything shaping a row needs.
+struct Shaper<'a> {
+    font: &'a TerminalFont,
+    base: Font,
+    cell_w: Pixels,
+}
+
+impl Shaper<'_> {
+    fn run_font(&self, bold: bool, italic: bool) -> Font {
+        let mut font = self.base.clone();
+        if bold {
+            font.weight = self.font.bold_weight;
+        }
+        if italic {
+            font.style = FontStyle::Italic;
+        }
+        font
+    }
+
+    fn shape(
+        &self,
+        text: &str,
+        run: &lucerna_terminal::TextRun,
+        forced: bool,
+        window: &mut Window,
+    ) -> ShapedLine {
+        let color = hsla(run.style.fg);
+        let underline = match run.style.underline {
+            Underline::None => None,
+            Underline::Curl => Some(UnderlineStyle {
+                thickness: px(1.),
+                color: Some(color),
+                wavy: true,
+            }),
+            Underline::Single | Underline::Double => Some(UnderlineStyle {
+                thickness: px(1.),
+                color: Some(color),
+                wavy: false,
+            }),
+        };
+        let runs = [TextRun {
+            len: text.len(),
+            font: self.run_font(run.style.bold, run.style.italic),
+            color,
+            background_color: None,
+            underline,
+            strikethrough: run.style.strike.then_some(StrikethroughStyle {
+                thickness: px(1.),
+                color: Some(color),
+            }),
+        }];
+        let text = SharedString::from(text.to_string());
+        window
+            .text_system()
+            .shape_line(text, self.font.size, &runs, forced.then_some(self.cell_w))
+    }
+
+    /// Shapes one run into pieces at `y`. Narrow text is forced onto the
+    /// cell grid; each wide character (with its marks) is shaped on its
+    /// own at its two cells, since forcing would squeeze it into one.
+    fn pieces(
+        &self,
+        run: &lucerna_terminal::TextRun,
+        origin_x: Pixels,
+        y: Pixels,
+        window: &mut Window,
+        out: &mut Vec<Piece>,
+    ) {
+        let mut col = run.col;
+        let mut start = 0usize;
+        let mut start_col = col;
+        let mut push = |text: &str, at: u16, forced: bool, out: &mut Vec<Piece>| {
+            if text.is_empty() {
+                return;
+            }
+            out.push(Piece {
+                origin: point(origin_x + self.cell_w * at as f32, y),
+                line: self.shape(text, run, forced, window),
+                col: at,
+                text: text.to_string().into(),
+            });
+        };
+        let text = run.text.as_str();
+        let mut chars = text.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if c.width() != Some(2) {
+                if c.width().unwrap_or(0) > 0 {
+                    col += 1;
+                }
+                continue;
+            }
+            push(&text[start..i], start_col, true, out);
+            let mut end = i + c.len_utf8();
+            while let Some(&(j, m)) = chars.peek() {
+                if m.width() != Some(0) {
+                    break;
+                }
+                end = j + m.len_utf8();
+                chars.next();
+            }
+            push(&text[i..end], col, false, out);
+            col += 2;
+            start = end;
+            start_col = col;
+        }
+        push(&text[start..], start_col, true, out);
+    }
+}
+
+impl TerminalView {
+    /// Lays out one frame for `bounds`: resizes the terminal when the grid
+    /// changed, then snapshots it and shapes the visible rows.
+    fn layout(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) -> Rc<Frame> {
+        let font = terminal_font(cx);
+        let generation = cx.global::<AppState>().theme_generation;
+        let palette: Rc<TerminalPalette> = match &self.palette {
+            Some((g, p)) if *g == generation => p.clone(),
+            _ => {
+                let p = Rc::new(palette(cx));
+                self.palette = Some((generation, p.clone()));
+                p
+            }
+        };
+        let (min_contrast, bold_bright) = (minimum_contrast(cx), bold_is_bright(cx));
+        let scale = window.scale_factor();
+
+        let base = base_font(&font);
+        let text_system = window.text_system();
+        let font_id = text_system.resolve_font(&base);
+        let advance = text_system
+            .advance(font_id, font.size, 'm')
+            .map(|s| s.width)
+            .ok()
+            .filter(|w| *w > px(0.))
+            .unwrap_or(font.size * 0.6);
+        let cell_w = (advance + px(font.letter_spacing)).max(px(1.));
+        let cell_h = snap(font.cell_height(), scale).max(px(1.));
+
+        // `resize` only passes a change on, so a new cell size with the
+        // same grid still reaches the app.
+        if let Some(grid) = grid_for(bounds, cell_w, cell_h) {
+            self.grid = grid;
+            let px_u16 = |v: Pixels| f32::from(v).round().clamp(1., u16::MAX as f32) as u16;
+            self.terminal()
+                .resize(grid.0, grid.1, px_u16(cell_w), px_u16(cell_h));
+        }
+        let snapshot = self.terminal().snapshot();
+
+        // Leftover height goes above the grid while it follows the output,
+        // so the prompt sits on the bottom edge; below it when scrolled up.
+        let grid_h = cell_h * snapshot.rows as f32;
+        let leftover = (bounds.size.height - grid_h).max(px(0.));
+        let top = if snapshot.display_offset == 0 {
+            bounds.top() + leftover
+        } else {
+            bounds.top()
+        };
+        let origin = point(snap(bounds.left() + cell_w, scale), snap(top, scale));
+        let cell = |row: u16, col: u16, cols: u16| {
+            Bounds::new(
+                point(
+                    origin.x + cell_w * col as f32,
+                    origin.y + cell_h * row as f32,
+                ),
+                size(cell_w * cols as f32, cell_h),
+            )
+        };
+
+        let shaper = Shaper {
+            font: &font,
+            base,
+            cell_w,
+        };
+        let mut backgrounds = Vec::new();
+        let mut blocks = Vec::new();
+        let mut rows = Vec::with_capacity(snapshot.cells.len());
+        for (r, cells) in snapshot.cells.iter().enumerate() {
+            let r = r as u16;
+            let LineLayout {
+                runs,
+                bgs,
+                blocks: block_rects,
+            } = layout_line(cells, &palette, min_contrast, bold_bright);
+            for bg in bgs {
+                backgrounds.push((cell(r, bg.col, bg.cols), hsla(bg.color)));
+            }
+            for b in block_rects {
+                let c = cell(r, b.col, 1);
+                let bounds = Bounds::new(
+                    point(c.left() + cell_w * b.x, c.top() + cell_h * b.y),
+                    size(cell_w * b.w, cell_h * b.h),
+                );
+                blocks.push((bounds, hsla(b.color)));
+            }
+            let y = origin.y + cell_h * r as f32;
+            let mut pieces = Vec::with_capacity(runs.len());
+            for run in &runs {
+                shaper.pieces(run, origin.x, y, window, &mut pieces);
+            }
+            rows.push(pieces);
+        }
+
+        let selection = selection_rects(&snapshot, &cell);
+        let focused = self.focus.is_focused(window);
+        let cursor = cursor_paint(&snapshot, &palette, focused, &shaper, &cell, window);
+        let frame = Rc::new(Frame {
+            bounds,
+            line_height: cell_h,
+            background: rgba(palette.background),
+            backgrounds,
+            selection,
+            selection_color: hsla(palette.selection),
+            rows,
+            blocks,
+            cursor,
+        });
+        self.last_frame = Some(frame.clone());
+        frame
+    }
+}
+
+/// The selected cells on screen, one rectangle per row.
+fn selection_rects(
+    snapshot: &Snapshot,
+    cell: &impl Fn(u16, u16, u16) -> Bounds<Pixels>,
+) -> Vec<Bounds<Pixels>> {
+    let Some(sel) = snapshot.selection else {
+        return Vec::new();
+    };
+    let offset = snapshot.display_offset as i32;
+    let last_col = snapshot.cols.saturating_sub(1);
+    let mut out = Vec::new();
+    for line in sel.start.line..=sel.end.line {
+        let row = line + offset;
+        if !(0..snapshot.rows as i32).contains(&row) {
+            continue;
+        }
+        let (from, to) = if sel.is_block {
+            (
+                sel.start.col.min(sel.end.col),
+                sel.start.col.max(sel.end.col),
+            )
+        } else {
+            (
+                if line == sel.start.line {
+                    sel.start.col
+                } else {
+                    0
+                },
+                if line == sel.end.line {
+                    sel.end.col
+                } else {
+                    last_col
+                },
+            )
+        };
+        let to = to.min(last_col);
+        if from <= to {
+            out.push(cell(row as u16, from, to - from + 1));
+        }
+    }
+    out
+}
+
+fn cursor_paint(
+    snapshot: &Snapshot,
+    palette: &TerminalPalette,
+    focused: bool,
+    shaper: &Shaper<'_>,
+    cell: &impl Fn(u16, u16, u16) -> Bounds<Pixels>,
+    window: &mut Window,
+) -> Option<CursorPaint> {
+    let cursor = snapshot.cursor?;
+    let under = snapshot
+        .cells
+        .get(cursor.row as usize)
+        .and_then(|row| row.get(cursor.col as usize));
+    let wide = under.is_some_and(|c| c.flags.contains(CellFlags::WIDE));
+    let full = cell(cursor.row, cursor.col, if wide { 2 } else { 1 });
+    let thickness = px(CURSOR_THICKNESS);
+    let kind = match (focused, cursor.shape) {
+        (_, CursorShape::Hidden) => return None,
+        (false, _) => CursorKind::Outline,
+        (true, CursorShape::Block) => CursorKind::Block,
+        (true, CursorShape::Bar) => CursorKind::Bar,
+        (true, CursorShape::Underline) => CursorKind::Underline,
+    };
+    let bounds = match kind {
+        CursorKind::Block | CursorKind::Outline => full,
+        CursorKind::Bar => Bounds::new(full.origin, size(thickness, full.size.height)),
+        CursorKind::Underline => Bounds::new(
+            point(full.left(), full.bottom() - thickness),
+            size(full.size.width, thickness),
+        ),
+    };
+    let glyph = (kind == CursorKind::Block)
+        .then(|| under.filter(|c| c.ch != ' ' && !c.flags.contains(CellFlags::HIDDEN)))
+        .flatten()
+        .map(|c| {
+            let mut text = String::from(c.ch);
+            if let Some(z) = &c.zerowidth {
+                text.extend(z.iter());
+            }
+            let run = lucerna_terminal::TextRun {
+                col: cursor.col,
+                cells: if wide { 2 } else { 1 },
+                text: text.clone(),
+                style: lucerna_terminal::RunStyle {
+                    fg: palette.background,
+                    bold: c.flags.contains(CellFlags::BOLD),
+                    italic: c.flags.contains(CellFlags::ITALIC),
+                    underline: Underline::None,
+                    strike: false,
+                },
+            };
+            (full.origin, shaper.shape(&text, &run, !wide, window))
+        });
+    Some(CursorPaint {
+        kind,
+        bounds,
+        color: hsla(palette.cursor),
+        glyph,
+    })
+}
+
+impl Element for TerminalElement {
+    type RequestLayoutState = ();
+    type PrepaintState = Rc<Frame>;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        style.size.height = relative(1.).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Rc<Frame> {
+        self.view
+            .update(cx, |view, cx| view.layout(bounds, window, cx))
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        frame: &mut Rc<Frame>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.view.update(cx, |view, _| view.frames_drawn += 1);
+        let frame = &**frame;
+        let lh = frame.line_height;
+        window.paint_quad(fill(frame.bounds, Hsla::from(frame.background)));
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: frame.bounds,
+            }),
+            |window| {
+                for (bounds, color) in &frame.backgrounds {
+                    window.paint_quad(fill(*bounds, *color));
+                }
+                for bounds in &frame.selection {
+                    window.paint_quad(fill(*bounds, frame.selection_color));
+                }
+                for piece in frame.rows.iter().flatten() {
+                    let _ = piece
+                        .line
+                        .paint(piece.origin, lh, TextAlign::Left, None, window, cx);
+                }
+                for (bounds, color) in &frame.blocks {
+                    window.paint_quad(fill(*bounds, *color));
+                }
+                if let Some(cursor) = &frame.cursor {
+                    match cursor.kind {
+                        CursorKind::Outline => window.paint_quad(outline(
+                            cursor.bounds,
+                            cursor.color,
+                            gpui::BorderStyle::Solid,
+                        )),
+                        _ => window.paint_quad(fill(cursor.bounds, cursor.color)),
+                    }
+                    if let Some((origin, line)) = &cursor.glyph {
+                        let _ = line.paint(*origin, lh, TextAlign::Left, None, window, cx);
+                    }
+                }
+            },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(w: f32, h: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(0.), px(0.)), size(px(w), px(h)))
+    }
+
+    #[test]
+    fn grid_keeps_a_left_margin_and_rounds_down() {
+        assert_eq!(grid_for(b(100., 50.), px(10.), px(16.)), Some((3, 9)));
+    }
+
+    #[test]
+    fn grid_needs_room_for_one_cell() {
+        assert_eq!(grid_for(b(0., 0.), px(10.), px(16.)), None);
+        assert_eq!(grid_for(b(15., 100.), px(10.), px(16.)), None);
+        assert_eq!(grid_for(b(100., 10.), px(10.), px(16.)), None);
+        assert_eq!(grid_for(b(20., 16.), px(10.), px(16.)), Some((1, 1)));
+    }
+}

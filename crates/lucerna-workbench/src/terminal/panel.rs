@@ -2,12 +2,15 @@
 //! which one is shown. The panel frame (`layout::panel`) draws the tab bar
 //! from [`tab_elements`] and this entity as its body.
 
+use std::collections::HashMap;
+
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, IntoElement,
-    MouseButton, ParentElement, Render, SharedString, Styled, Window, div, prelude::*, px, svg,
+    AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    IntoElement, MouseButton, ParentElement, Render, SharedString, Styled, Subscription, Window,
+    div, prelude::*, px, svg,
 };
 
-use super::view::TerminalView;
+use super::view::{TerminalView, TerminalViewEvent};
 use crate::AppState;
 use crate::icons;
 use crate::layout::color;
@@ -33,6 +36,8 @@ pub struct TerminalTab {
     pub title: SharedString,
     pub state: TabState,
     pub view: Option<Entity<TerminalView>>,
+    /// Why the terminal could not start; shown in its body.
+    pub error: Option<SharedString>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +53,8 @@ pub struct TerminalPanel {
     next_id: u64,
     /// The tab under the mouse: it shows its close button.
     hovered: Option<u64>,
+    /// Each tab's subscription to its view's events, by tab id.
+    view_events: HashMap<u64, Subscription>,
 }
 
 impl EventEmitter<PanelEvent> for TerminalPanel {}
@@ -60,6 +67,7 @@ impl TerminalPanel {
             focus: cx.focus_handle(),
             next_id: 1,
             hovered: None,
+            view_events: HashMap::new(),
         }
     }
 
@@ -82,8 +90,44 @@ impl TerminalPanel {
         &self.focus
     }
 
-    /// Adds a tab after the others and shows it. Returns its id.
+    /// What to focus to type into the shown tab: its terminal, else the
+    /// panel itself.
+    pub fn focus_target(&self, cx: &App) -> FocusHandle {
+        self.tabs
+            .get(self.active)
+            .and_then(|tab| tab.view.as_ref())
+            .map_or_else(|| self.focus.clone(), |view| view.read(cx).focus_handle(cx))
+    }
+
+    /// Adds a tab after the others and shows it. Returns its id. The tab
+    /// takes its title from the view's terminal.
     pub fn add_tab(&mut self, view: Option<Entity<TerminalView>>, cx: &mut Context<Self>) -> u64 {
+        let id = self.push_tab(view.clone(), None, cx);
+        if let Some(view) = view {
+            let subscription = cx.subscribe(&view, move |panel, _, event, cx| match event {
+                TerminalViewEvent::TitleChanged(title) => panel.set_title(id, title.clone(), cx),
+            });
+            self.view_events.insert(id, subscription);
+        }
+        id
+    }
+
+    /// Adds a tab for a terminal that could not start: its body shows
+    /// `error`, and closing it works as for any tab.
+    pub fn add_failed_tab(&mut self, error: SharedString, cx: &mut Context<Self>) -> u64 {
+        let id = self.push_tab(None, Some(error), cx);
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
+            tab.state = TabState::Failed;
+        }
+        id
+    }
+
+    fn push_tab(
+        &mut self,
+        view: Option<Entity<TerminalView>>,
+        error: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.tabs.push(TerminalTab {
@@ -91,10 +135,20 @@ impl TerminalPanel {
             title: DEFAULT_TITLE.into(),
             state: TabState::Normal,
             view,
+            error,
         });
         self.active = self.tabs.len() - 1;
         cx.notify();
         id
+    }
+
+    fn set_title(&mut self, id: u64, title: SharedString, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id)
+            && tab.title != title
+        {
+            tab.title = title;
+            cx.notify();
+        }
     }
 
     /// Closes the tab `id`, showing its right neighbour (or the new last
@@ -105,6 +159,7 @@ impl TerminalPanel {
             return;
         };
         self.tabs.remove(index);
+        self.view_events.remove(&id);
         if self.hovered == Some(id) {
             self.hovered = None;
         }
@@ -271,12 +326,23 @@ pub(crate) fn tab_elements(panel: &Entity<TerminalPanel>, cx: &App) -> Vec<AnyEl
 
 impl Render for TerminalPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let background = color(cx.global::<AppState>().theme.terminal.background);
-        let view = self.tabs.get(self.active).and_then(|tab| tab.view.clone());
+        let theme = &cx.global::<AppState>().theme;
+        let background = color(theme.terminal.background);
+        let tab = self.tabs.get(self.active);
+        let view = tab.and_then(|tab| tab.view.clone());
+        let error = tab.and_then(|tab| tab.error.clone()).map(|error| {
+            div()
+                .debug_selector(|| "terminal-error".into())
+                .p(px(GRID * 2.))
+                .text_size(px(UI_FONT_SIZE_SMALL))
+                .text_color(color(theme.ui.error))
+                .child(error)
+        });
         div()
             .debug_selector(|| "terminal-body".into())
             .size_full()
             .bg(background)
             .children(view)
+            .children(error)
     }
 }

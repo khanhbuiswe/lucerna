@@ -3495,6 +3495,7 @@ dependencies = [
  "lucerna-project",
  "lucerna-settings",
  "lucerna-syntax",
+ "lucerna-terminal",
  "lucerna-text",
  "lucerna-theme",
  "lucerna-vim",

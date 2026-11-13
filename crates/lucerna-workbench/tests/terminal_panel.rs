@@ -36,6 +36,19 @@ fn init(cx: &mut TestAppContext) {
             .0
             .resolve("Lucide"),
     });
+    // No real shells: terminals are fakes of the requested size.
+    cx.update(|cx| {
+        lucerna_workbench::set_default_terminal_spawner(
+            std::rc::Rc::new(|opts: lucerna_terminal::TerminalOptions| {
+                Ok(lucerna_terminal::Terminal::fake_with_events(
+                    opts.rows,
+                    opts.cols,
+                    opts.scrollback,
+                ))
+            }),
+            cx,
+        )
+    });
 }
 
 fn open(cx: &mut TestAppContext) -> (Entity<Workbench>, &mut VisualTestContext) {

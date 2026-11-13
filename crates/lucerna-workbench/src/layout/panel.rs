@@ -112,6 +112,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         |wb, _, window, cx| wb.toggle_maximized_panel(window, cx),
     );
     commands.register(
+        "workbench.action.terminal.new",
+        "Terminal: Create New Terminal",
+        |wb, _, window, cx| wb.new_terminal_tab(window, cx),
+    );
+    commands.register(
         "workbench.action.positionPanelBottom",
         "View: Move Panel To Bottom",
         |wb, _, _, cx| wb.set_panel_position(PanelPosition::Bottom, cx),
