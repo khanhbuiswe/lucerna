@@ -64,6 +64,30 @@ fn component_invalid(c: &str) -> bool {
     false
 }
 
+/// Separators that split a multi-level name on this platform.
+#[cfg(windows)]
+const SEPARATORS: &[char] = &['/', '\\'];
+#[cfg(not(windows))]
+const SEPARATORS: &[char] = &['/'];
+
+/// Splits `name` on `seps` and validates every component. Pure so the
+/// Windows separator rules are testable on every platform.
+#[doc(hidden)]
+pub fn split_components<'a>(name: &'a str, seps: &[char]) -> Result<Vec<&'a str>, NameError> {
+    let mut out = Vec::new();
+    for c in name.split(|ch| seps.contains(&ch)) {
+        if c.is_empty() {
+            // "a//b": ignore empty components, like a path split would.
+            continue;
+        }
+        if component_invalid(c) {
+            return Err(NameError::Invalid(c.to_string()));
+        }
+        out.push(c);
+    }
+    Ok(out)
+}
+
 /// Validates `name` (possibly multi-level, split on `/`) under `parent`.
 pub fn validate_new_name(
     parent: &Path,
@@ -79,20 +103,13 @@ pub fn validate_new_name(
         return Err(NameError::LeadingSlash);
     }
     let mut target = parent.to_path_buf();
-    for c in name.split('/') {
-        if c.is_empty() {
-            // "a//b": ignore empty components, like a path split would.
-            continue;
-        }
-        if component_invalid(c) {
-            return Err(NameError::Invalid(c.to_string()));
-        }
+    for c in split_components(name, SEPARATORS)? {
         target.push(c);
     }
     if exists(&target) {
-        let same = original.is_some_and(|o| {
-            o.to_string_lossy().to_lowercase() == target.to_string_lossy().to_lowercase()
-        });
+        let lower = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+        let same =
+            original.is_some_and(|o| o.parent() == target.parent() && lower(o) == lower(&target));
         if !same {
             let shown = target
                 .file_name()
@@ -120,24 +137,81 @@ pub fn create_file(path: &Path) -> io::Result<()> {
 }
 
 pub fn create_dir(path: &Path) -> io::Result<()> {
-    if path.exists() {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::create_dir(path)
+}
+
+/// True when both paths are the very same file system entry.
+fn same_entry(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+            (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => false,
+        }
+    }
+}
+
+/// Renames without replacing an existing target. Atomic on macOS and Linux;
+/// elsewhere it checks then renames (not atomic).
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let f = CString::new(from.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let t = CString::new(to.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        #[cfg(target_os = "macos")]
+        // SAFETY: both pointers are valid NUL-terminated strings.
+        let rc = unsafe { libc::renamex_np(f.as_ptr(), t.as_ptr(), libc::RENAME_EXCL) };
+        #[cfg(target_os = "linux")]
+        // SAFETY: both pointers are valid NUL-terminated strings.
+        let rc = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                f.as_ptr(),
+                libc::AT_FDCWD,
+                t.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            // Unsupported by this file system or kernel: fall back below.
+            Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::ENOTSUP) => {}
+            _ => return Err(err),
+        }
+    }
+    if std::fs::symlink_metadata(to).is_ok() {
         return Err(already_exists());
     }
-    std::fs::create_dir_all(path)
+    std::fs::rename(from, to)
 }
 
 pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
-    if to.exists() {
-        let case_only = from != to
-            && from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
-        if !case_only {
-            return Err(already_exists());
-        }
-    }
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::rename(from, to)
+    // A case-only rename targets the same entry: plain rename is safe there.
+    if from != to && same_entry(from, to) {
+        return std::fs::rename(from, to);
+    }
+    rename_no_replace(from, to)
 }
 
 pub fn trash(path: &Path) -> Result<(), TrashError> {

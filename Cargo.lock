@@ -3349,6 +3349,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
+ "libc",
  "notify",
  "nucleo-matcher",
  "regex",

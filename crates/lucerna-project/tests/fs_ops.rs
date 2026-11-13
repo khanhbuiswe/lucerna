@@ -98,3 +98,62 @@ fn stem_range_cases() {
     assert_eq!(stem_range(".gitignore", false), 0..10);
     assert_eq!(stem_range("a.b", true), 0..3);
 }
+
+#[test]
+fn case_only_rename_does_not_replace_distinct_file() {
+    let d = tempfile::tempdir().unwrap();
+    let (a, upper) = (d.path().join("a"), d.path().join("A"));
+    std::fs::write(&a, "lower").unwrap();
+    std::fs::write(&upper, "upper").unwrap();
+    if std::fs::read_to_string(&a).unwrap() != "lower" {
+        eprintln!("skipping: case-insensitive file system");
+        return;
+    }
+    assert_eq!(
+        rename(&a, &upper).unwrap_err().kind(),
+        ErrorKind::AlreadyExists
+    );
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "lower");
+    assert_eq!(std::fs::read_to_string(&upper).unwrap(), "upper");
+}
+
+#[cfg(unix)]
+#[test]
+fn rename_refuses_dangling_symlink_target() {
+    let d = tempfile::tempdir().unwrap();
+    let (a, link) = (d.path().join("a"), d.path().join("link"));
+    std::fs::write(&a, "x").unwrap();
+    std::os::unix::fs::symlink(d.path().join("missing"), &link).unwrap();
+    assert_eq!(
+        rename(&a, &link).unwrap_err().kind(),
+        ErrorKind::AlreadyExists
+    );
+    assert!(a.exists());
+    assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+}
+
+#[test]
+fn windows_separators_split_and_reject_traversal() {
+    assert!(matches!(
+        split_components("a\\..\\..\\x", &['/', '\\']),
+        Err(NameError::Invalid(_))
+    ));
+    assert_eq!(
+        split_components("a\\b/c", &['/', '\\']).unwrap(),
+        ["a", "b", "c"]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn delete_permanently_unlinks_symlink_to_dir() {
+    let d = tempfile::tempdir().unwrap();
+    let target = d.path().join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(target.join("f"), "x").unwrap();
+    let link = d.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    delete_permanently(&link).unwrap();
+    assert!(std::fs::symlink_metadata(&link).is_err());
+    assert!(target.join("f").exists());
+}
