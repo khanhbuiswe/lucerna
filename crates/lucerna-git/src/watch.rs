@@ -31,7 +31,11 @@ const IGNORED_FILES: &[&str] = &["COMMIT_EDITMSG", "FETCH_HEAD", "ORIG_HEAD", "g
 /// (its git dir is `<common dir>/worktrees/<name>`), `None` in the main
 /// worktree. Under the common dir's `worktrees/`, only the own worktree's
 /// entries count, with the `worktrees/<name>/` prefix stripped: other
-/// worktrees' indexes and `HEAD`s do not affect this one.
+/// worktrees' indexes and `HEAD`s do not affect this one. In a linked
+/// worktree the common dir's own top-level files (`index`, `HEAD`,
+/// `MERGE_HEAD`, ...) belong to the main worktree, so only the entries all
+/// worktrees share count there: `refs/` (minus the per-worktree `bisect/`,
+/// `worktree/` and `rewritten/`), `packed-refs`, `config` and `info/`.
 pub fn is_relevant_git_path(rel: &Path, own_worktree: Option<&OsStr>) -> bool {
     let mut parts: Vec<&OsStr> = rel
         .components()
@@ -46,6 +50,8 @@ pub fn is_relevant_git_path(rel: &Path, own_worktree: Option<&OsStr>) -> bool {
             return false;
         }
         parts.drain(..2);
+    } else if own_worktree.is_some() && !is_shared_common_entry(&parts) {
+        return false;
     }
     let Some(last) = parts.last().and_then(|s| s.to_str()) else {
         return false;
@@ -58,6 +64,21 @@ pub fn is_relevant_git_path(rel: &Path, own_worktree: Option<&OsStr>) -> bool {
         return false;
     }
     !(IGNORED_FILES.contains(&last) || last.ends_with(".lock"))
+}
+
+/// Whether `parts` (relative to the common dir) is an entry every worktree
+/// shares, rather than one of the main worktree's own files.
+fn is_shared_common_entry(parts: &[&OsStr]) -> bool {
+    const PER_WORKTREE_REFS: &[&str] = &["bisect", "worktree", "rewritten"];
+    match parts {
+        [first, rest @ ..] if *first == "refs" => !rest
+            .first()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| PER_WORKTREE_REFS.contains(&s)),
+        [only] => *only == "packed-refs" || *only == "config",
+        [first, _, ..] => *first == "info",
+        [] => false,
+    }
 }
 
 /// The linked worktree name of `git_dir`: its basename when it sits in
@@ -240,6 +261,43 @@ mod tests {
         assert!(!rel_in("x", "worktrees/other/index"));
         assert!(!rel_in("x", "worktrees/other/HEAD"));
         assert!(rel_in("x", "worktrees/x/HEAD"));
+    }
+
+    #[test]
+    fn linked_worktree_ignores_the_main_worktrees_own_files() {
+        for p in ["index", "HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "info"] {
+            assert!(!rel_in("x", p), "{p}");
+        }
+        for p in [
+            "refs/bisect/bad",
+            "refs/worktree/a",
+            "refs/rewritten/b",
+            "refs/heads/main.lock",
+        ] {
+            assert!(!rel_in("x", p), "{p}");
+        }
+        for p in [
+            "refs/heads/main",
+            "refs/tags/v1",
+            "packed-refs",
+            "config",
+            "info/exclude",
+            "worktrees/x/index",
+            "worktrees/x/HEAD",
+        ] {
+            assert!(rel_in("x", p), "{p}");
+        }
+        assert!(!rel_in("x", "worktrees/y/index"));
+        // The main worktree still counts its own files.
+        for p in [
+            "index",
+            "HEAD",
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "refs/bisect/bad",
+        ] {
+            assert!(rel(p), "{p}");
+        }
     }
 
     #[test]
