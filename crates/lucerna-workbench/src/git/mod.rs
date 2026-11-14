@@ -4,23 +4,24 @@
 //! buffers. The UI thread never runs `git`, reads a file or diffs: it only
 //! swaps in finished results.
 
+mod hunks;
+mod job;
 mod locate;
 pub mod rollup;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::StreamExt as _;
 use gpui::{App, Context, EventEmitter, Task};
-use lucerna_git::{
-    FileStatus, GitBinary, GitDirWatcher, GitError, Hunk, MAX_DIFF_BYTES, Repo, diff_hunks,
-    load_base_text,
-};
+use lucerna_git::{FileStatus, GitBinary, GitDirWatcher, GitError, Hunk, Repo};
 use lucerna_text::BufferSnapshot;
 
 use crate::AppState;
+use hunks::{Diffed, HunkWork};
+use job::{Job, JobInput, JobOutput, run_job};
 use rollup::Rollup;
 
 /// Hunks are recomputed this long after the last `track_buffer` call.
@@ -106,41 +107,6 @@ impl GitSettings {
     }
 }
 
-enum Job {
-    Rescan,
-    RefreshPaths(BTreeSet<Arc<Path>>),
-}
-
-impl Job {
-    /// The job that replaces `self` (queued) when `next` arrives.
-    fn merge(self, next: Job) -> Job {
-        match (self, next) {
-            (Job::RefreshPaths(mut a), Job::RefreshPaths(b)) => {
-                a.extend(b);
-                Job::RefreshPaths(a)
-            }
-            _ => Job::Rescan,
-        }
-    }
-}
-
-struct JobInput {
-    repo: Repo,
-    job: Job,
-    diff_base: DiffBase,
-    status_limit: usize,
-    prev: GitSnapshot,
-    /// Tracked buffers whose base text a `Rescan` reloads.
-    buffers: Vec<(Arc<Path>, u64, BufferSnapshot)>,
-}
-
-struct JobOutput {
-    snapshot: GitSnapshot,
-    too_many: bool,
-    /// Per tracked buffer (as of the job's start): version, base text, hunks.
-    reloaded: Vec<(Arc<Path>, u64, Diffed)>,
-}
-
 /// The diff base of one tracked file. `text` is `None` when the file gets
 /// no hunks (untracked, binary or too large).
 struct Base {
@@ -154,56 +120,6 @@ struct Tracked {
     version: u64,
     /// The debounce timer and diff for this buffer; replacing it cancels both.
     task: Option<Task<()>>,
-}
-
-/// Inputs for diffing one tracked buffer off the UI thread.
-struct HunkWork {
-    repo: Repo,
-    path: Arc<Path>,
-    snapshot: BufferSnapshot,
-    rev: Option<String>,
-    /// The base text, when cached for `rev`.
-    cached: Option<Option<Arc<str>>>,
-    diff_base: DiffBase,
-}
-
-impl HunkWork {
-    /// Blocking: loads the base text when needed, then diffs.
-    fn run(self) -> Diffed {
-        let text = match (self.cached, &self.rev) {
-            (Some(text), _) => Ok(text),
-            (None, Some(rev)) => load_base(&self.repo, rev, &self.path, self.diff_base),
-            (None, None) => Ok(None),
-        };
-        match text {
-            Ok(text) => Diffed {
-                hunks: diff_buffer(text.as_ref(), &self.snapshot),
-                rev: self.rev,
-                text,
-                failed: false,
-            },
-            Err(err) => {
-                let path = self.path.display();
-                tracing::warn!(%err, %path, "could not read the git base");
-                Diffed {
-                    rev: self.rev,
-                    text: None,
-                    hunks: None,
-                    failed: true,
-                }
-            }
-        }
-    }
-}
-
-/// One buffer diffed against the base text of `rev`.
-struct Diffed {
-    rev: Option<String>,
-    text: Option<Arc<str>>,
-    hunks: Option<Arc<[Hunk]>>,
-    /// Reading the base failed: the hunks shown stay, nothing is cached, and
-    /// the next `track_buffer` or rescan retries.
-    failed: bool,
 }
 
 enum Setup {
@@ -738,115 +654,6 @@ fn discover(git: Option<GitBinary>, setting: Option<PathBuf>, root: &Path) -> Se
         Err(GitError::NotFound) => Setup::NoGit,
         found => Setup::Found(found),
     }
-}
-
-/// Statuses against the diff base; `paths` limits them (workspace-relative).
-fn status_entries(
-    repo: &Repo,
-    diff_base: DiffBase,
-    base_rev: Option<&str>,
-    paths: Option<&[PathBuf]>,
-) -> Result<Vec<(Arc<Path>, FileStatus)>, GitError> {
-    let entries = match (diff_base, base_rev) {
-        (DiffBase::DefaultBranch, Some(rev)) => repo.changed_since_in(rev, paths)?,
-        _ => repo.status(paths)?,
-    };
-    Ok(entries
-        .into_iter()
-        .map(|(p, s)| (Arc::from(p), s))
-        .collect())
-}
-
-/// One status job. Blocking: runs on the background executor.
-fn run_job(input: JobInput) -> Result<JobOutput, GitError> {
-    let JobInput {
-        repo,
-        job,
-        diff_base,
-        status_limit,
-        prev,
-        buffers,
-    } = input;
-    let (statuses, head, base_rev, default_branch) = match &job {
-        Job::Rescan => {
-            let head = repo.head_oid()?;
-            let default_branch = repo.default_branch()?;
-            let base_rev = match (diff_base, &default_branch, &head) {
-                (DiffBase::DefaultBranch, Some(branch), Some(_)) => {
-                    repo.merge_base(branch)?.or_else(|| head.clone())
-                }
-                _ => head.clone(),
-            };
-            let entries = status_entries(&repo, diff_base, base_rev.as_deref(), None)?;
-            let statuses: HashMap<_, _> = entries.into_iter().collect();
-            (statuses, head, base_rev, default_branch)
-        }
-        Job::RefreshPaths(paths) => {
-            let list: Vec<PathBuf> = paths.iter().map(|p| p.to_path_buf()).collect();
-            let fresh = status_entries(&repo, diff_base, prev.base_rev.as_deref(), Some(&list))?;
-            let mut statuses = (*prev.statuses).clone();
-            statuses.retain(|k, _| !paths.iter().any(|p| k.starts_with(p)));
-            statuses.extend(fresh);
-            (statuses, prev.head, prev.base_rev, prev.default_branch)
-        }
-    };
-    let entries: Vec<(Arc<Path>, FileStatus)> =
-        statuses.iter().map(|(p, s)| (p.clone(), *s)).collect();
-    let rollup = Rollup::build(&entries);
-    let reloaded = buffers
-        .into_iter()
-        .map(|(path, version, snapshot)| {
-            let work = HunkWork {
-                repo: repo.clone(),
-                path: path.clone(),
-                snapshot,
-                rev: base_rev.clone(),
-                cached: None,
-                diff_base,
-            };
-            (path, version, work.run())
-        })
-        .collect();
-    Ok(JobOutput {
-        too_many: statuses.len() > status_limit,
-        snapshot: GitSnapshot {
-            generation: 0,
-            statuses: Arc::new(statuses),
-            rollup: Arc::new(rollup),
-            head,
-            base_rev,
-            default_branch,
-        },
-        reloaded,
-    })
-}
-
-/// The base text of `path` at `rev`. `None` (no hunks) for files missing
-/// there, binary or over 8 MB, except that with `"defaultBranch"` a file
-/// created and committed on the branch is compared with empty text. An
-/// error is not "no base": the caller keeps what it shows.
-fn load_base(
-    repo: &Repo,
-    rev: &str,
-    path: &Path,
-    diff_base: DiffBase,
-) -> Result<Option<Arc<str>>, GitError> {
-    Ok(match repo.read_blob(rev, path)? {
-        Some(bytes) => load_base_text(&bytes).map(Arc::from),
-        None if diff_base == DiffBase::DefaultBranch && repo.read_blob("HEAD", path)?.is_some() => {
-            Some(Arc::from(""))
-        }
-        None => None,
-    })
-}
-
-fn diff_buffer(base: Option<&Arc<str>>, snapshot: &BufferSnapshot) -> Option<Arc<[Hunk]>> {
-    let base = base?;
-    let text = snapshot.text();
-    if text.len() as u64 > MAX_DIFF_BYTES {
-        return None;
-    }
-    Some(diff_hunks(base, &text).into())
 }
 
 #[cfg(test)]

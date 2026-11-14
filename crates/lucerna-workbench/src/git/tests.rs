@@ -3,6 +3,7 @@
 
 use super::*;
 use gpui::{AppContext as _, TestAppContext};
+use lucerna_git::diff_hunks;
 use std::process::Command;
 
 #[cfg(windows)]
