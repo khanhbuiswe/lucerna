@@ -141,3 +141,63 @@ fn fallback_ansi_matches_vscode_reference() {
         }
     }
 }
+
+/// Lucerna Dark and Light carry their own terminal palette (GitHub Primer
+/// ANSI, editor background and text, the accent cursor): the terminal reads
+/// those keys rather than the fallbacks.
+#[test]
+fn lucerna_themes_define_their_terminal_colors() {
+    let reg = ThemeRegistry::builtin();
+    let cases = [
+        (
+            lucerna_theme::DEFAULT_DARK_THEME,
+            Appearance::Dark,
+            [
+                "#484f58", "#ff7b72", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf",
+                "#b1bac4", "#7c848f", "#ffa198", "#56d364", "#e3b341", "#79c0ff", "#d2a8ff",
+                "#56d4dd", "#ffffff",
+            ],
+            ["#191919", "#d3d7de", "#efefef", "#9c9c9c"],
+            "#4f8cff40",
+        ),
+        (
+            lucerna_theme::DEFAULT_LIGHT_THEME,
+            Appearance::Light,
+            [
+                "#24292f", "#cf222e", "#116329", "#4d2d00", "#0969da", "#8250df", "#1b7c83",
+                "#6e7781", "#57606a", "#a40e26", "#1a7f37", "#633c01", "#0070ea", "#8a4ef7",
+                "#2a7e92", "#8c959f",
+            ],
+            ["#ffffff", "#2b303b", "#191919", "#666666"],
+            "#4f8cff33",
+        ),
+    ];
+    for (name, appearance, ansi, [bg, fg, bright, dim], selection) in cases {
+        let t = reg
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} is built in"));
+        assert_eq!(t.appearance, appearance, "{name}");
+        let c = &t.terminal;
+        for (i, h) in ansi.iter().enumerate() {
+            assert_eq!(c.ansi[i], hex(h), "{name} ansi[{i}]");
+        }
+        for i in 0..8 {
+            let expected = hex(&format!("{}b3", ansi[i]));
+            assert_eq!(c.dim[i], expected, "{name} dim[{i}]");
+        }
+        assert_eq!(c.background, hex(bg), "{name} background");
+        assert_eq!(c.foreground, hex(fg), "{name} foreground");
+        assert_eq!(c.bright_foreground, hex(bright), "{name} bright_foreground");
+        assert_eq!(c.dim_foreground, hex(dim), "{name} dim_foreground");
+        assert_eq!(c.cursor, hex("#4f8cff"), "{name} cursor");
+        assert_eq!(c.selection, hex(selection), "{name} selection");
+        // None of it is the fallback palette.
+        let fallback = lucerna_theme::TerminalColors::fallback(appearance);
+        for i in 0..16 {
+            assert_ne!(
+                c.ansi[i], fallback.ansi[i],
+                "{name} ansi[{i}] is a fallback"
+            );
+        }
+    }
+}
