@@ -113,6 +113,26 @@ pub struct UiColors {
     pub element_hover: Rgba,
     /// `scrollbar.thumb.background`: the thin overlay scrollbar's thumb.
     pub scrollbar_thumb: Rgba,
+    /// `version_control.added`: a line added since the diff base (gutter).
+    pub vc_added: Rgba,
+    /// `version_control.modified`: a line changed since the diff base (gutter).
+    pub vc_modified: Rgba,
+    /// `version_control.deleted`: lines removed since the diff base (gutter).
+    pub vc_deleted: Rgba,
+    /// `created`: an added or untracked file in the Explorer.
+    pub status_created: Rgba,
+    /// `modified`: a modified file in the Explorer.
+    pub status_modified: Rgba,
+    /// `deleted`: a deleted file.
+    pub status_deleted: Rgba,
+    /// `conflict`: a file with merge conflicts.
+    pub status_conflict: Rgba,
+    /// `ignored`: a git-ignored file.
+    pub status_ignored: Rgba,
+    /// `editor.diff_hunk.added.background`: added lines in a diff view.
+    pub diff_added_background: Rgba,
+    /// `editor.diff_hunk.deleted.background`: removed lines in a diff view.
+    pub diff_deleted_background: Rgba,
 }
 
 const fn gray(v: u8, a: u8) -> Rgba {
@@ -222,6 +242,16 @@ impl UiColors {
             editor_highlighted_line_background: pick("#2f343eff", "#ebebecff"),
             element_hover: hover,
             scrollbar_thumb,
+            vc_added: pick("#487E02", "#48985D"),
+            vc_modified: pick("#1B81A8", "#2090D3"),
+            vc_deleted: pick("#F14C4C", "#E51400"),
+            status_created: pick("#73C991", "#007100"),
+            status_modified: pick("#E2C08D", "#895503"),
+            status_deleted: pick("#C74E39", "#AD0707"),
+            status_conflict: pick("#E4676B", "#AD0707"),
+            status_ignored: pick("#8C8C8C", "#8E8E90"),
+            diff_added_background: pick("#9BB95533", "#9BB95533"),
+            diff_deleted_background: pick("#FF000033", "#FF000033"),
         }
     }
 }

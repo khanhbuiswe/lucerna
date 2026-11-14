@@ -3448,6 +3448,7 @@ dependencies = [
  "lsp-types",
  "lucerna-editor",
  "lucerna-extension",
+ "lucerna-git",
  "lucerna-lsp",
  "lucerna-project",
  "lucerna-settings",

@@ -16,6 +16,7 @@ jsonc-parser.workspace = true
 lsp-types.workspace = true
 lucerna-editor.workspace = true
 lucerna-extension.workspace = true
+lucerna-git.workspace = true
 lucerna-lsp.workspace = true
 lucerna-project.workspace = true
 lucerna-settings.workspace = true
