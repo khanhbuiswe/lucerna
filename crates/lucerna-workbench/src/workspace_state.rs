@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::editor_groups::{
-    EXTENSIONS_TAB_STATE, GIT_CHANGES_TAB_STATE, GroupsState, SEARCH_TAB_STATE, prefixed,
-    split_preview_state,
+    BRANCH_CHANGES_TAB_STATE, EXTENSIONS_TAB_STATE, GIT_CHANGES_TAB_STATE, GroupsState,
+    SEARCH_TAB_STATE, prefixed, split_preview_state,
 };
 
 /// The file format version; a file of any other version is set aside.
@@ -38,6 +38,11 @@ pub struct WorkspaceState {
     /// before they were saved.
     #[serde(default)]
     pub search: SearchState,
+    /// The ref the Changes since tab compares with, as the user picked it;
+    /// `None` (also in files from before it was saved) follows the default
+    /// branch.
+    #[serde(default)]
+    pub branch_diff_base: Option<String>,
 }
 
 /// What the Search tab keeps across restarts: the query, its toggles, the
@@ -57,10 +62,10 @@ impl WorkspaceState {
     /// Makes every path absolute (relative ones, from files written before
     /// tab paths were normalised, are joined onto `root`), then drops tabs
     /// (and scroll rows) of files that no longer exist, keeping each
-    /// group's active tab where it still exists. The Extensions, Search
-    /// and Uncommitted Changes tabs ([`EXTENSIONS_TAB_STATE`],
-    /// [`SEARCH_TAB_STATE`], [`GIT_CHANGES_TAB_STATE`]) are kept as they
-    /// are. A Markdown preview tab (saved as a prefix and a path) keeps
+    /// group's active tab where it still exists. The Extensions, Search,
+    /// Uncommitted Changes and Changes since tabs ([`EXTENSIONS_TAB_STATE`],
+    /// [`SEARCH_TAB_STATE`], [`GIT_CHANGES_TAB_STATE`],
+    /// [`BRANCH_CHANGES_TAB_STATE`]) are kept as they are. A Markdown preview tab (saved as a prefix and a path) keeps
     /// its prefix and is kept while the file it shows exists. Empty groups
     /// are left for [`crate::EditorGroups::restore`] to normalise.
     pub fn without_missing_files(mut self, root: &Path) -> Self {
@@ -69,6 +74,7 @@ impl WorkspaceState {
                 EXTENSIONS_TAB_STATE,
                 SEARCH_TAB_STATE,
                 GIT_CHANGES_TAB_STATE,
+                BRANCH_CHANGES_TAB_STATE,
             ]
             .iter()
             .any(|s| path == Path::new(s))

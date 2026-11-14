@@ -980,7 +980,8 @@ impl CodeView {
         self.passive
     }
 
-    pub(crate) fn set_passive(&mut self, passive: bool) {
+    #[doc(hidden)]
+    pub fn set_passive(&mut self, passive: bool) {
         self.passive = passive;
     }
 

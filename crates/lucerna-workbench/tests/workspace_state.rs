@@ -13,9 +13,10 @@ use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, EXTENSIONS_TAB_STATE, GroupState, GroupsState, MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
-    MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode, SEARCH_TAB_STATE, SearchState, SidebarView, TabItem,
-    Workbench, WorkspaceState, load_state, save_state, state_path,
+    AppState, BRANCH_CHANGES_TAB_STATE, EXTENSIONS_TAB_STATE, GroupState, GroupsState,
+    MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
+    SEARCH_TAB_STATE, SearchState, SidebarView, TabItem, Workbench, WorkspaceState, load_state,
+    save_state, state_path,
 };
 use tempfile::TempDir;
 
@@ -44,6 +45,7 @@ fn sample(paths: &[&Path]) -> WorkspaceState {
         scroll: paths.iter().map(|p| (p.to_path_buf(), 7)).collect(),
         group_widths: vec![0.25, 0.75],
         search: Default::default(),
+        branch_diff_base: None,
     }
 }
 
@@ -606,6 +608,42 @@ fn old_state_without_search_field_loads() {
     fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
     let state = load_state(&path).expect("a file without `search` still loads");
     assert_eq!(state.search, SearchState::default());
+}
+
+#[test]
+fn old_state_without_branch_diff_base_loads() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("state.json");
+    let mut state = sample(&[Path::new("/a"), Path::new("/b")]);
+    state.branch_diff_base = Some("origin/main".into());
+    save_state(&path, &state).unwrap();
+    assert_eq!(
+        load_state(&path),
+        Some(state.clone()),
+        "the ref round-trips"
+    );
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let object = value.as_object_mut().unwrap();
+    assert!(object.remove("branch_diff_base").is_some());
+    fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+    let state = load_state(&path).expect("a file without `branch_diff_base` still loads");
+    assert_eq!(state.branch_diff_base, None);
+}
+
+#[test]
+fn branch_changes_tab_survives_without_missing_files() {
+    let dir = TempDir::new().unwrap();
+    let a = dir.path().join("a");
+    fs::write(&a, "x").unwrap();
+    let mut state = sample(&[&a, &a]);
+    state.groups.groups[1].tabs = vec![(PathBuf::from(BRANCH_CHANGES_TAB_STATE), true)];
+    let state = state.without_missing_files(dir.path());
+    assert_eq!(
+        state.groups.groups[1].tabs,
+        vec![(PathBuf::from(BRANCH_CHANGES_TAB_STATE), true)],
+        "the Changes since tab is not a file"
+    );
 }
 
 /// A lone file keeps its own state, keyed by the file: not shared with its

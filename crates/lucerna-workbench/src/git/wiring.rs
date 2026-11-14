@@ -10,6 +10,7 @@ use lucerna_project::WorktreeEvent;
 use super::GitStore;
 use crate::diff_view::DiffView;
 use crate::documents::{DocumentEvent, Documents};
+use crate::editor_groups::branch_changes_title;
 use crate::{CommandRegistry, EditorGroups, OpenMode, TabItem, Workbench};
 
 /// The status message of `git.openChange` with no file to compare.
@@ -18,11 +19,19 @@ const NO_FILE_MESSAGE: &str = "No file to compare";
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register("git.refresh", "Git: Refresh", |wb, _, _, cx| {
         wb.git().update(cx, |git, cx| git.rescan(cx));
+        for view in wb.diff_views(cx) {
+            view.update(cx, |v, cx| v.git_refreshed(cx));
+        }
     });
     commands.register(
         "git.viewChanges",
         "Git: Open Changes (Uncommitted)",
         |wb, _, window, cx| wb.open_git_changes(window, cx),
+    );
+    commands.register(
+        "lucerna.git.viewBranchChanges",
+        "Git: Open Changes Since Branch",
+        |wb, _, window, cx| wb.open_branch_changes(window, cx),
     );
     commands.register(
         "git.openChange",
@@ -149,16 +158,51 @@ impl Workbench {
     }
 
     /// The views of every drawn diff tab.
-    fn diff_views(&self, cx: &App) -> Vec<Entity<DiffView>> {
+    pub(crate) fn diff_views(&self, cx: &App) -> Vec<Entity<DiffView>> {
         let groups = self.editor_groups().read(cx);
         groups
             .model()
             .groups()
             .iter()
             .flat_map(|g| &g.tabs)
-            .filter(|t| matches!(t.item, TabItem::GitChanges | TabItem::FileDiff(_)))
+            .filter(|t| {
+                matches!(
+                    t.item,
+                    TabItem::GitChanges | TabItem::FileDiff(_) | TabItem::BranchChanges
+                )
+            })
             .filter_map(|t| groups.body_of(t.id)?.downcast::<DiffView>().ok())
             .collect()
+    }
+
+    /// Focuses the Changes since tab wherever it is, or opens it in the
+    /// active group; its list takes the focus once drawn.
+    pub fn open_branch_changes(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor_groups(cx, EditorGroups::open_branch_changes);
+        cx.notify();
+    }
+
+    /// The view of the Changes since tab, while the tab is open and has
+    /// been drawn.
+    pub fn branch_changes_view(&self, cx: &App) -> Option<Entity<DiffView>> {
+        let groups = self.editor_groups().read(cx);
+        let tab = groups.model().branch_changes_tab()?;
+        groups.body_of(tab)?.downcast::<DiffView>().ok()
+    }
+
+    /// The ref the Changes since tab compares with: the picked one, else
+    /// the default branch; `None` when there is neither.
+    pub(crate) fn branch_diff_ref(&self, cx: &App) -> Option<String> {
+        let chosen = self.branch_base.read(cx).0.clone();
+        chosen.or_else(|| self.git.read(cx).snapshot().default_branch)
+    }
+
+    /// Names the Changes since tab's ref in the tab bar.
+    pub(crate) fn update_branch_title(&mut self, cx: &mut Context<Self>) {
+        let title = branch_changes_title(self.branch_diff_ref(cx).as_deref());
+        self.editor_groups().update(cx, |groups, cx| {
+            groups.set_branch_title(Some(title.into()), cx)
+        });
     }
 
     /// The view of the Uncommitted Changes tab, while the tab is open and

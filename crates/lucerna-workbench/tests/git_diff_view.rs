@@ -18,8 +18,8 @@ use lucerna_text::Point;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, DiffKind, DiffView, GIT_CHANGES_TAB_STATE, OpenMode, SearchLineRef as LineRef,
-    TabItem, Workbench,
+    AppState, BRANCH_CHANGES_TAB_STATE, DiffKind, DiffView, GIT_CHANGES_TAB_STATE, OpenMode,
+    SearchLineRef as LineRef, TabItem, Workbench, WorkspaceStateStore,
 };
 use support::git::{git, isolated_git, repo};
 use tempfile::TempDir;
@@ -820,4 +820,329 @@ fn keystroke_diffs_the_file_once(cx: &mut TestAppContext) {
     let after = cx.update(|_, cx| view.read(cx).loads_started());
     assert_eq!(after - before, 1, "one background diff per keystroke");
     assert!(rows(&view, 0, cx).contains(&(8, LineKind::Added, "Zl8".into())));
+}
+
+// ---- Task 5: the Changes since ‹branch› tab (spec §4.7) -------------------
+
+/// Runs `lucerna.git.viewBranchChanges` and returns the tab's view.
+fn open_branch(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<DiffView> {
+    run(wb, "lucerna.git.viewBranchChanges", cx);
+    cx.update(|_, cx| wb.read(cx).branch_changes_view(cx))
+        .expect("the Changes since tab is open")
+}
+
+fn title(view: &Entity<DiffView>, cx: &mut VisualTestContext) -> String {
+    cx.update(|_, cx| view.read(cx).title())
+}
+
+/// The title the tab bar shows for the Changes since tab.
+fn tab_bar_title(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<String> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .branch_title()
+            .map(|t| t.to_string())
+    })
+}
+
+fn picker_rows(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<Vec<String>> {
+    cx.update(|_, cx| wb.read(cx).branch_picker().map(|p| p.read(cx).row_texts()))
+}
+
+fn click(selector: &'static str, cx: &mut VisualTestContext) {
+    draw(cx);
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"));
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    settle(cx);
+}
+
+/// Opens the branch picker with `button` and picks the row `query` finds.
+fn pick_branch(
+    wb: &Entity<Workbench>,
+    button: &'static str,
+    query: &str,
+    cx: &mut VisualTestContext,
+) {
+    click(button, cx);
+    assert!(picker_rows(wb, cx).is_some(), "the picker is shown");
+    cx.simulate_input(query);
+    settle(cx);
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    assert!(picker_rows(wb, cx).is_none(), "picking closes the picker");
+}
+
+/// On `feature`: `a.txt` changed and committed, `b.txt` changed only in
+/// the worktree.
+fn feature_branch(dir: &Path) {
+    git(dir, &["checkout", "-q", "-b", "feature"]);
+    write(dir, "a.txt", "one\nTWO\nthree\n");
+    git(dir, &["commit", "-q", "-am", "work"]);
+    write(dir, "b.txt", "B\n");
+}
+
+#[gpui::test]
+fn branch_tab_includes_commits_and_uncommitted(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(feature_branch, cx);
+    let view = open_branch(&wb, cx);
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt"]);
+    assert_eq!(message(&view, cx), None);
+    assert_eq!(
+        rows(&view, 0, cx),
+        [
+            (1, LineKind::Normal, "one".into()),
+            (2, LineKind::Deleted { base_line: 2 }, "two".into()),
+            (2, LineKind::Added, "TWO".into()),
+            (3, LineKind::Normal, "three".into()),
+        ],
+        "the committed change, against the merge base"
+    );
+    assert!(cx.debug_bounds("git-diff-branch").is_some());
+    assert_eq!(
+        tab_items(&wb, cx),
+        [(TabItem::BranchChanges, true)],
+        "one pinned tab"
+    );
+}
+
+#[gpui::test]
+fn branch_tab_title_uses_ref(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            git(dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+            git(
+                dir,
+                &[
+                    "symbolic-ref",
+                    "refs/remotes/origin/HEAD",
+                    "refs/remotes/origin/main",
+                ],
+            );
+            feature_branch(dir);
+        },
+        cx,
+    );
+    let view = open_branch(&wb, cx);
+    assert_eq!(title(&view, cx), "Changes since origin/main");
+    assert_eq!(
+        tab_bar_title(&wb, cx).as_deref(),
+        Some("Changes since origin/main")
+    );
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt"]);
+}
+
+/// A trusted workbench on `dir` that saves its state under `data`.
+fn trusted_with_data<'a>(
+    dir: &Path,
+    data: &Path,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+    let (root, data) = (dir.to_path_buf(), data.to_path_buf());
+    let (wb, cx) =
+        cx.add_window_view(|window, cx| Workbench::with_data_dir(root, data, window, cx));
+    wb.update(cx, |wb, cx| {
+        wb.git().update(cx, |git, cx| {
+            git.use_git_for_test(isolated_git());
+            git.set_trusted(true, cx);
+        });
+    });
+    settle(cx);
+    (wb, cx)
+}
+
+#[gpui::test]
+fn picker_changes_base_and_saves(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_t, dir) = repo();
+    // `release` stays at the first commit; `main` moves on (b.txt), and
+    // `feature` branches from there (a.txt).
+    git(&dir, &["branch", "release"]);
+    write(&dir, "b.txt", "B\n");
+    git(&dir, &["commit", "-q", "-am", "main"]);
+    git(&dir, &["checkout", "-q", "-b", "feature"]);
+    write(&dir, "a.txt", "one\nTWO\nthree\n");
+    git(&dir, &["commit", "-q", "-am", "work"]);
+    let data = TempDir::new().unwrap();
+    {
+        let (wb, cx) = trusted_with_data(&dir, data.path(), cx);
+        let view = open_branch(&wb, cx);
+        assert_eq!(title(&view, cx), "Changes since main");
+        assert_eq!(file_paths(&view, cx), ["a.txt"]);
+        click("git-diff-branch", cx);
+        let rows = picker_rows(&wb, cx).expect("the picker is shown");
+        for branch in ["feature", "main", "release"] {
+            assert!(rows.iter().any(|r| r == branch), "{branch} in {rows:?}");
+        }
+        cx.simulate_keystrokes("escape");
+        settle(cx);
+        assert!(picker_rows(&wb, cx).is_none(), "Escape closes the picker");
+
+        pick_branch(&wb, "git-diff-branch", "release", cx);
+        assert_eq!(title(&view, cx), "Changes since release");
+        assert_eq!(
+            tab_bar_title(&wb, cx).as_deref(),
+            Some("Changes since release")
+        );
+        assert_eq!(
+            file_paths(&view, cx),
+            ["a.txt", "b.txt"],
+            "reloaded in place"
+        );
+        pick_branch(&wb, "git-diff-branch", "main", cx);
+        assert_eq!(title(&view, cx), "Changes since main");
+        assert_eq!(file_paths(&view, cx), ["a.txt"]);
+        wb.update(cx, |wb, cx| wb.save_workspace_state(cx));
+        let saved = WorkspaceStateStore::new(data.path().to_path_buf(), dir.clone())
+            .load()
+            .expect("the state is saved");
+        assert_eq!(saved.branch_diff_base.as_deref(), Some("main"));
+        assert!(
+            saved.groups.groups[0]
+                .tabs
+                .contains(&(PathBuf::from(BRANCH_CHANGES_TAB_STATE), true))
+        );
+    }
+    // Reopened: the tab comes back with the chosen ref.
+    let (wb, cx) = trusted_with_data(&dir, data.path(), cx);
+    let view = cx
+        .update(|_, cx| wb.read(cx).branch_changes_view(cx))
+        .expect("the tab is restored and drawn");
+    assert_eq!(title(&view, cx), "Changes since main");
+    assert_eq!(file_paths(&view, cx), ["a.txt"]);
+}
+
+#[gpui::test]
+fn missing_base_ref_shows_empty_state(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(
+        |dir| {
+            git(dir, &["branch", "old"]);
+            feature_branch(dir);
+        },
+        cx,
+    );
+    let view = open_branch(&wb, cx);
+    pick_branch(&wb, "git-diff-branch", "old", cx);
+    assert_eq!(title(&view, cx), "Changes since old");
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt"]);
+    git(&dir, &["branch", "-D", "old"]);
+    wb.update(cx, |wb, cx| wb.git().update(cx, |g, cx| g.rescan(cx)));
+    settle(cx);
+    assert_eq!(
+        message(&view, cx).as_deref(),
+        Some("No default branch found")
+    );
+    assert!(cx.debug_bounds("git-diff-choose-branch").is_some());
+    assert_eq!(file_paths(&view, cx), Vec::<String>::new());
+}
+
+#[gpui::test]
+fn no_default_branch_offers_picker(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            git(dir, &["branch", "-m", "main", "trunk"]);
+        },
+        cx,
+    );
+    let view = open_branch(&wb, cx);
+    assert_eq!(
+        message(&view, cx).as_deref(),
+        Some("No default branch found")
+    );
+    assert_eq!(title(&view, cx), "Changes since default branch");
+    assert!(cx.debug_bounds("git-diff-toolbar").is_none());
+    click("git-diff-choose-branch", cx);
+    assert_eq!(picker_rows(&wb, cx), Some(vec!["trunk".to_string()]));
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    assert_eq!(title(&view, cx), "Changes since trunk");
+    assert_eq!(
+        message(&view, cx).as_deref(),
+        Some("No changes since trunk")
+    );
+    assert!(
+        cx.debug_bounds("git-diff-choose-branch").is_some(),
+        "the ref can be changed with nothing listed"
+    );
+}
+
+#[gpui::test]
+fn agent_commit_keeps_changes_listed(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(
+        |dir| {
+            git(dir, &["checkout", "-q", "-b", "feature"]);
+            write(dir, "a.txt", "one\nTWO\nthree\n");
+            write(dir, "c.txt", "c\n");
+        },
+        cx,
+    );
+    let uncommitted = open_changes(&wb, cx);
+    assert_eq!(file_paths(&uncommitted, cx), ["a.txt", "c.txt"]);
+    let branch = open_branch(&wb, cx);
+    assert_eq!(file_paths(&branch, cx), ["a.txt", "c.txt"]);
+    // The agent commits everything; the watcher rescans.
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "agent"]);
+    wb.update(cx, |wb, cx| wb.git().update(cx, |g, cx| g.rescan(cx)));
+    settle(cx);
+    assert_eq!(file_paths(&uncommitted, cx), Vec::<String>::new());
+    assert_eq!(
+        message(&uncommitted, cx).as_deref(),
+        Some("No uncommitted changes")
+    );
+    assert_eq!(file_paths(&branch, cx), ["a.txt", "c.txt"]);
+    assert_eq!(message(&branch, cx), None);
+}
+
+#[gpui::test]
+fn new_file_joins_branch_tab_by_path(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(feature_branch, cx);
+    let view = open_branch(&wb, cx);
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt"]);
+    let lists = cx.update(|_, cx| view.read(cx).listings_run());
+    write(&dir, "d.txt", "d\n");
+    write(&dir, "b.txt", "b\n");
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(
+            &WorktreeEvent::Changed(vec![
+                Change {
+                    path: Arc::from(dir.join("d.txt")),
+                    kind: ChangeKind::Added,
+                },
+                Change {
+                    path: Arc::from(dir.join("b.txt")),
+                    kind: ChangeKind::Modified,
+                },
+            ]),
+            cx,
+        )
+    });
+    settle(cx);
+    assert_eq!(
+        file_paths(&view, cx),
+        ["a.txt", "d.txt"],
+        "d.txt is new, b.txt is back to its base"
+    );
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).listings_run()),
+        lists,
+        "no full listing: only the changed paths were asked"
+    );
+}
+
+#[gpui::test]
+fn refresh_button_resolves_the_ref_again(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(feature_branch, cx);
+    let view = open_branch(&wb, cx);
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt"]);
+    // `main` catches up with the feature commit (a merge upstream).
+    git(&dir, &["update-ref", "refs/heads/main", "HEAD"]);
+    click("git-diff-refresh", cx);
+    assert_eq!(
+        file_paths(&view, cx),
+        ["b.txt"],
+        "only the uncommitted change is left"
+    );
 }

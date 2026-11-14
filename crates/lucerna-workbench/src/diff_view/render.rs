@@ -4,6 +4,7 @@ use std::path::Path;
 
 use gpui::{
     Context, IntoElement, KeyDownEvent, ParentElement, Render, Styled, Window, div, prelude::*, px,
+    svg,
 };
 
 use super::{DiffKind, DiffView};
@@ -12,8 +13,8 @@ use crate::git::GitState;
 use crate::icons::{CHEVRONS_DOWN_UP, CHEVRONS_UP_DOWN, REFRESH_CW};
 use crate::layout::color;
 use crate::ui::{
-    CHEVRON_LEFT_ICON, CHEVRON_RIGHT_ICON, GRID, UI_FONT_SIZE_SMALL, bar_icon_button,
-    bar_separator, centered_message, search_bar_row, search_toolbar, text_button,
+    CHEVRON_DOWN_ICON, CHEVRON_LEFT_ICON, CHEVRON_RIGHT_ICON, GRID, UI_FONT_SIZE_SMALL,
+    bar_icon_button, bar_separator, centered_message, search_bar_row, search_toolbar, text_button,
 };
 
 impl DiffView {
@@ -58,8 +59,28 @@ impl DiffView {
             .child(bar)
     }
 
-    /// The toolbar: `{n} files  +A −R` on the left; previous / next
-    /// change, collapse all and refresh on the right.
+    /// The branch tab's ref button: the ref and a chevron; it opens the
+    /// branch picker.
+    fn render_branch_button(&self, base: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = cx.global::<AppState>().theme.ui.clone();
+        text_button("git-diff-branch", base, cx)
+            .gap(px(GRID))
+            .max_w(px(60. * GRID))
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(
+                svg()
+                    .data(CHEVRON_DOWN_ICON)
+                    .flex_none()
+                    .size(px(3. * GRID))
+                    .text_color(color(ui.icon_muted)),
+            )
+            .on_click(cx.listener(|view, _, window, cx| view.choose_branch(window, cx)))
+    }
+
+    /// The toolbar: `{n} files  +A −R` on the left; the ref button (branch
+    /// tab), previous / next change, collapse all and refresh on the right.
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<AppState>().theme.ui.clone();
         let (files, added, removed) = self.totals();
@@ -105,8 +126,15 @@ impl DiffView {
                             .child(format!("\u{2212}{removed}")),
                     ),
             );
+        let branch = match (&self.kind, &self.shown_ref) {
+            (DiffKind::Branch { .. }, Some(base)) => {
+                Some(self.render_branch_button(base.clone(), cx))
+            }
+            _ => None,
+        };
         let bar = search_bar_row()
             .child(summary)
+            .children(branch)
             .child(
                 bar_icon_button("git-diff-previous", CHEVRON_LEFT_ICON, false, cx)
                     .on_click(cx.listener(|view, _, _, cx| view.step_change(false, cx))),
@@ -130,11 +158,19 @@ impl DiffView {
     }
 
     /// The centered line shown instead of the list, with the "Manage
-    /// Workspace Trust" button in Restricted Mode.
+    /// Workspace Trust" button in Restricted Mode, or "Choose Branch" when
+    /// a branch tab has no ref or nothing to show.
     fn render_message(&self, text: String, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = cx.global::<AppState>().theme.ui.clone();
-        let restricted =
-            self.kind == DiffKind::Uncommitted && self.git.read(cx).state() == GitState::Restricted;
+        let state = self.git.read(cx).state();
+        let restricted = !matches!(self.kind, DiffKind::File(_)) && state == GitState::Restricted;
+        let choose = (matches!(self.kind, DiffKind::Branch { .. })
+            && self.listed
+            && matches!(state, GitState::Ready | GitState::TooManyChanges))
+        .then(|| {
+            text_button("git-diff-choose-branch", "Choose Branch", cx)
+                .on_click(cx.listener(|view, _, window, cx| view.choose_branch(window, cx)))
+        });
         let trust = restricted.then(|| {
             text_button("git-diff-trust", "Manage Workspace Trust", cx).on_click(cx.listener(
                 |view, _, window, cx| {
@@ -159,6 +195,7 @@ impl DiffView {
                     .flex_none(),
             )
             .children(trust)
+            .children(choose)
     }
 }
 

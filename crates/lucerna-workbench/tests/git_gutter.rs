@@ -423,3 +423,21 @@ fn gutter_action_none_does_nothing(cx: &mut TestAppContext) {
         "no diff tab opens"
     );
 }
+
+/// A passive view (a picker or References preview) has no one to open the
+/// diff: its bars take no clicks, so the click falls through to the view.
+#[gpui::test]
+fn passive_view_bars_take_no_clicks(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(None, two_changes, cx);
+    let view = open(&wb, "c.txt", cx);
+    assert_eq!(bars(&view, cx), 2);
+    view.update(cx, |v, _| v.set_passive(true));
+    click_bar(&view, 1, cx);
+    assert!(
+        matches!(
+            active_item(&wb, cx),
+            Some(lucerna_workbench::TabItem::File(_))
+        ),
+        "no diff tab opens"
+    );
+}

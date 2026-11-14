@@ -15,9 +15,11 @@
 //! against `git.diffBase`, its status and base taken from the
 //! [`GitStore`] snapshot (no `git status` of its own).
 //!
-//! [`DiffKind::Branch`] is a placeholder for the tab plan 5.2 adds next:
-//! it shows its empty state and runs nothing.
+//! The Changes since ‹branch› tab ([`DiffKind::Branch`]) shows the
+//! worktree against the merge base with a ref; see [`branch`].
 
+mod branch;
+pub mod branch_picker;
 pub(crate) mod build;
 mod jobs;
 mod load;
@@ -41,6 +43,8 @@ use crate::excerpt_list::{ExcerptList, ExcerptListEvent};
 use crate::git::{GitState, GitStore, GitStoreEvent, workspace_relative};
 use crate::tasks::guarded;
 use crate::{DocumentEvent, Documents, OpenMode, Workbench};
+pub(crate) use branch::BranchBase;
+use branch::BranchState;
 use load::Side;
 
 /// Files loading or diffing at once, as in Zed.
@@ -57,8 +61,9 @@ const RELOAD_DEBOUNCE: Duration = Duration::from_millis(50);
 pub enum DiffKind {
     /// The working tree (and open buffers) against HEAD.
     Uncommitted,
-    /// The working tree against the merge base with `base_ref` (the
-    /// default branch when `None`). Not built yet: shows its empty state.
+    /// The working tree (and open buffers) against the merge base of HEAD
+    /// with `base_ref`, the ref the user picked (the default branch when
+    /// `None`).
     Branch { base_ref: Option<String> },
     /// One whole file (workspace-relative) against `git.diffBase`.
     File(Arc<Path>),
@@ -95,9 +100,15 @@ pub struct DiffView {
     /// Focus of the list: arrows and Enter work here.
     list_focus: FocusHandle,
     files: HashMap<Arc<Path>, Entry>,
-    /// The base revision when the list was last computed: HEAD, or
-    /// `git.diffBase`'s for a single file.
+    /// The base revision when the list was last computed: HEAD,
+    /// `git.diffBase`'s for a single file, or the merge base with the ref.
     rev: Option<String>,
+    /// The ref a branch tab compares with, as git names it: the picked one
+    /// or the default branch. `None` while there is none.
+    shown_ref: Option<String>,
+    branch: BranchState,
+    /// File lists applied so far.
+    listings_run: usize,
     /// Whether a file list has arrived since the repository was found.
     listed: bool,
     /// The running `git status`; another one is due when `relist` is set.
@@ -135,26 +146,29 @@ impl DiffView {
             cx.new(|cx| ExcerptList::new(root, "git-diff", cx))
         };
         let list_focus = list.read(cx).focus_handle().clone();
-        let mut subscriptions = vec![cx.subscribe(&list, |view, _, event, cx| match event {
-            // Like Search and References: a preview.
-            ExcerptListEvent::Activate(r) => view.open_line(*r, OpenMode::Preview, cx),
-        })];
-        let live = matches!(kind, DiffKind::Uncommitted | DiffKind::File(_));
-        if live {
-            subscriptions.push(cx.subscribe(&git, |view, _, event, cx| match event {
+        let subscriptions = vec![
+            cx.subscribe(&list, |view, _, event, cx| match event {
+                // Like Search and References: a preview.
+                ExcerptListEvent::Activate(r) => view.open_line(*r, OpenMode::Preview, cx),
+            }),
+            cx.subscribe(&git, |view, _, event, cx| match event {
                 GitStoreEvent::SnapshotChanged => view.refresh_list(cx),
                 GitStoreEvent::StateChanged => view.state_changed(cx),
                 GitStoreEvent::HunksChanged(path) => view.schedule_reload(path.clone(), cx),
-            }));
-            subscriptions.push(cx.subscribe(&documents, |view, _, event, cx| match event {
+            }),
+            cx.subscribe(&documents, |view, _, event, cx| match event {
                 DocumentEvent::Edited { path, .. } | DocumentEvent::Closed { path } => {
                     if let Some(rel) = workspace_relative(&view.root, path) {
                         view.schedule_reload(rel, cx);
                     }
                 }
                 _ => {}
-            }));
-        }
+            }),
+        ];
+        let shown_ref = match &kind {
+            DiffKind::Branch { base_ref } => base_ref.clone(),
+            _ => None,
+        };
         let mut view = DiffView {
             kind,
             git,
@@ -166,6 +180,9 @@ impl DiffView {
             list_focus,
             files: HashMap::new(),
             rev: None,
+            shown_ref,
+            branch: BranchState::default(),
+            listings_run: 0,
             listed: false,
             status_task: None,
             relist: false,
@@ -180,9 +197,7 @@ impl DiffView {
             pending_row: None,
             _subscriptions: subscriptions,
         };
-        if live {
-            view.refresh_list(cx);
-        }
+        view.refresh_list(cx);
         view
     }
 
@@ -195,10 +210,9 @@ impl DiffView {
     pub fn title(&self) -> String {
         match &self.kind {
             DiffKind::Uncommitted => crate::editor_groups::GIT_CHANGES_TAB_TITLE.to_string(),
-            DiffKind::Branch {
-                base_ref: Some(base),
-            } => format!("Changes since {base}"),
-            DiffKind::Branch { base_ref: None } => "Changes since default branch".to_string(),
+            DiffKind::Branch { .. } => {
+                crate::editor_groups::branch_changes_title(self.shown_ref.as_deref())
+            }
             DiffKind::File(path) => crate::editor_groups::file_diff_title(path),
         }
     }
@@ -216,6 +230,13 @@ impl DiffView {
     #[doc(hidden)]
     pub fn peak_jobs(&self) -> usize {
         self.peak_jobs
+    }
+
+    /// File lists (`git status`, or the changes since a merge base)
+    /// applied so far.
+    #[doc(hidden)]
+    pub fn listings_run(&self) -> usize {
+        self.listings_run
     }
 
     /// File loads (each one a background diff) started so far.
@@ -236,23 +257,23 @@ impl DiffView {
     /// The line shown instead of the list: why there is nothing to show,
     /// or `None` when files are listed.
     pub fn message(&self, cx: &App) -> Option<String> {
-        let text = match &self.kind {
-            DiffKind::Uncommitted | DiffKind::File(_) => match self.git.read(cx).state() {
-                GitState::Off => "Git is off",
-                GitState::Locating => LOADING_NOTE,
-                GitState::NoGit => "Git is not available",
-                GitState::NoRepo => "Not a Git repository",
-                GitState::Restricted => "Git is off in Restricted Mode",
-                GitState::Ready | GitState::TooManyChanges if !self.listed => LOADING_NOTE,
-                GitState::Ready | GitState::TooManyChanges if self.files.is_empty() => {
-                    "No uncommitted changes"
+        let text = match self.git.read(cx).state() {
+            GitState::Off => "Git is off",
+            GitState::Locating => LOADING_NOTE,
+            GitState::NoGit => "Git is not available",
+            GitState::NoRepo => "Not a Git repository",
+            GitState::Restricted => "Git is off in Restricted Mode",
+            GitState::Ready | GitState::TooManyChanges if !self.listed => LOADING_NOTE,
+            GitState::Ready | GitState::TooManyChanges if self.branch.unresolved => {
+                "No default branch found"
+            }
+            GitState::Ready | GitState::TooManyChanges if !self.files.is_empty() => return None,
+            GitState::Ready | GitState::TooManyChanges => match &self.shown_ref {
+                Some(base) if matches!(self.kind, DiffKind::Branch { .. }) => {
+                    return Some(format!("No changes since {base}"));
                 }
-                GitState::Ready | GitState::TooManyChanges => return None,
+                _ => "No uncommitted changes",
             },
-            DiffKind::Branch {
-                base_ref: Some(base),
-            } => return Some(format!("No changes since {base}")),
-            DiffKind::Branch { base_ref: None } => "No default branch found",
         };
         Some(text.to_string())
     }
@@ -309,18 +330,43 @@ impl DiffView {
     }
 
     /// Reloads the listed files among `paths` (workspace-relative), which
-    /// changed on disk.
+    /// changed on disk; a branch tab also asks git whether they changed
+    /// since the merge base.
     pub(crate) fn paths_changed(&mut self, paths: &[Arc<Path>], cx: &mut Context<Self>) {
         for path in paths {
             self.reload(path, cx);
         }
+        if matches!(self.kind, DiffKind::Branch { .. }) && !paths.is_empty() {
+            self.branch_paths_changed(paths.to_vec(), cx);
+        }
     }
 
-    /// The refresh button: rescans the repository, then reloads every file.
-    fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// `git.refresh` ran: the next list reloads every file, and a branch
+    /// tab resolves its ref and lists its files again now.
+    pub(crate) fn git_refreshed(&mut self, cx: &mut Context<Self>) {
         self.reload_all = true;
+        if matches!(self.kind, DiffKind::Branch { .. }) {
+            self.refresh_list(cx);
+        }
+    }
+
+    /// The refresh button: runs `git.refresh`, which rescans the repository
+    /// and reloads every file of every diff tab.
+    fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let workbench = self.workbench.clone();
+        // The command reaches this view too: run it once this update ends.
+        window.defer(cx, move |window, cx| {
+            workbench
+                .update(cx, |wb, cx| wb.run_command("git.refresh", None, window, cx))
+                .ok();
+        });
+    }
+
+    /// Shows the branch picker (the toolbar's ref button and "Choose
+    /// Branch").
+    fn choose_branch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(workbench) = self.workbench.upgrade() {
-            workbench.update(cx, |wb, cx| wb.run_command("git.refresh", None, window, cx));
+            workbench.update(cx, |wb, cx| wb.show_branch_picker(window, cx));
         }
     }
 
@@ -345,6 +391,7 @@ impl DiffView {
         self.relist = false;
         self.listed = false;
         self.rev = None;
+        self.branch = BranchState::default();
         self.pending_reloads.clear();
         self.reload_timer = None;
         self.list.update(cx, |list, cx| list.clear(cx));
@@ -362,6 +409,9 @@ impl DiffView {
             cx.notify();
             return;
         };
+        if matches!(self.kind, DiffKind::Branch { .. }) {
+            return self.refresh_branch_list(repo, cx);
+        }
         if let DiffKind::File(path) = &self.kind {
             // The store already knows the file's status and base.
             let snapshot = self.git.read(cx).snapshot();
@@ -399,6 +449,7 @@ impl DiffView {
         self.status_task = None;
         match listed {
             Ok((rev, entries)) => {
+                self.listings_run += 1;
                 let reload_all = std::mem::take(&mut self.reload_all) || rev != self.rev;
                 self.rev = rev;
                 self.listed = true;

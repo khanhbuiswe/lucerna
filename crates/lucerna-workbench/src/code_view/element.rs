@@ -752,7 +752,9 @@ impl CodeView {
         } else {
             (Vec::new(), px(0.))
         };
-        let hunk_hitboxes = if self.config.diff_gutter_click {
+        // A passive view (a picker's preview) has no one to open the diff:
+        // its bars take no clicks and show no hand.
+        let hunk_hitboxes = if self.config.diff_gutter_click && !self.passive {
             hunk_bars
                 .iter()
                 .filter_map(|bar| {

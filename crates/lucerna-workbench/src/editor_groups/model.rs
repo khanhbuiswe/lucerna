@@ -53,6 +53,10 @@ pub enum TabItem {
     /// (`git.openChange`, spec §4.8). At most one per path in all groups;
     /// never a preview, never saved.
     FileDiff(Arc<Path>),
+    /// The Changes since ‹branch› tab (`lucerna.git.viewBranchChanges`,
+    /// spec §4.7). At most one in all groups; never a preview; saved, with
+    /// its ref in the workspace state.
+    BranchChanges,
 }
 
 impl TabItem {
@@ -116,6 +120,10 @@ pub const GIT_CHANGES_TAB_STATE: &str = "lucerna:git-changes";
 /// The title of the Uncommitted Changes tab.
 pub const GIT_CHANGES_TAB_TITLE: &str = "Uncommitted Changes";
 
+/// How the Changes since ‹branch› tab is saved in [`GroupState::tabs`];
+/// relative, like [`EXTENSIONS_TAB_STATE`].
+pub const BRANCH_CHANGES_TAB_STATE: &str = "lucerna:branch-changes";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tab {
     pub id: TabId,
@@ -145,8 +153,9 @@ impl Tab {
 
     /// The tab bar's label: the file name, "Preview <file name>" for the
     /// dynamic preview, "Extensions", "Search", "<server> Log",
-    /// "References", "Language Servers", "Uncommitted Changes" or
-    /// "<file name> (Changes)".
+    /// "References", "Language Servers", "Uncommitted Changes",
+    /// "<file name> (Changes)" or "Changes since default branch" (the tab
+    /// bar names the ref, see [`branch_changes_title`]).
     pub fn title(&self) -> String {
         match &self.item {
             TabItem::File(path) | TabItem::MarkdownPreview(path) => file_name(path),
@@ -158,8 +167,15 @@ impl Tab {
             TabItem::LspHealth => LSP_HEALTH_TAB_TITLE.to_string(),
             TabItem::GitChanges => GIT_CHANGES_TAB_TITLE.to_string(),
             TabItem::FileDiff(path) => file_diff_title(path),
+            TabItem::BranchChanges => branch_changes_title(None),
         }
     }
+}
+
+/// "Changes since {base}", the title of the Changes since tab; "Changes
+/// since default branch" while no ref is known.
+pub(crate) fn branch_changes_title(base: Option<&str>) -> String {
+    format!("Changes since {}", base.unwrap_or("default branch"))
 }
 
 /// "{file name} (Changes)": the title of the diff tab of `path`.
@@ -366,6 +382,17 @@ impl EditorGroups {
     /// The Uncommitted Changes tab, if open in any group.
     pub fn git_changes_tab(&self) -> Option<TabId> {
         self.find_item(&TabItem::GitChanges)
+    }
+
+    /// Activates the Changes since tab wherever it is, or opens it (pinned)
+    /// at the end of the active group. Returns its tab.
+    pub fn open_branch_changes(&mut self) -> TabId {
+        self.open_singleton(TabItem::BranchChanges)
+    }
+
+    /// The Changes since tab, if open in any group.
+    pub fn branch_changes_tab(&self) -> Option<TabId> {
+        self.find_item(&TabItem::BranchChanges)
     }
 
     /// Activates the diff tab of `path` (workspace-relative) wherever it
@@ -767,6 +794,8 @@ fn saved_item(path: &Path) -> TabItem {
         TabItem::Search
     } else if path == Path::new(GIT_CHANGES_TAB_STATE) {
         TabItem::GitChanges
+    } else if path == Path::new(BRANCH_CHANGES_TAB_STATE) {
+        TabItem::BranchChanges
     } else if let Some((prefix, rest)) = split_preview_state(path) {
         if prefix == MARKDOWN_PREVIEW_STATE_PREFIX {
             TabItem::MarkdownPreview(Arc::from(rest))
@@ -798,7 +827,8 @@ pub(crate) fn split_preview_state(path: &Path) -> Option<(&'static str, &Path)> 
 }
 
 /// How a tab is saved: its path, [`EXTENSIONS_TAB_STATE`],
-/// [`SEARCH_TAB_STATE`], [`GIT_CHANGES_TAB_STATE`] or a preview prefix and the path; `None` for a server log, the References tab or
+/// [`SEARCH_TAB_STATE`], [`GIT_CHANGES_TAB_STATE`],
+/// [`BRANCH_CHANGES_TAB_STATE`] or a preview prefix and the path; `None` for a server log, the References tab or
 /// the Health tab, which are not saved.
 fn saved_path(item: &TabItem) -> Option<PathBuf> {
     match item {
@@ -806,6 +836,7 @@ fn saved_path(item: &TabItem) -> Option<PathBuf> {
         TabItem::Extensions => Some(PathBuf::from(EXTENSIONS_TAB_STATE)),
         TabItem::Search => Some(PathBuf::from(SEARCH_TAB_STATE)),
         TabItem::GitChanges => Some(PathBuf::from(GIT_CHANGES_TAB_STATE)),
+        TabItem::BranchChanges => Some(PathBuf::from(BRANCH_CHANGES_TAB_STATE)),
         TabItem::MarkdownPreview(path) => Some(prefixed(MARKDOWN_PREVIEW_STATE_PREFIX, path)),
         TabItem::MarkdownPreviewDynamic(path) => {
             Some(prefixed(MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, path))
