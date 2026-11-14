@@ -21,8 +21,14 @@ fn builtin_has_lucerna_dark_and_light() {
     let names = reg.names();
     assert!(names.contains(&"Lucerna Dark".to_string()));
     assert!(names.contains(&"Lucerna Light".to_string()));
-    assert_eq!(reg.get("Lucerna Dark").unwrap().appearance, Appearance::Dark);
-    assert_eq!(reg.get("Lucerna Light").unwrap().appearance, Appearance::Light);
+    assert_eq!(
+        reg.get("Lucerna Dark").unwrap().appearance,
+        Appearance::Dark
+    );
+    assert_eq!(
+        reg.get("Lucerna Light").unwrap().appearance,
+        Appearance::Light
+    );
 }
 
 #[test]
@@ -33,7 +39,10 @@ fn ui_colors_present_for_lucerna_dark() {
         Rgba::parse_hex("#191919ff").unwrap()
     );
     assert_eq!(t.ui.text, Rgba::parse_hex("#efefefff").unwrap());
-    assert_eq!(t.ui.editor_line_number, Rgba::parse_hex("#9c9c9cff").unwrap());
+    assert_eq!(
+        t.ui.editor_line_number,
+        Rgba::parse_hex("#9c9c9cff").unwrap()
+    );
     assert_eq!(t.ui.selection, Rgba::parse_hex("#4f8cff40").unwrap());
     assert_eq!(t.ui.cursor, Rgba::parse_hex("#4f8cffff").unwrap());
     assert_eq!(

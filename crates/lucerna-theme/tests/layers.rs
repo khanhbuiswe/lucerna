@@ -22,7 +22,11 @@ fn editor_bg(reg: &ThemeRegistry, name: &str) -> lucerna_theme::Rgba {
 fn user_beats_extension_beats_builtin() {
     let ext_dir = tempfile::tempdir().unwrap();
     let user_dir = tempfile::tempdir().unwrap();
-    let ext = write(ext_dir.path(), "ext.json", &family("Lucerna Dark", "#ff0000ff"));
+    let ext = write(
+        ext_dir.path(),
+        "ext.json",
+        &family("Lucerna Dark", "#ff0000ff"),
+    );
 
     let (reg, errors) = ThemeRegistry::build(&[("ext".to_string(), ext.clone())], None);
     assert!(errors.is_empty());

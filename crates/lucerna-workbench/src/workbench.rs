@@ -293,6 +293,7 @@ impl Workbench {
             cx.has_global::<AppState>(),
             "set the AppState global before creating the Workbench"
         );
+        crate::config_files::follow_system_appearance(window, cx);
         let focus = cx.focus_handle();
         let editor_focus = cx.focus_handle();
         window.focus(&editor_focus, cx);

@@ -485,7 +485,8 @@ fn theme_install_offers_set_theme_toast(cx: &mut TestAppContext) {
     settle(cx);
     let settings = std::fs::read_to_string(env.user.path().join("settings.json")).unwrap();
     assert!(
-        settings.contains(r#""workbench.colorTheme": "X Dark""#),
+        // The test platform's system mode is light, and the theme follows it.
+        settings.contains(r#""workbench.preferredLightColorTheme": "X Dark""#),
         "{settings}"
     );
     assert_eq!(

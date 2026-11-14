@@ -15,7 +15,7 @@ use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
     AppState, ConfigPaths, ConfigState, ConfigWatcher, OpenMode, ThemePicker, Workbench,
-    reload_config, status_message, watch_config,
+    reload_config, set_system_appearance, status_message, watch_config,
 };
 use tempfile::TempDir;
 
@@ -176,7 +176,7 @@ fn user_settings_change_applies(cx: &mut TestAppContext) {
 
     write(
         &dirs.settings(),
-        "// mine\n{ \"editor.fontSize\": 20, \"workbench.colorTheme\": \"Lucerna Light\" }\n",
+        "// mine\n{ \"editor.fontSize\": 20, \"window.autoDetectColorScheme\": false, \"workbench.colorTheme\": \"Lucerna Dark\" }\n",
         cx,
     );
 
@@ -186,7 +186,7 @@ fn user_settings_change_applies(cx: &mut TestAppContext) {
         20.,
         "the open view takes the new font size"
     );
-    assert_eq!(theme_name(cx), "Lucerna Light");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
     assert!(
         cx.update(|_, cx| cx.global::<AppState>().theme_generation) > generation,
         "a theme switch bumps the generation the shape caches key on"
@@ -206,7 +206,11 @@ fn user_settings_change_applies(cx: &mut TestAppContext) {
 #[gpui::test]
 fn user_theme_file_applies(cx: &mut TestAppContext) {
     let dirs = Dirs::new();
-    std::fs::write(dirs.settings(), "{ \"workbench.colorTheme\": \"Custom\" }").unwrap();
+    std::fs::write(
+        dirs.settings(),
+        "{ \"window.autoDetectColorScheme\": false, \"workbench.colorTheme\": \"Custom\" }",
+    )
+    .unwrap();
     init(&dirs, cx);
     let (_wb, cx) = open(dirs.root.path(), cx);
     assert_eq!(theme_name(cx), "Lucerna Dark", "no such theme yet");
@@ -413,7 +417,7 @@ fn open_settings_creates_missing_file(cx: &mut TestAppContext) {
 #[gpui::test]
 fn theme_picker_writes_setting_preserving_comments(cx: &mut TestAppContext) {
     let dirs = Dirs::new();
-    let original = "// my settings\n{\n  // bigger\n  \"editor.fontSize\": 14 // px\n}\n";
+    let original = "// my settings\n{\n  \"window.autoDetectColorScheme\": false,\n  // bigger\n  \"editor.fontSize\": 14 // px\n}\n";
     std::fs::write(dirs.settings(), original).unwrap();
     init(&dirs, cx);
     let (wb, cx) = open(dirs.root.path(), cx);
@@ -433,7 +437,7 @@ fn theme_picker_writes_setting_preserving_comments(cx: &mut TestAppContext) {
     assert_eq!(theme_name(cx), "Lucerna Light");
     assert_eq!(
         std::fs::read_to_string(dirs.settings()).unwrap(),
-        "// my settings\n{\n  // bigger\n  \"editor.fontSize\": 14, // px\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}\n"
+        "// my settings\n{\n  \"window.autoDetectColorScheme\": false,\n  // bigger\n  \"editor.fontSize\": 14, // px\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}\n"
     );
 
     // Picking again replaces the value in place.
@@ -449,7 +453,7 @@ fn theme_picker_writes_setting_preserving_comments(cx: &mut TestAppContext) {
     assert_eq!(theme_name(cx), "Lucerna Dark");
     assert_eq!(
         std::fs::read_to_string(dirs.settings()).unwrap(),
-        "// my settings\n{\n  // bigger\n  \"editor.fontSize\": 14, // px\n  \"workbench.colorTheme\": \"Lucerna Dark\"\n}\n"
+        "// my settings\n{\n  \"window.autoDetectColorScheme\": false,\n  // bigger\n  \"editor.fontSize\": 14, // px\n  \"workbench.colorTheme\": \"Lucerna Dark\"\n}\n"
     );
     let leftovers: Vec<_> = std::fs::read_dir(dirs.user.path())
         .unwrap()
@@ -461,19 +465,29 @@ fn theme_picker_writes_setting_preserving_comments(cx: &mut TestAppContext) {
 #[gpui::test]
 fn theme_picker_escape_reverts(cx: &mut TestAppContext) {
     let dirs = Dirs::new();
+    let settings = "{ \"window.autoDetectColorScheme\": false }";
+    std::fs::write(dirs.settings(), settings).unwrap();
     init(&dirs, cx);
     let (wb, cx) = open(dirs.root.path(), cx);
     let generation = cx.update(|_, cx| cx.global::<AppState>().theme_generation);
 
     keys("cmd-k cmd-t", cx);
     keys("down", cx);
-    assert_eq!(theme_name(cx), "Lucerna Light", "moving the selection previews");
+    assert_eq!(
+        theme_name(cx),
+        "Lucerna Light",
+        "moving the selection previews"
+    );
     keys("escape", cx);
 
     assert!(theme_picker(&wb, cx).is_none());
     assert_eq!(theme_name(cx), "Lucerna Dark");
     assert!(cx.update(|_, cx| cx.global::<AppState>().theme_generation) > generation);
-    assert!(!dirs.settings().exists(), "Escape writes nothing");
+    assert_eq!(
+        std::fs::read_to_string(dirs.settings()).unwrap(),
+        settings,
+        "Escape writes nothing"
+    );
 }
 
 /// The real watcher: a write to `settings.json` arrives as one debounced
@@ -524,6 +538,11 @@ fn config_paths_layout() {
 #[gpui::test]
 fn reload_mid_preview_keeps_preview(cx: &mut TestAppContext) {
     let dirs = Dirs::new();
+    std::fs::write(
+        dirs.settings(),
+        "{ \"window.autoDetectColorScheme\": false }",
+    )
+    .unwrap();
     init(&dirs, cx);
     let (wb, cx) = open(dirs.root.path(), cx);
 
@@ -531,15 +550,23 @@ fn reload_mid_preview_keeps_preview(cx: &mut TestAppContext) {
     keys("down", cx);
     assert_eq!(theme_name(cx), "Lucerna Light");
     // Unrelated reloads arrive while the preview is shown.
-    write(&dirs.settings(), "{ \"editor.fontSize\": 15 }", cx);
+    write(
+        &dirs.settings(),
+        "{ \"window.autoDetectColorScheme\": false, \"editor.fontSize\": 15 }",
+        cx,
+    );
     write(&dirs.keybindings(), "[]", cx);
-    assert_eq!(theme_name(cx), "Lucerna Light", "the preview survives reloads");
+    assert_eq!(
+        theme_name(cx),
+        "Lucerna Light",
+        "the preview survives reloads"
+    );
     assert!(theme_picker(&wb, cx).is_some());
 
     // Escape goes back to the configured theme, as last loaded.
     write(
         &dirs.settings(),
-        "{ \"workbench.colorTheme\": \"Lucerna Light\" }",
+        "{ \"window.autoDetectColorScheme\": false, \"workbench.colorTheme\": \"Lucerna Light\" }",
         cx,
     );
     keys("up", cx);
@@ -549,7 +576,7 @@ fn reload_mid_preview_keeps_preview(cx: &mut TestAppContext) {
     // Closed: reloads apply the configured theme again.
     write(
         &dirs.settings(),
-        "{ \"workbench.colorTheme\": \"Lucerna Dark\" }",
+        "{ \"window.autoDetectColorScheme\": false, \"workbench.colorTheme\": \"Lucerna Dark\" }",
         cx,
     );
     assert_eq!(theme_name(cx), "Lucerna Dark");
@@ -562,13 +589,15 @@ fn failed_theme_save_keeps_picker_open(cx: &mut TestAppContext) {
     std::fs::write(dirs.settings(), broken).unwrap();
     init(&dirs, cx);
     let (wb, cx) = open(dirs.root.path(), cx);
+    // Broken settings leave the defaults: the light system mode's theme.
+    assert_eq!(theme_name(cx), "Lucerna Light");
     keys("cmd-k cmd-t", cx);
     keys("down", cx);
-    assert_eq!(theme_name(cx), "Lucerna Light");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
     keys("enter", cx);
 
     assert!(theme_picker(&wb, cx).is_some(), "the picker stays open");
-    assert_eq!(theme_name(cx), "Lucerna Dark", "the preview is reverted");
+    assert_eq!(theme_name(cx), "Lucerna Light", "the preview is reverted");
     assert_eq!(std::fs::read_to_string(dirs.settings()).unwrap(), broken);
     let errors = error_texts(cx);
     assert!(
@@ -623,7 +652,7 @@ fn user_only_loads_user_settings_without_a_workspace_layer(cx: &mut TestAppConte
     let user = tempfile::tempdir().unwrap();
     std::fs::write(
         user.path().join("settings.json"),
-        "{\"workbench.colorTheme\":\"Lucerna Light\"}",
+        "{\"window.autoDetectColorScheme\":false,\"workbench.colorTheme\":\"Lucerna Light\"}",
     )
     .unwrap();
     init_with(ConfigPaths::user_only_with_user_dir(user.path()), cx);
@@ -661,15 +690,82 @@ fn user_only_reloads_user_settings_and_ignores_workspace_paths(cx: &mut TestAppC
     let settings = user.path().join("settings.json");
     init_with(ConfigPaths::user_only_with_user_dir(user.path()), cx);
     let (_wb, cx) = cx.add_window_view(|_, _| gpui::Empty);
-    assert_eq!(theme_name(cx), "Lucerna Dark");
+    assert_eq!(theme_name(cx), "Lucerna Light");
 
     let stray = user.path().join("x/.lucerna/settings.json");
     cx.update(|_, cx| reload_config(&[stray], cx));
     draw(cx);
-    assert_eq!(theme_name(cx), "Lucerna Dark");
-    assert!(error_texts(cx).is_empty());
-
-    write(&settings, "{\"workbench.colorTheme\":\"Lucerna Light\"}", cx);
     assert_eq!(theme_name(cx), "Lucerna Light");
     assert!(error_texts(cx).is_empty());
+
+    write(&settings, "{\"window.autoDetectColorScheme\":false}", cx);
+    assert_eq!(theme_name(cx), "Lucerna Dark");
+    assert!(error_texts(cx).is_empty());
+}
+
+/// Tells the workbench the system color mode changed, as the window
+/// appearance observer does (GPUI's test window cannot be driven from here).
+fn system_mode(appearance: lucerna_theme::Appearance, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| set_system_appearance(appearance, cx));
+    draw(cx);
+}
+
+#[gpui::test]
+fn system_appearance_change_switches_theme(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, cx);
+    let (_wb, cx) = open(dirs.root.path(), cx);
+    // GPUI's test platform reports a light system.
+    assert_eq!(theme_name(cx), "Lucerna Light");
+    system_mode(lucerna_theme::Appearance::Dark, cx);
+    assert_eq!(theme_name(cx), "Lucerna Dark");
+    system_mode(lucerna_theme::Appearance::Light, cx);
+    assert_eq!(theme_name(cx), "Lucerna Light");
+}
+
+#[gpui::test]
+fn turning_auto_detect_off_uses_color_theme(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, cx);
+    let (_wb, cx) = open(dirs.root.path(), cx);
+    assert_eq!(theme_name(cx), "Lucerna Light");
+    write(
+        &dirs.settings(),
+        r#"{ "window.autoDetectColorScheme": false, "workbench.colorTheme": "Lucerna Dark" }"#,
+        cx,
+    );
+    assert_eq!(theme_name(cx), "Lucerna Dark");
+    system_mode(lucerna_theme::Appearance::Light, cx);
+    assert_eq!(
+        theme_name(cx),
+        "Lucerna Dark",
+        "the system mode no longer matters"
+    );
+}
+
+#[gpui::test]
+fn stale_one_dark_setting_falls_back(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    std::fs::write(
+        dirs.settings(),
+        r#"{ "window.autoDetectColorScheme": false, "workbench.colorTheme": "One Dark" }"#,
+    )
+    .unwrap();
+    init(&dirs, cx);
+    let (_wb, cx) = open(dirs.root.path(), cx);
+    assert_eq!(theme_name(cx), "Lucerna Dark");
+    assert!(error_texts(cx).is_empty(), "{:?}", error_texts(cx));
+}
+
+#[gpui::test]
+fn unknown_preferred_theme_falls_back(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    std::fs::write(
+        dirs.settings(),
+        r#"{ "workbench.preferredLightColorTheme": "Nope" }"#,
+    )
+    .unwrap();
+    init(&dirs, cx);
+    let (_wb, cx) = open(dirs.root.path(), cx);
+    assert_eq!(theme_name(cx), "Lucerna Dark");
 }

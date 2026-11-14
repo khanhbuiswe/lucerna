@@ -5,7 +5,9 @@ mod registry;
 mod schema;
 
 pub use icon_theme::{IconSource, IconTheme, IconThemeRegistry, ResolvedIcons, lucide_icon_theme};
-pub use registry::{DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, ThemeFile, ThemeRegistry, ThemeSource};
+pub use registry::{
+    DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, ThemeFile, ThemeRegistry, ThemeSource,
+};
 
 use std::collections::HashMap;
 

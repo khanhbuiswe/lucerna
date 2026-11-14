@@ -37,7 +37,15 @@
   "lucerna.externalChanges.autoMerge": true,
   "search.exclude": { "**/node_modules": true, "**/target": true },
   "search.searchEditor.defaultNumberOfContextLines": 1,
+  // If enabled, automatically select a color theme based on the system color mode:
+  // `workbench.preferredDarkColorTheme` when it is dark, `workbench.preferredLightColorTheme` when it is light.
+  "window.autoDetectColorScheme": true,
+  // The color theme used when `window.autoDetectColorScheme` is disabled.
   "workbench.colorTheme": "Lucerna Dark",
+  // The color theme used when the system color mode is dark and `window.autoDetectColorScheme` is enabled.
+  "workbench.preferredDarkColorTheme": "Lucerna Dark",
+  // The color theme used when the system color mode is light and `window.autoDetectColorScheme` is enabled.
+  "workbench.preferredLightColorTheme": "Lucerna Light",
   "workbench.iconTheme": "Lucide",
   // Controls which editor is shown at startup, if none are restored from the previous session.
   // "welcomePage" | "welcomePageInEmptyWorkbench": the Welcome screen when Lucerna starts without a folder.

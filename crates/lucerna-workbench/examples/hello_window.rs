@@ -12,7 +12,9 @@ use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::{AppState, Workbench, window_options};
 
 fn main() {
-    let theme_name = std::env::args().nth(1).unwrap_or_else(|| "Lucerna Dark".into());
+    let theme_name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "Lucerna Dark".into());
     let root = std::env::current_dir().expect("current directory");
     application().run(move |cx: &mut App| {
         lucerna_workbench::fonts::register(cx);

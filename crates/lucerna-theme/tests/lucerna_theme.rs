@@ -239,7 +239,10 @@ fn luminance(c: [f64; 3]) -> f64 {
 fn contrast(fg: &str, bg: &str) -> f64 {
     let (f, b) = (rgba(fg), rgba(bg));
     let blend = |i: usize| f[i] * f[3] + b[i] * (1.0 - f[3]);
-    let (lf, lb) = (luminance([blend(0), blend(1), blend(2)]), luminance([b[0], b[1], b[2]]));
+    let (lf, lb) = (
+        luminance([blend(0), blend(1), blend(2)]),
+        luminance([b[0], b[1], b[2]]),
+    );
     (lf.max(lb) + 0.05) / (lf.min(lb) + 0.05)
 }
 
@@ -280,8 +283,14 @@ fn builtin_is_only_lucerna() {
     assert_eq!(reg.names(), vec!["Lucerna Dark", "Lucerna Light"]);
     assert_eq!(DEFAULT_DARK_THEME, "Lucerna Dark");
     assert_eq!(DEFAULT_LIGHT_THEME, "Lucerna Light");
-    assert_eq!(reg.get("Lucerna Dark").unwrap().appearance, Appearance::Dark);
-    assert_eq!(reg.get("Lucerna Light").unwrap().appearance, Appearance::Light);
+    assert_eq!(
+        reg.get("Lucerna Dark").unwrap().appearance,
+        Appearance::Dark
+    );
+    assert_eq!(
+        reg.get("Lucerna Light").unwrap().appearance,
+        Appearance::Light
+    );
     assert_eq!(reg.get_or_default("Lucerna Dark").name, "Lucerna Dark");
 }
 
@@ -311,10 +320,25 @@ fn text_colors_meet_aa_on_editor_background() {
         let mut pairs = keyed(
             &style,
             &[
-                "text", "text.muted", "text.placeholder", "text.accent", "editor.foreground",
-                "editor.line_number", "editor.active_line_number", "error", "warning", "info",
-                "hint", "success", "created", "modified", "deleted", "conflict", "renamed",
-                "ignored", "terminal.foreground",
+                "text",
+                "text.muted",
+                "text.placeholder",
+                "text.accent",
+                "editor.foreground",
+                "editor.line_number",
+                "editor.active_line_number",
+                "error",
+                "warning",
+                "info",
+                "hint",
+                "success",
+                "created",
+                "modified",
+                "deleted",
+                "conflict",
+                "renamed",
+                "ignored",
+                "terminal.foreground",
             ],
         );
         pairs.extend(syntax_colors(&style));
@@ -323,7 +347,9 @@ fn text_colors_meet_aa_on_editor_background() {
         } else {
             &["white", "bright_white"]
         };
-        for color in ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] {
+        for color in [
+            "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+        ] {
             for key in [color.to_string(), format!("bright_{color}")] {
                 if !skip.contains(&key.as_str()) {
                     let k = format!("terminal.ansi.{key}");
@@ -341,7 +367,16 @@ fn list_text_meets_aa_on_selected_row() {
     for (name, style) in themes() {
         let pairs = keyed(
             &style,
-            &["text", "text.muted", "created", "modified", "deleted", "conflict", "renamed", "ignored"],
+            &[
+                "text",
+                "text.muted",
+                "created",
+                "modified",
+                "deleted",
+                "conflict",
+                "renamed",
+                "ignored",
+            ],
         );
         let bad = failures(&pairs, get(&style, "element.selected"), 4.5);
         assert!(bad.is_empty(), "{name}: {bad:#?}");
@@ -385,7 +420,8 @@ fn non_text_meets_3_to_1() {
 fn spec_palette_values() {
     let all = themes();
     let (dark, light) = (&all[0].1, &all[1].1);
-    let syn = |s: &Map<String, Value>, k: &str| s["syntax"][k]["color"].as_str().unwrap().to_string();
+    let syn =
+        |s: &Map<String, Value>, k: &str| s["syntax"][k]["color"].as_str().unwrap().to_string();
     assert_eq!(get(dark, "editor.background"), "#191919ff");
     assert_eq!(syn(dark, "keyword"), "#cc7bf4ff");
     assert_eq!(syn(dark, "function"), "#70b8ffff");

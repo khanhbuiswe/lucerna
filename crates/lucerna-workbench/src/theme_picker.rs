@@ -19,8 +19,9 @@ use lucerna_settings::{Layer, SettingsError, SettingsStore};
 use lucerna_theme::{ResolvedIcons, Theme};
 
 use crate::config_files::{
-    ConfigFile, ConfigState, USER_SETTINGS_TEMPLATE, apply_configured_theme, record_error,
-    reload_config, set_icon_preview, set_theme_preview,
+    ConfigFile, ConfigState, USER_SETTINGS_TEMPLATE, apply_configured_theme,
+    color_theme_setting_key, record_error, reload_config, set_icon_preview, set_theme_preview,
+    system_appearance,
 };
 use crate::extensions::service::resolve_icons;
 use crate::quick_open::picker::{
@@ -351,7 +352,7 @@ pub(crate) fn set_theme_setting(name: &str, icons: bool, cx: &mut App) -> Result
     let key = if icons {
         ICON_THEME_KEY
     } else {
-        COLOR_THEME_KEY
+        color_theme_key(cx)
     };
     save_setting(key, name, cx)?;
     preview(name, icons, cx);
@@ -362,6 +363,12 @@ pub(crate) fn set_theme_setting(name: &str, icons: bool, cx: &mut App) -> Result
         reload_config(&[path], cx);
     }
     Ok(())
+}
+
+/// The setting a picked color theme is written to: the preferred theme
+/// for the system mode while the theme follows it, as in VS Code.
+fn color_theme_key(cx: &App) -> &'static str {
+    color_theme_setting_key(&cx.global::<AppState>().settings, system_appearance(cx))
 }
 
 /// Makes the named theme (colors or icons) active without saving it.
@@ -548,7 +555,9 @@ mod tests {
     #[test]
     fn replaces_an_existing_value_in_place() {
         assert_eq!(
-            set("{\n  // theme\n  \"workbench.colorTheme\": \"Lucerna Dark\", /* x */\n  \"b\": 2\n}"),
+            set(
+                "{\n  // theme\n  \"workbench.colorTheme\": \"Lucerna Dark\", /* x */\n  \"b\": 2\n}"
+            ),
             "{\n  // theme\n  \"workbench.colorTheme\": \"Lucerna Light\", /* x */\n  \"b\": 2\n}"
         );
         // Only top-level keys count.
