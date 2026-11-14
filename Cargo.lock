@@ -3320,6 +3320,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucerna-git"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "lucerna-lsp"
 version = "0.1.0"
 dependencies = [
