@@ -77,7 +77,8 @@ def cell(values, unit: str, single: bool = False) -> str:
 
 def config_label(cfg: dict) -> str:
     lsp = "rust-analyzer" if cfg.get("lsp") else "Không LSP"
-    return f"{lsp} · {'lạnh' if cfg.get('cold') else 'ấm'}"
+    # --cold purges only before startup launches: the other metrics are warm.
+    return f"{lsp} · {'lạnh (chỉ khởi động)' if cfg.get('cold') else 'ấm'}"
 
 
 def config_slug(cfg: dict) -> str:
@@ -107,6 +108,18 @@ def _meta_block(meta: dict) -> list[str]:
     ra = meta.get("rust_analyzer")
     if ra:
         lines.append(f"- rust-analyzer: {ra.get('version') or ra.get('path') or DASH}")
+    lb = meta.get("lucerna_binary")
+    if lb:
+        lines.append(f"- Binary Lucerna: {lb.get('version') or DASH}, "
+                     f"dựng lúc {lb.get('mtime') or DASH}")
+    d = meta.get("display")
+    if d:
+        lines.append(f"- Màn hình chính: {d.get('width')}×{d.get('height')} pt, "
+                     f"scale {d.get('scale')}, {d.get('refresh_hz')} Hz")
+    wf = meta.get("window_frame")
+    if wf:
+        lines.append(f"- Cửa sổ: {wf.get('w')}×{wf.get('h')} pt (mọi phép đo trừ khởi động; "
+                     "khởi động dùng kích thước mặc định của từng editor)")
     return lines
 
 

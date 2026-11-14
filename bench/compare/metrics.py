@@ -8,6 +8,12 @@ recording garbage.
 
 Frame times come from `bench-helper` (README "Helper"); its clock is
 CLOCK_UPTIME_RAW, read here with `editors.now_ns()`.
+
+Startup is captured on the whole display, started BEFORE the launch (`watch
+--display`), so the first frame of the new window is never missed. Every other
+launching metric first sets the window to WINDOW_FRAME (`frame`, through AX), so
+all three editors are measured at one window size; startup keeps each editor's
+default window size (a first frame cannot be resized).
 """
 
 from __future__ import annotations
@@ -38,6 +44,38 @@ IDLE_S = 60
 SCROLL_LINES = 3000
 SCROLL_RATE = 120
 QUICK_OPEN_QUERY = "mod0042"  # gen-bench-repo.sh: directory pkg00/mod0042/
+# Fixed window frame in points (top-left origin) for every launching metric but
+# startup. macOS may move the window below a taller (notch) menu bar; the size
+# is what the helper enforces.
+WINDOW_FRAME = {"x": 0, "y": 25, "w": 1280, "h": 800}
+
+# Permissions each bench-helper subcommand needs (README "Helper") and the
+# subcommands each metric runs. run.py derives its permission checks from these
+# two tables; tests check every metric's calls against METRIC_HELPERS.
+HELPER_PERMISSIONS = {
+    "now": (), "check": (), "display": (),
+    "sample": ("screen",),
+    "watch": ("screen",),
+    "scroll": ("screen", "accessibility"),
+    "key": ("accessibility",),
+    "type": ("accessibility",),
+    "frame": ("accessibility",),
+}
+_IDLE_HELPERS = ("frame", "key", "type")
+METRIC_HELPERS = {
+    "startup_ms": ("sample", "watch"),          # sample: background calibration
+    "file_change_ms": ("sample", "frame", "watch"),
+    "quick_open_ms": ("frame", "key", "type", "watch"),
+    "idle_ram_mb": _IDLE_HELPERS,
+    "idle_cpu_pct": _IDLE_HELPERS,
+    "scroll_dropped_pct": ("sample", "frame", "watch", "scroll"),
+    "app_size_mb": (),
+}
+
+
+def metric_permissions(metric: str) -> set:
+    """{"screen", "accessibility"} subset that `metric`'s helper calls need."""
+    return {p for cmd in METRIC_HELPERS[metric] for p in HELPER_PERMISSIONS[cmd]}
 
 # Ten real .rs files of ripgrep 14.1.1 (`git ls-tree -r 14.1.1`), opened with
 # Quick Open in every editor: `luc` takes a single path and has no way to
@@ -160,7 +198,8 @@ def _left(deadline: float) -> int:
 
 
 def _owner_pids(editor: str, paths: BenchPaths, deadline: float) -> list[int] | None:
-    """All bench pids, once the process that owns the window exists."""
+    """All bench pids, once the process that owns the window (the main binary,
+    not a `--type=` helper) exists."""
     while time.monotonic() < deadline:
         pids = editors.bench_pids(editor, paths)
         if pids and editor == "lucerna":
@@ -169,7 +208,7 @@ def _owner_pids(editor: str, paths: BenchPaths, deadline: float) -> list[int] | 
             out = subprocess.run(["ps", "-o", "command=", "-p", _csv(pids)],
                                  capture_output=True, text=True).stdout
             main = _MAIN_BINARY[editor]
-            if any(c.startswith(main) and "cli.js" not in c and "--type=" not in c
+            if any(c.startswith(main) and "--type=" not in c
                    for c in out.splitlines()):
                 return editors.bench_pids(editor, paths)
         time.sleep(0.05)
@@ -181,6 +220,17 @@ def _owner_pids(editor: str, paths: BenchPaths, deadline: float) -> list[int] | 
                  "--user-data-dir: nó dùng hồ sơ THẬT của bạn, không phải hồ sơ bench. "
                  "Không tự đóng; hãy tự đóng nó.")
     return None
+
+
+def _set_frame(editor: str, paths: BenchPaths, deadline: float) -> bool:
+    """WINDOW_FRAME through AX, once the window is up; False fails the round
+    (a measurement at another size would not be comparable)."""
+    f = WINDOW_FRAME
+    out = _helper(paths, ["frame", "--pid", _csv(editors.bench_pids(editor, paths)),
+                          "--x", str(f["x"]), "--y", str(f["y"]),
+                          "--w", str(f["w"]), "--h", str(f["h"]),
+                          "--timeout", str(_left(deadline))])
+    return out is not None
 
 
 def _shown(editor, paths, bg, since_ns, coverage, deadline) -> bool:
@@ -246,28 +296,37 @@ def background(editor: str, paths: BenchPaths) -> str | None:
 # Metrics ------------------------------------------------------------------
 
 def startup_ms(editor: str, paths: BenchPaths) -> float | None:
-    """Launch call → first frame whose centre is ≥ 30 % marker text."""
+    """Launch call → first frame whose window centre is ≥ 30 % marker text.
+
+    The display capture starts (and prints `ready`) BEFORE the launch, and
+    finds the window by its executable, minus instances already running. t0 is
+    unknown when the helper starts, so it gets `--since 0` and reports the
+    absolute frame time; the launch time is subtracted here."""
     bg = background(editor, paths)
     if bg is None:
         return None
-    launched = editors.launch(editor, paths, paths.marker_file)
+    exe = editors.main_executable(editor)
+    args = ["watch", "--display", "--exe", exe]
+    exclude = editors.running_pids(exe)
+    if exclude:
+        args += ["--exclude-pids", _csv(exclude)]
+    args += ["--since", "0", "--until", f"coverage:{COVERAGE}", "--background", bg,
+             "--timeout", str(TIMEOUT_S)]
+    watch = _start_watch(paths, args, TIMEOUT_S)
+    if watch is None:
+        return None
     try:
-        deadline = time.monotonic() + TIMEOUT_S
-        pids = _owner_pids(editor, paths, deadline)
-        if pids is None:
-            return None
-        out = _helper(paths, ["watch", "--pid", _csv(pids), "--since", str(launched.t0_ns),
-                              "--until", f"coverage:{COVERAGE}", "--background", bg,
-                              "--timeout", str(_left(deadline))])
+        launched = editors.launch(editor, paths, paths.marker_file)
+        out = watch.result(TIMEOUT_S)
         if out is None:
             return None
-        if out.get("first_frame_hit"):
-            # Content predates the capture: the number is only an upper bound
-            # inflated by capture latency.
+        if out.get("first_frame_hit") or out["t_ns"] < launched.t0_ns:
+            # The window was there before the launch: not this launch's frame.
             _log(f"{editor}: startup content already on the first frame; round dropped")
             return None
         return (out["t_ns"] - launched.t0_ns) / 1e6
     finally:
+        watch.close()
         editors.quit(editor, paths)
 
 
@@ -290,6 +349,8 @@ def file_change_ms(editor: str, paths: BenchPaths) -> float | None:
     try:
         deadline = time.monotonic() + TIMEOUT_S
         if _owner_pids(editor, paths, deadline) is None:
+            return None
+        if not _set_frame(editor, paths, deadline):
             return None
         if not _shown(editor, paths, bg, launched.t0_ns, COVERAGE, deadline):
             return None
@@ -319,7 +380,10 @@ def quick_open_ms(editor: str, paths: BenchPaths) -> float | None:
     editors.launch(editor, paths, paths.large_repo)
     watch = None
     try:
-        if _owner_pids(editor, paths, time.monotonic() + TIMEOUT_S) is None:
+        deadline = time.monotonic() + TIMEOUT_S
+        if _owner_pids(editor, paths, deadline) is None:
+            return None
+        if not _set_frame(editor, paths, deadline):
             return None
         time.sleep(SCAN_WAIT_S)
         deadline = time.monotonic() + TIMEOUT_S
@@ -370,17 +434,57 @@ def _footprint_mb(pids) -> float | None:
     return total / 1024 ** 2 if total else None
 
 
-def _cpu_pct(pids) -> float | None:
-    """Mean over IDLE_S one-second samples of the summed `ps %cpu`."""
-    samples = []
-    for _ in range(IDLE_S):
-        out = subprocess.run(["ps", "-o", "%cpu=", "-p", _csv(pids)],
-                             capture_output=True, text=True).stdout
-        values = [float(v) for v in out.split()]
-        if values:
-            samples.append(sum(values))
-        time.sleep(1)
-    return sum(samples) / len(samples) if samples else None
+def parse_cputime(text: str) -> float:
+    """`ps -o time=` ("[[dd-]hh:]mm:ss.ss", minutes may exceed 59) → seconds."""
+    days = 0
+    if "-" in text:
+        d, text = text.split("-", 1)
+        days = int(d)
+    total = 0.0
+    for part in text.strip().split(":"):
+        total = total * 60 + float(part)
+    return days * 86400 + total
+
+
+def _cpu_times(pids) -> dict:
+    """{pid: cumulative CPU seconds} of the live ones among `pids`."""
+    out = subprocess.run(["ps", "-o", "pid=,time=", "-p", _csv(pids)],
+                         capture_output=True, text=True).stdout
+    times = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit():
+            try:
+                times[int(parts[0])] = parse_cputime(parts[1])
+            except ValueError:
+                pass
+    return times
+
+
+def _cpu_pct(editor: str, paths: BenchPaths) -> float | None:
+    """CPU % over an IDLE_S window from cumulative CPU time (`ps -o time=`),
+    not from `%cpu`, which is a decaying average. Sampled every second with the
+    bench pids refreshed each time: a process present at the first sample
+    counts from its time then, a later one from 0; a process that exits counts
+    up to its last sample. 100 % = one core."""
+    first: dict = {}
+    last: dict = {}
+    start = end = None
+    for i in range(IDLE_S + 1):
+        pids = editors.bench_pids(editor, paths)
+        now = time.monotonic()
+        times = _cpu_times(pids) if pids else {}
+        if start is None:
+            start, first = now, dict(times)
+        last.update(times)
+        end = now
+        if i < IDLE_S:
+            time.sleep(1)
+    elapsed = end - start
+    if not last or elapsed <= 0:
+        return None
+    used = sum(max(0.0, v - first.get(pid, 0.0)) for pid, v in last.items())
+    return used / elapsed * 100
 
 
 def _quick_open_type(paths, pids: str, text: str) -> bool:
@@ -408,7 +512,10 @@ def idle_session(editor: str, paths: BenchPaths) -> tuple[float | None, float | 
     from one launch, so run.py can record both from the same session."""
     editors.launch(editor, paths, paths.medium_repo)
     try:
-        if _owner_pids(editor, paths, time.monotonic() + TIMEOUT_S) is None:
+        deadline = time.monotonic() + TIMEOUT_S
+        if _owner_pids(editor, paths, deadline) is None:
+            return None, None
+        if not _set_frame(editor, paths, deadline):
             return None, None
         time.sleep(OPEN_SETTLE_S)
         for relative in IDLE_FILES:
@@ -419,7 +526,7 @@ def idle_session(editor: str, paths: BenchPaths) -> tuple[float | None, float | 
         if not pids:
             return None, None
         ram = _footprint_mb(pids)
-        cpu = _cpu_pct(pids)
+        cpu = _cpu_pct(editor, paths)
         return ram, cpu
     finally:
         editors.quit(editor, paths)
@@ -446,6 +553,8 @@ def scroll_dropped_pct(editor: str, paths: BenchPaths) -> float | None:
     try:
         deadline = time.monotonic() + TIMEOUT_S
         if _owner_pids(editor, paths, deadline) is None:
+            return None
+        if not _set_frame(editor, paths, deadline):
             return None
         if not _shown(editor, paths, bg, launched.t0_ns, TEXT_COVERAGE, deadline):
             return None

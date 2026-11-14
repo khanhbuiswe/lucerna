@@ -6,12 +6,20 @@ bench pidfile (and its descendants), are ever returned by `bench_pids`, and
 `quit` signals nothing else.
 
 Lucerna is found by pidfile, not by its HOME: macOS `ps` does not print another
-process's environment, so a HOME match can never work. `launch` records the pid
-and its start time; a reused pid has a different start time and is ignored.
+process's environment, so a HOME match can never work. `launch` records the pid,
+its start time and the exact binary path; a reused pid has a different start
+time and is ignored, and the command must start with that exact path (paths
+with spaces work).
+
+The Lucerna binary is resolved ONCE per run (`resolve_lucerna`, which may call
+`cargo metadata` through scripts/target-dir.sh) and cached, so the measured
+binary is the one recorded in the result meta and nothing runs cargo during
+measurement.
 """
 
-import json
+from __future__ import annotations
 
+import json
 import os
 import plistlib
 import re
@@ -20,23 +28,30 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
-from env import REPO_ROOT, BenchPaths
+from env import PIDFILE_NAME, REPO_ROOT, BenchPaths, profile_lsp, vscode_ext_dir
 
 EDITORS = ("lucerna", "zed", "vscode")
 VSCODE_APP = Path("/Applications/Visual Studio Code.app")
 ZED_APP = Path("/Applications/Zed.app")
-VSCODE_CLI = VSCODE_APP / "Contents/Resources/app/bin/code"
+# Both are launched through their main binary, which owns the window: VS
+# Code's `bin/code` adds a node/CLI hop the other editors don't pay, and Zed's
+# `cli` hands off through LaunchServices and drops --user-data-dir.
+VSCODE_BIN = VSCODE_APP / "Contents/MacOS/Code"
 ZED_BIN = ZED_APP / "Contents/MacOS/zed"
-# The process that owns the window. Launchers (`code`, Zed's `cli`) carry no
-# window; Zed's `cli` would also start the app WITHOUT --user-data-dir.
 MAIN_BINARY = {
-    "vscode": str(VSCODE_APP / "Contents/MacOS/Code"),
+    "vscode": str(VSCODE_BIN),
     "zed": str(ZED_BIN),
 }
+# The user's own instance, wherever the app bundle lives: matched on the
+# executable part of the command line (see `_exe_part`).
+_MAIN_PATTERN = {
+    "zed": re.compile(r"(^|/)Zed\.app/Contents/MacOS/zed(\s|$)"),
+    "vscode": re.compile(r"(^|/)Visual Studio Code\.app/Contents/MacOS/Code(\s|$)"),
+}
 QUIT_GRACE_S = 5.0
-PIDFILE_NAME = ".bench-pids.json"
 
 
 def now_ns() -> int:
@@ -55,15 +70,22 @@ class Launched:
     popen: object
 
 
-def _vscode_dirs(paths: BenchPaths) -> tuple[str, str]:
-    return str(paths.profiles / "vscode"), str(paths.profiles / "vscode-ext")
+class BinaryMissing(RuntimeError):
+    """The Lucerna binary is missing or not executable: the run must stop."""
+
+
+def _vscode_dirs(paths: BenchPaths, lsp: bool = False) -> tuple[str, str]:
+    return str(paths.profiles / "vscode"), str(vscode_ext_dir(paths, lsp))
 
 
 def _zed_dir(paths: BenchPaths) -> str:
     return str(paths.profiles / "zed")
 
 
-def _lucerna_bin() -> str:
+_LUCERNA: dict = {}   # cached resolution: {"path", "mtime", "version"}
+
+
+def _find_lucerna() -> str:
     override = os.environ.get("LUCERNA_BIN")
     if override:
         return override
@@ -77,16 +99,62 @@ def _lucerna_bin() -> str:
         pass
     found = shutil.which("luc")
     if not found:
-        raise RuntimeError("luc not found: set LUCERNA_BIN or build the release bundle")
+        raise BinaryMissing("không tìm thấy `luc`: đặt LUCERNA_BIN hoặc dựng bản release "
+                            "bằng scripts/bundle-app.sh")
     return found
+
+
+def _check_executable(path: str) -> None:
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        raise BinaryMissing(f"binary Lucerna {path} không tồn tại hoặc không chạy được "
+                            "(bị xoá hay đang dựng lại?); dừng.")
+
+
+def resolve_lucerna(refresh: bool = False) -> dict:
+    """Resolve the Lucerna binary once and cache it: {"path", "mtime" (ISO,
+    UTC), "version" (`luc --version`)}. Raises BinaryMissing."""
+    if _LUCERNA and not refresh:
+        return dict(_LUCERNA)
+    path = os.path.realpath(_find_lucerna())
+    _check_executable(path)
+    mtime = datetime.fromtimestamp(os.stat(path).st_mtime, timezone.utc)
+    try:
+        v = subprocess.run([path, "--version"], capture_output=True, text=True,
+                           timeout=30).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        v = ""
+    _LUCERNA.clear()
+    _LUCERNA.update({"path": path, "mtime": mtime.isoformat(timespec="seconds"),
+                     "version": v})
+    return dict(_LUCERNA)
+
+
+def _lucerna_bin() -> str:
+    return resolve_lucerna()["path"]
+
+
+def main_executable(editor: str) -> str:
+    """Absolute path of the binary that owns the editor's window."""
+    if editor == "lucerna":
+        return _lucerna_bin()
+    try:
+        return MAIN_BINARY[editor]
+    except KeyError:
+        raise ValueError(f"unknown editor: {editor}") from None
 
 
 def launch(editor: str, paths: BenchPaths, target: Path) -> Launched:
     env = None
     if editor == "vscode":
-        user, ext = _vscode_dirs(paths)
-        cmd = [str(VSCODE_CLI), "--user-data-dir", user, "--extensions-dir", ext,
-               "--new-window", str(target)]
+        # The extensions dir follows the profile written for this config:
+        # empty plus --disable-extensions without LSP, the rust-analyzer one
+        # with it.
+        lsp = profile_lsp(paths)
+        user, ext = _vscode_dirs(paths, lsp)
+        cmd = [str(VSCODE_BIN), "--user-data-dir", user, "--extensions-dir", ext]
+        if not lsp:
+            cmd.append("--disable-extensions")
+        cmd += ["--new-window", str(target)]
     elif editor == "zed":
         # Run the main binary itself: `cli` hands off through LaunchServices
         # and drops --user-data-dir, so Zed would open the user's real profile.
@@ -95,7 +163,9 @@ def launch(editor: str, paths: BenchPaths, target: Path) -> Launched:
             raise ForeignInstance(foreign_message("zed", foreign))
         cmd = [str(ZED_BIN), "--user-data-dir", _zed_dir(paths), str(target)]
     elif editor == "lucerna":
-        cmd = [_lucerna_bin(), str(target)]
+        exe = _lucerna_bin()
+        _check_executable(exe)   # vanished since the run started (rebuild, clean)
+        cmd = [exe, str(target)]
         env = {**os.environ, "HOME": str(paths.lucerna_home)}
     else:
         raise ValueError(f"unknown editor: {editor}")
@@ -105,7 +175,8 @@ def launch(editor: str, paths: BenchPaths, target: Path) -> Launched:
     if editor == "lucerna":
         pidfile = paths.lucerna_home / PIDFILE_NAME
         pidfile.parent.mkdir(parents=True, exist_ok=True)
-        pidfile.write_text(json.dumps({"pid": popen.pid, "lstart": _lstart(popen.pid)}))
+        pidfile.write_text(json.dumps({"pid": popen.pid, "lstart": _lstart(popen.pid),
+                                       "exe": cmd[0]}))
     return Launched(t0_ns=t0, popen=popen)
 
 
@@ -120,15 +191,22 @@ def _ps() -> list[tuple[int, int, str]]:
     return rows
 
 
+def _exe_part(command: str) -> str:
+    """The executable part of a `ps` command line: up to the first argument
+    that starts with "-" or "/" (so an app path with spaces stays whole)."""
+    return re.split(r"\s(?=[-/])", command, maxsplit=1)[0]
+
+
 def foreign_instances(editor: str, paths: BenchPaths) -> list[int]:
-    """Main app processes of `editor` that are not the bench session's."""
-    main = MAIN_BINARY.get(editor)
-    if main is None:
+    """Main app processes of `editor` that are not the bench session's,
+    wherever the app bundle lives."""
+    pattern = _MAIN_PATTERN.get(editor)
+    if pattern is None:
         return []
     mine = set(bench_pids(editor, paths))
     found = []
     for pid, _, cmd in _ps():
-        if pid in mine or not (cmd == main or cmd.startswith(main + " ")):
+        if pid in mine or not pattern.search(_exe_part(cmd)):
             continue
         if "--crash-handler" in cmd or "--type=" in cmd:
             continue
@@ -143,6 +221,20 @@ def foreign_message(editor: str, pids: list[int]) -> str:
                 "kênh phát hành, nên bench không thể mở Zed riêng. "
                 "Hãy tự đóng Zed rồi chạy lại.")
     return f"{editor} của bạn đang chạy (pid {listed})."
+
+
+def running_pids(exe: str) -> list[int]:
+    """Pids already running `exe` or any process inside its app bundle's
+    Contents/ (what `watch --display` would match): excluded from the
+    display watch so the user's own instance is never measured."""
+    contents = None
+    i = exe.rfind(".app/Contents/")
+    if i >= 0:
+        contents = exe[:i + len(".app/Contents/")]
+    me = os.getpid()
+    return sorted(pid for pid, _, cmd in _ps()
+                  if pid != me and (cmd == exe or cmd.startswith(exe + " ")
+                                    or (contents and cmd.startswith(contents))))
 
 
 def _lstart(pid: int) -> str:
@@ -163,13 +255,13 @@ def _ancestors(pid: int, table) -> set[int]:
 def _lucerna_root(paths: BenchPaths, table) -> set[int]:
     try:
         rec = json.loads((paths.lucerna_home / PIDFILE_NAME).read_text())
-        pid, started = int(rec["pid"]), rec["lstart"]
+        pid, started, exe = int(rec["pid"]), rec["lstart"], rec["exe"]
     except (OSError, ValueError, KeyError, TypeError):
         return set()
     cmd = next((c for p, _, c in table if p == pid), None)
-    if cmd is None or not started or _lstart(pid) != started:
+    if cmd is None or not started or not exe or _lstart(pid) != started:
         return set()
-    if not re.match(r"\S*/luc(?:\s|$)", cmd):
+    if not (cmd == exe or cmd.startswith(exe + " ")):
         return set()
     return {pid}
 
@@ -220,7 +312,12 @@ def _reap(pid: int) -> None:
 def quit(editor: str, paths: BenchPaths) -> None:
     # Snapshot (pid -> start time) now: orphans reparented to pid 1 are still
     # killed later, and a reused pid (different start time) never is.
-    snap = {pid: _lstart(pid) for pid in bench_pids(editor, paths)}
+    # A pid without a start time is already gone: never signal it.
+    snap = {}
+    for pid in bench_pids(editor, paths):
+        started = _lstart(pid)
+        if started:
+            snap[pid] = started
 
     def alive(pid: int) -> bool:
         return bool(snap[pid]) and _lstart(pid) == snap[pid]
@@ -261,11 +358,9 @@ def app_bundle(editor: str) -> Path:
 
 def version(editor: str) -> str:
     if editor == "lucerna":
-        v = subprocess.run([_lucerna_bin(), "--version"], capture_output=True,
-                           text=True).stdout.strip()
-        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                             cwd=REPO_ROOT, capture_output=True,
-                             text=True).stdout.strip()
-        return f"{v} ({sha})"
+        # Cached with the binary: no subprocess during measurement. The build
+        # time keys the background calibration to this exact binary.
+        rec = resolve_lucerna()
+        return f"{rec['version'] or 'unknown'} (build {rec['mtime']})"
     with open(app_bundle(editor) / "Contents" / "Info.plist", "rb") as f:
         return plistlib.load(f)["CFBundleShortVersionString"]

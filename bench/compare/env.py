@@ -1,5 +1,7 @@
 """Clean profiles, benchmark data and machine preflight for the comparison."""
 
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -15,7 +17,12 @@ RIPGREP_TAG = "14.1.1"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GEN_SCRIPT = REPO_ROOT / "scripts" / "gen-bench-repo.sh"
 VSCODE_RUST_ANALYZER = "rust-lang.rust-analyzer"
+VSCODE_CLI = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
 LOAD_LIMIT = 2.0
+PIDFILE_NAME = ".bench-pids.json"     # editors.py: the bench `luc` (in lucerna-home)
+PROFILE_MARKER = "bench-profile.json"  # which config the profiles were written for
+# Kept across configs: installing rust-analyzer needs the network.
+KEEP_PROFILES = ("vscode-ext-lsp",)
 
 
 @dataclass(frozen=True)
@@ -75,15 +82,62 @@ def _write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
+def vscode_ext_dir(paths: BenchPaths, lsp: bool) -> Path:
+    """VS Code extensions: `vscode-ext` stays empty (no-LSP config, also
+    launched with --disable-extensions); `vscode-ext-lsp` holds rust-analyzer."""
+    return paths.profiles / ("vscode-ext-lsp" if lsp else "vscode-ext")
+
+
 def install_vscode_rust_analyzer(paths: BenchPaths) -> None:
-    """Needs the network. Not called by tests; run once before `lsp=True` runs."""
-    code = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+    """Needs the network. Not called by tests; run once before `lsp=True` runs.
+    The CLI (`bin/code`) is fine here: this is setup, not a measurement."""
     subprocess.run(
-        [code, "--user-data-dir", str(paths.profiles / "vscode"),
-         "--extensions-dir", str(paths.profiles / "vscode-ext"),
+        [VSCODE_CLI, "--user-data-dir", str(paths.profiles / "vscode"),
+         "--extensions-dir", str(vscode_ext_dir(paths, True)),
          "--install-extension", VSCODE_RUST_ANALYZER],
         check=True,
     )
+
+
+def vscode_rust_analyzer_installed(paths: BenchPaths) -> bool:
+    d = vscode_ext_dir(paths, True)
+    return d.is_dir() and any(p.is_dir() for p in d.glob(VSCODE_RUST_ANALYZER + "*"))
+
+
+def reset_profiles(paths: BenchPaths) -> list[Path]:
+    """Delete every editor profile under <bench>/profiles except
+    KEEP_PROFILES, and everything in lucerna-home but the bench pidfile, so
+    each config starts from a clean profile. Refuses to delete anything that
+    does not resolve inside <bench>/profiles. Returns what was removed."""
+    root = paths.profiles.resolve()
+    if not paths.profiles.is_dir():
+        return []
+    victims = []
+    for entry in sorted(paths.profiles.iterdir()):
+        if entry.name in KEEP_PROFILES:
+            continue
+        if entry.name == paths.lucerna_home.name and entry.is_dir() and not entry.is_symlink():
+            victims += [c for c in sorted(entry.iterdir()) if c.name != PIDFILE_NAME]
+        else:
+            victims.append(entry)
+    for v in victims:
+        # A symlink is removed itself, never followed.
+        parent = v.parent.resolve()
+        if not (parent == root or root in parent.parents) or v.name in ("", ".", ".."):
+            raise RuntimeError(f"refusing to delete {v}: not under {root}")
+        if v.is_dir() and not v.is_symlink():
+            shutil.rmtree(v)
+        else:
+            v.unlink()
+    return victims
+
+
+def profile_lsp(paths: BenchPaths) -> bool:
+    """The `lsp` the profiles were last written for (False if unknown)."""
+    try:
+        return bool(json.loads((paths.profiles / PROFILE_MARKER).read_text())["lsp"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def write_profiles(paths: BenchPaths, lsp: bool) -> None:
@@ -106,6 +160,7 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
     if lsp:
         vscode["rust-analyzer.server.path"] = ra
     _write_json(paths.profiles / "vscode" / "User" / "settings.json", vscode)
+    vscode_ext_dir(paths, False).mkdir(parents=True, exist_ok=True)
 
     zed = {
         "telemetry": {"diagnostics": False, "metrics": False},
@@ -115,6 +170,10 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
         "restore_on_startup": "none",
         "minimap": {"show": "never"},
         "preview_tabs": {"enable_preview_from_file_finder": False},
+        # Zed installs the html extension by default and suggests others:
+        # no downloads into the bench profile.
+        "auto_install_extensions": {"html": False},
+        "suggest_extensions": False,
     }
     if lsp:
         zed["lsp"] = {"rust-analyzer": {"binary": {"path": ra}}}
@@ -138,6 +197,7 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
         home / "Library" / "Application Support" / "Lucerna" / "trusted.json",
         {"folders": [data], "parents": [data]},
     )
+    _write_json(paths.profiles / PROFILE_MARKER, {"lsp": lsp})
 
 
 def _processes() -> list[str]:

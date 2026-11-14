@@ -13,6 +13,8 @@ import env  # noqa: E402
 import metrics  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+EXE = "/A/X.app/Contents/MacOS/x"
+FRAME_OK = {"x": 0, "y": 38, "w": 1280, "h": 800, "pid": 11}
 
 
 def done(rc, stdout="", stderr=""):
@@ -49,6 +51,8 @@ class Base(unittest.TestCase):
         self.quit = self.patch(editors, "quit")
         self.patch(editors, "bench_pids", return_value=[11, 12])
         self.patch(metrics, "_owner_pids", return_value=[11, 12])
+        self.patch(editors, "main_executable", return_value=EXE)
+        self.running = self.patch(editors, "running_pids", return_value=[])
         if self.fake_background:
             self.patch(metrics, "background", return_value="1E1E1E")
         self.patch(metrics.time, "sleep")
@@ -77,14 +81,14 @@ class FootprintTests(unittest.TestCase):
 class HelperTests(Base):
     def test_metric_timeout_returns_none(self):
         with mock.patch.object(metrics.subprocess, "run", return_value=done(2, stderr="timeout")):
-            self.assertIsNone(metrics.startup_ms("zed", self.paths))
+            self.assertIsNone(metrics.scroll_dropped_pct("zed", self.paths))
         self.quit.assert_called_once_with("zed", self.paths)
 
     def test_missing_permission_raises(self):
         with mock.patch.object(metrics.subprocess, "run",
-                               return_value=done(3, stderr="no Screen Recording")):
+                               return_value=done(3, stderr="no Accessibility")):
             with self.assertRaises(metrics.PermissionDenied):
-                metrics.startup_ms("zed", self.paths)
+                metrics.scroll_dropped_pct("zed", self.paths)
         self.quit.assert_called_once_with("zed", self.paths)
 
     def test_helper_path_override(self):
@@ -96,23 +100,65 @@ class HelperTests(Base):
 
 
 class StartupTests(Base):
-    def test_startup_uses_marker_and_coverage(self):
+    def run_startup(self, out, editor="vscode"):
+        order = []
+        watch = FakeWatch(out)
+        self.launch.side_effect = lambda *a: order.append("launch") or \
+            editors.Launched(t0_ns=1_000_000_000, popen=None)
+
+        def start(paths, args, timeout=metrics.TIMEOUT_S):
+            order.append("watch")
+            return watch
+
+        with mock.patch.object(metrics, "_start_watch", side_effect=start) as st, \
+                mock.patch.object(metrics, "_helper") as helper:
+            value = metrics.startup_ms(editor, self.paths)
+        helper.assert_not_called()
+        return value, st.call_args.args[1], order, watch
+
+    def test_display_watch_started_before_launch(self):
         out = {"t_ns": 1_250_000_000, "frames": 9, "first_frame_hit": False}
-        with mock.patch.object(metrics, "_helper", return_value=out) as helper:
-            self.assertEqual(metrics.startup_ms("vscode", self.paths), 250.0)
+        value, args, order, watch = self.run_startup(out)
+        self.assertEqual(value, 250.0)
+        self.assertEqual(order, ["watch", "launch"])
         self.launch.assert_called_once_with("vscode", self.paths, self.paths.marker_file)
-        args = helper.call_args.args[1]
-        self.assertEqual(args[0], "watch")
-        self.assertEqual(args[args.index("--pid") + 1], "11,12")
-        self.assertEqual(args[args.index("--since") + 1], "1000000000")
+        self.assertEqual(args[:4], ["watch", "--display", "--exe", EXE])
+        self.assertNotIn("--pid", args)
+        self.assertNotIn("--exclude-pids", args)
+        # t0 is unknown when the helper starts: absolute times, Python subtracts.
+        self.assertEqual(args[args.index("--since") + 1], "0")
         self.assertEqual(args[args.index("--until") + 1], "coverage:0.3")
         self.assertEqual(args[args.index("--background") + 1], "1E1E1E")
+        self.assertTrue(watch.closed)
         self.quit.assert_called_once_with("vscode", self.paths)
+
+    def test_running_instances_excluded(self):
+        self.running.return_value = [70, 71]
+        _, args, _, _ = self.run_startup({"t_ns": 1_100_000_000, "frames": 3})
+        self.running.assert_called_once_with(EXE)
+        self.assertEqual(args[args.index("--exclude-pids") + 1], "70,71")
 
     def test_first_frame_hit_returns_none(self):
         out = {"t_ns": 1_250_000_000, "frames": 1, "first_frame_hit": True}
-        with mock.patch.object(metrics, "_helper", return_value=out):
+        self.assertIsNone(self.run_startup(out)[0])
+
+    def test_frame_before_launch_returns_none(self):
+        out = {"t_ns": 900_000_000, "frames": 4, "first_frame_hit": False}
+        self.assertIsNone(self.run_startup(out)[0])
+
+    def test_watch_not_ready_skips_launch(self):
+        with mock.patch.object(metrics, "_start_watch", return_value=None):
             self.assertIsNone(metrics.startup_ms("zed", self.paths))
+        self.launch.assert_not_called()
+
+    def test_foreign_instance_closes_watch_and_propagates(self):
+        watch = FakeWatch({"t_ns": 1})
+        self.launch.side_effect = editors.ForeignInstance("zed")
+        with mock.patch.object(metrics, "_start_watch", return_value=watch):
+            with self.assertRaises(editors.ForeignInstance):
+                metrics.startup_ms("zed", self.paths)
+        self.assertTrue(watch.closed)
+        self.assertFalse(watch.waited)
 
 
 class FileChangeTests(Base):
@@ -129,7 +175,7 @@ class FileChangeTests(Base):
 
         shown = {"t_ns": 1, "frames": 3, "first_frame_hit": False}
         watch = FakeWatch({"t_ns": 5_012_000_000, "frames": 4}, on_result)
-        with mock.patch.object(metrics, "_helper", return_value=shown), \
+        with mock.patch.object(metrics, "_helper", side_effect=[FRAME_OK, shown]), \
                 mock.patch.object(metrics, "_start_watch", return_value=watch) as start, \
                 mock.patch.object(editors, "now_ns", side_effect=clock):
             self.assertEqual(metrics.file_change_ms("lucerna", self.paths), 12.0)
@@ -163,7 +209,7 @@ class QuickOpenTests(Base):
         with mock.patch.object(metrics, "_helper", side_effect=helper), \
                 mock.patch.object(metrics, "_start_watch", side_effect=start):
             self.assertEqual(metrics.quick_open_ms("zed", self.paths), 12.0)
-        self.assertEqual(calls, ["key:", "type:mod004", "watch", "type:2"])
+        self.assertEqual(calls, ["frame:", "key:", "type:mod004", "watch", "type:2"])
         metrics.time.sleep.assert_any_call(metrics.SETTLE_S / 2)
         self.launch.assert_called_once_with("zed", self.paths, self.paths.large_repo)
         metrics.time.sleep.assert_any_call(metrics.SCAN_WAIT_S)
@@ -203,25 +249,29 @@ class QuickOpenTests(Base):
 
 class IdleTests(Base):
     def run_idle(self):
-        ps_rows = iter(["  1.5\n  0.5\n"] + ["  0.0\n  1.0\n"] * (metrics.IDLE_S - 1))
+        # pid 11 uses 0.3 s CPU per 1 s sample; 12 is idle.
+        ps_rows = iter(f"11 0:{1 + 0.3 * i:05.2f}\n12 1:00.50\n"
+                       for i in range(metrics.IDLE_S + 1))
         fp = (FIXTURES / "footprint.txt").read_text()
 
         def run(cmd, **kw):
             if cmd[0] == "footprint":
                 return done(0, fp)
-            if cmd[0] == "ps":
+            if cmd[:3] == ["ps", "-o", "pid=,time="]:
                 return done(0, next(ps_rows))
             raise AssertionError(cmd)
 
         with mock.patch.object(metrics, "_helper", return_value={"t_ns": 1}) as helper, \
-                mock.patch.object(metrics.subprocess, "run", side_effect=run) as sub:
+                mock.patch.object(metrics.subprocess, "run", side_effect=run) as sub, \
+                mock.patch.object(metrics.time, "monotonic", side_effect=range(10 ** 6)):
             result = metrics.idle_session("vscode", self.paths)
         return result, helper, sub
 
     def test_idle_session_ram_and_cpu(self):
         (ram, cpu), helper, sub = self.run_idle()
         self.assertAlmostEqual(ram, 852160 * 2 / 1024 ** 2)
-        self.assertAlmostEqual(cpu, (2.0 + 1.0 * (metrics.IDLE_S - 1)) / metrics.IDLE_S)
+        self.assertAlmostEqual(cpu, 30.0)
+        self.assertEqual(helper.call_args_list[0].args[1][0], "frame")
         self.launch.assert_called_once_with("vscode", self.paths, self.paths.medium_repo)
         typed = [c.args[1][-1] for c in helper.call_args_list if c.args[1][0] == "type"]
         self.assertEqual([t for t in typed if t != "\n"], list(metrics.IDLE_FILES))
@@ -238,9 +288,117 @@ class IdleTests(Base):
             self.assertEqual(metrics.idle_cpu_pct("zed", self.paths), 2.0)
 
 
+class CpuTests(Base):
+    def test_parse_cputime(self):
+        self.assertAlmostEqual(metrics.parse_cputime("0:01.25"), 1.25)
+        self.assertAlmostEqual(metrics.parse_cputime("2210:49.57"), 2210 * 60 + 49.57)
+        self.assertAlmostEqual(metrics.parse_cputime("1:02:03.5"), 3723.5)
+        self.assertAlmostEqual(metrics.parse_cputime("2-00:00:01.00"), 2 * 86400 + 1)
+
+    def test_cpu_from_cumulative_time_with_pid_refresh(self):
+        # pid 20 appears at sample 2 (counts from 0); pid 21 exits after
+        # sample 1 (counts to its last value); 22 is constant.
+        rows = {0: {21: 5.0, 22: 9.0}, 1: {21: 5.5, 22: 9.0}}
+        idle = metrics.IDLE_S
+
+        def times(pids):
+            i = state["i"]
+            state["i"] += 1
+            if i in rows:
+                return rows[i]
+            return {20: 0.1 * (i - 1), 22: 9.0}
+        state = {"i": 0}
+        pid_lists = []
+        self.patch(editors, "bench_pids",
+                   side_effect=lambda e, p: pid_lists.append(1) or [20, 21, 22])
+        with mock.patch.object(metrics, "_cpu_times", side_effect=times), \
+                mock.patch.object(metrics.time, "monotonic", side_effect=range(10 ** 6)):
+            cpu = metrics._cpu_pct("zed", self.paths)
+        self.assertEqual(len(pid_lists), idle + 1)     # refreshed every sample
+        used = 0.5 + 0.1 * (idle - 1)
+        self.assertAlmostEqual(cpu, used / idle * 100)
+
+    def test_no_process_is_none(self):
+        self.patch(editors, "bench_pids", return_value=[])
+        with mock.patch.object(metrics.time, "monotonic", side_effect=range(10 ** 6)):
+            self.assertIsNone(metrics._cpu_pct("zed", self.paths))
+
+
+class FrameTests(Base):
+    def test_frame_set_before_measuring(self):
+        outs = [FRAME_OK, {"t_ns": 1, "frames": 5}, {"frames": 10, "dropped": 1}]
+        with mock.patch.object(metrics, "_helper", side_effect=outs) as helper:
+            metrics.scroll_dropped_pct("zed", self.paths)
+        args = helper.call_args_list[0].args[1]
+        f = metrics.WINDOW_FRAME
+        self.assertEqual(args[:3], ["frame", "--pid", "11,12"])
+        for k in ("x", "y", "w", "h"):
+            self.assertEqual(args[args.index("--" + k) + 1], str(f[k]))
+        self.assertEqual((f["w"], f["h"]), (1280, 800))
+
+    def test_frame_failure_drops_round(self):
+        for fn in (metrics.scroll_dropped_pct, metrics.file_change_ms, metrics.quick_open_ms):
+            with self.subTest(fn=fn.__name__), \
+                    mock.patch.object(metrics, "_helper", return_value=None) as helper, \
+                    mock.patch.object(metrics, "_start_watch") as start:
+                self.assertIsNone(fn("zed", self.paths))
+                self.assertEqual([c.args[1][0] for c in helper.call_args_list], ["frame"])
+                start.assert_not_called()
+        with mock.patch.object(metrics, "_helper", return_value=None):
+            self.assertEqual(metrics.idle_session("zed", self.paths), (None, None))
+
+
+class HelperTableTests(Base):
+    """Each metric runs exactly the helper subcommands METRIC_HELPERS lists,
+    so run.py's permission check (derived from it) is right."""
+
+    def used(self, name):
+        cmds = set()
+        replies = {"frame": FRAME_OK, "watch": {"t_ns": 1, "frames": 3},
+                   "key": {"t_ns": 1}, "type": {"t_ns": [1]},
+                   "scroll": {"frames": 10, "dropped": 1}}
+
+        def helper(paths, args, timeout=metrics.TIMEOUT_S):
+            cmds.add(args[0])
+            return replies[args[0]]
+
+        def start(paths, args, timeout=metrics.TIMEOUT_S):
+            cmds.add(args[0])
+            return FakeWatch({"t_ns": 2_000_000_000, "frames": 3})
+
+        metrics.background.side_effect = lambda e, p: cmds.add("sample") or "1E1E1E"
+        fp = (FIXTURES / "footprint.txt").read_text()
+        with mock.patch.object(metrics, "_helper", side_effect=helper), \
+                mock.patch.object(metrics, "_start_watch", side_effect=start), \
+                mock.patch.object(metrics, "_cpu_pct", return_value=1.0), \
+                mock.patch.object(metrics.subprocess, "run", return_value=done(0, fp)):
+            if name in ("idle_ram_mb", "idle_cpu_pct"):
+                getattr(metrics, name)("zed", self.paths)
+            elif name == "app_size_mb":
+                with mock.patch.object(editors, "app_bundle", return_value=Path("/A.app")), \
+                        mock.patch.object(metrics.subprocess, "run",
+                                          return_value=done(0, "1\t/A.app\n")):
+                    metrics.app_size_mb("zed")
+            else:
+                getattr(metrics, name)("zed", self.paths)
+        return cmds
+
+    def test_table_matches_calls(self):
+        for name, listed in metrics.METRIC_HELPERS.items():
+            with self.subTest(metric=name):
+                self.assertEqual(self.used(name), set(listed))
+
+    def test_permissions(self):
+        self.assertEqual(metrics.metric_permissions("scroll_dropped_pct"),
+                         {"screen", "accessibility"})
+        self.assertEqual(metrics.metric_permissions("startup_ms"), {"screen"})
+        self.assertEqual(metrics.metric_permissions("idle_ram_mb"), {"accessibility"})
+        self.assertEqual(metrics.metric_permissions("app_size_mb"), set())
+
+
 class ScrollTests(Base):
     def test_dropped_percent(self):
-        outs = [{"t_ns": 1, "frames": 5, "first_frame_hit": False},
+        outs = [FRAME_OK, {"t_ns": 1, "frames": 5, "first_frame_hit": False},
                 {"frames": 200, "dropped": 3, "refresh_hz": 120, "rate": 120}]
         with mock.patch.object(metrics, "_helper", side_effect=outs) as helper:
             self.assertEqual(metrics.scroll_dropped_pct("zed", self.paths), 1.5)
@@ -258,14 +416,14 @@ class ScrollTests(Base):
         self.launch.side_effect = lambda *a: order.append("launch") or \
             editors.Launched(t0_ns=1, popen=None)
         with mock.patch.object(metrics, "_helper", return_value=None), \
-                mock.patch.object(metrics, "_start_watch", return_value=None):
+                mock.patch.object(metrics, "_start_watch", return_value=FakeWatch(None)):
             metrics.scroll_dropped_pct("zed", self.paths)
             metrics.file_change_ms("zed", self.paths)
             metrics.startup_ms("zed", self.paths)
         self.assertEqual(order, ["bg", "launch"] * 3)
 
     def test_zero_frames_is_none(self):
-        outs = [{"t_ns": 1, "frames": 5}, {"frames": 0, "dropped": 0}]
+        outs = [FRAME_OK, {"t_ns": 1, "frames": 5}, {"frames": 0, "dropped": 0}]
         with mock.patch.object(metrics, "_helper", side_effect=outs):
             self.assertIsNone(metrics.scroll_dropped_pct("zed", self.paths))
 
@@ -365,13 +523,11 @@ class OwnerPidTests(unittest.TestCase):
                 mock.patch.object(metrics.time, "monotonic", side_effect=range(10 ** 6)):
             return metrics._owner_pids(editor, env.BenchPaths(Path("/b")), 50), sub
 
-    def test_vscode_waits_past_cli_and_helpers(self):
-        cli = f"{self.VSCODE} /x/Resources/app/out/cli.js --user-data-dir /b/profiles/vscode"
+    def test_vscode_waits_for_main_binary(self):
         helper = f"{self.VSCODE} Helper --type=renderer --user-data-dir /b/profiles/vscode"
         main = f"{self.VSCODE} --user-data-dir /b/profiles/vscode /b/data/marker.txt"
-        pids, _ = self.owner("vscode", [([], []), ([1], [cli]), ([1, 2], [cli, helper]),
-                                        ([1, 2, 3], [cli, helper, main])])
-        self.assertEqual(pids, [1, 2, 3])
+        pids, _ = self.owner("vscode", [([], []), ([2], [helper]), ([1, 2], [main, helper])])
+        self.assertEqual(pids, [1, 2])
 
     def test_zed_cli_is_not_the_owner(self):
         cli = f"{self.ZED}/cli --user-data-dir /b/profiles/zed --new /b/data/marker.txt"

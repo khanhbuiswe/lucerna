@@ -23,7 +23,19 @@ class ReportTests(unittest.TestCase):
         self.assertIn("| Chỉ số | Lucerna | Zed | VS Code |", md.splitlines())
         self.assertEqual(md.count("| Chỉ số | Lucerna | Zed | VS Code |"), 2)
         self.assertIn("Không LSP · ấm", md)
-        self.assertIn("rust-analyzer · lạnh", md)
+        self.assertIn("rust-analyzer · lạnh (chỉ khởi động)", md)
+
+    def test_meta_lists_binary_display_and_window(self):
+        r = load()
+        r["meta"].update({
+            "lucerna_binary": {"path": "/x/luc", "mtime": "2026-11-14T01:02:03+00:00",
+                               "version": "luc 0.1.0"},
+            "display": {"width": 1470, "height": 956, "scale": 2.0, "refresh_hz": 120},
+            "window_frame": {"x": 0, "y": 25, "w": 1280, "h": 800}})
+        md = report.render_markdown(r)
+        self.assertIn("luc 0.1.0, dựng lúc 2026-11-14T01:02:03+00:00", md)
+        self.assertIn("1470×956 pt, scale 2.0, 120 Hz", md)
+        self.assertIn("1280×800 pt", md)
 
     def test_ratio_format(self):
         self.assertEqual(report.ratio(140, 100), "1,4×")

@@ -653,8 +653,11 @@ func axFrame(_ window: AXUIElement) -> CGRect? {
 
 /// Sets the largest AX window of the app that owns the chosen window (same
 /// choice as key/type) to `rect` (global top-left points) and prints the frame
-/// read back. Retries until the read-back matches within 1 pt, else exits 2 at
-/// the deadline (the app refused or the screen is too small).
+/// read back. Retries until the read-back SIZE matches within 1 pt, else exits
+/// 2 at the deadline (the app refused or the screen is too small). The origin
+/// is requested but not enforced: macOS keeps windows below the menu bar, which
+/// is taller on displays with a camera notch, so it may move the window down;
+/// the printed x/y are where it actually is.
 func setFrame(pids: Set<pid_t>, rect: CGRect, deadline: UInt64) async {
     let owner = await findWindowOwner(pids: pids, deadline: deadline)
     let app = AXUIElementCreateApplication(owner)
@@ -677,8 +680,8 @@ func setFrame(pids: Set<pid_t>, rect: CGRect, deadline: UInt64) async {
                 }
                 try? await Task.sleep(nanoseconds: 150_000_000)
                 last = axFrame(window)
-                if let got = last, abs(got.minX - rect.minX) <= 1, abs(got.minY - rect.minY) <= 1,
-                   abs(got.width - rect.width) <= 1, abs(got.height - rect.height) <= 1 {
+                if let got = last, abs(got.width - rect.width) <= 1,
+                   abs(got.height - rect.height) <= 1 {
                     emit(["x": got.minX, "y": got.minY, "w": got.width, "h": got.height,
                           "pid": owner])
                     return

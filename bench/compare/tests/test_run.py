@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 import sys
@@ -33,6 +34,9 @@ class Harness:
         self.values = metric_values or {}
         self.app_size = lambda e: 5.0
         self.foreign = []
+        self.ra_installed = True
+        self.lucerna = {"path": "/x/luc", "mtime": "2026-11-14T00:00:00+00:00",
+                        "version": "luc 0.1.0"}
 
     def metric(self, name):
         def fn(editor, paths):
@@ -49,9 +53,14 @@ class Harness:
             mock.patch.object(run.env, "prepare_data", lambda p: None),
             mock.patch.object(run.env, "write_profiles",
                               lambda p, lsp: h.calls.append(("profiles", lsp))),
+            mock.patch.object(run.env, "reset_profiles",
+                              lambda p: h.calls.append(("reset", None))),
+            mock.patch.object(run.env, "vscode_rust_analyzer_installed",
+                              lambda p: h.ra_installed),
+            mock.patch.object(run.editors, "resolve_lucerna", self._resolve),
             mock.patch.object(run.editors, "foreign_instances",
                               lambda e, p: list(h.foreign)),
-            mock.patch.object(run, "collect_meta", lambda lsp_modes: dict(META)),
+            mock.patch.object(run, "collect_meta", lambda lsp_modes, paths: dict(META)),
             mock.patch.object(run, "helper_permissions", lambda p: h.perms),
             mock.patch.object(run.metrics, "load_calibration", lambda p: {"c": "1"}),
             mock.patch.object(run.metrics, "app_size_mb",
@@ -66,6 +75,11 @@ class Harness:
             self.test.addCleanup(p.stop)
         args = ["--bench-dir", self.tmp.name, "--out", str(self.out), "--skip-prepare", *argv]
         return run.main(args)
+
+    def _resolve(self, refresh=False):
+        if isinstance(self.lucerna, Exception):
+            raise self.lucerna
+        return dict(self.lucerna)
 
     def _pre(self):
         self.preflights += 1
@@ -111,6 +125,69 @@ class Runner(unittest.TestCase):
         for e in editors.EDITORS:
             self.assertEqual(len(m[e]), 10)
 
+    def test_warm_up_round_covers_every_launching_metric(self):
+        # rounds + 1 calls per launching metric and editor; round 0 discarded.
+        h = Harness(self, metric_values={"scroll_dropped_pct": 4.0})
+        self.assertEqual(h.main("--rounds", "3"), 0)
+        for e in editors.EDITORS:
+            for name in ("startup_ms", "scroll_dropped_pct", "file_change_ms",
+                         "quick_open_ms", "idle_session"):
+                self.assertEqual(h.count(name, e), 4, (name, e))
+            self.assertEqual(h.count("app_size_mb", e), 1)
+        m = h.result()["configs"][0]["metrics"]
+        for name in run.METRICS:
+            if name != "app_size_mb":
+                self.assertEqual(len(m[name]["zed"]), 3, name)
+
+    def test_warm_up_before_any_recorded_value(self):
+        h = Harness(self)
+        h.main("--rounds", "2", "--only", "scroll_dropped_pct")
+        first = [s for s in h.snapshots if s["configs"]][0]
+        self.assertEqual(first["configs"][0]["metrics"]["scroll_dropped_pct"]["zed"], [])
+
+    def test_profiles_wiped_then_written_each_config(self):
+        h = Harness(self)
+        h.main("--rounds", "1", "--lsp", "both", "--only", "app_size_mb")
+        seq = [c for c in h.calls if c[0] in ("reset", "profiles")]
+        self.assertEqual(seq, [("reset", None), ("profiles", False),
+                               ("reset", None), ("profiles", True)])
+
+    def test_lsp_without_vscode_extension_aborts_up_front(self):
+        h = Harness(self)
+        h.ra_installed = False
+        with mock.patch.object(run, "_log") as lg:
+            self.assertEqual(h.main("--rounds", "1", "--lsp", "on"), 1)
+        self.assertEqual([c for c in h.calls if c[0] not in ("profiles", "reset")], [])
+        self.assertIn("rust-analyzer", " ".join(c.args[0] for c in lg.call_args_list))
+
+    def test_lsp_off_does_not_need_vscode_extension(self):
+        h = Harness(self)
+        h.ra_installed = False
+        self.assertEqual(h.main("--rounds", "1", "--only", "scroll_dropped_pct"), 0)
+
+    def test_missing_lucerna_binary_aborts_before_anything(self):
+        h = Harness(self)
+        h.lucerna = run.editors.BinaryMissing("không tìm thấy `luc`")
+        with mock.patch.object(run, "_log") as lg:
+            self.assertEqual(h.main("--rounds", "1"), 1)
+        self.assertEqual(h.calls, [])
+        self.assertIn("luc", lg.call_args_list[-1].args[0])
+
+    def test_binary_vanishing_mid_run_stops_and_saves(self):
+        h = Harness(self)
+        n = {"i": 0}
+
+        def vanish(editor, paths):
+            n["i"] += 1
+            if n["i"] > 2:
+                raise run.editors.BinaryMissing("binary Lucerna /x/luc không tồn tại")
+            return 1.0
+        orig = h.metric
+        h.metric = lambda name: vanish if name == "scroll_dropped_pct" else orig(name)
+        self.assertEqual(h.main("--rounds", "2", "--only", "scroll_dropped_pct"), 1)
+        self.assertEqual(n["i"], 3)       # stopped at once, not recorded as null
+        self.assertTrue(h.out.exists())
+
     def test_preflight_rechecked_each_round(self):
         h = Harness(self)
         h.main("--rounds", "4", "--only", "startup_ms")
@@ -142,7 +219,7 @@ class Runner(unittest.TestCase):
     def test_only_filtering(self):
         h = Harness(self)
         h.main("--rounds", "1", "--only", "quick_open_ms,file_change_ms")
-        names = {c[0] for c in h.calls} - {"profiles"}
+        names = {c[0] for c in h.calls} - {"profiles", "reset"}
         self.assertEqual(names, {"quick_open_ms", "file_change_ms"})
         self.assertEqual(set(h.result()["configs"][0]["metrics"]),
                          {"quick_open_ms", "file_change_ms"})
@@ -156,7 +233,7 @@ class Runner(unittest.TestCase):
         h = Harness(self)
         h.main("--rounds", "3", "--only", "idle_ram_mb,idle_cpu_pct")
         for e in editors.EDITORS:
-            self.assertEqual(h.count("idle_session", e), 3)
+            self.assertEqual(h.count("idle_session", e), 4)   # warm-up + 3
         m = h.result()["configs"][0]["metrics"]
         self.assertEqual(m["idle_ram_mb"]["vscode"], [7.0] * 3)
         self.assertEqual(m["idle_cpu_pct"]["vscode"], [2.0] * 3)
@@ -170,7 +247,7 @@ class Runner(unittest.TestCase):
         h = Harness(self, perms={"screen_recording": False, "accessibility": True})
         rc = h.main("--rounds", "1")
         self.assertNotEqual(rc, 0)
-        self.assertEqual([c for c in h.calls if c[0] != "profiles"], [])
+        self.assertEqual([c for c in h.calls if c[0] not in ("profiles", "reset")], [])
 
     def test_permission_ok_for_subset(self):
         h = Harness(self, perms={"screen_recording": False, "accessibility": True})
@@ -194,7 +271,7 @@ class Runner(unittest.TestCase):
 
         def boom(editor, paths):
             n["i"] += 1
-            if n["i"] > 4:
+            if n["i"] > 7:   # 3 warm-up calls first
                 raise run.metrics.PermissionDenied("x")
             return 3.0
         orig = h.metric
@@ -226,7 +303,7 @@ class Runner(unittest.TestCase):
     def test_rest_between_editor_runs(self):
         h = Harness(self)
         h.main("--rounds", "1", "--only", "scroll_dropped_pct")
-        self.assertEqual(h.sleeps.count(20), 2)  # 3 runs, rest between
+        self.assertEqual(h.sleeps.count(20), 5)  # 3 warm-up + 3 runs, rest between
 
     def test_app_size_failure_is_null(self):
         h = Harness(self)
@@ -239,9 +316,9 @@ class Runner(unittest.TestCase):
         rc = h.main("--rounds", "2", "--ignore-preflight", "--only", "scroll_dropped_pct")
         self.assertEqual(rc, 0)
         self.assertEqual(h.sleeps.count(30), 0)
-        self.assertEqual(h.count("scroll_dropped_pct"), 6)
+        self.assertEqual(h.count("scroll_dropped_pct"), 9)   # warm-up + 2 rounds
         ign = h.result()["meta"]["preflight_ignored"]
-        self.assertEqual([x["round"] for x in ign], [1, 2])
+        self.assertEqual([x["round"] for x in ign], [0, 1, 2])
         self.assertEqual(ign[0]["reasons"], ["build running"])
 
     def test_no_preflight_ignored_key_without_flag(self):
@@ -251,9 +328,24 @@ class Runner(unittest.TestCase):
 
     def test_unexpected_error_saves_partial_nonzero(self):
         h = Harness(self)
-        with mock.patch.object(run, "wait_quiet", side_effect=RuntimeError("boom")):
+        err = io.StringIO()
+        with mock.patch.object(run, "wait_quiet", side_effect=RuntimeError("boom")), \
+                mock.patch.object(run.sys, "stderr", err):
             self.assertNotEqual(h.main("--rounds", "1", "--only", "scroll_dropped_pct"), 0)
         self.assertTrue(h.out.exists())
+        self.assertIn("Traceback", err.getvalue())
+
+    def test_failed_metric_logs_traceback(self):
+        h = Harness(self)
+
+        def boom(editor, paths):
+            raise ValueError("bad frame")
+        h.metric = lambda name: boom
+        err = io.StringIO()
+        with mock.patch.object(run.sys, "stderr", err):
+            self.assertEqual(h.main("--rounds", "1", "--only", "scroll_dropped_pct"), 0)
+        self.assertIn("Traceback", err.getvalue())
+        self.assertIn("ValueError: bad frame", err.getvalue())
 
     def test_eof_on_cold_prompt(self):
         h = Harness(self)
@@ -292,6 +384,39 @@ class FakeHelper(unittest.TestCase):
                 self.assertEqual(h.main("--rounds", "1", "--only", "scroll_dropped_pct"), 1)
         self.assertNotIn("check: \n", lg.call_args_list[-1][0][0])
         self.assertIn("Screen Recording", lg.call_args_list[-1][0][0])
+
+
+class Permissions(unittest.TestCase):
+    def test_needs_derived_from_helper_table(self):
+        self.assertEqual(set(run.NEEDS_SCREEN),
+                         {"startup_ms", "scroll_dropped_pct", "file_change_ms", "quick_open_ms"})
+        self.assertEqual(set(run.NEEDS_AX),
+                         {"scroll_dropped_pct", "file_change_ms", "quick_open_ms",
+                          "idle_ram_mb", "idle_cpu_pct"})
+
+    def test_missing_accessibility_blocks_scroll(self):
+        h = Harness(self, perms={"screen_recording": True, "accessibility": False})
+        with mock.patch.object(run, "_log") as lg:
+            self.assertEqual(h.main("--rounds", "1", "--only", "scroll_dropped_pct"), 1)
+        self.assertEqual(h.count("scroll_dropped_pct"), 0)
+        self.assertIn("Accessibility", lg.call_args_list[-1].args[0])
+
+    def test_meta_records_binary_helper_display_window(self):
+        with tempfile.TemporaryDirectory() as d:
+            paths = run.BenchPaths(Path(d))
+            fake = Path(d) / "helper"
+            fake.write_text('#!/bin/sh\necho \'{"width": 1470, "height": 956, "scale": 2}\'\n')
+            fake.chmod(0o755)
+            rec = {"path": "/x/luc", "mtime": "T", "version": "luc 1"}
+            with mock.patch.dict("os.environ", {"BENCH_HELPER": str(fake)}), \
+                    mock.patch.object(run.editors, "resolve_lucerna", return_value=rec), \
+                    mock.patch.object(run.editors, "version", return_value="v"):
+                meta = run.collect_meta([False], paths)
+        self.assertEqual(meta["lucerna_binary"], rec)
+        self.assertEqual(meta["helper"]["path"], str(fake))
+        self.assertIsNotNone(meta["helper"]["mtime"])
+        self.assertEqual(meta["display"], {"width": 1470, "height": 956, "scale": 2})
+        self.assertEqual(meta["window_frame"], {"x": 0, "y": 25, "w": 1280, "h": 800})
 
 
 class ForeignZed(unittest.TestCase):

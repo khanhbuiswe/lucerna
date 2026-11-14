@@ -18,7 +18,8 @@ import statistics
 import subprocess
 import sys
 import time
-from datetime import date
+import traceback
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -36,8 +37,10 @@ RESULTS_DIR = Path(__file__).resolve().parent / "results"
 METRICS = ("startup_ms", "idle_ram_mb", "idle_cpu_pct", "scroll_dropped_pct",
            "file_change_ms", "quick_open_ms", "app_size_mb")
 IDLE = ("idle_ram_mb", "idle_cpu_pct")
-NEEDS_SCREEN = ("startup_ms", "scroll_dropped_pct", "file_change_ms", "quick_open_ms")
-NEEDS_AX = ("quick_open_ms", "idle_ram_mb", "idle_cpu_pct")
+# Derived from metrics.METRIC_HELPERS x metrics.HELPER_PERMISSIONS: a metric
+# needs a permission if any helper subcommand it runs needs it.
+NEEDS_SCREEN = tuple(m for m in METRICS if "screen" in metrics.metric_permissions(m))
+NEEDS_AX = tuple(m for m in METRICS if "accessibility" in metrics.metric_permissions(m))
 SIMPLE = ("startup_ms", "scroll_dropped_pct", "file_change_ms", "quick_open_ms")
 
 
@@ -51,6 +54,10 @@ def _sleep(seconds: float) -> None:
 
 def _log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
+
+
+def _log_traceback() -> None:
+    print(traceback.format_exc(), file=sys.stderr, end="", flush=True)
 
 
 def order(rnd: int) -> list[str]:
@@ -75,7 +82,29 @@ def _cmd(args: list[str]) -> str:
         return ""
 
 
-def collect_meta(lsp_modes) -> dict:
+def _mtime_iso(path) -> str | None:
+    try:
+        t = os.stat(path).st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds")
+
+
+def helper_display(paths: BenchPaths) -> dict | None:
+    """`bench-helper display`: main display size, scale and refresh (no
+    permission needed)."""
+    try:
+        r = subprocess.run([metrics.helper_path(paths), "display"],
+                           capture_output=True, text=True, timeout=30)
+        data = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def collect_meta(lsp_modes, paths: BenchPaths) -> dict:
+    """Run once, before measuring. The Lucerna binary must already be
+    resolved (`editors.resolve_lucerna`); this reads the cached record."""
     ra = None
     if True in lsp_modes:
         path = shutil.which("rust-analyzer")
@@ -96,6 +125,14 @@ def collect_meta(lsp_modes) -> dict:
         "chip": _cmd(["sysctl", "-n", "machdep.cpu.brand_string"]),
         "ram_gb": round(int(mem) / 2 ** 30) if mem.isdigit() else None,
         "rust_analyzer": ra,
+        # The measured binary itself; lucerna_commit is only the checkout's HEAD.
+        "lucerna_binary": editors.resolve_lucerna(),
+        "helper": {"path": metrics.helper_path(paths),
+                   "mtime": _mtime_iso(metrics.helper_path(paths))},
+        "display": helper_display(paths),
+        # Every launching metric but startup; startup keeps each editor's
+        # default window size.
+        "window_frame": dict(metrics.WINDOW_FRAME),
     }
 
 
@@ -140,6 +177,16 @@ def check_permissions(paths: BenchPaths, selected: list[str]) -> None:
         lines.append("Có thể chạy trước các phép đo còn lại: --only " + ",".join(runnable))
     lines.append("Cấp quyền trong System Settings > Privacy & Security rồi chạy lại.")
     raise Abort("\n".join(lines))
+
+
+def check_vscode_lsp(paths: BenchPaths, selected: list[str], lsp_modes) -> None:
+    """The rust-analyzer config needs the extension in vscode-ext-lsp."""
+    if True not in lsp_modes or not [m for m in selected if m != "app_size_mb"]:
+        return
+    if not env.vscode_rust_analyzer_installed(paths):
+        raise Abort(f"Thiếu extension {env.VSCODE_RUST_ANALYZER} trong "
+                    f"{env.vscode_ext_dir(paths, True)} (cần cho --lsp on/both). Cài một lần "
+                    "bằng env.install_vscode_rust_analyzer (xem bench/compare/README.md).")
 
 
 def check_foreign_zed(paths: BenchPaths, selected: list[str]) -> None:
@@ -209,10 +256,11 @@ class Runner:
     def _call(self, fn, editor, label):
         try:
             return fn()
-        except (metrics.PermissionDenied, editors.ForeignInstance):
+        except (metrics.PermissionDenied, editors.ForeignInstance, editors.BinaryMissing):
             raise
         except Exception as exc:  # one broken round must not end the session
             _log(f"  {label} {editor}: lỗi {exc!r}, ghi null")
+            _log_traceback()
             return None
 
     def measure(self, cfg_metrics, editor) -> None:
@@ -235,20 +283,24 @@ class Runner:
             if "idle_cpu_pct" in self.selected:
                 cfg_metrics["idle_cpu_pct"][editor].append(cpu)
 
-    def warm_up(self, cfg_metrics) -> None:
-        """First startup of each editor runs and is discarded."""
-        if "startup_ms" not in self.selected:
+    def warm_up(self) -> None:
+        """Round 0: one full round of every selected launching metric (startup
+        included) for each editor, discarded. Fills OS and app caches so the
+        first measured round is not the first launch of anything."""
+        launching = [m for m in self.selected if m != "app_size_mb"]
+        if not launching:
             return
         self.round_no = 0
-        for editor in editors.EDITORS:
-            self.quiet()
-            _log(f"khởi động thử {editor} (bỏ kết quả)")
-            self._launch_gate()
-            if self.cold:
-                input("chạy `sudo purge` rồi nhấn Enter")
-            self._call(lambda: metrics.startup_ms(editor, self.paths), editor, "startup_ms")
+        self.quiet()
+        _log("lượt 0: chạy thử, bỏ kết quả")
+        scratch = {m: {e: [] for e in editors.EDITORS} for m in launching}
+        for editor in order(0):
+            self.measure(scratch, editor)
 
     def run_config(self, lsp: bool) -> None:
+        # Clean profiles for every config (vscode-ext-lsp is kept: installing
+        # rust-analyzer needs the network), then the settings for this one.
+        env.reset_profiles(self.paths)
         env.write_profiles(self.paths, lsp)
         cfg = {"lsp": lsp, "cold": self.cold,
                "metrics": {m: {e: [] for e in editors.EDITORS} for m in self.selected}}
@@ -259,7 +311,7 @@ class Runner:
                 cm["app_size_mb"][e] = [self._call(
                     lambda: metrics.app_size_mb(e), e, "app_size_mb")]
         self.save()
-        self.warm_up(cm)
+        self.warm_up()
         launching = [m for m in self.selected if m != "app_size_mb"]
         if not launching:
             return
@@ -268,8 +320,7 @@ class Runner:
             self.quiet()
             _log(f"lượt {r + 1}/{self.rounds} (lsp={'on' if lsp else 'off'})")
             for editor in order(r):
-                # warm-up already consumed the discarded startup, so measure()
-                # here records everything it returns
+                # round 0 (warm_up) was discarded; everything here is recorded
                 self.measure(cm, editor)
             self.save()
 
@@ -304,7 +355,13 @@ def main(argv=None) -> int:
     a = parse_args(sys.argv[1:] if argv is None else argv)
     paths = BenchPaths(Path(a.bench_dir).expanduser())
     lsp_modes = {"off": [False], "on": [True], "both": [False, True]}[a.lsp]
-    meta = collect_meta(lsp_modes)
+    try:
+        # Once per run: the binary recorded in meta is the binary measured.
+        editors.resolve_lucerna()
+    except editors.BinaryMissing as exc:
+        _log(str(exc))
+        return 1
+    meta = collect_meta(lsp_modes, paths)
     if a.out:
         out = Path(a.out)
     else:
@@ -313,6 +370,7 @@ def main(argv=None) -> int:
     try:
         check_permissions(paths, a.selected)
         check_foreign_zed(paths, a.selected)
+        check_vscode_lsp(paths, a.selected, lsp_modes)
         if not a.skip_prepare:
             env.prepare_data(paths)
         for lsp in lsp_modes:
@@ -326,7 +384,7 @@ def main(argv=None) -> int:
         _log(f"thiếu quyền giữa chừng: {detail}\nĐã lưu kết quả dở tại {out}.")
         runner.save()
         return 1
-    except (Abort, editors.ForeignInstance) as exc:
+    except (Abort, editors.ForeignInstance, editors.BinaryMissing) as exc:
         _log(str(exc))
         runner.save()
         return 1
@@ -335,6 +393,7 @@ def main(argv=None) -> int:
         runner.save()
         return 1
     except Exception as exc:
+        _log_traceback()
         _log(f"lỗi bất ngờ: {exc!r}; đã lưu kết quả dở tại {out}.")
         runner.save()
         return 1

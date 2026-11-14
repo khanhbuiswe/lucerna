@@ -67,6 +67,72 @@ class ProfilesTest(unittest.TestCase):
         self.assertIs(s["disable_ai"], True)
         self.assertEqual(s["buffer_font_size"], 14)
         self.assertIs(s["preview_tabs"]["enable_preview_from_file_finder"], False)
+        self.assertEqual(s["auto_install_extensions"], {"html": False})
+        self.assertIs(s["suggest_extensions"], False)
+
+    def test_profile_marker_records_lsp(self):
+        self.assertFalse(env.profile_lsp(self.paths))
+        env.write_profiles(self.paths, lsp=False)
+        self.assertFalse(env.profile_lsp(self.paths))
+        self.assertTrue((self.paths.profiles / "vscode-ext").is_dir())
+        with mock.patch.object(env.shutil, "which", return_value="/x/rust-analyzer"):
+            env.write_profiles(self.paths, lsp=True)
+        self.assertTrue(env.profile_lsp(self.paths))
+
+    def test_vscode_extension_dirs(self):
+        self.assertEqual(env.vscode_ext_dir(self.paths, False), self.paths.profiles / "vscode-ext")
+        self.assertEqual(env.vscode_ext_dir(self.paths, True),
+                         self.paths.profiles / "vscode-ext-lsp")
+        self.assertFalse(env.vscode_rust_analyzer_installed(self.paths))
+        (self.paths.profiles / "vscode-ext-lsp" / "rust-lang.rust-analyzer-0.3.2-darwin-arm64"
+         ).mkdir(parents=True)
+        self.assertTrue(env.vscode_rust_analyzer_installed(self.paths))
+
+
+class ResetProfilesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.paths = env.BenchPaths(Path(self.tmp.name) / "bench")
+
+    def test_wipes_all_but_lsp_extensions_and_pidfile(self):
+        env.write_profiles(self.paths, lsp=False)
+        prof = self.paths.profiles
+        (prof / "zed" / "data" / "db").mkdir(parents=True)
+        (prof / "vscode-ext" / "stray").mkdir(parents=True)
+        (prof / "vscode-ext-lsp" / "rust-lang.rust-analyzer-1").mkdir(parents=True)
+        pidfile = self.paths.lucerna_home / env.PIDFILE_NAME
+        pidfile.write_text("{}")
+        outside = Path(self.tmp.name) / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("x")
+        (prof / "link").symlink_to(outside)
+        env.reset_profiles(self.paths)
+        self.assertEqual(sorted(p.name for p in prof.iterdir()),
+                         ["lucerna-home", "vscode-ext-lsp"])
+        self.assertEqual([p.name for p in self.paths.lucerna_home.iterdir()],
+                         [env.PIDFILE_NAME])
+        self.assertTrue((prof / "vscode-ext-lsp" / "rust-lang.rust-analyzer-1").is_dir())
+        self.assertTrue((outside / "keep").exists())   # symlink removed, not followed
+        self.assertTrue(self.paths.data.parent.exists())
+
+    def test_no_profiles_dir_is_noop(self):
+        self.assertEqual(env.reset_profiles(self.paths), [])
+
+    def test_refuses_outside_profiles(self):
+        prof = self.paths.profiles
+        prof.mkdir(parents=True)
+        (prof / "zed").mkdir()
+        real_iterdir = Path.iterdir
+
+        def fake_iterdir(p):
+            if p == prof:
+                return iter([Path(self.tmp.name) / "elsewhere"])
+            return real_iterdir(p)
+        with mock.patch.object(Path, "iterdir", fake_iterdir):
+            with self.assertRaises(RuntimeError):
+                env.reset_profiles(self.paths)
+        self.assertTrue((prof / "zed").exists())
 
     def test_write_profiles_lucerna_real_keys_and_trust(self):
         env.write_profiles(self.paths, lsp=False)
