@@ -50,8 +50,10 @@ impl PanelPosition {
 }
 
 /// Where the panel is, how big in each position, and whether it shows;
-/// kept in the workspace state.
+/// kept in the workspace state. A field missing from the file takes its
+/// default.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
 pub struct PanelState {
     pub visible: bool,
     pub position: PanelPosition,

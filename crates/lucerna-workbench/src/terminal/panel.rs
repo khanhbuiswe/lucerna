@@ -61,19 +61,47 @@ pub struct TerminalPanel {
     hovered: Option<u64>,
     /// Each tab's subscription to its view's events, by tab id.
     view_events: HashMap<u64, Subscription>,
+    _focus_forward: Subscription,
 }
 
 impl EventEmitter<PanelEvent> for TerminalPanel {}
 
 impl TerminalPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus = cx.focus_handle();
+        // The frame tracks this handle, so a press anywhere in the tab bar
+        // focuses it: hand the focus on to the shown terminal, which
+        // installs the input handler (IME) and draws a solid cursor.
+        let forward = cx.on_focus(&focus, window, |panel: &mut Self, window, cx| {
+            let target = panel.focus_target(cx);
+            if target != panel.focus {
+                window.focus(&target, cx);
+            }
+        });
         TerminalPanel {
             tabs: Vec::new(),
             active: 0,
-            focus: cx.focus_handle(),
+            focus,
             next_id: 1,
             hovered: None,
             view_events: HashMap::new(),
+            _focus_forward: forward,
+        }
+    }
+
+    /// Runs `change` (which may show another tab), then focuses the shown
+    /// terminal when the focus was in the panel before.
+    fn keeping_focus(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut Self, &mut Context<Self>),
+    ) {
+        let had_focus = self.focus.contains_focused(window, cx);
+        change(self, cx);
+        if had_focus && !self.tabs.is_empty() {
+            let target = self.focus_target(cx);
+            window.focus(&target, cx);
         }
     }
 
@@ -306,8 +334,10 @@ pub(crate) fn tab_elements(panel: &Entity<TerminalPanel>, cx: &App) -> Vec<AnyEl
                 ui::TabClose {
                     id: ("terminal-tab-close", id).into(),
                     selector: format!("terminal-tab-close-{i}"),
-                    on_click: Box::new(move |_: &ClickEvent, _, cx: &mut App| {
-                        panel.update(cx, |p, cx| p.close_tab(id, cx));
+                    on_click: Box::new(move |_: &ClickEvent, window, cx: &mut App| {
+                        panel.update(cx, |p, cx| {
+                            p.keeping_focus(window, cx, |p, cx| p.close_tab(id, cx))
+                        });
                     }),
                 }
             });
@@ -345,11 +375,15 @@ pub(crate) fn tab_elements(panel: &Entity<TerminalPanel>, cx: &App) -> Vec<AnyEl
             .on_hover(move |hovered: &bool, _, cx| {
                 on_hover.update(cx, |p, cx| p.set_hovered(id, *hovered, cx));
             })
-            .on_click(move |_, _, cx| {
-                on_click.update(cx, |p, cx| p.activate(i, cx));
+            .on_click(move |_, window, cx| {
+                on_click.update(cx, |p, cx| {
+                    p.keeping_focus(window, cx, |p, cx| p.activate(i, cx))
+                });
             })
-            .on_mouse_up(MouseButton::Middle, move |_, _, cx| {
-                on_middle.update(cx, |p, cx| p.close_tab(id, cx));
+            .on_mouse_up(MouseButton::Middle, move |_, window, cx| {
+                on_middle.update(cx, |p, cx| {
+                    p.keeping_focus(window, cx, |p, cx| p.close_tab(id, cx))
+                });
             })
             .on_drag(drag, |drag: &TabDrag, _, _, cx: &mut App| {
                 let title = drag.title.clone();

@@ -386,6 +386,23 @@ fn old_state_without_panel_loads_default() {
     );
 }
 
+#[test]
+fn panel_state_with_missing_fields_keeps_the_others() {
+    let state: PanelState = serde_json::from_value(serde_json::json!({
+        "visible": true,
+        "position": "right",
+    }))
+    .expect("a partial panel state parses");
+    assert_eq!(
+        state,
+        PanelState {
+            visible: true,
+            position: PanelPosition::Right,
+            ..PanelState::default()
+        }
+    );
+}
+
 #[gpui::test]
 fn default_location_setting_places_a_new_panel(cx: &mut TestAppContext) {
     init(cx);

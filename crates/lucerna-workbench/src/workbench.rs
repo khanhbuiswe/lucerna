@@ -195,6 +195,10 @@ pub struct Workbench {
     terminal_panel: Entity<TerminalPanel>,
     /// Starts the panel's terminals.
     terminal_spawner: TerminalSpawner,
+    /// The panel was restored visible: its fresh terminal starts once the
+    /// folder's trust is known, so it gets the Workspace shell settings of
+    /// a trusted folder.
+    restore_terminal: bool,
     /// The focused group and its active tab as last seen: when they
     /// change under a maximized panel, the panel goes back to its size so
     /// the editor shows (as VS Code does).
@@ -500,7 +504,7 @@ impl Workbench {
                 ..PanelState::default()
             },
         };
-        let terminal_panel = cx.new(TerminalPanel::new);
+        let terminal_panel = cx.new(|cx| TerminalPanel::new(window, cx));
         let sidebar_focus = cx.focus_handle();
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
@@ -628,6 +632,7 @@ impl Workbench {
             panel: panel_state,
             terminal_panel: terminal_panel.clone(),
             terminal_spawner: default_spawner(cx),
+            restore_terminal: false,
             shown_editor: (0, None),
             commands: Rc::new(commands),
             focus,
@@ -689,10 +694,9 @@ impl Workbench {
             workbench.start_persistence(store, restored.as_ref(), cx);
         }
         workbench.shown_editor = workbench.shown_editor(cx);
-        // A panel shown when the window closed shows a new terminal.
-        if workbench.panel.visible {
-            workbench.open_terminal(window, cx);
-        }
+        // A panel shown when the window closed shows a new terminal, once
+        // the trust store has answered (`open_restored_terminal`).
+        workbench.restore_terminal = workbench.panel.visible;
         if workbench.panel.visible && workbench.panel.maximized {
             // The editor area is not drawn: the panel takes the focus.
             let focus = terminal_panel.read(cx).focus_target(cx);
@@ -707,6 +711,9 @@ impl Workbench {
         let documents = workbench.documents.clone();
         let trust_events = workbench.start_trust(&documents, window, cx);
         workbench._subscriptions.push(trust_events);
+        if workbench.language_servers().read(cx).trust_known() {
+            workbench.open_restored_terminal(window, cx);
+        }
         workbench.start_auto_save(&documents, window, cx);
         workbench.refresh_watched_open_files(cx);
         workbench.add_status_item(StatusBarSide::Left, diagnostics_status.into(), cx);
@@ -1908,7 +1915,7 @@ impl Workbench {
     pub fn toggle_maximized_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.panel.visible {
             self.panel.maximized = !self.panel.maximized;
-            if self.panel.maximized {
+            if self.panel.maximized || self.panel_has_focus(window, cx) {
                 let focus = self.terminal_panel.read(cx).focus_target(cx);
                 window.focus(&focus, cx);
             }
@@ -1952,6 +1959,25 @@ impl Workbench {
                     .update(cx, |panel, cx| panel.add_failed_tab(error, cx))
             }
         }
+    }
+
+    /// Starts the terminal of a panel restored visible, now that the
+    /// folder's trust is known. Nothing when the panel was hidden or got a
+    /// terminal meanwhile. With the focus in the panel (restored
+    /// maximized), the terminal takes it.
+    pub(crate) fn open_restored_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.restore_terminal)
+            || !self.panel.visible
+            || self.terminal_panel.read(cx).tab_count() > 0
+        {
+            return;
+        }
+        self.open_terminal(window, cx);
+        if self.panel_has_focus(window, cx) {
+            let focus = self.terminal_panel.read(cx).focus_target(cx);
+            window.focus(&focus, cx);
+        }
+        cx.notify();
     }
 
     /// The shown tab's terminal, if it is running.
@@ -2095,6 +2121,13 @@ impl Workbench {
     ) {
         match target {
             LinkTarget::File { path, line, col } => {
+                // The file may already be the active editor, which leaves
+                // the editor groups unchanged: restore the panel here.
+                if self.panel.visible && self.panel.maximized {
+                    self.panel.maximized = false;
+                    self.layout_changed(cx);
+                    cx.notify();
+                }
                 // Terminal positions are 1-based and count characters (as
                 // rustc, tsc and gcc print them); `Point` is 0-based bytes,
                 // so the column is converted once the text is loaded.

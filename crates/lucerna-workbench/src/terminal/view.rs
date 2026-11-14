@@ -134,6 +134,9 @@ pub struct TerminalView {
     poll: Option<Task<()>>,
     poll_again: bool,
     last_poll: Option<Instant>,
+    /// The theme generation the terminal's query palette (OSC 4/10/11
+    /// answers) was last set for.
+    query_palette_generation: Option<u64>,
     /// Bells rung since the view was made.
     bells: u64,
     /// The exit code once the process has exited (`Some(None)`: killed by
@@ -176,13 +179,14 @@ impl TerminalView {
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
             cx.observe_global::<crate::AppState>(|view, cx| {
                 view.apply_settings(cx);
+                view.sync_query_palette(cx);
                 cx.notify();
             }),
         ];
         // The first hover must not spend its 1 ms compiling the patterns.
         cx.background_spawn(async { lucerna_terminal::warm_link_patterns() })
             .detach();
-        let view = TerminalView {
+        let mut view = TerminalView {
             terminal: Arc::new(terminal),
             cwd_start: PathBuf::new(),
             root: PathBuf::new(),
@@ -195,6 +199,7 @@ impl TerminalView {
             poll: None,
             poll_again: false,
             last_poll: None,
+            query_palette_generation: None,
             bells: 0,
             exited: None,
             grid: (snapshot.rows, snapshot.cols),
@@ -210,7 +215,20 @@ impl TerminalView {
             _subscriptions: subscriptions,
         };
         view.apply_settings(cx);
+        view.sync_query_palette(cx);
         view
+    }
+
+    /// Gives the terminal the active theme's colours to answer colour
+    /// queries with, once per theme change: apps reading the background
+    /// (OSC 11) then match a light theme.
+    fn sync_query_palette(&mut self, cx: &App) {
+        let generation = cx.global::<crate::AppState>().theme_generation;
+        if self.query_palette_generation != Some(generation) {
+            self.query_palette_generation = Some(generation);
+            self.terminal
+                .set_query_palette(&super::settings::palette(cx));
+        }
     }
 
     /// Hands the settings an open terminal follows to its terminal
@@ -443,6 +461,12 @@ impl TerminalView {
         self.terminal.paste(text);
         self.terminal.scroll(Scroll::Bottom);
         cx.notify();
+    }
+
+    /// The last paint gave the window this view's input handler: typed
+    /// text and IME compositions (Telex) reach the terminal.
+    pub fn input_handler_installed(&self) -> bool {
+        self.input_handler_installed
     }
 
     /// The IME composition in progress, if any.

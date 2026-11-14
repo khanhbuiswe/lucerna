@@ -559,3 +559,155 @@ fn panel_reopens_with_fresh_terminal(cx: &mut TestAppContext) {
     assert_eq!(tab_count(&wb, cx), 1);
     assert_eq!(fakes.borrow().options.len(), spawned + 1, "a new terminal");
 }
+
+fn view_focused(view: &Entity<TerminalView>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|window, cx| view.read(cx).focus_handle(cx).is_focused(window))
+}
+
+fn assert_types_into(view: &Entity<TerminalView>, what: &str, cx: &mut VisualTestContext) {
+    assert!(view_focused(view, cx), "{what}: the terminal has the focus");
+    assert!(
+        view.read_with(cx, |v, _| v.input_handler_installed()),
+        "{what}: the input handler (IME) is installed"
+    );
+}
+
+fn click_at(name: &'static str, cx: &mut VisualTestContext) {
+    let at = cx
+        .debug_bounds(name)
+        .unwrap_or_else(|| panic!("no element {name}"))
+        .center();
+    cx.simulate_click(at, gpui::Modifiers::none());
+    settle(cx);
+}
+
+#[gpui::test]
+fn clicks_in_the_tab_bar_keep_the_terminal_focused(cx: &mut TestAppContext) {
+    init("{}", cx);
+    let (wb, cx) = open(Path::new("/tmp/project"), cx);
+    let first = new_terminal(&wb, cx);
+    let second = new_terminal(&wb, cx);
+    assert_types_into(&second, "a new terminal", cx);
+
+    // Clicking a tab focuses its terminal, not the panel frame.
+    click_at("terminal-tab-0", cx);
+    assert_types_into(&first, "after a tab click", cx);
+    click_at("terminal-tab-1", cx);
+    assert_types_into(&second, "after another tab click", cx);
+
+    // × on a background tab: the shown terminal keeps the focus.
+    new_terminal(&wb, cx);
+    click_at("terminal-tab-1", cx);
+    let at = cx.debug_bounds("terminal-tab-2").unwrap().center();
+    cx.simulate_mouse_move(at, None, gpui::Modifiers::none());
+    settle(cx);
+    click_at("terminal-tab-close-2", cx);
+    assert_eq!(tab_count(&wb, cx), 2);
+    assert_types_into(&second, "after × on a background tab", cx);
+
+    // × on the shown tab: the tab shown next takes the focus.
+    click_at("terminal-tab-close-1", cx);
+    assert_eq!(tab_count(&wb, cx), 1);
+    assert_types_into(&first, "after × on the shown tab", cx);
+
+    // Maximize, then restore.
+    click_at("terminal-maximize", cx);
+    assert!(wb.read_with(cx, |wb, _| wb.panel_state().maximized));
+    assert_types_into(&first, "after maximize", cx);
+    click_at("terminal-maximize", cx);
+    assert!(!wb.read_with(cx, |wb, _| wb.panel_state().maximized));
+    assert_types_into(&first, "after restore", cx);
+}
+
+#[gpui::test]
+fn middle_click_close_keeps_the_terminal_focused(cx: &mut TestAppContext) {
+    init("{}", cx);
+    let (wb, cx) = open(Path::new("/tmp/project"), cx);
+    let first = new_terminal(&wb, cx);
+    new_terminal(&wb, cx);
+    let at = cx.debug_bounds("terminal-tab-1").unwrap().center();
+    cx.simulate_mouse_down(at, gpui::MouseButton::Middle, gpui::Modifiers::none());
+    cx.simulate_mouse_up(at, gpui::MouseButton::Middle, gpui::Modifiers::none());
+    settle(cx);
+    assert_eq!(tab_count(&wb, cx), 1);
+    assert_types_into(&first, "after a middle-click close", cx);
+}
+
+/// The reply to an OSC 11 query for `background`, as xterm words it.
+fn osc11_reply(background: lucerna_theme::Rgba) -> String {
+    let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
+    let (r, g, b) = (byte(background.r), byte(background.g), byte(background.b));
+    format!("\x1b]11;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\x07")
+}
+
+#[gpui::test]
+fn background_query_answers_with_the_theme(cx: &mut TestAppContext) {
+    init("{}", cx);
+    let light = cx.update(|cx| {
+        let state = cx.global::<AppState>();
+        state.themes.get_or_default("Lucerna Light")
+    });
+    cx.update_global::<AppState, _>(|state, _| state.set_theme(light.clone()));
+    let (wb, cx) = open(Path::new("/tmp/project"), cx);
+    let view = new_terminal(&wb, cx);
+    view.read_with(cx, |v, _| v.terminal().feed(b"\x1b]11;?\x07"));
+    let written = view.read_with(cx, |v, _| v.terminal().written());
+    let light_reply = osc11_reply(light.terminal.background);
+    assert_eq!(String::from_utf8(written).unwrap(), light_reply);
+
+    // A theme change answers the next query with the new background.
+    let dark = cx.update(|_, cx| {
+        cx.global::<AppState>()
+            .themes
+            .get_or_default("Lucerna Dark")
+    });
+    cx.update(|_, cx| cx.update_global::<AppState, _>(|state, _| state.set_theme(dark.clone())));
+    settle(cx);
+    view.read_with(cx, |v, _| v.terminal().feed(b"\x1b]11;?\x07"));
+    let written = view.read_with(cx, |v, _| v.terminal().written());
+    assert_eq!(
+        String::from_utf8(written).unwrap(),
+        light_reply + &osc11_reply(dark.terminal.background)
+    );
+}
+
+#[gpui::test]
+fn restored_terminal_in_a_trusted_folder_uses_workspace_settings(cx: &mut TestAppContext) {
+    let root = TempDir::new().unwrap();
+    let data = TempDir::new().unwrap();
+    std::fs::create_dir(root.path().join("ws")).unwrap();
+    let fakes = init("{}", cx);
+    cx.update_global::<AppState, _>(|state, _| {
+        state
+            .settings
+            .set_layer(Layer::Workspace, r#"{ "terminal.integrated.cwd": "ws" }"#)
+            .unwrap();
+    });
+    let mut store = lucerna_workbench::TrustStore::load(data.path());
+    store.trust(root.path(), false).unwrap();
+    let state: lucerna_workbench::WorkspaceState = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "sidebar_visible": true,
+        "sidebar_width": 260.0,
+        "sidebar_view": "explorer",
+        "groups": { "groups": [], "active_group": 0 },
+        "scroll": {},
+        "panel": { "visible": true, "position": "bottom", "bottom_height": 320.0,
+                   "right_width": 640.0, "maximized": true },
+    }))
+    .unwrap();
+    let state_file = lucerna_workbench::state_path(data.path(), root.path());
+    lucerna_workbench::save_state(&state_file, &state).unwrap();
+
+    let (r, d) = (root.path().to_path_buf(), data.path().to_path_buf());
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::with_data_dir(r, d, window, cx));
+    settle(cx);
+    assert!(!wb.read_with(cx, |wb, cx| wb.is_restricted(cx)));
+    assert_eq!(tab_count(&wb, cx), 1, "the restored panel has one terminal");
+    assert_eq!(fakes.borrow().options.len(), 1);
+    assert_eq!(last_options(&fakes).cwd, root.path().join("ws"));
+    // Restored maximized, the panel's focus went to the terminal once it
+    // started.
+    let view = active_view(&wb, cx);
+    assert_types_into(&view, "the restored terminal", cx);
+}

@@ -514,3 +514,32 @@ fn click_survives_a_plain_move(cx: &mut TestAppContext) {
     let tab = active_tab(&wb, cx).expect("the clicked file opened");
     assert_eq!(tab.file_name().unwrap(), "lib.rs");
 }
+
+#[gpui::test]
+fn link_to_the_shown_file_restores_a_maximized_panel(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = project();
+    let (wb, cx, view) = with_terminal(dir.path(), cx);
+    feed(&view, "src/lib.rs:2", cx);
+    click(at(&view, 0, 3, cx), link_mods(), cx);
+    assert_eq!(
+        active_tab(&wb, cx)
+            .expect("a tab opened")
+            .file_name()
+            .unwrap(),
+        "lib.rs"
+    );
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            assert!(wb.run_command("workbench.action.toggleMaximizedPanel", None, window, cx));
+        })
+    });
+    draw(cx);
+    assert!(wb.read_with(cx, |wb, _| wb.panel_state().maximized));
+    assert!(cx.debug_bounds("editor-area").is_none());
+
+    // The file is already the active editor: the editor area must still show.
+    click(at(&view, 0, 3, cx), link_mods(), cx);
+    assert!(!wb.read_with(cx, |wb, _| wb.panel_state().maximized));
+    assert!(cx.debug_bounds("editor-area").is_some());
+}

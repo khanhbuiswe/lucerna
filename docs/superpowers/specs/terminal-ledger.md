@@ -100,6 +100,20 @@ Cache shape theo damage của §9.1 không làm: prepaint 200 × 60 bây giờ ~
 
 Bản đầu của §1.2 lấy `descent` của font với dấu âm (font-kit trả descent là số âm), nên baseline thấp hơn baseline của dòng shape khoảng một descent (17,60 px so với 13,39 px trong ô cao 17 px), chữ lệch với ký tự rộng, dấu kết hợp, con trỏ khối và chữ IME trên cùng dòng, gạch chân và gạch ngang lệch theo. Đã sửa bằng `abs()`, như layout của GPUI. `terminal_perf` bây giờ luôn kiểm tra (cả khi chạy `cargo test` thường, không cần `--ignored`) rằng baseline của chữ vẽ từ glyph bằng `(cao ô − ascent − descent) / 2 + ascent` của `layout_line("m")` bằng text system thật.
 
+### 1.4 Sửa sau review cuối nhánh
+
+Mỗi mục có test hồi quy, viết trước và thấy fail rồi mới sửa.
+
+1. Bấm vào thanh tab của panel (tab, × kể cả trên tab nền, nút giữa, ⤢) để focus ở khung panel chứ không ở terminal: bộ xử lý nhập (IME, gõ Telex) không được cài, con trỏ vẽ rỗng. `TerminalPanel` giờ chuyển focus của chính panel sang terminal đang hiện (`cx.on_focus`), và bấm tab hoặc đóng tab khi focus đang trong panel thì focus terminal được hiện. Test: `clicks_in_the_tab_bar_keep_the_terminal_focused`, `middle_click_close_keeps_the_terminal_focused`.
+2. Câu hỏi màu OSC 4/10/11/12 luôn được trả bằng bảng màu tối cố định, nên Neovim và Codex chọn kiểu tối dưới Lucerna Light. Bảng màu để trả lời giờ nằm trong terminal (`Terminal::set_query_palette`), `TerminalView` đặt nó lúc tạo và mỗi khi `theme_generation` đổi. Bảng cố định trong `lucerna-terminal` đã bỏ; trước khi có bảng màu thì không trả lời. Test: `background_query_answers_with_the_theme`, `color_request_is_answered_from_the_query_palette`.
+3. Terminal mở lại cùng cửa sổ luôn chạy như Restricted Mode vì nó khởi động trước khi đọc xong trust store. Giờ nó chờ trust store trả lời (`open_restored_terminal`). Test: `restored_terminal_in_a_trusted_folder_uses_workspace_settings`.
+4. `foreground_process` có thể đọc một fd đã bị đóng và dùng lại. Giờ `Terminal::with_pty_fd` giữ khóa `pty_open` trong lúc gọi `tcgetpgrp`. Test: `with_pty_fd_keeps_the_fd_open_while_it_runs`.
+5. `env -u` coi đường dẫn chương trình có `=` là phép gán biến. Chương trình như vậy giờ chạy qua `/bin/sh -c 'exec "$0" "$@"'`, vì cả `env` của BSD lẫn GNU vẫn đọc `a=b` là phép gán dù có `--`. `ALACRITTY_WINDOW_ID` và `WINDOWID` (alacritty tự thêm) cũng bị bỏ khỏi môi trường của shell. Test: `program_path_with_equals_sign_runs`, `alacritty_window_variables_do_not_reach_the_child`.
+6. ⌘+click vào file đang là editor active khi panel phóng to thì không hiện gì. Giờ link file luôn đưa panel về kích thước thường. Test: `link_to_the_shown_file_restores_a_maximized_panel`.
+7. `PanelState` có `#[serde(default)]`: file trạng thái thiếu một trường vẫn đọc được. Test: `panel_state_with_missing_fields_keeps_the_others`.
+
+Các mục kiểm tra thủ công ở §2 vẫn chưa đánh dấu: chờ người dùng kiểm tra, nhất là gõ Telex sau khi bấm đổi tab và OSC 11 dưới Lucerna Light (Neovim, Codex).
+
 ## 2. Kiểm tra thủ công (chờ người dùng kiểm tra)
 
 Chạy bản release (`scripts/bundle-app.sh`), đặt cạnh Zed khi so giao diện (design-principles §1.1).
@@ -120,6 +134,8 @@ Chạy bản release (`scripts/bundle-app.sh`), đặt cạnh Zed khi so giao di
 - [ ] Resize panel khi Claude Code đang vẽ: không vỡ khung, không panic. Chờ người dùng kiểm tra.
 - [ ] Gõ tiếng Việt bằng Telex trong zsh và trong Claude Code: chữ đang gõ hiện ở con trỏ, dấu đúng. Chờ người dùng kiểm tra.
 - [ ] Đổi theme khi terminal đang mở: màu đổi ngay. Chờ người dùng kiểm tra.
+- [ ] Dưới Lucerna Light, Neovim 0.10+ và Codex chọn kiểu sáng (OSC 11). Chờ người dùng kiểm tra.
+- [ ] Hai tab Claude Code: bấm đổi tab rồi gõ Telex ngay, chữ đang gõ hiện ở con trỏ. Chờ người dùng kiểm tra.
 - [ ] Chữ có dấu kết hợp, CJK và emoji hiện đúng ô sau thay đổi cách vẽ ở §1.2 (đường shape vẫn dùng cho chúng). Chờ người dùng kiểm tra.
 
 ### 2.3 So giao diện với Zed (Task 13 bước 6)
