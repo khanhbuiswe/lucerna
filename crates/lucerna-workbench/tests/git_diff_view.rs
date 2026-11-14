@@ -1146,3 +1146,65 @@ fn refresh_button_resolves_the_ref_again(cx: &mut TestAppContext) {
         "only the uncommitted change is left"
     );
 }
+
+#[gpui::test]
+fn paths_changed_during_first_listing_are_asked_after_it(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(feature_branch, cx);
+    // Open the tab and draw it once: its first listing is started, not run.
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command("lucerna.git.viewBranchChanges", None, window, cx)
+        })
+    });
+    draw(cx);
+    let view = cx
+        .update(|_, cx| wb.read(cx).branch_changes_view(cx))
+        .expect("the tab is drawn");
+    write(&dir, "d.txt", "d\n");
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&changed(&dir, "d.txt"), cx)
+    });
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).queued_paths()),
+        1,
+        "the change waits for the listing"
+    );
+    settle(cx);
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt", "d.txt"]);
+    assert_eq!(cx.update(|_, cx| view.read(cx).queued_paths()), 0);
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).path_queries_run()),
+        1,
+        "asked once the listing was in"
+    );
+}
+
+#[gpui::test]
+fn too_many_changes_stops_per_path_queries(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench_with(
+        Some(r#"{ "git.statusLimit": 3 }"#),
+        true,
+        |dir| {
+            feature_branch(dir);
+            for i in 0..4 {
+                write(dir, &format!("u{i}.txt"), "u\n");
+            }
+        },
+        cx,
+    );
+    let state = cx.update(|_, cx| wb.read(cx).git().read(cx).state());
+    assert_eq!(state, lucerna_workbench::GitState::TooManyChanges);
+    let view = open_branch(&wb, cx);
+    assert_eq!(file_paths(&view, cx).len(), 6);
+    let lists = cx.update(|_, cx| view.read(cx).listings_run());
+    write(&dir, "d.txt", "d\n");
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&changed(&dir, "d.txt"), cx)
+    });
+    settle(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).path_queries_run()), 0);
+    assert_eq!(cx.update(|_, cx| view.read(cx).listings_run()), lists);
+    assert_eq!(file_paths(&view, cx).len(), 6, "d.txt waits for a refresh");
+    run(&wb, "git.refresh", cx);
+    assert!(file_paths(&view, cx).contains(&"d.txt".to_string()));
+}

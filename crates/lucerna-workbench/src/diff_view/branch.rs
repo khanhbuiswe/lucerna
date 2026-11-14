@@ -17,6 +17,7 @@ use gpui::{AppContext, Context, Entity};
 use lucerna_git::{FileStatus, GitError, Repo};
 
 use super::{DiffKind, DiffView};
+use crate::git::GitState;
 use crate::tasks::guarded;
 
 /// More changed paths than this list the whole tree again rather than
@@ -37,6 +38,8 @@ pub(super) struct BranchState {
     pub(super) unresolved: bool,
     /// Changed paths waiting for the running listing.
     pub(super) pending_paths: Vec<Arc<Path>>,
+    /// Per-path queries started so far.
+    pub(super) path_queries: usize,
 }
 
 /// The answer of a listing job.
@@ -53,6 +56,18 @@ enum BranchListing {
 }
 
 impl DiffView {
+    /// Changed paths waiting for the running listing of a branch tab.
+    #[doc(hidden)]
+    pub fn queued_paths(&self) -> usize {
+        self.branch.pending_paths.len()
+    }
+
+    /// Per-path git queries a branch tab started so far.
+    #[doc(hidden)]
+    pub fn path_queries_run(&self) -> usize {
+        self.branch.path_queries
+    }
+
     /// Makes the tab follow `base`: picking a ref reloads it in place.
     pub(crate) fn follow_branch_base(&mut self, base: Entity<BranchBase>, cx: &mut Context<Self>) {
         let subscription = cx.observe(&base, |view, base, cx| {
@@ -157,14 +172,20 @@ impl DiffView {
 
     /// Asks git whether `paths` (changed on disk) differ from the merge
     /// base: files join, leave or change status in the list.
+    /// Only while the store is [`GitState::Ready`]: after too many
+    /// changes git runs on `git.refresh` alone (spec §4.12).
     pub(super) fn branch_paths_changed(&mut self, paths: Vec<Arc<Path>>, cx: &mut Context<Self>) {
-        let Some((_, merge_base)) = self.branch.known.clone() else {
+        if self.git.read(cx).state() != GitState::Ready {
             return;
-        };
+        }
+        // Asked once the running listing is in, which may predate them.
         if self.status_task.is_some() {
             self.branch.pending_paths.extend(paths);
             return;
         }
+        let Some((_, merge_base)) = self.branch.known.clone() else {
+            return;
+        };
         let Some(repo) = self.git.read(cx).repo() else {
             return;
         };
@@ -176,6 +197,7 @@ impl DiffView {
             return;
         }
         let specs: Vec<PathBuf> = paths.iter().map(|p| p.to_path_buf()).collect();
+        self.branch.path_queries += 1;
         self.status_task = Some(cx.spawn(async move |this, cx| {
             let listed = cx
                 .background_spawn(async move {
