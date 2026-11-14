@@ -64,7 +64,7 @@ left out.
 - **Minimal UI.**
   - Compact chrome: an integrated title bar that shows the git branch, and panel toggles in the status bar.
   - Flat tabs with preview tabs, a path bar, indent guides and thin scrollbars.
-  - Lilex and IBM Plex Sans fonts, Lucide icons, and the One Dark and One Light themes.
+  - Lilex and IBM Plex Sans fonts, Lucide icons, and the Lucerna Dark and Lucerna Light themes, which follow the system's light or dark mode.
 - **Syntax highlighting** with tree-sitter for Rust, TypeScript/TSX, JavaScript, Python, Go, JSON,
   Markdown, TOML, YAML, Bash, HTML and CSS. More languages come from extensions.
 - **Code intelligence over LSP.** Go to definition, references, hover, diagnostics and outline from
@@ -181,7 +181,9 @@ The settings use VS Code's names, for example:
   "editor.lineHeight": 1.6,
   "editor.wordWrap": "off",
   "editor.minimap.enabled": false,
-  "workbench.colorTheme": "One Dark",
+  "window.autoDetectColorScheme": true,
+  "workbench.preferredDarkColorTheme": "Lucerna Dark",
+  "workbench.preferredLightColorTheme": "Lucerna Light",
   "files.exclude": { "**/dist": true },
   "[go]": { "editor.tabSize": 8 }
 }
