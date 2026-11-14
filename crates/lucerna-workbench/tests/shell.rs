@@ -17,7 +17,7 @@ fn init(cx: &mut TestAppContext, user_keymap: Option<&str>) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), user_keymap);
     assert!(error.is_none(), "keymap error: {error:?}");
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings: SettingsStore::with_defaults(),
         keymap,

@@ -188,10 +188,6 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
             *color,
         ));
     }
-    if let Some(thumb) = frame.thumb {
-        window
-            .paint_quad(fill(thumb, colors.scrollbar_thumb).corner_radii(px(SCROLLBAR_WIDTH / 2.)));
-    }
 }
 
 /// Diagnostic marks over the text: wavy underlines in the severity's

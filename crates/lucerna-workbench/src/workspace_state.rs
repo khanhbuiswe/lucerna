@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::editor_groups::{EXTENSIONS_TAB_STATE, GroupsState, SEARCH_TAB_STATE};
+use crate::editor_groups::{
+    EXTENSIONS_TAB_STATE, GroupsState, SEARCH_TAB_STATE, prefixed, split_preview_state,
+};
 
 /// The file format version; a file of any other version is set aside.
 pub(crate) const STATE_VERSION: u32 = 1;
@@ -56,25 +58,35 @@ impl WorkspaceState {
     /// (and scroll rows) of files that no longer exist, keeping each
     /// group's active tab where it still exists. The Extensions and Search
     /// tabs ([`EXTENSIONS_TAB_STATE`], [`SEARCH_TAB_STATE`]) are kept as
-    /// they are. Empty groups are left
-    /// for [`crate::EditorGroups::restore`] to normalise.
+    /// they are. A Markdown preview tab (saved as a prefix and a path) keeps
+    /// its prefix and is kept while the file it shows exists. Empty groups
+    /// are left for [`crate::EditorGroups::restore`] to normalise.
     pub fn without_missing_files(mut self, root: &Path) -> Self {
         let special = |path: &Path| {
             path == Path::new(EXTENSIONS_TAB_STATE) || path == Path::new(SEARCH_TAB_STATE)
         };
+        let exists = |path: &Path| {
+            special(path)
+                || match split_preview_state(path) {
+                    Some((_, file)) => file.exists(),
+                    None => path.exists(),
+                }
+        };
         for group in &mut self.groups.groups {
             for (path, _) in &mut group.tabs {
-                if !special(path) {
-                    *path = absolute_path(root, path);
+                if special(path) {
+                    continue;
                 }
+                *path = match split_preview_state(path) {
+                    Some((prefix, file)) => prefixed(prefix, &absolute_path(root, file)),
+                    None => absolute_path(root, path),
+                };
             }
             let active_path = group
                 .active
                 .and_then(|i| group.tabs.get(i))
                 .map(|(path, _)| path.clone());
-            group
-                .tabs
-                .retain(|(path, _)| special(path) || path.exists());
+            group.tabs.retain(|(path, _)| exists(path));
             group.active = active_path.and_then(|a| group.tabs.iter().position(|(p, _)| *p == a));
         }
         self.scroll = std::mem::take(&mut self.scroll)
@@ -94,6 +106,18 @@ pub(crate) fn absolute_path(root: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         root.join(path)
+    }
+}
+
+/// Where `path` is after `from` was renamed to `to`: `to` for `from`
+/// itself, `to/<rest>` for a path under it (whole components only, so
+/// `/r/srcx` is not under `/r/src`), else `None`.
+pub(crate) fn moved_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    let rest = path.strip_prefix(from).ok()?;
+    if rest.as_os_str().is_empty() {
+        Some(to.to_path_buf())
+    } else {
+        Some(to.join(rest))
     }
 }
 

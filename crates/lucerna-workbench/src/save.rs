@@ -298,17 +298,28 @@ pub(crate) fn failure_message(path: &Path, err: &WriteError) -> String {
     format!("Failed to save '{}': {err}", display_name(path))
 }
 
-/// Saves the document of the active code view.
+/// The file the save and revert commands act on: the active code view's,
+/// or the file a focused Markdown preview (static or dynamic) renders
+/// (spec §4.1).
+fn active_document_path(wb: &Workbench, cx: &App) -> Option<Arc<Path>> {
+    if let Some(view) = wb.active_code_view(cx) {
+        return Some(view.read(cx).path().clone());
+    }
+    let groups = wb.editor_groups().read(cx);
+    let tab = groups.model().active_tab()?;
+    tab.path().or(tab.previewed_path()).cloned()
+}
+
+/// Saves the document of the active code view or preview.
 fn save_active(
     wb: &mut Workbench,
     opts: SaveOptions,
     window: &mut Window,
     cx: &mut Context<Workbench>,
 ) {
-    let Some(view) = wb.active_code_view(cx) else {
+    let Some(path) = active_document_path(wb, cx) else {
         return;
     };
-    let path = view.read(cx).path().clone();
     wb.documents()
         .clone()
         .update(cx, |d, cx| d.save(&path, opts, window, cx))
@@ -385,12 +396,20 @@ impl Workbench {
 
     fn auto_save_event(
         &mut self,
-        _: &Entity<Documents>,
+        documents: &Entity<Documents>,
         event: &DocumentEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
+            // Only a renamed document opens with unsaved changes: its timer
+            // went with `Closed` at the old path.
+            DocumentEvent::Opened { path, .. }
+                if documents.read(cx).is_dirty(path)
+                    && self.auto_save_mode(path, cx) == "afterDelay" =>
+            {
+                self.arm_auto_save(path, window, cx);
+            }
             DocumentEvent::Edited { path, .. } => {
                 if self.auto_save_mode(path, cx) != "afterDelay" {
                     self.auto_save.timers.remove(path);
@@ -503,10 +522,9 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "workbench.action.files.revert",
         "File: Revert File",
         |wb, _, _, cx| {
-            let Some(view) = wb.active_code_view(cx) else {
+            let Some(path) = active_document_path(wb, cx) else {
                 return;
             };
-            let path = view.read(cx).path().clone();
             wb.documents()
                 .clone()
                 .update(cx, |d, cx| d.revert(&path, cx))

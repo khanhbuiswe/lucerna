@@ -64,7 +64,7 @@ left out.
 - **Minimal UI.**
   - Compact chrome: an integrated title bar that shows the git branch, and panel toggles in the status bar.
   - Flat tabs with preview tabs, a path bar, indent guides and thin scrollbars.
-  - Lilex and IBM Plex Sans fonts, Lucide icons, and the One Dark and One Light themes.
+  - Lilex and IBM Plex Sans fonts, Lucide icons, and the Lucerna Dark and Lucerna Light themes, which follow the system's light or dark mode.
 - **Syntax highlighting** with tree-sitter for Rust, TypeScript/TSX, JavaScript, Python, Go, JSON,
   Markdown, TOML, YAML, Bash, HTML and CSS. More languages come from extensions.
 - **Code intelligence over LSP.** Go to definition, references, hover, diagnostics and outline from
@@ -181,7 +181,9 @@ The settings use VS Code's names, for example:
   "editor.lineHeight": 1.6,
   "editor.wordWrap": "off",
   "editor.minimap.enabled": false,
-  "workbench.colorTheme": "One Dark",
+  "window.autoDetectColorScheme": true,
+  "workbench.preferredDarkColorTheme": "Lucerna Dark",
+  "workbench.preferredLightColorTheme": "Lucerna Light",
   "files.exclude": { "**/dist": true },
   "[go]": { "editor.tabSize": 8 }
 }
@@ -366,4 +368,6 @@ Lucerna is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-A
 
 Bundled third-party assets keep their own licenses. These include the Lilex and IBM Plex fonts (OFL-1.1),
 Lucide icons (ISC), the One theme (MIT), tree-sitter grammars and GPUI (Apache-2.0).
-See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for a summary. The app carries the full
+license text of every bundled crate and asset: open it with Help › Third-Party Licenses, or the Licenses
+button in About. `scripts/bundle-app.sh` writes it with `scripts/gen-licenses.py`.

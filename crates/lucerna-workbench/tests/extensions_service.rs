@@ -325,12 +325,12 @@ fn color_theme_applied_when_extension_appears(cx: &mut TestAppContext) {
     let dirs = Dirs::new();
     write(
         &dirs.settings(),
-        r#"{ "workbench.colorTheme": "Ext Dark" }"#,
+        r#"{ "window.autoDetectColorScheme": false, "workbench.colorTheme": "Ext Dark" }"#,
     );
     init_with_config(&dirs, cx);
     let (_wb, cx) = workbench(&dirs, cx);
     settle(cx);
-    assert_eq!(theme_name(cx), "One Dark");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
     let setting: Option<String> = cx.update(|_, cx| {
         cx.global::<AppState>()
             .settings
@@ -358,7 +358,7 @@ fn configured_extension_theme_applies_at_startup(cx: &mut TestAppContext) {
     reindex(dirs.store.path());
     write(
         &dirs.settings(),
-        r#"{ "workbench.colorTheme": "Ext Dark" }"#,
+        r#"{ "window.autoDetectColorScheme": false, "workbench.colorTheme": "Ext Dark" }"#,
     );
     init_with_config(&dirs, cx);
     let (_wb, cx) = workbench(&dirs, cx);

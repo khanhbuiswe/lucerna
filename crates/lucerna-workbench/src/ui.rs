@@ -9,6 +9,9 @@ use gpui::{
 use lucerna_theme::IconSource;
 
 use crate::AppState;
+pub use crate::context_menu::{
+    ContextMenu, DeployedMenu, MenuCommand, MenuItem, deploy_context_menu, render_deployed,
+};
 use crate::icons;
 use crate::layout::color;
 use crate::text_input::TextInput;
@@ -26,6 +29,13 @@ pub const PATH_BAR_HEIGHT: f32 = TAB_HEIGHT - 2. * GRID;
 pub const TREE_ROW_HEIGHT: f32 = 24.0;
 /// Width of the thin overlay scrollbar thumb.
 pub const SCROLLBAR_WIDTH: f32 = 6.0;
+pub use crate::scrollbar::{
+    ScrollHandleSource, ScrollMetrics, ScrollbarSource, ScrollbarState, scrollbar,
+};
+
+/// Width of the strip at the right edge that takes the mouse for the
+/// scrollbar: wider than the thumb, so it is easy to hit.
+pub const SCROLLBAR_HIT_WIDTH: f32 = 12.0;
 /// The scrollbar thumb never gets shorter than this.
 pub const MIN_THUMB_HEIGHT: f32 = 6. * GRID;
 pub const POPOVER_MAX_WIDTH: f32 = 600.0;
@@ -620,6 +630,41 @@ pub(crate) fn thumb_geometry(viewport: f32, content: f32, scroll_top: f32) -> Op
     Some((top, height))
 }
 
+/// The scroll position that puts the thumb's top at `thumb_top` (clamped
+/// to the track): the inverse of [`thumb_geometry`]. 0 when nothing
+/// overflows.
+pub(crate) fn scroll_top_for_thumb(viewport: f32, content: f32, thumb_top: f32) -> f32 {
+    let Some((_, height)) = thumb_geometry(viewport, content, 0.) else {
+        return 0.;
+    };
+    let travel = viewport - height;
+    let max_scroll = content - viewport;
+    if travel <= 0. {
+        return 0.;
+    }
+    (thumb_top / travel).clamp(0., 1.) * max_scroll
+}
+
+/// The scroll position after a click on the track at `y` (from the
+/// track's top): the thumb centered there, or with `by_page` one viewport
+/// up or down depending on which side of the thumb `y` is.
+pub(crate) fn scroll_top_for_track_click(
+    viewport: f32,
+    content: f32,
+    scroll_top: f32,
+    y: f32,
+    by_page: bool,
+) -> f32 {
+    let Some((top, height)) = thumb_geometry(viewport, content, scroll_top) else {
+        return 0.;
+    };
+    if !by_page {
+        return scroll_top_for_thumb(viewport, content, y - height / 2.);
+    }
+    let page = if y < top { -viewport } else { viewport };
+    (scroll_top + page).clamp(0., content - viewport)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,5 +683,49 @@ mod tests {
         let (top, height) = thumb_geometry(100., 100_000., 99_900.).unwrap();
         assert_eq!(height, MIN_THUMB_HEIGHT);
         assert_eq!(top + height, 100.);
+    }
+
+    #[test]
+    fn thumb_position_maps_back_to_scroll() {
+        // 200 tall, 400 content: thumb 100 tall, 100 px of travel for
+        // 200 px of scroll.
+        assert_eq!(scroll_top_for_thumb(200., 400., 0.), 0.);
+        assert_eq!(scroll_top_for_thumb(200., 400., 50.), 100.);
+        assert_eq!(scroll_top_for_thumb(200., 400., 100.), 200.);
+        // Round trip with thumb_geometry.
+        assert_eq!(thumb_geometry(200., 400., 80.), Some((40., 100.)));
+        assert_eq!(scroll_top_for_thumb(200., 400., 40.), 80.);
+        assert_eq!(scroll_top_for_thumb(100., 50., 10.), 0.);
+    }
+
+    #[test]
+    fn drag_past_track_ends_clamps() {
+        assert_eq!(scroll_top_for_thumb(200., 400., -30.), 0.);
+        assert_eq!(scroll_top_for_thumb(200., 400., 500.), 200.);
+    }
+
+    #[test]
+    fn track_click_centers_the_thumb_or_pages() {
+        // Thumb 100 tall centered on y=150: its top is 100, the end.
+        assert_eq!(
+            scroll_top_for_track_click(200., 400., 0., 150., false),
+            200.
+        );
+        // Centered on y=60: top 10.
+        assert_eq!(scroll_top_for_track_click(200., 400., 0., 60., false), 20.);
+        // Paged: below the thumb one viewport down, above it one up,
+        // clamped to the range.
+        assert_eq!(
+            scroll_top_for_track_click(200., 1000., 0., 190., true),
+            200.
+        );
+        assert_eq!(
+            scroll_top_for_track_click(200., 1000., 700., 5., true),
+            500.
+        );
+        assert_eq!(
+            scroll_top_for_track_click(200., 1000., 700., 199., true),
+            800.
+        );
     }
 }

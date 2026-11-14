@@ -16,11 +16,12 @@ use jsonc_parser::common::Ranged;
 use jsonc_parser::tokens::Token;
 use jsonc_parser::{CollectOptions, CommentCollectionStrategy, ParseOptions, ast, parse_to_ast};
 use lucerna_settings::{Layer, SettingsError, SettingsStore};
-use lucerna_theme::{ResolvedIcons, Theme};
+use lucerna_theme::{Appearance, ResolvedIcons, Theme};
 
 use crate::config_files::{
-    ConfigFile, ConfigState, USER_SETTINGS_TEMPLATE, apply_configured_theme, record_error,
-    reload_config, set_icon_preview, set_theme_preview,
+    ConfigFile, ConfigState, USER_SETTINGS_TEMPLATE, apply_configured_theme,
+    color_theme_setting_key, record_error, reload_config, set_icon_preview, set_theme_preview,
+    system_appearance,
 };
 use crate::extensions::service::resolve_icons;
 use crate::quick_open::picker::{
@@ -217,13 +218,33 @@ impl Workbench {
         if self.theme_picker.is_some() {
             return;
         }
+        let system = system_appearance(cx);
         let state = cx.global::<AppState>();
-        let (names, original) = (state.themes.names(), state.theme.clone());
+        let follows_system = color_theme_setting_key(&state.settings, system) != COLOR_THEME_KEY;
+        let original = state.theme.clone();
         let current = original.name.clone();
+        // As in VS Code: the themes of the mode in use come first.
+        let mode = if follows_system {
+            system
+        } else {
+            original.appearance
+        };
+        let (mut names, rest): (Vec<_>, Vec<_>) = state
+            .themes
+            .themes_with_appearance()
+            .into_iter()
+            .partition(|(_, appearance)| *appearance == mode);
+        names.extend(rest);
+        let names = names.into_iter().map(|(name, _)| name).collect();
+        let placeholder = match (follows_system, system) {
+            (false, _) => "Select Color Theme (detect system color mode disabled)",
+            (true, Appearance::Dark) => "Select Color Theme for System Dark Mode",
+            (true, Appearance::Light) => "Select Color Theme for System Light Mode",
+        };
         self.show_picker(
             names,
             &current,
-            "Select Color Theme",
+            placeholder,
             Picking::ColorTheme(original),
             window,
             cx,
@@ -318,7 +339,7 @@ impl Workbench {
                 let key = if is_icons {
                     ICON_THEME_KEY
                 } else {
-                    COLOR_THEME_KEY
+                    color_theme_key(cx)
                 };
                 match save_setting(key, name, cx) {
                     Ok(()) => {
@@ -351,7 +372,7 @@ pub(crate) fn set_theme_setting(name: &str, icons: bool, cx: &mut App) -> Result
     let key = if icons {
         ICON_THEME_KEY
     } else {
-        COLOR_THEME_KEY
+        color_theme_key(cx)
     };
     save_setting(key, name, cx)?;
     preview(name, icons, cx);
@@ -362,6 +383,12 @@ pub(crate) fn set_theme_setting(name: &str, icons: bool, cx: &mut App) -> Result
         reload_config(&[path], cx);
     }
     Ok(())
+}
+
+/// The setting a picked color theme is written to: the preferred theme
+/// for the system mode while the theme follows it, as in VS Code.
+fn color_theme_key(cx: &App) -> &'static str {
+    color_theme_setting_key(&cx.global::<AppState>().settings, system_appearance(cx))
 }
 
 /// Makes the named theme (colors or icons) active without saving it.
@@ -522,39 +549,41 @@ mod tests {
     use super::*;
 
     fn set(text: &str) -> String {
-        set_string_setting(text, COLOR_THEME_KEY, "One Light").unwrap()
+        set_string_setting(text, COLOR_THEME_KEY, "Lucerna Light").unwrap()
     }
 
     #[test]
     fn appends_before_the_closing_brace() {
         assert_eq!(
             set(USER_SETTINGS_TEMPLATE),
-            "// Lucerna user settings\n{\n  \"workbench.colorTheme\": \"One Light\"\n}\n"
+            "// Lucerna user settings\n{\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}\n"
         );
         assert_eq!(
             set("{\n  \"a\": 1 // one\n}\n"),
-            "{\n  \"a\": 1, // one\n  \"workbench.colorTheme\": \"One Light\"\n}\n"
+            "{\n  \"a\": 1, // one\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}\n"
         );
         assert_eq!(
             set("{ \"a\": [1, 2], }"),
-            "{ \"a\": [1, 2],\n  \"workbench.colorTheme\": \"One Light\"\n}"
+            "{ \"a\": [1, 2],\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}"
         );
         assert_eq!(
             set("// only a comment\n"),
-            "// only a comment\n{\n  \"workbench.colorTheme\": \"One Light\"\n}\n"
+            "// only a comment\n{\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}\n"
         );
     }
 
     #[test]
     fn replaces_an_existing_value_in_place() {
         assert_eq!(
-            set("{\n  // theme\n  \"workbench.colorTheme\": \"One Dark\", /* x */\n  \"b\": 2\n}"),
-            "{\n  // theme\n  \"workbench.colorTheme\": \"One Light\", /* x */\n  \"b\": 2\n}"
+            set(
+                "{\n  // theme\n  \"workbench.colorTheme\": \"Lucerna Dark\", /* x */\n  \"b\": 2\n}"
+            ),
+            "{\n  // theme\n  \"workbench.colorTheme\": \"Lucerna Light\", /* x */\n  \"b\": 2\n}"
         );
         // Only top-level keys count.
         assert_eq!(
             set("{ \"x\": { \"workbench.colorTheme\": 1 } }"),
-            "{ \"x\": { \"workbench.colorTheme\": 1 },\n  \"workbench.colorTheme\": \"One Light\"\n}"
+            "{ \"x\": { \"workbench.colorTheme\": 1 },\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}"
         );
     }
 
@@ -564,13 +593,13 @@ mod tests {
         let updated = set(text);
         assert_eq!(
             updated,
-            "{\n  \"workbench.colorTheme\": \"A\",\n  \"workbench.colorTheme\": \"One Light\"\n}"
+            "{\n  \"workbench.colorTheme\": \"A\",\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}"
         );
         let mut store = SettingsStore::default();
         store.set_layer(Layer::User, &updated).unwrap();
         assert_eq!(
             store.get::<String>(COLOR_THEME_KEY, None).as_deref(),
-            Some("One Light")
+            Some("Lucerna Light")
         );
     }
 
@@ -580,13 +609,13 @@ mod tests {
         let updated = set(text);
         assert_eq!(
             updated,
-            "{\n  \"[rust]\": { \"workbench.colorTheme\": \"A\" },\n  \"workbench.colorTheme\": \"One Light\"\n}"
+            "{\n  \"[rust]\": { \"workbench.colorTheme\": \"A\" },\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}"
         );
         let mut store = SettingsStore::default();
         store.set_layer(Layer::User, &updated).unwrap();
         assert_eq!(
             store.get::<String>(COLOR_THEME_KEY, None).as_deref(),
-            Some("One Light")
+            Some("Lucerna Light")
         );
         assert_eq!(
             store
@@ -606,10 +635,10 @@ mod tests {
     fn atomic_write_leaves_no_temp_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        write_string_setting(&path, COLOR_THEME_KEY, "One Light").unwrap();
+        write_string_setting(&path, COLOR_THEME_KEY, "Lucerna Light").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
-            text.contains("\"workbench.colorTheme\": \"One Light\""),
+            text.contains("\"workbench.colorTheme\": \"Lucerna Light\""),
             "{text}"
         );
         let names: Vec<_> = std::fs::read_dir(dir.path())

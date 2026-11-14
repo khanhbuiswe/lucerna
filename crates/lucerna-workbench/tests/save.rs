@@ -33,7 +33,7 @@ fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
         settings.set_layer(Layer::User, json).unwrap();
     }
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings,
         keymap,
@@ -1599,4 +1599,24 @@ fn auto_save_does_not_move_a_caret_at_the_end_past_a_final_newline(cx: &mut Test
     assert_eq!(disk(&dir, "file.txt"), "abcx");
     keys("cmd-s", cx);
     assert_eq!(disk(&dir, "file.txt"), "abcx\n", "an explicit save adds it");
+}
+
+/// A renamed document with unsaved changes is still autosaved, at its new
+/// path, without another edit: `Closed` at the old path dropped its timer.
+#[gpui::test]
+fn after_delay_saves_a_renamed_document(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"files.autoSave": "afterDelay", "files.autoSaveDelay": 200}"#),
+    );
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    let (from, to) = (dir.path().join("file.txt"), dir.path().join("new.txt"));
+    fs::rename(&from, &to).unwrap();
+    let docs = documents(&wb, cx);
+    docs.update(cx, |d, cx| d.rename(&from, &to, cx));
+    settle(cx);
+    advance(1000, cx);
+    assert_eq!(disk(&dir, "new.txt"), "xabc\n");
+    assert!(!from.exists(), "the old file is not written again");
 }

@@ -35,6 +35,7 @@ Spec này **chỉ** mô tả giai đoạn 1. Mỗi giai đoạn sau có spec ri�
 | 5 | Mở rộng | Git gutter, xem diff, terminal tích hợp, giao diện settings (5.1 Git lõi: màu Explorer, gutter — xong trên nhánh, chờ merge) |
 | V1 | Vim di chuyển (đã xong) | Bật bằng `vim.enabled` trong settings. Chỉ có các thao tác đọc: motion, tìm kiếm, cuộn, số đếm, mark, chọn bằng visual rồi copy |
 | V2 | Vim sửa (làm ngay sau bước 4.2 và 4.4, trước 4.3, 4.5, 4.6). **V2a đã xong** | Insert mode, các toán tử `d`/`c`/`y`, text object, `.`, macro, register, một phần lệnh `:` |
+| MD | Markdown preview (đã làm xong, còn chờ hai bước kiểm tra: so giao diện với Zed, đo RAM sau khi đóng tab có ảnh) ([spec](2026-11-13-markdown-preview-design.md)) | Xem `.md` đã render ở tab riêng, cuộn đồng bộ với tab mã nguồn, ảnh và link cục bộ, mở file HTML bằng trình duyệt |
 
 Vim mode là tính năng có sẵn trong lõi editor, không phải extension, giống cách Zed làm. Xem phần nghiên cứu ở `docs/research/2026-11-09-vim-mode.md`.
 

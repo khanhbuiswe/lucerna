@@ -119,6 +119,26 @@ impl FoldState {
         self.hiding_header(row).unwrap_or(row)
     }
 
+    /// The buffer row of the `n`th row not hidden by a closed fold (the
+    /// inverse of `row - hidden_before(row)`); past the end it counts on as
+    /// if the buffer were longer.
+    pub fn nth_visible(&self, n: u32) -> u32 {
+        let mut row = n;
+        let mut covered = 0;
+        for (&header, &end) in &self.folded {
+            if header < covered {
+                // Inside a fold already counted.
+                continue;
+            }
+            if header >= row {
+                break;
+            }
+            row += end - (header + 1);
+            covered = end;
+        }
+        row
+    }
+
     /// How many rows before `row` closed folds hide.
     pub fn hidden_before(&self, row: u32) -> u32 {
         let mut hidden = 0;
@@ -300,6 +320,28 @@ mod tests {
                 pieces.len() as u32,
                 "row {row}"
             );
+        }
+    }
+
+    #[test]
+    fn nth_visible_skips_folds() {
+        let available = [2..10, 20..25];
+        let mut folds = FoldState::default();
+        assert_eq!(folds.nth_visible(7), 7);
+        folds.toggle(2, &available);
+        // Rows 3..10 are hidden.
+        assert_eq!(folds.nth_visible(0), 0);
+        assert_eq!(folds.nth_visible(2), 2);
+        assert_eq!(folds.nth_visible(3), 10);
+        assert_eq!(folds.nth_visible(5), 12);
+        folds.toggle(20, &available);
+        // And 21..25: row 20 is index 13, the next shown is 25.
+        assert_eq!(folds.nth_visible(13), 20);
+        assert_eq!(folds.nth_visible(14), 25);
+        for n in 0..40 {
+            let row = folds.nth_visible(n);
+            assert_eq!(row - folds.hidden_before(row), n, "n {n}");
+            assert_eq!(folds.prev_visible(row), row, "n {n}");
         }
     }
 

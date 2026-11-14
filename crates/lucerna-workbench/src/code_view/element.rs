@@ -26,7 +26,7 @@ use super::selection;
 use super::{CodeView, CursorOverlay, CursorShape, Drag, hsla, link};
 use crate::AppState;
 use crate::hover::PopoverAnchor;
-use crate::ui::{SCROLLBAR_WIDTH, thumb_geometry};
+use crate::ui::ScrollMetrics;
 
 /// Rows shaped below the viewport so the next scroll step is ready.
 const OVERSCAN_ROWS: u32 = 3;
@@ -183,8 +183,8 @@ pub(crate) struct Frame {
     /// `·` and `→`, when whitespace is rendered.
     whitespace: Option<(ShapedLine, ShapedLine)>,
     hitbox: Option<Hitbox>,
-    /// The overlay scrollbar thumb, while the rows overflow.
-    thumb: Option<Bounds<Pixels>>,
+    /// The scrollbar's geometry: one row's height per buffer row shown.
+    scroll_metrics: ScrollMetrics,
     diagnostics: FrameDiagnostics,
     /// Git change bars and deletion pills in the gutter.
     hunk_bars: Vec<hunk_bars::HunkBar>,
@@ -233,7 +233,6 @@ struct FrameColors {
     hover: Hsla,
     cursor: Hsla,
     caret: Hsla,
-    scrollbar_thumb: Hsla,
     fade: Hsla,
     strike: Hsla,
 }
@@ -278,8 +277,8 @@ fn severity_icon(severity: Severity) -> DiagnosticIcon {
 }
 
 impl Frame {
-    pub fn thumb(&self) -> Option<Bounds<Pixels>> {
-        self.thumb
+    pub fn scroll_metrics(&self) -> ScrollMetrics {
+        self.scroll_metrics
     }
 
     pub fn visible_rows(&self) -> u32 {
@@ -688,28 +687,24 @@ impl CodeView {
             .collect();
 
         // The thumb follows buffer rows (folded ones left out), not
-        // wrapped display lines: one row's height each. It shows while the
+        // wrapped display lines: one line's height each. It shows while the
         // rows overflow, and its range is the real scroll range, which
         // ends with the last row at the top.
         let lh = f32::from(line_height);
         let viewport = f32::from(bounds.size.height);
         let shown_rows = line_count - self.folds.hidden_before(line_count);
         let rows_above = self.scroll.top_row - self.folds.hidden_before(self.scroll.top_row);
-        let thumb = (shown_rows as f32 * lh > viewport)
-            .then(|| {
-                thumb_geometry(
-                    viewport,
-                    shown_rows.saturating_sub(1) as f32 * lh + viewport,
-                    rows_above as f32 * lh + self.scroll.offset,
-                )
-            })
-            .flatten()
-            .map(|(top, height)| {
-                Bounds::new(
-                    point(bounds.right() - px(SCROLLBAR_WIDTH), bounds.top() + px(top)),
-                    size(px(SCROLLBAR_WIDTH), px(height)),
-                )
-            });
+        let scroll_metrics = ScrollMetrics {
+            viewport,
+            content: if shown_rows as f32 * lh > viewport {
+                shown_rows.saturating_sub(1) as f32 * lh + viewport
+            } else {
+                viewport
+            },
+            // The top row's display lines share its one line of the scale.
+            scroll_top: rows_above as f32 * lh
+                + self.scroll.offset / self.wrap_count(self.scroll.top_row).max(1) as f32,
+        };
 
         let scrollbar_marks = self.scrollbar_marks(bounds.size.height, ui, cx);
         let diagnostics = self.layout_diagnostics(
@@ -772,7 +767,7 @@ impl CodeView {
             brackets,
             whitespace,
             hitbox: Some(hitbox),
-            thumb,
+            scroll_metrics,
             diagnostics,
             hunk_bars,
             icon_shift,
@@ -788,12 +783,12 @@ impl CodeView {
                 hover: hsla(ui.element_hover),
                 cursor: hsla(ui.editor_foreground).opacity(CURSOR_ALPHA),
                 caret: hsla(ui.cursor),
-                scrollbar_thumb: hsla(ui.scrollbar_thumb),
                 fade: hsla(ui.editor_background).opacity(FADE_ALPHA),
                 strike: hsla(ui.editor_foreground),
             },
         });
         self.frame = Some(frame.clone());
+        self.report_scroll(cx);
         frame
     }
 
@@ -1205,6 +1200,7 @@ impl CodeView {
         if !self.word_wrap {
             self.scroll_x = (self.scroll_x - f32::from(delta.x)).max(0.);
         }
+        self.report_scroll(cx);
         cx.notify();
     }
 }

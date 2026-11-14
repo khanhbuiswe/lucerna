@@ -126,6 +126,15 @@ mod tests {
         }
     }
 
+    fn alt_shift_cmd() -> Modifiers {
+        Modifiers {
+            alt: true,
+            shift: true,
+            platform: true,
+            ..Modifiers::none()
+        }
+    }
+
     fn ctrl_shift_cmd() -> Modifiers {
         Modifiers {
             control: true,
@@ -173,9 +182,11 @@ mod tests {
             (event("c", None, alt_cmd()), "alt+cmd+c"),
             (event("w", None, alt_cmd()), "alt+cmd+w"),
             (event("r", None, alt_cmd()), "alt+cmd+r"),
+            (event("f", Some("ƒ"), alt_shift()), "alt+shift+f"),
             (event("j", None, cmd_shift()), "shift+cmd+j"),
             (event("f4", None, Modifiers::none()), "f4"),
             (event("f4", None, Modifiers::shift()), "shift+f4"),
+            (event("f10", None, Modifiers::shift()), "shift+f10"),
             (event("f12", None, Modifiers::none()), "f12"),
             (event("f12", None, alt()), "alt+f12"),
             (event("f12", None, cmd()), "cmd+f12"),
@@ -200,6 +211,9 @@ mod tests {
             (event("r", None, ctrl_shift()), "ctrl+shift+r"),
             (event("o", None, cmd()), "cmd+o"),
             (event("f", Some("f"), Modifiers::none()), "f"),
+            // Markdown preview: toggle, and the second stroke of `cmd+k v`.
+            (event("v", None, cmd_shift()), "cmd+shift+v"),
+            (event("v", Some("v"), Modifiers::none()), "v"),
         ];
         // Cursor movement.
         for (key, plain, shifted) in [
@@ -261,6 +275,7 @@ mod tests {
             ),
             (event("backspace", None, alt()), "alt+backspace"),
             (event("backspace", None, cmd()), "cmd+backspace"),
+            (event("backspace", None, alt_cmd()), "alt+cmd+backspace"),
             (event("delete", None, Modifiers::none()), "delete"),
             (event("delete", None, alt()), "alt+delete"),
             (event("delete", None, cmd()), "cmd+delete"),
@@ -278,6 +293,8 @@ mod tests {
             (event("up", None, alt_shift()), "shift+alt+up"),
             (event("down", None, alt_shift()), "shift+alt+down"),
             (event("k", None, cmd_shift()), "cmd+shift+k"),
+            (event("enter", Some("\n"), ctrl()), "ctrl+enter"),
+            (event("c", None, alt_shift_cmd()), "alt+cmd+shift+c"),
             (event("enter", Some("\n"), cmd()), "cmd+enter"),
             (event("enter", Some("\n"), cmd_shift()), "cmd+shift+enter"),
             (event("]", None, cmd()), "cmd+]"),
