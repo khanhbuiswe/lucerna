@@ -1,11 +1,11 @@
 //! An excerpt list's data: files with excerpts, flattened into rows for the
-//! list, plus match navigation. Pure data, no gpui.
+//! list, plus match and change navigation. Pure data, no gpui.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use lucerna_project::{Excerpt, LineMatch};
+use lucerna_project::{Excerpt, LineKind, LineMatch};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineRef {
@@ -15,25 +15,73 @@ pub struct LineRef {
 }
 
 /// A result line named by path and line number: unlike a [`LineRef`] it
-/// stays valid while streamed results insert files before it.
+/// stays valid while streamed results insert files before it. `kind` tells
+/// apart a deleted line from the current line it shares a number with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineAnchor {
     pub path: Arc<Path>,
     pub line_number: u32,
+    pub kind: LineKind,
+}
+
+/// What a diff view knows about a file beyond its lines: shown on its
+/// header (`+added −removed` and a small tag such as "new"), and a `note`
+/// (such as "Binary file") shown as one row in place of its excerpts.
+/// When `openable` is false (a deleted file) the header's "open file"
+/// button is disabled. Files sort by `group`, then by path, so a diff view
+/// can list conflicts first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileMeta {
+    pub added: u32,
+    pub removed: u32,
+    pub label: Option<&'static str>,
+    pub note: Option<&'static str>,
+    pub openable: bool,
+    pub group: u8,
+}
+
+impl Default for FileMeta {
+    /// No counts, label or note, openable, group 0.
+    fn default() -> Self {
+        FileMeta {
+            added: 0,
+            removed: 0,
+            label: None,
+            note: None,
+            openable: true,
+            group: 0,
+        }
+    }
+}
+
+/// Where file `path` sorts: by its meta's group, then by path.
+fn order_key<'a>(meta: &HashMap<Arc<Path>, FileMeta>, path: &'a Path) -> (u8, &'a Path) {
+    (meta.get(path).map_or(0, |m| m.group), path)
+}
+
+/// Whether `line` is an added or deleted line of a diff.
+fn is_change(line: &LineMatch) -> bool {
+    line.kind != LineKind::Normal
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Header(usize),
     Line(LineRef),
-    Separator { file: usize },
+    Separator {
+        file: usize,
+    },
+    /// A file's [`FileMeta::note`], shown in place of its excerpts.
+    Note {
+        file: usize,
+    },
 }
 
 impl Row {
     /// The index of the file the row belongs to.
     pub fn file(&self) -> usize {
         match *self {
-            Row::Header(file) | Row::Separator { file } => file,
+            Row::Header(file) | Row::Separator { file } | Row::Note { file } => file,
             Row::Line(r) => r.file,
         }
     }
@@ -67,14 +115,115 @@ pub struct Results {
     /// excerpts: the other files are its predecessor's, kept on screen
     /// until [`prune`](Self::prune).
     confirmed: HashSet<Arc<Path>>,
+    /// Diff meta by path; it may be set before the file arrives.
+    meta: HashMap<Arc<Path>, FileMeta>,
+    /// Bumped by every change to the files or rows.
+    revision: u64,
 }
 
 impl Results {
+    /// Drops every file and every file's meta.
     pub fn clear(&mut self) {
+        self.revision += 1;
         self.files.clear();
         self.rows.clear();
         self.match_count = 0;
         self.confirmed.clear();
+        self.meta.clear();
+    }
+
+    /// Replaces every file, keeping the meta of the paths still present.
+    pub fn replace_files(&mut self, files: Vec<(Arc<Path>, Vec<Excerpt>)>) {
+        let mut meta = std::mem::take(&mut self.meta);
+        self.clear();
+        let present: HashSet<&Arc<Path>> = files.iter().map(|(p, _)| p).collect();
+        meta.retain(|p, _| present.contains(p));
+        self.meta = meta;
+        self.add_files(files);
+    }
+
+    /// Sets the diff meta of file `path` (present or not yet). A new
+    /// group moves the file. The rows are rebuilt only for a listed file.
+    pub fn set_meta(&mut self, path: Arc<Path>, meta: FileMeta) {
+        let old = self.meta.get(&path).copied();
+        if old == Some(meta) {
+            return;
+        }
+        let listed = self.search(&path).is_ok();
+        let regroup = old.map_or(0, |m| m.group) != meta.group;
+        self.meta.insert(path, meta);
+        if listed && regroup {
+            self.sort_files();
+        }
+        if listed {
+            self.rebuild();
+        }
+    }
+
+    /// Whether any file has diff meta.
+    pub(crate) fn has_meta(&self) -> bool {
+        !self.meta.is_empty()
+    }
+
+    /// Drops the meta of file `path`, which is not listed: rows stay.
+    pub(crate) fn forget_meta(&mut self, path: &Path) {
+        self.meta.remove(path);
+    }
+
+    /// The position of file `path`, or where it would go.
+    fn search(&self, path: &Path) -> Result<usize, usize> {
+        let key = order_key(&self.meta, path);
+        self.files
+            .binary_search_by(|f| order_key(&self.meta, &f.path).cmp(&key))
+    }
+
+    /// Sorts the files by group, then path.
+    fn sort_files(&mut self) {
+        let meta = &self.meta;
+        self.files
+            .sort_by(|a, b| order_key(meta, &a.path).cmp(&order_key(meta, &b.path)));
+    }
+
+    /// Replaces the excerpts of file `path` in place (keeping its fold),
+    /// or adds it.
+    pub fn set_file(&mut self, path: Arc<Path>, excerpts: Vec<Excerpt>) {
+        match self.search(&path) {
+            Ok(i) => self.files[i].excerpts = excerpts,
+            Err(i) => self.files.insert(
+                i,
+                FileResult {
+                    path,
+                    excerpts,
+                    collapsed: false,
+                },
+            ),
+        }
+        self.rebuild();
+    }
+
+    /// Drops the files `paths`.
+    pub fn remove_files(&mut self, paths: &[Arc<Path>]) {
+        let gone: HashSet<&Arc<Path>> = paths.iter().collect();
+        let before = self.files.len();
+        self.files.retain(|f| !gone.contains(&f.path));
+        if self.files.len() != before {
+            self.rebuild();
+        }
+    }
+
+    /// Folds or unfolds file `file`.
+    pub fn set_collapsed(&mut self, file: usize, collapsed: bool) {
+        if let Some(f) = self.files.get_mut(file)
+            && f.collapsed != collapsed
+        {
+            f.collapsed = collapsed;
+            self.rebuild();
+        }
+    }
+
+    /// The diff meta of file `path`, if set.
+    pub fn meta(&self, path: &Path) -> Option<&FileMeta> {
+        self.meta.get(path)
     }
 
     /// A new search starts over the shown files: they stay until it
@@ -94,7 +243,7 @@ impl Results {
         let mut changed = false;
         for (path, excerpts) in batch {
             changed = true;
-            match self.files.binary_search_by(|f| f.path.cmp(&path)) {
+            match self.search(&path) {
                 Ok(i) => {
                     if self.confirmed.insert(path) {
                         self.files[i].excerpts = excerpts;
@@ -121,7 +270,7 @@ impl Results {
         }
         if !fresh.is_empty() {
             self.files.extend(fresh);
-            self.files.sort_by(|a, b| a.path.cmp(&b.path));
+            self.sort_files();
         }
         self.rebuild();
     }
@@ -138,30 +287,36 @@ impl Results {
         }
     }
 
-    /// The largest line number among the files: sizes the gutter.
+    /// The largest line number shown among the files: sizes the gutter.
+    /// Deleted lines show no number, so they do not count.
     pub fn max_line_number(&self) -> u32 {
         self.files
             .iter()
             .flat_map(|f| &f.excerpts)
-            .filter_map(|e| e.lines.last())
+            .filter_map(|e| {
+                e.lines
+                    .iter()
+                    .rev()
+                    .find(|l| !matches!(l.kind, LineKind::Deleted { .. }))
+            })
             .map(|l| l.line_number)
             .max()
             .unwrap_or(0)
     }
 
-    /// Adds a file's excerpts, keeping files sorted by path. An existing
-    /// path gets the excerpts appended.
+    /// Adds a file's excerpts, keeping files sorted (by group, then path).
+    /// An existing path gets the excerpts appended.
     pub fn add_file(&mut self, path: Arc<Path>, excerpts: Vec<Excerpt>) {
         self.add_files(std::iter::once((path, excerpts)));
     }
 
     /// Adds a batch of files like repeated [`add_file`](Self::add_file)
-    /// calls (sorted by path, same paths merged in batch order) but sorts
+    /// calls (sorted, same paths merged in batch order) but sorts
     /// and rebuilds the rows once.
     pub fn add_files(&mut self, batch: impl IntoIterator<Item = (Arc<Path>, Vec<Excerpt>)>) {
         let mut fresh: Vec<FileResult> = Vec::new();
         for (path, excerpts) in batch {
-            match self.files.binary_search_by(|f| f.path.cmp(&path)) {
+            match self.search(&path) {
                 Ok(i) => self.files[i].excerpts.extend(excerpts),
                 Err(_) => fresh.push(FileResult {
                     path,
@@ -184,7 +339,7 @@ impl Results {
         }
         if !merged.is_empty() {
             self.files.extend(merged);
-            self.files.sort_by(|a, b| a.path.cmp(&b.path));
+            self.sort_files();
         }
         self.rebuild();
     }
@@ -195,6 +350,12 @@ impl Results {
 
     pub fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    /// Changes whenever the files or rows change: a file's lines are the
+    /// same while it is.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn line(&self, r: LineRef) -> Option<&LineMatch> {
@@ -208,32 +369,42 @@ impl Results {
 
     /// The index of the file `path` among [`files`](Self::files).
     pub fn file_index(&self, path: &Path) -> Option<usize> {
-        self.files
-            .binary_search_by(|f| f.path.as_ref().cmp(path))
-            .ok()
+        self.search(path).ok()
     }
 
     /// Names line `r` by its file and line number, which stay put when
     /// streamed results shift file indices.
     pub fn anchor_of(&self, r: LineRef) -> Option<LineAnchor> {
+        let line = self.line(r)?;
         Some(LineAnchor {
             path: self.files.get(r.file)?.path.clone(),
-            line_number: self.line(r)?.line_number,
+            line_number: line.line_number,
+            kind: line.kind,
         })
     }
 
-    /// The current position of the line `anchor` names.
+    /// The current position of the line `anchor` names: the line with its
+    /// number and kind (a deleted line by its base line). When that is
+    /// gone, as after a re-diff, the first line with its number.
     pub fn resolve(&self, anchor: &LineAnchor) -> Option<LineRef> {
         let file = self.file_index(&anchor.path)?;
+        let same = |l: &LineMatch| match (anchor.kind, l.kind) {
+            (LineKind::Deleted { base_line: a }, LineKind::Deleted { base_line: b }) => a == b,
+            (LineKind::Deleted { .. }, _) | (_, LineKind::Deleted { .. }) => false,
+            _ => l.line_number == anchor.line_number,
+        };
+        self.find_line(file, same)
+            .or_else(|| self.find_line(file, |l| l.line_number == anchor.line_number))
+    }
+
+    /// The first line of file `file` that `pred` accepts.
+    fn find_line(&self, file: usize, pred: impl Fn(&LineMatch) -> bool) -> Option<LineRef> {
         self.files[file]
             .excerpts
             .iter()
             .enumerate()
             .find_map(|(excerpt, e)| {
-                let line = e
-                    .lines
-                    .iter()
-                    .position(|l| l.line_number == anchor.line_number)?;
+                let line = e.lines.iter().position(&pred)?;
                 Some(LineRef {
                     file,
                     excerpt,
@@ -307,6 +478,17 @@ impl Results {
         })
     }
 
+    /// The line the header's "open file" button opens: the first match,
+    /// else (a diff) the first change, else the first line.
+    pub fn first_line_to_open(&self, file: usize) -> Option<LineRef> {
+        if file >= self.files.len() {
+            return None;
+        }
+        self.first_match_of(file)
+            .or_else(|| self.find_line(file, is_change))
+            .or_else(|| self.find_line(file, |_| true))
+    }
+
     /// The row of file `file`'s header.
     pub fn header_row(&self, file: usize) -> Option<usize> {
         self.rows.iter().position(|row| *row == Row::Header(file))
@@ -339,6 +521,57 @@ impl Results {
         all.get(found).copied()
     }
 
+    /// The first line of the next (or previous) run of added or deleted
+    /// lines, across files, wrapping around as
+    /// [`next_match`](Self::next_match) does. From inside a run, forward
+    /// goes to the next run and backward to this run's first line.
+    /// Collapsed files are included; a file shown as a note is not.
+    pub fn next_change(&self, from: Option<LineRef>, forward: bool) -> Option<LineRef> {
+        let all = self.change_starts();
+        if all.is_empty() {
+            return None;
+        }
+        let key = |r: &LineRef| (r.file, r.excerpt, r.line);
+        let found = match from {
+            None if forward => 0,
+            None => all.len() - 1,
+            Some(f) => {
+                let k = key(&f);
+                if forward {
+                    all.partition_point(|r| key(r) <= k) % all.len()
+                } else {
+                    (all.partition_point(|r| key(r) < k) + all.len() - 1) % all.len()
+                }
+            }
+        };
+        all.get(found).copied()
+    }
+
+    /// The first line of every run of changed lines, in order.
+    fn change_starts(&self) -> Vec<LineRef> {
+        let mut out = Vec::new();
+        for (file, f) in self.files.iter().enumerate() {
+            if self.meta.get(&f.path).is_some_and(|m| m.note.is_some()) {
+                continue;
+            }
+            for (excerpt, e) in f.excerpts.iter().enumerate() {
+                let mut previous = false;
+                for (line, l) in e.lines.iter().enumerate() {
+                    let change = is_change(l);
+                    if change && !previous {
+                        out.push(LineRef {
+                            file,
+                            excerpt,
+                            line,
+                        });
+                    }
+                    previous = change;
+                }
+            }
+        }
+        out
+    }
+
     fn match_refs(&self) -> impl Iterator<Item = LineRef> + '_ {
         self.files.iter().enumerate().flat_map(|(file, f)| {
             f.excerpts.iter().enumerate().flat_map(move |(excerpt, e)| {
@@ -356,11 +589,16 @@ impl Results {
     }
 
     fn rebuild(&mut self) {
+        self.revision += 1;
         self.match_count = self.files.iter().map(FileResult::match_count).sum();
         self.rows.clear();
         for (file, f) in self.files.iter().enumerate() {
             self.rows.push(Row::Header(file));
             if f.collapsed {
+                continue;
+            }
+            if self.meta.get(&f.path).is_some_and(|m| m.note.is_some()) {
+                self.rows.push(Row::Note { file });
                 continue;
             }
             for (excerpt, e) in f.excerpts.iter().enumerate() {
@@ -446,6 +684,7 @@ mod tests {
             } else {
                 vec![]
             },
+            kind: LineKind::Normal,
         }
     }
 
@@ -685,10 +924,48 @@ mod tests {
             line_number: 1,
             line_text: "x".into(),
             ranges: std::iter::once(5..5).collect(),
+            kind: LineKind::Normal,
         };
         r.add_file(path("a"), vec![Excerpt { lines: vec![cut] }]);
         assert_eq!(r.match_count(), 1);
         assert!(r.next_match(None, true).is_some());
+    }
+
+    #[test]
+    fn anchors_tell_deleted_lines_apart_and_meta_survives_replace() {
+        let del = |base_line| LineMatch {
+            kind: LineKind::Deleted { base_line },
+            ..line(5, false)
+        };
+        let mut r = Results::default();
+        r.set_meta(path("a"), FileMeta::default());
+        r.replace_files(vec![(
+            path("a"),
+            vec![Excerpt {
+                lines: vec![del(5), del(6), line(5, false)],
+            }],
+        )]);
+        let at = |line| LineRef {
+            file: 0,
+            excerpt: 0,
+            line,
+        };
+        for i in 0..3 {
+            let anchor = r.anchor_of(at(i)).unwrap();
+            assert_eq!(r.resolve(&anchor), Some(at(i)));
+        }
+        let second = r.anchor_of(at(1)).unwrap();
+        assert!(r.meta(Path::new("a")).is_some(), "kept for a present path");
+        // Re-diffed without that deleted line: its row takes the selection.
+        r.replace_files(vec![(
+            path("a"),
+            vec![Excerpt {
+                lines: vec![line(5, false)],
+            }],
+        )]);
+        assert_eq!(r.resolve(&second), Some(at(0)));
+        r.replace_files(vec![(path("b"), vec![excerpt(1)])]);
+        assert!(r.meta(Path::new("a")).is_none(), "dropped with its file");
     }
 
     #[test]

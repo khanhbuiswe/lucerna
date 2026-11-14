@@ -11,6 +11,7 @@ mod config_files;
 mod conflict_bar;
 mod context_menu;
 mod diagnostics_status;
+mod diff_view;
 mod documents;
 mod editing;
 mod editor_groups;
@@ -67,16 +68,20 @@ pub use config_files::{
     reload_config, set_system_appearance, watch_config,
 };
 pub use diagnostics_status::DiagnosticsStatusItem;
+pub use diff_view::branch_picker::{BranchPicker, BranchPickerEvent};
+pub use diff_view::{DiffKind, DiffView};
 pub use documents::{DiskNotice, DocState, DocumentEvent, DocumentStatus, Documents};
 pub use editor_groups::{
-    EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, FileView, Group, GroupState, GroupsState,
-    MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
-    SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
+    BRANCH_CHANGES_TAB_STATE, EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, FileView,
+    GIT_CHANGES_TAB_STATE, Group, GroupState, GroupsState, MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
+    MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode, SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem,
+    placeholder_body,
 };
 pub use excerpt_list::model::{
-    FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
+    FileMeta, FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
     Row as SearchRow,
 };
+pub use excerpt_list::{ExcerptList, ExcerptListEvent, TextSource};
 pub use explorer::{
     CHANGE_DECORATION, EditKind, EditState, ExplorerModel, ExplorerView, Row, SelectedKind,
     Selection,

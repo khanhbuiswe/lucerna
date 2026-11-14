@@ -60,6 +60,8 @@ Nguồn là mã nguồn Zed ở revision `b5cd310`. Chi tiết xem file tra cứ
 - Không có nút chuyển một cột / hai cột, vì hai cột để bản sau.
 - Tab chỉ đọc. Lucerna dựng tab trên excerpt list (dùng chung với Search và References), không dựng trên editor.
 
+**Soát lại ở 5.2 (Task 6).** Đã đọc mã vẽ tab (`diff_view/render.rs`, `excerpt_list/render.rs`) đối chiếu với mô tả trên: header (icon, tên, đường dẫn mờ), nền dòng thêm/xóa theo `diff_*_background`, vạch đổi ở mép gutter, dòng xóa không có số dòng, toolbar dựng bằng `search_toolbar` / `search_bar_row` của `ui.rs`, thông báo rỗng căn giữa ("No uncommitted changes"), file bị xóa thu gọn sẵn. Không thấy chỗ nào lệch. Việc đặt cạnh Zed `git: diff` trên cùng repo để so bằng mắt (chiều cao header, màu, khoảng cách toolbar) chưa làm được vì không điều khiển được hai ứng dụng GUI từ phiên này. **Để người dùng so bằng mắt**; chỗ nào lệch thì sửa theo `docs/design-principles.md` §1.1 hoặc ghi vào đây kèm lý do.
+
 ## 3. Các cách đã cân nhắc
 
 ### 3.1 Mốc để so

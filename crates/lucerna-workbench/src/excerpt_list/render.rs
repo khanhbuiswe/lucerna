@@ -1,5 +1,7 @@
 //! Drawing an [`ExcerptList`]: file headers (with a sticky copy pinned over
-//! the list), code lines with their gutter, and excerpt separators.
+//! the list), code lines with their gutter, excerpt separators and file
+//! notes. Diff lines get the diff backgrounds and a change bar at the
+//! gutter's left edge, as wide as the editor's.
 
 use std::ops::Range;
 
@@ -9,14 +11,18 @@ use gpui::{
     div, font, list, prelude::*, px, relative, svg,
 };
 
+use lucerna_project::LineKind;
+
 use super::ExcerptList;
 use super::highlight::LineSpans;
 use super::model::{LineRef, Row, expand_tabs, thousands};
 use crate::AppState;
+use crate::code_view::hunk_bar_width;
 use crate::icons::ARROW_UP_RIGHT;
 use crate::layout::color;
 use crate::ui::{
-    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, FILE_ICON_SIZE, GRID, file_icon_sized, subheader_card,
+    CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, FILE_ICON_SIZE, GRID, UI_FONT_SIZE_CAPTION,
+    file_icon_sized, subheader_card,
 };
 
 /// A file header is this many editor lines tall, as in Zed.
@@ -65,13 +71,20 @@ impl ExcerptList {
     }
 
     /// Row `ix` of the list.
-    fn render_row(&mut self, ix: usize, style: &RowStyle, cx: &mut Context<Self>) -> AnyElement {
+    /// `selected` is the selected line, resolved once for the frame.
+    fn render_row(
+        &mut self,
+        ix: usize,
+        style: &RowStyle,
+        selected: Option<LineRef>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(row) = self.results.rows().get(ix).copied() else {
             return div().into_any_element();
         };
         match row {
-            Row::Header(file) => self.render_header(file, false, style, cx),
-            Row::Line(r) => self.render_line(ix, r, style, cx),
+            Row::Header(file) => self.render_header(file, false, style, selected, cx),
+            Row::Line(r) => self.render_line(ix, r, style, selected == Some(r), cx),
             Row::Separator { file } => {
                 // The excerpt it comes before.
                 let excerpt = match self.results.rows().get(ix + 1) {
@@ -80,6 +93,7 @@ impl ExcerptList {
                 };
                 self.render_separator(ix, file, excerpt, style, cx)
             }
+            Row::Note { file } => self.render_note(ix, file, style, cx),
         }
     }
 
@@ -87,12 +101,16 @@ impl ExcerptList {
     /// border on `editor.subheader.background` holding the fold chevron,
     /// the file icon, the name, the folder (muted, cut with "…"), the
     /// match count and an "open file" button. Clicking the card folds or
-    /// unfolds the file. `sticky` is the copy pinned over the list.
+    /// unfolds the file. `sticky` is the copy pinned over the list. A file
+    /// with diff meta shows its label as a small tag after the name and
+    /// `+added −removed` in place of the match count; an unopenable one
+    /// has its button disabled.
     fn render_header(
         &self,
         index: usize,
         sticky: bool,
         style: &RowStyle,
+        selected: Option<LineRef>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let state = cx.global::<AppState>();
@@ -135,7 +153,9 @@ impl ExcerptList {
                 )
             };
         let group: SharedString = format!("{selector}-group").into();
-        let selected_here = self.selected().is_some_and(|r| r.file == index);
+        let selected_here = selected.is_some_and(|r| r.file == index);
+        let meta = self.results.meta(&file.path).copied();
+        let openable = meta.is_none_or(|m| m.openable);
         let open_path = path.clone();
         let open = div()
             .id(open_id)
@@ -147,15 +167,20 @@ impl ExcerptList {
             .w(px(6. * GRID))
             .h(px(5. * GRID))
             .rounded(px(GRID))
-            .cursor_pointer()
+            .when(openable, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
             .when(!selected_here, |d| {
-                d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
+                d.opacity(0.).group_hover(group.clone(), move |s| {
+                    s.opacity(if openable { 1. } else { 0.4 })
+                })
             })
-            .hover(move |s| s.bg(hover))
+            .when(selected_here && !openable, |d| d.opacity(0.4))
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            // Disabled, it still swallows the click so the card does not fold.
             .on_click(cx.listener(move |list, _, _, cx| {
                 cx.stop_propagation();
-                list.open_file_at_first_match(&open_path, cx);
+                if openable {
+                    list.open_file_at_first_match(&open_path, cx);
+                }
             }))
             .child(
                 svg()
@@ -210,6 +235,20 @@ impl ExcerptList {
                     .text_color(color(ui.text))
                     .child(name),
             )
+            .children(meta.and_then(|m| m.label).map(|label| {
+                div()
+                    .when(!sticky, |d| {
+                        d.debug_selector(move || format!("{prefix}-label-{index}"))
+                    })
+                    .flex_none()
+                    .px(px(GRID))
+                    .rounded(px(GRID))
+                    .border_1()
+                    .border_color(color(ui.border_variant))
+                    .text_size(px(UI_FONT_SIZE_CAPTION))
+                    .text_color(color(ui.text_muted))
+                    .child(label)
+            }))
             .child(
                 div()
                     .flex_1()
@@ -220,12 +259,29 @@ impl ExcerptList {
                     .text_color(color(ui.text_muted))
                     .child(dir),
             )
-            .child(
-                div()
+            .child(match meta {
+                Some(m) => div()
+                    .when(!sticky, |d| {
+                        d.debug_selector(move || format!("{prefix}-stats-{index}"))
+                    })
+                    .flex()
+                    .flex_none()
+                    .gap(px(GRID))
+                    .child(
+                        div()
+                            .text_color(color(ui.vc_added))
+                            .child(format!("+{}", thousands(m.added as usize))),
+                    )
+                    .child(
+                        div()
+                            .text_color(color(ui.vc_deleted))
+                            .child(format!("\u{2212}{}", thousands(m.removed as usize))),
+                    ),
+                None => div()
                     .flex_none()
                     .text_color(color(ui.text_muted))
                     .child(thousands(file.match_count())),
-            )
+            })
             .child(open);
         div()
             .w_full()
@@ -240,6 +296,7 @@ impl ExcerptList {
         ix: usize,
         r: LineRef,
         style: &RowStyle,
+        selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let state = cx.global::<AppState>();
@@ -276,24 +333,59 @@ impl ExcerptList {
             self.id_prefix, r.file, r.excerpt, r.line
         );
         let anchor = self.results.anchor_of(r);
-        let selected = self.selected() == Some(r);
         // Code lines read like editor lines (as in Zed's multibuffer): no
-        // hover; the selected line gets the editor's active-line colors.
-        let el = row(ix, selector, style);
-        let (el, number) = if selected {
-            (
-                el.bg(color(ui.editor_active_line_background)),
-                color(ui.editor_active_line_number),
-            )
-        } else {
-            (el, color(ui.text_muted))
+        // hover; the selected line gets the editor's active-line colors,
+        // over the diff color of an added or deleted line.
+        let bar = match line.kind {
+            LineKind::Normal => None,
+            LineKind::Added => Some(ui.vc_added),
+            LineKind::Deleted { .. } => Some(ui.vc_deleted),
         };
+        let mut el = row(ix, selector, style).relative();
+        if let Some(bg) = self.background_of(line.kind, selected, cx) {
+            el = el.bg(bg);
+        }
+        if selected && bar.is_some() {
+            el = el.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(color(ui.editor_active_line_background)),
+            );
+        }
+        let number = if selected {
+            color(ui.editor_active_line_number)
+        } else {
+            color(ui.text_muted)
+        };
+        let id = (self.id_prefix, r.file, r.excerpt, r.line);
+        let mut gutter = gutter(style, number).relative();
+        if let Some(bar) = bar {
+            gutter = gutter.child(
+                div()
+                    .debug_selector(move || format!("{}-bar-{}-{}-{}", id.0, id.1, id.2, id.3))
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .h_full()
+                    .w(hunk_bar_width(style.line_height))
+                    .bg(color(bar)),
+            );
+        }
+        // A deleted line is not in the current text: no number, as in Zed.
+        if !matches!(line.kind, LineKind::Deleted { .. }) {
+            gutter = gutter.child(
+                div()
+                    .debug_selector(move || format!("{}-number-{}-{}-{}", id.0, id.1, id.2, id.3))
+                    .child(line.line_number.to_string()),
+            );
+        }
         el.on_click(cx.listener(move |list, _, _, cx| {
             if let Some(anchor) = &anchor {
                 list.open_anchor(anchor, cx);
             }
         }))
-        .child(gutter(style, number).child(line.line_number.to_string()))
+        .child(gutter)
         .child(
             div()
                 .flex_1()
@@ -335,6 +427,49 @@ impl ExcerptList {
     }
 }
 
+impl ExcerptList {
+    /// A file's note (such as "Binary file"), one muted line in place of
+    /// its excerpts, starting where the code does.
+    fn render_note(
+        &self,
+        ix: usize,
+        file: usize,
+        style: &RowStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let ui = &cx.global::<AppState>().theme.ui;
+        let note = self
+            .results
+            .files()
+            .get(file)
+            .and_then(|f| self.results.meta(&f.path))
+            .and_then(|m| m.note)
+            .unwrap_or_default();
+        let selector = format!("{}-note-{file}", self.id_prefix);
+        div()
+            .id(("row", ix))
+            .debug_selector(move || selector)
+            .flex()
+            .items_center()
+            .gap(px(1.5 * GRID))
+            .h(style.line_height)
+            .w_full()
+            .pr(px(2. * GRID))
+            .child(div().flex_none().w(style.gutter))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(color(ui.text_muted))
+                    .child(note),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for ExcerptList {
     /// The rows, with the sticky header over them. The host tracks
     /// [`ExcerptList::focus_handle`] on the area around it.
@@ -342,6 +477,9 @@ impl Render for ExcerptList {
         let ui = cx.global::<AppState>().theme.ui.clone();
         let style = self.row_style(window, cx);
         let lh = style.line_height;
+        // Found once per frame, not per row: resolving it scans its file.
+        let selected = self.selected();
+        self.selection_resolves += 1;
         // The rows on screen get their syntax colors first.
         let viewport = match self.list.viewport_bounds().size.height {
             h if h > px(0.) => h,
@@ -376,7 +514,7 @@ impl Render for ExcerptList {
                         .right_0()
                         .top(push)
                         .bg(color(ui.editor_background))
-                        .child(self.render_header(file, true, &style, cx)),
+                        .child(self.render_header(file, true, &style, selected, cx)),
                 )
         });
         let row_style = style.clone();
@@ -389,7 +527,9 @@ impl Render for ExcerptList {
             .child(
                 list(
                     self.list.clone(),
-                    cx.processor(move |list, ix: usize, _, cx| list.render_row(ix, &row_style, cx)),
+                    cx.processor(move |list, ix: usize, _, cx| {
+                        list.render_row(ix, &row_style, selected, cx)
+                    }),
                 )
                 .size_full(),
             )
@@ -432,7 +572,7 @@ pub(super) fn header_height(lh: Pixels) -> Pixels {
 pub(super) fn row_height(row: &Row, lh: Pixels) -> Pixels {
     match row {
         Row::Header(_) => header_height(lh),
-        Row::Line(_) | Row::Separator { .. } => lh,
+        Row::Line(_) | Row::Separator { .. } | Row::Note { .. } => lh,
     }
 }
 

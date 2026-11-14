@@ -5,6 +5,8 @@
 mod hunk_bars;
 mod paint;
 
+pub(crate) use hunk_bars::bar_width as hunk_bar_width;
+
 use std::sync::Arc;
 
 use gpui::{
@@ -188,6 +190,9 @@ pub(crate) struct Frame {
     diagnostics: FrameDiagnostics,
     /// Git change bars and deletion pills in the gutter.
     hunk_bars: Vec<hunk_bars::HunkBar>,
+    /// The clickable bars (`scm.diffDecorationsGutterAction` is `diff`):
+    /// each one's visible part and the row a click on it opens.
+    hunk_hitboxes: Vec<(Hitbox, u32)>,
     /// How far the diagnostic icons move right to clear the change bars.
     icon_shift: Pixels,
     colors: FrameColors,
@@ -291,6 +296,12 @@ impl Frame {
 
     pub fn hunk_bar_count(&self) -> usize {
         self.hunk_bars.len()
+    }
+
+    /// The visible part of bar `i` (a deletion pill is half clipped).
+    pub fn hunk_bar_bounds(&self, i: usize) -> Option<Bounds<Pixels>> {
+        let bar = self.hunk_bars.get(i)?;
+        Some(bar.bounds.intersect(&self.bounds))
     }
 
     pub fn inline_rows(&self) -> Vec<u32> {
@@ -475,6 +486,9 @@ impl Element for CodeElement {
                 CursorStyle::IBeam
             };
             window.set_cursor_style(style, hitbox);
+        }
+        for (hitbox, _) in &frame.hunk_hitboxes {
+            window.set_cursor_style(CursorStyle::PointingHand, hitbox);
         }
         register_mouse(&self.view, frame, window);
     }
@@ -738,6 +752,24 @@ impl CodeView {
         } else {
             (Vec::new(), px(0.))
         };
+        // A passive view (a picker's preview) has no one to open the diff:
+        // its bars take no clicks and show no hand.
+        let hunk_hitboxes = if self.config.diff_gutter_click && !self.passive {
+            hunk_bars
+                .iter()
+                .filter_map(|bar| {
+                    let visible = bar.bounds.intersect(&bounds);
+                    (!visible.is_empty()).then(|| {
+                        (
+                            window.insert_hitbox(visible, HitboxBehavior::Normal),
+                            bar.row,
+                        )
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let frame = Arc::new(Frame {
             bounds,
             text_bounds,
@@ -770,6 +802,7 @@ impl CodeView {
             scroll_metrics,
             diagnostics,
             hunk_bars,
+            hunk_hitboxes,
             icon_shift,
             colors: FrameColors {
                 background: hsla(ui.editor_background),
@@ -1255,11 +1288,24 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
     };
     window.on_mouse_event({
         let (view, hitbox) = (view.clone(), hitbox.clone());
+        let bars: Vec<(Bounds<Pixels>, u32)> = frame
+            .hunk_hitboxes
+            .iter()
+            .map(|(hitbox, row)| (hitbox.bounds, *row))
+            .collect();
         move |ev: &MouseDownEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble
                 && ev.button == MouseButton::Left
                 && hitbox.is_hovered(window)
             {
+                // A click on a change bar opens the file's diff there.
+                if let Some(&(_, row)) = bars.iter().find(|(b, _)| b.contains(&ev.position)) {
+                    view.update(cx, |_, cx| {
+                        cx.emit(super::CodeViewEvent::DiffHunkClicked { row })
+                    });
+                    cx.stop_propagation();
+                    return;
+                }
                 view.update(cx, |v, cx| v.mouse_down(ev, window, cx));
                 cx.stop_propagation();
             }

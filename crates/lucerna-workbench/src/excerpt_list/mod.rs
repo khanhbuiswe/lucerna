@@ -4,6 +4,12 @@
 //! the lines, and a click or `Enter` asks the host to open a line
 //! ([`ExcerptListEvent::Activate`]). The Search and References tabs show
 //! their results in one; the host keeps its own toolbar and status.
+//!
+//! A diff view shows its hunks in one too: lines are context, added or
+//! deleted ([`lucerna_project::LineKind`]), colored from the texts the
+//! host gives ([`ExcerptList::set_text_source`]), with per-file counts,
+//! tags and notes on the headers ([`ExcerptList::set_file_meta`]) and
+//! change navigation ([`ExcerptList::step_change`]).
 
 pub(crate) mod highlight;
 pub(crate) mod model;
@@ -15,14 +21,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, KeyDownEvent, ListAlignment, ListOffset, ListState,
-    Pixels, Task, px,
+    App, Context, EventEmitter, FocusHandle, Hsla, KeyDownEvent, ListAlignment, ListOffset,
+    ListState, Pixels, Task, px,
 };
-use lucerna_project::Excerpt;
+use lucerna_project::{Excerpt, LineKind};
 
 use crate::AppState;
-use highlight::{FileHighlights, HighlightCache};
-use model::{LineAnchor, LineRef, Results, Row};
+use crate::layout::color;
+use highlight::{FileHighlights, HighlightCache, LineSpans};
+use model::{FileMeta, LineAnchor, LineRef, Results, Row};
 use render::{editor_line_height, header_height, row_height};
 
 /// The gutter always has room for this many digits.
@@ -30,6 +37,15 @@ pub const MIN_GUTTER_DIGITS: u32 = 4;
 
 /// Pixels of rows rendered above and below the visible ones.
 const LIST_OVERDRAW: f32 = 200.;
+
+/// The texts a diff view's lines are colored from: current lines from
+/// `current` (by line number; the file on disk when `None`), deleted lines
+/// from `base` (by base line; plain when `None`). LF line endings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TextSource {
+    pub current: Option<Arc<str>>,
+    pub base: Option<Arc<str>>,
+}
 
 pub enum ExcerptListEvent {
     /// Open line `r` (a click, `Enter`, or a header's "open file" button).
@@ -75,6 +91,14 @@ pub struct ExcerptList {
     highlight_theme: u64,
     peak_highlight_jobs: usize,
     highlight_jobs_started: usize,
+    /// Frames rendered, each resolving the selection once.
+    selection_resolves: usize,
+    /// The texts of the files colored from the host's texts, not the
+    /// disk, each with the generation it was set at.
+    text_sources: HashMap<Arc<Path>, (TextSource, u64)>,
+    /// The last generation given to a text source; files without one
+    /// are generation 0.
+    last_source_generation: u64,
 }
 
 impl EventEmitter<ExcerptListEvent> for ExcerptList {}
@@ -101,19 +125,47 @@ impl ExcerptList {
             highlight_theme: cx.global::<AppState>().theme_generation,
             peak_highlight_jobs: 0,
             highlight_jobs_started: 0,
+            selection_resolves: 0,
+            text_sources: HashMap::new(),
+            last_source_generation: 0,
         }
     }
 
-    /// Replaces every file; the gutter is sized for the new ones.
+    /// Replaces every file; the gutter is sized for the new ones. The
+    /// text sources and meta of the paths still present are kept.
     pub fn set_files(&mut self, files: Vec<(Arc<Path>, Vec<Excerpt>)>, cx: &mut Context<Self>) {
         self.max_line_number = 0;
-        self.update_results(
-            |r| {
-                r.clear();
-                r.add_files(files);
-            },
-            cx,
-        );
+        let present: HashSet<&Arc<Path>> = files.iter().map(|(p, _)| p).collect();
+        self.text_sources.retain(|p, _| present.contains(p));
+        self.update_results(|r| r.replace_files(files), cx);
+    }
+
+    /// Colors the lines of file `path` from `source` instead of the disk.
+    /// A changed source colors the file again, showing the old colors
+    /// until then. Kept until the file leaves the list.
+    pub fn set_text_source(&mut self, path: Arc<Path>, source: TextSource, cx: &mut Context<Self>) {
+        if self
+            .text_sources
+            .get(&path)
+            .is_some_and(|(s, _)| *s == source)
+        {
+            return;
+        }
+        self.last_source_generation += 1;
+        self.text_sources
+            .insert(path, (source, self.last_source_generation));
+        cx.notify();
+    }
+
+    /// The generation of file `path`'s text source; 0 without one.
+    fn source_generation(&self, path: &Path) -> u64 {
+        self.text_sources.get(path).map_or(0, |(_, g)| *g)
+    }
+
+    /// Sets the diff meta of file `path`, shown on its header. Kept until
+    /// the file leaves the list.
+    pub fn set_file_meta(&mut self, path: Arc<Path>, meta: FileMeta, cx: &mut Context<Self>) {
+        self.update_results(|r| r.set_meta(path, meta), cx);
     }
 
     /// Applies a streamed batch (see [`Results::update_files`]).
@@ -121,11 +173,50 @@ impl ExcerptList {
         self.update_results(|r| r.update_files(batch), cx);
     }
 
+    /// Replaces the excerpts of file `path`, keeping its fold, or adds it.
+    pub fn set_file(&mut self, path: Arc<Path>, excerpts: Vec<Excerpt>, cx: &mut Context<Self>) {
+        self.update_results(|r| r.set_file(path, excerpts), cx);
+    }
+
+    /// Drops the files `paths`, with their text sources and meta.
+    pub fn remove_files(&mut self, paths: &[Arc<Path>], cx: &mut Context<Self>) {
+        self.update_results(|r| r.remove_files(paths), cx);
+    }
+
+    /// Folds or unfolds the file `path`.
+    pub fn set_collapsed(&mut self, path: &Path, collapsed: bool, cx: &mut Context<Self>) {
+        if let Some(file) = self.results.file_index(path) {
+            self.update_results(|r| r.set_collapsed(file, collapsed), cx);
+        }
+    }
+
+    /// Whether file `path` is colored from a text source.
+    #[doc(hidden)]
+    pub fn has_text_source(&self, path: &Path) -> bool {
+        self.text_sources.contains_key(path)
+    }
+
     /// Changes the results, then tells the list once: the gutter grows to
     /// the largest line number left, a selection whose line is gone is
-    /// dropped, and only the changed rows are spliced.
+    /// dropped, and only the changed rows are spliced. Files that left
+    /// take their text sources and meta with them.
     pub fn update_results(&mut self, change: impl FnOnce(&mut Results), cx: &mut Context<Self>) {
+        let listed: Vec<Arc<Path>> = if self.text_sources.is_empty() && !self.results.has_meta() {
+            Vec::new()
+        } else {
+            self.results
+                .files()
+                .iter()
+                .map(|f| f.path.clone())
+                .collect()
+        };
         change(&mut self.results);
+        for path in listed {
+            if self.results.file_index(&path).is_none() {
+                self.text_sources.remove(&path);
+                self.results.forget_meta(&path);
+            }
+        }
         self.max_line_number = self.max_line_number.max(self.results.max_line_number());
         if self
             .selected
@@ -138,9 +229,11 @@ impl ExcerptList {
         cx.notify();
     }
 
-    /// Drops every file and the selection; the gutter shrinks back.
+    /// Drops every file (with its text source and meta) and the
+    /// selection; the gutter shrinks back.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.results.clear();
+        self.text_sources.clear();
         self.sync_list(cx);
         self.selected = None;
         self.max_line_number = 0;
@@ -165,6 +258,50 @@ impl ExcerptList {
     /// line number, once computed.
     pub fn highlights(&self, path: &Path) -> Option<FileHighlights> {
         self.highlight_cache.file(path)
+    }
+
+    /// The cached syntax colors of line `r`, once computed.
+    #[doc(hidden)]
+    pub fn line_spans(&self, r: LineRef) -> Option<LineSpans> {
+        let path = &self.results.files().get(r.file)?.path;
+        self.highlight_cache
+            .get(path, self.results.line(r)?)
+            .cloned()
+    }
+
+    /// The background line `r` is drawn on: the diff color of an added or
+    /// deleted line (the selection's active-line color is laid over it),
+    /// else the active-line color when selected, else none.
+    #[doc(hidden)]
+    pub fn row_background(&self, r: LineRef, cx: &App) -> Option<Hsla> {
+        let kind = self.results.line(r)?.kind;
+        self.background_of(kind, self.selected() == Some(r), cx)
+    }
+
+    /// [`row_background`](Self::row_background) of a line of `kind`,
+    /// `selected` or not.
+    fn background_of(&self, kind: LineKind, selected: bool, cx: &App) -> Option<Hsla> {
+        let ui = &cx.global::<AppState>().theme.ui;
+        let c = match kind {
+            LineKind::Added => ui.diff_added_background,
+            LineKind::Deleted { .. } => ui.diff_deleted_background,
+            LineKind::Normal if selected => ui.editor_active_line_background,
+            LineKind::Normal => return None,
+        };
+        Some(color(c).into())
+    }
+
+    /// How often a frame resolved the selection: once per frame.
+    #[doc(hidden)]
+    pub fn selection_resolves(&self) -> usize {
+        self.selection_resolves
+    }
+
+    /// How often the highlight queue scanned a file's lines for missing
+    /// colors: not again while the file and its colors are unchanged.
+    #[doc(hidden)]
+    pub fn highlight_scans(&self) -> usize {
+        self.highlight_cache.scans()
     }
 
     /// Highlight jobs running now; never above
@@ -221,6 +358,27 @@ impl ExcerptList {
         Some(r)
     }
 
+    /// Selects the first line of the next or previous run of added or
+    /// deleted lines (from the selection, wrapping, across files), unfolds
+    /// its file and scrolls it into view.
+    pub fn step_change(&mut self, forward: bool, cx: &mut Context<Self>) -> Option<LineRef> {
+        let r = self.results.next_change(self.selected(), forward)?;
+        self.results.expand(r.file);
+        self.sync_list(cx);
+        self.select(r, cx);
+        Some(r)
+    }
+
+    /// Selects line `r`, unfolding its file and scrolling it into view.
+    pub fn select_line(&mut self, r: LineRef, cx: &mut Context<Self>) {
+        if self.results.line(r).is_none() {
+            return;
+        }
+        self.results.expand(r.file);
+        self.sync_list(cx);
+        self.select(r, cx);
+    }
+
     /// Selects line `r`, scrolling it into view.
     fn select(&mut self, r: LineRef, cx: &mut Context<Self>) {
         self.selected = self.results.anchor_of(r);
@@ -236,13 +394,13 @@ impl ExcerptList {
         cx.emit(ExcerptListEvent::Activate(r));
     }
 
-    /// Selects the first match of the file `path` and opens it (the
-    /// header's "open file" button).
+    /// Selects the first match of the file `path` (in a diff, its first
+    /// change) and opens it (the header's "open file" button).
     fn open_file_at_first_match(&mut self, path: &Path, cx: &mut Context<Self>) {
         if let Some(r) = self
             .results
             .file_index(path)
-            .and_then(|file| self.results.first_match_of(file))
+            .and_then(|file| self.results.first_line_to_open(file))
         {
             self.activate(r, cx);
         }

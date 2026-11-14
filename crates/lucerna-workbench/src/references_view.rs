@@ -18,7 +18,7 @@ use gpui::{
     SharedString, Styled, Subscription, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use lucerna_lsp::locations::ResolvedLocation;
-use lucerna_project::{Excerpt, LineMatch, MAX_LINE_CHARS};
+use lucerna_project::{Excerpt, LineKind, LineMatch, MAX_LINE_CHARS};
 use lucerna_text::{Buffer, Point};
 
 use crate::code_view::CodeView;
@@ -481,6 +481,7 @@ fn line_match(row: u32, line: &str, ranges: Option<&[Range<usize>]>) -> LineMatc
         line_number: row + 1,
         line_text: line[..keep].to_owned(),
         ranges: kept,
+        kind: LineKind::Normal,
     }
 }
 

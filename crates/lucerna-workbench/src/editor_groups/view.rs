@@ -112,6 +112,9 @@ pub struct EditorGroupsView {
     search_title: Option<SharedString>,
     /// Shown as the References tab's title in place of "References".
     references_title: Option<SharedString>,
+    /// Shown as the Changes since tab's title in place of "Changes since
+    /// default branch".
+    branch_title: Option<SharedString>,
     /// The breadcrumbs of file tabs, as the workbench last computed them.
     breadcrumbs: HashMap<TabId, Crumbs>,
     on_breadcrumbs_click: Option<BreadcrumbsClick>,
@@ -132,6 +135,7 @@ impl Default for EditorGroupsView {
             home: std::env::home_dir(),
             search_title: None,
             references_title: None,
+            branch_title: None,
             breadcrumbs: HashMap::new(),
             on_breadcrumbs_click: None,
             on_command: None,
@@ -397,6 +401,19 @@ impl EditorGroupsView {
         self.references_title.as_ref()
     }
 
+    /// The Changes since tab's title, naming its ref.
+    pub fn set_branch_title(&mut self, title: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.branch_title != title {
+            self.branch_title = title;
+            cx.notify();
+        }
+    }
+
+    /// The title [`EditorGroupsView::set_branch_title`] set.
+    pub fn branch_title(&self) -> Option<&SharedString> {
+        self.branch_title.as_ref()
+    }
+
     /// Path bars show paths relative to `root`.
     pub(crate) fn set_root(&mut self, root: PathBuf) {
         self.root = Some(root);
@@ -635,17 +652,22 @@ impl Render for EditorGroupsView {
                 let id = tab.id;
                 let active = group.active == Some(id);
                 let fg = title_color(active, gi == focused_group, ui);
-                let title = match (&tab.item, &self.search_title, &self.references_title) {
-                    (TabItem::Search, Some(title), _) => title.to_string(),
-                    (TabItem::References, _, Some(title)) => title.to_string(),
-                    _ => tab.title(),
+                let title = match &tab.item {
+                    TabItem::Search => self.search_title.as_ref(),
+                    TabItem::References => self.references_title.as_ref(),
+                    TabItem::BranchChanges => self.branch_title.as_ref(),
+                    _ => None,
                 };
+                let title = title.map_or_else(|| tab.title(), |t| t.to_string());
                 let icon = match tab.item {
                     TabItem::Extensions => Some(BLOCKS_ICON),
                     TabItem::Search => Some(SEARCH_ICON),
                     TabItem::LspLog(_) => Some(icons::ZAP),
                     TabItem::References => Some(icons::FILE_CODE),
                     TabItem::LspHealth => Some(icons::ZAP),
+                    TabItem::GitChanges | TabItem::FileDiff(_) | TabItem::BranchChanges => {
+                        Some(icons::GIT_BRANCH)
+                    }
                     TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_) => {
                         Some(icons::EYE)
                     }

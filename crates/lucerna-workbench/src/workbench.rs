@@ -17,9 +17,11 @@ use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resoluti
 use lucerna_text::Point;
 use serde_json::Value;
 
-use crate::code_view::{self, CodeView, LargeFileStatus};
+use crate::code_view::{self, CodeView, CodeViewEvent, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
+use crate::diff_view::branch_picker::ShownBranchPicker;
+use crate::diff_view::{BranchBase, DiffKind, DiffView};
 use crate::documents::{DocumentEvent, DocumentStatusItem, Documents};
 use crate::editor_groups::{
     self, EditorGroups, EditorGroupsView, FileView, GroupId, OpenMode, TabId, TabItem,
@@ -220,6 +222,13 @@ pub struct Workbench {
     pub(crate) recent_picker_loading: Option<Task<()>>,
     /// The shown locations picker (several definitions, references…).
     pub(crate) locations_picker: Option<ShownLocationsPicker>,
+    /// The shown branch picker of the Changes since tab.
+    pub(crate) branch_picker: Option<ShownBranchPicker>,
+    /// Lists the branches for the branch picker about to show.
+    pub(crate) branch_picker_loading: Option<Task<()>>,
+    /// The ref the Changes since tab compares with, as picked (`None`: the
+    /// default branch); saved with the workspace.
+    pub(crate) branch_base: Entity<BranchBase>,
     /// Folder trust: the trust store's answer and the trust modal.
     pub(crate) trust: Trust,
     /// `files.autoSave`.
@@ -350,6 +359,9 @@ impl Workbench {
             let (workbench, servers) = (cx.weak_entity(), language_servers.clone());
             cx.new(|cx| LspStatusItem::new(workbench, servers, cx))
         };
+        // Before the editor groups: the diff tabs read them.
+        let git = cx.new(|cx| GitStore::new(root.clone(), cx));
+        let branch_base = cx.new(|_| BranchBase(None));
         let workbench = cx.weak_entity();
         let breadcrumbs_target = cx.weak_entity();
         let command_target = cx.weak_entity();
@@ -360,10 +372,12 @@ impl Workbench {
             let search = search_view.clone();
             let references = references_view.clone();
             let health = lsp_health.clone();
+            let git = git.clone();
+            let branch_base = branch_base.clone();
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
             let preview_root: Arc<Path> = Arc::from(root.as_path());
             groups.set_tab_body_factory(
-                Rc::new(move |tab, _, cx| {
+                Rc::new(move |tab, window, cx| {
                     let path = match &tab.item {
                         TabItem::File(path) => path.clone(),
                         TabItem::MarkdownPreview(path) | TabItem::MarkdownPreviewDynamic(path) => {
@@ -387,11 +401,50 @@ impl Workbench {
                             health.update(cx, |health, cx| health.shown(cx));
                             return health.clone().into();
                         }
+                        TabItem::GitChanges | TabItem::FileDiff(_) | TabItem::BranchChanges => {
+                            let kind = match &tab.item {
+                                TabItem::FileDiff(path) => DiffKind::File(path.clone()),
+                                TabItem::BranchChanges => DiffKind::Branch {
+                                    base_ref: branch_base.read(cx).0.clone(),
+                                },
+                                _ => DiffKind::Uncommitted,
+                            };
+                            let branch = matches!(kind, DiffKind::Branch { .. });
+                            let (git, docs) = (git.clone(), docs.clone());
+                            let (root, workbench) = (preview_root.to_path_buf(), workbench.clone());
+                            let base = branch_base.clone();
+                            return cx
+                                .new(|cx| {
+                                    let mut view =
+                                        DiffView::new(kind, git, docs, root, workbench, cx);
+                                    if branch {
+                                        view.follow_branch_base(base, cx);
+                                    }
+                                    view
+                                })
+                                .into();
+                        }
                     };
                     let view = docs.update(cx, |docs, cx| docs.open(path, cx));
                     view.update(cx, |v, _| {
                         v.set_hover_sources(workbench.clone(), servers.downgrade())
                     });
+                    // A click on a change bar opens the file's diff there.
+                    window
+                        .subscribe(&view, cx, {
+                            let workbench = workbench.clone();
+                            move |view, event: &CodeViewEvent, window, cx| {
+                                if let CodeViewEvent::DiffHunkClicked { row } = *event {
+                                    let path = view.read(cx).path().clone();
+                                    workbench
+                                        .update(cx, |wb, cx| {
+                                            wb.open_file_diff(path, Some(row), window, cx)
+                                        })
+                                        .ok();
+                                }
+                            }
+                        })
+                        .detach();
                     // An F8 jump into this file shows its hover once the
                     // view exists.
                     cx.defer({
@@ -474,6 +527,7 @@ impl Workbench {
             });
         }
         if let Some(state) = &restored {
+            branch_base.update(cx, |base, _| base.0 = state.branch_diff_base.clone());
             search_view.update(cx, |view, cx| {
                 view.restore(state.search.clone(), window, cx)
             });
@@ -550,6 +604,11 @@ impl Workbench {
                 wb.editor_groups
                     .update(cx, |groups, cx| groups.set_references_title(title, cx));
             }),
+            // The Changes since tab's ref is in its title and the layout.
+            cx.observe(&branch_base, |wb, _, cx| {
+                wb.update_branch_title(cx);
+                wb.layout_changed(cx);
+            }),
         ];
         if cx.has_global::<ExtensionService>() {
             subscriptions.push(cx.observe_global::<ExtensionService>(|wb, cx| {
@@ -579,7 +638,6 @@ impl Workbench {
         };
         let git_head = crate::git_branch::head_path(&root);
         let git_branch = crate::git_branch::read_branch(&root);
-        let git = cx.new(|cx| GitStore::new(root.clone(), cx));
         subscriptions.push(cx.subscribe(&documents, Self::git_document_event));
         subscriptions.push(
             cx.subscribe(&git, |wb, git, ev: &GitStoreEvent, cx| match ev {
@@ -587,6 +645,8 @@ impl Workbench {
                     let snapshot = git.read(cx).snapshot();
                     wb.explorer
                         .update(cx, |explorer, cx| explorer.set_git(snapshot, cx));
+                    // The default branch may have changed.
+                    wb.update_branch_title(cx);
                 }
                 GitStoreEvent::HunksChanged(path) => wb.git_hunks_changed(path, cx),
                 GitStoreEvent::StateChanged => wb.git_state_changed(cx),
@@ -662,6 +722,9 @@ impl Workbench {
             recent_picker: None,
             recent_picker_loading: None,
             locations_picker: None,
+            branch_picker: None,
+            branch_picker_loading: None,
+            branch_base,
             trust,
             auto_save: Default::default(),
             toast: None,
@@ -684,6 +747,7 @@ impl Workbench {
         workbench._subscriptions.push(trust_events);
         workbench.start_auto_save(&documents, window, cx);
         workbench.refresh_watched_open_files(cx);
+        workbench.update_branch_title(cx);
         workbench.add_status_item(StatusBarSide::Left, diagnostics_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, mode_indicator.into(), cx);
@@ -758,6 +822,7 @@ impl Workbench {
             scroll,
             group_widths: groups.group_widths().to_vec(),
             search: self.search_view.read(cx).state(cx),
+            branch_diff_base: self.branch_base.read(cx).0.clone(),
         };
         if let Some(p) = &mut self.persistence {
             p.scroll_rows = state.scroll.clone();
@@ -1290,10 +1355,13 @@ impl Workbench {
             || groups.hidden_bodies().any(|body| {
                 let handle = match body.clone().downcast::<CodeView>() {
                     Ok(view) => Some(view.read(cx).focus_handle(cx)),
-                    Err(body) => body
-                        .downcast::<MarkdownPreview>()
-                        .ok()
-                        .map(|preview| preview.read(cx).focus_handle(cx)),
+                    Err(body) => match body.downcast::<DiffView>() {
+                        Ok(view) => Some(view.read(cx).focus_handle(cx)),
+                        Err(body) => body
+                            .downcast::<MarkdownPreview>()
+                            .ok()
+                            .map(|preview| preview.read(cx).focus_handle(cx)),
+                    },
                 };
                 handle.is_some_and(had_focus)
             });
@@ -1625,6 +1693,10 @@ impl Workbench {
         flag("searchViewletFocus", self.search_focused(window, cx));
         flag("referencesViewFocus", self.references_view_focus(cx));
         flag(
+            "gitDiffViewFocus",
+            self.focused_diff_view(window, cx).is_some(),
+        );
+        flag(
             "extensionsViewletFocus",
             self.extensions_focused(window, cx),
         );
@@ -1635,7 +1707,8 @@ impl Workbench {
             self.quick_open.is_some()
                 || self.theme_picker.is_some()
                 || self.locations_picker.is_some()
-                || self.recent_picker.is_some(),
+                || self.recent_picker.is_some()
+                || self.branch_picker.is_some(),
         );
         flag("inRecentPicker", self.recent_picker.is_some());
         // As of the last frame: GPUI knows key contexts only once drawn.
@@ -1796,24 +1869,26 @@ impl Workbench {
     }
 
     /// Closes every modal overlay (Quick Open, the locations picker, the
-    /// theme picker, reverting its preview, the Open Recent picker and the
-    /// trust modal). Each `show_*` calls it first, so at most one is ever
+    /// theme picker, reverting its preview, the Open Recent picker, the
+    /// branch picker and the trust modal). Each `show_*` calls it first, so at most one is ever
     /// shown and one Esc never has to close two.
     pub(crate) fn close_modal_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_quick_open(window, cx);
         self.close_locations_picker(window, cx);
         self.close_theme_picker(true, window, cx);
         self.close_recent_picker(window, cx);
+        self.close_branch_picker(window, cx);
         self.close_trust_modal(window, cx);
     }
 
-    /// Whether Quick Open, the theme picker, the Open Recent picker or the
-    /// trust modal is shown: a late go-to answer then does not open the
+    /// Whether Quick Open, the theme picker, the Open Recent picker, the
+    /// branch picker or the trust modal is shown: a late go-to answer then does not open the
     /// locations picker over it.
     pub(crate) fn other_modal_overlay_shown(&self) -> bool {
         self.quick_open.is_some()
             || self.theme_picker.is_some()
             || self.recent_picker.is_some()
+            || self.branch_picker.is_some()
             || self.trust_modal().is_some()
     }
 
@@ -1837,6 +1912,17 @@ impl Workbench {
             let v = view.read(cx);
             return Some((view.entity_id(), v.focus_handle(cx), v.is_passive()));
         }
+        let body = match body.downcast::<DiffView>() {
+            // The list takes the keys.
+            Ok(view) => {
+                return Some((
+                    view.entity_id(),
+                    view.read(cx).list_focus_handle().clone(),
+                    false,
+                ));
+            }
+            Err(body) => body,
+        };
         let preview = body.downcast::<MarkdownPreview>().ok()?;
         Some((
             preview.entity_id(),
@@ -2311,6 +2397,10 @@ impl Render for Workbench {
             )
             .children(
                 self.locations_picker()
+                    .map(|picker| popover_overlay(picker.clone())),
+            )
+            .children(
+                self.branch_picker()
                     .map(|picker| popover_overlay(picker.clone())),
             )
             .children(

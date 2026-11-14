@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lucerna_workbench::{
-    EXTENSIONS_TAB_STATE, EditorGroups, FileView, GroupState, GroupsState,
-    MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
+    BRANCH_CHANGES_TAB_STATE, EXTENSIONS_TAB_STATE, EditorGroups, FileView, GroupState,
+    GroupsState, MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
     SEARCH_TAB_STATE, TabItem,
 };
 
@@ -715,4 +715,49 @@ fn retarget_moves_markdown_previews() {
         items(&g, 1),
         vec![TabItem::MarkdownPreviewDynamic(p("/r/notes/a.md"))]
     );
+}
+
+#[test]
+fn file_diff_tabs_are_one_per_file_and_not_saved() {
+    let mut g = EditorGroups::default();
+    g.open(p("/w/a.rs"), OpenMode::Pinned, true);
+    let a = g.open_file_diff(p("a.rs"));
+    let b = g.open_file_diff(p("b.rs"));
+    assert_ne!(a, b, "one tab per file");
+    assert_eq!(g.open_file_diff(p("a.rs")), a, "reopening activates it");
+    assert_eq!(g.active_tab().map(|t| t.id), Some(a));
+    assert_eq!(g.file_diff_tab(Path::new("b.rs")), Some(b));
+    let tab = g.active_tab().unwrap();
+    assert!(tab.pinned, "never a preview");
+    assert_eq!(tab.title(), "a.rs (Changes)");
+    assert!(tab.item.is_singleton());
+    let saved = &g.state().groups[0].tabs;
+    assert_eq!(saved, &[(PathBuf::from("/w/a.rs"), true)], "not saved");
+    assert!(matches!(tab.item, TabItem::FileDiff(_)));
+}
+
+#[test]
+fn branch_changes_tab_is_one_and_saved() {
+    let mut g = EditorGroups::default();
+    g.open(p("/w/a.rs"), OpenMode::Pinned, true);
+    let tab = g.open_branch_changes();
+    g.open(p("/w/b.rs"), OpenMode::Pinned, true);
+    assert_eq!(g.open_branch_changes(), tab, "reopening activates it");
+    assert_eq!(g.branch_changes_tab(), Some(tab));
+    let active = g.active_tab().unwrap();
+    assert!(active.pinned, "never a preview");
+    assert!(active.item.is_singleton());
+    assert_eq!(active.item, TabItem::BranchChanges);
+    assert_eq!(active.title(), "Changes since default branch");
+    let state = g.state();
+    assert_eq!(
+        state.groups[0].tabs,
+        [
+            (PathBuf::from("/w/a.rs"), true),
+            (PathBuf::from(BRANCH_CHANGES_TAB_STATE), true),
+            (PathBuf::from("/w/b.rs"), true),
+        ]
+    );
+    let restored = EditorGroups::restore(&state);
+    assert!(restored.branch_changes_tab().is_some());
 }

@@ -522,6 +522,26 @@ pub fn search_query_column<E: Styled>(el: E) -> E {
         .min_w(px(SEARCH_QUERY_MIN_WIDTH))
 }
 
+/// A message filling a list area, centered as in Zed: the Search tab's
+/// error, "Searching…" or "No results found", or a diff tab's empty or
+/// unavailable state. Its debug selector is `selector`.
+pub fn centered_message(
+    selector: &'static str,
+    text: impl Into<SharedString>,
+    text_color: gpui::Rgba,
+) -> Div {
+    div()
+        .debug_selector(move || selector.into())
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(3. * GRID))
+        .text_size(px(UI_FONT_SIZE))
+        .text_color(text_color)
+        .child(text.into())
+}
+
 /// An [`icon_button`] for a bar: its debug selector is `id`, and pressing
 /// it leaves focus where it was (in the query input). Add `on_click`.
 pub fn bar_icon_button(

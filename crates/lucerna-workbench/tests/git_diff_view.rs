@@ -1,0 +1,1237 @@
+//! The Uncommitted Changes tab (spec §4.7): files against HEAD in
+//! conflict, tracked, new order, streamed in with bounded concurrency,
+//! with diff rows, notes, empty and unavailable states, change navigation
+//! and workspace save / restore.
+
+mod support;
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
+
+use gpui::{Entity, Focusable, TestAppContext, VisualTestContext};
+use lucerna_project::{Change, ChangeKind, LineKind, WorktreeEvent};
+use lucerna_settings::{Keymap, Layer, SettingsStore};
+use lucerna_syntax::LanguageRegistry;
+use lucerna_text::Point;
+use lucerna_theme::ThemeRegistry;
+use lucerna_workbench::code_view::CodeView;
+use lucerna_workbench::{
+    AppState, BRANCH_CHANGES_TAB_STATE, DiffKind, DiffView, GIT_CHANGES_TAB_STATE, OpenMode,
+    SearchLineRef as LineRef, TabItem, Workbench, WorkspaceStateStore,
+};
+use support::git::{git, isolated_git, repo};
+use tempfile::TempDir;
+
+fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
+    let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
+    assert!(error.is_none(), "keymap error: {error:?}");
+    let mut settings = SettingsStore::with_defaults();
+    if let Some(json) = user_settings {
+        settings.set_layer(Layer::User, json).unwrap();
+    }
+    let themes = ThemeRegistry::builtin();
+    let theme = themes.get_or_default("Lucerna Dark");
+    cx.set_global(AppState {
+        settings,
+        keymap,
+        themes,
+        theme,
+        theme_generation: 0,
+        languages: Arc::new(LanguageRegistry::bundled()),
+        languages_generation: 0,
+        icon_themes: lucerna_theme::IconThemeRegistry::build(&[]).0,
+        icons: lucerna_theme::IconThemeRegistry::build(&[])
+            .0
+            .resolve("Lucide"),
+    });
+}
+
+fn draw(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+fn settle(cx: &mut VisualTestContext) {
+    for _ in 0..3 {
+        draw(cx);
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(60));
+    }
+    draw(cx);
+}
+
+/// A repo (committed `a.txt` and `b.txt`, see [`repo`]) that `prepare`
+/// changes before a workbench opens on it. `trusted` runs git.
+fn workbench_with<'a>(
+    settings: Option<&str>,
+    trusted: bool,
+    prepare: impl FnOnce(&Path),
+    cx: &'a mut TestAppContext,
+) -> (
+    TempDir,
+    PathBuf,
+    Entity<Workbench>,
+    &'a mut VisualTestContext,
+) {
+    init(cx, settings);
+    let (tmp, dir) = repo();
+    prepare(&dir);
+    let root = dir.clone();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    wb.update(cx, |wb, cx| {
+        wb.git().update(cx, |git, cx| {
+            git.use_git_for_test(isolated_git());
+            git.set_trusted(trusted, cx);
+        });
+    });
+    settle(cx);
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::ScanComplete, cx)
+    });
+    settle(cx);
+    (tmp, dir, wb, cx)
+}
+
+fn workbench(
+    prepare: impl FnOnce(&Path),
+    cx: &mut TestAppContext,
+) -> (TempDir, PathBuf, Entity<Workbench>, &mut VisualTestContext) {
+    workbench_with(None, true, prepare, cx)
+}
+
+/// Runs `git.viewChanges` and returns the tab's view.
+fn open_changes(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<DiffView> {
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command("git.viewChanges", None, window, cx)
+        })
+    });
+    settle(cx);
+    cx.update(|_, cx| wb.read(cx).git_changes_view(cx))
+        .expect("the Uncommitted Changes tab is open")
+}
+
+fn file_paths(view: &Entity<DiffView>, cx: &mut VisualTestContext) -> Vec<String> {
+    cx.update(|_, cx| {
+        view.read(cx)
+            .excerpt_list()
+            .read(cx)
+            .results()
+            .files()
+            .iter()
+            .map(|f| f.path.to_string_lossy().into_owned())
+            .collect()
+    })
+}
+
+/// `(line number, kind, text)` of every line of file `file`.
+fn rows(
+    view: &Entity<DiffView>,
+    file: usize,
+    cx: &mut VisualTestContext,
+) -> Vec<(u32, LineKind, String)> {
+    cx.update(|_, cx| {
+        view.read(cx).excerpt_list().read(cx).results().files()[file]
+            .excerpts
+            .iter()
+            .flat_map(|e| &e.lines)
+            .map(|l| (l.line_number, l.kind, l.line_text.clone()))
+            .collect()
+    })
+}
+
+fn message(view: &Entity<DiffView>, cx: &mut VisualTestContext) -> Option<String> {
+    cx.update(|_, cx| view.read(cx).message(cx))
+}
+
+fn selected(view: &Entity<DiffView>, cx: &mut VisualTestContext) -> Option<LineRef> {
+    cx.update(|_, cx| view.read(cx).excerpt_list().read(cx).selected())
+}
+
+fn write(dir: &Path, name: &str, text: &str) {
+    std::fs::write(dir.join(name), text).unwrap();
+}
+
+fn changed(dir: &Path, name: &str) -> WorktreeEvent {
+    WorktreeEvent::Changed(vec![Change {
+        path: Arc::from(dir.join(name)),
+        kind: ChangeKind::Modified,
+    }])
+}
+
+#[gpui::test]
+fn lists_files_in_conflict_tracked_new_order(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            // `zz.txt` conflicts: changed on two branches, then merged.
+            write(dir, "zz.txt", "base\n");
+            git(dir, &["add", "."]);
+            git(dir, &["commit", "-q", "-m", "zz"]);
+            git(dir, &["checkout", "-q", "-b", "other"]);
+            write(dir, "zz.txt", "other\n");
+            git(dir, &["commit", "-q", "-am", "other"]);
+            git(dir, &["checkout", "-q", "main"]);
+            write(dir, "zz.txt", "main\n");
+            git(dir, &["commit", "-q", "-am", "main"]);
+            let merge = Command::new("git")
+                .current_dir(dir)
+                .args(["merge", "-q", "other"])
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(!merge.status.success(), "the merge conflicts");
+            write(dir, "a.txt", "one\nTWO\nthree\n");
+            std::fs::remove_file(dir.join("b.txt")).unwrap();
+            write(dir, "added.txt", "added\n");
+            git(dir, &["add", "added.txt"]);
+            write(dir, "0new.txt", "new\n");
+        },
+        cx,
+    );
+    let view = open_changes(&wb, cx);
+    assert_eq!(
+        file_paths(&view, cx),
+        ["zz.txt", "a.txt", "added.txt", "b.txt", "0new.txt"],
+        "conflicts, then tracked, then new; by path within each"
+    );
+    let labels: Vec<Option<&str>> = cx.update(|_, cx| {
+        let list = view.read(cx).excerpt_list().read(cx);
+        list.results()
+            .files()
+            .iter()
+            .map(|f| list.results().meta(&f.path).and_then(|m| m.label))
+            .collect()
+    });
+    assert_eq!(
+        labels,
+        [None, None, Some("new"), Some("deleted"), Some("new")]
+    );
+    let title = cx.update(|_, cx| view.read(cx).title());
+    assert_eq!(title, "Uncommitted Changes");
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).kind().clone()),
+        DiffKind::Uncommitted
+    );
+    assert!(cx.debug_bounds("git-diff-file-0").is_some());
+}
+
+#[gpui::test]
+fn shows_deleted_and_added_rows_for_modified_file(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "a.txt", "one\nTWO\nthree\n"), cx);
+    let view = open_changes(&wb, cx);
+    assert_eq!(file_paths(&view, cx), ["a.txt"]);
+    assert_eq!(
+        rows(&view, 0, cx),
+        vec![
+            (1, LineKind::Normal, "one".into()),
+            (2, LineKind::Deleted { base_line: 2 }, "two".into()),
+            (2, LineKind::Added, "TWO".into()),
+            (3, LineKind::Normal, "three".into()),
+        ]
+    );
+    let (files, added, removed) = cx.update(|_, cx| view.read(cx).totals());
+    assert_eq!((files, added, removed), (1, 1, 1));
+    let (added_bg, theme_added) = cx.update(|_, cx| {
+        let list = view.read(cx).excerpt_list().read(cx);
+        let r = LineRef {
+            file: 0,
+            excerpt: 0,
+            line: 2,
+        };
+        let c = cx.global::<AppState>().theme.ui.diff_added_background;
+        let theme = gpui::Rgba {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+            a: c.a,
+        };
+        (list.row_background(r, cx), Some(gpui::Hsla::from(theme)))
+    });
+    assert_eq!(added_bg, theme_added);
+    assert!(cx.debug_bounds("git-diff-line-0-0-1").is_some());
+    assert!(cx.debug_bounds("git-diff-summary").is_some());
+}
+
+#[gpui::test]
+fn unsaved_buffer_text_is_used(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "a.txt", "one\nTWO\nthree\n"), cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("a.txt")), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+    let code = cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .and_then(|b| b.downcast::<CodeView>().ok())
+            .expect("a code view")
+    });
+    cx.update(|window, cx| {
+        let focus = code.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    code.update(cx, |v, cx| v.set_cursor(Point { row: 0, column: 0 }, cx));
+    cx.simulate_input("X");
+    settle(cx);
+    let view = open_changes(&wb, cx);
+    let lines = rows(&view, 0, cx);
+    assert!(
+        lines.contains(&(1, LineKind::Added, "Xone".into())),
+        "the buffer's unsaved text: {lines:?}"
+    );
+    assert!(lines.contains(&(1, LineKind::Deleted { base_line: 1 }, "one".into())));
+    // An edit while the tab shows reloads the file.
+    code.update(cx, |v, cx| {
+        v.type_text("Y", cx);
+    });
+    settle(cx);
+    let lines = rows(&view, 0, cx);
+    assert!(
+        lines.contains(&(1, LineKind::Added, "XYone".into())),
+        "the edited text: {lines:?}"
+    );
+}
+
+#[gpui::test]
+fn deleted_file_collapsed_and_not_openable(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| std::fs::remove_file(dir.join("b.txt")).unwrap(), cx);
+    let view = open_changes(&wb, cx);
+    assert_eq!(file_paths(&view, cx), ["b.txt"]);
+    let (collapsed, meta) = cx.update(|_, cx| {
+        let results = view.read(cx).excerpt_list().read(cx).results();
+        let f = &results.files()[0];
+        (f.collapsed, results.meta(&f.path).copied())
+    });
+    assert!(collapsed, "deleted files start collapsed");
+    let meta = meta.expect("meta");
+    assert!(!meta.openable);
+    assert_eq!(meta.label, Some("deleted"));
+    assert_eq!((meta.added, meta.removed), (0, 1));
+    assert_eq!(
+        rows(&view, 0, cx),
+        vec![(1, LineKind::Deleted { base_line: 1 }, "b".into())]
+    );
+    assert!(cx.debug_bounds("git-diff-line-0-0-0").is_none(), "folded");
+}
+
+#[gpui::test]
+fn binary_file_shows_note(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            std::fs::write(dir.join("img.bin"), b"\0\x01\x02").unwrap();
+            git(dir, &["add", "."]);
+            git(dir, &["commit", "-q", "-m", "bin"]);
+            std::fs::write(dir.join("img.bin"), b"\0\x01\x03").unwrap();
+        },
+        cx,
+    );
+    let view = open_changes(&wb, cx);
+    assert_eq!(file_paths(&view, cx), ["img.bin"]);
+    let note = cx.update(|_, cx| {
+        let results = view.read(cx).excerpt_list().read(cx).results();
+        results.meta(Path::new("img.bin")).and_then(|m| m.note)
+    });
+    assert_eq!(note, Some("Binary file"));
+    assert!(cx.debug_bounds("git-diff-note-0").is_some());
+}
+
+#[gpui::test]
+fn one_file_change_keeps_selection(cx: &mut TestAppContext) {
+    let base: String = (1..=20).map(|n| format!("l{n}\n")).collect();
+    let (_t, dir, wb, cx) = workbench(
+        |dir| {
+            write(dir, "a.rs", &base);
+            write(dir, "b.rs", &base);
+            git(dir, &["add", "."]);
+            git(dir, &["commit", "-q", "-m", "rs"]);
+            write(dir, "a.rs", &base.replace("l3\n", "x3\n"));
+            write(dir, "b.rs", &base.replace("l10\n", "x10\n"));
+        },
+        cx,
+    );
+    let view = open_changes(&wb, cx);
+    assert_eq!(file_paths(&view, cx), ["a.rs", "b.rs"]);
+    let list = cx.update(|_, cx| view.read(cx).excerpt_list().clone());
+    list.update(cx, |l, cx| {
+        l.step_change(true, cx);
+        l.step_change(true, cx);
+    });
+    let anchor = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let l = list.read(cx);
+            let r = l.selected().expect("a selection");
+            let results = l.results();
+            let line = results.line(r).unwrap();
+            (
+                results.files()[r.file].path.to_path_buf(),
+                line.line_number,
+                line.kind,
+                line.line_text.clone(),
+            )
+        })
+    };
+    let before = anchor(cx);
+    assert_eq!(before.0, Path::new("b.rs"));
+    // a.rs gains a hunk: its rows grow above b.rs.
+    write(
+        &dir,
+        "a.rs",
+        &base.replace("l3\n", "x3\n").replace("l15\n", "x15\n"),
+    );
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&changed(&dir, "a.rs"), cx)
+    });
+    settle(cx);
+    assert_eq!(rows(&view, 0, cx).len(), 12, "a.rs was rebuilt");
+    assert_eq!(anchor(cx), before, "the selection stays on its line");
+}
+
+#[gpui::test]
+fn streams_with_bounded_concurrency(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            for i in 0..100 {
+                write(dir, &format!("f{i:03}.txt"), "a\nb\nc\n");
+            }
+            git(dir, &["add", "."]);
+            git(dir, &["commit", "-q", "-m", "many"]);
+            for i in 0..100 {
+                write(dir, &format!("f{i:03}.txt"), "a\nB\nc\n");
+            }
+        },
+        cx,
+    );
+    let view = open_changes(&wb, cx);
+    let (files, peak, loading) = cx.update(|_, cx| {
+        let v = view.read(cx);
+        let results = v.excerpt_list().read(cx).results();
+        let loading = results
+            .files()
+            .iter()
+            .filter(|f| results.meta(&f.path).is_some_and(|m| m.note.is_some()))
+            .count();
+        (results.files().len(), v.peak_jobs(), loading)
+    });
+    assert_eq!(files, 100);
+    assert_eq!(loading, 0, "every file finished loading");
+    assert!(peak <= 16, "at most 16 files load at once, saw {peak}");
+    assert!(peak > 1, "files load in parallel, saw {peak}");
+}
+
+#[gpui::test]
+fn empty_state_when_clean(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|_| {}, cx);
+    let view = open_changes(&wb, cx);
+    assert_eq!(
+        message(&view, cx).as_deref(),
+        Some("No uncommitted changes")
+    );
+    assert!(cx.debug_bounds("git-diff-message").is_some());
+    assert!(cx.debug_bounds("git-diff-trust").is_none());
+}
+
+#[gpui::test]
+fn restricted_state_has_trust_button(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench_with(None, false, |_| {}, cx);
+    let view = open_changes(&wb, cx);
+    assert_eq!(
+        message(&view, cx).as_deref(),
+        Some("Git is off in Restricted Mode")
+    );
+    assert!(cx.debug_bounds("git-diff-trust").is_some());
+    let button = cx.debug_bounds("git-diff-trust").unwrap();
+    cx.simulate_click(button.center(), gpui::Modifiers::none());
+    settle(cx);
+    assert!(
+        cx.update(|_, cx| wb.read(cx).trust_modal().is_some()),
+        "the button opens the trust dialog"
+    );
+}
+
+#[gpui::test]
+fn alt_f5_steps_hunks_across_files(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            write(dir, "a.txt", "one\nTWO\nthree\n");
+            write(dir, "b.txt", "B\n");
+        },
+        cx,
+    );
+    let view = open_changes(&wb, cx);
+    let focused =
+        cx.update(|window, cx| view.read(cx).focus_handle(cx).contains_focused(window, cx));
+    assert!(focused, "the tab takes the focus");
+    let ctx = cx.update(|window, cx| wb.read(cx).context_keys(window, cx));
+    assert!(
+        lucerna_settings::parse_when("gitDiffViewFocus")
+            .unwrap()
+            .eval(&ctx)
+    );
+    assert!(
+        !lucerna_settings::parse_when("editorTextFocus")
+            .unwrap()
+            .eval(&ctx)
+    );
+    let at = |file, line| LineRef {
+        file,
+        excerpt: 0,
+        line,
+    };
+    cx.simulate_keystrokes("alt-f5");
+    settle(cx);
+    assert_eq!(selected(&view, cx), Some(at(0, 1)));
+    cx.simulate_keystrokes("alt-f5");
+    settle(cx);
+    assert_eq!(selected(&view, cx), Some(at(1, 0)));
+    cx.simulate_keystrokes("alt-f5");
+    settle(cx);
+    assert_eq!(selected(&view, cx), Some(at(0, 1)), "wraps around");
+    cx.simulate_keystrokes("shift-alt-f5");
+    settle(cx);
+    assert_eq!(selected(&view, cx), Some(at(1, 0)));
+}
+
+#[gpui::test]
+fn tab_saved_and_restored(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_t, dir) = repo();
+    let data = TempDir::new().unwrap();
+    let items = |wb: &Entity<Workbench>, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            wb.read(cx)
+                .editor_groups()
+                .read(cx)
+                .model()
+                .groups()
+                .iter()
+                .flat_map(|g| g.tabs.iter().map(|t| t.item.clone()))
+                .collect::<Vec<_>>()
+        })
+    };
+    {
+        let (root, data) = (dir.clone(), data.path().to_path_buf());
+        let (wb, cx) =
+            cx.add_window_view(|window, cx| Workbench::with_data_dir(root, data, window, cx));
+        open_changes(&wb, cx);
+        assert_eq!(items(&wb, cx), [TabItem::GitChanges]);
+        let state = cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).model().state());
+        assert_eq!(
+            state.groups[0].tabs,
+            [(PathBuf::from(GIT_CHANGES_TAB_STATE), true)]
+        );
+        wb.update(cx, |wb, cx| wb.save_workspace_state(cx));
+    }
+    let (root, data) = (dir.clone(), data.path().to_path_buf());
+    let (wb, cx) =
+        cx.add_window_view(|window, cx| Workbench::with_data_dir(root, data, window, cx));
+    settle(cx);
+    assert_eq!(items(&wb, cx), [TabItem::GitChanges]);
+    let title =
+        cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).model().groups()[0].tabs[0].title());
+    assert_eq!(title, "Uncommitted Changes");
+    assert!(
+        cx.update(|_, cx| wb.read(cx).git_changes_view(cx))
+            .is_some()
+    );
+}
+
+#[gpui::test]
+fn independent_of_diff_base_setting(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench_with(
+        Some(r#"{ "git.diffBase": "defaultBranch" }"#),
+        true,
+        |dir| {
+            git(dir, &["checkout", "-q", "-b", "feature"]);
+            write(dir, "a.txt", "one\nTWO\nthree\n");
+            git(dir, &["commit", "-q", "-am", "work"]);
+        },
+        cx,
+    );
+    let against_branch = cx.update(|_, cx| wb.read(cx).git().read(cx).snapshot().statuses.len());
+    assert_eq!(against_branch, 1, "the store diffs against main");
+    let view = open_changes(&wb, cx);
+    assert_eq!(file_paths(&view, cx), Vec::<String>::new());
+    assert_eq!(
+        message(&view, cx).as_deref(),
+        Some("No uncommitted changes")
+    );
+}
+
+// ---- Task 4: the single-file diff tab (spec §4.8) -------------------------
+
+/// Ten committed lines, `l1` to `l10`.
+fn ten_lines() -> String {
+    (1..=10).map(|n| format!("l{n}\n")).collect()
+}
+
+/// The tab items of every group, in order.
+fn tab_items(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<(TabItem, bool)> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| g.tabs.iter().map(|t| (t.item.clone(), t.pinned)))
+            .collect()
+    })
+}
+
+fn active_item(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<(TabItem, bool)> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .active_tab()
+            .map(|t| (t.item.clone(), t.pinned))
+    })
+}
+
+fn open_file(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) {
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new(name)), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+}
+
+fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| wb.update(cx, |wb, cx| wb.run_command(command, None, window, cx)));
+    settle(cx);
+}
+
+fn file_diff(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) -> Entity<DiffView> {
+    cx.update(|_, cx| wb.read(cx).file_diff_view(Path::new(name), cx))
+        .expect("the file diff tab is open")
+}
+
+/// Whether the active tab shows file `name` (paths may be absolute).
+fn active_file_is(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) -> Option<bool> {
+    match active_item(wb, cx)? {
+        (TabItem::File(path), pinned) => path.ends_with(name).then_some(pinned),
+        _ => None,
+    }
+}
+
+#[gpui::test]
+fn open_change_shows_full_file_with_diff_rows(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            write(dir, "f.txt", &ten_lines());
+            git(dir, &["add", "."]);
+            git(dir, &["commit", "-q", "-m", "f"]);
+            write(dir, "f.txt", &ten_lines().replace("l9\n", "x9\n"));
+        },
+        cx,
+    );
+    open_file(&wb, "f.txt", cx);
+    run(&wb, "git.openChange", cx);
+    let view = file_diff(&wb, "f.txt", cx);
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).kind().clone()),
+        DiffKind::File(Arc::from(Path::new("f.txt")))
+    );
+    assert_eq!(cx.update(|_, cx| view.read(cx).title()), "f.txt (Changes)");
+    assert_eq!(
+        active_item(&wb, cx),
+        Some((TabItem::FileDiff(Arc::from(Path::new("f.txt"))), true)),
+        "the tab is active and not a preview"
+    );
+    let lines = rows(&view, 0, cx);
+    assert_eq!(lines.len(), 11, "the whole file, plus the deleted line");
+    assert_eq!(lines[0], (1, LineKind::Normal, "l1".into()));
+    assert_eq!(
+        lines[8],
+        (9, LineKind::Deleted { base_line: 9 }, "l9".into())
+    );
+    assert_eq!(lines[9], (9, LineKind::Added, "x9".into()));
+    assert_eq!(lines[10], (10, LineKind::Normal, "l10".into()));
+    assert!(cx.debug_bounds("git-diff-path").is_some());
+    assert!(cx.debug_bounds("git-diff-previous").is_some());
+    assert!(cx.debug_bounds("git-diff-next").is_some());
+    assert!(cx.debug_bounds("git-diff-open-file").is_some());
+    // One tab per file: opening it again activates it.
+    run(&wb, "git.openChange", cx);
+    let diffs = tab_items(&wb, cx)
+        .into_iter()
+        .filter(|(i, _)| matches!(i, TabItem::FileDiff(_)))
+        .count();
+    assert_eq!(diffs, 1);
+    // Not saved with the workspace.
+    let state = cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).model().state());
+    assert_eq!(state.groups[0].tabs.len(), 1, "only the file tab is saved");
+
+    // An unchanged file shows all its lines, none coloured.
+    open_file(&wb, "a.txt", cx);
+    run(&wb, "git.openChange", cx);
+    let view = file_diff(&wb, "a.txt", cx);
+    assert_eq!(
+        rows(&view, 0, cx),
+        vec![
+            (1, LineKind::Normal, "one".into()),
+            (2, LineKind::Normal, "two".into()),
+            (3, LineKind::Normal, "three".into()),
+        ]
+    );
+    assert_eq!(message(&view, cx), None);
+}
+
+#[gpui::test]
+fn open_change_untracked_all_added(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "new.txt", "a\nb\n"), cx);
+    open_file(&wb, "new.txt", cx);
+    run(&wb, "git.openChange", cx);
+    let view = file_diff(&wb, "new.txt", cx);
+    assert_eq!(
+        rows(&view, 0, cx),
+        vec![
+            (1, LineKind::Added, "a".into()),
+            (2, LineKind::Added, "b".into()),
+        ]
+    );
+    let label = cx.update(|_, cx| {
+        let results = view.read(cx).excerpt_list().read(cx).results();
+        results.meta(Path::new("new.txt")).and_then(|m| m.label)
+    });
+    assert_eq!(label, Some("new"));
+}
+
+#[gpui::test]
+fn open_change_without_file_tab_shows_message(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "a.txt", "one\nTWO\nthree\n"), cx);
+    run(&wb, "git.openChange", cx);
+    let message =
+        cx.update(|_, cx| lucerna_workbench::status_message::current(cx).map(|m| m.to_string()));
+    assert_eq!(message.as_deref(), Some("No file to compare"));
+    assert!(tab_items(&wb, cx).is_empty());
+}
+
+#[gpui::test]
+fn open_file_from_file_diff(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "a.txt", "one\nTWO\nthree\n"), cx);
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.open_file_diff(Arc::from(Path::new("a.txt")), None, window, cx)
+        })
+    });
+    settle(cx);
+    assert!(matches!(
+        active_item(&wb, cx),
+        Some((TabItem::FileDiff(_), _))
+    ));
+    run(&wb, "git.openFile", cx);
+    assert_eq!(
+        active_file_is(&wb, "a.txt", cx),
+        Some(true),
+        "opened, pinned"
+    );
+
+    // The toolbar button does the same.
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| {
+            let id = m.active_tab().unwrap().id;
+            m.close(id);
+        })
+    });
+    settle(cx);
+    assert!(matches!(
+        active_item(&wb, cx),
+        Some((TabItem::FileDiff(_), _))
+    ));
+    let button = cx.debug_bounds("git-diff-open-file").expect("the button");
+    cx.simulate_click(button.center(), gpui::Modifiers::none());
+    settle(cx);
+    assert_eq!(active_file_is(&wb, "a.txt", cx), Some(true));
+
+    // In the Uncommitted Changes tab it opens the selected line's file.
+    let view = open_changes(&wb, cx);
+    let list = cx.update(|_, cx| view.read(cx).excerpt_list().clone());
+    list.update(cx, |l, cx| {
+        l.step_change(true, cx);
+    });
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| {
+            let file = m
+                .groups()
+                .iter()
+                .flat_map(|g| &g.tabs)
+                .find(|t| matches!(t.item, TabItem::File(_)))
+                .map(|t| t.id)
+                .unwrap();
+            m.close(file);
+        })
+    });
+    settle(cx);
+    run(&wb, "git.openFile", cx);
+    assert_eq!(active_file_is(&wb, "a.txt", cx), Some(true));
+}
+
+#[gpui::test]
+fn activating_a_line_opens_a_preview(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "a.txt", "one\nTWO\nthree\n"), cx);
+    let view = open_changes(&wb, cx);
+    let list = cx.update(|_, cx| view.read(cx).excerpt_list().clone());
+    list.update(cx, |l, cx| {
+        l.step_change(true, cx);
+    });
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    assert_eq!(
+        active_file_is(&wb, "a.txt", cx),
+        Some(false),
+        "Enter opens the file as a preview, like Search"
+    );
+}
+
+#[gpui::test]
+fn keystroke_diffs_the_file_once(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            write(dir, "f.txt", &ten_lines());
+            git(dir, &["add", "."]);
+            git(dir, &["commit", "-q", "-m", "f"]);
+            write(dir, "f.txt", &ten_lines().replace("l2\n", "x2\n"));
+        },
+        cx,
+    );
+    open_file(&wb, "f.txt", cx);
+    let code = cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .and_then(|b| b.downcast::<CodeView>().ok())
+            .expect("a code view")
+    });
+    let view = open_changes(&wb, cx);
+    let before = cx.update(|_, cx| view.read(cx).loads_started());
+    // A new hunk on row 7: the gutter's hunks change too.
+    code.update(cx, |v, cx| {
+        v.set_cursor(Point { row: 7, column: 0 }, cx);
+        v.type_text("Z", cx);
+    });
+    settle(cx);
+    let hunks = cx.update(|_, cx| code.read(cx).diff_hunks().len());
+    assert_eq!(hunks, 2, "the gutter saw the edit");
+    let after = cx.update(|_, cx| view.read(cx).loads_started());
+    assert_eq!(after - before, 1, "one background diff per keystroke");
+    assert!(rows(&view, 0, cx).contains(&(8, LineKind::Added, "Zl8".into())));
+}
+
+// ---- Task 5: the Changes since ‹branch› tab (spec §4.7) -------------------
+
+/// Runs `lucerna.git.viewBranchChanges` and returns the tab's view.
+fn open_branch(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<DiffView> {
+    run(wb, "lucerna.git.viewBranchChanges", cx);
+    cx.update(|_, cx| wb.read(cx).branch_changes_view(cx))
+        .expect("the Changes since tab is open")
+}
+
+fn title(view: &Entity<DiffView>, cx: &mut VisualTestContext) -> String {
+    cx.update(|_, cx| view.read(cx).title())
+}
+
+/// The title the tab bar shows for the Changes since tab.
+fn tab_bar_title(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<String> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .branch_title()
+            .map(|t| t.to_string())
+    })
+}
+
+fn picker_rows(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<Vec<String>> {
+    cx.update(|_, cx| wb.read(cx).branch_picker().map(|p| p.read(cx).row_texts()))
+}
+
+fn click(selector: &'static str, cx: &mut VisualTestContext) {
+    draw(cx);
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"));
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    settle(cx);
+}
+
+/// Opens the branch picker with `button` and picks the row `query` finds.
+fn pick_branch(
+    wb: &Entity<Workbench>,
+    button: &'static str,
+    query: &str,
+    cx: &mut VisualTestContext,
+) {
+    click(button, cx);
+    assert!(picker_rows(wb, cx).is_some(), "the picker is shown");
+    cx.simulate_input(query);
+    settle(cx);
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    assert!(picker_rows(wb, cx).is_none(), "picking closes the picker");
+}
+
+/// On `feature`: `a.txt` changed and committed, `b.txt` changed only in
+/// the worktree.
+fn feature_branch(dir: &Path) {
+    git(dir, &["checkout", "-q", "-b", "feature"]);
+    write(dir, "a.txt", "one\nTWO\nthree\n");
+    git(dir, &["commit", "-q", "-am", "work"]);
+    write(dir, "b.txt", "B\n");
+}
+
+#[gpui::test]
+fn branch_tab_includes_commits_and_uncommitted(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(feature_branch, cx);
+    let view = open_branch(&wb, cx);
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt"]);
+    assert_eq!(message(&view, cx), None);
+    assert_eq!(
+        rows(&view, 0, cx),
+        [
+            (1, LineKind::Normal, "one".into()),
+            (2, LineKind::Deleted { base_line: 2 }, "two".into()),
+            (2, LineKind::Added, "TWO".into()),
+            (3, LineKind::Normal, "three".into()),
+        ],
+        "the committed change, against the merge base"
+    );
+    assert!(cx.debug_bounds("git-diff-branch").is_some());
+    assert_eq!(
+        tab_items(&wb, cx),
+        [(TabItem::BranchChanges, true)],
+        "one pinned tab"
+    );
+}
+
+#[gpui::test]
+fn branch_tab_title_uses_ref(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            git(dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+            git(
+                dir,
+                &[
+                    "symbolic-ref",
+                    "refs/remotes/origin/HEAD",
+                    "refs/remotes/origin/main",
+                ],
+            );
+            feature_branch(dir);
+        },
+        cx,
+    );
+    let view = open_branch(&wb, cx);
+    assert_eq!(title(&view, cx), "Changes since origin/main");
+    assert_eq!(
+        tab_bar_title(&wb, cx).as_deref(),
+        Some("Changes since origin/main")
+    );
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt"]);
+}
+
+/// A trusted workbench on `dir` that saves its state under `data`.
+fn trusted_with_data<'a>(
+    dir: &Path,
+    data: &Path,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+    let (root, data) = (dir.to_path_buf(), data.to_path_buf());
+    let (wb, cx) =
+        cx.add_window_view(|window, cx| Workbench::with_data_dir(root, data, window, cx));
+    wb.update(cx, |wb, cx| {
+        wb.git().update(cx, |git, cx| {
+            git.use_git_for_test(isolated_git());
+            git.set_trusted(true, cx);
+        });
+    });
+    settle(cx);
+    (wb, cx)
+}
+
+#[gpui::test]
+fn picker_changes_base_and_saves(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_t, dir) = repo();
+    // `release` stays at the first commit; `main` moves on (b.txt), and
+    // `feature` branches from there (a.txt).
+    git(&dir, &["branch", "release"]);
+    write(&dir, "b.txt", "B\n");
+    git(&dir, &["commit", "-q", "-am", "main"]);
+    git(&dir, &["checkout", "-q", "-b", "feature"]);
+    write(&dir, "a.txt", "one\nTWO\nthree\n");
+    git(&dir, &["commit", "-q", "-am", "work"]);
+    let data = TempDir::new().unwrap();
+    {
+        let (wb, cx) = trusted_with_data(&dir, data.path(), cx);
+        let view = open_branch(&wb, cx);
+        assert_eq!(title(&view, cx), "Changes since main");
+        assert_eq!(file_paths(&view, cx), ["a.txt"]);
+        click("git-diff-branch", cx);
+        let rows = picker_rows(&wb, cx).expect("the picker is shown");
+        for branch in ["feature", "main", "release"] {
+            assert!(rows.iter().any(|r| r == branch), "{branch} in {rows:?}");
+        }
+        cx.simulate_keystrokes("escape");
+        settle(cx);
+        assert!(picker_rows(&wb, cx).is_none(), "Escape closes the picker");
+
+        pick_branch(&wb, "git-diff-branch", "release", cx);
+        assert_eq!(title(&view, cx), "Changes since release");
+        assert_eq!(
+            tab_bar_title(&wb, cx).as_deref(),
+            Some("Changes since release")
+        );
+        assert_eq!(
+            file_paths(&view, cx),
+            ["a.txt", "b.txt"],
+            "reloaded in place"
+        );
+        pick_branch(&wb, "git-diff-branch", "main", cx);
+        assert_eq!(title(&view, cx), "Changes since main");
+        assert_eq!(file_paths(&view, cx), ["a.txt"]);
+        wb.update(cx, |wb, cx| wb.save_workspace_state(cx));
+        let saved = WorkspaceStateStore::new(data.path().to_path_buf(), dir.clone())
+            .load()
+            .expect("the state is saved");
+        assert_eq!(saved.branch_diff_base.as_deref(), Some("main"));
+        assert!(
+            saved.groups.groups[0]
+                .tabs
+                .contains(&(PathBuf::from(BRANCH_CHANGES_TAB_STATE), true))
+        );
+    }
+    // Reopened: the tab comes back with the chosen ref.
+    let (wb, cx) = trusted_with_data(&dir, data.path(), cx);
+    let view = cx
+        .update(|_, cx| wb.read(cx).branch_changes_view(cx))
+        .expect("the tab is restored and drawn");
+    assert_eq!(title(&view, cx), "Changes since main");
+    assert_eq!(file_paths(&view, cx), ["a.txt"]);
+}
+
+#[gpui::test]
+fn missing_base_ref_shows_empty_state(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(
+        |dir| {
+            git(dir, &["branch", "old"]);
+            feature_branch(dir);
+        },
+        cx,
+    );
+    let view = open_branch(&wb, cx);
+    pick_branch(&wb, "git-diff-branch", "old", cx);
+    assert_eq!(title(&view, cx), "Changes since old");
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt"]);
+    git(&dir, &["branch", "-D", "old"]);
+    wb.update(cx, |wb, cx| wb.git().update(cx, |g, cx| g.rescan(cx)));
+    settle(cx);
+    assert_eq!(
+        message(&view, cx).as_deref(),
+        Some("No default branch found")
+    );
+    assert!(cx.debug_bounds("git-diff-choose-branch").is_some());
+    assert_eq!(file_paths(&view, cx), Vec::<String>::new());
+}
+
+#[gpui::test]
+fn no_default_branch_offers_picker(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            git(dir, &["branch", "-m", "main", "trunk"]);
+        },
+        cx,
+    );
+    let view = open_branch(&wb, cx);
+    assert_eq!(
+        message(&view, cx).as_deref(),
+        Some("No default branch found")
+    );
+    assert_eq!(title(&view, cx), "Changes since default branch");
+    assert!(cx.debug_bounds("git-diff-toolbar").is_none());
+    click("git-diff-choose-branch", cx);
+    assert_eq!(picker_rows(&wb, cx), Some(vec!["trunk".to_string()]));
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    assert_eq!(title(&view, cx), "Changes since trunk");
+    assert_eq!(
+        message(&view, cx).as_deref(),
+        Some("No changes since trunk")
+    );
+    assert!(
+        cx.debug_bounds("git-diff-choose-branch").is_some(),
+        "the ref can be changed with nothing listed"
+    );
+}
+
+#[gpui::test]
+fn agent_commit_keeps_changes_listed(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(
+        |dir| {
+            git(dir, &["checkout", "-q", "-b", "feature"]);
+            write(dir, "a.txt", "one\nTWO\nthree\n");
+            write(dir, "c.txt", "c\n");
+        },
+        cx,
+    );
+    let uncommitted = open_changes(&wb, cx);
+    assert_eq!(file_paths(&uncommitted, cx), ["a.txt", "c.txt"]);
+    let branch = open_branch(&wb, cx);
+    assert_eq!(file_paths(&branch, cx), ["a.txt", "c.txt"]);
+    // The agent commits everything; the watcher rescans.
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "agent"]);
+    wb.update(cx, |wb, cx| wb.git().update(cx, |g, cx| g.rescan(cx)));
+    settle(cx);
+    assert_eq!(file_paths(&uncommitted, cx), Vec::<String>::new());
+    assert_eq!(
+        message(&uncommitted, cx).as_deref(),
+        Some("No uncommitted changes")
+    );
+    assert_eq!(file_paths(&branch, cx), ["a.txt", "c.txt"]);
+    assert_eq!(message(&branch, cx), None);
+}
+
+#[gpui::test]
+fn new_file_joins_branch_tab_by_path(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(feature_branch, cx);
+    let view = open_branch(&wb, cx);
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt"]);
+    let lists = cx.update(|_, cx| view.read(cx).listings_run());
+    write(&dir, "d.txt", "d\n");
+    write(&dir, "b.txt", "b\n");
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(
+            &WorktreeEvent::Changed(vec![
+                Change {
+                    path: Arc::from(dir.join("d.txt")),
+                    kind: ChangeKind::Added,
+                },
+                Change {
+                    path: Arc::from(dir.join("b.txt")),
+                    kind: ChangeKind::Modified,
+                },
+            ]),
+            cx,
+        )
+    });
+    settle(cx);
+    assert_eq!(
+        file_paths(&view, cx),
+        ["a.txt", "d.txt"],
+        "d.txt is new, b.txt is back to its base"
+    );
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).listings_run()),
+        lists,
+        "no full listing: only the changed paths were asked"
+    );
+}
+
+#[gpui::test]
+fn refresh_button_resolves_the_ref_again(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(feature_branch, cx);
+    let view = open_branch(&wb, cx);
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt"]);
+    // `main` catches up with the feature commit (a merge upstream).
+    git(&dir, &["update-ref", "refs/heads/main", "HEAD"]);
+    click("git-diff-refresh", cx);
+    assert_eq!(
+        file_paths(&view, cx),
+        ["b.txt"],
+        "only the uncommitted change is left"
+    );
+}
+
+#[gpui::test]
+fn paths_changed_during_first_listing_are_asked_after_it(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(feature_branch, cx);
+    // Open the tab and draw it once: its first listing is started, not run.
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command("lucerna.git.viewBranchChanges", None, window, cx)
+        })
+    });
+    draw(cx);
+    let view = cx
+        .update(|_, cx| wb.read(cx).branch_changes_view(cx))
+        .expect("the tab is drawn");
+    write(&dir, "d.txt", "d\n");
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&changed(&dir, "d.txt"), cx)
+    });
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).queued_paths()),
+        1,
+        "the change waits for the listing"
+    );
+    settle(cx);
+    assert_eq!(file_paths(&view, cx), ["a.txt", "b.txt", "d.txt"]);
+    assert_eq!(cx.update(|_, cx| view.read(cx).queued_paths()), 0);
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).path_queries_run()),
+        1,
+        "asked once the listing was in"
+    );
+}
+
+#[gpui::test]
+fn too_many_changes_stops_per_path_queries(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench_with(
+        Some(r#"{ "git.statusLimit": 3 }"#),
+        true,
+        |dir| {
+            feature_branch(dir);
+            for i in 0..4 {
+                write(dir, &format!("u{i}.txt"), "u\n");
+            }
+        },
+        cx,
+    );
+    let state = cx.update(|_, cx| wb.read(cx).git().read(cx).state());
+    assert_eq!(state, lucerna_workbench::GitState::TooManyChanges);
+    let view = open_branch(&wb, cx);
+    assert_eq!(file_paths(&view, cx).len(), 6);
+    let lists = cx.update(|_, cx| view.read(cx).listings_run());
+    write(&dir, "d.txt", "d\n");
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&changed(&dir, "d.txt"), cx)
+    });
+    settle(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).path_queries_run()), 0);
+    assert_eq!(cx.update(|_, cx| view.read(cx).listings_run()), lists);
+    assert_eq!(file_paths(&view, cx).len(), 6, "d.txt waits for a refresh");
+    run(&wb, "git.refresh", cx);
+    assert!(file_paths(&view, cx).contains(&"d.txt".to_string()));
+}
+
+#[gpui::test]
+fn repository_leaving_drops_a_pending_reveal(cx: &mut TestAppContext) {
+    // Untrusted: no git runs, so the file never loads and the row waits.
+    let (_t, _dir, wb, cx) = workbench_with(
+        None,
+        false,
+        |dir| write(dir, "a.txt", "one\nTWO\nthree\n"),
+        cx,
+    );
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.open_file_diff(Arc::from(Path::new("a.txt")), Some(1), window, cx)
+        })
+    });
+    settle(cx);
+    let view = file_diff(&wb, "a.txt", cx);
+    assert_eq!(selected(&view, cx), None);
+    // Trusting restarts git: the repository goes (the view clears) and
+    // comes back. The row asked for before is not selected then.
+    wb.update(cx, |wb, cx| {
+        wb.git().update(cx, |git, cx| git.set_trusted(true, cx))
+    });
+    settle(cx);
+    assert!(!rows(&view, 0, cx).is_empty(), "the file loaded");
+    assert_eq!(selected(&view, cx), None, "cleared with the list");
+}

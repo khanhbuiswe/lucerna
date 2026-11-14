@@ -350,3 +350,94 @@ fn vim_brackets_go_to_changes(cx: &mut TestAppContext) {
     settle(cx);
     assert_eq!(cursor(&view, cx).row, 2);
 }
+
+/// The active tab's item.
+fn active_item(
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+) -> Option<lucerna_workbench::TabItem> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .active_tab()
+            .map(|t| t.item.clone())
+    })
+}
+
+fn click_bar(view: &Entity<CodeView>, i: usize, cx: &mut VisualTestContext) {
+    draw(cx);
+    let bounds = cx
+        .update(|_, cx| view.read(cx).hunk_bar_bounds(i))
+        .expect("the bar is painted");
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    settle(cx);
+    cx.run_until_parked();
+    settle(cx);
+}
+
+#[gpui::test]
+fn gutter_click_opens_file_diff_at_hunk(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(None, two_changes, cx);
+    let view = open(&wb, "c.txt", cx);
+    assert_eq!(bars(&view, cx), 2);
+    click_bar(&view, 1, cx);
+    assert_eq!(
+        active_item(&wb, cx),
+        Some(lucerna_workbench::TabItem::FileDiff(Arc::from(Path::new(
+            "c.txt"
+        ))))
+    );
+    let diff = cx
+        .update(|_, cx| wb.read(cx).file_diff_view(Path::new("c.txt"), cx))
+        .expect("the file diff view");
+    let selected = cx.update(|_, cx| {
+        let list = diff.read(cx).excerpt_list().read(cx);
+        let r = list.selected()?;
+        let line = list.results().line(r)?;
+        Some((line.line_number, line.line_text.clone()))
+    });
+    assert_eq!(
+        selected,
+        Some((11, "l10".to_string())),
+        "the first line of the clicked hunk (its deleted line)"
+    );
+}
+
+#[gpui::test]
+fn gutter_action_none_does_nothing(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        Some(r#"{ "scm.diffDecorationsGutterAction": "none" }"#),
+        two_changes,
+        cx,
+    );
+    let view = open(&wb, "c.txt", cx);
+    assert_eq!(bars(&view, cx), 2);
+    click_bar(&view, 1, cx);
+    assert!(
+        matches!(
+            active_item(&wb, cx),
+            Some(lucerna_workbench::TabItem::File(_))
+        ),
+        "no diff tab opens"
+    );
+}
+
+/// A passive view (a picker or References preview) has no one to open the
+/// diff: its bars take no clicks, so the click falls through to the view.
+#[gpui::test]
+fn passive_view_bars_take_no_clicks(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(None, two_changes, cx);
+    let view = open(&wb, "c.txt", cx);
+    assert_eq!(bars(&view, cx), 2);
+    view.update(cx, |v, _| v.set_passive(true));
+    click_bar(&view, 1, cx);
+    assert!(
+        matches!(
+            active_item(&wb, cx),
+            Some(lucerna_workbench::TabItem::File(_))
+        ),
+        "no diff tab opens"
+    );
+}
