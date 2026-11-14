@@ -7,7 +7,10 @@ Writes <dir>/results.md and <dir>/<metric>-<config>.svg.
 Rounding: ratios use round-half-up on the shortest decimal repr of the float
 (Decimal ROUND_HALF_UP); other numbers use Python's format rounding.
 Number format: Vietnamese decimal comma. Precision per unit: ms -> 0 decimals
-when >= 100, else 1; MB -> 0 decimals; % -> 1 decimal; ratios -> 1 decimal.
+when >= 100, else 1; MB -> 0 decimals; % -> 1 decimal (idle CPU: 2);
+ratios -> 1 decimal. A ratio is not shown ("—", with a footnote) when
+Lucerna's median is under the metric's noise floor (RATIO_FLOOR): a ratio of
+two values that small is noise.
 Ratio = other editor's median / Lucerna's median for every metric; a value
 above 1 means a larger number than Lucerna's, nothing more. The output is
 neutral: no winner/loser wording or colouring.
@@ -40,13 +43,20 @@ METRICS = {
 }
 DASH = "—"
 BAR_COLOR = "#8a8f98"
+DECIMALS = {"idle_cpu_pct": 2}   # per-metric override of the unit precision
+CPU_RATIO_FLOOR = 0.1            # %: idle CPU below this is measurement noise
+RATIO_FLOOR = {"idle_cpu_pct": CPU_RATIO_FLOOR}
+FLOOR_NOTE = {"idle_cpu_pct": "Hệ số không tính khi giá trị của Lucerna dưới ngưỡng "
+                              "đo được (CPU < 0,1 %)."}
 
 
 def _comma(text: str) -> str:
     return text.replace(".", ",")
 
 
-def _num(v: float, unit: str) -> str:
+def _num(v: float, unit: str, decimals: int | None = None) -> str:
+    if decimals is not None:
+        return _comma(f"{v:.{decimals}f}")
     if unit == "ms":
         return _comma(f"{v:.0f}" if v >= 100 else f"{v:.1f}")
     if unit == "MB":
@@ -54,8 +64,8 @@ def _num(v: float, unit: str) -> str:
     return _comma(f"{v:.1f}")
 
 
-def fmt(v: float, unit: str) -> str:
-    return f"{_num(v, unit)} {unit}"
+def fmt(v: float, unit: str, decimals: int | None = None) -> str:
+    return f"{_num(v, unit, decimals)} {unit}"
 
 
 def ratio(other, lucerna) -> str:
@@ -65,14 +75,15 @@ def ratio(other, lucerna) -> str:
     return _comma(f"{q}") + "×"
 
 
-def cell(values, unit: str, single: bool = False) -> str:
+def cell(values, unit: str, single: bool = False, decimals: int | None = None) -> str:
     s = run.stats(values)
     failed = f" · {s['failed']}/{len(values)} lượt hỏng" if s["failed"] else ""
     if s["median"] is None:
         return DASH + failed
     if single:
-        return fmt(s["median"], unit) + failed
-    return f"{fmt(s['median'], unit)} (p90 {_num(s['p90'], unit)}){failed}"
+        return fmt(s["median"], unit, decimals) + failed
+    return (f"{fmt(s['median'], unit, decimals)} (p90 {_num(s['p90'], unit, decimals)})"
+            f"{failed}")
 
 
 def config_label(cfg: dict) -> str:
@@ -90,8 +101,17 @@ def _medians(cfg: dict, metric: str) -> dict:
     return {e: run.stats(data.get(e, []))["median"] for e in EDITOR_ORDER}
 
 
+def below_floor(cfg: dict, metric: str) -> bool:
+    """Lucerna's median is under the metric's noise floor: no ratio."""
+    floor = RATIO_FLOOR.get(metric)
+    lucerna = _medians(cfg, metric)["lucerna"]
+    return floor is not None and lucerna is not None and lucerna < floor
+
+
 def ratio_cells(cfg: dict, metric: str) -> list[str]:
     m = _medians(cfg, metric)
+    if below_floor(cfg, metric):
+        return [DASH] * len(EDITOR_ORDER)
     return [DASH if e == "lucerna" else ratio(m[e], m["lucerna"]) for e in EDITOR_ORDER]
 
 
@@ -135,14 +155,20 @@ def render_markdown(result: dict) -> str:
     for cfg in result["configs"]:
         out += [f"## {config_label(cfg)}", "",
                 "| Chỉ số | Lucerna | Zed | VS Code |", "|---|---|---|---|"]
+        notes = []
         for metric, (label, unit) in METRICS.items():
             if metric not in cfg["metrics"]:
                 continue
             data = cfg["metrics"][metric]
-            cells = [cell(data.get(e, []), unit, single=(metric == "app_size_mb"))
+            cells = [cell(data.get(e, []), unit, single=(metric == "app_size_mb"),
+                          decimals=DECIMALS.get(metric))
                      for e in EDITOR_ORDER]
             out.append(f"| {label} | " + " | ".join(cells) + " |")
             out.append("| ↳ so với Lucerna | " + " | ".join(ratio_cells(cfg, metric)) + " |")
+            if below_floor(cfg, metric):
+                notes.append(FLOOR_NOTE[metric])
+        if notes:
+            out += [""] + notes
         out += ["", "Biểu đồ:", ""]
         for metric, (label, _unit) in METRICS.items():
             if metric in cfg["metrics"]:
@@ -173,7 +199,7 @@ def render_svg(metric: str, cfg: dict) -> str:
         bh = 0 if v is None else v / top * plot_h
         parts.append(f'<rect class="bar" x="{x:.1f}" y="{base - bh:.1f}" width="{bar_w}" '
                      f'height="{bh:.1f}" fill="{BAR_COLOR}"/>')
-        value = DASH if v is None else fmt(v, unit)
+        value = DASH if v is None else fmt(v, unit, DECIMALS.get(metric))
         parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{base - bh - 8:.1f}" '
                      f'text-anchor="middle" font-size="12">{escape(value)}</text>')
         parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{base + 20}" '

@@ -37,6 +37,39 @@ class ReportTests(unittest.TestCase):
         self.assertIn("1470×956 pt, scale 2.0, 120 Hz", md)
         self.assertIn("1280×800 pt", md)
 
+    def test_idle_cpu_two_decimals(self):
+        self.assertEqual(report.cell([0.04, 0.05, 0.03], "%", decimals=2),
+                         "0,04 % (p90 0,05)")
+        md = report.render_markdown(load())
+        row = next(l for l in md.splitlines() if l.startswith("| CPU khi rỗi"))
+        self.assertIn("0,40 % (p90 0,50)", row)
+        # scroll % keeps one decimal
+        row = next(l for l in md.splitlines() if l.startswith("| Khung rớt"))
+        self.assertIn("0,2 % (p90 0,5)", row)
+
+    def test_cpu_ratio_hidden_below_noise_floor(self):
+        r = load()
+        cfg = r["configs"][0]
+        cfg["metrics"]["idle_cpu_pct"] = {"lucerna": [0.04, 0.03, 0.05],
+                                          "zed": [0.8, 0.79, 0.81], "vscode": [2.0, 2.1, 2.2]}
+        self.assertEqual(report.ratio_cells(cfg, "idle_cpu_pct"), ["—", "—", "—"])
+        md = report.render_markdown(r)
+        lines = md.splitlines()
+        i = next(n for n, l in enumerate(lines) if l.startswith("| CPU khi rỗi"))
+        self.assertEqual(lines[i + 1], "| ↳ so với Lucerna | — | — | — |")
+        note = ("Hệ số không tính khi giá trị của Lucerna dưới ngưỡng đo được "
+                "(CPU < 0,1 %).")
+        self.assertEqual(md.count(note), 1)   # only the config below the floor
+        self.assertNotIn("×", lines[i + 1])
+
+    def test_cpu_ratio_shown_at_or_above_floor(self):
+        r = load()
+        cfg = r["configs"][0]
+        cfg["metrics"]["idle_cpu_pct"] = {"lucerna": [0.1, 0.1, 0.1],
+                                          "zed": [0.2, 0.2, 0.2], "vscode": [0.3, 0.3, 0.3]}
+        self.assertEqual(report.ratio_cells(cfg, "idle_cpu_pct"), ["—", "2,0×", "3,0×"])
+        self.assertNotIn("ngưỡng đo được", report.render_markdown(r).split("## ")[1])
+
     def test_ratio_format(self):
         self.assertEqual(report.ratio(140, 100), "1,4×")
         self.assertEqual(report.ratio(210, 100), "2,1×")
