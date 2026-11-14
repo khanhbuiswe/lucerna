@@ -100,6 +100,8 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
         "editor.fontSize": FONT_SIZE,
         "editor.minimap.enabled": False,
         "extensions.autoCheckUpdates": False,
+        # Quick Open opens the idle-RAM files: each must stay a real tab.
+        "workbench.editor.enablePreviewFromQuickOpen": False,
     }
     if lsp:
         vscode["rust-analyzer.server.path"] = ra
@@ -112,6 +114,7 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
         "disable_ai": True,
         "restore_on_startup": "none",
         "minimap": {"show": "never"},
+        "preview_tabs": {"enable_preview_from_file_finder": False},
     }
     if lsp:
         zed["lsp"] = {"rust-analyzer": {"binary": {"path": ra}}}
@@ -123,6 +126,8 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
         "editor.fontSize": FONT_SIZE,
         "workbench.startupEditor": "none",
         "lucerna.lsp.enabled": lsp,
+        # Lucerna's Quick Open always opens a preview; no narrower key exists.
+        "workbench.editor.enablePreview": False,
     }
     if lsp:
         luc["lsp"] = {"rust-analyzer": {"binary": {"path": ra}}}

@@ -33,6 +33,12 @@ QUIT_GRACE_S = 5.0
 PIDFILE_NAME = ".bench-pids.json"
 
 
+def now_ns() -> int:
+    """bench-helper's clock (CLOCK_UPTIME_RAW). Not `time.monotonic_ns()`:
+    Python 3.9 (the macOS system python3) counts that from process start."""
+    return time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)
+
+
 @dataclass
 class Launched:
     t0_ns: int
@@ -78,7 +84,7 @@ def launch(editor: str, paths: BenchPaths, target: Path) -> Launched:
         env = {**os.environ, "HOME": str(paths.lucerna_home)}
     else:
         raise ValueError(f"unknown editor: {editor}")
-    t0 = time.monotonic_ns()
+    t0 = now_ns()
     popen = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
     if editor == "lucerna":

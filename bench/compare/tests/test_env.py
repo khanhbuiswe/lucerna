@@ -57,6 +57,7 @@ class ProfilesTest(unittest.TestCase):
         self.assertEqual(s["editor.fontSize"], 14)
         self.assertIs(s["editor.minimap.enabled"], False)
         self.assertIs(s["extensions.autoCheckUpdates"], False)
+        self.assertIs(s["workbench.editor.enablePreviewFromQuickOpen"], False)
 
     def test_write_profiles_zed_no_lsp(self):
         env.write_profiles(self.paths, lsp=False)
@@ -65,6 +66,7 @@ class ProfilesTest(unittest.TestCase):
         self.assertEqual(s["telemetry"], {"diagnostics": False, "metrics": False})
         self.assertIs(s["disable_ai"], True)
         self.assertEqual(s["buffer_font_size"], 14)
+        self.assertIs(s["preview_tabs"]["enable_preview_from_file_finder"], False)
 
     def test_write_profiles_lucerna_real_keys_and_trust(self):
         env.write_profiles(self.paths, lsp=False)
@@ -73,6 +75,7 @@ class ProfilesTest(unittest.TestCase):
         self.assertEqual(s["editor.fontSize"], 14)
         self.assertEqual(s["workbench.startupEditor"], "none")
         self.assertIs(s["lucerna.lsp.enabled"], False)
+        self.assertIs(s["workbench.editor.enablePreview"], False)
         trust = json.loads(
             (home / "Library/Application Support/Lucerna/trusted.json").read_text()
         )

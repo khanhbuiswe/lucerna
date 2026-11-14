@@ -84,9 +84,9 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(r.stdout.strip(), "")
 
     def test_clock_matches_python(self):
-        before = time.monotonic_ns()
+        before = time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)
         r = _run(self.binary, "now")
-        after = time.monotonic_ns()
+        after = time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)
         self.assertEqual(r.returncode, 0, r.stderr)
         t = json.loads(r.stdout)["t_ns"]
         # Same clock: the helper's reading lies between two Python readings,
