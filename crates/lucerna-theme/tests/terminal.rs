@@ -181,8 +181,8 @@ fn lucerna_themes_define_their_terminal_colors() {
         for (i, h) in ansi.iter().enumerate() {
             assert_eq!(c.ansi[i], hex(h), "{name} ansi[{i}]");
         }
-        for i in 0..8 {
-            let expected = hex(&format!("{}b3", ansi[i]));
+        for (i, h) in ansi[..8].iter().enumerate() {
+            let expected = hex(&format!("{h}b3"));
             assert_eq!(c.dim[i], expected, "{name} dim[{i}]");
         }
         assert_eq!(c.background, hex(bg), "{name} background");
