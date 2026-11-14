@@ -559,3 +559,265 @@ fn independent_of_diff_base_setting(cx: &mut TestAppContext) {
         Some("No uncommitted changes")
     );
 }
+
+// ---- Task 4: the single-file diff tab (spec §4.8) -------------------------
+
+/// Ten committed lines, `l1` to `l10`.
+fn ten_lines() -> String {
+    (1..=10).map(|n| format!("l{n}\n")).collect()
+}
+
+/// The tab items of every group, in order.
+fn tab_items(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<(TabItem, bool)> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| g.tabs.iter().map(|t| (t.item.clone(), t.pinned)))
+            .collect()
+    })
+}
+
+fn active_item(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<(TabItem, bool)> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .active_tab()
+            .map(|t| (t.item.clone(), t.pinned))
+    })
+}
+
+fn open_file(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) {
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new(name)), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+}
+
+fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| wb.update(cx, |wb, cx| wb.run_command(command, None, window, cx)));
+    settle(cx);
+}
+
+fn file_diff(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) -> Entity<DiffView> {
+    cx.update(|_, cx| wb.read(cx).file_diff_view(Path::new(name), cx))
+        .expect("the file diff tab is open")
+}
+
+/// Whether the active tab shows file `name` (paths may be absolute).
+fn active_file_is(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) -> Option<bool> {
+    match active_item(wb, cx)? {
+        (TabItem::File(path), pinned) => path.ends_with(name).then_some(pinned),
+        _ => None,
+    }
+}
+
+#[gpui::test]
+fn open_change_shows_full_file_with_diff_rows(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            write(dir, "f.txt", &ten_lines());
+            git(dir, &["add", "."]);
+            git(dir, &["commit", "-q", "-m", "f"]);
+            write(dir, "f.txt", &ten_lines().replace("l9\n", "x9\n"));
+        },
+        cx,
+    );
+    open_file(&wb, "f.txt", cx);
+    run(&wb, "git.openChange", cx);
+    let view = file_diff(&wb, "f.txt", cx);
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).kind().clone()),
+        DiffKind::File(Arc::from(Path::new("f.txt")))
+    );
+    assert_eq!(cx.update(|_, cx| view.read(cx).title()), "f.txt (Changes)");
+    assert_eq!(
+        active_item(&wb, cx),
+        Some((TabItem::FileDiff(Arc::from(Path::new("f.txt"))), true)),
+        "the tab is active and not a preview"
+    );
+    let lines = rows(&view, 0, cx);
+    assert_eq!(lines.len(), 11, "the whole file, plus the deleted line");
+    assert_eq!(lines[0], (1, LineKind::Normal, "l1".into()));
+    assert_eq!(
+        lines[8],
+        (9, LineKind::Deleted { base_line: 9 }, "l9".into())
+    );
+    assert_eq!(lines[9], (9, LineKind::Added, "x9".into()));
+    assert_eq!(lines[10], (10, LineKind::Normal, "l10".into()));
+    assert!(cx.debug_bounds("git-diff-path").is_some());
+    assert!(cx.debug_bounds("git-diff-previous").is_some());
+    assert!(cx.debug_bounds("git-diff-next").is_some());
+    assert!(cx.debug_bounds("git-diff-open-file").is_some());
+    // One tab per file: opening it again activates it.
+    run(&wb, "git.openChange", cx);
+    let diffs = tab_items(&wb, cx)
+        .into_iter()
+        .filter(|(i, _)| matches!(i, TabItem::FileDiff(_)))
+        .count();
+    assert_eq!(diffs, 1);
+    // Not saved with the workspace.
+    let state = cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).model().state());
+    assert_eq!(state.groups[0].tabs.len(), 1, "only the file tab is saved");
+
+    // An unchanged file shows all its lines, none coloured.
+    open_file(&wb, "a.txt", cx);
+    run(&wb, "git.openChange", cx);
+    let view = file_diff(&wb, "a.txt", cx);
+    assert_eq!(
+        rows(&view, 0, cx),
+        vec![
+            (1, LineKind::Normal, "one".into()),
+            (2, LineKind::Normal, "two".into()),
+            (3, LineKind::Normal, "three".into()),
+        ]
+    );
+    assert_eq!(message(&view, cx), None);
+}
+
+#[gpui::test]
+fn open_change_untracked_all_added(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "new.txt", "a\nb\n"), cx);
+    open_file(&wb, "new.txt", cx);
+    run(&wb, "git.openChange", cx);
+    let view = file_diff(&wb, "new.txt", cx);
+    assert_eq!(
+        rows(&view, 0, cx),
+        vec![
+            (1, LineKind::Added, "a".into()),
+            (2, LineKind::Added, "b".into()),
+        ]
+    );
+    let label = cx.update(|_, cx| {
+        let results = view.read(cx).excerpt_list().read(cx).results();
+        results.meta(Path::new("new.txt")).and_then(|m| m.label)
+    });
+    assert_eq!(label, Some("new"));
+}
+
+#[gpui::test]
+fn open_change_without_file_tab_shows_message(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "a.txt", "one\nTWO\nthree\n"), cx);
+    run(&wb, "git.openChange", cx);
+    let message =
+        cx.update(|_, cx| lucerna_workbench::status_message::current(cx).map(|m| m.to_string()));
+    assert_eq!(message.as_deref(), Some("No file to compare"));
+    assert!(tab_items(&wb, cx).is_empty());
+}
+
+#[gpui::test]
+fn open_file_from_file_diff(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "a.txt", "one\nTWO\nthree\n"), cx);
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.open_file_diff(Arc::from(Path::new("a.txt")), None, window, cx)
+        })
+    });
+    settle(cx);
+    assert!(matches!(
+        active_item(&wb, cx),
+        Some((TabItem::FileDiff(_), _))
+    ));
+    run(&wb, "git.openFile", cx);
+    assert_eq!(
+        active_file_is(&wb, "a.txt", cx),
+        Some(true),
+        "opened, pinned"
+    );
+
+    // The toolbar button does the same.
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| {
+            let id = m.active_tab().unwrap().id;
+            m.close(id);
+        })
+    });
+    settle(cx);
+    assert!(matches!(
+        active_item(&wb, cx),
+        Some((TabItem::FileDiff(_), _))
+    ));
+    let button = cx.debug_bounds("git-diff-open-file").expect("the button");
+    cx.simulate_click(button.center(), gpui::Modifiers::none());
+    settle(cx);
+    assert_eq!(active_file_is(&wb, "a.txt", cx), Some(true));
+
+    // In the Uncommitted Changes tab it opens the selected line's file.
+    let view = open_changes(&wb, cx);
+    let list = cx.update(|_, cx| view.read(cx).excerpt_list().clone());
+    list.update(cx, |l, cx| {
+        l.step_change(true, cx);
+    });
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| {
+            let file = m
+                .groups()
+                .iter()
+                .flat_map(|g| &g.tabs)
+                .find(|t| matches!(t.item, TabItem::File(_)))
+                .map(|t| t.id)
+                .unwrap();
+            m.close(file);
+        })
+    });
+    settle(cx);
+    run(&wb, "git.openFile", cx);
+    assert_eq!(active_file_is(&wb, "a.txt", cx), Some(true));
+}
+
+#[gpui::test]
+fn activating_a_line_opens_a_preview(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "a.txt", "one\nTWO\nthree\n"), cx);
+    let view = open_changes(&wb, cx);
+    let list = cx.update(|_, cx| view.read(cx).excerpt_list().clone());
+    list.update(cx, |l, cx| {
+        l.step_change(true, cx);
+    });
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    assert_eq!(
+        active_file_is(&wb, "a.txt", cx),
+        Some(false),
+        "Enter opens the file as a preview, like Search"
+    );
+}
+
+#[gpui::test]
+fn keystroke_diffs_the_file_once(cx: &mut TestAppContext) {
+    let (_t, _dir, wb, cx) = workbench(
+        |dir| {
+            write(dir, "f.txt", &ten_lines());
+            git(dir, &["add", "."]);
+            git(dir, &["commit", "-q", "-m", "f"]);
+            write(dir, "f.txt", &ten_lines().replace("l2\n", "x2\n"));
+        },
+        cx,
+    );
+    open_file(&wb, "f.txt", cx);
+    let code = cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .and_then(|b| b.downcast::<CodeView>().ok())
+            .expect("a code view")
+    });
+    let view = open_changes(&wb, cx);
+    let before = cx.update(|_, cx| view.read(cx).loads_started());
+    // A new hunk on row 7: the gutter's hunks change too.
+    code.update(cx, |v, cx| {
+        v.set_cursor(Point { row: 7, column: 0 }, cx);
+        v.type_text("Z", cx);
+    });
+    settle(cx);
+    let hunks = cx.update(|_, cx| code.read(cx).diff_hunks().len());
+    assert_eq!(hunks, 2, "the gutter saw the edit");
+    let after = cx.update(|_, cx| view.read(cx).loads_started());
+    assert_eq!(after - before, 1, "one background diff per keystroke");
+    assert!(rows(&view, 0, cx).contains(&(8, LineKind::Added, "Zl8".into())));
+}

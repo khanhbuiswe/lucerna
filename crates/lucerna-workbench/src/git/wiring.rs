@@ -10,7 +10,10 @@ use lucerna_project::WorktreeEvent;
 use super::GitStore;
 use crate::diff_view::DiffView;
 use crate::documents::{DocumentEvent, Documents};
-use crate::{CommandRegistry, EditorGroups, Workbench};
+use crate::{CommandRegistry, EditorGroups, OpenMode, TabItem, Workbench};
+
+/// The status message of `git.openChange` with no file to compare.
+const NO_FILE_MESSAGE: &str = "No file to compare";
 
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register("git.refresh", "Git: Refresh", |wb, _, _, cx| {
@@ -21,6 +24,14 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "Git: Open Changes (Uncommitted)",
         |wb, _, window, cx| wb.open_git_changes(window, cx),
     );
+    commands.register(
+        "git.openChange",
+        "Git: Open Changes",
+        |wb, _, window, cx| wb.open_active_file_diff(window, cx),
+    );
+    commands.register("git.openFile", "Git: Open File", |wb, _, _, cx| {
+        wb.open_diff_file(cx)
+    });
     commands.register(
         "workbench.action.editor.nextChange",
         "Go to Next Change",
@@ -67,6 +78,87 @@ impl Workbench {
     pub fn open_git_changes(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.update_editor_groups(cx, EditorGroups::open_git_changes);
         cx.notify();
+    }
+
+    /// Opens the diff tab of `path` (absolute, or relative to the root),
+    /// or activates it where it is; with `row`, selects and scrolls to the
+    /// first changed line at or after that row once the file has loaded.
+    /// A path outside the root shows "No file to compare".
+    pub fn open_file_diff(
+        &mut self,
+        path: Arc<Path>,
+        row: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = workspace_relative(self.root(), &path) else {
+            crate::status_message::show(NO_FILE_MESSAGE, cx);
+            return;
+        };
+        self.update_editor_groups(cx, |groups| groups.open_file_diff(path));
+        let body = self
+            .editor_groups()
+            .update(cx, |groups, cx| groups.ensure_active_body(window, cx));
+        if let (Some(row), Some(view)) = (row, body.and_then(|b| b.downcast::<DiffView>().ok())) {
+            view.update(cx, |v, cx| v.reveal_row(row, cx));
+        }
+        cx.notify();
+    }
+
+    /// `git.openChange`: the diff of the active tab's file.
+    fn open_active_file_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let item = self
+            .editor_groups()
+            .read(cx)
+            .model()
+            .active_tab()
+            .map(|t| t.item.clone());
+        match item {
+            Some(TabItem::File(path) | TabItem::FileDiff(path)) => {
+                self.open_file_diff(path, None, window, cx)
+            }
+            _ => crate::status_message::show(NO_FILE_MESSAGE, cx),
+        }
+    }
+
+    /// `git.openFile` in the active diff tab: the selected line's file at
+    /// that line, or the file of a single-file tab.
+    fn open_diff_file(&mut self, cx: &mut Context<Self>) {
+        let Some(view) = self
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .and_then(|b| b.downcast::<DiffView>().ok())
+        else {
+            return;
+        };
+        match view.read(cx).file_to_open(cx) {
+            Some((path, Some(point))) => self.jump_to(path, point, OpenMode::Pinned, cx),
+            Some((path, None)) => self.open_path(path, OpenMode::Pinned, cx),
+            None => {}
+        }
+    }
+
+    /// The view of the diff tab of `path` (absolute, or relative to the
+    /// root), while the tab is open and has been drawn.
+    pub fn file_diff_view(&self, path: &Path, cx: &App) -> Option<Entity<DiffView>> {
+        let path = workspace_relative(self.root(), path)?;
+        let groups = self.editor_groups().read(cx);
+        let tab = groups.model().file_diff_tab(&path)?;
+        groups.body_of(tab)?.downcast::<DiffView>().ok()
+    }
+
+    /// The views of every drawn diff tab.
+    fn diff_views(&self, cx: &App) -> Vec<Entity<DiffView>> {
+        let groups = self.editor_groups().read(cx);
+        groups
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter(|t| matches!(t.item, TabItem::GitChanges | TabItem::FileDiff(_)))
+            .filter_map(|t| groups.body_of(t.id)?.downcast::<DiffView>().ok())
+            .collect()
     }
 
     /// The view of the Uncommitted Changes tab, while the tab is open and
@@ -116,7 +208,7 @@ impl Workbench {
                     .iter()
                     .filter_map(|c| workspace_relative(self.root(), &c.path))
                     .collect();
-                if let Some(view) = self.git_changes_view(cx) {
+                for view in self.diff_views(cx) {
                     view.update(cx, |v, cx| v.paths_changed(&paths, cx));
                 }
                 self.git.update(cx, |git, cx| git.paths_changed(paths, cx));

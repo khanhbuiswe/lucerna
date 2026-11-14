@@ -346,6 +346,16 @@ impl ExcerptList {
         Some(r)
     }
 
+    /// Selects line `r`, unfolding its file and scrolling it into view.
+    pub fn select_line(&mut self, r: LineRef, cx: &mut Context<Self>) {
+        if self.results.line(r).is_none() {
+            return;
+        }
+        self.results.expand(r.file);
+        self.sync_list(cx);
+        self.select(r, cx);
+    }
+
     /// Selects line `r`, scrolling it into view.
     fn select(&mut self, r: LineRef, cx: &mut Context<Self>) {
         self.selected = self.results.anchor_of(r);

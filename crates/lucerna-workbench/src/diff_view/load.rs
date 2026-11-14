@@ -56,6 +56,8 @@ pub(super) struct LoadInput {
     pub buffer: Option<BufferSnapshot>,
     /// The base side, when already read at `rev`.
     pub cached_base: Option<Side>,
+    /// One excerpt with every line, not just the changes and their context.
+    pub full_file: bool,
 }
 
 /// One loaded file.
@@ -112,7 +114,7 @@ pub(super) fn load_file(input: LoadInput) -> Result<Loaded, GitError> {
         }
         (Side::Note(note), _) | (_, Side::Note(note)) => return Ok(noted(note, base)),
     };
-    let built = build_file(&base_text, &current_text, CONTEXT_LINES, false);
+    let built = build_file(&base_text, &current_text, CONTEXT_LINES, input.full_file);
     Ok(Loaded {
         excerpts: built.excerpts,
         added: built.added,

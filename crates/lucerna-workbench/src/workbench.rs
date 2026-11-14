@@ -17,7 +17,7 @@ use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resoluti
 use lucerna_text::Point;
 use serde_json::Value;
 
-use crate::code_view::{self, CodeView, LargeFileStatus};
+use crate::code_view::{self, CodeView, CodeViewEvent, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
 use crate::diff_view::{DiffKind, DiffView};
@@ -367,7 +367,7 @@ impl Workbench {
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
             let preview_root: Arc<Path> = Arc::from(root.as_path());
             groups.set_tab_body_factory(
-                Rc::new(move |tab, _, cx| {
+                Rc::new(move |tab, window, cx| {
                     let path = match &tab.item {
                         TabItem::File(path) => path.clone(),
                         TabItem::MarkdownPreview(path) | TabItem::MarkdownPreviewDynamic(path) => {
@@ -391,20 +391,15 @@ impl Workbench {
                             health.update(cx, |health, cx| health.shown(cx));
                             return health.clone().into();
                         }
-                        TabItem::GitChanges => {
+                        TabItem::GitChanges | TabItem::FileDiff(_) => {
+                            let kind = match &tab.item {
+                                TabItem::FileDiff(path) => DiffKind::File(path.clone()),
+                                _ => DiffKind::Uncommitted,
+                            };
                             let (git, docs) = (git.clone(), docs.clone());
                             let (root, workbench) = (preview_root.to_path_buf(), workbench.clone());
                             return cx
-                                .new(|cx| {
-                                    DiffView::new(
-                                        DiffKind::Uncommitted,
-                                        git,
-                                        docs,
-                                        root,
-                                        workbench,
-                                        cx,
-                                    )
-                                })
+                                .new(|cx| DiffView::new(kind, git, docs, root, workbench, cx))
                                 .into();
                         }
                     };
@@ -412,6 +407,22 @@ impl Workbench {
                     view.update(cx, |v, _| {
                         v.set_hover_sources(workbench.clone(), servers.downgrade())
                     });
+                    // A click on a change bar opens the file's diff there.
+                    window
+                        .subscribe(&view, cx, {
+                            let workbench = workbench.clone();
+                            move |view, event: &CodeViewEvent, window, cx| {
+                                if let CodeViewEvent::DiffHunkClicked { row } = *event {
+                                    let path = view.read(cx).path().clone();
+                                    workbench
+                                        .update(cx, |wb, cx| {
+                                            wb.open_file_diff(path, Some(row), window, cx)
+                                        })
+                                        .ok();
+                                }
+                            }
+                        })
+                        .detach();
                     // An F8 jump into this file shows its hover once the
                     // view exists.
                     cx.defer({

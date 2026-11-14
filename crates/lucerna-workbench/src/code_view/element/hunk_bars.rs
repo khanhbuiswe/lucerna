@@ -19,6 +19,9 @@ const PILL_WIDTH: f32 = 0.35;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HunkBar {
     pub bounds: Bounds<Pixels>,
+    /// The first row of the hunk it shows (for a fold's bar, of the first
+    /// hunk the fold hides): where a click on it goes.
+    pub row: u32,
     pub color: Hsla,
     pub corner_radius: Pixels,
 }
@@ -73,16 +76,21 @@ fn first_touching(hunks: &[Hunk], row: u32) -> usize {
         .saturating_sub(1)
 }
 
-/// Whether any hunk lies in `rows`: a changed row inside it, or a
+/// The first hunk that lies in `rows`: a changed row inside it, or a
 /// deletion between two of its rows (or just before its first).
-fn any_in(hunks: &[Hunk], rows: std::ops::Range<u32>) -> bool {
+fn first_in(hunks: &[Hunk], rows: std::ops::Range<u32>) -> Option<&Hunk> {
     hunks[first_touching(hunks, rows.start)..]
         .iter()
         .take_while(|h| h.rows.start < rows.end)
-        .any(|h| match h.kind {
+        .find(|h| match h.kind {
             HunkKind::Deleted => rows.contains(&h.rows.start),
             _ => h.rows.start < rows.end && h.rows.end > rows.start,
         })
+}
+
+#[cfg(test)]
+fn any_in(hunks: &[Hunk], rows: std::ops::Range<u32>) -> bool {
+    first_in(hunks, rows).is_some()
 }
 
 /// The added or modified hunk on `row`.
@@ -110,15 +118,17 @@ pub(crate) fn layout(
         return bars;
     }
     let width = bar_width(line_height);
-    let mut current: Option<(Owner, Pixels, Pixels)> = None;
-    let flush = |current: Option<(Owner, Pixels, Pixels)>, bars: &mut Vec<HunkBar>| {
-        if let Some((owner, top, bottom)) = current {
+    // (owner, the row a click goes to, top, bottom)
+    let mut current: Option<(Owner, u32, Pixels, Pixels)> = None;
+    let flush = |current: Option<(Owner, u32, Pixels, Pixels)>, bars: &mut Vec<HunkBar>| {
+        if let Some((owner, row, top, bottom)) = current {
             let color = match owner {
                 Owner::Hunk(i) if hunks[i].kind == HunkKind::Added => colors.added,
                 _ => colors.modified,
             };
             bars.push(HunkBar {
                 bounds: Bounds::new(point(left, top), size(width, bottom - top)),
+                row,
                 color,
                 corner_radius: px(0.),
             });
@@ -127,16 +137,20 @@ pub(crate) fn layout(
     for r in rows {
         let row = r.buffer_row;
         let hidden = row + 1..folds.next_visible(row + 1);
-        let owner = if !hidden.is_empty() && any_in(hunks, hidden) {
-            Some(Owner::Fold(row))
+        let hidden_hunk = if hidden.is_empty() {
+            None
         } else {
-            hunk_on(hunks, row).map(Owner::Hunk)
+            first_in(hunks, hidden)
+        };
+        let owner = match hidden_hunk {
+            Some(h) => Some((Owner::Fold(row), h.rows.start)),
+            None => hunk_on(hunks, row).map(|i| (Owner::Hunk(i), hunks[i].rows.start)),
         };
         match (owner, &mut current) {
-            (Some(o), Some((c, _, bottom))) if *c == o => *bottom = r.top + line_height,
+            (Some((o, _)), Some((c, _, _, bottom))) if *c == o => *bottom = r.top + line_height,
             (owner, current) => {
                 flush(current.take(), &mut bars);
-                *current = owner.map(|o| (o, r.top, r.top + line_height));
+                *current = owner.map(|(o, at)| (o, at, r.top, r.top + line_height));
             }
         }
     }
@@ -172,6 +186,7 @@ pub(crate) fn layout(
                 point(left - pill, y - line_height / 2.),
                 size(pill * 2., line_height),
             ),
+            row: at,
             color: colors.deleted,
             corner_radius: pill,
         });

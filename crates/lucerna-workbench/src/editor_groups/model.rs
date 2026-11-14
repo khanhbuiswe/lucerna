@@ -49,6 +49,10 @@ pub enum TabItem {
     /// The Uncommitted Changes tab (`git.viewChanges`, spec §4.7). At most
     /// one in all groups; never a preview; saved.
     GitChanges,
+    /// The single-file diff of this workspace-relative path
+    /// (`git.openChange`, spec §4.8). At most one per path in all groups;
+    /// never a preview, never saved.
+    FileDiff(Arc<Path>),
 }
 
 impl TabItem {
@@ -141,7 +145,8 @@ impl Tab {
 
     /// The tab bar's label: the file name, "Preview <file name>" for the
     /// dynamic preview, "Extensions", "Search", "<server> Log",
-    /// "References" or "Language Servers".
+    /// "References", "Language Servers", "Uncommitted Changes" or
+    /// "<file name> (Changes)".
     pub fn title(&self) -> String {
         match &self.item {
             TabItem::File(path) | TabItem::MarkdownPreview(path) => file_name(path),
@@ -152,8 +157,14 @@ impl Tab {
             TabItem::References => REFERENCES_TAB_TITLE.to_string(),
             TabItem::LspHealth => LSP_HEALTH_TAB_TITLE.to_string(),
             TabItem::GitChanges => GIT_CHANGES_TAB_TITLE.to_string(),
+            TabItem::FileDiff(path) => file_diff_title(path),
         }
     }
+}
+
+/// "{file name} (Changes)": the title of the diff tab of `path`.
+pub(crate) fn file_diff_title(path: &Path) -> String {
+    format!("{} (Changes)", file_name(path))
 }
 
 fn file_name(path: &Path) -> String {
@@ -355,6 +366,18 @@ impl EditorGroups {
     /// The Uncommitted Changes tab, if open in any group.
     pub fn git_changes_tab(&self) -> Option<TabId> {
         self.find_item(&TabItem::GitChanges)
+    }
+
+    /// Activates the diff tab of `path` (workspace-relative) wherever it
+    /// is, or opens it (pinned) at the end of the active group. Returns its
+    /// tab.
+    pub fn open_file_diff(&mut self, path: Arc<Path>) -> TabId {
+        self.open_singleton(TabItem::FileDiff(path))
+    }
+
+    /// The diff tab of `path` (workspace-relative), if open in any group.
+    pub fn file_diff_tab(&self, path: &Path) -> Option<TabId> {
+        self.find_item(&TabItem::FileDiff(Arc::from(path)))
     }
 
     /// Activates the Health tab wherever it is, or opens it (pinned) at
@@ -787,7 +810,9 @@ fn saved_path(item: &TabItem) -> Option<PathBuf> {
         TabItem::MarkdownPreviewDynamic(path) => {
             Some(prefixed(MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, path))
         }
-        TabItem::LspLog(_) | TabItem::References | TabItem::LspHealth => None,
+        TabItem::LspLog(_) | TabItem::References | TabItem::LspHealth | TabItem::FileDiff(_) => {
+            None
+        }
     }
 }
 

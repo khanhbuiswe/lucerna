@@ -716,3 +716,22 @@ fn retarget_moves_markdown_previews() {
         vec![TabItem::MarkdownPreviewDynamic(p("/r/notes/a.md"))]
     );
 }
+
+#[test]
+fn file_diff_tabs_are_one_per_file_and_not_saved() {
+    let mut g = EditorGroups::default();
+    g.open(p("/w/a.rs"), OpenMode::Pinned, true);
+    let a = g.open_file_diff(p("a.rs"));
+    let b = g.open_file_diff(p("b.rs"));
+    assert_ne!(a, b, "one tab per file");
+    assert_eq!(g.open_file_diff(p("a.rs")), a, "reopening activates it");
+    assert_eq!(g.active_tab().map(|t| t.id), Some(a));
+    assert_eq!(g.file_diff_tab(Path::new("b.rs")), Some(b));
+    let tab = g.active_tab().unwrap();
+    assert!(tab.pinned, "never a preview");
+    assert_eq!(tab.title(), "a.rs (Changes)");
+    assert!(tab.item.is_singleton());
+    let saved = &g.state().groups[0].tabs;
+    assert_eq!(saved, &[(PathBuf::from("/w/a.rs"), true)], "not saved");
+    assert!(matches!(tab.item, TabItem::FileDiff(_)));
+}

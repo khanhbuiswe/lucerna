@@ -93,6 +93,9 @@ struct Config {
     inline_diagnostics: bool,
     /// `scm.diffDecorations` is `all` or `gutter`: git change bars show.
     diff_gutter: bool,
+    /// `scm.diffDecorationsGutterAction` is not `none`: a click on a bar
+    /// emits [`CodeViewEvent::DiffHunkClicked`].
+    diff_gutter_click: bool,
     hover: HoverConfig,
     /// `editor.cursorBlinking` is not `solid`.
     cursor_blinking: bool,
@@ -161,6 +164,9 @@ impl Config {
                     .as_deref(),
                 Some("none" | "overview" | "minimap")
             ),
+            diff_gutter_click: settings
+                .get::<String>("scm.diffDecorationsGutterAction", language)
+                .is_none_or(|a| a != "none"),
             hover: HoverConfig::read(settings, language),
             cursor_blinking: settings
                 .get::<String>("editor.cursorBlinking", language)
@@ -243,6 +249,9 @@ pub enum CodeViewEvent {
     /// scrolled, the view followed the cursor or an edit, or
     /// [`CodeView::set_scroll_top_row`] was called.
     ScrolledTo(u32),
+    /// A click on a git change bar or deletion marker in the gutter, with
+    /// the first row of its hunk (`scm.diffDecorationsGutterAction`).
+    DiffHunkClicked { row: u32 },
 }
 
 /// What changed the selections, which decides the undo stop and the
@@ -849,6 +858,13 @@ impl CodeView {
     #[doc(hidden)]
     pub fn painted_hunk_bars(&self) -> usize {
         self.frame.as_ref().map_or(0, |f| f.hunk_bar_count())
+    }
+
+    /// The visible bounds of gutter bar `i` in the last frame (change bars
+    /// first, then deletion markers), in window coordinates.
+    #[doc(hidden)]
+    pub fn hunk_bar_bounds(&self, i: usize) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.frame.as_ref()?.hunk_bar_bounds(i)
     }
 
     /// The "No … found" message shown at the cursor.

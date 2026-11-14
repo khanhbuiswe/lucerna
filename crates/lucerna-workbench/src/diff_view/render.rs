@@ -1,5 +1,7 @@
 //! Drawing a diff tab: the toolbar, the centered message and the list.
 
+use std::path::Path;
+
 use gpui::{
     Context, IntoElement, KeyDownEvent, ParentElement, Render, Styled, Window, div, prelude::*, px,
 };
@@ -20,6 +22,40 @@ impl DiffView {
         if self.list.update(cx, |list, cx| list.key_down(ev, cx)) {
             cx.stop_propagation();
         }
+    }
+
+    /// The single-file toolbar: the file's path on the left; previous /
+    /// next change and "Open File" (`git.openFile`) on the right.
+    fn render_file_toolbar(&self, path: &Path, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = cx.global::<AppState>().theme.ui.clone();
+        let path_text = div()
+            .debug_selector(|| "git-diff-path".into())
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .text_ellipsis()
+            .whitespace_nowrap()
+            .text_size(px(UI_FONT_SIZE_SMALL))
+            .text_color(color(ui.text_muted))
+            .child(path.to_string_lossy().into_owned());
+        let bar = search_bar_row()
+            .child(path_text)
+            .child(
+                bar_icon_button("git-diff-previous", CHEVRON_LEFT_ICON, false, cx)
+                    .on_click(cx.listener(|view, _, _, cx| view.step_change(false, cx))),
+            )
+            .child(
+                bar_icon_button("git-diff-next", CHEVRON_RIGHT_ICON, false, cx)
+                    .on_click(cx.listener(|view, _, _, cx| view.step_change(true, cx))),
+            )
+            .child(bar_separator(cx))
+            .child(
+                text_button("git-diff-open-file", "Open File", cx)
+                    .on_click(cx.listener(|view, _, _, cx| view.open_file(cx))),
+            );
+        search_toolbar(cx)
+            .debug_selector(|| "git-diff-toolbar".into())
+            .child(bar)
     }
 
     /// The toolbar: `{n} files  +A −R` on the left; previous / next
@@ -133,7 +169,13 @@ impl Render for DiffView {
             Some(text) => self.render_message(text, cx).into_any_element(),
             None => self.list.clone().into_any_element(),
         };
-        let toolbar = (!self.files.is_empty()).then(|| self.render_toolbar(cx));
+        let toolbar = (!self.files.is_empty()).then(|| match &self.kind {
+            DiffKind::File(path) => {
+                let path = path.clone();
+                self.render_file_toolbar(&path, cx).into_any_element()
+            }
+            _ => self.render_toolbar(cx).into_any_element(),
+        });
         div()
             .id("git-diff-view")
             .debug_selector(|| "git-diff-view".into())
