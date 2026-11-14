@@ -45,7 +45,6 @@ fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
     });
 }
 
-
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .current_dir(dir)
@@ -98,8 +97,11 @@ fn git_store_timings(cx: &mut TestAppContext) {
         cx.run_until_parked();
         store
     };
-    eprintln!("(a) first rescan -> snapshot: {:.1} ms (generation {})", ms(t),
-        store.read_with(cx, |s, _| s.snapshot().generation));
+    eprintln!(
+        "(a) first rescan -> snapshot: {:.1} ms (generation {})",
+        ms(t),
+        store.read_with(cx, |s, _| s.snapshot().generation)
+    );
 
     // (b) one modified file.
     let target = "crates/editor/src/editor.rs";
@@ -109,7 +111,10 @@ fn git_store_timings(cx: &mut TestAppContext) {
     store.update(cx, |s, cx| s.paths_changed(vec![p(target)], cx));
     cx.run_until_parked();
     let n = store.read_with(cx, |s, _| s.snapshot().statuses.len());
-    eprintln!("(b) paths_changed(1 file) -> snapshot: {:.1} ms ({n} statuses)", ms(t));
+    eprintln!(
+        "(b) paths_changed(1 file) -> snapshot: {:.1} ms ({n} statuses)",
+        ms(t)
+    );
 
     // (c) 500 files written at once.
     let before = store.read_with(cx, |s, _| s.jobs_run());
@@ -122,17 +127,37 @@ fn git_store_timings(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let ran = store.read_with(cx, |s, _| s.jobs_run()) - before;
     let n = store.read_with(cx, |s, _| s.snapshot().statuses.len());
-    eprintln!("(c) 500 files -> settled: {:.1} ms, {ran} jobs, {n} statuses", ms(t));
+    eprintln!(
+        "(c) 500 files -> settled: {:.1} ms, {ran} jobs, {n} statuses",
+        ms(t)
+    );
 
     // (d) commit then rescan.
     git(&dir, &["add", "-A"]);
-    git(&dir, &["-c", "user.name=Bench", "-c", "user.email=b@example.com",
-        "-c", "commit.gpgsign=false", "commit", "-q", "-m", "bench", "--no-verify"]);
+    git(
+        &dir,
+        &[
+            "-c",
+            "user.name=Bench",
+            "-c",
+            "user.email=b@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "bench",
+            "--no-verify",
+        ],
+    );
     let t = Instant::now();
     store.update(cx, |s, cx| s.rescan(cx));
     cx.run_until_parked();
     let n = store.read_with(cx, |s, _| s.snapshot().statuses.len());
-    eprintln!("(d) commit -> rescan -> snapshot: {:.1} ms ({n} statuses)", ms(t));
+    eprintln!(
+        "(d) commit -> rescan -> snapshot: {:.1} ms ({n} statuses)",
+        ms(t)
+    );
 
     // (e) track a ~13k-line buffer: base blob read + diff.
     let lines = original.lines().count();
@@ -147,6 +172,9 @@ fn git_store_timings(cx: &mut TestAppContext) {
     cx.executor().advance_clock(Duration::from_millis(50));
     cx.run_until_parked();
     let hunks = store.read_with(cx, |s, _| s.hunks(Path::new(target)));
-    eprintln!("(e) track_buffer {lines} lines -> hunks: {:.1} ms real (+50 ms debounce on the fake clock), {:?} hunks",
-        ms(t), hunks.map(|h| h.len()));
+    eprintln!(
+        "(e) track_buffer {lines} lines -> hunks: {:.1} ms real (+50 ms debounce on the fake clock), {:?} hunks",
+        ms(t),
+        hunks.map(|h| h.len())
+    );
 }
