@@ -3323,6 +3323,8 @@ dependencies = [
 name = "lucerna-git"
 version = "0.1.0"
 dependencies = [
+ "lucerna-text",
+ "similar",
  "tempfile",
 ]
 

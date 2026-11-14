@@ -1,14 +1,27 @@
 #![allow(dead_code)]
+use lucerna_git::GitBinary;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
+
+#[cfg(windows)]
+const NULL: &str = "NUL";
+#[cfg(not(windows))]
+const NULL: &str = "/dev/null";
+
+/// A `GitBinary` isolated from the developer's global/system git config.
+pub fn bin() -> GitBinary {
+    GitBinary::new(PathBuf::from("git"))
+        .with_env("GIT_CONFIG_GLOBAL", NULL)
+        .with_env("GIT_CONFIG_SYSTEM", NULL)
+}
 
 pub fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .current_dir(dir)
         .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_GLOBAL", NULL)
+        .env("GIT_CONFIG_SYSTEM", NULL)
         .output()
         .expect("spawn git");
     assert!(

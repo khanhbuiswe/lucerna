@@ -5,10 +5,10 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-use support::{git, repo};
+use support::{bin, git, repo};
 
 fn status(dir: &Path, pathspecs: &[&str]) -> Vec<(PathBuf, FileStatus)> {
-    let bin = GitBinary::new(PathBuf::from("git"));
+    let bin = bin();
     let mut args: Vec<&OsStr> = [
         "status",
         "--porcelain=v2",
@@ -96,6 +96,7 @@ fn pathspec_limits_output() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn hooks_and_fsmonitor_never_run() {
     let (_t, d) = repo();
@@ -118,6 +119,7 @@ fn hooks_and_fsmonitor_never_run() {
     assert!(!ran.exists(), "a hook or fsmonitor ran");
 }
 
+#[cfg(unix)]
 #[test]
 fn timeout_kills_process() {
     let start = Instant::now();
@@ -131,7 +133,7 @@ fn timeout_kills_process() {
 #[test]
 fn nonzero_exit_is_failed_and_missing_binary_is_not_found() {
     let (_t, d) = repo();
-    let bin = GitBinary::new(PathBuf::from("git"));
+    let bin = bin();
     let r = bin.run(&d, &[OsStr::new("nonsense-subcommand")]);
     assert!(matches!(r, Err(GitError::Failed { .. })), "{r:?}");
     let r = GitBinary::new(PathBuf::from("/nonexistent/git")).run(&d, &[OsStr::new("status")]);

@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -52,11 +52,23 @@ impl From<std::io::Error> for GitError {
 #[derive(Debug, Clone)]
 pub struct GitBinary {
     path: PathBuf,
+    extra_env: Vec<(OsString, OsString)>,
 }
 
 impl GitBinary {
     pub fn new(path: PathBuf) -> GitBinary {
-        GitBinary { path }
+        GitBinary {
+            path,
+            extra_env: Vec::new(),
+        }
+    }
+
+    /// Adds an environment variable to every command. Meant for tests (e.g. to
+    /// isolate from the developer's git config); production never calls it.
+    #[doc(hidden)]
+    pub fn with_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> GitBinary {
+        self.extra_env.push((key.into(), value.into()));
+        self
     }
 
     pub fn command(&self, cwd: &Path) -> Command {
@@ -73,6 +85,7 @@ impl GitBinary {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
         .stdin(Stdio::null());
+        cmd.envs(self.extra_env.iter().map(|(k, v)| (k, v)));
         cmd
     }
 
@@ -134,5 +147,28 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Vec<u8>, 
             code: s.code(),
             stderr: String::from_utf8_lossy(&err).into_owned(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_is_hardened() {
+        let cmd = GitBinary::new(PathBuf::from("git")).command(Path::new("."));
+        let args: Vec<&OsStr> = cmd.get_args().collect();
+        let expected = [
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            NULL_HOOKS,
+            "--no-optional-locks",
+            "--no-pager",
+        ];
+        assert_eq!(args, expected.iter().map(OsStr::new).collect::<Vec<_>>());
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert!(envs.contains(&(OsStr::new("GIT_TERMINAL_PROMPT"), Some(OsStr::new("0")))));
+        assert!(envs.contains(&(OsStr::new("LC_ALL"), Some(OsStr::new("C")))));
     }
 }
