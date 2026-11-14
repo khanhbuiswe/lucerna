@@ -423,6 +423,14 @@ impl ExcerptList {
             let Some(result) = self.results.files().get(file) else {
                 continue;
             };
+            // A file shown as a note has no lines on screen.
+            if self
+                .results
+                .meta(&result.path)
+                .is_some_and(|m| m.note.is_some())
+            {
+                continue;
+            }
             let path = result.path.clone();
             self.highlight_cache.touch(&path);
             let generation = self.source_generation(&path);

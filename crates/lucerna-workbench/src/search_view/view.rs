@@ -36,8 +36,8 @@ use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
     ClickHandler, GRID, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, bar_icon_button, bar_separator,
-    input_box, match_nav, search_bar_row, search_query_box, search_query_column, search_toolbar,
-    toggle_button,
+    centered_message, input_box, match_nav, search_bar_row, search_query_box, search_query_column,
+    search_toolbar, toggle_button,
 };
 use crate::workbench::enabled_globs;
 use crate::workspace_state::SearchState;
@@ -850,21 +850,6 @@ impl Drop for SearchView {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::SeqCst);
     }
-}
-
-/// A message filling the list area, centered like the empty state: the
-/// search error, "Searching…" or "No results found".
-fn centered_message(selector: &'static str, text: String, text_color: gpui::Rgba) -> Div {
-    div()
-        .debug_selector(move || selector.into())
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .px(px(3. * GRID))
-        .text_size(px(UI_FONT_SIZE))
-        .text_color(text_color)
-        .child(text)
 }
 
 impl Focusable for SearchView {

@@ -49,6 +49,8 @@
   { "key": "shift+alt+f8", "command": "editor.action.marker.prev", "when": "editorTextFocus" },
   { "key": "alt+f5", "command": "workbench.action.editor.nextChange", "when": "editorTextFocus" },
   { "key": "shift+alt+f5", "command": "workbench.action.editor.previousChange", "when": "editorTextFocus" },
+  { "key": "alt+f5", "command": "workbench.action.editor.nextChange", "when": "gitDiffViewFocus" },
+  { "key": "shift+alt+f5", "command": "workbench.action.editor.previousChange", "when": "gitDiffViewFocus" },
   { "key": "shift+cmd+o", "command": "workbench.action.gotoSymbol", "when": "editorTextFocus" },
   { "key": "cmd+t", "command": "workbench.action.showAllSymbols" },
   { "key": "shift+cmd+.", "command": "breadcrumbs.focusAndSelect", "when": "editorTextFocus" },

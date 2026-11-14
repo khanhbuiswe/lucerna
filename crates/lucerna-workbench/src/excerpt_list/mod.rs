@@ -170,11 +170,50 @@ impl ExcerptList {
         self.update_results(|r| r.update_files(batch), cx);
     }
 
+    /// Replaces the excerpts of file `path`, keeping its fold, or adds it.
+    pub fn set_file(&mut self, path: Arc<Path>, excerpts: Vec<Excerpt>, cx: &mut Context<Self>) {
+        self.update_results(|r| r.set_file(path, excerpts), cx);
+    }
+
+    /// Drops the files `paths`, with their text sources and meta.
+    pub fn remove_files(&mut self, paths: &[Arc<Path>], cx: &mut Context<Self>) {
+        self.update_results(|r| r.remove_files(paths), cx);
+    }
+
+    /// Folds or unfolds the file `path`.
+    pub fn set_collapsed(&mut self, path: &Path, collapsed: bool, cx: &mut Context<Self>) {
+        if let Some(file) = self.results.file_index(path) {
+            self.update_results(|r| r.set_collapsed(file, collapsed), cx);
+        }
+    }
+
+    /// Whether file `path` is colored from a text source.
+    #[doc(hidden)]
+    pub fn has_text_source(&self, path: &Path) -> bool {
+        self.text_sources.contains_key(path)
+    }
+
     /// Changes the results, then tells the list once: the gutter grows to
     /// the largest line number left, a selection whose line is gone is
-    /// dropped, and only the changed rows are spliced.
+    /// dropped, and only the changed rows are spliced. Files that left
+    /// take their text sources and meta with them.
     pub fn update_results(&mut self, change: impl FnOnce(&mut Results), cx: &mut Context<Self>) {
+        let listed: Vec<Arc<Path>> = if self.text_sources.is_empty() && !self.results.has_meta() {
+            Vec::new()
+        } else {
+            self.results
+                .files()
+                .iter()
+                .map(|f| f.path.clone())
+                .collect()
+        };
         change(&mut self.results);
+        for path in listed {
+            if self.results.file_index(&path).is_none() {
+                self.text_sources.remove(&path);
+                self.results.forget_meta(&path);
+            }
+        }
         self.max_line_number = self.max_line_number.max(self.results.max_line_number());
         if self
             .selected

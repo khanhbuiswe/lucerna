@@ -4,26 +4,32 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use gpui::{Context, Entity};
+use gpui::{App, Context, Entity, Focusable, Window};
 use lucerna_project::WorktreeEvent;
 
 use super::GitStore;
+use crate::diff_view::DiffView;
 use crate::documents::{DocumentEvent, Documents};
-use crate::{CommandRegistry, Workbench};
+use crate::{CommandRegistry, EditorGroups, Workbench};
 
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register("git.refresh", "Git: Refresh", |wb, _, _, cx| {
         wb.git().update(cx, |git, cx| git.rescan(cx));
     });
     commands.register(
+        "git.viewChanges",
+        "Git: Open Changes (Uncommitted)",
+        |wb, _, window, cx| wb.open_git_changes(window, cx),
+    );
+    commands.register(
         "workbench.action.editor.nextChange",
         "Go to Next Change",
-        |wb, _, _, cx| wb.go_to_change(true, cx),
+        |wb, _, window, cx| wb.go_to_change(true, window, cx),
     );
     commands.register(
         "workbench.action.editor.previousChange",
         "Go to Previous Change",
-        |wb, _, _, cx| wb.go_to_change(false, cx),
+        |wb, _, window, cx| wb.go_to_change(false, window, cx),
     );
 }
 
@@ -56,8 +62,43 @@ impl Workbench {
         }
     }
 
-    /// Alt+F5 / Shift+Alt+F5: the active editor's next or previous change.
-    fn go_to_change(&mut self, forward: bool, cx: &mut Context<Self>) {
+    /// Focuses the Uncommitted Changes tab wherever it is, or opens it in
+    /// the active group; its list takes the focus once drawn.
+    pub fn open_git_changes(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor_groups(cx, EditorGroups::open_git_changes);
+        cx.notify();
+    }
+
+    /// The view of the Uncommitted Changes tab, while the tab is open and
+    /// has been drawn.
+    pub fn git_changes_view(&self, cx: &App) -> Option<Entity<DiffView>> {
+        let groups = self.editor_groups().read(cx);
+        let tab = groups.model().git_changes_tab()?;
+        groups.body_of(tab)?.downcast::<DiffView>().ok()
+    }
+
+    /// The active tab's diff view, when it has the keyboard focus
+    /// (`gitDiffViewFocus`).
+    pub(crate) fn focused_diff_view(&self, window: &Window, cx: &App) -> Option<Entity<DiffView>> {
+        let view = self
+            .editor_groups()
+            .read(cx)
+            .active_body()?
+            .downcast::<DiffView>()
+            .ok()?;
+        view.read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx)
+            .then_some(view)
+    }
+
+    /// Alt+F5 / Shift+Alt+F5: the next or previous change of the focused
+    /// diff tab (across its files), else of the active editor.
+    fn go_to_change(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(view) = self.focused_diff_view(window, cx) {
+            view.update(cx, |v, cx| v.step_change(forward, cx));
+            return;
+        }
         let Some(view) = self.active_code_view(cx) else {
             return;
         };
@@ -75,6 +116,9 @@ impl Workbench {
                     .iter()
                     .filter_map(|c| workspace_relative(self.root(), &c.path))
                     .collect();
+                if let Some(view) = self.git_changes_view(cx) {
+                    view.update(cx, |v, cx| v.paths_changed(&paths, cx));
+                }
                 self.git.update(cx, |git, cx| git.paths_changed(paths, cx));
             }
             WorktreeEvent::Rescanned => self.git.update(cx, |git, cx| git.rescan(cx)),

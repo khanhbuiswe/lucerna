@@ -359,6 +359,7 @@ fn file_meta_header_and_note(cx: &mut TestAppContext) {
                 label: Some("new"),
                 note: None,
                 openable: true,
+                group: 0,
             },
             cx,
         );
@@ -440,4 +441,154 @@ fn unopenable_header_button_disabled(cx: &mut TestAppContext) {
         vec![at(0, 0, 1)],
         "without matches, the first change opens"
     );
+}
+
+#[gpui::test]
+fn sources_and_meta_go_with_files_that_leave(cx: &mut TestAppContext) {
+    let (_dir, list, cx) = diff_list(cx);
+    let source = TextSource {
+        current: Some(Arc::from("a\n")),
+        base: None,
+    };
+    list.update(cx, |l, cx| {
+        for p in ["a.rs", "b.rs"] {
+            l.set_file_meta(path(p), FileMeta::default(), cx);
+            l.set_text_source(path(p), source.clone(), cx);
+        }
+        l.add_files(
+            vec![
+                (
+                    path("a.rs"),
+                    vec![Excerpt {
+                        lines: vec![add(1, "a")],
+                    }],
+                ),
+                (
+                    path("b.rs"),
+                    vec![Excerpt {
+                        lines: vec![add(1, "a")],
+                    }],
+                ),
+            ],
+            cx,
+        );
+        // A streamed update that no longer reports `a.rs`.
+        l.update_results(
+            |r| {
+                r.begin_update();
+                r.update_files(vec![(
+                    path("b.rs"),
+                    vec![Excerpt {
+                        lines: vec![add(1, "b")],
+                    }],
+                )]);
+                r.prune();
+            },
+            cx,
+        );
+        // Meta set ahead of a file that has not arrived stays.
+        l.set_file_meta(path("later.rs"), FileMeta::default(), cx);
+    });
+    list.read_with(cx, |l, _| {
+        assert_eq!(l.results().files().len(), 1);
+        assert!(l.results().meta(Path::new("a.rs")).is_none());
+        assert!(!l.has_text_source(Path::new("a.rs")));
+        assert!(l.results().meta(Path::new("b.rs")).is_some());
+        assert!(l.has_text_source(Path::new("b.rs")));
+        assert!(l.results().meta(Path::new("later.rs")).is_some());
+    });
+}
+
+#[gpui::test]
+fn note_only_files_are_not_highlighted(cx: &mut TestAppContext) {
+    let (_dir, list, cx) = diff_list(cx);
+    list.update(cx, |l, cx| {
+        l.set_file_meta(
+            path("a.rs"),
+            FileMeta {
+                note: Some("Binary file"),
+                ..FileMeta::default()
+            },
+            cx,
+        );
+        l.set_text_source(
+            path("a.rs"),
+            TextSource {
+                current: Some(Arc::from("fn a() {}\n")),
+                base: None,
+            },
+            cx,
+        );
+    });
+    set_files(&list, vec![("a.rs", vec![vec![add(1, "fn a() {}")]])], cx);
+    assert!(cx.debug_bounds("diff-note-0").is_some());
+    list.read_with(cx, |l, _| assert_eq!(l.highlight_jobs_started(), 0));
+}
+
+#[gpui::test]
+fn files_sort_by_group_then_path(cx: &mut TestAppContext) {
+    let (_dir, list, cx) = diff_list(cx);
+    list.update(cx, |l, cx| {
+        l.set_file_meta(
+            path("z.rs"),
+            FileMeta {
+                group: 0,
+                ..FileMeta::default()
+            },
+            cx,
+        );
+        for p in ["a.rs", "b.rs"] {
+            l.set_file_meta(
+                path(p),
+                FileMeta {
+                    group: 1,
+                    ..FileMeta::default()
+                },
+                cx,
+            );
+        }
+        l.add_files(
+            vec![
+                (path("b.rs"), vec![]),
+                (path("a.rs"), vec![]),
+                (path("z.rs"), vec![]),
+                (path("m.rs"), vec![]),
+            ],
+            cx,
+        );
+    });
+    let order = |list: &Entity<ExcerptList>, cx: &mut VisualTestContext| {
+        list.read_with(cx, |l, _| {
+            l.results()
+                .files()
+                .iter()
+                .map(|f| f.path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(order(&list, cx), ["m.rs", "z.rs", "a.rs", "b.rs"]);
+    // A new group moves the file; it is still found by path.
+    list.update(cx, |l, cx| {
+        l.set_file_meta(
+            path("m.rs"),
+            FileMeta {
+                group: 2,
+                ..FileMeta::default()
+            },
+            cx,
+        );
+        l.set_file(
+            path("m.rs"),
+            vec![Excerpt {
+                lines: vec![add(1, "m")],
+            }],
+            cx,
+        );
+        l.remove_files(&[path("a.rs")], cx);
+    });
+    assert_eq!(order(&list, cx), ["z.rs", "b.rs", "m.rs"]);
+    list.read_with(cx, |l, _| {
+        assert_eq!(l.results().file_index(Path::new("m.rs")), Some(2));
+        assert_eq!(l.results().files()[2].excerpts.len(), 1);
+    });
 }

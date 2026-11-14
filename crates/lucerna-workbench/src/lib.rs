@@ -68,11 +68,12 @@ pub use config_files::{
     reload_config, set_system_appearance, watch_config,
 };
 pub use diagnostics_status::DiagnosticsStatusItem;
+pub use diff_view::{DiffKind, DiffView};
 pub use documents::{DiskNotice, DocState, DocumentEvent, DocumentStatus, Documents};
 pub use editor_groups::{
-    EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, FileView, Group, GroupState, GroupsState,
-    MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
-    SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
+    EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, FileView, GIT_CHANGES_TAB_STATE, Group,
+    GroupState, GroupsState, MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX,
+    OpenMode, SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
 };
 pub use excerpt_list::model::{
     FileMeta, FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,

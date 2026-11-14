@@ -20,6 +20,7 @@ use serde_json::Value;
 use crate::code_view::{self, CodeView, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
+use crate::diff_view::{DiffKind, DiffView};
 use crate::documents::{DocumentEvent, DocumentStatusItem, Documents};
 use crate::editor_groups::{
     self, EditorGroups, EditorGroupsView, FileView, GroupId, OpenMode, TabId, TabItem,
@@ -350,6 +351,8 @@ impl Workbench {
             let (workbench, servers) = (cx.weak_entity(), language_servers.clone());
             cx.new(|cx| LspStatusItem::new(workbench, servers, cx))
         };
+        // Before the editor groups: the diff tabs read it.
+        let git = cx.new(|cx| GitStore::new(root.clone(), cx));
         let workbench = cx.weak_entity();
         let breadcrumbs_target = cx.weak_entity();
         let command_target = cx.weak_entity();
@@ -360,6 +363,7 @@ impl Workbench {
             let search = search_view.clone();
             let references = references_view.clone();
             let health = lsp_health.clone();
+            let git = git.clone();
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
             let preview_root: Arc<Path> = Arc::from(root.as_path());
             groups.set_tab_body_factory(
@@ -386,6 +390,22 @@ impl Workbench {
                         TabItem::LspHealth => {
                             health.update(cx, |health, cx| health.shown(cx));
                             return health.clone().into();
+                        }
+                        TabItem::GitChanges => {
+                            let (git, docs) = (git.clone(), docs.clone());
+                            let (root, workbench) = (preview_root.to_path_buf(), workbench.clone());
+                            return cx
+                                .new(|cx| {
+                                    DiffView::new(
+                                        DiffKind::Uncommitted,
+                                        git,
+                                        docs,
+                                        root,
+                                        workbench,
+                                        cx,
+                                    )
+                                })
+                                .into();
                         }
                     };
                     let view = docs.update(cx, |docs, cx| docs.open(path, cx));
@@ -579,7 +599,6 @@ impl Workbench {
         };
         let git_head = crate::git_branch::head_path(&root);
         let git_branch = crate::git_branch::read_branch(&root);
-        let git = cx.new(|cx| GitStore::new(root.clone(), cx));
         subscriptions.push(cx.subscribe(&documents, Self::git_document_event));
         subscriptions.push(
             cx.subscribe(&git, |wb, git, ev: &GitStoreEvent, cx| match ev {
@@ -1290,10 +1309,13 @@ impl Workbench {
             || groups.hidden_bodies().any(|body| {
                 let handle = match body.clone().downcast::<CodeView>() {
                     Ok(view) => Some(view.read(cx).focus_handle(cx)),
-                    Err(body) => body
-                        .downcast::<MarkdownPreview>()
-                        .ok()
-                        .map(|preview| preview.read(cx).focus_handle(cx)),
+                    Err(body) => match body.downcast::<DiffView>() {
+                        Ok(view) => Some(view.read(cx).focus_handle(cx)),
+                        Err(body) => body
+                            .downcast::<MarkdownPreview>()
+                            .ok()
+                            .map(|preview| preview.read(cx).focus_handle(cx)),
+                    },
                 };
                 handle.is_some_and(had_focus)
             });
@@ -1625,6 +1647,10 @@ impl Workbench {
         flag("searchViewletFocus", self.search_focused(window, cx));
         flag("referencesViewFocus", self.references_view_focus(cx));
         flag(
+            "gitDiffViewFocus",
+            self.focused_diff_view(window, cx).is_some(),
+        );
+        flag(
             "extensionsViewletFocus",
             self.extensions_focused(window, cx),
         );
@@ -1837,6 +1863,17 @@ impl Workbench {
             let v = view.read(cx);
             return Some((view.entity_id(), v.focus_handle(cx), v.is_passive()));
         }
+        let body = match body.downcast::<DiffView>() {
+            // The list takes the keys.
+            Ok(view) => {
+                return Some((
+                    view.entity_id(),
+                    view.read(cx).list_focus_handle().clone(),
+                    false,
+                ));
+            }
+            Err(body) => body,
+        };
         let preview = body.downcast::<MarkdownPreview>().ok()?;
         Some((
             preview.entity_id(),

@@ -28,7 +28,8 @@ pub struct LineAnchor {
 /// header (`+added −removed` and a small tag such as "new"), and a `note`
 /// (such as "Binary file") shown as one row in place of its excerpts.
 /// When `openable` is false (a deleted file) the header's "open file"
-/// button is disabled.
+/// button is disabled. Files sort by `group`, then by path, so a diff view
+/// can list conflicts first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileMeta {
     pub added: u32,
@@ -36,10 +37,11 @@ pub struct FileMeta {
     pub label: Option<&'static str>,
     pub note: Option<&'static str>,
     pub openable: bool,
+    pub group: u8,
 }
 
 impl Default for FileMeta {
-    /// No counts, label or note, and openable.
+    /// No counts, label or note, openable, group 0.
     fn default() -> Self {
         FileMeta {
             added: 0,
@@ -47,8 +49,14 @@ impl Default for FileMeta {
             label: None,
             note: None,
             openable: true,
+            group: 0,
         }
     }
+}
+
+/// Where file `path` sorts: by its meta's group, then by path.
+fn order_key<'a>(meta: &HashMap<Arc<Path>, FileMeta>, path: &'a Path) -> (u8, &'a Path) {
+    (meta.get(path).map_or(0, |m| m.group), path)
 }
 
 /// Whether `line` is an added or deleted line of a diff.
@@ -131,13 +139,83 @@ impl Results {
         self.add_files(files);
     }
 
-    /// Sets the diff meta of file `path` (present or not yet).
+    /// Sets the diff meta of file `path` (present or not yet). A new
+    /// group moves the file. The rows are rebuilt only for a listed file.
     pub fn set_meta(&mut self, path: Arc<Path>, meta: FileMeta) {
-        if self.meta.get(&path) == Some(&meta) {
+        let old = self.meta.get(&path).copied();
+        if old == Some(meta) {
             return;
         }
+        let listed = self.search(&path).is_ok();
+        let regroup = old.map_or(0, |m| m.group) != meta.group;
         self.meta.insert(path, meta);
+        if listed && regroup {
+            self.sort_files();
+        }
+        if listed {
+            self.rebuild();
+        }
+    }
+
+    /// Whether any file has diff meta.
+    pub(crate) fn has_meta(&self) -> bool {
+        !self.meta.is_empty()
+    }
+
+    /// Drops the meta of file `path`, which is not listed: rows stay.
+    pub(crate) fn forget_meta(&mut self, path: &Path) {
+        self.meta.remove(path);
+    }
+
+    /// The position of file `path`, or where it would go.
+    fn search(&self, path: &Path) -> Result<usize, usize> {
+        let key = order_key(&self.meta, path);
+        self.files
+            .binary_search_by(|f| order_key(&self.meta, &f.path).cmp(&key))
+    }
+
+    /// Sorts the files by group, then path.
+    fn sort_files(&mut self) {
+        let meta = &self.meta;
+        self.files
+            .sort_by(|a, b| order_key(meta, &a.path).cmp(&order_key(meta, &b.path)));
+    }
+
+    /// Replaces the excerpts of file `path` in place (keeping its fold),
+    /// or adds it.
+    pub fn set_file(&mut self, path: Arc<Path>, excerpts: Vec<Excerpt>) {
+        match self.search(&path) {
+            Ok(i) => self.files[i].excerpts = excerpts,
+            Err(i) => self.files.insert(
+                i,
+                FileResult {
+                    path,
+                    excerpts,
+                    collapsed: false,
+                },
+            ),
+        }
         self.rebuild();
+    }
+
+    /// Drops the files `paths`.
+    pub fn remove_files(&mut self, paths: &[Arc<Path>]) {
+        let gone: HashSet<&Arc<Path>> = paths.iter().collect();
+        let before = self.files.len();
+        self.files.retain(|f| !gone.contains(&f.path));
+        if self.files.len() != before {
+            self.rebuild();
+        }
+    }
+
+    /// Folds or unfolds file `file`.
+    pub fn set_collapsed(&mut self, file: usize, collapsed: bool) {
+        if let Some(f) = self.files.get_mut(file)
+            && f.collapsed != collapsed
+        {
+            f.collapsed = collapsed;
+            self.rebuild();
+        }
     }
 
     /// The diff meta of file `path`, if set.
@@ -162,7 +240,7 @@ impl Results {
         let mut changed = false;
         for (path, excerpts) in batch {
             changed = true;
-            match self.files.binary_search_by(|f| f.path.cmp(&path)) {
+            match self.search(&path) {
                 Ok(i) => {
                     if self.confirmed.insert(path) {
                         self.files[i].excerpts = excerpts;
@@ -189,7 +267,7 @@ impl Results {
         }
         if !fresh.is_empty() {
             self.files.extend(fresh);
-            self.files.sort_by(|a, b| a.path.cmp(&b.path));
+            self.sort_files();
         }
         self.rebuild();
     }
@@ -223,19 +301,19 @@ impl Results {
             .unwrap_or(0)
     }
 
-    /// Adds a file's excerpts, keeping files sorted by path. An existing
-    /// path gets the excerpts appended.
+    /// Adds a file's excerpts, keeping files sorted (by group, then path).
+    /// An existing path gets the excerpts appended.
     pub fn add_file(&mut self, path: Arc<Path>, excerpts: Vec<Excerpt>) {
         self.add_files(std::iter::once((path, excerpts)));
     }
 
     /// Adds a batch of files like repeated [`add_file`](Self::add_file)
-    /// calls (sorted by path, same paths merged in batch order) but sorts
+    /// calls (sorted, same paths merged in batch order) but sorts
     /// and rebuilds the rows once.
     pub fn add_files(&mut self, batch: impl IntoIterator<Item = (Arc<Path>, Vec<Excerpt>)>) {
         let mut fresh: Vec<FileResult> = Vec::new();
         for (path, excerpts) in batch {
-            match self.files.binary_search_by(|f| f.path.cmp(&path)) {
+            match self.search(&path) {
                 Ok(i) => self.files[i].excerpts.extend(excerpts),
                 Err(_) => fresh.push(FileResult {
                     path,
@@ -258,7 +336,7 @@ impl Results {
         }
         if !merged.is_empty() {
             self.files.extend(merged);
-            self.files.sort_by(|a, b| a.path.cmp(&b.path));
+            self.sort_files();
         }
         self.rebuild();
     }
@@ -282,9 +360,7 @@ impl Results {
 
     /// The index of the file `path` among [`files`](Self::files).
     pub fn file_index(&self, path: &Path) -> Option<usize> {
-        self.files
-            .binary_search_by(|f| f.path.as_ref().cmp(path))
-            .ok()
+        self.search(path).ok()
     }
 
     /// Names line `r` by its file and line number, which stay put when

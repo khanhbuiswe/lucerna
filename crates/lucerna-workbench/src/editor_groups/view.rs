@@ -646,6 +646,7 @@ impl Render for EditorGroupsView {
                     TabItem::LspLog(_) => Some(icons::ZAP),
                     TabItem::References => Some(icons::FILE_CODE),
                     TabItem::LspHealth => Some(icons::ZAP),
+                    TabItem::GitChanges => Some(icons::GIT_BRANCH),
                     TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_) => {
                         Some(icons::EYE)
                     }

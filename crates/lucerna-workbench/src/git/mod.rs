@@ -26,7 +26,7 @@ use crate::AppState;
 use hunks::{Diffed, HunkWork};
 use job::{Job, JobError, JobInput, JobOutput, run_job};
 use rollup::Rollup;
-pub(crate) use wiring::register_commands;
+pub(crate) use wiring::{register_commands, workspace_relative};
 
 /// Hunks are recomputed this long after the last `track_buffer` call.
 const HUNK_DEBOUNCE: Duration = Duration::from_millis(50);
@@ -268,6 +268,12 @@ impl GitStore {
             GitState::NoRepo | GitState::NoGit => self.restart(cx),
             GitState::Off | GitState::Locating | GitState::Restricted => {}
         }
+    }
+
+    /// A handle on the repository, once found, for views that run their
+    /// own `git` work off the UI thread (the diff tabs).
+    pub fn repo(&self) -> Option<Repo> {
+        self.repo.clone()
     }
 
     /// The git dir of the repository, once found.

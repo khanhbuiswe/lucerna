@@ -4,9 +4,9 @@ mod model;
 mod view;
 
 pub use model::{
-    EXTENSIONS_TAB_STATE, EditorGroups, FileView, Group, GroupId, GroupState, GroupsState,
-    MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
-    SEARCH_TAB_STATE, Tab, TabId, TabItem,
+    EXTENSIONS_TAB_STATE, EditorGroups, FileView, GIT_CHANGES_TAB_STATE, GIT_CHANGES_TAB_TITLE,
+    Group, GroupId, GroupState, GroupsState, MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
+    MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode, SEARCH_TAB_STATE, Tab, TabId, TabItem,
 };
 pub(crate) use model::{prefixed, split_preview_state};
 pub(crate) use view::path_bar_text;

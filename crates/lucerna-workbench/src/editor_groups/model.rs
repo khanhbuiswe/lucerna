@@ -46,6 +46,9 @@ pub enum TabItem {
     /// The Markdown preview that follows the file being edited. At most
     /// one in all groups (whatever its path); saved.
     MarkdownPreviewDynamic(Arc<Path>),
+    /// The Uncommitted Changes tab (`git.viewChanges`, spec §4.7). At most
+    /// one in all groups; never a preview; saved.
+    GitChanges,
 }
 
 impl TabItem {
@@ -102,6 +105,13 @@ pub const REFERENCES_TAB_TITLE: &str = "References";
 /// The title of the language server Health tab.
 pub const LSP_HEALTH_TAB_TITLE: &str = "Language Servers";
 
+/// How the Uncommitted Changes tab is saved in [`GroupState::tabs`];
+/// relative, like [`EXTENSIONS_TAB_STATE`].
+pub const GIT_CHANGES_TAB_STATE: &str = "lucerna:git-changes";
+
+/// The title of the Uncommitted Changes tab.
+pub const GIT_CHANGES_TAB_TITLE: &str = "Uncommitted Changes";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tab {
     pub id: TabId,
@@ -141,6 +151,7 @@ impl Tab {
             TabItem::LspLog(server) => format!("{server} Log"),
             TabItem::References => REFERENCES_TAB_TITLE.to_string(),
             TabItem::LspHealth => LSP_HEALTH_TAB_TITLE.to_string(),
+            TabItem::GitChanges => GIT_CHANGES_TAB_TITLE.to_string(),
         }
     }
 }
@@ -333,6 +344,17 @@ impl EditorGroups {
     /// The References tab, if open in any group.
     pub fn references_tab(&self) -> Option<TabId> {
         self.find_item(&TabItem::References)
+    }
+
+    /// Activates the Uncommitted Changes tab wherever it is, or opens it
+    /// (pinned) at the end of the active group. Returns its tab.
+    pub fn open_git_changes(&mut self) -> TabId {
+        self.open_singleton(TabItem::GitChanges)
+    }
+
+    /// The Uncommitted Changes tab, if open in any group.
+    pub fn git_changes_tab(&self) -> Option<TabId> {
+        self.find_item(&TabItem::GitChanges)
     }
 
     /// Activates the Health tab wherever it is, or opens it (pinned) at
@@ -720,6 +742,8 @@ fn saved_item(path: &Path) -> TabItem {
         TabItem::Extensions
     } else if path == Path::new(SEARCH_TAB_STATE) {
         TabItem::Search
+    } else if path == Path::new(GIT_CHANGES_TAB_STATE) {
+        TabItem::GitChanges
     } else if let Some((prefix, rest)) = split_preview_state(path) {
         if prefix == MARKDOWN_PREVIEW_STATE_PREFIX {
             TabItem::MarkdownPreview(Arc::from(rest))
@@ -751,13 +775,14 @@ pub(crate) fn split_preview_state(path: &Path) -> Option<(&'static str, &Path)> 
 }
 
 /// How a tab is saved: its path, [`EXTENSIONS_TAB_STATE`],
-/// [`SEARCH_TAB_STATE`] or a preview prefix and the path; `None` for a server log, the References tab or
+/// [`SEARCH_TAB_STATE`], [`GIT_CHANGES_TAB_STATE`] or a preview prefix and the path; `None` for a server log, the References tab or
 /// the Health tab, which are not saved.
 fn saved_path(item: &TabItem) -> Option<PathBuf> {
     match item {
         TabItem::File(path) => Some(path.to_path_buf()),
         TabItem::Extensions => Some(PathBuf::from(EXTENSIONS_TAB_STATE)),
         TabItem::Search => Some(PathBuf::from(SEARCH_TAB_STATE)),
+        TabItem::GitChanges => Some(PathBuf::from(GIT_CHANGES_TAB_STATE)),
         TabItem::MarkdownPreview(path) => Some(prefixed(MARKDOWN_PREVIEW_STATE_PREFIX, path)),
         TabItem::MarkdownPreviewDynamic(path) => {
             Some(prefixed(MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, path))
