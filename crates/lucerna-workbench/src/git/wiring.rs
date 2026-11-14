@@ -15,6 +15,16 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register("git.refresh", "Git: Refresh", |wb, _, _, cx| {
         wb.git().update(cx, |git, cx| git.rescan(cx));
     });
+    commands.register(
+        "workbench.action.editor.nextChange",
+        "Go to Next Change",
+        |wb, _, _, cx| wb.go_to_change(true, cx),
+    );
+    commands.register(
+        "workbench.action.editor.previousChange",
+        "Go to Previous Change",
+        |wb, _, _, cx| wb.go_to_change(false, cx),
+    );
 }
 
 /// `path` relative to `root`: a relative path as it is, an absolute one
@@ -30,6 +40,30 @@ impl Workbench {
     /// The repository of the workspace: statuses and gutter hunks.
     pub fn git(&self) -> &Entity<GitStore> {
         &self.git
+    }
+
+    /// New hunks of `path` (workspace-relative) reach every view of it;
+    /// none (untracked, closed, git off) clear its bars.
+    pub(crate) fn git_hunks_changed(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let hunks = self
+            .git
+            .read(cx)
+            .hunks(path)
+            .unwrap_or_else(|| Arc::from([]));
+        let views = self.documents().read(cx).views_of(path);
+        for view in views {
+            view.update(cx, |v, cx| v.set_diff_hunks(hunks.clone(), cx));
+        }
+    }
+
+    /// Alt+F5 / Shift+Alt+F5: the active editor's next or previous change.
+    fn go_to_change(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(view) = self.active_code_view(cx) else {
+            return;
+        };
+        if !view.update(cx, |v, cx| v.next_change(forward, cx)) {
+            crate::status_message::show("No changes", cx);
+        }
     }
 
     /// Changed paths refresh their status (and the open files among them

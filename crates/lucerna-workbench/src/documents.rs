@@ -473,6 +473,11 @@ impl Documents {
                 // The language servers feed the views they know of; a new
                 // view starts with what its siblings show.
                 let diagnostics = doc.views().find_map(|v| v.read(cx).diagnostics_source());
+                // Likewise the git change bars.
+                let hunks = doc
+                    .views()
+                    .map(|v| v.read(cx).shared_diff_hunks())
+                    .find(|h| !h.is_empty());
                 doc.views.push(view.downgrade());
                 let state = doc.state.clone();
                 let (snapshot, syntax) = (doc.snapshot.clone(), doc.syntax.clone());
@@ -492,6 +497,9 @@ impl Documents {
                     }
                     if let Some(diagnostics) = diagnostics {
                         v.set_diagnostics(diagnostics, cx);
+                    }
+                    if let Some(hunks) = hunks {
+                        v.set_diff_hunks(hunks, cx);
                     }
                     // A jump centers its row; a scroll row asked for with it
                     // (Go Back) wins over that.

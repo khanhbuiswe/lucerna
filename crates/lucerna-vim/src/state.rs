@@ -1032,6 +1032,8 @@ impl Vim {
             return match c {
                 'd' if p == ']' => self.run_command("editor.action.marker.next"),
                 'd' => self.run_command("editor.action.marker.prev"),
+                'c' if p == ']' => self.run_command("workbench.action.editor.nextChange"),
+                'c' => self.run_command("workbench.action.editor.previousChange"),
                 _ => Outcome::Handled(vec![]),
             };
         }
@@ -2299,6 +2301,18 @@ mod tests {
         );
         // Other keys after the bracket stay unbound and clear the prefix.
         assert_eq!(runs("]x", "|abc")[1], Outcome::Handled(vec![]));
+    }
+
+    #[test]
+    fn bracket_c_runs_next_change() {
+        assert_eq!(
+            runs("]c", "|abc")[1],
+            run_command("workbench.action.editor.nextChange")
+        );
+        assert_eq!(
+            runs("[c", "|abc")[1],
+            run_command("workbench.action.editor.previousChange")
+        );
     }
 
     #[test]

@@ -47,6 +47,8 @@
   { "key": "shift+f8", "command": "editor.action.marker.prevInFiles", "when": "editorFocus" },
   { "key": "alt+f8", "command": "editor.action.marker.next", "when": "editorTextFocus" },
   { "key": "shift+alt+f8", "command": "editor.action.marker.prev", "when": "editorTextFocus" },
+  { "key": "alt+f5", "command": "workbench.action.editor.nextChange", "when": "editorTextFocus" },
+  { "key": "shift+alt+f5", "command": "workbench.action.editor.previousChange", "when": "editorTextFocus" },
   { "key": "shift+cmd+o", "command": "workbench.action.gotoSymbol", "when": "editorTextFocus" },
   { "key": "cmd+t", "command": "workbench.action.showAllSymbols" },
   { "key": "shift+cmd+.", "command": "breadcrumbs.focusAndSelect", "when": "editorTextFocus" },

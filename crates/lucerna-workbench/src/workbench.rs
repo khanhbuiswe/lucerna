@@ -533,13 +533,17 @@ impl Workbench {
         let git_branch = crate::git_branch::read_branch(&root);
         let git = cx.new(|cx| GitStore::new(root.clone(), cx));
         subscriptions.push(cx.subscribe(&documents, Self::git_document_event));
-        subscriptions.push(cx.subscribe(&git, |wb, git, ev: &GitStoreEvent, cx| {
-            if matches!(ev, GitStoreEvent::SnapshotChanged) {
-                let snapshot = git.read(cx).snapshot();
-                wb.explorer
-                    .update(cx, |explorer, cx| explorer.set_git(snapshot, cx));
-            }
-        }));
+        subscriptions.push(
+            cx.subscribe(&git, |wb, git, ev: &GitStoreEvent, cx| match ev {
+                GitStoreEvent::SnapshotChanged => {
+                    let snapshot = git.read(cx).snapshot();
+                    wb.explorer
+                        .update(cx, |explorer, cx| explorer.set_git(snapshot, cx));
+                }
+                GitStoreEvent::HunksChanged(path) => wb.git_hunks_changed(path, cx),
+                GitStoreEvent::StateChanged => {}
+            }),
+        );
         if let (Some(watcher), Some(head)) = (&open_file_watcher, &git_head) {
             watcher.set_files(vec![head.clone()]);
         }
