@@ -310,29 +310,109 @@ fn indent_guides_match_depth(cx: &mut TestAppContext) {
     }
 }
 
+fn thumb(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<gpui::Bounds<Pixels>> {
+    cx.update(|_, cx| wb.read(cx).explorer().read(cx).scrollbar_thumb())
+}
+
 #[gpui::test]
 fn scrollbar_thumb_only_when_list_overflows(cx: &mut TestAppContext) {
     init(cx, None);
     let small = project();
     {
-        let (_, cx) = open(small.path(), cx);
+        let (wb, cx) = open(small.path(), cx);
         assert!(cx.debug_bounds("explorer-list").is_some());
-        assert!(cx.debug_bounds("explorer-scrollbar-thumb").is_none());
+        assert!(thumb(&wb, cx).is_none());
     }
 
-    let big = tempfile::tempdir().unwrap();
-    for i in 0..300 {
-        std::fs::write(big.path().join(format!("f{i:03}.rs")), "").unwrap();
-    }
-    let (_, cx) = open(big.path(), cx);
-    let thumb = cx
-        .debug_bounds("explorer-scrollbar-thumb")
-        .expect("thumb is drawn when the list overflows");
+    let big = big_project();
+    let (wb, cx) = open(big.path(), cx);
+    let thumb = thumb(&wb, cx).expect("thumb is drawn when the list overflows");
     let list = cx.debug_bounds("explorer-list").unwrap();
     assert_eq!(thumb.size.width, px(ui::SCROLLBAR_WIDTH));
     assert_eq!(thumb.right(), list.right());
     assert_eq!(thumb.top(), list.top());
     assert!(thumb.size.height < list.size.height);
+}
+
+/// A folder of 300 files, more than the list shows.
+fn big_project() -> TempDir {
+    let big = tempfile::tempdir().unwrap();
+    for i in 0..300 {
+        std::fs::write(big.path().join(format!("f{i:03}.rs")), "").unwrap();
+    }
+    big
+}
+
+fn drag(from: Point<Pixels>, to: Point<Pixels>, cx: &mut VisualTestContext) {
+    let (left, none) = (MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_down(from, left, none);
+    draw(cx);
+    cx.simulate_mouse_move(to, Some(left), none);
+    draw(cx);
+    cx.simulate_mouse_up(to, left, none);
+    draw(cx);
+}
+
+#[gpui::test]
+fn explorer_scrollbar_drag_scrolls(cx: &mut TestAppContext) {
+    init(cx, None);
+    let big = big_project();
+    let (wb, cx) = open(big.path(), cx);
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    let start = thumb(&wb, cx).unwrap();
+    let travel = list.size.height - start.size.height;
+    let from = start.center();
+    drag(from, gpui::point(from.x, from.y + travel), cx);
+    let end = thumb(&wb, cx).unwrap();
+    assert!((end.bottom() - list.bottom()).abs() < px(0.5), "{end:?} in {list:?}");
+    assert!(cx.debug_bounds("explorer-row-f299.rs").is_some());
+    assert!(cx.debug_bounds("explorer-row-f000.rs").is_none());
+}
+
+#[gpui::test]
+fn explorer_track_click_jumps(cx: &mut TestAppContext) {
+    init(cx, None);
+    let big = big_project();
+    let (wb, cx) = open(big.path(), cx);
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    let at = gpui::point(list.right() - px(3.), list.bottom() - px(2.));
+    cx.simulate_click(at, Modifiers::none());
+    draw(cx);
+    let end = thumb(&wb, cx).unwrap();
+    assert!((end.bottom() - list.bottom()).abs() < px(0.5), "{end:?} in {list:?}");
+}
+
+#[gpui::test]
+fn drag_ends_on_mouse_up_anywhere(cx: &mut TestAppContext) {
+    init(cx, None);
+    let big = big_project();
+    let (wb, cx) = open(big.path(), cx);
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    let from = thumb(&wb, cx).unwrap().center();
+    let outside = gpui::point(list.left() + px(5.), from.y + px(20.));
+    drag(from, outside, cx);
+    let after_drag = thumb(&wb, cx).unwrap();
+    assert!(after_drag.top() > list.top(), "the drag scrolled");
+    cx.simulate_mouse_move(gpui::point(outside.x, outside.y + px(100.)), None, Modifiers::none());
+    draw(cx);
+    assert_eq!(thumb(&wb, cx).unwrap().top(), after_drag.top());
+}
+
+#[gpui::test]
+fn scrollbar_hover_tracks_mouse(cx: &mut TestAppContext) {
+    init(cx, None);
+    let big = big_project();
+    let (wb, cx) = open(big.path(), cx);
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    let hovered =
+        |cx: &mut VisualTestContext| cx.update(|_, cx| wb.read(cx).explorer().read(cx).scrollbar_hovered());
+    let y = thumb(&wb, cx).unwrap().center().y;
+    cx.simulate_mouse_move(gpui::point(list.right() - px(10.), y), None, Modifiers::none());
+    draw(cx);
+    assert!(hovered(cx));
+    cx.simulate_mouse_move(gpui::point(list.left() + px(5.), y), None, Modifiers::none());
+    draw(cx);
+    assert!(!hovered(cx));
 }
 
 fn ext_icon_theme(dir: &Path) -> (lucerna_theme::IconThemeRegistry, PathBuf) {

@@ -40,6 +40,7 @@ pub mod process;
 mod quick_open;
 pub mod recent;
 mod recent_picker;
+mod scrollbar;
 mod references_view;
 mod save;
 mod search_view;

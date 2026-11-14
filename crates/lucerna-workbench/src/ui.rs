@@ -29,6 +29,10 @@ pub const PATH_BAR_HEIGHT: f32 = TAB_HEIGHT - 2. * GRID;
 pub const TREE_ROW_HEIGHT: f32 = 24.0;
 /// Width of the thin overlay scrollbar thumb.
 pub const SCROLLBAR_WIDTH: f32 = 6.0;
+pub use crate::scrollbar::{
+    ScrollHandleSource, ScrollMetrics, Scrollbar, ScrollbarSource, ScrollbarState,
+};
+
 /// Width of the strip at the right edge that takes the mouse for the
 /// scrollbar: wider than the thumb, so it is easy to hit.
 pub const SCROLLBAR_HIT_WIDTH: f32 = 12.0;
