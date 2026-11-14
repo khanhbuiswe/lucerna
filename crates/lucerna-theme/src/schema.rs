@@ -118,6 +118,18 @@ impl ThemeDef {
             scrollbar_thumb,
             scrollbar_thumb_hover: crate::thumb_hover(scrollbar_thumb),
             scrollbar_thumb_active: crate::thumb_active(scrollbar_thumb),
+            vc_added: color("version_control.added").unwrap_or(fb.vc_added),
+            vc_modified: color("version_control.modified").unwrap_or(fb.vc_modified),
+            vc_deleted: color("version_control.deleted").unwrap_or(fb.vc_deleted),
+            status_created: color("created").unwrap_or(fb.status_created),
+            status_modified: color("modified").unwrap_or(fb.status_modified),
+            status_deleted: color("deleted").unwrap_or(fb.status_deleted),
+            status_conflict: color("conflict").unwrap_or(fb.status_conflict),
+            status_ignored: color("ignored").unwrap_or(fb.status_ignored),
+            diff_added_background: color("editor.diff_hunk.added.background")
+                .unwrap_or(fb.diff_added_background),
+            diff_deleted_background: color("editor.diff_hunk.deleted.background")
+                .unwrap_or(fb.diff_deleted_background),
         };
 
         let mut syntax = HashMap::new();

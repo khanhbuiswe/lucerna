@@ -32,6 +32,7 @@ use gpui::{
 };
 use lucerna_editor::indentation::Indentation;
 use lucerna_editor::{EditKind, Goal, Motion, Selection, SelectionSet, autoclose, move_selections};
+use lucerna_git::Hunk;
 use lucerna_lsp::diagnostics::Diagnostic;
 use lucerna_syntax::{SyntaxState, indent_folds};
 use lucerna_text::{Bias, Buffer, BufferSnapshot, LoadError, Patch, Point, Reload};
@@ -89,6 +90,8 @@ struct Config {
     gutter_icons: bool,
     /// `lucerna.diagnostics.inline.enabled`.
     inline_diagnostics: bool,
+    /// `scm.diffDecorations` is `all` or `gutter`: git change bars show.
+    diff_gutter: bool,
     hover: HoverConfig,
     /// `editor.cursorBlinking` is not `solid`.
     cursor_blinking: bool,
@@ -151,6 +154,12 @@ impl Config {
             inline_diagnostics: settings
                 .get("lucerna.diagnostics.inline.enabled", language)
                 .unwrap_or(false),
+            diff_gutter: !matches!(
+                settings
+                    .get::<String>("scm.diffDecorations", language)
+                    .as_deref(),
+                Some("none" | "overview" | "minimap")
+            ),
             hover: HoverConfig::read(settings, language),
             cursor_blinking: settings
                 .get::<String>("editor.cursorBlinking", language)
@@ -378,6 +387,9 @@ pub struct CodeView {
     diagnostic_rows: DiagnosticRows,
     /// Bumped whenever `diagnostic_rows` is rebuilt.
     diagnostic_rows_generation: u64,
+    /// The file's changes against the git base, as gutter bars. Kept
+    /// through edits until the next result, so the bars do not flicker.
+    diff_hunks: Arc<[Hunk]>,
     /// The scrollbar marks last laid out, reused while nothing they
     /// depend on changed.
     scrollbar_marks: Option<element::ScrollbarMarks>,
@@ -469,6 +481,7 @@ impl CodeView {
             diagnostics_source: false,
             diagnostic_rows: DiagnosticRows::default(),
             diagnostic_rows_generation: 0,
+            diff_hunks: Arc::from([]),
             scrollbar_marks: None,
             scrollbar: ScrollbarState::default(),
             hover,
@@ -791,6 +804,50 @@ impl CodeView {
             self.diagnostic_rows_generation += 1;
             cx.notify();
         }
+    }
+
+    /// Shows `hunks`, the file's changes against the git base, as gutter
+    /// bars.
+    pub fn set_diff_hunks(&mut self, hunks: Arc<[Hunk]>, cx: &mut Context<Self>) {
+        if self.diff_hunks != hunks {
+            self.diff_hunks = hunks;
+            cx.notify();
+        }
+    }
+
+    /// Drops the gutter bars.
+    pub fn clear_diff_hunks(&mut self, cx: &mut Context<Self>) {
+        self.set_diff_hunks(Arc::from([]), cx);
+    }
+
+    /// The file's changes against the git base, as last set: sorted by
+    /// row.
+    pub fn diff_hunks(&self) -> &[Hunk] {
+        &self.diff_hunks
+    }
+
+    /// The hunks, for another view of the same file.
+    pub(crate) fn shared_diff_hunks(&self) -> Arc<[Hunk]> {
+        self.diff_hunks.clone()
+    }
+
+    /// Moves the cursor to column 0 of the next change after the cursor
+    /// row (`forward`) or the previous one before it, wrapping around the
+    /// file, and scrolls it into view. `false` when there are no changes.
+    pub fn next_change(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
+        let last = self.snapshot.line_count().saturating_sub(1);
+        let Some(row) = next_change_row(&self.diff_hunks, self.cursor().row, last, forward) else {
+            return false;
+        };
+        self.set_cursor(Point { row, column: 0 }, cx);
+        true
+    }
+
+    /// The gutter bars, deletion markers and fold markers laid out in the
+    /// last frame.
+    #[doc(hidden)]
+    pub fn painted_hunk_bars(&self) -> usize {
+        self.frame.as_ref().map_or(0, |f| f.hunk_bar_count())
     }
 
     /// The "No … found" message shown at the cursor.
@@ -2023,6 +2080,22 @@ impl Render for LargeFileStatus {
     }
 }
 
+/// The start row of the first hunk after `row` (`forward`) or the last one
+/// before it, wrapping around the file; `None` without hunks. Starts are
+/// clamped to `last_row`: a deletion at the end of the file starts one past
+/// it, where the cursor cannot go.
+fn next_change_row(hunks: &[Hunk], row: u32, last_row: u32, forward: bool) -> Option<u32> {
+    let mut starts = hunks.iter().map(|h| h.rows.start.min(last_row));
+    if forward {
+        starts.clone().find(|&s| s > row).or_else(|| starts.next())
+    } else {
+        starts
+            .clone()
+            .rfind(|&s| s < row)
+            .or_else(|| starts.next_back())
+    }
+}
+
 /// Converts a theme color to a GPUI fill color.
 fn hsla(c: lucerna_theme::Rgba) -> gpui::Hsla {
     color(c).into()
@@ -2062,4 +2135,50 @@ fn touches(patch: &Patch, range: Range<usize>) -> bool {
     let edits = patch.edits();
     let first = edits.partition_point(|e| e.old.end < range.start);
     edits.get(first).is_some_and(|e| e.old.start <= range.end)
+}
+
+#[cfg(test)]
+mod tests {
+    use lucerna_git::HunkKind;
+
+    use super::*;
+
+    fn hunk(kind: HunkKind, rows: Range<u32>) -> Hunk {
+        Hunk {
+            kind,
+            rows,
+            base_rows: 0..0,
+        }
+    }
+
+    #[test]
+    fn next_change_row_wraps_both_ways() {
+        let hunks = [
+            hunk(HunkKind::Added, 2..4),
+            hunk(HunkKind::Deleted, 6..6),
+            hunk(HunkKind::Modified, 10..11),
+        ];
+        let next = |row, forward| next_change_row(&hunks, row, 20, forward);
+        assert_eq!(next(0, true), Some(2));
+        assert_eq!(next(2, true), Some(6));
+        assert_eq!(next(3, true), Some(6));
+        assert_eq!(next(11, true), Some(2));
+        assert_eq!(next(11, false), Some(10));
+        assert_eq!(next(10, false), Some(6));
+        assert_eq!(next(2, false), Some(10));
+        assert_eq!(next_change_row(&[], 2, 20, false), None);
+        assert_eq!(next_change_row(&[], 2, 20, true), None);
+    }
+
+    /// A deletion at the end of a 5-row file starts at row 5, past the
+    /// last row: it counts as row 4, so forward navigation from there
+    /// wraps instead of landing on it again.
+    #[test]
+    fn next_change_row_clamps_a_deletion_at_eof() {
+        let hunks = [hunk(HunkKind::Added, 1..2), hunk(HunkKind::Deleted, 5..5)];
+        assert_eq!(next_change_row(&hunks, 1, 4, true), Some(4));
+        assert_eq!(next_change_row(&hunks, 4, 4, true), Some(1));
+        assert_eq!(next_change_row(&hunks, 4, 4, false), Some(1));
+        assert_eq!(next_change_row(&hunks, 1, 4, false), Some(4));
+    }
 }

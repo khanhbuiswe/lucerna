@@ -274,6 +274,11 @@ impl BufferSnapshot {
         }
     }
 
+    /// The whole text (LF line endings).
+    pub fn text(&self) -> String {
+        self.rope.to_string()
+    }
+
     /// Content equality without copying the text.
     pub fn text_eq(&self, other: &BufferSnapshot) -> bool {
         self.rope == other.rope

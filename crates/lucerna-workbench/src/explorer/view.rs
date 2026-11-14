@@ -14,10 +14,12 @@ use gpui::{
 };
 use lucerna_project::fs_ops::{self, NameError};
 use lucerna_project::{ChangeKind, EntryKind, WorktreeEvent, WorktreeSnapshot};
-use lucerna_theme::{IconSource, ResolvedIcons};
+use lucerna_theme::{IconSource, ResolvedIcons, Rgba};
 
 use super::menu::build_menu;
 use super::model::{EditKind, EditState, ExplorerModel, Row, SelectedKind, Selection};
+use crate::git::GitSnapshot;
+use crate::git::rollup::{GitColor, Rollup};
 use crate::layout::color;
 use crate::text_input::TextInput;
 use crate::ui::{
@@ -96,6 +98,8 @@ pub struct ExplorerView {
     active: Option<Arc<Path>>,
     /// Repaints when the soonest change decoration expires.
     expiry: Option<Task<()>>,
+    /// The latest git statuses, rolled up to folders.
+    git: GitSnapshot,
     /// The open context menu.
     context_menu: Option<DeployedMenu>,
     /// Counts deployed menus, so a menu that closes late does not clear its
@@ -136,6 +140,7 @@ impl ExplorerView {
             scrollbar: ScrollbarState::default(),
             active: None,
             expiry: None,
+            git: GitSnapshot::default(),
             context_menu: None,
             menu_generation: 0,
             focus,
@@ -208,6 +213,76 @@ impl ExplorerView {
 
     pub fn model(&self) -> &ExplorerModel {
         &self.model
+    }
+
+    /// Swaps in a finished git snapshot and repaints.
+    pub(crate) fn set_git(&mut self, snapshot: GitSnapshot, cx: &mut Context<Self>) {
+        self.git = snapshot;
+        cx.notify();
+    }
+
+    /// The git color and badge of a row, honoring the decoration settings.
+    /// Shared by `render_rows` and the test accessors.
+    fn git_decoration(
+        &self,
+        path: &Path,
+        is_dir: bool,
+        cx: &App,
+    ) -> (Option<Rgba>, Option<&'static str>) {
+        let settings = &cx.global::<AppState>().settings;
+        let on = |key| settings.get::<bool>(key, None).unwrap_or(true);
+        if !on("git.decorations.enabled") {
+            return (None, None);
+        }
+        let ui = &cx.global::<AppState>().theme.ui;
+        let rollup: &Rollup = &self.git.rollup;
+        let git_color = if is_dir {
+            rollup.dir(path)
+        } else {
+            rollup.file(path)
+        };
+        let colored = git_color.filter(|_| on("explorer.decorations.colors"));
+        let text = colored.map(|c| match c {
+            GitColor::Conflict => ui.status_conflict,
+            GitColor::Deleted => ui.status_deleted,
+            GitColor::Modified => ui.status_modified,
+            GitColor::Created => ui.status_created,
+            GitColor::Ignored => ui.status_ignored,
+        });
+        let badges = settings
+            .get::<bool>("explorer.decorations.badges", None)
+            .unwrap_or(false);
+        let badge = if badges && !is_dir {
+            self.git.statuses.get(path).map(|s| Rollup::badge(*s))
+        } else {
+            None
+        };
+        // The badge shares the name's color; with colors off it is plain.
+        (text, badge)
+    }
+
+    /// The git color of the visible row at `path`; `None` when uncolored or
+    /// not shown.
+    #[doc(hidden)]
+    pub fn row_text_color(&self, path: &Path, cx: &App) -> Option<gpui::Hsla> {
+        let row = self
+            .model
+            .visible_rows()
+            .iter()
+            .find(|r| &*r.path == path)?;
+        let (text, _) = self.git_decoration(path, row.kind == EntryKind::Dir, cx);
+        text.map(|c| color(c).into())
+    }
+
+    /// The badge letter of the visible row at `path`.
+    #[doc(hidden)]
+    pub fn row_badge(&self, path: &Path, cx: &App) -> Option<&'static str> {
+        let row = self
+            .model
+            .visible_rows()
+            .iter()
+            .find(|r| &*r.path == path)?;
+        self.git_decoration(path, row.kind == EntryKind::Dir, cx).1
     }
 
     /// Whether a name is being typed in the tree.
@@ -1064,6 +1139,8 @@ impl ExplorerView {
                     .to_string_lossy()
                     .into_owned();
                 let is_dir = kind == EntryKind::Dir;
+                let (git_text, badge) = self.git_decoration(&row.path, is_dir, cx);
+                let badge_color = git_text.unwrap_or(ui.text_muted);
                 let type_icon = row_icon(&icons, row);
                 // Selectors are formatted lazily: GPUI only calls these
                 // closures in test builds, so release frames skip the
@@ -1140,11 +1217,22 @@ impl ExplorerView {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
+                            .when_some(git_text, |d, c| d.text_color(color(c)))
                             .when(changed, |d| {
-                                d.text_color(color(ui.text)).font_weight(FontWeight::BOLD)
+                                d.when(git_text.is_none(), |d| d.text_color(color(ui.text)))
+                                    .font_weight(FontWeight::BOLD)
                             })
                             .child(name),
                     )
+                    .when_some(badge, |d, letter| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_size(px(UI_FONT_SIZE_SMALL))
+                                .text_color(color(badge_color))
+                                .child(letter),
+                        )
+                    })
                     .when(changed, |d| {
                         d.child(
                             div()

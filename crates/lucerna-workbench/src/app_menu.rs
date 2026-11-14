@@ -314,6 +314,9 @@ pub static MENUS: &[MenuSpec] = &[
             Entry::Separator,
             command("Next Problem", "editor.action.marker.nextInFiles"),
             command("Previous Problem", "editor.action.marker.prevInFiles"),
+            Entry::Separator,
+            command("Next Change", "workbench.action.editor.nextChange"),
+            command("Previous Change", "workbench.action.editor.previousChange"),
         ],
     },
     MenuSpec {

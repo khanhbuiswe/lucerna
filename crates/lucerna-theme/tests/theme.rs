@@ -376,6 +376,46 @@ fn cursor_falls_back_to_editor_foreground() {
 }
 
 #[test]
+fn git_keys_read_and_fall_back() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("g.json"),
+        r##"{"name":"G","themes":[
+          {"name":"With","appearance":"dark","style":{"version_control.added":"#112233ff","created":"#445566ff"}},
+          {"name":"Without","appearance":"dark","style":{}},
+          {"name":"WithoutLight","appearance":"light","style":{}}
+        ]}"##,
+    )
+    .unwrap();
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty(), "{errors:?}");
+    let hex = |s: &str| Rgba::parse_hex(s).unwrap();
+
+    let with = reg.get("With").unwrap();
+    assert_eq!(with.ui.vc_added, hex("#112233ff"));
+    assert_eq!(with.ui.status_created, hex("#445566ff"));
+    // Keys the theme lacks still fall back.
+    assert_eq!(with.ui.vc_modified, hex("#1B81A8"));
+
+    let dark = reg.get("Without").unwrap();
+    assert_eq!(dark.ui.vc_added, hex("#487E02"));
+    assert_eq!(dark.ui.vc_modified, hex("#1B81A8"));
+    assert_eq!(dark.ui.vc_deleted, hex("#F14C4C"));
+    assert_eq!(dark.ui.status_created, hex("#73C991"));
+    assert_eq!(dark.ui.status_modified, hex("#E2C08D"));
+    assert_eq!(dark.ui.status_deleted, hex("#C74E39"));
+    assert_eq!(dark.ui.status_conflict, hex("#E4676B"));
+    assert_eq!(dark.ui.status_ignored, hex("#8C8C8C"));
+    assert_eq!(dark.ui.diff_added_background, hex("#9BB95533"));
+    assert_eq!(dark.ui.diff_deleted_background, hex("#FF000033"));
+
+    let light = reg.get("WithoutLight").unwrap();
+    assert_eq!(light.ui.vc_added, hex("#48985D"));
+    assert_eq!(light.ui.status_modified, hex("#895503"));
+    assert_eq!(light.ui.status_ignored, hex("#8E8E90"));
+}
+
+#[test]
 fn zed_theme_reads_text_disabled_and_border_focused() {
     let dir = tempfile::tempdir().unwrap();
     write_theme(

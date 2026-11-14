@@ -1,0 +1,17 @@
+[package]
+name = "lucerna-git"
+description = "Lucerna: read-only git integration (hardened runner, status parsing)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+similar.workspace = true
+lucerna-text.workspace = true
+notify.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

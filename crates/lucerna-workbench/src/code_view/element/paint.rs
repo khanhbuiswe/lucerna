@@ -139,6 +139,12 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
         size(text.left() - frame.bounds.left(), frame.bounds.size.height),
     );
     window.paint_quad(fill(gutter, colors.gutter));
+    // Under the line numbers; a deletion pill's left half is clipped.
+    window.with_content_mask(Some(ContentMask { bounds: gutter }), |window| {
+        for bar in &frame.hunk_bars {
+            window.paint_quad(fill(bar.bounds, bar.color).corner_radii(bar.corner_radius));
+        }
+    });
     let numbers_right = text.left() - frame.char_width * 2.;
     for (top, line) in &frame.numbers {
         let origin = point(numbers_right - line.width(), *top);
@@ -155,7 +161,7 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
     for (top, (key, svg), color) in &frame.diagnostics.icons {
         let bounds = Bounds::new(
             point(
-                frame.bounds.left() + inset,
+                frame.bounds.left() + inset + frame.icon_shift,
                 *top + (lh - px(DIAGNOSTIC_ICON)) / 2.,
             ),
             size(px(DIAGNOSTIC_ICON), px(DIAGNOSTIC_ICON)),

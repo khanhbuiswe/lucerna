@@ -3320,6 +3320,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucerna-git"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "lucerna-text",
+ "notify",
+ "similar",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "lucerna-lsp"
 version = "0.1.0"
 dependencies = [
@@ -3438,6 +3450,7 @@ dependencies = [
  "lsp-types",
  "lucerna-editor",
  "lucerna-extension",
+ "lucerna-git",
  "lucerna-lsp",
  "lucerna-project",
  "lucerna-settings",

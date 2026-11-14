@@ -21,6 +21,7 @@ lucerna-theme = { path = "crates/lucerna-theme" }
 lucerna-extension = { path = "crates/lucerna-extension" }
 lucerna-vim = { path = "crates/lucerna-vim" }
 lucerna-lsp = { path = "crates/lucerna-lsp" }
+lucerna-git = { path = "crates/lucerna-git" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

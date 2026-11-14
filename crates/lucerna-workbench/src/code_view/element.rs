@@ -2,6 +2,7 @@
 //! gutter, text, selection, bracket boxes and whitespace marks. It also
 //! turns mouse and scroll events into view changes.
 
+mod hunk_bars;
 mod paint;
 
 use std::sync::Arc;
@@ -185,6 +186,10 @@ pub(crate) struct Frame {
     /// The scrollbar's geometry: one row's height per buffer row shown.
     scroll_metrics: ScrollMetrics,
     diagnostics: FrameDiagnostics,
+    /// Git change bars and deletion pills in the gutter.
+    hunk_bars: Vec<hunk_bars::HunkBar>,
+    /// How far the diagnostic icons move right to clear the change bars.
+    icon_shift: Pixels,
     colors: FrameColors,
 }
 
@@ -282,6 +287,10 @@ impl Frame {
 
     pub fn gutter_width(&self) -> f32 {
         f32::from(self.text_bounds.left() - self.bounds.left())
+    }
+
+    pub fn hunk_bar_count(&self) -> usize {
+        self.hunk_bars.len()
     }
 
     pub fn inline_rows(&self) -> Vec<u32> {
@@ -712,6 +721,23 @@ impl CodeView {
             ui,
             window,
         );
+        let (hunk_bars, icon_shift) = if self.config.diff_gutter {
+            let bars = hunk_bars::layout(
+                &frame_rows,
+                &self.diff_hunks,
+                &self.folds,
+                bounds.left(),
+                line_height,
+                hunk_bars::HunkColors::new(ui),
+            );
+            // The bars sit at the gutter's left edge; the icons move right
+            // only when the bars would cover them.
+            let inset = px((DIAGNOSTIC_COLUMN - DIAGNOSTIC_ICON) / 2.);
+            let width = hunk_bars::bar_width(line_height);
+            (bars, if width > inset { width } else { px(0.) })
+        } else {
+            (Vec::new(), px(0.))
+        };
         let frame = Arc::new(Frame {
             bounds,
             text_bounds,
@@ -743,6 +769,8 @@ impl CodeView {
             hitbox: Some(hitbox),
             scroll_metrics,
             diagnostics,
+            hunk_bars,
+            icon_shift,
             colors: FrameColors {
                 background: hsla(ui.editor_background),
                 gutter: hsla(ui.editor_background),

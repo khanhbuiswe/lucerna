@@ -4,7 +4,8 @@
 //! the `workbench.trust.manage` command open the trust modal, which also
 //! opens by itself the first time a file whose language server is
 //! installed (on `PATH`, or set in the User `lsp` setting) is opened in an
-//! untrusted folder. The User setting `session.trustAllWorktrees`
+//! untrusted folder, or when the folder is in a git repository (spec
+//! §4.2 of the git view design). The User setting `session.trustAllWorktrees`
 //! trusts every folder without writing the file.
 //!
 //! Trust is per window: its root, which in single-file mode is the file's
@@ -37,6 +38,11 @@ const TRUST_FILE: &str = "trusted.json";
 /// The User setting that trusts every folder.
 const TRUST_ALL_KEY: &str = "session.trustAllWorktrees";
 const MODAL_WIDTH: f32 = 440.;
+/// What Restricted Mode prevents, one bullet each in the modal.
+const PREVENTS: [&str; 2] = [
+    "Language servers and Git from running",
+    "lsp settings in .lucerna/settings.json from being applied",
+];
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 struct TrustFile {
@@ -158,6 +164,11 @@ impl TrustModal {
         }
     }
 
+    /// The bullets under "Restricted Mode prevents:".
+    pub fn prevents(&self) -> [&'static str; 2] {
+        PREVENTS
+    }
+
     fn toggle_parent(&mut self, cx: &mut Context<Self>) {
         self.trust_parent = !self.trust_parent;
         cx.notify();
@@ -248,10 +259,7 @@ impl Render for TrustModal {
                     .flex_col()
                     .gap(px(GRID))
                     .child(div().text_color(muted).child("Restricted Mode prevents:"))
-                    .child(bullet("Language servers from running"))
-                    .child(bullet(
-                        "lsp settings in .lucerna/settings.json from being applied",
-                    )),
+                    .children(PREVENTS.map(bullet)),
             );
         let parent_row = self.parent.clone().map(|parent| {
             div()
@@ -412,6 +420,15 @@ impl Workbench {
         !self.language_servers().read(cx).is_trusted()
     }
 
+    /// Whether the title bar shows the Restricted Mode button: trust is
+    /// known to be false, and something it holds back is there (language
+    /// servers, or a repository for Git).
+    pub fn shows_restricted_mode(&self, cx: &App) -> bool {
+        let servers = self.language_servers().read(cx);
+        servers.shows_restricted_mode()
+            || (self.has_repo_hint() && servers.trust_known() && !servers.is_trusted())
+    }
+
     /// The shown trust modal, if any.
     pub fn trust_modal(&self) -> Option<&Entity<TrustModal>> {
         self.trust.modal.as_ref().map(|shown| &shown.modal)
@@ -427,6 +444,11 @@ impl Workbench {
         if std::mem::take(&mut self.trust.prompt_waiting) {
             self.prompt_trust(window, cx);
         }
+        // Git runs only in trusted folders: a repository asks, as a file
+        // with a language server does.
+        if self.is_restricted(cx) && self.has_repo_hint() && self.git().read(cx).is_enabled() {
+            self.server_file_opened(window, cx);
+        }
     }
 
     /// Trusted when the store trusts the root or the User layer sets
@@ -440,6 +462,8 @@ impl Workbench {
             == Some(true);
         let trusted = all || self.trust.stored == Some(true);
         let known = all || self.trust.stored.is_some();
+        // No `git` runs until the folder is trusted (spec §4.2).
+        self.git.update(cx, |git, cx| git.set_trusted(trusted, cx));
         let servers = self.language_servers().clone();
         if servers.read(cx).is_trusted() != trusted {
             servers.update(cx, |servers, cx| servers.set_trusted(trusted, cx));

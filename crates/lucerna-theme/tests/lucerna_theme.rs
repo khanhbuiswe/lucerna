@@ -1,7 +1,7 @@
 //! The bundled Lucerna themes: every Zed key is present and text meets
 //! WCAG AA. Spec: docs/superpowers/specs/2026-11-14-lucerna-theme-design.md.
 
-use lucerna_theme::{Appearance, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, ThemeRegistry};
+use lucerna_theme::{Appearance, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, Rgba, ThemeRegistry};
 use serde_json::{Map, Value};
 
 const LUCERNA_JSON: &str = include_str!("../assets/lucerna.json");
@@ -432,4 +432,76 @@ fn spec_palette_values() {
     assert_eq!(syn(light, "comment"), "#677080ff");
     assert_eq!(syn(light, "number"), "#007a7aff");
     assert_eq!(get(light, "text.accent"), "#1a5dccff");
+}
+
+/// Both Lucerna themes set every git color the workbench reads, with the
+/// spec's values (§ Bảng màu, Git), so none falls back to VS Code's colors.
+#[test]
+fn git_colors_come_from_the_theme() {
+    let reg = ThemeRegistry::builtin();
+    let expected: [(&str, [&str; 10]); 2] = [
+        (
+            "Lucerna Dark",
+            [
+                "#37ac42ff",
+                "#4f8cffff",
+                "#ff707bff",
+                "#7ee787ff",
+                "#e1c08dff",
+                "#ff7b72ff",
+                "#f0883eff",
+                "#9c9c9cff",
+                "#253a24ff",
+                "#2e1e1fff",
+            ],
+        ),
+        (
+            "Lucerna Light",
+            [
+                "#218635ff",
+                "#4f8cffff",
+                "#b7224cff",
+                "#116329ff",
+                "#895503ff",
+                "#c21d29ff",
+                "#a84400ff",
+                "#666666ff",
+                "#e7f3e7ff",
+                "#feeeefff",
+            ],
+        ),
+    ];
+    let keys = [
+        "version_control.added",
+        "version_control.modified",
+        "version_control.deleted",
+        "created",
+        "modified",
+        "deleted",
+        "conflict",
+        "ignored",
+        "editor.diff_hunk.added.background",
+        "editor.diff_hunk.deleted.background",
+    ];
+    let all = themes();
+    for (name, hexes) in expected {
+        let style = &all.iter().find(|(n, _)| n == name).unwrap().1;
+        let ui = &reg.get(name).unwrap().ui;
+        let read = [
+            ui.vc_added,
+            ui.vc_modified,
+            ui.vc_deleted,
+            ui.status_created,
+            ui.status_modified,
+            ui.status_deleted,
+            ui.status_conflict,
+            ui.status_ignored,
+            ui.diff_added_background,
+            ui.diff_deleted_background,
+        ];
+        for ((key, hex), got) in keys.iter().zip(hexes).zip(read) {
+            assert_eq!(get(style, key), hex, "{name} {key}");
+            assert_eq!(got, Rgba::parse_hex(hex).unwrap(), "{name} {key}");
+        }
+    }
 }

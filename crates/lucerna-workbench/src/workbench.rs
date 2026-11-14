@@ -26,6 +26,7 @@ use crate::editor_groups::{
 };
 use crate::explorer::{ExplorerView, SelectedKind};
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
+use crate::git::{GitStore, GitStoreEvent};
 use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;
 use crate::layout::sidebar::SidebarSash;
@@ -171,6 +172,9 @@ pub struct Workbench {
     git_head: Option<PathBuf>,
     /// What `HEAD` names: the branch, or a short SHA when detached.
     git_branch: Option<String>,
+    /// The repository: statuses and gutter hunks. Runs `git` only once
+    /// the folder is trusted.
+    pub(crate) git: Entity<GitStore>,
     /// The [`ConfigState`] batch last forwarded to the documents.
     config_batch: u64,
     _subscriptions: Vec<Subscription>,
@@ -575,6 +579,19 @@ impl Workbench {
         };
         let git_head = crate::git_branch::head_path(&root);
         let git_branch = crate::git_branch::read_branch(&root);
+        let git = cx.new(|cx| GitStore::new(root.clone(), cx));
+        subscriptions.push(cx.subscribe(&documents, Self::git_document_event));
+        subscriptions.push(
+            cx.subscribe(&git, |wb, git, ev: &GitStoreEvent, cx| match ev {
+                GitStoreEvent::SnapshotChanged => {
+                    let snapshot = git.read(cx).snapshot();
+                    wb.explorer
+                        .update(cx, |explorer, cx| explorer.set_git(snapshot, cx));
+                }
+                GitStoreEvent::HunksChanged(path) => wb.git_hunks_changed(path, cx),
+                GitStoreEvent::StateChanged => wb.git_state_changed(cx),
+            }),
+        );
         if let (Some(watcher), Some(head)) = (&open_file_watcher, &git_head) {
             watcher.set_files(vec![head.clone()]);
         }
@@ -598,6 +615,7 @@ impl Workbench {
             _open_file_events: open_file_events,
             git_head,
             git_branch,
+            git,
             config_batch: cx
                 .try_global::<ConfigState>()
                 .map_or(0, |state| state.last_changed().0),
@@ -822,6 +840,13 @@ impl Workbench {
         self.git_branch.as_deref()
     }
 
+    /// Whether the root is in a git repository, judged from the `.git`
+    /// found when the window opened ([`GitStore::has_repo_hint`]); no
+    /// `git` runs for it.
+    pub(crate) fn has_repo_hint(&self) -> bool {
+        self.git_head.is_some()
+    }
+
     /// The background scan of the opened folder.
     pub fn worktree(&self) -> &Worktree {
         &self.worktree
@@ -860,6 +885,8 @@ impl Workbench {
             .update(cx, |documents, cx| documents.settings_changed(cx));
         // `session.trustAllWorktrees` may have changed.
         self.apply_trust(cx);
+        // `git.*` may have changed.
+        self.git.update(cx, |git, cx| git.settings_changed(cx));
         // `breadcrumbs.*` may have changed.
         self.breadcrumbs_changed(cx);
         cx.notify();
@@ -1001,6 +1028,7 @@ impl Workbench {
         // After the documents: removed files are closed in their servers.
         self.language_servers
             .update(cx, |servers, cx| servers.on_worktree_event(ev, cx));
+        self.git_worktree_event(ev, cx);
         // The tree changed: some open files may have joined or left it.
         self.refresh_watched_open_files(cx);
     }
@@ -1056,6 +1084,29 @@ impl Workbench {
         paths
     }
 
+    /// A repository found after the window opened (`git init`, then Git:
+    /// Refresh) gives the title bar its branch and watched `HEAD`.
+    pub(crate) fn git_state_changed(&mut self, cx: &mut Context<Self>) {
+        if self.git_head.is_some() {
+            return;
+        }
+        let Some(head) = self.git.read(cx).git_dir().map(|d| d.join("HEAD")) else {
+            return;
+        };
+        self.git_head = Some(head);
+        self.git_branch = crate::git_branch::read_branch(self.root());
+        if let Some(watcher) = &self.open_file_watcher {
+            watcher.set_files(
+                self.watched_open_files
+                    .iter()
+                    .chain(&self.git_head)
+                    .cloned()
+                    .collect(),
+            );
+        }
+        cx.notify();
+    }
+
     /// Changes to files on disk that the worktree does not report: from
     /// the open-file watcher and the config watcher. Open documents among
     /// `changed` (compared with symlinks resolved, as watchers report
@@ -1088,6 +1139,8 @@ impl Workbench {
             .update(cx, |documents, cx| documents.on_worktree_event(&ev, cx));
         self.language_servers
             .update(cx, |servers, cx| servers.on_worktree_event(&ev, cx));
+        // Open files the worktree does not report (single-file mode).
+        self.git_worktree_event(&ev, cx);
     }
 
     /// A configuration batch arrived: an open `settings.json` (or other
@@ -2103,6 +2156,7 @@ pub(crate) fn default_registry() -> CommandRegistry {
     theme_picker::register_commands(&mut commands);
     open_commands::register_commands(&mut commands);
     trust::register_commands(&mut commands);
+    crate::git::register_commands(&mut commands);
     lsp_status::register_commands(&mut commands);
     diagnostics_status::register_commands(&mut commands);
     crate::hover::register_commands(&mut commands);
@@ -2207,7 +2261,7 @@ impl Render for Workbench {
             .child(title_bar::render(
                 root_name.clone(),
                 self.git_branch.clone(),
-                self.language_servers.read(cx).shows_restricted_mode(),
+                self.shows_restricted_mode(cx),
                 ui,
                 cx,
             ))

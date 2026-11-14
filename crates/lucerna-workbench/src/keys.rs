@@ -198,6 +198,8 @@ mod tests {
             (event("f8", None, Modifiers::shift()), "shift+f8"),
             (event("f8", None, alt()), "alt+f8"),
             (event("f8", None, alt_shift()), "shift+alt+f8"),
+            (event("f5", None, alt()), "alt+f5"),
+            (event("f5", None, alt_shift()), "shift+alt+f5"),
             (event("o", None, cmd_shift()), "shift+cmd+o"),
             // As gpui_macos reports them: the shifted character, `shift`
             // cleared.

@@ -10,8 +10,9 @@ use std::sync::Arc;
 use gpui::{AppContext, BorrowAppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
 use lucerna_settings::Layer;
-use lucerna_workbench::{AppState, TrustStore, Workbench};
+use lucerna_workbench::{AppState, GitState, TrustStore, Workbench};
 use serde_json::Value;
+use support::git::{isolated_git, repo};
 use support::lsp::*;
 use tempfile::TempDir;
 
@@ -612,4 +613,109 @@ fn single_file_inside_a_trusted_folder_is_trusted(cx: &mut TestAppContext) {
     open(&wb, "main.rs", cx);
     assert!(!shown("trust-modal", cx));
     assert_eq!(sent(&fake, "textDocument/didOpen").len(), 1);
+}
+
+/// A workbench on the repo `root` with no language server files, its
+/// store isolated from the developer's git config. Settled: the trust
+/// store is read.
+fn repo_workbench<'a>(
+    root: &Path,
+    data_dir: &Path,
+    user: &str,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+    let launcher = Arc::new(FakeLauncher::new());
+    let (wb, cx) = trust_workbench(root, data_dir, launcher, user, None, cx);
+    let store = cx.update(|_, cx| wb.read(cx).git().clone());
+    store.update(cx, |store, _| store.use_git_for_test(isolated_git()));
+    (wb, cx)
+}
+
+fn git_state(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> GitState {
+    cx.update(|_, cx| wb.read(cx).git().read(cx).state())
+}
+
+#[gpui::test]
+fn untrusted_folder_runs_no_git_and_prompts(cx: &mut TestAppContext) {
+    let ((_t, dir), data) = (repo(), TempDir::new().unwrap());
+    let (wb, cx) = repo_workbench(&dir, data.path(), "{}", cx);
+
+    assert!(shown("trust-modal", cx), "the repository asks for trust");
+    assert_eq!(git_state(&wb, cx), GitState::Restricted);
+    assert!(shown("restricted-mode", cx));
+
+    // Shown by itself once per session.
+    click("trust-stay", cx);
+    assert!(!shown("trust-modal", cx));
+    assert_eq!(git_state(&wb, cx), GitState::Restricted);
+}
+
+#[gpui::test]
+fn trusting_starts_git(cx: &mut TestAppContext) {
+    let ((_t, dir), data) = (repo(), TempDir::new().unwrap());
+    fs::write(dir.join("a.txt"), "changed\n").unwrap();
+    let (wb, cx) = repo_workbench(&dir, data.path(), "{}", cx);
+    assert!(shown("trust-modal", cx));
+
+    click("trust-continue", cx);
+
+    assert_eq!(git_state(&wb, cx), GitState::Ready);
+    let statuses = cx.update(|_, cx| wb.read(cx).git().read(cx).snapshot().statuses);
+    assert!(statuses.contains_key(Path::new("a.txt")), "{statuses:?}");
+    assert!(!shown("restricted-mode", cx));
+}
+
+#[gpui::test]
+fn non_repo_folder_does_not_prompt_for_git(cx: &mut TestAppContext) {
+    let (dir, data) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    fs::write(dir.path().join("notes.txt"), "plain text\n").unwrap();
+    let (wb, cx) = repo_workbench(dir.path(), data.path(), "{}", cx);
+
+    assert!(!shown("trust-modal", cx));
+    assert_eq!(git_state(&wb, cx), GitState::Restricted);
+}
+
+#[gpui::test]
+fn disabled_git_does_not_prompt(cx: &mut TestAppContext) {
+    let ((_t, dir), data) = (repo(), TempDir::new().unwrap());
+    let (_wb, cx) = repo_workbench(&dir, data.path(), r#"{ "git.enabled": false }"#, cx);
+
+    assert!(!shown("trust-modal", cx));
+}
+
+#[gpui::test]
+fn repo_in_parent_folder_prompts(cx: &mut TestAppContext) {
+    let ((_t, dir), data) = (repo(), TempDir::new().unwrap());
+    fs::create_dir(dir.join("sub")).unwrap();
+    let (_wb, cx) = repo_workbench(&dir.join("sub"), data.path(), "{}", cx);
+
+    assert!(shown("trust-modal", cx));
+}
+
+#[gpui::test]
+fn modal_mentions_git(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    let (wb, cx) = trust_workbench(
+        dir.path(),
+        data.path(),
+        Arc::new(FakeLauncher::new()),
+        "{}",
+        None,
+        cx,
+    );
+    run(&wb, "workbench.trust.manage", cx);
+    let prevents = cx.update(|_, cx| {
+        wb.read(cx)
+            .trust_modal()
+            .expect("the modal is shown")
+            .read(cx)
+            .prevents()
+    });
+    assert_eq!(
+        prevents,
+        [
+            "Language servers and Git from running",
+            "lsp settings in .lucerna/settings.json from being applied",
+        ]
+    );
 }
