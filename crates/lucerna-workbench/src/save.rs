@@ -396,12 +396,20 @@ impl Workbench {
 
     fn auto_save_event(
         &mut self,
-        _: &Entity<Documents>,
+        documents: &Entity<Documents>,
         event: &DocumentEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
+            // Only a renamed document opens with unsaved changes: its timer
+            // went with `Closed` at the old path.
+            DocumentEvent::Opened { path, .. }
+                if documents.read(cx).is_dirty(path)
+                    && self.auto_save_mode(path, cx) == "afterDelay" =>
+            {
+                self.arm_auto_save(path, window, cx);
+            }
             DocumentEvent::Edited { path, .. } => {
                 if self.auto_save_mode(path, cx) != "afterDelay" {
                     self.auto_save.timers.remove(path);

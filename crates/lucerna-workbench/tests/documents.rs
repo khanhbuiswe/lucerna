@@ -886,3 +886,74 @@ fn reload_racing_an_undone_edit_runs_again(cx: &mut TestAppContext) {
     assert!(!is_dirty(&wb, "f.txt", cx));
     assert!(!has_conflict(&wb, "f.txt", cx));
 }
+
+#[gpui::test]
+fn rename_rekeys_dirty_document(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "a.rs", cx);
+    edit_at(&wb, &view, "a.rs", 0..0, "// x\n", cx);
+    assert!(is_dirty(&wb, "a.rs", cx));
+    let (events, _sub) = record_events(&wb, cx);
+
+    fs::rename(dir.path().join("a.rs"), dir.path().join("b.rs")).unwrap();
+    let (from, to) = (dir.path().join("a.rs"), dir.path().join("b.rs"));
+    let docs = documents(&wb, cx);
+    docs.update(cx, |d, cx| d.rename(&from, &to, cx));
+    settle(cx);
+
+    assert!(is_dirty(&wb, "b.rs", cx));
+    assert!(!is_dirty(&wb, "a.rs", cx));
+    assert_eq!(state(&wb, Path::new("b.rs"), cx), Some(DocState::Ready));
+    let views = cx.update(|_, cx| docs.read(cx).views_of(Path::new("b.rs")));
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].entity_id(), view.entity_id());
+    assert_eq!(&*view.read_with(cx, |v, _| v.path().clone()), to.as_path());
+    assert_eq!(text(&view, cx), "// x\nfn a() {}\n");
+
+    let events = events.borrow().clone();
+    let closed = events
+        .iter()
+        .position(|ev| matches!(ev, DocumentEvent::Closed { path } if **path == *from));
+    let opened = events
+        .iter()
+        .position(|ev| matches!(ev, DocumentEvent::Opened { path, .. } if **path == *to));
+    let (closed, opened) = (closed.expect("Closed{a.rs}"), opened.expect("Opened{b.rs}"));
+    assert!(closed < opened, "{events:?}");
+
+    // The undo history came along.
+    let undone = docs.update(cx, |d, cx| d.undo(Path::new("b.rs"), cx));
+    assert!(undone.is_some());
+    settle(cx);
+    assert_eq!(text(&view, cx), "fn a() {}\n");
+}
+
+/// The watcher reported the old path removed before the rename reached the
+/// documents: the moved document reads its new path and is ready again,
+/// unsaved changes kept.
+#[gpui::test]
+fn rename_after_removed_event_comes_back(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "src/a.rs", cx);
+    edit_at(&wb, &view, "src/a.rs", 0..0, "// x\n", cx);
+    fs::rename(dir.path().join("src"), dir.path().join("lib")).unwrap();
+    changed(&wb, "src/a.rs", ChangeKind::Removed, cx);
+    assert_eq!(
+        state(&wb, Path::new("src/a.rs"), cx),
+        Some(DocState::Deleted)
+    );
+
+    let docs = documents(&wb, cx);
+    let (from, to) = (dir.path().join("src"), dir.path().join("lib"));
+    docs.update(cx, |d, cx| d.rename(&from, &to, cx));
+    settle(cx);
+    assert_eq!(state(&wb, Path::new("lib/a.rs"), cx), Some(DocState::Ready));
+    assert!(is_dirty(&wb, "lib/a.rs", cx));
+    assert_eq!(text(&view, cx), "// x\nfn a() {}\n");
+}

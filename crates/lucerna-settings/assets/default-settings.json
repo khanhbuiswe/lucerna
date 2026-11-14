@@ -1,4 +1,9 @@
 {
+  "explorer.confirmDelete": true,
+  "explorer.copyRelativePathSeparator": "auto",
+  "terminal.external.osxExec": "Terminal.app",
+  "terminal.external.linuxExec": "x-terminal-emulator",
+  "terminal.external.windowsExec": "cmd.exe",
   "editor.fontFamily": "Lilex",
   "editor.fontSize": 14,
   "editor.lineHeight": 1.6,

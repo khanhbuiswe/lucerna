@@ -485,6 +485,19 @@ impl CodeView {
         &self.path
     }
 
+    /// The file was renamed to `path` (see `Documents::rename`): the view
+    /// keeps its text, cursor and scroll. The old file's diagnostics no
+    /// longer apply; the language servers send the new path's.
+    pub(crate) fn set_path(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        if self.path == path {
+            return;
+        }
+        self.hover.set_path(path.clone(), cx);
+        self.path = path;
+        self.clear_diagnostics(cx);
+        cx.notify();
+    }
+
     pub fn snapshot(&self) -> &BufferSnapshot {
         &self.snapshot
     }

@@ -9,6 +9,7 @@ pub mod code_view;
 mod commands;
 mod config_files;
 mod conflict_bar;
+mod context_menu;
 mod diagnostics_status;
 mod documents;
 mod editing;
@@ -45,6 +46,7 @@ mod search_view;
 mod startup;
 pub mod status_message;
 mod symbols;
+pub mod system_shell;
 pub mod tasks;
 mod text_input;
 mod theme_picker;
@@ -73,7 +75,10 @@ pub use excerpt_list::model::{
     FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
     Row as SearchRow,
 };
-pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
+pub use explorer::{
+    CHANGE_DECORATION, EditKind, EditState, ExplorerModel, ExplorerView, Row, SelectedKind,
+    Selection,
+};
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
 pub use language_servers::{
     HoverInfo, LanguageServers, LanguageServersEvent, ServerStatus, SlotState,

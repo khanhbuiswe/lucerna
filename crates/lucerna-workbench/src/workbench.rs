@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use gpui::{
@@ -24,7 +24,7 @@ use crate::documents::{DocumentEvent, DocumentStatusItem, Documents};
 use crate::editor_groups::{
     self, EditorGroups, EditorGroupsView, FileView, GroupId, OpenMode, TabId, TabItem,
 };
-use crate::explorer::ExplorerView;
+use crate::explorer::{ExplorerView, SelectedKind};
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
 use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;
@@ -91,6 +91,9 @@ struct Persistence {
     _subscriptions: Vec<Subscription>,
 }
 
+/// How long a path from [`Workbench::expect_own_changes`] is remembered.
+const OWN_CHANGE_TTL: Duration = Duration::from_secs(5);
+
 pub struct Workbench {
     root: PathBuf,
     /// The one background scan of `root`; every view reads the tree from it.
@@ -99,6 +102,12 @@ pub struct Workbench {
     scan_started: std::time::Instant,
     scan_progress_logged: bool,
     scan_complete_logged: bool,
+    /// Root-relative paths Lucerna itself just created, renamed or deleted,
+    /// and when; the Explorer does not mark them as changed by another program.
+    own_changes: HashMap<Arc<Path>, Instant>,
+    /// Absolute paths a Delete is asking about or deleting; another Delete
+    /// of them (or of a path inside or around them) is ignored meanwhile.
+    pub(crate) deletes_in_flight: Rc<std::cell::RefCell<HashSet<PathBuf>>>,
     /// The options of the scan, from `files.exclude`.
     scan_options: ScanOptions,
     /// Re-themes and rescans when [`AppState`] changes.
@@ -468,11 +477,19 @@ impl Workbench {
                 search_view.update(cx, |view, cx| view.run_search(cx));
             }
         }
+        let sidebar_focus = cx.focus_handle();
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let lone = single_file_path.is_some();
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
-            cx.new(|cx| ExplorerView::new(root, lone, snapshot, workbench, &groups, cx))
+            let focus = sidebar_focus.clone();
+            let docs = documents.downgrade();
+            cx.new(|cx| {
+                let mut explorer =
+                    ExplorerView::new(root, lone, snapshot, workbench, &groups, focus, cx);
+                explorer.set_documents(docs);
+                explorer
+            })
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
@@ -566,6 +583,8 @@ impl Workbench {
             scan_started,
             scan_progress_logged: false,
             scan_complete_logged: false,
+            own_changes: HashMap::new(),
+            deletes_in_flight: Rc::default(),
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
@@ -584,7 +603,7 @@ impl Workbench {
             _subscriptions: subscriptions,
             commands: Rc::new(commands),
             focus,
-            sidebar_focus: cx.focus_handle(),
+            sidebar_focus,
             editor_focus,
             active_view: None,
             sidebar_visible: restored.as_ref().is_none_or(|s| s.sidebar_visible),
@@ -850,6 +869,79 @@ impl Workbench {
         &self.explorer
     }
 
+    /// Remembers root-relative paths Lucerna itself just changed, so their
+    /// watcher events are not decorated as another program's. A directory
+    /// also covers the paths under it. An entry is dropped once the
+    /// worktree reports its path as added or modified, and after
+    /// [`OWN_CHANGE_TTL`] at the latest.
+    pub fn expect_own_changes(&mut self, rel_paths: impl IntoIterator<Item = Arc<Path>>) {
+        let now = Instant::now();
+        self.own_changes
+            .extend(rel_paths.into_iter().map(|p| (p, now)));
+    }
+
+    /// Drops paths from [`Workbench::expect_own_changes`] whose operation
+    /// failed, so another program's later change to them is marked.
+    pub fn forget_own_changes(&mut self, rel_paths: &[Arc<Path>]) {
+        for path in rel_paths {
+            self.own_changes.remove(path);
+        }
+    }
+
+    /// After Lucerna renamed `from` to `to` (absolute) on disk: open
+    /// documents, tabs, recent files and Go Back / Go Forward places at
+    /// `from` or under it follow to the new path. Called right after the
+    /// rename, before the watcher reports it.
+    pub(crate) fn paths_renamed(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
+        let (from, to) = (self.absolute_path(from), self.absolute_path(to));
+        self.documents
+            .update(cx, |documents, cx| documents.rename(&from, &to, cx));
+        self.update_editor_groups(cx, |m| m.retarget(&from, &to));
+        self.recent_files.retarget(&from, &to);
+        for history in self.nav_history.values_mut() {
+            history.retarget(&from, &to);
+        }
+        if self
+            .marker_hover
+            .as_ref()
+            .is_some_and(|(path, _)| path.starts_with(&from))
+        {
+            self.marker_hover = None;
+        }
+        self.refresh_watched_open_files(cx);
+        cx.notify();
+    }
+
+    /// After Lucerna deleted `path` (absolute): the tabs of files at it or
+    /// under it close, except those with unsaved changes, which stay to be
+    /// marked deleted when the watcher reports the removal.
+    pub(crate) fn paths_deleted(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let path = self.absolute_path(path);
+        let documents = self.documents.read(cx);
+        let closing: Vec<TabId> = self
+            .editor_groups
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter(|t| {
+                t.path()
+                    .is_some_and(|p| p.starts_with(&path) && !documents.is_dirty(p))
+            })
+            .map(|t| t.id)
+            .collect();
+        if !closing.is_empty() {
+            self.update_editor_groups(cx, |m| {
+                for id in closing {
+                    m.close(id);
+                }
+            });
+        }
+        self.refresh_watched_open_files(cx);
+        cx.notify();
+    }
+
     /// Hands a worktree event to every view that follows the tree. Called
     /// for each event the worktree sends; tests call it directly.
     pub fn on_worktree_event(&mut self, ev: &WorktreeEvent, cx: &mut Context<Self>) {
@@ -869,17 +961,32 @@ impl Workbench {
         let decorate = decorates_external_changes(cx);
         // Open documents tell our own saves from other programs' writes
         // once they reload (`DocumentEvent::ChangedOnDisk`).
+        let now = Instant::now();
+        self.own_changes
+            .retain(|_, at| now.duration_since(*at) < OWN_CHANGE_TTL);
+        let own = &self.own_changes;
         let followed: HashSet<Arc<Path>> = match ev {
             WorktreeEvent::Changed(changes) => {
                 let documents = self.documents.read(cx);
                 changes
                     .iter()
-                    .filter(|c| documents.follows_disk(&c.path))
+                    .filter(|c| {
+                        documents.follows_disk(&c.path)
+                            || c.path.ancestors().any(|a| own.contains_key(a))
+                    })
                     .map(|c| c.path.clone())
                     .collect()
             }
             _ => HashSet::new(),
         };
+        // Reported: forget it, so another program's later change to it is
+        // marked. A removal (a rename's or delete's old path) does not end
+        // the wait; the TTL still bounds every entry.
+        if let WorktreeEvent::Changed(changes) = ev {
+            for change in changes.iter().filter(|c| c.kind != ChangeKind::Removed) {
+                self.own_changes.remove(&change.path);
+            }
+        }
         self.explorer.update(cx, |explorer, cx| {
             explorer.on_worktree_event(
                 ev,
@@ -1446,6 +1553,21 @@ impl Workbench {
         flag("sideBarVisible", self.sidebar_visible);
         flag("sideBarFocus", sidebar_focus);
         flag("explorerViewletFocus", sidebar_focus);
+        let explorer = self.explorer.read(cx);
+        let menu_open = explorer.context_menu_open();
+        let kind = explorer.selected_kind();
+        // Not while a name is typed in the tree: `textInputFocus` is a
+        // frame late when the input just took the focus.
+        flag(
+            "filesExplorerFocus",
+            sidebar_focus && !menu_open && !explorer.editing(),
+        );
+        flag(
+            "explorerResourceIsFolder",
+            matches!(kind, SelectedKind::Dir | SelectedKind::Root),
+        );
+        flag("explorerResourceIsRoot", kind == SelectedKind::Root);
+        flag("contextMenuVisible", menu_open);
         flag("searchViewletFocus", self.search_focused(window, cx));
         flag("referencesViewFocus", self.references_view_focus(cx));
         flag(
@@ -1572,10 +1694,17 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Shows or hides the sidebar. Hiding it moves focus out of it.
+    /// Shows or hides the sidebar. Hiding it cancels a name being typed in
+    /// the Explorer, closes its menu and moves focus out of it.
     pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sidebar_visible && self.sidebar_focus.contains_focused(window, cx) {
-            self.focus_editor_area(window, cx);
+        if self.sidebar_visible {
+            let focused = self.sidebar_focus.contains_focused(window, cx);
+            self.explorer
+                .clone()
+                .update(cx, |explorer, cx| explorer.dismiss_transient(window, cx));
+            if focused {
+                self.focus_editor_area(window, cx);
+            }
         }
         self.sidebar_visible = !self.sidebar_visible;
         self.layout_changed(cx);
@@ -1802,6 +1931,12 @@ impl Workbench {
             resolution = keymap.resolve(&chord, &ctx);
         }
         match resolution {
+            // A held Delete key would delete one entry after another.
+            Resolution::Command { command, .. }
+                if ev.is_held && matches!(command.as_str(), "moveFileToTrash" | "deleteFile") =>
+            {
+                cx.stop_propagation();
+            }
             Resolution::Command { command, args } => {
                 if command != SHOW_HOVER {
                     hide_hover(cx);
@@ -1977,6 +2112,7 @@ pub(crate) fn default_registry() -> CommandRegistry {
     crate::save::register_commands(&mut commands);
     crate::about::register_commands(&mut commands);
     markdown_preview::register_commands(&mut commands);
+    crate::explorer::register_commands(&mut commands);
     commands
 }
 
@@ -1993,6 +2129,18 @@ fn register_shell_commands(commands: &mut CommandRegistry) {
         "workbench.view.explorer",
         "View: Show Explorer",
         |wb, _, window, cx| wb.show_sidebar_view(SidebarView::Explorer, window, cx),
+    );
+    commands.register(
+        "filesExplorer.openContextMenu",
+        "Explorer: Open Context Menu",
+        |wb, _, window, cx| {
+            if !crate::explorer::editing(wb, cx) {
+                crate::explorer::show_explorer(wb, window, cx);
+                wb.explorer.clone().update(cx, |explorer, cx| {
+                    explorer.open_context_menu(None, window, cx)
+                })
+            }
+        },
     );
 }
 

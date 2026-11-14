@@ -469,6 +469,25 @@ impl EditorGroups {
         }
     }
 
+    /// After `from` was renamed to `to`: every file tab and Markdown
+    /// preview of `from`, or of a path under it (whole components), shows
+    /// the moved path. Tab ids, order, pin and preview state stay. Returns
+    /// whether a tab changed.
+    pub fn retarget(&mut self, from: &Path, to: &Path) -> bool {
+        let mut changed = false;
+        for tab in self.groups.iter_mut().flat_map(|g| g.tabs.iter_mut()) {
+            if let TabItem::File(path)
+            | TabItem::MarkdownPreview(path)
+            | TabItem::MarkdownPreviewDynamic(path) = &mut tab.item
+                && let Some(moved) = crate::workspace_state::moved_path(path, from, to)
+            {
+                *path = Arc::from(moved);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Makes `id` the active tab and its group the active group.
     /// Returns `false` when no tab has that id.
     pub fn activate(&mut self, id: TabId) -> bool {

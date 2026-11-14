@@ -606,6 +606,93 @@ impl Documents {
         cx.notify();
     }
 
+    /// After the file or folder `from` was renamed to `to` on disk: every
+    /// document at `from` or under it takes its new path. Its text, unsaved
+    /// changes, undo history and views (with their cursors) stay; the views
+    /// show the new path, and the language is looked up again by the new
+    /// name. An opened document is sent as [`DocumentEvent::Closed`] at the
+    /// old path, then [`DocumentEvent::Opened`] at the new one, so language
+    /// servers move it.
+    ///
+    /// A load or reload in flight read (or reads) the old path: it is
+    /// dropped and started again at the new one, which also brings back a
+    /// document the watcher already marked deleted. A parse in flight is
+    /// restarted, since it lands by key. A save in flight still writes the
+    /// old path (it captured it when it started).
+    pub fn rename(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
+        self.collect_closed(cx);
+        let (from, to) = (self.key(from), self.key(to));
+        let moved: Vec<(Arc<Path>, Arc<Path>)> = self
+            .docs
+            .keys()
+            .filter_map(|key| {
+                let new = crate::workspace_state::moved_path(key, &from, &to)?;
+                Some((key.clone(), Arc::from(new)))
+            })
+            .collect();
+        rekey(&mut self.pending_scroll, &from, &to);
+        rekey(&mut self.pending_go_to, &from, &to);
+        for (old, new) in moved {
+            let Some(mut doc) = self.docs.remove(&old) else {
+                continue;
+            };
+            for view in doc.views().collect::<Vec<_>>() {
+                let new = new.clone();
+                view.update(cx, |v, cx| v.set_path(new, cx));
+            }
+            let old_id = doc.language_id();
+            doc.language = language_for(&self.root, &new, doc.snapshot.as_ref(), cx);
+            sync_language_id(&doc, cx);
+            if doc.indentation_inputs.is_some()
+                && doc.indentation_inputs != Some(indentation_inputs(&doc, cx))
+            {
+                detect_indentation(&mut doc, cx);
+            }
+            let language_changed = doc.language_id() != old_id;
+            // Lands by key: started again below at the new one.
+            let restart_job = doc.job.take().is_some()
+                || matches!(
+                    doc.state,
+                    DocState::Deleted | DocState::Error(LoadError::NotFound)
+                );
+            let reparse = language_changed || doc.parse.is_some();
+            // Only an open tab of a file that is gone can hold the name
+            // (the rename never replaces a file, and the Explorer refuses
+            // it): it goes, before the moved document opens there.
+            if let Some(stale) = self.docs.remove(&new)
+                && stale.announced
+            {
+                cx.emit(DocumentEvent::Closed { path: new.clone() });
+            }
+            if doc.announced {
+                cx.emit(DocumentEvent::Closed { path: old.clone() });
+                if let Some(snapshot) = doc.snapshot.clone() {
+                    cx.emit(DocumentEvent::Opened {
+                        path: new.clone(),
+                        language_id: doc.language_id(),
+                        snapshot,
+                    });
+                } else {
+                    doc.announced = false;
+                }
+            }
+            self.docs.insert(new.clone(), doc);
+            if restart_job {
+                self.start_job(&new, cx);
+            }
+            if reparse {
+                let doc = self.docs.get_mut(&new).expect("just inserted");
+                if doc.language.is_none() {
+                    doc.cancel_parse();
+                    clear_syntax(doc, cx);
+                } else {
+                    self.parse(&new, false, false, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
     /// The live views of the document at `path`.
     pub fn views_of(&self, path: &Path) -> Vec<Entity<CodeView>> {
         self.docs
@@ -809,6 +896,32 @@ impl Documents {
             .get(&self.key(path))
             .and_then(|d| d.buffer.as_ref())
             .is_some_and(Buffer::is_dirty)
+    }
+
+    /// Whether a document is open at `path` or under it (a tab of a file
+    /// deleted on disk counts).
+    pub(crate) fn has_document_under(&self, path: &Path) -> bool {
+        let path = self.key(path);
+        self.docs.keys().any(|k| k.starts_with(&path))
+    }
+
+    /// Resolves once every save (or revert) asked for so far of the
+    /// documents at `path` or under it has ended, so a rename does not race
+    /// a write that would bring the old file back.
+    pub(crate) fn saves_done_under(&self, path: &Path) -> impl Future<Output = ()> + use<> {
+        let path = self.key(path);
+        let pending: Vec<Shared<oneshot::Receiver<()>>> = self
+            .docs
+            .iter()
+            .filter(|(k, _)| k.starts_with(&path))
+            .filter_map(|(_, d)| d.last_save.clone())
+            .filter(|p| p.clone().now_or_never().is_none())
+            .collect();
+        async move {
+            for save in pending {
+                save.await.ok();
+            }
+        }
     }
 
     /// The id of the language of the document at `path`.
@@ -2228,6 +2341,24 @@ fn queue_disk_work(
         // Polled here: finished work nobody waited on is done too.
         .filter(|p| p.clone().now_or_never().is_none());
     (done, previous)
+}
+
+/// Moves the entries of `map` at `from` or under it to their paths under
+/// `to` (see [`Documents::rename`]).
+fn rekey<V>(map: &mut HashMap<Arc<Path>, V>, from: &Path, to: &Path) {
+    let keys: Vec<Arc<Path>> = map
+        .keys()
+        .filter(|k| k.starts_with(from))
+        .cloned()
+        .collect();
+    for key in keys {
+        if let (Some(value), Some(new)) = (
+            map.remove(&key),
+            crate::workspace_state::moved_path(&key, from, to),
+        ) {
+            map.insert(Arc::from(new), value);
+        }
+    }
 }
 
 /// Tells listeners that a deleted file is back, with an empty

@@ -159,6 +159,13 @@ impl HoverController {
         }
     }
 
+    /// The file was renamed: requests go to its new path; an answer about
+    /// the old one hides.
+    pub(crate) fn set_path(&mut self, path: Arc<Path>, cx: &mut Context<CodeView>) {
+        self.path = path;
+        self.hide(cx);
+    }
+
     /// The view's diagnostics changed: the shown blocks follow.
     pub(crate) fn set_diagnostics(&mut self, diagnostics: Arc<[Diagnostic]>) {
         self.file_diagnostics = diagnostics;

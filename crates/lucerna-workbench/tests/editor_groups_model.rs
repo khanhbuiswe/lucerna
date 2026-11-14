@@ -670,3 +670,49 @@ fn static_preview_has_path_dynamic_has_not() {
     assert_eq!(tab(d).path(), None);
     assert_eq!(tab(d).previewed_path(), Some(&p("a.md")));
 }
+
+#[test]
+fn retarget_moves_file_and_children() {
+    let mut g = EditorGroups::default();
+    let a = g.open(p("/r/a.rs"), OpenMode::Pinned, true);
+    let x = g.open(p("/r/src/x.rs"), OpenMode::Pinned, true);
+    let srcx = g.open(p("/r/srcx.rs"), OpenMode::Preview, true);
+    assert!(g.retarget(Path::new("/r/src"), Path::new("/r/lib")));
+    assert_eq!(
+        tabs(&g, 0),
+        owned(&[
+            ("/r/a.rs", true),
+            ("/r/lib/x.rs", true),
+            ("/r/srcx.rs", false)
+        ])
+    );
+    let ids: Vec<_> = g.groups()[0].tabs.iter().map(|t| t.id).collect();
+    assert_eq!(ids, vec![a, x, srcx]);
+    // A file itself.
+    assert!(g.retarget(Path::new("/r/a.rs"), Path::new("/r/b.rs")));
+    assert_eq!(tabs(&g, 0)[0], ("/r/b.rs".to_string(), true));
+    assert!(!g.retarget(Path::new("/r/none"), Path::new("/r/other")));
+}
+
+/// Renaming a Markdown file moves its static and dynamic previews too.
+#[test]
+fn retarget_moves_markdown_previews() {
+    let mut g = EditorGroups::default();
+    g.open_file(
+        p("/r/doc/a.md"),
+        FileView::Preview,
+        OpenMode::Pinned,
+        true,
+        false,
+    );
+    g.open_dynamic_preview(p("/r/doc/a.md"));
+    assert!(g.retarget(Path::new("/r/doc"), Path::new("/r/notes")));
+    assert_eq!(
+        items(&g, 0),
+        vec![TabItem::MarkdownPreview(p("/r/notes/a.md"))]
+    );
+    assert_eq!(
+        items(&g, 1),
+        vec![TabItem::MarkdownPreviewDynamic(p("/r/notes/a.md"))]
+    );
+}
