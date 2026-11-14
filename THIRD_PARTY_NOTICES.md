@@ -166,6 +166,14 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## VS Code git colors
+
+The fallback colors for git decorations and change bars (the default values of
+the `gitDecoration.*`, `editorGutter.*` and `diffEditor.*` color tokens) follow
+the defaults in VS Code (https://github.com/microsoft/vscode, MIT, Copyright (c)
+Microsoft Corporation), under the same license text as in "VS Code editing
+logic" above. Bundled themes that define these tokens use their own values.
+
 ## VSCodeVim test cases
 
 Some unit tests in `lucerna-vim` are adapted from the test suite of VSCodeVim

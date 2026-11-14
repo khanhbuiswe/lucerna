@@ -32,7 +32,7 @@ Spec này **chỉ** mô tả giai đoạn 1. Mỗi giai đoạn sau có spec ri�
 | 3 | Hiểu code qua LSP | Định nghĩa, tham chiếu, hover, diagnostics, outline, breadcrumbs, Quick Open `@` và `#` |
 | 3b | Host WASM cho extension Zed | Language server từ `extension.wasm`. PHP, Ruby, Elixir, Vue… đã chạy qua bảng language server (`2026-11-11-lsp-server-table-design.md`) khi người dùng đã cài server |
 | 4 | Sửa code đầy đủ ([spec](2026-11-11-lucerna-phase4-editing-design.md), 4.1, 4.2 và 4.4 đã xong) | Multi-cursor, undo, xử lý xung đột với agent, completion, rename, format |
-| 5 | Mở rộng | Git gutter, xem diff, terminal tích hợp, giao diện settings |
+| 5 | Mở rộng | Git gutter, xem diff, terminal tích hợp, giao diện settings (5.1 Git lõi: màu Explorer, gutter — xong trên nhánh, chờ merge) |
 | V1 | Vim di chuyển (đã xong) | Bật bằng `vim.enabled` trong settings. Chỉ có các thao tác đọc: motion, tìm kiếm, cuộn, số đếm, mark, chọn bằng visual rồi copy |
 | V2 | Vim sửa (làm ngay sau bước 4.2 và 4.4, trước 4.3, 4.5, 4.6). **V2a đã xong** | Insert mode, các toán tử `d`/`c`/`y`, text object, `.`, macro, register, một phần lệnh `:` |
 
