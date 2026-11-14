@@ -1,5 +1,11 @@
 use similar::{Algorithm, DiffOp, TextDiff};
 use std::ops::Range;
+use std::time::Duration;
+
+/// A line diff taking longer than this stops refining: the rest of the
+/// text becomes coarser hunks (a mostly rewritten large file can otherwise
+/// take seconds).
+const DIFF_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Files larger than this get no diff.
 pub const MAX_DIFF_BYTES: u64 = 8 * 1024 * 1024;
@@ -21,10 +27,15 @@ pub struct Hunk {
     pub base_rows: Range<u32>,
 }
 
-/// Line-based diff of two LF texts.
+/// Line-based diff of two LF texts, refined for at most [`DIFF_TIMEOUT`].
 pub fn diff_hunks(base: &str, current: &str) -> Vec<Hunk> {
+    diff_hunks_within(base, current, DIFF_TIMEOUT)
+}
+
+fn diff_hunks_within(base: &str, current: &str, timeout: Duration) -> Vec<Hunk> {
     let diff = TextDiff::configure()
         .algorithm(Algorithm::Myers)
+        .timeout(timeout)
         .diff_lines(base, current);
     let mut hunks: Vec<Hunk> = Vec::new();
     let mut open: Option<(Range<usize>, Range<usize>)> = None;
@@ -67,4 +78,26 @@ pub fn load_base_text(bytes: &[u8]) -> Option<String> {
         return None;
     }
     lucerna_text::decode_file(bytes, false).ok().map(|d| d.text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timed_out_diff_yields_one_coarse_hunk() {
+        let base = "a\nx\nb\ny\nc\n";
+        let current = "a\nX\nb\nY\nc\n";
+        assert_eq!(diff_hunks(base, current).len(), 2);
+        // Past the deadline only the common prefix and suffix are found.
+        let coarse = diff_hunks_within(base, current, Duration::ZERO);
+        assert_eq!(
+            coarse,
+            vec![Hunk {
+                kind: HunkKind::Modified,
+                rows: 1..4,
+                base_rows: 1..4,
+            }]
+        );
+    }
 }
