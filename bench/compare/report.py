@@ -4,6 +4,8 @@
 
 Writes <dir>/results.md and <dir>/<metric>-<config>.svg.
 
+Rounding: ratios use round-half-up on the shortest decimal repr of the float
+(Decimal ROUND_HALF_UP); other numbers use Python's format rounding.
 Number format: Vietnamese decimal comma. Precision per unit: ms -> 0 decimals
 when >= 100, else 1; MB -> 0 decimals; % -> 1 decimal; ratios -> 1 decimal.
 Ratio = other editor's median / Lucerna's median for every metric; a value
@@ -17,6 +19,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from decimal import ROUND_HALF_UP, Decimal
 from xml.sax.saxutils import escape
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -58,7 +61,8 @@ def fmt(v: float, unit: str) -> str:
 def ratio(other, lucerna) -> str:
     if other is None or lucerna is None or lucerna == 0:
         return DASH
-    return _comma(f"{other / lucerna:.1f}") + "×"
+    q = Decimal(repr(other / lucerna)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return _comma(f"{q}") + "×"
 
 
 def cell(values, unit: str, single: bool = False) -> str:
@@ -85,10 +89,9 @@ def _medians(cfg: dict, metric: str) -> dict:
     return {e: run.stats(data.get(e, []))["median"] for e in EDITOR_ORDER}
 
 
-def ratio_line(cfg: dict, metric: str) -> str:
+def ratio_cells(cfg: dict, metric: str) -> list[str]:
     m = _medians(cfg, metric)
-    return " · ".join(f"{EDITOR_NAMES[e]} {ratio(m[e], m['lucerna'])}"
-                      for e in EDITOR_ORDER if e != "lucerna")
+    return [DASH if e == "lucerna" else ratio(m[e], m["lucerna"]) for e in EDITOR_ORDER]
 
 
 def _meta_block(meta: dict) -> list[str]:
@@ -121,8 +124,12 @@ def render_markdown(result: dict) -> str:
             data = cfg["metrics"][metric]
             cells = [cell(data.get(e, []), unit, single=(metric == "app_size_mb"))
                      for e in EDITOR_ORDER]
-            out.append(f"| {label} ({unit}) | " + " | ".join(cells) + " |")
-            out.append(f"| ↳ so với Lucerna | {ratio_line(cfg, metric)} | | |")
+            out.append(f"| {label} | " + " | ".join(cells) + " |")
+            out.append("| ↳ so với Lucerna | " + " | ".join(ratio_cells(cfg, metric)) + " |")
+        out += ["", "Biểu đồ:", ""]
+        for metric, (label, _unit) in METRICS.items():
+            if metric in cfg["metrics"]:
+                out.append(f"- [{label}]({metric}-{config_slug(cfg)}.svg)")
         out.append("")
     return "\n".join(out)
 
@@ -135,8 +142,9 @@ def render_svg(metric: str, cfg: dict) -> str:
     bar_w, gap = 90, 40
     x0 = (w - (3 * bar_w + 2 * gap)) / 2
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" '
-             f'width="{w}" height="{h}" role="img" font-family="sans-serif" '
-             f'fill="currentColor">',
+             f'width="{w}" height="{h}" role="img" font-family="sans-serif">',
+             '<style>text{fill:#24292f}line{stroke:#8a8f98}'
+             '@media (prefers-color-scheme:dark){text{fill:#e6e8eb}}</style>',
              f'<title>{escape(label)} — {escape(config_label(cfg))}</title>',
              f'<text x="{w / 2}" y="24" text-anchor="middle" font-size="14">'
              f'{escape(label)} ({escape(config_label(cfg))})</text>',

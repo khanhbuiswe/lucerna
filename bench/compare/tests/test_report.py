@@ -50,9 +50,23 @@ class ReportTests(unittest.TestCase):
 
     def test_missing_lucerna_median_gives_dash(self):
         md = report.render_markdown(load())
-        line = next(l for l in md.splitlines()
-                    if l.startswith("| ") and "Zed — · VS Code —" in l)
-        self.assertIn("Zed — · VS Code —", line)
+        self.assertIn("| ↳ so với Lucerna | — | — | — |", md.splitlines())
+
+    def test_ratio_row_per_column_and_charts_list(self):
+        md = report.render_markdown(load())
+        self.assertIn("| ↳ so với Lucerna | — | 1,5× | 3,2× |", md.splitlines())
+        self.assertIn("(startup_ms-nolsp-warm.svg)", md)
+        self.assertIn("Biểu đồ:", md)
+        self.assertNotIn("(ms) |", md)
+
+    def test_ratio_half_up(self):
+        self.assertEqual(report.ratio(125, 100), "1,3×")
+        self.assertEqual(report.ratio(1.25, 1), "1,3×")
+
+    def test_svg_dark_mode_style(self):
+        svg = report.render_svg("startup_ms", load()["configs"][0])
+        self.assertIn("prefers-color-scheme:dark", svg)
+        self.assertNotIn("currentColor", svg)
 
     def test_ratio_zero_or_none(self):
         self.assertEqual(report.ratio(5, 0), "—")
