@@ -43,7 +43,7 @@ Mặc định dưới `~/LucernaBench.noindex` (đổi bằng `--bench-dir`):
 2. `env.write_profiles(paths, lsp=False|True)`: ghi settings sạch cho cả ba editor.
 3. `lsp=True` cần `rust-analyzer` trên PATH; cài thêm extension cho VS Code một lần (cần mạng) bằng `env.install_vscode_rust_analyzer(paths)`.
 4. Trước mỗi lượt đo, `env.preflight()` phải trả danh sách rỗng (không có `cargo`/`rustc`, load 1 phút <= 2.0, `CPU_Speed_Limit` = 100, đang cắm điện AC, Low Power Mode tắt).
-5. Trước phiên đo, người dùng tự chạy `sudo purge` (script không chạy sudo).
+5. Với `--cold`, trước mỗi lần khởi động đo (kể cả khởi động thử) script dừng chờ; người dùng tự chạy `sudo purge` rồi nhấn Enter (script không chạy sudo).
 
 ## Đường dẫn và khoá đã xác minh
 

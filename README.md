@@ -44,7 +44,7 @@ already use and stays small. It has no AI features, no telemetry and no account.
 simple and does one job well: showing you the code.
 
 How Lucerna, Zed and VS Code are compared on startup, memory and scrolling, and how to rerun the
-measurements, is described in [`docs/benchmarks.md`](docs/benchmarks.md).
+measurements, is described in [`docs/benchmarks.md`](docs/benchmarks.md) (in Vietnamese; results pending).
 
 **Built for one flow.** Reading code is the first priority. Every feature is there to help you
 follow, navigate and understand what the agent wrote, and anything that does not serve that is

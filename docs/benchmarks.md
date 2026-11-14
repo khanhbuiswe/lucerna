@@ -70,8 +70,8 @@ Xcode hay `xctrace`) quay cửa sổ lớn nhất đang hiện của editor ở 
 của màn hình.
 
 **Màu nền.** Với mỗi editor và phiên bản, bench mở một file trống, lấy màu
-phổ biến nhất của vùng giữa cửa sổ làm màu nền; bỏ nếu vùng giữa không đồng
-nhất ≥ 90% (có thể là hộp thoại hay cửa sổ chưa vẽ xong). Màu lưu trong
+phổ biến nhất của vùng giữa cửa sổ làm màu nền; bỏ nếu màu phổ biến nhất chiếm
+dưới 90% vùng giữa (có thể là hộp thoại hay cửa sổ chưa vẽ xong). Màu lưu trong
 `<bench>/calibration.json` và ghi vào kết quả.
 
 | Chỉ số | Cách đo |
@@ -80,7 +80,7 @@ nhất ≥ 90% (có thể là hộp thoại hay cửa sổ chưa vẽ xong). Mà
 | Đổi file trên đĩa → màn hình cập nhật | Mở bản sao của `marker.txt`, chờ nội dung hiện và 1 s cho yên, bắt đầu quay, rồi script ghi file trống. Mốc là ngay trước lệnh ghi; dừng ở khung đầu tiên đổi hơn 0,5% so với khung tham chiếu (ngưỡng bỏ qua con trỏ nhấp nháy). |
 | Quick Open mỗi phím gõ (repo 80.000 file) | Mở repo lớn, chờ 30 s cho quét file, ⌘P, gõ `mod004`, rồi bắt đầu quay và gõ phím cuối `2` (`mod0042` là thư mục có thật trong repo sinh ra). Mốc là lúc gửi phím cuối; dừng ở khung đầu tiên đổi. Phím gửi bằng `CGEvent.postToPid` tới đúng process, sau khi đưa app lên trước. |
 | RAM khi rỗi | Mở repo vừa, mở 10 file `.rs` của ripgrep bằng Quick Open (cùng cách cho cả ba, vì `luc` chỉ nhận một đường dẫn trên dòng lệnh), rỗi 60 s, rồi cộng `phys_footprint` của mọi process của app (`footprint`). Đơn vị MiB (1024). |
-| CPU khi rỗi | Cùng phiên với RAM: 60 mẫu một giây của tổng `ps -o %cpu=` mọi process của app, lấy trung bình. `%cpu` của `ps` là trung bình suy giảm, không phải tức thời. |
+| CPU khi rỗi | Cùng phiên với RAM (mỗi editor mỗi lượt một phiên: rỗi 60 s, đọc RAM, rồi lấy mẫu CPU thêm 60 s, tổng khoảng 2 phút): 60 mẫu một giây của tổng `ps -o %cpu=` mọi process của app, lấy trung bình. `%cpu` của `ps` là trung bình suy giảm, không phải tức thời. |
 | Khung rớt khi cuộn `big.rs` | Mở `big.rs`, chờ nội dung hiện, rồi gửi 3000 sự kiện cuộn một dòng với tốc độ 120 sự kiện/giây (CGEvent), con trỏ đặt giữa cửa sổ. Khung rớt là khoảng cách giữa hai khung mới > 1,5 × max(chu kỳ quét màn hình, chu kỳ sự kiện) trong lúc còn gửi sự kiện. Báo tỉ lệ rớt / số khung (%). Vùng giữa của file code phủ ít điểm ảnh hơn nên ngưỡng "đã có nội dung" ở phép này là 2%, không phải 30%. |
 | Dung lượng app | `du -sk` của bundle `.app`, MiB. Một giá trị mỗi cấu hình, không lặp lượt. |
 
@@ -96,10 +96,13 @@ nhất ≥ 90% (có thể là hộp thoại hay cửa sổ chưa vẽ xong). Mà
   xếp).
 - Một lượt hỏng (helper lỗi, hết 60 s, không thấy cửa sổ, khung đáng ngờ)
   ghi `null`; thống kê bỏ qua và báo cáo ghi "n/N lượt hỏng". Một lượt hỏng
-  không làm hỏng cả phiên; kết quả được ghi lại sau mỗi lượt.
+  không làm hỏng cả phiên; kết quả được ghi lại sau mỗi lượt. Lượt khởi động
+  thử chỉ chạy khi `--only` có `startup_ms`. Lượt đổi file hoặc Quick Open bị
+  loại (`null`) nếu khung đổi trước lúc gây sự kiện.
 - **Hệ số** so với Lucerna = trung vị của editor kia / trung vị của Lucerna,
-  tính cho từng cột editor, làm tròn một chữ số thập phân. Hệ số lớn hơn 1
-  chỉ có nghĩa là số lớn hơn của Lucerna, không hơn. Không tô màu thắng/thua.
+  tính cho từng cột editor, làm tròn một chữ số thập phân. Hệ số > 1 chỉ có
+  nghĩa là số của editor kia lớn hơn số của Lucerna; số lớn hơn không tự nó là
+  tốt hay xấu, tuỳ chỉ số. Không tô màu thắng/thua.
 - Mỗi kết quả kèm: phiên bản ba editor, commit Lucerna, macOS, chip, RAM, ngày
   đo, `rust-analyzer` (nếu có), màu nền hiệu chuẩn.
 - Hai chế độ: **ấm** (mặc định) và **lạnh** (`--cold`: trước mỗi lần khởi động
@@ -112,8 +115,8 @@ nhất ≥ 90% (có thể là hộp thoại hay cửa sổ chưa vẽ xong). Mà
   bench không đo tính năng Lucerna không có.
 - **Kiến trúc khác nhau**: VS Code chạy trên Electron (nhiều process), Zed và
   Lucerna là app native vẽ bằng GPU. Số RAM cộng mọi process của app; cách tính
-  này công bằng về tổng nhưng không nói gì về chia sẻ bộ nhớ hay khả năng
-  nhường lại cho hệ điều hành.
+  này cộng tất cả process, nhưng không cho biết phần nào thuộc process nào,
+  cũng không phản ánh bộ nhớ dùng chung giữa các process.
 - **Đo ngoài gồm độ trễ hệ thống**: compositor, hiển thị và quay màn hình cộng
   vào số đo như nhau cho cả ba editor, nên các số không phải thời gian bên
   trong từng app và không so được với số đo trong của chúng. Độ trễ quay của
@@ -151,17 +154,21 @@ ripgrep).
    ```sh
    sh bench/compare/helper/build.sh        # ra <bench>/bin/bench-helper
    ```
+   Nếu dùng `--bench-dir D`, dựng bằng `BENCH_DIR=D sh bench/compare/helper/build.sh`
+   (hoặc truyền đường dẫn ra làm đối số), hoặc đặt `BENCH_HELPER` trỏ tới helper.
 4. (Chỉ cho cấu hình có LSP) cần `rust-analyzer` trên PATH; cài extension cho
    VS Code một lần bằng `env.install_vscode_rust_analyzer` (xem
    `bench/compare/README.md`).
-5. Chạy. Mỗi cấu hình mất khá lâu (mỗi lượt gồm nhiều lần khởi động và hai phiên
-   rỗi 60 s):
+5. Chạy. Mỗi cấu hình mất khá lâu (mỗi lượt gồm nhiều lần khởi động và, cho mỗi editor, một
+   phiên rỗi khoảng 2 phút: 60 s rỗi rồi 60 s lấy mẫu CPU):
    ```sh
    python3 -I bench/compare/run.py --rounds 10 --lsp off     # ấm, không LSP
    python3 -I bench/compare/run.py --rounds 10 --lsp on      # ấm, rust-analyzer
-   sudo purge   # lạnh: --cold dừng chờ và nhắc chạy lệnh này trước mỗi lần khởi động
    python3 -I bench/compare/run.py --rounds 10 --lsp off --cold
    ```
+   Với `--cold`, script dừng và nhắc "chạy `sudo purge` rồi nhấn Enter" trước
+   **mỗi** lần khởi động đo (kể cả khởi động thử); bạn chạy `sudo purge` ở
+   terminal khác rồi nhấn Enter.
    Tuỳ chọn: `--lsp both`, `--only startup_ms,scroll_dropped_pct`,
    `--bench-dir D`, `--out FILE`, `--skip-prepare`. Mặc định ghi
    `bench/compare/results/<ngày>-<commit>.json`.
