@@ -393,7 +393,7 @@ fn record(file: ConfigFile, path: PathBuf, result: Result<(), SettingsError>, cx
     };
 }
 
-/// Makes the theme named by `workbench.colorTheme` active ("One Dark"
+/// Makes the theme named by `workbench.colorTheme` active ("Lucerna Dark"
 /// when it names no known theme).
 pub(crate) fn apply_configured_theme(cx: &mut App) {
     let state = cx.global::<AppState>();

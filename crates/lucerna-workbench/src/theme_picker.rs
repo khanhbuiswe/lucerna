@@ -522,39 +522,39 @@ mod tests {
     use super::*;
 
     fn set(text: &str) -> String {
-        set_string_setting(text, COLOR_THEME_KEY, "One Light").unwrap()
+        set_string_setting(text, COLOR_THEME_KEY, "Lucerna Light").unwrap()
     }
 
     #[test]
     fn appends_before_the_closing_brace() {
         assert_eq!(
             set(USER_SETTINGS_TEMPLATE),
-            "// Lucerna user settings\n{\n  \"workbench.colorTheme\": \"One Light\"\n}\n"
+            "// Lucerna user settings\n{\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}\n"
         );
         assert_eq!(
             set("{\n  \"a\": 1 // one\n}\n"),
-            "{\n  \"a\": 1, // one\n  \"workbench.colorTheme\": \"One Light\"\n}\n"
+            "{\n  \"a\": 1, // one\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}\n"
         );
         assert_eq!(
             set("{ \"a\": [1, 2], }"),
-            "{ \"a\": [1, 2],\n  \"workbench.colorTheme\": \"One Light\"\n}"
+            "{ \"a\": [1, 2],\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}"
         );
         assert_eq!(
             set("// only a comment\n"),
-            "// only a comment\n{\n  \"workbench.colorTheme\": \"One Light\"\n}\n"
+            "// only a comment\n{\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}\n"
         );
     }
 
     #[test]
     fn replaces_an_existing_value_in_place() {
         assert_eq!(
-            set("{\n  // theme\n  \"workbench.colorTheme\": \"One Dark\", /* x */\n  \"b\": 2\n}"),
-            "{\n  // theme\n  \"workbench.colorTheme\": \"One Light\", /* x */\n  \"b\": 2\n}"
+            set("{\n  // theme\n  \"workbench.colorTheme\": \"Lucerna Dark\", /* x */\n  \"b\": 2\n}"),
+            "{\n  // theme\n  \"workbench.colorTheme\": \"Lucerna Light\", /* x */\n  \"b\": 2\n}"
         );
         // Only top-level keys count.
         assert_eq!(
             set("{ \"x\": { \"workbench.colorTheme\": 1 } }"),
-            "{ \"x\": { \"workbench.colorTheme\": 1 },\n  \"workbench.colorTheme\": \"One Light\"\n}"
+            "{ \"x\": { \"workbench.colorTheme\": 1 },\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}"
         );
     }
 
@@ -564,13 +564,13 @@ mod tests {
         let updated = set(text);
         assert_eq!(
             updated,
-            "{\n  \"workbench.colorTheme\": \"A\",\n  \"workbench.colorTheme\": \"One Light\"\n}"
+            "{\n  \"workbench.colorTheme\": \"A\",\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}"
         );
         let mut store = SettingsStore::default();
         store.set_layer(Layer::User, &updated).unwrap();
         assert_eq!(
             store.get::<String>(COLOR_THEME_KEY, None).as_deref(),
-            Some("One Light")
+            Some("Lucerna Light")
         );
     }
 
@@ -580,13 +580,13 @@ mod tests {
         let updated = set(text);
         assert_eq!(
             updated,
-            "{\n  \"[rust]\": { \"workbench.colorTheme\": \"A\" },\n  \"workbench.colorTheme\": \"One Light\"\n}"
+            "{\n  \"[rust]\": { \"workbench.colorTheme\": \"A\" },\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}"
         );
         let mut store = SettingsStore::default();
         store.set_layer(Layer::User, &updated).unwrap();
         assert_eq!(
             store.get::<String>(COLOR_THEME_KEY, None).as_deref(),
-            Some("One Light")
+            Some("Lucerna Light")
         );
         assert_eq!(
             store
@@ -606,10 +606,10 @@ mod tests {
     fn atomic_write_leaves_no_temp_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        write_string_setting(&path, COLOR_THEME_KEY, "One Light").unwrap();
+        write_string_setting(&path, COLOR_THEME_KEY, "Lucerna Light").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
-            text.contains("\"workbench.colorTheme\": \"One Light\""),
+            text.contains("\"workbench.colorTheme\": \"Lucerna Light\""),
             "{text}"
         );
         let names: Vec<_> = std::fs::read_dir(dir.path())

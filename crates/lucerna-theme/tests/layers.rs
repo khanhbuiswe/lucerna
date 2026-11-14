@@ -22,20 +22,20 @@ fn editor_bg(reg: &ThemeRegistry, name: &str) -> lucerna_theme::Rgba {
 fn user_beats_extension_beats_builtin() {
     let ext_dir = tempfile::tempdir().unwrap();
     let user_dir = tempfile::tempdir().unwrap();
-    let ext = write(ext_dir.path(), "one.json", &family("One Dark", "#ff0000ff"));
+    let ext = write(ext_dir.path(), "ext.json", &family("Lucerna Dark", "#ff0000ff"));
 
     let (reg, errors) = ThemeRegistry::build(&[("ext".to_string(), ext.clone())], None);
     assert!(errors.is_empty());
-    assert_eq!(editor_bg(&reg, "One Dark").r, 1.0);
+    assert_eq!(editor_bg(&reg, "Lucerna Dark").r, 1.0);
 
     write(
         user_dir.path(),
         "mine.json",
-        &family("One Dark", "#00ff00ff"),
+        &family("Lucerna Dark", "#00ff00ff"),
     );
     let (reg, errors) = ThemeRegistry::build(&[("ext".to_string(), ext)], Some(user_dir.path()));
     assert!(errors.is_empty());
-    let bg = editor_bg(&reg, "One Dark");
+    let bg = editor_bg(&reg, "Lucerna Dark");
     assert!(bg.g == 1.0 && bg.r == 0.0);
 }
 
@@ -105,5 +105,5 @@ fn appearance_listing_and_default_dark() {
     assert!(errors.is_empty(), "{errors:?}");
     let list = reg.themes_with_appearance();
     assert!(list.contains(&("NoAppearance".to_string(), Appearance::Dark)));
-    assert!(list.contains(&("One Light".to_string(), Appearance::Light)));
+    assert!(list.contains(&("Lucerna Light".to_string(), Appearance::Light)));
 }

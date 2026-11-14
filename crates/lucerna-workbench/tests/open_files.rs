@@ -48,7 +48,7 @@ impl Dirs {
 fn init(dirs: &Dirs, cx: &mut TestAppContext) {
     let (keymap, _) = Keymap::load(Keymap::default_bindings(), None);
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings: SettingsStore::with_defaults(),
         keymap,

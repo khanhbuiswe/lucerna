@@ -330,7 +330,7 @@ fn color_theme_applied_when_extension_appears(cx: &mut TestAppContext) {
     init_with_config(&dirs, cx);
     let (_wb, cx) = workbench(&dirs, cx);
     settle(cx);
-    assert_eq!(theme_name(cx), "One Dark");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
     let setting: Option<String> = cx.update(|_, cx| {
         cx.global::<AppState>()
             .settings

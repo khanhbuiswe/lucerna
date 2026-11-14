@@ -57,7 +57,7 @@ fn init_with(paths: ConfigPaths, cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     assert!(error.is_none(), "keymap error: {error:?}");
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings: SettingsStore::with_defaults(),
         keymap,
@@ -176,7 +176,7 @@ fn user_settings_change_applies(cx: &mut TestAppContext) {
 
     write(
         &dirs.settings(),
-        "// mine\n{ \"editor.fontSize\": 20, \"workbench.colorTheme\": \"One Light\" }\n",
+        "// mine\n{ \"editor.fontSize\": 20, \"workbench.colorTheme\": \"Lucerna Light\" }\n",
         cx,
     );
 
@@ -186,7 +186,7 @@ fn user_settings_change_applies(cx: &mut TestAppContext) {
         20.,
         "the open view takes the new font size"
     );
-    assert_eq!(theme_name(cx), "One Light");
+    assert_eq!(theme_name(cx), "Lucerna Light");
     assert!(
         cx.update(|_, cx| cx.global::<AppState>().theme_generation) > generation,
         "a theme switch bumps the generation the shape caches key on"
@@ -209,7 +209,7 @@ fn user_theme_file_applies(cx: &mut TestAppContext) {
     std::fs::write(dirs.settings(), "{ \"workbench.colorTheme\": \"Custom\" }").unwrap();
     init(&dirs, cx);
     let (_wb, cx) = open(dirs.root.path(), cx);
-    assert_eq!(theme_name(cx), "One Dark", "no such theme yet");
+    assert_eq!(theme_name(cx), "Lucerna Dark", "no such theme yet");
 
     let themes = dirs.user.path().join("themes");
     std::fs::create_dir(&themes).unwrap();
@@ -222,7 +222,7 @@ fn user_theme_file_applies(cx: &mut TestAppContext) {
     assert_eq!(theme_name(cx), "Custom");
     assert!(
         cx.update(|_, cx| cx.global::<AppState>().themes.names())
-            .contains(&"One Light".to_string()),
+            .contains(&"Lucerna Light".to_string()),
         "the bundled themes stay"
     );
 }
@@ -422,7 +422,7 @@ fn theme_picker_writes_setting_preserving_comments(cx: &mut TestAppContext) {
     let picker = theme_picker(&wb, cx).expect("cmd-k cmd-t shows the theme picker");
     assert_eq!(
         cx.update(|_, cx| picker.read(cx).row_texts()),
-        vec!["One Dark".to_string(), "One Light".to_string()]
+        vec!["Lucerna Dark".to_string(), "Lucerna Light".to_string()]
     );
     assert_eq!(cx.update(|_, cx| picker.read(cx).selected_index()), 0);
     cx.simulate_input("light");
@@ -430,10 +430,10 @@ fn theme_picker_writes_setting_preserving_comments(cx: &mut TestAppContext) {
     keys("enter", cx);
 
     assert!(theme_picker(&wb, cx).is_none(), "Enter closes the picker");
-    assert_eq!(theme_name(cx), "One Light");
+    assert_eq!(theme_name(cx), "Lucerna Light");
     assert_eq!(
         std::fs::read_to_string(dirs.settings()).unwrap(),
-        "// my settings\n{\n  // bigger\n  \"editor.fontSize\": 14, // px\n  \"workbench.colorTheme\": \"One Light\"\n}\n"
+        "// my settings\n{\n  // bigger\n  \"editor.fontSize\": 14, // px\n  \"workbench.colorTheme\": \"Lucerna Light\"\n}\n"
     );
 
     // Picking again replaces the value in place.
@@ -446,10 +446,10 @@ fn theme_picker_writes_setting_preserving_comments(cx: &mut TestAppContext) {
     );
     keys("up", cx);
     keys("enter", cx);
-    assert_eq!(theme_name(cx), "One Dark");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
     assert_eq!(
         std::fs::read_to_string(dirs.settings()).unwrap(),
-        "// my settings\n{\n  // bigger\n  \"editor.fontSize\": 14, // px\n  \"workbench.colorTheme\": \"One Dark\"\n}\n"
+        "// my settings\n{\n  // bigger\n  \"editor.fontSize\": 14, // px\n  \"workbench.colorTheme\": \"Lucerna Dark\"\n}\n"
     );
     let leftovers: Vec<_> = std::fs::read_dir(dirs.user.path())
         .unwrap()
@@ -467,11 +467,11 @@ fn theme_picker_escape_reverts(cx: &mut TestAppContext) {
 
     keys("cmd-k cmd-t", cx);
     keys("down", cx);
-    assert_eq!(theme_name(cx), "One Light", "moving the selection previews");
+    assert_eq!(theme_name(cx), "Lucerna Light", "moving the selection previews");
     keys("escape", cx);
 
     assert!(theme_picker(&wb, cx).is_none());
-    assert_eq!(theme_name(cx), "One Dark");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
     assert!(cx.update(|_, cx| cx.global::<AppState>().theme_generation) > generation);
     assert!(!dirs.settings().exists(), "Escape writes nothing");
 }
@@ -529,30 +529,30 @@ fn reload_mid_preview_keeps_preview(cx: &mut TestAppContext) {
 
     keys("cmd-k cmd-t", cx);
     keys("down", cx);
-    assert_eq!(theme_name(cx), "One Light");
+    assert_eq!(theme_name(cx), "Lucerna Light");
     // Unrelated reloads arrive while the preview is shown.
     write(&dirs.settings(), "{ \"editor.fontSize\": 15 }", cx);
     write(&dirs.keybindings(), "[]", cx);
-    assert_eq!(theme_name(cx), "One Light", "the preview survives reloads");
+    assert_eq!(theme_name(cx), "Lucerna Light", "the preview survives reloads");
     assert!(theme_picker(&wb, cx).is_some());
 
     // Escape goes back to the configured theme, as last loaded.
     write(
         &dirs.settings(),
-        "{ \"workbench.colorTheme\": \"One Light\" }",
+        "{ \"workbench.colorTheme\": \"Lucerna Light\" }",
         cx,
     );
     keys("up", cx);
-    assert_eq!(theme_name(cx), "One Dark");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
     keys("escape", cx);
-    assert_eq!(theme_name(cx), "One Light");
+    assert_eq!(theme_name(cx), "Lucerna Light");
     // Closed: reloads apply the configured theme again.
     write(
         &dirs.settings(),
-        "{ \"workbench.colorTheme\": \"One Dark\" }",
+        "{ \"workbench.colorTheme\": \"Lucerna Dark\" }",
         cx,
     );
-    assert_eq!(theme_name(cx), "One Dark");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
 }
 
 #[gpui::test]
@@ -564,11 +564,11 @@ fn failed_theme_save_keeps_picker_open(cx: &mut TestAppContext) {
     let (wb, cx) = open(dirs.root.path(), cx);
     keys("cmd-k cmd-t", cx);
     keys("down", cx);
-    assert_eq!(theme_name(cx), "One Light");
+    assert_eq!(theme_name(cx), "Lucerna Light");
     keys("enter", cx);
 
     assert!(theme_picker(&wb, cx).is_some(), "the picker stays open");
-    assert_eq!(theme_name(cx), "One Dark", "the preview is reverted");
+    assert_eq!(theme_name(cx), "Lucerna Dark", "the preview is reverted");
     assert_eq!(std::fs::read_to_string(dirs.settings()).unwrap(), broken);
     let errors = error_texts(cx);
     assert!(
@@ -623,12 +623,12 @@ fn user_only_loads_user_settings_without_a_workspace_layer(cx: &mut TestAppConte
     let user = tempfile::tempdir().unwrap();
     std::fs::write(
         user.path().join("settings.json"),
-        "{\"workbench.colorTheme\":\"One Light\"}",
+        "{\"workbench.colorTheme\":\"Lucerna Light\"}",
     )
     .unwrap();
     init_with(ConfigPaths::user_only_with_user_dir(user.path()), cx);
     let (_wb, cx) = cx.add_window_view(|_, _| gpui::Empty);
-    assert_eq!(theme_name(cx), "One Light");
+    assert_eq!(theme_name(cx), "Lucerna Light");
     assert!(error_texts(cx).is_empty());
 }
 
@@ -661,15 +661,15 @@ fn user_only_reloads_user_settings_and_ignores_workspace_paths(cx: &mut TestAppC
     let settings = user.path().join("settings.json");
     init_with(ConfigPaths::user_only_with_user_dir(user.path()), cx);
     let (_wb, cx) = cx.add_window_view(|_, _| gpui::Empty);
-    assert_eq!(theme_name(cx), "One Dark");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
 
     let stray = user.path().join("x/.lucerna/settings.json");
     cx.update(|_, cx| reload_config(&[stray], cx));
     draw(cx);
-    assert_eq!(theme_name(cx), "One Dark");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
     assert!(error_texts(cx).is_empty());
 
-    write(&settings, "{\"workbench.colorTheme\":\"One Light\"}", cx);
-    assert_eq!(theme_name(cx), "One Light");
+    write(&settings, "{\"workbench.colorTheme\":\"Lucerna Light\"}", cx);
+    assert_eq!(theme_name(cx), "Lucerna Light");
     assert!(error_texts(cx).is_empty());
 }

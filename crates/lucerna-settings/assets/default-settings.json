@@ -37,7 +37,7 @@
   "lucerna.externalChanges.autoMerge": true,
   "search.exclude": { "**/node_modules": true, "**/target": true },
   "search.searchEditor.defaultNumberOfContextLines": 1,
-  "workbench.colorTheme": "One Dark",
+  "workbench.colorTheme": "Lucerna Dark",
   "workbench.iconTheme": "Lucide",
   // Controls which editor is shown at startup, if none are restored from the previous session.
   // "welcomePage" | "welcomePageInEmptyWorkbench": the Welcome screen when Lucerna starts without a folder.

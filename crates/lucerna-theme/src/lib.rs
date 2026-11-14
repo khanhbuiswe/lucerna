@@ -1,11 +1,11 @@
-//! Zed theme loading. Pure data: no UI dependencies.
+//! Zed-format theme loading. Pure data: no UI dependencies.
 
 mod icon_theme;
 mod registry;
 mod schema;
 
 pub use icon_theme::{IconSource, IconTheme, IconThemeRegistry, ResolvedIcons, lucide_icon_theme};
-pub use registry::{ThemeFile, ThemeRegistry, ThemeSource};
+pub use registry::{DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, ThemeFile, ThemeRegistry, ThemeSource};
 
 use std::collections::HashMap;
 

@@ -1,7 +1,7 @@
 //! Opens the workbench shell on the current directory.
 //!
-//! `cargo run -p lucerna-workbench --example hello_window -- "One Light"`
-//! picks a theme by name (default "One Dark").
+//! `cargo run -p lucerna-workbench --example hello_window -- "Lucerna Light"`
+//! picks a theme by name (default "Lucerna Dark").
 use std::sync::Arc;
 
 use gpui::{App, Bounds, prelude::*, px, size};
@@ -12,7 +12,7 @@ use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::{AppState, Workbench, window_options};
 
 fn main() {
-    let theme_name = std::env::args().nth(1).unwrap_or_else(|| "One Dark".into());
+    let theme_name = std::env::args().nth(1).unwrap_or_else(|| "Lucerna Dark".into());
     let root = std::env::current_dir().expect("current directory");
     application().run(move |cx: &mut App| {
         lucerna_workbench::fonts::register(cx);

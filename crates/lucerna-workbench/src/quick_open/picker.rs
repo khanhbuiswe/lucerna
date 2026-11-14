@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn fuzzy_filter_best_first_and_all_when_empty() {
-        let names = ["One Dark", "One Light", "Solarized Light"];
+        let names = ["Lucerna Dark", "Lucerna Light", "Solarized Light"];
         let indices = |q: &str| -> Vec<usize> {
             fuzzy_filter(names, q).into_iter().map(|(i, _)| i).collect()
         };
@@ -169,6 +169,6 @@ mod tests {
         assert_eq!(indices("dark"), vec![0]);
         assert_eq!(indices("light").len(), 2);
         assert!(indices("zzz").is_empty());
-        assert_eq!(fuzzy_filter(names, "dark")[0].1, vec![4, 5, 6, 7]);
+        assert_eq!(fuzzy_filter(names, "dark")[0].1, vec![8, 9, 10, 11]);
     }
 }
