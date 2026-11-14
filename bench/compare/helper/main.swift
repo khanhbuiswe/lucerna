@@ -16,10 +16,14 @@
 // units; it is converted to ns with mach_timebase_info, so frame times and
 // Python's t0 share one time base.
 //
-// --pid takes a comma-separated list: launchers such as VS Code's `code` or
-// Zed's `cli` do not own the window, so Python passes every pid of the bench
-// session and the helper picks the largest on-screen layer-0 window owned by
-// any of them.
+// --pid takes a comma-separated list: Python passes every pid of the bench
+// session (helpers included) and the helper picks the largest on-screen
+// layer-0 window owned by any of them.
+//
+// `watch --display` is for startup: it starts capturing the main display
+// BEFORE the editor is launched, so the first frame of the new window is
+// never missed. The window is found on every frame by its owner's
+// executable path (proc_pidpath), since its pid is not known yet.
 
 import AppKit
 import CoreGraphics
@@ -54,6 +58,10 @@ usage: bench-helper <command> [options]      (<pids> = pid[,pid...])
   sample --pid <pids> [--timeout <s>]
   watch  --pid <pids> --since <t0_ns> --until coverage:<0..1>|change
          [--timeout <s>] [--baseline <png>] [--background RRGGBB]
+  watch  --display --exe <absolute path> [--exclude-pids <pids>] --since <t0_ns|0>
+         --until coverage:<0..1> --background RRGGBB [--timeout <s>]
+  frame  --pid <pids> --x <pt> --y <pt> --w <pt> --h <pt> [--timeout <s>]
+  display
   scroll --pid <pids> --lines <n> [--rate <events/s>] [--timeout <s>]
   type   --pid <pids> --text <s> [--interval-ms <ms>] [--timeout <s>]
   key    --pid <pids> --combo <cmd+p> [--timeout <s>]
@@ -109,17 +117,21 @@ func positiveOption(_ name: String) -> Double? {
     return v
 }
 
-func pidsOption() -> Set<pid_t> {
-    let parts = required("pid").split(separator: ",", omittingEmptySubsequences: false)
+func pidList(_ name: String, _ raw: String) -> Set<pid_t> {
+    let parts = raw.split(separator: ",", omittingEmptySubsequences: false)
     var pids = Set<pid_t>()
     for p in parts {
         guard let v = Int32(p.trimmingCharacters(in: .whitespaces)), v > 0 else {
-            fail("--pid must be a comma-separated list of positive pids", code: 1)
+            fail("--\(name) must be a comma-separated list of positive pids", code: 1)
         }
         pids.insert(v)
     }
     return pids
 }
+
+func pidsOption() -> Set<pid_t> { pidList("pid", required("pid")) }
+
+func flag(_ name: String) -> Bool { argv.contains("--" + name) }
 
 /// Deadline from --timeout (default 60 s; 10 s for key/type window lookup).
 func deadlineOption(default def: Double = 60) -> (seconds: Double, deadline: UInt64) {
@@ -147,6 +159,8 @@ func permissions() -> (screen: Bool, ax: Bool) {
 ///   scroll         Screen Recording + Accessibility (capture + CGEvent)
 ///   key, type      Accessibility (CGEvent; the window is found with
 ///                  CGWindowList, which needs no Screen Recording)
+///   frame          Accessibility (AX window position and size)
+///   now, display   nothing
 func requirePermissions(screen needScreen: Bool, accessibility needAx: Bool) {
     let p = permissions()
     var missing: [String] = []
@@ -232,13 +246,20 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
 
     var firstFrameSeen: Bool { lock.withLock { sawFirst } }
 
-    init(window: SCWindow, hz: Int, onFrame: @escaping (Frame) -> Bool) {
-        self.onFrame = onFrame
-        self.hz = hz
+    convenience init(window: SCWindow, hz: Int, onFrame: @escaping (Frame) -> Bool) {
         // Capture at point size (scale 1): plenty for pixel statistics and
         // cheap enough to analyse every frame at 120 Hz.
-        width = max(1, Int(window.frame.width))
-        height = max(1, Int(window.frame.height))
+        self.init(filter: SCContentFilter(desktopIndependentWindow: window),
+                  width: Int(window.frame.width), height: Int(window.frame.height),
+                  hz: hz, onFrame: onFrame)
+    }
+
+    init(filter: SCContentFilter, width w: Int, height h: Int, hz: Int,
+         onFrame: @escaping (Frame) -> Bool) {
+        self.onFrame = onFrame
+        self.hz = hz
+        width = max(1, w)
+        height = max(1, h)
         super.init()
         let config = SCStreamConfiguration()
         config.width = width
@@ -247,7 +268,6 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(hz))
         config.queueDepth = 6
         config.showsCursor = false
-        let filter = SCContentFilter(desktopIndependentWindow: window)
         stream = SCStream(filter: filter, configuration: config, delegate: self)
     }
 
@@ -397,7 +417,13 @@ func changedFraction(_ f: Frame, _ ref: Bitmap) -> Double {
 
 /// The central 60%×60% region that coverage measures.
 func centerRegion(_ f: Frame) -> (x: Range<Int>, y: Range<Int>) {
-    (f.width / 5 ..< f.width - f.width / 5, f.height / 5 ..< f.height - f.height / 5)
+    centerRegion(x: 0..<f.width, y: 0..<f.height)
+}
+
+/// The central 60%×60% of a sub-rectangle (a window cropped from a display frame).
+func centerRegion(x xs: Range<Int>, y ys: Range<Int>) -> (x: Range<Int>, y: Range<Int>) {
+    (xs.lowerBound + xs.count / 5 ..< xs.upperBound - xs.count / 5,
+     ys.lowerBound + ys.count / 5 ..< ys.upperBound - ys.count / 5)
 }
 
 /// Most common colour of a region (5-bit-per-channel buckets) as BGR bytes,
@@ -424,7 +450,12 @@ func hexRGB(_ bgr: [UInt8]) -> String {
 
 /// Fraction of the central region whose pixels differ from `bg`.
 func coverage(_ f: Frame, background bg: [UInt8]) -> Double {
-    let (xs, ys) = centerRegion(f)
+    coverage(f, region: centerRegion(f), background: bg)
+}
+
+/// Fraction of `region`'s pixels that differ from `bg`.
+func coverage(_ f: Frame, region: (x: Range<Int>, y: Range<Int>), background bg: [UInt8]) -> Double {
+    let (xs, ys) = region
     var hit = 0, total = 0
     bg.withUnsafeBufferPointer { b in
         for y in stride(from: ys.lowerBound, to: ys.upperBound, by: sampleStep) {
@@ -530,6 +561,155 @@ func watch(pids: Set<pid_t>, since: UInt64, mode: WatchMode, until: String,
     emit(["t_ns": hitNs, "frames": frames, "first_frame_hit": frames == 1])
 }
 
+/// The main display (the one with the menu bar) as ScreenCaptureKit sees it.
+func mainDisplay(deadline: UInt64) async -> SCDisplay {
+    let id = CGMainDisplayID()
+    while true {
+        if let content = try? await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: true),
+           let display = content.displays.first(where: { $0.displayID == id }) {
+            return display
+        }
+        if nowNs() >= deadline { fail("timeout: main display not available", code: 2) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+}
+
+/// Maximum refresh rate of a display (falls back to 60).
+func refreshHz(display id: CGDirectDisplayID) -> Int {
+    let key = NSDeviceDescriptionKey("NSScreenNumber")
+    let screen = NSScreen.screens.first {
+        ($0.deviceDescription[key] as? NSNumber)?.uint32Value == id
+    }
+    let hz = screen?.maximumFramesPerSecond ?? 60
+    return hz > 0 ? hz : 60
+}
+
+/// `watch --display`: captures the whole main display, started BEFORE the
+/// editor is launched. On every complete frame it looks up (CGWindowList)
+/// the largest on-screen layer-0 window whose owner matches `matcher`,
+/// crops the frame to that window (points → capture pixels) and applies the
+/// coverage test to the crop's central 60%×60%. Frames without such a window
+/// never hit.
+///
+/// `since` 0 means "report t_ns only": Python records t0 after this helper
+/// has printed "ready" and subtracts it itself. `first_frame_hit` means the
+/// window was already present and covered on the very first frame, which
+/// cannot happen for a window launched after "ready": suspect.
+func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
+                  background bg: [UInt8], timeout: (seconds: Double, deadline: UInt64)) async {
+    let display = await mainDisplay(deadline: timeout.deadline)
+    let origin = CGDisplayBounds(display.displayID).origin
+    let pointsWide = Double(display.width), pointsHigh = Double(display.height)
+    var frames = 0
+    var hitNs: UInt64 = 0
+    var hitWindow: CGRect = .zero
+    let capture = Capture(filter: SCContentFilter(display: display, excludingWindows: []),
+                          width: display.width, height: display.height,
+                          hz: refreshHz(display: display.displayID)) { f in
+        frames += 1
+        guard f.tNs >= since,
+              let win = largestWindow(where: { matcher.matches($0) }) else { return false }
+        let sx = Double(f.width) / pointsWide, sy = Double(f.height) / pointsHigh
+        let x0 = max(0, Int((Double(win.bounds.minX - origin.x) * sx).rounded()))
+        let y0 = max(0, Int((Double(win.bounds.minY - origin.y) * sy).rounded()))
+        let x1 = min(f.width, Int((Double(win.bounds.maxX - origin.x) * sx).rounded()))
+        let y1 = min(f.height, Int((Double(win.bounds.maxY - origin.y) * sy).rounded()))
+        guard x1 - x0 >= 10, y1 - y0 >= 10 else { return false }
+        let region = centerRegion(x: x0..<x1, y: y0..<y1)
+        if coverage(f, region: region, background: bg) >= threshold {
+            hitNs = f.tNs
+            hitWindow = win.bounds
+            return true
+        }
+        return false
+    }
+    guard await capture.start(deadline: timeout.deadline) else {
+        fail("timeout after \(timeout.seconds) s waiting for coverage:\(threshold) "
+             + "in a window of \(matcher.exe)", code: 2)
+    }
+    emit(["t_ns": hitNs, "frames": frames, "first_frame_hit": frames == 1,
+          "window": [hitWindow.minX, hitWindow.minY, hitWindow.width, hitWindow.height]])
+}
+
+// MARK: - frame
+
+/// Position and size of an AX window, nil if unreadable.
+func axFrame(_ window: AXUIElement) -> CGRect? {
+    var posRef: CFTypeRef?, sizeRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &posRef)
+            == .success,
+          AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef)
+            == .success,
+          let posRef, let sizeRef,
+          CFGetTypeID(posRef) == AXValueGetTypeID(), CFGetTypeID(sizeRef) == AXValueGetTypeID()
+    else { return nil }
+    var pos = CGPoint.zero, size = CGSize.zero
+    // swiftlint:disable:next force_cast
+    guard AXValueGetValue(posRef as! AXValue, .cgPoint, &pos),
+          AXValueGetValue(sizeRef as! AXValue, .cgSize, &size) else { return nil }
+    return CGRect(origin: pos, size: size)
+}
+
+/// Sets the largest AX window of the app that owns the chosen window (same
+/// choice as key/type) to `rect` (global top-left points) and prints the frame
+/// read back. Retries until the read-back matches within 1 pt, else exits 2 at
+/// the deadline (the app refused or the screen is too small).
+func setFrame(pids: Set<pid_t>, rect: CGRect, deadline: UInt64) async {
+    let owner = await findWindowOwner(pids: pids, deadline: deadline)
+    let app = AXUIElementCreateApplication(owner)
+    var last: CGRect? = nil
+    while true {
+        var ref: CFTypeRef?
+        if AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &ref) == .success,
+           let windows = ref as? [AXUIElement] {
+            let sized = windows.compactMap { w in axFrame(w).map { (w, $0) } }
+            if let (window, _) = sized.max(by: {
+                $0.1.width * $0.1.height < $1.1.width * $1.1.height
+            }) {
+                var origin = rect.origin, size = rect.size
+                if let pv = AXValueCreate(.cgPoint, &origin), let sv = AXValueCreate(.cgSize, &size) {
+                    // Position, size, position again: an app may clamp the
+                    // size against the old position.
+                    AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, pv)
+                    AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sv)
+                    AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, pv)
+                }
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                last = axFrame(window)
+                if let got = last, abs(got.minX - rect.minX) <= 1, abs(got.minY - rect.minY) <= 1,
+                   abs(got.width - rect.width) <= 1, abs(got.height - rect.height) <= 1 {
+                    emit(["x": got.minX, "y": got.minY, "w": got.width, "h": got.height,
+                          "pid": owner])
+                    return
+                }
+            }
+        }
+        if nowNs() >= deadline {
+            let got = last.map { "\($0)" } ?? "unreadable"
+            fail("timeout: could not set window of pid \(owner) to \(rect) (last \(got))",
+                 code: 2)
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+}
+
+// MARK: - display
+
+/// Main display geometry and refresh rate; needs no permission.
+func displayInfo() {
+    let id = CGMainDisplayID()
+    let bounds = CGDisplayBounds(id)
+    let mode = CGDisplayCopyDisplayMode(id)
+    let pixelWidth = mode?.pixelWidth ?? Int(bounds.width)
+    let pixelHeight = mode?.pixelHeight ?? Int(bounds.height)
+    emit(["width": bounds.width, "height": bounds.height,
+          "pixel_width": pixelWidth, "pixel_height": pixelHeight,
+          "scale": bounds.width > 0 ? Double(pixelWidth) / Double(bounds.width) : 0,
+          "refresh_hz": refreshHz(display: id),
+          "mode_refresh_hz": mode?.refreshRate ?? 0])
+}
+
 // MARK: - Input
 
 /// US ANSI virtual key codes. Apps that read the key code (not only the
@@ -616,24 +796,90 @@ func post(_ k: KeyStroke, to pid: pid_t) {
 /// Screen Recording (only window titles do, and they are not used).
 func findWindowOwner(pids: Set<pid_t>, deadline: UInt64) async -> pid_t {
     while true {
-        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                              kCGNullWindowID) as? [[String: Any]] ?? []
-        var best: (pid: pid_t, area: CGFloat)? = nil
-        for info in list {
-            guard let owner = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
-                  pids.contains(owner),
-                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
-                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
-                  bounds.width >= 100, bounds.height >= 100 else { continue }
-            let area = bounds.width * bounds.height
-            if best == nil || area > best!.area { best = (owner, area) }
-        }
-        if let best { return best.pid }
+        if let best = largestWindow(where: { pids.contains($0) }) { return best.pid }
         if nowNs() >= deadline {
             fail("timeout: no on-screen window for pid \(pids.sorted())", code: 2)
         }
         try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+}
+
+/// On-screen windows, front to back (CGWindowListCopyWindowInfo order), as
+/// (owner pid, layer, alpha, bounds in global top-left points).
+func onScreenWindows() -> [(pid: pid_t, layer: Int, alpha: Double, bounds: CGRect)] {
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                          kCGNullWindowID) as? [[String: Any]] ?? []
+    return list.compactMap { info in
+        guard let owner = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+              let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue,
+              let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+              let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
+        else { return nil }
+        let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+        return (owner, layer, alpha, bounds)
+    }
+}
+
+/// Largest on-screen layer-0 window (>= 100x100 pt) whose owner passes `accept`.
+func largestWindow(where accept: (pid_t) -> Bool) -> (pid: pid_t, bounds: CGRect)? {
+    var best: (pid: pid_t, bounds: CGRect)? = nil
+    for w in onScreenWindows() where w.layer == 0 && w.bounds.width >= 100
+        && w.bounds.height >= 100 && accept(w.pid) {
+        if best == nil || w.bounds.width * w.bounds.height
+            > best!.bounds.width * best!.bounds.height {
+            best = (w.pid, w.bounds)
+        }
+    }
+    return best
+}
+
+/// Owner of the topmost visible window containing `point` (global top-left
+/// points). Windows that are fully transparent (alpha 0) and system overlays
+/// at or above the main-menu level (menu bar, status items, cursor) are
+/// skipped: they do not take wheel events over an editor's centre.
+func topmostWindowOwner(at point: CGPoint) -> pid_t? {
+    let menuLevel = Int(CGWindowLevelForKey(.mainMenuWindow))
+    for w in onScreenWindows() where w.alpha > 0 && w.layer < menuLevel {
+        if w.bounds.contains(point) { return w.pid }
+    }
+    return nil
+}
+
+/// Executable path of `pid` (proc_pidpath), nil when it is gone.
+func executablePath(_ pid: pid_t) -> String? {
+    var buf = [CChar](repeating: 0, count: 4096)
+    guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return nil }
+    return String(cString: buf)
+}
+
+/// Matches window owners by executable: `exe` itself, or any process inside
+/// the same app bundle's Contents/ (helper processes), minus `excluded`
+/// (instances that were running before the launch, e.g. the user's own).
+final class ExecutableMatcher {
+    let exe: String
+    let contents: String?
+    let excluded: Set<pid_t>
+    private var cache: [pid_t: Bool] = [:]
+
+    init(exe raw: String, excluded: Set<pid_t>) {
+        exe = URL(fileURLWithPath: raw).resolvingSymlinksInPath().path
+        if let r = exe.range(of: ".app/Contents/", options: .backwards) {
+            contents = String(exe[..<r.upperBound])
+        } else {
+            contents = nil
+        }
+        self.excluded = excluded
+    }
+
+    func matches(_ pid: pid_t) -> Bool {
+        if excluded.contains(pid) { return false }
+        if let hit = cache[pid] { return hit }
+        var hit = false
+        if let path = executablePath(pid) {
+            hit = path == exe || (contents.map { path.hasPrefix($0) } ?? false)
+        }
+        cache[pid] = hit
+        return hit
     }
 }
 
@@ -691,13 +937,21 @@ func scroll(pids: Set<pid_t>, lines: Int, rateOption: Double?,
     let window = await findWindow(pids: pids, deadline: timeout.deadline)
     let hz = refreshHz(for: window)
     let rate = rateOption ?? Double(hz)
+    let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+    // Wheel events go to the window under the pointer: bring the editor
+    // frontmost, then refuse unless its window is the topmost one there.
+    _ = await activateOwner(pids: pids, deadline: timeout.deadline)
+    guard let top = topmostWindowOwner(at: center), pids.contains(top) else {
+        let who = topmostWindowOwner(at: center).map { "pid \($0)" } ?? "no window"
+        fail("another window (\(who)) is on top at the centre \(center) of the window of "
+             + "pid \(pids.sorted()); no scroll events sent", code: 1)
+    }
     let lock = NSLock()
     var stamps: [UInt64] = []
     let capture = Capture(window: window, hz: hz) { f in
         lock.withLock { stamps.append(f.tNs) }
         return false
     }
-    let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
     var sendStart: UInt64 = 0, sendEnd: UInt64 = 0
     let sendDuration = Double(lines) / rate
 
@@ -755,7 +1009,10 @@ case "sample":
     requirePermissions(screen: true, accessibility: false)
     await sample(pids: pids, timeout: timeout)
 case "watch":
-    let pids = pidsOption()
+    let display = flag("display")
+    // --display finds the window by executable; --pid by owner pid.
+    if display && option("pid") != nil { fail("--display and --pid are exclusive", code: 1) }
+    let pids = display ? [] : pidsOption()
     let since = UInt64(intOption("since", min: 0))
     let until = required("until")
     let mode: WatchMode
@@ -773,10 +1030,36 @@ case "watch":
         }
         background = [UInt8(v & 0xff), UInt8(v >> 8 & 0xff), UInt8(v >> 16)]
     }
-    let timeout = deadlineOption()
-    requirePermissions(screen: true, accessibility: false)
-    await watch(pids: pids, since: since, mode: mode, until: until, background: background,
-                baseline: option("baseline"), timeout: timeout)
+    if display {
+        let exe = required("exe")
+        guard exe.hasPrefix("/") else { fail("--exe must be an absolute path", code: 1) }
+        guard case .coverage(let threshold) = mode else {
+            fail("watch --display supports only --until coverage:<0..1>", code: 1)
+        }
+        guard let bg = background else { fail("watch --display needs --background", code: 1) }
+        if option("baseline") != nil { fail("watch --display takes no --baseline", code: 1) }
+        let excluded = option("exclude-pids").map { pidList("exclude-pids", $0) } ?? []
+        let timeout = deadlineOption()
+        requirePermissions(screen: true, accessibility: false)
+        await watchDisplay(matcher: ExecutableMatcher(exe: exe, excluded: excluded),
+                           since: since, threshold: threshold, background: bg,
+                           timeout: timeout)
+    } else {
+        let timeout = deadlineOption()
+        requirePermissions(screen: true, accessibility: false)
+        await watch(pids: pids, since: since, mode: mode, until: until, background: background,
+                    baseline: option("baseline"), timeout: timeout)
+    }
+case "frame":
+    let pids = pidsOption()
+    let x = intOption("x"), y = intOption("y")
+    let w = intOption("w", min: 100), h = intOption("h", min: 100)
+    let timeout = deadlineOption(default: 10)
+    requirePermissions(screen: false, accessibility: true)
+    await setFrame(pids: pids, rect: CGRect(x: x, y: y, width: w, height: h),
+                   deadline: timeout.deadline)
+case "display":
+    displayInfo()
 case "scroll":
     let pids = pidsOption()
     let lines = intOption("lines", min: 1)

@@ -8,6 +8,9 @@ import unittest
 from pathlib import Path
 
 HELPER_DIR = Path(__file__).resolve().parent.parent / "helper"
+DISPLAY_WATCH = ["watch", "--display", "--exe", "/Applications/X.app/Contents/MacOS/x",
+                 "--exclude-pids", "11,12", "--since", "0", "--until", "coverage:0.3",
+                 "--background", "1E1E1E", "--timeout", "1"]
 
 
 def _run(binary, *args, env_extra=None):
@@ -64,6 +67,9 @@ class HelperTests(unittest.TestCase):
             ["type", "--pid", str(os.getpid()), "--text", "ab"],
             ["key", "--pid", str(os.getpid()), "--combo", "cmd+p"],
             ["sample", "--pid", str(os.getpid()), "--timeout", "1"],
+            DISPLAY_WATCH,
+            ["frame", "--pid", str(os.getpid()), "--x", "0", "--y", "25", "--w", "1280",
+             "--h", "800", "--timeout", "1"],
         ]
         for args in measuring:
             with self.subTest(cmd=args[0]):
@@ -102,6 +108,7 @@ class HelperTests(unittest.TestCase):
         for args in (["watch", "--pid", me, "--since", "0", "--until", "change",
                       "--timeout", "1"],
                      ["sample", "--pid", me, "--timeout", "1"],
+                     DISPLAY_WATCH,
                      ["scroll", "--pid", me, "--lines", "5"]):
             with self.subTest(cmd=args[0]):
                 r = self._expect_denied("screen", args)
@@ -113,6 +120,7 @@ class HelperTests(unittest.TestCase):
         me = str(os.getpid())
         for args in (["key", "--pid", me, "--combo", "cmd+p", "--timeout", "1"],
                      ["type", "--pid", me, "--text", "ab", "--timeout", "1"],
+                     ["frame", "--pid", me, "--x", "0", "--y", "25", "--w", "1280", "--h", "800"],
                      ["scroll", "--pid", me, "--lines", "5"]):
             with self.subTest(cmd=args[0]):
                 r = self._expect_denied("accessibility", args)
@@ -129,7 +137,9 @@ class HelperTests(unittest.TestCase):
             self.skipTest("Accessibility not granted on this machine")
         me = str(os.getpid())
         for args in (["key", "--pid", me, "--combo", "cmd+p", "--timeout", "0.3"],
-                     ["type", "--pid", me, "--text", "ab", "--timeout", "0.3"]):
+                     ["type", "--pid", me, "--text", "ab", "--timeout", "0.3"],
+                     ["frame", "--pid", me, "--x", "0", "--y", "25", "--w", "1280", "--h", "800",
+                      "--timeout", "0.3"]):
             with self.subTest(cmd=args[0]):
                 r = _run(self.binary, *args, env_extra={"BENCH_HELPER_FAKE_DENY": "screen"})
                 self.assertEqual(r.returncode, 2, r.stderr)
@@ -161,6 +171,25 @@ class HelperTests(unittest.TestCase):
             ["scroll", "--pid", "1", "--lines", "5", "--rate", "-1"],
             ["type", "--pid", "1", "--text", "h\u00e9"],
             ["key", "--pid", "1", "--combo", "hyper+p"],
+            # watch --display: absolute --exe, coverage only, --background
+            # required, no --pid / --baseline, valid --exclude-pids
+            ["watch", "--display", "--exe", "rel/luc", "--since", "0",
+             "--until", "coverage:0.3", "--background", "000000"],
+            ["watch", "--display", "--since", "0", "--until", "coverage:0.3",
+             "--background", "000000"],
+            ["watch", "--display", "--exe", "/x/luc", "--since", "0", "--until", "change",
+             "--background", "000000"],
+            ["watch", "--display", "--exe", "/x/luc", "--since", "0", "--until", "coverage:0.3"],
+            ["watch", "--display", "--pid", "1", "--exe", "/x/luc", "--since", "0",
+             "--until", "coverage:0.3", "--background", "000000"],
+            ["watch", "--display", "--exe", "/x/luc", "--exclude-pids", "1,x", "--since", "0",
+             "--until", "coverage:0.3", "--background", "000000"],
+            ["watch", "--display", "--exe", "/x/luc", "--since", "0",
+             "--until", "coverage:0.3", "--background", "000000", "--baseline", "/x.png"],
+            # frame: all four numbers, size >= 100
+            ["frame", "--pid", "1", "--x", "0", "--y", "25", "--w", "1280"],
+            ["frame", "--pid", "1", "--x", "0", "--y", "25", "--w", "50", "--h", "800"],
+            ["frame", "--pid", "1", "--x", "a", "--y", "25", "--w", "1280", "--h", "800"],
         ]
         for args in bad:
             args = [a.encode().decode("unicode_escape") for a in args]
@@ -180,12 +209,31 @@ class HelperTests(unittest.TestCase):
             ["scroll", "--pid", "11,12", "--lines", "5"],
             ["type", "--pid", "11,12", "--text", "Hello, World!\n"],
             ["key", "--pid", "11,12", "--combo", "cmd+shift+p"],
+            DISPLAY_WATCH,
+            ["watch", "--display", "--exe", "/A b/X.app/Contents/MacOS/x", "--since", "0",
+             "--until", "coverage:0.3", "--background", "1E1E1E"],
+            ["frame", "--pid", "11,12", "--x", "-10", "--y", "25", "--w", "1280", "--h", "800"],
         ]
         for args in good:
             args = [a.encode().decode("unicode_escape") for a in args]
             with self.subTest(args=args):
                 r = _run(self.binary, *args, env_extra=deny)
                 self.assertEqual(r.returncode, 3, r.stderr)
+
+    def test_display_needs_no_permission(self):
+        r = _run(self.binary, "display", env_extra={"BENCH_HELPER_FAKE_DENY": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        data = json.loads(r.stdout)
+        for key in ("width", "height", "pixel_width", "pixel_height", "scale", "refresh_hz"):
+            self.assertIn(key, data)
+        self.assertGreater(data["width"], 0)
+        self.assertGreater(data["refresh_hz"], 0)
+
+    def test_usage_lists_new_commands(self):
+        r = _run(self.binary)
+        self.assertEqual(r.returncode, 1)
+        for text in ("watch  --display --exe", "frame  --pid", "display"):
+            self.assertIn(text, r.stderr)
 
     def test_bad_usage_exits_nonzero(self):
         r = _run(self.binary, "bogus")
