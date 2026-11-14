@@ -11,20 +11,36 @@ use super::hunks::{Diffed, HunkWork};
 use super::rollup::Rollup;
 use super::{DiffBase, GitSnapshot};
 
+/// A `RefreshPaths` with more paths than this becomes a `Rescan`, so the
+/// pathspec list passed to `git` stays bounded.
+const MAX_REFRESH_PATHS: usize = 256;
+
 pub(super) enum Job {
     Rescan,
     RefreshPaths(BTreeSet<Arc<Path>>),
 }
 
 impl Job {
+    /// Refreshes `paths`, or rescans when they exceed `MAX_REFRESH_PATHS`.
+    pub(super) fn refresh(paths: impl IntoIterator<Item = Arc<Path>>) -> Job {
+        Job::RefreshPaths(paths.into_iter().collect()).bounded()
+    }
+
     /// The job that replaces `self` (queued) when `next` arrives.
     pub(super) fn merge(self, next: Job) -> Job {
         match (self, next) {
             (Job::RefreshPaths(mut a), Job::RefreshPaths(b)) => {
                 a.extend(b);
-                Job::RefreshPaths(a)
+                Job::RefreshPaths(a).bounded()
             }
             _ => Job::Rescan,
+        }
+    }
+
+    fn bounded(self) -> Job {
+        match self {
+            Job::RefreshPaths(paths) if paths.len() > MAX_REFRESH_PATHS => Job::Rescan,
+            job => job,
         }
     }
 }
@@ -125,4 +141,29 @@ pub(super) fn run_job(input: JobInput) -> Result<JobOutput, GitError> {
         },
         reloaded,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paths(range: std::ops::Range<usize>) -> Vec<Arc<Path>> {
+        range
+            .map(|i| Arc::from(Path::new(&format!("f{i}.txt"))))
+            .collect()
+    }
+
+    #[test]
+    fn refresh_over_path_limit_becomes_rescan() {
+        assert!(matches!(Job::refresh(paths(0..256)), Job::RefreshPaths(p) if p.len() == 256));
+        assert!(matches!(Job::refresh(paths(0..257)), Job::Rescan));
+    }
+
+    #[test]
+    fn merged_refresh_over_path_limit_becomes_rescan() {
+        let merged = Job::refresh(paths(0..200)).merge(Job::refresh(paths(100..256)));
+        assert!(matches!(merged, Job::RefreshPaths(p) if p.len() == 256));
+        let merged = Job::refresh(paths(0..200)).merge(Job::refresh(paths(200..300)));
+        assert!(matches!(merged, Job::Rescan));
+    }
 }

@@ -2,19 +2,22 @@
 //! into immutable snapshots. These tests drive real `git` processes in
 //! temporary repositories, isolated from the developer's git config.
 
+mod support;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AppContext as _, Entity, TestAppContext};
+use gpui::{AppContext as _, BorrowAppContext as _, Entity, TestAppContext};
 use lucerna_git::{FileStatus, GitBinary, diff_hunks};
+use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::BufferSnapshot;
 use lucerna_theme::ThemeRegistry;
-use lucerna_workbench::{AppState, GitState, GitStore};
+use lucerna_workbench::{AppState, GitState, GitStore, OpenMode, Workbench};
 use tempfile::TempDir;
 
 #[cfg(windows)]
@@ -435,4 +438,150 @@ fn buffer_tracked_before_first_rescan_gets_hunks(cx: &mut TestAppContext) {
         .read_with(cx, |s, _| s.hunks(Path::new("a.txt")))
         .expect("hunks");
     assert_eq!(&*hunks, diff_hunks("one\ntwo\nthree\n", text).as_slice());
+}
+
+/// A workbench on the repo `root`, trusted (`session.trustAllWorktrees`)
+/// only once its store uses the isolated `git`, and settled.
+fn trusted_workbench<'a>(
+    root: &Path,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Workbench>, &'a mut gpui::VisualTestContext) {
+    support::lsp::init_with("{}", cx);
+    let root = root.to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    let store = cx.update(|_, cx| wb.read(cx).git().clone());
+    store.update(cx, |s, _| s.use_git_for_test(isolated_git()));
+    cx.update(|_, cx| {
+        cx.update_global::<AppState, _>(|state, _| {
+            state
+                .settings
+                .set_layer(Layer::User, support::lsp::TRUSTED)
+                .unwrap();
+        })
+    });
+    support::lsp::settle(cx);
+    assert_eq!(store.read_with(cx, |s, _| s.state()), GitState::Ready);
+    (wb, cx)
+}
+
+fn wb_store(wb: &Entity<Workbench>, cx: &mut gpui::VisualTestContext) -> Entity<GitStore> {
+    cx.update(|_, cx| wb.read(cx).git().clone())
+}
+
+fn changed(path: &str) -> WorktreeEvent {
+    WorktreeEvent::Changed(vec![Change {
+        path: p(path),
+        kind: ChangeKind::Modified,
+    }])
+}
+
+#[gpui::test]
+fn worktree_change_event_refreshes_status(cx: &mut TestAppContext) {
+    let (_t, dir) = repo();
+    let (wb, cx) = trusted_workbench(&dir, cx);
+    let store = wb_store(&wb, cx);
+    assert!(store.read_with(cx, |s, _| s.snapshot().statuses.is_empty()));
+
+    std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+    wb.update(cx, |wb, cx| wb.on_worktree_event(&changed("a.txt"), cx));
+    support::lsp::settle(cx);
+
+    let statuses = store.read_with(cx, |s, _| (*s.snapshot().statuses).clone());
+    assert_eq!(
+        statuses,
+        HashMap::from([(p("a.txt"), FileStatus::Modified)])
+    );
+
+    // A rescan from the worktree is a full rescan.
+    std::fs::write(dir.join("b.txt"), "changed\n").unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Rescanned, cx)
+    });
+    support::lsp::settle(cx);
+    let statuses = store.read_with(cx, |s, _| (*s.snapshot().statuses).clone());
+    assert_eq!(statuses.len(), 2, "{statuses:?}");
+}
+
+/// An agent rewrites an open file: the worktree reports it, the document
+/// reloads, and the gutter hunks follow the new text.
+#[gpui::test]
+fn reloaded_open_file_updates_hunks(cx: &mut TestAppContext) {
+    let (_t, dir) = repo();
+    let (wb, cx) = trusted_workbench(&dir, cx);
+    let store = wb_store(&wb, cx);
+    support::lsp::open(&wb, "a.txt", cx);
+    assert_eq!(
+        store
+            .read_with(cx, |s, _| s.hunks(Path::new("a.txt")))
+            .as_deref(),
+        Some(&[][..]),
+        "tracked by its workspace-relative path"
+    );
+
+    let text = "one\nTWO\nthree\n";
+    std::fs::write(dir.join("a.txt"), text).unwrap();
+    wb.update(cx, |wb, cx| wb.on_worktree_event(&changed("a.txt"), cx));
+    support::lsp::settle(cx);
+
+    let hunks = store.read_with(cx, |s, _| s.hunks(Path::new("a.txt")));
+    let expected = diff_hunks("one\ntwo\nthree\n", text);
+    assert!(!expected.is_empty());
+    assert_eq!(hunks.as_deref(), Some(&expected[..]));
+}
+
+#[gpui::test]
+fn closing_a_file_untracks_it(cx: &mut TestAppContext) {
+    let (_t, dir) = repo();
+    let (wb, cx) = trusted_workbench(&dir, cx);
+    let store = wb_store(&wb, cx);
+    support::lsp::open(&wb, "a.txt", cx);
+    assert!(store.read_with(cx, |s, _| s.is_tracking(Path::new("a.txt"))));
+
+    support::lsp::close_active_tab(&wb, cx);
+    support::lsp::settle(cx);
+    assert!(!store.read_with(cx, |s, _| s.is_tracking(Path::new("a.txt"))));
+    assert_eq!(
+        store.read_with(cx, |s, _| s.hunks(Path::new("a.txt"))),
+        None
+    );
+}
+
+#[gpui::test]
+fn file_outside_the_root_is_not_tracked(cx: &mut TestAppContext) {
+    let (_t, dir) = repo();
+    let other = TempDir::new().unwrap();
+    let outside = other.path().canonicalize().unwrap().join("x.txt");
+    std::fs::write(&outside, "x\n").unwrap();
+    let (wb, cx) = trusted_workbench(&dir, cx);
+    let store = wb_store(&wb, cx);
+
+    let path: Arc<Path> = Arc::from(outside.as_path());
+    wb.update(cx, |wb, cx| wb.open_path(path, OpenMode::Pinned, cx));
+    support::lsp::settle(cx);
+
+    assert!(!store.read_with(cx, |s, _| s.is_tracking(&outside)));
+    assert!(!store.read_with(cx, |s, _| s.is_tracking(Path::new("x.txt"))));
+}
+
+#[gpui::test]
+fn git_refresh_command_rescans(cx: &mut TestAppContext) {
+    let (_t, dir) = repo();
+    let (wb, cx) = trusted_workbench(&dir, cx);
+    let store = wb_store(&wb, cx);
+    std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+    let before = store.read_with(cx, |s, _| s.jobs_run());
+
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            assert!(wb.run_command("git.refresh", None, window, cx));
+        })
+    });
+    support::lsp::settle(cx);
+
+    assert_eq!(store.read_with(cx, |s, _| s.jobs_run()), before + 1);
+    let statuses = store.read_with(cx, |s, _| (*s.snapshot().statuses).clone());
+    assert_eq!(
+        statuses,
+        HashMap::from([(p("a.txt"), FileStatus::Modified)])
+    );
 }

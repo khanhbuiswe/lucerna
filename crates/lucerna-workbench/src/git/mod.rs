@@ -8,6 +8,7 @@ mod hunks;
 mod job;
 mod locate;
 pub mod rollup;
+mod wiring;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ use crate::AppState;
 use hunks::{Diffed, HunkWork};
 use job::{Job, JobInput, JobOutput, run_job};
 use rollup::Rollup;
+pub(crate) use wiring::register_commands;
 
 /// Hunks are recomputed this long after the last `track_buffer` call.
 const HUNK_DEBOUNCE: Duration = Duration::from_millis(50);
@@ -201,6 +203,11 @@ impl GitStore {
         self.state
     }
 
+    /// The `git.enabled` setting, as last read.
+    pub fn is_enabled(&self) -> bool {
+        self.settings.enabled
+    }
+
     pub fn snapshot(&self) -> GitSnapshot {
         self.snapshot.clone()
     }
@@ -214,7 +221,7 @@ impl GitStore {
         if paths.iter().any(|p| p.as_os_str().is_empty()) {
             self.enqueue(Job::Rescan, cx);
         } else {
-            self.enqueue(Job::RefreshPaths(paths.into_iter().collect()), cx);
+            self.enqueue(Job::refresh(paths), cx);
         }
     }
 
@@ -253,6 +260,13 @@ impl GitStore {
 
     pub fn hunks(&self, path: &Path) -> Option<Arc<[Hunk]>> {
         self.hunks.get(path).cloned()
+    }
+
+    /// Whether `track_buffer` was called for `path` and it was not
+    /// untracked since.
+    #[doc(hidden)]
+    pub fn is_tracking(&self, path: &Path) -> bool {
+        self.buffers.contains_key(path)
     }
 
     /// Re-reads the `git.*` settings: `enabled` or `path` restarts,
@@ -635,8 +649,13 @@ fn login_path() -> Option<&'static str> {
         .as_deref()
 }
 
-/// Finds `git` and the repository holding `root`. Blocking.
+/// Finds `git` and the repository holding `root`. Blocking. Without a
+/// `.git` at or above `root` there is no repository, and `git` is not
+/// looked for (that may run a login shell).
 fn discover(git: Option<GitBinary>, setting: Option<PathBuf>, root: &Path) -> Setup {
+    if !GitStore::has_repo_hint(root) {
+        return Setup::Found(Ok(None));
+    }
     let git = match git {
         Some(git) => git,
         None => {
