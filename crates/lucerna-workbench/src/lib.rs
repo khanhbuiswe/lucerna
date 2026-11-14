@@ -63,7 +63,7 @@ pub use app_state::AppState;
 pub use commands::{CommandHandler, CommandRegistry};
 pub use config_files::{
     CONFIG_DEBOUNCE, ConfigError, ConfigFile, ConfigPaths, ConfigState, ConfigWatcher,
-    reload_config, watch_config,
+    reload_config, set_system_appearance, watch_config,
 };
 pub use diagnostics_status::DiagnosticsStatusItem;
 pub use documents::{DiskNotice, DocState, DocumentEvent, DocumentStatus, Documents};

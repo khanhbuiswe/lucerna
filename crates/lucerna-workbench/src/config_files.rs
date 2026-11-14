@@ -15,9 +15,9 @@ use gpui::{
     App, Context, IntoElement, ParentElement, Render, Styled, Subscription, Task, WeakEntity,
     Window, div, prelude::*,
 };
-use lucerna_settings::{Keymap, Layer, SettingsError};
+use lucerna_settings::{Keymap, Layer, SettingsError, SettingsStore};
 use lucerna_text::Point;
-use lucerna_theme::ThemeRegistry;
+use lucerna_theme::{Appearance, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, ThemeRegistry};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::extensions::service;
@@ -153,6 +153,8 @@ pub struct ConfigState {
     /// The paths of the last batch [`reload_config`] was given, and a
     /// count of batches: the workbench reloads open files among them.
     changed: (u64, Arc<[PathBuf]>),
+    /// The system color mode, for `window.autoDetectColorScheme`.
+    system_appearance: Appearance,
 }
 
 impl gpui::Global for ConfigState {}
@@ -211,6 +213,7 @@ pub fn watch_config(paths: ConfigPaths, cx: &mut App) {
         icon_preview: false,
         keymap_generation: 0,
         changed: (0, Arc::from([])),
+        system_appearance: to_appearance(cx.window_appearance()),
     });
     // Settings first: the theme files read depend on `workbench.colorTheme`.
     load(
@@ -298,15 +301,12 @@ fn load(files: impl IntoIterator<Item = ConfigFile>, initial: bool, cx: &mut App
             ConfigFile::Themes => {
                 let dir = paths.themes_dir();
                 let user_dir = dir.is_dir().then_some(dir.as_path());
-                let configured: Option<String> = initial
-                    .then(|| {
-                        cx.global::<AppState>()
-                            .settings
-                            .get("workbench.colorTheme", None)
-                    })
-                    .flatten();
-                let initial_only = initial.then(|| configured.as_deref().unwrap_or_default());
-                let extension_files = service::extension_theme_files(cx, initial_only);
+                // The first load reads only the extension files holding the
+                // themes the settings name: both preferred ones while the
+                // theme follows the system, so a mode switch needs no load.
+                let wanted: Option<Vec<String>> =
+                    initial.then(|| wanted_theme_names(&cx.global::<AppState>().settings));
+                let extension_files = service::extension_theme_files(cx, wanted.as_deref());
                 let (themes, errors) = ThemeRegistry::build(&extension_files, user_dir);
                 for (path, err) in errors {
                     tracing::warn!(path = %path.display(), %err, "could not load theme");
@@ -393,14 +393,98 @@ fn record(file: ConfigFile, path: PathBuf, result: Result<(), SettingsError>, cx
     };
 }
 
-/// Makes the theme named by `workbench.colorTheme` active ("One Dark"
-/// when it names no known theme).
+const AUTO_DETECT_KEY: &str = "window.autoDetectColorScheme";
+const COLOR_THEME_KEY: &str = "workbench.colorTheme";
+const PREFERRED_DARK_KEY: &str = "workbench.preferredDarkColorTheme";
+const PREFERRED_LIGHT_KEY: &str = "workbench.preferredLightColorTheme";
+
+/// GPUI's window appearance as a theme appearance.
+pub(crate) fn to_appearance(appearance: gpui::WindowAppearance) -> Appearance {
+    match appearance {
+        gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark => Appearance::Dark,
+        gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight => Appearance::Light,
+    }
+}
+
+fn auto_detect(settings: &SettingsStore) -> bool {
+    settings.get(AUTO_DETECT_KEY, None).unwrap_or(true)
+}
+
+/// The setting that names the color theme in use, as in VS Code: one of
+/// the preferred themes while `window.autoDetectColorScheme` is on (by the
+/// system mode), else `workbench.colorTheme`.
+pub(crate) fn color_theme_setting_key(
+    settings: &SettingsStore,
+    system: Appearance,
+) -> &'static str {
+    match (auto_detect(settings), system) {
+        (false, _) => COLOR_THEME_KEY,
+        (true, Appearance::Dark) => PREFERRED_DARK_KEY,
+        (true, Appearance::Light) => PREFERRED_LIGHT_KEY,
+    }
+}
+
+/// The name of the color theme the settings ask for in `system` mode.
+pub(crate) fn configured_theme_name(settings: &SettingsStore, system: Appearance) -> String {
+    let key = color_theme_setting_key(settings, system);
+    settings.get(key, None).unwrap_or_else(|| {
+        match key {
+            PREFERRED_LIGHT_KEY => DEFAULT_LIGHT_THEME,
+            _ => DEFAULT_DARK_THEME,
+        }
+        .to_string()
+    })
+}
+
+/// The theme names the settings can select right now.
+fn wanted_theme_names(settings: &SettingsStore) -> Vec<String> {
+    if auto_detect(settings) {
+        vec![
+            configured_theme_name(settings, Appearance::Dark),
+            configured_theme_name(settings, Appearance::Light),
+        ]
+    } else {
+        vec![configured_theme_name(settings, Appearance::Dark)]
+    }
+}
+
+/// The system color mode as last reported (the platform's when
+/// [`watch_config`] was not called).
+pub(crate) fn system_appearance(cx: &App) -> Appearance {
+    cx.try_global::<ConfigState>()
+        .map(|state| state.system_appearance)
+        .unwrap_or_else(|| to_appearance(cx.window_appearance()))
+}
+
+/// Records the system color mode and applies the theme it selects (unless
+/// a theme picker is previewing). The window appearance observer calls it.
+pub fn set_system_appearance(appearance: Appearance, cx: &mut App) {
+    if cx.has_global::<ConfigState>() {
+        let state = cx.global_mut::<ConfigState>();
+        if state.system_appearance == appearance {
+            return;
+        }
+        state.system_appearance = appearance;
+    }
+    reapply_configured_theme(cx);
+}
+
+/// Follows the system color mode while `window` is open.
+pub(crate) fn follow_system_appearance(window: &mut Window, _: &mut App) {
+    window
+        .observe_window_appearance(|window, cx| {
+            set_system_appearance(to_appearance(window.appearance()), cx);
+        })
+        .detach();
+}
+
+/// Makes the theme the settings select active: by the system mode while
+/// `window.autoDetectColorScheme` is on, else `workbench.colorTheme`
+/// ("Lucerna Dark" when the name is unknown).
 pub(crate) fn apply_configured_theme(cx: &mut App) {
+    let system = system_appearance(cx);
     let state = cx.global::<AppState>();
-    let name: String = state
-        .settings
-        .get("workbench.colorTheme", None)
-        .unwrap_or_default();
+    let name = configured_theme_name(&state.settings, system);
     let theme = state.themes.get_or_default(&name);
     if !Arc::ptr_eq(&theme, &state.theme) {
         cx.global_mut::<AppState>().set_theme(theme);
@@ -764,6 +848,65 @@ impl Render for ConfigErrorItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lucerna_settings::SettingsStore;
+    use lucerna_theme::Appearance;
+
+    fn store(user: &str) -> SettingsStore {
+        let mut store = SettingsStore::with_defaults();
+        store.set_layer(Layer::User, user).unwrap();
+        store
+    }
+
+    #[test]
+    fn theme_name_follows_system_when_auto_detect_is_on() {
+        let s = store("{}");
+        assert_eq!(configured_theme_name(&s, Appearance::Dark), "Lucerna Dark");
+        assert_eq!(
+            configured_theme_name(&s, Appearance::Light),
+            "Lucerna Light"
+        );
+    }
+
+    #[test]
+    fn theme_name_uses_color_theme_when_auto_detect_is_off() {
+        let s = store(r#"{"window.autoDetectColorScheme": false, "workbench.colorTheme": "X"}"#);
+        assert_eq!(configured_theme_name(&s, Appearance::Dark), "X");
+        assert_eq!(configured_theme_name(&s, Appearance::Light), "X");
+    }
+
+    #[test]
+    fn preferred_settings_override_defaults() {
+        let s = store(r#"{"workbench.preferredLightColorTheme": "Y"}"#);
+        assert_eq!(configured_theme_name(&s, Appearance::Light), "Y");
+        assert_eq!(configured_theme_name(&s, Appearance::Dark), "Lucerna Dark");
+    }
+
+    #[test]
+    fn setting_key_matches_mode() {
+        let on = store("{}");
+        assert_eq!(
+            color_theme_setting_key(&on, Appearance::Dark),
+            "workbench.preferredDarkColorTheme"
+        );
+        assert_eq!(
+            color_theme_setting_key(&on, Appearance::Light),
+            "workbench.preferredLightColorTheme"
+        );
+        let off = store(r#"{"window.autoDetectColorScheme": false}"#);
+        assert_eq!(
+            color_theme_setting_key(&off, Appearance::Light),
+            "workbench.colorTheme"
+        );
+    }
+
+    #[test]
+    fn window_appearance_maps_to_theme_appearance() {
+        use gpui::WindowAppearance as W;
+        assert_eq!(to_appearance(W::Dark), Appearance::Dark);
+        assert_eq!(to_appearance(W::VibrantDark), Appearance::Dark);
+        assert_eq!(to_appearance(W::Light), Appearance::Light);
+        assert_eq!(to_appearance(W::VibrantLight), Appearance::Light);
+    }
 
     #[test]
     fn classify_maps_paths_to_files() {

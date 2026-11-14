@@ -28,7 +28,7 @@ ASSETS = [
     ("Lilex font", "crates/lucerna-workbench/assets/fonts/LICENSE-Lilex"),
     ("IBM Plex fonts", "crates/lucerna-workbench/assets/fonts/LICENSE-IBM-Plex"),
     ("Lucide icons", "crates/lucerna-workbench/assets/icons/LICENSE-lucide"),
-    ("One Dark and One Light themes", "crates/lucerna-theme/assets/LICENSE-one"),
+    ("GitHub Primer colors (Lucerna themes)", "crates/lucerna-theme/assets/LICENSE-primer"),
 ]
 
 

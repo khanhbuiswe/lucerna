@@ -98,12 +98,11 @@ here with the crate that required them.
 
 ## Themes
 
-`lucerna-theme` bundles the "One" theme family (One Dark, One Light) as a data
-file: `assets/themes/one/one.json` from the Zed repository
-(https://github.com/zed-industries/zed) at revision
-`b5cd310b3b54dfc659fcc06453e6358843dfe216`, stored as
-`crates/lucerna-theme/assets/one.json`. It is MIT licensed (Copyright (c) 2014
-GitHub Inc.); the license text is `crates/lucerna-theme/assets/LICENSE-one`.
+`lucerna-theme` bundles Lucerna's own themes, Lucerna Dark and Lucerna Light,
+in `crates/lucerna-theme/assets/lucerna.json`. Their diagnostic, git and
+terminal ANSI colors are based on GitHub Primer and primer/github-vscode-theme
+(https://github.com/primer/github-vscode-theme), MIT licensed (Copyright (c)
+2020 Primer); the license text is `crates/lucerna-theme/assets/LICENSE-primer`.
 
 ## Fonts
 

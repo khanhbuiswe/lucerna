@@ -607,7 +607,7 @@ pub fn set_app_state_with_store(store: Store, cx: &mut App) {
         Associations::default(),
     );
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     let (icon_themes, _) = IconThemeRegistry::build(&[]);
     let icons = icon_themes.resolve("Lucide");
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);

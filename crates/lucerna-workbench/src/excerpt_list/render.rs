@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn match_background_wins_over_syntax_and_runs_do_not_overlap() {
-        let theme = ThemeRegistry::builtin().get_or_default("One Dark");
+        let theme = ThemeRegistry::builtin().get_or_default("Lucerna Dark");
         let mark = HighlightStyle {
             background_color: Some(gpui::red()),
             ..Default::default()
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn bad_ranges_are_dropped() {
-        let theme = ThemeRegistry::builtin().get_or_default("One Dark");
+        let theme = ThemeRegistry::builtin().get_or_default("Lucerna Dark");
         let spans: LineSpans = vec![(0..1, "keyword".into()), (0..99, "keyword".into())];
         let runs = line_highlights(
             "é",

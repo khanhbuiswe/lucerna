@@ -149,6 +149,7 @@ impl WelcomeView {
     /// Focuses the page and starts loading the recent list in the
     /// background.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        crate::config_files::follow_system_appearance(window, cx);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let data_dir = cx

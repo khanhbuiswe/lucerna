@@ -5,8 +5,12 @@ use std::sync::Arc;
 use crate::schema::ThemeFamily;
 use crate::{Appearance, Theme};
 
-const ONE_JSON: &str = include_str!("../assets/one.json");
-const DEFAULT_THEME: &str = "One Dark";
+const LUCERNA_JSON: &str = include_str!("../assets/lucerna.json");
+
+/// The bundled dark theme, and the theme used for an unknown name.
+pub const DEFAULT_DARK_THEME: &str = "Lucerna Dark";
+/// The bundled light theme.
+pub const DEFAULT_LIGHT_THEME: &str = "Lucerna Light";
 
 #[derive(Debug, Clone)]
 pub struct ThemeRegistry {
@@ -39,7 +43,7 @@ fn parse_family(text: &str) -> Result<Vec<Theme>, String> {
 }
 
 impl ThemeRegistry {
-    /// The bundled One family: "One Dark" and "One Light".
+    /// The bundled Lucerna family: "Lucerna Dark" and "Lucerna Light".
     pub fn builtin() -> ThemeRegistry {
         Self::build(&[], None).0
     }
@@ -52,14 +56,14 @@ impl ThemeRegistry {
         extension_files: &[(String, PathBuf)],
         user_dir: Option<&Path>,
     ) -> (ThemeRegistry, Vec<(PathBuf, String)>) {
-        let themes: BTreeMap<String, Arc<Theme>> = parse_family(ONE_JSON)
-            .expect("bundled one.json is valid")
+        let themes: BTreeMap<String, Arc<Theme>> = parse_family(LUCERNA_JSON)
+            .expect("bundled lucerna.json is valid")
             .into_iter()
             .map(|t| (t.name.clone(), Arc::new(t)))
             .collect();
         let default = themes
-            .get(DEFAULT_THEME)
-            .expect("bundled one.json has One Dark")
+            .get(DEFAULT_DARK_THEME)
+            .expect("bundled lucerna.json has Lucerna Dark")
             .clone();
         let mut registry = ThemeRegistry { themes, default };
 
@@ -133,7 +137,7 @@ impl ThemeRegistry {
         self.themes.get(name).cloned()
     }
 
-    /// The named theme, or "One Dark" when the name is unknown.
+    /// The named theme, or "Lucerna Dark" when the name is unknown.
     pub fn get_or_default(&self, name: &str) -> Arc<Theme> {
         self.get(name).unwrap_or_else(|| self.default.clone())
     }

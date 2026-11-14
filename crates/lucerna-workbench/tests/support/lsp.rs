@@ -23,7 +23,7 @@ pub fn init_with(user_settings: &str, cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     assert!(error.is_none(), "keymap error: {error:?}");
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     let mut settings = SettingsStore::with_defaults();
     settings
         .set_layer(Layer::User, user_settings)
