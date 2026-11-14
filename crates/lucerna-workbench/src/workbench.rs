@@ -26,7 +26,7 @@ use crate::editor_groups::{
 };
 use crate::explorer::ExplorerView;
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
-use crate::git::GitStore;
+use crate::git::{GitStore, GitStoreEvent};
 use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;
 use crate::layout::sidebar::SidebarSash;
@@ -533,6 +533,13 @@ impl Workbench {
         let git_branch = crate::git_branch::read_branch(&root);
         let git = cx.new(|cx| GitStore::new(root.clone(), cx));
         subscriptions.push(cx.subscribe(&documents, Self::git_document_event));
+        subscriptions.push(cx.subscribe(&git, |wb, git, ev: &GitStoreEvent, cx| {
+            if matches!(ev, GitStoreEvent::SnapshotChanged) {
+                let snapshot = git.read(cx).snapshot();
+                wb.explorer
+                    .update(cx, |explorer, cx| explorer.set_git(snapshot, cx));
+            }
+        }));
         if let (Some(watcher), Some(head)) = (&open_file_watcher, &git_head) {
             watcher.set_files(vec![head.clone()]);
         }
