@@ -3323,9 +3323,12 @@ dependencies = [
 name = "lucerna-git"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "lucerna-text",
+ "notify",
  "similar",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

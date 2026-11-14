@@ -18,6 +18,7 @@ mod explorer;
 pub mod extensions;
 mod find_widget;
 pub mod fonts;
+mod git;
 pub mod git_branch;
 pub mod goto;
 pub mod hover;
