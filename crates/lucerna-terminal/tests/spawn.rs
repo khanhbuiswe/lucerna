@@ -271,8 +271,10 @@ fn foreground_is_child_shell() {
         assert!(Instant::now() < deadline, "no foreground process");
         thread::sleep(Duration::from_millis(20));
     };
+    // `/bin/sh` may run as the shell it points to (bash on macOS) before it
+    // execs `sleep`.
     assert!(
-        info.name == "sleep" || info.name == "sh",
+        ["sleep", "sh", "bash", "dash", "zsh"].contains(&info.name.as_str()),
         "name: {}",
         info.name
     );
