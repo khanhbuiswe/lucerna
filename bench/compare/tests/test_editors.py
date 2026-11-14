@@ -42,6 +42,17 @@ class LaunchTests(unittest.TestCase):
                                "--extensions-dir", prof + "/vscode-ext-lsp",
                                "--new-window", "/bench/data/medium"])
 
+    def test_vscode_env_drops_electron_node_mode(self):
+        with mock.patch.dict(editors.os.environ, {"ELECTRON_RUN_AS_NODE": "1",
+                                                   "ELECTRON_NO_ATTACH_CONSOLE": "1",
+                                                   "KEEP_ME": "x"}), \
+                mock.patch.object(editors.subprocess, "Popen") as popen:
+            editors.launch("vscode", PATHS, Path("/t"))
+        child = popen.call_args.kwargs["env"]
+        self.assertNotIn("ELECTRON_RUN_AS_NODE", child)
+        self.assertNotIn("ELECTRON_NO_ATTACH_CONSOLE", child)
+        self.assertEqual(child["KEEP_ME"], "x")
+
     def test_vscode_unknown_profile_defaults_to_no_lsp(self):
         cmd, _ = self.vscode_cmd(None)
         self.assertIn("--disable-extensions", cmd)

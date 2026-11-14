@@ -110,17 +110,23 @@ class StartupTests(Base):
             order.append("watch")
             return watch
 
+        def helper(paths, args, timeout=metrics.TIMEOUT_S):
+            order.append(args[0])
+            return {"pid": 11, "active": True}
+
         with mock.patch.object(metrics, "_start_watch", side_effect=start) as st, \
-                mock.patch.object(metrics, "_helper") as helper:
+                mock.patch.object(metrics, "_helper", side_effect=helper) as h:
             value = metrics.startup_ms(editor, self.paths)
-        helper.assert_not_called()
+        # only `activate`, with the owner pids, from the background thread
+        self.assertEqual([c.args[1] for c in h.call_args_list],
+                         [["activate", "--pid", "11,12", "--timeout", "10"]])
         return value, st.call_args.args[1], order, watch
 
     def test_display_watch_started_before_launch(self):
         out = {"t_ns": 1_250_000_000, "frames": 9, "first_frame_hit": False}
         value, args, order, watch = self.run_startup(out)
         self.assertEqual(value, 250.0)
-        self.assertEqual(order, ["watch", "launch"])
+        self.assertEqual(order, ["watch", "launch", "activate"])
         self.launch.assert_called_once_with("vscode", self.paths, self.paths.marker_file)
         self.assertEqual(args[:4], ["watch", "--display", "--exe", EXE])
         self.assertNotIn("--pid", args)
@@ -145,6 +151,23 @@ class StartupTests(Base):
     def test_frame_before_launch_returns_none(self):
         out = {"t_ns": 900_000_000, "frames": 4, "first_frame_hit": False}
         self.assertIsNone(self.run_startup(out)[0])
+
+    def test_activation_permission_error_propagates(self):
+        def helper(paths, args, timeout=metrics.TIMEOUT_S):
+            raise metrics.PermissionDenied("bench-helper activate: no Accessibility")
+        watch = FakeWatch({"t_ns": 1_100_000_000, "frames": 3})
+        with mock.patch.object(metrics, "_start_watch", return_value=watch), \
+                mock.patch.object(metrics, "_helper", side_effect=helper):
+            with self.assertRaises(metrics.PermissionDenied):
+                metrics.startup_ms("zed", self.paths)
+        self.assertTrue(watch.closed)
+        self.quit.assert_called_once()
+
+    def test_activation_failure_keeps_measurement(self):
+        watch = FakeWatch({"t_ns": 1_100_000_000, "frames": 3, "occluded_frames": 2})
+        with mock.patch.object(metrics, "_start_watch", return_value=watch), \
+                mock.patch.object(metrics, "_helper", return_value=None):
+            self.assertEqual(metrics.startup_ms("zed", self.paths), 100.0)
 
     def test_watch_not_ready_skips_launch(self):
         with mock.patch.object(metrics, "_start_watch", return_value=None):
@@ -336,6 +359,14 @@ class FrameTests(Base):
             self.assertEqual(args[args.index("--" + k) + 1], str(f[k]))
         self.assertEqual((f["w"], f["h"]), (1280, 800))
 
+    def test_actual_frame_remembered(self):
+        metrics.LAST_FRAME.clear()
+        self.addCleanup(metrics.LAST_FRAME.clear)
+        outs = [FRAME_OK, {"t_ns": 1, "frames": 5}, {"frames": 10, "dropped": 1}]
+        with mock.patch.object(metrics, "_helper", side_effect=outs):
+            metrics.scroll_dropped_pct("zed", self.paths)
+        self.assertEqual(metrics.LAST_FRAME["zed"], {"x": 0, "y": 38, "w": 1280, "h": 800})
+
     def test_frame_failure_drops_round(self):
         for fn in (metrics.scroll_dropped_pct, metrics.file_change_ms, metrics.quick_open_ms):
             with self.subTest(fn=fn.__name__), \
@@ -356,7 +387,7 @@ class HelperTableTests(Base):
         cmds = set()
         replies = {"frame": FRAME_OK, "watch": {"t_ns": 1, "frames": 3},
                    "key": {"t_ns": 1}, "type": {"t_ns": [1]},
-                   "scroll": {"frames": 10, "dropped": 1}}
+                   "scroll": {"frames": 10, "dropped": 1}, "activate": {"pid": 11}}
 
         def helper(paths, args, timeout=metrics.TIMEOUT_S):
             cmds.add(args[0])
@@ -391,7 +422,8 @@ class HelperTableTests(Base):
     def test_permissions(self):
         self.assertEqual(metrics.metric_permissions("scroll_dropped_pct"),
                          {"screen", "accessibility"})
-        self.assertEqual(metrics.metric_permissions("startup_ms"), {"screen"})
+        self.assertEqual(metrics.metric_permissions("startup_ms"),
+                         {"screen", "accessibility"})
         self.assertEqual(metrics.metric_permissions("idle_ram_mb"), {"accessibility"})
         self.assertEqual(metrics.metric_permissions("app_size_mb"), set())
 

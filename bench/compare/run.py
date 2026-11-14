@@ -273,15 +273,29 @@ class Runner:
             v = self._call(lambda: getattr(metrics, name)(editor, self.paths), editor, name)
             _log(f"  {editor} {name}: {v}")
             cfg_metrics[name][editor].append(v)
+            self._record_frame(editor)
         if any(m in self.selected for m in IDLE):
             self._launch_gate()
             r = self._call(lambda: metrics.idle_session(editor, self.paths), editor, "idle")
             ram, cpu = r if r else (None, None)
+            self._record_frame(editor)
             _log(f"  {editor} idle: ram {ram} MB, cpu {cpu} %")
             if "idle_ram_mb" in self.selected:
                 cfg_metrics["idle_ram_mb"][editor].append(ram)
             if "idle_cpu_pct" in self.selected:
                 cfg_metrics["idle_cpu_pct"][editor].append(cpu)
+
+    def _record_frame(self, editor: str) -> None:
+        """The window frame `frame` actually set, once per editor per config:
+        meta.window_frames[editor] = [{"lsp", "cold", "x", "y", "w", "h"}, ...]."""
+        actual = metrics.LAST_FRAME.get(editor)
+        cfg = self.result["configs"][-1] if self.result["configs"] else None
+        if not actual or cfg is None:
+            return
+        frames = self.result["meta"].setdefault("window_frames", {}).setdefault(editor, [])
+        if any(f["lsp"] == cfg["lsp"] and f["cold"] == cfg["cold"] for f in frames):
+            return
+        frames.append({"lsp": cfg["lsp"], "cold": cfg["cold"], **actual})
 
     def warm_up(self) -> None:
         """Round 0: one full round of every selected launching metric (startup
@@ -302,6 +316,7 @@ class Runner:
         # rust-analyzer needs the network), then the settings for this one.
         env.reset_profiles(self.paths)
         env.write_profiles(self.paths, lsp)
+        metrics.LAST_FRAME.clear()
         cfg = {"lsp": lsp, "cold": self.cold,
                "metrics": {m: {e: [] for e in editors.EDITORS} for m in self.selected}}
         self.result["configs"].append(cfg)

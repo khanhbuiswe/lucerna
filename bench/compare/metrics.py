@@ -60,10 +60,12 @@ HELPER_PERMISSIONS = {
     "key": ("accessibility",),
     "type": ("accessibility",),
     "frame": ("accessibility",),
+    "activate": ("accessibility",),
 }
 _IDLE_HELPERS = ("frame", "key", "type")
 METRIC_HELPERS = {
-    "startup_ms": ("sample", "watch"),          # sample: background calibration
+    # sample: background calibration; activate: bring the new window forward
+    "startup_ms": ("sample", "watch", "activate"),
     "file_change_ms": ("sample", "frame", "watch"),
     "quick_open_ms": ("frame", "key", "type", "watch"),
     "idle_ram_mb": _IDLE_HELPERS,
@@ -222,6 +224,10 @@ def _owner_pids(editor: str, paths: BenchPaths, deadline: float) -> list[int] | 
     return None
 
 
+# The frame `frame` actually set, per editor (last one); run.py records it.
+LAST_FRAME: dict = {}
+
+
 def _set_frame(editor: str, paths: BenchPaths, deadline: float) -> bool:
     """WINDOW_FRAME through AX, once the window is up; False fails the round
     (a measurement at another size would not be comparable)."""
@@ -230,7 +236,39 @@ def _set_frame(editor: str, paths: BenchPaths, deadline: float) -> bool:
                           "--x", str(f["x"]), "--y", str(f["y"]),
                           "--w", str(f["w"]), "--h", str(f["h"]),
                           "--timeout", str(_left(deadline))])
-    return out is not None
+    if out is None:
+        return False
+    LAST_FRAME[editor] = {k: out[k] for k in ("x", "y", "w", "h") if k in out}
+    return True
+
+
+class _Activator:
+    """Brings the new window's app forward from a background thread, once its
+    owner process exists, so a window opened behind another one is uncovered
+    without delaying the display watch. A PermissionDenied is re-raised by
+    `finish`; other failures only cost the round its chance to be uncovered
+    (an occluded window delays the measurement, it cannot fake it)."""
+
+    def __init__(self, editor: str, paths: BenchPaths, deadline: float):
+        self.error = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, args=(editor, paths, deadline),
+                                        daemon=True)
+        self._thread.start()
+
+    def _run(self, editor, paths, deadline):
+        try:
+            pids = _owner_pids(editor, paths, deadline)
+            if pids and not self._stop.is_set():
+                _helper(paths, ["activate", "--pid", _csv(pids), "--timeout", "10"])
+        except Exception as exc:  # reported by finish()
+            self.error = exc
+
+    def finish(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=TIMEOUT_S + 15)
+        if isinstance(self.error, PermissionDenied):
+            raise self.error
 
 
 def _shown(editor, paths, bg, since_ns, coverage, deadline) -> bool:
@@ -315,11 +353,16 @@ def startup_ms(editor: str, paths: BenchPaths) -> float | None:
     watch = _start_watch(paths, args, TIMEOUT_S)
     if watch is None:
         return None
+    activator = None
     try:
         launched = editors.launch(editor, paths, paths.marker_file)
+        activator = _Activator(editor, paths, time.monotonic() + TIMEOUT_S)
         out = watch.result(TIMEOUT_S)
+        activator.finish()
         if out is None:
             return None
+        if out.get("occluded_frames"):
+            _log(f"{editor}: window covered on {out['occluded_frames']} frame(s) during startup")
         if out.get("first_frame_hit") or out["t_ns"] < launched.t0_ns:
             # The window was there before the launch: not this launch's frame.
             _log(f"{editor}: startup content already on the first frame; round dropped")
@@ -327,6 +370,8 @@ def startup_ms(editor: str, paths: BenchPaths) -> float | None:
         return (out["t_ns"] - launched.t0_ns) / 1e6
     finally:
         watch.close()
+        if activator is not None:
+            activator._stop.set()
         editors.quit(editor, paths)
 
 

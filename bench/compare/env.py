@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,10 @@ VSCODE_CLI = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/co
 LOAD_LIMIT = 2.0
 PIDFILE_NAME = ".bench-pids.json"     # editors.py: the bench `luc` (in lucerna-home)
 PROFILE_MARKER = "bench-profile.json"  # which config the profiles were written for
+# Every entry write_profiles / the editors create under <bench>/profiles.
+# reset_profiles deletes only these (minus KEEP_PROFILES).
+PROFILE_ENTRIES = ("vscode", "vscode-ext", "vscode-ext-lsp", "zed", "lucerna-home",
+                   PROFILE_MARKER)
 # Kept across configs: installing rust-analyzer needs the network.
 KEEP_PROFILES = ("vscode-ext-lsp",)
 
@@ -105,16 +110,25 @@ def vscode_rust_analyzer_installed(paths: BenchPaths) -> bool:
 
 
 def reset_profiles(paths: BenchPaths) -> list[Path]:
-    """Delete every editor profile under <bench>/profiles except
-    KEEP_PROFILES, and everything in lucerna-home but the bench pidfile, so
-    each config starts from a clean profile. Refuses to delete anything that
-    does not resolve inside <bench>/profiles. Returns what was removed."""
-    root = paths.profiles.resolve()
+    """Delete the known editor profiles (PROFILE_ENTRIES) under
+    <bench>/profiles except KEEP_PROFILES, and everything in lucerna-home but
+    the bench pidfile, so each config starts from a clean profile. Unknown
+    entries are left alone with a warning. Refuses when <bench>/profiles is a
+    symlink, and to delete anything that does not resolve inside it. Returns
+    what was removed."""
+    if paths.profiles.is_symlink():
+        raise RuntimeError(f"{paths.profiles} là symlink; bench không xoá hồ sơ qua symlink. "
+                           "Hãy dùng một thư mục thật cho <bench>/profiles.")
     if not paths.profiles.is_dir():
         return []
+    root = paths.profiles.resolve()
     victims = []
     for entry in sorted(paths.profiles.iterdir()):
         if entry.name in KEEP_PROFILES:
+            continue
+        if entry.name not in PROFILE_ENTRIES:
+            print(f"env: cảnh báo: bỏ qua {entry} (không phải hồ sơ bench đã biết)",
+                  file=sys.stderr, flush=True)
             continue
         if entry.name == paths.lucerna_home.name and entry.is_dir() and not entry.is_symlink():
             victims += [c for c in sorted(entry.iterdir()) if c.name != PIDFILE_NAME]

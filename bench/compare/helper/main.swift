@@ -61,6 +61,7 @@ usage: bench-helper <command> [options]      (<pids> = pid[,pid...])
   watch  --display --exe <absolute path> [--exclude-pids <pids>] --since <t0_ns|0>
          --until coverage:<0..1> --background RRGGBB [--timeout <s>]
   frame  --pid <pids> --x <pt> --y <pt> --w <pt> --h <pt> [--timeout <s>]
+  activate --pid <pids> [--timeout <s>]
   display
   scroll --pid <pids> --lines <n> [--rate <events/s>] [--timeout <s>]
   type   --pid <pids> --text <s> [--interval-ms <ms>] [--timeout <s>]
@@ -160,6 +161,7 @@ func permissions() -> (screen: Bool, ax: Bool) {
 ///   key, type      Accessibility (CGEvent; the window is found with
 ///                  CGWindowList, which needs no Screen Recording)
 ///   frame          Accessibility (AX window position and size)
+///   activate       Accessibility (brings the window's app frontmost, like key)
 ///   now, display   nothing
 func requirePermissions(screen needScreen: Bool, accessibility needAx: Bool) {
     let p = permissions()
@@ -592,6 +594,13 @@ func refreshHz(display id: CGDirectDisplayID) -> Int {
 /// coverage test to the crop's central 60%×60%. Frames without such a window
 /// never hit.
 ///
+/// The pixels are the composited display, so another window over the editor
+/// would be measured instead of it. A frame is only tested when the topmost
+/// window (same window list, front to back) at the region's centre and at its
+/// four corners belongs to a matched pid; otherwise it counts as occluded
+/// (`occluded_frames`) and cannot hit. A covered window therefore delays the
+/// measured time, it cannot fake an early one.
+///
 /// `since` 0 means "report t_ns only": Python records t0 after this helper
 /// has printed "ready" and subtracts it itself. `first_frame_hit` means the
 /// window was already present and covered on the very first frame, which
@@ -601,15 +610,31 @@ func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
     let display = await mainDisplay(deadline: timeout.deadline)
     let origin = CGDisplayBounds(display.displayID).origin
     let pointsWide = Double(display.width), pointsHigh = Double(display.height)
-    var frames = 0
+    var frames = 0, occluded = 0
     var hitNs: UInt64 = 0
     var hitWindow: CGRect = .zero
     let capture = Capture(filter: SCContentFilter(display: display, excludingWindows: []),
                           width: display.width, height: display.height,
                           hz: refreshHz(display: display.displayID)) { f in
         frames += 1
-        guard f.tNs >= since,
-              let win = largestWindow(where: { matcher.matches($0) }) else { return false }
+        guard f.tNs >= since else { return false }
+        let list = onScreenWindows()
+        guard let win = largestWindow(in: list, where: { matcher.matches($0) }) else {
+            return false
+        }
+        let b = win.bounds
+        let probes = [CGPoint(x: b.midX, y: b.midY),
+                      CGPoint(x: b.minX + b.width * 0.2 + 1, y: b.minY + b.height * 0.2 + 1),
+                      CGPoint(x: b.maxX - b.width * 0.2 - 1, y: b.minY + b.height * 0.2 + 1),
+                      CGPoint(x: b.minX + b.width * 0.2 + 1, y: b.maxY - b.height * 0.2 - 1),
+                      CGPoint(x: b.maxX - b.width * 0.2 - 1, y: b.maxY - b.height * 0.2 - 1)]
+        let visible = probes.allSatisfy { p in
+            topmostWindowOwner(in: list, at: p).map { matcher.matches($0) } ?? false
+        }
+        guard visible else {
+            occluded += 1
+            return false
+        }
         let sx = Double(f.width) / pointsWide, sy = Double(f.height) / pointsHigh
         let x0 = max(0, Int((Double(win.bounds.minX - origin.x) * sx).rounded()))
         let y0 = max(0, Int((Double(win.bounds.minY - origin.y) * sy).rounded()))
@@ -629,6 +654,7 @@ func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
              + "in a window of \(matcher.exe)", code: 2)
     }
     emit(["t_ns": hitNs, "frames": frames, "first_frame_hit": frames == 1,
+          "occluded_frames": occluded,
           "window": [hitWindow.minX, hitWindow.minY, hitWindow.width, hitWindow.height]])
 }
 
@@ -809,7 +835,7 @@ func findWindowOwner(pids: Set<pid_t>, deadline: UInt64) async -> pid_t {
 
 /// On-screen windows, front to back (CGWindowListCopyWindowInfo order), as
 /// (owner pid, layer, alpha, bounds in global top-left points).
-func onScreenWindows() -> [(pid: pid_t, layer: Int, alpha: Double, bounds: CGRect)] {
+func onScreenWindows() -> [WindowInfo] {
     let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                           kCGNullWindowID) as? [[String: Any]] ?? []
     return list.compactMap { info in
@@ -823,10 +849,17 @@ func onScreenWindows() -> [(pid: pid_t, layer: Int, alpha: Double, bounds: CGRec
     }
 }
 
+typealias WindowInfo = (pid: pid_t, layer: Int, alpha: Double, bounds: CGRect)
+
 /// Largest on-screen layer-0 window (>= 100x100 pt) whose owner passes `accept`.
 func largestWindow(where accept: (pid_t) -> Bool) -> (pid: pid_t, bounds: CGRect)? {
+    largestWindow(in: onScreenWindows(), where: accept)
+}
+
+func largestWindow(in list: [WindowInfo],
+                   where accept: (pid_t) -> Bool) -> (pid: pid_t, bounds: CGRect)? {
     var best: (pid: pid_t, bounds: CGRect)? = nil
-    for w in onScreenWindows() where w.layer == 0 && w.bounds.width >= 100
+    for w in list where w.layer == 0 && w.bounds.width >= 100
         && w.bounds.height >= 100 && accept(w.pid) {
         if best == nil || w.bounds.width * w.bounds.height
             > best!.bounds.width * best!.bounds.height {
@@ -841,8 +874,13 @@ func largestWindow(where accept: (pid_t) -> Bool) -> (pid: pid_t, bounds: CGRect
 /// at or above the main-menu level (menu bar, status items, cursor) are
 /// skipped: they do not take wheel events over an editor's centre.
 func topmostWindowOwner(at point: CGPoint) -> pid_t? {
+    topmostWindowOwner(in: onScreenWindows(), at: point)
+}
+
+/// Same, over an already fetched front-to-back window list.
+func topmostWindowOwner(in list: [WindowInfo], at point: CGPoint) -> pid_t? {
     let menuLevel = Int(CGWindowLevelForKey(.mainMenuWindow))
-    for w in onScreenWindows() where w.alpha > 0 && w.layer < menuLevel {
+    for w in list where w.alpha > 0 && w.layer < menuLevel {
         if w.bounds.contains(point) { return w.pid }
     }
     return nil
@@ -1077,6 +1115,12 @@ case "type":
     let timeout = deadlineOption(default: 10)
     requirePermissions(screen: false, accessibility: true)
     await typeText(pids: pids, keys: keys, intervalMs: interval, deadline: timeout.deadline)
+case "activate":
+    let pids = pidsOption()
+    let timeout = deadlineOption(default: 10)
+    requirePermissions(screen: false, accessibility: true)
+    let owner = await activateOwner(pids: pids, deadline: timeout.deadline)
+    emit(["pid": owner, "active": NSRunningApplication(processIdentifier: owner)?.isActive ?? false])
 case "key":
     let pids = pidsOption()
     let stroke = comboStroke(required("combo"))

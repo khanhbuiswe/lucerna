@@ -391,8 +391,28 @@ class Permissions(unittest.TestCase):
         self.assertEqual(set(run.NEEDS_SCREEN),
                          {"startup_ms", "scroll_dropped_pct", "file_change_ms", "quick_open_ms"})
         self.assertEqual(set(run.NEEDS_AX),
-                         {"scroll_dropped_pct", "file_change_ms", "quick_open_ms",
-                          "idle_ram_mb", "idle_cpu_pct"})
+                         {"startup_ms", "scroll_dropped_pct", "file_change_ms",
+                          "quick_open_ms", "idle_ram_mb", "idle_cpu_pct"})
+
+    def test_actual_window_frames_once_per_editor_per_config(self):
+        h = Harness(self)
+        orig = h.metric
+
+        def framed(name):
+            fn = orig(name)
+
+            def wrapped(editor, paths):
+                run.metrics.LAST_FRAME[editor] = {"x": 0, "y": 38, "w": 1280, "h": 800}
+                return fn(editor, paths)
+            return wrapped
+        h.metric = framed
+        self.addCleanup(run.metrics.LAST_FRAME.clear)
+        h.main("--rounds", "2", "--lsp", "both", "--only", "scroll_dropped_pct")
+        frames = h.result()["meta"]["window_frames"]
+        self.assertEqual(set(frames), set(editors.EDITORS))
+        self.assertEqual(frames["zed"], [
+            {"lsp": False, "cold": False, "x": 0, "y": 38, "w": 1280, "h": 800},
+            {"lsp": True, "cold": False, "x": 0, "y": 38, "w": 1280, "h": 800}])
 
     def test_missing_accessibility_blocks_scroll(self):
         h = Harness(self, perms={"screen_recording": True, "accessibility": False})

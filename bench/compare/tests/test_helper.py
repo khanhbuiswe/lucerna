@@ -121,6 +121,7 @@ class HelperTests(unittest.TestCase):
         for args in (["key", "--pid", me, "--combo", "cmd+p", "--timeout", "1"],
                      ["type", "--pid", me, "--text", "ab", "--timeout", "1"],
                      ["frame", "--pid", me, "--x", "0", "--y", "25", "--w", "1280", "--h", "800"],
+                     ["activate", "--pid", me, "--timeout", "1"],
                      ["scroll", "--pid", me, "--lines", "5"]):
             with self.subTest(cmd=args[0]):
                 r = self._expect_denied("accessibility", args)
@@ -139,7 +140,8 @@ class HelperTests(unittest.TestCase):
         for args in (["key", "--pid", me, "--combo", "cmd+p", "--timeout", "0.3"],
                      ["type", "--pid", me, "--text", "ab", "--timeout", "0.3"],
                      ["frame", "--pid", me, "--x", "0", "--y", "25", "--w", "1280", "--h", "800",
-                      "--timeout", "0.3"]):
+                      "--timeout", "0.3"],
+                     ["activate", "--pid", me, "--timeout", "0.3"]):
             with self.subTest(cmd=args[0]):
                 r = _run(self.binary, *args, env_extra={"BENCH_HELPER_FAKE_DENY": "screen"})
                 self.assertEqual(r.returncode, 2, r.stderr)
@@ -190,6 +192,9 @@ class HelperTests(unittest.TestCase):
             ["frame", "--pid", "1", "--x", "0", "--y", "25", "--w", "1280"],
             ["frame", "--pid", "1", "--x", "0", "--y", "25", "--w", "50", "--h", "800"],
             ["frame", "--pid", "1", "--x", "a", "--y", "25", "--w", "1280", "--h", "800"],
+            ["activate"],
+            ["activate", "--pid", "0"],
+            ["activate", "--pid", "1", "--timeout", "-1"],
         ]
         for args in bad:
             args = [a.encode().decode("unicode_escape") for a in args]
@@ -213,6 +218,7 @@ class HelperTests(unittest.TestCase):
             ["watch", "--display", "--exe", "/A b/X.app/Contents/MacOS/x", "--since", "0",
              "--until", "coverage:0.3", "--background", "1E1E1E"],
             ["frame", "--pid", "11,12", "--x", "-10", "--y", "25", "--w", "1280", "--h", "800"],
+            ["activate", "--pid", "11,12"],
         ]
         for args in good:
             args = [a.encode().decode("unicode_escape") for a in args]
@@ -232,7 +238,7 @@ class HelperTests(unittest.TestCase):
     def test_usage_lists_new_commands(self):
         r = _run(self.binary)
         self.assertEqual(r.returncode, 1)
-        for text in ("watch  --display --exe", "frame  --pid", "display"):
+        for text in ("watch  --display --exe", "frame  --pid", "activate --pid", "display"):
             self.assertIn(text, r.stderr)
 
     def test_bad_usage_exits_nonzero(self):

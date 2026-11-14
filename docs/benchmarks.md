@@ -31,7 +31,8 @@ Mọi thứ nằm dưới thư mục bench (mặc định `~/LucernaBench.noinde
 rồi ghi lại settings, nên không cấu hình nào mang theo cache, lịch sử hay
 extension của cấu hình trước. Chỉ giữ `vscode-ext-lsp` (extension
 rust-analyzer của VS Code, cài cần mạng) và file pid của Lucerna. Việc xoá chỉ
-chạm đường dẫn nằm trong `<bench>/profiles`.
+chạm các mục hồ sơ đã biết nằm trong `<bench>/profiles`; mục lạ được giữ lại kèm
+cảnh báo, và bench từ chối xoá nếu `<bench>/profiles` là symlink.
 
 Cả ba editor được mở bằng **binary chính** của chúng (binary sở hữu cửa sổ),
 không qua launcher:
@@ -59,7 +60,9 @@ Cấu hình có LSP: VS Code dùng `vscode-ext-lsp`; thiếu extension
 1280×800 pt (yêu cầu ở toạ độ 0,25) qua Accessibility ngay khi cửa sổ hiện, nên
 ba editor được đo ở cùng một kích thước. macOS giữ cửa sổ dưới thanh menu, nên
 trên màn hình có notch cửa sổ có thể nằm thấp hơn; kích thước thì được kiểm
-tra lại, sai thì lượt đó bị loại. Phép khởi động dùng **kích thước mặc định
+tra lại, sai thì lượt đó bị loại. Khung thật (sau khi macOS chỉnh vị trí) được
+ghi vào kết quả, mỗi editor một lần cho mỗi cấu hình (`meta.window_frames`).
+Phép khởi động dùng **kích thước mặc định
 của từng editor** (khung hình đầu tiên không đổi cỡ được). Kích thước, tỉ lệ và
 tần số quét của màn hình chính được ghi vào kết quả.
 
@@ -91,7 +94,9 @@ binary) vì `ps` trên macOS không hiện biến môi trường của process k
 Binary Lucerna được xác định **một lần** đầu phiên và ghi vào kết quả
 (`meta.lucerna_binary`: đường dẫn, thời điểm sửa file, `luc --version`), cạnh
 `lucerna_commit` (HEAD của checkout, có thể khác binary nếu chưa dựng lại).
-Không có binary thì bench dừng ngay; binary biến mất giữa phiên (đang dựng lại)
+VS Code chạy với môi trường đã bỏ `ELECTRON_RUN_AS_NODE` và
+`ELECTRON_NO_ATTACH_CONSOLE` (nếu shell gọi bench có đặt), để `Code` luôn chạy
+như app. Không có binary Lucerna thì bench dừng ngay; binary biến mất giữa phiên (đang dựng lại)
 thì bench dừng trước lần mở Lucerna kế tiếp.
 
 Đồng hồ: mọi mốc là nano giây của `CLOCK_UPTIME_RAW`. Thời điểm của một khung
@@ -108,7 +113,7 @@ dưới 90% vùng giữa (có thể là hộp thoại hay cửa sổ chưa vẽ 
 
 | Chỉ số | Cách đo |
 |---|---|
-| Khởi động tới khung đầu có nội dung | Mở `marker.txt`. Helper quay **cả màn hình chính** và bắt đầu quay **trước** khi mở editor (chờ helper báo sẵn sàng rồi mới gọi lệnh mở), nên khung đầu tiên của cửa sổ mới không bị lỡ. Ở mỗi khung, helper tìm cửa sổ lớn nhất của binary editor (theo đường dẫn binary của process sở hữu; bỏ các process cùng binary đã chạy trước, ví dụ VS Code của bạn), cắt khung theo cửa sổ đó, và dừng ở khung đầu tiên mà ≥ 30% điểm ảnh của vùng giữa (60% × 60% cửa sổ) khác màu nền đã hiệu chuẩn. Mốc 0 là ngay trước khi gọi lệnh mở; helper báo thời điểm tuyệt đối của khung và bench trừ mốc 0. Nếu cửa sổ đã đủ nội dung ngay khung đầu tiên quay được (không thể xảy ra với cửa sổ mở sau đó), lượt đó bị loại (ghi `null`). |
+| Khởi động tới khung đầu có nội dung | Mở `marker.txt`. Helper quay **cả màn hình chính** và bắt đầu quay **trước** khi mở editor (chờ helper báo sẵn sàng rồi mới gọi lệnh mở), nên khung đầu tiên của cửa sổ mới không bị lỡ. Ở mỗi khung, helper tìm cửa sổ lớn nhất của binary editor (theo đường dẫn binary của process sở hữu; bỏ các process cùng binary đã chạy trước, ví dụ VS Code của bạn), cắt khung theo cửa sổ đó, và dừng ở khung đầu tiên mà ≥ 30% điểm ảnh của vùng giữa (60% × 60% cửa sổ) khác màu nền đã hiệu chuẩn. Mốc 0 là ngay trước khi gọi lệnh mở; helper báo thời điểm tuyệt đối của khung và bench trừ mốc 0. Vì quay cả màn hình, một cửa sổ khác nằm đè lên editor sẽ bị đo thay: một khung chỉ được tính khi cửa sổ trên cùng tại tâm và bốn góc của vùng giữa là của editor; khung bị che không thể đạt điều kiện, nên cửa sổ bị che chỉ làm số đo muộn hơn, không làm nó sớm giả (số khung bị che được ghi lại). Để cửa sổ mới không nằm sau cửa sổ khác, ngay khi process của editor xuất hiện bench đưa app đó lên trước từ một luồng nền (không làm chậm việc quay). Nếu cửa sổ đã đủ nội dung ngay khung đầu tiên quay được (không thể xảy ra với cửa sổ mở sau đó), lượt đó bị loại (ghi `null`). |
 | Đổi file trên đĩa → màn hình cập nhật | Mở bản sao của `marker.txt`, chờ nội dung hiện và 1 s cho yên, bắt đầu quay, rồi script ghi file trống. Mốc là ngay trước lệnh ghi; dừng ở khung đầu tiên đổi hơn 0,5% so với khung tham chiếu (ngưỡng bỏ qua con trỏ nhấp nháy). |
 | Quick Open mỗi phím gõ (repo 80.000 file) | Mở repo lớn, chờ 30 s cho quét file, ⌘P, gõ `mod004`, rồi bắt đầu quay và gõ phím cuối `2` (`mod0042` là thư mục có thật trong repo sinh ra). Mốc là lúc gửi phím cuối; dừng ở khung đầu tiên đổi. Phím gửi bằng `CGEvent.postToPid` tới đúng process, sau khi đưa app lên trước. |
 | RAM khi rỗi | Mở repo vừa, mở 10 file `.rs` của ripgrep bằng Quick Open (cùng cách cho cả ba, vì `luc` chỉ nhận một đường dẫn trên dòng lệnh), rỗi 60 s, rồi cộng `phys_footprint` của mọi process của app (`footprint`). Đơn vị MiB (1024). |
@@ -177,6 +182,9 @@ dưới 90% vùng giữa (có thể là hộp thoại hay cửa sổ chưa vẽ 
   mở chúng bằng Quick Open (gõ đường dẫn, Enter) và chờ, nhưng không kiểm tra
   mỗi editor thật sự có mười tab; một lần mở hỏng làm số RAM thấp hơn mà không
   bị loại.
+- **Chỉ màn hình chính.** Phép khởi động quay màn hình chính (màn hình có thanh
+  menu). Nếu editor mở cửa sổ trên màn hình khác, lượt đó hết giờ và ghi `null`.
+  Nên chạy với một màn hình, hoặc để các editor mở trên màn hình chính.
 - **Khởi động ở kích thước cửa sổ mặc định** của từng editor, các phép khác ở
   1280×800 pt. Kích thước mặc định khác nhau giữa các editor, nên số khởi động
   gồm cả khác biệt về diện tích cần vẽ.

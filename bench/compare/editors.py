@@ -52,6 +52,7 @@ _MAIN_PATTERN = {
     "vscode": re.compile(r"(^|/)Visual Studio Code\.app/Contents/MacOS/Code(\s|$)"),
 }
 QUIT_GRACE_S = 5.0
+VSCODE_DROP_ENV = ("ELECTRON_RUN_AS_NODE", "ELECTRON_NO_ATTACH_CONSOLE")
 
 
 def now_ns() -> int:
@@ -155,6 +156,8 @@ def launch(editor: str, paths: BenchPaths, target: Path) -> Launched:
         if not lsp:
             cmd.append("--disable-extensions")
         cmd += ["--new-window", str(target)]
+        # Run as the app, never as plain node, whatever the calling shell set.
+        env = {k: v for k, v in os.environ.items() if k not in VSCODE_DROP_ENV}
     elif editor == "zed":
         # Run the main binary itself: `cli` hands off through LaunchServices
         # and drops --user-data-dir, so Zed would open the user's real profile.

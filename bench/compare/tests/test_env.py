@@ -107,14 +107,35 @@ class ResetProfilesTest(unittest.TestCase):
         outside.mkdir()
         (outside / "keep").write_text("x")
         (prof / "link").symlink_to(outside)
-        env.reset_profiles(self.paths)
+        (prof / "notes.txt").write_text("mine")
+        with mock.patch.object(env.sys, "stderr") as err:
+            env.reset_profiles(self.paths)
+        # unknown entries survive, with a warning
         self.assertEqual(sorted(p.name for p in prof.iterdir()),
-                         ["lucerna-home", "vscode-ext-lsp"])
+                         ["link", "lucerna-home", "notes.txt", "vscode-ext-lsp"])
+        self.assertEqual((prof / "notes.txt").read_text(), "mine")
+        warned = "".join(c.args[0] for c in err.write.call_args_list)
+        self.assertIn("notes.txt", warned)
         self.assertEqual([p.name for p in self.paths.lucerna_home.iterdir()],
                          [env.PIDFILE_NAME])
         self.assertTrue((prof / "vscode-ext-lsp" / "rust-lang.rust-analyzer-1").is_dir())
-        self.assertTrue((outside / "keep").exists())   # symlink removed, not followed
+        self.assertTrue((outside / "keep").exists())   # unknown symlink never followed
         self.assertTrue(self.paths.data.parent.exists())
+
+    def test_refuses_symlinked_profiles_dir(self):
+        real = Path(self.tmp.name) / "real-profiles"
+        (real / "zed").mkdir(parents=True)
+        self.paths.root.mkdir(parents=True)
+        self.paths.profiles.symlink_to(real)
+        with self.assertRaises(RuntimeError) as cm:
+            env.reset_profiles(self.paths)
+        self.assertIn("symlink", str(cm.exception))
+        self.assertTrue((real / "zed").is_dir())
+
+    def test_known_entries_cover_what_write_profiles_creates(self):
+        env.write_profiles(self.paths, lsp=False)
+        for entry in self.paths.profiles.iterdir():
+            self.assertIn(entry.name, env.PROFILE_ENTRIES)
 
     def test_no_profiles_dir_is_noop(self):
         self.assertEqual(env.reset_profiles(self.paths), [])
@@ -127,7 +148,7 @@ class ResetProfilesTest(unittest.TestCase):
 
         def fake_iterdir(p):
             if p == prof:
-                return iter([Path(self.tmp.name) / "elsewhere"])
+                return iter([Path(self.tmp.name) / "zed"])   # known name, wrong place
             return real_iterdir(p)
         with mock.patch.object(Path, "iterdir", fake_iterdir):
             with self.assertRaises(RuntimeError):
