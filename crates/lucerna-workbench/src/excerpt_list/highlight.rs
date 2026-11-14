@@ -202,21 +202,47 @@ fn highlight_rows(
     }
     for run in runs {
         let spans = syntax.highlights(snapshot, run.clone(), styled);
-        for row in run {
-            let start = snapshot.point_to_offset(Point { row, column: 0 });
-            let len = snapshot.line(row).len();
-            let mut line_spans = LineSpans::new();
-            for span in &spans {
-                if span.range.end <= start {
-                    continue;
-                }
-                let from = span.range.start.max(start) - start;
-                let to = (span.range.end - start).min(len);
-                if from < to {
-                    line_spans.push((from..to, span.capture.clone()));
-                }
-            }
+        let bounds: Vec<(usize, usize)> = run
+            .clone()
+            .map(|row| {
+                let start = snapshot.point_to_offset(Point { row, column: 0 });
+                (start, snapshot.line(row).len())
+            })
+            .collect();
+        let spans: Vec<(Range<usize>, Arc<str>)> =
+            spans.into_iter().map(|s| (s.range, s.capture)).collect();
+        for (row, line_spans) in run.zip(spans_by_row(&bounds, &spans, &mut 0)) {
             out.insert(row + 1, line_spans);
+        }
+    }
+    out
+}
+
+/// Cuts `spans` (byte ranges of the text) to the rows `bounds` (each row's
+/// start offset and length, in order and not overlapping): each row gets
+/// the parts of the spans over it, relative to its start, in span order.
+/// Each span visits only the rows it covers, found by binary search, so a
+/// long run costs O(spans · log rows + output), not O(rows · spans).
+/// `steps` counts the rows visited, for tests.
+fn spans_by_row(
+    bounds: &[(usize, usize)],
+    spans: &[(Range<usize>, Arc<str>)],
+    steps: &mut usize,
+) -> Vec<LineSpans> {
+    let mut out = vec![LineSpans::new(); bounds.len()];
+    for (range, capture) in spans {
+        // The first row ending after the span starts.
+        let first = bounds.partition_point(|(start, len)| start + len <= range.start);
+        for (row, &(start, len)) in bounds.iter().enumerate().skip(first) {
+            if start >= range.end {
+                break;
+            }
+            *steps += 1;
+            let from = range.start.max(start) - start;
+            let to = (range.end - start).min(len);
+            if from < to {
+                out[row].push((from..to, capture.clone()));
+            }
         }
     }
     out
@@ -655,6 +681,96 @@ mod tests {
             &|_| true,
         );
         assert!(current.is_empty() && base.is_empty());
+    }
+
+    /// The per-row cut as it was: every row walks every span.
+    fn spans_by_row_naive(
+        bounds: &[(usize, usize)],
+        spans: &[(Range<usize>, Arc<str>)],
+    ) -> Vec<LineSpans> {
+        bounds
+            .iter()
+            .map(|&(start, len)| {
+                let mut line_spans = LineSpans::new();
+                for (range, capture) in spans {
+                    if range.end <= start {
+                        continue;
+                    }
+                    let from = range.start.max(start) - start;
+                    let to = (range.end - start).min(len);
+                    if from < to {
+                        line_spans.push((from..to, capture.clone()));
+                    }
+                }
+                line_spans
+            })
+            .collect()
+    }
+
+    /// Row bounds of `text` split at `\n`.
+    fn bounds_of(text: &str) -> Vec<(usize, usize)> {
+        let mut start = 0;
+        text.split('\n')
+            .map(|row| {
+                let b = (start, row.len());
+                start += row.len() + 1;
+                b
+            })
+            .collect()
+    }
+
+    #[test]
+    fn spans_by_row_matches_the_per_row_walk() {
+        // Rows: "fn a() {", "", "/* x", "y */ b", "}" with spans that
+        // nest, cross rows, sit on a newline, start past the end and come
+        // out of order (as injections may).
+        let text = "fn a() {\n\n/* x\ny */ b\n}";
+        let bounds = bounds_of(text);
+        let c = |s: &str| Arc::<str>::from(s);
+        let spans = vec![
+            (0..2, c("keyword")),
+            (0..24, c("block")),
+            (8..9, c("newline")),
+            (10..19, c("comment")),
+            (3..4, c("function")),
+            (20..21, c("var")),
+            (30..40, c("past")),
+            (9..9, c("empty")),
+        ];
+        let mut steps = 0;
+        assert_eq!(
+            spans_by_row(&bounds, &spans, &mut steps),
+            spans_by_row_naive(&bounds, &spans)
+        );
+        assert_eq!(
+            spans_by_row(&[], &spans, &mut steps),
+            Vec::<LineSpans>::new()
+        );
+    }
+
+    #[test]
+    fn spans_by_row_is_linear_on_a_long_run() {
+        // 5k rows, three one-row spans each: a whole-file tab's run.
+        let rows = 5_000;
+        let text = "let x = 1;\n".repeat(rows);
+        let bounds = bounds_of(&text);
+        let spans: Vec<(Range<usize>, Arc<str>)> = bounds
+            .iter()
+            .flat_map(|&(start, _)| {
+                [
+                    (start..start + 3, Arc::from("keyword")),
+                    (start + 4..start + 5, Arc::from("variable")),
+                    (start + 8..start + 9, Arc::from("number")),
+                ]
+            })
+            .collect();
+        let mut steps = 0;
+        let cut = spans_by_row(&bounds, &spans, &mut steps);
+        assert!(cut[..rows].iter().all(|s| s.len() == 3));
+        assert_eq!(cut[rows - 1][2], (8..9, Arc::from("number")));
+        // One row visit per span on a row (the three past the last
+        // newline cover none), not rows × spans (75 million).
+        assert_eq!(steps, rows * 3);
     }
 
     #[test]
