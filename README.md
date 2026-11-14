@@ -100,6 +100,18 @@ left out.
 Builds are macOS-only for now. Linux and Windows packages will come with cross-platform support
 (see [Roadmap](#roadmap)).
 
+### From a GitHub release (macOS)
+
+Download `Lucerna-<version>-macos-aarch64.zip` from the Releases page, unzip it and move
+`Lucerna.app` to Applications. Release builds are for Apple silicon, signed ad hoc and not
+notarized, so macOS blocks the first launch. Right-click the app and choose **Open**, or run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Lucerna.app
+```
+
+How releases are cut: [docs/releasing.md](docs/releasing.md).
+
 ### From the disk image (macOS)
 
 ```sh
