@@ -16,7 +16,7 @@ use jsonc_parser::common::Ranged;
 use jsonc_parser::tokens::Token;
 use jsonc_parser::{CollectOptions, CommentCollectionStrategy, ParseOptions, ast, parse_to_ast};
 use lucerna_settings::{Layer, SettingsError, SettingsStore};
-use lucerna_theme::{ResolvedIcons, Theme};
+use lucerna_theme::{Appearance, ResolvedIcons, Theme};
 
 use crate::config_files::{
     ConfigFile, ConfigState, USER_SETTINGS_TEMPLATE, apply_configured_theme,
@@ -218,13 +218,33 @@ impl Workbench {
         if self.theme_picker.is_some() {
             return;
         }
+        let system = system_appearance(cx);
         let state = cx.global::<AppState>();
-        let (names, original) = (state.themes.names(), state.theme.clone());
+        let follows_system = color_theme_setting_key(&state.settings, system) != COLOR_THEME_KEY;
+        let original = state.theme.clone();
         let current = original.name.clone();
+        // As in VS Code: the themes of the mode in use come first.
+        let mode = if follows_system {
+            system
+        } else {
+            original.appearance
+        };
+        let (mut names, rest): (Vec<_>, Vec<_>) = state
+            .themes
+            .themes_with_appearance()
+            .into_iter()
+            .partition(|(_, appearance)| *appearance == mode);
+        names.extend(rest);
+        let names = names.into_iter().map(|(name, _)| name).collect();
+        let placeholder = match (follows_system, system) {
+            (false, _) => "Select Color Theme (detect system color mode disabled)",
+            (true, Appearance::Dark) => "Select Color Theme for System Dark Mode",
+            (true, Appearance::Light) => "Select Color Theme for System Light Mode",
+        };
         self.show_picker(
             names,
             &current,
-            "Select Color Theme",
+            placeholder,
             Picking::ColorTheme(original),
             window,
             cx,
@@ -319,7 +339,7 @@ impl Workbench {
                 let key = if is_icons {
                     ICON_THEME_KEY
                 } else {
-                    COLOR_THEME_KEY
+                    color_theme_key(cx)
                 };
                 match save_setting(key, name, cx) {
                     Ok(()) => {

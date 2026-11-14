@@ -444,11 +444,16 @@ fn theme_picker_writes_setting_preserving_comments(cx: &mut TestAppContext) {
     keys("cmd-k cmd-t", cx);
     let picker = theme_picker(&wb, cx).unwrap();
     assert_eq!(
+        cx.update(|_, cx| picker.read(cx).row_texts()),
+        vec!["Lucerna Light".to_string(), "Lucerna Dark".to_string()],
+        "the active theme's mode comes first"
+    );
+    assert_eq!(
         cx.update(|_, cx| picker.read(cx).selected_index()),
-        1,
+        0,
         "the active theme is selected"
     );
-    keys("up", cx);
+    keys("down", cx);
     keys("enter", cx);
     assert_eq!(theme_name(cx), "Lucerna Dark");
     assert_eq!(
@@ -768,4 +773,114 @@ fn unknown_preferred_theme_falls_back(cx: &mut TestAppContext) {
     init(&dirs, cx);
     let (_wb, cx) = open(dirs.root.path(), cx);
     assert_eq!(theme_name(cx), "Lucerna Dark");
+}
+
+fn picker_placeholder(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> String {
+    let picker = theme_picker(wb, cx).expect("the theme picker is shown");
+    cx.update(|_, cx| picker.read(cx).input().read(cx).placeholder().to_string())
+}
+
+#[gpui::test]
+fn picker_placeholder_names_system_mode(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    keys("cmd-k cmd-t", cx);
+    assert_eq!(
+        picker_placeholder(&wb, cx),
+        "Select Color Theme for System Light Mode"
+    );
+    keys("escape", cx);
+    system_mode(lucerna_theme::Appearance::Dark, cx);
+    keys("cmd-k cmd-t", cx);
+    assert_eq!(
+        picker_placeholder(&wb, cx),
+        "Select Color Theme for System Dark Mode"
+    );
+    keys("escape", cx);
+    write(
+        &dirs.settings(),
+        r#"{ "window.autoDetectColorScheme": false }"#,
+        cx,
+    );
+    keys("cmd-k cmd-t", cx);
+    assert_eq!(
+        picker_placeholder(&wb, cx),
+        "Select Color Theme (detect system color mode disabled)"
+    );
+}
+
+#[gpui::test]
+fn picker_confirm_writes_preferred_setting(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    keys("cmd-k cmd-t", cx);
+    cx.simulate_input("dark");
+    draw(cx);
+    keys("enter", cx);
+    assert!(theme_picker(&wb, cx).is_none());
+    let text = std::fs::read_to_string(dirs.settings()).unwrap();
+    assert!(
+        text.contains(r#""workbench.preferredLightColorTheme": "Lucerna Dark""#),
+        "{text}"
+    );
+    assert!(!text.contains("workbench.colorTheme"), "{text}");
+    assert_eq!(theme_name(cx), "Lucerna Dark");
+}
+
+#[gpui::test]
+fn picker_confirm_writes_color_theme_when_detect_off(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    std::fs::write(
+        dirs.settings(),
+        r#"{ "window.autoDetectColorScheme": false }"#,
+    )
+    .unwrap();
+    init(&dirs, cx);
+    let (_wb, cx) = open(dirs.root.path(), cx);
+    keys("cmd-k cmd-t", cx);
+    cx.simulate_input("light");
+    draw(cx);
+    keys("enter", cx);
+    let text = std::fs::read_to_string(dirs.settings()).unwrap();
+    assert!(
+        text.contains(r#""workbench.colorTheme": "Lucerna Light""#),
+        "{text}"
+    );
+    assert!(!text.contains("preferred"), "{text}");
+    assert_eq!(theme_name(cx), "Lucerna Light");
+}
+
+#[gpui::test]
+fn picker_lists_system_mode_themes_first(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    keys("cmd-k cmd-t", cx);
+    let picker = theme_picker(&wb, cx).unwrap();
+    assert_eq!(
+        cx.update(|_, cx| picker.read(cx).row_texts()),
+        vec!["Lucerna Light".to_string(), "Lucerna Dark".to_string()]
+    );
+    assert_eq!(cx.update(|_, cx| picker.read(cx).selected_index()), 0);
+}
+
+#[gpui::test]
+fn appearance_change_during_preview_keeps_preview(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, cx);
+    let (_wb, cx) = open(dirs.root.path(), cx);
+    keys("cmd-k cmd-t", cx);
+    keys("down", cx);
+    assert_eq!(theme_name(cx), "Lucerna Dark", "the preview");
+    system_mode(lucerna_theme::Appearance::Dark, cx);
+    system_mode(lucerna_theme::Appearance::Light, cx);
+    assert_eq!(
+        theme_name(cx),
+        "Lucerna Dark",
+        "the preview survives mode changes"
+    );
+    keys("escape", cx);
+    assert_eq!(theme_name(cx), "Lucerna Light");
 }
