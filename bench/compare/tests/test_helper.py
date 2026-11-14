@@ -78,10 +78,63 @@ class HelperTests(unittest.TestCase):
             self.skipTest("machine has both permissions")
         r = _run(self.binary, "check")
         self.assertEqual(r.returncode, 3)
-        r = _run(self.binary, "watch", "--pid", str(os.getpid()), "--since", "0",
-                 "--until", "change", "--timeout", "1")
-        self.assertEqual(r.returncode, 3)
+        perms = json.loads(r.stdout)
+        if not perms["screen_recording"]:
+            r = _run(self.binary, "watch", "--pid", str(os.getpid()), "--since", "0",
+                     "--until", "change", "--timeout", "1")
+            self.assertEqual(r.returncode, 3)
+            self.assertEqual(r.stdout.strip(), "")
+        if not perms["accessibility"]:
+            r = _run(self.binary, "key", "--pid", str(os.getpid()), "--combo", "cmd+p",
+                     "--timeout", "1")
+            self.assertEqual(r.returncode, 3)
+            self.assertEqual(r.stdout.strip(), "")
+
+    def _expect_denied(self, deny, args):
+        r = _run(self.binary, *args, env_extra={"BENCH_HELPER_FAKE_DENY": deny})
+        self.assertEqual(r.returncode, 3, r.stderr)
         self.assertEqual(r.stdout.strip(), "")
+        self.assertIn("permission", r.stderr.lower())
+        return r
+
+    def test_capture_commands_need_screen_recording(self):
+        me = str(os.getpid())
+        for args in (["watch", "--pid", me, "--since", "0", "--until", "change",
+                      "--timeout", "1"],
+                     ["sample", "--pid", me, "--timeout", "1"],
+                     ["scroll", "--pid", me, "--lines", "5"]):
+            with self.subTest(cmd=args[0]):
+                r = self._expect_denied("screen", args)
+                self.assertIn("screen recording", r.stderr.lower())
+                if args[0] != "scroll":  # scroll also needs Accessibility
+                    self.assertNotIn("accessibility", r.stderr.lower())
+
+    def test_input_commands_need_accessibility(self):
+        me = str(os.getpid())
+        for args in (["key", "--pid", me, "--combo", "cmd+p", "--timeout", "1"],
+                     ["type", "--pid", me, "--text", "ab", "--timeout", "1"],
+                     ["scroll", "--pid", me, "--lines", "5"]):
+            with self.subTest(cmd=args[0]):
+                r = self._expect_denied("accessibility", args)
+                self.assertIn("accessibility", r.stderr.lower())
+                if args[0] != "scroll":  # scroll also needs Screen Recording
+                    self.assertNotIn("screen recording", r.stderr.lower())
+
+    def test_key_and_type_do_not_need_screen_recording(self):
+        # With Screen Recording denied, key/type get past the permission check
+        # and look for a window via CGWindowList; this process has none, so
+        # they time out (exit 2) instead of exiting 3.
+        check = _run(self.binary, "check")
+        if not json.loads(check.stdout)["accessibility"]:
+            self.skipTest("Accessibility not granted on this machine")
+        me = str(os.getpid())
+        for args in (["key", "--pid", me, "--combo", "cmd+p", "--timeout", "0.3"],
+                     ["type", "--pid", me, "--text", "ab", "--timeout", "0.3"]):
+            with self.subTest(cmd=args[0]):
+                r = _run(self.binary, *args, env_extra={"BENCH_HELPER_FAKE_DENY": "screen"})
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertEqual(r.stdout.strip(), "")
+                self.assertIn("no on-screen window", r.stderr)
 
     def test_clock_matches_python(self):
         before = time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)

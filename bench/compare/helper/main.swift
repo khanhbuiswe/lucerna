@@ -55,8 +55,8 @@ usage: bench-helper <command> [options]      (<pids> = pid[,pid...])
   watch  --pid <pids> --since <t0_ns> --until coverage:<0..1>|change
          [--timeout <s>] [--baseline <png>] [--background RRGGBB]
   scroll --pid <pids> --lines <n> [--rate <events/s>] [--timeout <s>]
-  type   --pid <pids> --text <s> [--interval-ms <ms>]
-  key    --pid <pids> --combo <cmd+p>
+  type   --pid <pids> --text <s> [--interval-ms <ms>] [--timeout <s>]
+  key    --pid <pids> --combo <cmd+p> [--timeout <s>]
 """
 
 // MARK: - Clock
@@ -121,9 +121,9 @@ func pidsOption() -> Set<pid_t> {
     return pids
 }
 
-/// Deadline from --timeout (default 60 s).
-func deadlineOption() -> (seconds: Double, deadline: UInt64) {
-    let s = positiveOption("timeout") ?? 60
+/// Deadline from --timeout (default 60 s; 10 s for key/type window lookup).
+func deadlineOption(default def: Double = 60) -> (seconds: Double, deadline: UInt64) {
+    let s = positiveOption("timeout") ?? def
     return (s, nowNs() + UInt64(s * 1e9))
 }
 
@@ -131,20 +131,27 @@ func deadlineOption() -> (seconds: Double, deadline: UInt64) {
 
 /// Preflight only: never prompts (no Request variants). TCC attributes the
 /// grant to the responsible app (the terminal or app that launched us).
+/// BENCH_HELPER_FAKE_DENY (for tests): "1" denies both, "screen" denies only
+/// Screen Recording, "accessibility" denies only Accessibility.
 func permissions() -> (screen: Bool, ax: Bool) {
-    if ProcessInfo.processInfo.environment["BENCH_HELPER_FAKE_DENY"] == "1" {
-        return (false, false)
-    }
-    return (CGPreflightScreenCaptureAccess(), AXIsProcessTrusted())
+    let fake = ProcessInfo.processInfo.environment["BENCH_HELPER_FAKE_DENY"]
+    if fake == "1" { return (false, false) }
+    let screen = fake == "screen" ? false : CGPreflightScreenCaptureAccess()
+    let ax = fake == "accessibility" ? false : AXIsProcessTrusted()
+    return (screen, ax)
 }
 
-/// Every measuring command needs both grants (window lookup uses
-/// ScreenCaptureKit, input uses CGEvent); refuse rather than report zeros.
-func requirePermissions() {
+/// Each measuring command checks only the grants it uses, and refuses rather
+/// than report zeros:
+///   watch, sample  Screen Recording (ScreenCaptureKit capture)
+///   scroll         Screen Recording + Accessibility (capture + CGEvent)
+///   key, type      Accessibility (CGEvent; the window is found with
+///                  CGWindowList, which needs no Screen Recording)
+func requirePermissions(screen needScreen: Bool, accessibility needAx: Bool) {
     let p = permissions()
     var missing: [String] = []
-    if !p.screen { missing.append("Screen Recording") }
-    if !p.ax { missing.append("Accessibility") }
+    if needScreen && !p.screen { missing.append("Screen Recording") }
+    if needAx && !p.ax { missing.append("Accessibility") }
     if !missing.isEmpty {
         fail("missing permission: \(missing.joined(separator: ", ")) — grant it to the app "
              + "that runs the benchmark (System Settings > Privacy & Security)", code: 3)
@@ -603,15 +610,39 @@ func post(_ k: KeyStroke, to pid: pid_t) {
     }
 }
 
+/// Owner pid of the largest on-screen layer-0 window (>= 100x100 pt) owned
+/// by any of `pids` — the same choice as `findWindow`, but read from
+/// CGWindowListCopyWindowInfo, whose owner pid, layer and bounds need no
+/// Screen Recording (only window titles do, and they are not used).
+func findWindowOwner(pids: Set<pid_t>, deadline: UInt64) async -> pid_t {
+    while true {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                              kCGNullWindowID) as? [[String: Any]] ?? []
+        var best: (pid: pid_t, area: CGFloat)? = nil
+        for info in list {
+            guard let owner = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  pids.contains(owner),
+                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  bounds.width >= 100, bounds.height >= 100 else { continue }
+            let area = bounds.width * bounds.height
+            if best == nil || area > best!.area { best = (owner, area) }
+        }
+        if let best { return best.pid }
+        if nowNs() >= deadline {
+            fail("timeout: no on-screen window for pid \(pids.sorted())", code: 2)
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+}
+
 /// Finds the window among `pids`, brings its owning app frontmost
 /// (NSRunningApplication.activate; key events posted to a pid go to its key
 /// window, which only takes input when the app is active) and returns the
 /// owner pid to post to.
-func activateOwner(pids: Set<pid_t>) async -> pid_t {
-    let window = await findWindow(pids: pids, deadline: nowNs() + 10_000_000_000)
-    guard let owner = window.owningApplication?.processID else {
-        fail("window has no owning application", code: 1)
-    }
+func activateOwner(pids: Set<pid_t>, deadline: UInt64) async -> pid_t {
+    let owner = await findWindowOwner(pids: pids, deadline: deadline)
     if let app = NSRunningApplication(processIdentifier: owner), !app.isActive {
         app.activate()
         let until = nowNs() + 2_000_000_000
@@ -624,8 +655,9 @@ func activateOwner(pids: Set<pid_t>) async -> pid_t {
 }
 
 /// Posts each character and prints the time each key-down was sent.
-func typeText(pids: Set<pid_t>, keys: [KeyStroke], intervalMs: Int) async {
-    let pid = await activateOwner(pids: pids)
+func typeText(pids: Set<pid_t>, keys: [KeyStroke], intervalMs: Int,
+              deadline: UInt64) async {
+    let pid = await activateOwner(pids: pids, deadline: deadline)
     var times: [UInt64] = []
     for (i, k) in keys.enumerated() {
         if i > 0 { usleep(UInt32(intervalMs) * 1000) }
@@ -635,8 +667,8 @@ func typeText(pids: Set<pid_t>, keys: [KeyStroke], intervalMs: Int) async {
     emit(["t_ns": times])
 }
 
-func keyCombo(pids: Set<pid_t>, stroke: KeyStroke) async {
-    let pid = await activateOwner(pids: pids)
+func keyCombo(pids: Set<pid_t>, stroke: KeyStroke, deadline: UInt64) async {
+    let pid = await activateOwner(pids: pids, deadline: deadline)
     let t = nowNs()
     post(stroke, to: pid)
     emit(["t_ns": t])
@@ -720,7 +752,7 @@ case "check":
 case "sample":
     let pids = pidsOption()
     let timeout = deadlineOption()
-    requirePermissions()
+    requirePermissions(screen: true, accessibility: false)
     await sample(pids: pids, timeout: timeout)
 case "watch":
     let pids = pidsOption()
@@ -742,7 +774,7 @@ case "watch":
         background = [UInt8(v & 0xff), UInt8(v >> 8 & 0xff), UInt8(v >> 16)]
     }
     let timeout = deadlineOption()
-    requirePermissions()
+    requirePermissions(screen: true, accessibility: false)
     await watch(pids: pids, since: since, mode: mode, until: until, background: background,
                 baseline: option("baseline"), timeout: timeout)
 case "scroll":
@@ -750,19 +782,21 @@ case "scroll":
     let lines = intOption("lines", min: 1)
     let rate = positiveOption("rate")
     let timeout = deadlineOption()
-    requirePermissions()
+    requirePermissions(screen: true, accessibility: true)
     await scroll(pids: pids, lines: lines, rateOption: rate, timeout: timeout)
 case "type":
     let pids = pidsOption()
     let keys = strokes(for: required("text"))
     let interval = intOption("interval-ms", default: 100, min: 0)
-    requirePermissions()
-    await typeText(pids: pids, keys: keys, intervalMs: interval)
+    let timeout = deadlineOption(default: 10)
+    requirePermissions(screen: false, accessibility: true)
+    await typeText(pids: pids, keys: keys, intervalMs: interval, deadline: timeout.deadline)
 case "key":
     let pids = pidsOption()
     let stroke = comboStroke(required("combo"))
-    requirePermissions()
-    await keyCombo(pids: pids, stroke: stroke)
+    let timeout = deadlineOption(default: 10)
+    requirePermissions(screen: false, accessibility: true)
+    await keyCombo(pids: pids, stroke: stroke, deadline: timeout.deadline)
 default:
     fail("unknown command \(command)\n" + usage, code: 1)
 }

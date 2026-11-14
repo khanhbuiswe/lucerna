@@ -13,16 +13,16 @@ Thiếu quyền thì helper báo lỗi và thoát mã khác 0.
 
 ## Helper `bench-helper` (Swift)
 
-Dựng bằng `swiftc` của Command Line Tools: `sh bench/compare/helper/build.sh [out]` (mặc định `<bench>/bin/bench-helper`). Mỗi lệnh in một dòng JSON ra stdout; lỗi ra stderr, mã thoát 1 = sai cú pháp/lỗi, 2 = hết giờ, 3 = thiếu quyền (không in số đo). Đối số được kiểm tra trước quyền, nên sai cú pháp luôn là mã 1.
+Dựng bằng `swiftc` của Command Line Tools: `sh bench/compare/helper/build.sh [out]` (mặc định `<bench>/bin/bench-helper`). Mỗi lệnh in một dòng JSON ra stdout; lỗi ra stderr, mã thoát 1 = sai cú pháp/lỗi, 2 = hết giờ, 3 = thiếu quyền (không in số đo). Đối số được kiểm tra trước quyền, nên sai cú pháp luôn là mã 1. Mỗi lệnh chỉ đòi quyền nó dùng: `watch`, `sample` cần Screen Recording; `scroll` cần Screen Recording và Accessibility; `key`, `type` chỉ cần Accessibility.
 
 `--pid` nhận danh sách cách nhau bởi dấu phẩy (truyền mọi pid của phiên bench, vì launcher `code`/`cli` không sở hữu cửa sổ); helper chọn cửa sổ layer 0 lớn nhất đang hiện thuộc một trong các pid đó. Kích thước quay cố định lúc bắt đầu stream; cửa sổ đổi cỡ sau đó thì nội dung được co giãn vào kích thước ấy.
 
 - `now`: `{"t_ns"}` theo `CLOCK_UPTIME_RAW`, cùng đồng hồ với `editors.now_ns()` (`time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)`; không dùng `time.monotonic_ns()` vì python3 3.9 của macOS đếm nó từ lúc process khởi động).
-- `check`: `{"screen_recording", "accessibility"}`, chỉ preflight, không bật hộp thoại xin quyền. `BENCH_HELPER_FAKE_DENY=1` giả thiếu quyền.
+- `check`: `{"screen_recording", "accessibility"}`, chỉ preflight, không bật hộp thoại xin quyền. `BENCH_HELPER_FAKE_DENY=1` giả thiếu cả hai quyền; `=screen` hoặc `=accessibility` giả thiếu một quyền.
 - `sample --pid [--timeout]`: hiệu chuẩn; lấy một khung, in `{"center_dominant": "RRGGBB", "center_dominant_frac", "window_dominant", "width", "height"}` (vùng giữa = vùng `coverage` đo). Python dùng để truyền `--background` riêng cho từng editor.
 - `watch --pid --since --until coverage:x|change [--timeout 60] [--baseline png] [--background RRGGBB]`: quay ở tần số màn hình, thời điểm khung lấy từ `SCStreamFrameInfo.displayTime` (mach time → ns). In `{"t_ns", "frames", "first_frame_hit"}`; `first_frame_hit: true` nghĩa là khung đầu tiên đã đạt điều kiện, số đo đáng ngờ. `coverage`: tỉ lệ điểm ảnh vùng 60%×60% giữa khác màu nền; thiếu `--background` thì lấy màu phổ biến nhất của khung đầu và cảnh báo trên stderr. `change`: so với `--baseline`, hoặc khung cuối trước `--since`, hoặc khung đầu tiên; ngưỡng 0,5% bỏ qua con trỏ nhấp nháy. Helper ghi `ready` ra stderr sau khi khung đầu đã được lưu làm mốc; chờ dòng này rồi mới gây thay đổi.
 - `scroll --pid --lines [--rate]`: dời con trỏ chuột vào giữa cửa sổ rồi gửi sự kiện cuộn 1 dòng, mặc định với tốc độ bằng tần số màn hình; in `{"frames", "dropped", "refresh_hz", "rate"}`. Khung "rớt" là khoảng giữa hai khung mới > 1,5 × max(chu kỳ màn hình, chu kỳ sự kiện) (lệch khỏi định nghĩa trong brief: khi `rate` < tần số màn hình, định nghĩa gốc coi mọi khung là rớt).
-- `type --pid --text [--interval-ms 100]`, `key --pid --combo cmd+p`: đưa app sở hữu cửa sổ lên trước (`NSRunningApplication.activate`) rồi gửi phím bằng `CGEvent.postToPid` tới pid đó; in thời điểm từng phím. `type` chỉ nhận chữ ASCII, số, dấu cách, dấu câu cơ bản và `\n` (Return); ký tự khác → mã 1.
+- `type --pid --text [--interval-ms 100] [--timeout 10]`, `key --pid --combo cmd+p [--timeout 10]`: tìm cửa sổ bằng `CGWindowListCopyWindowInfo` (pid chủ, layer, khung không cần Screen Recording; cùng cách chọn "cửa sổ layer 0 lớn nhất"), đưa app sở hữu cửa sổ lên trước (`NSRunningApplication.activate`) rồi gửi phím bằng `CGEvent.postToPid` tới pid đó; in thời điểm từng phím. `type` chỉ nhận chữ ASCII, số, dấu cách, dấu câu cơ bản và `\n` (Return); ký tự khác → mã 1.
 
 ## Phép đo (`metrics.py`)
 
