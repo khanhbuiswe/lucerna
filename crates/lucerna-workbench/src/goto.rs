@@ -411,7 +411,8 @@ pub(crate) fn prepaint_message(
         .text_size(px(UI_FONT_SIZE_SMALL))
         .child(text)
         .into_any_element();
-    let bounds = place_popover(&mut element, &anchor, window, cx);
+    let max_width = anchor.editor.size.width;
+    let bounds = place_popover(&mut element, &anchor, max_width, window, cx);
     window.defer_draw(element, bounds.origin, 1, None);
 }
 

@@ -478,31 +478,33 @@ pub(crate) fn prepaint_popover(
         let max_w = (a.editor.size.width / 2.).min(a.char_width * MAX_WIDTH_CHARS);
         let min_w = (a.char_width * MIN_WIDTH_CHARS).min(max_w);
         let max_h = (a.editor.size.height / 2.).min(a.line_height * MAX_HEIGHT_LINES);
-        Some((hover.render_popover(min_w, max_w, max_h, cx)?, a))
+        Some((hover.render_popover(min_w, max_w, max_h, cx)?, a, max_w))
     });
-    let Some((mut element, a)) = element else {
+    let Some((mut element, a, max_w)) = element else {
         if view.read(cx).hover().popover_bounds().is_some() {
             view.update(cx, |v, _| v.hover_mut().set_popover_bounds(None));
         }
         return;
     };
-    let bounds = place_popover(&mut element, &a, window, cx);
+    let bounds = place_popover(&mut element, &a, max_w, window, cx);
     view.update(cx, |v, _| v.hover_mut().set_popover_bounds(Some(bounds)));
     window.defer_draw(element, bounds.origin, 1, None);
 }
 
-/// Lays out `element` and finds its place by the anchor: above the
-/// anchor line when it fits, else below; 8 px from the editor's right
-/// edge.
+/// Lays out `element` at most `max_width` wide and finds its place by
+/// the anchor: above the anchor line when it fits, else below; 8 px from
+/// the editor's right edge. Text wraps at the width it is drawn at, so
+/// the height (and what is left to scroll) counts the wrapped lines.
 pub(crate) fn place_popover(
     element: &mut AnyElement,
     a: &PopoverAnchor,
+    max_width: Pixels,
     window: &mut Window,
     cx: &mut App,
 ) -> Bounds<Pixels> {
     let size = element.layout_as_root(
         size(
-            AvailableSpace::MaxContent,
+            AvailableSpace::Definite(max_width),
             AvailableSpace::Definite(a.editor.size.height),
         ),
         window,

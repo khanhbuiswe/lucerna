@@ -539,6 +539,106 @@ mod lsp_hover {
         assert!(visible(&view, cx));
     }
 
+    /// A hover taller than the popover keeps its full height inside it and
+    /// scrolls: nothing is cut off for good.
+    #[gpui::test]
+    fn long_hover_scrolls_inside_the_popover(cx: &mut TestAppContext) {
+        // Shaped like an intelephense hover: a title, a short line, a PHP
+        // code block, then a long doc comment.
+        let mut long = String::from(
+            "__App\\Models\\DeviceV2Command__\n\nSprint 6 record.\n\n\
+             ```php\n<?php\nclass DeviceV2Command extends Model\n{\n    use BroadcastsEvents;\n}\n```\n\n",
+        );
+        for i in 0..40 {
+            long.push_str(&format!("Paragraph {i} of a long PHPDoc comment.\n\n"));
+        }
+        let fake = FakeServer::new().on_request(HOVER, move |_| {
+            Ok(json!({ "contents": { "kind": "markdown", "value": long.clone() } }))
+        });
+        let (_dir, _fake, _wb, view, cx) = setup(TRUSTED, fake, cx);
+        hover_at(&view, 0, 4, cx);
+        advance(300, cx);
+        let pop = popover(cx).expect("popover shown");
+        let before = cx.debug_bounds("hover-markdown").expect("markdown drawn");
+        assert!(
+            before.size.height > pop.size.height,
+            "the content keeps its height ({:?}) instead of shrinking to the popover ({:?})",
+            before.size.height,
+            pop.size.height
+        );
+        move_to(pop.center(), cx);
+        cx.simulate_event(ScrollEvent {
+            position: pop.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+            ..Default::default()
+        });
+        super::draw(cx);
+        assert!(visible(&view, cx), "scrolling inside keeps the hover");
+        let after = cx.debug_bounds("hover-markdown").expect("markdown drawn");
+        assert!(
+            after.top() < before.top(),
+            "the content scrolled up: {:?} -> {:?}",
+            before.top(),
+            after.top()
+        );
+
+        // A trackpad sends many small deltas, with frames drawn between
+        // them: the offset must add up across frames.
+        let start = after.top();
+        for _ in 0..10 {
+            cx.simulate_event(ScrollEvent {
+                position: pop.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-10.))),
+                ..Default::default()
+            });
+            advance(16, cx);
+        }
+        let end = cx.debug_bounds("hover-markdown").expect("markdown drawn");
+        assert!(
+            end.top() <= start - px(90.),
+            "ten 10 px scrolls move the content about 100 px: {:?} -> {:?}",
+            start,
+            end.top()
+        );
+    }
+
+    /// Long paragraphs wrap inside the popover's width. The height used
+    /// for scrolling must be the wrapped one, else the end is cut off with
+    /// nothing to scroll (seen with intelephense PHPDoc hovers).
+    #[gpui::test]
+    fn wrapped_hover_scrolls_inside_the_popover(cx: &mut TestAppContext) {
+        let para = "word ".repeat(120);
+        let long: String = (0..6).map(|_| format!("{para}\n\n")).collect();
+        let fake = FakeServer::new().on_request(HOVER, move |_| {
+            Ok(json!({ "contents": { "kind": "markdown", "value": long.clone() } }))
+        });
+        let (_dir, _fake, _wb, view, cx) = setup(TRUSTED, fake, cx);
+        hover_at(&view, 0, 4, cx);
+        advance(300, cx);
+        let pop = popover(cx).expect("popover shown");
+        let before = cx.debug_bounds("hover-markdown").expect("markdown drawn");
+        assert!(
+            before.size.height > pop.size.height,
+            "wrapped content ({:?}) is taller than the popover ({:?})",
+            before.size.height,
+            pop.size.height
+        );
+        move_to(pop.center(), cx);
+        cx.simulate_event(ScrollEvent {
+            position: pop.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+            ..Default::default()
+        });
+        super::draw(cx);
+        let after = cx.debug_bounds("hover-markdown").expect("markdown drawn");
+        assert!(
+            after.top() < before.top(),
+            "{:?} -> {:?}",
+            before.top(),
+            after.top()
+        );
+    }
+
     #[gpui::test]
     fn popover_size_and_placement(cx: &mut TestAppContext) {
         let long = format!(
