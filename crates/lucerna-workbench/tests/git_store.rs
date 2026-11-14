@@ -325,3 +325,114 @@ fn diff_base_setting_change_rescans(cx: &mut TestAppContext) {
     let snap = store.read_with(cx, |s, _| s.snapshot());
     assert_eq!(snap.base_rev.as_deref(), Some(main.as_str()));
 }
+
+/// A failed base read (here: `git cat-file` exits while a flag file
+/// exists) keeps the hunks already shown and caches nothing, so the next
+/// `track_buffer` after recovery reads the base again.
+#[cfg(unix)]
+#[gpui::test]
+fn failed_base_read_keeps_hunks_and_retries(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    init(cx, None);
+    let (_t, dir) = repo();
+    let bin = TempDir::new().unwrap();
+    let flag = bin.path().join("fail-blobs");
+    let script = bin.path().join("git");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nif [ -e \"$LUC_FAIL_BLOBS\" ]; then\n  for a in \"$@\"; do [ \"$a\" = cat-file ] && exit 1; done\nfi\nexec git \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let git_bin = GitBinary::new(script)
+        .with_env("GIT_CONFIG_GLOBAL", NULL)
+        .with_env("GIT_CONFIG_SYSTEM", NULL)
+        .with_env("LUC_FAIL_BLOBS", &flag);
+    let root = dir.clone();
+    let store = cx.new(|cx| {
+        let mut store = GitStore::new(root, cx);
+        store.use_git_for_test(git_bin);
+        store
+    });
+    store.update(cx, |s, cx| s.set_trusted(true, cx));
+    cx.run_until_parked();
+
+    let first = "zero\none\ntwo\nthree\n";
+    store.update(cx, |s, cx| {
+        s.track_buffer(p("a.txt"), BufferSnapshot::from_text(first), cx)
+    });
+    cx.executor().advance_clock(Duration::from_millis(50));
+    cx.run_until_parked();
+    let shown = store
+        .read_with(cx, |s, _| s.hunks(Path::new("a.txt")))
+        .expect("hunks");
+    assert!(!shown.is_empty());
+
+    // Reads now fail: a rescan reloads the base and must keep the hunks.
+    std::fs::write(&flag, "").unwrap();
+    store.update(cx, |s, cx| {
+        s.kill_blob_process_for_test();
+        s.rescan(cx);
+    });
+    cx.run_until_parked();
+    let kept = store.read_with(cx, |s, _| s.hunks(Path::new("a.txt")));
+    assert_eq!(kept.as_deref(), Some(&*shown));
+
+    // Recovered: the next edit reads the base again (nothing was cached).
+    std::fs::remove_file(&flag).unwrap();
+    let second = "one\ntwo\nthree\nfour\n";
+    store.update(cx, |s, cx| {
+        s.track_buffer(p("a.txt"), BufferSnapshot::from_text(second), cx)
+    });
+    cx.executor().advance_clock(Duration::from_millis(50));
+    cx.run_until_parked();
+    let hunks = store
+        .read_with(cx, |s, _| s.hunks(Path::new("a.txt")))
+        .expect("hunks");
+    assert_eq!(&*hunks, diff_hunks("one\ntwo\nthree\n", second).as_slice());
+}
+
+/// A buffer tracked while a rescan that moves the base is running ends up
+/// diffed against the new base. (The scheduler finishes the rescan first
+/// here; the opposite order is covered by the unit test in `git/tests.rs`.)
+#[gpui::test(iterations = 5)]
+fn buffer_tracked_during_rescan_uses_new_base(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_t, dir) = repo();
+    let store = store(&dir, cx);
+    let text = "one\nTWO\nthree\n";
+    std::fs::write(dir.join("a.txt"), text).unwrap();
+    git(&dir, &["commit", "-q", "-am", "two"]);
+    store.update(cx, |s, cx| {
+        s.rescan(cx);
+        s.track_buffer(p("a.txt"), BufferSnapshot::from_text(text), cx);
+    });
+    cx.executor().advance_clock(Duration::from_millis(50));
+    cx.run_until_parked();
+    let hunks = store.read_with(cx, |s, _| s.hunks(Path::new("a.txt")));
+    assert_eq!(hunks.as_deref(), Some(&[][..]));
+}
+
+/// A buffer tracked before the first rescan finishes gets its hunks.
+#[gpui::test(iterations = 5)]
+fn buffer_tracked_before_first_rescan_gets_hunks(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_t, dir) = repo();
+    let root = dir.clone();
+    let store = cx.new(|cx| {
+        let mut store = GitStore::new(root, cx);
+        store.use_git_for_test(isolated_git());
+        store
+    });
+    let text = "one\nTWO\nthree\n";
+    store.update(cx, |s, cx| {
+        s.set_trusted(true, cx);
+        s.track_buffer(p("a.txt"), BufferSnapshot::from_text(text), cx);
+    });
+    cx.executor().advance_clock(Duration::from_millis(50));
+    cx.run_until_parked();
+    let hunks = store
+        .read_with(cx, |s, _| s.hunks(Path::new("a.txt")))
+        .expect("hunks");
+    assert_eq!(&*hunks, diff_hunks("one\ntwo\nthree\n", text).as_slice());
+}

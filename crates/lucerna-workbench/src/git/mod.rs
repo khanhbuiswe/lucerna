@@ -7,7 +7,7 @@
 mod locate;
 pub mod rollup;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -171,15 +171,27 @@ impl HunkWork {
     /// Blocking: loads the base text when needed, then diffs.
     fn run(self) -> Diffed {
         let text = match (self.cached, &self.rev) {
-            (Some(text), _) => text,
+            (Some(text), _) => Ok(text),
             (None, Some(rev)) => load_base(&self.repo, rev, &self.path, self.diff_base),
-            (None, None) => None,
+            (None, None) => Ok(None),
         };
-        let hunks = diff_buffer(text.as_ref(), &self.snapshot);
-        Diffed {
-            rev: self.rev,
-            text,
-            hunks,
+        match text {
+            Ok(text) => Diffed {
+                hunks: diff_buffer(text.as_ref(), &self.snapshot),
+                rev: self.rev,
+                text,
+                failed: false,
+            },
+            Err(err) => {
+                let path = self.path.display();
+                tracing::warn!(%err, %path, "could not read the git base");
+                Diffed {
+                    rev: self.rev,
+                    text: None,
+                    hunks: None,
+                    failed: true,
+                }
+            }
         }
     }
 }
@@ -189,6 +201,9 @@ struct Diffed {
     rev: Option<String>,
     text: Option<Arc<str>>,
     hunks: Option<Arc<[Hunk]>>,
+    /// Reading the base failed: the hunks shown stay, nothing is cached, and
+    /// the next `track_buffer` or rescan retries.
+    failed: bool,
 }
 
 enum Setup {
@@ -346,6 +361,15 @@ impl GitStore {
     #[doc(hidden)]
     pub fn use_git_for_test(&mut self, git: GitBinary) {
         self.git_override = Some(git);
+    }
+
+    /// Kills the blob reader's `git cat-file` process; the next read
+    /// restarts it.
+    #[doc(hidden)]
+    pub fn kill_blob_process_for_test(&self) {
+        if let Some(repo) = &self.repo {
+            repo.kill_blob_process_for_test();
+        }
     }
 
     /// How many status jobs have started.
@@ -534,10 +558,13 @@ impl GitStore {
         self.running = None;
         match result {
             Ok(out) => {
+                let old_rev = self.snapshot.base_rev.take();
                 self.snapshot = GitSnapshot {
                     generation: self.snapshot.generation + 1,
                     ..out.snapshot
                 };
+                let reloaded: HashSet<Arc<Path>> =
+                    out.reloaded.iter().map(|(p, _, _)| p.clone()).collect();
                 for (path, version, diffed) in out.reloaded {
                     let Some(tracked) = self.buffers.get(&path) else {
                         continue;
@@ -546,7 +573,25 @@ impl GitStore {
                         self.apply_diff(path, diffed, cx);
                     } else {
                         // Edited meanwhile: keep the base, diff the new text.
-                        self.store_base(&path, diffed.rev, diffed.text);
+                        if !diffed.failed {
+                            self.store_base(&path, diffed.rev, diffed.text);
+                        }
+                        self.schedule_hunks(path, Duration::ZERO, cx);
+                    }
+                }
+                if self.snapshot.base_rev != old_rev {
+                    // Buffers tracked after the job started may hold hunks
+                    // against the old base.
+                    let rev = self.snapshot.base_rev.as_ref();
+                    let stale: Vec<Arc<Path>> = self
+                        .buffers
+                        .keys()
+                        .filter(|p| {
+                            !reloaded.contains(*p) || self.bases.get(*p).map(|b| &b.rev) != rev
+                        })
+                        .cloned()
+                        .collect();
+                    for path in stale {
                         self.schedule_hunks(path, Duration::ZERO, cx);
                     }
                 }
@@ -642,6 +687,9 @@ impl GitStore {
     }
 
     fn apply_diff(&mut self, path: Arc<Path>, diffed: Diffed, cx: &mut Context<Self>) {
+        if diffed.failed {
+            return;
+        }
         self.store_base(&path, diffed.rev, diffed.text);
         self.set_hunks(path, diffed.hunks, cx);
     }
@@ -775,22 +823,21 @@ fn run_job(input: JobInput) -> Result<JobOutput, GitError> {
 
 /// The base text of `path` at `rev`. `None` (no hunks) for files missing
 /// there, binary or over 8 MB, except that with `"defaultBranch"` a file
-/// created and committed on the branch is compared with empty text.
-fn load_base(repo: &Repo, rev: &str, path: &Path, diff_base: DiffBase) -> Option<Arc<str>> {
-    let read = |rev: &str| match repo.read_blob(rev, path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::warn!(%err, path = %path.display(), "could not read the git base");
-            None
-        }
-    };
-    match read(rev) {
+/// created and committed on the branch is compared with empty text. An
+/// error is not "no base": the caller keeps what it shows.
+fn load_base(
+    repo: &Repo,
+    rev: &str,
+    path: &Path,
+    diff_base: DiffBase,
+) -> Result<Option<Arc<str>>, GitError> {
+    Ok(match repo.read_blob(rev, path)? {
         Some(bytes) => load_base_text(&bytes).map(Arc::from),
-        None if diff_base == DiffBase::DefaultBranch && read("HEAD").is_some() => {
+        None if diff_base == DiffBase::DefaultBranch && repo.read_blob("HEAD", path)?.is_some() => {
             Some(Arc::from(""))
         }
         None => None,
-    }
+    })
 }
 
 fn diff_buffer(base: Option<&Arc<str>>, snapshot: &BufferSnapshot) -> Option<Arc<[Hunk]>> {
@@ -801,3 +848,6 @@ fn diff_buffer(base: Option<&Arc<str>>, snapshot: &BufferSnapshot) -> Option<Arc
     }
     Some(diff_hunks(base, &text).into())
 }
+
+#[cfg(test)]
+mod tests;
