@@ -8,7 +8,7 @@ Máy đo: Apple M4, 10 nhân, 16 GB RAM, macOS 26 (Darwin 25.6). Spec đặt ng�
 
 | Đo | Ngưỡng | Kết quả | Trạng thái |
 |---|---|---|---|
-| Prepaint + paint một terminal 200 × 60 đầy chữ có màu (đổi kiểu mỗi 3 ô, 4020 run), bản release | ≤ 4 ms | Cả lần vẽ cửa sổ (render, layout, prepaint, paint): p95 **2,35 ms** khi màn không đổi, **2,46 ms** khi mọi dòng đổi mỗi khung (p50 2,22 / 2,25 ms) | Đạt |
+| Prepaint + paint một terminal 200 × 60 đầy chữ có màu (đổi kiểu mỗi 3 ô, 4020 run), bản release | ≤ 4 ms | Cả lần vẽ cửa sổ (render, layout, prepaint, paint): p95 **2,35 ms** khi màn không đổi, **2,46 ms** khi mọi dòng đổi mỗi khung (p50 2,22 / 2,25 ms), máy rảnh. Chạy lại sau khi sửa dấu descent (§1.3), máy đang tải nặng: p95 4,04 / 3,41 ms (p50 3,24 / 2,88 ms) | Đạt trên máy rảnh; cần đo lại khi máy rảnh |
 | `cat` file 100 MB, phía PTY và parser | terminal xong ≤ 3 s | **0,71 s** (dòng 108 byte, 3000 wakeup) | Đạt |
 | `cat` file 100 MB, khung hình editor bên cạnh ≤ 16 ms | ≤ 16 ms | chưa đo, cần app thật | Chờ người dùng kiểm tra |
 | Terminal đứng yên | 0 khung hình mỗi giây | 0 khung hình, 0 `notify` trong 10 s giả lập | Đạt |
@@ -30,7 +30,7 @@ cargo test --release -p lucerna-workbench --test terminal_perf -- --ignored
 - Đo 200 lần `window.draw` của một cửa sổ chỉ chứa `TerminalView`, sau 10 lần khởi động. Hai trường hợp: màn không đổi, và mỗi khung feed một màn mới (mọi dòng khác chữ). Không gồm việc GPU vẽ.
 - Đo riêng: `layout_line` cho 60 dòng p95 0,55 ms; `snapshot()` 200 × 60 p95 0,07 ms.
 
-Kết quả lần chạy cuối:
+Lần chạy trên máy rảnh (trước khi sửa dấu descent ở §1.3; cách sửa không đổi lượng việc mỗi khung):
 
 ```
 cell 8.40×17.00 px at 2×, grid 200×60
@@ -40,6 +40,19 @@ snapshot, 200×60: p50 0.059 ms, p95 0.065 ms, max 0.151 ms (200 frames)
 window draw, unchanged screen: p50 2.218 ms, p95 2.348 ms, max 2.587 ms (200 frames)
 window draw, every row new: p50 2.249 ms, p95 2.462 ms, max 3.990 ms (200 frames)
 budget 4 ms: unchanged p95 2.348 ms, every row new p95 2.462 ms
+```
+
+Lần chạy cuối, sau khi sửa dấu descent, trong lúc một phiên khác đang build (load average 30 trên 10 nhân). `layout_line` (không đổi code) cũng chậm hơn ~30 %, nên phần chậm hơn là do tải máy:
+
+```
+terminal_perf: baseline matches shaped text: ok
+cell 8.40×17.00 px at 2×, grid 200×60
+4020 text runs on screen
+layout_line, 60 rows: p50 0.677 ms, p95 0.717 ms, max 0.878 ms (200 frames)
+snapshot, 200×60: p50 0.076 ms, p95 0.078 ms, max 0.140 ms (200 frames)
+window draw, unchanged screen: p50 3.244 ms, p95 4.040 ms, max 5.873 ms (200 frames)
+window draw, every row new: p50 2.878 ms, p95 3.405 ms, max 3.742 ms (200 frames)
+budget 4 ms: unchanged p95 4.040 ms, every row new p95 3.405 ms
 ```
 
 **Flood** (`crates/lucerna-terminal/tests/flood.rs`, PTY thật, không có UI; luồng test nhận sự kiện và lấy snapshot mỗi 64 wakeup như UI):
@@ -82,6 +95,10 @@ Cách giữ lại (`element.rs`):
 - Run có ký tự rộng, dấu kết hợp, emoji hoặc ký tự không ra đúng một glyph vẫn shape như trước (ép độ rộng ô).
 
 Cache shape theo damage của §9.1 không làm: prepaint 200 × 60 bây giờ ~1,4 ms kể cả khi mọi dòng đổi (dưới mốc 2 ms của §9.1), và giá không còn phụ thuộc màn có đổi hay không. Ghi chú còn lại từ Task 8 (prepaint dựng lại cả lưới ở mỗi khung của cửa sổ khi terminal đang hiện) vì vậy chỉ tốn ~1,4 ms mỗi khung có vẽ lại; nếu đo trên M1 thấy vượt 2 ms thì làm cache theo dòng sau.
+
+### 1.3 Sửa: baseline của chữ vẽ từ glyph cache
+
+Bản đầu của §1.2 lấy `descent` của font với dấu âm (font-kit trả descent là số âm), nên baseline thấp hơn baseline của dòng shape khoảng một descent (17,60 px so với 13,39 px trong ô cao 17 px), chữ lệch với ký tự rộng, dấu kết hợp, con trỏ khối và chữ IME trên cùng dòng, gạch chân và gạch ngang lệch theo. Đã sửa bằng `abs()`, như layout của GPUI. `terminal_perf` bây giờ luôn kiểm tra (cả khi chạy `cargo test` thường, không cần `--ignored`) rằng baseline của chữ vẽ từ glyph bằng `(cao ô − ascent − descent) / 2 + ascent` của `layout_line("m")` bằng text system thật.
 
 ## 2. Kiểm tra thủ công (chờ người dùng kiểm tra)
 

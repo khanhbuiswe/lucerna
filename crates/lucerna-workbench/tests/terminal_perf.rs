@@ -7,9 +7,12 @@
 //! its snapshot and shaping, and paint), both with an unchanged screen and
 //! with every row new each frame. The GPU's work is not included.
 //!
+//! Before measuring, and in every test run, it checks that text drawn from
+//! cached glyphs sits on the baseline a shaped line would use.
+//!
 //! `TestAppContext`'s text system does not shape, and macOS creates the
 //! real one only on the main thread, so this test has its own `main` (see
-//! `Cargo.toml`). It is a measurement, skipped unless `--ignored` is given:
+//! `Cargo.toml`). The measurement is skipped unless `--ignored` is given:
 //!
 //! `cargo test --release -p lucerna-workbench --test terminal_perf -- --ignored`
 
@@ -21,7 +24,7 @@ use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_terminal::{Rgba8, Terminal, TerminalPalette, layout_line};
 use lucerna_theme::ThemeRegistry;
-use lucerna_workbench::{AppState, TerminalView, fonts};
+use lucerna_workbench::{AppState, TerminalView, fonts, terminal_font};
 
 const ROWS: u16 = 60;
 const COLS: u16 = 200;
@@ -140,14 +143,46 @@ fn feed(view: &Entity<TerminalView>, bytes: &[u8], cx: &mut VisualTestContext) {
     view.read_with(cx, |v, _| v.terminal().feed(bytes));
 }
 
+/// Plain text's baseline matches `ShapedLine::paint`'s: centred in the
+/// cell by the font's ascent and (positive) descent.
+fn check_baseline(view: &Entity<TerminalView>, cx: &mut VisualTestContext) {
+    let (baseline, cell) = view.read_with(cx, |v, _| (v.painted_baseline(), v.cell_bounds(0, 0)));
+    let (baseline, cell) = (
+        baseline.expect("a drawn frame"),
+        cell.expect("a drawn cell"),
+    );
+    let layout = cx.update(|window, cx| {
+        let font = terminal_font(cx);
+        let runs = [gpui::TextRun {
+            len: 1,
+            font: gpui::Font {
+                weight: font.weight,
+                ..gpui::font(font.family.clone())
+            },
+            color: gpui::Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }];
+        window
+            .text_system()
+            .layout_line("m", font.size, &runs, None)
+    });
+    assert!(
+        layout.descent >= gpui::px(0.),
+        "a line's descent is positive"
+    );
+    let expected = (cell.size.height - layout.ascent - layout.descent) / 2. + layout.ascent;
+    let diff = (f32::from(baseline) - f32::from(expected)).abs();
+    assert!(
+        diff < 0.01,
+        "plain text baseline {baseline:?}, a shaped line's {expected:?}"
+    );
+    println!("terminal_perf: baseline matches shaped text: ok");
+}
+
 fn main() {
-    if !std::env::args().any(|a| a == "--ignored" || a == "--include-ignored") {
-        println!("terminal_perf: a measurement, skipped (pass --ignored in a release build)");
-        return;
-    }
-    if cfg!(debug_assertions) {
-        println!("terminal_perf: debug build, the numbers mean little");
-    }
+    let measure = std::env::args().any(|a| a == "--ignored" || a == "--include-ignored");
     let text_system = gpui_platform::current_platform(true).text_system();
     let mut app = TestAppContext::build_with_text_system(TestDispatcher::new(0), None, text_system);
     init(&mut app);
@@ -159,6 +194,14 @@ fn main() {
     // An M1's display, and a window just big enough for 200×60.
     cx.simulate_scale_factor_change(2.0);
     draw(cx);
+    check_baseline(&view, cx);
+    if !measure {
+        println!("terminal_perf: measurement skipped (pass --ignored in a release build)");
+        return;
+    }
+    if cfg!(debug_assertions) {
+        println!("terminal_perf: debug build, the numbers mean little");
+    }
     let cell = view
         .read_with(cx, |v, _| v.cell_bounds(0, 0))
         .expect("a drawn cell");

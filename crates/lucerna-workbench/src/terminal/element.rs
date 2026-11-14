@@ -250,6 +250,10 @@ impl Frame {
         out
     }
 
+    pub(super) fn text_baseline(&self) -> Pixels {
+        self.text.baseline
+    }
+
     pub(super) fn selection_rect_count(&self) -> usize {
         self.selection.len()
     }
@@ -533,7 +537,9 @@ impl TerminalView {
         // Glyphs drawn from the cache sit where a shaped line in the
         // terminal font would put them.
         let ascent = text_system.ascent(font_id, font.size);
-        let descent = text_system.descent(font_id, font.size);
+        // Font metrics give the descent below the baseline as a negative
+        // number; a shaped line's layout, which this matches, uses it positive.
+        let descent = text_system.descent(font_id, font.size).abs();
         let padding_top = (cell_h - ascent - descent) / 2.;
         let text_metrics = TextMetrics {
             font_size: font.size,

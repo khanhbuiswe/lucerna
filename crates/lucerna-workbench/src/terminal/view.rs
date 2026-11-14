@@ -538,6 +538,13 @@ impl TerminalView {
             .map_or(0, |f| f.selection_rect_count())
     }
 
+    /// Where the last frame put plain text's baseline, below the top of
+    /// its cell row.
+    #[doc(hidden)]
+    pub fn painted_baseline(&self) -> Option<Pixels> {
+        Some(self.last_frame.as_ref()?.text_baseline())
+    }
+
     /// The background the last frame was filled with.
     #[doc(hidden)]
     pub fn painted_background(&self) -> Option<gpui::Rgba> {
