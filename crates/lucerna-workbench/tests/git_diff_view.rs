@@ -1208,3 +1208,30 @@ fn too_many_changes_stops_per_path_queries(cx: &mut TestAppContext) {
     run(&wb, "git.refresh", cx);
     assert!(file_paths(&view, cx).contains(&"d.txt".to_string()));
 }
+
+#[gpui::test]
+fn repository_leaving_drops_a_pending_reveal(cx: &mut TestAppContext) {
+    // Untrusted: no git runs, so the file never loads and the row waits.
+    let (_t, _dir, wb, cx) = workbench_with(
+        None,
+        false,
+        |dir| write(dir, "a.txt", "one\nTWO\nthree\n"),
+        cx,
+    );
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.open_file_diff(Arc::from(Path::new("a.txt")), Some(1), window, cx)
+        })
+    });
+    settle(cx);
+    let view = file_diff(&wb, "a.txt", cx);
+    assert_eq!(selected(&view, cx), None);
+    // Trusting restarts git: the repository goes (the view clears) and
+    // comes back. The row asked for before is not selected then.
+    wb.update(cx, |wb, cx| {
+        wb.git().update(cx, |git, cx| git.set_trusted(true, cx))
+    });
+    settle(cx);
+    assert!(!rows(&view, 0, cx).is_empty(), "the file loaded");
+    assert_eq!(selected(&view, cx), None, "cleared with the list");
+}

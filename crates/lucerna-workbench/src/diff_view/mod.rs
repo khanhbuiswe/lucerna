@@ -381,7 +381,8 @@ impl DiffView {
         cx.notify();
     }
 
-    /// Drops every file, job and result.
+    /// Drops every file, job and result, and what was due once they came:
+    /// a full reload and a row to reveal.
     fn clear(&mut self, cx: &mut Context<Self>) {
         self.files.clear();
         self.queue.clear();
@@ -389,6 +390,8 @@ impl DiffView {
         self.jobs.clear();
         self.status_task = None;
         self.relist = false;
+        self.reload_all = false;
+        self.pending_row = None;
         self.listed = false;
         self.rev = None;
         self.branch = BranchState::default();
