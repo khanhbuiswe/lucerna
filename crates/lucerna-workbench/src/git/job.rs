@@ -15,6 +15,20 @@ use super::{DiffBase, GitSnapshot};
 /// pathspec list passed to `git` stays bounded.
 const MAX_REFRESH_PATHS: usize = 256;
 
+/// A failed job, and whether it failed because the repository is gone.
+pub(super) struct JobError {
+    pub(super) err: GitError,
+    pub(super) repo_gone: bool,
+}
+
+impl JobError {
+    /// Blocking: checks whether `repo`'s git dir still exists.
+    pub(super) fn new(err: GitError, repo: &Repo) -> JobError {
+        let repo_gone = err.is_not_a_repo() || !repo.git_dir.is_dir();
+        JobError { err, repo_gone }
+    }
+}
+
 pub(super) enum Job {
     Rescan,
     RefreshPaths(BTreeSet<Arc<Path>>),

@@ -20,8 +20,19 @@ pub(super) struct HunkWork {
 }
 
 impl HunkWork {
-    /// Blocking: loads the base text when needed, then diffs.
+    /// Blocking: loads the base text when needed, then diffs. A symlink
+    /// gets no hunks: git stores the link target as its blob, while the
+    /// buffer holds the target file's text.
     pub(super) fn run(self) -> Diffed {
+        let on_disk = self.repo.workdir.join(&self.repo.prefix).join(&self.path);
+        if std::fs::symlink_metadata(&on_disk).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Diffed {
+                rev: self.rev,
+                text: None,
+                hunks: None,
+                failed: false,
+            };
+        }
         let text = match (self.cached, &self.rev) {
             (Some(text), _) => Ok(text),
             (None, Some(rev)) => load_base(&self.repo, rev, &self.path, self.diff_base),

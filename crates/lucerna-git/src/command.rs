@@ -21,6 +21,14 @@ pub enum GitError {
     Parse(String),
 }
 
+impl GitError {
+    /// `git` reported that the directory is not (or no longer) in a
+    /// repository.
+    pub fn is_not_a_repo(&self) -> bool {
+        matches!(self, GitError::Failed { stderr, .. } if stderr.contains("not a git repository"))
+    }
+}
+
 impl std::fmt::Display for GitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

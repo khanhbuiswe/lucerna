@@ -585,3 +585,110 @@ fn git_refresh_command_rescans(cx: &mut TestAppContext) {
         HashMap::from([(p("a.txt"), FileStatus::Modified)])
     );
 }
+
+/// Git stores a symlink's target path as its blob, while the buffer holds
+/// the target file's text: a tracked symlink gets no hunks (spec §6).
+#[cfg(unix)]
+#[gpui::test]
+fn tracked_symlink_gets_no_hunks(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_t, dir) = repo();
+    let text = "real\ntext\n";
+    std::fs::write(dir.join("REAL.md"), text).unwrap();
+    std::os::unix::fs::symlink("REAL.md", dir.join("LINK.md")).unwrap();
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-q", "-m", "link"]);
+    let store = store(&dir, cx);
+    store.update(cx, |s, cx| {
+        s.track_buffer(p("LINK.md"), BufferSnapshot::from_text(text), cx)
+    });
+    cx.executor().advance_clock(Duration::from_millis(50));
+    cx.run_until_parked();
+    assert_eq!(
+        store.read_with(cx, |s, _| s.hunks(Path::new("LINK.md"))),
+        None
+    );
+    // Nor after a rescan reloads the bases.
+    store.update(cx, |s, cx| s.rescan(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        store.read_with(cx, |s, _| s.hunks(Path::new("LINK.md"))),
+        None
+    );
+}
+
+/// Deleting `.git` drops the marks: a rescan that finds no repository
+/// goes to `NoRepo` with no statuses (spec §4.3).
+#[gpui::test]
+fn deleted_repository_goes_to_no_repo(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_t, dir) = repo();
+    std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+    let store = store(&dir, cx);
+    store.update(cx, |s, cx| {
+        s.track_buffer(p("a.txt"), BufferSnapshot::from_text("changed\n"), cx)
+    });
+    cx.executor().advance_clock(Duration::from_millis(50));
+    cx.run_until_parked();
+    assert!(!statuses(&store, cx).is_empty());
+    assert!(store.read_with(cx, |s, _| s.hunks(Path::new("a.txt")).is_some()));
+
+    std::fs::remove_dir_all(dir.join(".git")).unwrap();
+    store.update(cx, |s, cx| s.rescan(cx));
+    cx.run_until_parked();
+    assert_eq!(store.read_with(cx, |s, _| s.state()), GitState::NoRepo);
+    assert!(statuses(&store, cx).is_empty());
+    assert_eq!(
+        store.read_with(cx, |s, _| s.hunks(Path::new("a.txt"))),
+        None
+    );
+}
+
+/// A trusted folder that was not a repository when the window opened
+/// becomes one after `git init`; Git: Refresh finds it.
+#[gpui::test]
+fn git_refresh_finds_a_new_repository(cx: &mut TestAppContext) {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+    support::lsp::init_with("{}", cx);
+    let root = dir.clone();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    let store = wb_store(&wb, cx);
+    store.update(cx, |s, _| s.use_git_for_test(isolated_git()));
+    cx.update(|_, cx| {
+        cx.update_global::<AppState, _>(|state, _| {
+            state
+                .settings
+                .set_layer(Layer::User, support::lsp::TRUSTED)
+                .unwrap();
+        })
+    });
+    support::lsp::settle(cx);
+    assert_eq!(store.read_with(cx, |s, _| s.state()), GitState::NoRepo);
+
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["config", "user.name", "Test"]);
+    git(&dir, &["config", "user.email", "test@example.com"]);
+    git(&dir, &["config", "commit.gpgsign", "false"]);
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(dir.join("new.txt"), "n\n").unwrap();
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            assert!(wb.run_command("git.refresh", None, window, cx));
+        })
+    });
+    support::lsp::settle(cx);
+
+    assert_eq!(store.read_with(cx, |s, _| s.state()), GitState::Ready);
+    let statuses = store.read_with(cx, |s, _| (*s.snapshot().statuses).clone());
+    assert_eq!(
+        statuses,
+        HashMap::from([(p("new.txt"), FileStatus::Untracked)])
+    );
+    assert_eq!(
+        cx.update(|_, cx| wb.read(cx).git_branch().map(str::to_owned)),
+        Some("main".to_owned())
+    );
+}

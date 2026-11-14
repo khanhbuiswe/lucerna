@@ -87,11 +87,43 @@ fn job_moving_the_base_rediffs_buffers_it_did_not_reload(cx: &mut TestAppContext
             prev: s.snapshot.clone(),
             buffers: Vec::new(),
         };
-        let out = run_job(input);
+        let out = run_job(input).map_err(|err| JobError {
+            err,
+            repo_gone: false,
+        });
         s.running = Some(Task::ready(()));
         s.finish_job(s.epoch, out, cx);
     });
     cx.run_until_parked();
     let hunks = store.read_with(cx, |s, _| s.hunks(&path));
     assert_eq!(hunks.as_deref(), Some(&[][..]));
+}
+
+/// `git.path` is read from the User layer only, and only when absolute.
+#[test]
+fn git_path_comes_from_the_user_layer_only() {
+    use lucerna_settings::Layer;
+    let abs = if cfg!(windows) {
+        r"C:\\git\\git.exe"
+    } else {
+        "/opt/git/bin/git"
+    };
+    let mut store = SettingsStore::with_defaults();
+    store
+        .set_layer(Layer::Workspace, &format!(r#"{{ "git.path": "{abs}" }}"#))
+        .unwrap();
+    assert_eq!(GitSettings::from_store(&store).path, None);
+
+    store
+        .set_layer(Layer::User, &format!(r#"{{ "git.path": "{abs}" }}"#))
+        .unwrap();
+    assert_eq!(
+        GitSettings::from_store(&store).path,
+        Some(PathBuf::from(abs))
+    );
+
+    store
+        .set_layer(Layer::User, r#"{ "git.path": "bin/git" }"#)
+        .unwrap();
+    assert_eq!(GitSettings::from_store(&store).path, None);
 }

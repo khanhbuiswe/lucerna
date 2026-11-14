@@ -12,17 +12,19 @@ mod wiring;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::StreamExt as _;
 use gpui::{App, Context, EventEmitter, Task};
 use lucerna_git::{FileStatus, GitBinary, GitDirWatcher, GitError, Hunk, Repo};
+use lucerna_settings::SettingsStore;
 use lucerna_text::BufferSnapshot;
 
 use crate::AppState;
 use hunks::{Diffed, HunkWork};
-use job::{Job, JobInput, JobOutput, run_job};
+use job::{Job, JobError, JobInput, JobOutput, run_job};
 use rollup::Rollup;
 pub(crate) use wiring::register_commands;
 
@@ -83,21 +85,21 @@ struct GitSettings {
 
 impl GitSettings {
     fn read(cx: &App) -> GitSettings {
-        let Some(state) = cx.try_global::<AppState>() else {
-            return GitSettings {
+        match cx.try_global::<AppState>() {
+            Some(state) => GitSettings::from_store(&state.settings),
+            None => GitSettings {
                 enabled: true,
                 path: None,
                 diff_base: DiffBase::Head,
                 status_limit: 10_000,
-            };
-        };
-        let s = &state.settings;
+            },
+        }
+    }
+
+    fn from_store(s: &SettingsStore) -> GitSettings {
         GitSettings {
             enabled: s.get::<bool>("git.enabled", None).unwrap_or(true),
-            path: s
-                .get::<String>("git.path", None)
-                .filter(|p| !p.is_empty())
-                .map(PathBuf::from),
+            path: git_path_setting(s),
             diff_base: match s.get::<String>("git.diffBase", None).as_deref() {
                 Some("defaultBranch") => DiffBase::DefaultBranch,
                 _ => DiffBase::Head,
@@ -107,6 +109,25 @@ impl GitSettings {
                 .map_or(10_000, |n| n as usize),
         }
     }
+}
+
+/// `git.path`, from the User layer only: it names a binary to run, so a
+/// folder's `.lucerna/settings.json` must not choose it (as with language
+/// server binaries). A relative path would resolve against the process's
+/// working directory and is ignored.
+fn git_path_setting(s: &SettingsStore) -> Option<PathBuf> {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    let path = PathBuf::from(
+        s.get_trusted::<String>("git.path", None)
+            .filter(|p| !p.is_empty())?,
+    );
+    if path.is_absolute() {
+        return Some(path);
+    }
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(path = %path.display(), "git.path must be absolute; ignored");
+    }
+    None
 }
 
 /// The diff base of one tracked file. `text` is `None` when the file gets
@@ -239,10 +260,19 @@ impl GitStore {
 
     /// Recomputes everything: statuses, `default_branch`, `base_rev` and the
     /// base text of every tracked buffer. Runs even after too many changes.
+    /// Without `git` or a repository it looks for both again (a `git init`
+    /// or an install since).
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.state, GitState::Ready | GitState::TooManyChanges) {
-            self.enqueue(Job::Rescan, cx);
+        match self.state {
+            GitState::Ready | GitState::TooManyChanges => self.enqueue(Job::Rescan, cx),
+            GitState::NoRepo | GitState::NoGit => self.restart(cx),
+            GitState::Off | GitState::Locating | GitState::Restricted => {}
         }
+    }
+
+    /// The git dir of the repository, once found.
+    pub(crate) fn git_dir(&self) -> Option<&Path> {
+        self.repo.as_ref().map(|r| r.git_dir.as_path())
     }
 
     /// (Re)computes the hunks of `path` against the diff base, 50 ms after
@@ -489,7 +519,10 @@ impl GitStore {
         self.running = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { run_job(input) })
+                .spawn(async move {
+                    let repo = input.repo.clone();
+                    run_job(input).map_err(|err| JobError::new(err, &repo))
+                })
                 .await;
             this.update(cx, |s, cx| s.finish_job(epoch, result, cx))
                 .ok();
@@ -499,13 +532,19 @@ impl GitStore {
     fn finish_job(
         &mut self,
         epoch: u64,
-        result: Result<JobOutput, GitError>,
+        result: Result<JobOutput, JobError>,
         cx: &mut Context<Self>,
     ) {
         if epoch != self.epoch {
             return;
         }
         self.running = None;
+        if result.as_ref().is_err_and(|e| e.repo_gone) {
+            // The repository was deleted: its marks go too (spec §4.3).
+            self.reset(cx);
+            self.set_state(GitState::NoRepo, cx);
+            return;
+        }
         match result {
             Ok(out) => {
                 let old_rev = self.snapshot.base_rev.take();
@@ -556,7 +595,7 @@ impl GitStore {
                 cx.emit(GitStoreEvent::SnapshotChanged);
             }
             // The last snapshot stays.
-            Err(err) => self.report_error(&err, cx),
+            Err(err) => self.report_error(&err.err, cx),
         }
         self.start_next(cx);
     }

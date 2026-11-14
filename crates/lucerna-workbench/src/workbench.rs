@@ -541,7 +541,7 @@ impl Workbench {
                         .update(cx, |explorer, cx| explorer.set_git(snapshot, cx));
                 }
                 GitStoreEvent::HunksChanged(path) => wb.git_hunks_changed(path, cx),
-                GitStoreEvent::StateChanged => {}
+                GitStoreEvent::StateChanged => wb.git_state_changed(cx),
             }),
         );
         if let (Some(watcher), Some(head)) = (&open_file_watcher, &git_head) {
@@ -932,6 +932,29 @@ impl Workbench {
         paths.sort();
         paths.dedup();
         paths
+    }
+
+    /// A repository found after the window opened (`git init`, then Git:
+    /// Refresh) gives the title bar its branch and watched `HEAD`.
+    pub(crate) fn git_state_changed(&mut self, cx: &mut Context<Self>) {
+        if self.git_head.is_some() {
+            return;
+        }
+        let Some(head) = self.git.read(cx).git_dir().map(|d| d.join("HEAD")) else {
+            return;
+        };
+        self.git_head = Some(head);
+        self.git_branch = crate::git_branch::read_branch(self.root());
+        if let Some(watcher) = &self.open_file_watcher {
+            watcher.set_files(
+                self.watched_open_files
+                    .iter()
+                    .chain(&self.git_head)
+                    .cloned()
+                    .collect(),
+            );
+        }
+        cx.notify();
     }
 
     /// Changes to files on disk that the worktree does not report: from

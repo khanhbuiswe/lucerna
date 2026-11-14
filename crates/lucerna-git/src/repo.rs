@@ -29,10 +29,6 @@ fn path_from_line(line: &[u8]) -> PathBuf {
     }
 }
 
-fn is_not_a_repo(e: &GitError) -> bool {
-    matches!(e, GitError::Failed { stderr, .. } if stderr.contains("not a git repository"))
-}
-
 /// `Failed` with this exit code means "no result" for `--verify --quiet` style calls.
 fn exit_one_is_none(r: Result<Vec<u8>, GitError>) -> Result<Option<Vec<u8>>, GitError> {
     match r {
@@ -57,7 +53,7 @@ impl Repo {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
         let out = match git.run(workspace_root, &args) {
             Ok(out) => out,
-            Err(e) if is_not_a_repo(&e) => return Ok(None),
+            Err(e) if e.is_not_a_repo() => return Ok(None),
             // A missing workspace directory cannot be a repo.
             Err(GitError::Io(_) | GitError::NotFound) if !workspace_root.is_dir() => {
                 return Ok(None);
