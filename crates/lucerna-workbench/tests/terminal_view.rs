@@ -22,7 +22,7 @@ fn init(cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     assert!(error.is_none(), "keymap error: {error:?}");
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings: SettingsStore::with_defaults(),
         keymap,
@@ -366,24 +366,31 @@ fn hidden_busy_panel_draws_nothing(cx: &mut TestAppContext) {
 fn theme_change_recolors(cx: &mut TestAppContext) {
     init(cx);
     let (_wb, cx, view) = open_terminal(cx);
-    let dark = view.read_with(cx, |v, _| v.painted_background()).unwrap();
-    let light_bg = cx.update(|_, cx| {
+    let before = view.read_with(cx, |v, _| v.painted_background()).unwrap();
+    // The workbench follows the system appearance, so switch to whichever
+    // Lucerna theme is not showing.
+    let new_bg = cx.update(|_, cx| {
         cx.update_global::<AppState, _>(|state, _| {
-            let light = state.themes.get_or_default("One Light");
-            state.set_theme(light);
+            let other = if state.theme.name == "Lucerna Light" {
+                "Lucerna Dark"
+            } else {
+                "Lucerna Light"
+            };
+            let other = state.themes.get_or_default(other);
+            state.set_theme(other);
             state.theme.terminal.background
         })
     });
     draw(cx);
-    let light = view.read_with(cx, |v, _| v.painted_background()).unwrap();
-    assert_ne!(dark, light);
+    let after = view.read_with(cx, |v, _| v.painted_background()).unwrap();
+    assert_ne!(before, after);
     let expected = gpui::Rgba {
-        r: light_bg.r,
-        g: light_bg.g,
-        b: light_bg.b,
-        a: light_bg.a,
+        r: new_bg.r,
+        g: new_bg.g,
+        b: new_bg.b,
+        a: new_bg.a,
     };
-    assert_eq!(light, expected);
+    assert_eq!(after, expected);
 }
 
 #[gpui::test]
