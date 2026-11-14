@@ -21,6 +21,7 @@ use alacritty_terminal::vte::ansi::{
 };
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
+use crate::color::{TerminalPalette, query_color};
 use crate::events::TerminalEvent;
 use crate::options::{MAX_SCROLLBACK, TerminalOptions};
 use crate::snapshot::{self, CursorShape, Scroll, Snapshot, ViewStamp};
@@ -127,6 +128,9 @@ struct Shared {
     pty_open: Mutex<bool>,
     /// Exit code from `ChildExit`, reported once the final output is parsed.
     exit_code: Mutex<Option<i32>>,
+    /// The theme's colours, for answering OSC 4/10/11/12 queries; `None`
+    /// until the UI sets them, and queries go unanswered meanwhile.
+    query_palette: Mutex<Option<TerminalPalette>>,
 }
 
 impl Shared {
@@ -180,7 +184,15 @@ impl EventListener for Listener {
                 self.shared.write(format(size).into_bytes());
             }
             Event::ColorRequest(index, format) => {
-                if let Some(rgb) = default_color(index) {
+                let color = lock(&self.shared.query_palette)
+                    .as_ref()
+                    .and_then(|palette| query_color(palette, index));
+                if let Some(c) = color {
+                    let rgb = Rgb {
+                        r: c.r,
+                        g: c.g,
+                        b: c.b,
+                    };
                     self.shared.write(format(rgb).into_bytes());
                 }
             }
@@ -246,6 +258,7 @@ fn new_term(
         exited: AtomicBool::new(false),
         pty_open: Mutex::new(true),
         exit_code: Mutex::new(None),
+        query_palette: Mutex::new(None),
     });
     let config = term_config(&TermSettings::new(scrollback));
     let grid = GridSize {
@@ -278,30 +291,50 @@ fn term_config(settings: &TermSettings) -> Config {
     }
 }
 
+/// Variables alacritty sets on every child, for its own windows: they would
+/// tell apps they run in Alacritty.
+#[cfg(unix)]
+const ALACRITTY_VARS: [&str; 2] = ["ALACRITTY_WINDOW_ID", "WINDOWID"];
+
 /// The command line to run. Unix removes variables with `env -u`, because
-/// alacritty can only add to the inherited environment.
+/// alacritty can only add to the inherited environment: the ones set to
+/// `None` and the ones alacritty adds itself (unless the user set them).
 fn shell_command(opts: &TerminalOptions) -> tty::Shell {
     let program = opts.program.to_string_lossy().into_owned();
     #[cfg(unix)]
     {
-        let mut removed: Vec<&String> = opts
+        let mut removed: Vec<&str> = opts
             .env
             .iter()
             .filter(|(_, v)| v.is_none())
-            .map(|(k, _)| k)
+            .map(|(k, _)| k.as_str())
             .collect();
-        if !removed.is_empty() {
-            removed.sort();
-            let mut args = Vec::with_capacity(removed.len() * 2 + 1 + opts.args.len());
-            for key in removed {
-                args.push("-u".to_string());
-                args.push(key.clone());
+        for key in ALACRITTY_VARS {
+            if !opts.env.contains_key(key) {
+                removed.push(key);
             }
-            args.push(program);
-            args.extend(opts.args.iter().cloned());
-            return tty::Shell::new("/usr/bin/env".to_string(), args);
         }
+        removed.sort_unstable();
+        removed.dedup();
+        let mut args = Vec::with_capacity(removed.len() * 2 + 4 + opts.args.len());
+        for key in removed {
+            args.push("-u".to_string());
+            args.push(key.to_string());
+        }
+        // `env` reads any operand with `=` as an assignment, `--` or not
+        // (BSD and GNU alike), so such a program starts through `sh`, which
+        // runs `$0` as given: looked up in `PATH` without a slash, relative
+        // to the cwd with one.
+        if program.contains('=') {
+            args.push("/bin/sh".to_string());
+            args.push("-c".to_string());
+            args.push("exec \"$0\" \"$@\"".to_string());
+        }
+        args.push(program);
+        args.extend(opts.args.iter().cloned());
+        tty::Shell::new("/usr/bin/env".to_string(), args)
     }
+    #[cfg(not(unix))]
     tty::Shell::new(program, opts.args.clone())
 }
 
@@ -614,12 +647,32 @@ impl Terminal {
         snapshot::take(&term)
     }
 
-    /// The PTY's controller side, while the terminal has one.
+    /// The colours OSC 4/10/11/12 queries are answered with: the active
+    /// theme's, so an app that reads the background (Neovim, Codex) picks
+    /// light or dark styling to match. Call it again when the theme changes.
+    pub fn set_query_palette(&self, palette: &TerminalPalette) {
+        *lock(&self.shared.query_palette) = Some(palette.clone());
+    }
+
+    /// Runs `f` on the PTY's controller side while the terminal has one,
+    /// holding the lock that keeps the fd open: the reaper cannot close it,
+    /// and the number cannot be reused by another file, until `f` returns.
+    /// Keep `f` short (one syscall): the reaper waits for it.
     #[cfg(unix)]
-    pub fn pty_fd(&self) -> Option<std::os::fd::RawFd> {
+    pub fn with_pty_fd<R>(&self, f: impl FnOnce(std::os::fd::RawFd) -> R) -> Option<R> {
         let child = self.child.as_ref()?;
-        let open = !self.shared.exited.load(Ordering::SeqCst) && *lock(&self.shared.pty_open);
-        open.then_some(child.fd)
+        let open = lock(&self.shared.pty_open);
+        if !*open || self.shared.exited.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some(f(child.fd))
+    }
+
+    /// The PTY's controller side, while the terminal has one. The fd may be
+    /// closed as soon as this returns: use [`Terminal::with_pty_fd`].
+    #[cfg(all(unix, feature = "test-support"))]
+    pub fn pty_fd(&self) -> Option<std::os::fd::RawFd> {
+        self.with_pty_fd(|fd| fd)
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -789,80 +842,9 @@ fn hang_up(pid: Option<u32>, fd: std::os::fd::RawFd) {
     }
 }
 
-/// Answers OSC 4/10/11/12 colour queries. The theme's palette is not known
-/// here, so these are xterm's 256 colours on a dark background.
-fn default_color(index: usize) -> Option<Rgb> {
-    const ANSI: [(u8, u8, u8); 16] = [
-        (0x00, 0x00, 0x00),
-        (0xcd, 0x31, 0x31),
-        (0x0d, 0xbc, 0x79),
-        (0xe5, 0xe5, 0x10),
-        (0x24, 0x72, 0xc8),
-        (0xbc, 0x3f, 0xbc),
-        (0x11, 0xa8, 0xcd),
-        (0xe5, 0xe5, 0xe5),
-        (0x66, 0x66, 0x66),
-        (0xf1, 0x4c, 0x4c),
-        (0x23, 0xd1, 0x8b),
-        (0xf5, 0xf5, 0x43),
-        (0x3b, 0x8e, 0xea),
-        (0xd6, 0x70, 0xd6),
-        (0x29, 0xb8, 0xdb),
-        (0xe5, 0xe5, 0xe5),
-    ];
-    const FOREGROUND: (u8, u8, u8) = (0xcc, 0xcc, 0xcc);
-    const BACKGROUND: (u8, u8, u8) = (0x1e, 0x1e, 0x1e);
-    let dim = |(r, g, b): (u8, u8, u8)| {
-        let d = |c: u8| (c as u16 * 2 / 3) as u8;
-        (d(r), d(g), d(b))
-    };
-    let (r, g, b) = match index {
-        0..=15 => ANSI[index],
-        16..=231 => {
-            let i = index - 16;
-            let level = |v: usize| if v == 0 { 0 } else { (55 + v * 40) as u8 };
-            (level(i / 36), level(i / 6 % 6), level(i % 6))
-        }
-        232..=255 => {
-            let v = (8 + (index - 232) * 10) as u8;
-            (v, v, v)
-        }
-        256 | 258 | 267 => FOREGROUND,
-        257 => BACKGROUND,
-        259..=266 => dim(ANSI[index - 259]),
-        268 => dim(FOREGROUND),
-        _ => return None,
-    };
-    Some(Rgb { r, g, b })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_palette_covers_xterm_indices() {
-        assert_eq!(default_color(16), Some(Rgb { r: 0, g: 0, b: 0 }));
-        assert_eq!(
-            default_color(231),
-            Some(Rgb {
-                r: 255,
-                g: 255,
-                b: 255
-            })
-        );
-        assert_eq!(default_color(232), Some(Rgb { r: 8, g: 8, b: 8 }));
-        assert_eq!(
-            default_color(255),
-            Some(Rgb {
-                r: 238,
-                g: 238,
-                b: 238
-            })
-        );
-        assert!(default_color(257).is_some());
-        assert_eq!(default_color(269), None);
-    }
 
     fn listener() -> (Listener, UnboundedReceiver<TerminalEvent>) {
         let (tx, rx) = unbounded();

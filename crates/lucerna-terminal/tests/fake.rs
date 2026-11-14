@@ -1,7 +1,8 @@
 //! Parser-level behaviour through `Terminal::fake`, with no PTY.
 
 use lucerna_terminal::{
-    CellFlags, CursorShape, Modes, NamedColor, Scroll, Snapshot, TermColor, Terminal,
+    CellFlags, CursorShape, Modes, NamedColor, Rgba8, Scroll, Snapshot, TermColor, Terminal,
+    TerminalPalette,
 };
 
 fn row_text(snap: &Snapshot, row: usize) -> String {
@@ -145,14 +146,53 @@ fn text_area_size_request_is_answered() {
     assert_eq!(written(&term), format!("\x1b[4;{};{}t", 6 * 18, 20 * 9));
 }
 
+fn query_palette(background: Rgba8) -> TerminalPalette {
+    let mut ansi = [Rgba8::rgb(0, 0, 0); 16];
+    for (i, c) in ansi.iter_mut().enumerate() {
+        *c = Rgba8::rgb(i as u8 * 10, 1, 2);
+    }
+    TerminalPalette {
+        ansi,
+        dim: [Rgba8::rgb(9, 9, 9); 8],
+        foreground: Rgba8::rgb(0x11, 0x22, 0x33),
+        bright_foreground: Rgba8::rgb(0x44, 0x55, 0x66),
+        dim_foreground: Rgba8::rgb(0x77, 0x88, 0x99),
+        background,
+        cursor: Rgba8::rgb(0xaa, 0xbb, 0xcc),
+        selection: Rgba8::rgb(1, 1, 1),
+    }
+}
+
 #[test]
-fn color_request_is_answered() {
+fn color_request_is_answered_from_the_query_palette() {
+    let term = Terminal::fake(4, 10, 100);
+    term.set_query_palette(&query_palette(Rgba8::rgb(0xfa, 0xfb, 0xfc)));
+    term.feed(b"\x1b]11;?\x07");
+    assert_eq!(written(&term), "\x1b]11;rgb:fafa/fbfb/fcfc\x07");
+
+    // A new theme answers the next query.
+    term.set_query_palette(&query_palette(Rgba8::rgb(0x1e, 0x1e, 0x1e)));
+    term.feed(b"\x1b]10;?\x1b\\\x1b]12;?\x07\x1b]4;3;?\x07\x1b]4;196;?\x07");
+    assert_eq!(
+        written(&term),
+        concat!(
+            "\x1b]11;rgb:fafa/fbfb/fcfc\x07",
+            "\x1b]10;rgb:1111/2222/3333\x1b\\",
+            "\x1b]12;rgb:aaaa/bbbb/cccc\x07",
+            "\x1b]4;3;rgb:1e1e/0101/0202\x07",
+            "\x1b]4;196;rgb:ffff/0000/0000\x07",
+        )
+    );
+}
+
+#[test]
+fn color_request_without_a_palette_is_not_answered() {
     let term = Terminal::fake(4, 10, 100);
     term.feed(b"\x1b]11;?\x07");
-    let w = written(&term);
-    assert!(
-        w.starts_with("\x1b]11;rgb:") && w.ends_with('\x07'),
-        "{w:?}"
+    assert_eq!(
+        written(&term),
+        "",
+        "no made-up colours before the theme is known"
     );
 }
 

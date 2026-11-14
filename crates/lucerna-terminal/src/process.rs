@@ -27,10 +27,9 @@ pub struct ProcessInfo {
 pub fn foreground_process(t: &Terminal) -> Option<ProcessInfo> {
     #[cfg(unix)]
     {
-        let fd = t.pty_fd()?;
-        // SAFETY: `tcgetpgrp` only reads the descriptor; a closed or reused fd makes
-        // it fail with an error code, which is handled below.
-        let pgid = unsafe { libc::tcgetpgrp(fd) };
+        // SAFETY: `tcgetpgrp` only reads the descriptor, which `with_pty_fd`
+        // keeps open (and so not reused) while it runs.
+        let pgid = t.with_pty_fd(|fd| unsafe { libc::tcgetpgrp(fd) })?;
         if pgid <= 0 {
             return None;
         }

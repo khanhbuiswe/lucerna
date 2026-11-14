@@ -272,9 +272,10 @@ fn foreground_is_child_shell() {
         thread::sleep(Duration::from_millis(20));
     };
     // `/bin/sh` may run as the shell it points to (bash on macOS) before it
-    // execs `sleep`.
+    // execs `sleep`, and `env` (which removes alacritty's variables) runs
+    // for a moment before it execs the shell.
     assert!(
-        ["sleep", "sh", "bash", "dash", "zsh"].contains(&info.name.as_str()),
+        ["env", "sleep", "sh", "bash", "dash", "zsh"].contains(&info.name.as_str()),
         "name: {}",
         info.name
     );
@@ -285,4 +286,70 @@ fn foreground_is_child_shell() {
         Some(dir)
     );
     assert!(info.pid > 0);
+}
+
+#[test]
+fn with_pty_fd_keeps_the_fd_open_while_it_runs() {
+    let (term, mut rx) = Terminal::spawn(opts("/bin/sh", &["-c", "sleep 0.1; exit 0"])).unwrap();
+    // The child exits while the closure holds the fd: the reaper must not
+    // close it (or let it be reused) until the closure returns.
+    let still_open = term.with_pty_fd(|fd| {
+        thread::sleep(Duration::from_millis(600));
+        // SAFETY: F_GETFD only reads the descriptor's flags.
+        unsafe { libc::fcntl(fd, libc::F_GETFD) != -1 }
+    });
+    assert_eq!(still_open, Some(true));
+    assert_eq!(
+        wait_for(&mut rx, is_exit, TIMEOUT),
+        Some(TerminalEvent::Exited(Some(0)))
+    );
+    assert_eq!(
+        term.with_pty_fd(|fd| fd),
+        None,
+        "no fd once the child exited"
+    );
+}
+
+#[test]
+fn alacritty_window_variables_do_not_reach_the_child() {
+    let (term, mut rx) = Terminal::spawn(opts(
+        "/bin/sh",
+        &[
+            "-c",
+            "echo \"[${ALACRITTY_WINDOW_ID-unset}][${WINDOWID-unset}]\"",
+        ],
+    ))
+    .unwrap();
+    assert_eq!(
+        wait_for(&mut rx, is_exit, TIMEOUT),
+        Some(TerminalEvent::Exited(Some(0)))
+    );
+    assert_eq!(row_text(&term.snapshot(), 0).trim_end(), "[unset][unset]");
+}
+
+#[test]
+fn program_path_with_equals_sign_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("a=b");
+    std::fs::create_dir(&folder).unwrap();
+    std::os::unix::fs::symlink("/bin/sh", folder.join("sh")).unwrap();
+    // Absolute, then relative to the cwd; a removed variable forces the
+    // `env -u` wrapper either way.
+    for program in [folder.join("sh"), PathBuf::from("a=b/sh")] {
+        let mut o = opts("/bin/sh", &["-c", "echo ran"]);
+        o.program = program.clone();
+        o.cwd = dir.path().to_path_buf();
+        o.env.insert("LUCERNA_TERMINAL_TEST_UNSET".into(), None);
+        let (term, mut rx) = Terminal::spawn(o).unwrap();
+        assert_eq!(
+            wait_for(&mut rx, is_exit, TIMEOUT),
+            Some(TerminalEvent::Exited(Some(0))),
+            "{program:?}"
+        );
+        assert_eq!(
+            row_text(&term.snapshot(), 0).trim_end(),
+            "ran",
+            "{program:?}"
+        );
+    }
 }

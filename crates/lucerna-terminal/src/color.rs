@@ -150,6 +150,41 @@ pub fn resolve_color(
     resolve_color_origin(c, palette, is_fg, bold, dim, bold_bright).0
 }
 
+/// The colour an OSC 4/10/11/12 query asks for, by alacritty's index:
+/// 0-255 the 256 colours, then foreground (256), background (257), cursor
+/// (258), the eight dim colours (259-266), bright (267) and dim (268)
+/// foreground. A translucent colour is given over the background, as drawn.
+pub(crate) fn query_color(palette: &TerminalPalette, index: usize) -> Option<Rgba8> {
+    let c = match index {
+        0..=255 => resolve_color(
+            TermColor::Indexed(index as u8),
+            palette,
+            false,
+            false,
+            false,
+            false,
+        ),
+        256 => palette.foreground,
+        257 => palette.background,
+        258 => palette.cursor,
+        259..=266 => palette.dim[index - 259],
+        267 => palette.bright_foreground,
+        268 => palette.dim_foreground,
+        _ => return None,
+    };
+    Some(over(c, palette.background))
+}
+
+/// `c` drawn over the opaque `bg`.
+fn over(c: Rgba8, bg: Rgba8) -> Rgba8 {
+    if c.a == 255 {
+        return Rgba8 { a: 255, ..c };
+    }
+    let t = c.a as f32 / 255.0;
+    let m = |f: u8, b: u8| (f as f32 * t + b as f32 * (1.0 - t)).round() as u8;
+    Rgba8::rgb(m(c.r, bg.r), m(c.g, bg.g), m(c.b, bg.b))
+}
+
 fn channel(v: u8) -> f32 {
     let s = v as f32 / 255.0;
     if s <= 0.03928 {
@@ -381,6 +416,23 @@ mod tests {
             true,
         );
         assert_eq!(c, p.ansi[1]);
+    }
+
+    #[test]
+    fn query_color_covers_xterm_indices_and_named_slots() {
+        let p = test_palette();
+        let rgb = |i| query_color(&p, i).map(|c| (c.r, c.g, c.b));
+        assert_eq!(rgb(1), Some((205, 49, 49)));
+        assert_eq!(rgb(16), Some((0, 0, 0)));
+        assert_eq!(rgb(231), Some((255, 255, 255)));
+        assert_eq!(rgb(232), Some((8, 8, 8)));
+        assert_eq!(rgb(255), Some((238, 238, 238)));
+        assert_eq!(rgb(256), Some((204, 204, 204)));
+        assert_eq!(rgb(257), Some((0, 0, 0)));
+        assert_eq!(rgb(258), Some((255, 255, 255)));
+        // Dim red at alpha 178 over the black background.
+        assert_eq!(rgb(260), Some((143, 34, 34)));
+        assert_eq!(rgb(269), None);
     }
 
     #[test]
