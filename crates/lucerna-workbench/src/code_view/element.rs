@@ -678,7 +678,7 @@ impl CodeView {
             .collect();
 
         // The thumb follows buffer rows (folded ones left out), not
-        // wrapped display lines: one row's height each. It shows while the
+        // wrapped display lines: one line's height each. It shows while the
         // rows overflow, and its range is the real scroll range, which
         // ends with the last row at the top.
         let lh = f32::from(line_height);
@@ -692,7 +692,9 @@ impl CodeView {
             } else {
                 viewport
             },
-            scroll_top: rows_above as f32 * lh + self.scroll.offset,
+            // The top row's display lines share its one line of the scale.
+            scroll_top: rows_above as f32 * lh
+                + self.scroll.offset / self.wrap_count(self.scroll.top_row).max(1) as f32,
         };
 
         let scrollbar_marks = self.scrollbar_marks(bounds.size.height, ui, cx);

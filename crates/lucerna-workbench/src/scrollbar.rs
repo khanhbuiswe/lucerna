@@ -42,6 +42,18 @@ pub trait ScrollbarSource: 'static {
     fn track_click_pages(&self, _cx: &App) -> bool {
         false
     }
+    /// Scrolls one page down (or up): by default one viewport on the
+    /// scrollbar's scale; a source whose scale is not pixels on screen (the
+    /// editor with word wrap) pages by what is on screen instead.
+    fn scroll_page(&self, down: bool, metrics: ScrollMetrics, cx: &mut App) {
+        let page = if down {
+            metrics.viewport
+        } else {
+            -metrics.viewport
+        };
+        let max = (metrics.content - metrics.viewport).max(0.);
+        self.set_scroll_top((metrics.scroll_top + page).clamp(0., max), cx);
+    }
 }
 
 #[derive(Default)]
@@ -190,33 +202,30 @@ fn paint(
     window.on_mouse_event({
         let (state, source, hitbox) = (state.clone(), source.clone(), hitbox.clone());
         move |ev: &MouseDownEvent, phase, window, cx| {
-            if ev.button != MouseButton::Left || !hitbox.is_hovered(window) {
-                return;
-            }
-            // The thumb wins over a sash drawn on top of the same edge (the
-            // sidebar's, a split's), so it is taken before anything else
-            // sees the press; the rest of the track leaves the sash usable.
-            let on_thumb = thumb.contains(&ev.position);
-            let wanted = if on_thumb {
-                DispatchPhase::Capture
-            } else {
-                DispatchPhase::Bubble
-            };
-            if phase != wanted {
+            if phase != DispatchPhase::Bubble
+                || ev.button != MouseButton::Left
+                || !hitbox.is_hovered(window)
+            {
                 return;
             }
             cx.stop_propagation();
-            let y = f32::from(ev.position.y - track.top());
+            // The thumb's rows anywhere across the strip, which is wider
+            // than the painted thumb so it is easy to hit. A sash on the
+            // same edge occludes its own few px, so it wins there.
+            let on_thumb = ev.position.y >= thumb.top() && ev.position.y < thumb.bottom();
             let grab = if on_thumb {
                 Some(f32::from(ev.position.y - thumb.top()))
+            } else if source.track_click_pages(cx) {
+                source.scroll_page(ev.position.y >= thumb.bottom(), metrics, cx);
+                None
             } else {
-                let pages = source.track_click_pages(cx);
+                let y = f32::from(ev.position.y - track.top());
                 let top =
-                    scroll_top_for_track_click(viewport, content, metrics.scroll_top, y, pages);
+                    scroll_top_for_track_click(viewport, content, metrics.scroll_top, y, false);
                 source.set_scroll_top(top, cx);
-                // After a jump the thumb is centered under the mouse and a
-                // held button drags on from there; a page click does not.
-                (!pages).then(|| f32::from(thumb.size.height) / 2.)
+                // The thumb is now centered under the mouse, and a held
+                // button drags on from there.
+                Some(f32::from(thumb.size.height) / 2.)
             };
             state.0.borrow_mut().grab = grab;
             cx.notify(owner);

@@ -1077,3 +1077,55 @@ fn minimap_still_scrolls_next_to_scrollbar(cx: &mut TestAppContext) {
     draw(cx);
     assert!(view.read_with(cx, |v, _| v.scroll_top_row()) > 0);
 }
+
+/// With word wrap, a row's display lines share its one-line slice of the
+/// track: a slow drag keeps the thumb under the pointer.
+#[gpui::test]
+fn wrapped_drag_keeps_the_grab_point(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.wordWrap": "on" }"#));
+    let text: String = (0..300)
+        .map(|i| format!("{i:03}{}\n", "x".repeat(400)))
+        .collect();
+    let (view, cx) = code_view(&text, cx);
+    let start = view.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+    let (left, none) = (gpui::MouseButton::Left, gpui::Modifiers::none());
+    let from = start.center();
+    cx.simulate_mouse_down(from, left, none);
+    draw(cx);
+    for step in 1..=20 {
+        let dy = gpui::px(step as f32 * 0.7);
+        cx.simulate_mouse_move(gpui::point(from.x, from.y + dy), Some(left), none);
+        draw(cx);
+        let thumb = view.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+        let moved = thumb.top() - start.top();
+        assert!(
+            (moved - dy).abs() < gpui::px(0.5),
+            "step {step}: moved {moved:?}, dy {dy:?}"
+        );
+    }
+    cx.simulate_mouse_up(from, left, none);
+}
+
+/// A page is a screenful of display lines, not of buffer rows.
+#[gpui::test]
+fn wrapped_page_click_moves_one_screen(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{ "editor.wordWrap": "on", "editor.scrollbar.scrollByPage": true }"#),
+    );
+    let text: String = (0..300)
+        .map(|i| format!("{i:03}{}\n", "x".repeat(400)))
+        .collect();
+    let (view, cx) = code_view(&text, cx);
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let lines_on_screen = (viewport.height / gpui::px(LINE)) as u32;
+    let at = strip(3., viewport.height - gpui::px(2.), cx);
+    cx.simulate_click(at, gpui::Modifiers::none());
+    draw(cx);
+    let top = view.read_with(cx, |v, _| v.scroll_top_row());
+    // Each row is several lines, so a screen is fewer rows than lines.
+    assert!(
+        top > 0 && top < lines_on_screen,
+        "top {top}, lines {lines_on_screen}"
+    );
+}

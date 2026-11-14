@@ -1763,6 +1763,23 @@ impl ScrollbarSource for CodeViewScroll {
             .upgrade()
             .is_some_and(|v| v.read(cx).config.scroll_by_page)
     }
+
+    /// A screenful of display lines, which with word wrap is fewer rows
+    /// than the scale's viewport.
+    fn scroll_page(&self, down: bool, metrics: ScrollMetrics, cx: &mut App) {
+        if let Some(view) = self.0.upgrade() {
+            view.update(cx, |v, cx| {
+                v.scroll_by(if down {
+                    metrics.viewport
+                } else {
+                    -metrics.viewport
+                });
+                v.hover.hide(cx);
+                v.report_scroll(cx);
+                cx.notify();
+            });
+        }
+    }
 }
 
 /// Runs `f` on the code view in the active tab, if it shows one.

@@ -353,6 +353,44 @@ fn drag(from: Point<Pixels>, to: Point<Pixels>, cx: &mut VisualTestContext) {
     draw(cx);
 }
 
+/// Where the thumb can be grabbed in the Explorer: left of the 4 px
+/// sidebar sash that shares the right edge.
+fn grab_point(thumb: gpui::Bounds<Pixels>) -> Point<Pixels> {
+    gpui::point(thumb.right() - px(9.), thumb.center().y)
+}
+
+/// The sidebar sash over the track resizes the sidebar and never scrolls.
+#[gpui::test]
+fn sash_press_on_track_does_not_scroll(cx: &mut TestAppContext) {
+    init(cx, None);
+    let big = big_project();
+    let (wb, cx) = open(big.path(), cx);
+    let list = cx.debug_bounds("explorer-list").unwrap();
+    let start = thumb(&wb, cx).unwrap();
+    let on_sash = gpui::point(list.right() - px(1.), list.bottom() - px(10.));
+    drag(
+        on_sash,
+        gpui::point(on_sash.x + px(30.), on_sash.y - px(40.)),
+        cx,
+    );
+    assert_eq!(thumb(&wb, cx).unwrap().top(), start.top());
+}
+
+/// A press beside the thin thumb, still on its rows, grabs it.
+#[gpui::test]
+fn press_beside_thumb_grabs_it(cx: &mut TestAppContext) {
+    init(cx, None);
+    let big = big_project();
+    let (wb, cx) = open(big.path(), cx);
+    let start = thumb(&wb, cx).unwrap();
+    let at = gpui::point(start.left() - px(4.), start.top() + px(2.));
+    drag(at, at, cx);
+    assert_eq!(thumb(&wb, cx).unwrap().top(), start.top());
+    drag(at, gpui::point(at.x, at.y + px(30.)), cx);
+    let moved = thumb(&wb, cx).unwrap().top() - start.top();
+    assert!((moved - px(30.)).abs() < px(0.5), "moved {moved:?}");
+}
+
 #[gpui::test]
 fn explorer_scrollbar_drag_scrolls(cx: &mut TestAppContext) {
     init(cx, None);
@@ -361,7 +399,7 @@ fn explorer_scrollbar_drag_scrolls(cx: &mut TestAppContext) {
     let list = cx.debug_bounds("explorer-list").unwrap();
     let start = thumb(&wb, cx).unwrap();
     let travel = list.size.height - start.size.height;
-    let from = start.center();
+    let from = grab_point(start);
     drag(from, gpui::point(from.x, from.y + travel), cx);
     let end = thumb(&wb, cx).unwrap();
     assert!(
@@ -378,7 +416,7 @@ fn explorer_track_click_jumps(cx: &mut TestAppContext) {
     let big = big_project();
     let (wb, cx) = open(big.path(), cx);
     let list = cx.debug_bounds("explorer-list").unwrap();
-    let at = gpui::point(list.right() - px(3.), list.bottom() - px(2.));
+    let at = gpui::point(list.right() - px(8.), list.bottom() - px(2.));
     cx.simulate_click(at, Modifiers::none());
     draw(cx);
     let end = thumb(&wb, cx).unwrap();
@@ -394,7 +432,7 @@ fn drag_ends_on_mouse_up_anywhere(cx: &mut TestAppContext) {
     let big = big_project();
     let (wb, cx) = open(big.path(), cx);
     let list = cx.debug_bounds("explorer-list").unwrap();
-    let from = thumb(&wb, cx).unwrap().center();
+    let from = grab_point(thumb(&wb, cx).unwrap());
     let outside = gpui::point(list.left() + px(5.), from.y + px(20.));
     drag(from, outside, cx);
     let after_drag = thumb(&wb, cx).unwrap();
@@ -857,10 +895,11 @@ fn menu_stays_inside_window(cx: &mut TestAppContext) {
     cx.simulate_resize(gpui::size(px(400.), px(300.)));
     draw(cx);
     // The bottom right corner of the sidebar's list, as near to the window
-    // corner as the Explorer reaches.
+    // corner as the Explorer reaches: just left of the sidebar sash, which
+    // takes the mouse on its own 4 px.
     let list = cx.debug_bounds("explorer-list").unwrap();
     right_click_at(
-        Point::new(list.right() - px(1.), list.bottom() - px(1.)),
+        Point::new(list.right() - px(5.), list.bottom() - px(1.)),
         cx,
     );
     let menu = cx.debug_bounds("context-menu").expect("menu is drawn");
