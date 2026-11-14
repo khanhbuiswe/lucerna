@@ -364,7 +364,10 @@ fn explorer_scrollbar_drag_scrolls(cx: &mut TestAppContext) {
     let from = start.center();
     drag(from, gpui::point(from.x, from.y + travel), cx);
     let end = thumb(&wb, cx).unwrap();
-    assert!((end.bottom() - list.bottom()).abs() < px(0.5), "{end:?} in {list:?}");
+    assert!(
+        (end.bottom() - list.bottom()).abs() < px(0.5),
+        "{end:?} in {list:?}"
+    );
     assert!(cx.debug_bounds("explorer-row-f299.rs").is_some());
     assert!(cx.debug_bounds("explorer-row-f000.rs").is_none());
 }
@@ -379,7 +382,10 @@ fn explorer_track_click_jumps(cx: &mut TestAppContext) {
     cx.simulate_click(at, Modifiers::none());
     draw(cx);
     let end = thumb(&wb, cx).unwrap();
-    assert!((end.bottom() - list.bottom()).abs() < px(0.5), "{end:?} in {list:?}");
+    assert!(
+        (end.bottom() - list.bottom()).abs() < px(0.5),
+        "{end:?} in {list:?}"
+    );
 }
 
 #[gpui::test]
@@ -393,7 +399,11 @@ fn drag_ends_on_mouse_up_anywhere(cx: &mut TestAppContext) {
     drag(from, outside, cx);
     let after_drag = thumb(&wb, cx).unwrap();
     assert!(after_drag.top() > list.top(), "the drag scrolled");
-    cx.simulate_mouse_move(gpui::point(outside.x, outside.y + px(100.)), None, Modifiers::none());
+    cx.simulate_mouse_move(
+        gpui::point(outside.x, outside.y + px(100.)),
+        None,
+        Modifiers::none(),
+    );
     draw(cx);
     assert_eq!(thumb(&wb, cx).unwrap().top(), after_drag.top());
 }
@@ -404,13 +414,22 @@ fn scrollbar_hover_tracks_mouse(cx: &mut TestAppContext) {
     let big = big_project();
     let (wb, cx) = open(big.path(), cx);
     let list = cx.debug_bounds("explorer-list").unwrap();
-    let hovered =
-        |cx: &mut VisualTestContext| cx.update(|_, cx| wb.read(cx).explorer().read(cx).scrollbar_hovered());
+    let hovered = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| wb.read(cx).explorer().read(cx).scrollbar_hovered())
+    };
     let y = thumb(&wb, cx).unwrap().center().y;
-    cx.simulate_mouse_move(gpui::point(list.right() - px(10.), y), None, Modifiers::none());
+    cx.simulate_mouse_move(
+        gpui::point(list.right() - px(10.), y),
+        None,
+        Modifiers::none(),
+    );
     draw(cx);
     assert!(hovered(cx));
-    cx.simulate_mouse_move(gpui::point(list.left() + px(5.), y), None, Modifiers::none());
+    cx.simulate_mouse_move(
+        gpui::point(list.left() + px(5.), y),
+        None,
+        Modifiers::none(),
+    );
     draw(cx);
     assert!(!hovered(cx));
 }

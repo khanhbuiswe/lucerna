@@ -1,4 +1,4 @@
-//! The overlay scrollbar shared by the editor and the lists: a thin thumb
+//! The overlay scrollbar ([`scrollbar`]) shared by the editor and the lists: a thin thumb
 //! at the right edge that can be dragged, a track that jumps where it is
 //! clicked (or pages, for the editor's `editor.scrollbar.scrollByPage`),
 //! and a thumb that darkens under the mouse and while dragged.
@@ -106,61 +106,54 @@ struct Laid {
     hitbox: gpui::Hitbox,
 }
 
-pub struct Scrollbar;
-
-impl Scrollbar {
-    /// A strip [`SCROLLBAR_HIT_WIDTH`] wide over the right edge of its
-    /// parent, which must be `.relative()`. It takes the mouse (but not
-    /// the wheel) only while the content overflows.
-    pub fn new(
-        state: ScrollbarState,
-        source: impl ScrollbarSource,
-        owner: EntityId,
-    ) -> impl IntoElement {
-        let source: Rc<dyn ScrollbarSource> = Rc::new(source);
-        let prepaint_state = state.clone();
-        let prepaint_source = source.clone();
-        div()
-            .absolute()
-            .top_0()
-            .right_0()
-            .h_full()
-            .w(px(SCROLLBAR_HIT_WIDTH))
-            .child(
-                canvas(
-                    move |track, window, cx| {
-                        let laid = prepaint_source.metrics(cx).and_then(|metrics| {
-                            let (top, height) = thumb_geometry(
-                                metrics.viewport,
-                                metrics.content,
-                                metrics.scroll_top,
-                            )?;
-                            let thumb = Bounds::new(
-                                point(track.right() - px(SCROLLBAR_WIDTH), track.top() + px(top)),
-                                size(px(SCROLLBAR_WIDTH), px(height)),
-                            );
-                            let hitbox =
-                                window.insert_hitbox(track, HitboxBehavior::BlockMouseExceptScroll);
-                            Some(Laid {
-                                track,
-                                thumb,
-                                metrics,
-                                hitbox,
-                            })
-                        });
-                        let mut inner = prepaint_state.0.borrow_mut();
-                        inner.thumb = laid.as_ref().map(|l| l.thumb);
-                        if laid.is_none() {
-                            inner.hovered = false;
-                            inner.grab = None;
-                        }
-                        laid
-                    },
-                    move |_, laid, window, cx| paint(laid, &state, &source, owner, window, cx),
-                )
-                .size_full(),
+/// A strip [`SCROLLBAR_HIT_WIDTH`] wide over the right edge of its
+/// parent, which must be `.relative()`. It takes the mouse (but not
+/// the wheel) only while the content overflows.
+pub fn scrollbar(
+    state: ScrollbarState,
+    source: impl ScrollbarSource,
+    owner: EntityId,
+) -> impl IntoElement {
+    let source: Rc<dyn ScrollbarSource> = Rc::new(source);
+    let prepaint_state = state.clone();
+    let prepaint_source = source.clone();
+    div()
+        .absolute()
+        .top_0()
+        .right_0()
+        .h_full()
+        .w(px(SCROLLBAR_HIT_WIDTH))
+        .child(
+            canvas(
+                move |track, window, cx| {
+                    let laid = prepaint_source.metrics(cx).and_then(|metrics| {
+                        let (top, height) =
+                            thumb_geometry(metrics.viewport, metrics.content, metrics.scroll_top)?;
+                        let thumb = Bounds::new(
+                            point(track.right() - px(SCROLLBAR_WIDTH), track.top() + px(top)),
+                            size(px(SCROLLBAR_WIDTH), px(height)),
+                        );
+                        let hitbox =
+                            window.insert_hitbox(track, HitboxBehavior::BlockMouseExceptScroll);
+                        Some(Laid {
+                            track,
+                            thumb,
+                            metrics,
+                            hitbox,
+                        })
+                    });
+                    let mut inner = prepaint_state.0.borrow_mut();
+                    inner.thumb = laid.as_ref().map(|l| l.thumb);
+                    if laid.is_none() {
+                        inner.hovered = false;
+                        inner.grab = None;
+                    }
+                    laid
+                },
+                move |_, laid, window, cx| paint(laid, &state, &source, owner, window, cx),
             )
-    }
+            .size_full(),
+        )
 }
 
 fn paint(
@@ -183,9 +176,7 @@ fn paint(
         ui.scrollbar_thumb
     };
     window.set_cursor_style(CursorStyle::Arrow, &laid.hitbox);
-    window.paint_quad(
-        fill(laid.thumb, color(thumb_color)).corner_radii(px(SCROLLBAR_WIDTH / 2.)),
-    );
+    window.paint_quad(fill(laid.thumb, color(thumb_color)).corner_radii(px(SCROLLBAR_WIDTH / 2.)));
 
     let Laid {
         track,
@@ -220,13 +211,8 @@ fn paint(
                 Some(f32::from(ev.position.y - thumb.top()))
             } else {
                 let pages = source.track_click_pages(cx);
-                let top = scroll_top_for_track_click(
-                    viewport,
-                    content,
-                    metrics.scroll_top,
-                    y,
-                    pages,
-                );
+                let top =
+                    scroll_top_for_track_click(viewport, content, metrics.scroll_top, y, pages);
                 source.set_scroll_top(top, cx);
                 // After a jump the thumb is centered under the mouse and a
                 // held button drags on from there; a page click does not.

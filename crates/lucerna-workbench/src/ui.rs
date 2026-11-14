@@ -30,7 +30,7 @@ pub const TREE_ROW_HEIGHT: f32 = 24.0;
 /// Width of the thin overlay scrollbar thumb.
 pub const SCROLLBAR_WIDTH: f32 = 6.0;
 pub use crate::scrollbar::{
-    ScrollHandleSource, ScrollMetrics, Scrollbar, ScrollbarSource, ScrollbarState,
+    ScrollHandleSource, ScrollMetrics, ScrollbarSource, ScrollbarState, scrollbar,
 };
 
 /// Width of the strip at the right edge that takes the mouse for the
@@ -707,13 +707,25 @@ mod tests {
     #[test]
     fn track_click_centers_the_thumb_or_pages() {
         // Thumb 100 tall centered on y=150: its top is 100, the end.
-        assert_eq!(scroll_top_for_track_click(200., 400., 0., 150., false), 200.);
+        assert_eq!(
+            scroll_top_for_track_click(200., 400., 0., 150., false),
+            200.
+        );
         // Centered on y=60: top 10.
         assert_eq!(scroll_top_for_track_click(200., 400., 0., 60., false), 20.);
         // Paged: below the thumb one viewport down, above it one up,
         // clamped to the range.
-        assert_eq!(scroll_top_for_track_click(200., 1000., 0., 190., true), 200.);
-        assert_eq!(scroll_top_for_track_click(200., 1000., 700., 5., true), 500.);
-        assert_eq!(scroll_top_for_track_click(200., 1000., 700., 199., true), 800.);
+        assert_eq!(
+            scroll_top_for_track_click(200., 1000., 0., 190., true),
+            200.
+        );
+        assert_eq!(
+            scroll_top_for_track_click(200., 1000., 700., 5., true),
+            500.
+        );
+        assert_eq!(
+            scroll_top_for_track_click(200., 1000., 700., 199., true),
+            800.
+        );
     }
 }

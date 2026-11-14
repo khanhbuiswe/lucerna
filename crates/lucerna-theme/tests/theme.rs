@@ -404,7 +404,10 @@ fn missing_disabled_and_focused_fall_back() {
 fn scrollbar_thumb_hover_and_active_derive_from_the_thumb() {
     let dark = ThemeRegistry::builtin().get("One Dark").unwrap();
     let thumb = dark.ui.scrollbar_thumb;
-    for (c, k) in [(dark.ui.scrollbar_thumb_hover, 1.6), (dark.ui.scrollbar_thumb_active, 2.2)] {
+    for (c, k) in [
+        (dark.ui.scrollbar_thumb_hover, 1.6),
+        (dark.ui.scrollbar_thumb_active, 2.2),
+    ] {
         assert_eq!((c.r, c.g, c.b), (thumb.r, thumb.g, thumb.b));
         assert!((c.a - thumb.a * k).abs() < 1e-6, "{c:?}");
     }

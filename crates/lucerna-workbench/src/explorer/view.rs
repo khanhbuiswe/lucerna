@@ -7,11 +7,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    AnchoredPositionMode, App, Bounds, ClickEvent, Context, Div, Entity, FocusHandle,
-    Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, Point, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, anchored, deferred, div,
-    point, prelude::*, px, uniform_list,
+    AnchoredPositionMode, App, Bounds, ClickEvent, Context, Div, Entity, FocusHandle, Focusable,
+    FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Pixels,
+    Point, Render, ScrollStrategy, Stateful, Styled, Subscription, Task, UniformListScrollHandle,
+    WeakEntity, Window, anchored, deferred, div, point, prelude::*, px, uniform_list,
 };
 use lucerna_project::fs_ops::{self, NameError};
 use lucerna_project::{ChangeKind, EntryKind, WorktreeEvent, WorktreeSnapshot};
@@ -22,8 +21,8 @@ use super::model::{EditKind, EditState, ExplorerModel, Row, SelectedKind, Select
 use crate::layout::color;
 use crate::text_input::TextInput;
 use crate::ui::{
-    ContextMenu, DeployedMenu, GRID, ScrollHandleSource, Scrollbar, ScrollbarState, TREE_ROW_HEIGHT, UI_FONT_SIZE,
-    UI_FONT_SIZE_SMALL, deploy_context_menu, file_icon_sized, render_deployed,
+    ContextMenu, DeployedMenu, GRID, ScrollHandleSource, ScrollbarState, TREE_ROW_HEIGHT,
+    UI_FONT_SIZE, UI_FONT_SIZE_SMALL, deploy_context_menu, file_icon_sized, render_deployed,
 };
 use crate::{AppState, Documents, EditorGroupsView, OpenMode, Workbench, status_message};
 
@@ -1363,7 +1362,7 @@ impl Render for ExplorerView {
         {
             cx.defer_in(window, |this, window, cx| this.name_blurred(window, cx));
         }
-        let scrollbar = Scrollbar::new(
+        let scrollbar = crate::ui::scrollbar(
             self.scrollbar.clone(),
             ScrollHandleSource {
                 handle: self.scroll.0.borrow().base_handle.clone(),
