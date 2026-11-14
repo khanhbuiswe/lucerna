@@ -21,6 +21,7 @@ lucerna-lsp.workspace = true
 lucerna-project.workspace = true
 lucerna-settings.workspace = true
 lucerna-syntax.workspace = true
+lucerna-terminal.workspace = true
 lucerna-text.workspace = true
 lucerna-theme.workspace = true
 lucerna-vim.workspace = true
@@ -40,6 +41,7 @@ url.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 lucerna-extension = { workspace = true, features = ["test-support"] }
 lucerna-lsp = { workspace = true, features = ["test-support"] }
+lucerna-terminal = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 toml.workspace = true
 
@@ -47,4 +49,10 @@ toml.workspace = true
 # test supplies its own `main` instead of the libtest harness.
 [[test]]
 name = "fonts"
+harness = false
+
+# A measurement with the platform's real text system (main thread only, as
+# above); skipped unless run with `--ignored`.
+[[test]]
+name = "terminal_perf"
 harness = false

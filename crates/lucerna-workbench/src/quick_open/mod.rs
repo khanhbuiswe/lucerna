@@ -301,20 +301,11 @@ impl Workbench {
         let Some(view) = self.active_code_view(cx) else {
             return;
         };
-        let snapshot = view.read(cx).snapshot();
-        let row = line
-            .saturating_sub(1)
-            .min(snapshot.line_count().saturating_sub(1));
-        let column = match column {
-            Some(column) if column > 1 => {
-                let text = snapshot.line(row);
-                text.char_indices()
-                    .nth(column as usize - 1)
-                    .map_or(text.len(), |(byte, _)| byte) as u32
-            }
-            _ => 0,
-        };
-        let point = Point { row, column };
+        let point = crate::documents::char_point(
+            view.read(cx).snapshot(),
+            line.saturating_sub(1),
+            column.unwrap_or(1).saturating_sub(1),
+        );
         self.record_nav(
             &NavEntry {
                 path: view.read(cx).path().clone(),

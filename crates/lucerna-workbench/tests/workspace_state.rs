@@ -46,6 +46,7 @@ fn sample(paths: &[&Path]) -> WorkspaceState {
         group_widths: vec![0.25, 0.75],
         search: Default::default(),
         branch_diff_base: None,
+        panel: Default::default(),
     }
 }
 

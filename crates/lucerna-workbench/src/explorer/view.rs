@@ -950,6 +950,19 @@ impl ExplorerView {
         }
     }
 
+    /// Expands the parents of `path` (absolute or root-relative) and
+    /// scrolls its row to the middle, whatever `explorer.autoReveal` says;
+    /// whether the tree has it. For a terminal folder link (spec §6.7).
+    pub(crate) fn reveal_path(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
+        let path = self.relative(&Arc::from(path));
+        let Some(ix) = self.model.reveal(&path) else {
+            return false;
+        };
+        self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        cx.notify();
+        true
+    }
+
     fn relative(&self, path: &Arc<Path>) -> Arc<Path> {
         match path.strip_prefix(&self.root) {
             Ok(rel) if path.is_absolute() => Arc::from(rel),

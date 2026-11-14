@@ -56,6 +56,61 @@
   "files.associations": {},
   "extensions.autoCheckUpdates": true,
   "workbench.editor.enablePreview": true,
+  // Where the panel (the terminal) opens: "bottom" (under the editor area) or "right".
+  "workbench.panel.defaultLocation": "bottom",
+  // The integrated terminal (VS Code's keys and defaults, except where noted).
+  // Empty font family and null font size: the editor's.
+  "terminal.integrated.fontFamily": "",
+  "terminal.integrated.fontSize": null,
+  "terminal.integrated.lineHeight": 1.2,
+  "terminal.integrated.letterSpacing": 0,
+  "terminal.integrated.fontWeight": "normal",
+  "terminal.integrated.fontWeightBold": "bold",
+  "terminal.integrated.drawBoldTextInBrightColors": true,
+  "terminal.integrated.minimumContrastRatio": 4.5,
+  // "block" | "line" | "underline"; apps may still set their own.
+  "terminal.integrated.cursorStyle": "block",
+  // While the terminal is not focused: "outline" | "block" | "line" | "underline" | "none".
+  "terminal.integrated.cursorStyleInactive": "outline",
+  "terminal.integrated.cursorBlinking": false,
+  // A name from `profiles.<os>` ({ "path", "args", "env" }); null: $SHELL.
+  "terminal.integrated.defaultProfile.osx": null,
+  "terminal.integrated.defaultProfile.linux": null,
+  "terminal.integrated.defaultProfile.windows": null,
+  "terminal.integrated.profiles.osx": {},
+  "terminal.integrated.profiles.linux": {},
+  "terminal.integrated.profiles.windows": {},
+  // Absolute, or relative to the workspace folder; empty: the workspace folder.
+  "terminal.integrated.cwd": "",
+  // Added to the environment; null removes a variable.
+  "terminal.integrated.env.osx": {},
+  "terminal.integrated.env.linux": {},
+  "terminal.integrated.env.windows": {},
+  // "auto": LANG=en_US.UTF-8 when LANG is unset or not UTF-8. "off" leaves it.
+  "terminal.integrated.detectLocale": "auto",
+  // At most 100000.
+  "terminal.integrated.scrollback": 10000,
+  "terminal.integrated.copyOnSelection": false,
+  // "selectWord" | "copyPaste" | "paste" | "nothing" | "default" (as selectWord).
+  // null: the platform's default (selectWord on macOS and Linux, copyPaste on Windows).
+  "terminal.integrated.rightClickBehavior": null,
+  "terminal.integrated.macOptionIsMeta": false,
+  "terminal.integrated.macOptionClickForcesSelection": false,
+  "terminal.integrated.mouseWheelScrollSensitivity": 1,
+  "terminal.integrated.fastScrollSensitivity": 5,
+  // "auto" (unless the app takes bracketed paste) | "always" | "never".
+  "terminal.integrated.enableMultiLinePasteWarning": "auto",
+  "terminal.integrated.wordSeparators": " ()[]{}',\"`─‘’“”|",
+  "terminal.integrated.enableFileLinks": "on",
+  "terminal.integrated.allowedLinkSchemes": ["file", "http", "https", "mailto"],
+  // Command IDs that skip the shell, on top of the defaults; "-id" removes one.
+  "terminal.integrated.commandsToSkipShell": [],
+  "terminal.integrated.allowChords": true,
+  // "never" | "always" | "hasChildProcesses": ask before quitting or closing the window.
+  "terminal.integrated.confirmOnExit": "never",
+  "terminal.integrated.hideOnLastClosed": true,
+  // Colours a tab that rang its bell until a key is typed in it.
+  "terminal.integrated.enableBell": false,
   "explorer.autoReveal": true,
   "explorer.decorations.externalChanges": true,
   "explorer.decorations.colors": true,

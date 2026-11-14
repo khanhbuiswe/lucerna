@@ -2,11 +2,11 @@
 //! draws chrome takes its sizes and popover/icon-button styling from here.
 
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity, Hsla,
-    IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled,
+    AnyElement, AnyView, App, Axis, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity,
+    Hsla, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled,
     Window, div, img, prelude::*, px, relative, svg,
 };
-use lucerna_theme::IconSource;
+use lucerna_theme::{IconSource, Rgba};
 
 use crate::AppState;
 pub use crate::context_menu::{
@@ -269,19 +269,24 @@ struct Tooltip {
 
 impl Render for Tooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui = &cx.global::<AppState>().theme.ui;
-        div()
-            .px(px(2. * GRID))
-            .py(px(GRID))
-            .rounded(px(GRID))
-            .border_1()
-            .border_color(color(ui.border))
-            .bg(color(ui.elevated_surface_background))
-            .text_size(px(UI_FONT_SIZE_STATUS))
-            .text_color(color(ui.text))
-            .shadow_md()
-            .child(self.text.clone())
+        tooltip_box(cx).child(self.text.clone())
     }
+}
+
+/// The box a [`tooltip`] draws, for tooltips placed by hand (the
+/// terminal's link tooltip): add the text as children.
+pub fn tooltip_box(cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .px(px(2. * GRID))
+        .py(px(GRID))
+        .rounded(px(GRID))
+        .border_1()
+        .border_color(color(ui.border))
+        .bg(color(ui.elevated_surface_background))
+        .text_size(px(UI_FONT_SIZE_STATUS))
+        .text_color(color(ui.text))
+        .shadow_md()
 }
 
 /// A small bordered text button, 24 px tall; its id and debug selector are
@@ -633,6 +638,200 @@ pub fn toggle_button(
                 .hover(move |s| s.bg(hover))
         })
         .child(label)
+}
+
+/// Thickness of the sidebar's and the editor groups' sashes.
+pub const SASH_SIZE: f32 = 4.0;
+/// Square slot that holds a tab's close button, kept even while the
+/// button is hidden so tabs do not change width on hover.
+pub const TAB_CLOSE_SLOT: f32 = 16.0;
+/// The unsaved (or conflict) dot shown in a tab's close slot.
+pub const TAB_DOT_SIZE: f32 = 6.0;
+
+/// GPUI requires a view to draw under the cursor while dragging; a sash
+/// drag draws nothing.
+pub(crate) struct SashGhost;
+
+impl Render for SashGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
+
+/// A draggable divider `thickness` thick, running the full length of its
+/// parent across `axis`: with [`Axis::Horizontal`] it moves left and right
+/// (a vertical strip, `col-resize` cursor), with [`Axis::Vertical`] up and
+/// down (a horizontal strip, `row-resize` cursor). Dragging it carries
+/// `payload`; the container that resizes handles `on_drag_move` for that
+/// type. Its debug selector is its id. Place it with `absolute` offsets.
+/// It occludes what lies under its own few px (such as a scrollbar strip
+/// on that edge), so pressing it only resizes.
+pub fn sash<T: 'static>(
+    id: &'static str,
+    axis: Axis,
+    thickness: Pixels,
+    payload: T,
+) -> Stateful<Div> {
+    let sash = div().id(id).debug_selector(move || id.into()).absolute();
+    let sash = match axis {
+        Axis::Horizontal => sash.w(thickness).h_full().cursor_col_resize(),
+        Axis::Vertical => sash.h(thickness).w_full().cursor_row_resize(),
+    };
+    sash.occlude()
+        .on_drag(payload, |_, _, _, cx: &mut App| cx.new(|_| SashGhost))
+}
+
+/// The tab bar under which [`tab`]s sit: a row [`TAB_HEIGHT`] tall on
+/// `tab_bar.background`, scrolling sideways. Add the tabs, then a
+/// [`tab_bar_filler`].
+pub fn tab_bar(id: impl Into<ElementId>, cx: &App) -> Stateful<Div> {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .flex_none()
+        .h(px(TAB_HEIGHT))
+        .overflow_x_scroll()
+        .bg(color(ui.tab_bar_background))
+}
+
+/// The rest of a [`tab_bar`] after its tabs: fills the row and carries the
+/// bar's bottom border, which the active tab breaks.
+pub fn tab_bar_filler(cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .flex_1()
+        .h_full()
+        .border_b_1()
+        .border_color(color(ui.border_variant))
+}
+
+/// The close button of a [`tab`].
+pub struct TabClose {
+    pub id: ElementId,
+    pub selector: String,
+    pub on_click: ClickHandler,
+}
+
+/// What a [`tab`] shows.
+pub struct TabProps {
+    pub id: ElementId,
+    /// The tab's debug selector.
+    pub selector: String,
+    /// The active tab takes `editor.background` and opens onto the body
+    /// below; the others sit on `tab.inactive_background` over the bar's
+    /// bottom border.
+    pub active: bool,
+    pub title: SharedString,
+    pub title_color: Rgba,
+    /// Drawn before the title.
+    pub icon: Option<AnyElement>,
+    /// Italic title: a preview tab.
+    pub italic: bool,
+    /// Struck-through title, with this debug selector: a deleted file.
+    pub strike: Option<String>,
+    /// The close button, when shown (on hover, or on the active tab).
+    pub close: Option<TabClose>,
+    /// A dot of this color (and debug selector) in the close button's slot
+    /// while the button is hidden: unsaved changes.
+    pub dot: Option<(Rgba, String)>,
+}
+
+/// A flat tab, as in Zed: icon, title, then a fixed square slot holding
+/// the close button or a dot, so the tab keeps its width on hover. Add
+/// `on_click`, `on_hover` and middle-click handling to the result.
+pub fn tab(props: TabProps, cx: &App) -> Stateful<Div> {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let hover = color(ui.ghost_element_hover);
+    let TabProps {
+        id,
+        selector,
+        active,
+        title,
+        title_color,
+        icon,
+        italic,
+        strike,
+        close,
+        dot,
+    } = props;
+    let close = close.map(|close| {
+        let TabClose {
+            id,
+            selector,
+            on_click,
+        } = close;
+        div()
+            .id(id)
+            .debug_selector(move || selector)
+            .flex()
+            .justify_center()
+            .items_center()
+            .size_full()
+            .rounded(px(GRID))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .on_click(move |ev, window, cx| {
+                cx.stop_propagation();
+                on_click(ev, window, cx);
+            })
+            .child(
+                svg()
+                    .data(CLOSE_ICON)
+                    .size(px(10.))
+                    .text_color(color(ui.icon_muted)),
+            )
+    });
+    let dot = dot.map(|(fill, selector)| {
+        div()
+            .debug_selector(move || selector)
+            .size(px(TAB_DOT_SIZE))
+            .rounded_full()
+            .bg(color(fill))
+    });
+    div()
+        .id(id)
+        .debug_selector(move || selector)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(1.5 * GRID))
+        .px(px(TAB_PADDING_X))
+        .h_full()
+        .border_r_1()
+        .border_color(color(ui.border_variant))
+        // The bar's bottom border runs under every tab but the active one,
+        // which opens onto the body below.
+        .when(!active, |d| d.border_b_1())
+        .bg(color(if active {
+            ui.editor_background
+        } else {
+            ui.tab_inactive_background
+        }))
+        .when(!active, |d| d.hover(move |s| s.bg(hover)))
+        .text_color(color(title_color))
+        .text_size(px(UI_FONT_SIZE_SMALL))
+        .cursor_pointer()
+        .children(icon)
+        .child(
+            div()
+                .when(italic, |d| d.italic())
+                .when_some(strike, |d, selector| {
+                    d.line_through().debug_selector(move || selector)
+                })
+                .child(title),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .justify_center()
+                .items_center()
+                .size(px(TAB_CLOSE_SLOT))
+                .children(close)
+                .children(dot),
+        )
 }
 
 /// Top and height of a scrollbar thumb inside a `viewport` tall track

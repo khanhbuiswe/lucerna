@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{Appearance, HighlightStyle, Rgba, Theme, UiColors};
+use crate::{
+    ANSI_NAMES, Appearance, HighlightStyle, Rgba, TerminalColors, Theme, UiColors, dimmed,
+};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -132,6 +134,32 @@ impl ThemeDef {
                 .unwrap_or(fb.diff_deleted_background),
         };
 
+        let tfb = TerminalColors::fallback_ansi(appearance);
+        let foreground = color("terminal.foreground").unwrap_or(ui.editor_foreground);
+        let mut ansi = tfb;
+        for (i, name) in ANSI_NAMES.iter().enumerate() {
+            if let Some(c) = color(&format!("terminal.ansi.{name}")) {
+                ansi[i] = c;
+            }
+            if let Some(c) = color(&format!("terminal.ansi.bright_{name}")) {
+                ansi[i + 8] = c;
+            }
+        }
+        let dim = std::array::from_fn(|i| {
+            color(&format!("terminal.ansi.dim_{}", ANSI_NAMES[i]))
+                .unwrap_or_else(|| dimmed(ansi[i]))
+        });
+        let terminal = TerminalColors {
+            background: color("terminal.background").unwrap_or(ui.editor_background),
+            foreground,
+            bright_foreground: color("terminal.bright_foreground").unwrap_or(foreground),
+            dim_foreground: color("terminal.dim_foreground").unwrap_or(foreground),
+            ansi,
+            dim,
+            cursor: player("cursor").unwrap_or(ui.cursor),
+            selection: player("selection").unwrap_or(ui.selection),
+        };
+
         let mut syntax = HashMap::new();
         if let Some(Value::Object(map)) = self.style.get("syntax") {
             for (capture, value) in map {
@@ -152,6 +180,7 @@ impl ThemeDef {
             name: self.name,
             appearance,
             ui,
+            terminal,
             syntax,
         })
     }

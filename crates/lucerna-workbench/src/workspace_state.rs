@@ -14,6 +14,7 @@ use crate::editor_groups::{
     BRANCH_CHANGES_TAB_STATE, EXTENSIONS_TAB_STATE, GIT_CHANGES_TAB_STATE, GroupsState,
     SEARCH_TAB_STATE, prefixed, split_preview_state,
 };
+use crate::layout::panel::PanelState;
 
 /// The file format version; a file of any other version is set aside.
 pub(crate) const STATE_VERSION: u32 = 1;
@@ -43,6 +44,10 @@ pub struct WorkspaceState {
     /// branch.
     #[serde(default)]
     pub branch_diff_base: Option<String>,
+    /// The bottom / right panel; the default (hidden, at the bottom) in
+    /// files from before it was saved.
+    #[serde(default)]
+    pub panel: PanelState,
 }
 
 /// What the Search tab keeps across restarts: the query, its toggles, the

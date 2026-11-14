@@ -271,6 +271,69 @@ impl UiColors {
     }
 }
 
+/// Colors of the integrated terminal, from a Zed theme's `terminal.*` keys.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TerminalColors {
+    pub background: Rgba,
+    pub foreground: Rgba,
+    pub bright_foreground: Rgba,
+    pub dim_foreground: Rgba,
+    /// Black, red, green, yellow, blue, magenta, cyan, white, then the same
+    /// eight bright.
+    pub ansi: [Rgba; 16],
+    /// Dim variants of the first eight ANSI colors.
+    pub dim: [Rgba; 8],
+    pub cursor: Rgba,
+    pub selection: Rgba,
+}
+
+/// Zed's `terminal.ansi.*` key suffixes, in ANSI index order 0..8.
+pub(crate) const ANSI_NAMES: [&str; 8] = [
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+];
+
+impl TerminalColors {
+    /// Default ANSI table for a theme that lacks `terminal.ansi.*` keys.
+    // Adapted from microsoft/vscode src/vs/workbench/contrib/terminal/common/terminalColorRegistry.ts (MIT)
+    pub fn fallback_ansi(appearance: Appearance) -> [Rgba; 16] {
+        let table: [&str; 16] = match appearance {
+            Appearance::Dark => [
+                "#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd",
+                "#e5e5e5", "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6",
+                "#29b8db", "#e5e5e5",
+            ],
+            Appearance::Light => [
+                "#000000", "#cd3131", "#107c10", "#949800", "#0451a5", "#bc05bc", "#0598bc",
+                "#555555", "#666666", "#f14c4c", "#14ce14", "#b5ba00", "#3b8eea", "#d670d6",
+                "#29b8db", "#a5a5a5",
+            ],
+        };
+        table.map(|h| Rgba::parse_hex(h).expect("valid fallback hex"))
+    }
+
+    /// A complete palette built only from fallbacks: the VS Code ANSI table,
+    /// with `ui`'s editor colors, cursor and selection.
+    pub fn fallback(appearance: Appearance) -> TerminalColors {
+        let ui = UiColors::fallback(appearance);
+        let ansi = Self::fallback_ansi(appearance);
+        TerminalColors {
+            background: ui.editor_background,
+            foreground: ui.editor_foreground,
+            bright_foreground: ui.editor_foreground,
+            dim_foreground: ui.editor_foreground,
+            ansi,
+            dim: std::array::from_fn(|i| dimmed(ansi[i])),
+            cursor: ui.cursor,
+            selection: ui.selection,
+        }
+    }
+}
+
+/// A color with its alpha scaled by 0.7: the default dim variant.
+pub(crate) fn dimmed(c: Rgba) -> Rgba {
+    Rgba { a: c.a * 0.7, ..c }
+}
+
 /// The scrollbar thumb under the mouse, from its resting color. Derived
 /// rather than read from `scrollbar.thumb.hover_background`: Zed's themes
 /// set that for a thumb on a bordered track, and on Lucerna's bare overlay
@@ -296,6 +359,7 @@ pub struct Theme {
     pub name: String,
     pub appearance: Appearance,
     pub ui: UiColors,
+    pub terminal: TerminalColors,
     syntax: HashMap<String, HighlightStyle>,
 }
 

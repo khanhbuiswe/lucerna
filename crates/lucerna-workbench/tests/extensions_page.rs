@@ -599,6 +599,7 @@ fn old_sidebar_state_extensions_restores_explorer(cx: &mut TestAppContext) {
             group_widths: Vec::new(),
             search: Default::default(),
             branch_diff_base: None,
+            panel: Default::default(),
         },
     )
     .unwrap();

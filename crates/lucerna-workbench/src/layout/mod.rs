@@ -1,6 +1,7 @@
 //! The shell's fixed regions. Each module renders one region from state the
 //! [`Workbench`](crate::Workbench) owns.
 
+pub(crate) mod panel;
 pub(crate) mod panel_toggles;
 pub(crate) mod sidebar;
 pub(crate) mod status_bar;

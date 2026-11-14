@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, EntityId, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, ParentElement, Pixels, Render, Styled, Subscription, Task, WeakFocusHandle,
-    Window, WindowHandle, div, prelude::*, px,
+    KeyDownEvent, ModifiersChangedEvent, ParentElement, Pixels, Render, Styled, Subscription, Task,
+    WeakFocusHandle, Window, WindowHandle, div, prelude::*, px,
 };
 use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
@@ -22,7 +22,7 @@ use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
 use crate::diff_view::branch_picker::ShownBranchPicker;
 use crate::diff_view::{BranchBase, DiffKind, DiffView};
-use crate::documents::{DocumentEvent, DocumentStatusItem, Documents};
+use crate::documents::{DocumentEvent, DocumentStatusItem, Documents, GoTo};
 use crate::editor_groups::{
     self, EditorGroups, EditorGroupsView, FileView, GroupId, OpenMode, TabId, TabItem,
 };
@@ -31,6 +31,7 @@ use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids
 use crate::git::{GitStore, GitStoreEvent};
 use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;
+use crate::layout::panel::{self, EDITOR_MIN_SIZE, PanelPosition, PanelSash, PanelState};
 use crate::layout::sidebar::SidebarSash;
 use crate::layout::{
     SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, StatusBarSide, color,
@@ -51,6 +52,10 @@ use crate::search_view::{self, SearchView};
 use crate::symbols::SymbolSource;
 use crate::symbols::breadcrumbs::Breadcrumbs;
 use crate::tasks::try_spawn_guarded;
+use crate::terminal::commands::{allow_chords, key_bytes, option_is_meta, skips_shell};
+use crate::terminal::settings::{ConfirmOnExit, confirm_on_exit};
+use crate::terminal::view::{default_spawner, spawn_view};
+use crate::terminal::{LinkTarget, PanelEvent, TerminalPanel, TerminalSpawner, TerminalView};
 use crate::text_input::TEXT_INPUT_KEY_CONTEXT;
 use crate::theme_picker::{self, ShownThemePicker};
 use crate::trust::{self, Trust};
@@ -190,6 +195,20 @@ pub struct Workbench {
     active_view: Option<(EntityId, WeakFocusHandle)>,
     sidebar_visible: bool,
     sidebar_width: Pixels,
+    /// Where the bottom / right panel is, its sizes and whether it shows.
+    panel: PanelState,
+    /// The panel's terminals; kept while the panel is hidden.
+    terminal_panel: Entity<TerminalPanel>,
+    /// Starts the panel's terminals.
+    terminal_spawner: TerminalSpawner,
+    /// The panel was restored visible: its fresh terminal starts once the
+    /// folder's trust is known, so it gets the Workspace shell settings of
+    /// a trusted folder.
+    restore_terminal: bool,
+    /// The focused group and its active tab as last seen: when they
+    /// change under a maximized panel, the panel goes back to its size so
+    /// the editor shows (as VS Code does).
+    shown_editor: (usize, Option<TabId>),
     explorer_view: Option<AnyView>,
     editor_groups: Entity<EditorGroupsView>,
     /// Scrolls each shown Markdown preview with the shown editors of its
@@ -536,6 +555,14 @@ impl Workbench {
                 search_view.update(cx, |view, cx| view.run_search(cx));
             }
         }
+        let panel_state = match &restored {
+            Some(state) => state.panel.clone().sanitized(),
+            None => PanelState {
+                position: PanelPosition::from_setting(cx),
+                ..PanelState::default()
+            },
+        };
+        let terminal_panel = cx.new(|cx| TerminalPanel::new(window, cx));
         let sidebar_focus = cx.focus_handle();
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
@@ -680,6 +707,11 @@ impl Workbench {
                 .try_global::<ConfigState>()
                 .map_or(0, |state| state.last_changed().0),
             _subscriptions: subscriptions,
+            panel: panel_state,
+            terminal_panel: terminal_panel.clone(),
+            terminal_spawner: default_spawner(cx),
+            restore_terminal: false,
+            shown_editor: (0, None),
             commands: Rc::new(commands),
             focus,
             sidebar_focus,
@@ -742,9 +774,27 @@ impl Workbench {
         if let Some(store) = store {
             workbench.start_persistence(store, restored.as_ref(), cx);
         }
+        workbench.shown_editor = workbench.shown_editor(cx);
+        // A panel shown when the window closed shows a new terminal, once
+        // the trust store has answered (`open_restored_terminal`).
+        workbench.restore_terminal = workbench.panel.visible;
+        if workbench.panel.visible && workbench.panel.maximized {
+            // The editor area is not drawn: the panel takes the focus.
+            let focus = terminal_panel.read(cx).focus_target(cx);
+            window.focus(&focus, cx);
+        }
+        let groups = workbench.editor_groups.clone();
+        workbench._subscriptions.extend([
+            cx.observe(&groups, |wb, _, cx| wb.editor_groups_changed(cx)),
+            cx.observe(&terminal_panel, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&terminal_panel, window, Self::on_terminal_panel_event),
+        ]);
         let documents = workbench.documents.clone();
         let trust_events = workbench.start_trust(&documents, window, cx);
         workbench._subscriptions.push(trust_events);
+        if workbench.language_servers().read(cx).trust_known() {
+            workbench.open_restored_terminal(window, cx);
+        }
         workbench.start_auto_save(&documents, window, cx);
         workbench.refresh_watched_open_files(cx);
         workbench.update_branch_title(cx);
@@ -823,6 +873,7 @@ impl Workbench {
             group_widths: groups.group_widths().to_vec(),
             search: self.search_view.read(cx).state(cx),
             branch_diff_base: self.branch_base.read(cx).0.clone(),
+            panel: self.panel.clone(),
         };
         if let Some(p) = &mut self.persistence {
             p.scroll_rows = state.scroll.clone();
@@ -1506,12 +1557,15 @@ impl Workbench {
     /// app quits or the window closes (spec §6.3): `true` to go on. Save
     /// All saves each one and goes on only if all were saved and nothing
     /// is dirty afterwards, Don't Save
-    /// goes on, Cancel (or a dismissed prompt) stops. Nothing dirty: `true`
-    /// at once.
+    /// goes on, Cancel (or a dismissed prompt) stops. Then, when
+    /// `terminal.integrated.confirmOnExit` asks about running terminals
+    /// (terminal spec §6.1), whether to terminate them. Nothing to ask:
+    /// `true` at once.
     pub fn confirm_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
         let documents = self.documents.clone();
         let paths = documents.read(cx).dirty_paths();
-        if paths.is_empty() {
+        let terminals = self.terminals_to_confirm(cx);
+        if paths.is_empty() && terminals == 0 {
             return Task::ready(true);
         }
         // The prompt is already up for an earlier quit or close.
@@ -1519,30 +1573,67 @@ impl Workbench {
             return Task::ready(false);
         }
         self.confirming_quit = true;
-        let names: Vec<String> = paths.iter().map(|p| save::display_name(p)).collect();
-        let answer = save::prompt_unsaved_all(&names, window, cx);
+        let unsaved = (!paths.is_empty()).then(|| {
+            let names: Vec<String> = paths.iter().map(|p| save::display_name(p)).collect();
+            save::prompt_unsaved_all(&names, window, cx)
+        });
         cx.spawn_in(window, async move |wb, cx| {
-            let go_on = match SaveChoice::of(answer.await) {
-                SaveChoice::Save => {
-                    let paths = documents.read_with(cx, |d, _| d.dirty_paths());
-                    // An edit typed while the saves wrote is not saved:
-                    // stop rather than lose it.
-                    save::save_each(documents.clone(), paths, cx).await
-                        && documents.read_with(cx, |d, _| d.dirty_paths().is_empty())
-                }
-                SaveChoice::DontSave => true,
-                SaveChoice::Cancel => false,
+            let mut go_on = match unsaved {
+                None => true,
+                Some(answer) => match SaveChoice::of(answer.await) {
+                    SaveChoice::Save => {
+                        let paths = documents.read_with(cx, |d, _| d.dirty_paths());
+                        // An edit typed while the saves wrote is not saved:
+                        // stop rather than lose it.
+                        save::save_each(documents.clone(), paths, cx).await
+                            && documents.read_with(cx, |d, _| d.dirty_paths().is_empty())
+                    }
+                    SaveChoice::DontSave => true,
+                    SaveChoice::Cancel => false,
+                },
             };
+            if go_on && terminals > 0 {
+                let answer = wb.update_in(cx, |_, window, cx| {
+                    prompt_terminate_terminals(terminals, window, cx)
+                });
+                go_on = match answer {
+                    Ok(answer) => answer.await == Ok(0),
+                    Err(_) => false,
+                };
+            }
             wb.update(cx, |wb, _| wb.confirming_quit = false).ok();
             go_on
         })
     }
 
-    /// The window's close button: closes at once when nothing is dirty;
+    /// How many terminals `terminal.integrated.confirmOnExit` asks about
+    /// before the app quits or the window closes: every running one with
+    /// `always`, those running something other than their shell (as of the
+    /// last poll) with `hasChildProcesses`, none with `never`.
+    fn terminals_to_confirm(&self, cx: &App) -> usize {
+        let mode = confirm_on_exit(cx);
+        if mode == ConfirmOnExit::Never {
+            return 0;
+        }
+        self.terminal_panel
+            .read(cx)
+            .tabs()
+            .iter()
+            .filter_map(|tab| tab.view.as_ref())
+            .map(|view| view.read(cx))
+            .filter(|view| match mode {
+                ConfirmOnExit::Always => view.exited().is_none(),
+                _ => view.has_child_process(),
+            })
+            .count()
+    }
+
+    /// The window's close button: closes at once when nothing is dirty
+    /// and no terminal needs confirming;
     /// otherwise asks ([`Workbench::confirm_quit`]) and closes the window
     /// itself if told to go on.
     fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.documents.read(cx).dirty_paths().is_empty() {
+        if self.documents.read(cx).dirty_paths().is_empty() && self.terminals_to_confirm(cx) == 0 {
             self.save_workspace_state(cx);
             return true;
         }
@@ -1570,6 +1661,18 @@ impl Workbench {
         point: Point,
         cx: &mut Context<Self>,
     ) {
+        self.open_path_at_target(path, mode, GoTo::Byte(point), cx);
+    }
+
+    /// [`Workbench::open_path_at`] for a [`GoTo`], which may count its
+    /// column in characters.
+    fn open_path_at_target(
+        &mut self,
+        path: Arc<Path>,
+        mode: OpenMode,
+        to: GoTo,
+        cx: &mut Context<Self>,
+    ) {
         let path = self.absolute_path(&path);
         self.open_source(path.clone(), mode, cx);
         // An already-drawn tab has its view; a new one gets it on draw.
@@ -1579,8 +1682,8 @@ impl Workbench {
             .active_body()
             .and_then(|v| v.downcast::<CodeView>().ok());
         self.documents.update(cx, |docs, cx| match view {
-            Some(view) => docs.go_to(&view, point, cx),
-            None => docs.go_to_when_opened(&path, point),
+            Some(view) => docs.go_to_target(&view, to, cx),
+            None => docs.go_to_when_opened(&path, to),
         });
     }
 
@@ -1673,6 +1776,23 @@ impl Workbench {
             self.editor_focus.contains_focused(window, cx),
         );
         flag("sideBarVisible", self.sidebar_visible);
+        flag("isMac", cfg!(target_os = "macos"));
+        flag("isLinux", cfg!(target_os = "linux"));
+        flag("isWindows", cfg!(target_os = "windows"));
+        let terminal_focus = self.terminal_has_focus(window, cx);
+        flag("terminalFocus", terminal_focus);
+        let terminal = self
+            .active_terminal_view(cx)
+            .filter(|_| terminal_focus)
+            .map(|view| view.read(cx).terminal());
+        flag(
+            "terminalTextSelected",
+            terminal.is_some_and(|t| t.has_selection()),
+        );
+        flag(
+            "terminalAltBufferActive",
+            terminal.is_some_and(|t| t.mode().contains(lucerna_terminal::Modes::ALT_SCREEN)),
+        );
         flag("sideBarFocus", sidebar_focus);
         flag("explorerViewletFocus", sidebar_focus);
         let explorer = self.explorer.read(cx);
@@ -1863,6 +1983,337 @@ impl Workbench {
         self.run_command(command, None, window, cx);
     }
 
+    /// Where the panel is, its sizes and whether it shows.
+    pub fn panel_state(&self) -> &PanelState {
+        &self.panel
+    }
+
+    /// The panel's terminals.
+    pub fn terminal_panel(&self) -> &Entity<TerminalPanel> {
+        &self.terminal_panel
+    }
+
+    fn panel_has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.terminal_panel
+            .read(cx)
+            .focus_handle()
+            .contains_focused(window, cx)
+    }
+
+    /// `workbench.action.togglePanel`: hides the shown panel, or shows it.
+    pub fn toggle_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel.visible {
+            self.hide_panel(window, cx);
+        } else {
+            self.show_panel(window, cx);
+        }
+    }
+
+    /// Shows the panel and focuses it, opening a terminal when it has none.
+    pub fn show_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal_panel.read(cx).tab_count() == 0 {
+            self.open_terminal(window, cx);
+        }
+        self.panel.visible = true;
+        let focus = self.terminal_panel.read(cx).focus_target(cx);
+        window.focus(&focus, cx);
+        self.layout_changed(cx);
+        cx.notify();
+    }
+
+    /// Hides the panel, keeping its terminals running. Focus in it goes
+    /// back to the editor area.
+    pub fn hide_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.panel.visible {
+            return;
+        }
+        if self.panel_has_focus(window, cx) {
+            self.focus_editor_area(window, cx);
+        }
+        self.panel.visible = false;
+        self.layout_changed(cx);
+        cx.notify();
+    }
+
+    /// `workbench.action.toggleMaximizedPanel`: the panel takes the editor
+    /// area's place, or goes back to its size. A hidden panel shows
+    /// maximized.
+    pub fn toggle_maximized_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel.visible {
+            self.panel.maximized = !self.panel.maximized;
+            if self.panel.maximized || self.panel_has_focus(window, cx) {
+                let focus = self.terminal_panel.read(cx).focus_target(cx);
+                window.focus(&focus, cx);
+            }
+        } else {
+            self.panel.maximized = true;
+            self.show_panel(window, cx);
+        }
+        self.layout_changed(cx);
+        cx.notify();
+    }
+
+    /// Moves the panel under the editor area or right of it.
+    pub fn set_panel_position(&mut self, position: PanelPosition, cx: &mut Context<Self>) {
+        if self.panel.position != position {
+            self.panel.position = position;
+            self.layout_changed(cx);
+            cx.notify();
+        }
+    }
+
+    /// The ＋ button and `workbench.action.terminal.new`: a new terminal,
+    /// shown and focused.
+    pub(crate) fn new_terminal_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_terminal(window, cx);
+        self.show_panel(window, cx);
+    }
+
+    /// Starts a terminal in the workspace root and adds its tab; a terminal
+    /// that cannot start gets a tab showing why.
+    fn open_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> u64 {
+        // Never asks for trust (spec §6.3): Restricted Mode only drops the
+        // Workspace layer of the shell settings.
+        let restricted = self.is_restricted(cx);
+        match spawn_view(&self.terminal_spawner, &self.root, restricted, window, cx) {
+            Ok(view) => self
+                .terminal_panel
+                .update(cx, |panel, cx| panel.add_tab(Some(view), cx)),
+            Err(error) => {
+                tracing::warn!("{error}");
+                self.terminal_panel
+                    .update(cx, |panel, cx| panel.add_failed_tab(error, cx))
+            }
+        }
+    }
+
+    /// Starts the terminal of a panel restored visible, now that the
+    /// folder's trust is known. Nothing when the panel was hidden or got a
+    /// terminal meanwhile. With the focus in the panel (restored
+    /// maximized), the terminal takes it.
+    pub(crate) fn open_restored_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.restore_terminal)
+            || !self.panel.visible
+            || self.terminal_panel.read(cx).tab_count() > 0
+        {
+            return;
+        }
+        self.open_terminal(window, cx);
+        if self.panel_has_focus(window, cx) {
+            let focus = self.terminal_panel.read(cx).focus_target(cx);
+            window.focus(&focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// The shown tab's terminal, if it is running.
+    pub fn active_terminal_view(&self, cx: &App) -> Option<Entity<TerminalView>> {
+        let panel = self.terminal_panel.read(cx);
+        panel.tabs().get(panel.active()?)?.view.clone()
+    }
+
+    /// The focus is in the shown panel (`terminalFocus`).
+    fn terminal_has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.panel.visible && self.panel_has_focus(window, cx)
+    }
+
+    /// `workbench.action.terminal.toggleTerminal` (⌃`, spec §6.1): a hidden
+    /// panel shows with its terminal focused (one is made when there is
+    /// none); a shown one takes the focus; with the focus in it, it hides
+    /// and the focus goes back to the editor area.
+    pub fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal_has_focus(window, cx) {
+            self.hide_panel(window, cx);
+        } else {
+            self.show_panel(window, cx);
+        }
+    }
+
+    /// `workbench.action.terminal.kill`: closes the shown tab, dropping its
+    /// terminal (which hangs up its shell). The focus moves to the tab
+    /// shown next.
+    pub fn kill_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.terminal_panel.read(cx);
+        let Some(id) = panel.active().map(|index| panel.tabs()[index].id) else {
+            return;
+        };
+        self.close_terminal_tab(id, window, cx);
+    }
+
+    /// Closes tab `id`. With the focus in the panel, the tab shown next
+    /// takes it, or the editor area when none is left: the closed view's
+    /// focus handle goes with it.
+    fn close_terminal_tab(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let had_focus = self.panel_has_focus(window, cx);
+        let panel = self.terminal_panel.clone();
+        panel.update(cx, |panel, cx| panel.close_tab(id, cx));
+        if !had_focus {
+            return;
+        }
+        if self.panel.visible && panel.read(cx).tab_count() > 0 {
+            let focus = panel.read(cx).focus_target(cx);
+            window.focus(&focus, cx);
+        } else if panel.read(cx).tab_count() == 0 {
+            self.focus_editor_area(window, cx);
+        }
+    }
+
+    /// `focusNext` / `focusPrevious`: shows the tab `delta` places away,
+    /// wrapping around, and focuses it.
+    pub fn focus_terminal_by(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.terminal_panel.clone();
+        let count = panel.read(cx).tab_count();
+        let Some(active) = panel.read(cx).active() else {
+            return;
+        };
+        let next = (active as isize + delta).rem_euclid(count as isize) as usize;
+        panel.update(cx, |panel, cx| panel.activate(next, cx));
+        self.show_panel(window, cx);
+    }
+
+    /// Replaces what starts new terminals; see [`TerminalSpawner`].
+    pub fn set_terminal_spawner(&mut self, spawner: TerminalSpawner) {
+        self.terminal_spawner = spawner;
+    }
+
+    fn shown_editor(&self, cx: &App) -> (usize, Option<TabId>) {
+        let model = self.editor_groups.read(cx).model();
+        (model.active_group(), model.active_tab().map(|t| t.id))
+    }
+
+    /// A file opened, or another tab or group became active: a maximized
+    /// panel goes back to its size, so the editor it shows is seen.
+    fn editor_groups_changed(&mut self, cx: &mut Context<Self>) {
+        let shown = self.shown_editor(cx);
+        if std::mem::replace(&mut self.shown_editor, shown) == shown {
+            return;
+        }
+        if self.panel.visible && self.panel.maximized && shown.1.is_some() {
+            self.panel.maximized = false;
+            self.layout_changed(cx);
+            cx.notify();
+        }
+    }
+
+    fn on_terminal_panel_event(
+        &mut self,
+        _: &Entity<TerminalPanel>,
+        event: &PanelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            PanelEvent::Empty => {
+                let hide = cx
+                    .global::<AppState>()
+                    .settings
+                    .get::<bool>("terminal.integrated.hideOnLastClosed", None)
+                    .unwrap_or(true);
+                if hide {
+                    self.hide_panel(window, cx);
+                }
+            }
+            PanelEvent::OpenLink(target) => self.open_terminal_link(target, window, cx),
+            PanelEvent::ExitedCleanly(id) => self.close_terminal_tab(*id, window, cx),
+        }
+    }
+
+    /// The modifiers changed: the shown terminal looks for a link under
+    /// the mouse when ⌘ goes down and hides it when ⌘ goes up.
+    fn terminal_modifiers_changed(
+        &mut self,
+        modifiers: &gpui::Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.active_terminal_view(cx) else {
+            return;
+        };
+        let pos = window.mouse_position();
+        let shown = self.panel.visible;
+        view.update(cx, |view, cx| {
+            view.link_modifiers_changed(modifiers, pos, shown, cx)
+        });
+    }
+
+    /// A terminal link was ⌘+clicked (spec §6.7): a file opens in the
+    /// editor at its line and column, as Quick Open does; a folder in the
+    /// workspace is revealed in the Explorer; one outside it does nothing.
+    fn open_terminal_link(
+        &mut self,
+        target: &LinkTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            LinkTarget::File { path, line, col } => {
+                // The file may already be the active editor, which leaves
+                // the editor groups unchanged: restore the panel here.
+                if self.panel.visible && self.panel.maximized {
+                    self.panel.maximized = false;
+                    self.layout_changed(cx);
+                    cx.notify();
+                }
+                // Terminal positions are 1-based and count characters (as
+                // rustc, tsc and gcc print them); `Point` is 0-based bytes,
+                // so the column is converted once the text is loaded.
+                let row = line.unwrap_or(1).saturating_sub(1);
+                let col = col.unwrap_or(1).saturating_sub(1);
+                let path = self.absolute_path(&Arc::from(path.as_path()));
+                // History records the row; the column is approximate until
+                // the text is known.
+                self.record_nav(
+                    &NavEntry {
+                        path: path.clone(),
+                        point: Point { row, column: col },
+                        scroll_top_row: 0,
+                    },
+                    cx,
+                );
+                let to = GoTo::Chars { row, col };
+                self.open_path_at_target(path, OpenMode::Preview, to, cx);
+            }
+            LinkTarget::Dir(dir) => {
+                if dir.strip_prefix(&self.root).is_err() {
+                    return;
+                }
+                self.show_sidebar_view(SidebarView::Explorer, window, cx);
+                self.explorer
+                    .update(cx, |explorer, cx| explorer.reveal_path(dir, cx));
+            }
+            LinkTarget::Url(_) => {}
+        }
+    }
+
+    /// The sash dragged to `position` in `row`, the bounds of the sidebar,
+    /// editor area and panel together.
+    fn drag_panel_sash(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        row: gpui::Bounds<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        match self.panel.position {
+            PanelPosition::Bottom => {
+                let size = row.bottom() - position.y;
+                self.panel.bottom_height =
+                    panel::clamp_size(PanelPosition::Bottom, size, row.size.height);
+            }
+            PanelPosition::Right => {
+                let sidebar = if self.sidebar_visible {
+                    self.sidebar_width
+                } else {
+                    px(0.)
+                };
+                let size = row.right() - position.x;
+                self.panel.right_width =
+                    panel::clamp_size(PanelPosition::Right, size, row.size.width - sidebar);
+            }
+        }
+        self.layout_changed(cx);
+        cx.notify();
+    }
+
     pub fn focus_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.sidebar_focus, cx);
         cx.notify();
@@ -2042,15 +2493,19 @@ impl Workbench {
                 view.update(cx, |v, cx| v.hover_mut().hide(cx));
             }
         };
-        if vim::dispatch(
-            &self.vim,
-            &self.editor_groups,
-            ev,
-            &ctx,
-            chord_pending,
-            window,
-            cx,
-        ) {
+        // Vim never takes the terminal's keys (spec §6.4).
+        let terminal_focus = self.terminal_has_focus(window, cx);
+        if !terminal_focus
+            && vim::dispatch(
+                &self.vim,
+                &self.editor_groups,
+                ev,
+                &ctx,
+                chord_pending,
+                window,
+                cx,
+            )
+        {
             hide_hover(cx);
             cx.stop_propagation();
             // `gd`, `]d`, `ctrl-o`...: after the hover is hidden, so
@@ -2069,6 +2524,14 @@ impl Workbench {
             // VS Code: a key that breaks a chord is tried again on its own.
             chord = vec![stroke];
             resolution = keymap.resolve(&chord, &ctx);
+        }
+        if terminal_focus {
+            let completes_chord = chord.len() > 1;
+            self.dispatch_terminal_key(ev, chord, completes_chord, resolution, window, cx);
+            if had_pending || !self.pending_chord.is_empty() {
+                cx.notify();
+            }
+            return;
         }
         match resolution {
             // A held Delete key would delete one entry after another.
@@ -2095,6 +2558,82 @@ impl Workbench {
         }
         if had_pending || !self.pending_chord.is_empty() {
             cx.notify();
+        }
+    }
+}
+
+impl Workbench {
+    /// A key pressed while the terminal has focus (spec §6.4): a command
+    /// in the skip-shell list runs, and so does any command a pending chord
+    /// completes (as VS Code); on macOS a key with ⌘ runs its command
+    /// or is dropped, since a shell cannot receive ⌘; a chord's first key
+    /// waits for the next one while `allowChords` is on; anything else is
+    /// encoded for the shell.
+    fn dispatch_terminal_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        chord: Vec<Keystroke>,
+        completes_chord: bool,
+        resolution: Resolution,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let cmd = cfg!(target_os = "macos") && ev.keystroke.modifiers.platform;
+        match resolution {
+            Resolution::Command { command, args }
+                if completes_chord || cmd || skips_shell(&command, cx) =>
+            {
+                cx.stop_propagation();
+                if !self.run_command(&command, args.as_ref(), window, cx) {
+                    tracing::debug!(command, "key bound to an unregistered command");
+                }
+            }
+            Resolution::Pending if allow_chords(cx) => {
+                cx.stop_propagation();
+                self.pending_chord = chord;
+            }
+            _ if cmd => cx.stop_propagation(),
+            _ => self.send_key_to_terminal(ev, window, cx),
+        }
+    }
+
+    /// Encodes `ev` for the active terminal's mode and sends it. Text the
+    /// view's input handler will receive (typed characters, IME input) is
+    /// left to it, so it reaches the shell once.
+    fn send_key_to_terminal(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.active_terminal_view(cx) else {
+            cx.stop_propagation();
+            return;
+        };
+        // A tab kept after its process failed closes on the next key,
+        // which goes nowhere (spec §6.1).
+        if view.read(cx).exited().is_some() {
+            cx.stop_propagation();
+            self.kill_terminal(window, cx);
+            return;
+        }
+        self.terminal_panel
+            .update(cx, |panel, cx| panel.key_typed(cx));
+        // The multi-line paste warning takes enter and escape, and keeps
+        // other keys from the shell while it shows.
+        let key = ev.keystroke.key.as_str();
+        if view.update(cx, |view, cx| view.paste_warning_key(key, cx)) {
+            cx.stop_propagation();
+            return;
+        }
+        let meta = option_is_meta(cx);
+        if view.read(cx).input_handler_takes(ev, meta) {
+            return;
+        }
+        cx.stop_propagation();
+        let mode = view.read(cx).terminal().mode();
+        if let Some(bytes) = key_bytes(ev, mode, meta) {
+            view.update(cx, |view, cx| view.write_input(&bytes, cx));
         }
     }
 }
@@ -2200,6 +2739,27 @@ fn pump_open_file_changes(cx: &mut Context<Workbench>) -> (Option<OpenFileWatche
     }
 }
 
+/// VS Code's `confirmOnExit` prompt for `count` running terminals; the
+/// answer is 0 for Terminate.
+fn prompt_terminate_terminals(
+    count: usize,
+    window: &mut Window,
+    cx: &mut App,
+) -> futures::channel::oneshot::Receiver<usize> {
+    let message = if count == 1 {
+        "Do you want to terminate the active terminal session?".to_string()
+    } else {
+        format!("Do you want to terminate the {count} active terminal sessions?")
+    };
+    window.prompt(
+        gpui::PromptLevel::Warning,
+        &message,
+        None,
+        &["Terminate", "Cancel"],
+        cx,
+    )
+}
+
 /// Quits the app once every workbench window agreed to
 /// ([`Workbench::confirm_quit`], one window after another). Quitting runs
 /// the `on_app_quit` hooks, which save the layout.
@@ -2232,6 +2792,8 @@ pub(crate) fn quit(cx: &mut App) {
 pub(crate) fn default_registry() -> CommandRegistry {
     let mut commands = CommandRegistry::default();
     register_shell_commands(&mut commands);
+    panel::register_commands(&mut commands);
+    crate::terminal::commands::register_commands(&mut commands);
     editor_groups::register_commands(&mut commands);
     code_view::register_commands(&mut commands);
     quick_open::register_commands(&mut commands);
@@ -2313,6 +2875,7 @@ impl Render for Workbench {
         let sidebar_slot = self.explorer_view.clone();
         let editor_area = div()
             .id("editor-area")
+            .debug_selector(|| "editor-area".into())
             .track_focus(&self.editor_focus)
             .flex()
             .flex_1()
@@ -2327,11 +2890,45 @@ impl Render for Workbench {
                     .child("Lucerna")
             });
 
+        // The panel: under the editor area, in its column, or right of it,
+        // in the row with the sidebar. Maximized, it takes the editor
+        // area's place.
+        let shown_panel = self.panel.visible.then_some(&self.panel);
+        let panel_at = |position| shown_panel.filter(|p| p.position == position);
+        let editor_column = match (panel_at(PanelPosition::Bottom), shown_panel) {
+            (Some(state), _) => {
+                let panel = panel::render(state, &self.terminal_panel, cx);
+                Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .when(!state.maximized, |column| {
+                            column.child(editor_area.min_h(px(EDITOR_MIN_SIZE)))
+                        })
+                        .child(panel)
+                        .into_any_element(),
+                )
+            }
+            (None, Some(state)) if state.maximized => None,
+            (None, Some(_)) => Some(editor_area.min_w(px(EDITOR_MIN_SIZE)).into_any_element()),
+            (None, None) => Some(editor_area.into_any_element()),
+        };
+        let right_panel = panel_at(PanelPosition::Right)
+            .map(|state| panel::render(state, &self.terminal_panel, cx));
+
         let status_message = crate::status_message::current(cx);
         div()
             .id("workbench")
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::dispatch_key))
+            // At the root, so the terminal hears ⌘ go up and down wherever
+            // the focus is (gpui sends modifier changes along the focus path).
+            .on_modifiers_changed(cx.listener(|wb, ev: &ModifiersChangedEvent, window, cx| {
+                wb.terminal_modifiers_changed(&ev.modifiers, window, cx)
+            }))
             .on_drag_move(cx.listener(|wb, ev: &DragMoveEvent<SidebarSash>, _, cx| {
                 // The sidebar starts at the window's left edge.
                 wb.set_sidebar_width(ev.event.position.x - ev.bounds.left(), cx)
@@ -2366,13 +2963,18 @@ impl Render for Workbench {
                             ui,
                         ))
                     })
-                    .child(editor_area),
+                    .children(editor_column)
+                    .children(right_panel)
+                    .on_drag_move(cx.listener(|wb, ev: &DragMoveEvent<PanelSash>, _, cx| {
+                        wb.drag_panel_sash(ev.event.position, ev.bounds, cx);
+                    })),
             )
             .child(status_bar::render(
                 panel_toggles::render(
                     self.sidebar_visible,
                     search_active,
                     extensions_open,
+                    self.panel.visible,
                     self.extension_badge(cx),
                     cx,
                 ),

@@ -130,7 +130,7 @@ Icons: `folder`, `folder-open`, `file`, `file-code`, `braces`, `book-open`,
 
 ## VS Code editing logic
 
-Parts of the editing core in `lucerna-editor` are adapted from VS Code
+Parts of the editing core in `lucerna-editor`, and the default terminal ANSI colors in `lucerna-theme`, are adapted from VS Code
 (https://github.com/microsoft/vscode, MIT, Copyright (c) Microsoft Corporation).
 Each file carries a comment of the form
 `// Adapted from microsoft/vscode <path> (MIT)`. The files and their VS Code sources:
@@ -146,6 +146,7 @@ Each file carries a comment of the form
 | `crates/lucerna-editor/src/indentation.rs` | `src/vs/editor/common/model/indentationGuesser.ts` |
 | `crates/lucerna-editor/src/comment.rs` | `src/vs/editor/contrib/comment/browser/lineCommentCommand.ts`, `src/vs/editor/contrib/comment/browser/blockCommentCommand.ts` |
 | `crates/lucerna-editor/src/lines.rs` | `src/vs/editor/contrib/linesOperations/browser/linesOperations.ts`, `src/vs/editor/contrib/linesOperations/browser/moveLinesCommand.ts`, `src/vs/editor/contrib/linesOperations/browser/copyLinesCommand.ts` |
+| `crates/lucerna-theme/src/lib.rs` (default terminal ANSI colors, `TerminalColors::fallback_ansi`) | `src/vs/workbench/contrib/terminal/common/terminalColorRegistry.ts` |
 
 ```
 MIT License

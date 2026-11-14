@@ -19,22 +19,15 @@ use crate::conflict_bar::{self, BarActions};
 use crate::documents::{DiskNotice, DocState, Documents};
 use crate::icons;
 use crate::layout::color;
-use crate::layout::sidebar::SashGhost;
 use crate::markdown_preview::{self, SHOW_PREVIEW_TO_SIDE, TOGGLE_PREVIEW};
 use crate::save::{self, SaveChoice};
 use crate::symbols::breadcrumbs::{
     BreadcrumbSettings, Crumbs, breadcrumb_segments, breadcrumbs_row, segments_text,
 };
 use crate::ui::{
-    BLOCKS_ICON, CLOSE_ICON, ClickHandler, GRID, PATH_BAR_HEIGHT, SEARCH_ICON, TAB_HEIGHT,
-    TAB_PADDING_X, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, icon_button, tooltip,
+    self, BLOCKS_ICON, ClickHandler, GRID, PATH_BAR_HEIGHT, SEARCH_ICON, SashGhost, TAB_PADDING_X,
+    UI_FONT_SIZE, UI_FONT_SIZE_SMALL, icon_button, tooltip,
 };
-
-/// Square slot that holds a tab's close button, kept even while the
-/// button is hidden so tabs do not change width on hover.
-const CLOSE_SLOT: Pixels = px(16.);
-/// The unsaved (or conflict) dot shown in the close button's slot.
-const DIRTY_DOT: Pixels = px(6.);
 
 /// What a file tab's dot says about its document.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -47,7 +40,7 @@ enum TabMark {
 
 /// The deleted state and the dot of each tab's document, per group.
 type TabStates = Vec<Vec<(bool, Option<TabMark>)>>;
-const SASH_WIDTH: Pixels = px(4.);
+const SASH_WIDTH: Pixels = px(ui::SASH_SIZE);
 const MIN_GROUP_WIDTH: Pixels = px(120.);
 
 /// Produces the view shown under the tab bar for a tab. It is called once
@@ -691,114 +684,56 @@ impl Render for EditorGroupsView {
                         TabMark::Dirty => (ui.text_accent, "dirty"),
                         TabMark::Conflict => (ui.warning, "conflict"),
                     };
-                    div()
-                        .debug_selector(move || format!("tab-{kind}-{gi}-{ti}"))
-                        .size(DIRTY_DOT)
-                        .rounded_full()
-                        .bg(color(fill))
+                    (fill, format!("tab-{kind}-{gi}-{ti}"))
                 });
-                let hover = color(ui.ghost_element_hover);
                 let close = show_close.then(|| {
-                    div()
-                        .id(("tab-close", id.as_u64()))
-                        .debug_selector(move || format!("tab-close-{gi}-{ti}"))
-                        .flex()
-                        .justify_center()
-                        .items_center()
-                        .size_full()
-                        .rounded(px(GRID))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            cx.stop_propagation();
-                            view.request_close(id, window, cx);
-                        }))
-                        .child(
-                            svg()
-                                .data(CLOSE_ICON)
-                                .size(px(10.))
-                                .text_color(color(ui.icon_muted)),
-                        )
+                    let on_click = cx.listener(move |view, _: &ClickEvent, window, cx| {
+                        view.request_close(id, window, cx);
+                    });
+                    ui::TabClose {
+                        id: ("tab-close", id.as_u64()).into(),
+                        selector: format!("tab-close-{gi}-{ti}"),
+                        on_click: Box::new(on_click),
+                    }
                 });
-                div()
-                    .id(("tab", id.as_u64()))
-                    .debug_selector(move || format!("tab-{gi}-{ti}"))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(1.5 * GRID))
-                    .px(px(TAB_PADDING_X))
-                    .h_full()
-                    .border_r_1()
-                    .border_color(color(ui.border_variant))
-                    // The bar's bottom border runs under every tab but the
-                    // active one, which opens onto the editor below.
-                    .when(!active, |d| d.border_b_1())
-                    .bg(color(if active {
-                        ui.editor_background
-                    } else {
-                        ui.tab_inactive_background
-                    }))
-                    .when(!active, |d| d.hover(move |s| s.bg(hover)))
-                    .text_color(color(fg))
-                    .text_size(px(UI_FONT_SIZE_SMALL))
-                    .cursor_pointer()
-                    .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
-                        view.set_hovered(id, *hovered, cx);
-                    }))
-                    .on_click(cx.listener(move |view, ev: &ClickEvent, _, cx| {
-                        view.update_model(cx, |m| {
-                            m.activate(id);
-                            // VS Code: a double click keeps a preview open.
-                            if ev.click_count() >= 2 {
-                                m.pin(id);
-                            }
-                        });
-                    }))
-                    .on_mouse_up(
-                        MouseButton::Middle,
-                        cx.listener(move |view, _, window, cx| {
-                            view.request_close(id, window, cx);
-                        }),
-                    )
-                    .children(icon)
-                    .child(
-                        div()
-                            .when(!tab.pinned, |d| d.italic())
-                            .when(deleted, |d| {
-                                d.line_through()
-                                    .debug_selector(move || format!("tab-deleted-{gi}-{ti}"))
-                            })
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .justify_center()
-                            .items_center()
-                            .size(CLOSE_SLOT)
-                            .children(close)
-                            .children(dot),
-                    )
+                ui::tab(
+                    ui::TabProps {
+                        id: ("tab", id.as_u64()).into(),
+                        selector: format!("tab-{gi}-{ti}"),
+                        active,
+                        title: title.into(),
+                        title_color: fg,
+                        icon: icon.map(IntoElement::into_any_element),
+                        italic: !tab.pinned,
+                        strike: deleted.then(|| format!("tab-deleted-{gi}-{ti}")),
+                        close,
+                        dot,
+                    },
+                    cx,
+                )
+                .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                    view.set_hovered(id, *hovered, cx);
+                }))
+                .on_click(cx.listener(move |view, ev: &ClickEvent, _, cx| {
+                    view.update_model(cx, |m| {
+                        m.activate(id);
+                        // VS Code: a double click keeps a preview open.
+                        if ev.click_count() >= 2 {
+                            m.pin(id);
+                        }
+                    });
+                }))
+                .on_mouse_up(
+                    MouseButton::Middle,
+                    cx.listener(move |view, _, window, cx| {
+                        view.request_close(id, window, cx);
+                    }),
+                )
             });
-            let tab_bar = div()
-                .id(("tab-bar", gi))
-                .flex()
-                .flex_row()
-                .flex_none()
+            let tab_bar = ui::tab_bar(("tab-bar", gi), cx)
                 .w_full()
-                .h(px(TAB_HEIGHT))
-                .overflow_x_scroll()
-                .bg(color(ui.tab_bar_background))
                 .children(tabs)
-                .child(
-                    div()
-                        .flex_1()
-                        .h_full()
-                        .border_b_1()
-                        .border_color(color(ui.border_variant)),
-                );
+                .child(ui::tab_bar_filler(cx));
             let bar = || {
                 div()
                     .debug_selector(move || format!("path-bar-{gi}"))

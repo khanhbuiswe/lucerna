@@ -22,6 +22,7 @@ lucerna-extension = { path = "crates/lucerna-extension" }
 lucerna-vim = { path = "crates/lucerna-vim" }
 lucerna-lsp = { path = "crates/lucerna-lsp" }
 lucerna-git = { path = "crates/lucerna-git" }
+lucerna-terminal = { path = "crates/lucerna-terminal" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -56,6 +57,9 @@ sha2 = "0.10"
 toml = "0.8"
 globset = "0.4"
 libc = "0.2"
+
+# Terminal
+alacritty_terminal = "0.26"
 
 # Syntax: one tree-sitter core; every grammar exposes `LANGUAGE: LanguageFn`.
 tree-sitter = { version = "0.27", features = ["wasm"] }

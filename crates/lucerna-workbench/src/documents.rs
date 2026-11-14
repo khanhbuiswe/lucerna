@@ -361,7 +361,7 @@ struct Document {
     /// [`Documents::apply_edits_from_view`]).
     skip_view: Option<EntityId>,
     /// Where to put the cursor once the text is loaded.
-    pending_go_to: Option<Point>,
+    pending_go_to: Option<GoTo>,
     /// [`DocumentEvent::Opened`] was sent.
     announced: bool,
     /// Set by any view's selection change: the next edit starts a new
@@ -402,13 +402,56 @@ impl Document {
     }
 }
 
+/// Where a jump puts the cursor: a [`Point`] (byte column), or a row and
+/// a column counted in characters, as compilers and Quick Open's `:L:C`
+/// give it. A character column can only become bytes once the text is
+/// loaded, so it waits in that form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GoTo {
+    Byte(Point),
+    /// 0-based row and character column.
+    Chars {
+        row: u32,
+        col: u32,
+    },
+}
+
+impl From<Point> for GoTo {
+    fn from(p: Point) -> Self {
+        GoTo::Byte(p)
+    }
+}
+
+impl GoTo {
+    /// The point in `snapshot`.
+    pub(crate) fn point_in(self, snapshot: &BufferSnapshot) -> Point {
+        match self {
+            GoTo::Byte(p) => p,
+            GoTo::Chars { row, col } => char_point(snapshot, row, col),
+        }
+    }
+}
+
+/// The point at 0-based `row` and character column `char_col` of
+/// `snapshot`: the row clamps to the last line and the column to the end
+/// of its line.
+pub(crate) fn char_point(snapshot: &BufferSnapshot, row: u32, char_col: u32) -> Point {
+    let row = row.min(snapshot.line_count().saturating_sub(1));
+    let text = snapshot.line(row);
+    let column = text
+        .char_indices()
+        .nth(char_col as usize)
+        .map_or(text.len(), |(byte, _)| byte) as u32;
+    Point { row, column }
+}
+
 /// Every open document, keyed by normalised path. A GPUI entity owned by
 /// the [`crate::Workbench`].
 pub struct Documents {
     root: PathBuf,
     docs: HashMap<Arc<Path>, Document>,
     /// Jumps requested for paths whose document does not exist yet.
-    pending_go_to: HashMap<Arc<Path>, Point>,
+    pending_go_to: HashMap<Arc<Path>, GoTo>,
     /// Scroll rows restored for paths whose text is not loaded yet; the
     /// first view to have the text takes its row.
     pending_scroll: HashMap<Arc<Path>, u32>,
@@ -504,6 +547,7 @@ impl Documents {
                     // A jump centers its row; a scroll row asked for with it
                     // (Go Back) wins over that.
                     if let Some(p) = go_to {
+                        let p = p.point_in(v.snapshot());
                         v.go_to(p, cx);
                     }
                     if let Some(row) = scroll {
@@ -1559,27 +1603,42 @@ impl Documents {
     /// Puts the cursor of `view` at `point` and scrolls to it, now if its
     /// text is loaded, else as soon as it is.
     pub fn go_to(&mut self, view: &Entity<CodeView>, point: Point, cx: &mut Context<Self>) {
+        self.go_to_target(view, GoTo::Byte(point), cx);
+    }
+
+    /// [`Documents::go_to`] for a [`GoTo`], whose character column is
+    /// turned into bytes against the loaded text.
+    pub(crate) fn go_to_target(
+        &mut self,
+        view: &Entity<CodeView>,
+        to: GoTo,
+        cx: &mut Context<Self>,
+    ) {
         let key = self.key(view.read(cx).path());
         match self.docs.get_mut(&key) {
             Some(doc) if doc.snapshot.is_none() => {
-                doc.pending_go_to = Some(point);
+                doc.pending_go_to = Some(to);
                 // The jump supersedes a restored scroll row.
                 self.pending_scroll.remove(&key);
             }
-            _ => view.update(cx, |v, cx| v.go_to(point, cx)),
+            _ => view.update(cx, |v, cx| {
+                let p = to.point_in(v.snapshot());
+                v.go_to(p, cx)
+            }),
         }
     }
 
-    /// Remembers `point` for the next view of `path` to open: it jumps
-    /// there once its text is loaded.
-    pub(crate) fn go_to_when_opened(&mut self, path: &Path, point: Point) {
+    /// Remembers `to` for the next view of `path` to open: it jumps there
+    /// once its text is loaded.
+    pub(crate) fn go_to_when_opened(&mut self, path: &Path, to: impl Into<GoTo>) {
         let key = self.key(path);
+        let to = to.into();
         // The jump supersedes a restored scroll row.
         self.pending_scroll.remove(&key);
         match self.docs.get_mut(&key) {
-            Some(doc) => doc.pending_go_to = Some(point),
+            Some(doc) => doc.pending_go_to = Some(to),
             None => {
-                self.pending_go_to.insert(key, point);
+                self.pending_go_to.insert(key, to);
             }
         }
     }
@@ -1596,7 +1655,7 @@ impl Documents {
         let key = self.key(view.read(cx).path());
         match self.docs.get_mut(&key) {
             Some(doc) if doc.snapshot.is_none() => {
-                doc.pending_go_to = Some(point);
+                doc.pending_go_to = Some(GoTo::Byte(point));
                 self.pending_scroll.insert(key, row);
             }
             _ => view.update(cx, |v, cx| {
@@ -1904,7 +1963,10 @@ impl Documents {
                 if let Some(view) = views.last()
                     && let Some(p) = doc.pending_go_to.take()
                 {
-                    view.update(cx, |v, cx| v.go_to(p, cx));
+                    view.update(cx, |v, cx| {
+                        let p = p.point_in(v.snapshot());
+                        v.go_to(p, cx)
+                    });
                 }
                 // After the jump, which centers its row: a scroll row asked
                 // for with it (Go Back) wins.

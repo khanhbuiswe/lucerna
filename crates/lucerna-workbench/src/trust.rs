@@ -435,20 +435,20 @@ impl Workbench {
     }
 
     fn trust_loaded(&mut self, trusted: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // The user chose (or cleared) while it was read.
-        if self.trust.stored.is_some() {
-            return;
-        }
-        self.trust.stored = Some(trusted);
-        self.apply_trust(cx);
-        if std::mem::take(&mut self.trust.prompt_waiting) {
-            self.prompt_trust(window, cx);
+        // Unless the user chose (or cleared) while it was read.
+        if self.trust.stored.is_none() {
+            self.trust.stored = Some(trusted);
+            self.apply_trust(cx);
+            if std::mem::take(&mut self.trust.prompt_waiting) {
+                self.prompt_trust(window, cx);
+            }
         }
         // Git runs only in trusted folders: a repository asks, as a file
         // with a language server does.
         if self.is_restricted(cx) && self.has_repo_hint() && self.git().read(cx).is_enabled() {
             self.server_file_opened(window, cx);
         }
+        self.open_restored_terminal(window, cx);
     }
 
     /// Trusted when the store trusts the root or the User layer sets

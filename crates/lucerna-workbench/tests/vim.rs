@@ -910,8 +910,8 @@ fn mode_indicator_takes_no_room_when_off(cx: &mut TestAppContext) {
     draw(cx);
     keys("cmd-k", cx);
     let toggles = cx
-        .debug_bounds("panel-toggle-extensions")
-        .expect("the extensions toggle is drawn");
+        .debug_bounds("panel-toggle-terminal")
+        .expect("the last panel toggle (terminal) is drawn");
     let chord = cx
         .debug_bounds("pending-chord")
         .expect("the pending chord is drawn");
