@@ -1,4 +1,6 @@
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -23,10 +25,16 @@ class LaunchTests(unittest.TestCase):
         self.assertIsInstance(launched.t0_ns, int)
 
     def test_lucerna_env_home(self):
-        with mock.patch.object(editors.subprocess, "Popen") as popen, \
-                mock.patch.object(editors, "_lucerna_bin", return_value="/x/luc"):
-            editors.launch("lucerna", PATHS, Path("/bench/data/medium"))
-        self.assertEqual(popen.call_args.kwargs["env"]["HOME"], "/bench/profiles/lucerna-home")
+        with tempfile.TemporaryDirectory() as d:
+            paths = env.BenchPaths(Path(d))
+            with mock.patch.object(editors.subprocess, "Popen") as popen, \
+                    mock.patch.object(editors, "_lucerna_bin", return_value="/x/luc"), \
+                    mock.patch.object(editors, "_lstart", return_value="T1"):
+                popen.return_value.pid = 123
+                editors.launch("lucerna", paths, Path("/bench/data/medium"))
+            self.assertEqual(popen.call_args.kwargs["env"]["HOME"], str(paths.lucerna_home))
+            rec = json.loads((paths.lucerna_home / editors.PIDFILE_NAME).read_text())
+            self.assertEqual(rec, {"pid": 123, "lstart": "T1"})
         self.assertEqual(popen.call_args.args[0][0], "/x/luc")
 
 
@@ -41,6 +49,62 @@ class PidTests(unittest.TestCase):
         ]
         with mock.patch.object(editors, "_ps", return_value=table):
             self.assertEqual(sorted(editors.bench_pids("zed", PATHS)), [200, 201])
+
+    def test_user_data_dir_equals_form(self):
+        table = [(5, 1, "zed --user-data-dir=/bench/profiles/zed"),
+                 (6, 1, "zed --user-data-dir=/bench/profiles/zed2")]
+        with mock.patch.object(editors, "_ps", return_value=table):
+            self.assertEqual(editors.bench_pids("zed", PATHS), [5])
+
+    def _lucerna(self, started, table, write=True):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        paths = env.BenchPaths(Path(d.name))
+        if write:
+            paths.lucerna_home.mkdir(parents=True)
+            (paths.lucerna_home / editors.PIDFILE_NAME).write_text(
+                json.dumps({"pid": 50, "lstart": started}))
+        with mock.patch.object(editors, "_ps", return_value=table), \
+                mock.patch.object(editors, "_lstart", return_value="T1"):
+            return editors.bench_pids("lucerna", paths)
+
+    TABLE = [(50, 1, "/x/Lucerna.app/Contents/MacOS/luc /w"),
+             (51, 50, "helper"), (60, 1, "/usr/bin/luc /mine")]
+
+    def test_lucerna_pidfile_match(self):
+        self.assertEqual(self._lucerna("T1", self.TABLE), [50, 51])
+
+    def test_lucerna_reused_pid_excluded(self):
+        self.assertEqual(self._lucerna("OLD", self.TABLE), [])
+
+    def test_lucerna_without_pidfile_excluded(self):
+        self.assertEqual(self._lucerna("T1", self.TABLE, write=False), [])
+
+
+class QuitTests(unittest.TestCase):
+    def test_quit_kills_snapshotted_orphan(self):
+        table = [(7, 1, "zed --user-data-dir /bench/profiles/zed")]
+        kills = []
+        with mock.patch.object(editors, "_ps", return_value=table), \
+                mock.patch.object(editors, "_lstart", return_value="T1"), \
+                mock.patch.object(editors.os, "kill", lambda p, s: kills.append((p, s))), \
+                mock.patch.object(editors, "_reap"), \
+                mock.patch.object(editors, "QUIT_GRACE_S", 0.2):
+            editors.quit("zed", PATHS)
+        import signal
+        self.assertEqual(kills, [(7, signal.SIGTERM), (7, signal.SIGKILL)])
+
+    def test_quit_skips_reused_pid(self):
+        table = [(7, 1, "zed --user-data-dir /bench/profiles/zed")]
+        starts = iter(["T1"])
+        kills = []
+        with mock.patch.object(editors, "_ps", return_value=table), \
+                mock.patch.object(editors, "_lstart", lambda p: next(starts, "T2")), \
+                mock.patch.object(editors.os, "kill", lambda p, s: kills.append((p, s))), \
+                mock.patch.object(editors, "_reap"), \
+                mock.patch.object(editors, "QUIT_GRACE_S", 0.2):
+            editors.quit("zed", PATHS)
+        self.assertEqual([s for _, s in kills], [15])
 
 
 if __name__ == "__main__":

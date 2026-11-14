@@ -1,9 +1,16 @@
 """Launch, identify and clean up each editor inside its own bench profile.
 
 Safety: the user's own Zed / VS Code may be running. Only processes that carry
-the bench profile path (and their descendants), or `luc` with the bench HOME,
-are ever returned by `bench_pids`, and `quit` signals nothing else.
+the bench profile path (and their descendants), or the `luc` recorded in the
+bench pidfile (and its descendants), are ever returned by `bench_pids`, and
+`quit` signals nothing else.
+
+Lucerna is found by pidfile, not by its HOME: macOS `ps` does not print another
+process's environment, so a HOME match can never work. `launch` records the pid
+and its start time; a reused pid has a different start time and is ignored.
 """
+
+import json
 
 import os
 import plistlib
@@ -23,6 +30,7 @@ ZED_APP = Path("/Applications/Zed.app")
 VSCODE_CLI = VSCODE_APP / "Contents/Resources/app/bin/code"
 ZED_CLI = ZED_APP / "Contents/MacOS/cli"
 QUIT_GRACE_S = 5.0
+PIDFILE_NAME = ".bench-pids.json"
 
 
 @dataclass
@@ -73,6 +81,10 @@ def launch(editor: str, paths: BenchPaths, target: Path) -> Launched:
     t0 = time.monotonic_ns()
     popen = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
+    if editor == "lucerna":
+        pidfile = paths.lucerna_home / PIDFILE_NAME
+        pidfile.parent.mkdir(parents=True, exist_ok=True)
+        pidfile.write_text(json.dumps({"pid": popen.pid, "lstart": _lstart(popen.pid)}))
     return Launched(t0_ns=t0, popen=popen)
 
 
@@ -87,10 +99,33 @@ def _ps() -> list[tuple[int, int, str]]:
     return rows
 
 
-def _ps_env(pid: int) -> str:
-    """Command line followed by the environment (`ps eww`)."""
-    return subprocess.run(["ps", "eww", "-o", "command=", "-p", str(pid)],
-                          capture_output=True, text=True).stdout
+def _lstart(pid: int) -> str:
+    """Process start time; empty when the pid is gone."""
+    return subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def _ancestors(pid: int, table) -> set[int]:
+    parent = {p: pp for p, pp, _ in table}
+    out = {pid}
+    while parent.get(pid, 0) > 1 and parent[pid] not in out:
+        pid = parent[pid]
+        out.add(pid)
+    return out
+
+
+def _lucerna_root(paths: BenchPaths, table) -> set[int]:
+    try:
+        rec = json.loads((paths.lucerna_home / PIDFILE_NAME).read_text())
+        pid, started = int(rec["pid"]), rec["lstart"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return set()
+    cmd = next((c for p, _, c in table if p == pid), None)
+    if cmd is None or not started or _lstart(pid) != started:
+        return set()
+    if not re.match(r"\S*/luc(?:\s|$)", cmd):
+        return set()
+    return {pid}
 
 
 def _has_arg(command: str, flag: str, value: str) -> bool:
@@ -122,43 +157,47 @@ def bench_pids(editor: str, paths: BenchPaths) -> list[int]:
         zed = _zed_dir(paths)
         roots = {p for p, _, c in table if _has_arg(c, "--user-data-dir", zed)}
     elif editor == "lucerna":
-        home = str(paths.lucerna_home)
-        pat = rf"(?:^|\s)HOME={re.escape(home)}(?=\s|$)"
-        roots = set()
-        for pid, _, cmd in table:
-            if re.match(r"\S*/luc(?:\s|$)", cmd) and re.search(pat, _ps_env(pid)):
-                roots.add(pid)
+        roots = _lucerna_root(paths, table)
     else:
         raise ValueError(f"unknown editor: {editor}")
-    return sorted(_descendants(roots, table) - {me})
+    return sorted(_descendants(roots - _ancestors(me, table), table)
+                  - _ancestors(me, table))
 
 
-def _alive(pid: int) -> bool:
+def _reap(pid: int) -> None:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass
 
 
 def quit(editor: str, paths: BenchPaths) -> None:
-    pids = bench_pids(editor, paths)
-    for pid in pids:
+    # Snapshot (pid -> start time) now: orphans reparented to pid 1 are still
+    # killed later, and a reused pid (different start time) never is.
+    snap = {pid: _lstart(pid) for pid in bench_pids(editor, paths)}
+
+    def alive(pid: int) -> bool:
+        return bool(snap[pid]) and _lstart(pid) == snap[pid]
+
+    for pid in snap:
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
     deadline = time.monotonic() + QUIT_GRACE_S
-    while time.monotonic() < deadline and any(_alive(p) for p in pids):
+    while True:
+        for pid in snap:
+            _reap(pid)
+        if time.monotonic() >= deadline or not any(alive(p) for p in snap):
+            break
         time.sleep(0.1)
-    # Re-derive the list so a recycled PID is never killed by mistake.
-    for pid in set(bench_pids(editor, paths)) & set(pids):
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    for pid in snap:
+        if alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            _reap(pid)
 
 
 def app_bundle(editor: str) -> Path:
