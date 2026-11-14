@@ -100,7 +100,21 @@ def collect_meta(lsp_modes) -> dict:
 
 
 def helper_permissions(paths: BenchPaths) -> dict | None:
-    return metrics._helper(paths, ["check"])
+    """Run `bench-helper check` ourselves: it exits 3 *with* its JSON on stdout
+    when a permission is missing, which metrics._helper would turn into an
+    exception without the details."""
+    try:
+        r = subprocess.run([metrics.helper_path(paths), "check"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode not in (0, 3):
+        return None
+    try:
+        data = json.loads(r.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def check_permissions(paths: BenchPaths, selected: list[str]) -> None:
@@ -128,13 +142,18 @@ def check_permissions(paths: BenchPaths, selected: list[str]) -> None:
     raise Abort("\n".join(lines))
 
 
-def wait_quiet() -> None:
-    """Preflight; on failure wait and retry, then give up."""
+def wait_quiet(on_ignored=None) -> None:
+    """Preflight; on failure wait and retry, then give up. With `on_ignored`
+    (--ignore-preflight) a failure is reported to it and the run goes on."""
     for attempt in range(PREFLIGHT_RETRIES + 1):
         reasons = env.preflight()
         if not reasons:
             return
         _log("máy chưa yên: " + "; ".join(reasons))
+        if on_ignored is not None:
+            on_ignored(reasons)
+            _log("--ignore-preflight: đo tiếp")
+            return
         if attempt == PREFLIGHT_RETRIES:
             break
         _log(f"chờ {PREFLIGHT_WAIT_S} s rồi kiểm tra lại ({attempt + 1}/{PREFLIGHT_RETRIES})")
@@ -150,11 +169,22 @@ def _write_atomic(path: Path, data: dict) -> None:
 
 
 class Runner:
-    def __init__(self, paths, rounds, selected, cold, out, meta):
+    def __init__(self, paths, rounds, selected, cold, out, meta, ignore_preflight=False):
         self.paths, self.rounds, self.selected = paths, rounds, selected
         self.cold, self.out = cold, out
         self.result = {"meta": meta, "configs": []}
         self.ran_any = False
+        self.ignore_preflight = ignore_preflight
+        self.round_no = 0   # 0 = warm-up, then 1-based rounds
+        if ignore_preflight:
+            meta["preflight_ignored"] = []
+
+    def quiet(self) -> None:
+        if not self.ignore_preflight:
+            wait_quiet()
+            return
+        wait_quiet(lambda reasons: self.result["meta"]["preflight_ignored"].append(
+            {"round": self.round_no, "reasons": list(reasons)}))
 
     def save(self) -> None:
         self.result["meta"]["rounds"] = self.rounds
@@ -200,8 +230,9 @@ class Runner:
         """First startup of each editor runs and is discarded."""
         if "startup_ms" not in self.selected:
             return
+        self.round_no = 0
         for editor in editors.EDITORS:
-            wait_quiet()
+            self.quiet()
             _log(f"khởi động thử {editor} (bỏ kết quả)")
             self._launch_gate()
             if self.cold:
@@ -224,7 +255,8 @@ class Runner:
         if not launching:
             return
         for r in range(self.rounds):
-            wait_quiet()
+            self.round_no = r + 1
+            self.quiet()
             _log(f"lượt {r + 1}/{self.rounds} (lsp={'on' if lsp else 'off'})")
             for editor in order(r):
                 # warm-up already consumed the discarded startup, so measure()
@@ -241,6 +273,10 @@ def parse_args(argv) -> argparse.Namespace:
     ap.add_argument("--cold", action="store_true")
     ap.add_argument("--only", default=None, help="comma-separated: " + ",".join(METRICS))
     ap.add_argument("--out", default=None)
+    ap.add_argument("--ignore-preflight", action="store_true",
+                    help="log preflight failures and measure anyway (reasons go to "
+                         "meta.preflight_ignored). Results made with this flag are "
+                         "NOT for publication.")
     ap.add_argument("--skip-prepare", action="store_true")
     a = ap.parse_args(argv)
     if a.only is None:
@@ -264,7 +300,7 @@ def main(argv=None) -> int:
         out = Path(a.out)
     else:
         out = RESULTS_DIR / f"{meta['date']}-{meta['lucerna_commit']}.json"
-    runner = Runner(paths, a.rounds, a.selected, a.cold, out, meta)
+    runner = Runner(paths, a.rounds, a.selected, a.cold, out, meta, a.ignore_preflight)
     try:
         check_permissions(paths, a.selected)
         if not a.skip_prepare:
@@ -272,7 +308,12 @@ def main(argv=None) -> int:
         for lsp in lsp_modes:
             runner.run_config(lsp)
     except metrics.PermissionDenied as exc:
-        _log(f"thiếu quyền giữa chừng: {exc}\nĐã lưu kết quả dở tại {out}.")
+        detail = str(exc).strip()
+        if not detail or detail.endswith(":"):
+            detail = (detail + " " if detail else "") + (
+                "helper báo thiếu quyền Screen Recording hoặc Accessibility "
+                "(không kèm chi tiết)")
+        _log(f"thiếu quyền giữa chừng: {detail}\nĐã lưu kết quả dở tại {out}.")
         runner.save()
         return 1
     except Abort as exc:

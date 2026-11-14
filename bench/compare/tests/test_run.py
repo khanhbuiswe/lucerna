@@ -231,6 +231,21 @@ class Runner(unittest.TestCase):
         self.assertEqual(h.main("--rounds", "1", "--only", "app_size_mb"), 0)
         self.assertEqual(h.result()["configs"][0]["metrics"]["app_size_mb"]["zed"], [None])
 
+    def test_ignore_preflight_continues_and_records(self):
+        h = Harness(self, preflight=lambda: ["build running"])
+        rc = h.main("--rounds", "2", "--ignore-preflight", "--only", "scroll_dropped_pct")
+        self.assertEqual(rc, 0)
+        self.assertEqual(h.sleeps.count(30), 0)
+        self.assertEqual(h.count("scroll_dropped_pct"), 6)
+        ign = h.result()["meta"]["preflight_ignored"]
+        self.assertEqual([x["round"] for x in ign], [1, 2])
+        self.assertEqual(ign[0]["reasons"], ["build running"])
+
+    def test_no_preflight_ignored_key_without_flag(self):
+        h = Harness(self)
+        h.main("--rounds", "1", "--only", "scroll_dropped_pct")
+        self.assertNotIn("preflight_ignored", h.result()["meta"])
+
     def test_unexpected_error_saves_partial_nonzero(self):
         h = Harness(self)
         with mock.patch.object(run, "wait_quiet", side_effect=RuntimeError("boom")):
@@ -242,6 +257,38 @@ class Runner(unittest.TestCase):
         with mock.patch("builtins.input", side_effect=EOFError):
             self.assertNotEqual(h.main("--cold", "--only", "startup_ms"), 0)
         self.assertTrue(h.out.exists())
+
+
+class FakeHelper(unittest.TestCase):
+    def test_check_exit3_names_missing_permission(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        fake = Path(tmp.name) / "helper"
+        fake.write_text('#!/bin/sh\necho \'{"accessibility":true,"screen_recording":false}\'\nexit 3\n')
+        fake.chmod(0o755)
+        paths = run.BenchPaths(Path(tmp.name))
+        with mock.patch.dict("os.environ", {"BENCH_HELPER": str(fake)}):
+            self.assertEqual(run.helper_permissions(paths),
+                             {"accessibility": True, "screen_recording": False})
+            with self.assertRaises(run.Abort) as cm:
+                run.check_permissions(paths, ["startup_ms", "idle_ram_mb", "app_size_mb"])
+        msg = str(cm.exception)
+        self.assertIn("Screen Recording", msg)
+        self.assertIn("startup_ms", msg)
+        self.assertIn("--only idle_ram_mb,app_size_mb", msg)
+
+    def test_check_unusable_helper_gives_none(self):
+        paths = run.BenchPaths(Path("/nonexistent-bench"))
+        self.assertIsNone(run.helper_permissions(paths))
+
+    def test_midrun_denied_without_detail_has_fallback(self):
+        h = Harness(self)
+        with mock.patch.object(run, "wait_quiet",
+                               side_effect=run.metrics.PermissionDenied("bench-helper check: ")):
+            with mock.patch.object(run, "_log") as lg:
+                self.assertEqual(h.main("--rounds", "1", "--only", "scroll_dropped_pct"), 1)
+        self.assertNotIn("check: \n", lg.call_args_list[-1][0][0])
+        self.assertIn("Screen Recording", lg.call_args_list[-1][0][0])
 
 
 class Cli(unittest.TestCase):

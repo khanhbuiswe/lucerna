@@ -36,6 +36,14 @@ class ReportTests(unittest.TestCase):
         row = next(l for l in md.splitlines() if "Quick Open" in l)
         self.assertIn("— · 3/3 lượt hỏng", row)
 
+    def test_trial_warning_only_with_preflight_ignored(self):
+        r = load()
+        self.assertNotIn("Kết quả chạy thử", report.render_markdown(r))
+        r["meta"]["preflight_ignored"] = [{"round": 1, "reasons": ["x"]}]
+        md = report.render_markdown(r)
+        self.assertIn("Kết quả chạy thử: máy không yên khi đo (preflight bị bỏ qua), "
+                      "không dùng để công bố.", md.splitlines()[0])
+
     def test_svg_has_three_bars(self):
         cfg = load()["configs"][0]
         svg = report.render_svg("startup_ms", cfg)

@@ -111,7 +111,11 @@ def _meta_block(meta: dict) -> list[str]:
 
 
 def render_markdown(result: dict) -> str:
-    out = ["# Kết quả so sánh", ""]
+    out = []
+    if "preflight_ignored" in result.get("meta", {}):
+        out += ["**Kết quả chạy thử: máy không yên khi đo (preflight bị bỏ qua), "
+                "không dùng để công bố.**", ""]
+    out += ["# Kết quả so sánh", ""]
     out += _meta_block(result.get("meta", {}))
     out += ["", "Mỗi ô: trung vị (p90). Dòng hệ số: trung vị của editor đó chia cho "
             "trung vị của Lucerna; giá trị lớn hơn 1 nghĩa là số đo lớn hơn số đo của Lucerna.", ""]
