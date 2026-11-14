@@ -525,6 +525,7 @@ impl VimLayer {
                 };
                 self.view_edited(&view, edit, cx);
             }
+            CodeViewEvent::ScrolledTo(_) => {}
         }
     }
 

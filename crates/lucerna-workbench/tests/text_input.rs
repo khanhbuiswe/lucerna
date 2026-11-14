@@ -18,7 +18,7 @@ use lucerna_workbench::{AppState, TextInput};
 fn init(cx: &mut TestAppContext) {
     let (keymap, _) = Keymap::load(Keymap::default_bindings(), None);
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings: SettingsStore::with_defaults(),
         keymap,
@@ -252,4 +252,27 @@ fn set_text_moves_caret_to_end(cx: &mut TestAppContext) {
     assert_eq!(text(&input, cx), ">");
     assert_eq!(selection(&input, cx), 1..1);
     assert_eq!(changes.borrow().last().map(String::as_str), Some(">"));
+}
+
+#[gpui::test]
+fn select_range_selects_bytes(cx: &mut TestAppContext) {
+    let (input, _, cx) = setup(cx);
+    input.update_in(cx, |input, window, cx| {
+        input.set_text("foo.rs", window, cx);
+        input.select_range(0..3, window, cx);
+    });
+    draw(cx);
+    assert_eq!(selection(&input, cx), 0..3);
+}
+
+#[gpui::test]
+fn select_range_snaps_to_char_boundaries(cx: &mut TestAppContext) {
+    let (input, _, cx) = setup(cx);
+    input.update_in(cx, |input, window, cx| {
+        // `ả` is 3 bytes: 1 is inside it.
+        input.set_text("ảnh.rs", window, cx);
+        input.select_range(1..5, window, cx);
+    });
+    draw(cx);
+    assert_eq!(selection(&input, cx), 0..5);
 }

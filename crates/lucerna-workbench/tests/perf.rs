@@ -23,7 +23,7 @@ use tempfile::TempDir;
 fn init(cx: &mut TestAppContext) {
     let (keymap, _) = Keymap::load(Keymap::default_bindings(), None);
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings: SettingsStore::with_defaults(),
         keymap,
@@ -201,4 +201,50 @@ fn keystroke_latency_smart_typing(cx: &mut TestAppContext) {
         "auto-closed and typed over: {line}"
     );
     report("smart typing keystroke total", total);
+}
+
+/// Markdown preview parse (spec §6): a 5000-line document of about 200 KB,
+/// mixing headings, paragraphs, tables and code blocks, parses in under 30 ms.
+#[test]
+#[ignore = "a measurement: run in a release build with --ignored"]
+fn parse_5000_lines() {
+    let mut source = String::new();
+    let mut section = 0;
+    while source.lines().count() < 5_000 {
+        section += 1;
+        source.push_str(&format!("## Section {section}\n\n"));
+        // One long paragraph line, so the document reaches about 200 KB.
+        source.push_str(
+            &"A paragraph with **bold**, *italic*, `code` and a [link](https://example.com). "
+                .repeat(8),
+        );
+        source.push_str("\n\n");
+        source.push_str("| name | kind | size |\n|:-----|:----:|-----:|\n");
+        for row in 0..4 {
+            source.push_str(&format!("| item {row} | `u32` | {} |\n", row * 8));
+        }
+        source.push_str("\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n");
+        source.push_str("> A quote line.\n\n- one\n- two\n- three\n\n");
+    }
+    eprintln!(
+        "source: {} lines, {} bytes",
+        source.lines().count(),
+        source.len()
+    );
+    let mut samples: Vec<Duration> = (0..20)
+        .map(|_| {
+            let start = Instant::now();
+            let blocks = lucerna_workbench::markdown::parse_markdown_document(&source, None);
+            let elapsed = start.elapsed();
+            std::hint::black_box(blocks);
+            elapsed
+        })
+        .collect();
+    samples.sort();
+    let median = samples[samples.len() / 2];
+    eprintln!(
+        "parse_markdown_document: median {median:?}, max {:?}",
+        samples[19]
+    );
+    assert!(median < Duration::from_millis(30), "parse took {median:?}");
 }

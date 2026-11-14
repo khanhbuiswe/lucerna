@@ -1,6 +1,6 @@
 [package]
 name = "lucerna-theme"
-description = "Lucerna: Zed theme loading (One Dark / One Light built in)"
+description = "Lucerna: Zed-format theme loading (Lucerna Dark / Lucerna Light built in)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

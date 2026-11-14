@@ -102,11 +102,11 @@ fn language_editing(l: &LanguageEntry) -> LanguageEditing {
 
 /// `(extension id, theme family file)`, each file once. With `only`, just
 /// the files that hold a theme of that name.
-fn theme_files(index: &ExtensionIndex, only: Option<&str>) -> Vec<(String, PathBuf)> {
+fn theme_files(index: &ExtensionIndex, only: Option<&[String]>) -> Vec<(String, PathBuf)> {
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     for (id, ext) in usable(index) {
         for theme in &ext.themes {
-            if only.is_some_and(|name| name != theme.name) {
+            if only.is_some_and(|names| !names.contains(&theme.name)) {
                 continue;
             }
             let file = (id.clone(), theme.path.clone());
@@ -404,8 +404,8 @@ fn load_all_themes(index: Arc<ExtensionIndex>, cx: &mut App) {
 }
 
 /// The extension theme files to load with the user's themes; with `only`,
-/// just those holding a theme of that name.
-pub(crate) fn extension_theme_files(cx: &App, only: Option<&str>) -> Vec<(String, PathBuf)> {
+/// just those holding a theme of one of those names.
+pub(crate) fn extension_theme_files(cx: &App, only: Option<&[String]>) -> Vec<(String, PathBuf)> {
     theme_files(&current_index(cx), only)
 }
 

@@ -1,11 +1,13 @@
-//! Zed theme loading. Pure data: no UI dependencies.
+//! Zed-format theme loading. Pure data: no UI dependencies.
 
 mod icon_theme;
 mod registry;
 mod schema;
 
 pub use icon_theme::{IconSource, IconTheme, IconThemeRegistry, ResolvedIcons, lucide_icon_theme};
-pub use registry::{ThemeFile, ThemeRegistry, ThemeSource};
+pub use registry::{
+    DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, ThemeFile, ThemeRegistry, ThemeSource,
+};
 
 use std::collections::HashMap;
 
@@ -57,6 +59,11 @@ pub struct UiColors {
     pub border: Rgba,
     pub text: Rgba,
     pub text_muted: Rgba,
+    /// `text.disabled`: text of an entry that cannot be used, such as a
+    /// greyed-out menu item.
+    pub text_disabled: Rgba,
+    /// `border.focused`: the border of a focused control.
+    pub border_focused: Rgba,
     /// `text.accent`: text that stands out, such as a tab's unsaved dot.
     pub text_accent: Rgba,
     pub element_selected: Rgba,
@@ -113,6 +120,10 @@ pub struct UiColors {
     pub element_hover: Rgba,
     /// `scrollbar.thumb.background`: the thin overlay scrollbar's thumb.
     pub scrollbar_thumb: Rgba,
+    /// The thumb under the mouse: `scrollbar_thumb`, more opaque.
+    pub scrollbar_thumb_hover: Rgba,
+    /// The thumb being dragged: `scrollbar_thumb`, more opaque still.
+    pub scrollbar_thumb_active: Rgba,
 }
 
 const fn gray(v: u8, a: u8) -> Rgba {
@@ -183,6 +194,8 @@ impl UiColors {
             border,
             text: fg,
             text_muted: muted,
+            text_disabled: muted,
+            border_focused: border,
             text_accent: pick("#74ade8ff", "#5c78e2ff"),
             element_selected: sel,
             element_background: title_bar,
@@ -222,6 +235,8 @@ impl UiColors {
             editor_highlighted_line_background: pick("#2f343eff", "#ebebecff"),
             element_hover: hover,
             scrollbar_thumb,
+            scrollbar_thumb_hover: thumb_hover(scrollbar_thumb),
+            scrollbar_thumb_active: thumb_active(scrollbar_thumb),
         }
     }
 }
@@ -287,6 +302,26 @@ impl TerminalColors {
 /// A color with its alpha scaled by 0.7: the default dim variant.
 pub(crate) fn dimmed(c: Rgba) -> Rgba {
     Rgba { a: c.a * 0.7, ..c }
+}
+
+/// The scrollbar thumb under the mouse, from its resting color. Derived
+/// rather than read from `scrollbar.thumb.hover_background`: Zed's themes
+/// set that for a thumb on a bordered track, and on Lucerna's bare overlay
+/// it can be darker than the resting thumb (One Dark's nearly vanishes).
+pub fn thumb_hover(thumb: Rgba) -> Rgba {
+    scale_alpha(thumb, 1.6)
+}
+
+/// The scrollbar thumb while dragged, from its resting color.
+pub fn thumb_active(thumb: Rgba) -> Rgba {
+    scale_alpha(thumb, 2.2)
+}
+
+fn scale_alpha(c: Rgba, k: f32) -> Rgba {
+    Rgba {
+        a: (c.a * k).min(1.0),
+        ..c
+    }
 }
 
 #[derive(Debug, Clone)]

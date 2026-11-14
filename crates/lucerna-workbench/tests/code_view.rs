@@ -38,7 +38,7 @@ fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
         settings.set_layer(Layer::User, json).unwrap();
     }
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings,
         keymap,
@@ -939,4 +939,193 @@ fn edit_config_reads_auto_settings(cx: &mut TestAppContext) {
     assert_eq!(config.auto_surround, AutoSurround::LanguageDefined);
     let language = view.read_with(cx, |v, cx| v.edit_language(cx));
     assert!(language.is_some_and(|l| !l.editing().brackets.is_empty()));
+}
+
+fn long_text() -> String {
+    (0..500).map(|i| format!("line {i}\n")).collect()
+}
+
+/// The mouse strip of the editor's scrollbar: `x` px left of the text
+/// area's right edge, here the window's.
+fn strip(x: f32, y: gpui::Pixels, cx: &mut VisualTestContext) -> gpui::Point<gpui::Pixels> {
+    let viewport = cx.update(|window, _| window.viewport_size());
+    gpui::point(viewport.width - gpui::px(x), y)
+}
+
+fn mouse_drag(
+    from: gpui::Point<gpui::Pixels>,
+    to: gpui::Point<gpui::Pixels>,
+    cx: &mut VisualTestContext,
+) {
+    let (left, none) = (gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.simulate_mouse_down(from, left, none);
+    draw(cx);
+    cx.simulate_mouse_move(to, Some(left), none);
+    draw(cx);
+    cx.simulate_mouse_up(to, left, none);
+    draw(cx);
+}
+
+#[gpui::test]
+fn editor_scrollbar_drag_scrolls(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (view, cx) = code_view(&long_text(), cx);
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let thumb = view.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+    let from = thumb.center();
+    let to = gpui::point(from.x, from.y + viewport.height - thumb.size.height);
+    mouse_drag(from, to, cx);
+    assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 499);
+    let end = view.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+    assert!((end.bottom() - viewport.height).abs() < gpui::px(0.01));
+}
+
+#[gpui::test]
+fn editor_track_click_jumps(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (view, cx) = code_view(&long_text(), cx);
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let at = strip(3., viewport.height / 2., cx);
+    cx.simulate_click(at, gpui::Modifiers::none());
+    draw(cx);
+    let top = view.read_with(cx, |v, _| v.scroll_top_row());
+    assert!((248..=250).contains(&top), "top row {top}");
+}
+
+#[gpui::test]
+fn scroll_by_page_setting_pages(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.scrollbar.scrollByPage": true }"#));
+    let (view, cx) = code_view(&long_text(), cx);
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let at = strip(3., viewport.height - gpui::px(2.), cx);
+    cx.simulate_click(at, gpui::Modifiers::none());
+    draw(cx);
+    let (top, page) = view.read_with(cx, |v, _| (v.scroll_top_row(), v.visible_rows()));
+    assert!(top.abs_diff(page) <= 1, "top {top}, page {page}");
+}
+
+#[gpui::test]
+fn track_click_with_folds_lands_on_visible_row(cx: &mut TestAppContext) {
+    use lucerna_workbench::code_view::FoldOp;
+    init(cx, None);
+    let mut text = String::from("fn big() {\n");
+    text.extend((0..200).map(|i| format!("    x{i}();\n")));
+    text.push_str("}\n");
+    text.extend((0..297).map(|i| format!("line {i}\n")));
+    let (view, cx) = code_view(&text, cx);
+    cx.run_until_parked();
+    assert_eq!(
+        view.update(cx, |v, cx| v.fold_at(0, FoldOp::Close, cx)),
+        Some(0)
+    );
+    draw(cx);
+    // As in the other tests, n newline-ended lines are rows 0..n.
+    let lines = text.matches('\n').count() as u32;
+    let hidden = view.read_with(cx, |v, _| {
+        (0..lines).filter(|&r| v.is_row_hidden(r)).count() as u32
+    });
+    assert!(hidden >= 200, "hidden {hidden}");
+    let shown = lines - hidden;
+
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let at = strip(3., viewport.height / 2., cx);
+    cx.simulate_click(at, gpui::Modifiers::none());
+    draw(cx);
+    let top = view.read_with(cx, |v, _| v.scroll_top_row());
+    // Past the fold, so every hidden row is above it.
+    let index = top - hidden;
+    assert!(
+        index.abs_diff((shown - 1) / 2) <= 1,
+        "top {top}, shown {shown}"
+    );
+
+    let thumb = view.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+    let from = thumb.center();
+    mouse_drag(from, gpui::point(from.x, from.y + viewport.height), cx);
+    assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), lines - 1);
+}
+
+#[gpui::test]
+fn scrollbar_click_keeps_selection(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (view, cx) = code_view(&long_text(), cx);
+    let before = view.read_with(cx, |v, _| v.selection_head());
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let at = strip(3., viewport.height / 2., cx);
+    cx.simulate_click(at, gpui::Modifiers::none());
+    draw(cx);
+    let thumb = view.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+    mouse_drag(
+        thumb.center(),
+        gpui::point(thumb.center().x, gpui::px(5.)),
+        cx,
+    );
+    assert_eq!(view.read_with(cx, |v, _| v.selection_head()), before);
+    assert_eq!(view.read_with(cx, |v, _| v.selection()), None);
+}
+
+#[gpui::test]
+fn minimap_still_scrolls_next_to_scrollbar(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.minimap.enabled": true }"#));
+    let (view, cx) = code_view(&long_text(), cx);
+    let minimap = cx.debug_bounds("code-view-minimap").expect("minimap on");
+    let at = gpui::point(
+        minimap.left() + gpui::px(2.),
+        minimap.bottom() - gpui::px(5.),
+    );
+    cx.simulate_click(at, gpui::Modifiers::none());
+    draw(cx);
+    assert!(view.read_with(cx, |v, _| v.scroll_top_row()) > 0);
+}
+
+/// With word wrap, a row's display lines share its one-line slice of the
+/// track: a slow drag keeps the thumb under the pointer.
+#[gpui::test]
+fn wrapped_drag_keeps_the_grab_point(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.wordWrap": "on" }"#));
+    let text: String = (0..300)
+        .map(|i| format!("{i:03}{}\n", "x".repeat(400)))
+        .collect();
+    let (view, cx) = code_view(&text, cx);
+    let start = view.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+    let (left, none) = (gpui::MouseButton::Left, gpui::Modifiers::none());
+    let from = start.center();
+    cx.simulate_mouse_down(from, left, none);
+    draw(cx);
+    for step in 1..=20 {
+        let dy = gpui::px(step as f32 * 0.7);
+        cx.simulate_mouse_move(gpui::point(from.x, from.y + dy), Some(left), none);
+        draw(cx);
+        let thumb = view.read_with(cx, |v, _| v.scrollbar_thumb()).unwrap();
+        let moved = thumb.top() - start.top();
+        assert!(
+            (moved - dy).abs() < gpui::px(0.5),
+            "step {step}: moved {moved:?}, dy {dy:?}"
+        );
+    }
+    cx.simulate_mouse_up(from, left, none);
+}
+
+/// A page is a screenful of display lines, not of buffer rows.
+#[gpui::test]
+fn wrapped_page_click_moves_one_screen(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{ "editor.wordWrap": "on", "editor.scrollbar.scrollByPage": true }"#),
+    );
+    let text: String = (0..300)
+        .map(|i| format!("{i:03}{}\n", "x".repeat(400)))
+        .collect();
+    let (view, cx) = code_view(&text, cx);
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let lines_on_screen = (viewport.height / gpui::px(LINE)) as u32;
+    let at = strip(3., viewport.height - gpui::px(2.), cx);
+    cx.simulate_click(at, gpui::Modifiers::none());
+    draw(cx);
+    let top = view.read_with(cx, |v, _| v.scroll_top_row());
+    // Each row is several lines, so a screen is fewer rows than lines.
+    assert!(
+        top > 0 && top < lines_on_screen,
+        "top {top}, lines {lines_on_screen}"
+    );
 }

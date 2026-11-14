@@ -37,7 +37,7 @@ fn init_with_keymap(
         settings.set_layer(Layer::User, json).unwrap();
     }
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings,
         keymap,

@@ -196,6 +196,22 @@ impl Drop for Worktree {
 /// user `"**/.git": false` does not bring the repository's internals in.
 pub(crate) const GIT_DIR: &str = ".git";
 
+/// A pattern with no glob metacharacter (`*?[]{}`) names a path, and as in
+/// VS Code also covers everything under it: `src` becomes `src` and
+/// `src/**`. Any other pattern is returned unchanged. Used for include and
+/// exclude patterns alike.
+pub(crate) fn expand_plain_folder(pattern: &str) -> Vec<String> {
+    let trimmed = pattern.trim_end_matches('/');
+    let plain = !trimmed.is_empty()
+        && !trimmed.starts_with('!')
+        && !trimmed.contains(['*', '?', '[', ']', '{', '}']);
+    if plain {
+        vec![pattern.to_string(), format!("{trimmed}/**")]
+    } else {
+        vec![pattern.to_string()]
+    }
+}
+
 /// The one walker configuration shared by the scan and by content search.
 ///
 /// Ignore-source policy: hidden files are shown; project-level sources apply
@@ -228,12 +244,12 @@ pub(crate) fn walk_builder_with_includes(
         .follow_links(false)
         .filter_entry(|entry| entry.file_name() != GIT_DIR);
     let mut overrides = OverrideBuilder::new(root);
-    for glob in include {
-        if let Err(err) = overrides.add(glob) {
+    for glob in include.iter().flat_map(|g| expand_plain_folder(g)) {
+        if let Err(err) = overrides.add(&glob) {
             tracing::warn!(%glob, %err, "invalid include glob");
         }
     }
-    for glob in &opts.exclude {
+    for glob in opts.exclude.iter().flat_map(|g| expand_plain_folder(g)) {
         if let Err(err) = overrides.add(&format!("!{glob}")) {
             tracing::warn!(%glob, %err, "invalid files.exclude glob");
         }
@@ -672,6 +688,16 @@ impl Worker {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn plain_patterns_also_cover_what_is_under_them() {
+        assert_eq!(expand_plain_folder("src"), ["src", "src/**"]);
+        assert_eq!(expand_plain_folder("a/b"), ["a/b", "a/b/**"]);
+        assert_eq!(expand_plain_folder("src/"), ["src/", "src/**"]);
+        for glob in ["src/**", "*.rs", "a?", "[ab]", "{a,b}", "", "!x"] {
+            assert_eq!(expand_plain_folder(glob), [glob], "{glob}");
+        }
+    }
 
     fn wait(wt: &Worktree, want: fn(&WorktreeEvent) -> bool) {
         let rx = wt.events();

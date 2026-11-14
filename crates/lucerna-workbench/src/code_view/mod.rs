@@ -55,7 +55,7 @@ use crate::hover::{HoverConfig, HoverController};
 use crate::language_servers::LanguageServers;
 use crate::layout::color;
 use crate::tasks::{catch_panic, guarded};
-use crate::ui::GRID;
+use crate::ui::{GRID, ScrollMetrics, ScrollbarSource, ScrollbarState, scrollbar};
 use crate::{AppState, CommandRegistry, Workbench};
 
 /// The status-bar text shown while the active view is a large file.
@@ -96,6 +96,9 @@ struct Config {
     cursor_style: CaretStyle,
     /// `editor.wordSeparators`.
     word_separators: String,
+    /// `editor.scrollbar.scrollByPage`: a track click pages instead of
+    /// jumping there.
+    scroll_by_page: bool,
 }
 
 impl Config {
@@ -160,6 +163,9 @@ impl Config {
             word_separators: settings
                 .get("editor.wordSeparators", language)
                 .unwrap_or_else(|| DEFAULT_WORD_SEPARATORS.to_string()),
+            scroll_by_page: settings
+                .get("editor.scrollbar.scrollByPage", language)
+                .unwrap_or(false),
         };
         let font_size = settings
             .get::<f32>("editor.fontSize", language)
@@ -223,6 +229,10 @@ pub enum CodeViewEvent {
     /// session, for `.`: typed chars or an IME commit's final text, Enter,
     /// Backspace or Tab. Only while [`CodeView::set_typed_events`] is on.
     Typed(lucerna_vim::Typed),
+    /// The topmost visible buffer row (folds skipped) changed: the user
+    /// scrolled, the view followed the cursor or an edit, or
+    /// [`CodeView::set_scroll_top_row`] was called.
+    ScrolledTo(u32),
 }
 
 /// What changed the selections, which decides the undo stop and the
@@ -336,6 +346,8 @@ pub struct CodeView {
     frame: Option<Arc<Frame>>,
     /// A row to center once the viewport size is known.
     pending_center: Option<u32>,
+    /// The top row last sent as [`CodeViewEvent::ScrolledTo`].
+    reported_top_row: Option<u32>,
     /// The file's state; errors replace the text with a message.
     doc_state: DocState,
     /// Where the error actions ("Retry", "Open as text") go.
@@ -369,6 +381,8 @@ pub struct CodeView {
     /// The scrollbar marks last laid out, reused while nothing they
     /// depend on changed.
     scrollbar_marks: Option<element::ScrollbarMarks>,
+    /// The overlay scrollbar's hover and drag.
+    scrollbar: ScrollbarState,
     /// The LSP hover of this view.
     hover: HoverController,
     /// The "No definition found" message, until it times out or the
@@ -441,6 +455,7 @@ impl CodeView {
             caches: Caches::default(),
             frame: None,
             pending_center: None,
+            reported_top_row: None,
             doc_state: DocState::Ready,
             documents: None,
             match_highlights: Arc::from([]),
@@ -455,6 +470,7 @@ impl CodeView {
             diagnostic_rows: DiagnosticRows::default(),
             diagnostic_rows_generation: 0,
             scrollbar_marks: None,
+            scrollbar: ScrollbarState::default(),
             hover,
             goto_message: None,
             link: link::Link::default(),
@@ -476,6 +492,19 @@ impl CodeView {
 
     pub fn path(&self) -> &Arc<Path> {
         &self.path
+    }
+
+    /// The file was renamed to `path` (see `Documents::rename`): the view
+    /// keeps its text, cursor and scroll. The old file's diagnostics no
+    /// longer apply; the language servers send the new path's.
+    pub(crate) fn set_path(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        if self.path == path {
+            return;
+        }
+        self.hover.set_path(path.clone(), cx);
+        self.path = path;
+        self.clear_diagnostics(cx);
+        cx.notify();
     }
 
     pub fn snapshot(&self) -> &BufferSnapshot {
@@ -992,13 +1021,26 @@ impl CodeView {
             offset: 0.,
         };
         self.pending_center = None;
+        self.report_scroll(cx);
         cx.notify();
+    }
+
+    /// Emits [`CodeViewEvent::ScrolledTo`] when the top row is not the one
+    /// last reported. Called where the top row settles: an explicit
+    /// scroll, the wheel, and each layout (which applies the scrolls that
+    /// follow the cursor or an edit).
+    pub(crate) fn report_scroll(&mut self, cx: &mut Context<Self>) {
+        let top = self.scroll.top_row;
+        if self.reported_top_row != Some(top) {
+            self.reported_top_row = Some(top);
+            cx.emit(CodeViewEvent::ScrolledTo(top));
+        }
     }
 
     /// The overlay scrollbar thumb as last painted, in window coordinates;
     /// `None` while the rows fit (or before the first paint).
     pub fn scrollbar_thumb(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
-        self.frame.as_ref().and_then(|f| f.thumb())
+        self.scrollbar.thumb()
     }
 
     /// The gutter's width in pixels as last laid out; 0 before the first
@@ -1643,6 +1685,30 @@ impl CodeView {
         self.frame.as_ref().map(|f| f.wrap_chars).unwrap_or(None)
     }
 
+    /// Scrolls to `scroll_top` px on the scrollbar's scale, where each
+    /// buffer row not hidden by a fold is one line tall; a wrapped row
+    /// spreads its share over its display lines.
+    fn set_scrollbar_top(&mut self, scroll_top: f32, cx: &mut Context<Self>) {
+        let lh = self.line_height();
+        let rows = scroll_top.max(0.) / lh;
+        // `499 * lh / lh` can come back a hair under 499.
+        let n = (rows + 1e-3).floor();
+        let last = self
+            .folds
+            .prev_visible(self.snapshot.line_count().saturating_sub(1));
+        let row = self.folds.nth_visible(n as u32).min(last);
+        let offset = (rows - n).max(0.) * self.wrap_count(row) as f32 * lh;
+        self.scroll = Scroll {
+            top_row: row,
+            offset,
+        };
+        // Clamps the offset at the last row.
+        self.scroll_by(0.);
+        self.hover.hide(cx);
+        self.report_scroll(cx);
+        cx.notify();
+    }
+
     /// Scrolls down by `dy` pixels (up when negative), walking only the
     /// rows passed over.
     fn scroll_by(&mut self, dy: f32) {
@@ -1673,6 +1739,46 @@ impl CodeView {
         }
         self.scroll = scroll;
         self.pending_center = None;
+    }
+}
+
+/// The editor as the scrollbar's [`ScrollbarSource`].
+struct CodeViewScroll(WeakEntity<CodeView>);
+
+impl ScrollbarSource for CodeViewScroll {
+    fn metrics(&self, cx: &mut App) -> Option<ScrollMetrics> {
+        let view = self.0.upgrade()?;
+        let view = view.read(cx);
+        view.frame.as_ref().map(|f| f.scroll_metrics())
+    }
+
+    fn set_scroll_top(&self, scroll_top: f32, cx: &mut App) {
+        if let Some(view) = self.0.upgrade() {
+            view.update(cx, |v, cx| v.set_scrollbar_top(scroll_top, cx));
+        }
+    }
+
+    fn track_click_pages(&self, cx: &App) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|v| v.read(cx).config.scroll_by_page)
+    }
+
+    /// A screenful of display lines, which with word wrap is fewer rows
+    /// than the scale's viewport.
+    fn scroll_page(&self, down: bool, metrics: ScrollMetrics, cx: &mut App) {
+        if let Some(view) = self.0.upgrade() {
+            view.update(cx, |v, cx| {
+                v.scroll_by(if down {
+                    metrics.viewport
+                } else {
+                    -metrics.viewport
+                });
+                v.hover.hide(cx);
+                v.report_scroll(cx);
+                cx.notify();
+            });
+        }
     }
 }
 
@@ -1806,7 +1912,12 @@ impl Render for CodeView {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(CodeElement::new(view.clone())),
+                            .child(CodeElement::new(view.clone()))
+                            .child(scrollbar(
+                                self.scrollbar.clone(),
+                                CodeViewScroll(view.downgrade()),
+                                view.entity_id(),
+                            )),
                     )
                     .when(show_minimap, |d| d.child(minimap::render(view))),
             )

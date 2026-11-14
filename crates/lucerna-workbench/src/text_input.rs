@@ -107,6 +107,28 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Selects the byte `range`, clamped to the text and snapped back to
+    /// char boundaries; the caret goes to its end.
+    pub fn select_range(
+        &mut self,
+        range: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snap = |mut i: usize| {
+            i = i.min(self.text.len());
+            while !self.text.is_char_boundary(i) {
+                i -= 1;
+            }
+            i
+        };
+        let (start, end) = (snap(range.start), snap(range.end));
+        self.selected = start.min(end)..end.max(start);
+        self.reversed = false;
+        window.notify_text_selection_changed(&self.focus);
+        cx.notify();
+    }
+
     fn cursor(&self) -> usize {
         if self.reversed {
             self.selected.start

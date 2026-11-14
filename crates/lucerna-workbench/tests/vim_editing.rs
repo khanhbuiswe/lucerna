@@ -28,7 +28,7 @@ fn init(cx: &mut TestAppContext, user_settings: &str) {
     let mut settings = SettingsStore::with_defaults();
     settings.set_layer(Layer::User, user_settings).unwrap();
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings,
         keymap,

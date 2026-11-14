@@ -24,7 +24,7 @@ fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
         settings.set_layer(Layer::User, json).unwrap();
     }
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     cx.set_global(AppState {
         settings,
         keymap,
@@ -213,4 +213,47 @@ fn unopened_file_is_marked_at_once(cx: &mut TestAppContext) {
     fs::write(dir.path().join("b.txt"), "other\n").unwrap();
     report(&wb, "b.txt", cx);
     assert!(recently_changed(&wb, "b.txt", cx));
+}
+
+#[gpui::test]
+fn own_changes_are_not_decorated(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench("a\n", cx);
+    fs::write(dir.path().join("new.rs"), "x\n").unwrap();
+    fs::write(dir.path().join("other.rs"), "y\n").unwrap();
+    wb.update(cx, |wb, _| {
+        wb.expect_own_changes([Arc::from(Path::new("new.rs"))])
+    });
+    let added = |name: &str| Change {
+        path: Arc::from(Path::new(name)),
+        kind: ChangeKind::Added,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(
+            &WorktreeEvent::Changed(vec![added("new.rs"), added("other.rs")]),
+            cx,
+        )
+    });
+    settle(cx);
+    assert!(!recently_changed(&wb, "new.rs", cx));
+    assert!(recently_changed(&wb, "other.rs", cx));
+}
+
+#[gpui::test]
+fn own_directory_covers_paths_under_it(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench("a\n", cx);
+    fs::create_dir_all(dir.path().join("d/e")).unwrap();
+    wb.update(cx, |wb, _| {
+        wb.expect_own_changes([Arc::from(Path::new("d"))])
+    });
+    let added = |name: &str| Change {
+        path: Arc::from(Path::new(name)),
+        kind: ChangeKind::Added,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![added("d"), added("d/e")]), cx)
+    });
+    settle(cx);
+    assert!(!recently_changed(&wb, "d/e", cx));
 }

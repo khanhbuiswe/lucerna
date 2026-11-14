@@ -56,11 +56,18 @@ impl ThemeDef {
         };
         let selection = player("selection");
         let editor_foreground = color("editor.foreground").unwrap_or(fb.editor_foreground);
+        let scrollbar_thumb = color("scrollbar.thumb.background").unwrap_or(fb.scrollbar_thumb);
         let ui = UiColors {
             background: color("background").unwrap_or(fb.background),
             border: color("border").unwrap_or(fb.border),
             text: color("text").unwrap_or(fb.text),
             text_muted: color("text.muted").unwrap_or(fb.text_muted),
+            text_disabled: color("text.disabled")
+                .or_else(|| color("text.muted"))
+                .unwrap_or(fb.text_disabled),
+            border_focused: color("border.focused")
+                .or_else(|| color("border"))
+                .unwrap_or(fb.border_focused),
             text_accent: color("text.accent").unwrap_or(fb.text_accent),
             element_selected: color("element.selected").unwrap_or(fb.element_selected),
             element_background: color("element.background").unwrap_or(fb.element_background),
@@ -110,7 +117,9 @@ impl ThemeDef {
             editor_highlighted_line_background: color("editor.highlighted_line.background")
                 .unwrap_or(fb.editor_highlighted_line_background),
             element_hover: color("element.hover").unwrap_or(fb.element_hover),
-            scrollbar_thumb: color("scrollbar.thumb.background").unwrap_or(fb.scrollbar_thumb),
+            scrollbar_thumb,
+            scrollbar_thumb_hover: crate::thumb_hover(scrollbar_thumb),
+            scrollbar_thumb_active: crate::thumb_active(scrollbar_thumb),
         };
 
         let tfb = TerminalColors::fallback_ansi(appearance);

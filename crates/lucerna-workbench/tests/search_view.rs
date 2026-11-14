@@ -25,7 +25,7 @@ fn init(cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     assert!(error.is_none(), "keymap error: {error:?}");
     let themes = ThemeRegistry::builtin();
-    let theme = themes.get_or_default("One Dark");
+    let theme = themes.get_or_default("Lucerna Dark");
     // No language servers: the trust modal (opened by the first `.rs`
     // file) would take the focus these tests follow.
     let mut settings = SettingsStore::with_defaults();

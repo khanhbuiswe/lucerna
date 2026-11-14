@@ -16,6 +16,8 @@ notify.workspace = true
 crossbeam-channel.workspace = true
 tracing.workspace = true
 nucleo-matcher.workspace = true
+trash.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

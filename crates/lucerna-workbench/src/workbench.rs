@@ -4,13 +4,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use gpui::{
-    AnyView, App, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
+    AnyView, App, Context, DragMoveEvent, Entity, EntityId, FocusHandle, Focusable, IntoElement,
     KeyDownEvent, ModifiersChangedEvent, ParentElement, Pixels, Render, Styled, Subscription, Task,
-    WeakEntity, Window, WindowHandle, div, prelude::*, px,
+    WeakFocusHandle, Window, WindowHandle, div, prelude::*, px,
 };
 use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
@@ -22,9 +22,9 @@ use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
 use crate::documents::{DocumentEvent, DocumentStatusItem, Documents, GoTo};
 use crate::editor_groups::{
-    self, EditorGroups, EditorGroupsView, GroupId, OpenMode, TabId, TabItem,
+    self, EditorGroups, EditorGroupsView, FileView, GroupId, OpenMode, TabId, TabItem,
 };
-use crate::explorer::ExplorerView;
+use crate::explorer::{ExplorerView, SelectedKind};
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
 use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;
@@ -38,6 +38,7 @@ use crate::locations_picker::ShownLocationsPicker;
 use crate::lsp_health::LspHealthView;
 use crate::lsp_log::LspLogs;
 use crate::lsp_status::{self, LspStatusItem};
+use crate::markdown_preview::{self, MarkdownPreview, ScrollSync};
 use crate::nav_history::{NavEntry, NavHistory};
 use crate::open_commands::{self, ShownRecentPicker};
 use crate::open_files::{OpenFileWatcher, matching_files};
@@ -95,6 +96,9 @@ struct Persistence {
     _subscriptions: Vec<Subscription>,
 }
 
+/// How long a path from [`Workbench::expect_own_changes`] is remembered.
+const OWN_CHANGE_TTL: Duration = Duration::from_secs(5);
+
 pub struct Workbench {
     root: PathBuf,
     /// The one background scan of `root`; every view reads the tree from it.
@@ -103,6 +107,12 @@ pub struct Workbench {
     scan_started: std::time::Instant,
     scan_progress_logged: bool,
     scan_complete_logged: bool,
+    /// Root-relative paths Lucerna itself just created, renamed or deleted,
+    /// and when; the Explorer does not mark them as changed by another program.
+    own_changes: HashMap<Arc<Path>, Instant>,
+    /// Absolute paths a Delete is asking about or deleting; another Delete
+    /// of them (or of a path inside or around them) is ignored meanwhile.
+    pub(crate) deletes_in_flight: Rc<std::cell::RefCell<HashSet<PathBuf>>>,
     /// The options of the scan, from `files.exclude`.
     scan_options: ScanOptions,
     /// Re-themes and rescans when [`AppState`] changes.
@@ -173,9 +183,10 @@ pub struct Workbench {
     focus: FocusHandle,
     sidebar_focus: FocusHandle,
     editor_focus: FocusHandle,
-    /// The code view last made active, to focus a newly active one when
-    /// focus was on the editor area or on that view.
-    active_view: Option<WeakEntity<CodeView>>,
+    /// The view (code view or Markdown preview) last made active, to
+    /// focus a newly active one when focus was on the editor area or on
+    /// that view.
+    active_view: Option<(EntityId, WeakFocusHandle)>,
     sidebar_visible: bool,
     sidebar_width: Pixels,
     /// Where the bottom / right panel is, its sizes and whether it shows.
@@ -190,6 +201,9 @@ pub struct Workbench {
     shown_editor: (usize, Option<TabId>),
     explorer_view: Option<AnyView>,
     editor_groups: Entity<EditorGroupsView>,
+    /// Scrolls each shown Markdown preview with the shown editors of its
+    /// file in other groups.
+    scroll_sync: ScrollSync,
     editor_area: Option<AnyView>,
     status_left: Vec<AnyView>,
     status_right: Vec<AnyView>,
@@ -294,6 +308,7 @@ impl Workbench {
             cx.has_global::<AppState>(),
             "set the AppState global before creating the Workbench"
         );
+        crate::config_files::follow_system_appearance(window, cx);
         let focus = cx.focus_handle();
         let editor_focus = cx.focus_handle();
         window.focus(&editor_focus, cx);
@@ -348,6 +363,7 @@ impl Workbench {
         };
         let workbench = cx.weak_entity();
         let breadcrumbs_target = cx.weak_entity();
+        let command_target = cx.weak_entity();
         let editor_groups = cx.new(|cx| {
             let mut groups = EditorGroupsView::default();
             let docs = documents.clone();
@@ -356,10 +372,21 @@ impl Workbench {
             let references = references_view.clone();
             let health = lsp_health.clone();
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
+            let preview_root: Arc<Path> = Arc::from(root.as_path());
             groups.set_tab_body_factory(
                 Rc::new(move |tab, _, cx| {
                     let path = match &tab.item {
                         TabItem::File(path) => path.clone(),
+                        TabItem::MarkdownPreview(path) | TabItem::MarkdownPreviewDynamic(path) => {
+                            let dynamic = matches!(tab.item, TabItem::MarkdownPreviewDynamic(_));
+                            let (path, docs) = (path.clone(), docs.clone());
+                            let (workbench, root) = (workbench.clone(), preview_root.clone());
+                            return cx
+                                .new(|cx| {
+                                    MarkdownPreview::new(path, dynamic, root, docs, workbench, cx)
+                                })
+                                .into();
+                        }
                         TabItem::Extensions => {
                             page.update(cx, |page, cx| page.shown(cx));
                             return page.clone().into();
@@ -407,6 +434,11 @@ impl Workbench {
             groups.set_on_breadcrumbs_click(Rc::new(move |group, window, cx| {
                 breadcrumbs_target
                     .update(cx, |wb, cx| wb.open_breadcrumbs(group, window, cx))
+                    .ok();
+            }));
+            groups.set_on_command(Rc::new(move |id, window, cx| {
+                command_target
+                    .update(cx, |wb, cx| wb.run_command(id, None, window, cx))
                     .ok();
             }));
             groups
@@ -469,11 +501,19 @@ impl Workbench {
             },
         };
         let terminal_panel = cx.new(TerminalPanel::new);
+        let sidebar_focus = cx.focus_handle();
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let lone = single_file_path.is_some();
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
-            cx.new(|cx| ExplorerView::new(root, lone, snapshot, workbench, &groups, cx))
+            let focus = sidebar_focus.clone();
+            let docs = documents.downgrade();
+            cx.new(|cx| {
+                let mut explorer =
+                    ExplorerView::new(root, lone, snapshot, workbench, &groups, focus, cx);
+                explorer.set_documents(docs);
+                explorer
+            })
         };
         let worktree_events = pump_worktree_events(&worktree, cx);
         let (open_file_watcher, open_file_events) = pump_open_file_changes(cx);
@@ -489,6 +529,14 @@ impl Workbench {
             }),
             cx.observe_in(&editor_groups, window, |wb, _, window, cx| {
                 wb.active_tabs_changed(window, cx)
+            }),
+            // Before the scroll links: they pair the dynamic preview by
+            // the file it follows.
+            cx.observe_in(&editor_groups, window, |wb, _, window, cx| {
+                markdown_preview::follow_active(wb, window, cx)
+            }),
+            cx.observe_in(&editor_groups, window, |wb, groups, window, cx| {
+                wb.scroll_sync.refresh(&groups, &wb.root, window, cx)
             }),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
             // VS Code: a preview tab whose file gets unsaved changes is
@@ -559,6 +607,8 @@ impl Workbench {
             scan_started,
             scan_progress_logged: false,
             scan_complete_logged: false,
+            own_changes: HashMap::new(),
+            deletes_in_flight: Rc::default(),
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
@@ -581,7 +631,7 @@ impl Workbench {
             shown_editor: (0, None),
             commands: Rc::new(commands),
             focus,
-            sidebar_focus: cx.focus_handle(),
+            sidebar_focus,
             editor_focus,
             active_view: None,
             sidebar_visible: restored.as_ref().is_none_or(|s| s.sidebar_visible),
@@ -607,6 +657,7 @@ impl Workbench {
             extensions_page,
             editor_area: Some(editor_groups.clone().into()),
             editor_groups,
+            scroll_sync: ScrollSync::default(),
             status_left: Vec::new(),
             status_right: Vec::new(),
             pending_chord: Vec::new(),
@@ -664,6 +715,11 @@ impl Workbench {
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, lsp_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
+        // A restored layout may already show a preview beside its editor.
+        cx.defer_in(window, |wb, window, cx| {
+            let groups = wb.editor_groups.clone();
+            wb.scroll_sync.refresh(&groups, &wb.root, window, cx);
+        });
         workbench
     }
 
@@ -858,6 +914,79 @@ impl Workbench {
         &self.explorer
     }
 
+    /// Remembers root-relative paths Lucerna itself just changed, so their
+    /// watcher events are not decorated as another program's. A directory
+    /// also covers the paths under it. An entry is dropped once the
+    /// worktree reports its path as added or modified, and after
+    /// [`OWN_CHANGE_TTL`] at the latest.
+    pub fn expect_own_changes(&mut self, rel_paths: impl IntoIterator<Item = Arc<Path>>) {
+        let now = Instant::now();
+        self.own_changes
+            .extend(rel_paths.into_iter().map(|p| (p, now)));
+    }
+
+    /// Drops paths from [`Workbench::expect_own_changes`] whose operation
+    /// failed, so another program's later change to them is marked.
+    pub fn forget_own_changes(&mut self, rel_paths: &[Arc<Path>]) {
+        for path in rel_paths {
+            self.own_changes.remove(path);
+        }
+    }
+
+    /// After Lucerna renamed `from` to `to` (absolute) on disk: open
+    /// documents, tabs, recent files and Go Back / Go Forward places at
+    /// `from` or under it follow to the new path. Called right after the
+    /// rename, before the watcher reports it.
+    pub(crate) fn paths_renamed(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
+        let (from, to) = (self.absolute_path(from), self.absolute_path(to));
+        self.documents
+            .update(cx, |documents, cx| documents.rename(&from, &to, cx));
+        self.update_editor_groups(cx, |m| m.retarget(&from, &to));
+        self.recent_files.retarget(&from, &to);
+        for history in self.nav_history.values_mut() {
+            history.retarget(&from, &to);
+        }
+        if self
+            .marker_hover
+            .as_ref()
+            .is_some_and(|(path, _)| path.starts_with(&from))
+        {
+            self.marker_hover = None;
+        }
+        self.refresh_watched_open_files(cx);
+        cx.notify();
+    }
+
+    /// After Lucerna deleted `path` (absolute): the tabs of files at it or
+    /// under it close, except those with unsaved changes, which stay to be
+    /// marked deleted when the watcher reports the removal.
+    pub(crate) fn paths_deleted(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let path = self.absolute_path(path);
+        let documents = self.documents.read(cx);
+        let closing: Vec<TabId> = self
+            .editor_groups
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter(|t| {
+                t.path()
+                    .is_some_and(|p| p.starts_with(&path) && !documents.is_dirty(p))
+            })
+            .map(|t| t.id)
+            .collect();
+        if !closing.is_empty() {
+            self.update_editor_groups(cx, |m| {
+                for id in closing {
+                    m.close(id);
+                }
+            });
+        }
+        self.refresh_watched_open_files(cx);
+        cx.notify();
+    }
+
     /// Hands a worktree event to every view that follows the tree. Called
     /// for each event the worktree sends; tests call it directly.
     pub fn on_worktree_event(&mut self, ev: &WorktreeEvent, cx: &mut Context<Self>) {
@@ -877,17 +1006,32 @@ impl Workbench {
         let decorate = decorates_external_changes(cx);
         // Open documents tell our own saves from other programs' writes
         // once they reload (`DocumentEvent::ChangedOnDisk`).
+        let now = Instant::now();
+        self.own_changes
+            .retain(|_, at| now.duration_since(*at) < OWN_CHANGE_TTL);
+        let own = &self.own_changes;
         let followed: HashSet<Arc<Path>> = match ev {
             WorktreeEvent::Changed(changes) => {
                 let documents = self.documents.read(cx);
                 changes
                     .iter()
-                    .filter(|c| documents.follows_disk(&c.path))
+                    .filter(|c| {
+                        documents.follows_disk(&c.path)
+                            || c.path.ancestors().any(|a| own.contains_key(a))
+                    })
                     .map(|c| c.path.clone())
                     .collect()
             }
             _ => HashSet::new(),
         };
+        // Reported: forget it, so another program's later change to it is
+        // marked. A removal (a rename's or delete's old path) does not end
+        // the wait; the TTL still bounds every entry.
+        if let WorktreeEvent::Changed(changes) = ev {
+            for change in changes.iter().filter(|c| c.kind != ChangeKind::Removed) {
+                self.own_changes.remove(&change.path);
+            }
+        }
         self.explorer.update(cx, |explorer, cx| {
             explorer.on_worktree_event(
                 ev,
@@ -934,7 +1078,9 @@ impl Workbench {
         }
     }
 
-    /// Every open tab's path, once per path.
+    /// Every open tab's path, once per path, with the file the dynamic
+    /// Markdown preview shows (it has no path of its own, but its file must
+    /// stay watched).
     fn open_tab_paths(&self, cx: &App) -> Vec<PathBuf> {
         let mut paths: Vec<PathBuf> = self
             .editor_groups
@@ -942,7 +1088,11 @@ impl Workbench {
             .model()
             .groups()
             .iter()
-            .flat_map(|g| g.tabs.iter().filter_map(|t| t.path()))
+            .flat_map(|g| {
+                g.tabs
+                    .iter()
+                    .filter_map(|t| t.path().or(t.previewed_path()))
+            })
             .map(|p| p.to_path_buf())
             .collect();
         paths.sort();
@@ -1108,8 +1258,8 @@ impl Workbench {
     /// focused tab body is no longer shown, because its tab closed or
     /// stopped being its group's active tab (a jump in the same group, a
     /// search result opened in its place), focus goes to the editor area,
-    /// so keys keep working. Covers code views, the Extensions, Search,
-    /// References and Health tabs and server logs.
+    /// so keys keep working. Covers code views, Markdown previews, the
+    /// Extensions, Search, References and Health tabs and server logs.
     pub(crate) fn refocus_if_hidden(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let groups = self.editor_groups.read(cx);
         let model = groups.model();
@@ -1129,9 +1279,14 @@ impl Workbench {
             || (health_hidden && had_focus(self.lsp_health.read(cx).focus_handle(cx)))
             || self.lsp_logs.hidden_with_focus(model, window, cx)
             || groups.hidden_bodies().any(|body| {
-                body.clone()
-                    .downcast::<CodeView>()
-                    .is_ok_and(|view| had_focus(view.read(cx).focus_handle(cx)))
+                let handle = match body.clone().downcast::<CodeView>() {
+                    Ok(view) => Some(view.read(cx).focus_handle(cx)),
+                    Err(body) => body
+                        .downcast::<MarkdownPreview>()
+                        .ok()
+                        .map(|preview| preview.read(cx).focus_handle(cx)),
+                };
+                handle.is_some_and(had_focus)
             });
         if lost {
             self.focus_editor_area(window, cx);
@@ -1204,13 +1359,39 @@ impl Workbench {
         Arc::from(absolute_path(&self.root, path))
     }
 
-    /// Opens `path` in the editor area. `Preview` honours the
-    /// `workbench.editor.enablePreview` setting. Records `path` in
-    /// [`Workbench::recent_files`]. A relative path is resolved against the
-    /// root first, so tabs, recent files and the saved state only ever
-    /// hold absolute paths.
+    /// Opens `path` without a place to go to (the Explorer, Quick Open
+    /// without `:line`, Open Recent, `luc file`, a restored session): a
+    /// tab of the group already showing the file (source or preview) is
+    /// activated; otherwise it opens in the editor
+    /// `workbench.editorAssociations` names, the Markdown preview or the
+    /// source (spec §4.1). Otherwise like [`Workbench::open_source`].
     pub fn open_path(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
         let path = self.absolute_path(&path);
+        let view = markdown_preview::associated_editor(&self.root, &path, cx);
+        self.open_file(path, view, mode, true, cx);
+    }
+
+    /// Opens the source of `path` in the editor area, for opens that go to
+    /// a place in it ([`Workbench::open_path_at`], [`Workbench::jump_to`],
+    /// Go Back): the group's source tab of the file is reused, a preview of
+    /// it is not. `Preview` honours the `workbench.editor.enablePreview`
+    /// setting. Records `path` in [`Workbench::recent_files`]. A relative
+    /// path is resolved against the root first, so tabs, recent files and
+    /// the saved state only ever hold absolute paths.
+    pub fn open_source(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
+        let path = self.absolute_path(&path);
+        self.open_file(path, FileView::Source, mode, false, cx);
+    }
+
+    /// Opens absolute `path` as `view` (see [`EditorGroups::open_file`]).
+    fn open_file(
+        &mut self,
+        path: Arc<Path>,
+        view: FileView,
+        mode: OpenMode,
+        reuse_any: bool,
+        cx: &mut Context<Self>,
+    ) {
         // An F8 hover still waiting for its tab is for an earlier open.
         self.marker_hover = None;
         self.recent_files.record(path.clone());
@@ -1219,7 +1400,9 @@ impl Workbench {
             .settings
             .get::<bool>("workbench.editor.enablePreview", None)
             .unwrap_or(true);
-        self.update_editor_groups(cx, |m| m.open(path, mode, preview_enabled));
+        self.update_editor_groups(cx, |m| {
+            m.open_file(path, view, mode, preview_enabled, reuse_any)
+        });
         // A file with unsaved changes opened as a preview.
         self.pin_dirty_previews(cx);
     }
@@ -1340,9 +1523,9 @@ impl Workbench {
         false
     }
 
-    /// Opens `path` like [`Workbench::open_path`], then puts the cursor at
-    /// `point` and scrolls it to the middle, once the file is loaded. For
-    /// Quick Open, search results and go-to-line.
+    /// Opens the source of `path` ([`Workbench::open_source`]), then puts
+    /// the cursor at `point` and scrolls it to the middle, once the file is
+    /// loaded. For Quick Open, search results and go-to-line.
     pub fn open_path_at(
         &mut self,
         path: Arc<Path>,
@@ -1363,7 +1546,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         let path = self.absolute_path(&path);
-        self.open_path(path.clone(), mode, cx);
+        self.open_source(path.clone(), mode, cx);
         // An already-drawn tab has its view; a new one gets it on draw.
         let view = self
             .editor_groups
@@ -1445,7 +1628,7 @@ impl Workbench {
         let Some(target) = target else {
             return;
         };
-        self.open_path(target.path.clone(), OpenMode::Pinned, cx);
+        self.open_source(target.path.clone(), OpenMode::Pinned, cx);
         let view = self.active_code_view(cx);
         self.documents.update(cx, |docs, cx| match view {
             Some(view) => docs.go_to_and_scroll(&view, target.point, target.scroll_top_row, cx),
@@ -1484,6 +1667,21 @@ impl Workbench {
         );
         flag("sideBarFocus", sidebar_focus);
         flag("explorerViewletFocus", sidebar_focus);
+        let explorer = self.explorer.read(cx);
+        let menu_open = explorer.context_menu_open();
+        let kind = explorer.selected_kind();
+        // Not while a name is typed in the tree: `textInputFocus` is a
+        // frame late when the input just took the focus.
+        flag(
+            "filesExplorerFocus",
+            sidebar_focus && !menu_open && !explorer.editing(),
+        );
+        flag(
+            "explorerResourceIsFolder",
+            matches!(kind, SelectedKind::Dir | SelectedKind::Root),
+        );
+        flag("explorerResourceIsRoot", kind == SelectedKind::Root);
+        flag("contextMenuVisible", menu_open);
         flag("searchViewletFocus", self.search_focused(window, cx));
         flag("referencesViewFocus", self.references_view_focus(cx));
         flag(
@@ -1541,15 +1739,32 @@ impl Workbench {
                 .is_some_and(|v| v.read(cx).hover().is_visible()),
         );
         let active = self.editor_groups.read(cx).model().active_tab();
-        let path = active.and_then(|tab| tab.path());
+        let body = self.editor_groups.read(cx).active_body();
+        // A preview counts as an editor of the file it shows: the dynamic
+        // one's view knows which (its tab until the view is made).
+        let preview = body
+            .clone()
+            .and_then(|body| body.downcast::<MarkdownPreview>().ok());
+        let path = match &preview {
+            Some(preview) => Some(preview.read(cx).path()),
+            None => active.and_then(|tab| tab.path().or(tab.previewed_path())),
+        };
         let extname = path.map(|p| extname(p)).unwrap_or_default();
+        let preview_active = active.is_some_and(|tab| tab.previewed_path().is_some());
+        ctx.set(
+            "activeEditor",
+            ContextValue::Str(
+                if preview_active {
+                    "markdownPreview"
+                } else {
+                    ""
+                }
+                .into(),
+            ),
+        );
         // The language the document resolved (`files.associations`
         // included); before its view exists, the same lookup by path.
-        let view = self
-            .editor_groups
-            .read(cx)
-            .active_body()
-            .and_then(|body| body.downcast::<CodeView>().ok());
+        let view = body.and_then(|body| body.downcast::<CodeView>().ok());
         let vim = self.vim.read(cx);
         let vim_mode = view
             .as_ref()
@@ -1593,10 +1808,17 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Shows or hides the sidebar. Hiding it moves focus out of it.
+    /// Shows or hides the sidebar. Hiding it cancels a name being typed in
+    /// the Explorer, closes its menu and moves focus out of it.
     pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sidebar_visible && self.sidebar_focus.contains_focused(window, cx) {
-            self.focus_editor_area(window, cx);
+        if self.sidebar_visible {
+            let focused = self.sidebar_focus.contains_focused(window, cx);
+            self.explorer
+                .clone()
+                .update(cx, |explorer, cx| explorer.dismiss_transient(window, cx));
+            if focused {
+                self.focus_editor_area(window, cx);
+            }
         }
         self.sidebar_visible = !self.sidebar_visible;
         self.layout_changed(cx);
@@ -1960,41 +2182,57 @@ impl Workbench {
             || self.trust_modal().is_some()
     }
 
-    /// Focuses the active tab's code view, or the editor area when the
-    /// active tab shows none (yet: a new tab's view is made while drawing,
-    /// and [`Workbench::focus_active_view`] focuses it then).
+    /// Focuses the active tab's code view or Markdown preview, or the
+    /// editor area when the active tab shows none (yet: a new tab's view
+    /// is made while drawing, and [`Workbench::focus_active_view`] focuses
+    /// it then).
     pub fn focus_editor_area(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self
-            .active_code_view(cx)
-            .filter(|v| !v.read(cx).is_passive())
-        {
-            Some(view) => window.focus(&view.read(cx).focus_handle(cx), cx),
-            None => window.focus(&self.editor_focus, cx),
+        match self.active_focus_target(cx) {
+            Some((_, handle, false)) => window.focus(&handle, cx),
+            _ => window.focus(&self.editor_focus, cx),
         }
         cx.notify();
     }
 
-    /// Like Zed, a code view that becomes active (a file opened or a tab
-    /// activated) takes the focus, unless the focus is somewhere else
-    /// than the editor area itself or the previously active view (the
-    /// sidebar, a picker, the Search tab).
+    /// The active tab's code view or Markdown preview, once made: its
+    /// entity, focus handle and whether it is passive (never focused).
+    fn active_focus_target(&self, cx: &App) -> Option<(EntityId, FocusHandle, bool)> {
+        let body = self.editor_groups.read(cx).active_body()?;
+        if let Ok(view) = body.clone().downcast::<CodeView>() {
+            let v = view.read(cx);
+            return Some((view.entity_id(), v.focus_handle(cx), v.is_passive()));
+        }
+        let preview = body.downcast::<MarkdownPreview>().ok()?;
+        Some((
+            preview.entity_id(),
+            preview.read(cx).focus_handle(cx),
+            false,
+        ))
+    }
+
+    /// Like Zed, a code view or Markdown preview that becomes active (a
+    /// file opened or a tab activated) takes the focus, unless the focus
+    /// is somewhere else than the editor area itself or the previously
+    /// active view (the sidebar, a picker, the Search tab).
     fn focus_active_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(view) = self.active_code_view(cx) else {
+        let Some((id, handle, passive)) = self.active_focus_target(cx) else {
             return;
         };
-        let previous = self.active_view.as_ref().and_then(WeakEntity::upgrade);
-        if previous.as_ref() == Some(&view) {
+        if self.active_view.as_ref().is_some_and(|(p, _)| *p == id) {
             return;
         }
-        self.active_view = Some(view.downgrade());
-        if view.read(cx).is_passive() {
+        let previous = self
+            .active_view
+            .replace((id, handle.downgrade()))
+            .and_then(|(_, h)| h.upgrade());
+        if passive {
             return;
         }
         let focus_free = window.focused(cx).is_none()
             || self.editor_focus.is_focused(window)
-            || previous.is_some_and(|p| p.read(cx).focus_handle(cx).contains_focused(window, cx));
+            || previous.is_some_and(|p| p.contains_focused(window, cx));
         if focus_free {
-            window.focus(&view.read(cx).focus_handle(cx), cx);
+            window.focus(&handle, cx);
         }
     }
 
@@ -2124,6 +2362,12 @@ impl Workbench {
             return;
         }
         match resolution {
+            // A held Delete key would delete one entry after another.
+            Resolution::Command { command, .. }
+                if ev.is_held && matches!(command.as_str(), "moveFileToTrash" | "deleteFile") =>
+            {
+                cx.stop_propagation();
+            }
             Resolution::Command { command, args } => {
                 if command != SHOW_HOVER {
                     hide_hover(cx);
@@ -2397,6 +2641,8 @@ pub(crate) fn default_registry() -> CommandRegistry {
     crate::editing::register_commands(&mut commands);
     crate::save::register_commands(&mut commands);
     crate::about::register_commands(&mut commands);
+    markdown_preview::register_commands(&mut commands);
+    crate::explorer::register_commands(&mut commands);
     commands
 }
 
@@ -2413,6 +2659,18 @@ fn register_shell_commands(commands: &mut CommandRegistry) {
         "workbench.view.explorer",
         "View: Show Explorer",
         |wb, _, window, cx| wb.show_sidebar_view(SidebarView::Explorer, window, cx),
+    );
+    commands.register(
+        "filesExplorer.openContextMenu",
+        "Explorer: Open Context Menu",
+        |wb, _, window, cx| {
+            if !crate::explorer::editing(wb, cx) {
+                crate::explorer::show_explorer(wb, window, cx);
+                wb.explorer.clone().update(cx, |explorer, cx| {
+                    explorer.open_context_menu(None, window, cx)
+                })
+            }
+        },
     );
 }
 

@@ -16,35 +16,44 @@ fn parse_hex_rgb_and_rgba() {
 }
 
 #[test]
-fn builtin_has_one_dark_and_light() {
+fn builtin_has_lucerna_dark_and_light() {
     let reg = ThemeRegistry::builtin();
     let names = reg.names();
-    assert!(names.contains(&"One Dark".to_string()));
-    assert!(names.contains(&"One Light".to_string()));
-    assert_eq!(reg.get("One Dark").unwrap().appearance, Appearance::Dark);
-    assert_eq!(reg.get("One Light").unwrap().appearance, Appearance::Light);
+    assert!(names.contains(&"Lucerna Dark".to_string()));
+    assert!(names.contains(&"Lucerna Light".to_string()));
+    assert_eq!(
+        reg.get("Lucerna Dark").unwrap().appearance,
+        Appearance::Dark
+    );
+    assert_eq!(
+        reg.get("Lucerna Light").unwrap().appearance,
+        Appearance::Light
+    );
 }
 
 #[test]
-fn ui_colors_present_for_one_dark() {
-    let t = ThemeRegistry::builtin().get("One Dark").unwrap();
+fn ui_colors_present_for_lucerna_dark() {
+    let t = ThemeRegistry::builtin().get("Lucerna Dark").unwrap();
     assert_eq!(
         t.ui.editor_background,
-        Rgba::parse_hex("#282c33ff").unwrap()
+        Rgba::parse_hex("#191919ff").unwrap()
     );
-    assert_eq!(t.ui.text, Rgba::parse_hex("#dce0e5ff").unwrap());
-    assert_eq!(t.ui.editor_line_number, Rgba::parse_hex("#4e5a5f").unwrap());
-    assert_eq!(t.ui.selection, Rgba::parse_hex("#74ade83d").unwrap());
-    assert_eq!(t.ui.cursor, Rgba::parse_hex("#74ade8ff").unwrap());
+    assert_eq!(t.ui.text, Rgba::parse_hex("#efefefff").unwrap());
+    assert_eq!(
+        t.ui.editor_line_number,
+        Rgba::parse_hex("#9c9c9cff").unwrap()
+    );
+    assert_eq!(t.ui.selection, Rgba::parse_hex("#4f8cff40").unwrap());
+    assert_eq!(t.ui.cursor, Rgba::parse_hex("#4f8cffff").unwrap());
     assert_eq!(
         t.ui.status_bar_background,
-        Rgba::parse_hex("#3b414dff").unwrap()
+        Rgba::parse_hex("#191919ff").unwrap()
     );
 }
 
 #[test]
 fn style_for_falls_back() {
-    let t = ThemeRegistry::builtin().get("One Dark").unwrap();
+    let t = ThemeRegistry::builtin().get("Lucerna Dark").unwrap();
     let f = t.style_for("function").expect("function style");
     assert_eq!(t.style_for("function.method.call"), Some(f));
     assert_eq!(t.style_for("function.method.call").unwrap().color, f.color);
@@ -100,7 +109,7 @@ fn user_dir_reports_bad_file_and_keeps_good() {
     assert_eq!(errors[0].0, dir.path().join("bad.json"));
     assert!(!errors[0].1.is_empty());
     assert!(reg.get("Good").is_some());
-    assert!(reg.get("One Dark").is_some());
+    assert!(reg.get("Lucerna Dark").is_some());
     assert_eq!(
         ThemeRegistry::build(&[], Some(&dir.path().join("missing")))
             .1
@@ -110,10 +119,10 @@ fn user_dir_reports_bad_file_and_keeps_good() {
 }
 
 #[test]
-fn unknown_name_defaults_to_one_dark() {
+fn unknown_name_defaults_to_lucerna_dark() {
     let reg = ThemeRegistry::builtin();
     assert!(reg.get("Nope").is_none());
-    assert_eq!(reg.get_or_default("Nope").name, "One Dark");
+    assert_eq!(reg.get_or_default("Nope").name, "Lucerna Dark");
 }
 
 #[test]
@@ -140,17 +149,17 @@ fn chrome_colors(ui: &UiColors) -> [(&'static str, Rgba); 7] {
 }
 
 #[test]
-fn new_ui_colors_read_from_one_dark() {
-    let t = ThemeRegistry::builtin().get("One Dark").unwrap();
+fn new_ui_colors_read_from_lucerna_dark() {
+    let t = ThemeRegistry::builtin().get("Lucerna Dark").unwrap();
     let fallback = UiColors::fallback(Appearance::Dark);
     let expected = [
-        "#3b414dff",
-        "#2f343eff",
-        "#363c46ff",
-        "#363c46ff",
-        "#dce0e5ff",
-        "#a9afbcff",
-        "#2f343eff",
+        "#191919ff",
+        "#222222ff",
+        "#252424ff",
+        "#252525ff",
+        "#efefefff",
+        "#9c9c9cff",
+        "#191919ff",
     ];
     let got = chrome_colors(&t.ui);
     let fb = chrome_colors(&fallback);
@@ -200,8 +209,8 @@ fn new_ui_colors_fall_back_when_missing() {
 
 #[test]
 fn error_color_from_theme_or_red_fallback() {
-    let t = ThemeRegistry::builtin().get("One Dark").unwrap();
-    assert_eq!(t.ui.error, Rgba::parse_hex("#d07277ff").unwrap());
+    let t = ThemeRegistry::builtin().get("Lucerna Dark").unwrap();
+    assert_eq!(t.ui.error, Rgba::parse_hex("#f85149ff").unwrap());
     let dir = tempfile::tempdir().unwrap();
     write_theme(
         dir.path(),
@@ -220,10 +229,10 @@ fn error_color_from_theme_or_red_fallback() {
 
 #[test]
 fn scrollbar_thumb_from_theme_or_fallback() {
-    let dark = ThemeRegistry::builtin().get("One Dark").unwrap();
+    let dark = ThemeRegistry::builtin().get("Lucerna Dark").unwrap();
     assert_eq!(
         dark.ui.scrollbar_thumb,
-        Rgba::parse_hex("#c8ccd44c").unwrap()
+        Rgba::parse_hex("#c8c8c84c").unwrap()
     );
     let dir = tempfile::tempdir().unwrap();
     write_theme(
@@ -247,10 +256,10 @@ fn scrollbar_thumb_from_theme_or_fallback() {
 
 #[test]
 fn editor_subheader_background_from_theme_or_fallback() {
-    let dark = ThemeRegistry::builtin().get("One Dark").unwrap();
+    let dark = ThemeRegistry::builtin().get("Lucerna Dark").unwrap();
     assert_eq!(
         dark.ui.editor_subheader_background,
-        Rgba::parse_hex("#2f343eff").unwrap()
+        Rgba::parse_hex("#222222ff").unwrap()
     );
     let dir = tempfile::tempdir().unwrap();
     write_theme(
@@ -364,4 +373,65 @@ fn cursor_falls_back_to_editor_foreground() {
     let ui = &reg.get("No Cursor").unwrap().ui;
     assert_eq!(ui.cursor, Rgba::parse_hex("#abcdefff").unwrap());
     assert_eq!(ui.selection, Rgba::parse_hex("#11223344").unwrap());
+}
+
+#[test]
+fn zed_theme_reads_text_disabled_and_border_focused() {
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "t.json",
+        r##"{"name":"F","themes":[{"name":"Keys","appearance":"dark","style":{
+            "text.disabled":"#111111ff","border.focused":"#222222ff"}}]}"##,
+    );
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
+    let ui = &reg.get("Keys").unwrap().ui;
+    assert_eq!(ui.text_disabled, Rgba::parse_hex("#111111ff").unwrap());
+    assert_eq!(ui.border_focused, Rgba::parse_hex("#222222ff").unwrap());
+}
+
+#[test]
+fn missing_disabled_and_focused_fall_back() {
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "t.json",
+        r##"{"name":"F","themes":[{"name":"Bare","appearance":"dark","style":{
+            "text.muted":"#333333ff","border":"#444444ff"}}]}"##,
+    );
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
+    let ui = &reg.get("Bare").unwrap().ui;
+    assert_eq!(ui.text_disabled, ui.text_muted);
+    assert_eq!(ui.border_focused, ui.border);
+}
+
+/// The hover and drag colors are the resting thumb made more opaque, even
+/// where the theme sets `scrollbar.thumb.hover_background`.
+#[test]
+fn scrollbar_thumb_hover_and_active_derive_from_the_thumb() {
+    let dark = ThemeRegistry::builtin().get("Lucerna Dark").unwrap();
+    let thumb = dark.ui.scrollbar_thumb;
+    for (c, k) in [
+        (dark.ui.scrollbar_thumb_hover, 1.6),
+        (dark.ui.scrollbar_thumb_active, 2.2),
+    ] {
+        assert_eq!((c.r, c.g, c.b), (thumb.r, thumb.g, thumb.b));
+        assert!((c.a - thumb.a * k).abs() < 1e-6, "{c:?}");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "opaque.json",
+        r##"{"name":"O","themes":[{"name":"Opaque","appearance":"dark",
+            "style":{"scrollbar.thumb.background":"#808080cc"}}]}"##,
+    );
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
+    let ui = &reg.get("Opaque").unwrap().ui;
+    assert_eq!(ui.scrollbar_thumb_active.a, 1.0);
+    assert_eq!(ui.scrollbar_thumb_hover.a, 1.0);
+    let fb = UiColors::fallback(Appearance::Light);
+    assert!(fb.scrollbar_thumb_hover.a > fb.scrollbar_thumb.a);
 }

@@ -9,6 +9,7 @@ pub mod code_view;
 mod commands;
 mod config_files;
 mod conflict_bar;
+mod context_menu;
 mod diagnostics_status;
 mod documents;
 mod editing;
@@ -30,6 +31,7 @@ mod lsp_health;
 mod lsp_log;
 mod lsp_status;
 pub mod markdown;
+mod markdown_preview;
 mod nav_history;
 mod open_commands;
 mod open_files;
@@ -40,10 +42,12 @@ pub mod recent;
 mod recent_picker;
 mod references_view;
 mod save;
+mod scrollbar;
 mod search_view;
 mod startup;
 pub mod status_message;
 mod symbols;
+pub mod system_shell;
 pub mod tasks;
 mod terminal;
 mod text_input;
@@ -60,19 +64,23 @@ pub use app_state::AppState;
 pub use commands::{CommandHandler, CommandRegistry};
 pub use config_files::{
     CONFIG_DEBOUNCE, ConfigError, ConfigFile, ConfigPaths, ConfigState, ConfigWatcher,
-    reload_config, watch_config,
+    reload_config, set_system_appearance, watch_config,
 };
 pub use diagnostics_status::DiagnosticsStatusItem;
 pub use documents::{DiskNotice, DocState, DocumentEvent, DocumentStatus, Documents};
 pub use editor_groups::{
-    EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, Group, GroupState, GroupsState, OpenMode,
+    EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, FileView, Group, GroupState, GroupsState,
+    MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
     SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
 };
 pub use excerpt_list::model::{
     FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
     Row as SearchRow,
 };
-pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
+pub use explorer::{
+    CHANGE_DECORATION, EditKind, EditState, ExplorerModel, ExplorerView, Row, SelectedKind,
+    Selection,
+};
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
 pub use language_servers::{
     HoverInfo, LanguageServers, LanguageServersEvent, ServerStatus, SlotState,
@@ -86,8 +94,14 @@ pub use locations_picker::{
 pub use lsp_health::LspHealthView;
 pub use lsp_log::LspLogView;
 pub use lsp_status::{LspStatusItem, ServerRow, StatusDot};
+pub use markdown_preview::{
+    ImageContext, ImageSrc, LinkAction, MAX_IMAGE_BYTES, MAX_PREVIEW_BYTES, MarkdownPreview,
+    MarkdownPreviewEvent, PREVIEW_EDITOR_ID, REFRESH_PREVIEW, REPARSE_DELAY, SHOW_PREVIEW,
+    SHOW_PREVIEW_TO_SIDE, SHOW_SOURCE, TOGGLE_PREVIEW, editor_for, heading_slugs, item_to_line,
+    line_to_item, resolve_image, resolve_link,
+};
 pub use nav_history::{NavEntry, NavHistory};
-pub use open_commands::WorkbenchEvent;
+pub use open_commands::{OPEN_IN_BROWSER, WorkbenchEvent, browser_url};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
