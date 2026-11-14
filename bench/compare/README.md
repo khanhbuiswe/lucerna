@@ -11,6 +11,16 @@ System Settings > Privacy & Security, cấp cho ứng dụng terminal đang ch�
 
 Thiếu quyền thì helper báo lỗi và thoát mã khác 0.
 
+## Helper `bench-helper` (Swift)
+
+Dựng bằng `swiftc` của Command Line Tools: `sh bench/compare/helper/build.sh [out]` (mặc định `<bench>/bin/bench-helper`). Mỗi lệnh in một dòng JSON ra stdout; lỗi ra stderr, mã thoát 1 = sai cú pháp/lỗi, 2 = hết giờ, 3 = thiếu quyền (không in số đo).
+
+- `now`: `{"t_ns"}` theo `CLOCK_UPTIME_RAW`, cùng đồng hồ với `time.monotonic_ns()`.
+- `check`: `{"screen_recording", "accessibility"}`, chỉ preflight, không bật hộp thoại xin quyền. `BENCH_HELPER_FAKE_DENY=1` giả thiếu quyền.
+- `watch --pid --since --until coverage:x|change [--timeout 60] [--baseline png] [--background RRGGBB]`: quay cửa sổ lớn nhất của pid ở tần số màn hình, thời điểm khung lấy từ `SCStreamFrameInfo.displayTime` (mach time → ns). Màu nền cho `coverage` là màu phổ biến nhất của khung đầu tiên (hoặc `--background`); vùng đo là 60%×60% giữa cửa sổ. `change` so với `--baseline`, hoặc khung cuối trước `--since`, hoặc khung đầu tiên; ngưỡng 0,5% bỏ qua con trỏ nhấp nháy. Khi đo thay đổi, chạy `watch` trước rồi mới gây thay đổi: helper ghi `ready` ra stderr khi đã quay.
+- `scroll --pid --lines --rate`: dời con trỏ chuột vào giữa cửa sổ rồi gửi sự kiện cuộn 1 dòng; in `{"frames", "dropped", "refresh_hz"}`.
+- `type --pid --text [--interval-ms 100]`, `key --pid --combo cmd+p`: gửi phím (`CGEvent.postToPid`, app nên ở trước); in thời điểm từng phím.
+
 ## Dựng môi trường
 
 Mặc định dưới `~/LucernaBench.noindex` (đổi bằng `--bench-dir`):
