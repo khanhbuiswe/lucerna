@@ -104,10 +104,25 @@ ngày đo.
 - Kết quả thô (JSON) commit trong `bench/compare/results/`.
 - README và site trích bảng tóm tắt, dẫn về trang phương pháp.
 
-## Tham khảo (bổ sung khi lập plan)
+## Tham khảo
 
-- VS Code: `--prof-startup`, lệnh Developer: Startup Performance.
-- Zed: công cụ đo khởi động và khung hình của Zed.
+- VS Code, [Performance Issues](https://github.com/microsoft/vscode/wiki/Performance-Issues):
+  `code --prof-startup` ghi hai file profile CPU của lần khởi động; lệnh
+  **Developer: Startup Performance** (F1 > Startup Performance) mở bảng thời
+  gian khởi động theo từng giai đoạn. Cả hai dựa trên các mốc `perf marks`
+  của chính VS Code (trang wiki "Inventory of performance marks").
+- Zed, [Performance](https://zed.dev/docs/performance): dùng `samply` cho
+  flamechart CPU, Tracy (`ZTRACING=1 cargo r --features tracy --release`)
+  cho vết chi tiết, `zed open performance profiler` cho vết tác vụ
+  async, và cảnh báo hàm chậm `zlog::time!(...).warn_if_gt(...)`. Đây là công
+  cụ cho người phát triển Zed, dựng từ mã nguồn; không phải một cách đo
+  chung. Chỉ đọc tài liệu, không sao chép mã (phần lớn crate của Zed là GPL).
+- Vì sao đo bên ngoài: mỗi editor tự đánh dấu một thời điểm khác nhau (VS
+  Code: các mốc trong tiến trình renderer/extension host; Zed: thời gian
+  hàm trong tiến trình; Lucerna: khung đầu trong `perf-checklist.md`). Các số
+  này không so được với nhau và không gồm phần hệ điều hành hiển thị khung
+  hình. Quay cửa sổ từ ngoài bằng ScreenCaptureKit cho cả ba cùng một mốc
+  "người dùng nhìn thấy nội dung".
 
 ## Cách làm đã cân nhắc
 
