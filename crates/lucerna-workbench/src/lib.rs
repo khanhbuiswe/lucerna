@@ -11,6 +11,7 @@ mod config_files;
 mod conflict_bar;
 mod context_menu;
 mod diagnostics_status;
+mod diff_view;
 mod documents;
 mod editing;
 mod editor_groups;
