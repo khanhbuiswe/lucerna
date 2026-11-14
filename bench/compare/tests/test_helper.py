@@ -63,6 +63,7 @@ class HelperTests(unittest.TestCase):
             ["scroll", "--pid", str(os.getpid()), "--lines", "10", "--rate", "60"],
             ["type", "--pid", str(os.getpid()), "--text", "ab"],
             ["key", "--pid", str(os.getpid()), "--combo", "cmd+p"],
+            ["sample", "--pid", str(os.getpid()), "--timeout", "1"],
         ]
         for args in measuring:
             with self.subTest(cmd=args[0]):
@@ -93,6 +94,45 @@ class HelperTests(unittest.TestCase):
         self.assertGreaterEqual(t, before)
         self.assertLessEqual(t, after)
         self.assertLess(after - t, 5_000_000)
+
+    def test_usage_errors_exit_1_before_permission_check(self):
+        # Arguments are validated first, so these fail with 1 even when denied.
+        deny = {"BENCH_HELPER_FAKE_DENY": "1"}
+        bad = [
+            ["watch", "--pid", "1", "--since", "0", "--until", "change", "--timeout", "-1"],
+            ["watch", "--pid", "1", "--since", "0", "--until", "change", "--timeout", "nan"],
+            ["watch", "--pid", "1,x", "--since", "0", "--until", "change"],
+            ["watch", "--pid", "1", "--since", "0", "--until", "coverage:2"],
+            ["sample", "--pid", "1", "--timeout", "-5"],
+            ["scroll", "--pid", "1", "--lines", "0"],
+            ["scroll", "--pid", "1", "--lines", "5", "--rate", "-1"],
+            ["type", "--pid", "1", "--text", "h\u00e9"],
+            ["key", "--pid", "1", "--combo", "hyper+p"],
+        ]
+        for args in bad:
+            args = [a.encode().decode("unicode_escape") for a in args]
+            with self.subTest(args=args):
+                r = _run(self.binary, *args, env_extra=deny)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual(r.stdout.strip(), "")
+
+    def test_valid_arguments_reach_permission_check(self):
+        # Comma pid lists, "\n" in text, shifted punctuation and a default
+        # scroll rate all parse; the fake denial then gives exit 3.
+        deny = {"BENCH_HELPER_FAKE_DENY": "1"}
+        good = [
+            ["watch", "--pid", "11,12, 13", "--since", "0", "--until", "coverage:0.4",
+             "--background", "1E1E1E"],
+            ["sample", "--pid", "11,12"],
+            ["scroll", "--pid", "11,12", "--lines", "5"],
+            ["type", "--pid", "11,12", "--text", "Hello, World!\n"],
+            ["key", "--pid", "11,12", "--combo", "cmd+shift+p"],
+        ]
+        for args in good:
+            args = [a.encode().decode("unicode_escape") for a in args]
+            with self.subTest(args=args):
+                r = _run(self.binary, *args, env_extra=deny)
+                self.assertEqual(r.returncode, 3, r.stderr)
 
     def test_bad_usage_exits_nonzero(self):
         r = _run(self.binary, "bogus")
