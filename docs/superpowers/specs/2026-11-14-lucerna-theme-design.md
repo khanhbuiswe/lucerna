@@ -1,6 +1,6 @@
 # Theme Lucerna — thiết kế
 
-Ngày: 2026-11-14. Trạng thái: chờ duyệt.
+Ngày: 2026-11-14. Trạng thái: đã duyệt.
 
 ## Ý định
 
