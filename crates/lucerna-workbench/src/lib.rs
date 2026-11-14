@@ -74,9 +74,10 @@ pub use editor_groups::{
     SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, placeholder_body,
 };
 pub use excerpt_list::model::{
-    FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
+    FileMeta, FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
     Row as SearchRow,
 };
+pub use excerpt_list::{ExcerptList, ExcerptListEvent, TextSource};
 pub use explorer::{
     CHANGE_DECORATION, EditKind, EditState, ExplorerModel, ExplorerView, Row, SelectedKind,
     Selection,

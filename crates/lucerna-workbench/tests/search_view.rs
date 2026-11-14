@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{Entity, Focusable, Modifiers, TestAppContext, VisualTestContext};
-use lucerna_project::{Excerpt, LineMatch, SearchEvent, WorktreeEvent};
+use lucerna_project::{Excerpt, LineKind, LineMatch, SearchEvent, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore, parse_when};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::Point;
@@ -299,6 +299,7 @@ fn results_include_context_lines(cx: &mut TestAppContext) {
                     format!("line {}", results.line(*r).unwrap().line_number)
                 }
                 lucerna_workbench::SearchRow::Separator { .. } => "separator".into(),
+                lucerna_workbench::SearchRow::Note { .. } => "note".into(),
             })
             .collect()
     });
@@ -1031,6 +1032,7 @@ fn selection_follows_its_line_when_files_arrive_before_it(cx: &mut TestAppContex
         line_number: 1,
         line_text: "needle".into(),
         ranges: std::iter::once(0..6).collect(),
+        kind: LineKind::Normal,
     };
     view.update(cx, |v, cx| {
         v.apply_event(
@@ -1606,6 +1608,7 @@ fn file_matching_both_queries_never_leaves_the_rows(cx: &mut TestAppContext) {
         line_number: n,
         line_text: text.into(),
         ranges: std::iter::once(0..text.len()).collect(),
+        kind: LineKind::Normal,
     };
     let file = |path: &str, line: LineMatch| SearchEvent::File {
         path: Arc::from(Path::new(path)),

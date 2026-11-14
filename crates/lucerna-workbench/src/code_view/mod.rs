@@ -38,6 +38,7 @@ use lucerna_syntax::{SyntaxState, indent_folds};
 use lucerna_text::{Bias, Buffer, BufferSnapshot, LoadError, Patch, Point, Reload};
 
 pub use diagnostics::{DiagnosticRows, Mark, MarkStyle};
+pub(crate) use element::hunk_bar_width;
 pub use layout::{
     DisplayLine, FoldState, MAX_RENDERED_LINE_CHARS, display_lines, display_lines_with_tab_size,
 };

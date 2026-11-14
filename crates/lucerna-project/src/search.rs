@@ -25,11 +25,29 @@ pub struct SearchQuery {
     pub context_lines: u32,
 }
 
+/// What a reported line is. Search results are always [`Normal`]; a diff
+/// view reports added and deleted lines too.
+///
+/// [`Normal`]: LineKind::Normal
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineKind {
+    /// A match or a context line (in a diff, an unchanged line).
+    #[default]
+    Normal,
+    /// A line of the current text that the base does not have.
+    Added,
+    /// A base line, 1-based `base_line`, that the current text lacks. Its
+    /// [`LineMatch::line_number`] is the current row that follows the
+    /// deletion, and its `ranges` are empty.
+    Deleted { base_line: u32 },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineMatch {
     pub line_number: u32,
     pub line_text: String,
     pub ranges: Vec<Range<usize>>,
+    pub kind: LineKind,
 }
 
 /// A run of consecutive lines around one or more matches. A line with empty
@@ -331,6 +349,7 @@ fn line_match(matcher: &RegexMatcher, line_number: u64, line: &str, is_match: bo
         line_number: u32::try_from(line_number).unwrap_or(u32::MAX),
         line_text: line[..keep].to_owned(),
         ranges,
+        kind: LineKind::Normal,
     }
 }
 

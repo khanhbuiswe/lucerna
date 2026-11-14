@@ -5,6 +5,8 @@
 mod hunk_bars;
 mod paint;
 
+pub(crate) use hunk_bars::bar_width as hunk_bar_width;
+
 use std::sync::Arc;
 
 use gpui::{
