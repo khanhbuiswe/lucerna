@@ -225,13 +225,17 @@ impl Repo {
     pub fn branches(&self) -> Result<Vec<String>, GitError> {
         let out = self.run(&[
             "for-each-ref",
-            "--format=%(refname:short)",
+            "--format=%(refname)",
             "refs/heads",
             "refs/remotes",
         ])?;
         Ok(String::from_utf8_lossy(&out)
             .lines()
-            .filter(|l| !l.is_empty() && *l != "HEAD" && !l.ends_with("/HEAD"))
+            .filter(|l| !(l.starts_with("refs/remotes/") && l.ends_with("/HEAD")))
+            .filter_map(|l| {
+                l.strip_prefix("refs/heads/")
+                    .or_else(|| l.strip_prefix("refs/remotes/"))
+            })
             .map(str::to_string)
             .collect())
     }
@@ -246,6 +250,14 @@ impl Repo {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .read(&spec)
+    }
+
+    #[doc(hidden)]
+    pub fn set_blob_limits_for_test(&self, max_bytes: u64, timeout: std::time::Duration) {
+        self.blobs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_limits_for_test(max_bytes, timeout);
     }
 
     #[doc(hidden)]

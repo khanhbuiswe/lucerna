@@ -23,8 +23,10 @@ fn discover_none_outside_repo() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().canonicalize().unwrap();
     assert!(Repo::discover(bin(), &dir).unwrap().is_none());
-    let r = Repo::discover(bin(), &dir.join("missing"));
-    assert!(r.is_err() || matches!(r, Ok(None)));
+    assert!(matches!(
+        Repo::discover(bin(), &dir.join("missing")),
+        Ok(None)
+    ));
 }
 
 #[test]
@@ -123,7 +125,10 @@ fn merge_base_of_feature_branch() {
     git(&d, &["commit", "-q", "-m", "feat"]);
     let r = discover(&d);
     assert_eq!(r.merge_base("main").unwrap(), Some(base.clone()));
-    assert_eq!(r.merge_base("no-such-branch").unwrap_or(None), None);
+    assert!(matches!(
+        r.merge_base("no-such-branch"),
+        Err(GitError::Failed { .. })
+    ));
     assert_ne!(r.head_oid().unwrap(), Some(base));
 }
 
@@ -221,4 +226,74 @@ fn blob_reader_restarts_after_kill() {
 fn repo_is_clone_send_sync() {
     fn assert<T: Clone + Send + Sync>() {}
     assert::<Repo>();
+}
+
+#[test]
+fn branches_in_clone_skips_origin_head() {
+    let (_t, d) = repo();
+    git(&d, &["branch", "other"]);
+    let clone_tmp = TempDir::new().unwrap();
+    let c = clone_tmp.path().canonicalize().unwrap().join("c");
+    git(
+        &d,
+        &["clone", "-q", d.to_str().unwrap(), c.to_str().unwrap()],
+    );
+    let mut b = discover(&c).branches().unwrap();
+    b.sort();
+    assert_eq!(
+        b,
+        vec!["main", "origin/main", "origin/other"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn oversized_blob_is_none_and_reader_still_works() {
+    let (_t, d) = repo();
+    std::fs::write(d.join("big.txt"), "x".repeat(5000)).unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "big"]);
+    let r = discover(&d);
+    r.set_blob_limits_for_test(1000, std::time::Duration::from_secs(10));
+    assert_eq!(r.read_blob("HEAD", Path::new("big.txt")).unwrap(), None);
+    assert_eq!(
+        r.read_blob("HEAD", Path::new("a.txt")).unwrap(),
+        Some(b"one\n".to_vec())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn hung_cat_file_times_out_and_next_read_restarts() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_t, d) = repo();
+    let script_dir = TempDir::new().unwrap();
+    let marker = script_dir.path().join("hang");
+    let script = script_dir.path().join("fakegit.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = cat-file ] && [ -e '{}' ]; then exec sleep 30; fi\ndone\nexec git \"$@\"\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = lucerna_git::GitBinary::new(script)
+        .with_env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .with_env("GIT_CONFIG_SYSTEM", "/dev/null");
+    let r = Repo::discover(bin, &d).unwrap().unwrap();
+    r.set_blob_limits_for_test(1 << 20, std::time::Duration::from_millis(300));
+    std::fs::write(&marker, "").unwrap();
+    let start = std::time::Instant::now();
+    let res = r.read_blob("HEAD", Path::new("a.txt"));
+    assert!(matches!(res, Err(GitError::Timeout)), "{res:?}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    std::fs::remove_file(&marker).unwrap();
+    assert_eq!(
+        r.read_blob("HEAD", Path::new("a.txt")).unwrap(),
+        Some(b"one\n".to_vec())
+    );
 }
