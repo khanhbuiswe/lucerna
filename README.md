@@ -21,12 +21,14 @@ there is nothing new to learn.
 Claude / Codex (app or CLI) writes  →  Lucerna shows  →  you review
 ```
 
-> **Status:** Phases 4.1 (the editing core), 4.2 (smart typing) and 4.4 (conflicts with agents) are
-> done. Lucerna edits and saves files. When an agent rewrites a file you are editing,
-> non-overlapping changes merge into your unsaved text automatically, and overlapping ones show a
-> conflict bar with Reload / Keep Mine. Multi-cursor, completion, rename and format (4.3, 4.5,
-> 4.6) are not done yet. Known limits: quitting from the Dock or at logout cannot show the save prompt
-> (a GPUI limitation at the pinned revision), and there is no hot exit yet. It runs on **macOS** today. **Linux and Windows** are planned, and GPUI already
+> **Status:** pre-release, heading for a first public build (0.1). Lucerna reads, edits and saves
+> code; follows an agent's writes and merges them into unsaved text (a conflict bar with Reload /
+> Keep Mine when they overlap); shows git changes in the tree, the gutter and diff tabs; has an
+> integrated terminal, a Markdown preview, an Explorer context menu and optional Vim keys.
+> Not done yet: multi-cursor, completion, rename and format (Phase 4.3, 4.5, 4.6), Vim macros and
+> `:` commands, a settings UI. Known limits: quitting from the Dock or at logout cannot show the
+> save prompt (a GPUI limitation at the pinned revision), there is no hot exit, and builds are not
+> notarized yet. It runs on **macOS** today. **Linux and Windows** are planned, and GPUI already
 > supports both. See [Roadmap](#roadmap).
 
 ## Why Lucerna
@@ -66,8 +68,26 @@ left out.
   - Changes apply as soon as you save them.
 - **Minimal UI.**
   - Compact chrome: an integrated title bar that shows the git branch, and panel toggles in the status bar.
-  - Flat tabs with preview tabs, a path bar, indent guides and thin scrollbars.
+  - Flat tabs with preview tabs, a path bar, indent guides and thin scrollbars you can drag or click.
+  - A Welcome page with recent folders and files (Ctrl+R opens Open Recent anywhere).
   - Lilex and IBM Plex Sans fonts, Lucide icons, and the Lucerna Dark and Lucerna Light themes, which follow the system's light or dark mode.
+- **See what the agent changed (Git).** Read-only and fast: changed, added and untracked files are
+  coloured in the tree (folders too); the gutter marks added, modified and deleted lines against
+  `HEAD`; Alt+F5 / Shift+Alt+F5 (and `]c` / `[c` in Vim) jump between changes. Click a gutter mark
+  or run *Git: Open Changes* for a file's diff, *Git: Open Changes (Uncommitted)* for every
+  uncommitted change in one tab, and *Git: Open Changes Since Branch* to review a whole branch.
+  Updates follow the agent's writes and `git` commands. Lucerna never stages or commits; git runs
+  only in trusted folders.
+- **Integrated terminal.** Ctrl+` toggles a terminal panel at the bottom (Ctrl+Shift+` opens
+  another tab), so the agent's CLI can run next to the code. Colours follow the theme, Vietnamese
+  IME input works, full-screen apps (Claude Code, vim) run, and Cmd+click opens a file path or URL
+  the terminal printed. Settings use VS Code's `terminal.integrated.*` names.
+- **Markdown preview.** Cmd+Shift+V toggles a `.md` file between source and a rendered preview;
+  Cmd+K V opens a preview to the side that follows the active Markdown file. Tables, task lists,
+  images and code blocks render natively, and the preview follows edits and agent writes.
+- **Explorer context menu.** Right-click (or Shift+F10) a file or folder: New File, New Folder,
+  Rename (open tabs follow), Delete to Trash or Delete Permanently, Copy Path, Copy Relative Path,
+  Reveal in Finder, Open to the Side and Find in Folder.
 - **Syntax highlighting** with tree-sitter for Rust, TypeScript/TSX, JavaScript, Python, Go, JSON,
   Markdown, TOML, YAML, Bash, HTML and CSS. More languages come from extensions.
 - **Code intelligence over LSP.** Go to definition, references, hover, diagnostics and outline from
@@ -143,7 +163,9 @@ luc ~/code/my-project     # open a folder
 luc src/main.rs           # open a file on its own
 ```
 
-If you open Lucerna from Finder or the Dock, it asks which folder to open. A file opens on its own,
+If you open Lucerna from Finder or the Dock, it shows the Welcome page with your recent folders
+(set `"workbench.startupEditor": "none"` to get a folder picker instead). Open Folder, Open Recent
+and Close Folder (Cmd+K F) switch the window in place. A file opens on its own,
 as in Zed: the sidebar lists only that file, and neither its folder nor its git repository is
 scanned. Open the folder to work on the whole project.
 
@@ -166,6 +188,12 @@ example "Open in → Default app" in Claude Desktop.
 | Cmd+Shift+E | Explorer |
 | Cmd+Shift+X | Extensions |
 | Cmd+\ | Split the editor |
+| Ctrl+R | Open recent folder or file |
+| Ctrl+` | Toggle the terminal |
+| Ctrl+Shift+` | New terminal |
+| Alt+F5 / Shift+Alt+F5 | Next / previous change |
+| Cmd+Shift+V | Toggle Markdown preview |
+| Cmd+K V | Markdown preview to the side |
 | Cmd+1…8 | Focus editor group N |
 | Cmd+W | Close tab |
 | Ctrl+Tab | Recent tabs |
@@ -206,7 +234,7 @@ The settings use VS Code's names, for example:
 
 ### Vim mode
 
-Vim is built in and off by default. It takes effect as soon as you save the setting.
+Vim is built in and off by default (V1 navigation and V2a editing are done). It takes effect as soon as you save the setting.
 The status bar shows the mode, and the cursor becomes a block. Every command is one undo step,
 and a command that ends in Insert keeps the step open until `Esc`. Macros and `:` commands are
 planned (V2b).
@@ -351,11 +379,16 @@ cargo deny check
 | Crate | What it does |
 |---|---|
 | `lucerna-text` | Rope buffer, encoding detection, reload diff |
+| `lucerna-editor` | Editing core: edits, undo, smart typing, three-way merge with agent writes |
 | `lucerna-syntax` | tree-sitter languages, highlighting, folds, brackets |
 | `lucerna-project` | Directory scan, file watcher, fuzzy finder, project search |
 | `lucerna-settings` | Layered `settings.json`, keymap and `when` clauses |
-| `lucerna-theme` | Zed theme loading |
-| `lucerna-vim` | Vim navigation: motions, search, marks, visual mode. No GPUI |
+| `lucerna-theme` | Theme loading (Zed theme format) and the built-in Lucerna themes |
+| `lucerna-vim` | Vim state machine: motions, operators, text objects, registers. No GPUI |
+| `lucerna-lsp` | Language server client and the server table |
+| `lucerna-extension` | Zed extension registry, install and build |
+| `lucerna-git` | Read-only git: status, `HEAD` blobs, hunks (runs the `git` binary) |
+| `lucerna-terminal` | Terminal emulation and PTY, on `alacritty_terminal` |
 | `lucerna-workbench` | The whole UI. It is the only crate that depends on GPUI. |
 | `lucerna` | The `luc` binary |
 
@@ -371,10 +404,11 @@ and Zed do things are in [`docs/research/`](docs/research/). Before designing a 
 | 2 | Zed extensions: themes, icon themes, languages | ✅ Done |
 | 3 | Code intelligence over LSP: go to definition, references, hover, diagnostics, outline | ✅ Done |
 | 3b | WASM host for Zed extensions: language servers shipped inside `extension.wasm`. PHP, Ruby, Elixir, Vue and others already work through the language server table when their server is installed | Planned |
-| 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | 4.1 (editing core) and 4.2 (smart typing) done; 4.3 to 4.6 planned |
-| 5 | Git gutter and diff view, integrated terminal, settings UI | Planned |
+| 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | 4.1 (editing core), 4.2 (smart typing) and 4.4 (agent conflicts) done; 4.3 (multi-cursor), 4.5 (completion, snippets) and 4.6 (rename, format) planned |
+| 5 | Git status, gutter and diff tabs; integrated terminal; Markdown preview; Explorer context menu; settings UI | Done except the settings UI |
 | V1 | Vim navigation: motions, search, scroll, marks, visual copy | ✅ Done |
-| V2 | Vim editing beyond minimal Insert (right after 4.2 and 4.4, before 4.3, 4.5 and 4.6) | Planned |
+| V2 | Vim editing | V2a (operators, text objects, registers, `.`) done; V2b (macros, `:` commands) planned |
+| — | Public release: notarized build, published benchmarks | In progress |
 | — | Linux and Windows support, using GPUI's Wayland/X11 and DirectX backends | Planned |
 
 ## License
@@ -382,7 +416,8 @@ and Zed do things are in [`docs/research/`](docs/research/). Before designing a 
 Lucerna is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
 Bundled third-party assets keep their own licenses. These include the Lilex and IBM Plex fonts (OFL-1.1),
-Lucide icons (ISC), the One theme (MIT), tree-sitter grammars and GPUI (Apache-2.0).
+Lucide icons (ISC), GitHub Primer colours used by the Lucerna themes (MIT), tree-sitter grammars,
+`alacritty_terminal` and GPUI (Apache-2.0).
 See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for a summary. The app carries the full
 license text of every bundled crate and asset: open it with Help › Third-Party Licenses, or the Licenses
 button in About. `scripts/bundle-app.sh` writes it with `scripts/gen-licenses.py`.
