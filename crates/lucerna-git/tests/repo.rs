@@ -162,6 +162,25 @@ fn changed_since_includes_commits_and_untracked() {
 }
 
 #[test]
+fn changed_since_in_limits_to_paths() {
+    let (_t, d) = repo();
+    let base = git(&d, &["rev-parse", "HEAD"]).trim().to_string();
+    std::fs::write(d.join("a.txt"), "changed\n").unwrap();
+    std::fs::write(d.join("u.txt"), "u\n").unwrap();
+    std::fs::write(d.join("v.txt"), "v\n").unwrap();
+    let r = discover(&d);
+    let only = [p("a.txt"), p("u.txt")];
+    assert_eq!(
+        sorted(r.changed_since_in(&base, Some(&only)).unwrap()),
+        vec![
+            (p("a.txt"), FileStatus::Modified),
+            (p("u.txt"), FileStatus::Untracked),
+        ]
+    );
+    assert!(r.changed_since_in(&base, Some(&[])).unwrap().is_empty());
+}
+
+#[test]
 fn branches_lists_heads_and_remotes_without_head() {
     let (_t, d) = repo();
     git(&d, &["branch", "other"]);

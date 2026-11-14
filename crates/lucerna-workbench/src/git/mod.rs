@@ -1,7 +1,803 @@
-//! Git integration glue (filled in by a later task).
+//! Git integration glue. [`GitStore`] owns one workspace's repository: it
+//! finds `git`, runs a serial queue of status jobs in the background and
+//! publishes immutable [`GitSnapshot`]s, plus the gutter hunks of tracked
+//! buffers. The UI thread never runs `git`, reads a file or diffs: it only
+//! swaps in finished results.
 
-// Unused until the git view wires it in.
-#[allow(dead_code)]
-pub(crate) mod locate;
+mod locate;
+pub mod rollup;
 
-pub(crate) mod rollup;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use futures::StreamExt as _;
+use gpui::{App, Context, EventEmitter, Task};
+use lucerna_git::{
+    FileStatus, GitBinary, GitDirWatcher, GitError, Hunk, MAX_DIFF_BYTES, Repo, diff_hunks,
+    load_base_text,
+};
+use lucerna_text::BufferSnapshot;
+
+use crate::AppState;
+use rollup::Rollup;
+
+/// Hunks are recomputed this long after the last `track_buffer` call.
+const HUNK_DEBOUNCE: Duration = Duration::from_millis(50);
+const TOO_MANY_MESSAGE: &str = "Too many changes in this repository; automatic Git updates are off. Run Git: Refresh to update.";
+const NOT_FOUND_MESSAGE: &str = "Git not found. Install Git or set git.path to see changes.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitState {
+    /// Not started, or `git.enabled` is false.
+    Off,
+    /// Looking for `git` and the repository.
+    Locating,
+    NoGit,
+    NoRepo,
+    /// The folder is not trusted: no `git` runs.
+    Restricted,
+    Ready,
+    /// The status exceeded `git.statusLimit`; only `rescan` updates it.
+    TooManyChanges,
+}
+
+/// One immutable view of the repository, swapped whole on the UI thread.
+#[derive(Debug, Clone, Default)]
+pub struct GitSnapshot {
+    /// Bumped by every applied snapshot.
+    pub generation: u64,
+    /// Workspace-relative paths, against `git.diffBase`.
+    pub statuses: Arc<HashMap<Arc<Path>, FileStatus>>,
+    pub rollup: Arc<Rollup>,
+    pub head: Option<String>,
+    /// The resolved diff-base oid.
+    pub base_rev: Option<String>,
+    pub default_branch: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitStoreEvent {
+    SnapshotChanged,
+    HunksChanged(Arc<Path>),
+    StateChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffBase {
+    Head,
+    DefaultBranch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitSettings {
+    enabled: bool,
+    path: Option<PathBuf>,
+    diff_base: DiffBase,
+    status_limit: usize,
+}
+
+impl GitSettings {
+    fn read(cx: &App) -> GitSettings {
+        let Some(state) = cx.try_global::<AppState>() else {
+            return GitSettings {
+                enabled: true,
+                path: None,
+                diff_base: DiffBase::Head,
+                status_limit: 10_000,
+            };
+        };
+        let s = &state.settings;
+        GitSettings {
+            enabled: s.get::<bool>("git.enabled", None).unwrap_or(true),
+            path: s
+                .get::<String>("git.path", None)
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from),
+            diff_base: match s.get::<String>("git.diffBase", None).as_deref() {
+                Some("defaultBranch") => DiffBase::DefaultBranch,
+                _ => DiffBase::Head,
+            },
+            status_limit: s
+                .get::<u64>("git.statusLimit", None)
+                .map_or(10_000, |n| n as usize),
+        }
+    }
+}
+
+enum Job {
+    Rescan,
+    RefreshPaths(BTreeSet<Arc<Path>>),
+}
+
+impl Job {
+    /// The job that replaces `self` (queued) when `next` arrives.
+    fn merge(self, next: Job) -> Job {
+        match (self, next) {
+            (Job::RefreshPaths(mut a), Job::RefreshPaths(b)) => {
+                a.extend(b);
+                Job::RefreshPaths(a)
+            }
+            _ => Job::Rescan,
+        }
+    }
+}
+
+struct JobInput {
+    repo: Repo,
+    job: Job,
+    diff_base: DiffBase,
+    status_limit: usize,
+    prev: GitSnapshot,
+    /// Tracked buffers whose base text a `Rescan` reloads.
+    buffers: Vec<(Arc<Path>, u64, BufferSnapshot)>,
+}
+
+struct JobOutput {
+    snapshot: GitSnapshot,
+    too_many: bool,
+    /// Per tracked buffer (as of the job's start): version, base text, hunks.
+    reloaded: Vec<(Arc<Path>, u64, Diffed)>,
+}
+
+/// The diff base of one tracked file. `text` is `None` when the file gets
+/// no hunks (untracked, binary or too large).
+struct Base {
+    rev: String,
+    text: Option<Arc<str>>,
+}
+
+struct Tracked {
+    snapshot: BufferSnapshot,
+    /// Bumped by each `track_buffer`; results for older versions are dropped.
+    version: u64,
+    /// The debounce timer and diff for this buffer; replacing it cancels both.
+    task: Option<Task<()>>,
+}
+
+/// Inputs for diffing one tracked buffer off the UI thread.
+struct HunkWork {
+    repo: Repo,
+    path: Arc<Path>,
+    snapshot: BufferSnapshot,
+    rev: Option<String>,
+    /// The base text, when cached for `rev`.
+    cached: Option<Option<Arc<str>>>,
+    diff_base: DiffBase,
+}
+
+impl HunkWork {
+    /// Blocking: loads the base text when needed, then diffs.
+    fn run(self) -> Diffed {
+        let text = match (self.cached, &self.rev) {
+            (Some(text), _) => text,
+            (None, Some(rev)) => load_base(&self.repo, rev, &self.path, self.diff_base),
+            (None, None) => None,
+        };
+        let hunks = diff_buffer(text.as_ref(), &self.snapshot);
+        Diffed {
+            rev: self.rev,
+            text,
+            hunks,
+        }
+    }
+}
+
+/// One buffer diffed against the base text of `rev`.
+struct Diffed {
+    rev: Option<String>,
+    text: Option<Arc<str>>,
+    hunks: Option<Arc<[Hunk]>>,
+}
+
+enum Setup {
+    NoGit,
+    Found(Result<Option<Repo>, GitError>),
+}
+
+pub struct GitStore {
+    root: PathBuf,
+    settings: GitSettings,
+    trusted: bool,
+    state: GitState,
+    /// Bumped whenever the repository is dropped or replaced, so results of
+    /// older work are ignored.
+    epoch: u64,
+    repo: Option<Repo>,
+    watcher: Option<GitDirWatcher>,
+    watch_task: Option<Task<()>>,
+    setup: Option<Task<()>>,
+    running: Option<Task<()>>,
+    pending: Option<Job>,
+    snapshot: GitSnapshot,
+    buffers: HashMap<Arc<Path>, Tracked>,
+    bases: HashMap<Arc<Path>, Base>,
+    hunks: HashMap<Arc<Path>, Arc<[Hunk]>>,
+    jobs_run: usize,
+    error_reported: bool,
+    not_found_reported: bool,
+    too_many_reported: bool,
+    git_override: Option<GitBinary>,
+}
+
+impl EventEmitter<GitStoreEvent> for GitStore {}
+
+impl GitStore {
+    /// Starts in [`GitState::Off`]; nothing runs until `set_trusted(true)`.
+    pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
+        GitStore {
+            root,
+            settings: GitSettings::read(cx),
+            trusted: false,
+            state: GitState::Off,
+            epoch: 0,
+            repo: None,
+            watcher: None,
+            watch_task: None,
+            setup: None,
+            running: None,
+            pending: None,
+            snapshot: GitSnapshot::default(),
+            buffers: HashMap::new(),
+            bases: HashMap::new(),
+            hunks: HashMap::new(),
+            jobs_run: 0,
+            error_reported: false,
+            not_found_reported: false,
+            too_many_reported: false,
+            git_override: None,
+        }
+    }
+
+    /// Whether `root` looks like it is inside a repository, read from the
+    /// filesystem without running `git` (safe before the folder is trusted).
+    pub fn has_repo_hint(root: &Path) -> bool {
+        crate::git_branch::head_path(root).is_some()
+    }
+
+    /// `true` locates `git` and the repository and starts the first rescan;
+    /// `false` drops the repository and runs nothing more.
+    pub fn set_trusted(&mut self, trusted: bool, cx: &mut Context<Self>) {
+        if trusted == self.trusted && self.state != GitState::Off {
+            return;
+        }
+        self.trusted = trusted;
+        self.restart(cx);
+    }
+
+    pub fn state(&self) -> GitState {
+        self.state
+    }
+
+    pub fn snapshot(&self) -> GitSnapshot {
+        self.snapshot.clone()
+    }
+
+    /// Refreshes the status of `paths` (workspace-relative files or folders).
+    /// Ignored unless the store is [`GitState::Ready`].
+    pub fn paths_changed(&mut self, paths: Vec<Arc<Path>>, cx: &mut Context<Self>) {
+        if self.state != GitState::Ready || paths.is_empty() {
+            return;
+        }
+        if paths.iter().any(|p| p.as_os_str().is_empty()) {
+            self.enqueue(Job::Rescan, cx);
+        } else {
+            self.enqueue(Job::RefreshPaths(paths.into_iter().collect()), cx);
+        }
+    }
+
+    /// Recomputes everything: statuses, `default_branch`, `base_rev` and the
+    /// base text of every tracked buffer. Runs even after too many changes.
+    pub fn rescan(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.state, GitState::Ready | GitState::TooManyChanges) {
+            self.enqueue(Job::Rescan, cx);
+        }
+    }
+
+    /// (Re)computes the hunks of `path` against the diff base, 50 ms after
+    /// the last call for it.
+    pub fn track_buffer(
+        &mut self,
+        path: Arc<Path>,
+        snapshot: BufferSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let tracked = self.buffers.entry(path.clone()).or_insert(Tracked {
+            snapshot: snapshot.clone(),
+            version: 0,
+            task: None,
+        });
+        tracked.snapshot = snapshot;
+        tracked.version += 1;
+        self.schedule_hunks(path, HUNK_DEBOUNCE, cx);
+    }
+
+    /// Stops tracking `path` and frees its base text and hunks.
+    pub fn untrack_buffer(&mut self, path: &Path) {
+        self.buffers.remove(path);
+        self.bases.remove(path);
+        self.hunks.remove(path);
+    }
+
+    pub fn hunks(&self, path: &Path) -> Option<Arc<[Hunk]>> {
+        self.hunks.get(path).cloned()
+    }
+
+    /// Re-reads the `git.*` settings: `enabled` or `path` restarts,
+    /// `diffBase` or `statusLimit` rescans.
+    pub fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        let new = GitSettings::read(cx);
+        if new == self.settings {
+            return;
+        }
+        let old = std::mem::replace(&mut self.settings, new);
+        if old.enabled != self.settings.enabled || old.path != self.settings.path {
+            if self.trusted {
+                self.restart(cx);
+            }
+            return;
+        }
+        self.bases.clear();
+        self.rescan(cx);
+    }
+
+    /// Uses `git` instead of locating it (tests isolate its config this way).
+    #[doc(hidden)]
+    pub fn use_git_for_test(&mut self, git: GitBinary) {
+        self.git_override = Some(git);
+    }
+
+    /// How many status jobs have started.
+    #[doc(hidden)]
+    pub fn jobs_run(&self) -> usize {
+        self.jobs_run
+    }
+
+    fn set_state(&mut self, state: GitState, cx: &mut Context<Self>) {
+        if self.state != state {
+            self.state = state;
+            cx.emit(GitStoreEvent::StateChanged);
+        }
+    }
+
+    /// Drops the repository, its tasks and every result.
+    fn reset(&mut self, cx: &mut Context<Self>) {
+        self.epoch += 1;
+        self.repo = None;
+        self.watcher = None;
+        self.watch_task = None;
+        self.setup = None;
+        self.running = None;
+        self.pending = None;
+        self.bases.clear();
+        for tracked in self.buffers.values_mut() {
+            tracked.task = None;
+        }
+        for (path, _) in std::mem::take(&mut self.hunks) {
+            cx.emit(GitStoreEvent::HunksChanged(path));
+        }
+        if self.snapshot.generation > 0 {
+            self.snapshot = GitSnapshot {
+                generation: self.snapshot.generation + 1,
+                ..GitSnapshot::default()
+            };
+            cx.emit(GitStoreEvent::SnapshotChanged);
+        }
+    }
+
+    fn restart(&mut self, cx: &mut Context<Self>) {
+        self.reset(cx);
+        let state = if !self.trusted {
+            GitState::Restricted
+        } else if !self.settings.enabled {
+            GitState::Off
+        } else {
+            GitState::Locating
+        };
+        self.set_state(state, cx);
+        if state != GitState::Locating {
+            return;
+        }
+        let epoch = self.epoch;
+        let root = self.root.clone();
+        let setting = self.settings.path.clone();
+        let git = self.git_override.clone();
+        self.setup = Some(cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move { discover(git, setting, &root) })
+                .await;
+            this.update(cx, |s, cx| s.finish_setup(epoch, found, cx))
+                .ok();
+        }));
+    }
+
+    fn finish_setup(&mut self, epoch: u64, found: Setup, cx: &mut Context<Self>) {
+        if epoch != self.epoch {
+            return;
+        }
+        self.setup = None;
+        match found {
+            Setup::NoGit => {
+                self.set_state(GitState::NoGit, cx);
+                if !std::mem::replace(&mut self.not_found_reported, true) {
+                    crate::status_message::show(NOT_FOUND_MESSAGE, cx);
+                }
+            }
+            Setup::Found(Ok(None)) => self.set_state(GitState::NoRepo, cx),
+            Setup::Found(Err(err)) => {
+                self.report_error(&err, cx);
+                self.set_state(GitState::NoRepo, cx);
+            }
+            Setup::Found(Ok(Some(repo))) => {
+                self.start_watcher(&repo, cx);
+                self.repo = Some(repo);
+                self.set_state(GitState::Ready, cx);
+                self.enqueue(Job::Rescan, cx);
+            }
+        }
+    }
+
+    /// Watches the git dirs (rescan on `HEAD`, index or ref changes). Not
+    /// started on GPUI's test scheduler, which rejects wake-ups from other
+    /// threads; tests call `rescan` themselves.
+    fn start_watcher(&mut self, repo: &Repo, cx: &mut Context<Self>) {
+        if cx.background_executor().is_test() {
+            return;
+        }
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let dirs = [repo.git_dir.clone(), repo.common_dir.clone()];
+        match GitDirWatcher::start(&dirs, move || {
+            let _ = tx.unbounded_send(());
+        }) {
+            Ok(watcher) => {
+                self.watcher = Some(watcher);
+                self.watch_task = Some(cx.spawn(async move |this, cx| {
+                    while rx.next().await.is_some() {
+                        if this.update(cx, |s, cx| s.git_dir_changed(cx)).is_err() {
+                            break;
+                        }
+                    }
+                }));
+            }
+            Err(err) => tracing::warn!(%err, "could not watch the git directory"),
+        }
+    }
+
+    fn git_dir_changed(&mut self, cx: &mut Context<Self>) {
+        // After too many changes only an explicit `rescan` updates.
+        if self.state == GitState::Ready {
+            self.enqueue(Job::Rescan, cx);
+        }
+    }
+
+    fn enqueue(&mut self, job: Job, cx: &mut Context<Self>) {
+        self.pending = Some(match self.pending.take() {
+            Some(queued) => queued.merge(job),
+            None => job,
+        });
+        self.start_next(cx);
+    }
+
+    fn start_next(&mut self, cx: &mut Context<Self>) {
+        if self.running.is_some() {
+            return;
+        }
+        let Some(repo) = self.repo.clone() else {
+            self.pending = None;
+            return;
+        };
+        let Some(job) = self.pending.take() else {
+            return;
+        };
+        if self.state == GitState::TooManyChanges && matches!(job, Job::RefreshPaths(_)) {
+            return;
+        }
+        let buffers = match job {
+            Job::Rescan => self
+                .buffers
+                .iter()
+                .map(|(p, t)| (p.clone(), t.version, t.snapshot.clone()))
+                .collect(),
+            Job::RefreshPaths(_) => Vec::new(),
+        };
+        let input = JobInput {
+            repo,
+            job,
+            diff_base: self.settings.diff_base,
+            status_limit: self.settings.status_limit,
+            prev: self.snapshot.clone(),
+            buffers,
+        };
+        self.jobs_run += 1;
+        let epoch = self.epoch;
+        self.running = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { run_job(input) })
+                .await;
+            this.update(cx, |s, cx| s.finish_job(epoch, result, cx))
+                .ok();
+        }));
+    }
+
+    fn finish_job(
+        &mut self,
+        epoch: u64,
+        result: Result<JobOutput, GitError>,
+        cx: &mut Context<Self>,
+    ) {
+        if epoch != self.epoch {
+            return;
+        }
+        self.running = None;
+        match result {
+            Ok(out) => {
+                self.snapshot = GitSnapshot {
+                    generation: self.snapshot.generation + 1,
+                    ..out.snapshot
+                };
+                for (path, version, diffed) in out.reloaded {
+                    let Some(tracked) = self.buffers.get(&path) else {
+                        continue;
+                    };
+                    if tracked.version == version {
+                        self.apply_diff(path, diffed, cx);
+                    } else {
+                        // Edited meanwhile: keep the base, diff the new text.
+                        self.store_base(&path, diffed.rev, diffed.text);
+                        self.schedule_hunks(path, Duration::ZERO, cx);
+                    }
+                }
+                if out.too_many {
+                    self.set_state(GitState::TooManyChanges, cx);
+                    if !std::mem::replace(&mut self.too_many_reported, true) {
+                        crate::status_message::show(TOO_MANY_MESSAGE, cx);
+                    }
+                } else {
+                    self.set_state(GitState::Ready, cx);
+                }
+                cx.emit(GitStoreEvent::SnapshotChanged);
+            }
+            // The last snapshot stays.
+            Err(err) => self.report_error(&err, cx),
+        }
+        self.start_next(cx);
+    }
+
+    fn report_error(&mut self, err: &GitError, cx: &mut Context<Self>) {
+        tracing::warn!(%err, root = %self.root.display(), "git failed");
+        if !std::mem::replace(&mut self.error_reported, true) {
+            crate::status_message::show(format!("Git: {err}"), cx);
+        }
+    }
+
+    /// Diffs `path` after `delay`, loading its base text when it is not
+    /// cached for the current `base_rev`. Nothing runs without a repository.
+    fn schedule_hunks(&mut self, path: Arc<Path>, delay: Duration, cx: &mut Context<Self>) {
+        let epoch = self.epoch;
+        let Some(tracked) = self.buffers.get_mut(&path) else {
+            return;
+        };
+        let version = tracked.version;
+        tracked.task = Some(cx.spawn(async move |this, cx| {
+            if !delay.is_zero() {
+                cx.background_executor().timer(delay).await;
+            }
+            let Ok(Some(work)) = this.update(cx, |s, _| s.hunk_work(&path, version)) else {
+                return;
+            };
+            let diffed = cx
+                .background_executor()
+                .spawn(async move { work.run() })
+                .await;
+            this.update(cx, |s, cx| s.finish_hunks(epoch, path, version, diffed, cx))
+                .ok();
+        }));
+    }
+
+    /// The background work that diffs `path` at `version`, or `None` when
+    /// there is no repository (untrusted, disabled, still locating).
+    fn hunk_work(&self, path: &Arc<Path>, version: u64) -> Option<HunkWork> {
+        let repo = self.repo.clone()?;
+        let tracked = self.buffers.get(path).filter(|t| t.version == version)?;
+        let rev = self.snapshot.base_rev.clone();
+        let cached = self
+            .bases
+            .get(path)
+            .filter(|b| Some(&b.rev) == rev.as_ref())
+            .map(|b| b.text.clone());
+        Some(HunkWork {
+            repo,
+            path: path.clone(),
+            snapshot: tracked.snapshot.clone(),
+            rev,
+            cached,
+            diff_base: self.settings.diff_base,
+        })
+    }
+
+    fn finish_hunks(
+        &mut self,
+        epoch: u64,
+        path: Arc<Path>,
+        version: u64,
+        diffed: Diffed,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .buffers
+            .get(&path)
+            .is_some_and(|t| t.version == version);
+        if epoch != self.epoch || !current {
+            return;
+        }
+        if diffed.rev != self.snapshot.base_rev {
+            // A rescan moved the base meanwhile.
+            self.schedule_hunks(path, Duration::ZERO, cx);
+            return;
+        }
+        self.apply_diff(path, diffed, cx);
+    }
+
+    fn apply_diff(&mut self, path: Arc<Path>, diffed: Diffed, cx: &mut Context<Self>) {
+        self.store_base(&path, diffed.rev, diffed.text);
+        self.set_hunks(path, diffed.hunks, cx);
+    }
+
+    fn store_base(&mut self, path: &Arc<Path>, rev: Option<String>, text: Option<Arc<str>>) {
+        match rev {
+            Some(rev) => self.bases.insert(path.clone(), Base { rev, text }),
+            None => self.bases.remove(path),
+        };
+    }
+
+    fn set_hunks(&mut self, path: Arc<Path>, hunks: Option<Arc<[Hunk]>>, cx: &mut Context<Self>) {
+        let changed = match hunks {
+            Some(hunks) => self.hunks.insert(path.clone(), hunks.clone()).as_ref() != Some(&hunks),
+            None => self.hunks.remove(&path).is_some(),
+        };
+        if changed {
+            cx.emit(GitStoreEvent::HunksChanged(path));
+        }
+    }
+}
+
+/// The login shell's `PATH`, read once per process (it can take seconds).
+fn login_path() -> Option<&'static str> {
+    static PATH: OnceLock<Option<String>> = OnceLock::new();
+    PATH.get_or_init(|| lucerna_lsp::env::login_shell_env().remove("PATH"))
+        .as_deref()
+}
+
+/// Finds `git` and the repository holding `root`. Blocking.
+fn discover(git: Option<GitBinary>, setting: Option<PathBuf>, root: &Path) -> Setup {
+    let git = match git {
+        Some(git) => git,
+        None => {
+            let found = match setting {
+                Some(path) => locate::locate_git(Some(path), None),
+                None => locate::locate_git(None, login_path()),
+            };
+            match found {
+                Some(path) => GitBinary::new(path),
+                None => return Setup::NoGit,
+            }
+        }
+    };
+    match Repo::discover(git, root) {
+        Err(GitError::NotFound) => Setup::NoGit,
+        found => Setup::Found(found),
+    }
+}
+
+/// Statuses against the diff base; `paths` limits them (workspace-relative).
+fn status_entries(
+    repo: &Repo,
+    diff_base: DiffBase,
+    base_rev: Option<&str>,
+    paths: Option<&[PathBuf]>,
+) -> Result<Vec<(Arc<Path>, FileStatus)>, GitError> {
+    let entries = match (diff_base, base_rev) {
+        (DiffBase::DefaultBranch, Some(rev)) => repo.changed_since_in(rev, paths)?,
+        _ => repo.status(paths)?,
+    };
+    Ok(entries
+        .into_iter()
+        .map(|(p, s)| (Arc::from(p), s))
+        .collect())
+}
+
+/// One status job. Blocking: runs on the background executor.
+fn run_job(input: JobInput) -> Result<JobOutput, GitError> {
+    let JobInput {
+        repo,
+        job,
+        diff_base,
+        status_limit,
+        prev,
+        buffers,
+    } = input;
+    let (statuses, head, base_rev, default_branch) = match &job {
+        Job::Rescan => {
+            let head = repo.head_oid()?;
+            let default_branch = repo.default_branch()?;
+            let base_rev = match (diff_base, &default_branch, &head) {
+                (DiffBase::DefaultBranch, Some(branch), Some(_)) => {
+                    repo.merge_base(branch)?.or_else(|| head.clone())
+                }
+                _ => head.clone(),
+            };
+            let entries = status_entries(&repo, diff_base, base_rev.as_deref(), None)?;
+            let statuses: HashMap<_, _> = entries.into_iter().collect();
+            (statuses, head, base_rev, default_branch)
+        }
+        Job::RefreshPaths(paths) => {
+            let list: Vec<PathBuf> = paths.iter().map(|p| p.to_path_buf()).collect();
+            let fresh = status_entries(&repo, diff_base, prev.base_rev.as_deref(), Some(&list))?;
+            let mut statuses = (*prev.statuses).clone();
+            statuses.retain(|k, _| !paths.iter().any(|p| k.starts_with(p)));
+            statuses.extend(fresh);
+            (statuses, prev.head, prev.base_rev, prev.default_branch)
+        }
+    };
+    let entries: Vec<(Arc<Path>, FileStatus)> =
+        statuses.iter().map(|(p, s)| (p.clone(), *s)).collect();
+    let rollup = Rollup::build(&entries);
+    let reloaded = buffers
+        .into_iter()
+        .map(|(path, version, snapshot)| {
+            let work = HunkWork {
+                repo: repo.clone(),
+                path: path.clone(),
+                snapshot,
+                rev: base_rev.clone(),
+                cached: None,
+                diff_base,
+            };
+            (path, version, work.run())
+        })
+        .collect();
+    Ok(JobOutput {
+        too_many: statuses.len() > status_limit,
+        snapshot: GitSnapshot {
+            generation: 0,
+            statuses: Arc::new(statuses),
+            rollup: Arc::new(rollup),
+            head,
+            base_rev,
+            default_branch,
+        },
+        reloaded,
+    })
+}
+
+/// The base text of `path` at `rev`. `None` (no hunks) for files missing
+/// there, binary or over 8 MB, except that with `"defaultBranch"` a file
+/// created and committed on the branch is compared with empty text.
+fn load_base(repo: &Repo, rev: &str, path: &Path, diff_base: DiffBase) -> Option<Arc<str>> {
+    let read = |rev: &str| match repo.read_blob(rev, path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::warn!(%err, path = %path.display(), "could not read the git base");
+            None
+        }
+    };
+    match read(rev) {
+        Some(bytes) => load_base_text(&bytes).map(Arc::from),
+        None if diff_base == DiffBase::DefaultBranch && read("HEAD").is_some() => {
+            Some(Arc::from(""))
+        }
+        None => None,
+    }
+}
+
+fn diff_buffer(base: Option<&Arc<str>>, snapshot: &BufferSnapshot) -> Option<Arc<[Hunk]>> {
+    let base = base?;
+    let text = snapshot.text();
+    if text.len() as u64 > MAX_DIFF_BYTES {
+        return None;
+    }
+    Some(diff_hunks(base, &text).into())
+}

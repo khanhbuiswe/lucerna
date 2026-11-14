@@ -18,7 +18,7 @@ mod explorer;
 pub mod extensions;
 mod find_widget;
 pub mod fonts;
-mod git;
+pub mod git;
 pub mod git_branch;
 pub mod goto;
 pub mod hover;
@@ -74,6 +74,7 @@ pub use excerpt_list::model::{
 };
 pub use explorer::{CHANGE_DECORATION, ExplorerModel, ExplorerView, Row};
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
+pub use git::{GitSnapshot, GitState, GitStore, GitStoreEvent};
 pub use language_servers::{
     HoverInfo, LanguageServers, LanguageServersEvent, ServerStatus, SlotState,
 };

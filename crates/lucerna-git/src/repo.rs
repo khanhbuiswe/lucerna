@@ -185,13 +185,31 @@ impl Repo {
 
     /// Files changed in the worktree relative to `base`, plus untracked files.
     pub fn changed_since(&self, base: &str) -> Result<Vec<(PathBuf, FileStatus)>, GitError> {
+        self.changed_since_in(base, None)
+    }
+
+    /// [`changed_since`](Self::changed_since) limited to `paths`
+    /// (workspace-relative, passed as pathspecs); `None` means the whole workspace.
+    pub fn changed_since_in(
+        &self,
+        base: &str,
+        paths: Option<&[PathBuf]>,
+    ) -> Result<Vec<(PathBuf, FileStatus)>, GitError> {
         let mut args: Vec<String> = ["diff", "--name-status", "-z", "--no-renames", base]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        if !self.prefix.as_os_str().is_empty() {
-            args.push("--".into());
-            args.push(Self::pathspec(&self.prefix));
+        match paths {
+            Some(paths) if !paths.is_empty() => {
+                args.push("--".into());
+                args.extend(paths.iter().map(|p| Self::pathspec(&self.prefix.join(p))));
+            }
+            Some(_) => return Ok(Vec::new()),
+            None if !self.prefix.as_os_str().is_empty() => {
+                args.push("--".into());
+                args.push(Self::pathspec(&self.prefix));
+            }
+            None => {}
         }
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
         let out = self.run(&argv)?;
@@ -213,7 +231,7 @@ impl Repo {
         let mut result = self.strip(entries);
         let tracked: std::collections::HashSet<PathBuf> =
             result.iter().map(|(p, _)| p.clone()).collect();
-        for (p, s) in self.status(None)? {
+        for (p, s) in self.status(paths)? {
             if s == FileStatus::Untracked && !tracked.contains(&p) {
                 result.push((p, s));
             }

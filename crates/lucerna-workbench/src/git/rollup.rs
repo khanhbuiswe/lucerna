@@ -11,9 +11,8 @@ use lucerna_git::FileStatus;
 /// order, highest first, so the derived `Ord` makes the highest priority the
 /// *smallest* value: a folder takes the `min` of its descendants.
 // `Ignored` is produced once ignored files are shown (a later task).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum GitColor {
+pub enum GitColor {
     Conflict,
     Deleted,
     Modified,
@@ -21,7 +20,7 @@ pub(crate) enum GitColor {
     Ignored,
 }
 
-pub(crate) fn color_of(status: FileStatus) -> GitColor {
+pub fn color_of(status: FileStatus) -> GitColor {
     match status {
         FileStatus::Conflict => GitColor::Conflict,
         FileStatus::Deleted => GitColor::Deleted,
@@ -33,16 +32,14 @@ pub(crate) fn color_of(status: FileStatus) -> GitColor {
 /// Per-path colors: each file's own, and for every ancestor folder the
 /// highest-priority color among its descendants.
 #[derive(Debug, Default)]
-pub(crate) struct Rollup {
+pub struct Rollup {
     files: HashMap<Arc<Path>, GitColor>,
     dirs: HashMap<Arc<Path>, GitColor>,
 }
 
-// Used by the Explorer decorations in a later task.
-#[allow(dead_code)]
 impl Rollup {
     /// Paths are relative to the worktree root.
-    pub(crate) fn build(entries: &[(Arc<Path>, FileStatus)]) -> Rollup {
+    pub fn build(entries: &[(Arc<Path>, FileStatus)]) -> Rollup {
         let mut rollup = Rollup::default();
         for (path, status) in entries {
             let color = color_of(*status);
@@ -63,15 +60,15 @@ impl Rollup {
         rollup
     }
 
-    pub(crate) fn file(&self, path: &Path) -> Option<GitColor> {
+    pub fn file(&self, path: &Path) -> Option<GitColor> {
         self.files.get(path).copied()
     }
 
-    pub(crate) fn dir(&self, path: &Path) -> Option<GitColor> {
+    pub fn dir(&self, path: &Path) -> Option<GitColor> {
         self.dirs.get(path).copied()
     }
 
-    pub(crate) fn badge(status: FileStatus) -> &'static str {
+    pub fn badge(status: FileStatus) -> &'static str {
         match status {
             FileStatus::Modified => "M",
             FileStatus::Added => "A",
