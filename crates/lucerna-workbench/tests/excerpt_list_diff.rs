@@ -592,3 +592,79 @@ fn files_sort_by_group_then_path(cx: &mut TestAppContext) {
         assert_eq!(l.results().files()[2].excerpts.len(), 1);
     });
 }
+
+/// A whole-file tab: one file of `n` lines in one excerpt, colored from
+/// a text source.
+fn long_file(list: &Entity<ExcerptList>, n: u32, cx: &mut VisualTestContext) {
+    let text: String = (1..=n).map(|i| format!("let x{i} = {i};\n")).collect();
+    let lines: Vec<LineMatch> = (1..=n)
+        .map(|i| ctx(i, &format!("let x{i} = {i};")))
+        .collect();
+    list.update(cx, |l, cx| {
+        l.set_text_source(
+            path("a.rs"),
+            TextSource {
+                current: Some(Arc::from(text)),
+                base: None,
+            },
+            cx,
+        )
+    });
+    set_files(list, vec![("a.rs", vec![lines])], cx);
+}
+
+#[gpui::test]
+fn colored_file_is_not_rescanned_each_frame(cx: &mut TestAppContext) {
+    let (_dir, list, cx) = diff_list(cx);
+    long_file(&list, 5_000, cx);
+    let (scans, jobs) =
+        list.read_with(cx, |l, _| (l.highlight_scans(), l.highlight_jobs_started()));
+    assert_eq!(jobs, 1);
+    assert!(
+        list.read_with(cx, |l, _| l.line_spans(at(0, 0, 0)).is_some()),
+        "colored"
+    );
+    draw(cx);
+    draw(cx);
+    list.read_with(cx, |l, _| {
+        assert_eq!(l.highlight_scans(), scans, "complete: no scan per frame");
+        assert_eq!(l.highlight_jobs_started(), 1);
+    });
+    // A change to the lines looks again, once.
+    list.update(cx, |l, cx| {
+        l.set_file(
+            path("a.rs"),
+            vec![Excerpt {
+                lines: vec![ctx(1, "let x1 = 1;"), add(2, "fn new() {}")],
+            }],
+            cx,
+        )
+    });
+    draw(cx);
+    let after = list.read_with(cx, |l, _| l.highlight_scans());
+    assert!(after > scans, "the changed file is scanned");
+    draw(cx);
+    assert_eq!(list.read_with(cx, |l, _| l.highlight_scans()), after);
+}
+
+#[gpui::test]
+fn selection_is_resolved_once_per_frame(cx: &mut TestAppContext) {
+    let (_dir, list, cx) = diff_list(cx);
+    long_file(&list, 2_000, cx);
+    list.update(cx, |l, cx| l.select_line(at(0, 0, 1), cx));
+    draw(cx);
+    let before = list.read_with(cx, |l, _| l.selection_resolves());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        list.read_with(cx, |l, _| l.selection_resolves()),
+        before + 1,
+        "one frame, many rows on screen: one resolve"
+    );
+    // The selected line still draws as selected.
+    let active = ui_color(cx, |ui| ui.editor_active_line_background);
+    list.read_with(cx, |l, cx| {
+        assert_eq!(l.selected(), Some(at(0, 0, 1)));
+        assert_eq!(l.row_background(at(0, 0, 1), cx), Some(active));
+        assert_eq!(l.row_background(at(0, 0, 0), cx), None);
+    });
+}

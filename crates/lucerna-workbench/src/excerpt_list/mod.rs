@@ -91,6 +91,8 @@ pub struct ExcerptList {
     highlight_theme: u64,
     peak_highlight_jobs: usize,
     highlight_jobs_started: usize,
+    /// Frames rendered, each resolving the selection once.
+    selection_resolves: usize,
     /// The texts of the files colored from the host's texts, not the
     /// disk, each with the generation it was set at.
     text_sources: HashMap<Arc<Path>, (TextSource, u64)>,
@@ -123,6 +125,7 @@ impl ExcerptList {
             highlight_theme: cx.global::<AppState>().theme_generation,
             peak_highlight_jobs: 0,
             highlight_jobs_started: 0,
+            selection_resolves: 0,
             text_sources: HashMap::new(),
             last_source_generation: 0,
         }
@@ -271,14 +274,34 @@ impl ExcerptList {
     /// else the active-line color when selected, else none.
     #[doc(hidden)]
     pub fn row_background(&self, r: LineRef, cx: &App) -> Option<Hsla> {
+        let kind = self.results.line(r)?.kind;
+        self.background_of(kind, self.selected() == Some(r), cx)
+    }
+
+    /// [`row_background`](Self::row_background) of a line of `kind`,
+    /// `selected` or not.
+    fn background_of(&self, kind: LineKind, selected: bool, cx: &App) -> Option<Hsla> {
         let ui = &cx.global::<AppState>().theme.ui;
-        let c = match self.results.line(r)?.kind {
+        let c = match kind {
             LineKind::Added => ui.diff_added_background,
             LineKind::Deleted { .. } => ui.diff_deleted_background,
-            LineKind::Normal if self.selected() == Some(r) => ui.editor_active_line_background,
+            LineKind::Normal if selected => ui.editor_active_line_background,
             LineKind::Normal => return None,
         };
         Some(color(c).into())
+    }
+
+    /// How often a frame resolved the selection: once per frame.
+    #[doc(hidden)]
+    pub fn selection_resolves(&self) -> usize {
+        self.selection_resolves
+    }
+
+    /// How often the highlight queue scanned a file's lines for missing
+    /// colors: not again while the file and its colors are unchanged.
+    #[doc(hidden)]
+    pub fn highlight_scans(&self) -> usize {
+        self.highlight_cache.scans()
     }
 
     /// Highlight jobs running now; never above

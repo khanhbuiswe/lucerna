@@ -71,13 +71,20 @@ impl ExcerptList {
     }
 
     /// Row `ix` of the list.
-    fn render_row(&mut self, ix: usize, style: &RowStyle, cx: &mut Context<Self>) -> AnyElement {
+    /// `selected` is the selected line, resolved once for the frame.
+    fn render_row(
+        &mut self,
+        ix: usize,
+        style: &RowStyle,
+        selected: Option<LineRef>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(row) = self.results.rows().get(ix).copied() else {
             return div().into_any_element();
         };
         match row {
-            Row::Header(file) => self.render_header(file, false, style, cx),
-            Row::Line(r) => self.render_line(ix, r, style, cx),
+            Row::Header(file) => self.render_header(file, false, style, selected, cx),
+            Row::Line(r) => self.render_line(ix, r, style, selected == Some(r), cx),
             Row::Separator { file } => {
                 // The excerpt it comes before.
                 let excerpt = match self.results.rows().get(ix + 1) {
@@ -103,6 +110,7 @@ impl ExcerptList {
         index: usize,
         sticky: bool,
         style: &RowStyle,
+        selected: Option<LineRef>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let state = cx.global::<AppState>();
@@ -145,7 +153,7 @@ impl ExcerptList {
                 )
             };
         let group: SharedString = format!("{selector}-group").into();
-        let selected_here = self.selected().is_some_and(|r| r.file == index);
+        let selected_here = selected.is_some_and(|r| r.file == index);
         let meta = self.results.meta(&file.path).copied();
         let openable = meta.is_none_or(|m| m.openable);
         let open_path = path.clone();
@@ -288,6 +296,7 @@ impl ExcerptList {
         ix: usize,
         r: LineRef,
         style: &RowStyle,
+        selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let state = cx.global::<AppState>();
@@ -324,7 +333,6 @@ impl ExcerptList {
             self.id_prefix, r.file, r.excerpt, r.line
         );
         let anchor = self.results.anchor_of(r);
-        let selected = self.selected() == Some(r);
         // Code lines read like editor lines (as in Zed's multibuffer): no
         // hover; the selected line gets the editor's active-line colors,
         // over the diff color of an added or deleted line.
@@ -334,7 +342,7 @@ impl ExcerptList {
             LineKind::Deleted { .. } => Some(ui.vc_deleted),
         };
         let mut el = row(ix, selector, style).relative();
-        if let Some(bg) = self.row_background(r, cx) {
+        if let Some(bg) = self.background_of(line.kind, selected, cx) {
             el = el.bg(bg);
         }
         if selected && bar.is_some() {
@@ -469,6 +477,9 @@ impl Render for ExcerptList {
         let ui = cx.global::<AppState>().theme.ui.clone();
         let style = self.row_style(window, cx);
         let lh = style.line_height;
+        // Found once per frame, not per row: resolving it scans its file.
+        let selected = self.selected();
+        self.selection_resolves += 1;
         // The rows on screen get their syntax colors first.
         let viewport = match self.list.viewport_bounds().size.height {
             h if h > px(0.) => h,
@@ -503,7 +514,7 @@ impl Render for ExcerptList {
                         .right_0()
                         .top(push)
                         .bg(color(ui.editor_background))
-                        .child(self.render_header(file, true, &style, cx)),
+                        .child(self.render_header(file, true, &style, selected, cx)),
                 )
         });
         let row_style = style.clone();
@@ -516,7 +527,9 @@ impl Render for ExcerptList {
             .child(
                 list(
                     self.list.clone(),
-                    cx.processor(move |list, ix: usize, _, cx| list.render_row(ix, &row_style, cx)),
+                    cx.processor(move |list, ix: usize, _, cx| {
+                        list.render_row(ix, &row_style, selected, cx)
+                    }),
                 )
                 .size_full(),
             )

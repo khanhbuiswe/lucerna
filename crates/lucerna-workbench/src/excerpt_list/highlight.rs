@@ -310,6 +310,8 @@ impl Side {
 pub struct HighlightCache {
     files: HashMap<Arc<Path>, CachedFile>,
     tick: u64,
+    /// Line scans run by [`missing_at`](Self::missing_at), for tests.
+    scans: usize,
 }
 
 #[derive(Debug, Default)]
@@ -317,6 +319,10 @@ struct CachedFile {
     lines: HashMap<(Side, u32), (String, LineSpans)>,
     generation: u64,
     used: u64,
+    /// The results revision at which every line of the file was found
+    /// colored for `generation`: no need to look again until either
+    /// changes.
+    complete_at: Option<u64>,
 }
 
 impl HighlightCache {
@@ -348,6 +354,38 @@ impl HighlightCache {
                 .any(|l| self.get(path, l).is_none())
     }
 
+    /// [`missing`](Self::missing), remembered: once the file's lines are
+    /// all found colored at results `revision`, later calls with the same
+    /// revision and `generation` skip the scan of every line (run per
+    /// frame for each file on screen; a whole-file diff tab is one long
+    /// file).
+    pub fn missing_at(
+        &mut self,
+        path: &Path,
+        excerpts: &[Excerpt],
+        generation: u64,
+        revision: u64,
+    ) -> bool {
+        if self
+            .files
+            .get(path)
+            .is_some_and(|f| f.generation == generation && f.complete_at == Some(revision))
+        {
+            return false;
+        }
+        self.scans += 1;
+        let missing = self.missing(path, excerpts, generation);
+        if !missing && let Some(f) = self.files.get_mut(path) {
+            f.complete_at = Some(revision);
+        }
+        missing
+    }
+
+    /// Line scans run by [`missing_at`](Self::missing_at).
+    pub fn scans(&self) -> usize {
+        self.scans
+    }
+
     /// Marks `path` as just used, so it is the last to be dropped.
     pub fn touch(&mut self, path: &Path) {
         self.tick += 1;
@@ -373,6 +411,7 @@ impl HighlightCache {
         let tick = self.tick;
         let file = self.files.entry(path.clone()).or_default();
         file.used = tick;
+        file.complete_at = None;
         if file.generation != generation {
             file.lines.clear();
             file.generation = generation;
@@ -460,10 +499,12 @@ impl ExcerptList {
             let path = result.path.clone();
             self.highlight_cache.touch(&path);
             let generation = self.source_generation(&path);
-            if !self
-                .highlight_cache
-                .missing(&path, &result.excerpts, generation)
-                || !self.highlight_pending.insert(path.clone())
+            if !self.highlight_cache.missing_at(
+                &path,
+                &result.excerpts,
+                generation,
+                self.results.revision(),
+            ) || !self.highlight_pending.insert(path.clone())
             {
                 continue;
             }
@@ -848,6 +889,46 @@ mod cache_tests {
         }];
         assert!(cache.missing(Path::new("a"), &changed_ex, 0));
         assert!(cache.missing(Path::new("b"), &ex, 0));
+    }
+
+    #[test]
+    fn missing_at_skips_the_scan_while_complete() {
+        let mut cache = HighlightCache::default();
+        let ex = vec![excerpt(1)];
+        let a = Path::new("a");
+        assert!(cache.missing_at(a, &ex, 0, 1));
+        assert_eq!(cache.scans(), 1);
+        cache.insert(
+            path("a"),
+            &ex,
+            FileHighlights::new(),
+            FileHighlights::new(),
+            0,
+        );
+        assert!(!cache.missing_at(a, &ex, 0, 1));
+        assert!(!cache.missing_at(a, &ex, 0, 1));
+        assert_eq!(cache.scans(), 2, "complete: the second call does not scan");
+        // A new results revision or source generation looks again.
+        let changed = vec![Excerpt {
+            lines: vec![LineMatch {
+                line_text: "changed".into(),
+                ..line(2, true)
+            }],
+        }];
+        assert!(cache.missing_at(a, &changed, 0, 2));
+        assert!(cache.missing_at(a, &ex, 1, 2));
+        assert_eq!(cache.scans(), 4);
+        // New colors arriving clear the memo.
+        assert!(!cache.missing_at(a, &ex, 0, 3));
+        cache.insert(
+            path("a"),
+            &[],
+            FileHighlights::new(),
+            FileHighlights::new(),
+            0,
+        );
+        assert!(!cache.missing_at(a, &ex, 0, 3));
+        assert_eq!(cache.scans(), 6, "scanned again after the insert");
     }
 
     #[test]

@@ -117,11 +117,14 @@ pub struct Results {
     confirmed: HashSet<Arc<Path>>,
     /// Diff meta by path; it may be set before the file arrives.
     meta: HashMap<Arc<Path>, FileMeta>,
+    /// Bumped by every change to the files or rows.
+    revision: u64,
 }
 
 impl Results {
     /// Drops every file and every file's meta.
     pub fn clear(&mut self) {
+        self.revision += 1;
         self.files.clear();
         self.rows.clear();
         self.match_count = 0;
@@ -347,6 +350,12 @@ impl Results {
 
     pub fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    /// Changes whenever the files or rows change: a file's lines are the
+    /// same while it is.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn line(&self, r: LineRef) -> Option<&LineMatch> {
@@ -580,6 +589,7 @@ impl Results {
     }
 
     fn rebuild(&mut self) {
+        self.revision += 1;
         self.match_count = self.files.iter().map(FileResult::match_count).sum();
         self.rows.clear();
         for (file, f) in self.files.iter().enumerate() {
