@@ -55,12 +55,7 @@ IDLE_FILES = (
     "crates/searcher/src/lib.rs",
 )
 
-# The process that owns the window. The `code` / `cli` launchers (and VS Code's
-# `cli.js` node process) carry the profile flag too but own no window.
-_MAIN_BINARY = {
-    "vscode": str(editors.VSCODE_APP / "Contents/MacOS/Code"),
-    "zed": str(editors.ZED_APP / "Contents/MacOS/zed"),
-}
+_MAIN_BINARY = editors.MAIN_BINARY  # window owner; launchers carry no window
 
 
 class PermissionDenied(RuntimeError):
@@ -179,6 +174,12 @@ def _owner_pids(editor: str, paths: BenchPaths, deadline: float) -> list[int] | 
                 return editors.bench_pids(editor, paths)
         time.sleep(0.05)
     _log(f"{editor}: no window process within {TIMEOUT_S} s")
+    if editor == "zed":
+        stray = editors.foreign_instances("zed", paths)
+        if stray:
+            _log(f"LỖI: Zed pid {', '.join(map(str, stray))} mới xuất hiện không mang "
+                 "--user-data-dir: nó dùng hồ sơ THẬT của bạn, không phải hồ sơ bench. "
+                 "Không tự đóng; hãy tự đóng nó.")
     return None
 
 

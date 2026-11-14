@@ -28,7 +28,13 @@ EDITORS = ("lucerna", "zed", "vscode")
 VSCODE_APP = Path("/Applications/Visual Studio Code.app")
 ZED_APP = Path("/Applications/Zed.app")
 VSCODE_CLI = VSCODE_APP / "Contents/Resources/app/bin/code"
-ZED_CLI = ZED_APP / "Contents/MacOS/cli"
+ZED_BIN = ZED_APP / "Contents/MacOS/zed"
+# The process that owns the window. Launchers (`code`, Zed's `cli`) carry no
+# window; Zed's `cli` would also start the app WITHOUT --user-data-dir.
+MAIN_BINARY = {
+    "vscode": str(VSCODE_APP / "Contents/MacOS/Code"),
+    "zed": str(ZED_BIN),
+}
 QUIT_GRACE_S = 5.0
 PIDFILE_NAME = ".bench-pids.json"
 
@@ -37,6 +43,10 @@ def now_ns() -> int:
     """bench-helper's clock (CLOCK_UPTIME_RAW). Not `time.monotonic_ns()`:
     Python 3.9 (the macOS system python3) counts that from process start."""
     return time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)
+
+
+class ForeignInstance(RuntimeError):
+    """The user's own instance blocks a bench launch. Never signalled."""
 
 
 @dataclass
@@ -78,7 +88,12 @@ def launch(editor: str, paths: BenchPaths, target: Path) -> Launched:
         cmd = [str(VSCODE_CLI), "--user-data-dir", user, "--extensions-dir", ext,
                "--new-window", str(target)]
     elif editor == "zed":
-        cmd = [str(ZED_CLI), "--user-data-dir", _zed_dir(paths), "--new", str(target)]
+        # Run the main binary itself: `cli` hands off through LaunchServices
+        # and drops --user-data-dir, so Zed would open the user's real profile.
+        foreign = foreign_instances("zed", paths)
+        if foreign:
+            raise ForeignInstance(foreign_message("zed", foreign))
+        cmd = [str(ZED_BIN), "--user-data-dir", _zed_dir(paths), str(target)]
     elif editor == "lucerna":
         cmd = [_lucerna_bin(), str(target)]
         env = {**os.environ, "HOME": str(paths.lucerna_home)}
@@ -103,6 +118,31 @@ def _ps() -> list[tuple[int, int, str]]:
         if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
             rows.append((int(parts[0]), int(parts[1]), parts[2]))
     return rows
+
+
+def foreign_instances(editor: str, paths: BenchPaths) -> list[int]:
+    """Main app processes of `editor` that are not the bench session's."""
+    main = MAIN_BINARY.get(editor)
+    if main is None:
+        return []
+    mine = set(bench_pids(editor, paths))
+    found = []
+    for pid, _, cmd in _ps():
+        if pid in mine or not (cmd == main or cmd.startswith(main + " ")):
+            continue
+        if "--crash-handler" in cmd or "--type=" in cmd:
+            continue
+        found.append(pid)
+    return sorted(found)
+
+
+def foreign_message(editor: str, pids: list[int]) -> str:
+    listed = ", ".join(str(p) for p in pids)
+    if editor == "zed":
+        return (f"Zed của bạn đang chạy (pid {listed}). Zed chỉ cho một phiên mỗi "
+                "kênh phát hành, nên bench không thể mở Zed riêng. "
+                "Hãy tự đóng Zed rồi chạy lại.")
+    return f"{editor} của bạn đang chạy (pid {listed})."
 
 
 def _lstart(pid: int) -> str:

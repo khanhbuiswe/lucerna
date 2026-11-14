@@ -80,6 +80,31 @@ class PidTests(unittest.TestCase):
     def test_lucerna_without_pidfile_excluded(self):
         self.assertEqual(self._lucerna("T1", self.TABLE, write=False), [])
 
+    def test_foreign_instances_ignores_bench_and_crash_handler(self):
+        zed = "/Applications/Zed.app/Contents/MacOS/zed"
+        table = [(1000, 1, zed), (1001, 1000, zed + " --crash-handler x"),
+                 (200, 1, zed + " --user-data-dir /bench/profiles/zed"),
+                 (300, 1, "/Applications/Zed.app/Contents/MacOS/cli")]
+        with mock.patch.object(editors, "_ps", return_value=table):
+            self.assertEqual(editors.foreign_instances("zed", PATHS), [1000])
+
+    def test_zed_launch_refused_while_users_zed_runs(self):
+        table = [(1000, 1, "/Applications/Zed.app/Contents/MacOS/zed")]
+        with mock.patch.object(editors, "_ps", return_value=table), \
+                mock.patch.object(editors.subprocess, "Popen") as popen:
+            with self.assertRaises(editors.ForeignInstance) as cm:
+                editors.launch("zed", PATHS, Path("/t"))
+        popen.assert_not_called()
+        self.assertIn("1000", str(cm.exception))
+
+    def test_zed_launches_main_binary_directly(self):
+        with mock.patch.object(editors, "_ps", return_value=[]), \
+                mock.patch.object(editors.subprocess, "Popen") as popen:
+            editors.launch("zed", PATHS, Path("/t"))
+        self.assertEqual(popen.call_args.args[0], [
+            "/Applications/Zed.app/Contents/MacOS/zed", "--user-data-dir",
+            "/bench/profiles/zed", "/t"])
+
 
 class QuitTests(unittest.TestCase):
     def test_quit_kills_snapshotted_orphan(self):

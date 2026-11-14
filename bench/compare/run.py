@@ -142,6 +142,15 @@ def check_permissions(paths: BenchPaths, selected: list[str]) -> None:
     raise Abort("\n".join(lines))
 
 
+def check_foreign_zed(paths: BenchPaths, selected: list[str]) -> None:
+    """Zed allows one instance per channel: stop before touching anything."""
+    if not [m for m in selected if m != "app_size_mb"]:
+        return
+    pids = editors.foreign_instances("zed", paths)
+    if pids:
+        raise Abort(editors.foreign_message("zed", pids))
+
+
 def wait_quiet(on_ignored=None) -> None:
     """Preflight; on failure wait and retry, then give up. With `on_ignored`
     (--ignore-preflight) a failure is reported to it and the run goes on."""
@@ -200,7 +209,7 @@ class Runner:
     def _call(self, fn, editor, label):
         try:
             return fn()
-        except metrics.PermissionDenied:
+        except (metrics.PermissionDenied, editors.ForeignInstance):
             raise
         except Exception as exc:  # one broken round must not end the session
             _log(f"  {label} {editor}: lỗi {exc!r}, ghi null")
@@ -303,6 +312,7 @@ def main(argv=None) -> int:
     runner = Runner(paths, a.rounds, a.selected, a.cold, out, meta, a.ignore_preflight)
     try:
         check_permissions(paths, a.selected)
+        check_foreign_zed(paths, a.selected)
         if not a.skip_prepare:
             env.prepare_data(paths)
         for lsp in lsp_modes:
@@ -316,7 +326,7 @@ def main(argv=None) -> int:
         _log(f"thiếu quyền giữa chừng: {detail}\nĐã lưu kết quả dở tại {out}.")
         runner.save()
         return 1
-    except Abort as exc:
+    except (Abort, editors.ForeignInstance) as exc:
         _log(str(exc))
         runner.save()
         return 1

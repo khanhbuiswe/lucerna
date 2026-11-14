@@ -32,6 +32,7 @@ class Harness:
         self.preflight_fn = preflight or (lambda: [])
         self.values = metric_values or {}
         self.app_size = lambda e: 5.0
+        self.foreign = []
 
     def metric(self, name):
         def fn(editor, paths):
@@ -48,6 +49,8 @@ class Harness:
             mock.patch.object(run.env, "prepare_data", lambda p: None),
             mock.patch.object(run.env, "write_profiles",
                               lambda p, lsp: h.calls.append(("profiles", lsp))),
+            mock.patch.object(run.editors, "foreign_instances",
+                              lambda e, p: list(h.foreign)),
             mock.patch.object(run, "collect_meta", lambda lsp_modes: dict(META)),
             mock.patch.object(run, "helper_permissions", lambda p: h.perms),
             mock.patch.object(run.metrics, "load_calibration", lambda p: {"c": "1"}),
@@ -289,6 +292,28 @@ class FakeHelper(unittest.TestCase):
                 self.assertEqual(h.main("--rounds", "1", "--only", "scroll_dropped_pct"), 1)
         self.assertNotIn("check: \n", lg.call_args_list[-1][0][0])
         self.assertIn("Screen Recording", lg.call_args_list[-1][0][0])
+
+
+class ForeignZed(unittest.TestCase):
+    def test_aborts_up_front_when_users_zed_runs(self):
+        h = Harness(self)
+        h.foreign = [4242]
+        self.assertEqual(h.main("--rounds", "1"), 1)
+        self.assertEqual(h.calls, [])
+
+    def test_app_size_only_does_not_need_zed_closed(self):
+        h = Harness(self)
+        h.foreign = [4242]
+        self.assertEqual(h.main("--only", "app_size_mb"), 0)
+
+    def test_foreign_raised_mid_run_saves_partial_and_fails(self):
+        h = Harness(self)
+
+        def boom(editor, paths):
+            raise run.editors.ForeignInstance("Zed của bạn đang chạy (pid 1)")
+        h.metric = lambda name: boom
+        self.assertEqual(h.main("--rounds", "1", "--only", "startup_ms"), 1)
+        self.assertTrue(h.out.exists())
 
 
 class Cli(unittest.TestCase):

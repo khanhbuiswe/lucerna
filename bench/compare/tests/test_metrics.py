@@ -379,6 +379,16 @@ class OwnerPidTests(unittest.TestCase):
         pids, _ = self.owner("zed", [([5], [cli]), ([5, 6], [cli, main])])
         self.assertEqual(pids, [5, 6])
 
+    def test_zed_new_foreign_process_is_logged_loudly(self):
+        cli = f"{self.ZED}/cli --user-data-dir /b/profiles/zed"
+        with mock.patch.object(editors, "foreign_instances", return_value=[777]), \
+                mock.patch.object(metrics, "_log") as log:
+            pids, _ = self.owner("zed", [([5], [cli])])
+        self.assertIsNone(pids)
+        msgs = " ".join(c.args[0] for c in log.call_args_list)
+        self.assertIn("777", msgs)
+        self.assertIn("THẬT", msgs)
+
     def test_zed_never_owner_times_out(self):
         cli = f"{self.ZED}/cli --user-data-dir /b/profiles/zed"
         pids, _ = self.owner("zed", [([5], [cli])])
