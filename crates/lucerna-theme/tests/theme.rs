@@ -397,3 +397,29 @@ fn missing_disabled_and_focused_fall_back() {
     assert_eq!(ui.text_disabled, ui.text_muted);
     assert_eq!(ui.border_focused, ui.border);
 }
+
+/// The hover and drag colors are the resting thumb made more opaque, even
+/// where the theme sets `scrollbar.thumb.hover_background`.
+#[test]
+fn scrollbar_thumb_hover_and_active_derive_from_the_thumb() {
+    let dark = ThemeRegistry::builtin().get("One Dark").unwrap();
+    let thumb = dark.ui.scrollbar_thumb;
+    for (c, k) in [(dark.ui.scrollbar_thumb_hover, 1.6), (dark.ui.scrollbar_thumb_active, 2.2)] {
+        assert_eq!((c.r, c.g, c.b), (thumb.r, thumb.g, thumb.b));
+        assert!((c.a - thumb.a * k).abs() < 1e-6, "{c:?}");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(
+        dir.path(),
+        "opaque.json",
+        r##"{"name":"O","themes":[{"name":"Opaque","appearance":"dark",
+            "style":{"scrollbar.thumb.background":"#808080cc"}}]}"##,
+    );
+    let (reg, errors) = ThemeRegistry::build(&[], Some(dir.path()));
+    assert!(errors.is_empty());
+    let ui = &reg.get("Opaque").unwrap().ui;
+    assert_eq!(ui.scrollbar_thumb_active.a, 1.0);
+    assert_eq!(ui.scrollbar_thumb_hover.a, 1.0);
+    let fb = UiColors::fallback(Appearance::Light);
+    assert!(fb.scrollbar_thumb_hover.a > fb.scrollbar_thumb.a);
+}

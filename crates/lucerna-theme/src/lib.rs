@@ -118,6 +118,10 @@ pub struct UiColors {
     pub element_hover: Rgba,
     /// `scrollbar.thumb.background`: the thin overlay scrollbar's thumb.
     pub scrollbar_thumb: Rgba,
+    /// The thumb under the mouse: `scrollbar_thumb`, more opaque.
+    pub scrollbar_thumb_hover: Rgba,
+    /// The thumb being dragged: `scrollbar_thumb`, more opaque still.
+    pub scrollbar_thumb_active: Rgba,
 }
 
 const fn gray(v: u8, a: u8) -> Rgba {
@@ -229,7 +233,29 @@ impl UiColors {
             editor_highlighted_line_background: pick("#2f343eff", "#ebebecff"),
             element_hover: hover,
             scrollbar_thumb,
+            scrollbar_thumb_hover: thumb_hover(scrollbar_thumb),
+            scrollbar_thumb_active: thumb_active(scrollbar_thumb),
         }
+    }
+}
+
+/// The scrollbar thumb under the mouse, from its resting color. Derived
+/// rather than read from `scrollbar.thumb.hover_background`: Zed's themes
+/// set that for a thumb on a bordered track, and on Lucerna's bare overlay
+/// it can be darker than the resting thumb (One Dark's nearly vanishes).
+pub fn thumb_hover(thumb: Rgba) -> Rgba {
+    scale_alpha(thumb, 1.6)
+}
+
+/// The scrollbar thumb while dragged, from its resting color.
+pub fn thumb_active(thumb: Rgba) -> Rgba {
+    scale_alpha(thumb, 2.2)
+}
+
+fn scale_alpha(c: Rgba, k: f32) -> Rgba {
+    Rgba {
+        a: (c.a * k).min(1.0),
+        ..c
     }
 }
 
