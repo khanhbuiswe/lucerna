@@ -42,6 +42,7 @@ pub mod recent;
 mod recent_picker;
 mod references_view;
 mod save;
+mod scrollbar;
 mod search_view;
 mod startup;
 pub mod status_message;

@@ -53,6 +53,9 @@ pub(crate) fn render(
                 .w(SASH_WIDTH)
                 .h_full()
                 .cursor_col_resize()
+                // Over the scrollbar strip of the content on this edge: the
+                // sash wins on its own few px.
+                .occlude()
                 .on_drag(SidebarSash, |_, _, _, cx: &mut App| cx.new(|_| SashGhost)),
         )
 }

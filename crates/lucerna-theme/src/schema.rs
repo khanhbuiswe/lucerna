@@ -54,6 +54,7 @@ impl ThemeDef {
         };
         let selection = player("selection");
         let editor_foreground = color("editor.foreground").unwrap_or(fb.editor_foreground);
+        let scrollbar_thumb = color("scrollbar.thumb.background").unwrap_or(fb.scrollbar_thumb);
         let ui = UiColors {
             background: color("background").unwrap_or(fb.background),
             border: color("border").unwrap_or(fb.border),
@@ -114,7 +115,9 @@ impl ThemeDef {
             editor_highlighted_line_background: color("editor.highlighted_line.background")
                 .unwrap_or(fb.editor_highlighted_line_background),
             element_hover: color("element.hover").unwrap_or(fb.element_hover),
-            scrollbar_thumb: color("scrollbar.thumb.background").unwrap_or(fb.scrollbar_thumb),
+            scrollbar_thumb,
+            scrollbar_thumb_hover: crate::thumb_hover(scrollbar_thumb),
+            scrollbar_thumb_active: crate::thumb_active(scrollbar_thumb),
         };
 
         let mut syntax = HashMap::new();

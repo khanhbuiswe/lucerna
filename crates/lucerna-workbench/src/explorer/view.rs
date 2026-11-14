@@ -7,11 +7,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    AnchoredPositionMode, AnyElement, App, Bounds, ClickEvent, Context, Div, Entity, FocusHandle,
-    Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, Point, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
-    UniformListDecoration, UniformListScrollHandle, WeakEntity, Window, anchored, deferred, div,
-    point, prelude::*, px, uniform_list,
+    AnchoredPositionMode, App, Bounds, ClickEvent, Context, Div, Entity, FocusHandle, Focusable,
+    FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Pixels,
+    Point, Render, ScrollStrategy, Stateful, Styled, Subscription, Task, UniformListScrollHandle,
+    WeakEntity, Window, anchored, deferred, div, point, prelude::*, px, uniform_list,
 };
 use lucerna_project::fs_ops::{self, NameError};
 use lucerna_project::{ChangeKind, EntryKind, WorktreeEvent, WorktreeSnapshot};
@@ -22,8 +21,8 @@ use super::model::{EditKind, EditState, ExplorerModel, Row, SelectedKind, Select
 use crate::layout::color;
 use crate::text_input::TextInput;
 use crate::ui::{
-    ContextMenu, DeployedMenu, GRID, SCROLLBAR_WIDTH, TREE_ROW_HEIGHT, UI_FONT_SIZE,
-    UI_FONT_SIZE_SMALL, deploy_context_menu, file_icon_sized, render_deployed, thumb_geometry,
+    ContextMenu, DeployedMenu, GRID, ScrollHandleSource, ScrollbarState, TREE_ROW_HEIGHT,
+    UI_FONT_SIZE, UI_FONT_SIZE_SMALL, deploy_context_menu, file_icon_sized, render_deployed,
 };
 use crate::{AppState, Documents, EditorGroupsView, OpenMode, Workbench, status_message};
 
@@ -91,6 +90,7 @@ pub struct ExplorerView {
     /// taken.
     documents: WeakEntity<Documents>,
     scroll: UniformListScrollHandle,
+    scrollbar: ScrollbarState,
     /// The active tab of the active group, root-relative; its row is
     /// highlighted.
     active: Option<Arc<Path>>,
@@ -133,6 +133,7 @@ impl ExplorerView {
             workbench,
             documents: WeakEntity::new_invalid(),
             scroll: UniformListScrollHandle::new(),
+            scrollbar: ScrollbarState::default(),
             active: None,
             expiry: None,
             context_menu: None,
@@ -155,6 +156,17 @@ impl ExplorerView {
     /// The root row's label: the project folder's name, as on disk.
     pub fn root_label(&self) -> &str {
         &self.root_label
+    }
+
+    /// The scrollbar thumb as last painted, in window coordinates; `None`
+    /// while the rows fit.
+    pub fn scrollbar_thumb(&self) -> Option<Bounds<Pixels>> {
+        self.scrollbar.thumb()
+    }
+
+    /// Whether the mouse is over the scrollbar strip.
+    pub fn scrollbar_hovered(&self) -> bool {
+        self.scrollbar.is_hovered()
     }
 
     pub fn selection(&self) -> &Selection {
@@ -1336,51 +1348,6 @@ fn icon_slot(source: &IconSource, size: f32, tint: lucerna_theme::Rgba) -> Div {
         .child(file_icon_sized(source, px(size), color(tint).into()))
 }
 
-/// A thin overlay scrollbar for a uniform list: a thumb only, drawn at the
-/// right edge while the rows overflow the list.
-struct ScrollbarThumb {
-    color: gpui::Rgba,
-    selector: &'static str,
-}
-
-impl UniformListDecoration for ScrollbarThumb {
-    fn compute(
-        &self,
-        _visible_range: Range<usize>,
-        bounds: Bounds<Pixels>,
-        scroll_offset: Point<Pixels>,
-        item_height: Pixels,
-        item_count: usize,
-        _window: &mut Window,
-        _cx: &mut App,
-    ) -> AnyElement {
-        let viewport = f32::from(bounds.size.height);
-        let content = f32::from(item_height) * item_count as f32;
-        let scroll_top = -f32::from(scroll_offset.y);
-        let Some((top, height)) = thumb_geometry(viewport, content, scroll_top) else {
-            return gpui::Empty.into_any_element();
-        };
-        let selector = self.selector;
-        // Decorations are placed in content coordinates, which scroll; the
-        // visible top of the list is at `scroll_top`.
-        div()
-            .w(bounds.size.width)
-            .h(bounds.size.height)
-            .child(
-                div()
-                    .debug_selector(move || selector.into())
-                    .absolute()
-                    .top(px(scroll_top + top))
-                    .right_0()
-                    .w(px(SCROLLBAR_WIDTH))
-                    .h(px(height))
-                    .rounded(px(SCROLLBAR_WIDTH / 2.))
-                    .bg(self.color),
-            )
-            .into_any_element()
-    }
-}
-
 impl Render for ExplorerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(input) = self.refocus_sidebar.take()
@@ -1395,7 +1362,14 @@ impl Render for ExplorerView {
         {
             cx.defer_in(window, |this, window, cx| this.name_blurred(window, cx));
         }
-        let thumb = color(cx.global::<AppState>().theme.ui.scrollbar_thumb);
+        let scrollbar = crate::ui::scrollbar(
+            self.scrollbar.clone(),
+            ScrollHandleSource {
+                handle: self.scroll.0.borrow().base_handle.clone(),
+                view: cx.entity_id(),
+            },
+            cx.entity_id(),
+        );
         div()
             .debug_selector(|| "explorer".into())
             .size_full()
@@ -1413,6 +1387,7 @@ impl Render for ExplorerView {
                             this.empty_space_right_clicked(ev, window, cx)
                         }),
                     )
+                    .relative()
                     .child(
                         uniform_list(
                             "explorer-rows",
@@ -1420,12 +1395,9 @@ impl Render for ExplorerView {
                             cx.processor(|this, range, _, cx| this.render_rows(range, cx)),
                         )
                         .size_full()
-                        .with_decoration(ScrollbarThumb {
-                            color: thumb,
-                            selector: "explorer-scrollbar-thumb",
-                        })
                         .track_scroll(&self.scroll),
-                    ),
+                    )
+                    .child(scrollbar),
             )
             .children(self.context_menu.as_ref().map(render_deployed))
     }
