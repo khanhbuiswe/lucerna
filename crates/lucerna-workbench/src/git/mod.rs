@@ -126,8 +126,20 @@ struct Tracked {
 
 enum Setup {
     NoGit,
-    Found(Result<Option<Repo>, GitError>),
+    NoRepo,
+    Failed(GitError),
+    Found(Box<Located>),
 }
+
+/// A found repository, with its git-dir watcher when watching is on.
+struct Located {
+    repo: Repo,
+    watcher: Option<GitDirWatcher>,
+}
+
+/// The git-dir watcher's signal, sent from its thread.
+type WatchSender = futures::channel::mpsc::UnboundedSender<()>;
+type WatchReceiver = futures::channel::mpsc::UnboundedReceiver<()>;
 
 pub struct GitStore {
     root: PathBuf,
@@ -357,17 +369,31 @@ impl GitStore {
         let root = self.root.clone();
         let setting = self.settings.path.clone();
         let git = self.git_override.clone();
+        // The watcher is not started on GPUI's test scheduler, which rejects
+        // wake-ups from other threads; tests call `rescan` themselves.
+        let (watch_tx, watch_rx) = if cx.background_executor().is_test() {
+            (None, None)
+        } else {
+            let (tx, rx) = futures::channel::mpsc::unbounded();
+            (Some(tx), Some(rx))
+        };
         self.setup = Some(cx.spawn(async move |this, cx| {
             let found = cx
                 .background_executor()
-                .spawn(async move { discover(git, setting, &root) })
+                .spawn(async move { discover(git, setting, &root, watch_tx) })
                 .await;
-            this.update(cx, |s, cx| s.finish_setup(epoch, found, cx))
+            this.update(cx, |s, cx| s.finish_setup(epoch, found, watch_rx, cx))
                 .ok();
         }));
     }
 
-    fn finish_setup(&mut self, epoch: u64, found: Setup, cx: &mut Context<Self>) {
+    fn finish_setup(
+        &mut self,
+        epoch: u64,
+        found: Setup,
+        watch_rx: Option<WatchReceiver>,
+        cx: &mut Context<Self>,
+    ) {
         if epoch != self.epoch {
             return;
         }
@@ -379,13 +405,16 @@ impl GitStore {
                     crate::status_message::show(NOT_FOUND_MESSAGE, cx);
                 }
             }
-            Setup::Found(Ok(None)) => self.set_state(GitState::NoRepo, cx),
-            Setup::Found(Err(err)) => {
+            Setup::NoRepo => self.set_state(GitState::NoRepo, cx),
+            Setup::Failed(err) => {
                 self.report_error(&err, cx);
                 self.set_state(GitState::NoRepo, cx);
             }
-            Setup::Found(Ok(Some(repo))) => {
-                self.start_watcher(&repo, cx);
+            Setup::Found(found) => {
+                let Located { repo, watcher } = *found;
+                if let (Some(watcher), Some(rx)) = (watcher, watch_rx) {
+                    self.listen_to_watcher(watcher, rx, cx);
+                }
                 self.repo = Some(repo);
                 self.set_state(GitState::Ready, cx);
                 self.enqueue(Job::Rescan, cx);
@@ -393,30 +422,21 @@ impl GitStore {
         }
     }
 
-    /// Watches the git dirs (rescan on `HEAD`, index or ref changes). Not
-    /// started on GPUI's test scheduler, which rejects wake-ups from other
-    /// threads; tests call `rescan` themselves.
-    fn start_watcher(&mut self, repo: &Repo, cx: &mut Context<Self>) {
-        if cx.background_executor().is_test() {
-            return;
-        }
-        let (tx, mut rx) = futures::channel::mpsc::unbounded();
-        let dirs = [repo.git_dir.clone(), repo.common_dir.clone()];
-        match GitDirWatcher::start(&dirs, move || {
-            let _ = tx.unbounded_send(());
-        }) {
-            Ok(watcher) => {
-                self.watcher = Some(watcher);
-                self.watch_task = Some(cx.spawn(async move |this, cx| {
-                    while rx.next().await.is_some() {
-                        if this.update(cx, |s, cx| s.git_dir_changed(cx)).is_err() {
-                            break;
-                        }
-                    }
-                }));
+    /// Rescans on the watcher's signals (`HEAD`, index or ref changes).
+    fn listen_to_watcher(
+        &mut self,
+        watcher: GitDirWatcher,
+        mut rx: WatchReceiver,
+        cx: &mut Context<Self>,
+    ) {
+        self.watcher = Some(watcher);
+        self.watch_task = Some(cx.spawn(async move |this, cx| {
+            while rx.next().await.is_some() {
+                if this.update(cx, |s, cx| s.git_dir_changed(cx)).is_err() {
+                    break;
+                }
             }
-            Err(err) => tracing::warn!(%err, "could not watch the git directory"),
-        }
+        }));
     }
 
     fn git_dir_changed(&mut self, cx: &mut Context<Self>) {
@@ -649,12 +669,18 @@ fn login_path() -> Option<&'static str> {
         .as_deref()
 }
 
-/// Finds `git` and the repository holding `root`. Blocking. Without a
-/// `.git` at or above `root` there is no repository, and `git` is not
-/// looked for (that may run a login shell).
-fn discover(git: Option<GitBinary>, setting: Option<PathBuf>, root: &Path) -> Setup {
+/// Finds `git` and the repository holding `root`, and with `watch` starts
+/// watching its git dirs. Blocking. Without a `.git` at or above `root`
+/// there is no repository, and `git` is not looked for (that may run a
+/// login shell).
+fn discover(
+    git: Option<GitBinary>,
+    setting: Option<PathBuf>,
+    root: &Path,
+    watch: Option<WatchSender>,
+) -> Setup {
     if !GitStore::has_repo_hint(root) {
-        return Setup::Found(Ok(None));
+        return Setup::NoRepo;
     }
     let git = match git {
         Some(git) => git,
@@ -671,7 +697,18 @@ fn discover(git: Option<GitBinary>, setting: Option<PathBuf>, root: &Path) -> Se
     };
     match Repo::discover(git, root) {
         Err(GitError::NotFound) => Setup::NoGit,
-        found => Setup::Found(found),
+        Ok(Some(repo)) => {
+            let watcher = watch.and_then(|tx| {
+                GitDirWatcher::start(&repo.git_dir, &repo.common_dir, move || {
+                    let _ = tx.unbounded_send(());
+                })
+                .inspect_err(|err| tracing::warn!(%err, "could not watch the git directory"))
+                .ok()
+            });
+            Setup::Found(Box::new(Located { repo, watcher }))
+        }
+        Ok(None) => Setup::NoRepo,
+        Err(err) => Setup::Failed(err),
     }
 }
 

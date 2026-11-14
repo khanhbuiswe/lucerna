@@ -40,7 +40,7 @@ fn commit_signals_once() {
 
     let count = Arc::new(AtomicUsize::new(0));
     let c = count.clone();
-    let _w = GitDirWatcher::start(&[dir.join(".git")], move || {
+    let _w = GitDirWatcher::start(&dir.join(".git"), &dir.join(".git"), move || {
         c.fetch_add(1, Ordering::SeqCst);
     })
     .unwrap();
@@ -59,7 +59,7 @@ fn objects_only_changes_are_ignored() {
     std::thread::sleep(Duration::from_millis(500));
     let count = Arc::new(AtomicUsize::new(0));
     let c = count.clone();
-    let _w = GitDirWatcher::start(&[dir.join(".git")], move || {
+    let _w = GitDirWatcher::start(&dir.join(".git"), &dir.join(".git"), move || {
         c.fetch_add(1, Ordering::SeqCst);
     })
     .unwrap();
