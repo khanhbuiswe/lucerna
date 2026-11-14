@@ -806,7 +806,8 @@ impl CodeView {
     /// row (`forward`) or the previous one before it, wrapping around the
     /// file, and scrolls it into view. `false` when there are no changes.
     pub fn next_change(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
-        let Some(row) = next_change_row(&self.diff_hunks, self.cursor().row, forward) else {
+        let last = self.snapshot.line_count().saturating_sub(1);
+        let Some(row) = next_change_row(&self.diff_hunks, self.cursor().row, last, forward) else {
             return false;
         };
         self.set_cursor(Point { row, column: 0 }, cx);
@@ -1969,9 +1970,11 @@ impl Render for LargeFileStatus {
 }
 
 /// The start row of the first hunk after `row` (`forward`) or the last one
-/// before it, wrapping around the file; `None` without hunks.
-fn next_change_row(hunks: &[Hunk], row: u32, forward: bool) -> Option<u32> {
-    let mut starts = hunks.iter().map(|h| h.rows.start);
+/// before it, wrapping around the file; `None` without hunks. Starts are
+/// clamped to `last_row`: a deletion at the end of the file starts one past
+/// it, where the cursor cannot go.
+fn next_change_row(hunks: &[Hunk], row: u32, last_row: u32, forward: bool) -> Option<u32> {
+    let mut starts = hunks.iter().map(|h| h.rows.start.min(last_row));
     if forward {
         starts.clone().find(|&s| s > row).or_else(|| starts.next())
     } else {
@@ -2044,14 +2047,27 @@ mod tests {
             hunk(HunkKind::Deleted, 6..6),
             hunk(HunkKind::Modified, 10..11),
         ];
-        assert_eq!(next_change_row(&hunks, 0, true), Some(2));
-        assert_eq!(next_change_row(&hunks, 2, true), Some(6));
-        assert_eq!(next_change_row(&hunks, 3, true), Some(6));
-        assert_eq!(next_change_row(&hunks, 11, true), Some(2));
-        assert_eq!(next_change_row(&hunks, 11, false), Some(10));
-        assert_eq!(next_change_row(&hunks, 10, false), Some(6));
-        assert_eq!(next_change_row(&hunks, 2, false), Some(10));
-        assert_eq!(next_change_row(&[], 2, false), None);
-        assert_eq!(next_change_row(&[], 2, true), None);
+        let next = |row, forward| next_change_row(&hunks, row, 20, forward);
+        assert_eq!(next(0, true), Some(2));
+        assert_eq!(next(2, true), Some(6));
+        assert_eq!(next(3, true), Some(6));
+        assert_eq!(next(11, true), Some(2));
+        assert_eq!(next(11, false), Some(10));
+        assert_eq!(next(10, false), Some(6));
+        assert_eq!(next(2, false), Some(10));
+        assert_eq!(next_change_row(&[], 2, 20, false), None);
+        assert_eq!(next_change_row(&[], 2, 20, true), None);
+    }
+
+    /// A deletion at the end of a 5-row file starts at row 5, past the
+    /// last row: it counts as row 4, so forward navigation from there
+    /// wraps instead of landing on it again.
+    #[test]
+    fn next_change_row_clamps_a_deletion_at_eof() {
+        let hunks = [hunk(HunkKind::Added, 1..2), hunk(HunkKind::Deleted, 5..5)];
+        assert_eq!(next_change_row(&hunks, 1, 4, true), Some(4));
+        assert_eq!(next_change_row(&hunks, 4, 4, true), Some(1));
+        assert_eq!(next_change_row(&hunks, 4, 4, false), Some(1));
+        assert_eq!(next_change_row(&hunks, 1, 4, false), Some(4));
     }
 }
