@@ -31,6 +31,7 @@ COVERAGE = 0.3              # marker.txt: full blocks, so the centre fills up
 TEXT_COVERAGE = 0.02        # big.rs: plain code covers far less of the centre
 SETTLE_S = 1.0              # let a picker or a reload settle
 CALIBRATE_SETTLE_S = 3.0    # empty file: let the theme paint before sampling
+CALIBRATE_MIN_FRAC = 0.9    # an empty editor's centre is almost all background
 OPEN_SETTLE_S = 5.0         # medium repo: window up before Quick Open
 SCAN_WAIT_S = 30            # large repo: let the file scan finish
 IDLE_S = 60
@@ -113,9 +114,16 @@ class _Watch:
             _log("helper watch hung")
             return None
         finally:
-            out = self._p.stdout.read()
+            out = "" if self._p.stdout.closed else self._p.stdout.read()
             self._p.stdout.close()
         return _result(self._p.returncode, out, "".join(self._errors), self._args)
+
+    def close(self) -> None:
+        """Kill the watch if it is still running (a metric bailed out early)."""
+        if self._p.poll() is None:
+            self._p.kill()
+            self._p.wait()
+        self._p.stdout.close()
 
 
 def _start_watch(paths: BenchPaths, args: list[str], timeout: float = TIMEOUT_S):
@@ -209,7 +217,15 @@ def calibrate(editor: str, paths: BenchPaths) -> str | None:
         time.sleep(CALIBRATE_SETTLE_S)
         out = _helper(paths, ["sample", "--pid", _csv(editors.bench_pids(editor, paths)),
                               "--timeout", str(_left(deadline))])
-        return out["center_dominant"] if out else None
+        if not out:
+            return None
+        frac = out.get("center_dominant_frac", 0)
+        if frac < CALIBRATE_MIN_FRAC:
+            # Something other than the empty editor (dialog, welcome page,
+            # half-painted window) fills the centre: not a background colour.
+            _log(f"{editor}: calibration centre only {frac:.2f} one colour; not cached")
+            return None
+        return out["center_dominant"]
     finally:
         editors.quit(editor, paths)
 
@@ -269,6 +285,7 @@ def file_change_ms(editor: str, paths: BenchPaths) -> float | None:
     reload = paths.data / "reload.txt"
     shutil.copyfile(paths.marker_file, reload)
     launched = editors.launch(editor, paths, reload)
+    watch = None
     try:
         deadline = time.monotonic() + TIMEOUT_S
         if _owner_pids(editor, paths, deadline) is None:
@@ -278,7 +295,7 @@ def file_change_ms(editor: str, paths: BenchPaths) -> float | None:
         time.sleep(SETTLE_S)
         watch = _start_watch(paths, ["watch", "--pid", _csv(editors.bench_pids(editor, paths)),
                                      "--since", str(editors.now_ns()), "--until", "change",
-                                     "--timeout", str(_left(deadline))])
+                                     "--timeout", str(_left(deadline))], _left(deadline))
         if watch is None:
             return None
         t_w = _overwrite_empty(reload)
@@ -290,6 +307,8 @@ def file_change_ms(editor: str, paths: BenchPaths) -> float | None:
             return None
         return (out["t_ns"] - t_w) / 1e6
     finally:
+        if watch:
+            watch.close()
         editors.quit(editor, paths)
         shutil.copyfile(paths.marker_file, reload)
 
@@ -297,24 +316,26 @@ def file_change_ms(editor: str, paths: BenchPaths) -> float | None:
 def quick_open_ms(editor: str, paths: BenchPaths) -> float | None:
     """Large repo, ⌘P, type `mod0042`: last key → first changed frame."""
     editors.launch(editor, paths, paths.large_repo)
+    watch = None
     try:
         if _owner_pids(editor, paths, time.monotonic() + TIMEOUT_S) is None:
             return None
         time.sleep(SCAN_WAIT_S)
         deadline = time.monotonic() + TIMEOUT_S
         pids = _csv(editors.bench_pids(editor, paths))
-        if _helper(paths, ["key", "--pid", pids, "--combo", "cmd+p"]) is None:
-            return None
-        if _helper(paths, ["type", "--pid", pids, "--text", QUICK_OPEN_QUERY[:-1]]) is None:
+        if not _quick_open_type(paths, pids, QUICK_OPEN_QUERY[:-1]):
             return None
         time.sleep(SETTLE_S)
         watch = _start_watch(paths, ["watch", "--pid", pids, "--since", str(editors.now_ns()),
-                                     "--until", "change", "--timeout", str(_left(deadline))])
+                                     "--until", "change", "--timeout", str(_left(deadline))],
+                             _left(deadline))
         if watch is None:
             return None
         typed = _helper(paths, ["type", "--pid", pids, "--text", QUICK_OPEN_QUERY[-1]])
+        if typed is None:
+            return None  # `finally` kills the watch instead of waiting it out
         out = watch.result(_left(deadline))
-        if typed is None or out is None:
+        if out is None:
             return None
         t_k = typed["t_ns"][-1]
         if out["t_ns"] < t_k:
@@ -322,6 +343,8 @@ def quick_open_ms(editor: str, paths: BenchPaths) -> float | None:
             return None
         return (out["t_ns"] - t_k) / 1e6
     finally:
+        if watch:
+            watch.close()
         editors.quit(editor, paths)
 
 
@@ -359,12 +382,18 @@ def _cpu_pct(pids) -> float | None:
     return sum(samples) / len(samples) if samples else None
 
 
-def _open_with_quick_open(editor, paths, relative: str) -> bool:
-    pids = _csv(editors.bench_pids(editor, paths))
+def _quick_open_type(paths, pids: str, text: str) -> bool:
+    """⌘P, let the picker appear (so no leading key is lost), type `text`.
+    Shared by quick_open_ms and idle_session so both open it identically."""
     if _helper(paths, ["key", "--pid", pids, "--combo", "cmd+p"]) is None:
         return False
     time.sleep(SETTLE_S / 2)
-    if _helper(paths, ["type", "--pid", pids, "--text", relative]) is None:
+    return _helper(paths, ["type", "--pid", pids, "--text", text]) is not None
+
+
+def _open_with_quick_open(editor, paths, relative: str) -> bool:
+    pids = _csv(editors.bench_pids(editor, paths))
+    if not _quick_open_type(paths, pids, relative):
         return False
     time.sleep(SETTLE_S)
     if _helper(paths, ["type", "--pid", pids, "--text", "\n"]) is None:
@@ -396,10 +425,14 @@ def idle_session(editor: str, paths: BenchPaths) -> tuple[float | None, float | 
 
 
 def idle_ram_mb(editor: str, paths: BenchPaths) -> float | None:
+    """Runs a full idle_session (launch, 10 files, 60 s idle + 60 s CPU
+    sampling) for RAM alone; run.py should call idle_session once instead."""
     return idle_session(editor, paths)[0]
 
 
 def idle_cpu_pct(editor: str, paths: BenchPaths) -> float | None:
+    """Runs a full idle_session for CPU alone; run.py should call
+    idle_session once to get RAM and CPU from the same launch."""
     return idle_session(editor, paths)[1]
 
 
@@ -418,7 +451,7 @@ def scroll_dropped_pct(editor: str, paths: BenchPaths) -> float | None:
         time.sleep(SETTLE_S)
         out = _helper(paths, ["scroll", "--pid", _csv(editors.bench_pids(editor, paths)),
                               "--lines", str(SCROLL_LINES), "--rate", str(SCROLL_RATE),
-                              "--timeout", str(TIMEOUT_S)])
+                              "--timeout", str(_left(deadline))])
         if not out or not out.get("frames"):
             return None
         return out["dropped"] / out["frames"] * 100

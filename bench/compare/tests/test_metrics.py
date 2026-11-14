@@ -23,8 +23,14 @@ class FakeWatch:
     def __init__(self, result, on_result=None):
         self._result = result
         self._on_result = on_result
+        self.closed = False
+        self.waited = False
+
+    def close(self):
+        self.closed = True
 
     def result(self, timeout):
+        self.waited = True
         if self._on_result:
             self._on_result()
         return self._result
@@ -131,6 +137,7 @@ class FileChangeTests(Base):
         self.assertGreater(seen["size_at_t_w"], 0)
         self.assertEqual(seen["size_at_result"], 0)
         self.assertIn("change", start.call_args.args[1])
+        self.assertTrue(watch.closed)
         # The shared marker is never destroyed; the per-run copy is restored.
         self.assertGreater(self.paths.marker_file.stat().st_size, 0)
         self.assertEqual(reload.read_bytes(), self.paths.marker_file.read_bytes())
@@ -157,8 +164,35 @@ class QuickOpenTests(Base):
                 mock.patch.object(metrics, "_start_watch", side_effect=start):
             self.assertEqual(metrics.quick_open_ms("zed", self.paths), 12.0)
         self.assertEqual(calls, ["key:", "type:mod004", "watch", "type:2"])
+        metrics.time.sleep.assert_any_call(metrics.SETTLE_S / 2)
         self.launch.assert_called_once_with("zed", self.paths, self.paths.large_repo)
         metrics.time.sleep.assert_any_call(metrics.SCAN_WAIT_S)
+
+    def test_settle_between_cmd_p_and_typing(self):
+        events = []
+        metrics.time.sleep.side_effect = lambda s: events.append(f"sleep {s}")
+
+        def helper(paths, args, timeout=metrics.TIMEOUT_S):
+            events.append(args[0])
+            return {"t_ns": [1]} if args[0] == "type" else {"t_ns": 1}
+
+        with mock.patch.object(metrics, "_helper", side_effect=helper), \
+                mock.patch.object(metrics, "_start_watch", return_value=FakeWatch({"t_ns": 2})):
+            metrics.quick_open_ms("zed", self.paths)
+        i = events.index("key")
+        self.assertEqual(events[i:i + 3], ["key", f"sleep {metrics.SETTLE_S / 2}", "type"])
+
+    def test_failed_last_key_closes_watch_without_waiting(self):
+        watch = FakeWatch({"t_ns": 99})
+
+        def helper(paths, args, timeout=metrics.TIMEOUT_S):
+            return None if args[0] == "type" and args[-1] == "2" else {"t_ns": [1]}
+
+        with mock.patch.object(metrics, "_helper", side_effect=helper), \
+                mock.patch.object(metrics, "_start_watch", return_value=watch):
+            self.assertIsNone(metrics.quick_open_ms("zed", self.paths))
+        self.assertTrue(watch.closed)
+        self.assertFalse(watch.waited)
 
     def test_change_before_last_key_is_none(self):
         with mock.patch.object(metrics, "_helper", return_value={"t_ns": [50]}), \
@@ -214,6 +248,7 @@ class ScrollTests(Base):
         self.assertEqual(args[:1], ["scroll"])
         self.assertEqual(args[args.index("--lines") + 1], "3000")
         self.assertEqual(args[args.index("--rate") + 1], "120")
+        self.assertLessEqual(int(args[args.index("--timeout") + 1]), metrics.TIMEOUT_S)
         self.launch.assert_called_once_with("zed", self.paths, self.paths.big_file)
 
     def test_background_fetched_before_launch(self):
@@ -256,9 +291,20 @@ class CalibrationTests(Base):
         saved = json.loads((self.paths.root / "calibration.json").read_text())
         self.assertEqual(saved, {"zed 1.0": "282C34"})
 
+    def test_calibration_rejects_mixed_centre(self):
+        out = {"center_dominant": "FFFFFF", "center_dominant_frac": 0.6}
+        with mock.patch.object(metrics, "_helper", return_value=out), \
+                mock.patch.object(editors, "version", return_value="1.0"):
+            self.assertIsNone(metrics.calibrate("zed", self.paths))
+            self.assertIsNone(metrics.background("zed", self.paths))
+            self.assertIsNone(metrics.startup_ms("zed", self.paths))
+        self.assertFalse((self.paths.root / "calibration.json").exists())
+        self.assertEqual(self.quit.call_count, 3)  # each calibration quits; no measured launch
+
     def test_calibrate_samples_empty_file(self):
         with mock.patch.object(metrics, "_helper",
-                               return_value={"center_dominant": "FFFFFF"}) as helper:
+                               return_value={"center_dominant": "FFFFFF",
+                                             "center_dominant_frac": 0.97}) as helper:
             self.assertEqual(metrics.calibrate("lucerna", self.paths), "FFFFFF")
         empty = self.paths.data / "empty.txt"
         self.launch.assert_called_once_with("lucerna", self.paths, empty)
@@ -295,6 +341,62 @@ class RealProcessTests(unittest.TestCase):
     def test_helper_bad_json_is_none(self):
         paths = self.script("echo not-json\n")
         self.assertIsNone(metrics._helper(paths, ["now"], timeout=5))
+
+
+class OwnerPidTests(unittest.TestCase):
+    VSCODE = "/Applications/Visual Studio Code.app/Contents/MacOS/Code"
+    ZED = "/Applications/Zed.app/Contents/MacOS"
+
+    def owner(self, editor, rounds):
+        """rounds: successive (pids, ps command lines) the poll sees."""
+        seq = iter(rounds)
+        state = {}
+
+        def bench_pids(e, p):
+            state["cur"] = next(seq, rounds[-1])
+            return state["cur"][0]
+
+        def run(cmd, **kw):
+            return done(0, "".join(c + "\n" for c in state["cur"][1]))
+
+        with mock.patch.object(editors, "bench_pids", side_effect=bench_pids), \
+                mock.patch.object(metrics.subprocess, "run", side_effect=run) as sub, \
+                mock.patch.object(metrics.time, "sleep"), \
+                mock.patch.object(metrics.time, "monotonic", side_effect=range(10 ** 6)):
+            return metrics._owner_pids(editor, env.BenchPaths(Path("/b")), 50), sub
+
+    def test_vscode_waits_past_cli_and_helpers(self):
+        cli = f"{self.VSCODE} /x/Resources/app/out/cli.js --user-data-dir /b/profiles/vscode"
+        helper = f"{self.VSCODE} Helper --type=renderer --user-data-dir /b/profiles/vscode"
+        main = f"{self.VSCODE} --user-data-dir /b/profiles/vscode /b/data/marker.txt"
+        pids, _ = self.owner("vscode", [([], []), ([1], [cli]), ([1, 2], [cli, helper]),
+                                        ([1, 2, 3], [cli, helper, main])])
+        self.assertEqual(pids, [1, 2, 3])
+
+    def test_zed_cli_is_not_the_owner(self):
+        cli = f"{self.ZED}/cli --user-data-dir /b/profiles/zed --new /b/data/marker.txt"
+        main = f"{self.ZED}/zed --user-data-dir /b/profiles/zed"
+        pids, _ = self.owner("zed", [([5], [cli]), ([5, 6], [cli, main])])
+        self.assertEqual(pids, [5, 6])
+
+    def test_zed_never_owner_times_out(self):
+        cli = f"{self.ZED}/cli --user-data-dir /b/profiles/zed"
+        pids, _ = self.owner("zed", [([5], [cli])])
+        self.assertIsNone(pids)
+
+    def test_lucerna_first_pid(self):
+        pids, sub = self.owner("lucerna", [([], []), ([9], ["/x/luc /b/data/marker.txt"])])
+        self.assertEqual(pids, [9])
+        sub.assert_not_called()
+
+
+class WatchCloseTests(unittest.TestCase):
+    def test_close_kills_running_watch(self):
+        p = subprocess.Popen(["/bin/sleep", "30"], stdout=subprocess.PIPE, text=True)
+        w = metrics._Watch(p, ["watch"], [])
+        w.close()
+        self.assertIsNotNone(p.poll())
+        w.close()  # idempotent
 
 
 if __name__ == "__main__":

@@ -9,7 +9,9 @@
 // even on a machine without the grants.
 //
 // Clock: every timestamp is nanoseconds of CLOCK_UPTIME_RAW, the clock behind
-// mach_absolute_time() and Python's time.monotonic_ns() on macOS. Capture
+// mach_absolute_time(); Python reads it with
+// time.clock_gettime_ns(time.CLOCK_UPTIME_RAW) (`editors.now_ns()`), not
+// time.monotonic_ns(), which Python 3.9 counts from process start. Capture
 // frames carry SCStreamFrameInfo.displayTime, which is in mach absolute time
 // units; it is converted to ns with mach_timebase_info, so frame times and
 // Python's t0 share one time base.
