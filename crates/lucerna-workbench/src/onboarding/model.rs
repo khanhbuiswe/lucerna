@@ -1,5 +1,5 @@
-//! The settings model of the onboarding page: theme mode and editor font,
-//! mapped to and from settings keys. No gpui.
+//! The settings model of the onboarding page: theme mode and editor font
+//! size, mapped to and from settings keys. No gpui.
 
 use lucerna_settings::SettingsStore;
 use lucerna_theme::{Appearance, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, ThemeRegistry};
@@ -12,9 +12,7 @@ use crate::config_files::{
 pub const FONT_SIZE_MIN: u32 = 6;
 pub const FONT_SIZE_MAX: u32 = 100;
 const FONT_SIZE_DEFAULT: u32 = 14;
-const FONT_FAMILY_DEFAULT: &str = "Lilex";
 pub(crate) const FONT_SIZE_KEY: &str = "editor.fontSize";
-pub(crate) const FONT_FAMILY_KEY: &str = "editor.fontFamily";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ThemeMode {
@@ -97,13 +95,6 @@ pub fn stepped_font_size(current: u32, delta: i32) -> Option<u32> {
     let next = (current as i64 + delta as i64).clamp(FONT_SIZE_MIN as i64, FONT_SIZE_MAX as i64);
     let next = next as u32;
     (next != current).then_some(next)
-}
-
-pub fn current_font_family(settings: &SettingsStore) -> String {
-    settings
-        .get::<String>(FONT_FAMILY_KEY, None)
-        .filter(|family| !family.trim().is_empty())
-        .unwrap_or_else(|| FONT_FAMILY_DEFAULT.to_string())
 }
 
 #[cfg(test)]
@@ -190,18 +181,5 @@ mod tests {
             100
         );
         assert_eq!(current_font_size(&store("{}")), 14);
-    }
-
-    #[test]
-    fn family_fallback_is_lilex() {
-        assert_eq!(current_font_family(&store("{}")), "Lilex");
-        assert_eq!(
-            current_font_family(&store(r#"{"editor.fontFamily": ""}"#)),
-            "Lilex"
-        );
-        assert_eq!(
-            current_font_family(&store(r#"{"editor.fontFamily": "Menlo"}"#)),
-            "Menlo"
-        );
     }
 }

@@ -1,4 +1,4 @@
-//! The Get Started page: theme, editor font and Vim mode, each control
+//! The Get Started page: theme, editor font size and Vim mode, each control
 //! writing the user `settings.json` at once. One view for two hosts: the
 //! root of a window opened without a folder, with a title bar, or a tab of
 //! the workbench. Its host acts on [`OnboardingEvent`].
@@ -10,9 +10,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle,
-    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, StyledText,
-    Subscription, Task, WeakEntity, Window, div, prelude::*, px, svg,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    KeyDownEvent, ParentElement, Render, Styled, Subscription, WeakEntity, Window, div, prelude::*,
+    px, svg,
 };
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
 use serde_json::json;
@@ -21,17 +21,14 @@ use crate::config_files::{ConfigPaths, ConfigState, USER_SETTINGS_TEMPLATE, crea
 use crate::layout::{color, title_bar};
 use crate::settings_edit::save_user_settings;
 use crate::ui::{
-    GRID, UI_FONT_FAMILY, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, UI_FONT_SIZE_STATUS, dropdown_button,
-    list_button, number_stepper, popover_overlay, primary_text_button, section_header,
-    segmented_control, segmented_group, setting_row, subheader_card, switch, theme_preview,
-    warning_row,
+    GRID, UI_FONT_FAMILY, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, UI_FONT_SIZE_STATUS, list_button,
+    number_stepper, primary_text_button, section_header, segmented_control, segmented_group,
+    setting_row, switch, theme_preview, warning_row,
 };
-use crate::{
-    AppState, CommandRegistry, FontPicker, FontPickerEvent, Workbench, font_names, icons, keys,
-};
+use crate::{AppState, CommandRegistry, Workbench, icons, keys};
 use model::{
-    FONT_FAMILY_KEY, FONT_SIZE_KEY, FONT_SIZE_MAX, FONT_SIZE_MIN, ThemeMode, current_font_family,
-    current_font_size, current_mode, mode_edits, preview_themes, stepped_font_size,
+    FONT_SIZE_KEY, FONT_SIZE_MAX, FONT_SIZE_MIN, ThemeMode, current_font_size, current_mode,
+    mode_edits, preview_themes, stepped_font_size,
 };
 
 const FINISH: &str = "lucerna.onboarding.finish";
@@ -47,7 +44,6 @@ pub const ONBOARDING_COMMANDS: &[&str] = &[FINISH, OPEN_SETTINGS, OPEN_ONBOARDIN
 const COLUMN_MAX_WIDTH: f32 = 640.;
 const LOGO_SIZE: f32 = 45.;
 const TITLE_FONT_SIZE: f32 = 20.;
-const DROPDOWN_WIDTH: f32 = 48. * GRID;
 const VIM_KEY: &str = "vim.enabled";
 
 /// The theme buttons, in order: their labels and modes.
@@ -79,7 +75,6 @@ pub enum OnboardingEvent {
 enum Control {
     Finish,
     Theme(ThemeMode),
-    FontFamily,
     FontSizeMinus,
     FontSizePlus,
     Vim,
@@ -87,12 +82,11 @@ enum Control {
 }
 
 /// The controls in focus order.
-const FOCUS_ORDER: [Control; 9] = [
+const FOCUS_ORDER: [Control; 8] = [
     Control::Finish,
     Control::Theme(ThemeMode::Light),
     Control::Theme(ThemeMode::Dark),
     Control::Theme(ThemeMode::System),
-    Control::FontFamily,
     Control::FontSizeMinus,
     Control::FontSizePlus,
     Control::Vim,
@@ -109,14 +103,8 @@ pub struct OnboardingPage {
     keyboard_nav: bool,
     /// Whether the last frame drew the focus ring.
     show_ring: bool,
-    /// Whether the font picker was open when the last mouse press began,
-    /// so the press that dismissed it does not reopen it.
-    picker_open_at_press: bool,
     /// Why the settings file could not be opened, shown atop the column.
     warning: Option<String>,
-    picker: Option<(Entity<FontPicker>, Subscription)>,
-    /// Lists the fonts for the picker about to open.
-    loading_fonts: Option<Task<()>>,
     pending_chord: Vec<Keystroke>,
     /// The font size the last frame drew.
     drawn_font_size: Option<u32>,
@@ -148,19 +136,12 @@ impl OnboardingPage {
             focused,
             keyboard_nav: false,
             show_ring: false,
-            picker_open_at_press: false,
             warning: None,
-            picker: None,
-            loading_fonts: None,
             pending_chord: Vec::new(),
             drawn_font_size: None,
             title_bar_pressed: Rc::default(),
             _settings: cx.observe_global::<AppState>(|_, cx| cx.notify()),
         }
-    }
-
-    pub fn font_picker(&self) -> Option<&Entity<FontPicker>> {
-        self.picker.as_ref().map(|(picker, _)| picker)
     }
 
     /// Whether the last frame drew the focus ring.
@@ -188,11 +169,10 @@ impl OnboardingPage {
         true
     }
 
-    fn press(&mut self, control: Control, window: &mut Window, cx: &mut Context<Self>) {
+    fn press(&mut self, control: Control, cx: &mut Context<Self>) {
         match control {
             Control::Finish => cx.emit(OnboardingEvent::Finish),
             Control::Theme(mode) => self.set_mode(mode, cx),
-            Control::FontFamily => self.open_font_picker(window, cx),
             Control::FontSizeMinus => self.step_font_size(-1, cx),
             Control::FontSizePlus => self.step_font_size(1, cx),
             Control::Vim => {
@@ -207,15 +187,12 @@ impl OnboardingPage {
         }
     }
 
-    /// A click focuses the control and presses it. A click on Font
-    /// Family while its picker was open only closes the picker.
-    fn click(&mut self, control: Control, window: &mut Window, cx: &mut Context<Self>) {
+    /// A click focuses the control and presses it.
+    fn click(&mut self, control: Control, cx: &mut Context<Self>) {
         if let Some(index) = FOCUS_ORDER.iter().position(|c| *c == control) {
             self.focused = index;
         }
-        if !(control == Control::FontFamily && self.picker_open_at_press) {
-            self.press(control, window, cx);
-        }
+        self.press(control, cx);
         cx.notify();
     }
 
@@ -231,12 +208,6 @@ impl OnboardingPage {
             Err(()) => {}
         }
         cx.notify();
-    }
-
-    /// Closes the font picker, or stops it opening, and focuses the page.
-    pub(crate) fn drop_font_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.loading_fonts = None;
-        self.close_picker(window, cx);
     }
 
     /// Writes `mode` unless it is the one the settings describe already.
@@ -281,56 +252,15 @@ impl OnboardingPage {
         cx.notify();
     }
 
-    /// Lists the installed fonts in the background, then opens the picker.
-    fn open_font_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picker.is_some() || self.loading_fonts.is_some() {
-            return;
-        }
-        let names = font_names(cx);
-        self.loading_fonts = Some(cx.spawn_in(window, async move |this, cx| {
-            let names = names.await;
-            this.update_in(cx, |page, window, cx| {
-                page.loading_fonts = None;
-                let current = current_font_family(&cx.global::<AppState>().settings);
-                let picker = cx.new(|cx| FontPicker::new(names, &current, window, cx));
-                let events = cx.subscribe_in(&picker, window, Self::on_picker_event);
-                window.focus(&picker.focus_handle(cx), cx);
-                page.picker = Some((picker, events));
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.picker = None;
-        window.focus(&self.focus, cx);
-        cx.notify();
-    }
-
-    fn on_picker_event(
-        &mut self,
-        _: &Entity<FontPicker>,
-        event: &FontPickerEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let FontPickerEvent::Confirmed(name) = event {
-            self.save(&[(FONT_FAMILY_KEY, json!(name))], cx);
-        }
-        self.close_picker(window, cx);
-    }
-
     /// As a window root, runs keys bound to a page command; then moves
-    /// focus and presses controls. With the font picker open, keys go to
-    /// it first and `onboardingFocus` is false.
+    /// focus and presses controls.
     fn key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let stroke = keys::to_keystroke(ev);
         if self.host == Host::Window && self.dispatch_key(&stroke, window, cx) {
             cx.stop_propagation();
             return;
         }
-        if self.picker.is_none() && self.page_key(ev, window, cx) {
+        if self.page_key(ev, cx) {
             self.keyboard_nav = true;
             cx.notify();
             cx.stop_propagation();
@@ -346,8 +276,7 @@ impl OnboardingPage {
         cx: &mut Context<Self>,
     ) -> bool {
         let mut ctx = WhenContext::default();
-        ctx.set("onboardingFocus", ContextValue::Bool(self.picker.is_none()));
-        ctx.set("inQuickOpen", ContextValue::Bool(self.picker.is_some()));
+        ctx.set("onboardingFocus", ContextValue::Bool(true));
         let keymap = &cx.global::<AppState>().keymap;
         match keys::resolve_chord(&mut self.pending_chord, stroke, &ctx, keymap) {
             Resolution::Command { command, .. } => {
@@ -361,7 +290,7 @@ impl OnboardingPage {
 
     /// Tab, ⇧Tab and ↑/↓ move focus; Enter and Space press; ←/→ on a
     /// theme button pick the theme beside it.
-    fn page_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn page_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
         let m = &ev.keystroke.modifiers;
         if m.control || m.alt || m.platform || m.function {
             return false;
@@ -371,7 +300,7 @@ impl OnboardingPage {
             "tab" => self.move_focus(if m.shift { -1 } else { 1 }, cx),
             "up" if !m.shift => self.move_focus(-1, cx),
             "down" if !m.shift => self.move_focus(1, cx),
-            "enter" | "space" if !m.shift => self.press(focused, window, cx),
+            "enter" | "space" if !m.shift => self.press(focused, cx),
             key @ ("left" | "right") if !m.shift => {
                 let Control::Theme(mode) = focused else {
                     return false;
@@ -383,7 +312,7 @@ impl OnboardingPage {
                     Some(index + 1).filter(|i| *i < THEME_MODES.len())
                 };
                 if let Some(next) = next {
-                    self.click(Control::Theme(THEME_MODES[next]), window, cx);
+                    self.click(Control::Theme(THEME_MODES[next]), cx);
                 }
             }
             _ => return false,
@@ -438,18 +367,6 @@ fn rule(cx: &gpui::App) -> gpui::Div {
     div().w_full().h(px(1.)).bg(color(ui.border_variant))
 }
 
-/// A colored span of a sample line: byte range and syntax capture.
-type SampleToken = (std::ops::Range<usize>, &'static str);
-
-/// The sample lines of the font card: text, then its colored spans.
-const SAMPLE_LINES: [(&str, &[SampleToken]); 2] = [
-    ("fn main() {", &[(0..2, "keyword"), (3..7, "function")]),
-    (
-        "    println!(\"Hello, Lucerna\");",
-        &[(4..12, "function"), (13..29, "string")],
-    ),
-];
-
 impl OnboardingPage {
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let ui = &cx.global::<AppState>().theme.ui;
@@ -470,7 +387,7 @@ impl OnboardingPage {
                     .child(keys),
             )
         })
-        .on_click(cx.listener(|page, _, window, cx| page.click(Control::Finish, window, cx)));
+        .on_click(cx.listener(|page, _, _, cx| page.click(Control::Finish, cx)));
         div()
             .flex()
             .flex_row()
@@ -531,9 +448,7 @@ impl OnboardingPage {
                 .map(|(button, mode)| {
                     let control = Control::Theme(mode);
                     ring(button, self.is_focused(control), Ring::Overlay, cx)
-                        .on_click(
-                            cx.listener(move |page, _, window, cx| page.click(control, window, cx)),
-                        )
+                        .on_click(cx.listener(move |page, _, _, cx| page.click(control, cx)))
                         .into_any_element()
                 })
                 .collect();
@@ -562,18 +477,8 @@ impl OnboardingPage {
 
     fn render_editor(&self, cx: &mut Context<Self>) -> AnyElement {
         let settings = &cx.global::<AppState>().settings;
-        let family = current_font_family(settings);
         let size = current_font_size(settings);
         let vim: bool = settings.get(VIM_KEY, None).unwrap_or(false);
-
-        let dropdown = ring(
-            dropdown_button("onboarding-font-family", family.clone(), cx),
-            self.is_focused(Control::FontFamily),
-            Ring::Border,
-            cx,
-        )
-        .w(px(DROPDOWN_WIDTH))
-        .on_click(cx.listener(|page, _, window, cx| page.click(Control::FontFamily, window, cx)));
 
         let (value, minus, plus) = number_stepper(
             "onboarding-font-size",
@@ -588,16 +493,14 @@ impl OnboardingPage {
             Ring::Overlay,
             cx,
         )
-        .on_click(
-            cx.listener(|page, _, window, cx| page.click(Control::FontSizeMinus, window, cx)),
-        );
+        .on_click(cx.listener(|page, _, _, cx| page.click(Control::FontSizeMinus, cx)));
         let plus = ring(
             plus,
             self.is_focused(Control::FontSizePlus),
             Ring::Overlay,
             cx,
         )
-        .on_click(cx.listener(|page, _, window, cx| page.click(Control::FontSizePlus, window, cx)));
+        .on_click(cx.listener(|page, _, _, cx| page.click(Control::FontSizePlus, cx)));
         let stepper = div()
             .flex()
             .items_center()
@@ -611,14 +514,13 @@ impl OnboardingPage {
             Ring::Border,
             cx,
         )
-        .on_click(cx.listener(|page, _, window, cx| page.click(Control::Vim, window, cx)));
+        .on_click(cx.listener(|page, _, _, cx| page.click(Control::Vim, cx)));
 
         div()
             .flex()
             .flex_col()
             .gap(px(4. * GRID))
             .child(section_header("Editor", cx))
-            .child(setting_row("Font Family", None, dropdown, cx))
             .child(setting_row("Font Size", None, stepper, cx))
             .child(setting_row(
                 "Vim Mode",
@@ -626,42 +528,6 @@ impl OnboardingPage {
                 vim_switch,
                 cx,
             ))
-            .child(self.render_font_sample(family, size, cx))
-            .into_any_element()
-    }
-
-    /// Two lines of code in the editor font and size, in the active
-    /// theme's syntax colors.
-    fn render_font_sample(&self, family: String, size: u32, cx: &mut Context<Self>) -> AnyElement {
-        let theme = &cx.global::<AppState>().theme;
-        let foreground = color(theme.ui.editor_foreground);
-        let lines = SAMPLE_LINES.iter().map(|(text, tokens)| {
-            let highlights: Vec<_> = tokens
-                .iter()
-                .filter_map(|(range, capture)| {
-                    let fill = theme.style_for(capture)?.color?;
-                    let style = HighlightStyle {
-                        color: Some(color(fill).into()),
-                        ..Default::default()
-                    };
-                    Some((range.clone(), style))
-                })
-                .collect();
-            div()
-                .whitespace_nowrap()
-                .child(StyledText::new(SharedString::from(*text)).with_highlights(highlights))
-        });
-        subheader_card(cx)
-            .debug_selector(|| "onboarding-font-sample".into())
-            .flex_col()
-            .items_start()
-            .gap(px(GRID))
-            .p(px(3. * GRID))
-            .overflow_hidden()
-            .font_family(SharedString::from(family))
-            .text_size(px(size as f32))
-            .text_color(foreground)
-            .children(lines)
             .into_any_element()
     }
 
@@ -676,7 +542,7 @@ impl OnboardingPage {
             cx,
         )
         .debug_selector(|| "onboarding-open-settings".into())
-        .on_click(cx.listener(|page, _, window, cx| page.click(Control::OpenSettings, window, cx)))
+        .on_click(cx.listener(|page, _, _, cx| page.click(Control::OpenSettings, cx)))
         .into_any_element()
     }
 }
@@ -689,7 +555,6 @@ impl Focusable for OnboardingPage {
 
 impl Render for OnboardingPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Not while the font picker has the focus.
         self.show_ring = self.keyboard_nav && self.focus.is_focused(window);
         let app_state = cx.global::<AppState>();
         let mode = current_mode(&app_state.settings, &app_state.themes);
@@ -712,7 +577,6 @@ impl Render for OnboardingPage {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .capture_any_mouse_down(cx.listener(|page, _, _, cx| {
-                page.picker_open_at_press = page.picker.is_some() || page.loading_fonts.is_some();
                 if page.keyboard_nav {
                     page.keyboard_nav = false;
                     cx.notify();
@@ -750,10 +614,6 @@ impl Render for OnboardingPage {
                                 .child(open_settings),
                         ),
                     ),
-            )
-            .children(
-                self.font_picker()
-                    .map(|picker| popover_overlay(picker.clone())),
             )
     }
 }
@@ -804,8 +664,6 @@ impl Workbench {
     /// focuses its page.
     pub fn show_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let page = tab_page(&self.onboarding, &cx.weak_entity(), window, cx);
-        // A picker left open when the tab closed would take its keys.
-        page.update(cx, |page, cx| page.drop_font_picker(window, cx));
         self.update_editor_groups(cx, |m| {
             m.open_onboarding();
         });
@@ -829,13 +687,10 @@ impl Workbench {
         self.onboarding.borrow().clone()
     }
 
-    /// `onboardingFocus`: the focus is in the Get Started page and its
-    /// font picker is closed, so the picker takes its keys first.
+    /// `onboardingFocus`: the focus is in the Get Started page.
     pub(crate) fn onboarding_focused(&self, window: &Window, cx: &App) -> bool {
-        self.onboarding_page().is_some_and(|page| {
-            let page = page.read(cx);
-            page.picker.is_none() && page.focus.contains_focused(window, cx)
-        })
+        self.onboarding_page()
+            .is_some_and(|page| page.read(cx).focus.contains_focused(window, cx))
     }
 
     fn on_onboarding_event(

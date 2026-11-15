@@ -595,44 +595,6 @@ pub fn number_stepper(
     )
 }
 
-/// A button that opens a list, bordered like an [`input_box`]: `label`
-/// (cut off when long), then [`CHEVRON_DOWN_ICON`] at the right. Its id
-/// and debug selector are `id`. Add `on_click`.
-pub fn dropdown_button(
-    id: &'static str,
-    label: impl Into<SharedString>,
-    cx: &App,
-) -> Stateful<Div> {
-    let ui = &cx.global::<AppState>().theme.ui;
-    let hover = color(ui.ghost_element_hover);
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(2. * GRID))
-        .h(px(CONTROL_HEIGHT))
-        .pl(px(2. * GRID))
-        .pr(px(GRID))
-        .rounded(px(GRID))
-        .border_1()
-        .border_color(color(ui.border_variant))
-        .bg(color(ui.editor_background))
-        .hover(move |s| s.bg(hover))
-        .cursor_pointer()
-        .text_size(px(UI_FONT_SIZE_SMALL))
-        .text_color(color(ui.text))
-        .child(div().flex_1().min_w_0().truncate().child(label.into()))
-        .child(
-            svg()
-                .data(CHEVRON_DOWN_ICON)
-                .flex_none()
-                .size(px(14.))
-                .text_color(color(ui.icon_muted)),
-        )
-}
-
 /// A settings row: `label` ([`UI_FONT_SIZE`]) with `description`
 /// ([`UI_FONT_SIZE_SMALL`], `text.muted`) under it at the left, `control`
 /// at the right.

@@ -74,7 +74,6 @@ impl Render for Harness {
                 ui::switch("vim", true, cx),
                 cx,
             ))
-            .child(ui::dropdown_button("font", "Lilex", cx))
             .child(ui::theme_preview(
                 "preview",
                 &light,
@@ -155,12 +154,6 @@ fn switch_draws(cx: &mut TestAppContext) {
     assert_eq!(track.size.height, gpui::px(16.));
     // On: the knob sits at the right.
     assert!(knob.center().x > track.center().x);
-}
-
-#[gpui::test]
-fn dropdown_draws(cx: &mut TestAppContext) {
-    let (_, cx) = open(false, cx);
-    assert!(drawn("font", cx));
 }
 
 #[gpui::test]

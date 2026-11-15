@@ -144,12 +144,6 @@ impl Page<'_> {
         self.events.lock().unwrap().clone()
     }
 
-    fn picker_open(&mut self) -> bool {
-        let view = self.view.clone();
-        self.cx
-            .update(|_, cx| view.read(cx).font_picker().is_some())
-    }
-
     fn focus_ring_shown(&mut self) -> bool {
         let view = self.view.clone();
         self.cx.update(|_, cx| view.read(cx).focus_ring_shown())
@@ -178,11 +172,9 @@ fn draws_current_settings(cx: &mut TestAppContext) {
         "onboarding-theme-1",
         "onboarding-theme-2",
         "onboarding-preview",
-        "onboarding-font-family",
         "onboarding-font-size-minus",
         "onboarding-font-size-value",
         "onboarding-font-size-plus",
-        "onboarding-font-sample",
         "onboarding-open-settings",
     ] {
         assert!(page.drawn(selector), "{selector} is drawn");
@@ -269,8 +261,8 @@ fn plus_at_100_writes_nothing(cx: &mut TestAppContext) {
     let mut page = open(Host::Window, Some(text), cx);
     page.click("onboarding-font-size-plus");
     assert_eq!(page.file(), text);
-    // By key too: from System, Tab three times reaches +.
-    page.keys("tab tab tab enter");
+    // By key too: the click left focus on +.
+    page.keys("enter");
     assert_eq!(page.file(), text);
 }
 
@@ -346,47 +338,6 @@ fn finish_button_emits_finish(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn cmd_enter_in_font_picker_does_nothing(cx: &mut TestAppContext) {
-    let mut page = open(Host::Window, Some(TEMPLATE), cx);
-    page.click("onboarding-font-family");
-    assert!(page.picker_open());
-    page.keys("cmd-enter");
-    assert_eq!(page.events(), vec![]);
-    assert!(page.picker_open());
-}
-
-#[gpui::test]
-fn font_picker_confirm_writes_family(cx: &mut TestAppContext) {
-    let mut page = open(Host::Window, Some(r#"{"editor.fontFamily": "Menlo"}"#), cx);
-    page.click("onboarding-font-family");
-    assert!(page.picker_open());
-    page.keys("L i l e x enter");
-    assert_eq!(page.json()["editor.fontFamily"], "Lilex");
-    assert!(!page.picker_open());
-}
-
-#[gpui::test]
-fn font_picker_escape_writes_nothing(cx: &mut TestAppContext) {
-    let text = r#"{"editor.fontFamily": "Menlo"}"#;
-    let mut page = open(Host::Window, Some(text), cx);
-    page.click("onboarding-font-family");
-    page.keys("escape");
-    assert!(!page.picker_open());
-    assert_eq!(page.file(), text);
-}
-
-#[gpui::test]
-fn font_family_dropdown_toggles_the_picker(cx: &mut TestAppContext) {
-    let mut page = open(Host::Window, Some(TEMPLATE), cx);
-    page.click("onboarding-font-family");
-    assert!(page.picker_open());
-    page.click("onboarding-font-family");
-    assert!(!page.picker_open());
-    page.click("onboarding-font-family");
-    assert!(page.picker_open());
-}
-
-#[gpui::test]
 fn focus_ring_only_for_keyboard(cx: &mut TestAppContext) {
     let mut page = open(Host::Window, Some(TEMPLATE), cx);
     assert!(!page.focus_ring_shown());
@@ -394,11 +345,8 @@ fn focus_ring_only_for_keyboard(cx: &mut TestAppContext) {
     assert!(page.focus_ring_shown());
     page.click("onboarding-vim");
     assert!(!page.focus_ring_shown());
-    // Vim, up three: Font Family. The page loses focus to the picker.
-    page.keys("up up up enter");
-    assert!(page.picker_open());
-    assert!(!page.focus_ring_shown());
-    page.keys("escape");
+    // A key brings it back.
+    page.keys("up");
     assert!(page.focus_ring_shown());
 }
 
@@ -441,9 +389,9 @@ fn arrows_in_theme_group_change_the_mode(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn space_presses_the_focused_control(cx: &mut TestAppContext) {
-    // System, then Font Family, −, +, Vim.
+    // System, then −, +, Vim.
     let mut page = open(Host::Window, Some(TEMPLATE), cx);
-    page.keys("tab tab tab tab space");
+    page.keys("tab tab tab space");
     assert_eq!(page.json()["vim.enabled"], true);
     // Up twice: − ; Enter.
     page.keys("up up enter");
@@ -523,15 +471,6 @@ impl Bench<'_> {
                 .filter(|t| t.item == TabItem::Onboarding)
                 .map(|t| t.title())
                 .collect()
-        })
-    }
-
-    fn picker_open(&mut self) -> bool {
-        let wb = self.wb.clone();
-        self.cx.update(|_, cx| {
-            wb.read(cx)
-                .onboarding_page()
-                .is_some_and(|page| page.read(cx).font_picker().is_some())
         })
     }
 
@@ -636,19 +575,4 @@ fn open_settings_from_tab_opens_the_file_in_the_workbench(cx: &mut TestAppContex
         ),
         other => panic!("the settings file is active, not {other:?}"),
     }
-}
-
-#[gpui::test]
-fn reopened_tab_drops_the_font_picker(cx: &mut TestAppContext) {
-    let mut b = bench(Some(TEMPLATE), cx);
-    b.run("lucerna.openOnboarding");
-    b.click("onboarding-font-family");
-    assert!(b.picker_open());
-    b.run("workbench.action.closeActiveEditor");
-    assert!(b.onboarding_tabs().is_empty());
-    b.run("lucerna.openOnboarding");
-    assert!(!b.picker_open());
-    // The page has its keys back.
-    b.keys("cmd-enter");
-    assert!(b.onboarding_tabs().is_empty());
 }
