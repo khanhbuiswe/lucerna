@@ -1,12 +1,13 @@
 """Comparison tables (Markdown) and bar charts (SVG) from a run.py result file.
 
-    python3 -I bench/compare/report.py <result.json> --out <dir>
+    python3 -I bench/compare/report.py <result.json> --out <dir> [--metrics a,b,...]
 
-Writes <dir>/results.md and <dir>/<metric>-<config>.svg.
+Writes <dir>/results.md and <dir>/<metric>-<config>.svg. --metrics limits the
+tables and charts to the given metric keys (default: all).
 
 Rounding: ratios use round-half-up on the shortest decimal repr of the float
 (Decimal ROUND_HALF_UP); other numbers use Python's format rounding.
-Number format: Vietnamese decimal comma. Precision per unit: ms -> 0 decimals
+Number format: English (decimal point). Precision per unit: ms -> 0 decimals
 when >= 100, else 1; MB -> 0 decimals; % -> 1 decimal (idle CPU: 2);
 ratios -> 1 decimal. A ratio is not shown ("—", with a footnote) when
 Lucerna's median is under the metric's noise floor (RATIO_FLOOR): a ratio of
@@ -31,37 +32,33 @@ import run  # noqa: E402
 
 EDITOR_ORDER = ("lucerna", "zed", "vscode")
 EDITOR_NAMES = {"lucerna": "Lucerna", "zed": "Zed", "vscode": "VS Code"}
-# metric -> (Vietnamese label, unit), in fixed display order
+# metric -> (label, unit), in fixed display order
 METRICS = {
-    "startup_ms": ("Khởi động tới khung đầu có nội dung", "ms"),
-    "idle_ram_mb": ("RAM khi rỗi (repo vừa, 10 tab)", "MB"),
-    "idle_cpu_pct": ("CPU khi rỗi", "%"),
-    "scroll_dropped_pct": ("Khung rớt khi cuộn big.rs", "%"),
-    "file_change_ms": ("Đổi file trên đĩa → màn hình cập nhật", "ms"),
-    "quick_open_ms": ("Quick Open mỗi phím gõ (80.000 file)", "ms"),
-    "app_size_mb": ("Dung lượng app", "MB"),
+    "startup_ms": ("Startup to first frame with content", "ms"),
+    "idle_ram_mb": ("Idle RAM (medium repo, 10 tabs)", "MB"),
+    "idle_cpu_pct": ("Idle CPU", "%"),
+    "scroll_dropped_pct": ("Dropped frames scrolling big.rs", "%"),
+    "file_change_ms": ("File changed on disk → screen updated", "ms"),
+    "quick_open_ms": ("Quick Open per keystroke (80,000 files)", "ms"),
+    "app_size_mb": ("App size", "MB"),
 }
 DASH = "—"
 BAR_COLOR = "#8a8f98"
 DECIMALS = {"idle_cpu_pct": 2}   # per-metric override of the unit precision
 CPU_RATIO_FLOOR = 0.1            # %: idle CPU below this is measurement noise
 RATIO_FLOOR = {"idle_cpu_pct": CPU_RATIO_FLOOR}
-FLOOR_NOTE = {"idle_cpu_pct": "Hệ số không tính khi giá trị của Lucerna dưới ngưỡng "
-                              "đo được (CPU < 0,1 %)."}
-
-
-def _comma(text: str) -> str:
-    return text.replace(".", ",")
+FLOOR_NOTE = {"idle_cpu_pct": "Ratio not computed when Lucerna's value is below the "
+                              "measurable threshold (CPU < 0.1 %)."}
 
 
 def _num(v: float, unit: str, decimals: int | None = None) -> str:
     if decimals is not None:
-        return _comma(f"{v:.{decimals}f}")
+        return f"{v:.{decimals}f}"
     if unit == "ms":
-        return _comma(f"{v:.0f}" if v >= 100 else f"{v:.1f}")
+        return f"{v:.0f}" if v >= 100 else f"{v:.1f}"
     if unit == "MB":
         return f"{v:.0f}"
-    return _comma(f"{v:.1f}")
+    return f"{v:.1f}"
 
 
 def fmt(v: float, unit: str, decimals: int | None = None) -> str:
@@ -72,12 +69,12 @@ def ratio(other, lucerna) -> str:
     if other is None or lucerna is None or lucerna == 0:
         return DASH
     q = Decimal(repr(other / lucerna)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-    return _comma(f"{q}") + "×"
+    return f"{q}×"
 
 
 def cell(values, unit: str, single: bool = False, decimals: int | None = None) -> str:
     s = run.stats(values)
-    failed = f" · {s['failed']}/{len(values)} lượt hỏng" if s["failed"] else ""
+    failed = f" · {s['failed']}/{len(values)} rounds failed" if s["failed"] else ""
     if s["median"] is None:
         return DASH + failed
     if single:
@@ -87,9 +84,9 @@ def cell(values, unit: str, single: bool = False, decimals: int | None = None) -
 
 
 def config_label(cfg: dict) -> str:
-    lsp = "rust-analyzer" if cfg.get("lsp") else "Không LSP"
+    lsp = "rust-analyzer" if cfg.get("lsp") else "No LSP"
     # --cold purges only before startup launches: the other metrics are warm.
-    return f"{lsp} · {'lạnh (chỉ khởi động)' if cfg.get('cold') else 'ấm'}"
+    return f"{lsp} · {'cold (startup only)' if cfg.get('cold') else 'warm'}"
 
 
 def config_slug(cfg: dict) -> str:
@@ -117,46 +114,62 @@ def ratio_cells(cfg: dict, metric: str) -> list[str]:
 
 def _meta_block(meta: dict) -> list[str]:
     v = meta.get("versions", {})
-    lines = [f"- Ngày: {meta.get('date', DASH)}",
+    lines = [f"- Date: {meta.get('date', DASH)}",
              f"- Lucerna commit: {meta.get('lucerna_commit', DASH)}",
-             "- Phiên bản: " + ", ".join(
+             "- Versions: " + ", ".join(
                  f"{EDITOR_NAMES[e]} {v.get(e, DASH)}" for e in EDITOR_ORDER),
              f"- macOS: {meta.get('macos', DASH)}",
              f"- Chip: {meta.get('chip', DASH)}",
              f"- RAM: {meta.get('ram_gb', DASH)} GB",
-             f"- Số lượt mỗi phép đo: {meta.get('rounds', DASH)}"]
+             f"- Rounds per measurement: {meta.get('rounds', DASH)}"]
     ra = meta.get("rust_analyzer")
     if ra:
         lines.append(f"- rust-analyzer: {ra.get('version') or ra.get('path') or DASH}")
     lb = meta.get("lucerna_binary")
     if lb:
-        lines.append(f"- Binary Lucerna: {lb.get('version') or DASH}, "
-                     f"dựng lúc {lb.get('mtime') or DASH}")
+        lines.append(f"- Lucerna binary: {lb.get('version') or DASH}, "
+                     f"built at {lb.get('mtime') or DASH}")
     d = meta.get("display")
     if d:
-        lines.append(f"- Màn hình chính: {d.get('width')}×{d.get('height')} pt, "
+        lines.append(f"- Main display: {d.get('width')}×{d.get('height')} pt, "
                      f"scale {d.get('scale')}, {d.get('refresh_hz')} Hz")
     wf = meta.get("window_frame")
     if wf:
-        lines.append(f"- Cửa sổ: {wf.get('w')}×{wf.get('h')} pt (mọi phép đo trừ khởi động; "
-                     "khởi động dùng kích thước mặc định của từng editor)")
+        lines.append(f"- Window: {wf.get('w')}×{wf.get('h')} pt (all measurements except startup; "
+                     "startup uses each editor's default size)")
     return lines
 
 
-def render_markdown(result: dict) -> str:
+def _selected(metrics) -> list[str]:
+    """Metric keys to report, in the fixed display order."""
+    return [m for m in METRICS if metrics is None or m in metrics]
+
+
+def parse_metrics(text: str) -> list[str]:
+    """Validate a comma-separated --metrics value; raise ValueError on unknown names."""
+    names = [n.strip() for n in text.split(",") if n.strip()]
+    unknown = [n for n in names if n not in METRICS]
+    if not names or unknown:
+        raise ValueError(f"unknown metric(s): {', '.join(unknown) or text!r}; "
+                         f"valid: {', '.join(METRICS)}")
+    return names
+
+
+def render_markdown(result: dict, metrics=None) -> str:
     out = []
     if "preflight_ignored" in result.get("meta", {}):
-        out += ["**Kết quả chạy thử: máy không yên khi đo (preflight bị bỏ qua), "
-                "không dùng để công bố.**", ""]
-    out += ["# Kết quả so sánh", ""]
+        out += ["**Trial result: the machine was not quiet during measurement (preflight "
+                "ignored); do not publish.**", ""]
+    out += ["# Comparison results", ""]
     out += _meta_block(result.get("meta", {}))
-    out += ["", "Mỗi ô: trung vị (p90). Dòng hệ số: trung vị của editor đó chia cho "
-            "trung vị của Lucerna; giá trị lớn hơn 1 nghĩa là số đo lớn hơn số đo của Lucerna.", ""]
+    out += ["", "Each cell: median (p90). Ratio row: that editor's median divided by "
+            "Lucerna's median; a value above 1 means a larger measurement than Lucerna's.", ""]
     for cfg in result["configs"]:
         out += [f"## {config_label(cfg)}", "",
-                "| Chỉ số | Lucerna | Zed | VS Code |", "|---|---|---|---|"]
+                "| Metric | Lucerna | Zed | VS Code |", "|---|---|---|---|"]
         notes = []
-        for metric, (label, unit) in METRICS.items():
+        for metric in _selected(metrics):
+            label, unit = METRICS[metric]
             if metric not in cfg["metrics"]:
                 continue
             data = cfg["metrics"][metric]
@@ -164,13 +177,14 @@ def render_markdown(result: dict) -> str:
                           decimals=DECIMALS.get(metric))
                      for e in EDITOR_ORDER]
             out.append(f"| {label} | " + " | ".join(cells) + " |")
-            out.append("| ↳ so với Lucerna | " + " | ".join(ratio_cells(cfg, metric)) + " |")
+            out.append("| ↳ vs Lucerna | " + " | ".join(ratio_cells(cfg, metric)) + " |")
             if below_floor(cfg, metric):
                 notes.append(FLOOR_NOTE[metric])
         if notes:
             out += [""] + notes
-        out += ["", "Biểu đồ:", ""]
-        for metric, (label, _unit) in METRICS.items():
+        out += ["", "Charts:", ""]
+        for metric in _selected(metrics):
+            label = METRICS[metric][0]
             if metric in cfg["metrics"]:
                 out.append(f"- [{label}]({metric}-{config_slug(cfg)}.svg)")
         out.append("")
@@ -208,11 +222,11 @@ def render_svg(metric: str, cfg: dict) -> str:
     return "\n".join(parts) + "\n"
 
 
-def write_report(result: dict, out_dir: Path) -> None:
+def write_report(result: dict, out_dir: Path, metrics=None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "results.md").write_text(render_markdown(result), encoding="utf-8")
+    (out_dir / "results.md").write_text(render_markdown(result, metrics), encoding="utf-8")
     for cfg in result["configs"]:
-        for metric in METRICS:
+        for metric in _selected(metrics):
             if metric in cfg["metrics"]:
                 (out_dir / f"{metric}-{config_slug(cfg)}.svg").write_text(
                     render_svg(metric, cfg), encoding="utf-8")
@@ -222,9 +236,17 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("result")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--metrics", help="comma-separated metric keys to include "
+                    f"(default: all). Keys: {', '.join(METRICS)}")
     a = ap.parse_args(sys.argv[1:] if argv is None else argv)
+    metrics = None
+    if a.metrics is not None:
+        try:
+            metrics = parse_metrics(a.metrics)
+        except ValueError as e:
+            ap.error(str(e))
     result = json.loads(Path(a.result).read_text(encoding="utf-8"))
-    write_report(result, Path(a.out))
+    write_report(result, Path(a.out), metrics)
     return 0
 
 

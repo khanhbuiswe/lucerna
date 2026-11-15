@@ -117,8 +117,8 @@ def reset_profiles(paths: BenchPaths) -> list[Path]:
     symlink, and to delete anything that does not resolve inside it. Returns
     what was removed."""
     if paths.profiles.is_symlink():
-        raise RuntimeError(f"{paths.profiles} là symlink; bench không xoá hồ sơ qua symlink. "
-                           "Hãy dùng một thư mục thật cho <bench>/profiles.")
+        raise RuntimeError(f"{paths.profiles} is a symlink; bench does not delete profiles through a "
+                           "symlink. Use a real directory for <bench>/profiles.")
     if not paths.profiles.is_dir():
         return []
     root = paths.profiles.resolve()
@@ -127,7 +127,7 @@ def reset_profiles(paths: BenchPaths) -> list[Path]:
         if entry.name in KEEP_PROFILES:
             continue
         if entry.name not in PROFILE_ENTRIES:
-            print(f"env: cảnh báo: bỏ qua {entry} (không phải hồ sơ bench đã biết)",
+            print(f"env: warning: skipping {entry} (not a known bench profile)",
                   file=sys.stderr, flush=True)
             continue
         if entry.name == paths.lucerna_home.name and entry.is_dir() and not entry.is_symlink():

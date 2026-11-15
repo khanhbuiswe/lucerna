@@ -218,9 +218,9 @@ def _owner_pids(editor: str, paths: BenchPaths, deadline: float) -> list[int] | 
     if editor == "zed":
         stray = editors.foreign_instances("zed", paths)
         if stray:
-            _log(f"LỖI: Zed pid {', '.join(map(str, stray))} mới xuất hiện không mang "
-                 "--user-data-dir: nó dùng hồ sơ THẬT của bạn, không phải hồ sơ bench. "
-                 "Không tự đóng; hãy tự đóng nó.")
+            _log(f"ERROR: new Zed pid {', '.join(map(str, stray))} appeared without "
+                 "--user-data-dir: it uses your REAL profile, not the bench profile. "
+                 "Not closing it automatically; close it yourself.")
     return None
 
 

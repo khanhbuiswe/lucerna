@@ -1,248 +1,335 @@
-# So sánh hiệu năng: Lucerna, Zed và VS Code
+# Performance comparison: Lucerna, Zed and VS Code
 
-Trang này mô tả cách đo, để người khác chạy lại được và hiểu các con số có
-nghĩa gì và không có nghĩa gì. Thiết kế: [`docs/superpowers/specs/2026-11-14-editor-benchmark-design.md`](superpowers/specs/2026-11-14-editor-benchmark-design.md).
-Mã đo: [`bench/compare/`](../bench/compare/) (xem thêm `bench/compare/README.md`).
+This page describes how the measurements are made, so that others can rerun them
+and understand what the numbers do and do not mean. Design:
+[`docs/superpowers/specs/2026-11-14-editor-benchmark-design.md`](superpowers/specs/2026-11-14-editor-benchmark-design.md).
+Measurement code: [`bench/compare/`](../bench/compare/) (see also `bench/compare/README.md`).
 
-## Mục đích
+## Purpose
 
-Đo ba editor trên cùng một máy, trong môi trường sạch, bằng cùng một cách đo
-từ bên ngoài app, rồi công bố bảng so sánh cùng script và dữ liệu thô. Mục
-tiêu là con số tái lập được, không phải xếp hạng. Lucerna là editor tối giản,
-không có AI và ít tính năng hơn hai editor kia (xem [Giới hạn](#giới-hạn-đã-biết)).
+Measure three editors on the same machine, in a clean environment, with the same
+outside-the-app method, then publish the comparison table together with the
+script and the raw data. The goal is reproducible numbers, not a ranking.
+Lucerna is a minimal editor with no AI and fewer features than the other two
+(see [Known limits](#known-limits)).
 
-## Vì sao đo từ bên ngoài
+## Why measure from outside
 
-Mỗi editor có bộ đo riêng (VS Code: `--prof-startup`, Developer: Startup
-Performance; Zed: công cụ profile cho người phát triển; Lucerna: bộ đo trong
-`docs/perf-checklist.md`). Mỗi bộ đánh dấu một thời điểm khác nhau nên số
-không so được với nhau. Bộ công cụ này chỉ dùng một mốc chung cho cả ba: lúc
-cửa sổ **hiện nội dung trên màn hình**, quay bằng ScreenCaptureKit. Số đo
-trong của Lucerna không dùng để so với số đo ngoài của editor khác.
+Each editor has its own instrumentation (VS Code: `--prof-startup` and
+Developer: Startup Performance; Zed: its developer profiling tools; Lucerna: the
+measurements in `docs/perf-checklist.md`). Each one marks a different moment,
+so the numbers cannot be compared with each other. This toolkit uses a single
+shared mark for all three: the moment the window **shows content on screen**,
+captured with ScreenCaptureKit. Lucerna's internal numbers are not to be
+compared with another editor's outside measurement.
 
-## Môi trường
+## Environment
 
-Mọi thứ nằm dưới thư mục bench (mặc định `~/LucernaBench.noindex`, đổi bằng
-`--bench-dir`); dữ liệu thật của người dùng không bị đụng. Đuôi `.noindex`
-để Spotlight bỏ qua.
+Everything lives under the bench directory (default `~/LucernaBench.noindex`,
+changed with `--bench-dir`); the user's real data is never touched. The
+`.noindex` suffix makes Spotlight skip it.
 
-**Hồ sơ riêng cho từng editor** (`<bench>/profiles/`). Đầu mỗi cấu hình
-(không LSP / có rust-analyzer), bench xoá mọi hồ sơ dưới `<bench>/profiles`
-rồi ghi lại settings, nên không cấu hình nào mang theo cache, lịch sử hay
-extension của cấu hình trước. Chỉ giữ `vscode-ext-lsp` (extension
-rust-analyzer của VS Code, cài cần mạng) và file pid của Lucerna. Việc xoá chỉ
-chạm các mục hồ sơ đã biết nằm trong `<bench>/profiles`; mục lạ được giữ lại kèm
-cảnh báo, và bench từ chối xoá nếu `<bench>/profiles` là symlink.
+**A separate profile per editor** (`<bench>/profiles/`). At the start of each
+configuration (no LSP / with rust-analyzer), bench deletes every profile under
+`<bench>/profiles` and writes the settings again, so no configuration carries
+over the cache, history or extensions of the previous one. Only `vscode-ext-lsp`
+(VS Code's rust-analyzer extension, which needs a network connection to install)
+and Lucerna's pid file are kept. The deletion touches only known profile
+entries inside `<bench>/profiles`; unknown entries are kept with a warning, and
+bench refuses to delete anything if `<bench>/profiles` is a symlink.
 
-Cả ba editor được mở bằng **binary chính** của chúng (binary sở hữu cửa sổ),
-không qua launcher:
+All three editors are launched through their **main binary** (the binary that
+owns the window), not through a launcher:
 
-| Editor | Cách chạy | Settings chính |
+| Editor | How it is launched | Main settings |
 |---|---|---|
-| VS Code | `/Applications/Visual Studio Code.app/Contents/MacOS/Code --user-data-dir <bench>/profiles/vscode --extensions-dir <bench>/profiles/vscode-ext --disable-extensions --new-window <đích>`; cấu hình có LSP dùng `--extensions-dir <bench>/profiles/vscode-ext-lsp` và không có `--disable-extensions` | tắt telemetry, cập nhật, Workspace Trust, trang chào, mở lại cửa sổ cũ, minimap; `editor.fontSize` 14; tắt tab xem trước khi mở từ Quick Open |
-| Zed | `/Applications/Zed.app/Contents/MacOS/zed --user-data-dir <bench>/profiles/zed <đích>` | tắt telemetry, cập nhật, AI (`disable_ai`), khôi phục phiên, minimap, tự cài extension `html` (`auto_install_extensions`) và gợi ý extension (`suggest_extensions`); `buffer_font_size` 14; tắt tab xem trước từ file finder |
-| Lucerna | binary `luc` (xác định một lần mỗi phiên) với `HOME=<bench>/profiles/lucerna-home` | `editor.fontSize` 14, `workbench.startupEditor: "none"`, thư mục dữ liệu được đánh dấu tin cậy trước (không hiện Restricted Mode), tắt tab xem trước |
+| VS Code | `/Applications/Visual Studio Code.app/Contents/MacOS/Code --user-data-dir <bench>/profiles/vscode --extensions-dir <bench>/profiles/vscode-ext --disable-extensions --new-window <target>`; the LSP configuration uses `--extensions-dir <bench>/profiles/vscode-ext-lsp` and has no `--disable-extensions` | telemetry, updates, Workspace Trust, welcome page, reopening previous windows and minimap off; `editor.fontSize` 14; preview tabs off when opening from Quick Open |
+| Zed | `/Applications/Zed.app/Contents/MacOS/zed --user-data-dir <bench>/profiles/zed <target>` | telemetry, updates, AI (`disable_ai`), session restore, minimap, auto-install of the `html` extension (`auto_install_extensions`) and extension suggestions (`suggest_extensions`) off; `buffer_font_size` 14; preview tabs off from the file finder |
+| Lucerna | the `luc` binary (resolved once per session) with `HOME=<bench>/profiles/lucerna-home` | `editor.fontSize` 14, `workbench.startupEditor: "none"`, data folder marked trusted in advance (no Restricted Mode), preview tabs off |
 
-VS Code không chạy qua `bin/code`: lệnh đó khởi một bước node/CLI rồi mới gọi
-app, một chi phí mà hai editor kia không có trong số khởi động. Zed không chạy
-qua `cli`: `cli` chuyển qua LaunchServices và bỏ `--user-data-dir`. Zed ghi
-thêm dữ liệu của nó vào `profiles/zed/config` và `profiles/zed/data` khi chạy;
-thư mục được xoá đầu mỗi cấu hình.
+VS Code is not launched through `bin/code`: that command starts a node/CLI step
+before calling the app, a cost the other two editors do not have in their
+startup time. Zed is not launched through `cli`: `cli` goes through
+LaunchServices and drops `--user-data-dir`. Zed writes more of its own data to
+`profiles/zed/config` and `profiles/zed/data` while running; the folder is
+deleted at the start of each configuration.
 
-Theme mặc định của từng editor. Cấu hình có language server ghi đường dẫn và
-phiên bản `rust-analyzer` vào kết quả; cấu hình không LSP tắt LSP ở cả ba
-(Lucerna `lucerna.lsp.enabled: false`, Zed bỏ language server của Rust, VS
-Code dùng thư mục extension trống `vscode-ext` cùng `--disable-extensions`).
-Cấu hình có LSP: VS Code dùng `vscode-ext-lsp`; thiếu extension
-`rust-lang.rust-analyzer` ở đó thì bench dừng ngay từ đầu.
+Each editor uses its default theme. A configuration with a language server
+records the path and version of `rust-analyzer` in the result; the no-LSP
+configuration turns the LSP off in all three (Lucerna `lucerna.lsp.enabled:
+false`, Zed with the Rust language server removed, VS Code with the empty
+extension folder `vscode-ext` plus `--disable-extensions`). In the LSP
+configuration VS Code uses `vscode-ext-lsp`; if the
+`rust-lang.rust-analyzer` extension is missing there, bench stops right at the
+start.
 
-**Kích thước cửa sổ.** Mọi phép đo mở editor, trừ khởi động, đặt cửa sổ thành
-1280×800 pt (yêu cầu ở toạ độ 0,25) qua Accessibility ngay khi cửa sổ hiện, nên
-ba editor được đo ở cùng một kích thước. macOS giữ cửa sổ dưới thanh menu, nên
-trên màn hình có notch cửa sổ có thể nằm thấp hơn; kích thước thì được kiểm
-tra lại, sai thì lượt đó bị loại. Khung thật (sau khi macOS chỉnh vị trí) được
-ghi vào kết quả, mỗi editor một lần cho mỗi cấu hình (`meta.window_frames`).
-Phép khởi động dùng **kích thước mặc định
-của từng editor** (khung hình đầu tiên không đổi cỡ được). Kích thước, tỉ lệ và
-tần số quét của màn hình chính được ghi vào kết quả.
+**Window size.** Every measurement that opens an editor, except startup, sets
+the window to 1280×800 pt (requested at x=0, y=25) through Accessibility
+as soon as the window appears, so the three editors are measured at the same
+size. macOS keeps the window below the menu bar, so on a display with a notch
+the window may sit lower; the size is checked again, and if it is wrong the
+round is discarded. The real frame (after macOS adjusts the position) is
+recorded in the result, once per editor per configuration
+(`meta.window_frames`). The startup measurement uses **each editor's default
+window size** (the first frame cannot be resized). The size, scale and refresh
+rate of the main display are recorded in the result.
 
-**Dữ liệu cố định** trong `<bench>/data/`:
-- Repo lớn sinh bởi `scripts/gen-bench-repo.sh`: 80.000 file và `big.rs`
-  khoảng 10 MB.
-- Repo vừa: ripgrep `14.1.1` (clone nông), dùng cho RAM và CPU khi rỗi.
-- `marker.txt`: 200 dòng, mỗi dòng 80 ký tự `█` (khối đặc, để vùng giữa cửa
-  sổ đổi màu rõ ràng).
+**Fixed data** in `<bench>/data/`:
+- The large repo, generated by `scripts/gen-bench-repo.sh`: 80,000 files and a
+  `big.rs` of about 10 MB.
+- The medium repo: ripgrep `14.1.1` (shallow clone), used for idle RAM and CPU.
+- `marker.txt`: 200 lines of 80 `█` characters each (solid blocks, so the middle
+  of the window changes colour clearly).
 
-**Kiểm tra máy** (`env.preflight`), chạy **trước mỗi lượt** chứ không chỉ đầu
-phiên: không có `cargo`/`rustc` đang chạy, tải CPU 1 phút ≤ 2,0,
-`CPU_Speed_Limit` = 100 (`pmset -g therm`), đang cắm điện, Low Power Mode tắt.
-Không đạt thì chờ 30 s và thử lại (tối đa 10 lần), rồi dừng và lưu kết quả đã
-có. Người chạy tự tắt app khác.
+**Machine check** (`env.preflight`), run **before every round**, not only at the
+start of the session: no `cargo`/`rustc` running, 1-minute CPU load ≤ 2.0,
+`CPU_Speed_Limit` = 100 (`pmset -g therm`), on AC power, Low Power Mode off. If
+it fails, bench waits 30 s and tries again (up to 10 times), then stops and
+saves the results so far. The person running it is responsible for closing
+other apps.
 
-**Quyền cần cấp:** Screen Recording và Accessibility cho terminal chạy bench
-(quyền của từng lệnh helper và từng phép đo: `bench/compare/README.md`).
-Thiếu quyền thì helper báo lỗi rõ và thoát với mã khác 0, không trả số 0.
+**Permissions needed:** Screen Recording and Accessibility for the terminal
+running bench (permissions per helper command and per measurement:
+`bench/compare/README.md`). If a permission is missing, the helper reports a
+clear error and exits with a non-zero code; it never returns a 0 value.
 
-## Các phép đo
+## Measurements
 
-Mỗi phép mở editor trong hồ sơ bench, đo, rồi đóng editor. Chỉ process mang
-đường dẫn hồ sơ bench (và con của chúng), hoặc `luc` ghi trong file pid của
-bench, bị đóng; Zed hay VS Code đang chạy của người dùng không bị đụng. Lucerna
-nhận diện bằng file pid (pid, thời điểm bắt đầu và đường dẫn chính xác của
-binary) vì `ps` trên macOS không hiện biến môi trường của process khác.
+Each measurement opens the editor in the bench profile, measures, then closes
+the editor. Only processes carrying the bench profile path (and their children),
+or the `luc` recorded in bench's pid file, are closed; a Zed or VS Code that
+the user already has running is left alone. Lucerna is identified through the
+pid file (pid, start time and exact binary path) because `ps` on macOS does not
+show the environment variables of other processes.
 
-Binary Lucerna được xác định **một lần** đầu phiên và ghi vào kết quả
-(`meta.lucerna_binary`: đường dẫn, thời điểm sửa file, `luc --version`), cạnh
-`lucerna_commit` (HEAD của checkout, có thể khác binary nếu chưa dựng lại).
-VS Code chạy với môi trường đã bỏ `ELECTRON_RUN_AS_NODE` và
-`ELECTRON_NO_ATTACH_CONSOLE` (nếu shell gọi bench có đặt), để `Code` luôn chạy
-như app. Không có binary Lucerna thì bench dừng ngay; binary biến mất giữa phiên (đang dựng lại)
-thì bench dừng trước lần mở Lucerna kế tiếp.
+The Lucerna binary is resolved **once** at the start of the session and recorded
+in the result (`meta.lucerna_binary`: path, file modification time,
+`luc --version`), next to `lucerna_commit` (the checkout's HEAD, which may
+differ from the binary if it has not been rebuilt). VS Code runs with
+`ELECTRON_RUN_AS_NODE` and `ELECTRON_NO_ATTACH_CONSOLE` removed from its
+environment (if the shell that invokes bench sets them), so that `Code` always
+runs as an app. If there is no Lucerna binary, bench stops immediately; if the
+binary disappears mid-session (being rebuilt), bench stops before the next
+Lucerna launch.
 
-Đồng hồ: mọi mốc là nano giây của `CLOCK_UPTIME_RAW`. Thời điểm của một khung
-hình lấy từ `SCStreamFrameInfo.displayTime` (mach time) mà ScreenCaptureKit gắn
-cho khung, nên không phụ thuộc độ trễ chuyển khung tới process đo. Helper
-`bench-helper` (Swift, dựng bằng `swiftc` của Command Line Tools; không dùng
-Xcode hay `xctrace`) quay cửa sổ lớn nhất đang hiện của editor ở tần số quét
-của màn hình.
+Clock: every timestamp is in nanoseconds of `CLOCK_UPTIME_RAW`. The time of a
+frame comes from `SCStreamFrameInfo.displayTime` (mach time), which
+ScreenCaptureKit attaches to the frame, so it does not depend on the delay in
+delivering the frame to the measuring process. The `bench-helper` helper (Swift,
+built with the Command Line Tools' `swiftc`; no Xcode or `xctrace`) captures the
+editor's largest visible window at the display's refresh rate.
 
-**Màu nền.** Với mỗi editor và phiên bản, bench mở một file trống, lấy màu
-phổ biến nhất của vùng giữa cửa sổ làm màu nền; bỏ nếu màu phổ biến nhất chiếm
-dưới 90% vùng giữa (có thể là hộp thoại hay cửa sổ chưa vẽ xong). Màu lưu trong
-`<bench>/calibration.json` và ghi vào kết quả.
+**Background colour.** For each editor and version, bench opens an empty file
+and takes the most common colour in the middle of the window as the background
+colour; the calibration is discarded if the most common colour covers less than
+90% of the middle region (it may be a dialog or a window that has not finished
+drawing). The colour is stored in `<bench>/calibration.json` and recorded in the
+result.
 
-| Chỉ số | Cách đo |
+| Metric | How it is measured |
 |---|---|
-| Khởi động tới khung đầu có nội dung | Mở `marker.txt`. Helper quay **cả màn hình chính** và bắt đầu quay **trước** khi mở editor (chờ helper báo sẵn sàng rồi mới gọi lệnh mở), nên khung đầu tiên của cửa sổ mới không bị lỡ. Ở mỗi khung, helper tìm cửa sổ lớn nhất của binary editor (theo đường dẫn binary của process sở hữu; bỏ các process cùng binary đã chạy trước, ví dụ VS Code của bạn), cắt khung theo cửa sổ đó, và dừng ở khung đầu tiên mà ≥ 30% điểm ảnh của vùng giữa (60% × 60% cửa sổ) khác màu nền đã hiệu chuẩn. Mốc 0 là ngay trước khi gọi lệnh mở; helper báo thời điểm tuyệt đối của khung và bench trừ mốc 0. Vì quay cả màn hình, một cửa sổ khác nằm đè lên editor sẽ bị đo thay: một khung chỉ được tính khi cửa sổ trên cùng tại tâm và bốn góc của vùng giữa là của editor; khung bị che không thể đạt điều kiện, nên cửa sổ bị che chỉ làm số đo muộn hơn, không làm nó sớm giả (số khung bị che được ghi lại). Để cửa sổ mới không nằm sau cửa sổ khác, ngay khi process của editor xuất hiện bench đưa app đó lên trước từ một luồng nền (không làm chậm việc quay). Nếu cửa sổ đã đủ nội dung ngay khung đầu tiên quay được (không thể xảy ra với cửa sổ mở sau đó), lượt đó bị loại (ghi `null`). |
-| Đổi file trên đĩa → màn hình cập nhật | Mở bản sao của `marker.txt`, chờ nội dung hiện và 1 s cho yên, bắt đầu quay, rồi script ghi file trống. Mốc là ngay trước lệnh ghi; dừng ở khung đầu tiên đổi hơn 0,5% so với khung tham chiếu (ngưỡng bỏ qua con trỏ nhấp nháy). |
-| Quick Open mỗi phím gõ (repo 80.000 file) | Mở repo lớn, chờ 30 s cho quét file, ⌘P, gõ `mod004`, rồi bắt đầu quay và gõ phím cuối `2` (`mod0042` là thư mục có thật trong repo sinh ra). Mốc là lúc gửi phím cuối; dừng ở khung đầu tiên đổi. Phím gửi bằng `CGEvent.postToPid` tới đúng process, sau khi đưa app lên trước. |
-| RAM khi rỗi | Mở repo vừa, mở 10 file `.rs` của ripgrep bằng Quick Open (cùng cách cho cả ba, vì `luc` chỉ nhận một đường dẫn trên dòng lệnh), rỗi 60 s, rồi cộng `phys_footprint` của mọi process của app (`footprint`). Đơn vị MiB (1024). |
-| CPU khi rỗi | Cùng phiên với RAM (mỗi editor mỗi lượt một phiên: rỗi 60 s, đọc RAM, rồi đo CPU thêm 60 s, tổng khoảng 2 phút): thời gian CPU cộng dồn (`ps -o time=`) của mọi process của app, đọc mỗi giây với danh sách process làm mới mỗi lần; CPU dùng trong 60 s chia cho thời gian thực, ×100 (100% = một lõi). Process mới xuất hiện tính từ 0, process thoát giữa chừng tính tới lần đọc cuối của nó. Không dùng `%cpu` của `ps` (trung bình suy giảm, không phải tức thời). Báo cáo ghi hai chữ số thập phân; khi trung vị của Lucerna dưới 0,1% thì không ghi hệ số (tỉ số của hai giá trị nhỏ như vậy chủ yếu là nhiễu). |
-| Khung rớt khi cuộn `big.rs` | Mở `big.rs`, chờ nội dung hiện, đưa editor lên trước và kiểm tra cửa sổ trên cùng ở tâm cửa sổ là của editor (nếu bị cửa sổ khác che, lượt bị loại mà không gửi sự kiện nào), rồi gửi 3000 sự kiện cuộn một dòng với tốc độ 120 sự kiện/giây (CGEvent), con trỏ đặt giữa cửa sổ. Khung rớt là khoảng cách giữa hai khung mới > 1,5 × max(chu kỳ quét màn hình, chu kỳ sự kiện) trong lúc còn gửi sự kiện. Báo tỉ lệ rớt / số khung (%). Vùng giữa của file code phủ ít điểm ảnh hơn nên ngưỡng "đã có nội dung" ở phép này là 2%, không phải 30%. |
-| Dung lượng app | `du -sk` của bundle `.app`, MiB. Một giá trị mỗi cấu hình, không lặp lượt. |
+| Startup to first frame with content | Open `marker.txt`. The helper captures **the whole main display** and starts capturing **before** the editor is opened (bench waits for the helper to report ready, then runs the open command), so the first frame of the new window is not missed. On each frame the helper finds the editor binary's largest window (by the binary path of the owning process; processes of the same binary that were already running, such as your own VS Code, are excluded), crops the frame to that window, and stops at the first frame in which ≥ 30% of the pixels in the middle region (60% × 60% of the window) differ from the calibrated background colour. Time 0 is just before the open command; the helper reports the absolute time of the frame and bench subtracts time 0. Because the whole display is captured, another window lying over the editor would be measured instead: a frame counts only if the topmost window at the centre and the four corners of the middle region belongs to the editor; an occluded frame cannot meet the condition, so an occluded window only makes the measurement later, never falsely earlier (the number of occluded frames is recorded). So that the new window is not behind another window, as soon as the editor's process appears bench brings that app to the front from a background thread (which does not slow down the capture). If the window already has enough content in the very first captured frame (impossible for a window opened afterwards), the round is discarded (recorded as `null`). |
+| File changed on disk → screen updated | Open a copy of `marker.txt`, wait for the content to show plus 1 s to settle, start capturing, then the script writes an empty file. Time 0 is just before the write command; stops at the first frame that changes by more than 0.5% relative to the reference frame (a threshold that ignores a blinking cursor). |
+| Quick Open per keystroke (80,000-file repo) | Open the large repo, wait 30 s for the file scan, ⌘P, type `mod004`, then start capturing and type the last key `2` (`mod0042` is a folder that really exists in the generated repo). Time 0 is the moment the last key is sent; stops at the first frame that changes. Keys are sent with `CGEvent.postToPid` to the exact process, after bringing the app to the front. |
+| Idle RAM | Open the medium repo, open 10 `.rs` files of ripgrep through Quick Open (the same way for all three, because `luc` accepts only one path on the command line), idle for 60 s, then sum the `phys_footprint` of every process of the app (`footprint`). Unit: MiB (1024). |
+| Idle CPU | Same session as RAM (one session per editor per round: idle 60 s, read RAM, then measure CPU for another 60 s, about 2 minutes in total): cumulative CPU time (`ps -o time=`) of every process of the app, read every second with the process list refreshed each time; CPU used over the 60 s divided by wall-clock time, ×100 (100% = one core). A process that appears later counts from 0, and a process that exits midway counts up to its last reading. The `%cpu` column of `ps` is not used (a decaying average, not instantaneous). The report shows two decimal places; when Lucerna's median is below 0.1% no ratio is shown (a ratio of two values that small is mostly noise). |
+| Dropped frames scrolling `big.rs` | Open `big.rs`, wait for the content to show, bring the editor to the front and check that the topmost window at the window centre is the editor's (if another window covers it, the round is discarded without sending any event), then send 3000 one-line scroll events at 120 events/second (CGEvent), with the pointer at the window centre. A dropped frame is a gap between two new frames > 1.5 × max(display refresh period, event period) while events are still being sent. The reported value is the dropped rate / number of frames (%). The middle of a code file covers fewer pixels, so the "has content" threshold for this measurement is 2%, not 30%. |
+| App size | `du -sk` of the `.app` bundle, MiB. One value per configuration, not repeated per round. |
 
-## Lượt đo và thống kê
+## Rounds and statistics
 
-- **10 lượt** mỗi phép đo (`--rounds`, mặc định 10 theo spec). Thứ tự ba
-  editor xoay vòng mỗi lượt để không editor nào luôn chạy đầu hay cuối. Với 10
-  lượt, Lucerna chạy đầu 4 lần, Zed và VS Code mỗi editor 3 lần; nên chọn số
-  lượt là bội của 3 (ví dụ 9 hay 12) để mỗi editor chạy đầu số lần bằng nhau.
-- **Lượt 0 bị bỏ:** đầu mỗi cấu hình, bench chạy một lượt đầy đủ mọi phép đo
-  đã chọn (kể cả khởi động) cho mỗi editor rồi bỏ kết quả, để lượt đo đầu tiên
-  không phải lần mở đầu tiên của bất kỳ thứ gì (cache của hệ điều hành và của
-  app). Mỗi phép đo mở editor vì vậy chạy `rounds + 1` lần mỗi editor.
-- **Nghỉ 20 s** giữa hai lần mở editor để máy nguội. Preflight chạy trước mỗi
-  lượt.
-- Báo **trung vị** và **p90** (nearest rank: giá trị thứ ⌈0,9·n⌉ sau khi sắp
-  xếp).
-- Một lượt hỏng (helper lỗi, hết 60 s, không thấy cửa sổ, khung đáng ngờ)
-  ghi `null`; thống kê bỏ qua và báo cáo ghi "n/N lượt hỏng". Một lượt hỏng
-  không làm hỏng cả phiên; kết quả được ghi lại sau mỗi lượt. Lượt đổi file
-  hoặc Quick Open bị loại (`null`) nếu khung đổi trước lúc gây sự kiện.
-- **Hệ số** so với Lucerna = trung vị của editor kia / trung vị của Lucerna,
-  tính cho từng cột editor, làm tròn một chữ số thập phân. Hệ số > 1 chỉ có
-  nghĩa là số của editor kia lớn hơn số của Lucerna; số lớn hơn không tự nó là
-  tốt hay xấu, tuỳ chỉ số. Không tô màu thắng/thua.
-- Mỗi kết quả kèm: phiên bản ba editor, commit Lucerna, binary Lucerna (đường
-  dẫn, thời điểm dựng, `--version`), đường dẫn và thời điểm dựng của helper,
-  macOS, chip, RAM, màn hình chính (kích thước, tỉ lệ, tần số quét), khung cửa
-  sổ đã đặt, ngày đo, `rust-analyzer` (nếu có), màu nền hiệu chuẩn.
-- Hai chế độ: **ấm** (mặc định) và **lạnh** (`--cold`: trước mỗi lần khởi động,
-  kể cả lượt 0, bench dừng chờ bạn chạy `sudo purge`). Chỉ phép khởi động là
-  lạnh; các phép khác trong cùng cấu hình chạy như ở chế độ ấm. Báo cáo ghi cấu
-  hình này là "lạnh (chỉ khởi động)".
+- **10 rounds** per measurement (`--rounds`, default 10 per the spec). The order
+  of the three editors rotates every round so that no editor always runs first
+  or last. With 10 rounds, Lucerna runs first 4 times and Zed and VS Code 3
+  times each; so choose a number of rounds that is a multiple of 3 (for example
+  9 or 12) for each editor to run first an equal number of times.
+- **Round 0 is dropped:** at the start of each configuration, bench runs one full
+  round of every selected measurement (startup included) for each editor and
+  discards the result, so that the first measured round is not the first time
+  anything has been opened (operating system and app caches). Each measurement
+  that opens an editor therefore runs `rounds + 1` times per editor.
+- **A 20 s pause** between two editor launches lets the machine cool. Preflight
+  runs before every round.
+- Reported are the **median** and **p90** (nearest rank: the ⌈0.9·n⌉-th value
+  after sorting).
+- A failed round (helper error, 60 s timeout, no window found, suspicious frame)
+  is recorded as `null`; the statistics skip it and the report writes "n/N
+  rounds failed". One failed round does not fail the whole session; the result
+  is saved after every round. A file-change or Quick Open round is discarded
+  (`null`) if the frame changed before the triggering event.
+- **Ratio** vs Lucerna = the other editor's median / Lucerna's median, computed
+  per editor column and rounded to one decimal place. A ratio > 1 only means
+  that the other editor's number is larger than Lucerna's; a larger number is
+  not good or bad in itself, it depends on the metric. No winner/loser
+  colouring.
+- Each result comes with: the versions of the three editors, the Lucerna commit,
+  the Lucerna binary (path, build time, `--version`), the path and build time of
+  the helper, macOS, chip, RAM, the main display (size, scale, refresh rate),
+  the window frame that was set, the measurement date, `rust-analyzer` (if any),
+  and the calibrated background colours.
+- Two modes: **warm** (default) and **cold** (`--cold`: before every startup,
+  round 0 included, bench pauses and waits for you to run `sudo purge`). Only
+  the startup measurement is cold; the other measurements in the same
+  configuration run as in warm mode. The report names this configuration "cold
+  (startup only)".
 
-## Giới hạn đã biết
+## Known limits
 
-- **Lucerna ít tính năng hơn.** Không AI, không debugger, không extension host
-  kiểu VS Code. Cùng một phép đo chạy trên ba chương trình có phạm vi khác nhau;
-  bench không đo tính năng Lucerna không có.
-- **Kiến trúc khác nhau**: VS Code chạy trên Electron (nhiều process), Zed và
-  Lucerna là app native vẽ bằng GPU. Số RAM cộng mọi process của app; cách tính
-  này cộng tất cả process, nhưng không cho biết phần nào thuộc process nào,
-  cũng không phản ánh bộ nhớ dùng chung giữa các process.
-- **Đo ngoài gồm độ trễ hệ thống**: compositor, hiển thị và quay màn hình cộng
-  vào số đo như nhau cho cả ba editor, nên các số không phải thời gian bên
-  trong từng app và không so được với số đo trong của chúng. Độ trễ quay của
-  ScreenCaptureKit làm số khởi động và độ trễ phản hồi lớn hơn một chút so với
-  thực; độ phân giải thời gian bị giới hạn bởi tần số quét màn hình.
-- **Quick Open và mở file khác nhau giữa các editor**: mỗi editor đánh chỉ mục
-  và xếp hạng kết quả theo cách riêng, có thể quét nền sau khi mở thư mục. Bench
-  chờ 30 s trước khi gõ nhưng không kiểm chứng quét đã xong. Mở file đi qua
-  Quick Open ở cả ba để cùng đường đi; tab xem trước bị tắt ở cả ba để mười
-  file thành mười tab. Lucerna không có khoá riêng cho Quick Open nên dùng
+- **Lucerna has fewer features.** No AI, no debugger, no VS Code-style extension
+  host. The same measurement run on three programs covers different scope; bench
+  does not measure features Lucerna does not have.
+- **Different architectures**: VS Code runs on Electron (multiple processes),
+  while Zed and Lucerna are native apps drawn on the GPU. The RAM figure sums
+  every process of the app; this adds up all processes, but does not say which
+  part belongs to which process, nor does it reflect memory shared between
+  processes.
+- **Outside measurement includes system latency**: the compositor, the display
+  and screen capture add to the measurement equally for all three editors, so
+  the numbers are not the time inside each app and cannot be compared with their
+  internal numbers. ScreenCaptureKit's capture latency makes startup and response
+  latency slightly larger than the real value; time resolution is limited by the
+  display's refresh rate.
+- **Quick Open and file opening differ between editors**: each editor indexes
+  and ranks results in its own way and may scan in the background after a folder
+  is opened. Bench waits 30 s before typing but does not verify that the scan
+  has finished. Files are opened through Quick Open in all three so they take
+  the same path; preview tabs are off in all three so that ten files become ten
+  tabs. Lucerna has no separate setting for Quick Open, so it uses
   `workbench.editor.enablePreview: false`.
-- **Lựa chọn settings ảnh hưởng số đo**: tắt minimap, tắt tính năng AI của Zed,
-  tắt telemetry, cỡ chữ 14 và hồ sơ trống (không extension) làm số khác một
-  máy dùng hằng ngày. Cấu hình có rust-analyzer đo thêm phần language server;
-  cả ba editor dùng chung một binary `rust-analyzer` (VS Code qua extension
-  `rust-lang.rust-analyzer` cài một lần, trỏ tới cùng binary bằng
+- **Settings choices affect the numbers**: minimap off, Zed's AI features off,
+  telemetry off, font size 14 and an empty profile (no extensions) make the
+  numbers differ from a machine used every day. The rust-analyzer configuration
+  also measures the language server; all three editors share one
+  `rust-analyzer` binary (VS Code through the `rust-lang.rust-analyzer`
+  extension, installed once and pointed at the same binary with
   `rust-analyzer.server.path`).
-- **Mười file của phép RAM/CPU khi rỗi không được kiểm chứng là đã mở.** Bench
-  mở chúng bằng Quick Open (gõ đường dẫn, Enter) và chờ, nhưng không kiểm tra
-  mỗi editor thật sự có mười tab; một lần mở hỏng làm số RAM thấp hơn mà không
-  bị loại.
-- **Chỉ màn hình chính.** Phép khởi động quay màn hình chính (màn hình có thanh
-  menu). Nếu editor mở cửa sổ trên màn hình khác, lượt đó hết giờ và ghi `null`.
-  Nên chạy với một màn hình, hoặc để các editor mở trên màn hình chính.
-- **Khởi động ở kích thước cửa sổ mặc định** của từng editor, các phép khác ở
-  1280×800 pt. Kích thước mặc định khác nhau giữa các editor, nên số khởi động
-  gồm cả khác biệt về diện tích cần vẽ.
-- **Phép đo khởi động phụ thuộc vào `marker.txt`** (vùng giữa phủ ≥ 30%) và
-  màu nền hiệu chuẩn; theme khác có thể cho số khác. Một lượt có nội dung đã
-  hiện từ khung đầu tiên bị loại thay vì ghi số có thể sai.
-- **Một máy, một lần chạy.** Kết quả chỉ nói về máy và phiên bản ghi kèm.
-- Thiết lập Zed (`profiles/zed/config/settings.json`) dựa trên đọc help và binary
-  của Zed; nếu bản Zed khác dùng đường dẫn khác, cần chỉnh `env.write_profiles`.
+- **The ten files of the idle RAM/CPU measurement are not verified to be
+  open.** Bench opens them through Quick Open (type the path, Enter) and waits,
+  but does not check that each editor really has ten tabs; a failed open makes
+  the RAM number lower without the round being discarded.
+- **Main display only.** The startup measurement captures the main display (the
+  one with the menu bar). If an editor opens its window on another display, the
+  round times out and is recorded as `null`. Run with one display, or let the
+  editors open on the main display.
+- **Startup at each editor's default window size**, the other measurements at
+  1280×800 pt. Default sizes differ between editors, so the startup number
+  includes the difference in the area that has to be drawn.
+- **The startup measurement depends on `marker.txt`** (middle region covered
+  ≥ 30%) and on the calibrated background colour; a different theme can give
+  different numbers. A round where the content is already visible in the very
+  first frame is discarded instead of recording a possibly wrong number.
+- **One machine, one run.** The results speak only for the machine and versions
+  recorded with them.
+- The Zed setup (`profiles/zed/config/settings.json`) is based on reading Zed's
+  help and binary; if another Zed version uses different paths,
+  `env.write_profiles` needs adjusting.
 
-## Chạy lại
+## Rerunning
 
-Từ gốc repo. Cần: macOS, Command Line Tools (`swiftc`), `python3`, VS Code và
-Zed trong `/Applications`, một bản `luc` (build release bằng
-`scripts/bundle-app.sh`, hoặc đặt `LUCERNA_BIN`), và mạng cho lần đầu (clone
-ripgrep).
+From the repo root. Requirements: macOS, the Command Line Tools (`swiftc`),
+`python3`, VS Code and Zed in `/Applications`, a `luc` binary (a release build
+from `scripts/bundle-app.sh`, or set `LUCERNA_BIN`), and a network connection
+for the first run (cloning ripgrep).
 
-1. Cắm sạc, tắt Low Power Mode, đóng app khác, dừng mọi `cargo`/`rustc`.
-   **Đóng Zed của bạn trước** và không mở Zed trong lúc chạy: Zed chỉ cho một
-   phiên mỗi kênh phát hành, nên khi Zed của bạn đang chạy (ở bất kỳ đâu) bench
-   dừng ngay (hoặc giữa chừng, trước lần mở Zed kế tiếp) và lưu kết quả dở.
-   VS Code của bạn có thể để mở: bench chạy phiên riêng và bỏ qua cửa sổ của
-   nó. Không dựng lại Lucerna trong lúc chạy.
-2. Cấp **Screen Recording** và **Accessibility** cho ứng dụng terminal trong
+1. Plug in the charger, turn Low Power Mode off, close other apps, stop any
+   `cargo`/`rustc`. **Quit your own Zed first** and do not open Zed while the
+   run is in progress: Zed allows only one instance per release channel, so when
+   your Zed is running (anywhere) bench stops immediately (or midway, before the
+   next Zed launch) and saves the partial results. Your VS Code can stay open:
+   bench runs its own session and ignores your window. Do not rebuild Lucerna
+   during the run.
+2. Grant **Screen Recording** and **Accessibility** to the terminal app in
    System Settings > Privacy & Security.
-3. Dựng helper:
+3. Build the helper:
    ```sh
-   sh bench/compare/helper/build.sh        # ra <bench>/bin/bench-helper
+   sh bench/compare/helper/build.sh        # writes <bench>/bin/bench-helper
    ```
-   Nếu dùng `--bench-dir D`, dựng bằng `BENCH_DIR=D sh bench/compare/helper/build.sh`
-   (hoặc truyền đường dẫn ra làm đối số), hoặc đặt `BENCH_HELPER` trỏ tới helper.
-4. (Chỉ cho cấu hình có LSP) cần `rust-analyzer` trên PATH; cài extension cho
-   VS Code một lần vào `<bench>/profiles/vscode-ext-lsp` bằng
-   `env.install_vscode_rust_analyzer` (xem `bench/compare/README.md`). Thiếu
-   extension thì `--lsp on`/`both` dừng ngay từ đầu.
-5. Chạy. Mỗi cấu hình mất khá lâu (mỗi lượt gồm nhiều lần khởi động và, cho mỗi editor, một
-   phiên rỗi khoảng 2 phút: 60 s rỗi rồi 60 s lấy mẫu CPU):
+   If you use `--bench-dir D`, build with `BENCH_DIR=D sh bench/compare/helper/build.sh`
+   (or pass the output path as an argument), or set `BENCH_HELPER` to point at
+   the helper.
+4. (Only for the LSP configuration) `rust-analyzer` must be on PATH; install the
+   VS Code extension once into `<bench>/profiles/vscode-ext-lsp` with
+   `env.install_vscode_rust_analyzer` (see `bench/compare/README.md`). If the
+   extension is missing, `--lsp on`/`both` stops right at the start.
+5. Run. Each configuration takes quite a while (each round includes several
+   launches and, for each editor, an idle session of about 2 minutes: 60 s idle,
+   then 60 s of CPU sampling):
    ```sh
-   python3 -I bench/compare/run.py --rounds 10 --lsp off     # ấm, không LSP
-   python3 -I bench/compare/run.py --rounds 10 --lsp on      # ấm, rust-analyzer
+   python3 -I bench/compare/run.py --rounds 10 --lsp off     # warm, no LSP
+   python3 -I bench/compare/run.py --rounds 10 --lsp on      # warm, rust-analyzer
    python3 -I bench/compare/run.py --rounds 10 --lsp off --cold
    ```
-   Với `--cold`, script dừng và nhắc "chạy `sudo purge` rồi nhấn Enter" trước
-   **mỗi** lần khởi động đo (kể cả lượt 0); bạn chạy `sudo purge` ở terminal
-   khác rồi nhấn Enter.
-   Thiếu Screen Recording thì bench dừng trước khi đo và gợi ý `--only` với các
-   phép chạy được (ví dụ `--only idle_ram_mb,idle_cpu_pct,app_size_mb`).
-   Tuỳ chọn: `--lsp both`, `--only startup_ms,scroll_dropped_pct`,
-   `--bench-dir D`, `--out FILE`, `--skip-prepare`. Mặc định ghi
-   `bench/compare/results/<ngày>-<commit>.json`.
-6. Sinh bảng và biểu đồ:
+   With `--cold`, the script pauses and prompts "run `sudo purge`, then press
+   Enter" before **every** measured startup (round 0 included); run `sudo purge`
+   in another terminal, then press Enter.
+   If Screen Recording is missing, bench stops before measuring and suggests
+   `--only` with the measurements that can run (for example
+   `--only idle_ram_mb,idle_cpu_pct,app_size_mb`).
+   Options: `--lsp both`, `--only startup_ms,scroll_dropped_pct`,
+   `--bench-dir D`, `--out FILE`, `--skip-prepare`. By default the result is
+   written to `bench/compare/results/<date>-<commit>.json`.
+6. Generate the tables and charts:
    ```sh
    python3 -I bench/compare/report.py bench/compare/results/<file>.json --out <dir>
    ```
-   ra `results.md` và một SVG cho mỗi chỉ số và cấu hình.
+   which writes `results.md` and one SVG per metric and configuration.
+   `--metrics a,b,...` limits both to the given metric keys (default: all).
 
-Test của bộ công cụ: `python3 -m unittest discover -s bench/compare/tests -v`.
+The toolkit's tests: `python3 -m unittest discover -s bench/compare/tests -v`.
 
-## Kết quả
+## Results
 
-Chưa có — chờ lần đo chính thức.
+### Run
+
+- Date: 2026-11-15
+- Lucerna: `luc 0.1.0`, release build of commit `026bbac` on `main` (git tag `bench-2026-11-15`)
+- Configuration: no LSP, warm (OS caches already warm, no purge), 10 rounds; median and p90 reported
+- Editors: Lucerna `luc 0.1.0`, Zed 1.28.1, VS Code 1.146.0
+- Machine: Apple M4, 16 GB RAM, macOS 26.7.1 (25G241); main display 1470×956 pt at scale 2, 60 Hz
+- Window: 1280×800 pt for every metric except startup (each editor's default size)
+- Raw data: [`bench/compare/results/2026-11-15-026bbac.json`](../bench/compare/results/2026-11-15-026bbac.json)
+
+### Table
+
+Each cell: median (p90). The "vs Lucerna" row is that editor's median divided by
+Lucerna's median; a value above 1 only means a larger measurement than
+Lucerna's. This table is generated by `bench/compare/report.py` from the JSON
+file above (the full generated file is
+[`benchmarks/results.md`](benchmarks/results.md)).
+
+| Metric | Lucerna | Zed | VS Code |
+|---|---|---|---|
+| Startup to first frame with content | 140 ms (p90 143) | 241 ms (p90 252) | 267 ms (p90 672) |
+| ↳ vs Lucerna | — | 1.7× | 1.9× |
+| Idle RAM (medium repo, 10 tabs) | 169 MB (p90 179) | 235 MB (p90 236) | 879 MB (p90 879) |
+| ↳ vs Lucerna | — | 1.4× | 5.2× |
+| Idle CPU | 1.40 % (p90 1.42) | 2.20 % (p90 2.23) | 3.01 % (p90 3.18) |
+| ↳ vs Lucerna | — | 1.6× | 2.1× |
+| App size | 50 MB | 177 MB | 1604 MB |
+| ↳ vs Lucerna | — | 3.5× | 31.9× |
+
+### Charts
+
+![Startup to first frame with content](benchmarks/startup_ms-nolsp-warm.svg)
+
+![Idle RAM, medium repo with 10 tabs](benchmarks/idle_ram_mb-nolsp-warm.svg)
+
+![Idle CPU](benchmarks/idle_cpu_pct-nolsp-warm.svg)
+
+![App size](benchmarks/app_size_mb-nolsp-warm.svg)
+
+### Not published in this run
+
+Quick Open latency and scrolling dropped frames were measured in this run but
+are not published, because their measurement method is still being verified:
+in this run Quick Open failed in every round for two of the three editors, and
+the scrolling results look like a measurement artefact. The raw JSON keeps
+these values; do not quote them.
+The file-change metric was not part of this run.
+
+### Regenerating this section
+
+```sh
+python3 -I bench/compare/report.py bench/compare/results/2026-11-15-026bbac.json \
+  --out docs/benchmarks --metrics startup_ms,idle_ram_mb,idle_cpu_pct,app_size_mb
+```

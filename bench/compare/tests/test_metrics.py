@@ -575,7 +575,7 @@ class OwnerPidTests(unittest.TestCase):
         self.assertIsNone(pids)
         msgs = " ".join(c.args[0] for c in log.call_args_list)
         self.assertIn("777", msgs)
-        self.assertIn("THẬT", msgs)
+        self.assertIn("REAL", msgs)
 
     def test_zed_never_owner_times_out(self):
         cli = f"{self.ZED}/cli --user-data-dir /b/profiles/zed"

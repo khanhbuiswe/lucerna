@@ -35,18 +35,19 @@ Claude / Codex (app or CLI) writes  →  Lucerna shows  →  you review
 
 **Why not VS Code?** VS Code runs on Electron. Lucerna is written in Rust and draws on the GPU
 with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), the UI framework from
-the Zed project. In a release build the first frame takes about 150 ms, idle memory is about
-110 MB, and an 80,000-file repo shows its tree in about 60 ms
-(see [`docs/perf-checklist.md`](docs/perf-checklist.md)). You keep VS Code's shortcuts, setting
-names and `keybindings.json` format.
+the Zed project. In a release build the first frame with content takes about 140 ms, and idle
+memory is about 170 MB with a medium repo and 10 tabs open (medians of 10 runs on an Apple M4,
+measured from outside the app; see [`docs/benchmarks.md`](docs/benchmarks.md)). An 80,000-file
+repo shows its tree in about 60 ms (see [`docs/perf-checklist.md`](docs/perf-checklist.md)).
+You keep VS Code's shortcuts, setting names and `keybindings.json` format.
 
 **Why not Zed?** Zed is fast too, but it is an AI-first editor: it ships its own agent panel,
 edit predictions, collaboration and account sign-in. Lucerna leaves the agent to the tool you
 already use and stays small. It has no AI features, no telemetry and no account. It is fast,
 simple and does one job well: showing you the code.
 
-How Lucerna, Zed and VS Code are compared on startup, memory and scrolling, and how to rerun the
-measurements, is described in [`docs/benchmarks.md`](docs/benchmarks.md) (in Vietnamese; results pending).
+How Lucerna, Zed and VS Code are compared on startup, memory, CPU and app size, how to rerun the
+measurements, and the published results, are in [`docs/benchmarks.md`](docs/benchmarks.md).
 
 **Built for one flow.** Reading code is the first priority. Every feature is there to help you
 follow, navigate and understand what the agent wrote, and anything that does not serve that is
@@ -58,9 +59,11 @@ left out.
   its scroll position, syntax colours and folds. Atomic writes, `git checkout` of thousands
   of files, and deleted or recreated files are all handled. Files the agent just changed are
   marked in the tree for 10 seconds.
-- **Fast on big repos.** In a release build, the first frame takes about 150 ms. An 80,000-file repo shows
-  its tree in about 60 ms and finishes scanning in about 1.2 s. Idle memory is about 110 MB.
-  See [`docs/perf-checklist.md`](docs/perf-checklist.md).
+- **Fast on big repos.** In a release build, the first frame with content takes about 140 ms.
+  An 80,000-file repo shows its tree in about 60 ms and finishes scanning in about 1.2 s. Idle
+  memory is about 170 MB with a medium repo and 10 tabs open. See
+  [`docs/benchmarks.md`](docs/benchmarks.md) for the method and the three-editor table, and
+  [`docs/perf-checklist.md`](docs/perf-checklist.md) for the tree and scan figures.
 - **VS Code muscle memory.**
   - Cmd+P opens Quick Open, which also takes `>` for commands and `:` for go to line.
   - Cmd+Shift+F searches the project, Cmd+F finds in the file, Cmd+\ splits the editor.

@@ -161,8 +161,8 @@ def check_permissions(paths: BenchPaths, selected: list[str]) -> None:
         return
     perms = helper_permissions(paths)
     if perms is None:
-        raise Abort("bench-helper `check` không chạy được; dựng helper bằng "
-                    "`sh bench/compare/helper/build.sh` (xem README).")
+        raise Abort("bench-helper `check` cannot run; build the helper with "
+                    "`sh bench/compare/helper/build.sh` (see README).")
     missing = []
     if need_screen and not perms.get("screen_recording"):
         missing.append(("Screen Recording", need_screen))
@@ -170,12 +170,12 @@ def check_permissions(paths: BenchPaths, selected: list[str]) -> None:
         missing.append(("Accessibility", need_ax))
     if not missing:
         return
-    lines = [f"Thiếu quyền {name}: cần cho {', '.join(ms)}." for name, ms in missing]
+    lines = [f"Missing {name} permission: needed for {', '.join(ms)}." for name, ms in missing]
     blocked = {m for _, ms in missing for m in ms}
     runnable = [m for m in selected if m not in blocked]
     if runnable:
-        lines.append("Có thể chạy trước các phép đo còn lại: --only " + ",".join(runnable))
-    lines.append("Cấp quyền trong System Settings > Privacy & Security rồi chạy lại.")
+        lines.append("The remaining measurements can run first: --only " + ",".join(runnable))
+    lines.append("Grant the permission in System Settings > Privacy & Security and run again.")
     raise Abort("\n".join(lines))
 
 
@@ -184,9 +184,9 @@ def check_vscode_lsp(paths: BenchPaths, selected: list[str], lsp_modes) -> None:
     if True not in lsp_modes or not [m for m in selected if m != "app_size_mb"]:
         return
     if not env.vscode_rust_analyzer_installed(paths):
-        raise Abort(f"Thiếu extension {env.VSCODE_RUST_ANALYZER} trong "
-                    f"{env.vscode_ext_dir(paths, True)} (cần cho --lsp on/both). Cài một lần "
-                    "bằng env.install_vscode_rust_analyzer (xem bench/compare/README.md).")
+        raise Abort(f"Missing extension {env.VSCODE_RUST_ANALYZER} in "
+                    f"{env.vscode_ext_dir(paths, True)} (needed for --lsp on/both). Install it once "
+                    "with env.install_vscode_rust_analyzer (see bench/compare/README.md).")
 
 
 def check_foreign_zed(paths: BenchPaths, selected: list[str]) -> None:
@@ -205,16 +205,16 @@ def wait_quiet(on_ignored=None) -> None:
         reasons = env.preflight()
         if not reasons:
             return
-        _log("máy chưa yên: " + "; ".join(reasons))
+        _log("machine not quiet: " + "; ".join(reasons))
         if on_ignored is not None:
             on_ignored(reasons)
-            _log("--ignore-preflight: đo tiếp")
+            _log("--ignore-preflight: measuring anyway")
             return
         if attempt == PREFLIGHT_RETRIES:
             break
-        _log(f"chờ {PREFLIGHT_WAIT_S} s rồi kiểm tra lại ({attempt + 1}/{PREFLIGHT_RETRIES})")
+        _log(f"waiting {PREFLIGHT_WAIT_S} s, then checking again ({attempt + 1}/{PREFLIGHT_RETRIES})")
         _sleep(PREFLIGHT_WAIT_S)
-    raise Abort(f"máy vẫn chưa yên sau {PREFLIGHT_RETRIES} lần thử; dừng (đã lưu kết quả dở).")
+    raise Abort(f"machine still not quiet after {PREFLIGHT_RETRIES} attempts; stopping (partial results saved).")
 
 
 def _write_atomic(path: Path, data: dict) -> None:
@@ -259,7 +259,7 @@ class Runner:
         except (metrics.PermissionDenied, editors.ForeignInstance, editors.BinaryMissing):
             raise
         except Exception as exc:  # one broken round must not end the session
-            _log(f"  {label} {editor}: lỗi {exc!r}, ghi null")
+            _log(f"  {label} {editor}: error {exc!r}, recording null")
             _log_traceback()
             return None
 
@@ -269,7 +269,7 @@ class Runner:
                 continue
             self._launch_gate()
             if name == "startup_ms" and self.cold:
-                input("chạy `sudo purge` rồi nhấn Enter")
+                input("run `sudo purge`, then press Enter")
             v = self._call(lambda: getattr(metrics, name)(editor, self.paths), editor, name)
             _log(f"  {editor} {name}: {v}")
             cfg_metrics[name][editor].append(v)
@@ -306,7 +306,7 @@ class Runner:
             return
         self.round_no = 0
         self.quiet()
-        _log("lượt 0: chạy thử, bỏ kết quả")
+        _log("round 0: warm-up, result discarded")
         scratch = {m: {e: [] for e in editors.EDITORS} for m in launching}
         for editor in order(0):
             self.measure(scratch, editor)
@@ -333,7 +333,7 @@ class Runner:
         for r in range(self.rounds):
             self.round_no = r + 1
             self.quiet()
-            _log(f"lượt {r + 1}/{self.rounds} (lsp={'on' if lsp else 'off'})")
+            _log(f"round {r + 1}/{self.rounds} (lsp={'on' if lsp else 'off'})")
             for editor in order(r):
                 # round 0 (warm_up) was discarded; everything here is recorded
                 self.measure(cm, editor)
@@ -360,9 +360,9 @@ def parse_args(argv) -> argparse.Namespace:
         a.selected = [m.strip() for m in a.only.split(",") if m.strip()]
         bad = [m for m in a.selected if m not in METRICS]
         if bad or not a.selected:
-            ap.error(f"--only: tên không hợp lệ {bad}; hợp lệ: {', '.join(METRICS)}")
+            ap.error(f"--only: invalid name {bad}; valid: {', '.join(METRICS)}")
     if a.rounds < 1:
-        ap.error("--rounds phải >= 1")
+        ap.error("--rounds must be >= 1")
     return a
 
 
@@ -394,9 +394,9 @@ def main(argv=None) -> int:
         detail = str(exc).strip()
         if not detail or detail.endswith(":"):
             detail = (detail + " " if detail else "") + (
-                "helper báo thiếu quyền Screen Recording hoặc Accessibility "
-                "(không kèm chi tiết)")
-        _log(f"thiếu quyền giữa chừng: {detail}\nĐã lưu kết quả dở tại {out}.")
+                "helper reported a missing Screen Recording or Accessibility "
+                "permission (no details)")
+        _log(f"permission missing midway: {detail}\nPartial results saved to {out}.")
         runner.save()
         return 1
     except (Abort, editors.ForeignInstance, editors.BinaryMissing) as exc:
@@ -404,20 +404,20 @@ def main(argv=None) -> int:
         runner.save()
         return 1
     except EOFError:
-        _log(f"stdin đóng khi chờ Enter (--cold); đã lưu kết quả dở tại {out}.")
+        _log(f"stdin closed while waiting for Enter (--cold); partial results saved to {out}.")
         runner.save()
         return 1
     except Exception as exc:
         _log_traceback()
-        _log(f"lỗi bất ngờ: {exc!r}; đã lưu kết quả dở tại {out}.")
+        _log(f"unexpected error: {exc!r}; partial results saved to {out}.")
         runner.save()
         return 1
     except KeyboardInterrupt:
-        _log(f"bị ngắt; đã lưu kết quả dở tại {out}.")
+        _log(f"interrupted; partial results saved to {out}.")
         runner.save()
         return 130
     runner.save()
-    _log(f"xong: {out}")
+    _log(f"done: {out}")
     return 0
 
 
