@@ -14,8 +14,8 @@ use lucerna_theme::{Appearance, ResolvedIcons, Theme};
 use serde_json::Value;
 
 use crate::config_files::{
-    ConfigState, apply_configured_theme, color_theme_setting_key, set_icon_preview,
-    set_theme_preview, system_appearance,
+    COLOR_THEME_KEY, ConfigState, apply_configured_theme, color_theme_setting_key,
+    set_icon_preview, set_theme_preview, system_appearance,
 };
 use crate::extensions::service::resolve_icons;
 use crate::quick_open::picker::{
@@ -26,8 +26,8 @@ use crate::text_input::TextInput;
 use crate::ui::popover;
 use crate::{AppState, CommandRegistry, Workbench};
 
-/// The settings Enter writes.
-const COLOR_THEME_KEY: &str = "workbench.colorTheme";
+/// The setting Enter writes for an icon theme; a color theme writes
+/// [`COLOR_THEME_KEY`].
 const ICON_THEME_KEY: &str = "workbench.iconTheme";
 
 /// What the workbench does as the picker is used.

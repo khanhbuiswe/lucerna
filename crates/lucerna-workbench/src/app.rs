@@ -357,14 +357,18 @@ impl Router {
     /// Shows the Welcome screen in place of the workbench (spec W10) or the
     /// Get Started page (spec O5), on the user configuration alone.
     fn replace_with_welcome(this: &Rc<RefCell<Router>>, cx: &mut App) {
-        let (window, user_dir) = {
+        let (window, user_dir, user_only) = {
             let router = this.borrow();
             let Some(shown) = router.shown.as_ref() else {
                 return;
             };
-            (shown.window(), router.user_dir.clone())
+            let user_only = matches!(shown, Shown::Onboarding(_));
+            (shown.window(), router.user_dir.clone(), user_only)
         };
-        watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
+        // Get Started already watches the user configuration alone.
+        if !user_only {
+            watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
+        }
         let replaced = window.update(cx, |_, window, cx| {
             let view = window.replace_root(cx, WelcomeView::new);
             let router = this.clone();
