@@ -467,8 +467,11 @@ impl Router {
 }
 
 /// Adds `entry` to the recent list in the background, when the app has a
-/// data directory, then rebuilds the menu bar's Open Recent.
+/// data directory, then rebuilds the menu bar's Open Recent. The system's
+/// recent documents get it too, as Zed and VS Code do: on macOS that is
+/// what App Exposé (Ctrl+Down) and the Dock menu list; a no-op elsewhere.
 fn record_recent(entry: RecentEntry, cx: &mut App) {
+    cx.add_recent_document(&entry.path);
     let Some(data_dir) = app_data_dir(cx) else {
         return;
     };
