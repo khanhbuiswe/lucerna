@@ -12,7 +12,7 @@ from html.parser import HTMLParser
 
 ORIGIN = "https://lucerna.dev/"
 GITHUB = "https://github.com/lucerna-dev/lucerna"
-METRICS = ["887ms", "2.04ms", "96µs", "51ms"]
+METRICS = ["140ms", "169MB", "1.40%", "50MB"]
 CSS_URL = re.compile(r"""url\(\s*['"]?([^'")]+)""")
 CSS_IMPORT = re.compile(r"""@import\s+['"]([^'"]+)""")
 
