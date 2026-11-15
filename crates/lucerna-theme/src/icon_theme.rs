@@ -1,4 +1,10 @@
-//! Zed icon themes (schema v0.3.0) and the built-in "Lucide" theme.
+//! Zed icon themes (schema v0.3.0) and the built-in "Seti" and "Lucide" themes.
+
+/// The icon theme used when settings name none, or an unknown one.
+pub const DEFAULT_ICON_THEME: &str = "Seti";
+
+pub use crate::seti::seti_icon_theme;
+use crate::seti::shared_seti_theme;
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -7,6 +13,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::Appearance;
+use crate::seti::SetiIndex;
 
 /// Where an icon's pixels come from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +22,13 @@ pub enum IconSource {
     Builtin(&'static str),
     /// An SVG inside an extension, already confined to its icons root.
     File(PathBuf),
+    /// A bundled Seti glyph (an SVG name such as `"typescript"`) with its
+    /// colour for a dark and for a light theme, `0xRRGGBB`.
+    Glyph {
+        name: &'static str,
+        dark: u32,
+        light: u32,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -51,6 +65,16 @@ pub struct IconTheme {
     /// dot or the part before the first dot), as in Phase 1.
     extensions_only: bool,
     icons: HashMap<String, IconSource>,
+    kind: Kind,
+}
+
+/// How a theme answers lookups.
+#[derive(Debug, Clone)]
+enum Kind {
+    /// Stems, suffixes and typed icons (Lucide and extension themes).
+    Mapping,
+    /// The built-in Seti theme: file icons only.
+    Seti(Arc<SetiIndex>),
 }
 
 /// A key table that answers an exact key first, then a case-insensitive one.
@@ -100,7 +124,28 @@ impl IconTheme {
         self.type_icon(ty)
     }
 
+    /// The built-in Seti theme around a prebuilt index.
+    pub(crate) fn seti(index: SetiIndex) -> IconTheme {
+        IconTheme {
+            name: "Seti".to_string(),
+            appearance: Appearance::Dark,
+            directory: Pair::default(),
+            named_directories: HashMap::new(),
+            chevron: Pair::default(),
+            stems: Keys::default(),
+            suffixes: Keys::default(),
+            name_prefixes: Vec::new(),
+            extensions_only: false,
+            icons: HashMap::new(),
+            kind: Kind::Seti(Arc::new(index)),
+        }
+    }
+
     pub fn file_icon(&self, path: &Path) -> Option<IconSource> {
+        if let Kind::Seti(index) = &self.kind {
+            let name = path.file_name().map(|n| n.to_string_lossy());
+            return Some(index.lookup(name.as_deref().unwrap_or("")));
+        }
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -216,6 +261,7 @@ pub fn lucide_icon_theme() -> IconTheme {
             builtin("image", "image"),
             builtin("code", "file-code"),
         ]),
+        kind: Kind::Mapping,
     }
 }
 
@@ -344,6 +390,7 @@ fn parse_file(json: &Path, root: &Path) -> Result<(Vec<IconTheme>, Vec<String>),
             name_prefixes: Vec::new(),
             extensions_only: false,
             icons,
+            kind: Kind::Mapping,
         });
     }
     Ok((themes, r.warnings))
@@ -353,6 +400,7 @@ fn parse_file(json: &Path, root: &Path) -> Result<(Vec<IconTheme>, Vec<String>),
 
 #[derive(Debug, Clone)]
 pub struct IconThemeRegistry {
+    seti: Arc<IconTheme>,
     lucide: Arc<IconTheme>,
     themes: Vec<Arc<IconTheme>>,
 }
@@ -364,6 +412,7 @@ impl IconThemeRegistry {
     pub fn build(
         files: &[(String, PathBuf, PathBuf)],
     ) -> (IconThemeRegistry, Vec<(PathBuf, String)>) {
+        let seti = shared_seti_theme();
         let lucide = Arc::new(lucide_icon_theme());
         let mut themes: Vec<Arc<IconTheme>> = Vec::new();
         let mut warnings = Vec::new();
@@ -372,7 +421,10 @@ impl IconThemeRegistry {
                 Ok((parsed, warns)) => {
                     warnings.extend(warns.into_iter().map(|w| (json.clone(), w)));
                     for theme in parsed {
-                        if theme.name == lucide.name {
+                        if theme.name == lucide.name
+                            || theme.name == seti.name
+                            || theme.name == "vs-seti"
+                        {
                             continue;
                         }
                         themes.retain(|t| t.name != theme.name);
@@ -382,25 +434,39 @@ impl IconThemeRegistry {
                 Err(e) => warnings.push((json.clone(), e)),
             }
         }
-        (IconThemeRegistry { lucide, themes }, warnings)
+        (
+            IconThemeRegistry {
+                seti,
+                lucide,
+                themes,
+            },
+            warnings,
+        )
     }
 
-    /// "Lucide" first, then the extension themes in load order.
+    /// "Seti" and "Lucide" first, then the extension themes in load order.
     pub fn names(&self) -> Vec<String> {
-        std::iter::once(&self.lucide)
+        [&self.seti, &self.lucide]
+            .into_iter()
             .chain(&self.themes)
             .map(|t| t.name.clone())
             .collect()
     }
 
-    /// The named theme, or Lucide when the name is unknown.
+    /// The named theme (`"vs-seti"` is Seti), or Seti when the name is
+    /// unknown.
     pub fn resolve(&self, name: &str) -> ResolvedIcons {
-        let active = self
-            .themes
-            .iter()
-            .find(|t| t.name == name)
-            .unwrap_or(&self.lucide)
-            .clone();
+        let active = if name == self.seti.name || name == "vs-seti" {
+            &self.seti
+        } else if name == self.lucide.name {
+            &self.lucide
+        } else {
+            self.themes
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or(&self.seti)
+        }
+        .clone();
         ResolvedIcons {
             active,
             lucide: self.lucide.clone(),

@@ -16,7 +16,7 @@ use lucerna_extension::store::{InstallProgress, Store, StoreError, StoreEvent};
 use lucerna_syntax::{
     Associations, BracketPair, ExtensionLanguage, LanguageEditing, LanguageRegistry,
 };
-use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
+use lucerna_theme::{DEFAULT_ICON_THEME, IconThemeRegistry, ThemeRegistry};
 
 use crate::AppState;
 use crate::config_files::{ConfigState, icon_previewing, reapply_configured_theme};
@@ -237,7 +237,7 @@ fn configured_icon_theme(cx: &App) -> String {
     cx.global::<AppState>()
         .settings
         .get("workbench.iconTheme", None)
-        .unwrap_or_else(|| "Lucide".to_string())
+        .unwrap_or_else(|| DEFAULT_ICON_THEME.to_string())
 }
 
 fn configured_associations(cx: &App) -> BTreeMap<String, String> {
@@ -247,7 +247,7 @@ fn configured_associations(cx: &App) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-/// Makes the icon theme named by `workbench.iconTheme` active (Lucide when
+/// Makes the icon theme named by `workbench.iconTheme` active (Seti when
 /// it is not installed; the setting is kept). While an icon theme picker
 /// previews, the previewed theme stays (it is looked up again by name in
 /// the registry, so a swapped registry cannot leave it stale).

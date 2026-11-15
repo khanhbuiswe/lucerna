@@ -50,7 +50,7 @@
   "workbench.preferredDarkColorTheme": "Lucerna Dark",
   // The color theme used when the system color mode is light and `window.autoDetectColorScheme` is enabled.
   "workbench.preferredLightColorTheme": "Lucerna Light",
-  "workbench.iconTheme": "Lucide",
+  "workbench.iconTheme": "Seti",
   // Controls which editor is shown at startup, if none are restored from the previous session.
   // "welcomePage" | "welcomePageInEmptyWorkbench": the Welcome screen when Lucerna starts without a folder.
   // "none": ask for a folder instead; Cancel quits.
@@ -63,6 +63,7 @@
   "files.associations": {},
   "extensions.autoCheckUpdates": true,
   "workbench.editor.enablePreview": true,
+  "workbench.editor.showIcons": true,
   // Where the panel (the terminal) opens: "bottom" (under the editor area) or "right".
   "workbench.panel.defaultLocation": "bottom",
   // The integrated terminal (VS Code's keys and defaults, except where noted).

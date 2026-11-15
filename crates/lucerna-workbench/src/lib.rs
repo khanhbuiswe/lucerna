@@ -48,6 +48,7 @@ mod references_view;
 mod save;
 mod scrollbar;
 mod search_view;
+mod seti_svgs;
 mod settings_edit;
 mod startup;
 pub mod status_message;

@@ -97,7 +97,7 @@ supports both. See [Roadmap](#roadmap) below.
 Lucerna is licensed under either of [MIT](../LICENSE-MIT) or [Apache-2.0](../LICENSE-APACHE), at your option.
 
 Bundled third-party assets keep their own licenses. These include the Lilex and IBM Plex fonts (OFL-1.1),
-Lucide icons (ISC), GitHub Primer colours used by the Lucerna themes (MIT), tree-sitter grammars,
+Lucide icons (ISC), Seti file icons (the SVGs from seti-ui, MIT, Jesse Weed, and VS Code's Seti mapping, MIT, Microsoft), GitHub Primer colours used by the Lucerna themes (MIT), tree-sitter grammars,
 `alacritty_terminal` and GPUI (Apache-2.0).
 See [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) for a summary. The app carries the full
 license text of every bundled crate and asset: open it with Help › Third-Party Licenses, or the Licenses

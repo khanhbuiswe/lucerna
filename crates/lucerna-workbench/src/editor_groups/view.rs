@@ -9,9 +9,8 @@ use std::sync::Arc;
 use gpui::{
     AnyView, App, ClickEvent, Context, Div, DragMoveEvent, Entity, IntoElement, MouseButton,
     ParentElement, Pixels, Render, SharedString, Styled, Window, div, prelude::*, px, relative,
-    svg,
 };
-use lucerna_theme::{Rgba, UiColors};
+use lucerna_theme::{IconSource, Rgba, UiColors};
 
 use super::model::{EditorGroups, GroupsState, Tab, TabId, TabItem};
 use crate::AppState;
@@ -25,8 +24,8 @@ use crate::symbols::breadcrumbs::{
     BreadcrumbSettings, Crumbs, breadcrumb_segments, breadcrumbs_row, segments_text,
 };
 use crate::ui::{
-    self, BLOCKS_ICON, ClickHandler, GRID, PATH_BAR_HEIGHT, SEARCH_ICON, SashGhost, TAB_PADDING_X,
-    UI_FONT_SIZE, UI_FONT_SIZE_SMALL, icon_button, tooltip,
+    self, ClickHandler, GRID, PATH_BAR_HEIGHT, SashGhost, TAB_PADDING_X, UI_FONT_SIZE,
+    UI_FONT_SIZE_SMALL, icon_button, tooltip,
 };
 
 /// What a file tab's dot says about its document.
@@ -136,7 +135,43 @@ impl Default for EditorGroupsView {
     }
 }
 
+/// `workbench.editor.showIcons`: icons on every tab, default on.
+fn show_tab_icons(cx: &App) -> bool {
+    let settings = &cx.global::<AppState>().settings;
+    settings
+        .get("workbench.editor.showIcons", None)
+        .unwrap_or(true)
+}
+
+/// The icon of a tab: the icon theme's file icon for file tabs and file
+/// diffs, a Lucide icon for the special tabs.
+fn tab_icon_source(item: &TabItem, cx: &App) -> Option<IconSource> {
+    let file = |p: &Path| cx.global::<AppState>().icons.file(p);
+    Some(match item {
+        TabItem::File(p) | TabItem::FileDiff(p) => file(p),
+        TabItem::Extensions => IconSource::Builtin("blocks"),
+        TabItem::Search => IconSource::Builtin("search"),
+        TabItem::LspLog(_) | TabItem::LspHealth => IconSource::Builtin("zap"),
+        TabItem::References => IconSource::Builtin("file-code"),
+        TabItem::Onboarding => IconSource::Builtin("settings"),
+        TabItem::GitChanges | TabItem::BranchChanges => IconSource::Builtin("git-branch"),
+        TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_) => {
+            IconSource::Builtin("eye")
+        }
+    })
+}
+
 impl EditorGroupsView {
+    /// The icon of tab `ti` in group `gi`; `None` when the tab does not
+    /// exist or `workbench.editor.showIcons` is off.
+    pub fn tab_icon(&self, gi: usize, ti: usize, cx: &App) -> Option<IconSource> {
+        if !show_tab_icons(cx) {
+            return None;
+        }
+        let tab = self.model.groups().get(gi)?.tabs.get(ti)?;
+        tab_icon_source(&tab.item, cx)
+    }
+
     pub fn model(&self) -> &EditorGroups {
         &self.model
     }
@@ -626,6 +661,8 @@ impl Render for EditorGroupsView {
         let count = self.model.groups().len();
         let focused_group = self.model.active_group();
         let crumbs_settings = BreadcrumbSettings::read(cx);
+        let show_icons = show_tab_icons(cx);
+        let appearance = cx.global::<AppState>().theme.appearance;
         self.breadcrumbs.retain(|id, _| live.contains(id));
         let mut row = div()
             .id("editor-groups")
@@ -652,29 +689,20 @@ impl Render for EditorGroupsView {
                     _ => None,
                 };
                 let title = title.map_or_else(|| tab.title(), |t| t.to_string());
-                let icon = match tab.item {
-                    TabItem::Extensions => Some(BLOCKS_ICON),
-                    TabItem::Search => Some(SEARCH_ICON),
-                    TabItem::LspLog(_) => Some(icons::ZAP),
-                    TabItem::References => Some(icons::FILE_CODE),
-                    TabItem::LspHealth => Some(icons::ZAP),
-                    TabItem::Onboarding => Some(icons::SETTINGS),
-                    TabItem::GitChanges | TabItem::FileDiff(_) | TabItem::BranchChanges => {
-                        Some(icons::GIT_BRANCH)
-                    }
-                    TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_) => {
-                        Some(icons::EYE)
-                    }
-                    TabItem::File(_) => None,
-                };
-                let icon = icon.map(|icon| {
-                    svg()
-                        .debug_selector(move || format!("tab-icon-{gi}-{ti}"))
-                        .data(icon)
-                        .flex_none()
-                        .size(px(14.))
-                        .text_color(color(ui.icon_muted))
-                });
+                let icon = show_icons
+                    .then(|| tab_icon_source(&tab.item, cx))
+                    .flatten()
+                    .map(|src| {
+                        div()
+                            .debug_selector(move || format!("tab-icon-{gi}-{ti}"))
+                            .flex_none()
+                            .child(ui::file_icon_sized(
+                                &src,
+                                px(14.),
+                                color(ui.icon_muted).into(),
+                                appearance,
+                            ))
+                    });
                 let (deleted, mark) = states[gi][ti];
                 // As in Zed: a dot takes the ×'s place until the tab is
                 // hovered.

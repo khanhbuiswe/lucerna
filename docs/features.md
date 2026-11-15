@@ -43,7 +43,7 @@ example "Open in → Default app" in Claude Desktop.
   - Compact chrome: an integrated title bar that shows the git branch, and panel toggles in the status bar.
   - Flat tabs with preview tabs, a path bar, indent guides and thin scrollbars you can drag or click.
   - A Welcome page with recent folders and files (Ctrl+R opens Open Recent anywhere).
-  - Lilex and IBM Plex Sans fonts, Lucide icons, and the Lucerna Dark and Lucerna Light themes, which follow the system's light or dark mode.
+  - Lilex and IBM Plex Sans fonts, coloured Seti file icons (VS Code's default set) in the tree and on tabs (`workbench.editor.showIcons`), Lucide UI icons, and the Lucerna Dark and Lucerna Light themes, which follow the system's light or dark mode.
 - **See what the agent changed (Git).** Read-only and fast: changed, added and untracked files are
   coloured in the tree (folders too); the gutter marks added, modified and deleted lines against
   `HEAD`; Alt+F5 / Shift+Alt+F5 (and `]c` / `[c` in Vim) jump between changes. Click a gutter mark
