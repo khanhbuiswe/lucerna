@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 300" width="480" height="300" role="img" font-family="sans-serif">
+<style>text{fill:#24292f}line{stroke:#8a8f98}@media (prefers-color-scheme:dark){text{fill:#e6e8eb}}</style>
+<title>Idle RAM (medium repo, 10 tabs) — No LSP · warm</title>
+<text x="240.0" y="24" text-anchor="middle" font-size="14">Idle RAM (medium repo, 10 tabs) (No LSP · warm)</text>
+<line x1="45.0" y1="240" x2="435.0" y2="240" stroke="#8a8f98" stroke-width="1"/>
+<rect class="bar" x="65.0" y="209.2" width="90" height="30.8" fill="#8a8f98"/>
+<text x="110.0" y="201.2" text-anchor="middle" font-size="12">169 MB</text>
+<text x="110.0" y="260" text-anchor="middle" font-size="12">Lucerna</text>
+<rect class="bar" x="195.0" y="197.2" width="90" height="42.8" fill="#8a8f98"/>
+<text x="240.0" y="189.2" text-anchor="middle" font-size="12">235 MB</text>
+<text x="240.0" y="260" text-anchor="middle" font-size="12">Zed</text>
+<rect class="bar" x="325.0" y="80.0" width="90" height="160.0" fill="#8a8f98"/>
+<text x="370.0" y="72.0" text-anchor="middle" font-size="12">879 MB</text>
+<text x="370.0" y="260" text-anchor="middle" font-size="12">VS Code</text>
+</svg>
