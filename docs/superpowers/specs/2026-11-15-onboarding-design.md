@@ -9,6 +9,7 @@ Những chỗ khác spec khi triển khai:
 - Nút Get Started của Welcome dùng icon settings.
 - Test của router nằm trong `tests/welcome.rs`.
 - `settings.json` hỏng khi trang là gốc cửa sổ thì hiện một dòng cảnh báo.
+- **Bỏ chọn font family và ô code mẫu** (người dùng quyết định 2026-11-15, sau khi chạy thử): người dùng tự đặt `editor.fontFamily` trong `settings.json`. Trang chỉ còn cỡ chữ (− / +) và Vim trong phần EDITOR. Các mục về Font Family, `FontPicker`, `dropdown_button` và dòng mẫu font đã được bỏ khỏi spec này.
 
 Spec này sửa mục W12 của `2026-11-12-welcome-design.md`: Welcome vẫn không có AI, đăng nhập, New File hay Clone Repository, nhưng **Lucerna có onboarding**, là một trang riêng chứ không phải một phần của Welcome.
 
@@ -17,7 +18,7 @@ Spec này sửa mục W12 của `2026-11-12-welcome-design.md`: Welcome vẫn kh
 Zed có một trang onboarding riêng hiện ở lần chạy đầu, cho chọn theme và Vim. Lucerna sắp ra 0.1, và người dùng muốn người mới có một chỗ chỉnh vài thứ cơ bản ngay khi mở app: theme, font, Vim. Hiện nay người mới phải tự tìm `settings.json` hoặc Command Palette mới làm được.
 
 **Mục tiêu:**
-- Lần đầu mở Lucerna (Dock, Finder, `luc` không đối số) thì hiện trang "Get Started", chỉnh được theme Sáng / Tối / Theo hệ thống, font và cỡ chữ editor, Vim mode, và có nút mở `settings.json`.
+- Lần đầu mở Lucerna (Dock, Finder, `luc` không đối số) thì hiện trang "Get Started", chỉnh được theme Sáng / Tối / Theo hệ thống, cỡ chữ editor, Vim mode, và có nút mở `settings.json`.
 - Mỗi thay đổi được ghi ngay vào `settings.json` của người dùng và thấy kết quả ngay.
 - Trang chỉ tự hiện một lần. Mở lại được bằng lệnh, từ menu Help, và từ Welcome.
 - Hợp với `window.restoreWindows`: người đã có workspace để mở lại thì không bị chặn bởi onboarding.
@@ -36,7 +37,7 @@ Chi tiết ở `docs/research/2026-11-15-onboarding.md`. Tóm tắt:
 - **VS Code:** walkthrough "Get started with VS Code" trên trang Welcome có bước chọn theme bằng thẻ ảnh. Overlay onboarding mới là modal phủ Welcome, chỉ hiện khi storage ứng dụng mới. Chọn theme khi `window.autoDetectColorScheme` bật thì ghi vào khóa theme ưa thích theo chế độ hệ thống.
 - **Lucerna chọn:** điều kiện "lần đầu", cách ghi settings ngay, nút Finish và bố cục trang theo Zed; tên setting và lệnh mở settings theo VS Code. Lệch khỏi Zed:
   - chỉ một ô xem trước theme thay vì ba, vì Lucerna mới có một cặp theme;
-  - có phần font editor (bản Zed cũ có, bản mới bỏ), theo yêu cầu người dùng;
+  - có cỡ chữ editor (bản Zed cũ có, bản mới bỏ), theo yêu cầu người dùng;
   - có mục Help ▸ Get Started (Zed không có), để người dùng VS Code tìm được.
 
 ## 3. Quyết định
@@ -51,13 +52,13 @@ Chi tiết ở `docs/research/2026-11-15-onboarding.md`. Tóm tắt:
 | O6 | Mỗi control ghi ngay vào `settings.json` người dùng, giữ comment (hàm sẵn có trong `theme_picker.rs`), rồi nạp lại cấu hình. Trang vẽ theo setting hiện hành sau khi gộp các lớp. Không có Undo/Cancel. | Theo Zed. Sửa tay file thì trang đổi theo. |
 | O7 | Theme: cụm ba nút **Light / Dark / System**. System ghi `window.autoDetectColorScheme: true`. Light/Dark ghi `window.autoDetectColorScheme: false` và `workbench.colorTheme` bằng giá trị đang có của `workbench.preferredLightColorTheme` / `workbench.preferredDarkColorTheme` (mặc định "Lucerna Light" / "Lucerna Dark"). | Khóa theo VS Code, như người dùng yêu cầu. Giữ theme ưa thích người dùng đã đặt. |
 | O8 | Lệnh `lucerna.openOnboarding`, tiêu đề "Help: Get Started", không có phím mặc định. Có trong menu Help ("Get Started", đứng đầu) và là một nút "Get Started" trên Welcome. | VS Code không có lệnh tương ứng (onboarding mới của nó ở nhóm Developer), nên dùng tiền tố `lucerna.` như `lucerna.openLogsFolder`. Zed có nút "Return to Onboarding" trên Welcome. |
-| O9 | Font family chọn bằng picker có lọc mờ, Lilex đứng đầu. Khi chưa gõ gì, picker chỉ liệt kê các font code phổ biến có trên máy (và font đang dùng); gõ chữ thì tìm trong mọi font trên máy (`cx.text_system().all_font_names()`). Font size bằng nút − / + từ 6 tới 100, bước 1. | Gõ tên font tay dễ sai. Khung picker đã có. Danh sách đầy đủ có hàng trăm font không dùng để viết code (người dùng góp ý 2026-11-15). |
+| O9 | Font size bằng nút − / + từ 6 tới 100, bước 1. Không chọn font family trên trang: người dùng tự đặt `editor.fontFamily` trong `settings.json`. | Người dùng quyết định 2026-11-15 sau khi chạy thử: danh sách font dài và ít người đổi font lúc mới cài. |
 | O10 | Vim mode là một **công tắc** (switch) ghi `vim.enabled`. | Zed dùng switch. |
 | O11 | Không chọn keymap gốc, AI, đăng nhập, telemetry, import, font UI. | Phạm vi người dùng đã chốt. |
 
 **Thành công khi:**
 - Xóa `<data_dir>` (hoặc dùng một `HOME` mới), mở `Lucerna.app` từ Dock: hiện trang Get Started chiếm cả cửa sổ. Bấm Dark: app đổi sang Lucerna Dark ngay, `settings.json` có `"window.autoDetectColorScheme": false` và `"workbench.colorTheme": "Lucerna Dark"`, comment cũ còn nguyên.
-- Bấm + ở Font size: dòng mẫu font trên trang và editor ở các cửa sổ khác to lên ngay, file có `"editor.fontSize": 15`.
+- Bấm + ở Font size: editor ở các cửa sổ khác to lên ngay, file có `"editor.fontSize": 15`.
 - Bật Vim mode: file có `"vim.enabled": true`; mở một thư mục thì editor ở Normal mode.
 - ⌘Enter: cửa sổ đổi sang Welcome, không có cửa sổ thứ hai.
 - Thoát rồi mở lại từ Dock khi chưa mở thư mục nào: hiện Welcome, không hiện onboarding.
@@ -102,7 +103,6 @@ open_without_folder:
 │      └──────────────────────────────┘                        │
 │      Lucerna Dark                                            │  tên theme, muted
 │      EDITOR ─────────────────────────────────────────────────│
-│      Font Family                          [ Lilex        ▾ ] │  setting_row + dropdown_button
 │      Font Size                            [ −   14   + ]     │  setting_row + number_stepper
 │      Vim Mode                                         ( ●)   │  setting_row + switch
 │      Enable Vim keybindings (vim.enabled)                    │  mô tả muted dưới nhãn
@@ -123,7 +123,6 @@ open_without_folder:
 - **`segmented_control(id, options, selected, cx)`**: các nút liền nhau, viền 1 px `border`, bo `GRID`, cao `6×GRID`. Nút chọn nền `element_selected`, nút khác hover `ghost_element_hover`. Trả từng nút có `on_click`.
 - **`switch(id, on, cx)`**: rộng `7×GRID`, cao `4×GRID`, bo tròn. Bật: nền `element_selected` (hoặc màu nhấn của theme nếu có), núm bên phải. Tắt: nền `element_background`, núm bên trái.
 - **`number_stepper(id, value, cx)`**: nút − / + (`icon_button`) hai bên con số; nút mờ khi chạm giới hạn.
-- **`dropdown_button(id, label, cx)`**: ô viền như `input_box`, nhãn và `CHEVRON_DOWN_ICON` bên phải.
 - **`setting_row(label, description, control)`**: nhãn cỡ `UI_FONT_SIZE`, mô tả cỡ `UI_FONT_SIZE_SMALL` màu `text_muted` dưới nhãn, control căn phải.
 - **`theme_preview(theme, cx)`**: vẽ một workspace thu nhỏ bằng màu của theme truyền vào (không dùng theme đang active): sidebar ~22% có 6 dòng, vùng editor có ~8 thanh "mã giả" tô bằng màu cú pháp (keyword, function, string, comment, type, variable). Độ rộng và thụt lề của thanh là bảng cố định, không ngẫu nhiên. Cao `30×GRID`, bo 8 px, viền 1 px. Ở System thì vẽ hai nửa: trái là theme sáng, phải là theme tối.
 
@@ -143,15 +142,8 @@ Kiểm tra trong `ui.rs` trước khi tạo: nếu đã có component tương đ
 
 ### 5.4 Editor
 
-- **Font Family:** nhãn của dropdown là `editor.fontFamily` hiện hành (không có thì "Lilex"). Bấm thì mở `FontPicker` trong `popover_overlay`, dựng như `ThemePicker`/`RecentPicker` (`popover`, `picker_input_row`, `picker_list`, `picker_row`, `fuzzy_filter`):
-  - danh sách: "Lilex" đầu tiên, rồi `all_font_names()` đã bỏ trùng, xếp chữ cái; lấy danh sách ở luồng nền;
-  - khi ô lọc trống, chỉ hiện Lilex, font đang dùng, và các font trong danh sách gợi ý có trên máy (so không phân biệt hoa thường): Cascadia Code, Cascadia Mono, Consolas, Courier New, DejaVu Sans Mono, Fira Code, Fira Mono, Hack, IBM Plex Mono, Inconsolata, Iosevka, JetBrains Mono, Menlo, Monaco, SF Mono, Source Code Pro, Ubuntu Mono. Gõ chữ thì lọc mờ trên mọi font; xóa hết chữ thì về lại danh sách gợi ý;
-  - mỗi dòng vẽ tên bằng chính font đó;
-  - ↑/↓ chỉ chuyển dòng chọn, **không xem trước** trên editor (store không có lớp tạm trong bộ nhớ; mỗi dòng đã vẽ bằng font của nó). Enter ghi `editor.fontFamily`, Escape đóng mà không ghi.
-  - Giá trị là chuỗi đơn giản (một tên font), không dựng chuỗi CSS nhiều font như VS Code.
 - **Font Size:** hiện `editor.fontSize` hiện hành (làm tròn). − / + ghi giá trị mới, giới hạn 6–100 (VS Code chấp nhận 6–100).
 - **Vim Mode:** công tắc theo `vim.enabled`, bấm thì ghi giá trị đảo. Các editor đang mở đổi theo cách sẵn có khi `vim.enabled` thay đổi.
-- **Dòng mẫu font:** dưới ba dòng trên là một ô `subheader_card` có hai dòng code mẫu (ví dụ `fn main() {` / `    println!("Hello, Lucerna");`) vẽ bằng `editor.fontFamily` và `editor.fontSize` hiện hành, màu cú pháp của theme đang active. Đây là phản hồi duy nhất cho font khi trang là root (chưa có editor nào mở).
 - Các thay đổi này chỉ ghi lớp người dùng. Nếu lớp workspace (`.lucerna/settings.json`) hoặc override ngôn ngữ đặt khóa đó thì trang hiện giá trị đã gộp, và giá trị vừa ghi có thể không thấy hiệu lực. Spec này **không** báo điều đó trên trang, vì `SettingsStore` không cho biết lớp nào đặt khóa và spec chỉ đổi `lucerna-workbench`. Ghi vào giới hạn đã biết (§10).
 
 ### 5.5 Open Settings (JSON)
@@ -161,9 +153,9 @@ Kiểm tra trong `ui.rs` trước khi tạo: nếu đã có component tương đ
 
 ### 5.6 Bàn phím
 
-- Thứ tự focus: Finish → Light → Dark → System → Font Family → − → + → Vim Mode → Open Settings (JSON). Tab/⇧Tab và ↑/↓ chuyển focus; Enter hoặc Space bấm control đang focus; ←/→ trong cụm theme chuyển lựa chọn.
+- Thứ tự focus: Finish → Light → Dark → System → − → + → Vim Mode → Open Settings (JSON). Tab/⇧Tab và ↑/↓ chuyển focus; Enter hoặc Space bấm control đang focus; ←/→ trong cụm theme chuyển lựa chọn.
 - Focus ban đầu: nút theme đang chọn.
-- `⌘Enter` (lệnh `lucerna.onboarding.finish`, `when: onboardingFocus`) chạy Finish ở cả hai chế độ. `onboardingFocus` đúng khi focus nằm trong trang, **không** tính lúc FontPicker đang mở: khi đó phím đi vào picker trước (như picker ở Welcome), và ⌘Enter trong picker không làm gì. Binding này không đụng `editor.action.insertLineAfter` (`editorTextFocus`) vì trang không có editor.
+- `⌘Enter` (lệnh `lucerna.onboarding.finish`, `when: onboardingFocus`) chạy Finish ở cả hai chế độ. `onboardingFocus` đúng khi focus nằm trong trang. Binding này không đụng `editor.action.insertLineAfter` (`editorTextFocus`) vì trang không có editor.
 - Ở root: phím toàn cục đi qua keymap người dùng như Welcome (`WELCOME_COMMANDS`), thêm `lucerna.openOnboarding`, `workbench.action.openSettingsJson`, `lucerna.onboarding.finish`.
 - Ở tab: phím của workbench chạy như ở các tab khác (⌘W đóng tab).
 
@@ -182,7 +174,6 @@ Kiểm tra trong `ui.rs` trước khi tạo: nếu đã có component tương đ
 | File | Thay đổi |
 |---|---|
 | `onboarding.rs` (mới) | `OnboardingPage` (render §5, focus, phím), `OnboardingEvent::{Finish}`, `register_commands`. Biết mình là root hay tab qua một cờ `Host::{Window, Tab}` để vẽ title bar và chọn hành vi Open Settings. |
-| `font_picker.rs` (mới) | `FontPicker`, `FontPickerEvent::{Confirmed(name), Dismissed}`. |
 | `app_state_file.rs` (mới) | Đọc/ghi `<data_dir>/state.json` (§4). Không gpui. |
 | `startup.rs` | Thêm `StartupScreen` và `startup_screen` (§4). |
 | `app.rs` | `Shown::Onboarding(WindowHandle<OnboardingPage>)`; `Router::open_onboarding`, đổi root Welcome ↔ Onboarding; `open_without_folder` theo §4. |
@@ -200,7 +191,6 @@ Chỉ `lucerna-workbench` thay đổi; không thêm dependency.
 
 - `settings.json` đọc không được hoặc không parse được: không ghi, báo lỗi cấu hình như theme picker (`record_error`), control giữ giá trị cũ.
 - Chưa có `settings.json`: tạo từ `USER_SETTINGS_TEMPLATE` rồi ghi (như `write_string_setting`).
-- `all_font_names()` rỗng: picker chỉ có "Lilex".
 - Mở cửa sổ settings (§5.5) thất bại: `tracing::error`, hiện `warning_row` ở đầu cột.
 
 ## 9. Kiểm thử
@@ -215,14 +205,12 @@ Chỉ `lucerna-workbench` thay đổi; không thêm dependency.
   - Bấm Dark/System/+/Vim thì file người dùng có khóa đúng.
   - ⌘Enter ở root phát Finish (Router đổi sang Welcome); ở tab thì đóng tab.
   - `lucerna.openOnboarding` trong workbench mở một tab, gọi lần hai không mở thêm.
-  - FontPicker: lọc, Enter ghi, Escape trả lại font cũ.
   - Help menu có Get Started, bật ở cửa sổ Welcome.
 - **Thủ công (design-principles §1.1):** chạy app với `HOME` mới, đặt cạnh Zed (`zed: open onboarding`) so khoảng cách, cỡ chữ, nút, hover, switch. Thử chuỗi lần đầu → Finish → thoát → mở lại (Welcome) → mở thư mục → thoát → mở lại (thư mục).
 
 ## 10. Giới hạn đã biết
 
 - Không báo khi workspace hoặc override ngôn ngữ đè setting trang vừa ghi (§5.4).
-- Font picker không xem trước trên editor.
 - Người dùng nâng cấp từ bản trước 0.1: chưa có `state.json`, nên nếu khi khởi động không có gì để mở lại (`restoreWindows: "none"` hoặc mọi mục gần đây đã mất) thì họ thấy onboarding **một lần**, dù đã có `settings.json`. Zed cũng vậy. Chấp nhận, vì Lucerna chưa phát hành và chỉ hiện một lần.
 
 ## 11. Để người làm quyết

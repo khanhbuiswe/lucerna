@@ -88,7 +88,7 @@ Bản cũ có trang Editing: font UI và font buffer (picker họ font, stepper 
 | Theme | Light/Dark/System + ô xem trước vẽ bằng màu theme | Thẻ ảnh/SVG | Light/Dark/System theo Zed; khóa theo VS Code |
 | Keymap gốc | Có | Có (cài extension keymap) | Không: Lucerna chỉ theo phím VS Code |
 | Vim | Switch `vim_mode` | Không | Switch `vim.enabled` |
-| Font | Bản cũ có, bản mới bỏ | Không | Có `editor.fontFamily`, `editor.fontSize` |
+| Font | Bản cũ có, bản mới bỏ | Không | Chỉ `editor.fontSize`; font family người dùng tự đặt trong `settings.json` |
 | AI, đăng nhập, telemetry | Có | Có | Không |
 | Mở lại | Lệnh `zed: open onboarding`; Welcome có nút "Return to Onboarding" | Lệnh nhóm Developer | Lệnh + Help menu + nút trên Welcome |
 
