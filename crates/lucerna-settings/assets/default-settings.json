@@ -55,6 +55,10 @@
   "workbench.tips.enabled": true,
   "files.associations": {},
   "extensions.autoCheckUpdates": true,
+  // Starting without a folder (Dock, Finder) reopens the last folder or file, as Zed's
+  // "restore_on_startup": "last_workspace" does. "none": show the startup editor instead.
+  // "one" | "all" | "folders" | "preserve" all reopen one window for now.
+  "window.restoreWindows": "one",
   "workbench.editor.enablePreview": true,
   // Where the panel (the terminal) opens: "bottom" (under the editor area) or "right".
   "workbench.panel.defaultLocation": "bottom",

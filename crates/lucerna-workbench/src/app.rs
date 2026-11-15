@@ -33,7 +33,8 @@ use crate::recent::{self, RecentEntry, RecentKind, RecentStore};
 use crate::workspace_state::tilde_path;
 use crate::{
     AppState, ConfigPaths, OpenMode, Startup, WelcomeEvent, WelcomeView, Workbench, WorkbenchEvent,
-    default_data_dir, startup_choice, status_message, watch_config, window_options,
+    default_data_dir, last_workspace, restores_last_workspace, startup_choice, status_message,
+    watch_config, window_options,
 };
 
 /// What [`run`] opens.
@@ -103,11 +104,22 @@ pub fn run(launch: Option<Launch>, resolve: Resolve) {
     });
 }
 
-/// With no folder to open: reads the user's configuration, then shows the
-/// Welcome screen or the folder prompt as `workbench.startupEditor` says.
+/// With no folder to open: reads the user's configuration, then reopens
+/// the last workspace (`window.restoreWindows`), else shows the Welcome
+/// screen or the folder prompt as `workbench.startupEditor` says.
 fn open_without_folder(router: &Rc<RefCell<Router>>, cx: &mut App) {
     let user_dir = router.borrow().user_dir.clone();
     watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
+    if restores_last_workspace(&cx.global::<AppState>().settings)
+        && let Some(dir) = cx
+            .try_global::<RecentStore>()
+            .and_then(|s| s.data_dir.clone())
+        && let Some(entry) = last_workspace(&recent::load(&recent::recent_path(&dir))).cloned()
+    {
+        tracing::info!(path = %entry.path.display(), "reopening the last workspace");
+        Router::open_path(router, &entry.path, cx);
+        return;
+    }
     match startup_choice(&cx.global::<AppState>().settings) {
         Startup::FolderPrompt => pick_folder(router, cx),
         Startup::Welcome => Router::open_welcome(router, cx),
