@@ -95,6 +95,8 @@ lucerna  ⎇ main ▾                       ← bấm tên nhánh
   - Vẫn dùng `--no-pager` và `-c core.fsmonitor=false`.
   - **Không** đặt `core.hooksPath=/dev/null`: hook `post-checkout` của git-lfs, husky… chạy như trong terminal. Lệnh ghi chỉ chạy ở thư mục đã tin cậy (§4.5).
   - Bỏ `--no-optional-locks`, vì đây là lệnh ghi.
+  - Chạy với môi trường của login shell (đè lên môi trường của tiến trình), lấy từ `login_shell_env()` mà `GitStore` đã đọc và cache ở luồng nền; bỏ `PWD`, `OLDPWD`, `SHLVL`, `_`. Mở app từ Dock thì `PATH` chỉ có `/usr/bin:/bin:/usr/sbin:/sbin`, nên thiếu bước này thì `git-lfs` hay `node` của husky không chạy được, và một filter `required` hỏng sẽ để lại cây file chuyển dở. Test đưa môi trường vào bằng `GitBinary::with_write_env`.
+  - **Không** đặt `LC_ALL=C`: hook chạy với locale của người dùng như trong terminal. Chỉ lệnh đọc, mà Lucerna phân tích output, mới dùng `LC_ALL=C`.
   - **Không có thời gian chờ và không bao giờ kill.** Kill git giữa chừng có thể để lại cây file chuyển dở hoặc một `index.lock` cũ. Checkout kèm LFS hay hook có thể lâu, nên cứ để nó chạy xong.
   - Thêm một hàm riêng trên `GitBinary`, kiểu `command_for_write`. Hàm `command()` của các lệnh đọc và test `command_is_hardened` giữ nguyên.
 - **`pub fn sanitize_branch_name(input: &str) -> String`:**
@@ -136,7 +138,9 @@ Danh sách nhánh được nạp ở luồng nền như hiện nay. Picker hiệ
    - editor vẫn sửa được. Nếu người dùng sửa một file mà git đang ghi lại thì cơ chế xung đột của Phase 4.4 xử lý như khi agent ghi file. Đây là chỗ hở đã biết và chấp nhận được, vì chuyển nhánh thường xong dưới một giây.
 3. **Thành công:** không cần làm gì thêm. Watcher của 5.1 thấy `HEAD` và `index` đổi rồi quét lại. Watcher worktree thấy file đổi nên Documents nạp lại buffer. Thanh tiêu đề đọc lại `HEAD`.
    - Để không phải chờ watcher, gọi thêm `GitStore::rescan()`, và đọc lại tên nhánh bằng `git_branch::read_branch`, ngay sau khi lệnh xong. Tên nhánh trên thanh tiêu đề vốn đọc từ `HEAD` qua `git_branch.rs`, không đọc từ `GitState`.
-4. **Thất bại** (git trả mã lỗi, hoặc không chạy được git): hiện hộp thoại native `window.prompt(PromptLevel::Critical, "Could not switch branches", Some(<stderr của git, đã cắt bớt khoảng trắng>), ["OK"])`, như cách Zed báo lỗi. Repo giữ nguyên, vì git không đổi gì khi từ chối.
+4. **Thất bại** (git trả mã lỗi, hoặc không chạy được git): vẫn gọi `GitStore::rescan()` và đọc lại tên nhánh như khi thành công, vì git có thể đã chuyển nhánh rồi mới báo lỗi (ví dụ hook `post-checkout` trả mã khác 0). Sau đó hiện hộp thoại native `window.prompt(PromptLevel::Critical, <tiêu đề>, Some(<stderr của git, đã cắt bớt khoảng trắng>), ["OK"])`, như cách Zed báo lỗi.
+   - Nếu `HEAD` giờ đã là nhánh đích thì tiêu đề là "Switched branches, but git reported an error".
+   - Nếu không thì tiêu đề là "Could not switch branches". Khi git từ chối vì thay đổi đụng nhau thì repo giữ nguyên.
 
 ### 4.4 Lệnh và phím
 
@@ -169,7 +173,8 @@ Không thêm setting nào.
   - tạo nhánh mới;
   - có thay đổi đụng nhau thì trả lỗi kèm stderr của git, và repo không đổi;
   - có thay đổi không đụng nhau thì thay đổi được mang sang.
-- Hook `post-checkout` có chạy khi chuyển nhánh, trong khi các lệnh đọc vẫn không chạy hook.
+- Hook `post-checkout` có chạy khi chuyển nhánh, trong khi các lệnh đọc vẫn không chạy hook (một `checkout` chạy qua lệnh đọc không kích hoạt hook).
+- Filter `required` mà chương trình chỉ có trên `PATH` của môi trường ghi: chuyển nhánh thành công.
 - Nhánh remote có `/` trong tên (`origin/feature/x`) thì tạo được nhánh local `feature/x`.
 - `sanitize_branch_name` và `check_branch_name`: khoảng trắng, tên bắt đầu bằng `-`, `..`, tên rỗng.
 
@@ -180,6 +185,7 @@ Không thêm setting nào.
 - Gõ tên không hợp lệ: dòng tạo bị mờ, Enter không làm gì.
 - Có file chưa lưu: không chạy git, status bar có thông báo, HEAD không đổi.
 - Git từ chối: có hộp thoại lỗi (dùng prompt giả của test), HEAD không đổi.
+- Hook `post-checkout` lỗi sau khi đã chuyển: hộp thoại có tiêu đề "Switched branches, but git reported an error", thanh tiêu đề hiện nhánh mới, statuses được quét lại.
 - Restricted Mode: bấm tên nhánh mở hộp thoại tin cậy, không có lệnh git nào chạy.
 - Chế độ Compare của tab Changes since vẫn chạy như cũ.
 
