@@ -149,6 +149,11 @@ impl Page<'_> {
         self.cx
             .update(|_, cx| view.read(cx).font_picker().is_some())
     }
+
+    fn focus_ring_shown(&mut self) -> bool {
+        let view = self.view.clone();
+        self.cx.update(|_, cx| view.read(cx).focus_ring_shown())
+    }
 }
 
 fn draw(cx: &mut VisualTestContext) {
@@ -294,6 +299,28 @@ fn broken_settings_not_written(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn broken_settings_warn_in_window(cx: &mut TestAppContext) {
+    let mut page = open(Host::Window, Some(TEMPLATE), cx);
+    std::fs::write(page.settings_path(), "{ \"a\": ").unwrap();
+    page.click("onboarding-theme-1");
+    assert!(page.drawn("onboarding-warning"));
+    // Fixed: the next save clears the warning.
+    std::fs::write(page.settings_path(), TEMPLATE).unwrap();
+    page.click("onboarding-vim");
+    assert_eq!(page.json()["vim.enabled"], true);
+    assert!(!page.drawn("onboarding-warning"));
+}
+
+#[gpui::test]
+fn broken_settings_no_warning_in_tab(cx: &mut TestAppContext) {
+    // The workbench's status bar shows the error.
+    let mut page = open(Host::Tab, Some(TEMPLATE), cx);
+    std::fs::write(page.settings_path(), "{ \"a\": ").unwrap();
+    page.click("onboarding-theme-1");
+    assert!(!page.drawn("onboarding-warning"));
+}
+
+#[gpui::test]
 fn reflects_hand_edit(cx: &mut TestAppContext) {
     let mut page = open(Host::Window, Some(TEMPLATE), cx);
     let path = page.settings_path();
@@ -346,6 +373,33 @@ fn font_picker_escape_writes_nothing(cx: &mut TestAppContext) {
     page.keys("escape");
     assert!(!page.picker_open());
     assert_eq!(page.file(), text);
+}
+
+#[gpui::test]
+fn font_family_dropdown_toggles_the_picker(cx: &mut TestAppContext) {
+    let mut page = open(Host::Window, Some(TEMPLATE), cx);
+    page.click("onboarding-font-family");
+    assert!(page.picker_open());
+    page.click("onboarding-font-family");
+    assert!(!page.picker_open());
+    page.click("onboarding-font-family");
+    assert!(page.picker_open());
+}
+
+#[gpui::test]
+fn focus_ring_only_for_keyboard(cx: &mut TestAppContext) {
+    let mut page = open(Host::Window, Some(TEMPLATE), cx);
+    assert!(!page.focus_ring_shown());
+    page.keys("tab");
+    assert!(page.focus_ring_shown());
+    page.click("onboarding-vim");
+    assert!(!page.focus_ring_shown());
+    // Vim, up three: Font Family. The page loses focus to the picker.
+    page.keys("up up up enter");
+    assert!(page.picker_open());
+    assert!(!page.focus_ring_shown());
+    page.keys("escape");
+    assert!(page.focus_ring_shown());
 }
 
 #[gpui::test]
@@ -472,6 +526,15 @@ impl Bench<'_> {
         })
     }
 
+    fn picker_open(&mut self) -> bool {
+        let wb = self.wb.clone();
+        self.cx.update(|_, cx| {
+            wb.read(cx)
+                .onboarding_page()
+                .is_some_and(|page| page.read(cx).font_picker().is_some())
+        })
+    }
+
     fn active_item(&mut self) -> Option<TabItem> {
         let wb = self.wb.clone();
         self.cx.update(|_, cx| {
@@ -573,4 +636,19 @@ fn open_settings_from_tab_opens_the_file_in_the_workbench(cx: &mut TestAppContex
         ),
         other => panic!("the settings file is active, not {other:?}"),
     }
+}
+
+#[gpui::test]
+fn reopened_tab_drops_the_font_picker(cx: &mut TestAppContext) {
+    let mut b = bench(Some(TEMPLATE), cx);
+    b.run("lucerna.openOnboarding");
+    b.click("onboarding-font-family");
+    assert!(b.picker_open());
+    b.run("workbench.action.closeActiveEditor");
+    assert!(b.onboarding_tabs().is_empty());
+    b.run("lucerna.openOnboarding");
+    assert!(!b.picker_open());
+    // The page has its keys back.
+    b.keys("cmd-enter");
+    assert!(b.onboarding_tabs().is_empty());
 }

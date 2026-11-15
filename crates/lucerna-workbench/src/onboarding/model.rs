@@ -13,8 +13,8 @@ pub const FONT_SIZE_MIN: u32 = 6;
 pub const FONT_SIZE_MAX: u32 = 100;
 const FONT_SIZE_DEFAULT: u32 = 14;
 const FONT_FAMILY_DEFAULT: &str = "Lilex";
-const FONT_SIZE_KEY: &str = "editor.fontSize";
-const FONT_FAMILY_KEY: &str = "editor.fontFamily";
+pub(crate) const FONT_SIZE_KEY: &str = "editor.fontSize";
+pub(crate) const FONT_FAMILY_KEY: &str = "editor.fontFamily";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ThemeMode {
