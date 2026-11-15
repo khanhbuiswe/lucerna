@@ -1,7 +1,8 @@
 //! Starts the app for `luc`: the configuration, themes and keymap, then
-//! one workbench window on a folder, or the Welcome screen when the app
-//! bundle is started from Finder or the Dock, and opening the paths the
-//! platform sends ([`open_requests`]).
+//! one workbench window on a folder, or the Welcome screen (the Get
+//! Started page on the first run) when the app bundle is started from
+//! Finder or the Dock, and opening the paths the platform sends
+//! ([`open_requests`]).
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -24,17 +25,19 @@ use lucerna_syntax::{Associations, LanguageRegistry};
 use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 
 use crate::app_menu;
+use crate::app_state_file::{mark_onboarded, onboarded};
 use crate::extensions::{
     ExtensionService, WasmGrammarValidator, extension_languages, extensions_root,
 };
 use crate::open_requests::{self, OpenWindow, Route};
 use crate::process::{self, SpawnRequest, Spawner};
-use crate::recent::{self, RecentEntry, RecentKind, RecentStore};
+use crate::recent::{self, RecentEntry, RecentKind, RecentList, RecentStore};
+use crate::startup::{StartupScreen, startup_screen};
 use crate::workspace_state::tilde_path;
 use crate::{
-    AppState, ConfigPaths, OpenMode, Startup, WelcomeEvent, WelcomeView, Workbench, WorkbenchEvent,
-    default_data_dir, last_workspace, restores_last_workspace, startup_choice, status_message,
-    watch_config, window_options,
+    AppState, ConfigPaths, Host, OnboardingEvent, OnboardingPage, OpenMode, WelcomeEvent,
+    WelcomeView, Workbench, WorkbenchEvent, default_data_dir, last_workspace,
+    restores_last_workspace, startup_choice, status_message, watch_config, window_options,
 };
 
 /// What [`run`] opens.
@@ -62,7 +65,8 @@ const OPEN_REQUEST_GRACE: Duration = Duration::from_millis(300);
 ///
 /// With `launch`, the window opens on it. Without, as when Finder or the
 /// Dock starts the app bundle, the app waits briefly for a path to open and
-/// otherwise shows the Welcome screen, or asks for a folder when
+/// otherwise reopens the last workspace, shows the Get Started page on the
+/// first run, or the Welcome screen, or asks for a folder when
 /// `workbench.startupEditor` is `"none"` (Cancel quits). Paths the platform
 /// asks to open later go through [`open_requests::route`], resolved by
 /// `resolve`.
@@ -104,31 +108,58 @@ pub fn run(launch: Option<Launch>, resolve: Resolve) {
     });
 }
 
-/// With no folder to open: reads the user's configuration, then reopens
-/// the last workspace (`window.restoreWindows`), else shows the Welcome
-/// screen or the folder prompt as `workbench.startupEditor` says.
+/// With no folder to open: reads the user's configuration, then opens
+/// what [`first_screen`] picks. The Get Started page is remembered as
+/// shown as soon as it opens (spec O3).
 fn open_without_folder(router: &Rc<RefCell<Router>>, cx: &mut App) {
     let user_dir = router.borrow().user_dir.clone();
     watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
-    if restores_last_workspace(&cx.global::<AppState>().settings)
-        && let Some(dir) = cx
-            .try_global::<RecentStore>()
-            .and_then(|s| s.data_dir.clone())
-        && let Some(entry) = last_workspace(&recent::load(&recent::recent_path(&dir))).cloned()
-    {
-        tracing::info!(path = %entry.path.display(), "reopening the last workspace");
-        Router::open_path(router, &entry.path, cx);
-        return;
+    let data_dir = app_data_dir(cx);
+    match first_screen(data_dir.as_deref(), &cx.global::<AppState>().settings) {
+        StartupScreen::Restore(path) => {
+            tracing::info!(path = %path.display(), "reopening the last workspace");
+            Router::open_path(router, &path, cx);
+        }
+        StartupScreen::Onboarding => {
+            if let Some(dir) = data_dir {
+                cx.background_spawn(async move {
+                    if let Err(err) = mark_onboarded(&dir) {
+                        tracing::warn!(%err, "could not remember the onboarding as shown");
+                    }
+                })
+                .detach();
+            }
+            Router::open_onboarding(router, cx);
+        }
+        StartupScreen::Welcome => Router::open_welcome(router, cx),
+        StartupScreen::FolderPrompt => pick_folder(router, cx),
     }
-    match startup_choice(&cx.global::<AppState>().settings) {
-        Startup::FolderPrompt => pick_folder(router, cx),
-        Startup::Welcome => Router::open_welcome(router, cx),
-    }
+}
+
+/// What a start without a path shows, from the app data directory and the
+/// user settings: the last workspace when `window.restoreWindows` allows
+/// it, then the Get Started page on the first run, then what
+/// `workbench.startupEditor` says. Without a data directory there is no
+/// first run to remember, so no Get Started page. Reads the recent list
+/// and `state.json` on this thread.
+pub(crate) fn first_screen(data_dir: Option<&Path>, settings: &SettingsStore) -> StartupScreen {
+    let recent = match data_dir {
+        Some(dir) if restores_last_workspace(settings) => recent::load(&recent::recent_path(dir)),
+        _ => RecentList::default(),
+    };
+    let restore = last_workspace(&recent);
+    // The flag is not needed when a workspace is reopened.
+    let onboarded = match restore {
+        Some(_) => None,
+        None => data_dir.map(onboarded),
+    };
+    startup_screen(restore, onboarded, startup_choice(settings))
 }
 
 /// What the process's one window shows.
 enum Shown {
     Welcome(WindowHandle<WelcomeView>),
+    Onboarding(WindowHandle<OnboardingPage>),
     Workbench(OpenWindow, WindowHandle<Workbench>),
 }
 
@@ -136,6 +167,7 @@ impl Shown {
     fn window(&self) -> AnyWindowHandle {
         match self {
             Shown::Welcome(handle) => **handle,
+            Shown::Onboarding(handle) => **handle,
             Shown::Workbench(_, handle) => **handle,
         }
     }
@@ -223,6 +255,77 @@ impl Router {
         view
     }
 
+    /// Opens the Get Started page in a window like the workbench's; quits
+    /// if it cannot.
+    fn open_onboarding(this: &Rc<RefCell<Router>>, cx: &mut App) {
+        let opened = cx.open_window(maximized_window_options(cx), |window, cx| {
+            let view = cx.new(|cx| OnboardingPage::new(Host::Window, window, cx));
+            Router::route_onboarding(this, &view, cx);
+            view
+        });
+        match opened {
+            Ok(handle) => {
+                cx.activate(true);
+                this.borrow_mut().shown = Some(Shown::Onboarding(handle));
+                // The menu bar enables the page's items.
+                app_menu::refresh(cx);
+            }
+            Err(err) => {
+                tracing::error!(%err, "could not open the window");
+                cx.quit();
+            }
+        }
+    }
+
+    /// Makes this router handle the Get Started page's events.
+    fn route_onboarding(this: &Rc<RefCell<Router>>, view: &Entity<OnboardingPage>, cx: &mut App) {
+        let router = this.clone();
+        cx.subscribe(view, move |_, event: &OnboardingEvent, cx| {
+            Router::on_onboarding_event(&router, event, cx)
+        })
+        .detach();
+    }
+
+    fn on_onboarding_event(this: &Rc<RefCell<Router>>, event: &OnboardingEvent, cx: &mut App) {
+        match event {
+            OnboardingEvent::Finish => {
+                if matches!(this.borrow().shown, Some(Shown::Onboarding(_))) {
+                    Router::replace_with_welcome(this, cx);
+                }
+            }
+            OnboardingEvent::OpenSettingsInNewWindow(path) => {
+                if let Err(err) = process::spawn(&SpawnRequest::Path(path.clone()), cx) {
+                    tracing::error!(%err, path = %path.display(), "could not start luc");
+                }
+            }
+            // Only a tab asks this, of its workbench.
+            OnboardingEvent::OpenSettingsInWorkbench => {}
+        }
+    }
+
+    /// Shows the Get Started page in place of the Welcome screen (spec
+    /// §6); nothing while the window shows anything else.
+    fn replace_with_onboarding(this: &Rc<RefCell<Router>>, cx: &mut App) {
+        let window = match &this.borrow().shown {
+            Some(Shown::Welcome(handle)) => **handle,
+            _ => return,
+        };
+        let replaced = window.update(cx, |_, window, cx| {
+            let view = window.replace_root(cx, |window, cx| {
+                OnboardingPage::new(Host::Window, window, cx)
+            });
+            Router::route_onboarding(this, &view, cx);
+        });
+        match replaced {
+            Ok(()) => {
+                this.borrow_mut().shown =
+                    Some(Shown::Onboarding(WindowHandle::new(window.window_id())));
+                app_menu::refresh(cx);
+            }
+            Err(err) => tracing::error!(%err, "could not show the Get Started page"),
+        }
+    }
+
     fn on_workbench_event(this: &Rc<RefCell<Router>>, event: &WorkbenchEvent, cx: &mut App) {
         match event {
             WorkbenchEvent::Replace(SpawnRequest::Path(path)) => {
@@ -251,17 +354,21 @@ impl Router {
         }
     }
 
-    /// Shows the Welcome screen in place of the workbench (spec W10), on
-    /// the user configuration alone.
+    /// Shows the Welcome screen in place of the workbench (spec W10) or the
+    /// Get Started page (spec O5), on the user configuration alone.
     fn replace_with_welcome(this: &Rc<RefCell<Router>>, cx: &mut App) {
-        let (window, user_dir) = {
+        let (window, user_dir, user_only) = {
             let router = this.borrow();
             let Some(shown) = router.shown.as_ref() else {
                 return;
             };
-            (shown.window(), router.user_dir.clone())
+            let user_only = matches!(shown, Shown::Onboarding(_));
+            (shown.window(), router.user_dir.clone(), user_only)
         };
-        watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
+        // Get Started already watches the user configuration alone.
+        if !user_only {
+            watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
+        }
         let replaced = window.update(cx, |_, window, cx| {
             let view = window.replace_root(cx, WelcomeView::new);
             let router = this.clone();
@@ -285,6 +392,7 @@ impl Router {
             WelcomeEvent::Open { path, new_window } => {
                 Router::open_from_welcome(this, path.clone(), *new_window, cx)
             }
+            WelcomeEvent::OpenOnboarding => Router::replace_with_onboarding(this, cx),
             WelcomeEvent::Quit => crate::workbench::quit(cx),
         }
     }
@@ -638,4 +746,82 @@ pub fn set_app_state_with_store(store: Store, cx: &mut App) {
         icons,
     });
     ExtensionService::start(store, cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use lucerna_settings::Layer;
+
+    use super::*;
+    use crate::startup::StartupScreen;
+
+    /// A data dir whose `recent.json` lists one folder that exists.
+    fn with_recent_folder() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("project");
+        std::fs::create_dir(&folder).unwrap();
+        let file = serde_json::json!({
+            "version": 1,
+            "entries": [{ "path": folder, "kind": "folder" }],
+        });
+        std::fs::write(recent::recent_path(dir.path()), file.to_string()).unwrap();
+        (dir, folder)
+    }
+
+    fn with_user(json: &str) -> SettingsStore {
+        let mut store = SettingsStore::with_defaults();
+        store.set_layer(Layer::User, json).unwrap();
+        store
+    }
+
+    #[test]
+    fn first_screen_fresh_is_onboarding() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            first_screen(Some(dir.path()), &SettingsStore::with_defaults()),
+            StartupScreen::Onboarding
+        );
+    }
+
+    #[test]
+    fn first_screen_restores_existing_folder() {
+        let (dir, folder) = with_recent_folder();
+        assert_eq!(
+            first_screen(Some(dir.path()), &SettingsStore::with_defaults()),
+            StartupScreen::Restore(folder)
+        );
+    }
+
+    #[test]
+    fn first_screen_after_onboarded_is_welcome() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::app_state_file::mark_onboarded(dir.path()).unwrap();
+        assert_eq!(
+            first_screen(Some(dir.path()), &SettingsStore::with_defaults()),
+            StartupScreen::Welcome
+        );
+        let store = with_user(r#"{"workbench.startupEditor":"none"}"#);
+        assert_eq!(
+            first_screen(Some(dir.path()), &store),
+            StartupScreen::FolderPrompt
+        );
+    }
+
+    #[test]
+    fn first_screen_restore_none_first_run() {
+        let (dir, _) = with_recent_folder();
+        let store = with_user(r#"{"window.restoreWindows":"none"}"#);
+        assert_eq!(
+            first_screen(Some(dir.path()), &store),
+            StartupScreen::Onboarding
+        );
+    }
+
+    #[test]
+    fn first_screen_no_data_dir() {
+        assert_eq!(
+            first_screen(None, &SettingsStore::with_defaults()),
+            StartupScreen::Welcome
+        );
+    }
 }

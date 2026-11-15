@@ -16,7 +16,8 @@ use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::process::{SpawnRequest, Spawner};
 use lucerna_workbench::recent::{RecentEntry, RecentKind, RecentStore, load, recent_path};
 use lucerna_workbench::{
-    AppState, OpenMode, WelcomeEvent, WelcomeView, Workbench, WorkbenchEvent, status_message,
+    AppState, OnboardingEvent, OnboardingPage, OpenMode, WelcomeEvent, WelcomeView, Workbench,
+    WorkbenchEvent, status_message,
 };
 
 fn init(user_keymap: Option<&str>, data_dir: Option<PathBuf>, cx: &mut TestAppContext) {
@@ -246,8 +247,9 @@ fn cmd_1_opens_first_recent(cx: &mut TestAppContext) {
 fn arrows_move_focus_and_enter_presses(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["a", "b"], &[]);
     let (view, events, cx) = open_with(&fixture, None, cx);
-    // Open… (or Open File… and Open Folder…), Open Recent…, then the rows.
-    let first_row = if cfg!(target_os = "macos") { 2 } else { 3 };
+    // Open… (or Open File… and Open Folder…), Open Recent…, Get Started,
+    // then the rows.
+    let first_row = if cfg!(target_os = "macos") { 3 } else { 4 };
     assert_eq!(cx.update(|_, cx| view.read(cx).focused_index()), 0);
     for _ in 0..first_row {
         cx.simulate_keystrokes("down");
@@ -296,6 +298,14 @@ fn ctrl_r_opens_picker_and_escape_closes(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     draw(cx);
     assert!(cx.update(|_, cx| view.read(cx).recent_picker().is_none()));
+}
+
+#[gpui::test]
+fn get_started_button_emits_open_onboarding(cx: &mut TestAppContext) {
+    init(None, None, cx);
+    let (_, events, cx) = open(cx);
+    click("welcome-get-started", Modifiers::none(), cx);
+    assert_eq!(*events.lock().unwrap(), vec![WelcomeEvent::OpenOnboarding]);
 }
 
 #[gpui::test]
@@ -386,6 +396,7 @@ fn no_data_dir_shows_get_started_only(cx: &mut TestAppContext) {
         assert!(drawn("welcome-open-folder", cx));
     }
     assert!(drawn("welcome-open-recent", cx));
+    assert!(drawn("welcome-get-started", cx));
     assert!(!drawn("welcome-recent-0", cx));
     assert_eq!(
         cx.update(|_, cx| view.read(cx).recent().map(<[_]>::len)),
@@ -669,4 +680,60 @@ fn replace_with_a_missing_folder_keeps_the_workbench(cx: &mut TestAppContext) {
         .unwrap_or_default();
     assert!(status.starts_with("Could not open "), "{status:?}");
     assert!(spawns.borrow().is_empty());
+}
+
+/// The only window's root, when it is `V`.
+fn only_root<V: 'static>(cx: &mut TestAppContext) -> Option<Entity<V>> {
+    cx.update(|cx| {
+        let windows = cx.windows();
+        assert_eq!(windows.len(), 1, "one window");
+        windows[0]
+            .update(cx, |root, _, _| root.downcast::<V>().ok())
+            .unwrap()
+    })
+}
+
+fn emit_onboarding(page: &Entity<OnboardingPage>, event: OnboardingEvent, cx: &mut TestAppContext) {
+    cx.update(|cx| page.update(cx, |_, cx| cx.emit(event)));
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn get_started_and_finish_switch_the_root(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&["a"], &[]);
+    let (_, view, spawns) = routed_welcome(&fixture, cx);
+    let window = window_id(cx);
+    let released = view.downgrade();
+    emit(&view, vec![WelcomeEvent::OpenOnboarding], cx);
+    drop(view);
+    cx.run_until_parked();
+    let page = only_root::<OnboardingPage>(cx).expect("the root is the Get Started page");
+    assert_eq!(window_id(cx), window, "the same window");
+    assert!(released.upgrade().is_none(), "Welcome is released");
+
+    emit_onboarding(&page, OnboardingEvent::Finish, cx);
+    let view = only_root::<WelcomeView>(cx).expect("the root is the Welcome view");
+    assert_eq!(window_id(cx), window, "the same window");
+    assert!(spawns.borrow().is_empty(), "no new process");
+
+    // The new Welcome view is routed too.
+    emit(&view, vec![open_event(&fixture.path("a"), false)], cx);
+    assert!(only_workbench(cx).is_some());
+    assert_eq!(shown_root(cx), Some(canonical(&fixture.path("a"))));
+}
+
+#[gpui::test]
+fn onboarding_open_settings_spawns_a_process(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&[], &[]);
+    let (_, view, spawns) = routed_welcome(&fixture, cx);
+    emit(&view, vec![WelcomeEvent::OpenOnboarding], cx);
+    let page = only_root::<OnboardingPage>(cx).expect("the root is the Get Started page");
+    let settings = fixture.path("config/settings.json");
+    emit_onboarding(
+        &page,
+        OnboardingEvent::OpenSettingsInNewWindow(settings.clone()),
+        cx,
+    );
+    assert_eq!(*spawns.borrow(), vec![SpawnRequest::Path(settings)]);
+    assert!(only_root::<OnboardingPage>(cx).is_some(), "the page stays");
 }

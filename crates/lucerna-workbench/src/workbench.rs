@@ -43,6 +43,7 @@ use crate::lsp_log::LspLogs;
 use crate::lsp_status::{self, LspStatusItem};
 use crate::markdown_preview::{self, MarkdownPreview, ScrollSync};
 use crate::nav_history::{NavEntry, NavHistory};
+use crate::onboarding::{self, TabPage};
 use crate::open_commands::{self, ShownRecentPicker};
 use crate::open_files::{OpenFileWatcher, matching_files};
 use crate::quick_open::{self, QuickOpen, RecentFiles};
@@ -150,6 +151,9 @@ pub struct Workbench {
     /// The body of the Health tab, kept (with its last check) while the
     /// tab is closed.
     pub(crate) lsp_health: Entity<LspHealthView>,
+    /// The body of the Get Started tab, made when the tab first opens and
+    /// kept while it is closed.
+    pub(crate) onboarding: TabPage,
     /// The diagnostics counts and message in the status bar.
     pub(crate) diagnostics_status: Entity<DiagnosticsStatusItem>,
     /// The F8 lookup in flight.
@@ -381,6 +385,7 @@ impl Workbench {
         // Before the editor groups: the diff tabs read them.
         let git = cx.new(|cx| GitStore::new(root.clone(), cx));
         let branch_base = cx.new(|_| BranchBase(None));
+        let onboarding = TabPage::default();
         let workbench = cx.weak_entity();
         let breadcrumbs_target = cx.weak_entity();
         let command_target = cx.weak_entity();
@@ -391,6 +396,7 @@ impl Workbench {
             let search = search_view.clone();
             let references = references_view.clone();
             let health = lsp_health.clone();
+            let onboarding = onboarding.clone();
             let git = git.clone();
             let branch_base = branch_base.clone();
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
@@ -419,6 +425,10 @@ impl Workbench {
                         TabItem::LspHealth => {
                             health.update(cx, |health, cx| health.shown(cx));
                             return health.clone().into();
+                        }
+                        TabItem::Onboarding => {
+                            return onboarding::tab_page(&onboarding, &workbench, window, cx)
+                                .into();
                         }
                         TabItem::GitChanges | TabItem::FileDiff(_) | TabItem::BranchChanges => {
                             let kind = match &tab.item {
@@ -729,6 +739,7 @@ impl Workbench {
             breadcrumbs: Breadcrumbs::default(),
             lsp_status: lsp_status.clone(),
             lsp_health: lsp_health.clone(),
+            onboarding,
             diagnostics_status: diagnostics_status.clone(),
             marker_task: None,
             marker_hover: None,
@@ -1384,7 +1395,8 @@ impl Workbench {
     /// stopped being its group's active tab (a jump in the same group, a
     /// search result opened in its place), focus goes to the editor area,
     /// so keys keep working. Covers code views, Markdown previews, the
-    /// Extensions, Search, References and Health tabs and server logs.
+    /// Extensions, Search, References, Health and Get Started tabs and
+    /// server logs.
     pub(crate) fn refocus_if_hidden(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let groups = self.editor_groups.read(cx);
         let model = groups.model();
@@ -1402,6 +1414,10 @@ impl Workbench {
             || (search_hidden && had_focus(self.search_view.read(cx).focus_handle(cx)))
             || (references_hidden && had_focus(self.references_view.read(cx).focus_handle(cx)))
             || (health_hidden && had_focus(self.lsp_health.read(cx).focus_handle(cx)))
+            || (hidden(model.onboarding_tab())
+                && self
+                    .onboarding_page()
+                    .is_some_and(|page| had_focus(page.read(cx).focus_handle(cx))))
             || self.lsp_logs.hidden_with_focus(model, window, cx)
             || groups.hidden_bodies().any(|body| {
                 let handle = match body.clone().downcast::<CodeView>() {
@@ -1820,6 +1836,7 @@ impl Workbench {
             "extensionsViewletFocus",
             self.extensions_focused(window, cx),
         );
+        flag("onboardingFocus", self.onboarding_focused(window, cx));
         // The theme, locations and recent pickers are quick picks too:
         // Escape closes them.
         flag(
@@ -2841,6 +2858,7 @@ pub(crate) fn default_registry() -> CommandRegistry {
     crate::about::register_commands(&mut commands);
     markdown_preview::register_commands(&mut commands);
     crate::explorer::register_commands(&mut commands);
+    onboarding::register_commands(&mut commands);
     commands
 }
 

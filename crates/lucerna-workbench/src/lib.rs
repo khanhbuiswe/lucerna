@@ -5,6 +5,7 @@ mod about;
 pub mod app;
 pub mod app_menu;
 mod app_state;
+mod app_state_file;
 pub mod code_view;
 mod commands;
 mod config_files;
@@ -35,6 +36,7 @@ mod lsp_status;
 pub mod markdown;
 mod markdown_preview;
 mod nav_history;
+mod onboarding;
 mod open_commands;
 mod open_files;
 pub mod open_requests;
@@ -46,6 +48,7 @@ mod references_view;
 mod save;
 mod scrollbar;
 mod search_view;
+mod settings_edit;
 mod startup;
 pub mod status_message;
 mod symbols;
@@ -108,6 +111,7 @@ pub use markdown_preview::{
     line_to_item, resolve_image, resolve_link,
 };
 pub use nav_history::{NavEntry, NavHistory};
+pub use onboarding::{Host, ONBOARDING_COMMANDS, OnboardingEvent, OnboardingPage};
 pub use open_commands::{OPEN_IN_BROWSER, WorkbenchEvent, browser_url};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{

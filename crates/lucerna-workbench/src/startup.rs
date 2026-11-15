@@ -1,5 +1,7 @@
 //! What Lucerna shows when it starts without a folder to open.
 
+use std::path::PathBuf;
+
 use lucerna_settings::SettingsStore;
 
 use crate::recent::{RecentEntry, RecentList};
@@ -41,6 +43,37 @@ pub fn restores_last_workspace(settings: &SettingsStore) -> bool {
 /// opened alone, that still exists.
 pub fn last_workspace(list: &RecentList) -> Option<&RecentEntry> {
     list.entries.iter().find(|entry| entry.exists())
+}
+
+/// What the window opened without a path shows first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartupScreen {
+    /// Reopen this workspace.
+    Restore(PathBuf),
+    /// The first-run onboarding page.
+    Onboarding,
+    Welcome,
+    FolderPrompt,
+}
+
+/// Picks the startup screen: the workspace to restore wins, then the
+/// first-run onboarding (`onboarded` is `Some(false)`), then `choice`.
+/// `onboarded` is `None` when there is no data directory to remember it in.
+pub fn startup_screen(
+    restore: Option<&RecentEntry>,
+    onboarded: Option<bool>,
+    choice: Startup,
+) -> StartupScreen {
+    if let Some(entry) = restore {
+        return StartupScreen::Restore(entry.path.clone());
+    }
+    if onboarded == Some(false) {
+        return StartupScreen::Onboarding;
+    }
+    match choice {
+        Startup::Welcome => StartupScreen::Welcome,
+        Startup::FolderPrompt => StartupScreen::FolderPrompt,
+    }
 }
 
 #[cfg(test)]
@@ -118,5 +151,61 @@ mod tests {
             let store = with_user(&format!(r#"{{"workbench.startupEditor":{value}}}"#));
             assert_eq!(startup_choice(&store), Startup::Welcome, "{value}");
         }
+    }
+
+    fn entry(path: &str) -> RecentEntry {
+        RecentEntry {
+            path: PathBuf::from(path),
+            kind: crate::recent::RecentKind::Folder,
+        }
+    }
+
+    #[test]
+    fn restore_wins() {
+        let e = entry("/p");
+        assert_eq!(
+            startup_screen(Some(&e), Some(false), Startup::Welcome),
+            StartupScreen::Restore(PathBuf::from("/p"))
+        );
+    }
+
+    #[test]
+    fn first_run_onboarding() {
+        assert_eq!(
+            startup_screen(None, Some(false), Startup::Welcome),
+            StartupScreen::Onboarding
+        );
+    }
+
+    #[test]
+    fn first_run_beats_folder_prompt() {
+        assert_eq!(
+            startup_screen(None, Some(false), Startup::FolderPrompt),
+            StartupScreen::Onboarding
+        );
+    }
+
+    #[test]
+    fn onboarded_follows_choice() {
+        assert_eq!(
+            startup_screen(None, Some(true), Startup::Welcome),
+            StartupScreen::Welcome
+        );
+        assert_eq!(
+            startup_screen(None, Some(true), Startup::FolderPrompt),
+            StartupScreen::FolderPrompt
+        );
+    }
+
+    #[test]
+    fn no_data_dir_follows_choice() {
+        assert_eq!(
+            startup_screen(None, None, Startup::Welcome),
+            StartupScreen::Welcome
+        );
+        assert_eq!(
+            startup_screen(None, None, Startup::FolderPrompt),
+            StartupScreen::FolderPrompt
+        );
     }
 }

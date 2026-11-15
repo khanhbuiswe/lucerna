@@ -63,6 +63,7 @@ pub const TYPE: &[u8] = lucide!("type");
 pub const CIRCLE: &[u8] = lucide!("circle");
 pub const HISTORY: &[u8] = lucide!("history");
 pub const PLUS: &[u8] = lucide!("plus");
+pub const MINUS: &[u8] = lucide!("minus");
 pub const MAXIMIZE_2: &[u8] = lucide!("maximize-2");
 pub const MINIMIZE_2: &[u8] = lucide!("minimize-2");
 pub const EYE: &[u8] = lucide!("eye");
@@ -123,6 +124,7 @@ pub const ALL: &[(&str, &[u8])] = &[
     ("circle", CIRCLE),
     ("history", HISTORY),
     ("plus", PLUS),
+    ("minus", MINUS),
     ("maximize-2", MAXIMIZE_2),
     ("minimize-2", MINIMIZE_2),
     ("eye", EYE),

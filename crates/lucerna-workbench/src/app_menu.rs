@@ -16,7 +16,9 @@ use serde::Deserialize;
 use crate::config_files::ConfigState;
 use crate::recent::{self, RecentEntry, RecentStore};
 use crate::workspace_state::tilde_path;
-use crate::{AppState, WELCOME_COMMANDS, WelcomeView, Workbench};
+use crate::{
+    AppState, ONBOARDING_COMMANDS, OnboardingPage, WELCOME_COMMANDS, WelcomeView, Workbench,
+};
 
 /// Runs the command `id` in the active window: what every command item of
 /// the menu bar does.
@@ -123,6 +125,8 @@ pub enum Platform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowKind {
     Welcome,
+    /// The Get Started page as the root, before a folder is opened.
+    Onboarding,
     Workbench,
 }
 
@@ -328,6 +332,8 @@ pub static MENUS: &[MenuSpec] = &[
         title: "Help",
         role: Role::Help,
         entries: &[
+            command("Get Started", "lucerna.openOnboarding"),
+            Entry::Separator,
             command("Show All Commands", "workbench.action.showCommands"),
             command("Open Logs Folder", "lucerna.openLogsFolder"),
             command(
@@ -341,7 +347,7 @@ pub static MENUS: &[MenuSpec] = &[
 /// The menu bar for `input` (spec §9.2). Commands that are not registered
 /// are left out, and so are separators left at an end or next to another.
 /// On Linux and Windows the app menu's items move to File and Help. In a
-/// Welcome window only what Welcome runs is enabled.
+/// Welcome or Get Started window only what that page runs is enabled.
 pub fn build_menus(input: &BuildInput) -> Vec<Menu> {
     MENUS
         .iter()
@@ -406,7 +412,11 @@ fn command_item(
     if !input.commands.contains(&id) {
         return None;
     }
-    let enabled = input.window == WindowKind::Workbench || WELCOME_COMMANDS.contains(&id);
+    let enabled = match input.window {
+        WindowKind::Workbench => true,
+        WindowKind::Welcome => WELCOME_COMMANDS.contains(&id),
+        WindowKind::Onboarding => ONBOARDING_COMMANDS.contains(&id),
+    };
     let item = match (os, enabled) {
         (Some(os), true) => MenuItem::os_action(title, RunCommand { id: id.into() }, os),
         (None, true) => MenuItem::action(title, RunCommand { id: id.into() }),
@@ -429,11 +439,15 @@ fn app_item(action: AppAction, platform: Platform) -> Option<MenuItem> {
 }
 
 /// File ▸ Open Recent: the first recent entries, then "More…" and "Clear
-/// Recently Opened…".
+/// Recently Opened…". The Get Started page cannot open an entry, so its
+/// window lists none.
 fn recent_submenu(input: &BuildInput) -> MenuItem {
     let home = std::env::home_dir();
-    let mut children: Vec<MenuItem> = input
-        .recent
+    let recent = match input.window {
+        WindowKind::Onboarding => &[],
+        _ => input.recent,
+    };
+    let mut children: Vec<MenuItem> = recent
         .iter()
         .take(RECENT_MENU_ITEMS)
         .map(|entry| {
@@ -660,12 +674,16 @@ fn set_menus(recent: &[RecentEntry], cx: &mut App) {
     } else {
         Platform::Other
     };
-    let opened = active_window(cx)
+    let active = active_window(cx);
+    let opened = active
         .and_then(|id| WindowHandle::<Workbench>::new(id).read(cx).ok())
         .map(Workbench::opened_paths);
-    let window = match opened {
-        Some(_) => WindowKind::Workbench,
-        None => WindowKind::Welcome,
+    let onboarding =
+        active.is_some_and(|id| WindowHandle::<OnboardingPage>::new(id).read(cx).is_ok());
+    let window = match (&opened, onboarding) {
+        (Some(_), _) => WindowKind::Workbench,
+        (None, true) => WindowKind::Onboarding,
+        (None, false) => WindowKind::Welcome,
     };
     // Choosing the window's own folder would only reopen it.
     let opened = opened.unwrap_or_default();
@@ -703,10 +721,10 @@ fn menu_may_run(keymap: &Keymap, id: &str, context: &WhenContext) -> bool {
     bindings.any(|b| b.when.as_ref().is_none_or(|w| w.eval(context)))
 }
 
-/// Runs `id` in the active window's workbench, or Welcome screen; with no
-/// window, nothing. In a workbench, only where the command's key would
-/// run it ([`menu_may_run`]): AppKit fires a menu item for a key the
-/// workbench let through.
+/// Runs `id` in the active window's workbench, Welcome screen or Get
+/// Started page; with no window, nothing. In a workbench, only where the
+/// command's key would run it ([`menu_may_run`]): AppKit fires a menu item
+/// for a key the workbench let through.
 fn run_command(id: &str, cx: &mut App) {
     let Some(window) = active_window(cx) else {
         return;
@@ -717,10 +735,16 @@ fn run_command(id: &str, cx: &mut App) {
             wb.run_command(id, None, window, cx);
         }
     });
-    if ran.is_err() {
-        WindowHandle::<WelcomeView>::new(window)
+    if ran.is_err()
+        && WindowHandle::<WelcomeView>::new(window)
             .update(cx, |view, window, cx| {
                 view.run_command(id, window, cx);
+            })
+            .is_err()
+    {
+        WindowHandle::<OnboardingPage>::new(window)
+            .update(cx, |page, window, cx| {
+                page.run_command(id, window, cx);
             })
             .ok();
     }
@@ -912,6 +936,55 @@ mod tests {
 
         let menus = build_menus(&input(&commands, Platform::Mac, &[], WindowKind::Workbench));
         assert!(!item(menu(&menus, "File"), "Save").is_disabled());
+    }
+
+    #[test]
+    fn help_starts_with_get_started() {
+        let commands = Workbench::command_ids();
+        assert!(commands.contains(&"lucerna.openOnboarding"));
+        let help = titles(menu(&mac(&commands), "Help"));
+        assert_eq!(&help[..3], ["Get Started", "—", "Show All Commands"]);
+        // Unregistered, it is left out with its separator.
+        let without: Vec<_> = commands
+            .into_iter()
+            .filter(|id| *id != "lucerna.openOnboarding")
+            .collect();
+        let help = titles(menu(&mac(&without), "Help"));
+        assert_eq!(help.first().map(String::as_str), Some("Show All Commands"));
+    }
+
+    #[test]
+    fn welcome_enables_get_started() {
+        let commands = registered_and(&["lucerna.openOnboarding"]);
+        let menus = build_menus(&input(&commands, Platform::Mac, &[], WindowKind::Welcome));
+        assert!(!item(menu(&menus, "Help"), "Get Started").is_disabled());
+    }
+
+    #[test]
+    fn onboarding_enables_only_its_commands() {
+        let commands = registered_and(&["lucerna.openOnboarding"]);
+        let recent = [RecentEntry {
+            path: PathBuf::from("/p"),
+            kind: RecentKind::Folder,
+        }];
+        let menus = build_menus(&input(
+            &commands,
+            Platform::Mac,
+            &recent,
+            WindowKind::Onboarding,
+        ));
+        let file = menu(&menus, "File");
+        assert!(item(file, "Save").is_disabled());
+        assert!(item(file, "Open…").is_disabled());
+        // The page cannot open a recent entry.
+        let open_recent = submenu(file, "Open Recent");
+        assert!(!titles(open_recent).contains(&"/p".to_string()));
+        assert!(item(open_recent, "More…").is_disabled());
+        assert!(!item(menu(&menus, "Help"), "Get Started").is_disabled());
+        let app = menu(&menus, "Lucerna");
+        assert!(!item(app, "About Lucerna").is_disabled());
+        assert!(!item(app, "Quit Lucerna").is_disabled());
+        assert!(!item(submenu(app, "Settings"), "Open Settings (JSON)").is_disabled());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! The Welcome screen: the root view of a window opened without a folder.
 //! A title bar over one centered column: the logo and title, GET STARTED
-//! (Open…, Open Recent…) and up to five RECENT folders and files. The
+//! (Open…, Open Recent…, Get Started) and up to five RECENT folders and files. The
 //! window's router acts on [`WelcomeEvent`].
 
 use std::cell::Cell;
@@ -34,6 +34,7 @@ const OPEN_RECENT: &str = "workbench.action.openRecent";
 const CLEAR_RECENT: &str = "workbench.action.clearRecentFiles";
 const PICKER_NEXT: &str = "workbench.action.quickOpenNavigateNextInRecentFilesPicker";
 const PICKER_PREVIOUS: &str = "workbench.action.quickOpenNavigatePreviousInRecentFilesPicker";
+const OPEN_ONBOARDING: &str = "lucerna.openOnboarding";
 const ABOUT: &str = "workbench.action.showAboutDialog";
 const QUIT: &str = "workbench.action.quit";
 
@@ -47,6 +48,7 @@ pub const WELCOME_COMMANDS: &[&str] = &[
     CLEAR_RECENT,
     PICKER_NEXT,
     PICKER_PREVIOUS,
+    OPEN_ONBOARDING,
     ABOUT,
     QUIT,
 ];
@@ -69,6 +71,8 @@ pub enum WelcomeEvent {
         path: PathBuf,
         new_window: bool,
     },
+    /// Show the Get Started page in place of Welcome.
+    OpenOnboarding,
     Quit,
 }
 
@@ -101,6 +105,7 @@ const START_BUTTONS: &[StartButton] = &[
         command: OPEN_FILE_FOLDER,
     },
     OPEN_RECENT_BUTTON,
+    GET_STARTED_BUTTON,
 ];
 #[cfg(not(target_os = "macos"))]
 const START_BUTTONS: &[StartButton] = &[
@@ -117,12 +122,19 @@ const START_BUTTONS: &[StartButton] = &[
         command: OPEN_FOLDER,
     },
     OPEN_RECENT_BUTTON,
+    GET_STARTED_BUTTON,
 ];
 const OPEN_RECENT_BUTTON: StartButton = StartButton {
     selector: "welcome-open-recent",
     icon: icons::HISTORY,
     label: "Open Recent…",
     command: OPEN_RECENT,
+};
+const GET_STARTED_BUTTON: StartButton = StartButton {
+    selector: "welcome-get-started",
+    icon: icons::SETTINGS,
+    label: "Get Started",
+    command: OPEN_ONBOARDING,
 };
 
 pub struct WelcomeView {
@@ -243,6 +255,7 @@ impl WelcomeView {
             PICKER_NEXT => self.step_picker(1, cx),
             PICKER_PREVIOUS => self.step_picker(-1, cx),
             CLEAR_RECENT => self.clear_recent(window, cx),
+            OPEN_ONBOARDING => cx.emit(WelcomeEvent::OpenOnboarding),
             ABOUT => crate::about::show(window, cx),
             QUIT => cx.emit(WelcomeEvent::Quit),
             _ => return false,
@@ -431,17 +444,8 @@ impl WelcomeView {
         let mut ctx = WhenContext::default();
         ctx.set("inQuickOpen", ContextValue::Bool(self.picker.is_some()));
         ctx.set("inRecentPicker", ContextValue::Bool(self.picker.is_some()));
-        let had_pending = !self.pending_chord.is_empty();
-        let mut chord = std::mem::take(&mut self.pending_chord);
-        chord.push(stroke.clone());
         let keymap = &cx.global::<AppState>().keymap;
-        let mut resolution = keymap.resolve(&chord, &ctx);
-        if had_pending && resolution == Resolution::NoMatch {
-            // VS Code: a key that breaks a chord is tried again on its own.
-            chord = vec![stroke.clone()];
-            resolution = keymap.resolve(&chord, &ctx);
-        }
-        match resolution {
+        match keys::resolve_chord(&mut self.pending_chord, &stroke, &ctx, keymap) {
             Resolution::Command { command, .. } => {
                 if WELCOME_COMMANDS.contains(&command.as_str())
                     && self.run_command(&command, window, cx)
@@ -451,7 +455,6 @@ impl WelcomeView {
                 }
             }
             Resolution::Pending => {
-                self.pending_chord = chord;
                 cx.stop_propagation();
                 return;
             }
