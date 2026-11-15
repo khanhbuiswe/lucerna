@@ -726,13 +726,14 @@ fn menu_commands(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Stri
     })
 }
 
-const FILE_MENU: [&str; 10] = [
+const FILE_MENU: [&str; 11] = [
     "explorer.openToSide",
     "revealFileInOS",
     "openInIntegratedTerminal",
     "filesExplorer.cut",
     "filesExplorer.copy",
     "filesExplorer.paste",
+    "filesExplorer.duplicate",
     "copyFilePath",
     "copyRelativeFilePath",
     "renameFile",
@@ -757,7 +758,7 @@ const ROOT_MENU: [&str; 8] = [
     "copyFilePath",
     "copyRelativeFilePath",
 ];
-const FOLDER_MENU: [&str; 12] = [
+const FOLDER_MENU: [&str; 13] = [
     "explorer.newFile",
     "explorer.newFolder",
     "revealFileInOS",
@@ -766,6 +767,7 @@ const FOLDER_MENU: [&str; 12] = [
     "filesExplorer.cut",
     "filesExplorer.copy",
     "filesExplorer.paste",
+    "filesExplorer.duplicate",
     "copyFilePath",
     "copyRelativeFilePath",
     "renameFile",

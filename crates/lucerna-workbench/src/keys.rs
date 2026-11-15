@@ -266,6 +266,7 @@ mod tests {
             // The second stroke of `cmd+k s`.
             (event("s", Some("s"), Modifiers::none()), "s"),
             (event("u", None, cmd()), "cmd+u"),
+            (event("d", None, cmd()), "cmd+d"),
             (event("x", None, cmd()), "cmd+x"),
             (event("v", None, cmd()), "cmd+v"),
             (event("backspace", None, Modifiers::none()), "backspace"),

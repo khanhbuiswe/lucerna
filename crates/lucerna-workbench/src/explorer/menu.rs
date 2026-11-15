@@ -86,6 +86,9 @@ pub(super) fn build_menu(
         .when(!single_file, |m| {
             entry(m, "Paste", "filesExplorer.paste").disabled_when(!can_paste)
         })
+        .when(!is_root && !single_file, |m| {
+            entry(m, "Duplicate", "filesExplorer.duplicate")
+        })
         .separator();
     let menu = entry(menu, "Copy Path", "copyFilePath");
     entry(menu, "Copy Relative Path", "copyRelativeFilePath")

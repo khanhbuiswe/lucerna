@@ -112,6 +112,9 @@ pub struct ExplorerView {
     /// The input of an edit ended because its folder vanished: if it still
     /// held the focus, the next frame gives the focus to the sidebar.
     refocus_sidebar: Option<FocusHandle>,
+    /// A just duplicated path (root-relative) to rename once the tree has
+    /// it, with these bytes of its name selected.
+    pending_rename: Option<(Arc<Path>, Range<usize>)>,
     /// The clipboard's Cut entry, root-relative: its row is dimmed.
     cut: Option<Arc<Path>>,
     /// The clipboard holds an entry: the menu's Paste is enabled.
@@ -151,6 +154,7 @@ impl ExplorerView {
             name_edit: None,
             pending_reveal: None,
             refocus_sidebar: None,
+            pending_rename: None,
             cut: None,
             clipboard_filled: false,
             _active_tab: cx.observe(editor_groups, |this, groups, cx| {
@@ -329,14 +333,22 @@ impl ExplorerView {
     /// `args.path`).
     pub(crate) fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         self.pending_reveal = None;
+        self.pending_rename = None;
         self.model.select(selection);
         cx.notify();
     }
 
-    /// Selects `path` (root-relative), just pasted: once the tree has it,
-    /// its folders are expanded and its row scrolled into view.
-    pub(crate) fn select_new(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+    /// Selects `path` (root-relative), just pasted or duplicated: once the
+    /// tree has it, its folders are expanded and its row scrolled into
+    /// view, then with `rename` its name is edited, that range selected.
+    pub(crate) fn select_new(
+        &mut self,
+        path: Arc<Path>,
+        rename: Option<Range<usize>>,
+        cx: &mut Context<Self>,
+    ) {
         self.model.select(Selection::Path(path.clone()));
+        self.pending_rename = rename.map(|range| (path.clone(), range));
         self.pending_reveal = Some(PendingReveal {
             path,
             expand: false,
@@ -423,6 +435,26 @@ impl ExplorerView {
     /// name before its last extension selected. Not for the root, nor in
     /// single-file mode.
     pub fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_rename(None, window, cx);
+    }
+
+    /// Like [`Self::start_rename`], with the bytes `range` of the name
+    /// selected (Duplicate selects up to the end of " copy N").
+    pub fn start_rename_with(
+        &mut self,
+        range: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.begin_rename(Some(range), window, cx);
+    }
+
+    fn begin_rename(
+        &mut self,
+        range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.single_file || self.editing() {
             return;
         }
@@ -442,7 +474,9 @@ impl ExplorerView {
             parent: Arc::from(path.parent().unwrap_or(Path::new(""))),
             original: Some(path.clone()),
         };
-        let selected = fs_ops::stem_range(&name, is_dir);
+        let selected = range
+            .filter(|r| r.end <= name.len() && name.is_char_boundary(r.end))
+            .unwrap_or_else(|| fs_ops::stem_range(&name, is_dir));
         self.begin_edit(edit, &name, selected, window, cx);
     }
 
@@ -854,6 +888,27 @@ impl ExplorerView {
         }
     }
 
+    /// The duplicate waiting for its rename is in the tree: its rename
+    /// starts after this frame, while it is still the selection and no
+    /// other name is being typed.
+    fn start_pending_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ready = self
+            .pending_rename
+            .as_ref()
+            .is_some_and(|(path, _)| self.model.contains(path));
+        if !ready || self.editing() {
+            return;
+        }
+        let Some((path, range)) = self.pending_rename.take() else {
+            return;
+        };
+        cx.defer_in(window, move |this, window, cx| {
+            if *this.model.selection() == Selection::Path(path) {
+                this.start_rename_with(range, window, cx);
+            }
+        });
+    }
+
     /// Selects, reveals and expands a just-created path once the tree has it.
     fn reveal_pending(&mut self) {
         let Some(pending) = self
@@ -1101,6 +1156,7 @@ impl ExplorerView {
     ) {
         cx.stop_propagation();
         self.pending_reveal = None;
+        self.pending_rename = None;
         self.model.select(selection);
         self.open_context_menu(Some(ev.position), window, cx);
     }
@@ -1122,6 +1178,7 @@ impl ExplorerView {
 
     fn root_clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_reveal = None;
+        self.pending_rename = None;
         self.model.select(Selection::Root);
         self.focus_sidebar(window, cx);
         cx.notify();
@@ -1136,6 +1193,7 @@ impl ExplorerView {
         cx: &mut Context<Self>,
     ) {
         self.pending_reveal = None;
+        self.pending_rename = None;
         self.model.select(Selection::Path(path.clone()));
         self.focus_sidebar(window, cx);
         if kind == EntryKind::Dir {
@@ -1497,6 +1555,7 @@ fn icon_slot(source: &IconSource, size: f32, tint: lucerna_theme::Rgba) -> Div {
 
 impl Render for ExplorerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.start_pending_rename(window, cx);
         if let Some(input) = self.refocus_sidebar.take()
             && input.is_focused(window)
         {

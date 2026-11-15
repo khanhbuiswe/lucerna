@@ -1,5 +1,6 @@
 //! The Explorer's clipboard: Cut, Copy and Paste of files and folders.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -602,12 +603,14 @@ fn root_and_single_file_menus(cx: &mut TestAppContext) {
         menu_has(&wb, "filesExplorer.paste", cx),
         "pastes into the root"
     );
+    assert!(!menu_has(&wb, "filesExplorer.duplicate", cx));
     keys("escape", cx);
     right_click("explorer-row-a.rs", cx);
     for command in [
         "filesExplorer.cut",
         "filesExplorer.copy",
         "filesExplorer.paste",
+        "filesExplorer.duplicate",
     ] {
         assert!(menu_has(&wb, command, cx), "{command}");
     }
@@ -637,4 +640,143 @@ fn single_file_menu_has_copy_only(cx: &mut TestAppContext) {
     assert!(menu_has(&wb, "filesExplorer.copy", cx));
     assert!(!menu_has(&wb, "filesExplorer.cut", cx));
     assert!(!menu_has(&wb, "filesExplorer.paste", cx));
+    assert!(!menu_has(&wb, "filesExplorer.duplicate", cx));
+}
+
+fn editing(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| wb.read(cx).explorer().read(cx).model().edit().is_some())
+}
+
+fn input_state(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> (String, Range<usize>) {
+    cx.update(|_, cx| {
+        let explorer = wb.read(cx).explorer().read(cx);
+        let input = explorer.name_input().expect("a name input").read(cx);
+        (input.text().to_string(), input.selected_range())
+    })
+}
+
+#[gpui::test]
+fn duplicate_file_then_renames(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    right_click("explorer-row-a.rs", cx);
+    let commands: Vec<String> = menu(&wb, cx).into_iter().map(|(c, _)| c).collect();
+    let paste = commands
+        .iter()
+        .position(|c| c == "filesExplorer.paste")
+        .unwrap();
+    assert_eq!(commands[paste + 1], "filesExplorer.duplicate");
+    click("context-menu-item-filesExplorer.duplicate", cx);
+    wait_until(cx, |_| root.join("a copy.rs").is_file());
+    assert!(root.join("a.rs").is_file());
+    deliver_added(&wb, &["a copy.rs"], cx);
+    wait_until(cx, |cx| editing(&wb, cx));
+    assert_eq!(input_state(&wb, cx), ("a copy.rs".to_string(), 0..6));
+    assert_eq!(selection(&wb, cx), Selection::Path(p("a copy.rs")));
+    assert!(!decorated(&wb, "a copy.rs", cx));
+    // The rename works as any other.
+    type_text(cx, "c");
+    keys("enter", cx);
+    wait_until(cx, |_| root.join("c.rs").is_file());
+    assert!(!root.join("a copy.rs").exists());
+}
+
+#[gpui::test]
+fn duplicate_folder(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    right_click("explorer-row-src", cx);
+    click("context-menu-item-filesExplorer.duplicate", cx);
+    wait_until(cx, |_| root.join("src copy/main.rs").is_file());
+    deliver_added(&wb, &["src copy", "src copy/main.rs"], cx);
+    wait_until(cx, |cx| editing(&wb, cx));
+    assert_eq!(input_state(&wb, cx), ("src copy".to_string(), 0..8));
+    assert!(tabs(&wb, cx).is_empty());
+}
+
+#[gpui::test]
+fn duplicate_keeps_clipboard(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-b.rs", cx);
+    keys("cmd-x", cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-d", cx);
+    wait_until(cx, |_| root.join("a copy.rs").is_file());
+    assert_eq!(clipboard(&wb, cx), Some((ClipOp::Cut, root.join("b.rs"))));
+    assert!(cx.debug_bounds("explorer-row-cut-b.rs").is_some());
+}
+
+#[gpui::test]
+fn cmd_d_duplicates(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-d", cx);
+    wait_until(cx, |_| root.join("a copy.rs").is_file());
+    deliver_added(&wb, &["a copy.rs"], cx);
+    wait_until(cx, |cx| editing(&wb, cx));
+    // Twice: the next free name.
+    keys("escape", cx);
+    assert!(!editing(&wb, cx));
+    click("explorer-row-a.rs", cx);
+    keys("cmd-d", cx);
+    wait_until(cx, |_| root.join("a copy 2.rs").is_file());
+    deliver_added(&wb, &["a copy 2.rs"], cx);
+    wait_until(cx, |cx| editing(&wb, cx));
+    assert_eq!(input_state(&wb, cx), ("a copy 2.rs".to_string(), 0..8));
+    // Never on the root.
+    keys("escape", cx);
+    click("explorer-root", cx);
+    keys("cmd-d", cx);
+    assert!(
+        !root
+            .join(format!(
+                "{} copy",
+                root.file_name().unwrap().to_string_lossy()
+            ))
+            .exists()
+    );
+}
+
+#[gpui::test]
+fn clipboard_follows_rename_of_its_source(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-x", cx);
+    keys("enter", cx);
+    type_text(cx, "c");
+    keys("enter", cx);
+    wait_until(cx, |_| root.join("c.rs").is_file());
+    wait_until(cx, |cx| {
+        clipboard(&wb, cx) == Some((ClipOp::Cut, root.join("c.rs")))
+    });
+    deliver_added(&wb, &["c.rs"], cx);
+    assert!(cx.debug_bounds("explorer-row-cut-c.rs").is_some());
+}
+
+#[gpui::test]
+fn clipboard_cleared_when_its_source_is_deleted(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-c", cx);
+    keys("alt-cmd-backspace", cx);
+    cx.simulate_prompt_answer("Delete");
+    draw(cx);
+    wait_until(cx, |_| !root.join("a.rs").exists());
+    wait_until(cx, |cx| clipboard(&wb, cx).is_none());
 }
