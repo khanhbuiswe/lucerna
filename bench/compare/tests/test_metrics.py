@@ -213,95 +213,6 @@ class FileChangeTests(Base):
         self.quit.assert_called_once()
 
 
-class QuickOpenTests(Base):
-    def test_measured_from_last_key(self):
-        calls = []
-
-        def helper(paths, args, timeout=metrics.TIMEOUT_S):
-            calls.append(args[0] + ":" + (args[-1] if args[0] == "type" else ""))
-            if args[0] == "type" and args[-1] == "z":
-                return {"t_ns": [7_000_000]}
-            if args[0] == "type":
-                return {"t_ns": [1, 2, 3, 4, 5, 6]}
-            return {"t_ns": 1}
-
-        def start(paths, args, timeout=metrics.TIMEOUT_S):
-            calls.append("watch")
-            return FakeWatch({"t_ns": 19_000_000, "frames": 2})
-
-        with mock.patch.object(metrics, "_helper", side_effect=helper), \
-                mock.patch.object(metrics, "_start_watch", side_effect=start):
-            self.assertEqual(metrics.quick_open_ms("zed", self.paths), 12.0)
-        # A watch confirms the picker opened after ⌘P, then the prefix, then
-        # the measured watch and the last key.
-        self.assertEqual(calls, ["frame:", "watch", "key:", "type:mod0042", "watch", "type:z"])
-        metrics.time.sleep.assert_any_call(metrics.SETTLE_S / 2)
-        self.launch.assert_called_once_with("zed", self.paths, self.paths.large_repo)
-        metrics.time.sleep.assert_any_call(metrics.SCAN_WAIT_S)
-
-    def test_settle_between_cmd_p_and_typing(self):
-        events = []
-        metrics.time.sleep.side_effect = lambda s: events.append(f"sleep {s}")
-
-        def helper(paths, args, timeout=metrics.TIMEOUT_S):
-            events.append(args[0])
-            return {"t_ns": [1]} if args[0] == "type" else {"t_ns": 1}
-
-        with mock.patch.object(metrics, "_helper", side_effect=helper), \
-                mock.patch.object(metrics, "_start_watch", return_value=FakeWatch({"t_ns": 2})):
-            metrics.quick_open_ms("zed", self.paths)
-        i = events.index("key")
-        self.assertEqual(events[i:i + 3], ["key", f"sleep {metrics.SETTLE_S / 2}", "type"])
-
-    def test_failed_last_key_closes_watch_without_waiting(self):
-        picker, watch = FakeWatch({"t_ns": 5}), FakeWatch({"t_ns": 99})
-
-        def helper(paths, args, timeout=metrics.TIMEOUT_S):
-            return None if args[0] == "type" and args[-1] == "z" else {"t_ns": [1]}
-
-        with mock.patch.object(metrics, "_helper", side_effect=helper), \
-                mock.patch.object(metrics, "_start_watch", side_effect=[picker, watch]):
-            self.assertIsNone(metrics.quick_open_ms("zed", self.paths))
-        self.assertTrue(watch.closed)
-        self.assertFalse(watch.waited)
-
-    def test_lost_cmd_p_is_sent_again(self):
-        keys = []
-
-        def helper(paths, args, timeout=metrics.TIMEOUT_S):
-            if args[0] == "key":
-                keys.append(args[-1])
-            return {"t_ns": [7_000_000]} if args[0] == "type" else {"t_ns": 1}
-
-        watches = [FakeWatch(None), FakeWatch({"t_ns": 2}),
-                   FakeWatch({"t_ns": 19_000_000, "frames": 2})]
-        with mock.patch.object(metrics, "_helper", side_effect=helper), \
-                mock.patch.object(metrics, "_start_watch", side_effect=watches):
-            self.assertEqual(metrics.quick_open_ms("zed", self.paths), 12.0)
-        self.assertEqual(keys, ["cmd+p", "cmd+p"])
-        self.assertTrue(all(w.closed for w in watches))
-
-    def test_picker_never_opens_is_none_without_typing(self):
-        typed = []
-
-        def helper(paths, args, timeout=metrics.TIMEOUT_S):
-            if args[0] == "type":
-                typed.append(args[-1])
-            return {"t_ns": 1}
-
-        with mock.patch.object(metrics, "_helper", side_effect=helper), \
-                mock.patch.object(metrics, "_start_watch",
-                                  side_effect=[FakeWatch(None), FakeWatch(None)]):
-            self.assertIsNone(metrics.quick_open_ms("zed", self.paths))
-        self.assertEqual(typed, [])
-
-    def test_change_before_last_key_is_none(self):
-        with mock.patch.object(metrics, "_helper", return_value={"t_ns": [50]}), \
-                mock.patch.object(metrics, "_start_watch",
-                                  return_value=FakeWatch({"t_ns": 10, "frames": 2})):
-            self.assertIsNone(metrics.quick_open_ms("zed", self.paths))
-
-
 class IdleTests(Base):
     def run_idle(self):
         # pid 11 uses 0.3 s CPU per 1 s sample; 12 is idle.
@@ -336,6 +247,18 @@ class IdleTests(Base):
                                   "-p", "11", "-p", "12"])
         metrics.time.sleep.assert_any_call(metrics.IDLE_S)
         self.quit.assert_called_once()
+
+    def test_settle_between_cmd_p_and_typing(self):
+        events = []
+        metrics.time.sleep.side_effect = lambda s: events.append(f"sleep {s}")
+
+        def helper(paths, args, timeout=metrics.TIMEOUT_S):
+            events.append(args[0])
+            return {"t_ns": [1]} if args[0] == "type" else {"t_ns": 1}
+
+        with mock.patch.object(metrics, "_helper", side_effect=helper):
+            self.assertTrue(metrics._quick_open_type(self.paths, "11", "a.rs"))
+        self.assertEqual(events, ["key", f"sleep {metrics.SETTLE_S / 2}", "type"])
 
     def test_public_wrappers(self):
         with mock.patch.object(metrics, "idle_session", return_value=(1.0, 2.0)):
@@ -400,7 +323,7 @@ class FrameTests(Base):
         self.assertEqual(metrics.LAST_FRAME["zed"], {"x": 0, "y": 38, "w": 1280, "h": 800})
 
     def test_frame_failure_drops_round(self):
-        for fn in (metrics.scroll_dropped_pct, metrics.file_change_ms, metrics.quick_open_ms):
+        for fn in (metrics.scroll_dropped_pct, metrics.file_change_ms):
             with self.subTest(fn=fn.__name__), \
                     mock.patch.object(metrics, "_helper", return_value=None) as helper, \
                     mock.patch.object(metrics, "_start_watch") as start:

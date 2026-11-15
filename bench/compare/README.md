@@ -19,7 +19,7 @@ Each helper command asks only for the permissions it uses:
 | `scroll` | Screen Recording and Accessibility |
 
 From that, each measurement needs: `idle_ram_mb`, `idle_cpu_pct` Accessibility; `startup_ms`,
-`file_change_ms`, `quick_open_ms`, `scroll_dropped_pct` both; `app_size_mb`
+`file_change_ms`, `scroll_dropped_pct` both; `app_size_mb`
 none (the `METRIC_HELPERS` × `HELPER_PERMISSIONS` tables in `metrics.py`, from which `run.py` derives
 this). If a permission is missing, the helper reports an error and exits with code 3, and `run.py` stops before measuring, prints the name of the
 missing permission and suggests an `--only` listing the measurements that can run with the permissions you have (for example without
@@ -54,17 +54,18 @@ Each function opens the editor in the bench profile, measures, then always close
 - Window size: every measurement that opens an editor, except startup, sets the window to `WINDOW_FRAME` (1280×800 pt, requested at x=0, y=25) with `frame` as soon as the window appears; if `frame` fails, that round is `None`. Startup uses each editor's default size (the first frame cannot be resized).
 - `startup_ms`: computes the list of pids already running the same binary (for example your own VS Code) as `--exclude-pids`, runs `watch --display --exe <main binary> --since 0 --until coverage:0.3 --background <background>`, waits for `ready`, **then** opens `marker.txt`; result = `t_ns` − t0. Right after the open command, a background thread waits for the window-owning process to appear and then calls `activate` to bring the new window to the front (without slowing down `watch`); a failed `activate` is only logged, a missing permission stops the session. `first_frame_hit` or `t_ns` < t0 → `None`.
 - `file_change_ms`: opens `data/reload.txt` (a per-round copy of `marker.txt`), sets the window, waits for it to appear, `watch --until change`, writes an empty file; time 0 is just before the write.
-- `quick_open_ms`: the large repo, sets the window, waits 30 s, ⌘P (confirmed by a `watch --until change`, sent once more if the picker did not open), types `mod0042` (the `pkg00/mod0042/` folder from `gen-bench-repo.sh`), `watch --until change`, types `z`, which matches no path, so the list empties; time 0 is the `z` key.
 - `idle_session` → (`idle_ram_mb`, `idle_cpu_pct`): the medium repo, sets the window, opens 10 `.rs` files of ripgrep 14.1.1 through Quick Open (the same way for all three editors; `luc` accepts only one path), idles for 60 s; RAM = the sum of `phys_footprint` (`footprint -f bytes --noCategories -p …`). CPU = cumulative CPU time (`ps -o pid=,time=`) of every bench process over 60 s: sampled every second, with the pid list refreshed each time; a process present in the first sample counts from its value then, a process that appears later counts from 0, a process that exits midway counts up to its last sample; % = CPU used / wall-clock time × 100 (100% = one core). The `%cpu` of `ps` is not used (a decaying average). `report.py` writes CPU with two decimal places and writes no ratio when Lucerna's median is below `CPU_RATIO_FLOOR` (0.1 %), with a note under the table. The profile turns preview tabs off when opening from Quick Open so that 10 files are 10 tabs; bench does not verify that 10 tabs are open (a known limit).
 - `scroll_dropped_pct`: `big.rs`, sets the window, `scroll --unit pixel --lines 600 --pixels-per-event 40` (one continuous event per refresh), `dropped / frames × 100`.
-
-`diagnose.py` (not a benchmark) records what these two measurements see: the window change after each Quick Open key, with PNG dumps, and frame intervals for line and pixel scroll events, plus an optional hand-scrolling comparison (`record`). See docs/benchmarks.md, "Quick Open: why the last key leaves no match" and "Scrolling: why pixel events".
 - `app_size_mb`: `du -sk` of the bundle, MiB (1024).
+
+Quick Open latency is not measured: no external method gave a comparable result across the three editors (docs/benchmarks.md, "Measurements").
+
+`diagnose.py` (not a benchmark) records what the scroll measurement sees: frame intervals for line and pixel scroll events, plus an optional hand-scrolling comparison (`record`). See docs/benchmarks.md, "Scrolling: why pixel events".
 
 ## Building the environment
 
 By default under `~/LucernaBench.noindex` (change with `--bench-dir`):
-1. `env.prepare_data(paths)`: generates the large repo with `scripts/gen-bench-repo.sh` (80,000 files + `large/big.rs` ~10 MB), shallow-clones ripgrep `14.1.1` into `data/medium` (needs a network connection), writes `data/marker.txt`.
+1. `env.prepare_data(paths)`: generates the large repo with `scripts/gen-bench-repo.sh` (80,000 files + `large/big.rs` ~10 MB; only `big.rs` is measured, by `scroll_dropped_pct`), shallow-clones ripgrep `14.1.1` into `data/medium` (needs a network connection), writes `data/marker.txt`.
 2. At the start of each configuration: `env.reset_profiles(paths)` deletes the known profiles under `<bench>/profiles` (`env.PROFILE_ENTRIES`: `vscode`, `vscode-ext`, `zed`, `lucerna-home`, `bench-profile.json`), except `vscode-ext-lsp` and the Lucerna pid file in `lucerna-home`. Unknown entries are kept with a warning; if `<bench>/profiles` is a symlink it refuses; it deletes only paths inside that folder; then `env.write_profiles(paths, lsp=False|True)` writes clean settings for all three editors and `profiles/bench-profile.json` (`{"lsp": …}`, which `editors.launch` reads to choose VS Code's extensions folder).
 3. VS Code extensions: `profiles/vscode-ext` is always empty, used for the no-LSP configuration together with `--disable-extensions`; `profiles/vscode-ext-lsp` holds rust-analyzer, used for `lsp=True`. `lsp=True` needs `rust-analyzer` on PATH and the extension installed once (needs a network connection):
    ```sh

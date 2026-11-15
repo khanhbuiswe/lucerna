@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""Diagnostics for the Quick Open and scrolling measurements.
+"""Diagnostics for the scrolling measurement.
 
 Not a benchmark: it records what the helper sees so a person can check
 whether a measurement method is sound before its numbers are published.
 Needs Screen Recording and Accessibility for the terminal that runs it.
 
     python3 -I bench/compare/diagnose.py [--editors lucerna,zed,vscode]
-        [--bench-dir D] [--out DIR] [--skip quick_open|scroll|manual]
+        [--bench-dir D] [--out DIR] [--skip scroll|manual]
 
 For each editor it:
-  quick_open  opens the large repo, waits for the scan, opens Quick Open,
-              types `mod004`, then records how much of the window changes
-              after `2` and after a non-matching `x` (min-change 0.01 %,
-              PNG dumps of the reference and the most-changed frame);
   scroll      opens big.rs and scrolls with line events at 120/s and 60/s
               and with pixel (trackpad-like) events at 60/s, printing the
               frame-interval statistics of each;
@@ -27,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -48,8 +45,11 @@ def log(msg: str) -> None:
 def helper_run(paths, args, timeout=metrics.TIMEOUT_S):
     """Like metrics._helper, but keeps stderr (the diagnostics) on failure."""
     import subprocess
-    r = subprocess.run([metrics.helper_path(paths), *args], capture_output=True,
-                       text=True, timeout=timeout + 15)
+    try:
+        r = subprocess.run([metrics.helper_path(paths), *args], capture_output=True,
+                           text=True, timeout=timeout + 15)
+    except subprocess.TimeoutExpired:
+        return {"rc": None, "out": None, "stderr": f"helper {args[0]} hung"}
     out = None
     if r.returncode == 0 and r.stdout.strip():
         try:
@@ -60,66 +60,23 @@ def helper_run(paths, args, timeout=metrics.TIMEOUT_S):
 
 
 def start(editor, paths, target):
+    """Launch and size the window; on failure quit before raising, so the
+    next launch does not meet a leftover editor."""
     launched = editors.launch(editor, paths, target)
     deadline = time.monotonic() + metrics.TIMEOUT_S
+    problem = None
     if metrics._owner_pids(editor, paths, deadline) is None:
-        raise RuntimeError(f"{editor}: no window process")
-    if not metrics._set_frame(editor, paths, deadline):
-        raise RuntimeError(f"{editor}: could not set the window frame")
+        problem = "no window process"
+    elif not metrics._set_frame(editor, paths, deadline):
+        problem = "could not set the window frame"
+    if problem:
+        editors.quit(editor, paths)
+        raise RuntimeError(f"{editor}: {problem}")
     return launched
 
 
 def pids(editor, paths) -> str:
     return metrics._csv(editors.bench_pids(editor, paths))
-
-
-def watch_after_key(editor, paths, key_text, dump: Path, min_change="0.002"):
-    """Start a change watch, type `key_text`, return watch result + key time.
-
-    `--since` lies 1 s ahead, so the reference is the last frame just before
-    the key and changes before it (a blinking caret, a late repaint) are
-    not counted. 0.2 % is above a caret blink (about 0.1 % of the window)."""
-    dump.mkdir(parents=True, exist_ok=True)
-    p = pids(editor, paths)
-    since = editors.now_ns() + 1_000_000_000
-    w = metrics._start_watch(paths, ["watch", "--pid", p, "--since", str(since),
-                                     "--until", "change", "--min-change", min_change,
-                                     "--dump-dir", str(dump), "--timeout", "15"], 20)
-    if w is None:
-        return {"error": "watch did not start"}
-    time.sleep(max(0.0, (since - editors.now_ns()) / 1e9) + 0.05)
-    typed = helper_run(paths, ["type", "--pid", p, "--text", key_text])
-    out = w.result(20)
-    w.close()
-    res = {"typed": typed, "watch": out, "watch_stderr": "".join(w._errors)[-800:]}
-    if out and typed["out"]:
-        res["latency_ms"] = (out["t_ns"] - typed["out"]["t_ns"][-1]) / 1e6
-    changes = dump / "changes.txt"
-    if changes.exists():
-        rows = [ln.split() for ln in changes.read_text().splitlines() if ln.strip()]
-        res["changes_after_key_ms"] = [
-            [round((int(t) - typed["out"]["t_ns"][-1]) / 1e6, 1), float(f)]
-            for t, f in rows] if typed["out"] else rows
-    return res
-
-
-def quick_open(editor, paths, out: Path):
-    res = {}
-    start(editor, paths, paths.large_repo)
-    try:
-        log(f"{editor}: waiting {metrics.SCAN_WAIT_S} s for the scan")
-        time.sleep(metrics.SCAN_WAIT_S)
-        p = pids(editor, paths)
-        res["open"] = helper_run(paths, ["key", "--pid", p, "--combo", "cmd+p"])
-        time.sleep(metrics.SETTLE_S / 2)
-        res["type_prefix"] = helper_run(paths, ["type", "--pid", p, "--text", "mod004"])
-        time.sleep(metrics.SETTLE_S)
-        res["key_2"] = watch_after_key(editor, paths, "2", out / f"qo-{editor}-2")
-        time.sleep(metrics.SETTLE_S)
-        res["key_x"] = watch_after_key(editor, paths, "x", out / f"qo-{editor}-x")
-    finally:
-        editors.quit(editor, paths)
-    return res
 
 
 def scroll(editor, paths, out: Path):
@@ -164,7 +121,7 @@ def main(argv=None) -> int:
     ap.add_argument("--bench-dir", type=Path, default=env.DEFAULT_ROOT)
     ap.add_argument("--editors", default="lucerna,zed,vscode")
     ap.add_argument("--manual-editors", default="lucerna,zed")
-    ap.add_argument("--skip", default="", help="comma-separated: quick_open,scroll,manual")
+    ap.add_argument("--skip", default="", help="comma-separated: scroll,manual")
     ap.add_argument("--out", type=Path)
     a = ap.parse_args(argv)
     paths = env.BenchPaths(a.bench_dir)
@@ -179,6 +136,13 @@ def main(argv=None) -> int:
         print(editors.foreign_message("zed", editors.foreign_instances("zed", paths)),
               file=sys.stderr)
         return 1
+    running = [ln for ln in subprocess.run(["ps", "-axo", "command="], capture_output=True,
+                                            text=True).stdout.splitlines()
+               if "bench/compare/run.py" in ln and "diagnose" not in ln]
+    if running:
+        print("a benchmark (run.py) is running and shares the bench profiles; "
+              "wait for it or use another --bench-dir", file=sys.stderr)
+        return 1
     env.reset_profiles(paths)
     env.write_profiles(paths, lsp=False)
     summary = {"meta": {"versions": {e: editors.version(e) for e in eds},
@@ -186,8 +150,6 @@ def main(argv=None) -> int:
     try:
         for e in eds:
             summary[e] = {}
-            if "quick_open" not in skip:
-                summary[e]["quick_open"] = quick_open(e, paths, out)
             if "scroll" not in skip:
                 summary[e]["scroll"] = scroll(e, paths, out)
         if "manual" not in skip:

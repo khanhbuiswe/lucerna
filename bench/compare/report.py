@@ -3,7 +3,9 @@
     python3 -I bench/compare/report.py <result.json> --out <dir> [--metrics a,b,...]
 
 Writes <dir>/results.md and <dir>/<metric>-<config>.svg. --metrics limits the
-tables and charts to the given metric keys (default: all).
+tables and charts to the given metric keys (default: all). Metric keys this
+report does not know, such as a dropped metric in an older result file, are
+skipped.
 
 Rounding: ratios use round-half-up on the shortest decimal repr of the float
 (Decimal ROUND_HALF_UP); other numbers use Python's format rounding.
@@ -39,7 +41,6 @@ METRICS = {
     "idle_cpu_pct": ("Idle CPU", "%"),
     "scroll_dropped_pct": ("Dropped frames scrolling big.rs", "%"),
     "file_change_ms": ("File changed on disk → screen updated", "ms"),
-    "quick_open_ms": ("Quick Open per keystroke (80,000 files)", "ms"),
     "app_size_mb": ("App size", "MB"),
 }
 DASH = "—"

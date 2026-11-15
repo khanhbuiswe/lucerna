@@ -39,7 +39,6 @@ SETTLE_S = 1.0              # let a picker or a reload settle
 CALIBRATE_SETTLE_S = 3.0    # empty file: let the theme paint before sampling
 CALIBRATE_MIN_FRAC = 0.9    # an empty editor's centre is almost all background
 OPEN_SETTLE_S = 5.0         # medium repo: window up before Quick Open
-SCAN_WAIT_S = 30            # large repo: let the file scan finish
 IDLE_S = 60
 # Scrolling: continuous (trackpad-like) pixel events, one per display refresh
 # (the helper's default rate). Line (mouse-wheel) events made Zed and VS Code
@@ -48,12 +47,6 @@ IDLE_S = 60
 # how smoothly it scrolls (see docs/benchmarks.md, "Scrolling").
 SCROLL_EVENTS = 600
 SCROLL_PIXELS_PER_EVENT = 40
-# Quick Open: type the prefix, then one key that leaves no match. The result
-# list empties, a change every editor shows the same way. With `mod0042` as
-# the last step, the rows changed by one digit in Lucerna and Zed (under 0.1 %
-# of the window) and no round could be measured.
-QUICK_OPEN_PREFIX = "mod0042"  # gen-bench-repo.sh: directory pkg00/mod0042/
-QUICK_OPEN_LAST_KEY = "z"      # no path in the large repo contains a `z`
 # Fixed window frame in points (top-left origin) for every launching metric but
 # startup. macOS may move the window below a taller (notch) menu bar; the size
 # is what the helper enforces.
@@ -78,7 +71,6 @@ METRIC_HELPERS = {
     # sample: background calibration; activate: bring the new window forward
     "startup_ms": ("sample", "watch", "activate"),
     "file_change_ms": ("sample", "frame", "watch"),
-    "quick_open_ms": ("frame", "key", "type", "watch"),
     "idle_ram_mb": _IDLE_HELPERS,
     "idle_cpu_pct": _IDLE_HELPERS,
     "scroll_dropped_pct": ("sample", "frame", "watch", "scroll"),
@@ -431,73 +423,6 @@ def file_change_ms(editor: str, paths: BenchPaths) -> float | None:
         shutil.copyfile(paths.marker_file, reload)
 
 
-PICKER_TRIES = 2
-PICKER_WAIT_S = 3
-
-
-def _open_picker_confirmed(editor, paths, pids: str, deadline: float) -> bool:
-    """⌘P, confirmed on screen: the window must change (the picker opens)
-    within PICKER_WAIT_S, else ⌘P is sent once more. A ⌘P sent while the app
-    is still becoming active can be lost (seen with Zed); without this check
-    the round would time out on a window that has no picker."""
-    for attempt in range(PICKER_TRIES):
-        w = _start_watch(paths, ["watch", "--pid", pids, "--since", str(editors.now_ns()),
-                                 "--until", "change", "--timeout", str(PICKER_WAIT_S)],
-                         _left(deadline))
-        if w is None:
-            return False
-        try:
-            if _helper(paths, ["key", "--pid", pids, "--combo", "cmd+p"]) is None:
-                return False
-            if w.result(PICKER_WAIT_S) is not None:
-                time.sleep(SETTLE_S / 2)
-                return True
-        finally:
-            w.close()
-        _log(f"{editor}: Quick Open did not open (try {attempt + 1}/{PICKER_TRIES})")
-    return False
-
-
-def quick_open_ms(editor: str, paths: BenchPaths) -> float | None:
-    """Large repo, ⌘P, type `mod0042`, then `z` (no match): `z` → first changed frame."""
-    editors.launch(editor, paths, paths.large_repo)
-    watch = None
-    try:
-        deadline = time.monotonic() + TIMEOUT_S
-        if _owner_pids(editor, paths, deadline) is None:
-            return None
-        if not _set_frame(editor, paths, deadline):
-            return None
-        time.sleep(SCAN_WAIT_S)
-        deadline = time.monotonic() + TIMEOUT_S
-        pids = _csv(editors.bench_pids(editor, paths))
-        if not _open_picker_confirmed(editor, paths, pids, deadline):
-            return None
-        if _helper(paths, ["type", "--pid", pids, "--text", QUICK_OPEN_PREFIX]) is None:
-            return None
-        time.sleep(SETTLE_S)
-        watch = _start_watch(paths, ["watch", "--pid", pids, "--since", str(editors.now_ns()),
-                                     "--until", "change", "--timeout", str(_left(deadline))],
-                             _left(deadline))
-        if watch is None:
-            return None
-        typed = _helper(paths, ["type", "--pid", pids, "--text", QUICK_OPEN_LAST_KEY])
-        if typed is None:
-            return None  # `finally` kills the watch instead of waiting it out
-        out = watch.result(_left(deadline))
-        if out is None:
-            return None
-        t_k = typed["t_ns"][-1]
-        if out["t_ns"] < t_k:
-            _log(f"{editor}: Quick Open changed before the last key; round dropped")
-            return None
-        return (out["t_ns"] - t_k) / 1e6
-    finally:
-        if watch:
-            watch.close()
-        editors.quit(editor, paths)
-
-
 _UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3}
 
 
@@ -574,7 +499,7 @@ def _cpu_pct(editor: str, paths: BenchPaths) -> float | None:
 
 def _quick_open_type(paths, pids: str, text: str) -> bool:
     """⌘P, let the picker appear (so no leading key is lost), type `text`.
-    Shared by quick_open_ms and idle_session so both open it identically."""
+    idle_session opens every file this way."""
     if _helper(paths, ["key", "--pid", pids, "--combo", "cmd+p"]) is None:
         return False
     time.sleep(SETTLE_S / 2)
