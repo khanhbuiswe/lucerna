@@ -1,7 +1,9 @@
 //! The font family picker the onboarding page opens from its Font Family
 //! dropdown: Quick Open's list over the installed font families, each row
-//! drawn in its own font. Arrow keys only move the selection (there is no
-//! live preview); Enter confirms and Escape dismisses without a choice.
+//! drawn in its own font. With no query it lists only the popular coding
+//! fonts that are installed (and the current one); typing searches every
+//! installed family. Arrow keys only move the selection (there is no live
+//! preview); Enter confirms and Escape dismisses without a choice.
 
 use std::ops::Range;
 
@@ -21,6 +23,29 @@ use crate::ui::{GRID, popover};
 /// The bundled editor font, always the first row.
 const DEFAULT_FONT: &str = "Lilex";
 
+/// Coding fonts listed before anything is typed, when installed: the
+/// macOS, Windows and Linux defaults and the popular free ones. Matched
+/// case-insensitively.
+const SUGGESTED_FONTS: &[&str] = &[
+    "Cascadia Code",
+    "Cascadia Mono",
+    "Consolas",
+    "Courier New",
+    "DejaVu Sans Mono",
+    "Fira Code",
+    "Fira Mono",
+    "Hack",
+    "IBM Plex Mono",
+    "Inconsolata",
+    "Iosevka",
+    "JetBrains Mono",
+    "Menlo",
+    "Monaco",
+    "SF Mono",
+    "Source Code Pro",
+    "Ubuntu Mono",
+];
+
 /// What the host does as the picker is used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FontPickerEvent {
@@ -32,6 +57,8 @@ pub enum FontPickerEvent {
 pub struct FontPicker {
     input: Entity<TextInput>,
     names: Vec<String>,
+    /// The rows listed while the query is empty: indexes into `names`.
+    suggested: Vec<usize>,
     /// Matching names: index into `names` and matched char positions.
     rows: Vec<(usize, Vec<u32>)>,
     selected: usize,
@@ -47,8 +74,9 @@ pub fn font_names(cx: &App) -> Task<Vec<String>> {
 }
 
 impl FontPicker {
-    /// Lists "Lilex" first, then `names` without duplicates in
-    /// case-insensitive alphabetical order, with `current` selected.
+    /// Sorts "Lilex" first, then `names` without duplicates in
+    /// case-insensitive alphabetical order. Lists the suggested ones (and
+    /// `current`) until a query is typed, with `current` selected.
     pub fn new(
         names: Vec<String>,
         current: &str,
@@ -71,13 +99,23 @@ impl FontPicker {
         let names: Vec<String> = std::iter::once(DEFAULT_FONT.to_string())
             .chain(rest)
             .collect();
-        let rows = fuzzy_filter(names.iter().map(String::as_str), "");
-        let selected = names.iter().position(|n| n == current).unwrap_or(0);
+        let suggested: Vec<usize> = names
+            .iter()
+            .enumerate()
+            .filter(|(i, name)| *i == 0 || *name == current || is_suggested(name))
+            .map(|(i, _)| i)
+            .collect();
+        let rows = unfiltered(&suggested);
+        let selected = rows
+            .iter()
+            .position(|(i, _)| names[*i] == current)
+            .unwrap_or(0);
         let scroll = UniformListScrollHandle::new();
         scroll.scroll_to_item(selected, ScrollStrategy::Nearest);
         FontPicker {
             input,
             names,
+            suggested,
             rows,
             selected,
             scroll,
@@ -101,7 +139,12 @@ impl FontPicker {
     }
 
     fn query_changed(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.rows = fuzzy_filter(self.names.iter().map(String::as_str), text.trim());
+        let query = text.trim();
+        self.rows = if query.is_empty() {
+            unfiltered(&self.suggested)
+        } else {
+            fuzzy_filter(self.names.iter().map(String::as_str), query)
+        };
         self.select(0, cx);
     }
 
@@ -148,6 +191,16 @@ impl FontPicker {
             })
             .collect()
     }
+}
+
+/// Whether `name` is one of [`SUGGESTED_FONTS`].
+fn is_suggested(name: &str) -> bool {
+    SUGGESTED_FONTS.iter().any(|s| s.eq_ignore_ascii_case(name))
+}
+
+/// Rows for `indexes` with nothing highlighted.
+fn unfiltered(indexes: &[usize]) -> Vec<(usize, Vec<u32>)> {
+    indexes.iter().map(|&i| (i, Vec::new())).collect()
 }
 
 impl Focusable for FontPicker {

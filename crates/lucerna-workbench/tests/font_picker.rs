@@ -76,11 +76,43 @@ fn lilex_first_and_sorted_deduped(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn sorts_case_insensitively(cx: &mut TestAppContext) {
-    let (picker, _, cx) = open(&["menlo", "Zed Mono", "Arial"], "Lilex", cx);
+    let (picker, _, cx) = open(&["menlo", "Source Code Pro", "Fira Code"], "Lilex", cx);
     assert_eq!(
         texts(&picker, cx),
-        vec!["Lilex", "Arial", "menlo", "Zed Mono"]
+        vec!["Lilex", "Fira Code", "menlo", "Source Code Pro"]
     );
+}
+
+#[gpui::test]
+fn only_suggestions_until_typed(cx: &mut TestAppContext) {
+    let names = [
+        "Arial",
+        "Menlo",
+        "JetBrains Mono",
+        "Comic Sans MS",
+        "Al Bayan",
+    ];
+    let (picker, _, cx) = open(&names, "Lilex", cx);
+    assert_eq!(texts(&picker, cx), vec!["Lilex", "JetBrains Mono", "Menlo"]);
+}
+
+#[gpui::test]
+fn typing_searches_every_font(cx: &mut TestAppContext) {
+    let (picker, _, cx) = open(&["Menlo", "Comic Sans MS"], "Lilex", cx);
+    let input = cx.update(|_, cx| picker.read(cx).input().clone());
+    cx.update(|window, cx| input.update(cx, |input, cx| input.set_text("comic", window, cx)));
+    draw(cx);
+    assert_eq!(texts(&picker, cx), vec!["Comic Sans MS"]);
+    cx.update(|window, cx| input.update(cx, |input, cx| input.set_text("", window, cx)));
+    draw(cx);
+    assert_eq!(texts(&picker, cx), vec!["Lilex", "Menlo"]);
+}
+
+#[gpui::test]
+fn current_font_is_listed_and_selected(cx: &mut TestAppContext) {
+    let (picker, _, cx) = open(&["Menlo", "Comic Sans MS"], "Comic Sans MS", cx);
+    assert_eq!(texts(&picker, cx), vec!["Lilex", "Comic Sans MS", "Menlo"]);
+    assert_eq!(selected(&picker, cx), 1);
 }
 
 #[gpui::test]
@@ -135,13 +167,23 @@ fn drawn_rows(count: usize, cx: &mut VisualTestContext) -> Vec<usize> {
         .collect()
 }
 
-#[gpui::test]
-fn draws_only_visible_rows(cx: &mut TestAppContext) {
+/// Opens the picker over 2000 made-up families (none is a suggestion)
+/// and types "font" so all of them are listed.
+fn open_many(cx: &mut TestAppContext) -> (Entity<FontPicker>, &mut VisualTestContext) {
     let names: Vec<String> = (0..2000).map(|i| format!("Font {i:04}")).collect();
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let (picker, _, cx) = open(&refs, "Lilex", cx);
-    assert_eq!(texts(&picker, cx).len(), 2001);
-    let drawn = drawn_rows(2001, cx);
+    let input = cx.update(|_, cx| picker.read(cx).input().clone());
+    cx.update(|window, cx| input.update(cx, |input, cx| input.set_text("font", window, cx)));
+    draw(cx);
+    (picker, cx)
+}
+
+#[gpui::test]
+fn draws_only_visible_rows(cx: &mut TestAppContext) {
+    let (picker, cx) = open_many(cx);
+    assert_eq!(texts(&picker, cx).len(), 2000);
+    let drawn = drawn_rows(2000, cx);
     assert!(!drawn.is_empty(), "no rows drawn");
     assert!(drawn.len() <= 14, "drew {} rows", drawn.len());
     assert_eq!(drawn[0], 0);
@@ -149,14 +191,11 @@ fn draws_only_visible_rows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn scrolls_to_selected(cx: &mut TestAppContext) {
-    let names: Vec<String> = (0..2000).map(|i| format!("Font {i:04}")).collect();
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let (picker, _, cx) = open(&refs, "Font 1000", cx);
-    let selected = selected(&picker, cx);
-    assert_eq!(selected, 1001);
-    let drawn = drawn_rows(2001, cx);
-    assert!(drawn.contains(&selected), "drew {drawn:?}");
+    let (picker, cx) = open_many(cx);
+    assert_eq!(selected(&picker, cx), 0);
+    // Up from the first row wraps to the last.
     cx.simulate_keystrokes("up");
     draw(cx);
-    assert!(drawn_rows(2001, cx).contains(&1000));
+    assert_eq!(selected(&picker, cx), 1999);
+    assert!(drawn_rows(2000, cx).contains(&1999));
 }

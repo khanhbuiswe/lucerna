@@ -51,7 +51,7 @@ Chi tiết ở `docs/research/2026-11-15-onboarding.md`. Tóm tắt:
 | O6 | Mỗi control ghi ngay vào `settings.json` người dùng, giữ comment (hàm sẵn có trong `theme_picker.rs`), rồi nạp lại cấu hình. Trang vẽ theo setting hiện hành sau khi gộp các lớp. Không có Undo/Cancel. | Theo Zed. Sửa tay file thì trang đổi theo. |
 | O7 | Theme: cụm ba nút **Light / Dark / System**. System ghi `window.autoDetectColorScheme: true`. Light/Dark ghi `window.autoDetectColorScheme: false` và `workbench.colorTheme` bằng giá trị đang có của `workbench.preferredLightColorTheme` / `workbench.preferredDarkColorTheme` (mặc định "Lucerna Light" / "Lucerna Dark"). | Khóa theo VS Code, như người dùng yêu cầu. Giữ theme ưa thích người dùng đã đặt. |
 | O8 | Lệnh `lucerna.openOnboarding`, tiêu đề "Help: Get Started", không có phím mặc định. Có trong menu Help ("Get Started", đứng đầu) và là một nút "Get Started" trên Welcome. | VS Code không có lệnh tương ứng (onboarding mới của nó ở nhóm Developer), nên dùng tiền tố `lucerna.` như `lucerna.openLogsFolder`. Zed có nút "Return to Onboarding" trên Welcome. |
-| O9 | Font family chọn bằng picker có lọc mờ, liệt kê font trên máy (`cx.text_system().all_font_names()`), Lilex đứng đầu. Font size bằng nút − / + từ 6 tới 100, bước 1. | Gõ tên font tay dễ sai. Khung picker đã có. |
+| O9 | Font family chọn bằng picker có lọc mờ, Lilex đứng đầu. Khi chưa gõ gì, picker chỉ liệt kê các font code phổ biến có trên máy (và font đang dùng); gõ chữ thì tìm trong mọi font trên máy (`cx.text_system().all_font_names()`). Font size bằng nút − / + từ 6 tới 100, bước 1. | Gõ tên font tay dễ sai. Khung picker đã có. Danh sách đầy đủ có hàng trăm font không dùng để viết code (người dùng góp ý 2026-11-15). |
 | O10 | Vim mode là một **công tắc** (switch) ghi `vim.enabled`. | Zed dùng switch. |
 | O11 | Không chọn keymap gốc, AI, đăng nhập, telemetry, import, font UI. | Phạm vi người dùng đã chốt. |
 
@@ -145,6 +145,7 @@ Kiểm tra trong `ui.rs` trước khi tạo: nếu đã có component tương đ
 
 - **Font Family:** nhãn của dropdown là `editor.fontFamily` hiện hành (không có thì "Lilex"). Bấm thì mở `FontPicker` trong `popover_overlay`, dựng như `ThemePicker`/`RecentPicker` (`popover`, `picker_input_row`, `picker_list`, `picker_row`, `fuzzy_filter`):
   - danh sách: "Lilex" đầu tiên, rồi `all_font_names()` đã bỏ trùng, xếp chữ cái; lấy danh sách ở luồng nền;
+  - khi ô lọc trống, chỉ hiện Lilex, font đang dùng, và các font trong danh sách gợi ý có trên máy (so không phân biệt hoa thường): Cascadia Code, Cascadia Mono, Consolas, Courier New, DejaVu Sans Mono, Fira Code, Fira Mono, Hack, IBM Plex Mono, Inconsolata, Iosevka, JetBrains Mono, Menlo, Monaco, SF Mono, Source Code Pro, Ubuntu Mono. Gõ chữ thì lọc mờ trên mọi font; xóa hết chữ thì về lại danh sách gợi ý;
   - mỗi dòng vẽ tên bằng chính font đó;
   - ↑/↓ chỉ chuyển dòng chọn, **không xem trước** trên editor (store không có lớp tạm trong bộ nhớ; mỗi dòng đã vẽ bằng font của nó). Enter ghi `editor.fontFamily`, Escape đóng mà không ghi.
   - Giá trị là chuỗi đơn giản (một tên font), không dựng chuỗi CSS nhiều font như VS Code.
