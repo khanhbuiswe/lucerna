@@ -161,6 +161,44 @@ class ReportTests(unittest.TestCase):
             self.assertTrue((Path(t) / "startup_ms-nolsp-warm.svg").exists())
             self.assertTrue((Path(t) / "idle_ram_mb-lsp-cold.svg").exists())
 
+    def test_metrics_filter_table_and_charts(self):
+        md = report.render_markdown(load(), ["startup_ms", "idle_cpu_pct"])
+        self.assertIn("| Startup to first frame", md)
+        self.assertIn("| Idle CPU", md)
+        self.assertNotIn("Idle RAM", md)
+        self.assertNotIn("App size", md)
+        self.assertNotIn("idle_ram_mb", md)
+        self.assertIn("startup_ms-nolsp-warm.svg", md)
+
+    def test_metrics_none_means_all(self):
+        self.assertEqual(report.render_markdown(load(), None), report.render_markdown(load()))
+
+    def test_parse_metrics(self):
+        self.assertEqual(report.parse_metrics("startup_ms, idle_ram_mb"),
+                         ["startup_ms", "idle_ram_mb"])
+        for bad in ("nope", "startup_ms,nope", ""):
+            with self.assertRaises(ValueError):
+                report.parse_metrics(bad)
+
+    def test_cli_metrics_limits_svgs(self):
+        with tempfile.TemporaryDirectory() as t:
+            r = subprocess.run([sys.executable, "-I", str(HERE.parent / "report.py"),
+                                str(FIXTURE), "--out", t, "--metrics", "startup_ms"],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            names = sorted(p.name for p in Path(t).glob("*.svg"))
+            self.assertTrue(names and all(n.startswith("startup_ms-") for n in names), names)
+            self.assertNotIn("Idle RAM", (Path(t) / "results.md").read_text())
+
+    def test_cli_rejects_unknown_metric(self):
+        with tempfile.TemporaryDirectory() as t:
+            r = subprocess.run([sys.executable, "-I", str(HERE.parent / "report.py"),
+                                str(FIXTURE), "--out", t, "--metrics", "bogus"],
+                               capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("bogus", r.stderr)
+            self.assertFalse(list(Path(t).glob("*")))
+
 
 if __name__ == "__main__":
     unittest.main()

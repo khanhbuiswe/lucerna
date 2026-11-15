@@ -1,8 +1,9 @@
 """Comparison tables (Markdown) and bar charts (SVG) from a run.py result file.
 
-    python3 -I bench/compare/report.py <result.json> --out <dir>
+    python3 -I bench/compare/report.py <result.json> --out <dir> [--metrics a,b,...]
 
-Writes <dir>/results.md and <dir>/<metric>-<config>.svg.
+Writes <dir>/results.md and <dir>/<metric>-<config>.svg. --metrics limits the
+tables and charts to the given metric keys (default: all).
 
 Rounding: ratios use round-half-up on the shortest decimal repr of the float
 (Decimal ROUND_HALF_UP); other numbers use Python's format rounding.
@@ -139,7 +140,22 @@ def _meta_block(meta: dict) -> list[str]:
     return lines
 
 
-def render_markdown(result: dict) -> str:
+def _selected(metrics) -> list[str]:
+    """Metric keys to report, in the fixed display order."""
+    return [m for m in METRICS if metrics is None or m in metrics]
+
+
+def parse_metrics(text: str) -> list[str]:
+    """Validate a comma-separated --metrics value; raise ValueError on unknown names."""
+    names = [n.strip() for n in text.split(",") if n.strip()]
+    unknown = [n for n in names if n not in METRICS]
+    if not names or unknown:
+        raise ValueError(f"unknown metric(s): {', '.join(unknown) or text!r}; "
+                         f"valid: {', '.join(METRICS)}")
+    return names
+
+
+def render_markdown(result: dict, metrics=None) -> str:
     out = []
     if "preflight_ignored" in result.get("meta", {}):
         out += ["**Trial result: the machine was not quiet during measurement (preflight "
@@ -152,7 +168,8 @@ def render_markdown(result: dict) -> str:
         out += [f"## {config_label(cfg)}", "",
                 "| Metric | Lucerna | Zed | VS Code |", "|---|---|---|---|"]
         notes = []
-        for metric, (label, unit) in METRICS.items():
+        for metric in _selected(metrics):
+            label, unit = METRICS[metric]
             if metric not in cfg["metrics"]:
                 continue
             data = cfg["metrics"][metric]
@@ -166,7 +183,8 @@ def render_markdown(result: dict) -> str:
         if notes:
             out += [""] + notes
         out += ["", "Charts:", ""]
-        for metric, (label, _unit) in METRICS.items():
+        for metric in _selected(metrics):
+            label = METRICS[metric][0]
             if metric in cfg["metrics"]:
                 out.append(f"- [{label}]({metric}-{config_slug(cfg)}.svg)")
         out.append("")
@@ -204,11 +222,11 @@ def render_svg(metric: str, cfg: dict) -> str:
     return "\n".join(parts) + "\n"
 
 
-def write_report(result: dict, out_dir: Path) -> None:
+def write_report(result: dict, out_dir: Path, metrics=None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "results.md").write_text(render_markdown(result), encoding="utf-8")
+    (out_dir / "results.md").write_text(render_markdown(result, metrics), encoding="utf-8")
     for cfg in result["configs"]:
-        for metric in METRICS:
+        for metric in _selected(metrics):
             if metric in cfg["metrics"]:
                 (out_dir / f"{metric}-{config_slug(cfg)}.svg").write_text(
                     render_svg(metric, cfg), encoding="utf-8")
@@ -218,9 +236,17 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("result")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--metrics", help="comma-separated metric keys to include "
+                    f"(default: all). Keys: {', '.join(METRICS)}")
     a = ap.parse_args(sys.argv[1:] if argv is None else argv)
+    metrics = None
+    if a.metrics is not None:
+        try:
+            metrics = parse_metrics(a.metrics)
+        except ValueError as e:
+            ap.error(str(e))
     result = json.loads(Path(a.result).read_text(encoding="utf-8"))
-    write_report(result, Path(a.out))
+    write_report(result, Path(a.out), metrics)
     return 0
 
 
