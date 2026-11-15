@@ -19,7 +19,7 @@ use crate::ui::GRID;
 /// Height of one picker row.
 pub(crate) const PICKER_ROW_HEIGHT: f32 = 7. * GRID;
 /// Rows shown before the list scrolls.
-const PICKER_VISIBLE_ROWS: f32 = 12.;
+pub(crate) const PICKER_VISIBLE_ROWS: f32 = 12.;
 
 /// The items whose text fuzzy-matches `query`, best first, with the
 /// matched char indices; every item in order when `query` is empty.

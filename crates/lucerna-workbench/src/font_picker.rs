@@ -3,17 +3,20 @@
 //! drawn in its own font. Arrow keys only move the selection (there is no
 //! live preview); Enter confirms and Escape dismisses without a choice.
 
+use std::ops::Range;
+
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, KeyDownEvent, Render, ScrollHandle, SharedString, Styled, Task, Window,
-    prelude::*,
+    IntoElement, KeyDownEvent, Render, ScrollStrategy, SharedString, Styled, Task,
+    UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 
 use crate::quick_open::picker::{
-    fuzzy_filter, highlighted, picker_input_row, picker_list, picker_row, wrap_index,
+    PICKER_ROW_HEIGHT, PICKER_VISIBLE_ROWS, fuzzy_filter, highlighted, picker_input_row,
+    picker_row, wrap_index,
 };
 use crate::text_input::TextInput;
-use crate::ui::popover;
+use crate::ui::{GRID, popover};
 
 /// The bundled editor font, always the first row.
 const DEFAULT_FONT: &str = "Lilex";
@@ -32,7 +35,7 @@ pub struct FontPicker {
     /// Matching names: index into `names` and matched char positions.
     rows: Vec<(usize, Vec<u32>)>,
     selected: usize,
-    scroll: ScrollHandle,
+    scroll: UniformListScrollHandle,
 }
 
 impl EventEmitter<FontPickerEvent> for FontPicker {}
@@ -70,8 +73,8 @@ impl FontPicker {
             .collect();
         let rows = fuzzy_filter(names.iter().map(String::as_str), "");
         let selected = names.iter().position(|n| n == current).unwrap_or(0);
-        let scroll = ScrollHandle::new();
-        scroll.scroll_to_item(selected);
+        let scroll = UniformListScrollHandle::new();
+        scroll.scroll_to_item(selected, ScrollStrategy::Nearest);
         FontPicker {
             input,
             names,
@@ -104,7 +107,7 @@ impl FontPicker {
 
     fn select(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected = index;
-        self.scroll.scroll_to_item(index);
+        self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
         cx.notify();
     }
 
@@ -129,14 +132,21 @@ impl FontPicker {
         cx.stop_propagation();
     }
 
-    fn render_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let (name, positions) = &self.rows[index];
-        let name = &self.names[*name];
-        picker_row("font-picker-row", index, index == self.selected, cx)
-            .on_click(cx.listener(move |picker, _, _, cx| picker.confirm(index, cx)))
-            .font_family(SharedString::from(name.clone()))
-            .child(highlighted(name.clone().into(), positions, cx))
-            .into_any_element()
+    /// The rows in `range`, each in its own font.
+    fn render_rows(&self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        range
+            .filter_map(|index| {
+                let (name, positions) = self.rows.get(index)?;
+                let name = &self.names[*name];
+                Some(
+                    picker_row("font-picker-row", index, index == self.selected, cx)
+                        .on_click(cx.listener(move |picker, _, _, cx| picker.confirm(index, cx)))
+                        .font_family(SharedString::from(name.clone()))
+                        .child(highlighted(name.clone().into(), positions, cx))
+                        .into_any_element(),
+                )
+            })
+            .collect()
     }
 }
 
@@ -148,17 +158,28 @@ impl Focusable for FontPicker {
 
 impl Render for FontPicker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows: Vec<AnyElement> = (0..self.rows.len())
-            .map(|i| self.render_row(i, cx))
-            .collect();
+        let count = self.rows.len();
+        let shown = (count as f32).min(PICKER_VISIBLE_ROWS);
         popover(cx)
             .id("font-picker")
             .occlude()
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(FontPickerEvent::Dismissed)))
             .child(picker_input_row(&self.input, cx))
-            .when(!rows.is_empty(), |p| {
-                p.child(picker_list("font-picker-list", &self.scroll).children(rows))
+            .when(count > 0, |p| {
+                // Only the rows on screen are built: there may be hundreds
+                // of families, each laid out in its own font.
+                p.child(
+                    div().p(px(GRID)).child(
+                        uniform_list(
+                            "font-picker-list",
+                            count,
+                            cx.processor(|picker, range, _, cx| picker.render_rows(range, cx)),
+                        )
+                        .h(px(PICKER_ROW_HEIGHT * shown))
+                        .track_scroll(&self.scroll),
+                    ),
+                )
             })
     }
 }

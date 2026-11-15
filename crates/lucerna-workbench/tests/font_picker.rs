@@ -123,3 +123,40 @@ fn empty_names_only_lilex(cx: &mut TestAppContext) {
     let (picker, _, cx) = open(&[], "Lilex", cx);
     assert_eq!(texts(&picker, cx), vec!["Lilex"]);
 }
+
+/// How many `font-picker-row-{i}` rows the last frame drew, of `count`.
+fn drawn_rows(count: usize, cx: &mut VisualTestContext) -> Vec<usize> {
+    (0..count)
+        .filter(|i| {
+            // `debug_bounds` takes a `&'static str`.
+            let name: &'static str = format!("font-picker-row-{i}").leak();
+            cx.debug_bounds(name).is_some()
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn draws_only_visible_rows(cx: &mut TestAppContext) {
+    let names: Vec<String> = (0..2000).map(|i| format!("Font {i:04}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (picker, _, cx) = open(&refs, "Lilex", cx);
+    assert_eq!(texts(&picker, cx).len(), 2001);
+    let drawn = drawn_rows(2001, cx);
+    assert!(!drawn.is_empty(), "no rows drawn");
+    assert!(drawn.len() <= 14, "drew {} rows", drawn.len());
+    assert_eq!(drawn[0], 0);
+}
+
+#[gpui::test]
+fn scrolls_to_selected(cx: &mut TestAppContext) {
+    let names: Vec<String> = (0..2000).map(|i| format!("Font {i:04}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (picker, _, cx) = open(&refs, "Font 1000", cx);
+    let selected = selected(&picker, cx);
+    assert_eq!(selected, 1001);
+    let drawn = drawn_rows(2001, cx);
+    assert!(drawn.contains(&selected), "drew {drawn:?}");
+    cx.simulate_keystrokes("up");
+    draw(cx);
+    assert!(drawn_rows(2001, cx).contains(&1000));
+}
