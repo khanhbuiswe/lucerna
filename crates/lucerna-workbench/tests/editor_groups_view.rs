@@ -456,3 +456,106 @@ fn tips_disabled_hides_the_watermark(cx: &mut TestAppContext) {
     draw(cx);
     assert!(cx.debug_bounds("editor-empty-hint").is_none());
 }
+
+/// Like `init`, with the default (Seti) icon theme.
+fn init_seti(cx: &mut TestAppContext, user_settings: Option<&str>) {
+    init(cx, user_settings);
+    cx.update(|cx| {
+        let icons = lucerna_theme::IconThemeRegistry::build(&[])
+            .0
+            .resolve("Seti");
+        cx.global_mut::<AppState>().icons = icons;
+    });
+}
+
+fn drawn(selector: &'static str, cx: &mut VisualTestContext) -> bool {
+    draw(cx);
+    cx.debug_bounds(selector).is_some()
+}
+
+#[gpui::test]
+fn file_tabs_show_file_icons(cx: &mut TestAppContext) {
+    init_seti(cx, None);
+    let (wb, cx) = open(cx);
+    open_path(&wb, "a.ts", OpenMode::Preview, cx);
+    open_path(&wb, "b.rs", OpenMode::Pinned, cx);
+    assert!(drawn("tab-icon-0-0", cx));
+    assert!(drawn("tab-icon-0-1", cx));
+}
+
+#[gpui::test]
+fn deleted_file_tab_keeps_icon(cx: &mut TestAppContext) {
+    init_seti(cx, None);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("file.txt"), "abc\n").unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    open_path(&wb, "file.txt", OpenMode::Pinned, cx);
+    draw(cx);
+    cx.run_until_parked();
+    std::fs::remove_file(dir.path().join("file.txt")).unwrap();
+    let change = lucerna_project::Change {
+        path: p("file.txt"),
+        kind: lucerna_project::ChangeKind::Removed,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&lucerna_project::WorktreeEvent::Changed(vec![change]), cx)
+    });
+    draw(cx);
+    cx.run_until_parked();
+    assert!(drawn("tab-deleted-0-0", cx));
+    assert!(drawn("tab-icon-0-0", cx));
+}
+
+#[gpui::test]
+fn file_diff_tab_shows_file_icon(cx: &mut TestAppContext) {
+    init_seti(cx, None);
+    let (wb, cx) = open(cx);
+    let view = cx.update(|_, cx| wb.read(cx).editor_groups().clone());
+    view.update(cx, |v, cx| {
+        v.update_model(cx, |m| m.open_file_diff(p("/tmp/project/a.ts")));
+        v.update_model(cx, |m| m.open_git_changes());
+    });
+    cx.update(|_, cx| {
+        let v = view.read(cx);
+        let expected = cx
+            .global::<AppState>()
+            .icons
+            .file(Path::new("/tmp/project/a.ts"));
+        assert_eq!(v.tab_icon(0, 0, cx), Some(expected));
+        assert_eq!(
+            v.tab_icon(0, 1, cx),
+            Some(lucerna_theme::IconSource::Builtin("git-branch"))
+        );
+    });
+}
+
+#[gpui::test]
+fn show_icons_false_hides_all_tab_icons(cx: &mut TestAppContext) {
+    init_seti(cx, Some(r#"{"workbench.editor.showIcons": false}"#));
+    let (wb, cx) = open(cx);
+    open_path(&wb, "a.ts", OpenMode::Pinned, cx);
+    let view = cx.update(|_, cx| wb.read(cx).editor_groups().clone());
+    view.update(cx, |v, cx| v.update_model(cx, |m| m.open_search()));
+    draw(cx);
+    assert!(cx.debug_bounds("tab-0-0").is_some());
+    assert!(cx.debug_bounds("tab-0-1").is_some());
+    assert!(!drawn("tab-icon-0-0", cx));
+    assert!(!drawn("tab-icon-0-1", cx));
+}
+
+#[gpui::test]
+fn show_icons_toggle_redraws(cx: &mut TestAppContext) {
+    init_seti(cx, None);
+    let (wb, cx) = open(cx);
+    open_path(&wb, "a.ts", OpenMode::Pinned, cx);
+    assert!(drawn("tab-icon-0-0", cx));
+    cx.update(|_, cx| {
+        cx.global_mut::<AppState>()
+            .settings
+            .set_layer(Layer::User, r#"{"workbench.editor.showIcons": false}"#)
+            .unwrap();
+    });
+    wb.update(cx, |_, cx| cx.notify());
+    assert!(!drawn("tab-icon-0-0", cx));
+}
