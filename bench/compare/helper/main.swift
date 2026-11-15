@@ -771,8 +771,9 @@ func refreshHz(display id: CGDirectDisplayID) -> Int {
 /// cannot happen for a window launched after "ready": suspect.
 ///
 /// `holdMs` > 0: after the hit, capture goes on for that long and every new
-/// frame's window crop is compared with the hit frame's crop (same
-/// tolerance as changedFraction). `post_change` is the largest fraction
+/// frame's centre region (the region coverage measures) is compared with
+/// the hit frame's (same tolerance as changedFraction), on frames where the
+/// window is on top at its centre. `post_change` is the largest fraction
 /// that differs: a dialog or overlay appearing, or a hit taken before the
 /// real content, shows up as a large later change. A window whose size
 /// changed counts as 1.0. `post_frames` counts the frames compared.
@@ -807,17 +808,27 @@ func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
         if let ref = hitCrop {
             // Hold phase: how far does the window move away from the hit frame?
             guard f.tNs > hitNs else { return false }
-            postFrames += 1
             if let win = largestWindow(in: list, where: { matcher.matches($0) }) {
-                let fraction: Double
-                if win.bounds.size != hitWindow.size {
-                    fraction = 1
-                } else if let r = crop(f, win.bounds) {
-                    fraction = changedFraction(f, x0: r.x.lowerBound, y0: r.y.lowerBound, ref)
-                } else {
-                    fraction = 1
+                // Only the measured centre region counts, and only while the
+                // window is on top: chrome painted later around the text (a
+                // sidebar, a status bar) or another window passing over it
+                // is not a change of the content that was measured.
+                let b = win.bounds
+                let onTop = topmostWindowOwner(in: list, at: CGPoint(x: b.midX, y: b.midY))
+                    .map { matcher.matches($0) } ?? false
+                if onTop {
+                    let fraction: Double
+                    if b.size != hitWindow.size {
+                        fraction = 1
+                    } else if let r = crop(f, b) {
+                        let c = centerRegion(x: r.x, y: r.y)
+                        fraction = changedFraction(f, x0: c.x.lowerBound, y0: c.y.lowerBound, ref)
+                    } else {
+                        fraction = 1
+                    }
+                    postFrames += 1
+                    postChange = max(postChange, fraction)
                 }
-                postChange = max(postChange, fraction)
             }
             return f.tNs >= hitNs + UInt64(holdMs) * 1_000_000
         }
@@ -844,7 +855,7 @@ func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
             hitWindow = win.bounds
             framesAtHit = frames
             if holdMs <= 0 { return true }
-            hitCrop = cropBitmap(f, x: r.x, y: r.y)
+            hitCrop = cropBitmap(f, x: region.x, y: region.y)
             captureRef?.stop(afterMs: holdMs)
         }
         return false
