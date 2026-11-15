@@ -11,7 +11,7 @@ import sys
 from html.parser import HTMLParser
 
 ORIGIN = "https://lucerna.dev/"
-GITHUB = "https://github.com/lucerna-dev/lucerna"
+GITHUB = "https://github.com/khanhbuiswe/lucerna"
 METRICS = ["140ms", "169MB", "1.40%", "50MB"]
 CSS_URL = re.compile(r"""url\(\s*['"]?([^'")]+)""")
 CSS_IMPORT = re.compile(r"""@import\s+['"]([^'"]+)""")

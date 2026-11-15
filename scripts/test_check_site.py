@@ -102,7 +102,7 @@ class CheckSiteTest(unittest.TestCase):
     def test_github_link_passes(self):
         html = VALID_HTML.replace(
             "</body>",
-            '<a href="https://github.com/lucerna-dev/lucerna/issues">x</a></body>',
+            '<a href="https://github.com/khanhbuiswe/lucerna/issues">x</a></body>',
         )
         self.assertEqual(check_site(self.write(html)), [])
 
