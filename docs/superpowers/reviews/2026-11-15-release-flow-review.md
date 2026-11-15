@@ -8,9 +8,9 @@ Ngày: 2026-11-15. Spec: [2026-11-15-release-flow-review-design.md](../specs/202
 
 | Mức | Số lỗi |
 |---|---|
-| P0 (mất/hỏng dữ liệu, crash) | 1 |
+| P0 (mất/hỏng dữ liệu, crash) | 2 |
 | P1 (flow cơ bản không làm được) | 0 |
-| P2 (sai nhưng có cách khác) | 12 |
+| P2 (sai nhưng có cách khác) | 11 |
 | P3 (nhỏ) | 13 |
 
 Có 2 mục bị loại, 1 mục bị gộp vì trùng.
@@ -18,9 +18,19 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
 **Nên sửa trước release:**
 - **T2-1 [P0]:** Quit từ Dock, Log Out hoặc Restart máy thoát ngay mà không hỏi lưu, nên mất thay đổi chưa lưu.
 - **T2-2 [P2]:** đổi tên chỉ khác hoa/thường để lại một mục "ma" trong Explorer. Nếu chọn Delete Permanently trên mục đó thì file thật bị xoá.
-- **T1-1 [P2]:** file có byte sai encoding bị ghi thành `U+FFFD` khi lưu, mà không có cảnh báo nào.
+- **T1-1 [P0]:** file có byte sai encoding bị ghi thành `U+FFFD` khi lưu, mà không có cảnh báo nào.
 
 ## Danh sách lỗi
+
+### T1-1 [P0] Byte sai encoding bị thay bằng U+FFFD khi lưu, kể cả chỗ không sửa
+
+- **Flow:** lưu file không phải UTF-8 hoặc có BOM.
+- **Vị trí:** [load.rs:88](../../../crates/lucerna-text/src/load.rs), [write.rs:145](../../../crates/lucerna-text/src/write.rs).
+- **Tái hiện:** mở file UTF-8 có BOM nhưng lẫn byte `0xE9`, hoặc file UTF-16 có số byte lẻ. Sửa chỗ khác rồi lưu: byte hỏng thành `EF BF BD`.
+- **Biến thể:** với encoding nhiều byte (Shift_JIS, GBK…) thì lưu thất bại ở một dòng người dùng không sửa.
+- **Nguyên nhân:** `decode_without_bom_handling` bỏ cờ `had_errors`.
+- **Mức độ:** theo thang của spec, đổi byte người dùng không sửa là hỏng dữ liệu, nên xếp P0. Lỗi hiếm gặp: file UTF-8 hợp lệ và file Latin-1 không bị ảnh hưởng, và VS Code cũng ghi U+FFFD. Agent kiểm chứng đề xuất P2 vì lý do đó.
+- **Hướng sửa:** dùng `had_errors` để cảnh báo, hoặc mở chỉ đọc.
 
 ### T2-1 [P0] Thoát từ Dock, Log Out/Restart hoặc AppleScript bỏ qua hộp thoại lưu
 
@@ -28,21 +38,11 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
 - **Vị trí:** [workbench.rs:2907](../../../crates/lucerna-workbench/src/workbench.rs), [workbench.rs:1673](../../../crates/lucerna-workbench/src/workbench.rs), [workbench.rs:860](../../../crates/lucerna-workbench/src/workbench.rs).
 - **Tái hiện:** sửa một file, không lưu. Chuột phải icon Dock → Quit, hoặc Apple menu → Restart. App tắt ngay. Mở lại thì thay đổi đã mất.
 - **Nguyên nhân:**
-  - Chỉ action `Quit` của GPUI (Cmd+Q, menu) và việc đóng cửa sổ mới đi qua `confirm_quit`.
+  - Chỉ action `Quit` của Lucerna (Cmd+Q, menu; [app_menu.rs:570](../../../crates/lucerna-workbench/src/app_menu.rs)) và việc đóng cửa sổ mới đi qua `confirm_quit`.
   - Delegate macOS của GPUI (rev `b5cd310`, `gpui_macos/src/platform.rs:91`) chỉ đăng ký `applicationWillTerminate:`, không đăng ký `applicationShouldTerminate:`. Vì vậy `-[NSApp terminate:]` thoát ngay.
   - Hook `on_app_quit` của Lucerna chỉ lưu layout và tắt LSP.
   - Không có hot exit hay bản sao lưu nào.
 - **Hướng sửa:** chặn terminate ở tầng platform: `applicationShouldTerminate:` trả `NSTerminateCancel` rồi chạy `quit(cx)`. GPUI là code của Zed, nên cần patch hoặc hook riêng. Một lựa chọn khác là ghi bản sao lưu các buffer chưa lưu trong hook quit.
-
-### T1-1 [P2] Byte sai encoding bị thay bằng U+FFFD khi lưu
-
-- **Flow:** lưu file không phải UTF-8 hoặc có BOM.
-- **Vị trí:** [load.rs:88](../../../crates/lucerna-text/src/load.rs), [write.rs:145](../../../crates/lucerna-text/src/write.rs).
-- **Tái hiện:** mở file UTF-8 có BOM nhưng lẫn byte `0xE9`, hoặc file UTF-16 có số byte lẻ. Sửa chỗ khác rồi lưu: byte hỏng thành `EF BF BD`.
-- **Biến thể:** với encoding nhiều byte (Shift_JIS, GBK…) thì lưu thất bại ở một dòng người dùng không sửa.
-- **Nguyên nhân:** `decode_without_bom_handling` bỏ cờ `had_errors`.
-- **Ghi chú:** file UTF-8 hợp lệ và file Latin-1 không bị ảnh hưởng. VS Code cũng ghi U+FFFD.
-- **Hướng sửa:** dùng `had_errors` để cảnh báo, hoặc mở chỉ đọc.
 
 ### T2-2 [P2] Đổi tên chỉ khác hoa/thường để lại mục "ma" trong Explorer
 
@@ -59,7 +59,7 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
 - **Flow:** Explorer copy/paste.
 - **Vị trí:** [explorer/clipboard.rs:263](../../../crates/lucerna-workbench/src/explorer/clipboard.rs), [workbench.rs:1676](../../../crates/lucerna-workbench/src/workbench.rs).
 - **Tái hiện:** Paste một folder vài GB rồi Cmd+Q ngay. App thoát mà không hỏi. Bản `X copy` còn lại trên đĩa thì thiếu file, hoặc có file bị cụt.
-- **Nguyên nhân:** task copy bị `detach`, không có `InFlight`. `confirm_quit` chỉ xét buffer chưa lưu và terminal.
+- **Nguyên nhân:** task copy bị `detach`, và `confirm_quit` chỉ xét buffer chưa lưu và terminal. Không có thao tác file nào được theo dõi lúc thoát: `deletes_in_flight` ([explorer/commands.rs:288](../../../crates/lucerna-workbench/src/explorer/commands.rs)) cũng không được đọc ở đó, nên Cut hay Delete đang chạy cũng không được bảo vệ.
 - **Hướng sửa:** đếm các thao tác copy đang chạy và hỏi hoặc đợi khi thoát. Hoặc copy vào tên tạm rồi rename khi xong.
 
 ### T3-1 [P2] Open With hoặc thả lên Dock một thư mục con của folder đang mở không làm gì
@@ -86,6 +86,7 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
   - Chạy `mkfifo proj/pipe`, rồi bấm vào `pipe` trong Explorer: tab kẹt Loading.
   - Chạy `luc /dev/zero`: app đọc tới khi hết bộ nhớ.
 - **Nguyên nhân:** `metadata.len()` bằng 0 nên lọt qua `check_size`. Code không kiểm `is_file()`.
+- **Mức độ:** crash do hết RAM theo thang là P0. Mình hạ xuống P2 vì cần đầu vào cố ý (`/dev/zero`); FIFO trong project chỉ làm treo tab.
 - **Hướng sửa:** nếu `!meta.is_file()` thì trả `LoadError` ("Not a regular file").
 
 ### T3-5 [P2] Folder gốc không đọc được thì Explorer trống mà không báo
@@ -135,7 +136,7 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
 - **Tái hiện:** file `ghi-chú.md` có tên lưu dạng NFD. Cmd+P, gõ `chú`: không có kết quả. Gõ `chu` thì ra.
 - **Nguyên nhân:**
   - Không chỗ nào chuẩn hoá NFC.
-  - nucleo gộp grapheme, và trả vị trí theo byte hoặc grapheme, trong khi picker coi đó là chỉ số char.
+  - nucleo gộp grapheme, và trả vị trí theo grapheme, trong khi picker coi đó là chỉ số char.
 - **Hướng sửa:** chuẩn hoá NFC cả đường dẫn lẫn query, rồi map vị trí về chỉ số char.
 
 ### T5-6 [P2] Tìm trong project bỏ qua thay đổi chưa lưu, click nhảy sai dòng
@@ -148,79 +149,112 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
 
 ### T1-2 [P3] Autosave có thể tạo lại file mà agent vừa `rm`/`mv`
 
+- **Flow:** `files.autoSave` khi agent xoá hoặc đổi tên file.
 - **Vị trí:** [save.rs:274](../../../crates/lucerna-workbench/src/save.rs).
-- **Mô tả:** `changed_on_disk` coi NotFound là "không đổi". Nếu autosave chạy trong khoảng 50–150 ms trước khi watcher báo, nó ghi lại file cũ. Kết quả: lệnh `rm` của agent bị huỷ, còn `mv` thì sinh ra file trùng.
+- **Tái hiện:** đặt `files.autoSave: afterDelay`, rồi gõ vào `a.rs`. Agent chạy `rm a.rs` đúng lúc timer sắp nổ. File `a.rs` xuất hiện lại.
+- **Nguyên nhân:** `changed_on_disk` coi NotFound là "không đổi". Vì vậy autosave chạy trong khoảng 50–150 ms trước khi watcher báo sẽ ghi lại file. Kết quả: `rm` của agent bị huỷ, còn `mv` thì sinh ra file trùng.
 - **Hướng sửa:** với `SaveReason::Auto`, gặp NotFound thì không ghi.
 
 ### T1-3 [P3] Stamp sau khi lưu lấy sau bước rename
 
+- **Flow:** lưu file khi agent ghi ngay sau đó.
 - **Vị trí:** [save.rs:263](../../../crates/lucerna-workbench/src/save.rs).
-- **Mô tả:** nếu agent ghi đúng trong khoảng vài micro giây đó, rồi người dùng lưu lại trước khi watcher báo, thì bản của agent bị ghi đè. Gần như chỉ xảy ra trên lý thuyết.
+- **Tái hiện:** Cmd+S, agent ghi file trong vài micro giây sau bước rename, rồi người dùng lưu lại trước khi watcher báo. Bản của agent bị ghi đè mà không hỏi. Gần như chỉ xảy ra trên lý thuyết.
 - **Hướng sửa:** lấy metadata từ file handle của file tạm trước khi rename.
 
 ### T1-5 [P3] Tên file dài hơn khoảng 241 byte thì không lưu được
 
+- **Flow:** sửa và lưu.
 - **Vị trí:** [write.rs:263](../../../crates/lucerna-text/src/write.rs).
-- **Mô tả:** tên file tạm `.{name}.luc~XXXXXXXX` dài hơn tên gốc 14 byte, nên vượt giới hạn và gây ENAMETOOLONG. Lỗi có hiện trên status bar.
+- **Tái hiện:** mở file có tên 245 byte, sửa, Cmd+S. Status bar báo "File name too long".
+- **Nguyên nhân:** tên file tạm `.{name}.luc~XXXXXXXX` dài hơn tên gốc 14 byte.
 - **Hướng sửa:** cắt ngắn hoặc hash phần tên trong tên file tạm.
 
 ### T1-6 [P3] Sau Keep Mine, autosave không được hẹn lại
 
+- **Flow:** conflict với `files.autoSave: afterDelay`.
 - **Vị trí:** [documents.rs:1063](../../../crates/lucerna-workbench/src/documents.rs), [save.rs:404](../../../crates/lucerna-workbench/src/save.rs).
-- **Mô tả:** văn bản nằm chưa lưu cho tới lần gõ tiếp theo. Tab vẫn có chấm "chưa lưu".
+- **Tái hiện:** đặt autoSave afterDelay. Gõ vào file, agent ghi đè cùng dòng nên thành conflict. Chờ quá thời gian delay rồi bấm Keep Mine. Không có lần lưu nào chạy cho tới lần gõ tiếp theo; tab vẫn có chấm "chưa lưu".
 - **Hướng sửa:** hẹn lại timer khi nhận `ConflictChanged{conflict:false}` mà văn bản vẫn chưa lưu.
 
 ### T1-7 [P3] `files.trimFinalNewlines` với file toàn dòng trống còn lại `\n`
 
+- **Flow:** lưu với `files.trimFinalNewlines`.
 - **Vị trí:** [save.rs:212](../../../crates/lucerna-workbench/src/save.rs).
-- **Mô tả:** VS Code (theo hiểu biết của agent, chắc khoảng 80%) cho ra file rỗng. Test hiện tại khẳng định hành vi `\n`.
+- **Tái hiện:** bật `files.trimFinalNewlines`, lưu file có nội dung `\n\n\n`. File còn lại `\n`.
+- **Ghi chú:** VS Code cho ra file rỗng; agent nói chắc khoảng 80%. Test hiện tại khẳng định hành vi `\n`.
 - **Hướng sửa:** đối chiếu với `TrimFinalNewLinesParticipant` của VS Code.
 
 ### T2-4 [P3] Cmd+Q chọn Don't Save khi đang ghi thì để lại file tạm `.name.luc~XXXX`
 
+- **Flow:** thoát app khi đang lưu dở.
 - **Vị trí:** [write.rs:253](../../../crates/lucerna-text/src/write.rs), [workbench.rs:1696](../../../crates/lucerna-workbench/src/workbench.rs).
-- **Mô tả:** file gốc vẫn nguyên. Ngoại lệ: file có hardlink đi qua `write_in_place`, khi đó file có thể bị cụt. Trường hợp này hiếm.
+- **Tái hiện:** Cmd+S một file lớn, Cmd+Q ngay, chọn Don't Save. Còn lại file `.<tên>.luc~xxxxxxxx` cạnh file gốc.
+- **Ghi chú:** file gốc vẫn nguyên. Ngoại lệ hiếm: file có hardlink đi qua `write_in_place`, khi đó file có thể bị cụt.
 - **Hướng sửa:** trước khi thoát, đợi các lần lưu đang chạy xong.
 
 ### T2-5 [P3] New File với tên `foo/` tạo file thay vì folder
 
+- **Flow:** Explorer New File.
 - **Vị trí:** [fs_ops.rs:79](../../../crates/lucerna-project/src/fs_ops.rs).
-- **Mô tả:** VS Code tạo folder trong trường hợp này. Agent chưa kiểm lại trong source VS Code.
+- **Tái hiện:** Explorer → New File → gõ `components/` → Enter. Kết quả là file rỗng tên `components`.
+- **Ghi chú:** VS Code tạo folder trong trường hợp này. Agent chưa kiểm lại trong source VS Code.
 - **Hướng sửa:** tên kết thúc bằng dấu phân cách thì coi là New Folder.
 
 ### T3-3 [P3] Mục recent không còn tồn tại bị xoá vĩnh viễn ở lần ghi kế tiếp
 
+- **Flow:** Open Recent, Welcome page.
 - **Vị trí:** [recent.rs:127](../../../crates/lucerna-workbench/src/recent.rs).
-- **Mô tả:** folder trên ổ ngoài đang rút ra sẽ mất khỏi danh sách recent. Đây là hành vi cố ý theo doc comment, nhưng khác VS Code.
+- **Tái hiện:** mở `/Volumes/SSD/proj`, rút ổ, mở folder khác, rồi cắm lại ổ. `proj` đã mất khỏi danh sách recent.
+- **Ghi chú:** đây là hành vi cố ý theo doc comment, nhưng khác VS Code.
 - **Hướng sửa:** chỉ lọc các mục không tồn tại lúc hiển thị, không lọc lúc ghi.
 
 ### T4-4 [P3] Watcher không khởi động được thì chỉ ghi log
 
+- **Flow:** theo dõi agent.
 - **Vị trí:** [worktree.rs:312](../../../crates/lucerna-project/src/worktree.rs), [git/mod.rs:762](../../../crates/lucerna-workbench/src/git/mod.rs).
-- **Mô tả:** trên macOS hiếm gặp. Sẽ quan trọng hơn khi có bản Linux (hết inotify watch).
+- **Tái hiện:** watcher của worktree hoặc của `.git` không khởi động được, ví dụ trên volume mạng, hoặc hết inotify watch trên Linux. Auto-reload và màu git ngừng hoạt động mà không có thông báo nào. Trên macOS hiếm gặp.
 - **Hướng sửa:** hiện thông báo trên status bar.
 
 ### T4-5 [P3] File bị ignore có thư mục cha bị xoá rồi tạo lại có thể không được watch lại
 
+- **Flow:** reload file bị ignore (`dist/`, `target/`).
 - **Vị trí:** [open_files.rs:76](../../../crates/lucerna-workbench/src/open_files.rs).
-- **Tái hiện:** mở `dist/bundle.js`, agent chạy `rm -rf dist`, người dùng mở hoặc đóng một tab khác cũng nằm ngoài cây (ví dụ `.env`), agent build lại. Tab vẫn ở trạng thái Deleted.
+- **Tái hiện:**
+  1. Mở `dist/bundle.js`.
+  2. Agent chạy `rm -rf dist`.
+  3. Người dùng mở hoặc đóng một tab khác cũng nằm ngoài cây, ví dụ `.env`.
+  4. Agent build lại.
+
+  Kết quả: tab vẫn ở trạng thái Deleted.
 - **Ghi chú:** một lần Rescanned sẽ tự cứu được.
 - **Hướng sửa:** watch thư mục tổ tiên gần nhất còn tồn tại.
 
-### T5-1 [P3] Click kết quả search vượt cuối file để lại observer, con trỏ nhảy về sau
+### T5-1 [P3] Click kết quả search vượt cuối file để lại observer, về sau con trỏ nhảy
 
+- **Flow:** tìm trong project, click kết quả.
 - **Vị trí:** [search_view/view.rs:672](../../../crates/lucerna-workbench/src/search_view/view.rs).
-- **Mô tả:** khi file dài ra lại, con trỏ nhảy một lần về dòng cũ, có thể đúng lúc đang gõ.
+- **Tái hiện:**
+  1. Tìm có kết quả ở dòng 100 của `a.rs`.
+  2. Agent ghi lại `a.rs`, chỉ còn 50 dòng.
+  3. Click kết quả.
+  4. Sau đó gõ, hoặc agent ghi, làm file dài quá 100 dòng.
+
+  Con trỏ nhảy một lần về dòng 100.
 - **Hướng sửa:** khi doc đã Ready mà dòng không còn tồn tại thì gỡ observer.
 
 ### T5-4 [P3] Quick Open không nhận `:-N` và `:N,M`
 
+- **Flow:** Quick Open, đi tới dòng.
 - **Vị trí:** [quick_open/query.rs:42](../../../crates/lucerna-workbench/src/quick_open/query.rs).
+- **Tái hiện:** Cmd+P, gõ `:-1` hoặc `:12,5`, rồi Enter. Không có gì xảy ra. `:N` và `:N:M` thì vẫn chạy.
 - **Hướng sửa:** parse `i64`, số âm thì tính từ cuối file; tách phần dòng/cột theo `[:,#]`.
 
 ### T5-5 [P3] Tìm trong project bằng regex có `$` không khớp file CRLF
 
+- **Flow:** tìm trong project, chế độ regex.
 - **Vị trí:** [search.rs:122](../../../crates/lucerna-project/src/search.rs).
+- **Tái hiện:** file CRLF có dòng `foo`. Bật regex, tìm `foo$`: không có kết quả. Cmd+F trong chính file đó thì tìm thấy.
 - **Hướng sửa:** thêm `.crlf(true)` vào `RegexMatcherBuilder`.
 
 ## Đã loại
