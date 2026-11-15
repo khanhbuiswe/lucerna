@@ -4,7 +4,7 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnchoredPositionMode, App, Bounds, ClickEvent, Context, Div, Entity, FocusHandle, Focusable,
@@ -78,6 +78,19 @@ struct PendingReveal {
     expand: bool,
 }
 
+/// How long a duplicate waits for the tree to report it before its rename
+/// is dropped: a later rename would take the focus from whatever the user
+/// went on to do.
+const PENDING_RENAME_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// A just duplicated path (root-relative) to rename once the tree has it,
+/// with `range` (bytes of its name) selected, unless `deadline` passed.
+struct PendingRename {
+    path: Arc<Path>,
+    range: Range<usize>,
+    deadline: Instant,
+}
+
 /// The file tree in the sidebar's Explorer slot.
 pub struct ExplorerView {
     model: ExplorerModel,
@@ -112,9 +125,8 @@ pub struct ExplorerView {
     /// The input of an edit ended because its folder vanished: if it still
     /// held the focus, the next frame gives the focus to the sidebar.
     refocus_sidebar: Option<FocusHandle>,
-    /// A just duplicated path (root-relative) to rename once the tree has
-    /// it, with these bytes of its name selected.
-    pending_rename: Option<(Arc<Path>, Range<usize>)>,
+    /// A just duplicated path to rename once the tree has it.
+    pending_rename: Option<PendingRename>,
     /// The clipboard's Cut entry, root-relative: its row is dimmed.
     cut: Option<Arc<Path>>,
     /// The clipboard holds an entry: the menu's Paste is enabled.
@@ -348,7 +360,11 @@ impl ExplorerView {
         cx: &mut Context<Self>,
     ) {
         self.model.select(Selection::Path(path.clone()));
-        self.pending_rename = rename.map(|range| (path.clone(), range));
+        self.pending_rename = rename.map(|range| PendingRename {
+            path: path.clone(),
+            range,
+            deadline: Instant::now() + PENDING_RENAME_TIMEOUT,
+        });
         self.pending_reveal = Some(PendingReveal {
             path,
             expand: false,
@@ -889,23 +905,34 @@ impl ExplorerView {
     }
 
     /// The duplicate waiting for its rename is in the tree: its rename
-    /// starts after this frame, while it is still the selection and no
-    /// other name is being typed.
+    /// starts after this frame, its row revealed first. Dropped instead
+    /// when it waited too long, the selection moved off it or the focus
+    /// left the Explorer (the rename must not take the focus back).
     fn start_pending_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ready = self
-            .pending_rename
-            .as_ref()
-            .is_some_and(|(path, _)| self.model.contains(path));
-        if !ready || self.editing() {
+        let Some(pending) = &self.pending_rename else {
+            return;
+        };
+        let stale = Instant::now() > pending.deadline
+            || *self.model.selection() != Selection::Path(pending.path.clone())
+            || !self.focus.contains_focused(window, cx);
+        if stale {
+            self.pending_rename = None;
             return;
         }
-        let Some((path, range)) = self.pending_rename.take() else {
+        if !self.model.contains(&pending.path) || self.editing() {
+            return;
+        }
+        let Some(PendingRename { path, range, .. }) = self.pending_rename.take() else {
             return;
         };
         cx.defer_in(window, move |this, window, cx| {
-            if *this.model.selection() == Selection::Path(path) {
-                this.start_rename_with(range, window, cx);
+            if *this.model.selection() != Selection::Path(path.clone()) {
+                return;
             }
+            if let Some(ix) = this.model.reveal(&path) {
+                this.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+            }
+            this.start_rename_with(range, window, cx);
         });
     }
 

@@ -39,6 +39,16 @@ pub(crate) enum AfterTransfer {
     Rename,
 }
 
+impl AfterTransfer {
+    /// How a failure names the operation: `Unable to {verb} '{name}'`.
+    fn verb(self) -> &'static str {
+        match self {
+            Self::SelectAndOpen => "paste",
+            Self::Rename => "duplicate",
+        }
+    }
+}
+
 pub(super) fn register_commands(commands: &mut CommandRegistry) {
     commands.register("filesExplorer.cut", "Explorer: Cut", |wb, args, _, cx| {
         put(wb, args, ClipOp::Cut, cx)
@@ -113,7 +123,9 @@ fn duplicate(
     let Some(parent) = target.parent().map(Path::to_path_buf) else {
         return;
     };
+    // The copy's rename types in the tree (as Zed focuses its panel).
     show_explorer(wb, window, cx);
+    wb.focus_sidebar(window, cx);
     if let Some(task) = transfer(
         wb,
         target,
@@ -286,7 +298,8 @@ pub(crate) fn transfer(
         };
         wb.update(cx, |wb, cx| match result {
             Err(e) => {
-                status_message::show(format!("Unable to paste '{name}': {e}"), cx);
+                let verb = after.verb();
+                status_message::show(format!("Unable to {verb} '{name}': {e}"), cx);
                 false
             }
             Ok(()) => {

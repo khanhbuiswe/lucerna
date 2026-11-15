@@ -736,15 +736,13 @@ fn cmd_d_duplicates(cx: &mut TestAppContext) {
     // Never on the root.
     keys("escape", cx);
     click("explorer-root", cx);
+    let before = std::fs::read_dir(&root).unwrap().count();
     keys("cmd-d", cx);
-    assert!(
-        !root
-            .join(format!(
-                "{} copy",
-                root.file_name().unwrap().to_string_lossy()
-            ))
-            .exists()
-    );
+    let name = root.file_name().unwrap().to_string_lossy().into_owned();
+    let parent = root.parent().unwrap();
+    assert!(!parent.join(format!("{name} copy")).exists());
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), before);
+    assert!(!editing(&wb, cx));
 }
 
 #[gpui::test]
@@ -779,4 +777,85 @@ fn clipboard_cleared_when_its_source_is_deleted(cx: &mut TestAppContext) {
     draw(cx);
     wait_until(cx, |_| !root.join("a.rs").exists());
     wait_until(cx, |cx| clipboard(&wb, cx).is_none());
+}
+
+fn editor_focused(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|window, cx| {
+        let ctx = wb.read(cx).context_keys(window, cx);
+        lucerna_settings::parse_when("editorFocus")
+            .unwrap()
+            .eval(&ctx)
+    })
+}
+
+/// The copy reported after the focus left the Explorer: no rename takes
+/// the focus back.
+#[gpui::test]
+fn duplicate_rename_dropped_when_focus_left(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    keys("cmd-d", cx);
+    // The click opened `a.rs` in the preview tab: focus its editor.
+    cx.update(|window, cx| {
+        let view: Entity<lucerna_workbench::code_view::CodeView> = wb
+            .read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .expect("a tab body")
+            .downcast()
+            .expect("a code view");
+        let focus = gpui::Focusable::focus_handle(view.read(cx), cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    wait_until(cx, |_| root.join("a copy.rs").is_file());
+    deliver_added(&wb, &["a copy.rs"], cx);
+    draw(cx);
+    assert!(!editing(&wb, cx));
+    assert!(editor_focused(&wb, cx));
+}
+
+/// A copy inside a collapsed folder (Duplicate from the palette or a
+/// menu with `args.path`): the rename reveals it rather than being
+/// skipped.
+#[gpui::test]
+fn duplicate_rename_reveals_hidden_copy(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    assert!(cx.debug_bounds("explorer-row-src/main.rs").is_none());
+    cx.update(|window, cx| {
+        let args = serde_json::json!({ "path": "src/main.rs" });
+        wb.update(cx, |wb, cx| {
+            wb.run_command("filesExplorer.duplicate", Some(&args), window, cx)
+        });
+    });
+    draw(cx);
+    wait_until(cx, |_| root.join("src/main copy.rs").is_file());
+    deliver_added(&wb, &["src/main copy.rs"], cx);
+    wait_until(cx, |cx| editing(&wb, cx));
+    assert_eq!(input_state(&wb, cx), ("main copy.rs".to_string(), 0..9));
+}
+
+#[gpui::test]
+fn duplicate_failure_reports_status(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    std::fs::remove_file(root.join("a.rs")).unwrap();
+    keys("cmd-d", cx);
+    wait_until(cx, |cx| status(cx).is_some());
+    let message = status(cx).unwrap();
+    assert!(
+        message.starts_with("Unable to duplicate 'a.rs': "),
+        "{message}"
+    );
 }
