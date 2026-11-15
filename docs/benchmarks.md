@@ -337,6 +337,20 @@ file above (the full generated file is
 | App size | 50 MB | 177 MB | 1604 MB |
 | ↳ vs Lucerna | — | 3.5× | 31.9× |
 
+**Zed's startup figure (241 ms) is being re-measured.** In this run Zed showed
+an "Unrecognized Project" dialog over the content during startup, and the
+background colour calibrated for Zed did not match its theme, so the figure
+may measure the window appearing rather than the content. The bench profile
+now trusts the data folder, and the startup measurement drops rounds whose
+window changes after the first frame with content (see
+[Measurements](#measurements)). The other figures are unchanged.
+
+The bench profiles now also have settings that this run did not have:
+VS Code `workbench.welcomePage.experimentalOnboarding: false` and
+`chat.disableAIFeatures: true`; Zed `session.trust_all_worktrees` and, in the
+no-LSP configuration, `enable_language_server: false`. A rerun is needed
+before these numbers are final.
+
 ### Charts
 
 ![Startup to first frame with content](benchmarks/startup_ms-nolsp-warm.svg)
