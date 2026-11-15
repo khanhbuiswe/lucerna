@@ -27,6 +27,7 @@ const TRASH_FAILED_ANSWERS: [&str; 2] = ["Delete Permanently", "Cancel"];
 const PERMANENT_ANSWERS: [&str; 2] = ["Delete", "Cancel"];
 
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
+    super::clipboard::register_commands(commands);
     commands.register(
         "explorer.newFile",
         "File: New File…",
@@ -282,17 +283,17 @@ fn delete(
     .detach();
 }
 
-/// Marks a Delete of `path` as running, from its first prompt to its end
-/// (also when its task is dropped).
-struct InFlight {
+/// Marks a Delete (from its first prompt) or a move by Paste of `path` as
+/// running, until its end (also when its task is dropped).
+pub(super) struct InFlight {
     set: Rc<RefCell<HashSet<PathBuf>>>,
     path: PathBuf,
 }
 
 impl InFlight {
-    /// `None` when a Delete of `path`, or of a path inside or around it, is
-    /// already running.
-    fn begin(wb: &Workbench, path: &Path) -> Option<Self> {
+    /// `None` when a Delete or move of `path`, or of a path inside or
+    /// around it, is already running.
+    pub(super) fn begin(wb: &Workbench, path: &Path) -> Option<Self> {
         let set = wb.deletes_in_flight.clone();
         let busy = set
             .borrow()
@@ -457,7 +458,11 @@ pub(crate) fn command_target(wb: &Workbench, args: Option<&Value>, cx: &App) -> 
 
 /// Like [`command_target`], with `None` for a path the worktree does not
 /// know. Reads the Explorer and the worktree snapshot only, never the disk.
-fn target_kind(wb: &Workbench, args: Option<&Value>, cx: &App) -> (PathBuf, Option<bool>) {
+pub(super) fn target_kind(
+    wb: &Workbench,
+    args: Option<&Value>,
+    cx: &App,
+) -> (PathBuf, Option<bool>) {
     let given = args
         .and_then(|a| a.get("path"))
         .and_then(Value::as_str)

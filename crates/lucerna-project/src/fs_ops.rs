@@ -256,6 +256,119 @@ pub fn stem_range(name: &str, is_dir: bool) -> Range<usize> {
     }
 }
 
+/// First free target for pasting `name` into `dir`: `name` itself, then
+/// `"{stem} copy{ext}"`, `"{stem} copy 2{ext}"`, ... The range is the byte
+/// range of the final file name to select for renaming: the stem plus the
+/// " copy N" suffix, never the extension.
+pub fn paste_name(
+    dir: &Path,
+    name: &str,
+    is_dir: bool,
+    exists: impl Fn(&Path) -> bool,
+) -> (PathBuf, Range<usize>) {
+    let stem_len = stem_range(name, is_dir).end;
+    let (stem, ext) = name.split_at(stem_len);
+    let first = dir.join(name);
+    if !exists(&first) {
+        return (first, 0..stem_len);
+    }
+    let mut n = 1u32;
+    loop {
+        let base = if n == 1 {
+            format!("{stem} copy")
+        } else {
+            format!("{stem} copy {n}")
+        };
+        let candidate = dir.join(format!("{base}{ext}"));
+        if !exists(&candidate) {
+            return (candidate, 0..base.len());
+        }
+        n += 1;
+    }
+}
+
+/// Component-wise: true when `path` is `ancestor` or lies below it. Purely
+/// lexical (no canonicalization): callers pass paths in the same spelling.
+pub fn is_within(path: &Path, ancestor: &Path) -> bool {
+    path.starts_with(ancestor)
+}
+
+#[cfg(unix)]
+fn copy_symlink(from: &Path, to: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(std::fs::read_link(from)?, to)
+}
+
+#[cfg(windows)]
+fn copy_symlink(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+    let target = std::fs::read_link(from)?;
+    // The link's own kind decides; a dangling link falls back to a file link.
+    let points_to_dir = std::fs::metadata(from).is_ok_and(|m| m.is_dir());
+    if points_to_dir {
+        symlink_dir(target, to)
+    } else {
+        symlink_file(target, to)
+    }
+}
+
+/// Copies a file, directory tree or symlink from `from` to `to` without ever
+/// replacing anything: an existing `to` fails with `AlreadyExists`. Symlinks
+/// are recreated, not followed. Refuses (`InvalidInput`) when `to` is inside
+/// `from`. A failed file copy removes the file this call created; a failed
+/// directory copy leaves the entries it already created, never touching
+/// existing ones.
+pub fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
+    if is_within(to, from) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot copy into itself",
+        ));
+    }
+    copy_entry_inner(from, to)
+}
+
+fn copy_entry_inner(from: &Path, to: &Path) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(from)?;
+    let ty = meta.file_type();
+    if ty.is_symlink() {
+        copy_symlink(from, to)
+    } else if ty.is_dir() {
+        std::fs::create_dir(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            // Defensive: `copy_entry` already refuses a `to` inside `from`,
+            // so the copy never lists itself.
+            if entry.path() == to {
+                continue;
+            }
+            copy_entry_inner(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        // Directory permissions last, so a read-only source stays writable
+        // while its contents are copied.
+        std::fs::set_permissions(to, meta.permissions())
+    } else if ty.is_file() {
+        let mut src = std::fs::File::open(from)?;
+        let mut dst = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(to)?;
+        let done = io::copy(&mut src, &mut dst)
+            .map(drop)
+            .and_then(|()| std::fs::set_permissions(to, meta.permissions()));
+        if done.is_err() {
+            // Do not leave a truncated file that looks like a normal copy.
+            drop(dst);
+            let _ = std::fs::remove_file(to);
+        }
+        done
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "cannot copy special files",
+        ))
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     #[test]

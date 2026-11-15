@@ -612,3 +612,66 @@ fn palette_titles_name_the_explorer_and_platform(cx: &mut TestAppContext) {
     };
     assert_eq!(title("revealFileInOS", cx), reveal);
 }
+
+/// The active tab's item, if any.
+fn active_item(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<TabItem> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .active_tab()
+            .map(|t| t.item.clone())
+    })
+}
+
+#[gpui::test]
+fn open_preview_from_menu_opens_markdown_preview(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    std::fs::write(dir.path().join("README.md"), "# Title\n").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-README.md", cx);
+    assert!(menu_has("markdown.showPreview", cx));
+    click("context-menu-item-markdown.showPreview", cx);
+    let readme: Arc<Path> = Arc::from(root_of(&wb, cx).join("README.md"));
+    assert_eq!(active_item(&wb, cx), Some(TabItem::MarkdownPreview(readme)));
+    let pinned = cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .active_tab()
+            .is_some_and(|t| t.pinned)
+    });
+    assert!(pinned);
+}
+
+#[gpui::test]
+fn no_open_preview_for_rust_file(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let dir = project();
+    let (_wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-a.rs", cx);
+    assert!(!menu_has("markdown.showPreview", cx));
+}
+
+#[gpui::test]
+fn open_preview_follows_files_associations(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    // What the extension service does with `files.associations`.
+    let map = std::collections::BTreeMap::from([("*.notes".to_string(), "markdown".to_string())]);
+    cx.update(|cx| {
+        let state = cx.global_mut::<AppState>();
+        state.languages = Arc::new(
+            state
+                .languages
+                .with_associations(lucerna_syntax::Associations::new(&map)),
+        );
+    });
+    let dir = project();
+    std::fs::write(dir.path().join("todo.notes"), "- a\n").unwrap();
+    let (_wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-todo.notes", cx);
+    assert!(menu_has("markdown.showPreview", cx));
+}

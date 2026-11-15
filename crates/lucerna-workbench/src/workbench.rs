@@ -26,7 +26,7 @@ use crate::documents::{DocumentEvent, DocumentStatusItem, Documents, GoTo};
 use crate::editor_groups::{
     self, EditorGroups, EditorGroupsView, FileView, GroupId, OpenMode, TabId, TabItem,
 };
-use crate::explorer::{ExplorerView, SelectedKind};
+use crate::explorer::{ClipOp, ExplorerClipboard, ExplorerView, SelectedKind};
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
 use crate::git::{GitStore, GitStoreEvent};
 use crate::hover::SHOW_HOVER;
@@ -114,9 +114,12 @@ pub struct Workbench {
     /// Root-relative paths Lucerna itself just created, renamed or deleted,
     /// and when; the Explorer does not mark them as changed by another program.
     own_changes: HashMap<Arc<Path>, Instant>,
-    /// Absolute paths a Delete is asking about or deleting; another Delete
-    /// of them (or of a path inside or around them) is ignored meanwhile.
+    /// Absolute paths a Delete is asking about or deleting, or a Paste is
+    /// moving; another Delete or move of them (or of a path inside or
+    /// around them) is ignored meanwhile.
     pub(crate) deletes_in_flight: Rc<std::cell::RefCell<HashSet<PathBuf>>>,
+    /// What the Explorer's Cut or Copy last took.
+    explorer_clipboard: Option<ExplorerClipboard>,
     /// The options of the scan, from `files.exclude`.
     scan_options: ScanOptions,
     /// Re-themes and rescans when [`AppState`] changes.
@@ -700,6 +703,7 @@ impl Workbench {
             scan_complete_logged: false,
             own_changes: HashMap::new(),
             deletes_in_flight: Rc::default(),
+            explorer_clipboard: None,
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
@@ -1024,6 +1028,36 @@ impl Workbench {
         &self.explorer
     }
 
+    /// What the Explorer's Cut or Copy last took, if anything.
+    pub fn explorer_clipboard(&self) -> Option<&ExplorerClipboard> {
+        self.explorer_clipboard.as_ref()
+    }
+
+    /// Replaces the Explorer's clipboard. The Explorer learns of it once
+    /// this update ends (to dim a cut row and enable Paste): this may run
+    /// while the Explorer itself is being updated.
+    pub(crate) fn set_explorer_clipboard(
+        &mut self,
+        clip: Option<ExplorerClipboard>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.explorer_clipboard == clip {
+            return;
+        }
+        let cut = clip
+            .as_ref()
+            .filter(|c| c.op == ClipOp::Cut)
+            .and_then(|c| c.path.strip_prefix(&self.root).ok())
+            .map(Arc::from);
+        let filled = clip.is_some();
+        self.explorer_clipboard = clip;
+        let explorer = self.explorer.clone();
+        cx.defer(move |cx| {
+            explorer.update(cx, |explorer, cx| explorer.set_clipboard(cut, filled, cx))
+        });
+        cx.notify();
+    }
+
     /// Remembers root-relative paths Lucerna itself just changed, so their
     /// watcher events are not decorated as another program's. A directory
     /// also covers the paths under it. An entry is dropped once the
@@ -1063,6 +1097,17 @@ impl Workbench {
         {
             self.marker_hover = None;
         }
+        // The clipboard's entry follows a rename too.
+        // (`moved_path`: the entry itself becomes `to`, never `to/`.)
+        if let Some(clip) = &self.explorer_clipboard
+            && let Some(moved) = crate::workspace_state::moved_path(&clip.path, &from, &to)
+        {
+            let moved = ExplorerClipboard {
+                op: clip.op,
+                path: Arc::from(moved),
+            };
+            self.set_explorer_clipboard(Some(moved), cx);
+        }
         self.refresh_watched_open_files(cx);
         cx.notify();
     }
@@ -1072,6 +1117,13 @@ impl Workbench {
     /// marked deleted when the watcher reports the removal.
     pub(crate) fn paths_deleted(&mut self, path: &Path, cx: &mut Context<Self>) {
         let path = self.absolute_path(path);
+        if self
+            .explorer_clipboard
+            .as_ref()
+            .is_some_and(|clip| clip.path.starts_with(&path))
+        {
+            self.set_explorer_clipboard(None, cx);
+        }
         let documents = self.documents.read(cx);
         let closing: Vec<TabId> = self
             .editor_groups
@@ -1140,6 +1192,19 @@ impl Workbench {
         if let WorktreeEvent::Changed(changes) = ev {
             for change in changes.iter().filter(|c| c.kind != ChangeKind::Removed) {
                 self.own_changes.remove(&change.path);
+            }
+            // The clipboard's entry is gone (another program removed it,
+            // or a folder around it): nothing is left to paste.
+            let gone = self.explorer_clipboard.as_ref().is_some_and(|clip| {
+                clip.path.strip_prefix(&self.root).is_ok_and(|rel| {
+                    !snapshot.contains(rel)
+                        && changes
+                            .iter()
+                            .any(|c| c.kind == ChangeKind::Removed && rel.starts_with(&c.path))
+                })
+            });
+            if gone {
+                self.set_explorer_clipboard(None, cx);
             }
         }
         self.explorer.update(cx, |explorer, cx| {
@@ -1527,6 +1592,13 @@ impl Workbench {
         self.open_file(path, FileView::Source, mode, false, cx);
     }
 
+    /// Opens the static Markdown preview of `path` as a pinned tab, as the
+    /// Explorer's Open Preview does.
+    pub(crate) fn open_markdown_preview(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        let path = self.absolute_path(&path);
+        self.open_file(path, FileView::Preview, OpenMode::Pinned, false, cx);
+    }
+
     /// Opens absolute `path` as `view` (see [`EditorGroups::open_file`]).
     fn open_file(
         &mut self,
@@ -1825,6 +1897,12 @@ impl Workbench {
             matches!(kind, SelectedKind::Dir | SelectedKind::Root),
         );
         flag("explorerResourceIsRoot", kind == SelectedKind::Root);
+        flag(
+            "explorerResourceCut",
+            self.explorer_clipboard
+                .as_ref()
+                .is_some_and(|c| c.op == ClipOp::Cut),
+        );
         flag("contextMenuVisible", menu_open);
         flag("searchViewletFocus", self.search_focused(window, cx));
         flag("referencesViewFocus", self.references_view_focus(cx));
