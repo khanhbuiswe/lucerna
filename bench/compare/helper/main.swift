@@ -58,12 +58,15 @@ usage: bench-helper <command> [options]      (<pids> = pid[,pid...])
   sample --pid <pids> [--timeout <s>]
   watch  --pid <pids> --since <t0_ns> --until coverage:<0..1>|change
          [--timeout <s>] [--baseline <png>] [--background RRGGBB]
+         [--min-change <0..1>] [--dump-dir <dir>]     (the last two: change only)
   watch  --display --exe <absolute path> [--exclude-pids <pids>] --since <t0_ns|0>
          --until coverage:<0..1> --background RRGGBB [--timeout <s>]
   frame  --pid <pids> --x <pt> --y <pt> --w <pt> --h <pt> [--timeout <s>]
   activate --pid <pids> [--timeout <s>]
   display
   scroll --pid <pids> --lines <n> [--rate <events/s>] [--timeout <s>]
+         [--unit line|pixel] [--pixels-per-event <n>] [--dump-dir <dir>]
+  record --pid <pids> --seconds <s> [--dump-dir <dir>] [--timeout <s>]
   type   --pid <pids> --text <s> [--interval-ms <ms>] [--timeout <s>]
   key    --pid <pids> --combo <cmd+p> [--timeout <s>]
 """
@@ -118,6 +121,25 @@ func positiveOption(_ name: String) -> Double? {
     return v
 }
 
+/// Number in (0, 1] (nil when absent).
+func fractionOption(_ name: String) -> Double? {
+    guard let raw = option(name) else { return nil }
+    guard let v = Double(raw), v.isFinite, v > 0, v <= 1 else {
+        fail("--\(name) must be a number in (0, 1]", code: 1)
+    }
+    return v
+}
+
+/// --dump-dir: a non-empty path (created when the measurement writes to it).
+func dumpDirOption() -> String? {
+    guard let raw = option("dump-dir") else {
+        if flag("dump-dir") { fail("--dump-dir needs a path", code: 1) }
+        return nil
+    }
+    guard !raw.isEmpty, !raw.hasPrefix("--") else { fail("--dump-dir needs a path", code: 1) }
+    return raw
+}
+
 func pidList(_ name: String, _ raw: String) -> Set<pid_t> {
     let parts = raw.split(separator: ",", omittingEmptySubsequences: false)
     var pids = Set<pid_t>()
@@ -156,7 +178,7 @@ func permissions() -> (screen: Bool, ax: Bool) {
 
 /// Each measuring command checks only the grants it uses, and refuses rather
 /// than report zeros:
-///   watch, sample  Screen Recording (ScreenCaptureKit capture)
+///   watch, sample, record  Screen Recording (ScreenCaptureKit capture)
 ///   scroll         Screen Recording + Accessibility (capture + CGEvent)
 ///   key, type      Accessibility (CGEvent; the window is found with
 ///                  CGWindowList, which needs no Screen Recording)
@@ -399,6 +421,64 @@ struct Bitmap {
     }
 }
 
+// MARK: - Diagnostics output (--dump-dir)
+
+/// Creates `dir` (and parents); exit 1 when that fails.
+func makeDumpDir(_ dir: String) {
+    do {
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    } catch {
+        fail("cannot create --dump-dir \(dir): \(error.localizedDescription)", code: 1)
+    }
+}
+
+/// Writes a BGRA bitmap as PNG (alpha ignored); notes on stderr if it fails.
+func writePNG(_ b: Bitmap, to path: String) {
+    let data = Data(b.bytes) as CFData
+    guard let provider = CGDataProvider(data: data),
+          let image = CGImage(
+            width: b.width, height: b.height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: b.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+          let dest = CGImageDestinationCreateWithURL(
+            URL(fileURLWithPath: path) as CFURL, "public.png" as CFString, 1, nil) else {
+        note("bench-helper: warning: cannot write \(path)")
+        return
+    }
+    CGImageDestinationAddImage(dest, image, nil)
+    if !CGImageDestinationFinalize(dest) { note("bench-helper: warning: cannot write \(path)") }
+}
+
+/// Writes `lines` (one per line) to `path`; notes on stderr if it fails.
+func writeLines(_ lines: [String], to path: String) {
+    let text = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+    do {
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+    } catch {
+        note("bench-helper: warning: cannot write \(path): \(error.localizedDescription)")
+    }
+}
+
+/// Linear-interpolated percentile of an ascending array (p in 0...1).
+func percentile(_ sorted: [Double], _ p: Double) -> Double {
+    guard !sorted.isEmpty else { return 0 }
+    let pos = p * Double(sorted.count - 1)
+    let lo = Int(pos.rounded(.down)), hi = min(lo + 1, sorted.count - 1)
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - Double(lo))
+}
+
+/// Gaps (ms) between consecutive frame times and their p50 / p90 / max; the
+/// statistics are null when there are fewer than two frames.
+func intervalStats(_ gapsMs: [Double]) -> [String: Any] {
+    let sorted = gapsMs.sorted()
+    func value(_ v: Double) -> Any { sorted.isEmpty ? NSNull() : (v * 1000).rounded() / 1000 }
+    return ["interval_ms_p50": value(percentile(sorted, 0.5)),
+            "interval_ms_p90": value(percentile(sorted, 0.9)),
+            "interval_ms_max": value(sorted.last ?? 0)]
+}
+
 /// Fraction of sampled pixels that differ from `ref` (sizes must match;
 /// a size change counts as a full change).
 func changedFraction(_ f: Frame, _ ref: Bitmap) -> Double {
@@ -502,16 +582,25 @@ enum WatchMode { case coverage(Double), change }
 ///               least x of its pixels. Background = --background RRGGBB
 ///               (calibrate with `sample`), else — with a warning — the
 ///               dominant colour of the first captured frame.
-///   change      more than 0.5% of pixels differ from the reference frame. The
-///               reference is --baseline <png>, else the last frame before
-///               --since, else the first frame captured. The 0.5% floor
-///               ignores a blinking caret. Start watch and wait for "ready"
-///               on stderr before triggering the change.
+///   change      more than --min-change (default 0.005 = 0.5%) of sampled
+///               pixels differ from the reference frame. The reference is
+///               --baseline <png>, else the last frame before --since, else
+///               the first frame captured. The 0.5% floor ignores a blinking
+///               caret. Start watch and wait for "ready" on stderr before
+///               triggering the change.
 /// "first_frame_hit" is true when the very first complete frame met the
 /// condition: the measurement is then suspect (content may predate capture).
+///
+/// Change diagnostics: every frame compared after --since updates
+/// "max_change" (highest fraction seen) and "small_changes" (frames with a
+/// fraction > 0 but not above the threshold). On success the JSON adds
+/// "change" (the hit frame's fraction) and "max_change"; on timeout the
+/// stderr message carries max_change and small_changes. --dump-dir writes
+/// ref.png (the reference), max.png (the frame with the highest change) and
+/// changes.txt ("t_ns fraction" per compared frame), on success and timeout.
 func watch(pids: Set<pid_t>, since: UInt64, mode: WatchMode, until: String,
-           background bgOption: [UInt8]?, baseline: String?,
-           timeout: (seconds: Double, deadline: UInt64)) async {
+           background bgOption: [UInt8]?, baseline: String?, minChange: Double,
+           dumpDir: String?, timeout: (seconds: Double, deadline: UInt64)) async {
     let window = await findWindow(pids: pids, deadline: timeout.deadline)
     let hz = refreshHz(for: window)
     let w = max(1, Int(window.frame.width)), h = max(1, Int(window.frame.height))
@@ -528,8 +617,12 @@ func watch(pids: Set<pid_t>, since: UInt64, mode: WatchMode, until: String,
              + "colour, wrong if that frame already shows content")
     }
 
+    if let dumpDir { makeDumpDir(dumpDir) }
     var frames = 0
     var hitNs: UInt64 = 0
+    var hitChange = 0.0, maxChange = 0.0, smallChanges = 0
+    var maxFrame: Bitmap? = nil
+    var changeLog: [String] = []
     let capture = Capture(window: window, hz: hz) { f in
         frames += 1
         switch mode {
@@ -550,17 +643,40 @@ func watch(pids: Set<pid_t>, since: UInt64, mode: WatchMode, until: String,
                 reference = Bitmap(f)
                 return false
             }
-            if changedFraction(f, reference!) > 0.005 {
+            let fraction = changedFraction(f, reference!)
+            if dumpDir != nil {
+                changeLog.append("\(f.tNs) \(fraction)")
+                if maxFrame == nil || fraction > maxChange { maxFrame = Bitmap(f) }
+            }
+            maxChange = max(maxChange, fraction)
+            if fraction > minChange {
                 hitNs = f.tNs
+                hitChange = fraction
                 return true
             }
+            if fraction > 0 { smallChanges += 1 }
         }
         return false
     }
-    guard await capture.start(deadline: timeout.deadline) else {
-        fail("timeout after \(timeout.seconds) s waiting for \(until)", code: 2)
+    let hit = await capture.start(deadline: timeout.deadline)
+    if let dumpDir, case .change = mode {
+        if let reference { writePNG(reference, to: dumpDir + "/ref.png") }
+        if let maxFrame { writePNG(maxFrame, to: dumpDir + "/max.png") }
+        writeLines(changeLog, to: dumpDir + "/changes.txt")
     }
-    emit(["t_ns": hitNs, "frames": frames, "first_frame_hit": frames == 1])
+    guard hit else {
+        var extra = ""
+        if case .change = mode {
+            extra = " max_change=\(maxChange) small_changes=\(smallChanges)"
+        }
+        fail("timeout after \(timeout.seconds) s waiting for \(until)" + extra, code: 2)
+    }
+    var result: [String: Any] = ["t_ns": hitNs, "frames": frames, "first_frame_hit": frames == 1]
+    if case .change = mode {
+        result["change"] = hitChange
+        result["max_change"] = maxChange
+    }
+    emit(result)
 }
 
 /// The main display (the one with the menu bar) as ScreenCaptureKit sees it.
@@ -963,18 +1079,32 @@ func keyCombo(pids: Set<pid_t>, stroke: KeyStroke, deadline: UInt64) async {
 
 // MARK: - scroll
 
-/// Sends --lines one-line scroll-down events at --rate per second (default:
-/// the display refresh rate) to the window's center while capturing it. The
+enum ScrollUnit { case line, pixel(Int32) }
+
+/// Sends --lines scroll-down events at --rate per second (default: the
+/// display refresh rate) to the window's center while capturing it. The
 /// pointer is moved to the window center first because the window server
 /// routes wheel events to the window under the pointer.
+///
+/// --unit line (default): each event is one wheel line
+/// (kCGScrollEventUnitLine), like a notched mouse wheel.
+/// --unit pixel: --lines counts events; each is a continuous (trackpad-like)
+/// pixel event of --pixels-per-event (default 40) with
+/// kCGScrollWheelEventIsContinuous = 1 and kCGScrollWheelEventScrollPhase
+/// began on the first event, changed on the rest, and one extra zero-delta
+/// ended event after the last (no momentum phase).
 ///
 /// frames = new frames from the first event to 250 ms after the last.
 /// dropped = gaps between consecutive new frames, starting while events are
 /// still being sent, longer than 1.5 × max(refresh period, event period).
 /// The brief says 1.5 × refresh period; with --rate below the refresh rate
 /// every gap would count, so the event period is the floor.
-func scroll(pids: Set<pid_t>, lines: Int, rateOption: Double?,
-            timeout: (seconds: Double, deadline: UInt64)) async {
+/// interval_ms_p50/p90/max are those same gaps (the ones `dropped` tests);
+/// fps = new frames inside the send window / its length; events_sent counts
+/// the scroll events posted (the ended event excluded). --dump-dir writes
+/// intervals.txt (one gap in ms per line).
+func scroll(pids: Set<pid_t>, lines: Int, rateOption: Double?, unit: ScrollUnit,
+            dumpDir: String?, timeout: (seconds: Double, deadline: UInt64)) async {
     let window = await findWindow(pids: pids, deadline: timeout.deadline)
     let hz = refreshHz(for: window)
     let rate = rateOption ?? Double(hz)
@@ -987,8 +1117,10 @@ func scroll(pids: Set<pid_t>, lines: Int, rateOption: Double?,
         fail("another window (\(who)) is on top at the centre \(center) of the window of "
              + "pid \(pids.sorted()); no scroll events sent", code: 1)
     }
+    if let dumpDir { makeDumpDir(dumpDir) }
     let lock = NSLock()
     var stamps: [UInt64] = []
+    var sent = 0
     let capture = Capture(window: window, hz: hz) { f in
         lock.withLock { stamps.append(f.tNs) }
         return false
@@ -1006,16 +1138,41 @@ func scroll(pids: Set<pid_t>, lines: Int, rateOption: Double?,
         usleep(50_000)
         let periodNs = UInt64(1e9 / rate)
         let start = nowNs()
+        var posted = 0
         for i in 0..<lines {
             let target = start + UInt64(i) * periodNs
             while nowNs() < target { usleep(200) }
-            if let e = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
-                               wheel1: -1, wheel2: 0, wheel3: 0) {
+            let e: CGEvent?
+            switch unit {
+            case .line:
+                e = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                            wheel1: -1, wheel2: 0, wheel3: 0)
+            case .pixel(let px):
+                e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                            wheel1: -px, wheel2: 0, wheel3: 0)
+                e?.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+                e?.setIntegerValueField(.scrollWheelEventScrollPhase,
+                                        value: Int64(i == 0 ? CGScrollPhase.began.rawValue
+                                                            : CGScrollPhase.changed.rawValue))
+            }
+            if let e {
+                e.location = center
+                e.post(tap: .cghidEventTap)
+                posted += 1
+            }
+        }
+        if case .pixel = unit {
+            usleep(UInt32(periodNs / 1000))
+            if let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                               wheel1: 0, wheel2: 0, wheel3: 0) {
+                e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+                e.setIntegerValueField(.scrollWheelEventScrollPhase,
+                                       value: Int64(CGScrollPhase.ended.rawValue))
                 e.location = center
                 e.post(tap: .cghidEventTap)
             }
         }
-        lock.withLock { sendStart = start; sendEnd = nowNs() }
+        lock.withLock { sendStart = start; sendEnd = nowNs(); sent = posted }
     }
     sender.start()
     let stopAt = nowNs() + UInt64((sendDuration + 3.5) * 1e9)
@@ -1025,14 +1182,57 @@ func scroll(pids: Set<pid_t>, lines: Int, rateOption: Double?,
         try? await Task.sleep(nanoseconds: 10_000_000)
     }
 
-    let (window0, window1, all) = lock.withLock { (sendStart, sendEnd, stamps.sorted()) }
+    let (window0, window1, all, eventsSent) = lock.withLock {
+        (sendStart, sendEnd, stamps.sorted(), sent)
+    }
     let counted = all.filter { $0 >= window0 && $0 <= window1 + 250_000_000 }
     let limit = 1.5 * max(1e9 / Double(hz), 1e9 / rate)
     var dropped = 0
+    var gapsMs: [Double] = []
     for (a, b) in zip(counted, counted.dropFirst()) where a <= window1 {
         if Double(b - a) > limit { dropped += 1 }
+        gapsMs.append(Double(b - a) / 1e6)
     }
-    emit(["frames": counted.count, "dropped": dropped, "refresh_hz": hz, "rate": rate])
+    let inSend = counted.filter { $0 <= window1 }.count
+    let sendSeconds = Double(window1 - window0) / 1e9
+    var result: [String: Any] = ["frames": counted.count, "dropped": dropped, "refresh_hz": hz,
+                                 "rate": rate, "events_sent": eventsSent,
+                                 "fps": sendSeconds > 0 ? Double(inSend) / sendSeconds : 0]
+    result.merge(intervalStats(gapsMs)) { a, _ in a }
+    if let dumpDir { writeLines(gapsMs.map { "\($0)" }, to: dumpDir + "/intervals.txt") }
+    emit(result)
+}
+
+// MARK: - record
+
+/// Manual-scroll baseline: captures the largest window of --pid for
+/// --seconds while a person interacts with it (nothing is sent), then
+/// prints the gaps between consecutive new-content frames: frames,
+/// refresh_hz, seconds, fps (new frames / seconds) and
+/// interval_ms_p50/p90/max. "ready" goes to stderr when the first frame has
+/// arrived (start scrolling then) and "done" when the capture ends. Pauses
+/// show up as long gaps, so keep scrolling for the whole recording.
+/// --dump-dir writes intervals.txt (one gap in ms per line).
+func record(pids: Set<pid_t>, seconds: Double, dumpDir: String?,
+            timeout: (seconds: Double, deadline: UInt64)) async {
+    let window = await findWindow(pids: pids, deadline: timeout.deadline)
+    let hz = refreshHz(for: window)
+    if let dumpDir { makeDumpDir(dumpDir) }
+    let lock = NSLock()
+    var stamps: [UInt64] = []
+    let capture = Capture(window: window, hz: hz) { f in
+        lock.withLock { stamps.append(f.tNs) }
+        return false
+    }
+    _ = await capture.start(deadline: nowNs() + UInt64(seconds * 1e9))
+    note("done")
+    let all = lock.withLock { stamps.sorted() }
+    let gapsMs = zip(all, all.dropFirst()).map { Double($1 - $0) / 1e6 }
+    var result: [String: Any] = ["frames": all.count, "refresh_hz": hz, "seconds": seconds,
+                                 "fps": Double(all.count) / seconds]
+    result.merge(intervalStats(gapsMs)) { a, _ in a }
+    if let dumpDir { writeLines(gapsMs.map { "\($0)" }, to: dumpDir + "/intervals.txt") }
+    emit(result)
 }
 
 // MARK: - Dispatch (parse, then check permissions, then measure)
@@ -1079,6 +1279,9 @@ case "watch":
         }
         guard let bg = background else { fail("watch --display needs --background", code: 1) }
         if option("baseline") != nil { fail("watch --display takes no --baseline", code: 1) }
+        if option("min-change") != nil || option("dump-dir") != nil {
+            fail("watch --display takes no --min-change / --dump-dir", code: 1)
+        }
         let excluded = option("exclude-pids").map { pidList("exclude-pids", $0) } ?? []
         let timeout = deadlineOption()
         requirePermissions(screen: true, accessibility: false)
@@ -1086,10 +1289,16 @@ case "watch":
                            since: since, threshold: threshold, background: bg,
                            timeout: timeout)
     } else {
+        let minChange = fractionOption("min-change") ?? 0.005
+        let dumpDir = dumpDirOption()
+        if case .coverage = mode, option("min-change") != nil || dumpDir != nil {
+            fail("--min-change and --dump-dir need --until change", code: 1)
+        }
         let timeout = deadlineOption()
         requirePermissions(screen: true, accessibility: false)
         await watch(pids: pids, since: since, mode: mode, until: until, background: background,
-                    baseline: option("baseline"), timeout: timeout)
+                    baseline: option("baseline"), minChange: minChange, dumpDir: dumpDir,
+                    timeout: timeout)
     }
 case "frame":
     let pids = pidsOption()
@@ -1105,9 +1314,32 @@ case "scroll":
     let pids = pidsOption()
     let lines = intOption("lines", min: 1)
     let rate = positiveOption("rate")
+    let unit: ScrollUnit
+    switch option("unit") ?? "line" {
+    case "line":
+        if option("pixels-per-event") != nil {
+            fail("--pixels-per-event needs --unit pixel", code: 1)
+        }
+        unit = .line
+    case "pixel":
+        let px = intOption("pixels-per-event", default: 40, min: 1)
+        guard px <= 10_000 else { fail("--pixels-per-event must be at most 10000", code: 1) }
+        unit = .pixel(Int32(px))
+    default:
+        fail("--unit must be line or pixel", code: 1)
+    }
+    let dumpDir = dumpDirOption()
     let timeout = deadlineOption()
     requirePermissions(screen: true, accessibility: true)
-    await scroll(pids: pids, lines: lines, rateOption: rate, timeout: timeout)
+    await scroll(pids: pids, lines: lines, rateOption: rate, unit: unit, dumpDir: dumpDir,
+                 timeout: timeout)
+case "record":
+    let pids = pidsOption()
+    guard let seconds = positiveOption("seconds") else { fail("missing --seconds\n" + usage, code: 1) }
+    let dumpDir = dumpDirOption()
+    let timeout = deadlineOption(default: 10)
+    requirePermissions(screen: true, accessibility: false)
+    await record(pids: pids, seconds: seconds, dumpDir: dumpDir, timeout: timeout)
 case "type":
     let pids = pidsOption()
     let keys = strokes(for: required("text"))

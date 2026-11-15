@@ -67,6 +67,7 @@ class HelperTests(unittest.TestCase):
             ["type", "--pid", str(os.getpid()), "--text", "ab"],
             ["key", "--pid", str(os.getpid()), "--combo", "cmd+p"],
             ["sample", "--pid", str(os.getpid()), "--timeout", "1"],
+            ["record", "--pid", str(os.getpid()), "--seconds", "1"],
             DISPLAY_WATCH,
             ["frame", "--pid", str(os.getpid()), "--x", "0", "--y", "25", "--w", "1280",
              "--h", "800", "--timeout", "1"],
@@ -108,6 +109,7 @@ class HelperTests(unittest.TestCase):
         for args in (["watch", "--pid", me, "--since", "0", "--until", "change",
                       "--timeout", "1"],
                      ["sample", "--pid", me, "--timeout", "1"],
+                     ["record", "--pid", me, "--seconds", "1"],
                      DISPLAY_WATCH,
                      ["scroll", "--pid", me, "--lines", "5"]):
             with self.subTest(cmd=args[0]):
@@ -195,6 +197,32 @@ class HelperTests(unittest.TestCase):
             ["activate"],
             ["activate", "--pid", "0"],
             ["activate", "--pid", "1", "--timeout", "-1"],
+            # watch --until change diagnostics
+            ["watch", "--pid", "1", "--since", "0", "--until", "change", "--min-change", "0"],
+            ["watch", "--pid", "1", "--since", "0", "--until", "change", "--min-change", "1.5"],
+            ["watch", "--pid", "1", "--since", "0", "--until", "change", "--min-change", "x"],
+            ["watch", "--pid", "1", "--since", "0", "--until", "change", "--dump-dir"],
+            ["watch", "--pid", "1", "--since", "0", "--until", "coverage:0.3",
+             "--min-change", "0.01"],
+            ["watch", "--pid", "1", "--since", "0", "--until", "coverage:0.3",
+             "--dump-dir", "/tmp/d"],
+            ["watch", "--display", "--exe", "/x/luc", "--since", "0",
+             "--until", "coverage:0.3", "--background", "000000", "--dump-dir", "/tmp/d"],
+            # scroll --unit / --pixels-per-event / --dump-dir
+            ["scroll", "--pid", "1", "--lines", "5", "--unit", "page"],
+            ["scroll", "--pid", "1", "--lines", "5", "--unit", "pixel",
+             "--pixels-per-event", "0"],
+            ["scroll", "--pid", "1", "--lines", "5", "--unit", "pixel",
+             "--pixels-per-event", "20000"],
+            ["scroll", "--pid", "1", "--lines", "5", "--pixels-per-event", "40"],
+            ["scroll", "--pid", "1", "--lines", "5", "--dump-dir"],
+            # record: --pid and a positive --seconds
+            ["record", "--seconds", "5"],
+            ["record", "--pid", "1"],
+            ["record", "--pid", "1", "--seconds", "0"],
+            ["record", "--pid", "1", "--seconds", "-2"],
+            ["record", "--pid", "1,x", "--seconds", "5"],
+            ["record", "--pid", "1", "--seconds", "5", "--dump-dir"],
         ]
         for args in bad:
             args = [a.encode().decode("unicode_escape") for a in args]
@@ -219,6 +247,14 @@ class HelperTests(unittest.TestCase):
              "--until", "coverage:0.3", "--background", "1E1E1E"],
             ["frame", "--pid", "11,12", "--x", "-10", "--y", "25", "--w", "1280", "--h", "800"],
             ["activate", "--pid", "11,12"],
+            ["watch", "--pid", "11", "--since", "0", "--until", "change",
+             "--min-change", "0.001", "--dump-dir", "/tmp/never-created"],
+            ["scroll", "--pid", "11", "--lines", "5", "--unit", "line"],
+            ["scroll", "--pid", "11", "--lines", "5", "--unit", "pixel"],
+            ["scroll", "--pid", "11", "--lines", "5", "--unit", "pixel",
+             "--pixels-per-event", "12", "--dump-dir", "/tmp/never-created"],
+            ["record", "--pid", "11,12", "--seconds", "2.5"],
+            ["record", "--pid", "11", "--seconds", "5", "--dump-dir", "/tmp/never-created"],
         ]
         for args in good:
             args = [a.encode().decode("unicode_escape") for a in args]
@@ -238,7 +274,9 @@ class HelperTests(unittest.TestCase):
     def test_usage_lists_new_commands(self):
         r = _run(self.binary)
         self.assertEqual(r.returncode, 1)
-        for text in ("watch  --display --exe", "frame  --pid", "activate --pid", "display"):
+        for text in ("watch  --display --exe", "frame  --pid", "activate --pid", "display",
+                     "--min-change", "--unit line|pixel", "--pixels-per-event",
+                     "record --pid"):
             self.assertIn(text, r.stderr)
 
     def test_bad_usage_exits_nonzero(self):

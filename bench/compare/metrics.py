@@ -56,6 +56,7 @@ HELPER_PERMISSIONS = {
     "now": (), "check": (), "display": (),
     "sample": ("screen",),
     "watch": ("screen",),
+    "record": ("screen",),
     "scroll": ("screen", "accessibility"),
     "key": ("accessibility",),
     "type": ("accessibility",),
