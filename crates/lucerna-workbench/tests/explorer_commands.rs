@@ -658,12 +658,17 @@ fn no_open_preview_for_rust_file(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn open_preview_follows_files_associations(cx: &mut TestAppContext) {
-    init(
-        cx,
-        Some(
-            r#"{ "session.trustAllWorktrees": true, "files.associations": { "*.notes": "markdown" } }"#,
-        ),
-    );
+    init(cx, Some(TRUSTED));
+    // What the extension service does with `files.associations`.
+    let map = std::collections::BTreeMap::from([("*.notes".to_string(), "markdown".to_string())]);
+    cx.update(|cx| {
+        let state = cx.global_mut::<AppState>();
+        state.languages = Arc::new(
+            state
+                .languages
+                .with_associations(lucerna_syntax::Associations::new(&map)),
+        );
+    });
     let dir = project();
     std::fs::write(dir.path().join("todo.notes"), "- a\n").unwrap();
     let (_wb, cx) = open(dir.path(), cx);

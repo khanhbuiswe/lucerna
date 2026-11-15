@@ -740,8 +740,9 @@ const FILE_MENU: [&str; 11] = [
     "moveFileToTrash",
 ];
 /// Single-file mode: nothing that edits the tree.
-const SINGLE_FILE_MENU: [&str; 6] = [
+const SINGLE_FILE_MENU: [&str; 7] = [
     "explorer.openToSide",
+    "markdown.showPreview",
     "revealFileInOS",
     "openInIntegratedTerminal",
     "filesExplorer.copy",
