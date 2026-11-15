@@ -6,7 +6,7 @@ use gpui::{
     Hsla, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled,
     Window, div, img, prelude::*, px, relative, svg,
 };
-use lucerna_theme::{IconSource, Rgba, Theme};
+use lucerna_theme::{Appearance, IconSource, Rgba, Theme};
 
 use crate::AppState;
 pub use crate::context_menu::{
@@ -84,34 +84,55 @@ pub const FILE_ICON_SIZE: f32 = 14.0;
 
 /// An icon from an icon theme at [`FILE_ICON_SIZE`]; see
 /// [`file_icon_sized`].
-pub fn file_icon(source: &IconSource, color: Hsla) -> AnyElement {
-    file_icon_sized(source, px(FILE_ICON_SIZE), color)
+pub fn file_icon(source: &IconSource, color: Hsla, appearance: Appearance) -> AnyElement {
+    file_icon_sized(source, px(FILE_ICON_SIZE), color, appearance)
+}
+
+/// The color an icon is drawn in: a Seti glyph has its own, for a dark or
+/// a light theme by `appearance`; every other icon takes `fallback`.
+pub fn icon_tint(source: &IconSource, fallback: Hsla, appearance: Appearance) -> Hsla {
+    match source {
+        IconSource::Glyph { dark, light, .. } => {
+            let rgb = match appearance {
+                Appearance::Dark => *dark,
+                Appearance::Light => *light,
+            };
+            gpui::rgb(rgb).into()
+        }
+        _ => fallback,
+    }
 }
 
 /// An icon from an icon theme, `size` square. A bundled Lucide icon is an
-/// `svg` filled with `color`; an extension's icon is an `img` of its file,
+/// `svg` filled with `color`; a Seti glyph is an `svg` filled with its own
+/// color for `appearance`; an extension's icon is an `img` of its file,
 /// which keeps the colors it was drawn with. GPUI's `img` loads SVG files
 /// itself (rasterised at 1x by its SVG renderer, then scaled to `size`).
-pub fn file_icon_sized(source: &IconSource, size: Pixels, color: Hsla) -> AnyElement {
+pub fn file_icon_sized(
+    source: &IconSource,
+    size: Pixels,
+    color: Hsla,
+    appearance: Appearance,
+) -> AnyElement {
+    let drawn = |data: &'static [u8], tint: Hsla| {
+        svg()
+            .data(data)
+            .size(size)
+            .text_color(tint)
+            .into_any_element()
+    };
     match source {
         IconSource::Builtin(name) => match icons::lucide_svg(name) {
-            Some(data) => svg()
-                .data(data)
-                .size(size)
-                .text_color(color)
-                .into_any_element(),
+            Some(data) => drawn(data, color),
             None => div().size(size).into_any_element(),
         },
         IconSource::File(path) => img(path.clone()).size(size).into_any_element(),
-        // Stop-gap until Seti glyphs are drawn: the Lucide "file" icon.
-        IconSource::Glyph { .. } => match icons::lucide_svg("file") {
-            Some(data) => svg()
-                .data(data)
-                .size(size)
-                .text_color(color)
-                .into_any_element(),
-            None => div().size(size).into_any_element(),
-        },
+        IconSource::Glyph { name, .. } => {
+            match icons::seti_svg(name).or_else(|| icons::lucide_svg("file")) {
+                Some(data) => drawn(data, icon_tint(source, color, appearance)),
+                None => div().size(size).into_any_element(),
+            }
+        }
     }
 }
 
@@ -1249,6 +1270,30 @@ pub(crate) fn scroll_top_for_track_click(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glyph_tint_follows_appearance() {
+        let glyph = IconSource::Glyph {
+            name: "typescript",
+            dark: 0x519aba,
+            light: 0x2a6d8a,
+        };
+        let fallback = gpui::hsla(0.1, 0.2, 0.3, 0.4);
+        let want = |rgb: u32| -> Hsla { gpui::rgb(rgb).into() };
+        assert_eq!(
+            icon_tint(&glyph, fallback, Appearance::Dark),
+            want(0x519aba)
+        );
+        assert_eq!(
+            icon_tint(&glyph, fallback, Appearance::Light),
+            want(0x2a6d8a)
+        );
+        assert_eq!(icon_tint(&glyph, fallback, Appearance::Dark).a, 1.0);
+        assert_eq!(
+            icon_tint(&IconSource::Builtin("file"), fallback, Appearance::Light),
+            fallback
+        );
+    }
 
     #[test]
     fn no_thumb_without_overflow() {

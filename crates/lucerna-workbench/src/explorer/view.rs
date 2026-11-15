@@ -1246,6 +1246,7 @@ impl ExplorerView {
     fn render_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
         let ui = cx.global::<AppState>().theme.ui.clone();
         let icons = cx.global::<AppState>().icons.clone();
+        let appearance = cx.global::<AppState>().theme.appearance;
         let now = Instant::now();
         let hover = color(ui.ghost_element_hover);
         let menu_open = self.context_menu.is_some();
@@ -1350,9 +1351,14 @@ impl ExplorerView {
                     // icon alone, in the chevron's slot.
                     .when(is_dir, |d| {
                         let chevron = icons.chevron(row.expanded);
-                        d.child(icon_slot(&chevron, CHEVRON_SIZE, ui.icon_muted))
+                        d.child(icon_slot(&chevron, CHEVRON_SIZE, ui.icon_muted, appearance))
                     })
-                    .child(icon_slot(&type_icon, TYPE_ICON_SIZE, ui.icon_muted))
+                    .child(icon_slot(
+                        &type_icon,
+                        TYPE_ICON_SIZE,
+                        ui.icon_muted,
+                        appearance,
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -1398,6 +1404,7 @@ impl ExplorerView {
         let state = cx.global::<AppState>();
         let ui = state.theme.ui.clone();
         let icons = state.icons.clone();
+        let appearance = state.theme.appearance;
         let el = div().id("explorer-edit-row");
         let Some(edit) = &self.name_edit else {
             return el;
@@ -1460,9 +1467,9 @@ impl ExplorerView {
             .children((0..row.depth).map(|k| indent_guide(k, ui.border_variant)))
             .when(is_dir, |d| {
                 let chevron = icons.chevron(false);
-                d.child(icon_slot(&chevron, CHEVRON_SIZE, ui.icon_muted))
+                d.child(icon_slot(&chevron, CHEVRON_SIZE, ui.icon_muted, appearance))
             })
-            .child(icon_slot(&icon, TYPE_ICON_SIZE, ui.icon_muted))
+            .child(icon_slot(&icon, TYPE_ICON_SIZE, ui.icon_muted, appearance))
             .child(
                 div()
                     .debug_selector(|| "explorer-edit-input".into())
@@ -1488,6 +1495,7 @@ impl ExplorerView {
         let hover = color(cx.global::<AppState>().theme.ui.ghost_element_hover);
         let state = cx.global::<AppState>();
         let ui = &state.theme.ui;
+        let appearance = state.theme.appearance;
         let root_icon = state.icons.directory(&self.root_label, true);
         div()
             .id("explorer-root")
@@ -1531,7 +1539,7 @@ impl ExplorerView {
                 )
             })
             .child(
-                icon_slot(&root_icon, TYPE_ICON_SIZE, ui.icon_muted)
+                icon_slot(&root_icon, TYPE_ICON_SIZE, ui.icon_muted, appearance)
                     .debug_selector(|| "explorer-root-icon".into()),
             )
             .child(
@@ -1568,16 +1576,27 @@ fn row_icon(icons: &ResolvedIcons, row: &Row) -> IconSource {
     }
 }
 
-/// A fixed-size slot holding a centred icon in `tint` (Lucide icons only;
-/// extension icons keep their colors).
-fn icon_slot(source: &IconSource, size: f32, tint: lucerna_theme::Rgba) -> Div {
+/// A fixed-size slot holding a centred icon. Lucide icons are tinted
+/// `tint`, Seti glyphs take their own color for `appearance`, and extension
+/// icons keep their colors.
+fn icon_slot(
+    source: &IconSource,
+    size: f32,
+    tint: lucerna_theme::Rgba,
+    appearance: lucerna_theme::Appearance,
+) -> Div {
     div()
         .flex()
         .flex_none()
         .justify_center()
         .items_center()
         .size(px(ICON_SLOT))
-        .child(file_icon_sized(source, px(size), color(tint).into()))
+        .child(file_icon_sized(
+            source,
+            px(size),
+            color(tint).into(),
+            appearance,
+        ))
 }
 
 impl Render for ExplorerView {

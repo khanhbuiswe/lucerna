@@ -997,3 +997,68 @@ fn quick_open_closes_menu(cx: &mut TestAppContext) {
     assert!(!key(&wb, "contextMenuVisible", cx));
     assert!(cx.debug_bounds("context-menu").is_none());
 }
+
+/// Seti is a glyph theme: files get a coloured glyph, folders stay Lucide.
+#[gpui::test]
+fn seti_icons_in_explorer(cx: &mut TestAppContext) {
+    use lucerna_theme::IconSource::{Builtin, Glyph};
+    init(cx, None);
+    cx.update(|cx| {
+        let state = cx.global_mut::<AppState>();
+        state.icons = state.icon_themes.resolve("Seti");
+    });
+    let dir = project();
+    std::fs::write(dir.path().join("x.ts"), "").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    assert!(matches!(
+        row_icon(&wb, "x.ts", cx),
+        Glyph {
+            name: "typescript",
+            ..
+        }
+    ));
+    assert_eq!(row_icon(&wb, "src", cx), Builtin("folder"));
+    click("explorer-row-src", cx);
+    assert_eq!(row_icon(&wb, "src", cx), Builtin("folder-open"));
+    assert!(cx.debug_bounds("explorer-row-x.ts").is_some());
+}
+
+/// A Seti glyph takes the color for the color theme's appearance.
+#[gpui::test]
+fn glyph_color_tracks_color_theme(cx: &mut TestAppContext) {
+    init(cx, None);
+    cx.update(|cx| {
+        let state = cx.global_mut::<AppState>();
+        state.icons = state.icon_themes.resolve("Seti");
+    });
+    let dir = project();
+    std::fs::write(dir.path().join("x.ts"), "").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    let fallback = gpui::hsla(0., 0., 0.5, 1.);
+    let tint = |cx: &mut VisualTestContext| {
+        let src = row_icon(&wb, "x.ts", cx);
+        cx.update(|_, cx| ui::icon_tint(&src, fallback, cx.global::<AppState>().theme.appearance))
+    };
+    let glyph = match row_icon(&wb, "x.ts", cx) {
+        lucerna_theme::IconSource::Glyph { dark, light, .. } => (dark, light),
+        other => panic!("{other:?}"),
+    };
+    let rgb = |v: u32| -> gpui::Hsla { gpui::rgb(v).into() };
+    // The workbench may follow the OS appearance; pin the dark theme first.
+    cx.update(|_, cx| {
+        let state = cx.global_mut::<AppState>();
+        let dark = state.themes.get_or_default("Lucerna Dark");
+        state.set_theme(dark);
+    });
+    draw(cx);
+    assert_eq!(tint(cx), rgb(glyph.0));
+    cx.update(|_, cx| {
+        let state = cx.global_mut::<AppState>();
+        let light = state.themes.get_or_default("Lucerna Light");
+        state.set_theme(light);
+    });
+    draw(cx);
+    assert_eq!(tint(cx), rgb(glyph.1));
+    assert_ne!(glyph.0, glyph.1);
+    assert!(cx.debug_bounds("explorer-row-x.ts").is_some());
+}

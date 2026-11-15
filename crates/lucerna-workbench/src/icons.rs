@@ -135,9 +135,40 @@ pub fn lucide_svg(name: &str) -> Option<&'static [u8]> {
     ALL.iter().find(|(n, _)| *n == name).map(|(_, svg)| *svg)
 }
 
+/// The Seti SVG for a glyph name (`IconSource::Glyph`), if bundled.
+pub fn seti_svg(name: &str) -> Option<&'static [u8]> {
+    use crate::seti_svgs::SETI;
+    SETI.binary_search_by(|(n, _)| (*n).cmp(name))
+        .ok()
+        .map(|i| SETI[i].1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_seti_glyph_is_bundled() {
+        for name in lucerna_theme::seti_glyph_names() {
+            assert!(seti_svg(name).is_some(), "{name}");
+        }
+        assert!(seti_svg("nope").is_none());
+    }
+
+    #[test]
+    fn seti_svgs_have_square_viewbox() {
+        for (name, svg) in crate::seti_svgs::SETI {
+            let text = std::str::from_utf8(svg).unwrap();
+            let vb = text
+                .split("viewBox=\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .unwrap_or_else(|| panic!("{name}: no viewBox"));
+            let n: Vec<f32> = vb.split_whitespace().map(|v| v.parse().unwrap()).collect();
+            assert_eq!(n.len(), 4, "{name}: {vb}");
+            assert_eq!(n[2], n[3], "{name}: {vb}");
+        }
+    }
 
     #[test]
     fn lucide_svg_resolves_every_bundled_name() {

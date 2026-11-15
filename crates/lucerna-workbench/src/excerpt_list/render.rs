@@ -224,6 +224,7 @@ impl ExcerptList {
                 &icon,
                 px(FILE_ICON_SIZE),
                 color(ui.icon_muted).into(),
+                state.theme.appearance,
             ))
             .child(
                 div()
