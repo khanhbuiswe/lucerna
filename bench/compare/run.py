@@ -162,7 +162,7 @@ def check_permissions(paths: BenchPaths, selected: list[str]) -> None:
     perms = helper_permissions(paths)
     if perms is None:
         raise Abort("bench-helper `check` cannot run; build the helper with "
-                    "`sh bench/compare/helper/build.sh` (xem README).")
+                    "`sh bench/compare/helper/build.sh` (see README).")
     missing = []
     if need_screen and not perms.get("screen_recording"):
         missing.append(("Screen Recording", need_screen))

@@ -321,7 +321,10 @@ file above (the full generated file is
 ### Not published in this run
 
 Quick Open latency and scrolling dropped frames were measured in this run but
-are not published, because their measurement method is still being verified.
+are not published, because their measurement method is still being verified:
+in this run Quick Open failed in every round for two of the three editors, and
+the scrolling results look like a measurement artefact. The raw JSON keeps
+these values; do not quote them.
 The file-change metric was not part of this run.
 
 ### Regenerating this section
