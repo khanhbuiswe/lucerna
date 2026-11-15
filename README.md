@@ -30,7 +30,6 @@ project. No Electron, no web view.
 
 | | Lucerna | Zed | VS Code |
 |---|---|---|---|
-| Startup to first frame | 140 ms | 241 ms | 267 ms |
 | Idle memory (medium repo, 10 tabs) | 169 MB | 235 MB | 879 MB |
 | Idle CPU | 1.40 % | 2.20 % | 3.01 % |
 | App size | 50 MB | 177 MB | 1604 MB |

@@ -328,8 +328,6 @@ file above (the full generated file is
 
 | Metric | Lucerna | Zed | VS Code |
 |---|---|---|---|
-| Startup to first frame with content | 140 ms (p90 143) | 241 ms (p90 252) | 267 ms (p90 672) |
-| ↳ vs Lucerna | — | 1.7× | 1.9× |
 | Idle RAM (medium repo, 10 tabs) | 169 MB (p90 179) | 235 MB (p90 236) | 879 MB (p90 879) |
 | ↳ vs Lucerna | — | 1.4× | 5.2× |
 | Idle CPU | 1.40 % (p90 1.42) | 2.20 % (p90 2.23) | 3.01 % (p90 3.18) |
@@ -337,23 +335,24 @@ file above (the full generated file is
 | App size | 50 MB | 177 MB | 1604 MB |
 | ↳ vs Lucerna | — | 3.5× | 31.9× |
 
-**Zed's startup figure (241 ms) is being re-measured.** In this run Zed showed
-an "Unrecognized Project" dialog over the content during startup, and the
-background colour calibrated for Zed did not match its theme, so the figure
-may measure the window appearing rather than the content. The bench profile
-now trusts the data folder, and the startup measurement drops rounds whose
-window changes after the first frame with content (see
-[Measurements](#measurements)). The other figures are unchanged.
+**Startup time and scrolling are being re-measured and are not published.**
+After this run, a diagnostic showed that the startup measurement was not
+reliable for any of the three editors: the background colour calibrated for
+Lucerna and Zed did not match their themes (so a round could end when the
+window appeared rather than when the content did), and Zed showed an
+"Unrecognized Project" dialog over the content. The scrolling measurement used
+line (mouse-wheel) events, which some editors batch (see
+[Scrolling: why pixel events](#scrolling-why-pixel-events)). Both
+measurements have been changed; new figures will be added after a rerun.
 
 The bench profiles now also have settings that this run did not have:
 VS Code `workbench.welcomePage.experimentalOnboarding: false` and
 `chat.disableAIFeatures: true`; Zed `session.trust_all_worktrees` and, in the
-no-LSP configuration, `enable_language_server: false`. A rerun is needed
-before these numbers are final.
+no-LSP configuration, `enable_language_server: false`. These keep first-run
+dialogs from taking the keyboard; idle memory and CPU were checked not to be
+affected by the Zed dialog (the medium repo opened all 10 tabs with no dialog).
 
 ### Charts
-
-![Startup to first frame with content](benchmarks/startup_ms-nolsp-warm.svg)
 
 ![Idle RAM, medium repo with 10 tabs](benchmarks/idle_ram_mb-nolsp-warm.svg)
 
@@ -363,10 +362,8 @@ before these numbers are final.
 
 ### Not published in this run
 
-Scrolling dropped frames were measured in this run but are not published,
-because the scrolling results look like a measurement artefact (see
-[Scrolling: why pixel events](#scrolling-why-pixel-events)). The raw JSON
-keeps these values; do not quote them. It also holds `quick_open_ms`, a metric
+Startup time and scrolling dropped frames were measured in this run but are
+not published (see above). The raw JSON keeps these values; do not quote them. It also holds `quick_open_ms`, a metric
 since dropped from the benchmark; do not quote it either.
 The file-change metric was not part of this run.
 
@@ -374,5 +371,5 @@ The file-change metric was not part of this run.
 
 ```sh
 python3 -I bench/compare/report.py bench/compare/results/2026-11-15-026bbac.json \
-  --out docs/benchmarks --metrics startup_ms,idle_ram_mb,idle_cpu_pct,app_size_mb
+  --out docs/benchmarks --metrics idle_ram_mb,idle_cpu_pct,app_size_mb
 ```

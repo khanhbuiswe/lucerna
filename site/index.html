@@ -146,7 +146,7 @@
   <section class="pillars" aria-label="Four things Lucerna is">
     <div class="wrap">
       <a class="pillar" href="#rust"><h2>Written in Rust</h2><p>Native code, drawn on the GPU with GPUI. No Electron, no web view.</p></a>
-      <a class="pillar" href="#speed"><h2>Fast</h2><p>First frame in 140 ms. 169 MB of memory with a repo and ten tabs open.</p></a>
+      <a class="pillar" href="#speed"><h2>Fast</h2><p>169 MB of memory with a repo and ten tabs open. 50 MB on disk.</p></a>
       <a class="pillar" href="#minimal"><h2>Minimal</h2><p>A file tree, tabs, a terminal and your git changes. VS Code's keys and <code>settings.json</code>.</p></a>
       <a class="pillar" href="#why"><h2>No AI inside</h2><p>No chat panel, no ghost text, no telemetry, no account. Your agent does the writing.</p></a>
     </div>
@@ -159,15 +159,6 @@
         <p>Three editors on the same machine, timed the same way: by capturing the screen, not by asking each app for its own numbers. Shorter bars are better.</p>
       </div>
       <div class="charts">
-        <figure class="chart">
-          <figcaption>Startup to first frame with content</figcaption>
-          <div class="v">140<small>ms</small></div>
-          <div class="bars" role="list">
-            <div class="brow me" role="listitem" tabindex="0" data-tip="Median 140 ms, p90 143 ms"><span class="who">Lucerna</span><span class="track"><b style="--w:52.4%"></b></span><span class="val">140 ms</span></div>
-            <div class="brow" role="listitem" tabindex="0" data-tip="Median 241 ms, p90 252 ms"><span class="who">Zed</span><span class="track"><b style="--w:90.3%"></b></span><span class="val">241 ms <i>1.7×</i></span></div>
-            <div class="brow" role="listitem" tabindex="0" data-tip="Median 267 ms, p90 672 ms"><span class="who">VS Code</span><span class="track"><b style="--w:100%"></b></span><span class="val">267 ms <i>1.9×</i></span></div>
-          </div>
-        </figure>
         <figure class="chart">
           <figcaption>Memory at idle, medium repo and 10 tabs</figcaption>
           <div class="v">169<small>MB</small></div>
@@ -202,7 +193,6 @@
           <table>
             <thead><tr><th scope="col">Metric</th><th scope="col">Lucerna</th><th scope="col">Zed</th><th scope="col">VS Code</th></tr></thead>
             <tbody>
-              <tr><th scope="row">Startup to first frame</th><td>140 ms (p90 143)</td><td>241 ms (p90 252), 1.7×</td><td>267 ms (p90 672), 1.9×</td></tr>
               <tr><th scope="row">Idle memory, 10 tabs</th><td>169 MB (p90 179)</td><td>235 MB (p90 236), 1.4×</td><td>879 MB (p90 879), 5.2×</td></tr>
               <tr><th scope="row">Idle CPU</th><td>1.40 % (p90 1.42)</td><td>2.20 % (p90 2.23), 1.6×</td><td>3.01 % (p90 3.18), 2.1×</td></tr>
               <tr><th scope="row">App size</th><td>50 MB</td><td>177 MB, 3.5×</td><td>1604 MB, 31.9×</td></tr>
