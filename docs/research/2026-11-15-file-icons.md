@@ -37,4 +37,10 @@ Ngày: 2026-11-15. Phục vụ spec icon màu trong Explorer và icon file trên
 
 ## Lucerna chọn gì
 
+- Icon theme dựng sẵn **Seti** làm mặc định (`workbench.iconTheme: "Seti"`, nhận cả `"vs-seti"`). Dữ liệu sinh bằng `scripts/gen-seti.py` từ seti-ui `2d6c5e68` và VS Code (mapping, `languageIds` đổi thành tên file, mẫu tên và đuôi file). Thư mục và chevron vẫn dùng Lucide.
+- Màu theme tối giống VS Code. Màu theme sáng làm đậm đến tương phản ≥ 3:1 với `#ffffff`.
+- Tab file và tab diff có icon. `workbench.editor.showIcons` (mặc định `true`) tắt mọi icon trên tab.
+- Ảnh trước/sau: `docs/research/file-icons-screenshots/`.
+
+
 Xem spec `docs/superpowers/specs/2026-11-15-file-icons-design.md`. Theo nguyên tắc: setting và hành vi theo VS Code (`workbench.editor.showIcons`, mặc định bật), giao diện theo Zed (vị trí, cỡ icon, khoảng cách). Riêng màu icon mặc định thì lệch khỏi Zed theo yêu cầu người dùng.

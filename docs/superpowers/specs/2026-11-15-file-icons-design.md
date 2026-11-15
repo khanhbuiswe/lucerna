@@ -1,6 +1,6 @@
 # Icon file có màu (Seti) và icon trên tab
 
-Ngày: 2026-11-15. Trạng thái: đã duyệt (2026-11-15).
+Ngày: 2026-11-15. Trạng thái: đã triển khai (nhánh `claude/file-icons`, 2026-11-15).
 Tham khảo: `docs/research/2026-11-15-file-icons.md`.
 
 ## Mục đích
