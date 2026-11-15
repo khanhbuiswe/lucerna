@@ -1,7 +1,30 @@
 //! Converts GPUI key events into `lucerna_settings` keystrokes.
 
 use gpui::KeyDownEvent;
-use lucerna_settings::Keystroke;
+use lucerna_settings::{Context as WhenContext, Keymap, Keystroke, Resolution};
+
+/// Resolves `stroke` after the chord in `pending`. A key that breaks a
+/// chord is tried again on its own, as in VS Code. `pending` holds the
+/// chord afterwards while it is [`Resolution::Pending`], else it is empty.
+pub fn resolve_chord(
+    pending: &mut Vec<Keystroke>,
+    stroke: &Keystroke,
+    ctx: &WhenContext,
+    keymap: &Keymap,
+) -> Resolution {
+    let had_pending = !pending.is_empty();
+    let mut chord = std::mem::take(pending);
+    chord.push(stroke.clone());
+    let mut resolution = keymap.resolve(&chord, ctx);
+    if had_pending && resolution == Resolution::NoMatch {
+        chord = vec![stroke.clone()];
+        resolution = keymap.resolve(&chord, ctx);
+    }
+    if resolution == Resolution::Pending {
+        *pending = chord;
+    }
+    resolution
+}
 
 /// The keystroke for `ev`, with the key named exactly as the keymap files
 /// name it (`escape`, `enter`, `tab`, `space`, `\\`, `=`, ...).
@@ -82,7 +105,7 @@ fn canonical_key(key: &str) -> String {
 mod tests {
     use super::*;
     use gpui::Modifiers;
-    use lucerna_settings::{Keymap, parse_keys};
+    use lucerna_settings::parse_keys;
 
     /// A key-down as macOS reports it: `key` is the unmodified key, and
     /// `key_char` is what would be typed (none while cmd/ctrl is held).
@@ -402,5 +425,33 @@ mod tests {
             let ev = event(gpui_key, None, Modifiers::none());
             assert_eq!(to_keystroke(&ev).key, name, "{gpui_key:?}");
         }
+    }
+
+    #[test]
+    fn resolve_chord_keeps_and_breaks_chords() {
+        let (keymap, _) = Keymap::load(Keymap::default_bindings(), None);
+        let ctx = WhenContext::default();
+        let key = |k: &str| parse_keys(k).unwrap().remove(0);
+        let mut pending = Vec::new();
+        assert_eq!(
+            resolve_chord(&mut pending, &key("cmd+k"), &ctx, &keymap),
+            Resolution::Pending
+        );
+        assert_eq!(pending, vec![key("cmd+k")]);
+        assert_eq!(
+            resolve_chord(&mut pending, &key("cmd+t"), &ctx, &keymap),
+            Resolution::Command {
+                command: "workbench.action.selectTheme".into(),
+                args: None
+            }
+        );
+        assert!(pending.is_empty());
+        // A key that breaks the chord is tried again on its own.
+        resolve_chord(&mut pending, &key("cmd+k"), &ctx, &keymap);
+        assert!(matches!(
+            resolve_chord(&mut pending, &key("cmd+p"), &ctx, &keymap),
+            Resolution::Command { .. }
+        ));
+        assert!(pending.is_empty());
     }
 }

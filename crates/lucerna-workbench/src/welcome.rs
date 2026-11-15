@@ -431,17 +431,8 @@ impl WelcomeView {
         let mut ctx = WhenContext::default();
         ctx.set("inQuickOpen", ContextValue::Bool(self.picker.is_some()));
         ctx.set("inRecentPicker", ContextValue::Bool(self.picker.is_some()));
-        let had_pending = !self.pending_chord.is_empty();
-        let mut chord = std::mem::take(&mut self.pending_chord);
-        chord.push(stroke.clone());
         let keymap = &cx.global::<AppState>().keymap;
-        let mut resolution = keymap.resolve(&chord, &ctx);
-        if had_pending && resolution == Resolution::NoMatch {
-            // VS Code: a key that breaks a chord is tried again on its own.
-            chord = vec![stroke.clone()];
-            resolution = keymap.resolve(&chord, &ctx);
-        }
-        match resolution {
+        match keys::resolve_chord(&mut self.pending_chord, &stroke, &ctx, keymap) {
             Resolution::Command { command, .. } => {
                 if WELCOME_COMMANDS.contains(&command.as_str())
                     && self.run_command(&command, window, cx)
@@ -451,7 +442,6 @@ impl WelcomeView {
                 }
             }
             Resolution::Pending => {
-                self.pending_chord = chord;
                 cx.stop_propagation();
                 return;
             }
