@@ -1,7 +1,7 @@
 //! Switching branches: the title bar branch button and `git.checkout`
 //! open the branch picker in Checkout mode, gated on the git state, and
 //! its choice runs `git switch` in the background, one at a time. Git's
-//! refusal shows in a native prompt.
+//! errors show in a native prompt.
 
 use std::sync::Arc;
 
@@ -20,6 +20,7 @@ const GIT_LOADING: &str = "Git is still loading";
 const GIT_UNAVAILABLE: &str = "Git is not available";
 const UNSAVED_FILES: &str = "Save or revert unsaved files before switching branches";
 const SWITCH_FAILED: &str = "Could not switch branches";
+const SWITCHED_WITH_ERROR: &str = "Switched branches, but git reported an error";
 
 /// Where the Checkout-mode branch picker shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +164,7 @@ impl Workbench {
         self.switching_branch = true;
         self.switches_started += 1;
         cx.notify();
+        let branch = target.local_branch().to_owned();
         cx.spawn_in(window, async move |wb, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -171,7 +173,9 @@ impl Workbench {
                 })
                 .await;
             let prompt = wb
-                .update_in(cx, |wb, window, cx| wb.branch_switched(result, window, cx))
+                .update_in(cx, |wb, window, cx| {
+                    wb.branch_switched(result, &branch, window, cx)
+                })
                 .ok()
                 .flatten();
             if let Some(answer) = prompt {
@@ -181,37 +185,33 @@ impl Workbench {
         .detach();
     }
 
-    /// The switch ended: on success the statuses rescan and the title bar
-    /// reads `HEAD` now, without waiting for the watchers; on failure a
-    /// prompt shows git's message.
+    /// The switch ended, well or not (git may have switched and still
+    /// failed, e.g. in a `post-checkout` hook): the statuses rescan and the
+    /// title bar reads `HEAD` now, without waiting for the watchers. An
+    /// error shows git's message in a prompt, titled by whether `HEAD` now
+    /// names `branch`.
     fn branch_switched(
         &mut self,
         result: Result<(), GitError>,
+        branch: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<oneshot::Receiver<usize>> {
         self.switching_branch = false;
+        self.git.update(cx, |git, cx| git.rescan(cx));
+        self.git_branch = crate::git_branch::read_branch(self.root());
         cx.notify();
-        match result {
-            Ok(()) => {
-                self.git.update(cx, |git, cx| git.rescan(cx));
-                self.git_branch = crate::git_branch::read_branch(self.root());
-                None
-            }
-            Err(err) => {
-                tracing::warn!(%err, "could not switch branches");
-                let detail = match &err {
-                    GitError::Failed { stderr, .. } => stderr.trim().to_string(),
-                    other => other.to_string(),
-                };
-                Some(window.prompt(
-                    PromptLevel::Critical,
-                    SWITCH_FAILED,
-                    Some(&detail),
-                    &["OK"],
-                    cx,
-                ))
-            }
-        }
+        let err = result.err()?;
+        tracing::warn!(%err, "git switch failed");
+        let title = if self.git_branch.as_deref() == Some(branch) {
+            SWITCHED_WITH_ERROR
+        } else {
+            SWITCH_FAILED
+        };
+        let detail = match &err {
+            GitError::Failed { stderr, .. } => stderr.trim().to_string(),
+            other => other.to_string(),
+        };
+        Some(window.prompt(PromptLevel::Critical, title, Some(&detail), &["OK"], cx))
     }
 }

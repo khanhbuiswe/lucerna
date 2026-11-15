@@ -44,6 +44,16 @@ pub enum SwitchTarget {
     Create(String),
 }
 
+impl SwitchTarget {
+    /// The local branch `HEAD` names after the switch.
+    pub fn local_branch(&self) -> &str {
+        match self {
+            SwitchTarget::Local(name) | SwitchTarget::Create(name) => name,
+            SwitchTarget::Remote { branch, .. } => branch,
+        }
+    }
+}
+
 /// Trims both ends and replaces each run of whitespace with `-` (VS Code's
 /// default `git.branchWhitespaceChar`).
 pub fn sanitize_branch_name(input: &str) -> String {
@@ -234,5 +244,16 @@ mod tests {
             is_head: false,
         };
         assert_eq!(b.branch_part(), "feature/x");
+    }
+
+    #[test]
+    fn local_branch() {
+        assert_eq!(SwitchTarget::Local("a".into()).local_branch(), "a");
+        assert_eq!(SwitchTarget::Create("b".into()).local_branch(), "b");
+        let remote = SwitchTarget::Remote {
+            remote: "team/x".into(),
+            branch: "feature/y".into(),
+        };
+        assert_eq!(remote.local_branch(), "feature/y");
     }
 }

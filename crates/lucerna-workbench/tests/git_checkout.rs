@@ -234,9 +234,25 @@ fn click_opens_checkout_picker_with_current_first(cx: &mut TestAppContext) {
     );
 }
 
+fn view_hunks(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> usize {
+    cx.update(|_, cx| view.read(cx).diff_hunks().len())
+}
+
 #[gpui::test]
 fn picking_branch_switches_and_updates_title(cx: &mut TestAppContext) {
-    let (_t, dir, wb, cx) = workbench(cx);
+    // `b.txt` differs on `feature`.
+    let (_t, dir, wb, cx) = workbench_with(
+        true,
+        |dir| {
+            git(dir, &["checkout", "-q", "feature"]);
+            std::fs::write(dir.join("b.txt"), "b on feature\n").unwrap();
+            git(dir, &["commit", "-q", "-am", "b on feature"]);
+            git(dir, &["checkout", "-q", "main"]);
+        },
+        cx,
+    );
+    let view = open(&wb, "b.txt", cx);
+    assert_eq!(view_hunks(&view, cx), 0, "b.txt matches main");
     let before = cx.update(|_, cx| wb.read(cx).git().read(cx).snapshot().head);
     pick(&wb, "feature", cx);
     assert_eq!(head(&dir), "feature");
@@ -250,6 +266,24 @@ fn picking_branch_switches_and_updates_title(cx: &mut TestAppContext) {
     let feature = git(&dir, &["rev-parse", "HEAD"]).trim().to_string();
     assert_ne!(before, after, "the statuses were rescanned");
     assert_eq!(after.as_deref(), Some(feature.as_str()));
+
+    // The gutter diffs against `feature` now: the buffer still holds main's
+    // text (no file watcher in tests), so it shows a hunk...
+    assert_eq!(view_hunks(&view, cx), 1, "rediffed against feature");
+    // ...until the watcher reloads the file git rewrote.
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(
+            &WorktreeEvent::Changed(vec![Change {
+                path: Arc::from(dir.join("b.txt")),
+                kind: ChangeKind::Modified,
+            }]),
+            cx,
+        )
+    });
+    settle(cx);
+    let text = cx.update(|_, cx| view.read(cx).snapshot().text());
+    assert_eq!(text, "b on feature\n");
+    assert_eq!(view_hunks(&view, cx), 0);
 }
 
 #[gpui::test]
@@ -336,6 +370,41 @@ fn git_refusal_shows_prompt(cx: &mut TestAppContext) {
         std::fs::read_to_string(dir.join("a.txt")).unwrap(),
         "local change\n"
     );
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn failing_hook_after_switch_says_so_and_refreshes(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    let (_t, dir, wb, cx) = workbench_with(
+        true,
+        |dir| {
+            let hook = dir.join(".git/hooks/post-checkout");
+            std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+            std::fs::write(&hook, "#!/bin/sh\necho 'hook broke' >&2\nexit 1\n").unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        },
+        cx,
+    );
+    let before = cx.update(|_, cx| wb.read(cx).git().read(cx).snapshot().head);
+    pick(&wb, "feature", cx);
+    // git switched, then the hook failed.
+    assert_eq!(head(&dir), "feature");
+    let (title, detail) = cx.pending_prompt().expect("a prompt");
+    assert_eq!(title, "Switched branches, but git reported an error");
+    assert!(detail.contains("hook broke"), "{detail}");
+    assert_eq!(
+        cx.update(|_, cx| wb.read(cx).git_branch().map(str::to_owned)),
+        Some("feature".into())
+    );
+    let after = cx.update(|_, cx| wb.read(cx).git().read(cx).snapshot().head);
+    let feature = git(&dir, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_ne!(before, after, "the statuses were rescanned");
+    assert_eq!(after.as_deref(), Some(feature.as_str()));
+    cx.simulate_prompt_answer("OK");
+    settle(cx);
+    assert!(!cx.has_pending_prompt());
+    assert!(!cx.update(|_, cx| wb.read(cx).is_switching_branch()));
 }
 
 fn close_trust_modal(wb: &Entity<Workbench>, cx: &mut VisualTestContext) {
