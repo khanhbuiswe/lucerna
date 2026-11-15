@@ -30,7 +30,7 @@ fn path_from_line(line: &[u8]) -> PathBuf {
 }
 
 /// `Failed` with this exit code means "no result" for `--verify --quiet` style calls.
-fn exit_one_is_none(r: Result<Vec<u8>, GitError>) -> Result<Option<Vec<u8>>, GitError> {
+pub(crate) fn exit_one_is_none(r: Result<Vec<u8>, GitError>) -> Result<Option<Vec<u8>>, GitError> {
     match r {
         Ok(out) => Ok(Some(out)),
         Err(GitError::Failed { code: Some(1), .. }) => Ok(None),
@@ -89,7 +89,7 @@ impl Repo {
         }))
     }
 
-    fn run(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
+    pub(crate) fn run(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
         self.git.run(&self.workdir, &args)
     }
