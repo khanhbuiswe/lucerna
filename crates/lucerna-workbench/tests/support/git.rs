@@ -44,9 +44,11 @@ pub fn repo() -> (TempDir, PathBuf) {
     (tmp, dir)
 }
 
-/// `git` from `PATH`, ignoring the global and system config.
+/// `git` from `PATH`, ignoring the global and system config, in the C
+/// locale so tests can match git's messages.
 pub fn isolated_git() -> GitBinary {
     GitBinary::new(PathBuf::from("git"))
         .with_env("GIT_CONFIG_GLOBAL", NULL)
         .with_env("GIT_CONFIG_SYSTEM", NULL)
+        .with_env("LC_ALL", "C")
 }

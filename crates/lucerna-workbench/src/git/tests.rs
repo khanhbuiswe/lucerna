@@ -127,3 +127,27 @@ fn git_path_comes_from_the_user_layer_only() {
         .unwrap();
     assert_eq!(GitSettings::from_store(&store).path, None);
 }
+
+#[test]
+fn write_env_is_the_login_env_without_shell_state() {
+    let login: HashMap<String, String> = [
+        ("PATH", "/opt/homebrew/bin:/usr/bin"),
+        ("LANG", "vi_VN.UTF-8"),
+        ("PWD", "/somewhere"),
+        ("OLDPWD", "/before"),
+        ("SHLVL", "2"),
+        ("_", "/usr/bin/env"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let mut env = write_env(&login);
+    env.sort();
+    assert_eq!(
+        env,
+        vec![
+            ("LANG".to_string(), "vi_VN.UTF-8".to_string()),
+            ("PATH".to_string(), "/opt/homebrew/bin:/usr/bin".to_string()),
+        ]
+    );
+}

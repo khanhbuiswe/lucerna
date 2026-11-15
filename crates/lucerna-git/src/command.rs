@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A `git` command is killed after this long.
@@ -58,10 +59,11 @@ impl From<std::io::Error> for GitError {
 /// Path to a `git` executable. Read commands ([`command`](Self::command)) are
 /// hardened: no fsmonitor, no hooks, no optional locks, no pager, no prompts,
 /// C locale. Write commands ([`command_for_write`](Self::command_for_write))
-/// keep hooks and locks.
+/// keep hooks and locks, and run with the [write environment](Self::with_write_env).
 #[derive(Debug, Clone)]
 pub struct GitBinary {
     path: PathBuf,
+    write_env: Arc<[(OsString, OsString)]>,
     extra_env: Vec<(OsString, OsString)>,
 }
 
@@ -69,8 +71,22 @@ impl GitBinary {
     pub fn new(path: PathBuf) -> GitBinary {
         GitBinary {
             path,
+            write_env: Arc::from([]),
             extra_env: Vec::new(),
         }
+    }
+
+    /// The environment write commands run with, over the process's own.
+    /// Production passes the login shell's, so hooks and filters (git-lfs,
+    /// husky's `node`) find their programs as in a terminal even when the app
+    /// was launched from the Dock. Read commands never use it.
+    pub fn with_write_env<K, V>(mut self, env: impl IntoIterator<Item = (K, V)>) -> GitBinary
+    where
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
+        self.write_env = env.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+        self
     }
 
     /// Adds an environment variable to every command. Meant for tests (e.g. to
@@ -108,13 +124,14 @@ impl GitBinary {
 
     /// A command for git operations that change the repository (`git switch`).
     /// Unlike [`command`](Self::command), hooks run as they would in a
-    /// terminal (git-lfs, husky) and optional locks are taken.
+    /// terminal (git-lfs, husky): with the write environment and its locale
+    /// (no `LC_ALL=C`), and optional locks are taken.
     pub fn command_for_write(&self, cwd: &Path) -> Command {
         let mut cmd = Command::new(&self.path);
         cmd.args(["-c", "core.fsmonitor=false", "--no-pager"])
             .current_dir(cwd)
+            .envs(self.write_env.iter().map(|(k, v)| (k, v)))
             .env("GIT_TERMINAL_PROMPT", "0")
-            .env("LC_ALL", "C")
             .stdin(Stdio::null());
         cmd.envs(self.extra_env.iter().map(|(k, v)| (k, v)));
         cmd

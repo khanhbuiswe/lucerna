@@ -1,6 +1,8 @@
 mod support;
 
-use lucerna_git::{GitError, Repo, SwitchTarget, is_valid_branch_name, sanitize_branch_name};
+use lucerna_git::{
+    GitBinary, GitError, Repo, SwitchTarget, is_valid_branch_name, sanitize_branch_name,
+};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use support::{bin, git, repo};
@@ -266,11 +268,71 @@ fn switch_runs_post_checkout_hook_but_reads_do_not() {
     std::fs::write(&hook, "#!/bin/sh\ntouch ran.txt\n").unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     let r = discover(&d);
-    r.status(None).unwrap();
-    assert!(!d.join("ran.txt").exists());
-    r.switch_branch(&SwitchTarget::Local("other".into()))
+    // A checkout through the read command would fire `post-checkout`
+    // unless hooks are off there.
+    r.git
+        .run(
+            &d,
+            &[
+                OsStr::new("checkout"),
+                OsStr::new("-q"),
+                OsStr::new("other"),
+            ],
+        )
         .unwrap();
-    assert!(d.join("ran.txt").exists());
+    assert_eq!(head(&d), "other");
+    assert!(!d.join("ran.txt").exists(), "read commands run no hooks");
+    r.switch_branch(&SwitchTarget::Local("main".into()))
+        .unwrap();
+    assert_eq!(head(&d), "main");
+    assert!(d.join("ran.txt").exists(), "the switch runs hooks");
+}
+
+/// A repo whose branch `lfs` holds `x.dat`, which goes through a required
+/// smudge filter named `lucerna-test-smudge`, a program on no `PATH`.
+#[cfg(unix)]
+fn repo_with_required_filter() -> (TempDir, PathBuf) {
+    let (t, d) = repo();
+    git(&d, &["config", "filter.t.smudge", "lucerna-test-smudge"]);
+    git(&d, &["config", "filter.t.clean", "cat"]);
+    git(&d, &["config", "filter.t.required", "true"]);
+    git(&d, &["switch", "-q", "-c", "lfs"]);
+    std::fs::write(d.join(".gitattributes"), "*.dat filter=t\n").unwrap();
+    std::fs::write(d.join("x.dat"), "data\n").unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "lfs"]);
+    git(&d, &["switch", "-q", "main"]);
+    assert!(!d.join("x.dat").exists());
+    (t, d)
+}
+
+#[cfg(unix)]
+#[test]
+fn switch_finds_filters_on_the_write_path() {
+    use std::os::unix::fs::PermissionsExt;
+    // Without the program the checkout fails halfway: what a Dock launch
+    // (PATH without Homebrew) did with git-lfs.
+    let (_t, d) = repo_with_required_filter();
+    let r = discover(&d).switch_branch(&SwitchTarget::Local("lfs".into()));
+    assert!(matches!(r, Err(GitError::Failed { .. })), "{r:?}");
+    assert_eq!(head(&d), "main");
+
+    let tools = TempDir::new().unwrap();
+    let smudge = tools.path().join("lucerna-test-smudge");
+    std::fs::write(&smudge, "#!/bin/sh\ncat\n").unwrap();
+    std::fs::set_permissions(&smudge, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let process_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(tools.path().to_path_buf()).chain(std::env::split_paths(&process_path)),
+    )
+    .unwrap();
+    let (_t, d) = repo_with_required_filter();
+    let r = Repo::discover(bin().with_write_env([("PATH", path)]), &d)
+        .unwrap()
+        .unwrap();
+    r.switch_branch(&SwitchTarget::Local("lfs".into())).unwrap();
+    assert_eq!(head(&d), "lfs");
+    assert_eq!(std::fs::read_to_string(d.join("x.dat")).unwrap(), "data\n");
 }
 
 #[test]
@@ -332,7 +394,7 @@ fn pure_name_check() {
 
 #[test]
 fn write_command_is_not_hook_disabled() {
-    let cmd = bin().command_for_write(Path::new("."));
+    let cmd = GitBinary::new(PathBuf::from("git")).command_for_write(Path::new("."));
     let args: Vec<&OsStr> = cmd.get_args().collect();
     let has = |s: &str| args.contains(&OsStr::new(s));
     assert!(
@@ -345,7 +407,24 @@ fn write_command_is_not_hook_disabled() {
     assert!(has("--no-pager"));
     let envs: Vec<_> = cmd.get_envs().collect();
     assert!(envs.contains(&(OsStr::new("GIT_TERMINAL_PROMPT"), Some(OsStr::new("0")))));
+    // Hooks keep the user's locale.
+    assert!(
+        !envs.iter().any(|(k, _)| *k == OsStr::new("LC_ALL")),
+        "{envs:?}"
+    );
+
+    // The write environment applies to writes only; test env still wins.
+    let git = GitBinary::new(PathBuf::from("git"))
+        .with_write_env([("PATH", "/login/bin"), ("LC_ALL", "vi_VN.UTF-8")])
+        .with_env("PATH", "/test/bin");
+    let write = git.command_for_write(Path::new("."));
+    let envs: Vec<_> = write.get_envs().collect();
+    assert!(envs.contains(&(OsStr::new("LC_ALL"), Some(OsStr::new("vi_VN.UTF-8")))));
+    assert!(envs.contains(&(OsStr::new("PATH"), Some(OsStr::new("/test/bin")))));
+    let read = git.command(Path::new("."));
+    let envs: Vec<_> = read.get_envs().collect();
     assert!(envs.contains(&(OsStr::new("LC_ALL"), Some(OsStr::new("C")))));
+    assert!(envs.contains(&(OsStr::new("PATH"), Some(OsStr::new("/test/bin")))));
 }
 
 #[test]
