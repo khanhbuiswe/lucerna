@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Lucerna · A fast, native code viewer</title>
-<meta name="description" content="Lucerna is a fast, native code viewer for people who let AI agents write the code, in the terminal or in desktop apps like Claude and Codex. Open a repo, follow every change as it lands on disk, and keep the VS Code keys you already know.">
+<title>Lucerna: a fast, minimal code editor written in Rust</title>
+<meta name="description" content="Lucerna is a fast, minimal code editor written in Rust, with no AI inside. Your agent writes the code in Claude Code or Codex; Lucerna is where you read and review it, with the VS Code keys and settings you already know.">
 <meta name="theme-color" content="#080b12">
 <link rel="canonical" href="https://lucerna.dev/">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Lucerna · A fast, native code viewer">
-<meta property="og:description" content="Lucerna is a fast, native code viewer for people who let AI agents write the code, in the terminal or in desktop apps like Claude and Codex. Open a repo, follow every change as it lands on disk, and keep the VS Code keys you already know.">
+<meta property="og:title" content="Lucerna: a fast, minimal code editor written in Rust">
+<meta property="og:description" content="A fast, minimal code editor written in Rust, with no AI inside. Your agent writes the code; Lucerna is where you read and review it.">
 <meta property="og:url" content="https://lucerna.dev/">
 <meta property="og:image" content="https://lucerna.dev/og.png">
 <meta property="og:image:width" content="1200">
@@ -29,9 +29,9 @@
     </a>
     <div class="nav-links">
       <a href="#speed">Speed</a>
-      <a href="#features">Features</a>
-      <a href="#roadmap">Roadmap</a>
-      <a href="https://github.com/lucerna-dev/lucerna">GitHub</a>
+      <a href="#minimal">Minimal</a>
+      <a href="#why">No AI</a>
+      <a href="https://github.com/khanhbuiswe/lucerna">GitHub</a>
     </div>
     <a class="btn primary" href="#download">Download <span class="soon">Soon</span></a>
   </div>
@@ -39,13 +39,12 @@
 
 <header class="hero" id="top">
   <div class="wrap">
-    <span class="eyebrow">Open source · Written in Rust · macOS, Linux and Windows soon</span>
-    <h1>A quiet place to <em>read</em> the code your agents write.</h1>
-    <p class="lede">Lucerna is a fast, native code viewer for people who let AI agents write the code, in the terminal or in desktop apps like Claude and Codex. Open a repo, follow every change as it lands on disk, and keep the VS Code keys you already know.</p>
-    <div class="install">
-      <div class="cmd"><span class="p">$</span><code>curl -fsSL https://lucerna.dev/install.sh | sh</code><button class="copy" id="copy-hero" type="button">Copy</button></div>
-      <span class="soon">First release coming soon</span>
-      <span class="alt">Until then, <a href="https://github.com/lucerna-dev/lucerna">build from source</a>.</span>
+    <h1><span>A fast, minimal code editor.</span> <span>Written in Rust.</span> <span>No AI inside.</span></h1>
+    <p class="lede">Your agent writes the code in Claude Code, Codex or a desktop app. Lucerna is where you read it, see what changed and fix what needs fixing, with the VS Code keys you already know.</p>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/khanhbuiswe/lucerna">View on GitHub</a>
+      <a class="btn" href="#download">Build from source</a>
+      <span class="plat-note">Free and open source. macOS today, Linux and Windows later.</span>
     </div>
 
     <div class="stage">
@@ -123,117 +122,163 @@
 </header>
 
 <main>
+  <section class="pillars" aria-label="Four things Lucerna is">
+    <div class="wrap">
+      <a class="pillar" href="#rust"><h2>Written in Rust</h2><p>Native code, drawn on the GPU with GPUI. No Electron, no web view.</p></a>
+      <a class="pillar" href="#speed"><h2>Fast</h2><p>First frame in 140 ms. 169 MB of memory with a repo and ten tabs open.</p></a>
+      <a class="pillar" href="#minimal"><h2>Minimal</h2><p>A file tree, tabs, a terminal and your git changes. VS Code's keys and <code>settings.json</code>.</p></a>
+      <a class="pillar" href="#why"><h2>No AI inside</h2><p>No chat panel, no ghost text, no telemetry, no account. Your agent does the writing.</p></a>
+    </div>
+  </section>
+
   <section id="speed">
     <div class="wrap">
       <div class="sec-head">
-        <span class="eyebrow">Measured, not promised</span>
-        <h2>Big repositories open before you finish reaching for the mouse.</h2>
-        <p>Every number below comes from the benchmarks that run in CI on each pull request. A change that makes any of them more than 15% slower fails the build.</p>
+        <h2>Fast, measured from the outside.</h2>
+        <p>Three editors on the same machine, timed the same way: by capturing the screen, not by asking each app for its own numbers. Shorter bars are better.</p>
       </div>
-      <div class="bench">
-        <div class="metric">
-          <div class="v">887<small>ms</small></div>
-          <p class="what">Scan a repository of 80,000 files, from launch to a complete tree</p>
-          <div class="budget"><div class="track"><b style="width:17.7%"></b></div>Budget 5 s · uses 18%</div>
-        </div>
-        <div class="metric">
-          <div class="v">2.04<small>ms</small></div>
-          <p class="what">Quick Open match across all 80,000 paths, per keystroke</p>
-          <div class="budget"><div class="track"><b style="width:12.75%"></b></div>Budget one 60 Hz frame, 16 ms · uses 13%</div>
-        </div>
-        <div class="metric">
-          <div class="v">96<small>µs</small></div>
-          <p class="what">Syntax highlight one screen of a 10 MB Rust file</p>
-          <div class="budget">60 visible rows, tree-sitter</div>
-        </div>
-        <div class="metric">
-          <div class="v">51<small>ms</small></div>
-          <p class="what">Reload a 10 MB file after an agent rewrites its tail</p>
-          <div class="budget">Folds, selection and scroll position are kept</div>
-        </div>
+      <div class="charts">
+        <figure class="chart">
+          <figcaption>Startup to first frame with content</figcaption>
+          <div class="v">140<small>ms</small></div>
+          <div class="bars" role="list">
+            <div class="brow me" role="listitem" tabindex="0" data-tip="Median 140 ms, p90 143 ms"><span class="who">Lucerna</span><span class="track"><b style="--w:52.4%"></b></span><span class="val">140 ms</span></div>
+            <div class="brow" role="listitem" tabindex="0" data-tip="Median 241 ms, p90 252 ms"><span class="who">Zed</span><span class="track"><b style="--w:90.3%"></b></span><span class="val">241 ms <i>1.7×</i></span></div>
+            <div class="brow" role="listitem" tabindex="0" data-tip="Median 267 ms, p90 672 ms"><span class="who">VS Code</span><span class="track"><b style="--w:100%"></b></span><span class="val">267 ms <i>1.9×</i></span></div>
+          </div>
+        </figure>
+        <figure class="chart">
+          <figcaption>Memory at idle, medium repo and 10 tabs</figcaption>
+          <div class="v">169<small>MB</small></div>
+          <div class="bars" role="list">
+            <div class="brow me" role="listitem" tabindex="0" data-tip="Median 169 MB, p90 179 MB"><span class="who">Lucerna</span><span class="track"><b style="--w:19.2%"></b></span><span class="val">169 MB</span></div>
+            <div class="brow" role="listitem" tabindex="0" data-tip="Median 235 MB, p90 236 MB"><span class="who">Zed</span><span class="track"><b style="--w:26.7%"></b></span><span class="val">235 MB <i>1.4×</i></span></div>
+            <div class="brow" role="listitem" tabindex="0" data-tip="Median 879 MB, p90 879 MB"><span class="who">VS Code</span><span class="track"><b style="--w:100%"></b></span><span class="val">879 MB <i>5.2×</i></span></div>
+          </div>
+        </figure>
+        <figure class="chart">
+          <figcaption>CPU at idle, share of one core</figcaption>
+          <div class="v">1.40<small>%</small></div>
+          <div class="bars" role="list">
+            <div class="brow me" role="listitem" tabindex="0" data-tip="Median 1.40 %, p90 1.42 %"><span class="who">Lucerna</span><span class="track"><b style="--w:46.5%"></b></span><span class="val">1.40 %</span></div>
+            <div class="brow" role="listitem" tabindex="0" data-tip="Median 2.20 %, p90 2.23 %"><span class="who">Zed</span><span class="track"><b style="--w:73.1%"></b></span><span class="val">2.20 % <i>1.6×</i></span></div>
+            <div class="brow" role="listitem" tabindex="0" data-tip="Median 3.01 %, p90 3.18 %"><span class="who">VS Code</span><span class="track"><b style="--w:100%"></b></span><span class="val">3.01 % <i>2.1×</i></span></div>
+          </div>
+        </figure>
+        <figure class="chart">
+          <figcaption>App size on disk</figcaption>
+          <div class="v">50<small>MB</small></div>
+          <div class="bars" role="list">
+            <div class="brow me" role="listitem" tabindex="0" data-tip="50 MB"><span class="who">Lucerna</span><span class="track"><b style="--w:3.1%"></b></span><span class="val">50 MB</span></div>
+            <div class="brow" role="listitem" tabindex="0" data-tip="177 MB"><span class="who">Zed</span><span class="track"><b style="--w:11%"></b></span><span class="val">177 MB <i>3.5×</i></span></div>
+            <div class="brow" role="listitem" tabindex="0" data-tip="1604 MB"><span class="who">VS Code</span><span class="track"><b style="--w:100%"></b></span><span class="val">1604 MB <i>31.9×</i></span></div>
+          </div>
+        </figure>
       </div>
-      <p class="foot"><strong>How we measured:</strong> criterion benches on an Apple Silicon dev machine, 9 November 2026, against a generated repository of 80,000 files plus a 10 MB source file. Still being measured on release builds: first frame under 200 ms, idle memory under 150 MB with 10 tabs open, and 120 fps scrolling.</p>
+      <details class="as-table">
+        <summary>Show as a table</summary>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Metric</th><th scope="col">Lucerna</th><th scope="col">Zed</th><th scope="col">VS Code</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">Startup to first frame</th><td>140 ms (p90 143)</td><td>241 ms (p90 252), 1.7×</td><td>267 ms (p90 672), 1.9×</td></tr>
+              <tr><th scope="row">Idle memory, 10 tabs</th><td>169 MB (p90 179)</td><td>235 MB (p90 236), 1.4×</td><td>879 MB (p90 879), 5.2×</td></tr>
+              <tr><th scope="row">Idle CPU</th><td>1.40 % (p90 1.42)</td><td>2.20 % (p90 2.23), 1.6×</td><td>3.01 % (p90 3.18), 2.1×</td></tr>
+              <tr><th scope="row">App size</th><td>50 MB</td><td>177 MB, 3.5×</td><td>1604 MB, 31.9×</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+      <p class="foot">Median of 10 runs on an Apple M4 with 16 GB of RAM, macOS 26, 15 November 2026. Lucerna 0.1.0, Zed 1.28.1, VS Code 1.146.0, no language server, warm caches. Ratios are each editor's median divided by Lucerna's. Lucerna does less than the other two, so read these as one machine's numbers, not a ranking. <a href="https://github.com/khanhbuiswe/lucerna/blob/main/docs/benchmarks.md">Method, raw data and limits</a></p>
     </div>
   </section>
 
-  <section id="features" style="padding-top:0">
+  <section id="rust" class="tight">
+    <div class="wrap split">
+      <div class="sec-head">
+        <h2>Rust, drawn on the GPU.</h2>
+        <p>Lucerna is native code from end to end. Its window is drawn by GPUI, the GPU-accelerated UI framework from the Zed project, so opening a repo or reloading a file never waits on a browser engine.</p>
+      </div>
+      <dl class="facts">
+        <div><dt>The app</dt><dd>One native app of 50 MB, with the <code>luc</code> command beside it.</dd></div>
+        <div><dt>Rendering</dt><dd>GPUI on Metal. Linux and Windows are planned, and GPUI already supports both.</dd></div>
+        <div><dt>License</dt><dd>MIT or Apache-2.0. No GPL dependencies, checked by <code>cargo deny</code> on every change.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="minimal" class="tight">
     <div class="wrap split">
       <div>
-        <div class="sec-head" style="margin-bottom:32px">
-          <span class="eyebrow">Built for watching code change</span>
-          <h2>Everything you need to follow along. Nothing that talks back.</h2>
+        <div class="sec-head">
+          <h2>Minimal, and it already knows your keys.</h2>
+          <p>A file tree, tabs, a terminal and your git changes, and little else on screen. Shortcuts, <code>settings.json</code> and <code>keybindings.json</code> work the way they do in VS Code, so there is nothing new to learn.</p>
         </div>
         <div class="keys" role="group" aria-label="Default shortcuts">
-          <div class="key"><span>Open any file</span><span class="kbd"><kbd>⌘</kbd><kbd>P</kbd></span></div>
+          <div class="key"><span>Go to file</span><span class="kbd"><kbd>⌘</kbd><kbd>P</kbd></span></div>
           <div class="key"><span>Run a command</span><span class="kbd"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd></span></div>
           <div class="key"><span>Search the project</span><span class="kbd"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd></span></div>
-          <div class="key"><span>Split the editor</span><span class="kbd"><kbd>⌘</kbd><kbd>\</kbd></span></div>
-          <div class="key"><span>Go to line</span><span class="kbd"><kbd>⌃</kbd><kbd>G</kbd></span></div>
-          <div class="key"><span>Toggle the sidebar</span><span class="kbd"><kbd>⌘</kbd><kbd>B</kbd></span></div>
+          <div class="key"><span>Toggle the terminal</span><span class="kbd"><kbd>⌃</kbd><kbd>`</kbd></span></div>
+          <div class="key"><span>Next change</span><span class="kbd"><kbd>⌥</kbd><kbd>F5</kbd></span></div>
         </div>
       </div>
-      <div class="feats">
-        <div class="feat"><h3>Live from disk</h3><p>Files reload the moment an agent saves them. The explorer marks what changed outside Lucerna, and open tabs keep your scroll position and folds.</p></div>
-        <div class="feat"><h3>Quick Open</h3><p>One box for files, commands with <code>&gt;</code> and line numbers with <code>:</code>. Results show up within a frame, even on very large repos.</p></div>
-        <div class="feat"><h3>Project search</h3><p>Ripgrep's engine with case, whole word, regex and include or exclude globs. Results stream into the sidebar, grouped by file.</p></div>
-        <div class="feat"><h3>Tabs and splits</h3><p>Preview tabs in italics that you pin with a double-click, editor groups that remember their widths, and Ctrl+Tab through recent files.</p></div>
-        <div class="feat"><h3>A real code view</h3><p>Tree-sitter highlighting, minimap, indent folding, bracket matching, word wrap and find in file. Read-only for now, so nothing changes by accident.</p></div>
-        <div class="feat"><h3>Your settings</h3><p><code>settings.json</code> and <code>keybindings.json</code> with VS Code semantics, hot reloaded. Themes use Zed's JSON format; Lucerna Dark and Lucerna Light are built in and follow the system's light or dark mode.</p></div>
-      </div>
+      <figure class="settings" aria-label="Example settings.json" role="img">
+        <div class="settings-bar">~/.config/lucerna/settings.json</div>
+<pre><span class="pu">{</span>
+  <span class="ke">"editor.fontSize"</span>: <span class="nu">14</span>,
+  <span class="ke">"editor.wordWrap"</span>: <span class="st">"off"</span>,
+  <span class="ke">"editor.minimap.enabled"</span>: <span class="nu">false</span>,
+  <span class="ke">"files.autoSave"</span>: <span class="st">"afterDelay"</span>,
+  <span class="ke">"files.exclude"</span>: { <span class="ke">"**/dist"</span>: <span class="nu">true</span> },
+  <span class="ke">"workbench.preferredDarkColorTheme"</span>: <span class="st">"Lucerna Dark"</span>,
+  <span class="ke">"[go]"</span>: { <span class="ke">"editor.tabSize"</span>: <span class="nu">8</span> },
+  <span class="ke">"vim.enabled"</span>: <span class="nu">false</span>
+<span class="pu">}</span></pre>
+      </figure>
     </div>
   </section>
 
-  <section style="padding-top:0">
-    <div class="wrap principles">
-      <div class="pr"><span class="eyebrow">No AI inside</span><h3>Your agent already lives in the terminal.</h3><p class="muted">Lucerna has no chat panel, no ghost text and no MCP server. It shows you what changed and gets out of the way.</p></div>
-      <div class="pr"><span class="eyebrow">Native</span><h3>Rust and GPUI, drawn on the GPU.</h3><p class="muted">No Electron, no web view. One window per <code>luc</code> call, a few crates you can read in an afternoon.</p></div>
-      <div class="pr"><span class="eyebrow">Open source</span><h3>MIT or Apache 2.0, your choice.</h3><p class="muted">No GPL dependencies, checked by <code>cargo deny</code> in CI. Fork it, ship it, embed it.</p></div>
-    </div>
-  </section>
-
-  <section id="roadmap" style="padding-top:0">
+  <section id="why" class="tight">
     <div class="wrap">
       <div class="sec-head">
-        <span class="eyebrow">Roadmap</span>
-        <h2>Reading first. Editing when it is ready.</h2>
+        <h2>No AI inside. Bring your own agent.</h2>
+        <p>You already have an agent that writes code. Lucerna doesn't add a second one. It gives you a quiet place to check the work.</p>
       </div>
-      <div class="road">
-        <div class="ph now"><span class="no">Phase 1 · now</span><h3>Core viewer</h3><p>Explorer, tabs, Quick Open, search, live reload, themes.</p></div>
-        <div class="ph"><span class="no">Phase 2</span><h3>Zed extensions</h3><p>Themes, icon themes, languages, grammars and snippets.</p></div>
-        <div class="ph"><span class="no">Phase 3</span><h3>Code intelligence</h3><p>Go to definition, references, hover and diagnostics over LSP.</p></div>
-        <div class="ph"><span class="no">Phase 4</span><h3>Full editing</h3><p>Multi-cursor, undo, completion, and safe edits beside your agent.</p></div>
-        <div class="ph"><span class="no">Phase 5</span><h3>The rest</h3><p>Git gutter, diff view, built-in terminal, settings UI.</p></div>
+      <ol class="flow">
+        <li><h3>Your agent writes</h3><p>Claude Code, Codex or a desktop app edits files in your repo.</p></li>
+        <li><h3>Lucerna shows</h3><p>Open files reload in place. Changed files light up in the tree and the gutter marks every changed line.</p></li>
+        <li><h3>You review</h3><p>Read the diff, fix a line by hand, run the tests in the built-in terminal.</p></li>
+      </ol>
+      <div class="compare">
+        <div><h3>Why not VS Code?</h3><p>VS Code runs on Electron. Lucerna keeps its shortcuts and setting names, without a browser engine underneath.</p></div>
+        <div><h3>Why not Zed?</h3><p>Zed is fast too, and it is AI-first, with its own agent panel, edit predictions and sign-in. Lucerna has no AI features and needs no account, so the agent stays the tool you already use.</p></div>
       </div>
     </div>
   </section>
 
-  <section id="download" style="padding-top:0">
+  <section id="download" class="tight">
     <div class="wrap">
       <div class="dl">
-        <div style="display:grid;gap:12px">
-          <span class="eyebrow">Download</span>
-          <h2>Lucerna is free. The first release is almost here.</h2>
-          <p class="muted" style="max-width:60ch">Signed builds for macOS 13 and later will land on GitHub Releases. Until then you can build it with the Rust toolchain in a few minutes.</p>
+        <div class="dl-head">
+          <h2>Free, open source, and almost ready.</h2>
+          <p class="muted">The first release for macOS on Apple silicon is coming to GitHub Releases. Until then, you can build it yourself with Rust and the Xcode Command Line Tools.</p>
         </div>
-        <div class="cmd"><span class="p">$</span><code>git clone https://github.com/lucerna-dev/lucerna &amp;&amp; cd lucerna &amp;&amp; cargo build --release</code><button class="copy" id="copy-src" type="button">Copy</button></div>
+        <div class="cmd"><span class="p">$</span><code>git clone https://github.com/khanhbuiswe/lucerna &amp;&amp; cd lucerna &amp;&amp; scripts/bundle-app.sh --install</code><button class="copy" type="button">Copy</button></div>
         <div class="plats">
-          <span class="plat">macOS · Apple Silicon <span class="soon">Soon</span></span>
-          <span class="plat">macOS · Intel <span class="soon">Soon</span></span>
-          <span class="plat later">Linux · planned</span>
-          <span class="plat later">Windows · planned</span>
+          <span class="plat">macOS, Apple silicon <span class="soon">Soon</span></span>
+          <span class="plat later">Linux, planned</span>
+          <span class="plat later">Windows, planned</span>
         </div>
       </div>
     </div>
   </section>
 
-  <section style="padding-top:0">
+  <section class="tight">
     <div class="wrap">
-      <div class="sec-head"><span class="eyebrow">FAQ</span><h2>Questions people ask</h2></div>
+      <div class="sec-head"><h2>Questions</h2></div>
       <div class="faq">
-        <details open><summary>Can I edit code in Lucerna?</summary><p>Not yet. Phase 1 is a read-only viewer so nothing changes behind your agent's back. You can select and copy text. Full editing arrives in Phase 4.</p></details>
-        <details><summary>Why no AI features?</summary><p>The people Lucerna is for already run Claude Code, Codex or another agent in a terminal. A second assistant inside the editor would only compete for attention.</p></details>
-        <details><summary>Will my VS Code settings work?</summary><p>Lucerna reads <code>settings.json</code> and <code>keybindings.json</code> with the same layering and semantics as VS Code, and ships VS Code's default macOS shortcuts.</p></details>
-        <details><summary>Is it related to Zed?</summary><p>Lucerna uses GPUI, Zed's Apache-licensed UI framework, and reads Zed's theme format. Everything else is written from scratch, with no GPL code from Zed.</p></details>
+        <details open><summary>Can I edit code in Lucerna?</summary><p>Yes. Typing, undo, save, auto-closing brackets and Vim keys if you want them. When your agent writes to a file you have unsaved changes in, Lucerna merges the two and asks only when they overlap. Multi-cursor and completion come later.</p></details>
+        <details><summary>Is it related to Zed?</summary><p>Lucerna uses GPUI, Zed's Apache-licensed UI framework, and can install themes, icon themes and languages from Zed's extension registry. Everything else is written from scratch, with no GPL code.</p></details>
         <details><summary>Does Lucerna collect any data?</summary><p>No. There is no telemetry and no account. Logs stay on your machine in <code>~/Library/Logs/Lucerna</code>.</p></details>
       </div>
     </div>
@@ -242,9 +287,9 @@
 
 <footer>
   <div class="wrap">
-    <span>Lucerna · Latin for “lamp”</span>
-    <span>MIT OR Apache-2.0</span>
-    <span class="r"><a href="https://github.com/lucerna-dev/lucerna">GitHub</a><a href="#roadmap">Roadmap</a><a href="https://github.com/lucerna-dev/lucerna/issues">Report a problem</a></span>
+    <span>Lucerna is Latin for “lamp”.</span>
+    <span>MIT or Apache-2.0</span>
+    <span class="r"><a href="https://github.com/khanhbuiswe/lucerna">GitHub</a><a href="https://github.com/khanhbuiswe/lucerna/blob/main/docs/benchmarks.md">Benchmarks</a><a href="https://github.com/khanhbuiswe/lucerna/issues">Report a problem</a></span>
   </div>
 </footer>
 </body>

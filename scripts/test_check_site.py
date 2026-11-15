@@ -30,10 +30,10 @@ VALID_HTML = """<!doctype html>
 </head>
 <body>
 <header id="top"><a href="#top">Lucerna</a></header>
-<div class="v">887<small>ms</small></div>
-<div class="v">2.04<small>ms</small></div>
-<div class="v">96<small>µs</small></div>
-<div class="v">51<small>ms</small></div>
+<div class="v">140<small>ms</small></div>
+<div class="v">169<small>MB</small></div>
+<div class="v">1.40<small>%</small></div>
+<div class="v">50<small>MB</small></div>
 </body>
 </html>
 """
@@ -102,7 +102,7 @@ class CheckSiteTest(unittest.TestCase):
     def test_github_link_passes(self):
         html = VALID_HTML.replace(
             "</body>",
-            '<a href="https://github.com/lucerna-dev/lucerna/issues">x</a></body>',
+            '<a href="https://github.com/khanhbuiswe/lucerna/issues">x</a></body>',
         )
         self.assertEqual(check_site(self.write(html)), [])
 
@@ -147,8 +147,8 @@ class CheckSiteTest(unittest.TestCase):
         self.assertEqual(check_site(self.write(html)), [])
 
     def test_missing_metric_fails(self):
-        html = VALID_HTML.replace("2.04<small>", "2.40<small>")
-        self.assertFailureMentions(check_site(self.write(html)), "2.04")
+        html = VALID_HTML.replace("1.40<small>", "1.04<small>")
+        self.assertFailureMentions(check_site(self.write(html)), "1.40%")
 
 
 if __name__ == "__main__":
