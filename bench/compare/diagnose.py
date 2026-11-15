@@ -73,15 +73,21 @@ def pids(editor, paths) -> str:
     return metrics._csv(editors.bench_pids(editor, paths))
 
 
-def watch_after_key(editor, paths, key_text, dump: Path, min_change="0.0001"):
-    """Start a change watch, type `key_text`, return watch result + key time."""
+def watch_after_key(editor, paths, key_text, dump: Path, min_change="0.002"):
+    """Start a change watch, type `key_text`, return watch result + key time.
+
+    `--since` lies 1 s ahead, so the reference is the last frame just before
+    the key and changes before it (a blinking caret, a late repaint) are
+    not counted. 0.2 % is above a caret blink (about 0.1 % of the window)."""
     dump.mkdir(parents=True, exist_ok=True)
     p = pids(editor, paths)
-    w = metrics._start_watch(paths, ["watch", "--pid", p, "--since", str(editors.now_ns()),
+    since = editors.now_ns() + 1_000_000_000
+    w = metrics._start_watch(paths, ["watch", "--pid", p, "--since", str(since),
                                      "--until", "change", "--min-change", min_change,
                                      "--dump-dir", str(dump), "--timeout", "15"], 20)
     if w is None:
         return {"error": "watch did not start"}
+    time.sleep(max(0.0, (since - editors.now_ns()) / 1e9) + 0.05)
     typed = helper_run(paths, ["type", "--pid", p, "--text", key_text])
     out = w.result(20)
     w.close()

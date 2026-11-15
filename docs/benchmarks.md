@@ -43,8 +43,8 @@ owns the window), not through a launcher:
 
 | Editor | How it is launched | Main settings |
 |---|---|---|
-| VS Code | `/Applications/Visual Studio Code.app/Contents/MacOS/Code --user-data-dir <bench>/profiles/vscode --extensions-dir <bench>/profiles/vscode-ext --disable-extensions --new-window <target>`; the LSP configuration uses `--extensions-dir <bench>/profiles/vscode-ext-lsp` and has no `--disable-extensions` | telemetry, updates, Workspace Trust, welcome page, reopening previous windows and minimap off; `editor.fontSize` 14; preview tabs off when opening from Quick Open |
-| Zed | `/Applications/Zed.app/Contents/MacOS/zed --user-data-dir <bench>/profiles/zed <target>` | telemetry, updates, AI (`disable_ai`), session restore, minimap, auto-install of the `html` extension (`auto_install_extensions`) and extension suggestions (`suggest_extensions`) off; `buffer_font_size` 14; preview tabs off from the file finder |
+| VS Code | `/Applications/Visual Studio Code.app/Contents/MacOS/Code --user-data-dir <bench>/profiles/vscode --extensions-dir <bench>/profiles/vscode-ext --disable-extensions --new-window <target>`; the LSP configuration uses `--extensions-dir <bench>/profiles/vscode-ext-lsp` and has no `--disable-extensions` | telemetry, updates, Workspace Trust, welcome page, the first-run onboarding dialog (`workbench.welcomePage.experimentalOnboarding`), AI features (`chat.disableAIFeatures`), reopening previous windows and minimap off; `editor.fontSize` 14; preview tabs off when opening from Quick Open |
+| Zed | `/Applications/Zed.app/Contents/MacOS/zed --user-data-dir <bench>/profiles/zed <target>` | telemetry, updates, AI (`disable_ai`), session restore, minimap, auto-install of the `html` extension (`auto_install_extensions`) and extension suggestions (`suggest_extensions`) off; every folder trusted (`session.trust_all_worktrees`, so no "Unrecognized Project" dialog); with no LSP, language servers off for every language (`enable_language_server: false`); `buffer_font_size` 14; preview tabs off from the file finder |
 | Lucerna | the `luc` binary (resolved once per session) with `HOME=<bench>/profiles/lucerna-home` | `editor.fontSize` 14, `workbench.startupEditor: "none"`, data folder marked trusted in advance (no Restricted Mode), preview tabs off |
 
 VS Code is not launched through `bin/code`: that command starts a node/CLI step
@@ -130,11 +130,47 @@ result.
 |---|---|
 | Startup to first frame with content | Open `marker.txt`. The helper captures **the whole main display** and starts capturing **before** the editor is opened (bench waits for the helper to report ready, then runs the open command), so the first frame of the new window is not missed. On each frame the helper finds the editor binary's largest window (by the binary path of the owning process; processes of the same binary that were already running, such as your own VS Code, are excluded), crops the frame to that window, and stops at the first frame in which ≥ 30% of the pixels in the middle region (60% × 60% of the window) differ from the calibrated background colour. Time 0 is just before the open command; the helper reports the absolute time of the frame and bench subtracts time 0. Because the whole display is captured, another window lying over the editor would be measured instead: a frame counts only if the topmost window at the centre and the four corners of the middle region belongs to the editor; an occluded frame cannot meet the condition, so an occluded window only makes the measurement later, never falsely earlier (the number of occluded frames is recorded). So that the new window is not behind another window, as soon as the editor's process appears bench brings that app to the front from a background thread (which does not slow down the capture). If the window already has enough content in the very first captured frame (impossible for a window opened afterwards), the round is discarded (recorded as `null`). |
 | File changed on disk → screen updated | Open a copy of `marker.txt`, wait for the content to show plus 1 s to settle, start capturing, then the script writes an empty file. Time 0 is just before the write command; stops at the first frame that changes by more than 0.5% relative to the reference frame (a threshold that ignores a blinking cursor). |
-| Quick Open per keystroke (80,000-file repo) | Open the large repo, wait 30 s for the file scan, ⌘P, type `mod004`, then start capturing and type the last key `2` (`mod0042` is a folder that really exists in the generated repo). Time 0 is the moment the last key is sent; stops at the first frame that changes. Keys are sent with `CGEvent.postToPid` to the exact process, after bringing the app to the front. |
+| Quick Open per keystroke (80,000-file repo) | Open the large repo, wait 30 s for the file scan, ⌘P (confirmed on screen: if the window does not change within 3 s, ⌘P is sent once more, because a ⌘P sent while the app is still becoming active can be lost), type `mod0042` (a folder that really exists in the generated repo), then start capturing and type `z`. No path in the repo contains a `z`, so the editor searches all 80,000 paths and the result list empties: a large, comparable change in every editor. Time 0 is the moment `z` is sent; stops at the first frame that changes by more than 0.5% relative to the frame just before the key. Keys are sent with `CGEvent.postToPid` to the exact process, after bringing the app to the front. See [Quick Open: why the last key leaves no match](#quick-open-why-the-last-key-leaves-no-match). |
 | Idle RAM | Open the medium repo, open 10 `.rs` files of ripgrep through Quick Open (the same way for all three, because `luc` accepts only one path on the command line), idle for 60 s, then sum the `phys_footprint` of every process of the app (`footprint`). Unit: MiB (1024). |
 | Idle CPU | Same session as RAM (one session per editor per round: idle 60 s, read RAM, then measure CPU for another 60 s, about 2 minutes in total): cumulative CPU time (`ps -o time=`) of every process of the app, read every second with the process list refreshed each time; CPU used over the 60 s divided by wall-clock time, ×100 (100% = one core). A process that appears later counts from 0, and a process that exits midway counts up to its last reading. The `%cpu` column of `ps` is not used (a decaying average, not instantaneous). The report shows two decimal places; when Lucerna's median is below 0.1% no ratio is shown (a ratio of two values that small is mostly noise). |
-| Dropped frames scrolling `big.rs` | Open `big.rs`, wait for the content to show, bring the editor to the front and check that the topmost window at the window centre is the editor's (if another window covers it, the round is discarded without sending any event), then send 3000 one-line scroll events at 120 events/second (CGEvent), with the pointer at the window centre. A dropped frame is a gap between two new frames > 1.5 × max(display refresh period, event period) while events are still being sent. The reported value is the dropped rate / number of frames (%). The middle of a code file covers fewer pixels, so the "has content" threshold for this measurement is 2%, not 30%. |
+| Dropped frames scrolling `big.rs` | Open `big.rs`, wait for the content to show, bring the editor to the front and check that the topmost window at the window centre is the editor's (if another window covers it, the round is discarded without sending any event), then send 600 continuous (trackpad-like, pixel) scroll events of 40 px each, one per display refresh, with scroll phases began, changed and ended (CGEvent), with the pointer at the window centre. A dropped frame is a gap between two new frames > 1.5 × max(display refresh period, event period) while events are still being sent. See [Scrolling: why pixel events](#scrolling-why-pixel-events). The reported value is the dropped rate / number of frames (%). The middle of a code file covers fewer pixels, so the "has content" threshold for this measurement is 2%, not 30%. |
 | App size | `du -sk` of the `.app` bundle, MiB. One value per configuration, not repeated per round. |
+
+### Quick Open: why the last key leaves no match
+
+The first version typed `mod004` and then `2`. In Lucerna and Zed, the rows
+for `mod004` and `mod0042` differ by one digit each, so the window changed by
+less than 0.1% after the key, under the 0.5% threshold that ignores a blinking
+cursor, and every round timed out. A diagnostic run
+(`bench/compare/diagnose.py`) recorded the change after each key: after `2`,
+Lucerna peaked at 0.08%; after a key that leaves no match, the list empties
+and the window changed by 1.6% within one frame. The same diagnostic found two
+dialogs on a fresh profile that took the keyboard before Quick Open could
+open: Zed's "Unrecognized Project" (Restricted Mode) for the large repo, and
+VS Code's first-run "Welcome to VS Code" sign-in dialog. Both are now turned
+off in the profiles (see [Environment](#environment)).
+
+### Scrolling: why pixel events
+
+The first version sent one-line mouse-wheel events (3000 at 120/s). On a
+60 Hz display Lucerna drew a new frame every refresh, but Zed and VS Code drew
+new content only 11 to 15 times per second, with gaps of up to about 500 ms,
+at both 120 and 60 events/s. With continuous pixel events (40 px, one per
+refresh, like a trackpad) all three drew a new frame at about 58 frames per
+second with no gap longer than 21 ms. The line-event numbers therefore
+measured how each editor handles a stream of synthetic wheel ticks, not how
+smoothly it scrolls, so the measurement now uses pixel events. On a 60 Hz
+display all three keep up with this input; a 120 Hz display is needed to
+separate them further.
+
+Diagnostic data (one run each, `diagnose.py`, Apple M4, 60 Hz):
+
+| Input | Lucerna | Zed | VS Code |
+|---|---|---|---|
+| Line events, 120/s: new frames per second | 58.3 | 11.4 | 14.8 |
+| Line events, 60/s: new frames per second | 58.0 | 11.4 | 15.3 |
+| Pixel events, 60/s: new frames per second | 58.1 | 58.0 | 57.9 |
+| Pixel events, 60/s: longest gap | 21 ms | 19 ms | 20 ms |
 
 ## Rounds and statistics
 

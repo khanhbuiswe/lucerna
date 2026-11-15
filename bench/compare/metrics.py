@@ -41,9 +41,19 @@ CALIBRATE_MIN_FRAC = 0.9    # an empty editor's centre is almost all background
 OPEN_SETTLE_S = 5.0         # medium repo: window up before Quick Open
 SCAN_WAIT_S = 30            # large repo: let the file scan finish
 IDLE_S = 60
-SCROLL_LINES = 3000
-SCROLL_RATE = 120
-QUICK_OPEN_QUERY = "mod0042"  # gen-bench-repo.sh: directory pkg00/mod0042/
+# Scrolling: continuous (trackpad-like) pixel events, one per display refresh
+# (the helper's default rate). Line (mouse-wheel) events made Zed and VS Code
+# repaint only every few hundred ms while Lucerna repainted every frame, so
+# the dropped-frame count measured how each editor batches wheel ticks, not
+# how smoothly it scrolls (see docs/benchmarks.md, "Scrolling").
+SCROLL_EVENTS = 600
+SCROLL_PIXELS_PER_EVENT = 40
+# Quick Open: type the prefix, then one key that leaves no match. The result
+# list empties, a change every editor shows the same way. With `mod0042` as
+# the last step, the rows changed by one digit in Lucerna and Zed (under 0.1 %
+# of the window) and no round could be measured.
+QUICK_OPEN_PREFIX = "mod0042"  # gen-bench-repo.sh: directory pkg00/mod0042/
+QUICK_OPEN_LAST_KEY = "z"      # no path in the large repo contains a `z`
 # Fixed window frame in points (top-left origin) for every launching metric but
 # startup. macOS may move the window below a taller (notch) menu bar; the size
 # is what the helper enforces.
@@ -421,8 +431,35 @@ def file_change_ms(editor: str, paths: BenchPaths) -> float | None:
         shutil.copyfile(paths.marker_file, reload)
 
 
+PICKER_TRIES = 2
+PICKER_WAIT_S = 3
+
+
+def _open_picker_confirmed(editor, paths, pids: str, deadline: float) -> bool:
+    """⌘P, confirmed on screen: the window must change (the picker opens)
+    within PICKER_WAIT_S, else ⌘P is sent once more. A ⌘P sent while the app
+    is still becoming active can be lost (seen with Zed); without this check
+    the round would time out on a window that has no picker."""
+    for attempt in range(PICKER_TRIES):
+        w = _start_watch(paths, ["watch", "--pid", pids, "--since", str(editors.now_ns()),
+                                 "--until", "change", "--timeout", str(PICKER_WAIT_S)],
+                         _left(deadline))
+        if w is None:
+            return False
+        try:
+            if _helper(paths, ["key", "--pid", pids, "--combo", "cmd+p"]) is None:
+                return False
+            if w.result(PICKER_WAIT_S) is not None:
+                time.sleep(SETTLE_S / 2)
+                return True
+        finally:
+            w.close()
+        _log(f"{editor}: Quick Open did not open (try {attempt + 1}/{PICKER_TRIES})")
+    return False
+
+
 def quick_open_ms(editor: str, paths: BenchPaths) -> float | None:
-    """Large repo, ⌘P, type `mod0042`: last key → first changed frame."""
+    """Large repo, ⌘P, type `mod0042`, then `z` (no match): `z` → first changed frame."""
     editors.launch(editor, paths, paths.large_repo)
     watch = None
     try:
@@ -434,7 +471,9 @@ def quick_open_ms(editor: str, paths: BenchPaths) -> float | None:
         time.sleep(SCAN_WAIT_S)
         deadline = time.monotonic() + TIMEOUT_S
         pids = _csv(editors.bench_pids(editor, paths))
-        if not _quick_open_type(paths, pids, QUICK_OPEN_QUERY[:-1]):
+        if not _open_picker_confirmed(editor, paths, pids, deadline):
+            return None
+        if _helper(paths, ["type", "--pid", pids, "--text", QUICK_OPEN_PREFIX]) is None:
             return None
         time.sleep(SETTLE_S)
         watch = _start_watch(paths, ["watch", "--pid", pids, "--since", str(editors.now_ns()),
@@ -442,7 +481,7 @@ def quick_open_ms(editor: str, paths: BenchPaths) -> float | None:
                              _left(deadline))
         if watch is None:
             return None
-        typed = _helper(paths, ["type", "--pid", pids, "--text", QUICK_OPEN_QUERY[-1]])
+        typed = _helper(paths, ["type", "--pid", pids, "--text", QUICK_OPEN_LAST_KEY])
         if typed is None:
             return None  # `finally` kills the watch instead of waiting it out
         out = watch.result(_left(deadline))
@@ -591,7 +630,7 @@ def idle_cpu_pct(editor: str, paths: BenchPaths) -> float | None:
 
 
 def scroll_dropped_pct(editor: str, paths: BenchPaths) -> float | None:
-    """big.rs: 3000 one-line scroll events at 120/s; dropped frames in %."""
+    """big.rs: 600 continuous 40-px scroll events, one per refresh; dropped frames in %."""
     bg = background(editor, paths)
     if bg is None:
         return None
@@ -606,7 +645,8 @@ def scroll_dropped_pct(editor: str, paths: BenchPaths) -> float | None:
             return None
         time.sleep(SETTLE_S)
         out = _helper(paths, ["scroll", "--pid", _csv(editors.bench_pids(editor, paths)),
-                              "--lines", str(SCROLL_LINES), "--rate", str(SCROLL_RATE),
+                              "--unit", "pixel", "--lines", str(SCROLL_EVENTS),
+                              "--pixels-per-event", str(SCROLL_PIXELS_PER_EVENT),
                               "--timeout", str(_left(deadline))])
         if not out or not out.get("frames"):
             return None

@@ -219,7 +219,7 @@ class QuickOpenTests(Base):
 
         def helper(paths, args, timeout=metrics.TIMEOUT_S):
             calls.append(args[0] + ":" + (args[-1] if args[0] == "type" else ""))
-            if args[0] == "type" and args[-1] == "2":
+            if args[0] == "type" and args[-1] == "z":
                 return {"t_ns": [7_000_000]}
             if args[0] == "type":
                 return {"t_ns": [1, 2, 3, 4, 5, 6]}
@@ -232,7 +232,9 @@ class QuickOpenTests(Base):
         with mock.patch.object(metrics, "_helper", side_effect=helper), \
                 mock.patch.object(metrics, "_start_watch", side_effect=start):
             self.assertEqual(metrics.quick_open_ms("zed", self.paths), 12.0)
-        self.assertEqual(calls, ["frame:", "key:", "type:mod004", "watch", "type:2"])
+        # A watch confirms the picker opened after ⌘P, then the prefix, then
+        # the measured watch and the last key.
+        self.assertEqual(calls, ["frame:", "watch", "key:", "type:mod0042", "watch", "type:z"])
         metrics.time.sleep.assert_any_call(metrics.SETTLE_S / 2)
         self.launch.assert_called_once_with("zed", self.paths, self.paths.large_repo)
         metrics.time.sleep.assert_any_call(metrics.SCAN_WAIT_S)
@@ -252,16 +254,46 @@ class QuickOpenTests(Base):
         self.assertEqual(events[i:i + 3], ["key", f"sleep {metrics.SETTLE_S / 2}", "type"])
 
     def test_failed_last_key_closes_watch_without_waiting(self):
-        watch = FakeWatch({"t_ns": 99})
+        picker, watch = FakeWatch({"t_ns": 5}), FakeWatch({"t_ns": 99})
 
         def helper(paths, args, timeout=metrics.TIMEOUT_S):
-            return None if args[0] == "type" and args[-1] == "2" else {"t_ns": [1]}
+            return None if args[0] == "type" and args[-1] == "z" else {"t_ns": [1]}
 
         with mock.patch.object(metrics, "_helper", side_effect=helper), \
-                mock.patch.object(metrics, "_start_watch", return_value=watch):
+                mock.patch.object(metrics, "_start_watch", side_effect=[picker, watch]):
             self.assertIsNone(metrics.quick_open_ms("zed", self.paths))
         self.assertTrue(watch.closed)
         self.assertFalse(watch.waited)
+
+    def test_lost_cmd_p_is_sent_again(self):
+        keys = []
+
+        def helper(paths, args, timeout=metrics.TIMEOUT_S):
+            if args[0] == "key":
+                keys.append(args[-1])
+            return {"t_ns": [7_000_000]} if args[0] == "type" else {"t_ns": 1}
+
+        watches = [FakeWatch(None), FakeWatch({"t_ns": 2}),
+                   FakeWatch({"t_ns": 19_000_000, "frames": 2})]
+        with mock.patch.object(metrics, "_helper", side_effect=helper), \
+                mock.patch.object(metrics, "_start_watch", side_effect=watches):
+            self.assertEqual(metrics.quick_open_ms("zed", self.paths), 12.0)
+        self.assertEqual(keys, ["cmd+p", "cmd+p"])
+        self.assertTrue(all(w.closed for w in watches))
+
+    def test_picker_never_opens_is_none_without_typing(self):
+        typed = []
+
+        def helper(paths, args, timeout=metrics.TIMEOUT_S):
+            if args[0] == "type":
+                typed.append(args[-1])
+            return {"t_ns": 1}
+
+        with mock.patch.object(metrics, "_helper", side_effect=helper), \
+                mock.patch.object(metrics, "_start_watch",
+                                  side_effect=[FakeWatch(None), FakeWatch(None)]):
+            self.assertIsNone(metrics.quick_open_ms("zed", self.paths))
+        self.assertEqual(typed, [])
 
     def test_change_before_last_key_is_none(self):
         with mock.patch.object(metrics, "_helper", return_value={"t_ns": [50]}), \
@@ -436,8 +468,12 @@ class ScrollTests(Base):
             self.assertEqual(metrics.scroll_dropped_pct("zed", self.paths), 1.5)
         args = helper.call_args.args[1]
         self.assertEqual(args[:1], ["scroll"])
-        self.assertEqual(args[args.index("--lines") + 1], "3000")
-        self.assertEqual(args[args.index("--rate") + 1], "120")
+        # Continuous pixel events at the display rate (no --rate): line
+        # events measured how editors batch wheel ticks (docs, "Scrolling").
+        self.assertEqual(args[args.index("--unit") + 1], "pixel")
+        self.assertEqual(args[args.index("--lines") + 1], "600")
+        self.assertEqual(args[args.index("--pixels-per-event") + 1], "40")
+        self.assertNotIn("--rate", args)
         self.assertLessEqual(int(args[args.index("--timeout") + 1]), metrics.TIMEOUT_S)
         self.launch.assert_called_once_with("zed", self.paths, self.paths.big_file)
 

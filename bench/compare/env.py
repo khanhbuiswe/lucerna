@@ -170,6 +170,10 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
         "extensions.autoCheckUpdates": False,
         # Quick Open opens the idle-RAM files: each must stay a real tab.
         "workbench.editor.enablePreviewFromQuickOpen": False,
+        # VS Code 1.146 opens a "Welcome to VS Code / sign in" dialog over
+        # the window on a fresh profile; it takes the keyboard.
+        "workbench.welcomePage.experimentalOnboarding": False,
+        "chat.disableAIFeatures": True,
     }
     if lsp:
         vscode["rust-analyzer.server.path"] = ra
@@ -188,11 +192,17 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
         # no downloads into the bench profile.
         "auto_install_extensions": {"html": False},
         "suggest_extensions": False,
+        # Without this Zed shows "Unrecognized Project" (Restricted Mode) for
+        # a folder it has not seen, which takes the keyboard (Quick Open).
+        "session": {"trust_all_worktrees": True},
     }
     if lsp:
         zed["lsp"] = {"rust-analyzer": {"binary": {"path": ra}}}
     else:
         zed["languages"] = {"Rust": {"language_servers": []}}
+        # Trusting the folders would let Zed start (and download) servers
+        # for other languages, such as TypeScript in the large repo.
+        zed["enable_language_server"] = False
     _write_json(paths.profiles / "zed" / "config" / "settings.json", zed)
 
     luc = {
