@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use lucerna_settings::{Layer, SettingsStore};
+use lucerna_settings::{Layer, SettingsStore, WorkspaceLayer};
 
 fn fs(s: &SettingsStore, lang: Option<&str>, key: &str) -> Option<u32> {
     s.get::<u32>(key, lang)
@@ -35,9 +35,12 @@ fn workspace_overrides_user() {
     let mut s = SettingsStore::with_defaults();
     s.set_layer(Layer::User, r#"{"editor.fontSize": 15}"#)
         .unwrap();
-    s.set_layer(Layer::Workspace, r#"{"editor.fontSize": 16}"#)
-        .unwrap();
-    assert_eq!(fs(&s, None, "editor.fontSize"), Some(16));
+    let w = WorkspaceLayer::parse(r#"{"editor.fontSize": 16}"#).unwrap();
+    assert_eq!(
+        s.view(Some(&w)).get::<u32>("editor.fontSize", None),
+        Some(16)
+    );
+    assert_eq!(fs(&s, None, "editor.fontSize"), Some(15));
 }
 
 #[test]
@@ -64,23 +67,24 @@ fn user_language_beats_workspace_plain() {
     let mut s = SettingsStore::with_defaults();
     s.set_layer(Layer::User, r#"{"[rust]": {"editor.tabSize": 2}}"#)
         .unwrap();
-    s.set_layer(Layer::Workspace, r#"{"editor.tabSize": 8}"#)
-        .unwrap();
-    assert_eq!(fs(&s, Some("rust"), "editor.tabSize"), Some(2));
-    assert_eq!(fs(&s, Some("python"), "editor.tabSize"), Some(8));
+    let w = WorkspaceLayer::parse(r#"{"editor.tabSize": 8}"#).unwrap();
+    let v = s.view(Some(&w));
+    assert_eq!(v.get::<u32>("editor.tabSize", Some("rust")), Some(2));
+    assert_eq!(v.get::<u32>("editor.tabSize", Some("python")), Some(8));
 }
 
 /// Workspace[lang], User[lang], Default[lang], Workspace, User, Default:
 /// each value shows once every layer above it is taken away.
 #[test]
 fn precedence_is_language_layers_then_plain_layers() {
+    // Layer 0 Default, 1 User, 2 Workspace.
     let order = [
-        (Layer::Workspace, true, 1),
-        (Layer::User, true, 2),
-        (Layer::Default, true, 3),
-        (Layer::Workspace, false, 4),
-        (Layer::User, false, 5),
-        (Layer::Default, false, 6),
+        (2, true, 1),
+        (1, true, 2),
+        (0, true, 3),
+        (2, false, 4),
+        (1, false, 5),
+        (0, false, 6),
     ];
     for winner in 0..order.len() {
         let mut layers: [Vec<String>; 3] = Default::default();
@@ -90,18 +94,15 @@ fn precedence_is_language_layers_then_plain_layers() {
             } else {
                 format!(r#""editor.tabSize": {value}"#)
             };
-            layers[layer as usize].push(entry);
+            layers[layer].push(entry);
         }
+        let text = |entries: &Vec<String>| format!("{{{}}}", entries.join(","));
         let mut s = SettingsStore::default();
-        for (layer, entries) in [Layer::Default, Layer::User, Layer::Workspace]
-            .into_iter()
-            .zip(&layers)
-        {
-            s.set_layer(layer, &format!("{{{}}}", entries.join(",")))
-                .unwrap();
-        }
+        s.set_layer(Layer::Default, &text(&layers[0])).unwrap();
+        s.set_layer(Layer::User, &text(&layers[1])).unwrap();
+        let w = WorkspaceLayer::parse(&text(&layers[2])).unwrap();
         assert_eq!(
-            fs(&s, Some("go"), "editor.tabSize"),
+            s.view(Some(&w)).get::<u32>("editor.tabSize", Some("go")),
             Some(order[winner].2),
             "with {:?}",
             &order[winner..]
@@ -145,15 +146,13 @@ fn false_in_a_higher_layer_turns_a_lower_glob_off() {
     let mut s = SettingsStore::with_defaults();
     s.set_layer(Layer::User, r#"{"files.exclude": {"**/.DS_Store": false}}"#)
         .unwrap();
-    s.set_layer(
-        Layer::Workspace,
-        r#"{"search.exclude": {"**/target": false, "**/out": true}}"#,
-    )
-    .unwrap();
-    let files: BTreeMap<String, bool> = s.get("files.exclude", None).unwrap();
+    let w = WorkspaceLayer::parse(r#"{"search.exclude": {"**/target": false, "**/out": true}}"#)
+        .unwrap();
+    let v = s.view(Some(&w));
+    let files: BTreeMap<String, bool> = v.get("files.exclude", None).unwrap();
     assert_eq!(files.get("**/.DS_Store"), Some(&false));
     assert_eq!(files.get("**/.git"), Some(&true));
-    let search: BTreeMap<String, bool> = s.get("search.exclude", None).unwrap();
+    let search: BTreeMap<String, bool> = v.get("search.exclude", None).unwrap();
     assert_eq!(
         search,
         BTreeMap::from([
@@ -173,8 +172,8 @@ fn objects_merge_deeply_and_a_non_object_replaces() {
         .unwrap();
     let v: serde_json::Value = s.get("a", None).unwrap();
     assert_eq!(v, serde_json::json!({"x": {"p": 1, "q": 3}, "y": 1}));
-    s.set_layer(Layer::Workspace, r#"{"a": 7}"#).unwrap();
-    assert_eq!(s.get::<u32>("a", None), Some(7));
+    let w = WorkspaceLayer::parse(r#"{"a": 7}"#).unwrap();
+    assert_eq!(s.view(Some(&w)).get::<u32>("a", None), Some(7));
 }
 
 #[test]
@@ -242,9 +241,9 @@ fn files_associations_merge_across_layers() {
     let mut s = SettingsStore::with_defaults();
     s.set_layer(Layer::User, r#"{"files.associations": {"*.a": "x"}}"#)
         .unwrap();
-    s.set_layer(Layer::Workspace, r#"{"files.associations": {"*.b": "y"}}"#)
-        .unwrap();
+    let w = WorkspaceLayer::parse(r#"{"files.associations": {"*.b": "y"}}"#).unwrap();
     let assoc = s
+        .view(Some(&w))
         .get::<BTreeMap<String, String>>("files.associations", None)
         .unwrap();
     assert_eq!(assoc.len(), 2);
@@ -255,36 +254,39 @@ fn files_associations_merge_across_layers() {
 #[test]
 fn get_trusted_ignores_workspace_layer() {
     let mut s = SettingsStore::with_defaults();
-    s.set_layer(
-        Layer::Workspace,
+    let w = WorkspaceLayer::parse(
         r#"{"lsp.x": "ws", "lsp.o": {"a": 1, "b": 1}, "[python]": {"lsp.py": "ws"}}"#,
     )
     .unwrap();
-    assert_eq!(s.get_trusted::<String>("lsp.x", None), None);
-    assert_eq!(s.get::<String>("lsp.x", None).as_deref(), Some("ws"));
-    assert_eq!(s.get_trusted::<String>("lsp.py", Some("python")), None);
+    let v = s.view(Some(&w));
+    assert_eq!(v.get_trusted::<String>("lsp.x", None), None);
+    assert_eq!(v.get::<String>("lsp.x", None).as_deref(), Some("ws"));
+    assert_eq!(v.get_trusted::<String>("lsp.py", Some("python")), None);
 
     s.set_layer(
         Layer::User,
         r#"{"lsp.x": "user", "lsp.o": {"b": 2}, "[python]": {"lsp.py": "user"}}"#,
     )
     .unwrap();
+    let v = s.view(Some(&w));
     assert_eq!(
-        s.get_trusted::<String>("lsp.x", None).as_deref(),
+        v.get_trusted::<String>("lsp.x", None).as_deref(),
         Some("user")
     );
     assert_eq!(
-        s.get_trusted::<String>("lsp.py", Some("python")).as_deref(),
+        v.get_trusted::<String>("lsp.py", Some("python")).as_deref(),
         Some("user")
     );
     // Objects still merge across Default and User, without Workspace.
     s.set_layer(Layer::Default, r#"{"lsp.o": {"a": 0, "c": 0}}"#)
         .unwrap();
-    let merged: BTreeMap<String, u32> = s.get_trusted("lsp.o", None).unwrap();
+    let merged: BTreeMap<String, u32> = s.view(Some(&w)).get_trusted("lsp.o", None).unwrap();
     assert_eq!(
         merged,
         BTreeMap::from([("a".into(), 0), ("b".into(), 2), ("c".into(), 0)])
     );
+    // The store alone has no workspace layer.
+    assert_eq!(s.get::<String>("lsp.x", None).as_deref(), Some("user"));
 }
 
 #[test]
