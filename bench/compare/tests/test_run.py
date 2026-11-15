@@ -167,7 +167,7 @@ class Runner(unittest.TestCase):
 
     def test_missing_lucerna_binary_aborts_before_anything(self):
         h = Harness(self)
-        h.lucerna = run.editors.BinaryMissing("không tìm thấy `luc`")
+        h.lucerna = run.editors.BinaryMissing("`luc` not found")
         with mock.patch.object(run, "_log") as lg:
             self.assertEqual(h.main("--rounds", "1"), 1)
         self.assertEqual(h.calls, [])
@@ -180,7 +180,7 @@ class Runner(unittest.TestCase):
         def vanish(editor, paths):
             n["i"] += 1
             if n["i"] > 2:
-                raise run.editors.BinaryMissing("binary Lucerna /x/luc không tồn tại")
+                raise run.editors.BinaryMissing("Lucerna binary /x/luc does not exist")
             return 1.0
         orig = h.metric
         h.metric = lambda name: vanish if name == "scroll_dropped_pct" else orig(name)
@@ -455,7 +455,7 @@ class ForeignZed(unittest.TestCase):
         h = Harness(self)
 
         def boom(editor, paths):
-            raise run.editors.ForeignInstance("Zed của bạn đang chạy (pid 1)")
+            raise run.editors.ForeignInstance("Your Zed is running (pid 1)")
         h.metric = lambda name: boom
         self.assertEqual(h.main("--rounds", "1", "--only", "startup_ms"), 1)
         self.assertTrue(h.out.exists())

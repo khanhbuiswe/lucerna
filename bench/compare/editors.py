@@ -100,15 +100,15 @@ def _find_lucerna() -> str:
         pass
     found = shutil.which("luc")
     if not found:
-        raise BinaryMissing("không tìm thấy `luc`: đặt LUCERNA_BIN hoặc dựng bản release "
-                            "bằng scripts/bundle-app.sh")
+        raise BinaryMissing("`luc` not found: set LUCERNA_BIN or build a release with "
+                            "scripts/bundle-app.sh")
     return found
 
 
 def _check_executable(path: str) -> None:
     if not (os.path.isfile(path) and os.access(path, os.X_OK)):
-        raise BinaryMissing(f"binary Lucerna {path} không tồn tại hoặc không chạy được "
-                            "(bị xoá hay đang dựng lại?); dừng.")
+        raise BinaryMissing(f"Lucerna binary {path} does not exist or cannot run "
+                            "(deleted or being rebuilt?); stopping.")
 
 
 def resolve_lucerna(refresh: bool = False) -> dict:
@@ -220,10 +220,10 @@ def foreign_instances(editor: str, paths: BenchPaths) -> list[int]:
 def foreign_message(editor: str, pids: list[int]) -> str:
     listed = ", ".join(str(p) for p in pids)
     if editor == "zed":
-        return (f"Zed của bạn đang chạy (pid {listed}). Zed chỉ cho một phiên mỗi "
-                "kênh phát hành, nên bench không thể mở Zed riêng. "
-                "Hãy tự đóng Zed rồi chạy lại.")
-    return f"{editor} của bạn đang chạy (pid {listed})."
+        return (f"Your Zed is running (pid {listed}). Zed allows only one instance per "
+                "release channel, so bench cannot open its own Zed. "
+                "Quit Zed yourself and run again.")
+    return f"Your {editor} is running (pid {listed})."
 
 
 def running_pids(exe: str) -> list[int]:

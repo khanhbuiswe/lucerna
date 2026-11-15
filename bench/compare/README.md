@@ -1,92 +1,92 @@
-# bench/compare: so sánh Lucerna, Zed và VS Code từ bên ngoài app
+# bench/compare: compare Lucerna, Zed and VS Code from outside the app
 
-Spec: `docs/superpowers/specs/2026-11-14-editor-benchmark-design.md`. Chỉ dùng stdlib Python (`python3 -I`).
-Test: `python3 -m unittest discover -s bench/compare/tests -v` (chạy từ gốc repo).
+Spec: `docs/superpowers/specs/2026-11-14-editor-benchmark-design.md`. Python stdlib only (`python3 -I`).
+Tests: `python3 -m unittest discover -s bench/compare/tests -v` (run from the repo root).
 
-## Quyền cần cấp (một lần)
+## Permissions needed (once)
 
-System Settings > Privacy & Security, cấp cho ứng dụng terminal đang chạy bench:
-- **Screen Recording** (helper quay màn hình bằng ScreenCaptureKit).
-- **Accessibility** (helper tạo sự kiện phím/cuộn bằng CGEvent và đặt kích thước cửa sổ bằng AX).
+System Settings > Privacy & Security, grant to the terminal app that runs bench:
+- **Screen Recording** (the helper captures the screen with ScreenCaptureKit).
+- **Accessibility** (the helper creates key/scroll events with CGEvent and sets the window size with AX).
 
-Mỗi lệnh helper chỉ đòi quyền nó dùng:
+Each helper command asks only for the permissions it uses:
 
-| Lệnh | Quyền |
+| Command | Permission |
 |---|---|
-| `now`, `check`, `display` | không cần |
-| `sample`, `watch` (cả `watch --display`) | Screen Recording |
+| `now`, `check`, `display` | none |
+| `sample`, `watch` (including `watch --display`) | Screen Recording |
 | `key`, `type`, `frame`, `activate` | Accessibility |
-| `scroll` | Screen Recording và Accessibility |
+| `scroll` | Screen Recording and Accessibility |
 
-Từ đó mỗi phép đo cần: `idle_ram_mb`, `idle_cpu_pct` Accessibility; `startup_ms`,
-`file_change_ms`, `quick_open_ms`, `scroll_dropped_pct` cả hai; `app_size_mb`
-không cần (bảng `METRIC_HELPERS` × `HELPER_PERMISSIONS` trong `metrics.py`, `run.py` suy ra
-từ đó). Thiếu quyền thì helper báo lỗi và thoát mã 3, và `run.py` dừng trước khi đo, in tên
-quyền thiếu và gợi ý `--only` gồm các phép đo chạy được với quyền đang có (ví dụ chưa có
+From that, each measurement needs: `idle_ram_mb`, `idle_cpu_pct` Accessibility; `startup_ms`,
+`file_change_ms`, `quick_open_ms`, `scroll_dropped_pct` both; `app_size_mb`
+none (the `METRIC_HELPERS` × `HELPER_PERMISSIONS` tables in `metrics.py`, from which `run.py` derives
+this). If a permission is missing, the helper reports an error and exits with code 3, and `run.py` stops before measuring, prints the name of the
+missing permission and suggests an `--only` listing the measurements that can run with the permissions you have (for example without
 Screen Recording: `--only idle_ram_mb,idle_cpu_pct,app_size_mb`).
 
-Cửa sổ bench phải nằm trên màn hình chính: `watch --display` chỉ quay màn hình chính, và
-cửa sổ ở màn hình khác cho lượt `null` (hết giờ).
+The bench window must be on the main display: `watch --display` captures only the main display, and
+a window on another display gives a `null` round (timeout).
 
-## Helper `bench-helper` (Swift)
+## The `bench-helper` helper (Swift)
 
-Dựng bằng `swiftc` của Command Line Tools: `sh bench/compare/helper/build.sh [out]` (mặc định `<bench>/bin/bench-helper`). Mỗi lệnh in một dòng JSON ra stdout; lỗi ra stderr, mã thoát 1 = sai cú pháp/lỗi, 2 = hết giờ, 3 = thiếu quyền (không in số đo). Đối số được kiểm tra trước quyền, nên sai cú pháp luôn là mã 1. Quyền của từng lệnh: bảng ở trên.
+Build it with the Command Line Tools' `swiftc`: `sh bench/compare/helper/build.sh [out]` (default `<bench>/bin/bench-helper`). Each command prints one JSON line to stdout; errors go to stderr, exit code 1 = syntax error/failure, 2 = timeout, 3 = missing permission (no measurement is printed). Arguments are checked before permissions, so a syntax error is always code 1. Permissions per command: see the table above.
 
-`--pid` nhận danh sách cách nhau bởi dấu phẩy (truyền mọi pid của phiên bench, kể cả process con); helper chọn cửa sổ layer 0 lớn nhất (≥ 100×100 pt) đang hiện thuộc một trong các pid đó. Kích thước quay cố định lúc bắt đầu stream; cửa sổ đổi cỡ sau đó thì nội dung được co giãn vào kích thước ấy.
+`--pid` takes a comma-separated list (pass every pid of the bench session, child processes included); the helper picks the largest visible layer-0 window (≥ 100×100 pt) belonging to one of those pids. The capture size is fixed when the stream starts; if the window is resized afterwards, the content is scaled into that size.
 
-- `now`: `{"t_ns"}` theo `CLOCK_UPTIME_RAW`, cùng đồng hồ với `editors.now_ns()` (`time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)`; không dùng `time.monotonic_ns()` vì python3 3.9 của macOS đếm nó từ lúc process khởi động).
-- `check`: `{"screen_recording", "accessibility"}`, chỉ preflight, không bật hộp thoại xin quyền. `BENCH_HELPER_FAKE_DENY=1` giả thiếu cả hai quyền; `=screen` hoặc `=accessibility` giả thiếu một quyền.
-- `sample --pid [--timeout]`: hiệu chuẩn; lấy một khung, in `{"center_dominant": "RRGGBB", "center_dominant_frac", "window_dominant", "width", "height"}` (vùng giữa = vùng `coverage` đo). Python dùng để truyền `--background` riêng cho từng editor.
-- `watch --pid --since --until coverage:x|change [--timeout 60] [--baseline png] [--background RRGGBB]`: quay ở tần số màn hình, thời điểm khung lấy từ `SCStreamFrameInfo.displayTime` (mach time → ns). In `{"t_ns", "frames", "first_frame_hit"}`; `first_frame_hit: true` nghĩa là khung đầu tiên đã đạt điều kiện, số đo đáng ngờ. `coverage`: tỉ lệ điểm ảnh vùng 60%×60% giữa khác màu nền; thiếu `--background` thì lấy màu phổ biến nhất của khung đầu và cảnh báo trên stderr. `change`: so với `--baseline`, hoặc khung cuối trước `--since`, hoặc khung đầu tiên; ngưỡng 0,5% bỏ qua con trỏ nhấp nháy. Helper ghi `ready` ra stderr sau khi khung đầu đã được lưu làm mốc; chờ dòng này rồi mới gây thay đổi.
-- `watch --display --exe <đường dẫn tuyệt đối> [--exclude-pids a,b] --since 0 --until coverage:x --background RRGGBB [--timeout s]`: dùng cho khởi động. Quay **cả màn hình chính** (`SCContentFilter(display:excludingWindows: [])`), bắt đầu **trước** khi mở editor. Ở mỗi khung hoàn chỉnh, helper tìm bằng `CGWindowListCopyWindowInfo` cửa sổ layer 0 lớn nhất (≥ 100×100 pt) đang hiện mà process sở hữu có `proc_pidpath` bằng `--exe` hoặc nằm trong `Contents/` của cùng bundle `.app` (process con), và không thuộc `--exclude-pids`; cắt khung theo vùng cửa sổ (điểm → điểm ảnh theo tỉ lệ khung/màn hình) rồi đo `coverage` trên vùng 60%×60% giữa của phần cắt. Ghi `ready` ra stderr sau khung hoàn chỉnh đầu tiên. Python chưa biết t0 khi helper bắt đầu, nên truyền `--since 0` (helper chỉ báo `t_ns` tuyệt đối) và tự trừ t0 của lần mở. `first_frame_hit: true` ở chế độ này nghĩa là cửa sổ đã có và đủ nội dung ngay khung đầu, điều không thể xảy ra với cửa sổ mở sau `ready`: vẫn coi là đáng ngờ và bỏ lượt. Điểm ảnh là màn hình đã ghép, nên một cửa sổ khác che editor sẽ bị đo thay: helper chỉ thử `coverage` ở khung mà cửa sổ trên cùng (cùng danh sách cửa sổ, thứ tự trước → sau) tại tâm và bốn góc của vùng giữa thuộc một pid khớp; khung khác tính là bị che (`occluded_frames`) và không thể đạt. Cửa sổ bị che vì vậy làm số đo muộn hơn chứ không làm nó sớm giả. Chỉ nhận `coverage`, bắt buộc `--background`, không nhận `--pid`/`--baseline`. In thêm `"occluded_frames"` và `"window": [x, y, w, h]` của cửa sổ lúc đạt.
-- `activate --pid [--timeout 10]`: chọn cửa sổ như `key` và đưa app sở hữu lên trước (`NSRunningApplication.activate`); in `{"pid", "active"}`.
-- `frame --pid --x --y --w --h [--timeout 10]`: chọn cửa sổ như `key`, lấy cửa sổ AX lớn nhất của app sở hữu (`AXUIElementCreateApplication` → `kAXWindowsAttribute`), đặt `kAXPositionAttribute`/`kAXSizeAttribute`, đọc lại; in `{"x", "y", "w", "h", "pid"}`. Chỉ ép **kích thước** (sai ≤ 1 pt): macOS giữ cửa sổ dưới thanh menu, thanh này cao hơn trên màn hình có notch, nên `y` thật có thể lớn hơn `--y`. Không đạt trước hạn → mã 2.
-- `display`: `{"width", "height"}` (pt), `pixel_width`, `pixel_height`, `scale`, `refresh_hz` (`NSScreen.maximumFramesPerSecond`), `mode_refresh_hz` của màn hình chính; không cần quyền.
-- `scroll --pid --lines [--rate]`: đưa app sở hữu cửa sổ lên trước, rồi kiểm tra bằng `CGWindowListCopyWindowInfo` (thứ tự trước → sau) rằng cửa sổ trên cùng tại tâm cửa sổ thuộc các pid đã cho (bỏ qua cửa sổ trong suốt alpha 0 và lớp hệ thống từ mức thanh menu trở lên); nếu không, mã 1 và không gửi sự kiện nào. Sau đó dời con trỏ chuột vào giữa cửa sổ rồi gửi sự kiện cuộn 1 dòng, mặc định với tốc độ bằng tần số màn hình; in `{"frames", "dropped", "refresh_hz", "rate"}`. Khung "rớt" là khoảng giữa hai khung mới > 1,5 × max(chu kỳ màn hình, chu kỳ sự kiện) (lệch khỏi định nghĩa trong brief: khi `rate` < tần số màn hình, định nghĩa gốc coi mọi khung là rớt).
-- `type --pid --text [--interval-ms 100] [--timeout 10]`, `key --pid --combo cmd+p [--timeout 10]`: tìm cửa sổ bằng `CGWindowListCopyWindowInfo` (pid chủ, layer, khung không cần Screen Recording; cùng cách chọn "cửa sổ layer 0 lớn nhất"), đưa app sở hữu cửa sổ lên trước (`NSRunningApplication.activate`) rồi gửi phím bằng `CGEvent.postToPid` tới pid đó; in thời điểm từng phím. `type` chỉ nhận chữ ASCII, số, dấu cách, dấu câu cơ bản và `\n` (Return); ký tự khác → mã 1.
+- `now`: `{"t_ns"}` from `CLOCK_UPTIME_RAW`, the same clock as `editors.now_ns()` (`time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)`; `time.monotonic_ns()` is not used because macOS's python3 3.9 counts it from process start).
+- `check`: `{"screen_recording", "accessibility"}`, preflight only, never shows a permission prompt. `BENCH_HELPER_FAKE_DENY=1` fakes both permissions missing; `=screen` or `=accessibility` fakes one missing.
+- `sample --pid [--timeout]`: calibration; grabs one frame and prints `{"center_dominant": "RRGGBB", "center_dominant_frac", "window_dominant", "width", "height"}` (the middle region is the region `coverage` measures). Python uses it to pass a per-editor `--background`.
+- `watch --pid --since --until coverage:x|change [--timeout 60] [--baseline png] [--background RRGGBB]`: captures at the display's refresh rate; the frame time comes from `SCStreamFrameInfo.displayTime` (mach time → ns). Prints `{"t_ns", "frames", "first_frame_hit"}`; `first_frame_hit: true` means the first frame already met the condition, so the measurement is suspect. `coverage`: the fraction of pixels in the middle 60%×60% region that differ from the background colour; without `--background` it takes the most common colour of the first frame and warns on stderr. `change`: compared with `--baseline`, or the last frame before `--since`, or the first frame; a 0.5% threshold ignores a blinking cursor. The helper writes `ready` to stderr once the first frame has been saved as the reference; wait for this line before causing the change.
+- `watch --display --exe <absolute path> [--exclude-pids a,b] --since 0 --until coverage:x --background RRGGBB [--timeout s]`: used for startup. Captures **the whole main display** (`SCContentFilter(display:excludingWindows: [])`), starting **before** the editor is opened. On every complete frame the helper uses `CGWindowListCopyWindowInfo` to find the largest visible layer-0 window (≥ 100×100 pt) whose owning process has a `proc_pidpath` equal to `--exe` or inside the `Contents/` of the same `.app` bundle (child processes), and is not in `--exclude-pids`; it crops the frame to the window region (points → pixels by the frame/display ratio) and measures `coverage` on the middle 60%×60% region of the crop. It writes `ready` to stderr after the first complete frame. Python does not yet know t0 when the helper starts, so it passes `--since 0` (the helper reports only an absolute `t_ns`) and subtracts the t0 of the launch itself. `first_frame_hit: true` in this mode means the window already existed and had enough content in the first frame, which cannot happen for a window opened after `ready`: it is still treated as suspect and the round is discarded. The pixels are the composited display, so another window covering the editor would be measured instead: the helper tries `coverage` only on a frame where the topmost window (same window list, front-to-back order) at the centre and the four corners of the middle region belongs to a matching pid; other frames count as occluded (`occluded_frames`) and cannot hit. An occluded window therefore makes the measurement later, not falsely earlier. Accepts only `coverage`, requires `--background`, does not accept `--pid`/`--baseline`. Also prints `"occluded_frames"` and `"window": [x, y, w, h]` of the window at the hit.
+- `activate --pid [--timeout 10]`: picks the window like `key` and brings the owning app to the front (`NSRunningApplication.activate`); prints `{"pid", "active"}`.
+- `frame --pid --x --y --w --h [--timeout 10]`: picks the window like `key`, takes the owning app's largest AX window (`AXUIElementCreateApplication` → `kAXWindowsAttribute`), sets `kAXPositionAttribute`/`kAXSizeAttribute`, reads them back; prints `{"x", "y", "w", "h", "pid"}`. Only the **size** is enforced (error ≤ 1 pt): macOS keeps the window below the menu bar, which is taller on a display with a notch, so the real `y` can be larger than `--y`. If it is not reached before the deadline → code 2.
+- `display`: `{"width", "height"}` (pt), `pixel_width`, `pixel_height`, `scale`, `refresh_hz` (`NSScreen.maximumFramesPerSecond`), `mode_refresh_hz` of the main display; needs no permission.
+- `scroll --pid --lines [--rate]`: brings the owning app's window to the front, then checks with `CGWindowListCopyWindowInfo` (front-to-back order) that the topmost window at the window centre belongs to the given pids (ignoring fully transparent alpha-0 windows and system layers from the menu bar level up); if not, code 1 and no event is sent. Then it moves the mouse pointer to the window centre and sends one-line scroll events, by default at a rate equal to the display's refresh rate; prints `{"frames", "dropped", "refresh_hz", "rate"}`. A "dropped" frame is a gap between two new frames > 1.5 × max(display period, event period) (a deviation from the definition in the brief: when `rate` < the display refresh rate, the original definition counts every frame as dropped).
+- `type --pid --text [--interval-ms 100] [--timeout 10]`, `key --pid --combo cmd+p [--timeout 10]`: find the window with `CGWindowListCopyWindowInfo` (owner pid, layer and frame need no Screen Recording; the same "largest layer-0 window" choice), bring the owning app to the front (`NSRunningApplication.activate`), then send keys with `CGEvent.postToPid` to that pid; print the time of each key. `type` accepts only ASCII letters, digits, space, basic punctuation and `\n` (Return); any other character → code 1.
 
-## Phép đo (`metrics.py`)
+## Measurements (`metrics.py`)
 
-Mỗi hàm mở editor trong hồ sơ bench, đo, rồi luôn đóng editor; trả `None` khi lượt hỏng (helper lỗi/hết giờ 60 s, không thấy cửa sổ, khung đáng ngờ). Thiếu quyền (helper mã 3) thì ném `PermissionDenied` để dừng cả phiên.
+Each function opens the editor in the bench profile, measures, then always closes the editor; it returns `None` when the round failed (helper error/60 s timeout, no window found, suspicious frame). A missing permission (helper code 3) raises `PermissionDenied` to stop the whole session.
 
-- Hiệu chuẩn nền: `calibrate` mở `data/empty.txt`, `sample` lấy màu giữa cửa sổ; lưu ở `<bench>/calibration.json` theo editor + phiên bản (`load_calibration`).
-- Kích thước cửa sổ: mọi phép đo mở editor, trừ khởi động, đặt cửa sổ thành `WINDOW_FRAME` (1280×800 pt, yêu cầu ở 0,25) bằng `frame` ngay khi cửa sổ hiện; `frame` hỏng thì lượt đó `None`. Khởi động dùng kích thước mặc định của từng editor (khung đầu không đổi cỡ được).
-- `startup_ms`: tính danh sách pid đang chạy cùng binary (ví dụ VS Code của bạn) làm `--exclude-pids`, chạy `watch --display --exe <binary chính> --since 0 --until coverage:0.3 --background <nền>`, chờ `ready`, **rồi** mới mở `marker.txt`; kết quả = `t_ns` − t0. Ngay sau lệnh mở, một luồng nền chờ process sở hữu cửa sổ xuất hiện rồi gọi `activate` để đưa cửa sổ mới lên trước (không làm chậm `watch`); `activate` hỏng chỉ ghi log, thiếu quyền thì dừng phiên. `first_frame_hit` hoặc `t_ns` < t0 → `None`.
-- `file_change_ms`: mở `data/reload.txt` (bản sao `marker.txt` mỗi lượt), đặt cửa sổ, chờ hiện, `watch --until change`, ghi file trống; mốc là ngay trước lệnh ghi.
-- `quick_open_ms`: repo lớn, đặt cửa sổ, chờ 30 s, ⌘P, gõ `mod004`, `watch --until change`, gõ `2`; mốc là phím cuối. `mod0042` là thư mục `pkg00/mod0042/` của `gen-bench-repo.sh`.
-- `idle_session` → (`idle_ram_mb`, `idle_cpu_pct`): repo vừa, đặt cửa sổ, mở 10 file `.rs` của ripgrep 14.1.1 bằng Quick Open (cùng cách cho ba editor; `luc` chỉ nhận một đường dẫn), rỗi 60 s; RAM = tổng `phys_footprint` (`footprint -f bytes --noCategories -p …`). CPU = thời gian CPU cộng dồn (`ps -o pid=,time=`) của mọi process bench trong 60 s: lấy mẫu mỗi giây, danh sách pid làm mới mỗi lần; process có ở mẫu đầu tính từ giá trị lúc đó, process xuất hiện sau tính từ 0, process thoát giữa chừng tính tới mẫu cuối của nó; % = CPU dùng / thời gian thực × 100 (100% = một lõi). Không dùng `%cpu` của `ps` (trung bình suy giảm). `report.py` ghi CPU với hai chữ số thập phân và không ghi hệ số khi trung vị của Lucerna dưới `CPU_RATIO_FLOOR` (0,1 %), kèm chú thích dưới bảng. Hồ sơ tắt tab xem trước khi mở từ Quick Open để 10 file là 10 tab; bench không kiểm chứng 10 tab đã mở (giới hạn đã biết).
-- `scroll_dropped_pct`: `big.rs`, đặt cửa sổ, `scroll --lines 3000 --rate 120`, `dropped / frames × 100`.
-- `app_size_mb`: `du -sk` bundle, MiB (1024).
+- Background calibration: `calibrate` opens `data/empty.txt` and `sample` takes the colour at the window centre; stored in `<bench>/calibration.json` by editor + version (`load_calibration`).
+- Window size: every measurement that opens an editor, except startup, sets the window to `WINDOW_FRAME` (1280×800 pt, requested at x=0, y=25) with `frame` as soon as the window appears; if `frame` fails, that round is `None`. Startup uses each editor's default size (the first frame cannot be resized).
+- `startup_ms`: computes the list of pids already running the same binary (for example your own VS Code) as `--exclude-pids`, runs `watch --display --exe <main binary> --since 0 --until coverage:0.3 --background <background>`, waits for `ready`, **then** opens `marker.txt`; result = `t_ns` − t0. Right after the open command, a background thread waits for the window-owning process to appear and then calls `activate` to bring the new window to the front (without slowing down `watch`); a failed `activate` is only logged, a missing permission stops the session. `first_frame_hit` or `t_ns` < t0 → `None`.
+- `file_change_ms`: opens `data/reload.txt` (a per-round copy of `marker.txt`), sets the window, waits for it to appear, `watch --until change`, writes an empty file; time 0 is just before the write.
+- `quick_open_ms`: the large repo, sets the window, waits 30 s, ⌘P, types `mod004`, `watch --until change`, types `2`; time 0 is the last key. `mod0042` is the `pkg00/mod0042/` folder from `gen-bench-repo.sh`.
+- `idle_session` → (`idle_ram_mb`, `idle_cpu_pct`): the medium repo, sets the window, opens 10 `.rs` files of ripgrep 14.1.1 through Quick Open (the same way for all three editors; `luc` accepts only one path), idles for 60 s; RAM = the sum of `phys_footprint` (`footprint -f bytes --noCategories -p …`). CPU = cumulative CPU time (`ps -o pid=,time=`) of every bench process over 60 s: sampled every second, with the pid list refreshed each time; a process present in the first sample counts from its value then, a process that appears later counts from 0, a process that exits midway counts up to its last sample; % = CPU used / wall-clock time × 100 (100% = one core). The `%cpu` of `ps` is not used (a decaying average). `report.py` writes CPU with two decimal places and writes no ratio when Lucerna's median is below `CPU_RATIO_FLOOR` (0.1 %), with a note under the table. The profile turns preview tabs off when opening from Quick Open so that 10 files are 10 tabs; bench does not verify that 10 tabs are open (a known limit).
+- `scroll_dropped_pct`: `big.rs`, sets the window, `scroll --lines 3000 --rate 120`, `dropped / frames × 100`.
+- `app_size_mb`: `du -sk` of the bundle, MiB (1024).
 
-## Dựng môi trường
+## Building the environment
 
-Mặc định dưới `~/LucernaBench.noindex` (đổi bằng `--bench-dir`):
-1. `env.prepare_data(paths)`: sinh repo lớn bằng `scripts/gen-bench-repo.sh` (80.000 file + `large/big.rs` ~10 MB), clone nông ripgrep `14.1.1` vào `data/medium` (cần mạng), ghi `data/marker.txt`.
-2. Đầu mỗi cấu hình: `env.reset_profiles(paths)` xoá các hồ sơ đã biết dưới `<bench>/profiles` (`env.PROFILE_ENTRIES`: `vscode`, `vscode-ext`, `zed`, `lucerna-home`, `bench-profile.json`), trừ `vscode-ext-lsp` và file pid Lucerna trong `lucerna-home`. Mục lạ được giữ nguyên kèm cảnh báo; `<bench>/profiles` là symlink thì từ chối; chỉ xoá đường dẫn nằm trong thư mục đó; rồi `env.write_profiles(paths, lsp=False|True)` ghi settings sạch cho cả ba editor và `profiles/bench-profile.json` (`{"lsp": …}`, `editors.launch` đọc để chọn thư mục extension của VS Code).
-3. Extension VS Code: `profiles/vscode-ext` luôn trống, dùng cho cấu hình không LSP cùng `--disable-extensions`; `profiles/vscode-ext-lsp` chứa rust-analyzer, dùng cho `lsp=True`. `lsp=True` cần `rust-analyzer` trên PATH và extension đã cài một lần (cần mạng):
+By default under `~/LucernaBench.noindex` (change with `--bench-dir`):
+1. `env.prepare_data(paths)`: generates the large repo with `scripts/gen-bench-repo.sh` (80,000 files + `large/big.rs` ~10 MB), shallow-clones ripgrep `14.1.1` into `data/medium` (needs a network connection), writes `data/marker.txt`.
+2. At the start of each configuration: `env.reset_profiles(paths)` deletes the known profiles under `<bench>/profiles` (`env.PROFILE_ENTRIES`: `vscode`, `vscode-ext`, `zed`, `lucerna-home`, `bench-profile.json`), except `vscode-ext-lsp` and the Lucerna pid file in `lucerna-home`. Unknown entries are kept with a warning; if `<bench>/profiles` is a symlink it refuses; it deletes only paths inside that folder; then `env.write_profiles(paths, lsp=False|True)` writes clean settings for all three editors and `profiles/bench-profile.json` (`{"lsp": …}`, which `editors.launch` reads to choose VS Code's extensions folder).
+3. VS Code extensions: `profiles/vscode-ext` is always empty, used for the no-LSP configuration together with `--disable-extensions`; `profiles/vscode-ext-lsp` holds rust-analyzer, used for `lsp=True`. `lsp=True` needs `rust-analyzer` on PATH and the extension installed once (needs a network connection):
    ```sh
    python3 -I -c 'import sys; sys.path.insert(0, "bench/compare"); import env; env.install_vscode_rust_analyzer(env.BenchPaths(env.DEFAULT_ROOT))'
    ```
-   Thiếu `rust-lang.rust-analyzer*` trong `vscode-ext-lsp` thì `run.py --lsp on|both` dừng ngay từ đầu.
-4. Trước mỗi lượt đo, `env.preflight()` phải trả danh sách rỗng (không có `cargo`/`rustc`, load 1 phút <= 2.0, `CPU_Speed_Limit` = 100, đang cắm điện AC, Low Power Mode tắt).
-5. Với `--cold`, trước mỗi lần khởi động đo (kể cả lượt 0) script dừng chờ; người dùng tự chạy `sudo purge` rồi nhấn Enter (script không chạy sudo). Chỉ phép khởi động là lạnh; báo cáo ghi cấu hình là "lạnh (chỉ khởi động)".
-6. Binary Lucerna được xác định **một lần** đầu phiên (`LUCERNA_BIN`, rồi bundle release theo `scripts/target-dir.sh`, rồi `luc` trên PATH) và ghi vào `meta.lucerna_binary` (`path`, `mtime`, `version` = `luc --version`); không gọi `cargo metadata` lúc đang đo. Thiếu hoặc không chạy được → dừng ngay; binary biến mất giữa phiên → dừng trước lần mở Lucerna kế tiếp (lưu kết quả dở).
+   If `rust-lang.rust-analyzer*` is missing from `vscode-ext-lsp`, `run.py --lsp on|both` stops right at the start.
+4. Before each measured round, `env.preflight()` must return an empty list (no `cargo`/`rustc`, 1-minute load <= 2.0, `CPU_Speed_Limit` = 100, on AC power, Low Power Mode off).
+5. With `--cold`, before every measured startup (round 0 included) the script pauses; the user runs `sudo purge` themselves and presses Enter (the script does not run sudo). Only the startup measurement is cold; the report names the configuration "cold (startup only)".
+6. The Lucerna binary is resolved **once** at the start of the session (`LUCERNA_BIN`, then the release bundle per `scripts/target-dir.sh`, then `luc` on PATH) and recorded in `meta.lucerna_binary` (`path`, `mtime`, `version` = `luc --version`); `cargo metadata` is not called during measurement. Missing or unable to run → stop immediately; binary disappears mid-session → stop before the next Lucerna launch (partial results saved).
 
-Lệnh mở mỗi editor (đều chạy thẳng binary chính, binary đó sở hữu cửa sổ):
+Command used to launch each editor (all run the main binary directly, and that binary owns the window):
 
-| Editor | Lệnh |
+| Editor | Command |
 |---|---|
-| VS Code | `…/Visual Studio Code.app/Contents/MacOS/Code --user-data-dir <bench>/profiles/vscode --extensions-dir <bench>/profiles/vscode-ext --disable-extensions --new-window <đích>` (có LSP: `--extensions-dir …/vscode-ext-lsp`, không `--disable-extensions`). Không qua `bin/code`, vì nó thêm một bước node/CLI mà hai editor kia không có. Môi trường con bỏ `ELECTRON_RUN_AS_NODE` và `ELECTRON_NO_ATTACH_CONSOLE` để `Code` luôn chạy như app. |
-| Zed | `…/Zed.app/Contents/MacOS/zed --user-data-dir <bench>/profiles/zed <đích>`. Không qua `cli`, vì `cli` chuyển qua LaunchServices và bỏ `--user-data-dir`. Zed chỉ cho một phiên mỗi kênh: Zed của bạn đang chạy (ở bất kỳ đâu, khớp `Zed.app/Contents/MacOS/zed`) thì bench dừng. |
-| Lucerna | `<binary đã xác định> <đích>` với `HOME=<bench>/profiles/lucerna-home`; pid, thời điểm bắt đầu và đường dẫn binary ghi vào `lucerna-home/.bench-pids.json`. |
+| VS Code | `…/Visual Studio Code.app/Contents/MacOS/Code --user-data-dir <bench>/profiles/vscode --extensions-dir <bench>/profiles/vscode-ext --disable-extensions --new-window <target>` (with LSP: `--extensions-dir …/vscode-ext-lsp`, no `--disable-extensions`). Not through `bin/code`, because it adds a node/CLI step that the other two editors do not have. The child environment drops `ELECTRON_RUN_AS_NODE` and `ELECTRON_NO_ATTACH_CONSOLE` so `Code` always runs as an app. |
+| Zed | `…/Zed.app/Contents/MacOS/zed --user-data-dir <bench>/profiles/zed <target>`. Not through `cli`, because `cli` goes through LaunchServices and drops `--user-data-dir`. Zed allows only one instance per channel: if your own Zed is running (anywhere, matching `Zed.app/Contents/MacOS/zed`), bench stops. |
+| Lucerna | `<resolved binary> <target>` with `HOME=<bench>/profiles/lucerna-home`; the pid, start time and binary path are written to `lucerna-home/.bench-pids.json`. |
 
-## Đường dẫn và khoá đã xác minh
+## Verified paths and keys
 
-| Editor | File settings | Ghi chú |
+| Editor | Settings file | Notes |
 |---|---|---|
-| VS Code | `profiles/vscode/User/settings.json` | Theo `--user-data-dir`. |
-| Zed | `profiles/zed/config/settings.json` | Zed 1.28.1: help của `--user-data-dir` nói thư mục chứa dữ liệu; binary có các thư mục con `config` và `data` (`strings`); `config/settings.json` theo cách Zed tính `custom_data_dir`. Zed tự ghi thêm vào `profiles/zed/config` (và `data`) khi chạy; hồ sơ bị xoá đầu mỗi cấu hình nên không mang sang. Khoá `auto_install_extensions` (`{"html": false}`) và `suggest_extensions` (`false`) theo tài liệu Zed (Configuring Zed) và có trong binary. Chưa khởi chạy Zed để kiểm chứng. |
-| Lucerna | `profiles/lucerna-home/.config/lucerna/settings.json` | Lucerna lấy `$HOME/.config/lucerna` (`crates/lucerna-workbench/src/config_files.rs:52`), không phải `Library/Application Support`. |
-| Lucerna trust | `profiles/lucerna-home/Library/Application Support/Lucerna/trusted.json` | `{"folders": [...], "parents": [...]}` (`trust.rs:40-47`, tên file `trusted.json` ở `trust.rs:35`); thư mục dữ liệu từ `workspace_state.rs:236`. Ghi `<data>` vào cả hai danh sách. |
+| VS Code | `profiles/vscode/User/settings.json` | Follows `--user-data-dir`. |
+| Zed | `profiles/zed/config/settings.json` | Zed 1.28.1: the help for `--user-data-dir` says it is the folder holding the data; the binary has `config` and `data` subfolders (`strings`); `config/settings.json` follows how Zed computes `custom_data_dir`. Zed also writes more into `profiles/zed/config` (and `data`) while running; the profile is deleted at the start of each configuration so it does not carry over. The keys `auto_install_extensions` (`{"html": false}`) and `suggest_extensions` (`false`) follow Zed's documentation (Configuring Zed) and are present in the binary. Zed has not been launched to verify this. |
+| Lucerna | `profiles/lucerna-home/.config/lucerna/settings.json` | Lucerna uses `$HOME/.config/lucerna` (`crates/lucerna-workbench/src/config_files.rs:52`), not `Library/Application Support`. |
+| Lucerna trust | `profiles/lucerna-home/Library/Application Support/Lucerna/trusted.json` | `{"folders": [...], "parents": [...]}` (`trust.rs:40-47`, file name `trusted.json` at `trust.rs:35`); data folder from `workspace_state.rs:236`. Writes `<data>` into both lists. |
 
-Khoá Lucerna: `editor.fontSize`, `workbench.startupEditor: "none"` (`startup.rs:14`; "none" hỏi chọn thư mục, Cancel thoát), tắt LSP bằng `lucerna.lsp.enabled: false` (`default-settings.json:62`). Với `lsp=True`: `"lsp": {"rust-analyzer": {"binary": {"path": ...}}}` (dạng của Zed, theo spec LSP phase 3). Lucerna không có khoá "không mở lại phiên trước": hồ sơ `HOME` trống nên không có phiên cũ để mở lại.
+Lucerna keys: `editor.fontSize`, `workbench.startupEditor: "none"` (`startup.rs:14`; "none" asks to pick a folder, Cancel exits), LSP off with `lucerna.lsp.enabled: false` (`default-settings.json:62`). With `lsp=True`: `"lsp": {"rust-analyzer": {"binary": {"path": ...}}}` (Zed's form, per the phase 3 LSP spec). Lucerna has no "do not reopen the previous session" key: the `HOME` profile is empty, so there is no previous session to reopen.
