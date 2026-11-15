@@ -38,6 +38,9 @@ mod lsp_status;
 pub mod markdown;
 mod markdown_preview;
 mod nav_history;
+// Used by the onboarding page (Task 6).
+#[allow(dead_code)]
+mod onboarding;
 mod open_commands;
 mod open_files;
 pub mod open_requests;

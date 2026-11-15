@@ -393,10 +393,10 @@ fn record(file: ConfigFile, path: PathBuf, result: Result<(), SettingsError>, cx
     };
 }
 
-const AUTO_DETECT_KEY: &str = "window.autoDetectColorScheme";
-const COLOR_THEME_KEY: &str = "workbench.colorTheme";
-const PREFERRED_DARK_KEY: &str = "workbench.preferredDarkColorTheme";
-const PREFERRED_LIGHT_KEY: &str = "workbench.preferredLightColorTheme";
+pub(crate) const AUTO_DETECT_KEY: &str = "window.autoDetectColorScheme";
+pub(crate) const COLOR_THEME_KEY: &str = "workbench.colorTheme";
+pub(crate) const PREFERRED_DARK_KEY: &str = "workbench.preferredDarkColorTheme";
+pub(crate) const PREFERRED_LIGHT_KEY: &str = "workbench.preferredLightColorTheme";
 
 /// GPUI's window appearance as a theme appearance.
 pub(crate) fn to_appearance(appearance: gpui::WindowAppearance) -> Appearance {
@@ -406,7 +406,7 @@ pub(crate) fn to_appearance(appearance: gpui::WindowAppearance) -> Appearance {
     }
 }
 
-fn auto_detect(settings: &SettingsStore) -> bool {
+pub(crate) fn auto_detect(settings: &SettingsStore) -> bool {
     settings.get(AUTO_DETECT_KEY, None).unwrap_or(true)
 }
 
