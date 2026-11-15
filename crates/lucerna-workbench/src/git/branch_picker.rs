@@ -1,15 +1,21 @@
-//! The branch picker of the Changes since tab: the local and remote
-//! branches (`git for-each-ref`) in Quick Open's list, fuzzy-filtered,
-//! with the ref the tab compares with selected. Enter or a click picks
-//! the row; the tab then compares with it and the workspace keeps it.
-//! The workbench hosts it as a modal overlay, like the Open Recent picker.
+//! The branch picker, in two modes. Compare mode (the Changes since tab):
+//! the local and remote branches in Quick Open's list, fuzzy-filtered,
+//! with the ref the tab compares with selected; Enter or a click picks the
+//! row. Checkout mode (the title bar branch button): the current branch
+//! with a check, the other local branches, then the remote ones, each with
+//! its last commit time, and a Create row for a name that is not a branch
+//! yet. The workbench hosts it as a modal overlay, like the Open Recent
+//! picker.
+
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
     IntoElement, KeyDownEvent, ParentElement, Render, ScrollHandle, Styled, Subscription, Window,
     div, prelude::*, px, svg,
 };
-use lucerna_git::GitError;
+use lucerna_git::{BranchRef, GitError, SwitchTarget, sanitize_branch_name};
 
 use crate::icons;
 use crate::layout::color;
@@ -18,24 +24,59 @@ use crate::quick_open::picker::{
 };
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
-use crate::ui::{FILE_ICON_SIZE, GRID, UI_FONT_SIZE, popover};
+use crate::ui::{FILE_ICON_SIZE, GRID, UI_FONT_SIZE, popover, relative_time};
 use crate::{AppState, Workbench};
 
-const PLACEHOLDER: &str = "Select a branch to compare with";
+const COMPARE_PLACEHOLDER: &str = "Select a branch to compare with";
+const CHECKOUT_PLACEHOLDER: &str = "Switch to a branch or type to create one";
+const INVALID_NAME: &str = "Invalid branch name";
+
+/// What the picker is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchPickerMode {
+    /// Pick the ref the Changes since tab compares with.
+    Compare,
+    /// Pick the branch to switch to, or a name to create.
+    Checkout,
+}
 
 /// What the host does as the picker is used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchPickerEvent {
-    /// Enter or a click chose this ref.
+    /// Compare mode: Enter or a click chose this ref.
     Pick(String),
+    /// Checkout mode: Enter or a click chose this switch. Choosing the
+    /// current branch is a `Dismiss`.
+    Checkout(SwitchTarget),
     Dismiss,
 }
 
+/// Whether a branch name passes git's ref-format rules; a pure check, so
+/// the picker never runs git.
+pub type NameCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// The Create row of Checkout mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CreateRow {
+    /// The sanitized query.
+    name: String,
+    valid: bool,
+}
+
 pub struct BranchPicker {
+    mode: BranchPickerMode,
     input: Entity<TextInput>,
+    /// The names listed, parallel to `refs` in Checkout mode.
     branches: Vec<String>,
+    /// Checkout mode: the branches, current first, then local, then remote.
+    refs: Vec<BranchRef>,
+    is_valid_name: NameCheck,
+    /// Unix time the picker opened at, for the relative times.
+    now: i64,
     /// Matching branches: index into `branches` and matched char positions.
     rows: Vec<(usize, Vec<u32>)>,
+    /// Checkout mode: the row after `rows` for a name that is no branch yet.
+    create: Option<CreateRow>,
     selected: usize,
     scroll: ScrollHandle,
 }
@@ -43,12 +84,62 @@ pub struct BranchPicker {
 impl EventEmitter<BranchPickerEvent> for BranchPicker {}
 
 impl BranchPicker {
-    /// Lists `branches` with `current` selected.
+    /// Compare mode: lists `branches` with `current` selected.
     pub fn new(branches: Vec<String>, current: Option<&str>, cx: &mut Context<Self>) -> Self {
+        let selected = current
+            .and_then(|c| branches.iter().position(|b| b == c))
+            .unwrap_or(0);
+        let mut picker = Self::build(
+            BranchPickerMode::Compare,
+            branches,
+            Vec::new(),
+            Arc::new(|_| true),
+            COMPARE_PLACEHOLDER,
+            cx,
+        );
+        picker.select(selected, cx);
+        picker
+    }
+
+    /// Checkout mode over `branches` (any order). `is_valid_name` is a pure
+    /// check of a sanitized name, run on every keystroke.
+    pub fn new_checkout(
+        mut branches: Vec<BranchRef>,
+        is_valid_name: NameCheck,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Current branch, other local branches, remote branches; newest
+        // first in each group (the sort is stable).
+        branches.sort_by_key(|b| {
+            (
+                !b.is_head,
+                b.remote.is_some(),
+                std::cmp::Reverse(b.committed),
+            )
+        });
+        let names = branches.iter().map(|b| b.name.clone()).collect();
+        Self::build(
+            BranchPickerMode::Checkout,
+            names,
+            branches,
+            is_valid_name,
+            CHECKOUT_PLACEHOLDER,
+            cx,
+        )
+    }
+
+    fn build(
+        mode: BranchPickerMode,
+        branches: Vec<String>,
+        refs: Vec<BranchRef>,
+        is_valid_name: NameCheck,
+        placeholder: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let this = cx.weak_entity();
         let input = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder(PLACEHOLDER);
+            input.set_placeholder(placeholder);
             input.on_change(move |text, _, cx| {
                 this.update(cx, |picker, cx| picker.query_changed(text, cx))
                     .ok();
@@ -56,35 +147,95 @@ impl BranchPicker {
             input
         });
         let rows = fuzzy_filter(branches.iter().map(String::as_str), "");
-        let selected = current
-            .and_then(|c| branches.iter().position(|b| b == c))
-            .unwrap_or(0);
-        let scroll = ScrollHandle::new();
-        scroll.scroll_to_item(selected);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
         BranchPicker {
+            mode,
             input,
             branches,
+            refs,
+            is_valid_name,
+            now,
             rows,
-            selected,
-            scroll,
+            create: None,
+            selected: 0,
+            scroll: ScrollHandle::new(),
         }
     }
 
-    /// The refs listed, in order.
+    /// The rows listed, in order: Compare mode the refs; Checkout mode
+    /// `✓ main  2 days ago`, ... and the Create row last.
     pub fn row_texts(&self) -> Vec<String> {
-        self.rows
+        let mut texts: Vec<String> = self
+            .rows
             .iter()
-            .map(|(i, _)| self.branches[*i].clone())
-            .collect()
+            .map(|(i, _)| match self.refs.get(*i) {
+                Some(b) => format!(
+                    "{}{}  {}",
+                    if b.is_head { "✓ " } else { "" },
+                    b.name,
+                    relative_time(b.committed, self.now)
+                ),
+                None => self.branches[*i].clone(),
+            })
+            .collect();
+        if let Some(create) = &self.create {
+            let mut text = format!("+ Create branch \"{}\"", create.name);
+            if !create.valid {
+                text.push_str("  ");
+                text.push_str(INVALID_NAME);
+            }
+            texts.push(text);
+        }
+        texts
     }
 
     pub fn selected_index(&self) -> usize {
         self.selected
     }
 
+    /// The input, for tests.
+    #[doc(hidden)]
+    pub fn input(&self) -> &Entity<TextInput> {
+        &self.input
+    }
+
+    /// Checkout mode: the Create row's name and whether it is a valid
+    /// branch name.
+    #[doc(hidden)]
+    pub fn create_row(&self) -> Option<(String, bool)> {
+        self.create.as_ref().map(|c| (c.name.clone(), c.valid))
+    }
+
+    fn row_count(&self) -> usize {
+        self.rows.len() + usize::from(self.create.is_some())
+    }
+
     fn query_changed(&mut self, text: &str, cx: &mut Context<Self>) {
         self.rows = fuzzy_filter(self.branches.iter().map(String::as_str), text.trim());
+        self.create = self.create_for(text);
         self.select(0, cx);
+    }
+
+    /// The Create row for `query`, when it names no branch yet.
+    fn create_for(&self, query: &str) -> Option<CreateRow> {
+        if self.mode != BranchPickerMode::Checkout {
+            return None;
+        }
+        let name = sanitize_branch_name(query);
+        if name.is_empty() {
+            return None;
+        }
+        let taken = self.refs.iter().any(|b| match b.remote {
+            None => b.name == name,
+            Some(_) => b.branch_part() == name,
+        });
+        if taken {
+            return None;
+        }
+        let valid = (self.is_valid_name)(&name);
+        Some(CreateRow { name, valid })
     }
 
     fn select(&mut self, row: usize, cx: &mut Context<Self>) {
@@ -95,7 +246,27 @@ impl BranchPicker {
 
     fn pick(&mut self, row: usize, cx: &mut Context<Self>) {
         if let Some(&(index, _)) = self.rows.get(row) {
-            cx.emit(BranchPickerEvent::Pick(self.branches[index].clone()));
+            match self.refs.get(index) {
+                None => cx.emit(BranchPickerEvent::Pick(self.branches[index].clone())),
+                Some(b) if b.is_head => cx.emit(BranchPickerEvent::Dismiss),
+                Some(b) => {
+                    let target = match &b.remote {
+                        None => SwitchTarget::Local(b.name.clone()),
+                        Some(remote) => SwitchTarget::Remote {
+                            remote: remote.clone(),
+                            branch: b.branch_part().to_string(),
+                        },
+                    };
+                    cx.emit(BranchPickerEvent::Checkout(target));
+                }
+            }
+        } else if row == self.rows.len()
+            && let Some(create) = &self.create
+            && create.valid
+        {
+            cx.emit(BranchPickerEvent::Checkout(SwitchTarget::Create(
+                create.name.clone(),
+            )));
         }
     }
 
@@ -105,8 +276,8 @@ impl BranchPicker {
             return;
         }
         match ev.keystroke.key.as_str() {
-            "up" => self.select(wrap_index(self.selected, self.rows.len(), -1), cx),
-            "down" => self.select(wrap_index(self.selected, self.rows.len(), 1), cx),
+            "up" => self.select(wrap_index(self.selected, self.row_count(), -1), cx),
+            "down" => self.select(wrap_index(self.selected, self.row_count(), 1), cx),
             "enter" => self.pick(self.selected, cx),
             // Unless a key binding closed the picker first.
             "escape" => cx.emit(BranchPickerEvent::Dismiss),
@@ -118,7 +289,8 @@ impl BranchPicker {
     fn render_row(&self, row: usize, cx: &mut Context<Self>) -> AnyElement {
         let (index, positions) = &self.rows[row];
         let ui = &cx.global::<AppState>().theme.ui;
-        picker_row("branch-picker-row", row, row == self.selected, cx)
+        let branch = self.refs.get(*index);
+        let mut el = picker_row("branch-picker-row", row, row == self.selected, cx)
             .gap(px(2. * GRID))
             .on_click(cx.listener(move |picker, _, _, cx| picker.pick(row, cx)))
             .child(
@@ -138,8 +310,64 @@ impl BranchPicker {
                         positions,
                         cx,
                     )),
+            );
+        if let Some(branch) = branch {
+            if branch.is_head {
+                el = el.child(
+                    svg()
+                        .data(icons::CHECK)
+                        .size(px(FILE_ICON_SIZE))
+                        .flex_none()
+                        .text_color(color(ui.icon_muted)),
+                );
+            }
+            el = el.child(div().flex_1()).child(
+                div()
+                    .flex_none()
+                    .text_size(px(UI_FONT_SIZE))
+                    .text_color(color(ui.text_muted))
+                    .child(relative_time(branch.committed, self.now)),
+            );
+        }
+        el.into_any_element()
+    }
+
+    fn render_create_row(&self, create: &CreateRow, cx: &mut Context<Self>) -> AnyElement {
+        let row = self.rows.len();
+        let ui = &cx.global::<AppState>().theme.ui;
+        let text_color = if create.valid {
+            ui.text
+        } else {
+            ui.text_disabled
+        };
+        let mut el = picker_row("branch-picker-row", row, row == self.selected, cx)
+            .gap(px(2. * GRID))
+            .on_click(cx.listener(move |picker, _, _, cx| picker.pick(row, cx)))
+            .child(
+                svg()
+                    .data(icons::PLUS)
+                    .size(px(FILE_ICON_SIZE))
+                    .flex_none()
+                    .text_color(color(ui.icon_muted)),
             )
-            .into_any_element()
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(UI_FONT_SIZE))
+                    .text_color(color(text_color))
+                    .child(format!("Create branch \"{}\"", create.name)),
+            );
+        if !create.valid {
+            el = el.child(div().flex_1()).child(
+                div()
+                    .flex_none()
+                    .text_size(px(UI_FONT_SIZE))
+                    .text_color(color(ui.text_muted))
+                    .child(INVALID_NAME),
+            );
+        }
+        el.into_any_element()
     }
 }
 
@@ -151,9 +379,12 @@ impl Focusable for BranchPicker {
 
 impl Render for BranchPicker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows: Vec<AnyElement> = (0..self.rows.len())
+        let mut rows: Vec<AnyElement> = (0..self.rows.len())
             .map(|row| self.render_row(row, cx))
             .collect();
+        if let Some(create) = self.create.clone() {
+            rows.push(self.render_create_row(&create, cx));
+        }
         let ui = &cx.global::<AppState>().theme.ui;
         let empty = rows.is_empty().then(|| {
             let message = if self.branches.is_empty() {
@@ -281,6 +512,9 @@ impl Workbench {
                     cx.notify();
                 });
             }
+            // Only a Checkout-mode picker emits it, and this host shows
+            // Compare mode.
+            BranchPickerEvent::Checkout(_) => {}
             BranchPickerEvent::Dismiss => self.close_branch_picker(window, cx),
         }
     }

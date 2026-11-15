@@ -1237,9 +1237,58 @@ pub(crate) fn scroll_top_for_track_click(
     (scroll_top + page).clamp(0., content - viewport)
 }
 
+/// How long before `now_unix` a unix time was, in words ("just now",
+/// "3 hours ago", "yesterday"). A time in the future reads "just now".
+pub fn relative_time(then_unix: i64, now_unix: i64) -> String {
+    fn count(n: i64, unit: &str) -> String {
+        format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+    }
+    let secs = now_unix.saturating_sub(then_unix);
+    let days = secs / 86_400;
+    if secs < 60 {
+        "just now".into()
+    } else if secs < 3600 {
+        count(secs / 60, "minute")
+    } else if secs < 86_400 {
+        count(secs / 3600, "hour")
+    } else if secs < 172_800 {
+        "yesterday".into()
+    } else if days < 30 {
+        count(days, "day")
+    } else if days < 365 {
+        count(days / 30, "month")
+    } else {
+        count(days / 365, "year")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_time_buckets() {
+        let now = 10_000_000_000;
+        let at = |ago: i64| relative_time(now - ago, now);
+        assert_eq!(at(0), "just now");
+        assert_eq!(at(59), "just now");
+        assert_eq!(at(60), "1 minute ago");
+        assert_eq!(at(119), "1 minute ago");
+        assert_eq!(at(120), "2 minutes ago");
+        assert_eq!(at(3599), "59 minutes ago");
+        assert_eq!(at(3600), "1 hour ago");
+        assert_eq!(at(86_399), "23 hours ago");
+        assert_eq!(at(86_400), "yesterday");
+        assert_eq!(at(172_799), "yesterday");
+        assert_eq!(at(172_800), "2 days ago");
+        assert_eq!(at(29 * 86_400), "29 days ago");
+        assert_eq!(at(30 * 86_400), "1 month ago");
+        assert_eq!(at(364 * 86_400), "12 months ago");
+        assert_eq!(at(365 * 86_400), "1 year ago");
+        assert_eq!(at(800 * 86_400), "2 years ago");
+        // A clock behind the commit date.
+        assert_eq!(relative_time(now + 500, now), "just now");
+    }
 
     #[test]
     fn no_thumb_without_overflow() {
