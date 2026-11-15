@@ -123,7 +123,8 @@ class StartupTests(Base):
         return value, st.call_args.args[1], order, watch
 
     def test_display_watch_started_before_launch(self):
-        out = {"t_ns": 1_250_000_000, "frames": 9, "first_frame_hit": False}
+        out = {"t_ns": 1_250_000_000, "frames": 9, "first_frame_hit": False,
+               "post_change": 0.001}
         value, args, order, watch = self.run_startup(out)
         self.assertEqual(value, 250.0)
         self.assertEqual(order, ["watch", "launch", "activate"])
@@ -135,18 +136,46 @@ class StartupTests(Base):
         self.assertEqual(args[args.index("--since") + 1], "0")
         self.assertEqual(args[args.index("--until") + 1], "coverage:0.3")
         self.assertEqual(args[args.index("--background") + 1], "1E1E1E")
+        self.assertEqual(args[args.index("--hold-ms") + 1], "1500")
         self.assertTrue(watch.closed)
         self.quit.assert_called_once_with("vscode", self.paths)
 
     def test_running_instances_excluded(self):
         self.running.return_value = [70, 71]
-        _, args, _, _ = self.run_startup({"t_ns": 1_100_000_000, "frames": 3})
+        _, args, _, _ = self.run_startup({"t_ns": 1_100_000_000, "frames": 3,
+                                          "post_change": 0.0})
         self.running.assert_called_once_with(EXE)
         self.assertEqual(args[args.index("--exclude-pids") + 1], "70,71")
 
     def test_first_frame_hit_returns_none(self):
         out = {"t_ns": 1_250_000_000, "frames": 1, "first_frame_hit": True}
         self.assertIsNone(self.run_startup(out)[0])
+
+    def test_window_change_after_hit_drops_round(self):
+        out = {"t_ns": 1_250_000_000, "frames": 9, "first_frame_hit": False,
+               "post_change": 0.2}
+        with mock.patch.object(metrics, "_log") as log:
+            self.assertIsNone(self.run_startup(out, editor="zed")[0])
+        msg = log.call_args.args[0]
+        self.assertIn("zed: window changed by 20.0% after the first content frame", msg)
+        self.assertIn("dialog, overlay or late repaint?", msg)
+        self.assertIn("round dropped", msg)
+
+    def test_small_change_after_hit_keeps_round(self):
+        out = {"t_ns": 1_250_000_000, "frames": 9, "first_frame_hit": False,
+               "post_change": 0.01}
+        self.assertEqual(self.run_startup(out)[0], 250.0)
+
+    def test_change_at_the_limit_keeps_round(self):
+        out = {"t_ns": 1_250_000_000, "frames": 9, "post_change": metrics.POST_CHANGE_MAX}
+        self.assertEqual(self.run_startup(out)[0], 250.0)
+
+    def test_missing_post_change_drops_round(self):
+        # An installed helper older than --hold-ms prints no post_change.
+        out = {"t_ns": 1_250_000_000, "frames": 9, "first_frame_hit": False}
+        with mock.patch.object(metrics, "_log") as log:
+            self.assertIsNone(self.run_startup(out)[0])
+        self.assertIn("rebuild", log.call_args.args[0])
 
     def test_frame_before_launch_returns_none(self):
         out = {"t_ns": 900_000_000, "frames": 4, "first_frame_hit": False}
@@ -164,7 +193,8 @@ class StartupTests(Base):
         self.quit.assert_called_once()
 
     def test_activation_failure_keeps_measurement(self):
-        watch = FakeWatch({"t_ns": 1_100_000_000, "frames": 3, "occluded_frames": 2})
+        watch = FakeWatch({"t_ns": 1_100_000_000, "frames": 3, "occluded_frames": 2,
+                           "post_change": 0.0})
         with mock.patch.object(metrics, "_start_watch", return_value=watch), \
                 mock.patch.object(metrics, "_helper", return_value=None):
             self.assertEqual(metrics.startup_ms("zed", self.paths), 100.0)
@@ -431,14 +461,44 @@ class SizeTests(Base):
 class CalibrationTests(Base):
     fake_background = False
 
-    def test_background_cached_by_version(self):
+    def test_background_cached_by_version_and_settings(self):
+        env.write_profiles(self.paths, lsp=False)
+        digest = metrics.settings_hash("zed", self.paths)
+        self.assertRegex(digest, r"^[0-9a-f]{12}$")
         with mock.patch.object(editors, "version", return_value="1.0"), \
                 mock.patch.object(metrics, "calibrate", return_value="282C34") as cal:
             self.assertEqual(metrics.background("zed", self.paths), "282C34")
             self.assertEqual(metrics.background("zed", self.paths), "282C34")
         cal.assert_called_once()
         saved = json.loads((self.paths.root / "calibration.json").read_text())
-        self.assertEqual(saved, {"zed 1.0": "282C34"})
+        self.assertEqual(saved, {f"zed 1.0 {digest}": "282C34"})
+
+    def test_settings_change_recalibrates(self):
+        # The official run reused a colour sampled under an older profile.
+        env.write_profiles(self.paths, lsp=False)
+        settings = env.settings_file(self.paths, "zed")
+        with mock.patch.object(editors, "version", return_value="1.0"), \
+                mock.patch.object(metrics, "calibrate",
+                                  side_effect=["ECECEC", "282C34"]) as cal:
+            self.assertEqual(metrics.background("zed", self.paths), "ECECEC")
+            settings.write_text(settings.read_text().replace("}\n", ', "x": 1}\n', 1))
+            self.assertEqual(metrics.background("zed", self.paths), "282C34")
+            self.assertEqual(metrics.background("zed", self.paths), "282C34")
+        self.assertEqual(cal.call_count, 2)
+        self.assertEqual(len(json.loads((self.paths.root / "calibration.json").read_text())), 2)
+
+    def test_settings_hash_is_per_editor(self):
+        env.write_profiles(self.paths, lsp=False)
+        before = {e: metrics.settings_hash(e, self.paths) for e in editors.EDITORS}
+        self.assertEqual(len(set(before.values())), len(editors.EDITORS))
+        vscode = env.settings_file(self.paths, "vscode")
+        vscode.write_text(vscode.read_text() + " ")
+        self.assertNotEqual(metrics.settings_hash("vscode", self.paths), before["vscode"])
+        self.assertEqual(metrics.settings_hash("zed", self.paths), before["zed"])
+
+    def test_missing_settings_file_has_a_stable_key(self):
+        with mock.patch.object(editors, "version", return_value="1.0"):
+            self.assertEqual(metrics.calibration_key("zed", self.paths), "zed 1.0 none")
 
     def test_calibration_rejects_mixed_centre(self):
         out = {"center_dominant": "FFFFFF", "center_dominant_frac": 0.6}

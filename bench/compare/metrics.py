@@ -18,6 +18,7 @@ default window size (a first frame cannot be resized).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -30,6 +31,7 @@ import time
 from pathlib import Path
 
 import editors
+import env
 from env import BenchPaths
 
 TIMEOUT_S = 60
@@ -51,6 +53,15 @@ SCROLL_PIXELS_PER_EVENT = 40
 # startup. macOS may move the window below a taller (notch) menu bar; the size
 # is what the helper enforces.
 WINDOW_FRAME = {"x": 0, "y": 25, "w": 1280, "h": 800}
+# Startup: after the first frame with content the helper keeps capturing for
+# POST_HOLD_MS and reports `post_change`, the largest fraction of the window
+# that differs from that frame. marker.txt is static, so the window must stay
+# almost the same (a blinking caret is about 0.1 %). A dialog or overlay
+# appearing (Zed's "Unrecognized Project" dimmed the window in the first
+# official run), or a hit taken before the real content because the
+# calibrated background was wrong, shows up as a large later change.
+POST_HOLD_MS = 1500
+POST_CHANGE_MAX = 0.05
 
 # Permissions each bench-helper subcommand needs (README "Helper") and the
 # subcommands each metric runs. run.py derives its permission checks from these
@@ -290,7 +301,8 @@ def _calibration_file(paths: BenchPaths) -> Path:
 
 
 def load_calibration(paths: BenchPaths) -> dict:
-    """{"<editor> <version>": "RRGGBB"}; Task 5 puts it in the result meta."""
+    """{"<editor> <version> <settings hash>": "RRGGBB"}; run.py puts it in
+    the result meta."""
     try:
         return json.loads(_calibration_file(paths).read_text())
     except (OSError, ValueError):
@@ -322,8 +334,24 @@ def calibrate(editor: str, paths: BenchPaths) -> str | None:
         editors.quit(editor, paths)
 
 
+def settings_hash(editor: str, paths: BenchPaths) -> str:
+    """Short hash of the bench settings.json for `editor` ("none" if absent)."""
+    try:
+        content = env.settings_file(paths, editor).read_bytes()
+    except OSError:
+        return "none"
+    return hashlib.sha256(content).hexdigest()[:12]
+
+
+def calibration_key(editor: str, paths: BenchPaths) -> str:
+    """"<editor> <version> <settings hash>": a profile change (theme, a
+    dialog turned off) recalibrates instead of reusing a colour sampled under
+    other settings."""
+    return f"{editor} {editors.version(editor)} {settings_hash(editor, paths)}"
+
+
 def background(editor: str, paths: BenchPaths) -> str | None:
-    key = f"{editor} {editors.version(editor)}"
+    key = calibration_key(editor, paths)
     cache = load_calibration(paths)
     if key not in cache:
         bg = calibrate(editor, paths)
@@ -337,7 +365,8 @@ def background(editor: str, paths: BenchPaths) -> str | None:
 # Metrics ------------------------------------------------------------------
 
 def startup_ms(editor: str, paths: BenchPaths) -> float | None:
-    """Launch call → first frame whose window centre is ≥ 30 % marker text.
+    """Launch call → first frame whose window centre is ≥ 30 % marker text,
+    provided the window then stays almost unchanged for POST_HOLD_MS.
 
     The display capture starts (and prints `ready`) BEFORE the launch, and
     finds the window by its executable, minus instances already running. t0 is
@@ -352,7 +381,7 @@ def startup_ms(editor: str, paths: BenchPaths) -> float | None:
     if exclude:
         args += ["--exclude-pids", _csv(exclude)]
     args += ["--since", "0", "--until", f"coverage:{COVERAGE}", "--background", bg,
-             "--timeout", str(TIMEOUT_S)]
+             "--timeout", str(TIMEOUT_S), "--hold-ms", str(POST_HOLD_MS)]
     watch = _start_watch(paths, args, TIMEOUT_S)
     if watch is None:
         return None
@@ -369,6 +398,15 @@ def startup_ms(editor: str, paths: BenchPaths) -> float | None:
         if out.get("first_frame_hit") or out["t_ns"] < launched.t0_ns:
             # The window was there before the launch: not this launch's frame.
             _log(f"{editor}: startup content already on the first frame; round dropped")
+            return None
+        post = out.get("post_change")
+        if post is None:
+            _log(f"{editor}: helper reported no post_change (rebuild it with "
+                 "`sh bench/compare/helper/build.sh`); round dropped")
+            return None
+        if post > POST_CHANGE_MAX:
+            _log(f"{editor}: window changed by {post * 100:.1f}% after the first content "
+                 "frame (dialog, overlay or late repaint?); round dropped")
             return None
         return (out["t_ns"] - launched.t0_ns) / 1e6
     finally:

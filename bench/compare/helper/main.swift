@@ -60,7 +60,7 @@ usage: bench-helper <command> [options]      (<pids> = pid[,pid...])
          [--timeout <s>] [--baseline <png>] [--background RRGGBB]
          [--min-change <0..1>] [--dump-dir <dir>]     (the last two: change only)
   watch  --display --exe <absolute path> [--exclude-pids <pids>] --since <t0_ns|0>
-         --until coverage:<0..1> --background RRGGBB [--timeout <s>]
+         --until coverage:<0..1> --background RRGGBB [--timeout <s>] [--hold-ms <ms>]
   frame  --pid <pids> --x <pt> --y <pt> --w <pt> --h <pt> [--timeout <s>]
   activate --pid <pids> [--timeout <s>]
   display
@@ -321,6 +321,14 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         return result
     }
 
+    /// Stops the capture (as a hit) `ms` milliseconds from now, even when
+    /// no new frame arrives: an unchanged screen sends only idle frames.
+    func stop(afterMs ms: Int) {
+        queue.asyncAfter(deadline: .now() + .milliseconds(ms)) { [weak self] in
+            self?.finish(true)
+        }
+    }
+
     private func finish(_ value: Bool) {
         let c: CheckedContinuation<Bool, Never>? = lock.withLock {
             if finished { return nil }
@@ -389,6 +397,13 @@ struct Bitmap {
     var bytes: [UInt8]
     let width: Int
     let height: Int
+
+    /// A black bitmap of the given size.
+    init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+        bytes = [UInt8](repeating: 0, count: width * height * 4)
+    }
 
     init(_ f: Frame) {
         width = f.width
@@ -489,6 +504,39 @@ func changedFraction(_ f: Frame, _ ref: Bitmap) -> Double {
             for x in stride(from: 0, to: f.width, by: sampleStep) {
                 total += 1
                 if differs(f.pixel(x, y), r.baseAddress! + (y * ref.width + x) * 4) {
+                    changed += 1
+                }
+            }
+        }
+    }
+    return total == 0 ? 0 : Double(changed) / Double(total)
+}
+
+/// Owned BGRA copy of a rectangle of a frame (the editor window cropped
+/// from a display frame).
+func cropBitmap(_ f: Frame, x xs: Range<Int>, y ys: Range<Int>) -> Bitmap {
+    var b = Bitmap(width: xs.count, height: ys.count)
+    b.bytes.withUnsafeMutableBufferPointer { dst in
+        for (row, y) in ys.enumerated() {
+            memcpy(dst.baseAddress! + row * xs.count * 4, f.pixel(xs.lowerBound, y), xs.count * 4)
+        }
+    }
+    return b
+}
+
+/// Fraction of sampled pixels of the rectangle at (x0, y0) of `f`, the size
+/// of `ref`, that differ from `ref` (same tolerance as changedFraction). A
+/// rectangle that does not fit in the frame counts as a full change.
+func changedFraction(_ f: Frame, x0: Int, y0: Int, _ ref: Bitmap) -> Double {
+    guard x0 >= 0, y0 >= 0, x0 + ref.width <= f.width, y0 + ref.height <= f.height else {
+        return 1
+    }
+    var changed = 0, total = 0
+    ref.bytes.withUnsafeBufferPointer { r in
+        for y in stride(from: 0, to: ref.height, by: sampleStep) {
+            for x in stride(from: 0, to: ref.width, by: sampleStep) {
+                total += 1
+                if differs(f.pixel(x0 + x, y0 + y), r.baseAddress! + (y * ref.width + x) * 4) {
                     changed += 1
                 }
             }
@@ -721,20 +769,58 @@ func refreshHz(display id: CGDirectDisplayID) -> Int {
 /// has printed "ready" and subtracts it itself. `first_frame_hit` means the
 /// window was already present and covered on the very first frame, which
 /// cannot happen for a window launched after "ready": suspect.
+///
+/// `holdMs` > 0: after the hit, capture goes on for that long and every new
+/// frame's window crop is compared with the hit frame's crop (same
+/// tolerance as changedFraction). `post_change` is the largest fraction
+/// that differs: a dialog or overlay appearing, or a hit taken before the
+/// real content, shows up as a large later change. A window whose size
+/// changed counts as 1.0. `post_frames` counts the frames compared.
 func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
-                  background bg: [UInt8], timeout: (seconds: Double, deadline: UInt64)) async {
+                  background bg: [UInt8], holdMs: Int,
+                  timeout: (seconds: Double, deadline: UInt64)) async {
     let display = await mainDisplay(deadline: timeout.deadline)
     let origin = CGDisplayBounds(display.displayID).origin
     let pointsWide = Double(display.width), pointsHigh = Double(display.height)
-    var frames = 0, occluded = 0
+    var frames = 0, occluded = 0, framesAtHit = 0
     var hitNs: UInt64 = 0
     var hitWindow: CGRect = .zero
+    var hitCrop: Bitmap? = nil
+    var postChange = 0.0, postFrames = 0
+    var captureRef: Capture? = nil
+    /// The window's rectangle in capture pixels, nil when too small.
+    func crop(_ f: Frame, _ bounds: CGRect) -> (x: Range<Int>, y: Range<Int>)? {
+        let sx = Double(f.width) / pointsWide, sy = Double(f.height) / pointsHigh
+        let x0 = max(0, Int((Double(bounds.minX - origin.x) * sx).rounded()))
+        let y0 = max(0, Int((Double(bounds.minY - origin.y) * sy).rounded()))
+        let x1 = min(f.width, Int((Double(bounds.maxX - origin.x) * sx).rounded()))
+        let y1 = min(f.height, Int((Double(bounds.maxY - origin.y) * sy).rounded()))
+        guard x1 - x0 >= 10, y1 - y0 >= 10 else { return nil }
+        return (x0..<x1, y0..<y1)
+    }
     let capture = Capture(filter: SCContentFilter(display: display, excludingWindows: []),
                           width: display.width, height: display.height,
                           hz: refreshHz(display: display.displayID)) { f in
         frames += 1
         guard f.tNs >= since else { return false }
         let list = onScreenWindows()
+        if let ref = hitCrop {
+            // Hold phase: how far does the window move away from the hit frame?
+            guard f.tNs > hitNs else { return false }
+            postFrames += 1
+            if let win = largestWindow(in: list, where: { matcher.matches($0) }) {
+                let fraction: Double
+                if win.bounds.size != hitWindow.size {
+                    fraction = 1
+                } else if let r = crop(f, win.bounds) {
+                    fraction = changedFraction(f, x0: r.x.lowerBound, y0: r.y.lowerBound, ref)
+                } else {
+                    fraction = 1
+                }
+                postChange = max(postChange, fraction)
+            }
+            return f.tNs >= hitNs + UInt64(holdMs) * 1_000_000
+        }
         guard let win = largestWindow(in: list, where: { matcher.matches($0) }) else {
             return false
         }
@@ -751,27 +837,34 @@ func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
             occluded += 1
             return false
         }
-        let sx = Double(f.width) / pointsWide, sy = Double(f.height) / pointsHigh
-        let x0 = max(0, Int((Double(win.bounds.minX - origin.x) * sx).rounded()))
-        let y0 = max(0, Int((Double(win.bounds.minY - origin.y) * sy).rounded()))
-        let x1 = min(f.width, Int((Double(win.bounds.maxX - origin.x) * sx).rounded()))
-        let y1 = min(f.height, Int((Double(win.bounds.maxY - origin.y) * sy).rounded()))
-        guard x1 - x0 >= 10, y1 - y0 >= 10 else { return false }
-        let region = centerRegion(x: x0..<x1, y: y0..<y1)
+        guard let r = crop(f, win.bounds) else { return false }
+        let region = centerRegion(x: r.x, y: r.y)
         if coverage(f, region: region, background: bg) >= threshold {
             hitNs = f.tNs
             hitWindow = win.bounds
-            return true
+            framesAtHit = frames
+            if holdMs <= 0 { return true }
+            hitCrop = cropBitmap(f, x: r.x, y: r.y)
+            captureRef?.stop(afterMs: holdMs)
         }
         return false
     }
-    guard await capture.start(deadline: timeout.deadline) else {
+    captureRef = capture
+    // A hold cut short by the deadline still reports the hit.
+    let stopped = await capture.start(deadline: timeout.deadline)
+    guard stopped || hitNs != 0 else {
         fail("timeout after \(timeout.seconds) s waiting for coverage:\(threshold) "
              + "in a window of \(matcher.exe)", code: 2)
     }
-    emit(["t_ns": hitNs, "frames": frames, "first_frame_hit": frames == 1,
-          "occluded_frames": occluded,
-          "window": [hitWindow.minX, hitWindow.minY, hitWindow.width, hitWindow.height]])
+    var result: [String: Any] = [
+        "t_ns": hitNs, "frames": framesAtHit, "first_frame_hit": framesAtHit == 1,
+        "occluded_frames": occluded,
+        "window": [hitWindow.minX, hitWindow.minY, hitWindow.width, hitWindow.height]]
+    if holdMs > 0 {
+        result["post_change"] = postChange
+        result["post_frames"] = postFrames
+    }
+    emit(result)
 }
 
 // MARK: - frame
@@ -1282,13 +1375,19 @@ case "watch":
         if option("min-change") != nil || option("dump-dir") != nil {
             fail("watch --display takes no --min-change / --dump-dir", code: 1)
         }
+        if flag("hold-ms") && option("hold-ms") == nil {
+            fail("--hold-ms needs a number of milliseconds", code: 1)
+        }
+        let holdMs = intOption("hold-ms", default: 0, min: 0)
+        if holdMs > 60_000 { fail("--hold-ms must be at most 60000", code: 1) }
         let excluded = option("exclude-pids").map { pidList("exclude-pids", $0) } ?? []
         let timeout = deadlineOption()
         requirePermissions(screen: true, accessibility: false)
         await watchDisplay(matcher: ExecutableMatcher(exe: exe, excluded: excluded),
                            since: since, threshold: threshold, background: bg,
-                           timeout: timeout)
+                           holdMs: holdMs, timeout: timeout)
     } else {
+        if flag("hold-ms") { fail("--hold-ms needs watch --display", code: 1) }
         let minChange = fractionOption("min-change") ?? 0.005
         let dumpDir = dumpDirOption()
         if case .coverage = mode, option("min-change") != nil || dumpDir != nil {
