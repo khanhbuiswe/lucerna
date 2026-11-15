@@ -221,7 +221,11 @@ fn defaults_include_phase2_keys() {
     let s = SettingsStore::with_defaults();
     assert_eq!(
         s.get::<String>("workbench.iconTheme", None).as_deref(),
-        Some("Lucide")
+        Some("Seti")
+    );
+    assert_eq!(
+        s.get::<bool>("workbench.editor.showIcons", None),
+        Some(true)
     );
     assert_eq!(
         s.get::<bool>("extensions.autoCheckUpdates", None),

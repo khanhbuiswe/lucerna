@@ -3,11 +3,17 @@
 mod icon_theme;
 mod registry;
 mod schema;
+mod seti;
+mod seti_data;
 
-pub use icon_theme::{IconSource, IconTheme, IconThemeRegistry, ResolvedIcons, lucide_icon_theme};
+pub use icon_theme::{
+    DEFAULT_ICON_THEME, IconSource, IconTheme, IconThemeRegistry, ResolvedIcons, lucide_icon_theme,
+    seti_icon_theme,
+};
 pub use registry::{
     DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, ThemeFile, ThemeRegistry, ThemeSource,
 };
+pub use seti::seti_glyph_names;
 
 use std::collections::HashMap;
 

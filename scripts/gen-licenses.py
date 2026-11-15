@@ -28,6 +28,8 @@ ASSETS = [
     ("Lilex font", "crates/lucerna-workbench/assets/fonts/LICENSE-Lilex"),
     ("IBM Plex fonts", "crates/lucerna-workbench/assets/fonts/LICENSE-IBM-Plex"),
     ("Lucide icons", "crates/lucerna-workbench/assets/icons/LICENSE-lucide"),
+    ("Seti icons (seti-ui)", "crates/lucerna-workbench/assets/icons/seti/LICENSE-seti-ui"),
+    ("Seti icon theme mapping (VS Code)", "crates/lucerna-workbench/assets/icons/seti/LICENSE-vscode"),
     ("GitHub Primer colors (Lucerna themes)", "crates/lucerna-theme/assets/LICENSE-primer"),
 ]
 

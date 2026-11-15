@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A `git` command is killed after this long.
@@ -55,11 +56,14 @@ impl From<std::io::Error> for GitError {
     }
 }
 
-/// Path to a `git` executable. Every invocation is hardened: no fsmonitor, no
-/// hooks, no optional locks, no pager, no prompts, C locale.
+/// Path to a `git` executable. Read commands ([`command`](Self::command)) are
+/// hardened: no fsmonitor, no hooks, no optional locks, no pager, no prompts,
+/// C locale. Write commands ([`command_for_write`](Self::command_for_write))
+/// keep hooks and locks, and run with the [write environment](Self::with_write_env).
 #[derive(Debug, Clone)]
 pub struct GitBinary {
     path: PathBuf,
+    write_env: Arc<[(OsString, OsString)]>,
     extra_env: Vec<(OsString, OsString)>,
 }
 
@@ -67,8 +71,22 @@ impl GitBinary {
     pub fn new(path: PathBuf) -> GitBinary {
         GitBinary {
             path,
+            write_env: Arc::from([]),
             extra_env: Vec::new(),
         }
+    }
+
+    /// The environment write commands run with, over the process's own.
+    /// Production passes the login shell's, so hooks and filters (git-lfs,
+    /// husky's `node`) find their programs as in a terminal even when the app
+    /// was launched from the Dock. Read commands never use it.
+    pub fn with_write_env<K, V>(mut self, env: impl IntoIterator<Item = (K, V)>) -> GitBinary
+    where
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
+        self.write_env = env.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+        self
     }
 
     /// Adds an environment variable to every command. Meant for tests (e.g. to
@@ -103,12 +121,43 @@ impl GitBinary {
         cmd.args(args);
         run_with_timeout(cmd, TIMEOUT)
     }
+
+    /// A command for git operations that change the repository (`git switch`).
+    /// Unlike [`command`](Self::command), hooks run as they would in a
+    /// terminal (git-lfs, husky): with the write environment and its locale
+    /// (no `LC_ALL=C`), and optional locks are taken.
+    pub fn command_for_write(&self, cwd: &Path) -> Command {
+        let mut cmd = Command::new(&self.path);
+        cmd.args(["-c", "core.fsmonitor=false", "--no-pager"])
+            .current_dir(cwd)
+            .envs(self.write_env.iter().map(|(k, v)| (k, v)))
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null());
+        cmd.envs(self.extra_env.iter().map(|(k, v)| (k, v)));
+        cmd
+    }
+
+    /// Runs a write command and returns stdout. Non-zero exit is an error.
+    /// There is no timeout and the child is never killed: stopping git
+    /// halfway can leave a half-switched tree or a stale `index.lock`.
+    /// Call it off the UI thread.
+    pub fn run_write(&self, cwd: &Path, args: &[&OsStr]) -> Result<Vec<u8>, GitError> {
+        let mut cmd = self.command_for_write(cwd);
+        cmd.args(args);
+        run_to_completion(cmd)
+    }
 }
 
-/// Runs `cmd`, returning stdout on success. Stdout and stderr are drained on
-/// helper threads so a full pipe cannot deadlock; the child is killed at the deadline.
-#[doc(hidden)]
-pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Vec<u8>, GitError> {
+/// A running child and the threads draining its stdout and stderr.
+type Drained = (
+    std::process::Child,
+    std::thread::JoinHandle<Vec<u8>>,
+    std::thread::JoinHandle<Vec<u8>>,
+);
+
+/// Spawns `cmd` with piped stdout and stderr, each drained on a helper thread
+/// so a full pipe cannot deadlock.
+fn spawn_drained(mut cmd: Command) -> Result<Drained, GitError> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -125,6 +174,39 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Vec<u8>, 
         let _ = stderr.read_to_end(&mut buf);
         buf
     });
+    Ok((child, out_thread, err_thread))
+}
+
+fn finish(
+    status: std::process::ExitStatus,
+    out: Vec<u8>,
+    err: Vec<u8>,
+) -> Result<Vec<u8>, GitError> {
+    if status.success() {
+        Ok(out)
+    } else {
+        Err(GitError::Failed {
+            code: status.code(),
+            stderr: String::from_utf8_lossy(&err).into_owned(),
+        })
+    }
+}
+
+/// Runs `cmd` until it exits, returning stdout on success. Never kills it.
+fn run_to_completion(cmd: Command) -> Result<Vec<u8>, GitError> {
+    let (mut child, out_thread, err_thread) = spawn_drained(cmd)?;
+    // On a wait error the drain threads are detached rather than joined.
+    let status = child.wait()?;
+    let out = out_thread.join().unwrap_or_default();
+    let err = err_thread.join().unwrap_or_default();
+    finish(status, out, err)
+}
+
+/// Runs `cmd`, returning stdout on success. Stdout and stderr are drained on
+/// helper threads so a full pipe cannot deadlock; the child is killed at the deadline.
+#[doc(hidden)]
+pub fn run_with_timeout(cmd: Command, timeout: Duration) -> Result<Vec<u8>, GitError> {
+    let (mut child, out_thread, err_thread) = spawn_drained(cmd)?;
 
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -150,11 +232,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Vec<u8>, 
     let err = err_thread.join().unwrap_or_default();
     match status {
         None => Err(GitError::Timeout),
-        Some(s) if s.success() => Ok(out),
-        Some(s) => Err(GitError::Failed {
-            code: s.code(),
-            stderr: String::from_utf8_lossy(&err).into_owned(),
-        }),
+        Some(s) => finish(s, out, err),
     }
 }
 

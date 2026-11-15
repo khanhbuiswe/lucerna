@@ -2,11 +2,11 @@
 //! draws chrome takes its sizes and popover/icon-button styling from here.
 
 use gpui::{
-    AnyElement, AnyView, App, Axis, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity,
-    Hsla, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled,
-    Window, div, img, prelude::*, px, relative, svg,
+    AnyElement, AnyView, App, Axis, Bounds, ClickEvent, ClipboardItem, Context, Div, ElementId,
+    Entity, Hsla, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Size,
+    Stateful, Styled, Window, div, img, prelude::*, px, relative, svg,
 };
-use lucerna_theme::{IconSource, Rgba, Theme};
+use lucerna_theme::{Appearance, IconSource, Rgba, Theme};
 
 use crate::AppState;
 pub use crate::context_menu::{
@@ -84,25 +84,55 @@ pub const FILE_ICON_SIZE: f32 = 14.0;
 
 /// An icon from an icon theme at [`FILE_ICON_SIZE`]; see
 /// [`file_icon_sized`].
-pub fn file_icon(source: &IconSource, color: Hsla) -> AnyElement {
-    file_icon_sized(source, px(FILE_ICON_SIZE), color)
+pub fn file_icon(source: &IconSource, color: Hsla, appearance: Appearance) -> AnyElement {
+    file_icon_sized(source, px(FILE_ICON_SIZE), color, appearance)
+}
+
+/// The color an icon is drawn in: a Seti glyph has its own, for a dark or
+/// a light theme by `appearance`; every other icon takes `fallback`.
+pub fn icon_tint(source: &IconSource, fallback: Hsla, appearance: Appearance) -> Hsla {
+    match source {
+        IconSource::Glyph { dark, light, .. } => {
+            let rgb = match appearance {
+                Appearance::Dark => *dark,
+                Appearance::Light => *light,
+            };
+            gpui::rgb(rgb).into()
+        }
+        _ => fallback,
+    }
 }
 
 /// An icon from an icon theme, `size` square. A bundled Lucide icon is an
-/// `svg` filled with `color`; an extension's icon is an `img` of its file,
+/// `svg` filled with `color`; a Seti glyph is an `svg` filled with its own
+/// color for `appearance`; an extension's icon is an `img` of its file,
 /// which keeps the colors it was drawn with. GPUI's `img` loads SVG files
 /// itself (rasterised at 1x by its SVG renderer, then scaled to `size`).
-pub fn file_icon_sized(source: &IconSource, size: Pixels, color: Hsla) -> AnyElement {
+pub fn file_icon_sized(
+    source: &IconSource,
+    size: Pixels,
+    color: Hsla,
+    appearance: Appearance,
+) -> AnyElement {
+    let drawn = |data: &'static [u8], tint: Hsla| {
+        svg()
+            .data(data)
+            .size(size)
+            .text_color(tint)
+            .into_any_element()
+    };
     match source {
         IconSource::Builtin(name) => match icons::lucide_svg(name) {
-            Some(data) => svg()
-                .data(data)
-                .size(size)
-                .text_color(color)
-                .into_any_element(),
+            Some(data) => drawn(data, color),
             None => div().size(size).into_any_element(),
         },
         IconSource::File(path) => img(path.clone()).size(size).into_any_element(),
+        IconSource::Glyph { name, .. } => {
+            match icons::seti_svg(name).or_else(|| icons::lucide_svg("file")) {
+                Some(data) => drawn(data, icon_tint(source, color, appearance)),
+                None => div().size(size).into_any_element(),
+            }
+        }
     }
 }
 
@@ -139,6 +169,33 @@ pub fn popover_overlay(popover: impl IntoElement) -> Div {
         .pt(px(TITLE_BAR_HEIGHT + 6. * GRID))
         .px(px(4. * GRID))
         .child(popover)
+}
+
+/// Covers its parent and holds `popover` just under `anchor` (window
+/// coordinates), left-aligned to it, as wide as [`popover_overlay`] makes
+/// it but moved left as needed to stay inside `viewport` with the same
+/// 16 px gutter. Give it a `relative` parent the size of the window.
+pub fn anchored_popover_overlay(
+    popover: impl IntoElement,
+    anchor: Bounds<Pixels>,
+    viewport: Size<Pixels>,
+) -> Div {
+    let gutter = px(4. * GRID);
+    let width = px(POPOVER_MAX_WIDTH)
+        .min(viewport.width - gutter * 2.)
+        .max(px(0.));
+    let left = anchor
+        .left()
+        .min(viewport.width - gutter - width)
+        .max(gutter);
+    div().absolute().top_0().left_0().size_full().child(
+        div()
+            .absolute()
+            .left(left)
+            .top(anchor.bottom() + px(GRID))
+            .w(width)
+            .child(popover),
+    )
 }
 
 /// A 24×20 icon button: `active` gets the `element.selected` background
@@ -1237,9 +1294,82 @@ pub(crate) fn scroll_top_for_track_click(
     (scroll_top + page).clamp(0., content - viewport)
 }
 
+/// How long before `now_unix` a unix time was, in words ("just now",
+/// "3 hours ago", "yesterday"). A time in the future reads "just now".
+pub fn relative_time(then_unix: i64, now_unix: i64) -> String {
+    fn count(n: i64, unit: &str) -> String {
+        format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+    }
+    let secs = now_unix.saturating_sub(then_unix);
+    let days = secs / 86_400;
+    if secs < 60 {
+        "just now".into()
+    } else if secs < 3600 {
+        count(secs / 60, "minute")
+    } else if secs < 86_400 {
+        count(secs / 3600, "hour")
+    } else if secs < 172_800 {
+        "yesterday".into()
+    } else if days < 30 {
+        count(days, "day")
+    } else if days < 365 {
+        count(days / 30, "month")
+    } else {
+        count(days / 365, "year")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_time_buckets() {
+        let now = 10_000_000_000;
+        let at = |ago: i64| relative_time(now - ago, now);
+        assert_eq!(at(0), "just now");
+        assert_eq!(at(59), "just now");
+        assert_eq!(at(60), "1 minute ago");
+        assert_eq!(at(119), "1 minute ago");
+        assert_eq!(at(120), "2 minutes ago");
+        assert_eq!(at(3599), "59 minutes ago");
+        assert_eq!(at(3600), "1 hour ago");
+        assert_eq!(at(86_399), "23 hours ago");
+        assert_eq!(at(86_400), "yesterday");
+        assert_eq!(at(172_799), "yesterday");
+        assert_eq!(at(172_800), "2 days ago");
+        assert_eq!(at(29 * 86_400), "29 days ago");
+        assert_eq!(at(30 * 86_400), "1 month ago");
+        assert_eq!(at(364 * 86_400), "12 months ago");
+        assert_eq!(at(365 * 86_400), "1 year ago");
+        assert_eq!(at(800 * 86_400), "2 years ago");
+        // A clock behind the commit date.
+        assert_eq!(relative_time(now + 500, now), "just now");
+    }
+
+    #[test]
+    fn glyph_tint_follows_appearance() {
+        let glyph = IconSource::Glyph {
+            name: "typescript",
+            dark: 0x519aba,
+            light: 0x2a6d8a,
+        };
+        let fallback = gpui::hsla(0.1, 0.2, 0.3, 0.4);
+        let want = |rgb: u32| -> Hsla { gpui::rgb(rgb).into() };
+        assert_eq!(
+            icon_tint(&glyph, fallback, Appearance::Dark),
+            want(0x519aba)
+        );
+        assert_eq!(
+            icon_tint(&glyph, fallback, Appearance::Light),
+            want(0x2a6d8a)
+        );
+        assert_eq!(icon_tint(&glyph, fallback, Appearance::Dark).a, 1.0);
+        assert_eq!(
+            icon_tint(&IconSource::Builtin("file"), fallback, Appearance::Light),
+            fallback
+        );
+    }
 
     #[test]
     fn no_thumb_without_overflow() {

@@ -12,7 +12,7 @@ use gpui::{
 use lucerna_project::WorktreeEvent;
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
-use lucerna_theme::{IconSource, IconThemeRegistry, ThemeRegistry};
+use lucerna_theme::{DEFAULT_ICON_THEME, IconSource, IconThemeRegistry, ThemeRegistry};
 use lucerna_workbench::{
     AppState, ConfigPaths, ConfigState, ThemePicker, Workbench, reload_config, watch_config,
 };
@@ -39,7 +39,7 @@ impl Dirs {
         self.user.path().join("settings.json")
     }
 
-    /// Lucide plus "Ext Icons", whose `json` files are drawn from a file.
+    /// Seti, Lucide plus "Ext Icons", whose `json` files are drawn from a file.
     fn registry(&self) -> IconThemeRegistry {
         let root = self.icons.path().canonicalize().unwrap();
         std::fs::create_dir_all(root.join("icons")).unwrap();
@@ -74,7 +74,7 @@ fn init(dirs: &Dirs, settings: Option<&str>, cx: &mut TestAppContext) {
         theme_generation: 0,
         languages: Arc::new(LanguageRegistry::bundled()),
         languages_generation: 0,
-        icons: icon_themes.resolve("Lucide"),
+        icons: icon_themes.resolve(DEFAULT_ICON_THEME),
         icon_themes,
     });
     let paths = ConfigPaths::with_user_dir(dirs.user.path(), dirs.root.path());
@@ -165,14 +165,18 @@ fn icon_theme_picker_previews_and_persists(cx: &mut TestAppContext) {
     let original = "// mine\n{\n  \"editor.fontSize\": 14 // px\n}\n";
     init(&dirs, Some(original), cx);
     let (wb, cx) = open(dirs.root.path(), cx);
-    assert_eq!(icon_name(cx), "Lucide");
+    assert_eq!(icon_name(cx), "Seti");
 
     let p = show_picker(&wb, cx);
     assert_eq!(
         cx.update(|_, cx| p.read(cx).row_texts()),
-        vec!["Lucide".to_string(), "Ext Icons".to_string()]
+        vec![
+            "Seti".to_string(),
+            "Lucide".to_string(),
+            "Ext Icons".to_string()
+        ]
     );
-    keys("down", cx);
+    keys("down down", cx);
     assert_eq!(icon_name(cx), "Ext Icons", "moving the selection previews");
 
     // A reload while previewing leaves the preview alone.
@@ -185,7 +189,7 @@ fn icon_theme_picker_previews_and_persists(cx: &mut TestAppContext) {
     // Escape goes back to the configured theme and writes nothing.
     keys("escape", cx);
     assert!(picker(&wb, cx).is_none());
-    assert_eq!(icon_name(cx), "Lucide");
+    assert_eq!(icon_name(cx), "Seti");
     assert_eq!(
         std::fs::read_to_string(dirs.settings()).unwrap(),
         "{ \"editor.fontSize\": 15 }"
@@ -196,7 +200,7 @@ fn icon_theme_picker_previews_and_persists(cx: &mut TestAppContext) {
     let changed = dirs.settings();
     cx.update(|_, cx| reload_config(&[changed], cx));
     show_picker(&wb, cx);
-    keys("down", cx);
+    keys("down down", cx);
     keys("enter", cx);
     assert!(picker(&wb, cx).is_none());
     assert_eq!(icon_name(cx), "Ext Icons");
@@ -228,18 +232,14 @@ fn unknown_icon_theme_setting_kept(cx: &mut TestAppContext) {
     let text = "{ \"workbench.iconTheme\": \"Gone\" }";
     init(&dirs, Some(text), cx);
     let (wb, cx) = open(dirs.root.path(), cx);
-    assert_eq!(
-        icon_name(cx),
-        "Lucide",
-        "Lucide answers for an unknown theme"
-    );
+    assert_eq!(icon_name(cx), "Seti", "Seti answers for an unknown theme");
 
     let p = show_picker(&wb, cx);
     assert_eq!(cx.update(|_, cx| p.read(cx).selected_index()), 0);
     keys("down", cx);
-    assert_eq!(icon_name(cx), "Ext Icons");
-    keys("escape", cx);
     assert_eq!(icon_name(cx), "Lucide");
+    keys("escape", cx);
+    assert_eq!(icon_name(cx), "Seti");
     assert_eq!(std::fs::read_to_string(dirs.settings()).unwrap(), text);
     let configured: Option<String> = cx.update(|_, cx| {
         cx.global::<AppState>()
@@ -247,4 +247,17 @@ fn unknown_icon_theme_setting_kept(cx: &mut TestAppContext) {
             .get("workbench.iconTheme", None)
     });
     assert_eq!(configured.as_deref(), Some("Gone"));
+}
+
+#[gpui::test]
+fn lucide_setting_kept(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, Some("{ \"workbench.iconTheme\": \"Lucide\" }"), cx);
+    let (_wb, cx) = open(dirs.root.path(), cx);
+    assert_eq!(icon_name(cx), "Lucide");
+
+    let changed = dirs.settings();
+    cx.update(|_, cx| reload_config(&[changed], cx));
+    draw(cx);
+    assert_eq!(icon_name(cx), "Lucide");
 }

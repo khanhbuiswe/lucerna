@@ -1,5 +1,5 @@
 //! How the workbench feeds its [`GitStore`]: worktree changes, open
-//! documents and the `git.refresh` command.
+//! documents and the git commands.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -8,6 +8,7 @@ use gpui::{App, Context, Entity, Focusable, Window};
 use lucerna_project::WorktreeEvent;
 
 use super::GitStore;
+use super::checkout::CheckoutAnchor;
 use crate::diff_view::DiffView;
 use crate::documents::{DocumentEvent, Documents};
 use crate::editor_groups::branch_changes_title;
@@ -23,6 +24,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             view.update(cx, |v, cx| v.git_refreshed(cx));
         }
     });
+    commands.register(
+        "git.checkout",
+        "Git: Checkout to…",
+        |wb, _, window, cx| wb.show_checkout_picker(CheckoutAnchor::Center, window, cx),
+    );
     commands.register(
         "git.viewChanges",
         "Git: Open Changes (Uncommitted)",

@@ -1,6 +1,6 @@
 [package]
 name = "lucerna-git"
-description = "Lucerna: read-only git integration (hardened runner, status parsing)"
+description = "Lucerna: git integration (hardened runner, status parsing, branch switching)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

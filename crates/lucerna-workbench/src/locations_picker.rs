@@ -416,7 +416,11 @@ impl LocationsPicker {
             .h(px(PICKER_ROW_HEIGHT))
             .px(px(2. * GRID))
             .overflow_hidden()
-            .child(file_icon(&icon, color(ui.icon_muted).into()))
+            .child(file_icon(
+                &icon,
+                color(ui.icon_muted).into(),
+                state.theme.appearance,
+            ))
             .child(div().flex_none().child(group.name.clone()))
             .child(
                 div()

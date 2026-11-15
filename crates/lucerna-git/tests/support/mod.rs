@@ -9,11 +9,13 @@ const NULL: &str = "NUL";
 #[cfg(not(windows))]
 const NULL: &str = "/dev/null";
 
-/// A `GitBinary` isolated from the developer's global/system git config.
+/// A `GitBinary` isolated from the developer's global/system git config,
+/// in the C locale so tests can match git's messages.
 pub fn bin() -> GitBinary {
     GitBinary::new(PathBuf::from("git"))
         .with_env("GIT_CONFIG_GLOBAL", NULL)
         .with_env("GIT_CONFIG_SYSTEM", NULL)
+        .with_env("LC_ALL", "C")
 }
 
 pub fn git(dir: &Path, args: &[&str]) -> String {

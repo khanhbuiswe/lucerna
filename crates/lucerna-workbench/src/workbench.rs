@@ -1,5 +1,6 @@
 //! The root view: shell layout, view slots and VS Code–style key dispatch.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -8,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use gpui::{
-    AnyView, App, Context, DragMoveEvent, Entity, EntityId, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, ModifiersChangedEvent, ParentElement, Pixels, Render, Styled, Subscription, Task,
-    WeakFocusHandle, Window, WindowHandle, div, prelude::*, px,
+    AnyView, App, Bounds, Context, DragMoveEvent, Entity, EntityId, FocusHandle, Focusable,
+    IntoElement, KeyDownEvent, ModifiersChangedEvent, ParentElement, Pixels, Render, Styled,
+    Subscription, Task, WeakFocusHandle, Window, WindowHandle, div, prelude::*, px,
 };
 use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
@@ -20,7 +21,6 @@ use serde_json::Value;
 use crate::code_view::{self, CodeView, CodeViewEvent, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
-use crate::diff_view::branch_picker::ShownBranchPicker;
 use crate::diff_view::{BranchBase, DiffKind, DiffView};
 use crate::documents::{DocumentEvent, DocumentStatusItem, Documents, GoTo};
 use crate::editor_groups::{
@@ -28,6 +28,7 @@ use crate::editor_groups::{
 };
 use crate::explorer::{ClipOp, ExplorerClipboard, ExplorerView, SelectedKind};
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
+use crate::git::branch_picker::ShownBranchPicker;
 use crate::git::{GitStore, GitStoreEvent};
 use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;
@@ -185,7 +186,7 @@ pub struct Workbench {
     /// watcher so a checkout updates the title bar.
     git_head: Option<PathBuf>,
     /// What `HEAD` names: the branch, or a short SHA when detached.
-    git_branch: Option<String>,
+    pub(crate) git_branch: Option<String>,
     /// The repository: statuses and gutter hunks. Runs `git` only once
     /// the folder is trusted.
     pub(crate) git: Entity<GitStore>,
@@ -231,6 +232,15 @@ pub struct Workbench {
     /// The left button went down on the title bar and the window has not
     /// started moving yet. Only acted on while the button is still held.
     pub(crate) title_bar_pressed: bool,
+    /// The title bar's branch button as last laid out: the Checkout-mode
+    /// picker opened from it shows under it.
+    pub(crate) branch_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// A press on the branch button closed the picker it opens.
+    pub(crate) branch_button_press_closed: bool,
+    /// A `git switch` is running; the title bar says "Switching…".
+    pub(crate) switching_branch: bool,
+    /// Switches started, for tests.
+    pub(crate) switches_started: usize,
     /// The shown Quick Open and the subscription to its events.
     pub(crate) quick_open: Option<(Entity<QuickOpen>, Subscription)>,
     /// Where focus goes back to when Quick Open closes.
@@ -761,6 +771,10 @@ impl Workbench {
             pending_chord: Vec::new(),
             vim,
             title_bar_pressed: false,
+            branch_button_bounds: Rc::default(),
+            branch_button_press_closed: false,
+            switching_branch: false,
+            switches_started: 0,
             quick_open: None,
             focus_before_quick_open: None,
             recent_files: RecentFiles::default(),
@@ -963,6 +977,13 @@ impl Workbench {
             .unwrap_or(path.as_os_str())
             .to_string_lossy()
             .into_owned()
+    }
+
+    /// Whether a press on the title bar waits to start a window move, for
+    /// tests.
+    #[doc(hidden)]
+    pub fn title_bar_pressed(&self) -> bool {
+        self.title_bar_pressed
     }
 
     /// The branch checked out in the repository holding the root (a
@@ -3063,9 +3084,13 @@ impl Render for Workbench {
             .font_family(UI_FONT_FAMILY)
             .text_size(px(UI_FONT_SIZE))
             .child(title_bar::render(
-                root_name.clone(),
-                self.git_branch.clone(),
-                self.shows_restricted_mode(cx),
+                title_bar::TitleBarState {
+                    root_name: root_name.clone(),
+                    branch: self.git_branch.clone(),
+                    switching: self.switching_branch,
+                    branch_bounds: self.branch_button_bounds.clone(),
+                    restricted: self.shows_restricted_mode(cx),
+                },
                 ui,
                 cx,
             ))
@@ -3122,10 +3147,7 @@ impl Render for Workbench {
                 self.locations_picker()
                     .map(|picker| popover_overlay(picker.clone())),
             )
-            .children(
-                self.branch_picker()
-                    .map(|picker| popover_overlay(picker.clone())),
-            )
+            .children(self.branch_picker_overlay(window))
             .children(
                 self.trust_modal()
                     .map(|modal| popover_overlay(modal.clone())),
