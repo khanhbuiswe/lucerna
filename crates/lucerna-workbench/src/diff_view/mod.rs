@@ -19,7 +19,6 @@
 //! worktree against the merge base with a ref; see [`branch`].
 
 mod branch;
-pub mod branch_picker;
 pub(crate) mod build;
 mod jobs;
 mod load;

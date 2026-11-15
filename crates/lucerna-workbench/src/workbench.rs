@@ -20,7 +20,6 @@ use serde_json::Value;
 use crate::code_view::{self, CodeView, CodeViewEvent, LargeFileStatus};
 use crate::config_files::{self, ConfigErrorItem, ConfigState};
 use crate::diagnostics_status::{self, DiagnosticsStatusItem};
-use crate::diff_view::branch_picker::ShownBranchPicker;
 use crate::diff_view::{BranchBase, DiffKind, DiffView};
 use crate::documents::{DocumentEvent, DocumentStatusItem, Documents, GoTo};
 use crate::editor_groups::{
@@ -28,6 +27,7 @@ use crate::editor_groups::{
 };
 use crate::explorer::{ClipOp, ExplorerClipboard, ExplorerView, SelectedKind};
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
+use crate::git::branch_picker::ShownBranchPicker;
 use crate::git::{GitStore, GitStoreEvent};
 use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;

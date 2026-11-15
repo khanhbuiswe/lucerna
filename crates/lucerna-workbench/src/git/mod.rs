@@ -4,6 +4,7 @@
 //! buffers. The UI thread never runs `git`, reads a file or diffs: it only
 //! swaps in finished results.
 
+pub mod branch_picker;
 mod hunks;
 mod job;
 mod locate;
