@@ -4,6 +4,8 @@
 //! buffers. The UI thread never runs `git`, reads a file or diffs: it only
 //! swaps in finished results.
 
+pub mod branch_picker;
+pub mod checkout;
 mod hunks;
 mod job;
 mod locate;
@@ -707,17 +709,30 @@ impl GitStore {
     }
 }
 
-/// The login shell's `PATH`, read once per process (it can take seconds).
-fn login_path() -> Option<&'static str> {
-    static PATH: OnceLock<Option<String>> = OnceLock::new();
-    PATH.get_or_init(|| lucerna_lsp::env::login_shell_env().remove("PATH"))
-        .as_deref()
+/// The login shell's environment, read once per process (it can take
+/// seconds; call it off the UI thread).
+fn login_env() -> &'static HashMap<String, String> {
+    static ENV: OnceLock<HashMap<String, String>> = OnceLock::new();
+    ENV.get_or_init(lucerna_lsp::env::login_shell_env)
+}
+
+/// What write commands (`git switch`) add to the process environment: the
+/// login shell's, so hooks and filters (git-lfs, husky's `node`) find their
+/// programs as in a terminal. Variables the shell sets about itself are
+/// left out.
+fn write_env(login: &HashMap<String, String>) -> Vec<(String, String)> {
+    const SHELL_OWN: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
+    login
+        .iter()
+        .filter(|(k, _)| !SHELL_OWN.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 /// Finds `git` and the repository holding `root`, and with `watch` starts
 /// watching its git dirs. Blocking. Without a `.git` at or above `root`
 /// there is no repository, and `git` is not looked for (that may run a
-/// login shell).
+/// login shell). A located `git` writes with the login shell's environment.
 fn discover(
     git: Option<GitBinary>,
     setting: Option<PathBuf>,
@@ -730,12 +745,13 @@ fn discover(
     let git = match git {
         Some(git) => git,
         None => {
+            let login = login_env();
             let found = match setting {
                 Some(path) => locate::locate_git(Some(path), None),
-                None => locate::locate_git(None, login_path()),
+                None => locate::locate_git(None, login.get("PATH").map(String::as_str)),
             };
             match found {
-                Some(path) => GitBinary::new(path),
+                Some(path) => GitBinary::new(path).with_write_env(write_env(login)),
                 None => return Setup::NoGit,
             }
         }
