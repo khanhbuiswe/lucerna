@@ -42,6 +42,13 @@ pub(super) fn build_menu(
 ) -> ContextMenu {
     let is_file = kind == SelectedKind::File;
     let is_root = kind == SelectedKind::Root;
+    // `path` is root-relative, so the root to strip is empty.
+    let is_markdown = is_file
+        && crate::markdown_preview::is_markdown(
+            std::path::Path::new(""),
+            std::path::Path::new(&path),
+            cx,
+        );
     let args: Value = json!({ "path": path });
     let entry = |m: ContextMenu, label: &'static str, command: &'static str| {
         m.entry_with_args(label, command, args.clone())
@@ -54,6 +61,9 @@ pub(super) fn build_menu(
         .separator()
         .when(is_file, |m| {
             entry(m, "Open to the Side", "explorer.openToSide")
+        })
+        .when(is_file && is_markdown, |m| {
+            entry(m, "Open Preview", "markdown.showPreview")
         });
     let menu = entry(menu, REVEAL_LABEL, "revealFileInOS");
     // `terminal.explorerKind` (VS Code): "integrated" (default),

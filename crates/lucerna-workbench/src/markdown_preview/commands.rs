@@ -52,7 +52,16 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         SHOW_PREVIEW,
         "Markdown: Open Preview",
-        |wb, _, window, cx| {
+        |wb, args, window, cx| {
+            // From the Explorer's menu: the row's file, whatever is open.
+            if let Some(rel) = args.and_then(|a| a.get("path")).and_then(|p| p.as_str()) {
+                let path = wb.absolute_path(Path::new(rel));
+                if is_markdown(wb.root(), &path, cx) {
+                    wb.open_markdown_preview(path, cx);
+                    wb.focus_editor_area(window, cx);
+                }
+                return;
+            }
             if let Some(Active::Source { tab, path }) = active(wb, cx) {
                 preview_in_place(wb, tab, path, window, cx);
             }

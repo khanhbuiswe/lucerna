@@ -1562,6 +1562,13 @@ impl Workbench {
         self.open_file(path, FileView::Source, mode, false, cx);
     }
 
+    /// Opens the static Markdown preview of `path` as a pinned tab, as the
+    /// Explorer's Open Preview does.
+    pub(crate) fn open_markdown_preview(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        let path = self.absolute_path(&path);
+        self.open_file(path, FileView::Preview, OpenMode::Pinned, false, cx);
+    }
+
     /// Opens absolute `path` as `view` (see [`EditorGroups::open_file`]).
     fn open_file(
         &mut self,
