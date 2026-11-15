@@ -5,8 +5,6 @@ mod about;
 pub mod app;
 pub mod app_menu;
 mod app_state;
-// Used by the app router in a later onboarding task.
-#[allow(dead_code)]
 mod app_state_file;
 pub mod code_view;
 mod commands;

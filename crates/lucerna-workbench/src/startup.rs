@@ -59,8 +59,6 @@ pub enum StartupScreen {
 /// Picks the startup screen: the workspace to restore wins, then the
 /// first-run onboarding (`onboarded` is `Some(false)`), then `choice`.
 /// `onboarded` is `None` when there is no data directory to remember it in.
-// Called by the app router in a later task.
-#[allow(dead_code)]
 pub fn startup_screen(
     restore: Option<&RecentEntry>,
     onboarded: Option<bool>,
