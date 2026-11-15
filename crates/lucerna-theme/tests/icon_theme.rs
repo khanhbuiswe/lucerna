@@ -166,13 +166,49 @@ fn escaping_icon_path_rejected() {
 }
 
 #[test]
-fn unknown_theme_name_resolves_to_lucide() {
+fn unknown_theme_name_resolves_to_seti() {
     let (reg, warnings) = IconThemeRegistry::build(&[]);
     assert!(warnings.is_empty());
-    assert_eq!(reg.names(), vec!["Lucide".to_string()]);
-    let t = reg.resolve("Nope");
+    assert_eq!(reg.names(), vec!["Seti".to_string(), "Lucide".to_string()]);
+    assert_eq!(reg.resolve("Gone").name(), "Seti");
+    assert!(matches!(
+        reg.resolve("Nope").file(Path::new("a.json")),
+        IconSource::Glyph { name: "json", .. }
+    ));
+}
+
+#[test]
+fn vs_seti_alias_resolves_to_seti() {
+    let (reg, _) = IconThemeRegistry::build(&[]);
+    assert_eq!(reg.resolve("vs-seti").name(), "Seti");
+    assert_eq!(reg.resolve("Seti").name(), "Seti");
+}
+
+#[test]
+fn lucide_still_resolvable() {
+    let (reg, _) = IconThemeRegistry::build(&[]);
+    let t = reg.resolve("Lucide");
     assert_eq!(t.name(), "Lucide");
     assert_eq!(t.file(Path::new("a.json")), IconSource::Builtin("braces"));
+}
+
+#[test]
+fn extension_cannot_replace_seti() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = r#"{ "name": "T", "themes": [{ "name": "Seti", "appearance": "dark",
+      "file_stems": {"a": "d"}, "file_icons": {"d": {"path": "docker.svg"}} }] }"#;
+    let (id, f, root) = write_theme(dir.path(), json);
+    let (reg, _) = IconThemeRegistry::build(&[(id, f, root)]);
+    assert_eq!(reg.names(), vec!["Seti".to_string(), "Lucide".to_string()]);
+    // A real extension theme is listed once, after the built-ins.
+    let dir2 = tempfile::tempdir().unwrap();
+    let (id, f, root) = write_theme(dir2.path(), &STEMS.replace("icons/", ""));
+    let (reg, _) = IconThemeRegistry::build(&[(id, f, root)]);
+    assert_eq!(reg.names(), ["Seti", "Lucide", "Stems"]);
+    assert!(matches!(
+        reg.resolve("Seti").file(Path::new("a")),
+        IconSource::Glyph { .. }
+    ));
 }
 
 #[test]

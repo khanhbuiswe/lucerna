@@ -39,7 +39,7 @@ impl Dirs {
         self.user.path().join("settings.json")
     }
 
-    /// Lucide plus "Ext Icons", whose `json` files are drawn from a file.
+    /// Seti, Lucide plus "Ext Icons", whose `json` files are drawn from a file.
     fn registry(&self) -> IconThemeRegistry {
         let root = self.icons.path().canonicalize().unwrap();
         std::fs::create_dir_all(root.join("icons")).unwrap();
@@ -170,7 +170,11 @@ fn icon_theme_picker_previews_and_persists(cx: &mut TestAppContext) {
     let p = show_picker(&wb, cx);
     assert_eq!(
         cx.update(|_, cx| p.read(cx).row_texts()),
-        vec!["Lucide".to_string(), "Ext Icons".to_string()]
+        vec![
+            "Seti".to_string(),
+            "Lucide".to_string(),
+            "Ext Icons".to_string()
+        ]
     );
     keys("down", cx);
     assert_eq!(icon_name(cx), "Ext Icons", "moving the selection previews");
@@ -228,18 +232,14 @@ fn unknown_icon_theme_setting_kept(cx: &mut TestAppContext) {
     let text = "{ \"workbench.iconTheme\": \"Gone\" }";
     init(&dirs, Some(text), cx);
     let (wb, cx) = open(dirs.root.path(), cx);
-    assert_eq!(
-        icon_name(cx),
-        "Lucide",
-        "Lucide answers for an unknown theme"
-    );
+    assert_eq!(icon_name(cx), "Seti", "Seti answers for an unknown theme");
 
     let p = show_picker(&wb, cx);
     assert_eq!(cx.update(|_, cx| p.read(cx).selected_index()), 0);
     keys("down", cx);
-    assert_eq!(icon_name(cx), "Ext Icons");
-    keys("escape", cx);
     assert_eq!(icon_name(cx), "Lucide");
+    keys("escape", cx);
+    assert_eq!(icon_name(cx), "Seti");
     assert_eq!(std::fs::read_to_string(dirs.settings()).unwrap(), text);
     let configured: Option<String> = cx.update(|_, cx| {
         cx.global::<AppState>()

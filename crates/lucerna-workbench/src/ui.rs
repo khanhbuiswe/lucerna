@@ -103,6 +103,15 @@ pub fn file_icon_sized(source: &IconSource, size: Pixels, color: Hsla) -> AnyEle
             None => div().size(size).into_any_element(),
         },
         IconSource::File(path) => img(path.clone()).size(size).into_any_element(),
+        // Stop-gap until Seti glyphs are drawn: the Lucide "file" icon.
+        IconSource::Glyph { .. } => match icons::lucide_svg("file") {
+            Some(data) => svg()
+                .data(data)
+                .size(size)
+                .text_color(color)
+                .into_any_element(),
+            None => div().size(size).into_any_element(),
+        },
     }
 }
 
