@@ -1,16 +1,16 @@
 //! The 34 px integrated title bar: macOS traffic lights inset into the
-//! window, then the root folder's name, its git branch and, in Restricted
-//! Mode, the "Restricted Mode" button. Dragging it moves the window and a
-//! double-click zooms it. A plain variant shows only a title, for the
-//! Welcome screen.
+//! window, then the root folder's name, its git branch (a button that
+//! switches branches) and, in Restricted Mode, the "Restricted Mode"
+//! button. Dragging it moves the window and a double-click zooms it. A
+//! plain variant shows only a title, for the Welcome screen.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
     Bounds, Context, Div, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
-    Pixels, Stateful, Styled, TitlebarOptions, WindowBounds, WindowOptions, div, point, prelude::*,
-    px, svg,
+    Pixels, Stateful, Styled, TitlebarOptions, WindowBounds, WindowOptions, canvas, div, point,
+    prelude::*, px, svg,
 };
 use lucerna_theme::UiColors;
 
@@ -94,13 +94,29 @@ pub(crate) fn render_plain(
         )
 }
 
+/// What the title bar shows of the workspace.
+pub(crate) struct TitleBarState {
+    pub root_name: String,
+    pub branch: Option<String>,
+    /// A branch switch is running.
+    pub switching: bool,
+    /// Where the branch button was laid out, for the picker it opens.
+    pub branch_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    pub restricted: bool,
+}
+
 pub(crate) fn render(
-    root_name: String,
-    branch: Option<String>,
-    restricted: bool,
+    state: TitleBarState,
     ui: &UiColors,
     cx: &mut Context<Workbench>,
 ) -> impl IntoElement {
+    let TitleBarState {
+        root_name,
+        branch,
+        switching,
+        branch_bounds,
+        restricted,
+    } = state;
     bar(ui)
         // Start the native move on the first drag motion, not on mouse
         // down, so a double-click still reaches `on_click`.
@@ -126,37 +142,95 @@ pub(crate) fn render(
                 .text_color(color(ui.text))
                 .child(root_name),
         )
-        .children(branch.map(|branch| {
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(GRID))
-                .min_w_0()
-                .child(
-                    div()
-                        .debug_selector(|| "title-bar-branch-icon".into())
-                        .flex_none()
-                        .size(px(UI_FONT_SIZE_SMALL))
-                        .child(
-                            svg()
-                                .data(icons::GIT_BRANCH)
-                                .size(px(UI_FONT_SIZE_SMALL))
-                                .text_color(color(ui.icon_muted)),
-                        ),
-                )
-                .child(
-                    div()
-                        .debug_selector(|| "title-bar-branch".into())
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_color(color(ui.text_muted))
-                        .child(branch),
-                )
-        }))
+        .children(branch.map(|branch| branch_button(branch, switching, branch_bounds, ui, cx)))
         .when(restricted, |bar| bar.child(restricted_mode_button(ui, cx)))
+}
+
+/// The branch icon and name: a click opens the branch picker under it.
+/// While a switch runs it is dimmed, says "Switching…" and ignores
+/// clicks. Presses on it neither move nor zoom the window. Its bounds go
+/// to `bounds` as it is laid out.
+fn branch_button(
+    branch: String,
+    switching: bool,
+    bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    ui: &UiColors,
+    cx: &mut Context<Workbench>,
+) -> impl IntoElement {
+    let hover = color(ui.ghost_element_hover);
+    let text = if switching {
+        ui.text_disabled
+    } else {
+        ui.text_muted
+    };
+    div()
+        .id("title-bar-branch-button")
+        .debug_selector(|| "title-bar-branch-button".into())
+        .relative()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(GRID))
+        .min_w_0()
+        .h(px(6. * GRID))
+        .px(px(1.5 * GRID))
+        .rounded(px(GRID))
+        .when(!switching, |button| {
+            button.cursor_pointer().hover(move |s| s.bg(hover))
+        })
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|wb, _: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                wb.branch_button_pressed();
+            }),
+        )
+        .on_click(cx.listener(|wb, _, window, cx| {
+            cx.stop_propagation();
+            wb.branch_button_clicked(window, cx);
+        }))
+        .child(
+            div()
+                .debug_selector(|| "title-bar-branch-icon".into())
+                .flex_none()
+                .size(px(UI_FONT_SIZE_SMALL))
+                .child(
+                    svg()
+                        .data(icons::GIT_BRANCH)
+                        .size(px(UI_FONT_SIZE_SMALL))
+                        .text_color(color(if switching {
+                            ui.text_disabled
+                        } else {
+                            ui.icon_muted
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .debug_selector(|| "title-bar-branch".into())
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(color(text))
+                .child(branch),
+        )
+        .when(switching, |button| {
+            button.child(
+                div()
+                    .debug_selector(|| "title-bar-branch-switching".into())
+                    .flex_none()
+                    .text_color(color(text))
+                    .child("Switching…"),
+            )
+        })
+        .child(
+            canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+        )
 }
 
 /// A warning icon and "Restricted Mode": opens the trust modal. Presses on

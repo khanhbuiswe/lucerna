@@ -5,6 +5,7 @@
 //! swaps in finished results.
 
 pub mod branch_picker;
+pub mod checkout;
 mod hunks;
 mod job;
 mod locate;

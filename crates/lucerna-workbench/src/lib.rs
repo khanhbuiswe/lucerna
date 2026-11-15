@@ -91,6 +91,7 @@ pub use explorer::{
 };
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
 pub use git::branch_picker::{BranchPicker, BranchPickerEvent, BranchPickerMode, NameCheck};
+pub use git::checkout::CheckoutAnchor;
 pub use git::{GitSnapshot, GitState, GitStore, GitStoreEvent};
 pub use language_servers::{
     HoverInfo, LanguageServers, LanguageServersEvent, ServerStatus, SlotState,

@@ -2,9 +2,9 @@
 //! draws chrome takes its sizes and popover/icon-button styling from here.
 
 use gpui::{
-    AnyElement, AnyView, App, Axis, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity,
-    Hsla, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled,
-    Window, div, img, prelude::*, px, relative, svg,
+    AnyElement, AnyView, App, Axis, Bounds, ClickEvent, ClipboardItem, Context, Div, ElementId,
+    Entity, Hsla, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Size,
+    Stateful, Styled, Window, div, img, prelude::*, px, relative, svg,
 };
 use lucerna_theme::{IconSource, Rgba, Theme};
 
@@ -139,6 +139,33 @@ pub fn popover_overlay(popover: impl IntoElement) -> Div {
         .pt(px(TITLE_BAR_HEIGHT + 6. * GRID))
         .px(px(4. * GRID))
         .child(popover)
+}
+
+/// Covers its parent and holds `popover` just under `anchor` (window
+/// coordinates), left-aligned to it, as wide as [`popover_overlay`] makes
+/// it but moved left as needed to stay inside `viewport` with the same
+/// 16 px gutter. Give it a `relative` parent the size of the window.
+pub fn anchored_popover_overlay(
+    popover: impl IntoElement,
+    anchor: Bounds<Pixels>,
+    viewport: Size<Pixels>,
+) -> Div {
+    let gutter = px(4. * GRID);
+    let width = px(POPOVER_MAX_WIDTH)
+        .min(viewport.width - gutter * 2.)
+        .max(px(0.));
+    let left = anchor
+        .left()
+        .min(viewport.width - gutter - width)
+        .max(gutter);
+    div().absolute().top_0().left_0().size_full().child(
+        div()
+            .absolute()
+            .left(left)
+            .top(anchor.bottom() + px(GRID))
+            .w(width)
+            .child(popover),
+    )
 }
 
 /// A 24×20 icon button: `active` gets the `element.selected` background

@@ -11,12 +11,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    AnyElement, App, AppContext, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
     IntoElement, KeyDownEvent, ParentElement, Render, ScrollHandle, Styled, Subscription, Window,
     div, prelude::*, px, svg,
 };
 use lucerna_git::{BranchRef, GitError, SwitchTarget, sanitize_branch_name};
 
+use crate::git::checkout::CheckoutAnchor;
 use crate::icons;
 use crate::layout::color;
 use crate::quick_open::picker::{
@@ -24,7 +25,10 @@ use crate::quick_open::picker::{
 };
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
-use crate::ui::{FILE_ICON_SIZE, GRID, UI_FONT_SIZE, popover, relative_time};
+use crate::ui::{
+    FILE_ICON_SIZE, GRID, UI_FONT_SIZE, anchored_popover_overlay, popover, popover_overlay,
+    relative_time,
+};
 use crate::{AppState, Workbench};
 
 const COMPARE_PLACEHOLDER: &str = "Select a branch to compare with";
@@ -189,6 +193,10 @@ impl BranchPicker {
             texts.push(text);
         }
         texts
+    }
+
+    pub fn mode(&self) -> BranchPickerMode {
+        self.mode
     }
 
     pub fn selected_index(&self) -> usize {
@@ -402,6 +410,7 @@ impl Render for BranchPicker {
         });
         popover(cx)
             .id("branch-picker")
+            .debug_selector(|| "branch-picker".to_string())
             .occlude()
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(BranchPickerEvent::Dismiss)))
@@ -416,6 +425,8 @@ impl Render for BranchPicker {
 /// The shown branch picker.
 pub(crate) struct ShownBranchPicker {
     picker: Entity<BranchPicker>,
+    /// Where a Checkout-mode picker shows; `None` in Compare mode.
+    pub(crate) anchor: Option<CheckoutAnchor>,
     _events: Subscription,
     focus_before: Option<FocusHandle>,
 }
@@ -424,6 +435,20 @@ impl Workbench {
     /// The shown branch picker, if any.
     pub fn branch_picker(&self) -> Option<&Entity<BranchPicker>> {
         self.branch_picker.as_ref().map(|shown| &shown.picker)
+    }
+
+    /// The shown branch picker in its overlay: a Checkout-mode picker
+    /// opened from the title bar under the branch button, any other at
+    /// Quick Open's position.
+    pub(crate) fn branch_picker_overlay(&self, window: &Window) -> Option<Div> {
+        let shown = self.branch_picker.as_ref()?;
+        let picker = shown.picker.clone();
+        Some(match (shown.anchor, self.branch_button_bounds.get()) {
+            (Some(CheckoutAnchor::TitleBar), Some(anchor)) => {
+                anchored_popover_overlay(picker, anchor, window.viewport_size())
+            }
+            _ => popover_overlay(picker),
+        })
     }
 
     /// Shows the branch picker over the repository's branches, once listed
@@ -468,11 +493,24 @@ impl Workbench {
         }
         let current = self.branch_diff_ref(cx);
         let picker = cx.new(|cx| BranchPicker::new(branches, current.as_deref(), cx));
+        self.host_branch_picker(picker, None, window, cx);
+    }
+
+    /// Shows `picker` as the modal overlay and gives it the focus; with an
+    /// `anchor`, a Checkout-mode picker.
+    pub(crate) fn host_branch_picker(
+        &mut self,
+        picker: Entity<BranchPicker>,
+        anchor: Option<CheckoutAnchor>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let events = cx.subscribe_in(&picker, window, Self::on_branch_picker_event);
         let focus_before = window.focused(cx);
         window.focus(&picker.focus_handle(cx), cx);
         self.branch_picker = Some(ShownBranchPicker {
             picker,
+            anchor,
             _events: events,
             focus_before,
         });
@@ -512,9 +550,10 @@ impl Workbench {
                     cx.notify();
                 });
             }
-            // Only a Checkout-mode picker emits it, and this host shows
-            // Compare mode.
-            BranchPickerEvent::Checkout(_) => {}
+            BranchPickerEvent::Checkout(target) => {
+                self.close_branch_picker(window, cx);
+                self.switch_branch(target.clone(), window, cx);
+            }
             BranchPickerEvent::Dismiss => self.close_branch_picker(window, cx),
         }
     }
