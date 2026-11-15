@@ -22,7 +22,7 @@ use gpui_platform::application;
 use lucerna_extension::store::Store;
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::{Associations, LanguageRegistry};
-use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
+use lucerna_theme::{DEFAULT_ICON_THEME, IconThemeRegistry, ThemeRegistry};
 
 use crate::app_menu;
 use crate::app_state_file::{mark_onboarded, onboarded};
@@ -729,7 +729,7 @@ pub fn set_app_state_with_store(store: Store, cx: &mut App) {
     let themes = ThemeRegistry::builtin();
     let theme = themes.get_or_default("Lucerna Dark");
     let (icon_themes, _) = IconThemeRegistry::build(&[]);
-    let icons = icon_themes.resolve("Lucide");
+    let icons = icon_themes.resolve(DEFAULT_ICON_THEME);
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     if let Some(error) = error {
         tracing::error!(message = error.message, "default keymap");
