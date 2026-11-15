@@ -368,3 +368,78 @@ fn run_write_reports_failure() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out).trim(), "main");
 }
+
+#[test]
+fn remote_with_slash_in_name_creates_plain_local_branch() {
+    let (_t, src) = repo();
+    git(&src, &["branch", "x"]);
+    let (_c, bare, work) = clone_of(&src);
+    git(&work, &["remote", "add", "team/a", bare.to_str().unwrap()]);
+    git(&work, &["fetch", "-q", "team/a"]);
+    let r = discover(&work);
+    let target = SwitchTarget::Remote {
+        remote: "team/a".into(),
+        branch: "x".into(),
+    };
+    r.switch_branch(&target).unwrap();
+    assert_eq!(head(&work), "x");
+    assert!(!local_branches(&work).contains(&"a/x".to_string()));
+    assert_eq!(git(&work, &["config", "branch.x.remote"]).trim(), "team/a");
+    assert_eq!(
+        git(&work, &["config", "branch.x.merge"]).trim(),
+        "refs/heads/x"
+    );
+    // Selecting it again switches to the existing local branch.
+    git(&work, &["switch", "-q", "main"]);
+    r.switch_branch(&target).unwrap();
+    assert_eq!(head(&work), "x");
+}
+
+#[test]
+fn overlapping_remotes_fail_cleanly() {
+    // `origin`'s refspec also maps `refs/remotes/origin/sub/x`, so git refuses
+    // to pick an upstream (a configuration error, per git's hint). Git has
+    // already created `x` without an upstream, exactly as in a terminal; what
+    // matters is that HEAD stays put and no `sub/x` appears.
+    let (_t, src) = repo();
+    git(&src, &["branch", "x"]);
+    let (_c, bare, work) = clone_of(&src);
+    git(
+        &work,
+        &["remote", "add", "origin/sub", bare.to_str().unwrap()],
+    );
+    git(&work, &["fetch", "-q", "origin/sub"]);
+    let r = discover(&work).switch_branch(&SwitchTarget::Remote {
+        remote: "origin/sub".into(),
+        branch: "x".into(),
+    });
+    match r {
+        Err(GitError::Failed { stderr, .. }) => assert!(stderr.contains("ambiguous"), "{stderr}"),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert_eq!(head(&work), "main");
+    assert!(!local_branches(&work).contains(&"sub/x".to_string()));
+}
+
+#[test]
+fn local_branch_named_like_remote_ref_does_not_confuse_switch() {
+    let (_t, src) = repo();
+    git(&src, &["branch", "feat"]);
+    let (_c, _bare, work) = clone_of(&src);
+    git(&work, &["branch", "origin/feat"]);
+    discover(&work)
+        .switch_branch(&SwitchTarget::Remote {
+            remote: "origin".into(),
+            branch: "feat".into(),
+        })
+        .unwrap();
+    assert_eq!(head(&work), "feat");
+    assert_eq!(
+        git(&work, &["config", "branch.feat.remote"]).trim(),
+        "origin"
+    );
+    assert_eq!(
+        git(&work, &["rev-parse", "feat"]),
+        git(&work, &["rev-parse", "refs/remotes/origin/feat"])
+    );
+}

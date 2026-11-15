@@ -158,7 +158,8 @@ impl Repo {
     /// thread. Every name is checked first: an invalid one returns
     /// `Failed { code: None, stderr: "Invalid branch name" }` without running
     /// git. Names are passed after `--end-of-options` (or as the value of
-    /// `-c`), so they can never be read as flags.
+    /// `-c`), so they can never be read as flags. A remote branch with no
+    /// local copy runs `switch -c <branch> --track refs/remotes/<remote>/<branch>`.
     pub fn switch_branch(&self, target: &SwitchTarget) -> Result<(), GitError> {
         let args: Vec<String> = match target {
             SwitchTarget::Local(name) => {
@@ -180,11 +181,16 @@ impl Repo {
                 if exit_one_is_none(r)?.is_some() {
                     vec!["switch".into(), "--end-of-options".into(), branch.clone()]
                 } else {
+                    // Name the local branch and the full ref explicitly: with
+                    // `--track` alone git derives the local name by cutting at the
+                    // first `/`, which is wrong for remotes like `team/a`.
                     vec![
                         "switch".into(),
+                        "-c".into(),
+                        branch.clone(),
                         "--track".into(),
                         "--end-of-options".into(),
-                        full,
+                        format!("refs/remotes/{full}"),
                     ]
                 }
             }
