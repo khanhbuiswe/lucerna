@@ -141,8 +141,8 @@ impl DiffView {
         cx: &mut Context<Self>,
     ) -> Self {
         let list = {
-            let root = root.clone();
-            cx.new(|cx| ExcerptList::new(root, "git-diff", cx))
+            let (root, settings) = (root.clone(), documents.read(cx).settings().clone());
+            cx.new(|cx| ExcerptList::new(root, "git-diff", settings, cx))
         };
         let list_focus = list.read(cx).focus_handle().clone();
         let subscriptions = vec![

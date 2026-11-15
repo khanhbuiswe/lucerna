@@ -10,7 +10,7 @@ use std::rc::Rc;
 use gpui::{App, Entity, EntityId, Subscription, Window};
 use lucerna_text::{Bias, BufferSnapshot, Patch, Point};
 
-use crate::AppState;
+use crate::WindowSettings;
 use crate::code_view::{CodeView, CodeViewEvent};
 use crate::editor_groups::{EditorGroupsView, TabId, TabItem};
 use crate::workspace_state::absolute_path;
@@ -93,11 +93,8 @@ pub(crate) fn source_line_for_preview(preview: &MarkdownPreview) -> u32 {
 }
 
 /// Whether the boolean setting `key` is on (the default).
-fn enabled(key: &str, cx: &App) -> bool {
-    cx.global::<AppState>()
-        .settings
-        .get::<bool>(key, None)
-        .unwrap_or(true)
+fn enabled(key: &str, settings: &Entity<WindowSettings>, cx: &App) -> bool {
+    settings.read(cx).get::<bool>(key, None, cx).unwrap_or(true)
 }
 
 /// The links between each shown Markdown preview and each shown editor of
@@ -118,6 +115,7 @@ impl ScrollSync {
         &mut self,
         groups: &Entity<EditorGroupsView>,
         root: &Path,
+        settings: &Entity<WindowSettings>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -149,11 +147,11 @@ impl ScrollSync {
         let mut subscriptions = Vec::with_capacity(pairs.len() * 2);
         for (preview, editor) in pairs {
             let id = (preview.entity_id(), editor.entity_id());
-            if !self.pairs.contains(&id) && enabled(SCROLL_PREVIEW_WITH_EDITOR, cx) {
+            if !self.pairs.contains(&id) && enabled(SCROLL_PREVIEW_WITH_EDITOR, settings, cx) {
                 let row = editor.read(cx).scroll_top_row();
                 preview.update(cx, |p, cx| p.scroll_to_line(row as f32, cx));
             }
-            subscriptions.extend(link(preview, editor, cx));
+            subscriptions.extend(link(preview, editor, settings, cx));
         }
         self.pairs = ids;
         self._subscriptions = subscriptions;
@@ -193,6 +191,7 @@ fn shown_pairs(groups: &Entity<EditorGroupsView>, root: &Path, cx: &App) -> Vec<
 fn link(
     preview: Entity<MarkdownPreview>,
     editor: Entity<CodeView>,
+    settings: &Entity<WindowSettings>,
     cx: &mut App,
 ) -> [Subscription; 2] {
     // The row the editor was scrolled to for the preview: its next
@@ -200,11 +199,15 @@ fn link(
     let echo = Rc::new(Cell::new(None::<u32>));
     let editor_scrolled = {
         let (preview, echo) = (preview.downgrade(), echo.clone());
+        let settings = settings.downgrade();
         cx.subscribe(&editor, move |_, event: &CodeViewEvent, cx| {
             let CodeViewEvent::ScrolledTo(row) = *event else {
                 return;
             };
-            if echo.take() == Some(row) || !enabled(SCROLL_PREVIEW_WITH_EDITOR, cx) {
+            let Some(settings) = settings.upgrade() else {
+                return;
+            };
+            if echo.take() == Some(row) || !enabled(SCROLL_PREVIEW_WITH_EDITOR, &settings, cx) {
                 return;
             }
             preview
@@ -213,9 +216,12 @@ fn link(
         })
     };
     let preview_scrolled = {
-        let editor = editor.downgrade();
+        let (editor, settings) = (editor.downgrade(), settings.downgrade());
         cx.subscribe(&preview, move |preview, _: &MarkdownPreviewEvent, cx| {
-            if !enabled(SCROLL_EDITOR_WITH_PREVIEW, cx) {
+            let Some(settings) = settings.upgrade() else {
+                return;
+            };
+            if !enabled(SCROLL_EDITOR_WITH_PREVIEW, &settings, cx) {
                 return;
             }
             let row = source_line_for_preview(preview.read(cx));

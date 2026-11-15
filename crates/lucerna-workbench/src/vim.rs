@@ -15,7 +15,7 @@ use gpui::{
 };
 use lucerna_editor::clipboard::ClipboardText;
 use lucerna_editor::{Ctx, EditConfig};
-use lucerna_settings::{Context as WhenContext, WhenExpr, parse_when};
+use lucerna_settings::{Context as WhenContext, SettingsView, WhenExpr, parse_when};
 use lucerna_syntax::Language;
 use lucerna_text::{Bias, BufferSnapshot, Patch, Point, Reload};
 use lucerna_vim::{
@@ -24,7 +24,7 @@ use lucerna_vim::{
     exclusive_range,
 };
 
-use crate::AppState;
+use crate::WindowSettings;
 use crate::code_view::{
     ClipboardMetadata, CodeView, CodeViewEvent, CursorOverlay, CursorShape, FoldOp, clipboard_item,
 };
@@ -145,13 +145,15 @@ pub struct VimLayer {
     /// [`VimLayer::attach`].
     groups: Option<WeakEntity<EditorGroupsView>>,
     _new_views: Option<Subscription>,
+    /// The window's settings, which `vim.*` is read from.
+    window_settings: Entity<WindowSettings>,
     _settings: Subscription,
 }
 
 impl VimLayer {
-    /// Reads the settings from [`AppState`] and follows their changes.
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let (enabled, settings) = read_settings(cx);
+    /// Reads the window's settings and follows their changes.
+    pub fn new(window_settings: Entity<WindowSettings>, cx: &mut Context<Self>) -> Self {
+        let (enabled, settings) = read_settings(window_settings.read(cx).view(cx));
         VimLayer {
             enabled,
             settings,
@@ -169,7 +171,8 @@ impl VimLayer {
             open_search: None,
             groups: None,
             _new_views: None,
-            _settings: cx.observe_global::<AppState>(Self::settings_changed),
+            _settings: cx.observe(&window_settings, |vim, _, cx| vim.settings_changed(cx)),
+            window_settings,
         }
     }
 
@@ -413,7 +416,7 @@ impl VimLayer {
     }
 
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
-        let (enabled, settings) = read_settings(cx);
+        let (enabled, settings) = read_settings(self.window_settings.read(cx).view(cx));
         self.settings = settings;
         if enabled == self.enabled {
             return;
@@ -1360,8 +1363,7 @@ pub(crate) fn takes_keys(view: &CodeView) -> bool {
     matches!(view.doc_state(), DocState::Ready | DocState::Deleted)
 }
 
-fn read_settings(cx: &App) -> (bool, Settings) {
-    let store = &cx.global::<AppState>().settings;
+fn read_settings(store: SettingsView<'_>) -> (bool, Settings) {
     let enabled = store
         .get::<bool>("vim.enabled", None)
         .or_else(|| store.get::<bool>("vim_mode", None))

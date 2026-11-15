@@ -442,7 +442,8 @@ impl LocationsPicker {
     }
 
     fn render_rows(&self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let font_family = editor_font_family(None, cx);
+        let font_family =
+            editor_font_family(cx.global::<crate::AppState>().settings.view(None), None);
         range
             .filter_map(|row| {
                 Some(match self.rows.get(row)? {

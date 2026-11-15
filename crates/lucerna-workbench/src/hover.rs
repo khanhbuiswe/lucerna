@@ -20,7 +20,7 @@ use gpui::{
     ParentElement, Pixels, Styled, Task, WeakEntity, Window, div, point, prelude::*, px, size,
 };
 use lucerna_lsp::diagnostics::{Diagnostic, Severity};
-use lucerna_settings::SettingsStore;
+use lucerna_settings::SettingsView;
 use lucerna_text::{BufferSnapshot, Point};
 
 use crate::code_view::{CodeView, word_at};
@@ -57,7 +57,7 @@ pub struct HoverConfig {
 
 impl HoverConfig {
     /// The settings for a view of `language`.
-    pub fn read(settings: &SettingsStore, language: Option<&str>) -> HoverConfig {
+    pub fn read(settings: SettingsView<'_>, language: Option<&str>) -> HoverConfig {
         let ms = |key: &str, default: u64| {
             Duration::from_millis(settings.get::<u64>(key, language).unwrap_or(default))
         };

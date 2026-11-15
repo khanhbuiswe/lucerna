@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use lucerna_project::LineKind;
+use lucerna_settings::SettingsView;
 
 use super::ExcerptList;
 use super::highlight::LineSpans;
@@ -47,9 +48,9 @@ impl ExcerptList {
     /// the largest line number.
     fn row_style(&mut self, window: &Window, cx: &App) -> RowStyle {
         self.scale_factor = window.scale_factor();
-        let settings = &cx.global::<AppState>().settings;
-        let font_family = crate::fonts::editor_font_family(None, cx);
-        let font_size = px(editor_font_size(cx));
+        let settings = self.settings.read(cx).view(cx);
+        let font_family = crate::fonts::editor_font_family(settings, None);
+        let font_size = px(editor_font_size(settings));
         let text_system = window.text_system();
         let font_id = text_system.resolve_font(&font(font_family.clone()));
         let char_width = text_system
@@ -61,7 +62,7 @@ impl ExcerptList {
         RowStyle {
             font_family,
             font_size,
-            line_height: editor_line_height(self.scale_factor, cx),
+            line_height: editor_line_height(self.scale_factor, settings),
             gutter: char_width * digits as f32 + px(4. * GRID),
             tab_size: settings
                 .get::<u32>("editor.tabSize", None)
@@ -539,9 +540,8 @@ impl Render for ExcerptList {
 }
 
 /// The editor font size in pixels, from `editor.fontSize`.
-fn editor_font_size(cx: &App) -> f32 {
-    cx.global::<AppState>()
-        .settings
+fn editor_font_size(settings: SettingsView<'_>) -> f32 {
+    settings
         .get::<f32>("editor.fontSize", None)
         .unwrap_or(14.)
         .clamp(6., 40.)
@@ -552,11 +552,9 @@ fn editor_font_size(cx: &App) -> f32 {
 /// device pixels of `scale_factor`: layout snaps row heights to that grid,
 /// and scrolling to a row sums these heights, so they must match what the
 /// list measures.
-pub(super) fn editor_line_height(scale_factor: f32, cx: &App) -> Pixels {
-    let size = editor_font_size(cx);
-    let lh = cx
-        .global::<AppState>()
-        .settings
+pub(super) fn editor_line_height(scale_factor: f32, settings: SettingsView<'_>) -> Pixels {
+    let size = editor_font_size(settings);
+    let lh = settings
         .get::<f32>("editor.lineHeight", None)
         .unwrap_or(1.6);
     let lh = if lh < 8. { lh * size } else { lh };

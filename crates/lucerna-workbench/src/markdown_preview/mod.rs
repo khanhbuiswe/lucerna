@@ -38,7 +38,6 @@ use gpui::{
 };
 use lucerna_text::{BufferSnapshot, LoadError};
 
-use crate::AppState;
 use crate::code_view::CodeView;
 use crate::documents::{DocState, DocumentEvent, Documents};
 use crate::layout::color;
@@ -48,6 +47,7 @@ use crate::markdown::{
 };
 use crate::ui::{GRID, UI_FONT_FAMILY, text_button};
 use crate::workbench::Workbench;
+use crate::{AppState, WindowSettings};
 
 /// Files larger than this are not parsed: the preview offers the source
 /// instead.
@@ -92,6 +92,8 @@ pub struct MarkdownPreview {
     root: Arc<Path>,
     documents: Entity<Documents>,
     workbench: WeakEntity<Workbench>,
+    /// The window's settings: `markdown.preview.*` styles the preview.
+    settings: Entity<WindowSettings>,
     /// Taken when the preview is clicked or its tab becomes active; the
     /// scroll keys work while it is focused.
     focus_handle: FocusHandle,
@@ -143,9 +145,12 @@ impl MarkdownPreview {
         root: Arc<Path>,
         documents: Entity<Documents>,
         workbench: WeakEntity<Workbench>,
+        settings: Entity<WindowSettings>,
         cx: &mut Context<Self>,
     ) -> Self {
         let source = documents.update(cx, |d, cx| d.open_preview(path.clone(), cx));
+        // `markdown.preview.*` restyles the preview.
+        cx.observe(&settings, |_, _, cx| cx.notify()).detach();
         // Every change to the documents (an edit, a reload, the first
         // load, a deletion) is checked against the revision shown.
         cx.observe(&documents, |preview, _, cx| preview.documents_changed(cx))
@@ -187,6 +192,7 @@ impl MarkdownPreview {
             root,
             documents,
             workbench,
+            settings,
             focus_handle: cx.focus_handle(),
             _source: source,
             blocks: None,
@@ -407,7 +413,7 @@ impl MarkdownPreview {
         if mods.control || mods.alt || mods.function {
             return;
         }
-        let style = Self::style(cx);
+        let style = self.style(cx);
         let line = px(style.text_size * style.line_height);
         let viewport = self.list_state.viewport_bounds().size.height;
         let page = (viewport - line).max(line);
@@ -551,8 +557,8 @@ impl MarkdownPreview {
     }
 
     /// The preview's style, from the `markdown.preview.*` settings.
-    fn style(cx: &App) -> MarkdownStyle {
-        let settings = &cx.global::<AppState>().settings;
+    fn style(&self, cx: &App) -> MarkdownStyle {
+        let settings = self.settings.read(cx).view(cx);
         let font_size = settings
             .get::<f32>("markdown.preview.fontSize", None)
             .unwrap_or(14.);
@@ -712,7 +718,7 @@ impl Render for MarkdownPreview {
                 window.request_animation_frame();
             }
         }
-        let mut style = Self::style(cx);
+        let mut style = self.style(cx);
         style.images = Some(self.image_lookup());
         let on_link = self.link_handler(cx);
         let last = blocks.blocks().len().saturating_sub(1);

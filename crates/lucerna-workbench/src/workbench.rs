@@ -357,7 +357,7 @@ impl Workbench {
         let editor_focus = cx.focus_handle();
         window.focus(&editor_focus, cx);
         let commands = default_registry();
-        let documents = cx.new(|_| Documents::new(root.clone()));
+        let documents = cx.new(|_| Documents::new(root.clone(), settings.clone()));
         let language_servers = {
             let root = root.clone();
             // Servers' `{data_dir}`: the workspace's data dir, else the
@@ -385,7 +385,8 @@ impl Workbench {
         let search_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
             let searchable = single_file.is_none();
-            cx.new(|cx| SearchView::new(root, workbench, searchable, window, cx))
+            let settings = settings.clone();
+            cx.new(|cx| SearchView::new(root, workbench, searchable, settings, window, cx))
         };
         let references_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
@@ -424,6 +425,7 @@ impl Workbench {
             let branch_base = branch_base.clone();
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
             let preview_root: Arc<Path> = Arc::from(root.as_path());
+            let preview_settings = settings.clone();
             groups.set_tab_body_factory(
                 Rc::new(move |tab, window, cx| {
                     let path = match &tab.item {
@@ -432,9 +434,12 @@ impl Workbench {
                             let dynamic = matches!(tab.item, TabItem::MarkdownPreviewDynamic(_));
                             let (path, docs) = (path.clone(), docs.clone());
                             let (workbench, root) = (workbench.clone(), preview_root.clone());
+                            let settings = preview_settings.clone();
                             return cx
                                 .new(|cx| {
-                                    MarkdownPreview::new(path, dynamic, root, docs, workbench, cx)
+                                    MarkdownPreview::new(
+                                        path, dynamic, root, docs, workbench, settings, cx,
+                                    )
                                 })
                                 .into();
                         }
@@ -524,6 +529,7 @@ impl Workbench {
                 cx,
             );
             groups.set_documents(documents.clone());
+            groups.set_settings(settings.clone());
             groups.set_root(root.clone());
             groups.set_on_breadcrumbs_click(Rc::new(move |group, window, cx| {
                 breadcrumbs_target
@@ -631,10 +637,14 @@ impl Workbench {
                 markdown_preview::follow_active(wb, window, cx)
             }),
             cx.observe_in(&editor_groups, window, |wb, groups, window, cx| {
-                wb.scroll_sync.refresh(&groups, &wb.root, window, cx)
+                wb.scroll_sync
+                    .refresh(&groups, &wb.root, &wb.settings, window, cx)
             }),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
-            cx.observe(&settings, |wb, _, cx| wb.workspace_settings_changed(cx)),
+            cx.observe(&settings, |wb, _, cx| {
+                wb.workspace_settings_changed(cx);
+                wb.editor_settings_changed(cx);
+            }),
             // Saving `.lucerna/settings.json` here applies it at once.
             cx.subscribe(&documents, |wb, _, ev: &DocumentEvent, cx| {
                 if let DocumentEvent::Saved { path, .. } = ev {
@@ -697,7 +707,10 @@ impl Workbench {
             let settings = settings.clone();
             cx.new(|cx| ConfigErrorItem::new(workbench, settings, cx))
         };
-        let vim = cx.new(VimLayer::new);
+        let vim = {
+            let settings = settings.clone();
+            cx.new(|cx| VimLayer::new(settings, cx))
+        };
         vim.update(cx, |vim, cx| vim.attach(&editor_groups, cx));
         let mode_indicator = {
             let (vim, groups) = (vim.clone(), editor_groups.clone());
@@ -860,7 +873,8 @@ impl Workbench {
         // A restored layout may already show a preview beside its editor.
         cx.defer_in(window, |wb, window, cx| {
             let groups = wb.editor_groups.clone();
-            wb.scroll_sync.refresh(&groups, &wb.root, window, cx);
+            wb.scroll_sync
+                .refresh(&groups, &wb.root, &wb.settings, window, cx);
         });
         workbench
     }
@@ -1055,14 +1069,20 @@ impl Workbench {
             self.documents
                 .update(cx, |documents, cx| documents.languages_changed(cx));
         }
-        // `editor.detectIndentation`, `editor.tabSize` or
-        // `editor.insertSpaces` may have changed.
-        self.documents
-            .update(cx, |documents, cx| documents.settings_changed(cx));
         // `session.trustAllWorktrees` may have changed.
         self.apply_trust(cx);
         // `git.*` may have changed.
         self.git.update(cx, |git, cx| git.settings_changed(cx));
+        cx.notify();
+    }
+
+    /// After any change to the window's settings (its workspace layer, or
+    /// the app's user layer under it): the editor area reads them again.
+    fn editor_settings_changed(&mut self, cx: &mut Context<Self>) {
+        // `editor.detectIndentation`, `editor.tabSize` or
+        // `editor.insertSpaces` may have changed.
+        self.documents
+            .update(cx, |documents, cx| documents.settings_changed(cx));
         // `breadcrumbs.*` may have changed.
         self.breadcrumbs_changed(cx);
         cx.notify();
@@ -1641,7 +1661,8 @@ impl Workbench {
     /// source (spec §4.1). Otherwise like [`Workbench::open_source`].
     pub fn open_path(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
         let path = self.absolute_path(&path);
-        let view = markdown_preview::associated_editor(&self.root, &path, cx);
+        let view =
+            markdown_preview::associated_editor(&self.root, &path, self.settings.read(cx).view(cx));
         self.open_file(path, view, mode, true, cx);
     }
 

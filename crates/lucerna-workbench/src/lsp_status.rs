@@ -238,7 +238,10 @@ impl LspStatusItem {
         let restricted = self.servers.read(cx).shows_restricted_mode();
         let rows = self.rows(cx);
         let has_rows = !rows.is_empty();
-        let code_font = crate::fonts::editor_font_family(None, cx);
+        let code_font = crate::fonts::editor_font_family(
+            cx.global::<crate::AppState>().settings.view(None),
+            None,
+        );
         let table_errors = self
             .table_error_lines(cx)
             .into_iter()

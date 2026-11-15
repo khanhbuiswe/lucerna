@@ -13,9 +13,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, Context, Div, IntoElement, ParentElement, SharedString, Stateful, Styled, Task, Window,
-    div, prelude::*, px, relative, svg,
+    Context, Div, IntoElement, ParentElement, SharedString, Stateful, Styled, Task, Window, div,
+    prelude::*, px, relative, svg,
 };
+use lucerna_settings::SettingsView;
 use lucerna_syntax::{Symbol, SymbolKind, SymbolTree};
 use lucerna_theme::UiColors;
 
@@ -23,7 +24,7 @@ use crate::code_view::CodeView;
 use crate::editor_groups::{TabId, TabItem};
 use crate::layout::color;
 use crate::ui::{GRID, TAB_PADDING_X};
-use crate::{AppState, SymbolState, Workbench, fonts};
+use crate::{SymbolState, Workbench, fonts};
 
 use super::kind_icon;
 
@@ -145,8 +146,7 @@ pub(crate) struct BreadcrumbSettings {
 }
 
 impl BreadcrumbSettings {
-    pub(crate) fn read(cx: &App) -> BreadcrumbSettings {
-        let settings = &cx.global::<AppState>().settings;
+    pub(crate) fn read(settings: SettingsView<'_>) -> BreadcrumbSettings {
         let mode = |key| BreadcrumbMode::parse(settings.get::<String>(key, None).as_deref());
         BreadcrumbSettings {
             enabled: settings.get("breadcrumbs.enabled", None).unwrap_or(true),
@@ -209,7 +209,7 @@ impl Workbench {
         if active == self.breadcrumbs.active {
             return;
         }
-        if BreadcrumbSettings::read(cx).enabled {
+        if BreadcrumbSettings::read(self.settings().read(cx).view(cx)).enabled {
             groups.update(cx, |view, cx| view.ensure_active_bodies(window, cx));
         }
         self.refresh_breadcrumbs(cx);
@@ -217,7 +217,7 @@ impl Workbench {
 
     /// Hands each group's file tab its row.
     fn refresh_breadcrumbs(&mut self, cx: &mut Context<Self>) {
-        let settings = BreadcrumbSettings::read(cx);
+        let settings = BreadcrumbSettings::read(self.settings().read(cx).view(cx));
         let groups = self.editor_groups().clone();
         self.breadcrumbs.active = groups
             .read(cx)
@@ -260,13 +260,17 @@ impl Workbench {
                     };
                     let tree = self.symbol_tree(&path, cx);
                     used.push(path);
-                    (
-                        tree,
-                        Some(cursor),
-                        fonts::editor_font_family(language.as_deref(), cx),
-                    )
+                    let font = fonts::editor_font_family(
+                        self.settings().read(cx).view(cx),
+                        language.as_deref(),
+                    );
+                    (tree, Some(cursor), font)
                 }
-                None => (None, None, fonts::editor_font_family(None, cx)),
+                None => (
+                    None,
+                    None,
+                    fonts::editor_font_family(self.settings().read(cx).view(cx), None),
+                ),
             };
             let symbols = match (&tree, cursor) {
                 (Some(tree), Some(cursor)) => tree.path_at(cursor),

@@ -18,13 +18,14 @@ use gpui::{
     Task, Window, px,
 };
 use lucerna_lsp::locations::ResolvedLocation;
+use lucerna_settings::SettingsView;
 use lucerna_text::Point;
 
 use crate::code_view::{CodeView, word_at};
 use crate::hover::{PopoverAnchor, place_popover};
 use crate::locations_picker::LocationsPicker;
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE_SMALL, popover};
-use crate::{AppState, CommandHandler, CommandRegistry, OpenMode, Workbench};
+use crate::{CommandHandler, CommandRegistry, OpenMode, Workbench};
 
 /// How long the "No … found" message stays.
 const MESSAGE_DURATION: Duration = Duration::from_secs(3);
@@ -93,11 +94,8 @@ enum Multiple {
 }
 
 impl Multiple {
-    fn read(kind: GotoKind, language: Option<&str>, cx: &App) -> Multiple {
-        let value = cx
-            .global::<AppState>()
-            .settings
-            .get::<String>(kind.multiple_setting(), language);
+    fn read(kind: GotoKind, language: Option<&str>, settings: SettingsView<'_>) -> Multiple {
+        let value = settings.get::<String>(kind.multiple_setting(), language);
         match value.as_deref() {
             Some("goto") => Multiple::Goto,
             Some("gotoAndPeek") => Multiple::GotoAndPeek,
@@ -240,7 +238,10 @@ fn show_results(
     }
     let multiple = match mode {
         GotoMode::Peek => Multiple::Peek,
-        _ => Multiple::read(kind, view.read(cx).language_id(), cx),
+        _ => {
+            let view = view.read(cx);
+            Multiple::read(kind, view.language_id(), view.settings().read(cx).view(cx))
+        }
     };
     // Quick Open, the theme picker or the trust modal opened while the
     // servers answered: the picker would stack over it.

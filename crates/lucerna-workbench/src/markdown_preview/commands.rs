@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use gpui::{App, Context, Entity, EntityId, WeakEntity, Window};
+use lucerna_settings::SettingsView;
 use lucerna_syntax::Associations;
 use lucerna_text::Point;
 
@@ -132,10 +133,8 @@ pub fn editor_for(path: &Path, rel: &Path, map: &BTreeMap<String, String>) -> Fi
 }
 
 /// The editor `path` (absolute) opens in, by the user's associations.
-pub(crate) fn associated_editor(root: &Path, path: &Path, cx: &App) -> FileView {
-    let map = cx
-        .global::<AppState>()
-        .settings
+pub(crate) fn associated_editor(root: &Path, path: &Path, settings: SettingsView<'_>) -> FileView {
+    let map = settings
         .get::<BTreeMap<String, String>>(EDITOR_ASSOCIATIONS, None)
         .unwrap_or_default();
     let rel = path.strip_prefix(root).unwrap_or(path);
@@ -366,10 +365,10 @@ pub(crate) fn double_clicked(
     window: &mut Window,
     cx: &mut Context<Workbench>,
 ) {
-    let enabled = cx
-        .global::<AppState>()
-        .settings
-        .get::<bool>(DOUBLE_CLICK_TO_SWITCH, None)
+    let enabled = wb
+        .settings()
+        .read(cx)
+        .get::<bool>(DOUBLE_CLICK_TO_SWITCH, None, cx)
         .unwrap_or(true);
     if !enabled {
         return;
@@ -455,10 +454,10 @@ pub(crate) fn follow_link(
         }
         LinkAction::Markdown { path, slug } => {
             let path: Arc<Path> = Arc::from(path);
-            let in_editor = cx
-                .global::<AppState>()
-                .settings
-                .get::<String>(OPEN_MARKDOWN_LINKS, None)
+            let in_editor = wb
+                .settings()
+                .read(cx)
+                .get::<String>(OPEN_MARKDOWN_LINKS, None, cx)
                 .is_some_and(|v| v == "inEditor");
             if in_editor {
                 wb.open_source(path, OpenMode::Preview, cx);

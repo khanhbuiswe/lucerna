@@ -41,7 +41,7 @@ use crate::ui::{
 };
 use crate::workbench::enabled_globs;
 use crate::workspace_state::SearchState;
-use crate::{AppState, CommandRegistry, DocState, OpenMode, Workbench};
+use crate::{AppState, CommandRegistry, DocState, OpenMode, WindowSettings, Workbench};
 
 /// How long the inputs must stay unchanged before a search starts.
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -113,6 +113,7 @@ impl SearchView {
         root: PathBuf,
         workbench: WeakEntity<Workbench>,
         searchable: bool,
+        settings: Entity<WindowSettings>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -129,7 +130,7 @@ impl SearchView {
         };
         let list = {
             let root = root.clone();
-            cx.new(|cx| ExcerptList::new(root, "search", cx))
+            cx.new(|cx| ExcerptList::new(root, "search", settings, cx))
         };
         let list_focus = list.read(cx).focus_handle().clone();
         let list_events =

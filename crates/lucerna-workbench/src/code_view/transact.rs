@@ -44,7 +44,7 @@ impl CodeView {
 
     /// The editing settings of this view's language.
     pub fn edit_config(&self, cx: &App) -> EditConfig {
-        let settings = &cx.global::<AppState>().settings;
+        let settings = self.settings.read(cx).view(cx);
         let language = self.language_id.as_deref();
         EditConfig {
             tab_size: self.config.tab_size,
@@ -426,7 +426,7 @@ pub(crate) fn clipboard_item(clip: ClipboardText) -> ClipboardItem {
 /// A string setting parsed into an enum; `None` when unset or unknown, so
 /// the caller falls back to the default.
 fn setting_enum<T>(
-    settings: &lucerna_settings::SettingsStore,
+    settings: lucerna_settings::SettingsView<'_>,
     key: &str,
     language: Option<&str>,
     parse: fn(&str) -> Option<T>,

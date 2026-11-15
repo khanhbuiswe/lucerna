@@ -243,7 +243,10 @@ pub fn section_header(title: &str, cx: &App) -> Div {
         .child(
             div()
                 .flex_none()
-                .font_family(crate::fonts::editor_font_family(None, cx))
+                .font_family(crate::fonts::editor_font_family(
+                    cx.global::<crate::AppState>().settings.view(None),
+                    None,
+                ))
                 .text_size(px(UI_FONT_SIZE_CAPTION))
                 .text_color(color(ui.text_muted))
                 .child(title.to_uppercase()),

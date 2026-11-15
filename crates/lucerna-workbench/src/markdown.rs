@@ -351,7 +351,7 @@ pub(crate) fn visit_image_urls(blocks: &[Block], f: &mut impl FnMut(&str)) {
 }
 
 fn code_font_family(cx: &App) -> SharedString {
-    crate::fonts::editor_font_family(None, cx)
+    crate::fonts::editor_font_family(cx.global::<crate::AppState>().settings.view(None), None)
 }
 
 /// Capture spans of `text` in `language`; empty when the parse does not

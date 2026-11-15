@@ -18,7 +18,6 @@ use futures::channel::oneshot;
 use gpui::{App, AsyncWindowContext, Context, Entity, PromptLevel, Subscription, Task, Window};
 use lucerna_text::{Buffer, BufferSnapshot, LineEnding, Point, WriteError, Written, write_bytes};
 
-use crate::app_state::AppState;
 use crate::documents::{DocState, DocumentEvent, Edits, Stamp};
 use crate::{CommandRegistry, Documents, Workbench};
 
@@ -152,7 +151,7 @@ pub(crate) type Participant = fn(&BufferSnapshot, &[u32]) -> Edits;
 /// The participants enabled for a document of `language`, in the order
 /// they run.
 pub(crate) fn participants(
-    settings: &lucerna_settings::SettingsStore,
+    settings: lucerna_settings::SettingsView<'_>,
     language: Option<&str>,
     reason: SaveReason,
 ) -> Vec<Participant> {
@@ -374,9 +373,9 @@ impl Workbench {
             .read(cx)
             .language_id_of(path)
             .map(|id| id.to_string());
-        cx.global::<AppState>()
-            .settings
-            .get::<String>("files.autoSave", language.as_deref())
+        self.settings()
+            .read(cx)
+            .get::<String>("files.autoSave", language.as_deref(), cx)
             .unwrap_or_else(|| "off".into())
     }
 
@@ -386,10 +385,10 @@ impl Workbench {
             .read(cx)
             .language_id_of(path)
             .map(|id| id.to_string());
-        let ms = cx
-            .global::<AppState>()
-            .settings
-            .get::<u64>("files.autoSaveDelay", language.as_deref())
+        let ms = self
+            .settings()
+            .read(cx)
+            .get::<u64>("files.autoSaveDelay", language.as_deref(), cx)
             .unwrap_or(DEFAULT_AUTO_SAVE_DELAY);
         Duration::from_millis(ms)
     }

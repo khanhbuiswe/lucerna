@@ -53,7 +53,9 @@ pub fn terminal_font(cx: &App) -> TerminalFont {
         .get::<String>("terminal.integrated.fontFamily", None)
         .filter(|f| !f.trim().is_empty())
         .map(SharedString::from)
-        .unwrap_or_else(|| editor_font_family(None, cx));
+        .unwrap_or_else(|| {
+            editor_font_family(cx.global::<crate::AppState>().settings.view(None), None)
+        });
     let positive = |key: &str| settings.get::<f32>(key, None).filter(|v| *v > 0.);
     let size = positive("terminal.integrated.fontSize")
         .or_else(|| positive("editor.fontSize"))
