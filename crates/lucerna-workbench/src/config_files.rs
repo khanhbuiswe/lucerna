@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, unbounded};
 use futures::StreamExt;
 use gpui::{
-    App, Context, IntoElement, ParentElement, Render, Styled, Subscription, Task, WeakEntity,
-    Window, div, prelude::*,
+    App, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Task,
+    WeakEntity, Window, div, prelude::*,
 };
 use lucerna_settings::{Keymap, Layer, SettingsError, SettingsStore};
 use lucerna_text::Point;
@@ -24,7 +24,7 @@ use crate::extensions::service;
 use crate::layout::color;
 use crate::status_message;
 use crate::tasks::{spawn_guarded, try_spawn_guarded};
-use crate::{AppState, CommandRegistry, OpenMode, Workbench};
+use crate::{AppState, CommandRegistry, OpenMode, WindowSettings, Workbench};
 
 /// A batch of changes ends once no event arrived for this long...
 pub const CONFIG_DEBOUNCE: Duration = Duration::from_millis(50);
@@ -41,28 +41,12 @@ const KEYBINDINGS_TEMPLATE: &str = "// Lucerna user keybindings\n[\n]\n";
 pub struct ConfigPaths {
     /// `~/.config/lucerna`: `settings.json`, `keybindings.json`, `themes/`.
     pub user_dir: PathBuf,
-    /// `<root>/.lucerna/settings.json`; `None` while no folder is open.
-    pub workspace_settings: Option<PathBuf>,
 }
 
 impl ConfigPaths {
-    /// The user directory under `$HOME`, and the workspace settings of
-    /// `root`.
-    pub fn for_root(root: &Path) -> ConfigPaths {
-        let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        ConfigPaths::with_user_dir(home.join(".config").join("lucerna"), root)
-    }
-
-    /// Like [`ConfigPaths::for_root`] with another user directory; for tests.
-    pub fn with_user_dir(user_dir: impl Into<PathBuf>, root: &Path) -> ConfigPaths {
-        ConfigPaths {
-            user_dir: user_dir.into(),
-            workspace_settings: Some(root.join(".lucerna").join("settings.json")),
-        }
-    }
-
-    /// The user directory under `$HOME` and no workspace layer: for a
-    /// window with no folder open (the Welcome screen).
+    /// The user directory under `$HOME`. A folder's
+    /// `.lucerna/settings.json` belongs to its window
+    /// ([`crate::WindowSettings`]).
     pub fn user_only() -> ConfigPaths {
         let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         ConfigPaths::user_only_with_user_dir(home.join(".config").join("lucerna"))
@@ -73,7 +57,6 @@ impl ConfigPaths {
     pub fn user_only_with_user_dir(user_dir: impl Into<PathBuf>) -> ConfigPaths {
         ConfigPaths {
             user_dir: user_dir.into(),
-            workspace_settings: None,
         }
     }
 
@@ -90,19 +73,9 @@ impl ConfigPaths {
         self.user_dir.join("themes")
     }
 
-    /// `<root>/.lucerna`; `None` while no folder is open.
-    pub fn workspace_dir(&self) -> Option<&Path> {
-        self.workspace_settings.as_deref().map(|path| {
-            path.parent()
-                .expect("workspace settings live in a directory")
-        })
-    }
-
     /// The directories the watcher follows.
     fn watched_dirs(&self) -> Vec<PathBuf> {
-        let mut dirs = vec![self.user_dir.clone()];
-        dirs.extend(self.workspace_dir().map(Path::to_path_buf));
-        dirs
+        vec![self.user_dir.clone()]
     }
 }
 
@@ -110,6 +83,8 @@ impl ConfigPaths {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConfigFile {
     UserSettings,
+    /// A folder's `.lucerna/settings.json`, reported by its window's
+    /// [`crate::WindowSettings`].
     WorkspaceSettings,
     Keybindings,
     Themes,
@@ -137,7 +112,7 @@ impl ConfigError {
     }
 }
 
-/// The configuration files in use, their current errors and the watcher.
+/// The user's configuration files, their current errors and the watcher.
 /// A GPUI global set by [`watch_config`].
 pub struct ConfigState {
     paths: ConfigPaths,
@@ -176,17 +151,17 @@ impl ConfigState {
         (self.changed.0, &self.changed.1)
     }
 
-    /// Files that failed to load, user settings first.
+    /// User files that failed to load, settings first.
     pub fn errors(&self) -> impl Iterator<Item = &ConfigError> {
         self.errors.values()
     }
 }
 
-/// Loads every configuration file into [`AppState`], then follows changes
-/// to them: settings go through `set_layer`, keybindings through
+/// Loads the user's configuration files into [`AppState`], then follows
+/// changes to them: settings go through `set_layer`, keybindings through
 /// `Keymap::load`, user themes through `ThemeRegistry::build`, and the theme named by
-/// `workbench.colorTheme` is made active. Replaces an earlier call's
-/// paths and watcher.
+/// `workbench.colorTheme` is made active. The app calls it once at start;
+/// another call replaces the paths and watcher.
 ///
 /// The watcher is not started on GPUI's deterministic test scheduler,
 /// which rejects wake-ups from other threads; tests deliver changes with
@@ -219,7 +194,6 @@ pub fn watch_config(paths: ConfigPaths, cx: &mut App) {
     load(
         [
             ConfigFile::UserSettings,
-            ConfigFile::WorkspaceSettings,
             ConfigFile::Themes,
             ConfigFile::Keybindings,
         ],
@@ -272,17 +246,11 @@ fn load(files: impl IntoIterator<Item = ConfigFile>, initial: bool, cx: &mut App
     let paths = cx.global::<ConfigState>().paths.clone();
     let mut settings_loaded = false;
     for file in files {
-        settings_loaded |= matches!(
-            file,
-            ConfigFile::UserSettings | ConfigFile::WorkspaceSettings
-        );
+        settings_loaded |= file == ConfigFile::UserSettings;
         match file {
             ConfigFile::UserSettings => load_settings(file, Layer::User, paths.user_settings(), cx),
-            ConfigFile::WorkspaceSettings => {
-                if let Some(path) = paths.workspace_settings.clone() {
-                    load_settings(file, Layer::Workspace, path, cx);
-                }
-            }
+            // Each window loads its own.
+            ConfigFile::WorkspaceSettings => {}
             ConfigFile::Keybindings => {
                 let path = paths.keybindings();
                 let result = read(&path).and_then(|text| {
@@ -369,7 +337,7 @@ fn load_settings(file: ConfigFile, layer: Layer, path: PathBuf, cx: &mut App) {
 }
 
 /// The file's text; `None` when it does not exist.
-fn read(path: &Path) -> Result<Option<String>, SettingsError> {
+pub(crate) fn read(path: &Path) -> Result<Option<String>, SettingsError> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -497,7 +465,6 @@ pub(crate) fn apply_configured_theme(cx: &mut App) {
 fn classify(paths: &ConfigPaths, changed: &[PathBuf]) -> BTreeSet<ConfigFile> {
     let user_dir = real_path(&paths.user_dir);
     let themes = user_dir.join("themes");
-    let workspace_dir = paths.workspace_dir().map(real_path);
     let mut files = BTreeSet::new();
     for path in changed {
         let path = real_path(path);
@@ -507,11 +474,6 @@ fn classify(paths: &ConfigPaths, changed: &[PathBuf]) -> BTreeSet<ConfigFile> {
                 ConfigFile::Keybindings,
                 ConfigFile::Themes,
             ]);
-        }
-        if let Some(workspace_dir) = &workspace_dir
-            && (workspace_dir.starts_with(&path) || path == workspace_dir.join("settings.json"))
-        {
-            files.insert(ConfigFile::WorkspaceSettings);
         }
         if path == user_dir.join("settings.json") {
             files.insert(ConfigFile::UserSettings);
@@ -545,7 +507,8 @@ pub(crate) fn real_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-/// Watches the user and workspace configuration directories and reports
+/// Watches configuration directories (the user's; a window's `.lucerna`)
+/// and reports
 /// changed paths in batches debounced by [`CONFIG_DEBOUNCE`]. A directory
 /// that does not exist yet is followed through its parent until it does.
 /// Dropping it stops watching.
@@ -560,9 +523,18 @@ struct WatchState {
 }
 
 impl ConfigWatcher {
-    /// Starts watching; `on_batch` runs on the watcher's thread.
+    /// Starts watching the user directory; `on_batch` runs on the
+    /// watcher's thread.
     pub fn start(
         paths: &ConfigPaths,
+        on_batch: impl Fn(Vec<PathBuf>) + Send + 'static,
+    ) -> notify::Result<ConfigWatcher> {
+        ConfigWatcher::start_dirs(paths.watched_dirs(), on_batch)
+    }
+
+    /// Starts watching `dirs`; `on_batch` runs on the watcher's thread.
+    pub(crate) fn start_dirs(
+        dirs: Vec<PathBuf>,
         on_batch: impl Fn(Vec<PathBuf>) + Send + 'static,
     ) -> notify::Result<ConfigWatcher> {
         let (tx, rx) = unbounded();
@@ -571,7 +543,7 @@ impl ConfigWatcher {
         })?;
         let state = Arc::new(Mutex::new(WatchState {
             watcher,
-            dirs: paths.watched_dirs(),
+            dirs,
             watched: Vec::new(),
         }));
         lock(&state).rearm();
@@ -686,39 +658,34 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "workbench.action.openSettingsJson",
         "Preferences: Open User Settings (JSON)",
         |wb, _, window, cx| {
-            open_config_file(
-                wb,
-                |paths| Some(paths.user_settings()),
-                USER_SETTINGS_TEMPLATE,
-                window,
-                cx,
-            )
+            if let Some(path) = user_config_path(ConfigPaths::user_settings, cx) {
+                open_config_file(wb, path, USER_SETTINGS_TEMPLATE, window, cx);
+            }
         },
     );
     commands.register(
         "workbench.action.openGlobalKeybindingsFile",
         "Preferences: Open Keyboard Shortcuts (JSON)",
         |wb, _, window, cx| {
-            open_config_file(
-                wb,
-                |paths| Some(paths.keybindings()),
-                KEYBINDINGS_TEMPLATE,
-                window,
-                cx,
-            )
+            if let Some(path) = user_config_path(ConfigPaths::keybindings, cx) {
+                open_config_file(wb, path, KEYBINDINGS_TEMPLATE, window, cx);
+            }
         },
     );
     commands.register(
         "workbench.action.openWorkspaceSettingsFile",
         "Preferences: Open Workspace Settings (JSON)",
         |wb, _, window, cx| {
-            open_config_file(
-                wb,
-                |paths| paths.workspace_settings.clone(),
-                WORKSPACE_SETTINGS_TEMPLATE,
-                window,
-                cx,
-            )
+            let path = wb
+                .settings()
+                .read(cx)
+                .settings_path()
+                .map(Path::to_path_buf);
+            let Some(path) = path else {
+                status_message::show("No folder is open", cx);
+                return;
+            };
+            open_config_file(wb, path, WORKSPACE_SETTINGS_TEMPLATE, window, cx);
         },
     );
     commands.register(
@@ -728,28 +695,37 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     );
 }
 
+/// A file in the user directory; `None` (and a warning) without
+/// [`watch_config`].
+fn user_config_path(file: impl FnOnce(&ConfigPaths) -> PathBuf, cx: &App) -> Option<PathBuf> {
+    match cx.try_global::<ConfigState>() {
+        Some(state) => Some(file(&state.paths)),
+        None => {
+            tracing::warn!("watch_config was not called: no configuration files to open");
+            None
+        }
+    }
+}
+
 /// Opens a configuration file in a pinned tab, creating it (and its
 /// directory) from `template` first when it does not exist.
 fn open_config_file(
     wb: &mut Workbench,
-    path: impl FnOnce(&ConfigPaths) -> Option<PathBuf>,
+    path: PathBuf,
     template: &str,
     window: &mut Window,
     cx: &mut Context<Workbench>,
 ) {
-    let Some(state) = cx.try_global::<ConfigState>() else {
-        tracing::warn!("watch_config was not called: no configuration files to open");
-        return;
-    };
-    let Some(path) = path(&state.paths) else {
-        status_message::show("No folder is open", cx);
-        return;
-    };
     match create_if_missing(&path, template) {
         Ok(true) => {
-            if let Some(watcher) = &state.watcher {
+            // The watchers follow a directory made just now.
+            if let Some(watcher) = cx
+                .try_global::<ConfigState>()
+                .and_then(|s| s.watcher.as_ref())
+            {
                 watcher.rearm();
             }
+            wb.settings().read(cx).rearm_watcher();
         }
         Ok(false) => {}
         Err(err) => {
@@ -799,17 +775,28 @@ fn open_logs_folder() {
 }
 
 /// The status-bar item for a broken configuration file, in the theme's
-/// error color. Clicking it opens the file at the reported line.
+/// error color: a user file's error first, then the window's
+/// `.lucerna/settings.json`. Clicking it opens the file at the reported
+/// line.
 pub(crate) struct ConfigErrorItem {
     workbench: WeakEntity<Workbench>,
-    _errors: Subscription,
+    settings: Entity<WindowSettings>,
+    _errors: [Subscription; 2],
 }
 
 impl ConfigErrorItem {
-    pub(crate) fn new(workbench: WeakEntity<Workbench>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        workbench: WeakEntity<Workbench>,
+        settings: Entity<WindowSettings>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         ConfigErrorItem {
             workbench,
-            _errors: cx.observe_global::<ConfigState>(|_, cx| cx.notify()),
+            _errors: [
+                cx.observe_global::<ConfigState>(|_, cx| cx.notify()),
+                cx.observe(&settings, |_, _, cx| cx.notify()),
+            ],
+            settings,
         }
     }
 }
@@ -818,7 +805,8 @@ impl Render for ConfigErrorItem {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let error = cx
             .try_global::<ConfigState>()
-            .and_then(|state| state.errors().next().cloned());
+            .and_then(|state| state.errors().next().cloned())
+            .or_else(|| self.settings.read(cx).error().cloned());
         let error_color = color(cx.global::<AppState>().theme.ui.error);
         let workbench = self.workbench.clone();
         div()
@@ -912,7 +900,7 @@ mod tests {
     fn classify_maps_paths_to_files() {
         let user = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
-        let paths = ConfigPaths::with_user_dir(user.path(), root.path());
+        let paths = ConfigPaths::user_only_with_user_dir(user.path());
         let files = |changed: &[PathBuf]| -> Vec<ConfigFile> {
             classify(&paths, changed).into_iter().collect()
         };
@@ -922,10 +910,7 @@ mod tests {
             files(&[paths.themes_dir().join("x.json")]),
             [ConfigFile::Themes]
         );
-        assert_eq!(
-            files(&[paths.workspace_settings.clone().unwrap()]),
-            [ConfigFile::WorkspaceSettings]
-        );
+        assert!(files(&[root.path().join(".lucerna/settings.json")]).is_empty());
         assert_eq!(
             files(std::slice::from_ref(&paths.user_dir)),
             [
@@ -939,12 +924,11 @@ mod tests {
     }
 
     #[test]
-    fn files_ignore_workspace_without_folder() {
+    fn files_ignore_workspace_settings() {
         let user = tempfile::tempdir().unwrap();
         let paths = ConfigPaths::user_only_with_user_dir(user.path());
         let changed = [user.path().join("x/.lucerna/settings.json")];
-        assert!(!classify(&paths, &changed).contains(&ConfigFile::WorkspaceSettings));
-        assert!(paths.workspace_dir().is_none());
+        assert!(classify(&paths, &changed).is_empty());
     }
 
     #[test]

@@ -65,7 +65,7 @@ use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
 use crate::vim::{self, VimLayer};
 use crate::vim_indicator::ModeIndicator;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateStore, absolute_path};
-use crate::{AppState, CommandRegistry, find_widget, keys};
+use crate::{AppState, CommandRegistry, WindowSettings, find_widget, keys};
 
 /// What the sidebar shows. Only the Explorer: Search and Extensions are
 /// editor tabs. A saved `"search"` or `"extensions"` restores the Explorer.
@@ -192,6 +192,11 @@ pub struct Workbench {
     pub(crate) git: Entity<GitStore>,
     /// The [`ConfigState`] batch last forwarded to the documents.
     config_batch: u64,
+    /// This window's settings: the folder's `.lucerna/settings.json` over
+    /// the user's.
+    settings: Entity<WindowSettings>,
+    /// [`WindowSettings::generation`] last forwarded to the documents.
+    settings_generation: u64,
     _subscriptions: Vec<Subscription>,
     commands: Rc<CommandRegistry>,
     focus: FocusHandle,
@@ -343,6 +348,11 @@ impl Workbench {
             "set the AppState global before creating the Workbench"
         );
         crate::config_files::follow_system_appearance(window, cx);
+        // Before every other entity: they read settings through it.
+        let settings = {
+            let folder = single_file.is_none().then_some(root.as_path());
+            cx.new(|cx| WindowSettings::new(folder, cx))
+        };
         let focus = cx.focus_handle();
         let editor_focus = cx.focus_handle();
         window.focus(&editor_focus, cx);
@@ -624,6 +634,17 @@ impl Workbench {
                 wb.scroll_sync.refresh(&groups, &wb.root, window, cx)
             }),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
+            cx.observe(&settings, |wb, _, cx| wb.workspace_settings_changed(cx)),
+            // Saving `.lucerna/settings.json` here applies it at once.
+            cx.subscribe(&documents, |wb, _, ev: &DocumentEvent, cx| {
+                if let DocumentEvent::Saved { path, .. } = ev {
+                    let saved = wb.absolute_path(path);
+                    let settings = wb.settings.clone();
+                    if settings.read(cx).settings_path() == Some(&*saved) {
+                        settings.update(cx, WindowSettings::reload);
+                    }
+                }
+            }),
             // VS Code: a preview tab whose file gets unsaved changes is
             // pinned, so opening another file never replaces it.
             cx.subscribe(&documents, |wb, _, ev: &DocumentEvent, cx| match ev {
@@ -673,7 +694,8 @@ impl Workbench {
             .map_or(0, |s| s.fresh_installs().len());
         let config_error = {
             let workbench = cx.weak_entity();
-            cx.new(|cx| ConfigErrorItem::new(workbench, cx))
+            let settings = settings.clone();
+            cx.new(|cx| ConfigErrorItem::new(workbench, settings, cx))
         };
         let vim = cx.new(VimLayer::new);
         vim.update(cx, |vim, cx| vim.attach(&editor_groups, cx));
@@ -730,6 +752,8 @@ impl Workbench {
             config_batch: cx
                 .try_global::<ConfigState>()
                 .map_or(0, |state| state.last_changed().0),
+            settings_generation: settings.read(cx).generation(),
+            settings,
             _subscriptions: subscriptions,
             panel: panel_state,
             terminal_panel: terminal_panel.clone(),
@@ -1370,6 +1394,26 @@ impl Workbench {
             self.config_batch = batch;
             self.on_open_file_changes(&changed, cx);
         }
+    }
+
+    /// The workspace settings reloaded: an open `.lucerna/settings.json`
+    /// reloads too.
+    fn workspace_settings_changed(&mut self, cx: &mut Context<Self>) {
+        let settings = self.settings.read(cx);
+        let generation = settings.generation();
+        if generation == self.settings_generation {
+            return;
+        }
+        self.settings_generation = generation;
+        if let Some(path) = settings.settings_path().map(Path::to_path_buf) {
+            self.on_open_file_changes(&[path], cx);
+        }
+    }
+
+    /// This window's settings: its folder's `.lucerna/settings.json` over
+    /// the app's default and user layers.
+    pub fn settings(&self) -> &Entity<WindowSettings> {
+        &self.settings
     }
 
     /// The Search tab's body.

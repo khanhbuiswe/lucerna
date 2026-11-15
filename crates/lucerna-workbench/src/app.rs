@@ -78,10 +78,11 @@ pub fn run(launch: Option<Launch>, resolve: Resolve) {
     });
     app.run(move |cx: &mut App| {
         start(cx);
+        // Once for the app: each window reads its own folder's settings.
+        watch_config(ConfigPaths::user_only(), cx);
         let router = Rc::new(RefCell::new(Router {
             shown: None,
             resolve,
-            user_dir: ConfigPaths::user_only().user_dir,
         }));
         let waiting = launch.is_none();
         if let Some(launch) = launch {
@@ -108,12 +109,9 @@ pub fn run(launch: Option<Launch>, resolve: Resolve) {
     });
 }
 
-/// With no folder to open: reads the user's configuration, then opens
-/// what [`first_screen`] picks. The Get Started page is remembered as
-/// shown as soon as it opens (spec O3).
+/// With no folder to open: opens what [`first_screen`] picks. The Get
+/// Started page is remembered as shown as soon as it opens (spec O3).
 fn open_without_folder(router: &Rc<RefCell<Router>>, cx: &mut App) {
-    let user_dir = router.borrow().user_dir.clone();
-    watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
     let data_dir = app_data_dir(cx);
     match first_screen(data_dir.as_deref(), &cx.global::<AppState>().settings) {
         StartupScreen::Restore(path) => {
@@ -177,8 +175,6 @@ impl Shown {
 struct Router {
     shown: Option<Shown>,
     resolve: Resolve,
-    /// The user configuration directory ([`ConfigPaths::user_dir`]).
-    user_dir: PathBuf,
 }
 
 impl Router {
@@ -202,14 +198,7 @@ impl Router {
                 },
             ),
         };
-        let (shown, user_dir) = {
-            let router = this.borrow();
-            (
-                router.shown.as_ref().map(Shown::window),
-                router.user_dir.clone(),
-            )
-        };
-        watch_config(ConfigPaths::with_user_dir(user_dir, &launch.root), cx);
+        let shown = this.borrow().shown.as_ref().map(Shown::window);
         let handle = match shown {
             Some(window) => replace_root(this, window, launch, cx),
             None => open_workbench(this, launch, cx),
@@ -355,20 +344,11 @@ impl Router {
     }
 
     /// Shows the Welcome screen in place of the workbench (spec W10) or the
-    /// Get Started page (spec O5), on the user configuration alone.
+    /// Get Started page (spec O5).
     fn replace_with_welcome(this: &Rc<RefCell<Router>>, cx: &mut App) {
-        let (window, user_dir, user_only) = {
-            let router = this.borrow();
-            let Some(shown) = router.shown.as_ref() else {
-                return;
-            };
-            let user_only = matches!(shown, Shown::Onboarding(_));
-            (shown.window(), router.user_dir.clone(), user_only)
+        let Some(window) = this.borrow().shown.as_ref().map(Shown::window) else {
+            return;
         };
-        // Get Started already watches the user configuration alone.
-        if !user_only {
-            watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
-        }
         let replaced = window.update(cx, |_, window, cx| {
             let view = window.replace_root(cx, WelcomeView::new);
             let router = this.clone();
@@ -673,10 +653,11 @@ fn test_router(cx: &mut App) -> Rc<RefCell<Router>> {
         })
     });
     let user_dir = app_data_dir(cx).unwrap_or_default().join("config");
+    // As `run` does, once.
+    watch_config(ConfigPaths::user_only_with_user_dir(user_dir), cx);
     let router = Rc::new(RefCell::new(Router {
         shown: None,
         resolve,
-        user_dir,
     }));
     cx.set_global(TestRouter(router.clone()));
     router

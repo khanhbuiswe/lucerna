@@ -37,7 +37,7 @@ impl Dirs {
     }
 
     fn paths(&self) -> ConfigPaths {
-        ConfigPaths::with_user_dir(self.user.path(), self.root.path())
+        ConfigPaths::user_only_with_user_dir(self.user.path())
     }
 
     fn settings(&self) -> PathBuf {
@@ -192,13 +192,26 @@ fn user_settings_change_applies(cx: &mut TestAppContext) {
         "a theme switch bumps the generation the shape caches key on"
     );
 
-    // Workspace settings override user settings.
+    // Workspace settings override user settings, once the window reloads
+    // them.
     let workspace = dirs.root.path().join(".lucerna");
     std::fs::create_dir(&workspace).unwrap();
-    write(
-        &workspace.join("settings.json"),
+    std::fs::write(
+        workspace.join("settings.json"),
         "{ \"editor.fontSize\": 16 }",
-        cx,
+    )
+    .unwrap();
+    let settings = cx.update(|_, cx| wb.read(cx).settings().clone());
+    settings.update(cx, |s, cx| s.reload(cx));
+    draw(cx);
+    assert_eq!(
+        cx.update(|_, cx| settings.read(cx).get::<f32>("editor.fontSize", None, cx)),
+        Some(16.)
+    );
+    assert_eq!(
+        font_size(cx),
+        Some(20.),
+        "the app's settings stay the user's"
     );
     assert_eq!(cx.update(|_, cx| view.read(cx).font_size()), 16.);
 }
@@ -353,7 +366,7 @@ fn open_settings_creates_missing_file(cx: &mut TestAppContext) {
     let dirs = Dirs::new();
     // The user directory does not exist yet: it is made on first open.
     let user_dir = dirs.user.path().join("lucerna");
-    let paths = ConfigPaths::with_user_dir(&user_dir, dirs.root.path());
+    let paths = ConfigPaths::user_only_with_user_dir(&user_dir);
     init_with(paths, cx);
     let (wb, cx) = open(dirs.root.path(), cx);
     assert!(!dirs.root.path().join(".lucerna").exists());
@@ -523,16 +536,12 @@ fn watcher_reports_settings_write() {
 
 #[test]
 fn config_paths_layout() {
-    let paths = ConfigPaths::with_user_dir("/u", Path::new("/r"));
+    let paths = ConfigPaths::user_only_with_user_dir("/u");
     assert_eq!(paths.user_dir, PathBuf::from("/u"));
-    assert_eq!(
-        paths.workspace_settings,
-        Some(PathBuf::from("/r/.lucerna/settings.json"))
-    );
     assert_eq!(paths.user_settings(), PathBuf::from("/u/settings.json"));
     assert_eq!(paths.keybindings(), PathBuf::from("/u/keybindings.json"));
     assert_eq!(paths.themes_dir(), PathBuf::from("/u/themes"));
-    let home = ConfigPaths::for_root(Path::new("/r"));
+    let home = ConfigPaths::user_only();
     assert!(
         home.user_dir.ends_with(".config/lucerna"),
         "{:?}",
@@ -670,9 +679,14 @@ fn user_only_loads_user_settings_without_a_workspace_layer(cx: &mut TestAppConte
 fn workspace_settings_command_without_a_folder_reports_it(cx: &mut TestAppContext) {
     let dirs = Dirs::new();
     init(&dirs, cx);
-    let (wb, cx) = open(dirs.root.path(), cx);
-    let user = dirs.user.path().to_path_buf();
-    cx.update(|_, cx| watch_config(ConfigPaths::user_only_with_user_dir(user), cx));
+    // A file opened alone has no folder.
+    let (root, file) = (
+        dirs.root.path().to_path_buf(),
+        dirs.root.path().join("a.txt"),
+    );
+    let (wb, cx) =
+        cx.add_window_view(move |window, cx| Workbench::single_file(root, &file, None, window, cx));
+    draw(cx);
     let before = active_tab_path(&wb, cx);
     wb.update_in(cx, |wb, window, cx| {
         wb.run_command(
@@ -883,4 +897,65 @@ fn appearance_change_during_preview_keeps_preview(cx: &mut TestAppContext) {
     );
     keys("escape", cx);
     assert_eq!(theme_name(cx), "Lucerna Light");
+}
+
+fn workspace_file(dirs: &Dirs, text: &str) -> PathBuf {
+    let file = dirs.root.path().join(".lucerna").join("settings.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, text).unwrap();
+    file
+}
+
+#[gpui::test]
+fn saving_workspace_settings_in_the_editor_applies_them(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let file = workspace_file(&dirs, r#"{"editor.tabSize": 2}"#);
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    let settings = cx.update(|_, cx| wb.read(cx).settings().clone());
+    let tab_size = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| settings.read(cx).get::<u32>("editor.tabSize", None, cx))
+    };
+    assert_eq!(tab_size(cx), Some(2));
+
+    let path: Arc<Path> = Arc::from(file.as_path());
+    wb.update(cx, |wb, cx| wb.open_path(path, OpenMode::Pinned, cx));
+    draw(cx);
+    wb.update_in(cx, |wb, window, cx| wb.focus_editor_area(window, cx));
+    keys("cmd-right left backspace", cx);
+    cx.simulate_input("3");
+    keys("cmd-s", cx);
+
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        r#"{"editor.tabSize": 3}"#
+    );
+    assert_eq!(tab_size(cx), Some(3));
+}
+
+#[gpui::test]
+fn broken_workspace_settings_show_in_the_status_bar(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    workspace_file(&dirs, "{\n  \"editor.tabSize\": \n}\n");
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    assert!(error_texts(cx).is_empty(), "the user files are fine");
+    let error = cx.update(|_, cx| {
+        wb.read(cx)
+            .settings()
+            .read(cx)
+            .error()
+            .map(|e| e.status_text())
+    });
+    let error = error.expect("the window reports its file");
+    assert!(
+        error.starts_with(".lucerna/settings.json: line 3: "),
+        "{error}"
+    );
+    assert!(cx.debug_bounds("settings-error").is_some());
+
+    // A broken user file is shown first.
+    write(&dirs.settings(), "{ \"editor.fontSize\": ", cx);
+    assert_eq!(error_texts(cx).len(), 1);
+    assert!(cx.debug_bounds("settings-error").is_some());
 }

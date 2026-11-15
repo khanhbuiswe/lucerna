@@ -221,17 +221,15 @@ fn untrusted_workspace_server_not_listed_as_found(cx: &mut TestAppContext) {
     let dir = rust_project();
     let launcher = Arc::new(FakeLauncher::new().with_server("evil", FakeServer::new()));
     let (wb, cx) = lsp_workbench_with(dir.path(), launcher, "{}", cx);
-    cx.update(|_, cx| {
-        cx.update_global::<AppState, _>(|state, _| {
-            state
-                .settings
-                .set_layer(
-                    Layer::Workspace,
-                    r#"{ "lsp": { "evil": { "command": "evil", "file_types": ["rb"] } } }"#,
-                )
-                .unwrap();
+    let settings = cx.update(|_, cx| wb.read(cx).settings().clone());
+    settings
+        .update(cx, |s, cx| {
+            s.set_workspace_json(
+                r#"{ "lsp": { "evil": { "command": "evil", "file_types": ["rb"] } } }"#,
+                cx,
+            )
         })
-    });
+        .unwrap();
     settle(cx);
     let servers = language_servers(&wb, cx);
     assert!(!cx.update(|_, cx| servers.read(cx).is_trusted()));

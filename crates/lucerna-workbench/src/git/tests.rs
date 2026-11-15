@@ -102,16 +102,22 @@ fn job_moving_the_base_rediffs_buffers_it_did_not_reload(cx: &mut TestAppContext
 /// `git.path` is read from the User layer only, and only when absolute.
 #[test]
 fn git_path_comes_from_the_user_layer_only() {
-    use lucerna_settings::Layer;
+    use lucerna_settings::{Layer, WorkspaceLayer};
     let abs = if cfg!(windows) {
         r"C:\\git\\git.exe"
     } else {
         "/opt/git/bin/git"
     };
     let mut store = SettingsStore::with_defaults();
-    store
-        .set_layer(Layer::Workspace, &format!(r#"{{ "git.path": "{abs}" }}"#))
-        .unwrap();
+    let workspace = WorkspaceLayer::parse(&format!(r#"{{ "git.path": "{abs}" }}"#)).unwrap();
+    // A trusted lookup, as `git_path_setting` makes, skips a folder's
+    // settings.
+    assert_eq!(
+        store
+            .view(Some(&workspace))
+            .get_trusted::<String>("git.path", None),
+        None
+    );
     assert_eq!(GitSettings::from_store(&store).path, None);
 
     store

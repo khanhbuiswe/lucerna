@@ -169,6 +169,12 @@ fn screen_contains(view: &Entity<TerminalView>, text: &str, cx: &mut VisualTestC
     screen(view, cx).iter().any(|row| row.contains(text))
 }
 
+/// `<root>/.lucerna/settings.json`, which a window reads when it is made.
+fn write_workspace_settings(root: &Path, text: &str) {
+    std::fs::create_dir_all(root.join(".lucerna")).unwrap();
+    std::fs::write(root.join(".lucerna").join("settings.json"), text).unwrap();
+}
+
 fn env_of(opts: &TerminalOptions, key: &str) -> Option<Option<String>> {
     opts.env.get(key).cloned()
 }
@@ -188,12 +194,7 @@ fn untrusted_ignores_workspace_shell_settings(cx: &mut TestAppContext) {
         }}"#
     );
     let fakes = init(&user, cx);
-    cx.update_global::<AppState, _>(|state, _| {
-        state
-            .settings
-            .set_layer(Layer::Workspace, &workspace)
-            .unwrap();
-    });
+    write_workspace_settings(root.path(), &workspace);
     {
         let (wb, cx) = open(root.path(), cx);
         assert!(wb.read_with(cx, |wb, cx| wb.is_restricted(cx)));
@@ -677,12 +678,7 @@ fn restored_terminal_in_a_trusted_folder_uses_workspace_settings(cx: &mut TestAp
     let data = TempDir::new().unwrap();
     std::fs::create_dir(root.path().join("ws")).unwrap();
     let fakes = init("{}", cx);
-    cx.update_global::<AppState, _>(|state, _| {
-        state
-            .settings
-            .set_layer(Layer::Workspace, r#"{ "terminal.integrated.cwd": "ws" }"#)
-            .unwrap();
-    });
+    write_workspace_settings(root.path(), r#"{ "terminal.integrated.cwd": "ws" }"#);
     let mut store = lucerna_workbench::TrustStore::load(data.path());
     store.trust(root.path(), false).unwrap();
     let state: lucerna_workbench::WorkspaceState = serde_json::from_value(serde_json::json!({

@@ -63,6 +63,7 @@ pub mod ui;
 mod vim;
 mod vim_indicator;
 mod welcome;
+mod window_settings;
 mod workbench;
 mod workspace_state;
 
@@ -139,6 +140,7 @@ pub use theme_picker::{ThemePicker, ThemePickerEvent};
 pub use trust::{TrustModal, TrustModalEvent, TrustStore};
 pub use vim::VimLayer;
 pub use welcome::{WELCOME_COMMANDS, WelcomeEvent, WelcomeView};
+pub use window_settings::WindowSettings;
 pub use workbench::{SidebarView, Workbench};
 pub use workspace_state::{
     SearchState, WorkspaceState, WorkspaceStateStore, default_data_dir, load_state, save_state,
