@@ -1,6 +1,6 @@
 # Màn onboarding lần chạy đầu ("Get Started")
 
-Ngày 2026-11-15. Trạng thái: bản nháp, chờ người dùng duyệt.
+Ngày 2026-11-15. Trạng thái: người dùng đã duyệt (2026-11-15), chưa triển khai.
 
 Spec này sửa mục W12 của `2026-11-12-welcome-design.md`: Welcome vẫn không có AI, đăng nhập, New File hay Clone Repository, nhưng **Lucerna có onboarding**, là một trang riêng chứ không phải một phần của Welcome.
 
