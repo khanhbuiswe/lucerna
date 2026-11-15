@@ -1,0 +1,169 @@
+{
+  "meta": {
+    "date": "2026-11-15",
+    "mode": "before",
+    "rounds": 5,
+    "windows": [
+      1,
+      2,
+      3
+    ],
+    "selected": [
+      "ram_mb",
+      "second_window_ms",
+      "drop"
+    ],
+    "lucerna_commit": "f6cb426",
+    "lucerna_binary": {
+      "path": "/Users/duykhanh/Projects.nosync/lucerna/target/release/Lucerna.app/Contents/MacOS/luc",
+      "mtime": "2026-11-15T16:08:58+00:00",
+      "version": "luc 0.1.0"
+    },
+    "macos": "26.7.1",
+    "chip": "Apple M4",
+    "preflight_ignored": [],
+    "recorded_at": "2026-11-15T16:12:49+00:00"
+  },
+  "rounds": [
+    {
+      "ram_mb": {
+        "1": 86.42279052734375,
+        "2": 160.2049560546875,
+        "3": 230.56526947021484
+      },
+      "second_window_ms": 552.032208,
+      "drop_pct_idle_b": 0.0,
+      "drop_pct_while_busy": 0.0
+    },
+    {
+      "ram_mb": {
+        "1": 86.32901763916016,
+        "2": 161.2518310546875,
+        "3": 230.79964447021484
+      },
+      "second_window_ms": 585.59975,
+      "drop_pct_idle_b": 0.0,
+      "drop_pct_while_busy": 0.0
+    },
+    {
+      "ram_mb": {
+        "1": 85.90718841552734,
+        "2": 161.2987060546875,
+        "3": 230.61214447021484
+      },
+      "second_window_ms": 536.252875,
+      "drop_pct_idle_b": 0.0,
+      "drop_pct_while_busy": 0.0
+    },
+    {
+      "ram_mb": {
+        "1": 86.21966552734375,
+        "2": 161.0643081665039,
+        "3": 273.22154235839844
+      },
+      "second_window_ms": 559.610916,
+      "drop_pct_idle_b": 0.0,
+      "drop_pct_while_busy": 0.0
+    },
+    {
+      "ram_mb": {
+        "1": 86.25091552734375,
+        "2": 181.8612060546875,
+        "3": 230.29962158203125
+      },
+      "second_window_ms": 518.395292,
+      "drop_pct_idle_b": 0.0,
+      "drop_pct_while_busy": 0.0
+    }
+  ],
+  "summary": {
+    "ram_mb[1]": {
+      "median": 86.25091552734375,
+      "min": 85.90718841552734,
+      "max": 86.42279052734375,
+      "n": 5,
+      "failed": 0
+    },
+    "ram_mb[2]": {
+      "median": 161.2518310546875,
+      "min": 160.2049560546875,
+      "max": 181.8612060546875,
+      "n": 5,
+      "failed": 0
+    },
+    "ram_mb[3]": {
+      "median": 230.61214447021484,
+      "min": 230.29962158203125,
+      "max": 273.22154235839844,
+      "n": 5,
+      "failed": 0
+    },
+    "second_window_ms": {
+      "median": 552.032208,
+      "min": 518.395292,
+      "max": 585.59975,
+      "n": 5,
+      "failed": 0
+    },
+    "drop_pct_idle_b": {
+      "median": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "n": 5,
+      "failed": 0
+    },
+    "drop_pct_while_busy": {
+      "median": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "n": 5,
+      "failed": 0
+    }
+  },
+  "single_window": {
+    "startup_ms": [
+      568.767042,
+      569.719625,
+      602.440959,
+      601.970416,
+      619.32975
+    ],
+    "idle_ram_mb": [
+      181.36058807373047,
+      165.20431518554688,
+      181.32929229736328,
+      165.23556518554688,
+      181.25116729736328
+    ],
+    "idle_cpu_pct": [
+      1.281732372807975,
+      0.49975958667576825,
+      1.2965011096839767,
+      1.3249155464812952,
+      1.3282373925827944
+    ]
+  },
+  "summary_single_window": {
+    "startup_ms": {
+      "median": 601.970416,
+      "min": 568.767042,
+      "max": 619.32975,
+      "n": 5,
+      "failed": 0
+    },
+    "idle_ram_mb": {
+      "median": 181.25116729736328,
+      "min": 165.20431518554688,
+      "max": 181.36058807373047,
+      "n": 5,
+      "failed": 0
+    },
+    "idle_cpu_pct": {
+      "median": 1.2965011096839767,
+      "min": 0.49975958667576825,
+      "max": 1.3282373925827944,
+      "n": 5,
+      "failed": 0
+    }
+  }
+}

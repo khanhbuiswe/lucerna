@@ -62,6 +62,27 @@ Quick Open latency is not measured: no external method gave a comparable result 
 
 `diagnose.py` (not a benchmark) records what the scroll measurement sees: frame intervals for line and pixel scroll events, plus an optional hand-scrolling comparison (`record`). See docs/benchmarks.md, "Scrolling: why pixel events".
 
+## Multi-window measurement (`multiwindow.py`)
+
+Spec: `docs/superpowers/specs/2026-11-15-multi-window-design.md` section 7.1. Lucerna only.
+
+```sh
+python3 -I bench/compare/multiwindow.py --windows 1,2,3 --mode before \
+    --out bench/compare/results/multiwindow-before.json --single-window
+```
+
+`--mode before` is today's behaviour: every window is its own `luc <repo>` process. `--mode after` is the one-process build: the first window is `luc --foreground <repo1>`, the others are `luc <repoK>` clients (the `--foreground` flag does not exist before that work lands). Options: `--rounds` (default 5), `--only ram_mb,second_window_ms,drop`, `--single-window` (also measures the existing `startup_ms` and `idle_ram_mb` of one window with `metrics.py`), `--ignore-preflight`, `--bench-dir`.
+
+| Metric | What | Permission |
+|---|---|---|
+| `ram_mb[n]` | summed `footprint` of every `luc` process this script spawned (and their children), after n windows on n different repos settled | none |
+| `second_window_ms` | the second `luc` command to the first frame of the new window with content (`watch --display`, as `startup_ms`). Window A is empty and 600x400, so the new, larger window is the one measured in both modes | Screen Recording, Accessibility |
+| `drop_pct_idle_b`, `drop_pct_while_busy` | dropped frames in % while scrolling A (`big.rs`, 1280x800) with B idle on a small repo, and while B has just been asked to open the large repo | Screen Recording, Accessibility |
+
+The script starts its own processes and signals only those and their children (the pidfile of `editors.py` holds one root, so it is not used). Repos are copies of the ripgrep sources in `<bench>/data/multi/{a,b,c,d}`, and `<bench>/data/multi/scroll/big.rs` is the scroll file (so A does not index the 80,000-file repo).
+
+Known limit: with two windows of one pid (the `after` mode) `bench-helper` cannot move B (`frame` and `scroll` pick the largest window of the pid list). A is the larger window, so `frame` and `scroll` pick A, but B keeps its default position: if it covers A's centre, `scroll` refuses and that round is `null`. If it happens, add `--window-index` to `bench-helper` (Swift) before the `after` run.
+
 ## Building the environment
 
 By default under `~/LucernaBench.noindex` (change with `--bench-dir`):

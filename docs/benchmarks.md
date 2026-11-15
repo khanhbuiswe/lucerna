@@ -373,3 +373,70 @@ The file-change metric was not part of this run.
 python3 -I bench/compare/report.py bench/compare/results/2026-11-15-026bbac.json \
   --out docs/benchmarks --metrics idle_ram_mb,idle_cpu_pct,app_size_mb
 ```
+
+## Nhiều cửa sổ
+
+Mục này ghi số đo cho việc chuyển sang một tiến trình, nhiều cửa sổ
+(spec: [`2026-11-15-multi-window-design.md`](superpowers/specs/2026-11-15-multi-window-design.md),
+mục 7). Script: `bench/compare/multiwindow.py` (xem `bench/compare/README.md`).
+Chỉ đo Lucerna. Đây là số nội bộ để so trước và sau, không dùng để so với
+Zed hay VS Code.
+
+### Nhiều cửa sổ — trước
+
+Đo trên bản release dựng từ commit `f6cb426` của nhánh `multi-window`. Mã của
+nó giống `main` (hơn `2a9c1e3` chỉ các commit docs). Mỗi cửa sổ là một tiến
+trình `luc <repo>` riêng. Năm vòng cho mỗi số. Máy: Apple M4, 16 GB RAM,
+macOS 26.7.1, màn hình chính 1470×956 pt, 60 Hz. `HOME` riêng như
+`editors.launch`. Dữ liệu thô:
+[`bench/compare/results/multiwindow-before.json`](../bench/compare/results/multiwindow-before.json).
+
+Mỗi ô: trung vị (nhỏ nhất – lớn nhất).
+
+| Số đo | Kết quả |
+|---|---|
+| RAM, 1 cửa sổ | 86,3 MB (85,9 – 86,4) |
+| RAM, 2 cửa sổ (tổng `footprint`) | 161,3 MB (160,2 – 181,9) |
+| RAM, 3 cửa sổ (tổng `footprint`) | 230,6 MB (230,3 – 273,2) |
+| Mở cửa sổ thứ hai | 552 ms (518 – 586) |
+| Khung hình rớt ở A, B đứng yên | 0,0 % (0,0 – 0,0) |
+| Khung hình rớt ở A, B đang mở repo lớn | 0,0 % (0,0 – 0,0) |
+
+Số đo một cửa sổ (cùng bản build, Lucerna, `bench/compare/metrics.py`). Mốc
+cho ngưỡng "một cửa sổ không tệ hơn" của spec 7.2:
+
+| Số đo | Kết quả |
+|---|---|
+| `startup_ms` | 602 ms (569 – 619) |
+| `idle_ram_mb` (repo vừa, 10 tệp, nghỉ 60 s) | 181,3 MB (165,2 – 181,4) |
+| `idle_cpu_pct` | 1,30 % (0,50 – 1,33) |
+
+Cách đo và giới hạn:
+
+- RAM là tổng `footprint` của mọi tiến trình `luc` mà script đã chạy, sau khi
+  n cửa sổ trên n repo khác nhau mở xong và nghỉ 8 s. Các repo là bản sao mã
+  nguồn ripgrep, nhỏ. Cửa sổ thứ nhất dùng khoảng 86 MB, nhưng `idle_ram_mb`
+  cao hơn (181 MB) vì ở đó mở 10 tệp bằng Quick Open.
+- Mở cửa sổ thứ hai: cửa sổ A đang mở một tệp rỗng, nhỏ (600×400). Đo từ lúc
+  chạy lệnh `luc` thứ hai (mở `marker.txt`) tới khung hình đầu của cửa sổ mới
+  có nội dung, như `startup_ms`. Số này gồm cả việc khởi động tiến trình.
+- Khung hình rớt: cuộn `big.rs` ở A (600 sự kiện pixel, như
+  `scroll_dropped_pct`) trong lúc B đứng yên trên repo nhỏ, rồi trong lúc B vừa
+  được yêu cầu mở repo lớn (80.000 tệp). Cả hai cho 0 % rớt: ở bản cũ hai cửa
+  sổ là hai tiến trình, nên B không tranh luồng giao diện với A. Số này chỉ có
+  ý nghĩa để so với bản một tiến trình.
+- `idle_ram_mb` thấp bất thường ở hai vòng (165 MB, các vòng khác 181 MB). Giữ
+  nguyên, vì là kết quả đo thật.
+- Bản đo chạy khi tải máy hơi cao do các phiên khác; preflight đã đợi tải
+  dưới 2,0 trước mỗi vòng. Không dùng `--ignore-preflight`.
+- Số khởi động đã công bố trước đây đã bị rút lại (commit `58540ca`). Số
+  `startup_ms` ở đây chỉ là mốc nội bộ của đợt này, không công bố.
+- Chế độ `--mode after` chưa chạy được: cờ `--foreground` chưa có. Task sau sẽ
+  chạy lại bằng đúng lệnh này để so.
+
+Lệnh đã chạy:
+
+```sh
+python3 -I bench/compare/multiwindow.py --windows 1,2,3 --mode before --rounds 5 \
+  --single-window --out bench/compare/results/multiwindow-before.json
+```
