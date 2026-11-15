@@ -762,7 +762,7 @@ fn open_config_file(
 }
 
 /// Writes `template` to `path` unless it exists. Returns whether it did.
-fn create_if_missing(path: &Path, template: &str) -> io::Result<bool> {
+pub(crate) fn create_if_missing(path: &Path, template: &str) -> io::Result<bool> {
     if path.exists() {
         return Ok(false);
     }

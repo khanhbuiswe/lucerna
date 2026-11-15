@@ -120,6 +120,7 @@
   { "key": "shift+alt+down", "command": "editor.action.copyLinesDownAction", "when": "editorTextFocus && !editorReadonly" },
   { "key": "cmd+shift+k", "command": "editor.action.deleteLines", "when": "editorTextFocus && !editorReadonly" },
   { "key": "cmd+enter", "command": "editor.action.insertLineAfter", "when": "editorTextFocus && !editorReadonly" },
+  { "key": "cmd+enter", "command": "lucerna.onboarding.finish", "when": "onboardingFocus" },
   { "key": "cmd+shift+enter", "command": "editor.action.insertLineBefore", "when": "editorTextFocus && !editorReadonly" },
   { "key": "cmd+]", "command": "editor.action.indentLines", "when": "editorTextFocus && !editorReadonly" },
   { "key": "cmd+[", "command": "editor.action.outdentLines", "when": "editorTextFocus && !editorReadonly" },
