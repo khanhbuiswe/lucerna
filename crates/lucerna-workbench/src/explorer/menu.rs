@@ -62,7 +62,7 @@ pub(super) fn build_menu(
         .when(is_file, |m| {
             entry(m, "Open to the Side", "explorer.openToSide")
         })
-        .when(is_file && is_markdown, |m| {
+        .when(is_markdown, |m| {
             entry(m, "Open Preview", "markdown.showPreview")
         });
     let menu = entry(menu, REVEAL_LABEL, "revealFileInOS");

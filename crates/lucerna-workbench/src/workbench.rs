@@ -1087,12 +1087,13 @@ impl Workbench {
             self.marker_hover = None;
         }
         // The clipboard's entry follows a rename too.
+        // (`moved_path`: the entry itself becomes `to`, never `to/`.)
         if let Some(clip) = &self.explorer_clipboard
-            && let Ok(rest) = clip.path.strip_prefix(&*from)
+            && let Some(moved) = crate::workspace_state::moved_path(&clip.path, &from, &to)
         {
             let moved = ExplorerClipboard {
                 op: clip.op,
-                path: Arc::from(to.join(rest)),
+                path: Arc::from(moved),
             };
             self.set_explorer_clipboard(Some(moved), cx);
         }
@@ -1180,6 +1181,19 @@ impl Workbench {
         if let WorktreeEvent::Changed(changes) = ev {
             for change in changes.iter().filter(|c| c.kind != ChangeKind::Removed) {
                 self.own_changes.remove(&change.path);
+            }
+            // The clipboard's entry is gone (another program removed it,
+            // or a folder around it): nothing is left to paste.
+            let gone = self.explorer_clipboard.as_ref().is_some_and(|clip| {
+                clip.path.strip_prefix(&self.root).is_ok_and(|rel| {
+                    !snapshot.contains(rel)
+                        && changes
+                            .iter()
+                            .any(|c| c.kind == ChangeKind::Removed && rel.starts_with(&c.path))
+                })
+            });
+            if gone {
+                self.set_explorer_clipboard(None, cx);
             }
         }
         self.explorer.update(cx, |explorer, cx| {

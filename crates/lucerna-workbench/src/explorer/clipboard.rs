@@ -169,7 +169,10 @@ pub(crate) fn paste_into(
     }
     wb.set_explorer_clipboard(None, cx);
     cx.spawn(async move |wb, cx| {
-        if !task.await {
+        // A source that is gone is not put back.
+        if let Err(kind) = task.await
+            && kind != std::io::ErrorKind::NotFound
+        {
             let _ = wb.update(cx, |wb, cx| {
                 if wb.explorer_clipboard().is_none() {
                     wb.set_explorer_clipboard(Some(clip), cx);
@@ -190,7 +193,7 @@ pub(crate) fn paste_into(
 ///
 /// `None` when nothing is started (a move into its own folder, a paste
 /// into itself, a move already running); else the task, which resolves to
-/// whether the entry was written.
+/// whether the entry was written, or the kind of error that stopped it.
 pub(crate) fn transfer(
     wb: &mut Workbench,
     src: PathBuf,
@@ -199,7 +202,7 @@ pub(crate) fn transfer(
     after: AfterTransfer,
     window: &mut Window,
     cx: &mut Context<Workbench>,
-) -> Option<Task<bool>> {
+) -> Option<Task<Result<(), std::io::ErrorKind>>> {
     let name = src.file_name()?.to_string_lossy().into_owned();
     let root = wb.root().to_path_buf();
     let src_rel = src.strip_prefix(&root).ok()?;
@@ -254,7 +257,7 @@ pub(crate) fn transfer(
                 .update(cx, |wb, _| wb.expect_own_changes(expected.iter().cloned()))
                 .is_err()
             {
-                return false;
+                return Err(std::io::ErrorKind::Interrupted);
             }
             let (from, to) = (src.clone(), target.clone());
             let result = cx
@@ -284,23 +287,33 @@ pub(crate) fn transfer(
                         .await;
                 }
                 Err(e) => {
-                    // A taken target may be another paste's: left to expire.
-                    let forget = if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    // A failed folder copy may leave what it wrote so far.
+                    let partial = e.kind() != std::io::ErrorKind::AlreadyExists && {
+                        let to = target.clone();
+                        cx.background_executor()
+                            .spawn(async move { std::fs::symlink_metadata(&to).is_ok() })
+                            .await
+                    };
+                    // A taken target may be another paste's, and a partial
+                    // copy is Lucerna's own: both stay expected (until the
+                    // TTL); a source left in place does not.
+                    let forget = if e.kind() == std::io::ErrorKind::AlreadyExists || partial {
                         &expected[1..]
                     } else {
                         &expected[..]
                     };
                     let _ = wb.update(cx, |wb, _| wb.forget_own_changes(forget));
-                    break Err(e);
+                    break Err((e, partial));
                 }
                 Ok(()) => break Ok(()),
             }
         };
         wb.update(cx, |wb, cx| match result {
-            Err(e) => {
+            Err((e, partial)) => {
                 let verb = after.verb();
-                status_message::show(format!("Unable to {verb} '{name}': {e}"), cx);
-                false
+                let partial = if partial { " (partially copied)" } else { "" };
+                status_message::show(format!("Unable to {verb} '{name}': {e}{partial}"), cx);
+                Err(e.kind())
             }
             Ok(()) => {
                 if op == ClipOp::Cut {
@@ -316,9 +329,9 @@ pub(crate) fn transfer(
                 if after == AfterTransfer::SelectAndOpen && !is_dir {
                     wb.open_path(rel, OpenMode::Pinned, cx);
                 }
-                true
+                Ok(())
             }
         })
-        .unwrap_or(false)
+        .unwrap_or(Err(std::io::ErrorKind::Interrupted))
     }))
 }

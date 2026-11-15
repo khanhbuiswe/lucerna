@@ -336,6 +336,8 @@ fn copy_entry_inner(from: &Path, to: &Path) -> io::Result<()> {
         std::fs::create_dir(to)?;
         for entry in std::fs::read_dir(from)? {
             let entry = entry?;
+            // Defensive: `copy_entry` already refuses a `to` inside `from`,
+            // so the copy never lists itself.
             if entry.path() == to {
                 continue;
             }

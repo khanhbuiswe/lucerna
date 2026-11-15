@@ -81,7 +81,7 @@ struct PendingReveal {
 /// How long a duplicate waits for the tree to report it before its rename
 /// is dropped: a later rename would take the focus from whatever the user
 /// went on to do.
-const PENDING_RENAME_TIMEOUT: Duration = Duration::from_secs(1);
+const PENDING_RENAME_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A just duplicated path (root-relative) to rename once the tree has it,
 /// with `range` (bytes of its name) selected, unless `deadline` passed.

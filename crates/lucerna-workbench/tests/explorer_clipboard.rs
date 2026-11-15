@@ -745,23 +745,125 @@ fn cmd_d_duplicates(cx: &mut TestAppContext) {
     assert!(!editing(&wb, cx));
 }
 
+/// Cut or Copy, then Rename of the entry, then Paste: the paste takes
+/// the renamed entry.
+fn rename_then_paste(op: ClipOp, cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-a.rs", cx);
+    match op {
+        ClipOp::Cut => keys("cmd-x", cx),
+        ClipOp::Copy => keys("cmd-c", cx),
+    }
+    keys("enter", cx);
+    type_text(cx, "c");
+    keys("enter", cx);
+    wait_until(cx, |_| root.join("c.rs").is_file());
+    wait_until(cx, |cx| clipboard(&wb, cx) == Some((op, root.join("c.rs"))));
+    // Spelled exactly as the file, with no trailing separator.
+    let held = clipboard(&wb, cx).unwrap().1;
+    assert_eq!(held.as_os_str(), root.join("c.rs").as_os_str());
+    deliver_added(&wb, &["c.rs"], cx);
+    assert_eq!(
+        cx.debug_bounds("explorer-row-cut-c.rs").is_some(),
+        op == ClipOp::Cut
+    );
+    click("explorer-row-src", cx);
+    keys("cmd-v", cx);
+    wait_until(cx, |cx| {
+        root.join("src/c.rs").is_file() || status(cx).is_some()
+    });
+    assert_eq!(status(cx), None);
+    assert!(root.join("src/c.rs").is_file());
+    assert_eq!(root.join("c.rs").exists(), op == ClipOp::Copy);
+}
+
 #[gpui::test]
 fn clipboard_follows_rename_of_its_source(cx: &mut TestAppContext) {
+    rename_then_paste(ClipOp::Cut, cx);
+}
+
+#[gpui::test]
+fn copied_entry_follows_rename(cx: &mut TestAppContext) {
+    rename_then_paste(ClipOp::Copy, cx);
+}
+
+/// A cut whose source is gone is not put back on the clipboard.
+#[gpui::test]
+fn cut_of_vanished_source_is_not_restored(cx: &mut TestAppContext) {
     init(cx);
     let dir = project();
     let (wb, cx) = open(dir.path(), cx);
     let root = root_of(&wb, cx);
     click("explorer-row-a.rs", cx);
     keys("cmd-x", cx);
-    keys("enter", cx);
-    type_text(cx, "c");
-    keys("enter", cx);
-    wait_until(cx, |_| root.join("c.rs").is_file());
-    wait_until(cx, |cx| {
-        clipboard(&wb, cx) == Some((ClipOp::Cut, root.join("c.rs")))
-    });
-    deliver_added(&wb, &["c.rs"], cx);
-    assert!(cx.debug_bounds("explorer-row-cut-c.rs").is_some());
+    std::fs::remove_file(root.join("a.rs")).unwrap();
+    click("explorer-row-src", cx);
+    keys("cmd-v", cx);
+    wait_until(cx, |cx| status(cx).is_some());
+    assert!(status(cx).unwrap().starts_with("Unable to paste 'a.rs': "));
+    assert_eq!(clipboard(&wb, cx), None);
+}
+
+/// Another program removes the clipboard's entry: the clipboard empties.
+#[gpui::test]
+fn clipboard_cleared_when_tree_reports_source_removed(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-src", cx);
+    click("explorer-row-src/main.rs", cx);
+    keys("cmd-c", cx);
+    // A Removed for something else leaves it.
+    std::fs::remove_file(root.join("b.rs")).unwrap();
+    deliver_removed(&wb, "b.rs", cx);
+    assert!(clipboard(&wb, cx).is_some());
+    std::fs::remove_dir_all(root.join("src")).unwrap();
+    deliver_removed(&wb, "src", cx);
+    assert_eq!(clipboard(&wb, cx), None);
+}
+
+/// Restores a folder's permissions when the test ends.
+#[cfg(unix)]
+struct Readable(PathBuf);
+
+#[cfg(unix)]
+impl Drop for Readable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// A folder copy that fails halfway says so, and what it wrote is not
+/// decorated as another program's.
+#[cfg(unix)]
+#[gpui::test]
+fn failed_folder_copy_reports_partial_copy(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    init(cx);
+    let dir = project();
+    let locked = dir.path().join("src/zz");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("x.rs"), "x\n").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let _readable = Readable(locked.clone());
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    click("explorer-row-src", cx);
+    keys("cmd-c", cx);
+    click("explorer-root", cx);
+    keys("cmd-v", cx);
+    wait_until(cx, |cx| status(cx).is_some());
+    let message = status(cx).unwrap();
+    assert!(message.starts_with("Unable to paste 'src': "), "{message}");
+    assert!(message.ends_with(" (partially copied)"), "{message}");
+    assert!(root.join("src copy").is_dir());
+    deliver_added(&wb, &["src copy"], cx);
+    assert!(!decorated(&wb, "src copy", cx));
 }
 
 #[gpui::test]
