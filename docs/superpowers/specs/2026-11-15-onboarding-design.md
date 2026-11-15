@@ -1,6 +1,14 @@
 # Màn onboarding lần chạy đầu ("Get Started")
 
-Ngày 2026-11-15. Trạng thái: người dùng đã duyệt (2026-11-15), chưa triển khai.
+Ngày 2026-11-15. Trạng thái: đã triển khai (branch claude/interesting-kapitsa-5d4c92, commits 50d9583–e48d6b1); kiểm tra thủ công §9 chưa làm.
+
+Những chỗ khác spec khi triển khai:
+- `ONBOARDING_COMMANDS` không có lệnh Open… nào.
+- `number_stepper` trả về `(value, minus, plus)`.
+- File ▸ Open Recent không liệt kê mục nào trong cửa sổ onboarding.
+- Nút Get Started của Welcome dùng icon settings.
+- Test của router nằm trong `tests/welcome.rs`.
+- `settings.json` hỏng khi trang là gốc cửa sổ thì hiện một dòng cảnh báo.
 
 Spec này sửa mục W12 của `2026-11-12-welcome-design.md`: Welcome vẫn không có AI, đăng nhập, New File hay Clone Repository, nhưng **Lucerna có onboarding**, là một trang riêng chứ không phải một phần của Welcome.
 
