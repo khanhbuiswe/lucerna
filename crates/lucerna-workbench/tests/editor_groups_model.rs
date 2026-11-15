@@ -761,3 +761,35 @@ fn branch_changes_tab_is_one_and_saved() {
     let restored = EditorGroups::restore(&state);
     assert!(restored.branch_changes_tab().is_some());
 }
+
+#[test]
+fn onboarding_is_singleton() {
+    let mut g = EditorGroups::default();
+    g.open(p("/w/a.rs"), OpenMode::Pinned, true);
+    let tab = g.open_onboarding();
+    g.open(p("/w/b.rs"), OpenMode::Pinned, true);
+    assert_eq!(g.open_onboarding(), tab, "reopening activates it");
+    assert_eq!(g.onboarding_tab(), Some(tab));
+    let active = g.active_tab().unwrap();
+    assert_eq!(active.id, tab);
+    assert!(active.pinned, "never a preview");
+    assert!(active.item.is_singleton());
+    assert_eq!(active.item, TabItem::Onboarding);
+    assert_eq!(active.title(), "Get Started");
+    let count = g.groups()[0]
+        .tabs
+        .iter()
+        .filter(|t| t.item == TabItem::Onboarding)
+        .count();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn onboarding_not_saved() {
+    let mut g = EditorGroups::default();
+    g.open(p("/w/a.rs"), OpenMode::Pinned, true);
+    g.open_onboarding();
+    let state = g.state();
+    assert_eq!(state.groups[0].tabs, [(PathBuf::from("/w/a.rs"), true)]);
+    assert!(EditorGroups::restore(&state).onboarding_tab().is_none());
+}

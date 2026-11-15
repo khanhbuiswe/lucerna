@@ -940,11 +940,16 @@ mod tests {
 
     #[test]
     fn help_starts_with_get_started() {
-        let commands = registered_and(&["lucerna.openOnboarding"]);
+        let commands = Workbench::command_ids();
+        assert!(commands.contains(&"lucerna.openOnboarding"));
         let help = titles(menu(&mac(&commands), "Help"));
         assert_eq!(&help[..3], ["Get Started", "—", "Show All Commands"]);
         // Unregistered, it is left out with its separator.
-        let help = titles(menu(&mac(&Workbench::command_ids()), "Help"));
+        let without: Vec<_> = commands
+            .into_iter()
+            .filter(|id| *id != "lucerna.openOnboarding")
+            .collect();
+        let help = titles(menu(&mac(&without), "Help"));
         assert_eq!(help.first().map(String::as_str), Some("Show All Commands"));
     }
 

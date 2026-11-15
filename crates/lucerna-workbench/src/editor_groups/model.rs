@@ -1,5 +1,5 @@
 //! The pure editor-groups model: which files (and the Extensions page, the
-//! Search, References and Health tabs and language server logs) are open in which group, which tab is a preview, and the most-recently-used
+//! Search, References, Health and Get Started tabs and language server logs) are open in which group, which tab is a preview, and the most-recently-used
 //! order per group.
 
 use std::path::{Path, PathBuf};
@@ -57,6 +57,9 @@ pub enum TabItem {
     /// spec §4.7). At most one in all groups; never a preview; saved, with
     /// its ref in the workspace state.
     BranchChanges,
+    /// The Get Started page (`lucerna.openOnboarding`). At most one in all
+    /// groups; never a preview, never saved.
+    Onboarding,
 }
 
 impl TabItem {
@@ -113,6 +116,9 @@ pub const REFERENCES_TAB_TITLE: &str = "References";
 /// The title of the language server Health tab.
 pub const LSP_HEALTH_TAB_TITLE: &str = "Language Servers";
 
+/// The title of the Get Started tab.
+pub const ONBOARDING_TAB_TITLE: &str = "Get Started";
+
 /// How the Uncommitted Changes tab is saved in [`GroupState::tabs`];
 /// relative, like [`EXTENSIONS_TAB_STATE`].
 pub const GIT_CHANGES_TAB_STATE: &str = "lucerna:git-changes";
@@ -154,8 +160,8 @@ impl Tab {
     /// The tab bar's label: the file name, "Preview <file name>" for the
     /// dynamic preview, "Extensions", "Search", "<server> Log",
     /// "References", "Language Servers", "Uncommitted Changes",
-    /// "<file name> (Changes)" or "Changes since default branch" (the tab
-    /// bar names the ref, see [`branch_changes_title`]).
+    /// "<file name> (Changes)", "Changes since default branch" (the tab
+    /// bar names the ref, see [`branch_changes_title`]) or "Get Started".
     pub fn title(&self) -> String {
         match &self.item {
             TabItem::File(path) | TabItem::MarkdownPreview(path) => file_name(path),
@@ -168,6 +174,7 @@ impl Tab {
             TabItem::GitChanges => GIT_CHANGES_TAB_TITLE.to_string(),
             TabItem::FileDiff(path) => file_diff_title(path),
             TabItem::BranchChanges => branch_changes_title(None),
+            TabItem::Onboarding => ONBOARDING_TAB_TITLE.to_string(),
         }
     }
 }
@@ -416,6 +423,17 @@ impl EditorGroups {
     /// The Health tab, if open in any group.
     pub fn lsp_health_tab(&self) -> Option<TabId> {
         self.find_item(&TabItem::LspHealth)
+    }
+
+    /// Activates the Get Started tab wherever it is, or opens it (pinned)
+    /// at the end of the active group. Returns its tab.
+    pub fn open_onboarding(&mut self) -> TabId {
+        self.open_singleton(TabItem::Onboarding)
+    }
+
+    /// The Get Started tab, if open in any group.
+    pub fn onboarding_tab(&self) -> Option<TabId> {
+        self.find_item(&TabItem::Onboarding)
     }
 
     /// Replaces tab `id` with a tab showing `item` in the same place, with
@@ -828,8 +846,8 @@ pub(crate) fn split_preview_state(path: &Path) -> Option<(&'static str, &Path)> 
 
 /// How a tab is saved: its path, [`EXTENSIONS_TAB_STATE`],
 /// [`SEARCH_TAB_STATE`], [`GIT_CHANGES_TAB_STATE`],
-/// [`BRANCH_CHANGES_TAB_STATE`] or a preview prefix and the path; `None` for a server log, the References tab or
-/// the Health tab, which are not saved.
+/// [`BRANCH_CHANGES_TAB_STATE`] or a preview prefix and the path; `None` for a server log, the References tab,
+/// the Health tab, a diff tab or the Get Started tab, which are not saved.
 fn saved_path(item: &TabItem) -> Option<PathBuf> {
     match item {
         TabItem::File(path) => Some(path.to_path_buf()),
@@ -841,9 +859,11 @@ fn saved_path(item: &TabItem) -> Option<PathBuf> {
         TabItem::MarkdownPreviewDynamic(path) => {
             Some(prefixed(MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, path))
         }
-        TabItem::LspLog(_) | TabItem::References | TabItem::LspHealth | TabItem::FileDiff(_) => {
-            None
-        }
+        TabItem::LspLog(_)
+        | TabItem::References
+        | TabItem::LspHealth
+        | TabItem::FileDiff(_)
+        | TabItem::Onboarding => None,
     }
 }
 

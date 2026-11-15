@@ -5,14 +5,14 @@
 
 pub mod model;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle, IntoElement,
-    KeyDownEvent, ParentElement, Render, SharedString, Styled, StyledText, Subscription, Task,
-    Window, div, prelude::*, px, svg,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle,
+    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, StyledText,
+    Subscription, Task, WeakEntity, Window, div, prelude::*, px, svg,
 };
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
 use serde_json::json;
@@ -26,7 +26,9 @@ use crate::ui::{
     segmented_control, segmented_group, setting_row, subheader_card, switch, theme_preview,
     warning_row,
 };
-use crate::{AppState, FontPicker, FontPickerEvent, font_names, icons, keys};
+use crate::{
+    AppState, CommandRegistry, FontPicker, FontPickerEvent, Workbench, font_names, icons, keys,
+};
 use model::{
     FONT_SIZE_MAX, FONT_SIZE_MIN, ThemeMode, current_font_family, current_font_size, current_mode,
     mode_edits, preview_themes, stepped_font_size,
@@ -678,5 +680,100 @@ impl Render for OnboardingPage {
                 self.font_picker()
                     .map(|picker| popover_overlay(picker.clone())),
             )
+    }
+}
+
+/// The workbench's Get Started page, made the first time its tab is shown.
+pub(crate) type TabPage = Rc<RefCell<Option<Entity<OnboardingPage>>>>;
+
+/// The page in `slot`; made, with `workbench` acting on its events, when
+/// there is none yet.
+pub(crate) fn tab_page(
+    slot: &TabPage,
+    workbench: &WeakEntity<Workbench>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<OnboardingPage> {
+    let made = slot.borrow().clone();
+    if let Some(page) = made {
+        return page;
+    }
+    let page = cx.new(|cx| OnboardingPage::new(Host::Tab, window, cx));
+    let workbench = workbench.clone();
+    window
+        .subscribe(&page, cx, move |_, event: &OnboardingEvent, window, cx| {
+            workbench
+                .update(cx, |wb, cx| wb.on_onboarding_event(event, window, cx))
+                .ok();
+        })
+        .detach();
+    *slot.borrow_mut() = Some(page.clone());
+    page
+}
+
+/// Help: Get Started, and Finish (`cmd+enter` while the page has focus).
+pub(crate) fn register_commands(commands: &mut CommandRegistry) {
+    commands.register(OPEN_ONBOARDING, "Help: Get Started", |wb, _, window, cx| {
+        wb.show_onboarding(window, cx)
+    });
+    commands.register_when(
+        FINISH,
+        "Get Started: Finish",
+        "onboardingFocus",
+        |wb, _, window, cx| wb.finish_onboarding(window, cx),
+    );
+}
+
+impl Workbench {
+    /// Opens (or activates) the Get Started tab in the active group and
+    /// focuses its page.
+    pub fn show_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let page = tab_page(&self.onboarding, &cx.weak_entity(), window, cx);
+        self.update_editor_groups(cx, |m| {
+            m.open_onboarding();
+        });
+        window.focus(&page.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    /// Finish: closes the Get Started tab, if open.
+    pub fn finish_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.editor_groups().read(cx).model().onboarding_tab() else {
+            return;
+        };
+        self.update_editor_groups(cx, |m| {
+            m.close(id);
+        });
+        self.refocus_if_hidden(window, cx);
+    }
+
+    /// The Get Started tab's page, once it has been shown.
+    pub fn onboarding_page(&self) -> Option<Entity<OnboardingPage>> {
+        self.onboarding.borrow().clone()
+    }
+
+    /// `onboardingFocus`: the focus is in the Get Started page and its
+    /// font picker is closed, so the picker takes its keys first.
+    pub(crate) fn onboarding_focused(&self, window: &Window, cx: &App) -> bool {
+        self.onboarding_page().is_some_and(|page| {
+            let page = page.read(cx);
+            page.picker.is_none() && page.focus.contains_focused(window, cx)
+        })
+    }
+
+    fn on_onboarding_event(
+        &mut self,
+        event: &OnboardingEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            OnboardingEvent::Finish => self.finish_onboarding(window, cx),
+            OnboardingEvent::OpenSettingsInWorkbench => {
+                self.run_command(OPEN_SETTINGS, None, window, cx);
+            }
+            // Only a window root asks for a new window.
+            OnboardingEvent::OpenSettingsInNewWindow(_) => {}
+        }
     }
 }
