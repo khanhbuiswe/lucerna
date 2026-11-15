@@ -6,7 +6,7 @@ use gpui::{
     Hsla, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled,
     Window, div, img, prelude::*, px, relative, svg,
 };
-use lucerna_theme::{IconSource, Rgba};
+use lucerna_theme::{IconSource, Rgba, Theme};
 
 use crate::AppState;
 pub use crate::context_menu::{
@@ -453,6 +453,397 @@ pub fn checkbox(checked: bool, cx: &App) -> Div {
                     .text_color(color(ui.icon)),
             )
         })
+}
+
+/// Height of a [`segmented_group`] and of the controls on a settings row.
+pub const CONTROL_HEIGHT: f32 = 6. * GRID;
+
+/// The frame of a [`segmented_control`]: a row [`CONTROL_HEIGHT`] tall
+/// with a 1 px `border`, rounded by [`GRID`]. Add the buttons as children.
+pub fn segmented_group(cx: &App) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .h(px(CONTROL_HEIGHT))
+        .overflow_hidden()
+        .rounded(px(GRID))
+        .border_1()
+        .border_color(color(ui.border))
+}
+
+/// The buttons of a segmented control, one per option, to put in a
+/// [`segmented_group`]: `options[selected]` sits on `element.selected`,
+/// the others show `ghost_element.hover` on hover. Each after the first
+/// has a `border` line on its left. Button `i` has id and debug selector
+/// `"{id}-{i}"`; add `on_click` to each.
+pub fn segmented_control(
+    id: &'static str,
+    options: &[&'static str],
+    selected: usize,
+    cx: &App,
+) -> Vec<Stateful<Div>> {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let hover = color(ui.ghost_element_hover);
+    options
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let name = format!("{id}-{i}");
+            let active = i == selected;
+            div()
+                .id(SharedString::from(name.clone()))
+                .debug_selector(move || name)
+                .flex()
+                .flex_1()
+                .justify_center()
+                .items_center()
+                .h_full()
+                .px(px(3. * GRID))
+                .cursor_pointer()
+                .whitespace_nowrap()
+                .text_size(px(UI_FONT_SIZE_SMALL))
+                .when(i > 0, |d| d.border_l_1().border_color(color(ui.border)))
+                .when(active, |d| {
+                    d.bg(color(ui.element_selected)).text_color(color(ui.text))
+                })
+                .when(!active, |d| {
+                    d.text_color(color(ui.text_muted))
+                        .hover(move |s| s.bg(hover))
+                })
+                .child(*label)
+        })
+        .collect()
+}
+
+/// An on/off switch, 7×4 [`GRID`] and fully rounded: on, it is filled
+/// with `element.selected` and its knob sits at the right; off, it is on
+/// `element.background` with the knob at the left. Its id and debug
+/// selector are `id`, the knob's `"{id}-knob"`. Add `on_click`.
+pub fn switch(id: &'static str, on: bool, cx: &App) -> Stateful<Div> {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let knob = 4. * GRID - 4.;
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex()
+        .flex_none()
+        .items_center()
+        .when(on, |d| d.justify_end())
+        .w(px(7. * GRID))
+        .h(px(4. * GRID))
+        .px(px(1.))
+        .rounded_full()
+        .border_1()
+        .border_color(color(ui.border))
+        .bg(color(if on {
+            ui.element_selected
+        } else {
+            ui.element_background
+        }))
+        .cursor_pointer()
+        .child(
+            div()
+                .debug_selector(move || format!("{id}-knob"))
+                .size(px(knob))
+                .rounded_full()
+                .bg(color(if on { ui.icon } else { ui.icon_muted })),
+        )
+}
+
+/// A number with − and + buttons: returns `(value, minus, plus)`, to lay
+/// out in that order (− value +) in a row. `value` shows the number
+/// (small text, centered, debug selector `id`); the buttons are
+/// [`icon_button`]s with ids and debug selectors `"{id}-minus"` and
+/// `"{id}-plus"`. A button at its limit (`at_min`, `at_max`) is dimmed and
+/// takes no clicks, even with `on_click` added. Add `on_click` to both.
+pub fn number_stepper(
+    id: &'static str,
+    value: u32,
+    at_min: bool,
+    at_max: bool,
+    cx: &App,
+) -> (Div, Stateful<Div>, Stateful<Div>) {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let button = |suffix: &'static str, icon: &'static [u8], disabled: bool| {
+        let name = format!("{id}-{suffix}");
+        icon_button(SharedString::from(name.clone()), icon, false, cx)
+            .debug_selector(move || name)
+            .relative()
+            .when(disabled, |b| {
+                // The occluding cover keeps the button from seeing the
+                // mouse, so it takes no clicks and shows no hover.
+                b.opacity(0.4)
+                    .cursor_default()
+                    .child(div().absolute().inset_0().occlude())
+            })
+    };
+    let number = div()
+        .debug_selector(move || id.into())
+        .flex()
+        .flex_none()
+        .justify_center()
+        .min_w(px(8. * GRID))
+        .text_size(px(UI_FONT_SIZE_SMALL))
+        .text_color(color(ui.text))
+        .child(value.to_string());
+    (
+        number,
+        button("minus", icons::MINUS, at_min),
+        button("plus", icons::PLUS, at_max),
+    )
+}
+
+/// A button that opens a list, bordered like an [`input_box`]: `label`
+/// (cut off when long), then [`CHEVRON_DOWN_ICON`] at the right. Its id
+/// and debug selector are `id`. Add `on_click`.
+pub fn dropdown_button(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Stateful<Div> {
+    let ui = &cx.global::<AppState>().theme.ui;
+    let hover = color(ui.ghost_element_hover);
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2. * GRID))
+        .h(px(CONTROL_HEIGHT))
+        .pl(px(2. * GRID))
+        .pr(px(GRID))
+        .rounded(px(GRID))
+        .border_1()
+        .border_color(color(ui.border_variant))
+        .bg(color(ui.editor_background))
+        .hover(move |s| s.bg(hover))
+        .cursor_pointer()
+        .text_size(px(UI_FONT_SIZE_SMALL))
+        .text_color(color(ui.text))
+        .child(div().flex_1().min_w_0().truncate().child(label.into()))
+        .child(
+            svg()
+                .data(CHEVRON_DOWN_ICON)
+                .flex_none()
+                .size(px(14.))
+                .text_color(color(ui.icon_muted)),
+        )
+}
+
+/// A settings row: `label` ([`UI_FONT_SIZE`]) with `description`
+/// ([`UI_FONT_SIZE_SMALL`], `text.muted`) under it at the left, `control`
+/// at the right.
+pub fn setting_row(
+    label: &str,
+    description: Option<&str>,
+    control: impl IntoElement,
+    cx: &App,
+) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(4. * GRID))
+        .w_full()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(GRID / 2.))
+                .child(
+                    div()
+                        .text_size(px(UI_FONT_SIZE))
+                        .text_color(color(ui.text))
+                        .child(label.to_string()),
+                )
+                .when_some(description, |d, description| {
+                    d.child(
+                        div()
+                            .text_size(px(UI_FONT_SIZE_SMALL))
+                            .text_color(color(ui.text_muted))
+                            .child(description.to_string()),
+                    )
+                }),
+        )
+        .child(div().flex_none().child(control))
+}
+
+/// The syntax color a bar of [`theme_preview`] takes.
+#[derive(Clone, Copy)]
+enum Token {
+    Keyword,
+    Function,
+    String,
+    Comment,
+    Type,
+    Variable,
+}
+
+impl Token {
+    fn capture(self) -> &'static str {
+        match self {
+            Token::Keyword => "keyword",
+            Token::Function => "function",
+            Token::String => "string",
+            Token::Comment => "comment",
+            Token::Type => "type",
+            Token::Variable => "variable",
+        }
+    }
+}
+
+/// One line of the preview's mock code: indent levels, then bars as
+/// (width in [`PREVIEW_UNIT`]s, color).
+struct PreviewLine {
+    indent: u8,
+    bars: &'static [(u8, Token)],
+}
+
+/// Width of one unit of a preview bar, in px.
+const PREVIEW_UNIT: f32 = 3.;
+
+/// The mock code of [`theme_preview`]: fixed, so the preview never moves.
+const PREVIEW_LINES: &[PreviewLine] = {
+    use Token::*;
+    &[
+        PreviewLine {
+            indent: 0,
+            bars: &[(12, Comment), (18, Comment)],
+        },
+        PreviewLine {
+            indent: 0,
+            bars: &[(6, Keyword), (10, Function), (8, Type)],
+        },
+        PreviewLine {
+            indent: 1,
+            bars: &[(5, Keyword), (8, Variable), (14, String)],
+        },
+        PreviewLine {
+            indent: 1,
+            bars: &[(4, Keyword), (9, Variable), (7, Function)],
+        },
+        PreviewLine {
+            indent: 2,
+            bars: &[(10, Function), (16, String)],
+        },
+        PreviewLine {
+            indent: 1,
+            bars: &[(3, Keyword)],
+        },
+        PreviewLine {
+            indent: 1,
+            bars: &[(8, Variable), (6, Type), (11, Function)],
+        },
+        PreviewLine {
+            indent: 0,
+            bars: &[(2, Keyword)],
+        },
+    ]
+};
+
+/// A small workspace drawn in `left`'s colors (not the active theme's): a
+/// sidebar of about a fifth of the width with six rows, and an editor of
+/// [`PREVIEW_LINES`] bars in the theme's keyword, function, string,
+/// comment, type and variable colors. With `right`, the preview splits
+/// into two halves, `left` and `right` (System: light, then dark). It is
+/// 30 [`GRID`]s tall, rounded 8 px, with a 1 px `border` of the active
+/// theme. Its id and debug selector are `id`, the halves'
+/// `"{id}-left"` and `"{id}-right"`.
+pub fn theme_preview(
+    id: &'static str,
+    left: &Theme,
+    right: Option<&Theme>,
+    cx: &App,
+) -> Stateful<Div> {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex()
+        .flex_none()
+        .w_full()
+        .h(px(30. * GRID))
+        .overflow_hidden()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(color(ui.border))
+        .child(preview_half(format!("{id}-left"), left))
+        .when_some(right, |d, right| {
+            d.child(preview_half(format!("{id}-right"), right))
+        })
+}
+
+/// One theme's half (or the whole) of a [`theme_preview`].
+fn preview_half(selector: String, theme: &Theme) -> Div {
+    let ui = &theme.ui;
+    let faint = |c: Rgba, alpha: f32| {
+        let mut c = color(c);
+        c.a *= alpha;
+        c
+    };
+    let bar = |width: f32, fill: gpui::Rgba| {
+        div()
+            .flex_none()
+            .w(px(width))
+            .h(px(GRID))
+            .rounded_full()
+            .bg(fill)
+    };
+    let sidebar_widths = [16., 22., 12., 26., 18., 14.];
+    let sidebar = div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w(relative(0.22))
+        .h_full()
+        .gap(px(2.5 * GRID))
+        .p(px(3. * GRID))
+        .overflow_hidden()
+        .bg(color(ui.panel_background))
+        .border_r_1()
+        .border_color(color(ui.border_variant))
+        .children(
+            sidebar_widths
+                .iter()
+                .map(|w| bar(w * PREVIEW_UNIT, faint(ui.text_muted, 0.5))),
+        );
+    let code = div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .gap(px(2. * GRID))
+        .p(px(3. * GRID))
+        .overflow_hidden()
+        .children(PREVIEW_LINES.iter().map(|line| {
+            div()
+                .flex()
+                .gap(px(1.5 * GRID))
+                .pl(px(f32::from(line.indent) * 4. * PREVIEW_UNIT))
+                .children(line.bars.iter().map(|&(width, token)| {
+                    let fill = theme
+                        .style_for(token.capture())
+                        .and_then(|style| style.color)
+                        .unwrap_or(ui.editor_foreground);
+                    bar(f32::from(width) * PREVIEW_UNIT, color(fill))
+                }))
+        }));
+    div()
+        .debug_selector(move || selector)
+        .flex()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .bg(color(ui.editor_background))
+        .child(sidebar)
+        .child(code)
 }
 
 /// Height of a search bar row: the find bar and the Search tab's toolbar.
