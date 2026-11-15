@@ -193,6 +193,20 @@ fn lucide_still_resolvable() {
 }
 
 #[test]
+fn extension_cannot_take_the_vs_seti_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = r#"{ "name": "T", "themes": [{ "name": "vs-seti", "appearance": "dark",
+      "file_stems": {"a": "d"}, "file_icons": {"d": {"path": "docker.svg"}} }] }"#;
+    let (id, f, root) = write_theme(dir.path(), json);
+    let (reg, _) = IconThemeRegistry::build(&[(id, f, root)]);
+    assert_eq!(reg.names(), vec!["Seti".to_string(), "Lucide".to_string()]);
+    assert!(matches!(
+        reg.resolve("vs-seti").file(Path::new("a")),
+        IconSource::Glyph { .. }
+    ));
+}
+
+#[test]
 fn extension_cannot_replace_seti() {
     let dir = tempfile::tempdir().unwrap();
     let json = r#"{ "name": "T", "themes": [{ "name": "Seti", "appearance": "dark",

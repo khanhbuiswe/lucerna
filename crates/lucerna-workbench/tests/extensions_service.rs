@@ -436,10 +436,10 @@ fn icon_theme_setting_follows_extensions(cx: &mut TestAppContext) {
     };
     assert_eq!(icons(cx), "Ext Icons");
 
-    // Uninstalled: Lucide answers, and the setting is kept.
+    // Uninstalled: Seti answers, and the setting is kept.
     cx.update(|_, cx| ExtensionService::uninstall("exticons".into(), cx));
     settle(cx);
-    assert_eq!(icons(cx), "Lucide");
+    assert_eq!(icons(cx), "Seti");
     let setting: Option<String> = cx.update(|_, cx| {
         cx.global::<AppState>()
             .settings

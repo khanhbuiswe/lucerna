@@ -2,6 +2,7 @@
 //! name, then extension, then language, as VS Code does.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, LazyLock};
 
 use crate::icon_theme::{IconSource, IconTheme};
 use crate::seti_data::{
@@ -143,6 +144,12 @@ pub fn seti_icon_theme() -> IconTheme {
     IconTheme::seti(SetiIndex::new())
 }
 
+/// The one Seti theme every registry shares, built on first use.
+pub(crate) fn shared_seti_theme() -> Arc<IconTheme> {
+    static SETI: LazyLock<Arc<IconTheme>> = LazyLock::new(|| Arc::new(seti_icon_theme()));
+    SETI.clone()
+}
+
 /// The glyph (SVG) names the theme can answer with, sorted, without
 /// repeats, so the workbench can check that all of them are embedded.
 pub fn seti_glyph_names() -> impl Iterator<Item = &'static str> {
@@ -159,7 +166,7 @@ mod tests {
     fn luminance(rgb: u32) -> f64 {
         let ch = |shift: u32| {
             let c = f64::from((rgb >> shift) & 0xff) / 255.0;
-            if c <= 0.03928 {
+            if c <= 0.04045 {
                 c / 12.92
             } else {
                 ((c + 0.055) / 1.055).powf(2.4)
@@ -179,6 +186,37 @@ mod tests {
             let c = contrast(d.light, 0xffffff);
             assert!(c >= 3.0, "{key}: light {:06x} has contrast {c:.2}", d.light);
         }
+    }
+
+    /// VS Code's light colour: each channel x 0.9, rounded half up.
+    fn vscode_light(rgb: u32) -> u32 {
+        let ch = |shift: u32| (f64::from((rgb >> shift) & 0xff) * 0.9 + 0.5) as u32;
+        (ch(16) << 16) | (ch(8) << 8) | ch(0)
+    }
+
+    #[test]
+    fn light_color_is_vscodes_when_it_already_has_contrast() {
+        let default = DEFS
+            .iter()
+            .find(|(k, _)| *k == DEFAULT_DEF)
+            .map(|(_, d)| d)
+            .unwrap();
+        let mut checked = 0;
+        for (key, d) in DEFS {
+            // A definition without its own colour (`_todo`) takes the
+            // default's; the generated data already stores that.
+            let dark = if *key == "_todo" {
+                default.dark
+            } else {
+                d.dark
+            };
+            let vs = vscode_light(dark);
+            if contrast(vs, 0xffffff) >= 3.0 {
+                assert_eq!(d.light, vs, "{key}: dark {:06x}", d.dark);
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
     }
 
     #[test]

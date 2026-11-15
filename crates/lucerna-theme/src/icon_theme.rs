@@ -4,6 +4,7 @@
 pub const DEFAULT_ICON_THEME: &str = "Seti";
 
 pub use crate::seti::seti_icon_theme;
+use crate::seti::shared_seti_theme;
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -142,11 +143,8 @@ impl IconTheme {
 
     pub fn file_icon(&self, path: &Path) -> Option<IconSource> {
         if let Kind::Seti(index) = &self.kind {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            return Some(index.lookup(&name));
+            let name = path.file_name().map(|n| n.to_string_lossy());
+            return Some(index.lookup(name.as_deref().unwrap_or("")));
         }
         let name = path
             .file_name()
@@ -414,7 +412,7 @@ impl IconThemeRegistry {
     pub fn build(
         files: &[(String, PathBuf, PathBuf)],
     ) -> (IconThemeRegistry, Vec<(PathBuf, String)>) {
-        let seti = Arc::new(seti_icon_theme());
+        let seti = shared_seti_theme();
         let lucide = Arc::new(lucide_icon_theme());
         let mut themes: Vec<Arc<IconTheme>> = Vec::new();
         let mut warnings = Vec::new();
@@ -423,7 +421,10 @@ impl IconThemeRegistry {
                 Ok((parsed, warns)) => {
                     warnings.extend(warns.into_iter().map(|w| (json.clone(), w)));
                     for theme in parsed {
-                        if theme.name == lucide.name || theme.name == seti.name {
+                        if theme.name == lucide.name
+                            || theme.name == seti.name
+                            || theme.name == "vs-seti"
+                        {
                             continue;
                         }
                         themes.retain(|t| t.name != theme.name);

@@ -23,7 +23,7 @@ pub struct AppState {
     /// Bumped each time [`AppState::languages`] is replaced, so open
     /// documents look their language up again.
     pub languages_generation: u64,
-    /// Seti, Lucide plus the icon themes of installed extensions.
+    /// Seti and Lucide plus the icon themes of installed extensions.
     pub icon_themes: IconThemeRegistry,
     /// The icon theme named by `workbench.iconTheme` (Seti when it names
     /// none that is installed).

@@ -36,6 +36,8 @@ What it does (spec: docs/superpowers/specs/2026-11-15-file-icons-design.md,
   - Maps the theme's languageIds to file names, name patterns and extensions
     through contributes.languages in extensions/*/package.json, plus the
     nonBuiltInLanguages list of extensions/theme-seti/build/update-icon-theme.js
+    (included because Lucerna has no VS Code language extensions, so these
+    give the icons a VS Code user with those extensions would see)
     (its inheritIconFromLanguage list is already folded into languageIds, and
     ignoreExtAssociation only edits fileExtensions, which we read as is).
     Name patterns "X.*" become prefixes ("x."), "*.x" suffixes (".x"), and
@@ -321,7 +323,7 @@ def normalise_svg(text, name):
     vb = " ".join(fmt_num(v) for v in (cx - side / 2, cy - side / 2, side, side))
     tag = SIZE_ATTR.sub("", m.group(0))
     tag = f'<svg viewBox="{vb}"' + tag[len("<svg"):]
-    return text[: m.start()] + tag + text[m.end():], (x0, y0, x1, y1), vb
+    return text[: m.start()] + tag + text[m.end():]
 
 
 # ------------------------------------------------------------------ output
@@ -378,18 +380,23 @@ def main():
 
     glyphs = sorted({d["glyph"] for d in defs.values()})
     missing = [g for g in glyphs if not (args.seti / "icons" / f"{g}.svg").is_file()]
+    if missing:
+        die(f"glyphs referenced by DEFS without an SVG in seti-ui: {missing}")
+    # Everything that can fail runs before anything is deleted or written.
+    svgs = {
+        g: normalise_svg((args.seti / "icons" / f"{g}.svg").read_text(encoding="utf-8"), g)
+        for g in glyphs
+    }
+    for src in (args.seti / "LICENSE.md", args.vscode / "LICENSE.txt"):
+        if not src.is_file():
+            die(f"{src} not found")
 
     # SVGs, licenses, README
     SVG_DIR.mkdir(parents=True, exist_ok=True)
     for old in SVG_DIR.glob("*.svg"):
         old.unlink()
-    boxes = {}
-    if not missing:
-        for g in glyphs:
-            src = (args.seti / "icons" / f"{g}.svg").read_text(encoding="utf-8")
-            out, box, vb = normalise_svg(src, g)
-            boxes[g] = (box, vb)
-            (SVG_DIR / f"{g}.svg").write_text(out, encoding="utf-8")
+    for g, out in svgs.items():
+        (SVG_DIR / f"{g}.svg").write_text(out, encoding="utf-8")
     shutil.copyfile(args.seti / "LICENSE.md", SVG_DIR / "LICENSE-seti-ui")
     shutil.copyfile(args.vscode / "LICENSE.txt", SVG_DIR / "LICENSE-vscode")
     (SVG_DIR / "README.md").write_text(
@@ -403,7 +410,10 @@ def main():
         "extensions. MIT, see `LICENSE-vscode`.\n\n"
         "Each SVG's viewBox has been reset to a square around its drawing, so every "
         "icon has the same size and is centred; width and height were removed. "
-        "The drawing paths are unchanged.\n",
+        "The drawing paths are unchanged.\n\n"
+        "VS Code's `nonBuiltInLanguages` are included because Lucerna has no VS Code "
+        "language extensions, so these give the icons a VS Code user with those "
+        "extensions would see.\n",
         encoding="utf-8",
     )
 
@@ -484,7 +494,6 @@ def main():
     print(f"seti-ui {seti_commit}, vscode {vscode_commit}")
     print(f"definitions: {len(defs)} (of {len(theme['iconDefinitions'])} incl. _light)")
     print(f"glyphs: {len(glyphs)}")
-    print(f"glyphs referenced by DEFS without an SVG: {len(missing)} {missing}")
     print(
         f"tables: FILE_NAMES {len(seti_names)}, FILE_EXTENSIONS {len(seti_ext)}, "
         f"LANG_FILE_NAMES {len(lang['names'])}, LANG_NAME_PREFIXES {len(lang['prefixes'])}, "
@@ -501,8 +510,6 @@ def main():
             f"  {k}: #{d['vs_light']:06x} ({contrast_on_white(d['vs_light']):.2f}) -> "
             f"#{d['light']:06x} ({contrast_on_white(d['light']):.2f})"
         )
-    if missing:
-        die("some glyphs have no SVG")
 
 
 if __name__ == "__main__":

@@ -53,8 +53,10 @@ fn seti_own_entries_beat_language_entries() {
     // `tsconfig.json` is in Seti's file names (tsconfig, blue) and also a
     // language file name (json, yellow): Seti's own entry wins.
     assert_eq!(glyph("tsconfig.json"), ("tsconfig", 0x519aba));
-    // `Dockerfile` is only a language file name here; `.gitignore` too.
+    // `Dockerfile` is only a language file name here; `.gitignore` only a
+    // language extension (git, VS Code's `_git` colour).
     assert_eq!(glyph("dockerfile").0, "docker");
+    assert_eq!(glyph(".gitignore"), ("git", 0x41535b));
 }
 
 #[test]

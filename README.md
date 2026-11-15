@@ -73,7 +73,7 @@ left out.
   - Compact chrome: an integrated title bar that shows the git branch, and panel toggles in the status bar.
   - Flat tabs with preview tabs, a path bar, indent guides and thin scrollbars you can drag or click.
   - A Welcome page with recent folders and files (Ctrl+R opens Open Recent anywhere).
-  - Lilex and IBM Plex Sans fonts, Lucide icons, and the Lucerna Dark and Lucerna Light themes, which follow the system's light or dark mode.
+  - Lilex and IBM Plex Sans fonts, Seti file icons (VS Code's default set), Lucide UI icons, and the Lucerna Dark and Lucerna Light themes, which follow the system's light or dark mode.
 - **See what the agent changed (Git).** Read-only and fast: changed, added and untracked files are
   coloured in the tree (folders too); the gutter marks added, modified and deleted lines against
   `HEAD`; Alt+F5 / Shift+Alt+F5 (and `]c` / `[c` in Vim) jump between changes. Click a gutter mark
@@ -420,7 +420,7 @@ and Zed do things are in [`docs/research/`](docs/research/). Before designing a 
 Lucerna is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
 Bundled third-party assets keep their own licenses. These include the Lilex and IBM Plex fonts (OFL-1.1),
-Lucide icons (ISC), GitHub Primer colours used by the Lucerna themes (MIT), tree-sitter grammars,
+Lucide icons (ISC), Seti file icons (the SVGs from seti-ui, MIT, Jesse Weed, and VS Code's Seti mapping, MIT, Microsoft), GitHub Primer colours used by the Lucerna themes (MIT), tree-sitter grammars,
 `alacritty_terminal` and GPUI (Apache-2.0).
 See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for a summary. The app carries the full
 license text of every bundled crate and asset: open it with Help › Third-Party Licenses, or the Licenses

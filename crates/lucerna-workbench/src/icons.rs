@@ -156,6 +156,15 @@ mod tests {
     }
 
     #[test]
+    fn seti_table_is_sorted_by_name() {
+        // `seti_svg` binary-searches it.
+        assert!(
+            crate::seti_svgs::SETI.windows(2).all(|w| w[0].0 < w[1].0),
+            "SETI must be strictly sorted by name"
+        );
+    }
+
+    #[test]
     fn seti_svgs_have_square_viewbox() {
         for (name, svg) in crate::seti_svgs::SETI {
             let text = std::str::from_utf8(svg).unwrap();

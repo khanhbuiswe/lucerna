@@ -484,6 +484,45 @@ fn file_tabs_show_file_icons(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn seti_tab_icon_color_tracks_color_theme(cx: &mut TestAppContext) {
+    init_seti(cx, None);
+    let (wb, cx) = open(cx);
+    open_path(&wb, "a.ts", OpenMode::Pinned, cx);
+    let view = cx.update(|_, cx| wb.read(cx).editor_groups().clone());
+    let tint = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let src = view.read(cx).tab_icon(0, 0, cx).expect("tab icon");
+            let fallback = gpui::hsla(0., 0., 0.5, 1.);
+            lucerna_workbench::ui::icon_tint(
+                &src,
+                fallback,
+                cx.global::<AppState>().theme.appearance,
+            )
+        })
+    };
+    let (dark, light) = cx.update(|_, cx| match view.read(cx).tab_icon(0, 0, cx) {
+        Some(lucerna_theme::IconSource::Glyph { dark, light, .. }) => (dark, light),
+        other => panic!("{other:?}"),
+    });
+    assert_ne!(dark, light);
+    let rgb = |v: u32| -> gpui::Hsla { gpui::rgb(v).into() };
+    cx.update(|_, cx| {
+        let state = cx.global_mut::<AppState>();
+        let theme = state.themes.get_or_default("Lucerna Dark");
+        state.set_theme(theme);
+    });
+    draw(cx);
+    assert_eq!(tint(cx), rgb(dark));
+    cx.update(|_, cx| {
+        let state = cx.global_mut::<AppState>();
+        let theme = state.themes.get_or_default("Lucerna Light");
+        state.set_theme(theme);
+    });
+    draw(cx);
+    assert_eq!(tint(cx), rgb(light));
+}
+
+#[gpui::test]
 fn deleted_file_tab_keeps_icon(cx: &mut TestAppContext) {
     init_seti(cx, None);
     let dir = tempfile::tempdir().unwrap();
