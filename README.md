@@ -163,8 +163,9 @@ luc ~/code/my-project     # open a folder
 luc src/main.rs           # open a file on its own
 ```
 
-If you open Lucerna from Finder or the Dock, it shows the Welcome page with your recent folders
-(set `"workbench.startupEditor": "none"` to get a folder picker instead). Open Folder, Open Recent
+If you open Lucerna from Finder or the Dock, it reopens the folder (or file) you used last, as Zed
+does. Set `"window.restoreWindows": "none"` to get the Welcome page with your recent folders instead
+(and `"workbench.startupEditor": "none"` for a folder picker). Open Folder, Open Recent
 and Close Folder (Cmd+K F) switch the window in place. A file opens on its own,
 as in Zed: the sidebar lists only that file, and neither its folder nor its git repository is
 scanned. Open the folder to work on the whole project.

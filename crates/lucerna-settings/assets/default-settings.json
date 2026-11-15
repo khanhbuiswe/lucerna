@@ -1,6 +1,9 @@
 {
   "explorer.confirmDelete": true,
   "explorer.copyRelativePathSeparator": "auto",
+  // Explorer context menu: "integrated" opens the integrated terminal, "external" the
+  // app below, "both" shows both entries.
+  "terminal.explorerKind": "integrated",
   "terminal.external.osxExec": "Terminal.app",
   "terminal.external.linuxExec": "x-terminal-emulator",
   "terminal.external.windowsExec": "cmd.exe",
@@ -52,6 +55,10 @@
   // "welcomePage" | "welcomePageInEmptyWorkbench": the Welcome screen when Lucerna starts without a folder.
   // "none": ask for a folder instead; Cancel quits.
   "workbench.startupEditor": "welcomePage",
+  // Starting without a folder (Dock, Finder) reopens the last folder or file, as Zed's
+  // "restore_on_startup": "last_workspace" does. "none": show the startup editor instead.
+  // "one" | "all" | "folders" | "preserve" all reopen one window for now.
+  "window.restoreWindows": "one",
   "workbench.tips.enabled": true,
   "files.associations": {},
   "extensions.autoCheckUpdates": true,

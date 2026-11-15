@@ -1,7 +1,10 @@
 //! The read-only Explorer commands: Open to the Side, Reveal, Open in
 //! Terminal, Copy Path and Copy Relative Path.
 
+use std::cell::RefCell;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,9 +15,10 @@ use gpui::{
 use lucerna_project::WorktreeEvent;
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
+use lucerna_terminal::TerminalOptions;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::system_shell::{SystemShell, SystemShellGlobal};
-use lucerna_workbench::{AppState, TabItem, Workbench};
+use lucerna_workbench::{AppState, TabItem, TerminalSpawner, Workbench};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -207,7 +211,9 @@ fn reveal_records_target(cx: &mut TestAppContext) {
 fn terminal_opens_parent_of_file_with_setting(cx: &mut TestAppContext) {
     init(
         cx,
-        Some(r#"{ "session.trustAllWorktrees": true, "terminal.external.osxExec": "iTerm.app" }"#),
+        Some(
+            r#"{ "session.trustAllWorktrees": true, "terminal.explorerKind": "external", "terminal.external.osxExec": "iTerm.app" }"#,
+        ),
     );
     let calls = install_shell(false, cx);
     let dir = project();
@@ -218,9 +224,92 @@ fn terminal_opens_parent_of_file_with_setting(cx: &mut TestAppContext) {
     assert_eq!(*calls.lock().unwrap(), vec![expected]);
 }
 
+/// Records the folder each terminal would start in; the start itself
+/// fails, which still adds a tab.
+fn recording_spawner(
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+) -> Rc<RefCell<Vec<PathBuf>>> {
+    let cwds = Rc::new(RefCell::new(Vec::new()));
+    let spawner: TerminalSpawner = {
+        let cwds = cwds.clone();
+        Rc::new(move |opts: TerminalOptions| {
+            cwds.borrow_mut().push(opts.cwd.clone());
+            Err(io::Error::other("test"))
+        })
+    };
+    wb.update(cx, |wb, _| wb.set_terminal_spawner(spawner));
+    cwds
+}
+
+fn menu_has(command: &str, cx: &mut VisualTestContext) -> bool {
+    cx.debug_bounds(Box::leak(
+        format!("context-menu-item-{command}").into_boxed_str(),
+    ))
+    .is_some()
+}
+
+/// VS Code's default (`terminal.explorerKind: "integrated"`): the menu
+/// opens the integrated terminal in the folder, or a file's folder.
+#[gpui::test]
+fn integrated_terminal_opens_in_the_folder(cx: &mut TestAppContext) {
+    init(cx, Some(TRUSTED));
+    let calls = install_shell(false, cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let cwds = recording_spawner(&wb, cx);
+    right_click("explorer-row-a.rs", cx);
+    assert!(
+        !menu_has("openInTerminal", cx),
+        "no external entry by default"
+    );
+    click("context-menu-item-openInIntegratedTerminal", cx);
+    assert_eq!(*cwds.borrow(), vec![root_of(&wb, cx)], "a file's folder");
+    assert!(calls.lock().unwrap().is_empty(), "no external terminal");
+    let shown = cx.update(|_, cx| {
+        let wb = wb.read(cx);
+        (
+            wb.terminal_panel().read(cx).tab_count(),
+            wb.panel_state().visible,
+        )
+    });
+    assert_eq!(shown, (1, true), "a new tab, panel shown");
+}
+
+#[gpui::test]
+fn explorer_kind_picks_the_menu_entries(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{ "session.trustAllWorktrees": true, "terminal.explorerKind": "external" }"#),
+    );
+    install_shell(false, cx);
+    let dir = project();
+    let (_wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-a.rs", cx);
+    assert!(menu_has("openInTerminal", cx));
+    assert!(!menu_has("openInIntegratedTerminal", cx));
+}
+
+#[gpui::test]
+fn explorer_kind_both_shows_both(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{ "session.trustAllWorktrees": true, "terminal.explorerKind": "both" }"#),
+    );
+    install_shell(false, cx);
+    let dir = project();
+    let (_wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-a.rs", cx);
+    assert!(menu_has("openInTerminal", cx));
+    assert!(menu_has("openInIntegratedTerminal", cx));
+}
+
 #[gpui::test]
 fn terminal_error_shows_status(cx: &mut TestAppContext) {
-    init(cx, Some(TRUSTED));
+    init(
+        cx,
+        Some(r#"{ "session.trustAllWorktrees": true, "terminal.explorerKind": "external" }"#),
+    );
     install_shell(true, cx);
     let dir = project();
     let (_wb, cx) = open(dir.path(), cx);

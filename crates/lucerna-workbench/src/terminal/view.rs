@@ -68,11 +68,17 @@ pub(crate) fn default_spawner(cx: &App) -> TerminalSpawner {
 pub(crate) fn spawn_view(
     spawner: &TerminalSpawner,
     root: &Path,
+    cwd: Option<&Path>,
     restricted: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> Result<Entity<TerminalView>, SharedString> {
-    let plan = spawn_plan(root, restricted, cx);
+    let mut plan = spawn_plan(root, restricted, cx);
+    // An explicit folder (Explorer: Open in Integrated Terminal) wins over
+    // `terminal.integrated.cwd`.
+    if let Some(cwd) = cwd {
+        plan.options.cwd = cwd.to_path_buf();
+    }
     let cwd = plan.options.cwd.clone();
     match spawner(plan.options) {
         Ok((terminal, events)) => Ok(cx.new(|cx| {

@@ -1,5 +1,6 @@
 //! Explorer commands: New File, New Folder, Rename, Delete, Delete
-//! Permanently, Open to the Side, Reveal in Finder, Open in Terminal, Find
+//! Permanently, Open to the Side, Reveal in Finder, Open in Integrated or
+//! External Terminal, Find
 //! in Folder, Copy Path and Copy Relative Path. Each acts on `args.path`
 //! when given, else on the Explorer's selection (New File, New Folder and
 //! Rename always on the selection). None runs while a name is being typed
@@ -110,20 +111,24 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         },
     );
     commands.register(
+        "openInIntegratedTerminal",
+        "Explorer: Open in Integrated Terminal",
+        |wb, args, window, cx| {
+            if editing(wb, cx) {
+                return;
+            }
+            let dir = terminal_dir(wb, args, cx);
+            wb.new_terminal_tab_in(&dir, window, cx);
+        },
+    );
+    commands.register(
         "openInTerminal",
-        "Explorer: Open in Terminal",
+        "Explorer: Open in External Terminal",
         |wb, args, _, cx| {
             if editing(wb, cx) {
                 return;
             }
-            let (target, is_dir) = command_target(wb, args, cx);
-            let dir = if is_dir {
-                target
-            } else {
-                target
-                    .parent()
-                    .map_or_else(|| wb.root().to_path_buf(), Path::to_path_buf)
-            };
+            let dir = terminal_dir(wb, args, cx);
             let key = if cfg!(target_os = "macos") {
                 "terminal.external.osxExec"
             } else if cfg!(target_os = "windows") {
@@ -432,6 +437,19 @@ pub(crate) fn editing(wb: &Workbench, cx: &App) -> bool {
 /// The path a command acts on and whether it is a folder: `args.path`
 /// (absolute, or relative to the root) when present, else the selection.
 /// A path the worktree does not know counts as a file.
+/// The folder a terminal opens in for the menu's row: the folder itself,
+/// or a file's parent.
+fn terminal_dir(wb: &Workbench, args: Option<&Value>, cx: &App) -> PathBuf {
+    let (target, is_dir) = command_target(wb, args, cx);
+    if is_dir {
+        target
+    } else {
+        target
+            .parent()
+            .map_or_else(|| wb.root().to_path_buf(), Path::to_path_buf)
+    }
+}
+
 pub(crate) fn command_target(wb: &Workbench, args: Option<&Value>, cx: &App) -> (PathBuf, bool) {
     let (target, kind) = target_kind(wb, args, cx);
     (target, kind == Some(true))

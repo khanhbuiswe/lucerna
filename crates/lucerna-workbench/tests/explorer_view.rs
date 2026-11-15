@@ -729,7 +729,7 @@ fn menu_commands(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Stri
 const FILE_MENU: [&str; 7] = [
     "explorer.openToSide",
     "revealFileInOS",
-    "openInTerminal",
+    "openInIntegratedTerminal",
     "copyFilePath",
     "copyRelativeFilePath",
     "renameFile",
@@ -739,7 +739,7 @@ const FILE_MENU: [&str; 7] = [
 const SINGLE_FILE_MENU: [&str; 5] = [
     "explorer.openToSide",
     "revealFileInOS",
-    "openInTerminal",
+    "openInIntegratedTerminal",
     "copyFilePath",
     "copyRelativeFilePath",
 ];
@@ -747,7 +747,7 @@ const ROOT_MENU: [&str; 7] = [
     "explorer.newFile",
     "explorer.newFolder",
     "revealFileInOS",
-    "openInTerminal",
+    "openInIntegratedTerminal",
     "filesExplorer.findInFolder",
     "copyFilePath",
     "copyRelativeFilePath",
@@ -756,7 +756,7 @@ const FOLDER_MENU: [&str; 9] = [
     "explorer.newFile",
     "explorer.newFolder",
     "revealFileInOS",
-    "openInTerminal",
+    "openInIntegratedTerminal",
     "filesExplorer.findInFolder",
     "copyFilePath",
     "copyRelativeFilePath",

@@ -53,7 +53,24 @@ pub(super) fn build_menu(
             entry(m, "Open to the Side", "explorer.openToSide")
         });
     let menu = entry(menu, REVEAL_LABEL, "revealFileInOS");
-    let menu = entry(menu, "Open in Terminal", "openInTerminal")
+    // `terminal.explorerKind` (VS Code): "integrated" (default),
+    // "external" or "both".
+    let kind_setting = cx
+        .global::<crate::AppState>()
+        .settings
+        .get::<String>("terminal.explorerKind", None);
+    let (integrated, external) = match kind_setting.as_deref() {
+        Some("external") => (false, true),
+        Some("both") => (true, true),
+        _ => (true, false),
+    };
+    let menu = menu
+        .when(integrated, |m| {
+            entry(m, "Open in Integrated Terminal", "openInIntegratedTerminal")
+        })
+        .when(external, |m| {
+            entry(m, "Open in External Terminal", "openInTerminal")
+        })
         .separator()
         .when(!is_file, |m| {
             entry(m, "Find in Folder…", "filesExplorer.findInFolder")

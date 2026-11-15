@@ -2012,7 +2012,7 @@ impl Workbench {
     /// Shows the panel and focuses it, opening a terminal when it has none.
     pub fn show_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.terminal_panel.read(cx).tab_count() == 0 {
-            self.open_terminal(window, cx);
+            self.open_terminal(None, window, cx);
         }
         self.panel.visible = true;
         let focus = self.terminal_panel.read(cx).focus_target(cx);
@@ -2065,17 +2065,42 @@ impl Workbench {
     /// The ＋ button and `workbench.action.terminal.new`: a new terminal,
     /// shown and focused.
     pub(crate) fn new_terminal_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_terminal(window, cx);
+        self.open_terminal(None, window, cx);
         self.show_panel(window, cx);
     }
 
-    /// Starts a terminal in the workspace root and adds its tab; a terminal
-    /// that cannot start gets a tab showing why.
-    fn open_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> u64 {
+    /// Explorer: Open in Integrated Terminal: a new terminal in `dir`,
+    /// shown and focused.
+    pub(crate) fn new_terminal_tab_in(
+        &mut self,
+        dir: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_terminal(Some(dir), window, cx);
+        self.show_panel(window, cx);
+    }
+
+    /// Starts a terminal in `cwd` (else as `terminal.integrated.cwd` says,
+    /// from the workspace root) and adds its tab; a terminal that cannot
+    /// start gets a tab showing why.
+    fn open_terminal(
+        &mut self,
+        cwd: Option<&Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> u64 {
         // Never asks for trust (spec §6.3): Restricted Mode only drops the
         // Workspace layer of the shell settings.
         let restricted = self.is_restricted(cx);
-        match spawn_view(&self.terminal_spawner, &self.root, restricted, window, cx) {
+        match spawn_view(
+            &self.terminal_spawner,
+            &self.root,
+            cwd,
+            restricted,
+            window,
+            cx,
+        ) {
             Ok(view) => self
                 .terminal_panel
                 .update(cx, |panel, cx| panel.add_tab(Some(view), cx)),
@@ -2098,7 +2123,7 @@ impl Workbench {
         {
             return;
         }
-        self.open_terminal(window, cx);
+        self.open_terminal(None, window, cx);
         if self.panel_has_focus(window, cx) {
             let focus = self.terminal_panel.read(cx).focus_target(cx);
             window.focus(&focus, cx);
