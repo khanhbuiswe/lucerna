@@ -262,3 +262,33 @@ fn is_within_cases() {
     assert!(!is_within(Path::new("/ab"), Path::new("/a")));
     assert!(!is_within(Path::new("/a"), Path::new("/a/b")));
 }
+
+#[cfg(unix)]
+#[test]
+fn copy_file_keeps_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let a = d.path().join("run.sh");
+    std::fs::write(&a, "x").unwrap();
+    std::fs::set_permissions(&a, std::fs::Permissions::from_mode(0o750)).unwrap();
+    let b = d.path().join("copy.sh");
+    copy_entry(&a, &b).unwrap();
+    let mode = std::fs::metadata(&b).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o750);
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_refuses_fifo() {
+    use std::os::unix::ffi::OsStrExt;
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("pipe");
+    let c = std::ffi::CString::new(f.as_os_str().as_bytes()).unwrap();
+    // SAFETY: valid NUL-terminated path.
+    if unsafe { libc::mkfifo(c.as_ptr(), 0o600) } != 0 {
+        return;
+    }
+    let err = copy_entry(&f, &d.path().join("out")).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert!(!d.path().join("out").exists());
+}

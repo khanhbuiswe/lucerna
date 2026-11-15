@@ -287,7 +287,8 @@ pub fn paste_name(
     }
 }
 
-/// Component-wise: true when `path` is `ancestor` or lies below it.
+/// Component-wise: true when `path` is `ancestor` or lies below it. Purely
+/// lexical (no canonicalization): callers pass paths in the same spelling.
 pub fn is_within(path: &Path, ancestor: &Path) -> bool {
     path.starts_with(ancestor)
 }
@@ -313,12 +314,14 @@ fn copy_symlink(from: &Path, to: &Path) -> io::Result<()> {
 /// Copies a file, directory tree or symlink from `from` to `to` without ever
 /// replacing anything: an existing `to` fails with `AlreadyExists`. Symlinks
 /// are recreated, not followed. Refuses (`InvalidInput`) when `to` is inside
-/// `from`.
+/// `from`. A failed file copy removes the file this call created; a failed
+/// directory copy leaves the entries it already created, never touching
+/// existing ones.
 pub fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
     if is_within(to, from) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "cannot copy a folder into itself",
+            "cannot copy into itself",
         ));
     }
     copy_entry_inner(from, to)
@@ -333,19 +336,34 @@ fn copy_entry_inner(from: &Path, to: &Path) -> io::Result<()> {
         std::fs::create_dir(to)?;
         for entry in std::fs::read_dir(from)? {
             let entry = entry?;
+            if entry.path() == to {
+                continue;
+            }
             copy_entry_inner(&entry.path(), &to.join(entry.file_name()))?;
         }
         // Directory permissions last, so a read-only source stays writable
         // while its contents are copied.
         std::fs::set_permissions(to, meta.permissions())
-    } else {
+    } else if ty.is_file() {
         let mut src = std::fs::File::open(from)?;
         let mut dst = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(to)?;
-        io::copy(&mut src, &mut dst)?;
-        std::fs::set_permissions(to, meta.permissions())
+        let done = io::copy(&mut src, &mut dst)
+            .map(drop)
+            .and_then(|()| std::fs::set_permissions(to, meta.permissions()));
+        if done.is_err() {
+            // Do not leave a truncated file that looks like a normal copy.
+            drop(dst);
+            let _ = std::fs::remove_file(to);
+        }
+        done
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "cannot copy special files",
+        ))
     }
 }
 
