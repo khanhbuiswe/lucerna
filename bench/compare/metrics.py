@@ -18,6 +18,7 @@ default window size (a first frame cannot be resized).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -30,6 +31,7 @@ import time
 from pathlib import Path
 
 import editors
+import env
 from env import BenchPaths
 
 TIMEOUT_S = 60
@@ -39,15 +41,27 @@ SETTLE_S = 1.0              # let a picker or a reload settle
 CALIBRATE_SETTLE_S = 3.0    # empty file: let the theme paint before sampling
 CALIBRATE_MIN_FRAC = 0.9    # an empty editor's centre is almost all background
 OPEN_SETTLE_S = 5.0         # medium repo: window up before Quick Open
-SCAN_WAIT_S = 30            # large repo: let the file scan finish
 IDLE_S = 60
-SCROLL_LINES = 3000
-SCROLL_RATE = 120
-QUICK_OPEN_QUERY = "mod0042"  # gen-bench-repo.sh: directory pkg00/mod0042/
+# Scrolling: continuous (trackpad-like) pixel events, one per display refresh
+# (the helper's default rate). Line (mouse-wheel) events made Zed and VS Code
+# repaint only every few hundred ms while Lucerna repainted every frame, so
+# the dropped-frame count measured how each editor batches wheel ticks, not
+# how smoothly it scrolls (see docs/benchmarks.md, "Scrolling").
+SCROLL_EVENTS = 600
+SCROLL_PIXELS_PER_EVENT = 40
 # Fixed window frame in points (top-left origin) for every launching metric but
 # startup. macOS may move the window below a taller (notch) menu bar; the size
 # is what the helper enforces.
 WINDOW_FRAME = {"x": 0, "y": 25, "w": 1280, "h": 800}
+# Startup: after the first frame with content the helper keeps capturing for
+# POST_HOLD_MS and reports `post_change`, the largest fraction of the window
+# that differs from that frame. marker.txt is static, so the window must stay
+# almost the same (a blinking caret is about 0.1 %). A dialog or overlay
+# appearing (Zed's "Unrecognized Project" dimmed the window in the first
+# official run), or a hit taken before the real content because the
+# calibrated background was wrong, shows up as a large later change.
+POST_HOLD_MS = 1500
+POST_CHANGE_MAX = 0.05
 
 # Permissions each bench-helper subcommand needs (README "Helper") and the
 # subcommands each metric runs. run.py derives its permission checks from these
@@ -56,6 +70,7 @@ HELPER_PERMISSIONS = {
     "now": (), "check": (), "display": (),
     "sample": ("screen",),
     "watch": ("screen",),
+    "record": ("screen",),
     "scroll": ("screen", "accessibility"),
     "key": ("accessibility",),
     "type": ("accessibility",),
@@ -67,7 +82,6 @@ METRIC_HELPERS = {
     # sample: background calibration; activate: bring the new window forward
     "startup_ms": ("sample", "watch", "activate"),
     "file_change_ms": ("sample", "frame", "watch"),
-    "quick_open_ms": ("frame", "key", "type", "watch"),
     "idle_ram_mb": _IDLE_HELPERS,
     "idle_cpu_pct": _IDLE_HELPERS,
     "scroll_dropped_pct": ("sample", "frame", "watch", "scroll"),
@@ -287,7 +301,8 @@ def _calibration_file(paths: BenchPaths) -> Path:
 
 
 def load_calibration(paths: BenchPaths) -> dict:
-    """{"<editor> <version>": "RRGGBB"}; Task 5 puts it in the result meta."""
+    """{"<editor> <version> <settings hash>": "RRGGBB"}; run.py puts it in
+    the result meta."""
     try:
         return json.loads(_calibration_file(paths).read_text())
     except (OSError, ValueError):
@@ -319,8 +334,24 @@ def calibrate(editor: str, paths: BenchPaths) -> str | None:
         editors.quit(editor, paths)
 
 
+def settings_hash(editor: str, paths: BenchPaths) -> str:
+    """Short hash of the bench settings.json for `editor` ("none" if absent)."""
+    try:
+        content = env.settings_file(paths, editor).read_bytes()
+    except OSError:
+        return "none"
+    return hashlib.sha256(content).hexdigest()[:12]
+
+
+def calibration_key(editor: str, paths: BenchPaths) -> str:
+    """"<editor> <version> <settings hash>": a profile change (theme, a
+    dialog turned off) recalibrates instead of reusing a colour sampled under
+    other settings."""
+    return f"{editor} {editors.version(editor)} {settings_hash(editor, paths)}"
+
+
 def background(editor: str, paths: BenchPaths) -> str | None:
-    key = f"{editor} {editors.version(editor)}"
+    key = calibration_key(editor, paths)
     cache = load_calibration(paths)
     if key not in cache:
         bg = calibrate(editor, paths)
@@ -334,7 +365,8 @@ def background(editor: str, paths: BenchPaths) -> str | None:
 # Metrics ------------------------------------------------------------------
 
 def startup_ms(editor: str, paths: BenchPaths) -> float | None:
-    """Launch call → first frame whose window centre is ≥ 30 % marker text.
+    """Launch call → first frame whose window centre is ≥ 30 % marker text,
+    provided the window then stays almost unchanged for POST_HOLD_MS.
 
     The display capture starts (and prints `ready`) BEFORE the launch, and
     finds the window by its executable, minus instances already running. t0 is
@@ -349,7 +381,7 @@ def startup_ms(editor: str, paths: BenchPaths) -> float | None:
     if exclude:
         args += ["--exclude-pids", _csv(exclude)]
     args += ["--since", "0", "--until", f"coverage:{COVERAGE}", "--background", bg,
-             "--timeout", str(TIMEOUT_S)]
+             "--timeout", str(TIMEOUT_S), "--hold-ms", str(POST_HOLD_MS)]
     watch = _start_watch(paths, args, TIMEOUT_S)
     if watch is None:
         return None
@@ -366,6 +398,15 @@ def startup_ms(editor: str, paths: BenchPaths) -> float | None:
         if out.get("first_frame_hit") or out["t_ns"] < launched.t0_ns:
             # The window was there before the launch: not this launch's frame.
             _log(f"{editor}: startup content already on the first frame; round dropped")
+            return None
+        post = out.get("post_change")
+        if post is None:
+            _log(f"{editor}: helper reported no post_change (rebuild it with "
+                 "`sh bench/compare/helper/build.sh`); round dropped")
+            return None
+        if post > POST_CHANGE_MAX:
+            _log(f"{editor}: window changed by {post * 100:.1f}% after the first content "
+                 "frame (dialog, overlay or late repaint?); round dropped")
             return None
         return (out["t_ns"] - launched.t0_ns) / 1e6
     finally:
@@ -418,44 +459,6 @@ def file_change_ms(editor: str, paths: BenchPaths) -> float | None:
             watch.close()
         editors.quit(editor, paths)
         shutil.copyfile(paths.marker_file, reload)
-
-
-def quick_open_ms(editor: str, paths: BenchPaths) -> float | None:
-    """Large repo, ⌘P, type `mod0042`: last key → first changed frame."""
-    editors.launch(editor, paths, paths.large_repo)
-    watch = None
-    try:
-        deadline = time.monotonic() + TIMEOUT_S
-        if _owner_pids(editor, paths, deadline) is None:
-            return None
-        if not _set_frame(editor, paths, deadline):
-            return None
-        time.sleep(SCAN_WAIT_S)
-        deadline = time.monotonic() + TIMEOUT_S
-        pids = _csv(editors.bench_pids(editor, paths))
-        if not _quick_open_type(paths, pids, QUICK_OPEN_QUERY[:-1]):
-            return None
-        time.sleep(SETTLE_S)
-        watch = _start_watch(paths, ["watch", "--pid", pids, "--since", str(editors.now_ns()),
-                                     "--until", "change", "--timeout", str(_left(deadline))],
-                             _left(deadline))
-        if watch is None:
-            return None
-        typed = _helper(paths, ["type", "--pid", pids, "--text", QUICK_OPEN_QUERY[-1]])
-        if typed is None:
-            return None  # `finally` kills the watch instead of waiting it out
-        out = watch.result(_left(deadline))
-        if out is None:
-            return None
-        t_k = typed["t_ns"][-1]
-        if out["t_ns"] < t_k:
-            _log(f"{editor}: Quick Open changed before the last key; round dropped")
-            return None
-        return (out["t_ns"] - t_k) / 1e6
-    finally:
-        if watch:
-            watch.close()
-        editors.quit(editor, paths)
 
 
 _UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3}
@@ -534,7 +537,7 @@ def _cpu_pct(editor: str, paths: BenchPaths) -> float | None:
 
 def _quick_open_type(paths, pids: str, text: str) -> bool:
     """⌘P, let the picker appear (so no leading key is lost), type `text`.
-    Shared by quick_open_ms and idle_session so both open it identically."""
+    idle_session opens every file this way."""
     if _helper(paths, ["key", "--pid", pids, "--combo", "cmd+p"]) is None:
         return False
     time.sleep(SETTLE_S / 2)
@@ -590,7 +593,7 @@ def idle_cpu_pct(editor: str, paths: BenchPaths) -> float | None:
 
 
 def scroll_dropped_pct(editor: str, paths: BenchPaths) -> float | None:
-    """big.rs: 3000 one-line scroll events at 120/s; dropped frames in %."""
+    """big.rs: 600 continuous 40-px scroll events, one per refresh; dropped frames in %."""
     bg = background(editor, paths)
     if bg is None:
         return None
@@ -605,7 +608,8 @@ def scroll_dropped_pct(editor: str, paths: BenchPaths) -> float | None:
             return None
         time.sleep(SETTLE_S)
         out = _helper(paths, ["scroll", "--pid", _csv(editors.bench_pids(editor, paths)),
-                              "--lines", str(SCROLL_LINES), "--rate", str(SCROLL_RATE),
+                              "--unit", "pixel", "--lines", str(SCROLL_EVENTS),
+                              "--pixels-per-event", str(SCROLL_PIXELS_PER_EVENT),
                               "--timeout", str(_left(deadline))])
         if not out or not out.get("frames"):
             return None

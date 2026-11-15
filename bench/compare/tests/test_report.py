@@ -77,9 +77,32 @@ class ReportTests(unittest.TestCase):
     def test_failed_rounds_reported(self):
         md = report.render_markdown(load())
         self.assertIn("1/3 rounds failed", md)       # zed scroll
-        self.assertIn("3/3 rounds failed", md)       # vscode quick open all failed
-        row = next(l for l in md.splitlines() if "Quick Open" in l)
-        self.assertIn("— · 3/3 rounds failed", row)
+        second = md.split("rust-analyzer · cold", 1)[1]
+        row = next(l for l in second.splitlines() if l.startswith("| Idle RAM"))
+        self.assertIn("| — · 3/3 rounds failed |", row)   # lucerna, all failed
+
+    def test_unknown_metric_keys_are_ignored(self):
+        # The fixture, like results/2026-11-15-026bbac.json, still holds
+        # quick_open_ms, a metric dropped from the benchmark.
+        r = load()
+        self.assertIn("quick_open_ms", r["configs"][0]["metrics"])
+        r["configs"][0]["metrics"]["bogus_ms"] = {"lucerna": [1.0]}
+        with tempfile.TemporaryDirectory() as t:
+            report.write_report(r, Path(t))
+            md = (Path(t) / "results.md").read_text()
+            svgs = sorted(p.name for p in Path(t).glob("*.svg"))
+        self.assertNotIn("Quick Open", md)
+        self.assertNotIn("quick_open_ms", md)
+        self.assertNotIn("bogus", md)
+        self.assertFalse([n for n in svgs if n.startswith(("quick_open_ms", "bogus"))], svgs)
+        self.assertIn("startup_ms-nolsp-warm.svg", svgs)
+
+    def test_published_result_file_still_renders(self):
+        published = HERE.parent / "results" / "2026-11-15-026bbac.json"
+        r = json.loads(published.read_text())
+        md = report.render_markdown(r)
+        self.assertIn("| Startup to first frame", md)
+        self.assertNotIn("Quick Open", md)
 
     def test_trial_warning_only_with_preflight_ignored(self):
         r = load()
@@ -96,8 +119,8 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(svg.startswith("<svg"))
 
     def test_svg_missing_value_still_three_rects(self):
-        cfg = load()["configs"][0]
-        svg = report.render_svg("quick_open_ms", cfg)
+        cfg = load()["configs"][1]
+        svg = report.render_svg("idle_ram_mb", cfg)
         self.assertEqual(svg.count("<rect"), 3)
         self.assertIn("—", svg)
 

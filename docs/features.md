@@ -29,8 +29,7 @@ example "Open in → Default app" in Claude Desktop.
   its scroll position, syntax colours and folds. Atomic writes, `git checkout` of thousands
   of files, and deleted or recreated files are all handled. Files the agent just changed are
   marked in the tree for 10 seconds.
-- **Fast on big repos.** In a release build, the first frame with content takes about 140 ms.
-  An 80,000-file repo shows its tree in about 60 ms and finishes scanning in about 1.2 s. Idle
+- **Fast on big repos.** In a release build, an 80,000-file repo shows its tree in about 60 ms and finishes scanning in about 1.2 s. Idle
   memory is about 170 MB with a medium repo and 10 tabs open. See
   [`docs/benchmarks.md`](benchmarks.md) for the method and the three-editor table, and
   [`docs/perf-checklist.md`](perf-checklist.md) for the tree and scan figures.

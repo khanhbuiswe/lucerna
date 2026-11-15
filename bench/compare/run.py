@@ -35,13 +35,13 @@ PREFLIGHT_RETRIES = 10
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 METRICS = ("startup_ms", "idle_ram_mb", "idle_cpu_pct", "scroll_dropped_pct",
-           "file_change_ms", "quick_open_ms", "app_size_mb")
+           "file_change_ms", "app_size_mb")
 IDLE = ("idle_ram_mb", "idle_cpu_pct")
 # Derived from metrics.METRIC_HELPERS x metrics.HELPER_PERMISSIONS: a metric
 # needs a permission if any helper subcommand it runs needs it.
 NEEDS_SCREEN = tuple(m for m in METRICS if "screen" in metrics.metric_permissions(m))
 NEEDS_AX = tuple(m for m in METRICS if "accessibility" in metrics.metric_permissions(m))
-SIMPLE = ("startup_ms", "scroll_dropped_pct", "file_change_ms", "quick_open_ms")
+SIMPLE = ("startup_ms", "scroll_dropped_pct", "file_change_ms")
 
 
 class Abort(Exception):

@@ -58,6 +58,9 @@ class ProfilesTest(unittest.TestCase):
         self.assertIs(s["editor.minimap.enabled"], False)
         self.assertIs(s["extensions.autoCheckUpdates"], False)
         self.assertIs(s["workbench.editor.enablePreviewFromQuickOpen"], False)
+        # The fresh-profile onboarding dialog would take the keyboard.
+        self.assertIs(s["workbench.welcomePage.experimentalOnboarding"], False)
+        self.assertIs(s["chat.disableAIFeatures"], True)
 
     def test_write_profiles_zed_no_lsp(self):
         env.write_profiles(self.paths, lsp=False)
@@ -69,6 +72,16 @@ class ProfilesTest(unittest.TestCase):
         self.assertIs(s["preview_tabs"]["enable_preview_from_file_finder"], False)
         self.assertEqual(s["auto_install_extensions"], {"html": False})
         self.assertIs(s["suggest_extensions"], False)
+        # No "Unrecognized Project" dialog, and no server for any language.
+        self.assertIs(s["session"]["trust_all_worktrees"], True)
+        self.assertIs(s["enable_language_server"], False)
+
+    def test_write_profiles_zed_lsp_keeps_servers_on(self):
+        with mock.patch.object(env.shutil, "which", return_value="/x/rust-analyzer"):
+            env.write_profiles(self.paths, lsp=True)
+        s = json.loads((self.paths.profiles / "zed/config/settings.json").read_text())
+        self.assertNotIn("enable_language_server", s)
+        self.assertIs(s["session"]["trust_all_worktrees"], True)
 
     def test_profile_marker_records_lsp(self):
         self.assertFalse(env.profile_lsp(self.paths))

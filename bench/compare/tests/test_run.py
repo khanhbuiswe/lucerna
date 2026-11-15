@@ -68,7 +68,7 @@ class Harness:
             mock.patch.object(run.metrics, "idle_session",
                               lambda e, p: h.calls.append(("idle_session", e)) or (7.0, 2.0)),
         ]
-        for n in ("startup_ms", "scroll_dropped_pct", "file_change_ms", "quick_open_ms"):
+        for n in ("startup_ms", "scroll_dropped_pct", "file_change_ms"):
             patches.append(mock.patch.object(run.metrics, n, self.metric(n)))
         for p in patches:
             p.start()
@@ -131,7 +131,7 @@ class Runner(unittest.TestCase):
         self.assertEqual(h.main("--rounds", "3"), 0)
         for e in editors.EDITORS:
             for name in ("startup_ms", "scroll_dropped_pct", "file_change_ms",
-                         "quick_open_ms", "idle_session"):
+                         "idle_session"):
                 self.assertEqual(h.count(name, e), 4, (name, e))
             self.assertEqual(h.count("app_size_mb", e), 1)
         m = h.result()["configs"][0]["metrics"]
@@ -218,16 +218,23 @@ class Runner(unittest.TestCase):
 
     def test_only_filtering(self):
         h = Harness(self)
-        h.main("--rounds", "1", "--only", "quick_open_ms,file_change_ms")
+        h.main("--rounds", "1", "--only", "scroll_dropped_pct,file_change_ms")
         names = {c[0] for c in h.calls} - {"profiles", "reset"}
-        self.assertEqual(names, {"quick_open_ms", "file_change_ms"})
+        self.assertEqual(names, {"scroll_dropped_pct", "file_change_ms"})
         self.assertEqual(set(h.result()["configs"][0]["metrics"]),
-                         {"quick_open_ms", "file_change_ms"})
+                         {"scroll_dropped_pct", "file_change_ms"})
 
     def test_only_unknown_metric_rejected(self):
         h = Harness(self)
         with self.assertRaises(SystemExit):
             h.main("--only", "bogus")
+
+    def test_quick_open_is_no_longer_a_metric(self):
+        self.assertNotIn("quick_open_ms", run.METRICS)
+        self.assertFalse(hasattr(run.metrics, "quick_open_ms"))
+        h = Harness(self)
+        with self.assertRaises(SystemExit):
+            h.main("--only", "quick_open_ms")
 
     def test_idle_session_once_per_editor_round(self):
         h = Harness(self)
@@ -389,10 +396,10 @@ class FakeHelper(unittest.TestCase):
 class Permissions(unittest.TestCase):
     def test_needs_derived_from_helper_table(self):
         self.assertEqual(set(run.NEEDS_SCREEN),
-                         {"startup_ms", "scroll_dropped_pct", "file_change_ms", "quick_open_ms"})
+                         {"startup_ms", "scroll_dropped_pct", "file_change_ms"})
         self.assertEqual(set(run.NEEDS_AX),
                          {"startup_ms", "scroll_dropped_pct", "file_change_ms",
-                          "quick_open_ms", "idle_ram_mb", "idle_cpu_pct"})
+                          "idle_ram_mb", "idle_cpu_pct"})
 
     def test_actual_window_frames_once_per_editor_per_config(self):
         h = Harness(self)

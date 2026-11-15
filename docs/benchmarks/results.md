@@ -17,8 +17,6 @@ Each cell: median (p90). Ratio row: that editor's median divided by Lucerna's me
 
 | Metric | Lucerna | Zed | VS Code |
 |---|---|---|---|
-| Startup to first frame with content | 140 ms (p90 143) | 241 ms (p90 252) | 267 ms (p90 672) |
-| ↳ vs Lucerna | — | 1.7× | 1.9× |
 | Idle RAM (medium repo, 10 tabs) | 169 MB (p90 179) | 235 MB (p90 236) | 879 MB (p90 879) |
 | ↳ vs Lucerna | — | 1.4× | 5.2× |
 | Idle CPU | 1.40 % (p90 1.42) | 2.20 % (p90 2.23) | 3.01 % (p90 3.18) |
@@ -28,7 +26,6 @@ Each cell: median (p90). Ratio row: that editor's median divided by Lucerna's me
 
 Charts:
 
-- [Startup to first frame with content](startup_ms-nolsp-warm.svg)
 - [Idle RAM (medium repo, 10 tabs)](idle_ram_mb-nolsp-warm.svg)
 - [Idle CPU](idle_cpu_pct-nolsp-warm.svg)
 - [App size](app_size_mb-nolsp-warm.svg)

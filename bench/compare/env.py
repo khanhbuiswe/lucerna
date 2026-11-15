@@ -154,6 +154,15 @@ def profile_lsp(paths: BenchPaths) -> bool:
         return False
 
 
+def settings_file(paths: BenchPaths, editor: str) -> Path:
+    """The settings.json `write_profiles` writes for `editor`."""
+    return {
+        "vscode": paths.profiles / "vscode" / "User" / "settings.json",
+        "zed": paths.profiles / "zed" / "config" / "settings.json",
+        "lucerna": paths.lucerna_home / ".config" / "lucerna" / "settings.json",
+    }[editor]
+
+
 def write_profiles(paths: BenchPaths, lsp: bool) -> None:
     ra = shutil.which("rust-analyzer") if lsp else None
     if lsp and not ra:
@@ -170,10 +179,14 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
         "extensions.autoCheckUpdates": False,
         # Quick Open opens the idle-RAM files: each must stay a real tab.
         "workbench.editor.enablePreviewFromQuickOpen": False,
+        # VS Code 1.146 opens a "Welcome to VS Code / sign in" dialog over
+        # the window on a fresh profile; it takes the keyboard.
+        "workbench.welcomePage.experimentalOnboarding": False,
+        "chat.disableAIFeatures": True,
     }
     if lsp:
         vscode["rust-analyzer.server.path"] = ra
-    _write_json(paths.profiles / "vscode" / "User" / "settings.json", vscode)
+    _write_json(settings_file(paths, "vscode"), vscode)
     vscode_ext_dir(paths, False).mkdir(parents=True, exist_ok=True)
 
     zed = {
@@ -188,12 +201,19 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
         # no downloads into the bench profile.
         "auto_install_extensions": {"html": False},
         "suggest_extensions": False,
+        # Without this Zed shows "Unrecognized Project" (Restricted Mode) for
+        # a folder it has not seen; the dialog takes the keyboard (Quick Open
+        # in idle_session) and dims the window during startup.
+        "session": {"trust_all_worktrees": True},
     }
     if lsp:
         zed["lsp"] = {"rust-analyzer": {"binary": {"path": ra}}}
     else:
         zed["languages"] = {"Rust": {"language_servers": []}}
-    _write_json(paths.profiles / "zed" / "config" / "settings.json", zed)
+        # Trusting the folders would let Zed start (and download) servers
+        # for other languages, such as TypeScript in the large repo.
+        zed["enable_language_server"] = False
+    _write_json(settings_file(paths, "zed"), zed)
 
     luc = {
         "editor.fontSize": FONT_SIZE,
@@ -205,7 +225,7 @@ def write_profiles(paths: BenchPaths, lsp: bool) -> None:
     if lsp:
         luc["lsp"] = {"rust-analyzer": {"binary": {"path": ra}}}
     home = paths.lucerna_home
-    _write_json(home / ".config" / "lucerna" / "settings.json", luc)
+    _write_json(settings_file(paths, "lucerna"), luc)
     data = str(paths.data)
     _write_json(
         home / "Library" / "Application Support" / "Lucerna" / "trusted.json",

@@ -30,7 +30,6 @@ VALID_HTML = """<!doctype html>
 </head>
 <body>
 <header id="top"><a href="#top">Lucerna</a></header>
-<div class="v">140<small>ms</small></div>
 <div class="v">169<small>MB</small></div>
 <div class="v">1.40<small>%</small></div>
 <div class="v">50<small>MB</small></div>
