@@ -31,14 +31,17 @@ pub(super) const REVEAL_TITLE: &str = if cfg!(target_os = "macos") {
 /// root-relative row the menu is for (empty for the root): every entry
 /// carries it as `args.path`, so a command never falls back to whatever is
 /// selected when it runs (the row may vanish while the menu is open).
+/// `can_paste`: the Explorer's clipboard holds an entry.
 pub(super) fn build_menu(
     kind: SelectedKind,
     single_file: bool,
     path: String,
+    can_paste: bool,
     owner: FocusHandle,
     cx: &mut Context<ContextMenu>,
 ) -> ContextMenu {
     let is_file = kind == SelectedKind::File;
+    let is_root = kind == SelectedKind::Root;
     let args: Value = json!({ "path": path });
     let entry = |m: ContextMenu, label: &'static str, command: &'static str| {
         m.entry_with_args(label, command, args.clone())
@@ -75,11 +78,19 @@ pub(super) fn build_menu(
         .when(!is_file, |m| {
             entry(m, "Find in Folder…", "filesExplorer.findInFolder")
         })
+        .separator()
+        .when(!is_root && !single_file, |m| {
+            entry(m, "Cut", "filesExplorer.cut")
+        })
+        .when(!is_root, |m| entry(m, "Copy", "filesExplorer.copy"))
+        .when(!single_file, |m| {
+            entry(m, "Paste", "filesExplorer.paste").disabled_when(!can_paste)
+        })
         .separator();
     let menu = entry(menu, "Copy Path", "copyFilePath");
     entry(menu, "Copy Relative Path", "copyRelativeFilePath")
         .separator()
-        .when(kind != SelectedKind::Root && !single_file, |m| {
+        .when(!is_root && !single_file, |m| {
             let m = entry(m, "Rename…", "renameFile");
             entry(m, "Delete", "moveFileToTrash")
         })

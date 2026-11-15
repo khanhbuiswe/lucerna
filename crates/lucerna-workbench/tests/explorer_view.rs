@@ -726,38 +726,46 @@ fn menu_commands(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Stri
     })
 }
 
-const FILE_MENU: [&str; 7] = [
+const FILE_MENU: [&str; 10] = [
     "explorer.openToSide",
     "revealFileInOS",
     "openInIntegratedTerminal",
+    "filesExplorer.cut",
+    "filesExplorer.copy",
+    "filesExplorer.paste",
     "copyFilePath",
     "copyRelativeFilePath",
     "renameFile",
     "moveFileToTrash",
 ];
 /// Single-file mode: nothing that edits the tree.
-const SINGLE_FILE_MENU: [&str; 5] = [
+const SINGLE_FILE_MENU: [&str; 6] = [
     "explorer.openToSide",
     "revealFileInOS",
     "openInIntegratedTerminal",
+    "filesExplorer.copy",
     "copyFilePath",
     "copyRelativeFilePath",
 ];
-const ROOT_MENU: [&str; 7] = [
+const ROOT_MENU: [&str; 8] = [
     "explorer.newFile",
     "explorer.newFolder",
     "revealFileInOS",
     "openInIntegratedTerminal",
     "filesExplorer.findInFolder",
+    "filesExplorer.paste",
     "copyFilePath",
     "copyRelativeFilePath",
 ];
-const FOLDER_MENU: [&str; 9] = [
+const FOLDER_MENU: [&str; 12] = [
     "explorer.newFile",
     "explorer.newFolder",
     "revealFileInOS",
     "openInIntegratedTerminal",
     "filesExplorer.findInFolder",
+    "filesExplorer.cut",
+    "filesExplorer.copy",
+    "filesExplorer.paste",
     "copyFilePath",
     "copyRelativeFilePath",
     "renameFile",

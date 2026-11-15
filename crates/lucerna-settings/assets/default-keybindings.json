@@ -170,5 +170,9 @@
   { "key": "alt+cmd+shift+c", "command": "copyRelativeFilePath", "when": "filesExplorerFocus && !textInputFocus" },
   { "key": "enter", "command": "renameFile", "when": "filesExplorerFocus && !explorerResourceIsRoot && !textInputFocus" },
   { "key": "cmd+backspace", "command": "moveFileToTrash", "when": "filesExplorerFocus && !explorerResourceIsRoot && !textInputFocus" },
-  { "key": "alt+cmd+backspace", "command": "deleteFile", "when": "filesExplorerFocus && !explorerResourceIsRoot && !textInputFocus" }
+  { "key": "alt+cmd+backspace", "command": "deleteFile", "when": "filesExplorerFocus && !explorerResourceIsRoot && !textInputFocus" },
+  { "key": "cmd+x", "command": "filesExplorer.cut", "when": "filesExplorerFocus && !textInputFocus" },
+  { "key": "cmd+c", "command": "filesExplorer.copy", "when": "filesExplorerFocus && !textInputFocus" },
+  { "key": "cmd+v", "command": "filesExplorer.paste", "when": "filesExplorerFocus && !textInputFocus" },
+  { "key": "escape", "command": "filesExplorer.cancelCut", "when": "filesExplorerFocus && explorerResourceCut && !textInputFocus" }
 ]

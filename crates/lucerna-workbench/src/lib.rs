@@ -84,8 +84,8 @@ pub use excerpt_list::model::{
 };
 pub use excerpt_list::{ExcerptList, ExcerptListEvent, TextSource};
 pub use explorer::{
-    CHANGE_DECORATION, EditKind, EditState, ExplorerModel, ExplorerView, Row, SelectedKind,
-    Selection,
+    CHANGE_DECORATION, ClipOp, EditKind, EditState, ExplorerClipboard, ExplorerModel, ExplorerView,
+    Row, SelectedKind, Selection,
 };
 pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot};
 pub use git::{GitSnapshot, GitState, GitStore, GitStoreEvent};

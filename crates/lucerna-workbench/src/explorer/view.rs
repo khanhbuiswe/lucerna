@@ -112,6 +112,10 @@ pub struct ExplorerView {
     /// The input of an edit ended because its folder vanished: if it still
     /// held the focus, the next frame gives the focus to the sidebar.
     refocus_sidebar: Option<FocusHandle>,
+    /// The clipboard's Cut entry, root-relative: its row is dimmed.
+    cut: Option<Arc<Path>>,
+    /// The clipboard holds an entry: the menu's Paste is enabled.
+    clipboard_filled: bool,
     _active_tab: Subscription,
 }
 
@@ -147,6 +151,8 @@ impl ExplorerView {
             name_edit: None,
             pending_reveal: None,
             refocus_sidebar: None,
+            cut: None,
+            clipboard_filled: false,
             _active_tab: cx.observe(editor_groups, |this, groups, cx| {
                 this.sync_active_tab(&groups, cx)
             }),
@@ -324,6 +330,31 @@ impl ExplorerView {
     pub(crate) fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         self.pending_reveal = None;
         self.model.select(selection);
+        cx.notify();
+    }
+
+    /// Selects `path` (root-relative), just pasted: once the tree has it,
+    /// its folders are expanded and its row scrolled into view.
+    pub(crate) fn select_new(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        self.model.select(Selection::Path(path.clone()));
+        self.pending_reveal = Some(PendingReveal {
+            path,
+            expand: false,
+        });
+        self.reveal_pending();
+        cx.notify();
+    }
+
+    /// The workbench's clipboard changed: `cut` is its Cut entry
+    /// (root-relative), `filled` whether it holds anything.
+    pub(crate) fn set_clipboard(
+        &mut self,
+        cut: Option<Arc<Path>>,
+        filled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.cut = cut;
+        self.clipboard_filled = filled;
         cx.notify();
     }
 
@@ -1011,7 +1042,8 @@ impl ExplorerView {
             .strip_prefix(&self.root)
             .map(|rel| rel.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let menu = cx.new(|cx| build_menu(kind, single_file, path, owner, cx));
+        let can_paste = self.clipboard_filled;
+        let menu = cx.new(|cx| build_menu(kind, single_file, path, can_paste, owner, cx));
         self.menu_generation += 1;
         let generation = self.menu_generation;
         self.context_menu = Some(deploy_context_menu(
@@ -1144,6 +1176,7 @@ impl ExplorerView {
                 let kind = row.kind;
                 let selected =
                     matches!(self.model.selection(), Selection::Path(p) if *p == row.path);
+                let is_cut = self.cut.as_ref() == Some(&row.path);
                 let changed = self.model.is_recently_changed(&row.path, now);
                 let name = row
                     .path
@@ -1162,6 +1195,7 @@ impl ExplorerView {
                 let selected_path = row.path.clone();
                 let outline_path = row.path.clone();
                 let right_path = row.path.clone();
+                let cut_path = row.path.clone();
                 let guides = (0..row.depth).map(|k| {
                     let path = row.path.clone();
                     indent_guide(k, ui.border_variant)
@@ -1216,6 +1250,17 @@ impl ExplorerView {
                                 .size_0(),
                         )
                     })
+                    .when(is_cut, |d| {
+                        // Marker for tests, like the selected one.
+                        d.child(
+                            div()
+                                .debug_selector(move || {
+                                    format!("explorer-row-cut-{}", cut_path.display())
+                                })
+                                .absolute()
+                                .size_0(),
+                        )
+                    })
                     // Directories: chevron, then folder. Files: their type
                     // icon alone, in the chevron's slot.
                     .when(is_dir, |d| {
@@ -1235,6 +1280,7 @@ impl ExplorerView {
                                 d.when(git_text.is_none(), |d| d.text_color(color(ui.text)))
                                     .font_weight(FontWeight::BOLD)
                             })
+                            .when(is_cut, |d| d.text_color(color(ui.text_muted)))
                             .child(name),
                     )
                     .when_some(badge, |d, letter| {
