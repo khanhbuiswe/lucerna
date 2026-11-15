@@ -38,9 +38,11 @@ What it does (spec: docs/superpowers/specs/2026-11-15-file-icons-design.md,
     nonBuiltInLanguages list of extensions/theme-seti/build/update-icon-theme.js
     (its inheritIconFromLanguage list is already folded into languageIds, and
     ignoreExtAssociation only edits fileExtensions, which we read as is).
-    Name patterns are kept only in the forms "X.*" (prefix "x.") and "*.x"
-    (suffix ".x"); a pattern without wildcards is an exact file name. Others
-    are skipped with a warning. Keys are lowercase; on a duplicate key within
+    Name patterns "X.*" become prefixes ("x."), "*.x" suffixes (".x"), and
+    other patterns whose only wildcard is "*" (no "**") go to LANG_NAME_GLOBS
+    as is ("*docker*compose*.yml"); a pattern without wildcards is an exact
+    file name. Patterns with "?", "[", "{", "/" or "**" are skipped with a
+    warning. Keys are lowercase; on a duplicate key within
     one table the first entry wins, in extension folder name order.
   - Rewrites each used SVG's root viewBox to a square around the real drawing
     bounds (svgelements, transforms and strokes included), padded by PAD on
@@ -229,7 +231,7 @@ GLOB_CHARS = set("*?[]{}/")
 
 def build_lang_tables(theme, vscode, stats):
     lang_defs = theme["languageIds"]
-    tables = {"names": {}, "prefixes": {}, "suffixes": {}, "exts": {}}
+    tables = {"names": {}, "prefixes": {}, "suffixes": {}, "globs": {}, "exts": {}}
     seen_langs = set()
 
     def put(table, key, d, where):
@@ -261,6 +263,8 @@ def build_lang_tables(theme, vscode, stats):
                 put("suffixes", p[1:], d, where)
             elif not GLOB_CHARS & set(p):
                 put("names", p, d, where)  # a pattern with no wildcard is a file name
+            elif not (GLOB_CHARS - {"*"}) & set(p) and "**" not in p:
+                put("globs", p, d, where)  # "*" wildcards only
             else:
                 warn(f"skipped filename pattern {pat!r} ({where})")
     stats["langs_without_files"] = sorted(set(lang_defs) - seen_langs)
@@ -446,6 +450,11 @@ def main():
         "LANG_NAME_SUFFIXES", 'Language file name patterns "*.x", as ".x".', lang["suffixes"]
     )
     lines += pairs_const(
+        "LANG_NAME_GLOBS",
+        'Other language file name patterns with only "*" wildcards, lowercase.',
+        lang["globs"],
+    )
+    lines += pairs_const(
         "LANG_EXTENSIONS", "Language file extensions, lowercase, no leading dot.", lang["exts"]
     )
     write_rust(DATA_RS, "\n".join(lines).rstrip("\n") + "\n")
@@ -479,7 +488,8 @@ def main():
     print(
         f"tables: FILE_NAMES {len(seti_names)}, FILE_EXTENSIONS {len(seti_ext)}, "
         f"LANG_FILE_NAMES {len(lang['names'])}, LANG_NAME_PREFIXES {len(lang['prefixes'])}, "
-        f"LANG_NAME_SUFFIXES {len(lang['suffixes'])}, LANG_EXTENSIONS {len(lang['exts'])}"
+        f"LANG_NAME_SUFFIXES {len(lang['suffixes'])}, LANG_NAME_GLOBS {len(lang['globs'])}, "
+        f"LANG_EXTENSIONS {len(lang['exts'])}"
     )
     print(f"languageIds with no file associations: {stats['langs_without_files']}")
     for c in stats["conflicts"]:

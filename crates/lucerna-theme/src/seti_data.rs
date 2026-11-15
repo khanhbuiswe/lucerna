@@ -1985,6 +1985,19 @@ pub(crate) const LANG_NAME_PREFIXES: &[(&str, &str)] = &[
 /// Language file name patterns "*.x", as ".x".
 pub(crate) const LANG_NAME_SUFFIXES: &[(&str, &str)] = &[];
 
+/// Other language file name patterns with only "*" wildcards, lowercase.
+pub(crate) const LANG_NAME_GLOBS: &[(&str, &str)] = &[
+    ("*docker*compose*.yaml", "_docker_3"),
+    ("*docker*compose*.yml", "_docker_3"),
+    ("compose.*.yaml", "_docker_3"),
+    ("compose.*.yml", "_docker_3"),
+    ("jenkinsfile*", "_grails"),
+    ("jsconfig-*.json", "_json"),
+    ("jsconfig.*.json", "_json"),
+    ("tsconfig-*.json", "_json"),
+    ("tsconfig.*.json", "_json"),
+];
+
 /// Language file extensions, lowercase, no leading dot.
 pub(crate) const LANG_EXTENSIONS: &[(&str, &str)] = &[
     ("ad", "_argdown"),
