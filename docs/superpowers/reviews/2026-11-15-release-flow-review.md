@@ -2,6 +2,8 @@
 
 Ngày: 2026-11-15. Spec: [2026-11-15-release-flow-review-design.md](../specs/2026-11-15-release-flow-review-design.md). Plan: [2026-11-15-release-flow-review.md](../plans/2026-11-15-release-flow-review.md).
 
+**Bổ sung 2026-11-16:** review thêm phần merge multi-window (`d765a50`), xem mục [Bổ sung](#bổ-sung-phần-merge-multi-window-d765a50). Các lỗi cũ bị ảnh hưởng bởi merge đã được cập nhật tại chỗ.
+
 **Cách làm.** Năm agent đọc code theo năm nhóm flow. Mỗi lỗi tìm được do một agent khác đọc lại code để kiểm chứng; agent này không được xem lập luận của agent trước. Không có lỗi nào được kiểm chứng bằng cách chạy app hay chạy test. Mọi kết luận đều đến từ việc đọc code tại commit `ff0498b`.
 
 ## Tóm tắt
@@ -10,15 +12,17 @@ Ngày: 2026-11-15. Spec: [2026-11-15-release-flow-review-design.md](../specs/202
 |---|---|
 | P0 (mất/hỏng dữ liệu, crash) | 2 |
 | P1 (flow cơ bản không làm được) | 0 |
-| P2 (sai nhưng có cách khác) | 11 |
-| P3 (nhỏ) | 13 |
+| P2 (sai nhưng có cách khác) | 14 (10 cũ còn mở, 4 mới) |
+| P3 (nhỏ) | 21 (13 cũ, 8 mới) |
 
-Có 2 mục bị loại, 1 mục bị gộp vì trùng.
+Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được sửa trong lần merge multi-window.
 
 **Nên sửa trước release:**
 - **T2-1 [P0]:** Quit từ Dock, Log Out hoặc Restart máy thoát ngay mà không hỏi lưu, nên mất thay đổi chưa lưu.
 - **T2-2 [P2]:** đổi tên chỉ khác hoa/thường để lại một mục "ma" trong Explorer. Nếu chọn Delete Permanently trên mục đó thì file thật bị xoá.
 - **T1-1 [P0]:** file có byte sai encoding bị ghi thành `U+FFFD` khi lưu, mà không có cảnh báo nào.
+
+**Từ phần merge multi-window, đáng xem nhất:** M3-2 (không ghi được trust thì cửa sổ âm thầm về Restricted Mode), M2-1 (Cmd+Q không hiện hộp thoại lưu khi cửa sổ đang thu nhỏ), M3-1 (theme xem thử bị kẹt), M1-1 (hai `luc` cùng lúc).
 
 ## Danh sách lỗi
 
@@ -43,6 +47,7 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
   - Hook `on_app_quit` của Lucerna chỉ lưu layout và tắt LSP.
   - Không có hot exit hay bản sao lưu nào.
 - **Hướng sửa:** chặn terminate ở tầng platform: `applicationShouldTerminate:` trả `NSTerminateCancel` rồi chạy `quit(cx)`. GPUI là code của Zed, nên cần patch hoặc hook riêng. Một lựa chọn khác là ghi bản sao lưu các buffer chưa lưu trong hook quit.
+- **Sau merge multi-window:** vẫn còn. GPUI vẫn ở `b5cd310`. `quit` giờ ở [workbench.rs:3018](../../../crates/lucerna-workbench/src/workbench.rs) và hỏi mọi cửa sổ, nhưng Dock Quit và Log Out vẫn đi thẳng qua `terminate:`. Spec multi-window §6.6 ghi nhận đây là giới hạn đã biết.
 
 ### T2-2 [P2] Đổi tên chỉ khác hoa/thường để lại mục "ma" trong Explorer
 
@@ -61,14 +66,16 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
 - **Tái hiện:** Paste một folder vài GB rồi Cmd+Q ngay. App thoát mà không hỏi. Bản `X copy` còn lại trên đĩa thì thiếu file, hoặc có file bị cụt.
 - **Nguyên nhân:** task copy bị `detach`, và `confirm_quit` chỉ xét buffer chưa lưu và terminal. Không có thao tác file nào được theo dõi lúc thoát: `deletes_in_flight` ([explorer/commands.rs:288](../../../crates/lucerna-workbench/src/explorer/commands.rs)) cũng không được đọc ở đó, nên Cut hay Delete đang chạy cũng không được bảo vệ.
 - **Hướng sửa:** đếm các thao tác copy đang chạy và hỏi hoặc đợi khi thoát. Hoặc copy vào tên tạm rồi rename khi xong.
+- **Sau merge multi-window:** vẫn còn với Cmd+Q (`confirm_quit` ở [workbench.rs:1773](../../../crates/lucerna-workbench/src/workbench.rs)). Riêng việc đóng một cửa sổ trên macOS thì không còn gây lỗi, vì process vẫn sống nên lần copy chạy xong.
 
-### T3-1 [P2] Open With hoặc thả lên Dock một thư mục con của folder đang mở không làm gì
+### T3-1 [P2, đã sửa ở `d765a50`] Open With hoặc thả lên Dock một thư mục con của folder đang mở không làm gì
 
 - **Flow:** mở từ Finder hoặc Dock.
-- **Vị trí:** [open_requests.rs:77](../../../crates/lucerna-workbench/src/open_requests.rs), [app.rs:445](../../../crates/lucerna-workbench/src/app.rs).
+- **Vị trí:** `open_requests.rs:77` (tại `ff0498b`, file đã bị xoá), [app.rs:445](../../../crates/lucerna-workbench/src/app.rs).
 - **Tái hiện:** chạy `luc ~/proj`. Trong Finder, Open With Lucerna trên `~/proj/src`: chỉ kích hoạt cửa sổ hiện có.
 - **Kỳ vọng:** docs ghi "anything else opens in a new window".
 - **Hướng sửa:** trong `route`, chỉ xếp file và chính root vào `ThisWindow`. Thư mục con thì trả `NewProcess`.
+- **Sau merge multi-window:** đã hết. `open_requests.rs` bị xoá; [window_choice.rs:71](../../../crates/lucerna-workbench/src/window_choice.rs) chỉ focus khi `root == path`, thư mục con mở cửa sổ mới hoặc thay cửa sổ Welcome.
 
 ### T3-2 [P2] Ở chế độ mở một file, Open Recent ẩn folder cha
 
@@ -77,6 +84,7 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
 - **Tái hiện:** mở `~/proj` một lần. Sau đó chạy `luc ~/proj/README.md` rồi bấm Ctrl+R: không thấy `~/proj`.
 - **Nguyên nhân:** `opened_paths` luôn có `root`, mà ở chế độ một file thì root chính là thư mục cha.
 - **Hướng sửa:** ở chế độ một file, chỉ trả về chính file đó.
+- **Sau merge multi-window:** vẫn còn. `opened_paths` giờ ở [workbench.rs:1029](../../../crates/lucerna-workbench/src/workbench.rs). Lỗi cũng ảnh hưởng menu File ▸ Open Recent ([app_menu.rs:705](../../../crates/lucerna-workbench/src/app_menu.rs)).
 
 ### T3-4 [P2] Mở FIFO thì tab kẹt Loading; `luc /dev/zero` dùng hết RAM rồi crash
 
@@ -257,11 +265,133 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
 - **Tái hiện:** file CRLF có dòng `foo`. Bật regex, tìm `foo$`: không có kết quả. Cmd+F trong chính file đó thì tìm thấy.
 - **Hướng sửa:** thêm `.crlf(true)` vào `RegexMatcherBuilder`.
 
+## Bổ sung: phần merge multi-window (`d765a50`)
+
+Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này chuyển từ "mỗi cửa sổ một process" sang "một process, nhiều cửa sổ", và `luc` giờ chuyển đường dẫn qua Unix socket. Phần này được review theo cùng cách làm như trên, nhưng trên `git diff ff0498b..d765a50`: ba agent đọc code, mỗi lỗi do một agent khác kiểm chứng. Spec của nhánh: [2026-11-15-multi-window-design.md](../specs/2026-11-15-multi-window-design.md).
+
+**Không tìm thấy lỗi P0 hay P1 mới.** Các agent đã kiểm và không thấy lỗi ở các trường hợp sau:
+- **Cùng một file mở ở hai cửa sổ:** không có đường nào làm mất dữ liệu. Mỗi cửa sổ có `Documents` riêng, và trước khi ghi đều so stamp và hash, nên thay đổi từ cửa sổ kia sẽ thành conflict.
+- **Settings:** không rò từ cửa sổ này sang cửa sổ khác. Đã kiểm `files.*`, `editor.*`, `terminal.integrated.*`, `git.*`, `lsp`.
+- **Quit với nhiều cửa sổ:** Cancel ở bất kỳ cửa sổ nào đều huỷ toàn bộ việc thoát.
+- **`WindowHandle::update` lên cửa sổ đã đóng:** đều được xử lý, không có panic.
+
+### M1-1 [P2] Hai lệnh `luc` chạy cùng lúc khi app chưa mở: lệnh thứ hai có thể thất bại
+
+- **Flow:** mở bằng `luc` (ví dụ agent chạy `luc a & luc b`).
+- **Vị trí:** [main.rs:173](../../../crates/lucerna/src/main.rs), [cli_socket.rs:289](../../../crates/lucerna-workbench/src/cli_socket.rs), [cli_socket.rs:367](../../../crates/lucerna-workbench/src/cli_socket.rs).
+- **Tái hiện:** app chưa chạy, chạy `luc a & luc b`. Đôi khi `b` báo "no reply from Lucerna", thoát với mã 1, và không mở gì.
+- **Nguyên nhân:**
+  1. `luc` thứ nhất bind socket rồi nhả ra (`release`) để app con bind lại.
+  2. Nếu `luc` thứ hai connect đúng trong khoảng đó, kết nối của nó nằm trong backlog của listener sắp bị drop.
+  3. Listener bị drop, kết nối bị reset, và `luc` thứ hai không thử lại.
+- **Hướng sửa:** cho app con thừa kế fd của listener thay vì nhả rồi bind lại; hoặc phía client claim lại một lần khi gặp EOF hay lỗi.
+
+### M2-1 [P2] Cmd+Q khi cửa sổ có file chưa lưu đang thu nhỏ: hộp thoại lưu không hiện ra
+
+- **Flow:** thoát app với nhiều cửa sổ.
+- **Vị trí:** [workbench.rs:3028](../../../crates/lucerna-workbench/src/workbench.rs), [save.rs:105](../../../crates/lucerna-workbench/src/save.rs).
+- **Tái hiện:** mở folder A và B. Sửa một file ở B, không lưu, rồi thu nhỏ B (hoặc chuyển B sang Space khác). Đứng ở A bấm Cmd+Q: không có gì xảy ra. Bấm Cmd+Q lần hai cũng không, vì việc thoát bị huỷ im lặng.
+- **Nguyên nhân:** `quit()` hỏi từng cửa sổ nhưng không đưa cửa sổ đó ra trước. GPUI macOS hiện hộp thoại dạng sheet trên cửa sổ đó (`beginSheetModalForWindow`) và không bỏ thu nhỏ.
+- **Mức độ:** không mất dữ liệu, vì việc thoát bị huỷ chứ không bỏ file.
+- **Hướng sửa:** gọi `activate_window()` cho cửa sổ trước khi gọi `confirm_quit`, như Zed làm.
+
+### M3-1 [P2] Đóng cửa sổ khi picker theme còn mở làm theme xem thử bị kẹt ở mọi cửa sổ
+
+- **Flow:** chọn theme khi có nhiều cửa sổ.
+- **Vị trí:** [workbench.rs:1844](../../../crates/lucerna-workbench/src/workbench.rs), [theme_picker.rs:247](../../../crates/lucerna-workbench/src/theme_picker.rs), [config_files.rs:295](../../../crates/lucerna-workbench/src/config_files.rs).
+- **Tái hiện:** có cửa sổ A và B. Ở A mở Color Theme picker, dùng mũi tên chọn tới một theme khác, rồi bấm nút đỏ đóng A.
+  - B giữ theme đang xem thử.
+  - Sau đó sửa `workbench.colorTheme`, hay đổi Light/Dark của hệ thống, cũng không có tác dụng.
+  - Icon theme bị kẹt theo cùng cách.
+- **Nguyên nhân:** cờ `theme_preview`/`icon_preview` là global, và chỉ `close_theme_picker` mới xoá nó. Đường đóng cửa sổ không gọi hàm này. Trước khi có multi-window, đóng cửa sổ là thoát process nên không gặp.
+- **Cách gỡ tạm:** mở rồi Esc picker ở một cửa sổ khác.
+- **Hướng sửa:** đóng picker kèm revert trong `should_close_window` và trong `on_release` của Workbench; hoặc gắn cờ xem thử với `WindowId`.
+
+### M3-2 [P2] Không ghi được `trusted.json` thì cửa sổ vừa bấm Trust bị đưa về Restricted Mode mà không báo
+
+- **Flow:** trust folder.
+- **Vị trí:** [trust.rs:712](../../../crates/lucerna-workbench/src/trust.rs), [trust.rs:473](../../../crates/lucerna-workbench/src/trust.rs).
+- **Tái hiện:** thư mục data không ghi được (đĩa đầy, hoặc read-only). Mở folder, bấm "Trust and Continue". LSP và git chạy lên rồi dừng ngay, nút Restricted Mode hiện lại. Lỗi chỉ có trong log.
+- **Nguyên nhân:**
+  1. `write_trust` bỏ qua lỗi ghi nhưng vẫn bump `TrustGeneration`.
+  2. Mọi cửa sổ, kể cả cửa sổ vừa bấm, đọc lại file cũ và đặt `stored=false`.
+
+  Đây là regression: trước đây trust vẫn giữ trong bộ nhớ suốt phiên.
+- **Hướng sửa:** chỉ bump khi ghi thành công. Khi ghi lỗi thì hiện status message và giữ trust trong phiên.
+
+### M1-2 [P3] `luc` đúng lúc app đang thoát thì báo lỗi thay vì mở app mới
+
+- **Flow:** mở bằng `luc`.
+- **Vị trí:** [cli_socket.rs:478](../../../crates/lucerna-workbench/src/cli_socket.rs), [app.rs:146](../../../crates/lucerna-workbench/src/app.rs).
+- **Tái hiện:** Cmd+Q, rồi trong lúc app đang tắt gõ `luc ~/proj`. `luc` in "Lucerna is quitting" hoặc "no reply", thoát với mã 1.
+- **Hướng sửa:** phía client coi "quitting" và EOF là tín hiệu claim lại socket.
+
+### M1-3 [P3] App bận quá 5 giây: nếu việc mở sau đó thất bại thì không có thông báo
+
+- **Flow:** mở bằng `luc` trong lúc app đang khôi phục cửa sổ.
+- **Vị trí:** [router.rs:460](../../../crates/lucerna-workbench/src/router.rs).
+- **Tái hiện:** app đang khôi phục nhiều cửa sổ, gõ `luc ~/x/file`. Sau 5 giây `luc` báo "will open when ready" và thoát 0. Nếu file bị xoá trong lúc đó thì không có thông báo nào.
+- **Nguyên nhân:** chỉ `Source::Menu` mới hiện status message. Báo "will open when ready" rồi thoát 0 là đúng spec §6.5.
+- **Hướng sửa:** hiện status message cả với `Source::Cli`.
+
+### M1-4 [P3] Không dùng được socket thì app chạy ngay trong terminal; đóng terminal là mất file chưa lưu
+
+- **Flow:** `luc` khi thư mục data thuộc user khác, hoặc khi không có HOME.
+- **Vị trí:** [main.rs:160](../../../crates/lucerna/src/main.rs).
+- **Tái hiện:**
+  1. Thư mục `~/Library/Application Support/Lucerna` thuộc user khác (ví dụ từng chạy `sudo luc`).
+  2. Chạy `luc ~/proj`: in cảnh báo "running without the luc socket", app chạy ngay trong terminal.
+  3. Sửa file, rồi đóng tab terminal: app chết, không hỏi lưu.
+- **Ghi chú:** spec §6.5 chủ ý chạy không có socket kèm cảnh báo, nhưng không nói phải tách khỏi terminal.
+- **Hướng sửa:** vẫn `spawn_detached` app không có socket rồi thoát.
+
+### M1-5 [P3] Tên socket chứa version: sau khi cập nhật mà app cũ còn chạy thì có hai app
+
+- **Flow:** cập nhật Lucerna.
+- **Vị trí:** [cli_socket.rs:136](../../../crates/lucerna-workbench/src/cli_socket.rs).
+- **Tái hiện:** app 0.1.0 đang chạy, cài 0.1.1, chạy `luc ~/proj`: một process thứ hai mở ra. Process nào thoát sau thì `windows.json` chỉ giữ cửa sổ của process đó.
+- **Ghi chú:** cố ý theo spec M13 và §10. Mọi lần ghi đều atomic nên không hỏng file.
+- **Hướng sửa:** giữ hậu tố `-dev` nhưng bỏ version khỏi tên socket (giao thức đã có trường `version`).
+
+### M1-6 [P3] `luc --trace-startup`/`--foreground` khi app cùng bản đang chạy chỉ chuyển request
+
+- **Flow:** công cụ dev và bench.
+- **Vị trí:** [main.rs:143](../../../crates/lucerna/src/main.rs).
+- **Tái hiện:** mở Lucerna, rồi chạy `luc --trace-startup ~/proj` bằng cùng binary: thoát 0 ngay, không in `startup_ms`. Bench sẽ đo nhầm mà không có cảnh báo.
+- **Hướng sửa:** khi có `--trace-startup` mà socket đã bị giữ thì báo lỗi rõ.
+
+### M2-2 [P3] Cmd+Q khi một cửa sổ khác đang có hộp thoại lưu thì bị huỷ im lặng
+
+- **Flow:** thoát app với nhiều cửa sổ. Lỗi này gộp M3-5.
+- **Vị trí:** [workbench.rs:1781](../../../crates/lucerna-workbench/src/workbench.rs).
+- **Tái hiện:** B có file chưa lưu. Bấm nút đỏ của B, sheet "Save changes?" hiện ra. Chuyển sang A bấm Cmd+Q: không có gì xảy ra.
+- **Ghi chú:** việc chặn hộp thoại thứ hai là cố ý (có comment trong code). Chỉ thiếu phản hồi cho người dùng.
+- **Hướng sửa:** đưa cửa sổ đang hỏi ra trước, hoặc đợi hộp thoại đó trả lời.
+
+### M2-3 [P3] Bấm Dock trong lúc app đang khôi phục cửa sổ thì có thêm một cửa sổ Welcome
+
+- **Flow:** khởi động app.
+- **Vị trí:** [router.rs:577](../../../crates/lucerna-workbench/src/router.rs).
+- **Tái hiện:** `windows.json` có 2 folder. Bấm icon Lucerna để khởi động, rồi bấm lần nữa ngay. Kết quả là 2 cửa sổ folder và 1 cửa sổ Welcome thừa.
+- **Nguyên nhân:** `reopen()` không xét cờ `restoring`, trong khi đường `luc` có xét. Spec M14 yêu cầu mọi yêu cầu chờ restore xong.
+- **Hướng sửa:** `reopen()` bỏ qua khi đang `restoring`.
+
+### M3-4 [P3] Hai cửa sổ dùng chung thư mục data của jdtls khi project root trùng nhau
+
+- **Flow:** language server ở hai cửa sổ có root lồng nhau.
+- **Vị trí:** [lifecycle.rs:594](../../../crates/lucerna-workbench/src/language_servers/lifecycle.rs), [vars.rs:126](../../../crates/lucerna-lsp/src/vars.rs).
+- **Tái hiện:** cửa sổ A mở `/mono`, cửa sổ B mở `/mono/svc` (có `pom.xml`). Mở cùng một file Java ở cả hai: jdtls ở cửa sổ thứ hai báo workspace bị khoá.
+- **Nguyên nhân:** `data_dir_for` chỉ băm theo root của server.
+- **Ghi chú:** lỗi đã có từ trước khi có multi-window. Chỉ jdtls bị ảnh hưởng. LSP nằm ngoài phạm vi "flow cơ bản".
+- **Hướng sửa:** thêm định danh cửa sổ vào khoá băm, hoặc dùng chung một server khi `(server, root)` trùng.
+
 ## Đã loại
 
 - **T1-4** (file lẫn CRLF/LF bị chuẩn hoá theo kiểu đa số khi lưu): hành vi cố ý. Xem [phase4 spec](../specs/2026-11-11-lucerna-phase4-editing-design.md) và test `mixed_endings_pick_majority`. VS Code cũng làm vậy.
 - **T4-6** (`git init` sau khi mở folder không bật Git): Git vẫn tự bật, vì `git init` tạo `.git/info/exclude` và việc này kích hoạt rescan. Chỉ kẹt khi không có template. Spec git-view cũng ghi "không có repo thì tắt, không báo".
 - **T4-3:** trùng T2-2, đã gộp vào đó.
+- **M3-3** (Copy trong Explorer ở cửa sổ A, Paste ở cửa sổ B không làm gì): cố ý. Spec Explorer file ops ghi rõ clipboard là clipboard nội bộ, như Zed, và trước khi có multi-window cũng không dán chéo được.
+- **M3-5:** trùng M2-2, đã gộp vào đó.
 
 ## Cần thử tay trước release
 
@@ -280,3 +410,9 @@ Có 2 mục bị loại, 1 mục bị gộp vì trùng.
 - [ ] Merge hoặc reload đúng lúc đang gõ IME, hoặc đang ở Insert mode của Vim.
 - [ ] Lưu file thuộc user khác, hoặc file có xattr/ACL (rename atomic có làm mất các thuộc tính đó không).
 - [ ] Mở cùng một file ở hai cửa sổ.
+- [ ] Hai `luc` chạy cùng lúc khi app chưa mở (M1-1), và backlog đầy (macOS có thể trả ECONNREFUSED, khiến socket của app đang sống bị coi là cũ và bị xoá).
+- [ ] Cmd+Q khi cửa sổ có file chưa lưu đang thu nhỏ hoặc ở Space khác (M2-1).
+- [ ] Đóng cửa sổ hoặc thay root: watcher, PTY của terminal và git của workbench cũ có dừng thật không.
+- [ ] Đường dẫn socket dự phòng khi HOME dài, và TMPDIR khác nhau giữa app mở từ Finder với terminal, tmux hay ssh.
+- [ ] Cài hoặc gỡ extension khi có nhiều cửa sổ; kéo thả giữa các cửa sổ.
+- [ ] Bấm Dock khi mọi cửa sổ đều đang thu nhỏ.
