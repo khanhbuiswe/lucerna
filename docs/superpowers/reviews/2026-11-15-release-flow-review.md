@@ -69,6 +69,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Nguyên nhân:** task copy bị `detach`, và `confirm_quit` chỉ xét buffer chưa lưu và terminal. Không có thao tác file nào được theo dõi lúc thoát: `deletes_in_flight` ([explorer/commands.rs:288](../../../crates/lucerna-workbench/src/explorer/commands.rs)) cũng không được đọc ở đó, nên Cut hay Delete đang chạy cũng không được bảo vệ.
 - **Hướng sửa:** đếm các thao tác copy đang chạy và hỏi hoặc đợi khi thoát. Hoặc copy vào tên tạm rồi rename khi xong.
 - **Sau merge multi-window:** vẫn còn với Cmd+Q (`confirm_quit` ở [workbench.rs:1773](../../../crates/lucerna-workbench/src/workbench.rs)). Riêng việc đóng một cửa sổ trên macOS thì không còn gây lỗi, vì process vẫn sống nên lần copy chạy xong.
+- **Đã sửa** (commit a5f9802): copy ghi vào tên ẩn `.luc-copy~*` cạnh đích rồi mới rename khi xong (Explorer không hiện tên ẩn này), và Cmd+Q hay đóng cửa sổ khi Paste/Duplicate/Cut/Delete đang chạy hỏi "A file operation is still running" (Quit / Cancel).
 
 ### T3-1 [P2, đã sửa ở `d765a50`] Open With hoặc thả lên Dock một thư mục con của folder đang mở không làm gì
 
