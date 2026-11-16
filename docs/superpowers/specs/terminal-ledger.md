@@ -141,7 +141,7 @@ Chạy bản release (`scripts/bundle-app.sh`), đặt cạnh Zed khi so giao di
 ### 2.3 So giao diện với Zed (Task 13 bước 6)
 
 - [ ] Chiều cao thanh tab, nền và viền panel, sash, khoảng cách nút ＋ ⤢ ×. Chờ người dùng kiểm tra.
-- [ ] Trạng thái rỗng, trạng thái tiến trình đã thoát (`[Tiến trình kết thúc với mã N]`), tab có chuông hoặc mã khác 0. Chờ người dùng kiểm tra.
+- [ ] Trạng thái rỗng, trạng thái tiến trình đã thoát (`[Process exited with code N]`), tab có chuông hoặc mã khác 0. Chờ người dùng kiểm tra.
 - [ ] Con trỏ khung rỗng khi mất focus, lề trái một ô, thanh cuộn. Chờ người dùng kiểm tra.
 
 ## 3. Khác

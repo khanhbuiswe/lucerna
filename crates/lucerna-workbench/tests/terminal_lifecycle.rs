@@ -281,7 +281,7 @@ fn nonzero_exit_keeps_tab(cx: &mut TestAppContext) {
         .rposition(|r| !r.trim().is_empty())
         .expect("text on screen");
     assert!(
-        rows[last].contains("[Tiến trình kết thúc với mã 2]"),
+        rows[last].contains("[Process exited with code 2]"),
         "{rows:?}"
     );
 
@@ -300,7 +300,7 @@ fn signal_exit_keeps_tab(cx: &mut TestAppContext) {
     emit(&fakes, TerminalEvent::Exited(None), cx);
     assert_eq!(tab_count(&wb, cx), 1);
     assert_eq!(tab_state(&wb, cx), TabState::Failed);
-    assert!(screen_contains(&view, "[Tiến trình kết thúc]", cx));
+    assert!(screen_contains(&view, "[Process exited]", cx));
 }
 
 #[gpui::test]

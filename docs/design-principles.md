@@ -50,3 +50,4 @@ Mã nguồn Lucerna dùng giấy phép MIT OR Apache-2.0. `cargo-deny` sẽ ch�
 - Chỉ crate `lucerna-workbench` được phụ thuộc vào GPUI.
 - Settings và keybindings theo ngữ nghĩa của VS Code: gộp object qua các lớp, override theo ngôn ngữ, và thứ tự ưu tiên giống VS Code.
 - Mỗi tính năng có test, review từng task, rồi review toàn bộ trước khi merge.
+- **Trong app chỉ dùng tiếng Anh.** Mọi chữ người dùng thấy (menu, lệnh, nhãn, thông báo, hộp thoại, dòng in ra terminal, tooltip, lỗi) đều bằng tiếng Anh, theo cách VS Code đặt tên. Không có chuỗi tiếng Việt trong code ngoài test (dữ liệu kiểm tra gõ tiếng Việt, IME, Unicode thì được). Spec và tài liệu nội bộ viết tiếng Việt vẫn được, nhưng chữ trong spec mô tả giao diện phải ghi đúng bản tiếng Anh sẽ hiện trong app.

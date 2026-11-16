@@ -99,8 +99,8 @@ pub(crate) fn spawn_view(
 /// none (killed by a signal), as spec §6.1 words it.
 fn exit_line(code: Option<i32>) -> String {
     match code {
-        Some(code) => format!("[Tiến trình kết thúc với mã {code}]"),
-        None => "[Tiến trình kết thúc]".to_string(),
+        Some(code) => format!("[Process exited with code {code}]"),
+        None => "[Process exited]".to_string(),
     }
 }
 

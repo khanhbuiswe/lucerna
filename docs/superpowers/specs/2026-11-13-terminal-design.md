@@ -151,7 +151,7 @@ Tách crate giúp test lõi (phím → byte, gộp run, dò link, màu) mà khô
 - ⌃` (`toggleTerminal`): panel ẩn thì hiện và focus terminal active, chưa có terminal thì tạo một cái. Panel hiện mà focus đang ở chỗ khác thì focus vào terminal. Focus đang ở terminal thì ẩn panel và trả focus về editor. Như VS Code.
 - ⌃⇧` (`new`): tạo terminal mới, hiện panel, focus nó.
 - Ẩn panel không giết terminal; tiến trình vẫn chạy.
-- **Tiến trình thoát** (theo VS Code): mã 0 thì đóng tab. Mã khác 0 hoặc bị tín hiệu giết thì giữ tab, in thêm dòng `[Tiến trình kết thúc với mã N]` (màu `text_muted`), tên tab đổi màu `error`. Gõ phím bất kỳ vào tab đó thì đóng nó.
+- **Tiến trình thoát** (theo VS Code): mã 0 thì đóng tab. Mã khác 0 hoặc bị tín hiệu giết thì giữ tab, in thêm dòng `[Process exited with code N]` (màu `text_muted`), tên tab đổi màu `error`. Gõ phím bất kỳ vào tab đó thì đóng nó.
 - Đóng tab cuối cùng thì ẩn panel (`terminal.integrated.hideOnLastClosed`, mặc định true).
 - `kill` (và × trên tab) gửi SIGHUP cho nhóm tiến trình rồi đóng tab, không hỏi (`confirmOnKill` của VS Code mặc định chỉ hỏi với terminal ở vùng editor).
 - Đóng cửa sổ hoặc thoát app khi còn terminal đang chạy: **không hỏi** (`terminal.integrated.confirmOnExit` mặc định `never`, như VS Code). Hỗ trợ giá trị `always` và `hasChildProcesses`.
