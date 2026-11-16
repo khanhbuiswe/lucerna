@@ -21,11 +21,11 @@ VALID_HTML = """<!doctype html>
 <meta name="description" content="A fast, native code viewer.">
 <meta property="og:title" content="Lucerna">
 <meta property="og:description" content="A fast, native code viewer.">
-<meta property="og:image" content="https://lucerna.dev/og.png">
-<meta property="og:url" content="https://lucerna.dev/">
+<meta property="og:image" content="https://lucerna.skynomadlabs.dev/og.png">
+<meta property="og:url" content="https://lucerna.skynomadlabs.dev/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#080b12">
-<link rel="canonical" href="https://lucerna.dev/">
+<link rel="canonical" href="https://lucerna.skynomadlabs.dev/">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 </head>
 <body>

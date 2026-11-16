@@ -10,7 +10,7 @@ import re
 import sys
 from html.parser import HTMLParser
 
-ORIGIN = "https://lucerna.dev/"
+ORIGIN = "https://lucerna.skynomadlabs.dev/"
 GITHUB = "https://github.com/khanhbuiswe/lucerna"
 METRICS = ["169MB", "1.40%", "50MB"]
 CSS_URL = re.compile(r"""url\(\s*['"]?([^'")]+)""")
