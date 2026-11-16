@@ -67,6 +67,8 @@ enum Command {
     SetOptions(ScanOptions, u64),
     /// A coalesced batch from the file watcher.
     FsEvents(Coalesced),
+    /// Load the unloaded folders on this root-relative path.
+    Load(Arc<Path>),
     Shutdown,
 }
 
@@ -115,6 +117,7 @@ impl Worktree {
             ignores_case: Cell::new(None),
             root_status: RefCell::new(RootStatus::Readable),
             unloaded: RefCell::new(HashSet::new()),
+            loaded: RefCell::new(HashSet::new()),
             #[cfg(test)]
             folders_listed: Cell::new(0),
             #[cfg(test)]
@@ -191,6 +194,14 @@ impl Worktree {
     pub fn set_options(&self, opts: ScanOptions) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let _ = self.commands.send(Command::SetOptions(opts, generation));
+    }
+
+    /// Loads every unloaded folder that is `rel` (root-relative) or one of
+    /// its ancestors, one level each, then publishes and sends `Changed`
+    /// with the new entries. Does nothing if no folder on the path is
+    /// unloaded.
+    pub fn load(&self, rel: &Path) {
+        let _ = self.commands.send(Command::Load(Arc::from(rel)));
     }
 }
 
@@ -320,6 +331,8 @@ struct Worker {
     root_status: RefCell<RootStatus>,
     /// Folders the last scan left unloaded; published with each snapshot.
     unloaded: RefCell<HashSet<Arc<Path>>>,
+    /// Folders loaded on request; loaded again after each full scan.
+    loaded: RefCell<HashSet<Arc<Path>>>,
     /// How many folders the last batch listed to catch respelled paths.
     #[cfg(test)]
     folders_listed: Cell<usize>,
@@ -362,6 +375,7 @@ impl Worker {
                         }
                     }
                 }
+                Command::Load(rel) => self.load(&rel, &opts),
                 Command::SetOptions(o, g) => {
                     let (mut next_opts, mut generation) = (o, g);
                     // Coalesce queued requests down to the latest.
@@ -369,7 +383,9 @@ impl Worker {
                         match next {
                             Command::SetOptions(o, g) => (next_opts, generation) = (o, g),
                             Command::Shutdown => return,
-                            fs @ Command::FsEvents(_) => backlog.push_back(fs),
+                            other @ (Command::FsEvents(_) | Command::Load(_)) => {
+                                backlog.push_back(other)
+                            }
                         }
                     }
                     opts = next_opts;
@@ -406,6 +422,9 @@ impl Worker {
             });
             if matches!(outcome, ScanOutcome::Aborted) {
                 return false;
+            }
+            if matches!(outcome, ScanOutcome::Completed) {
+                self.reload(opts, &mut entries);
             }
             // After a panic, publish what was collected so waiters unblock.
             self.publish(entries, true);
@@ -513,8 +532,14 @@ impl Worker {
             added_paths.contains(path) || snapshot.contains(path)
         };
         let mut listings = Listings::default();
+        let unloaded = self.unloaded.borrow().clone();
         for change in changes {
             let mut rel = change.path;
+            // Inside a folder left unloaded: not in the snapshot, and not
+            // shown until the folder is loaded.
+            if rel.ancestors().skip(1).any(|a| unloaded.contains(a)) {
+                continue;
+            }
             let mut meta = fs::symlink_metadata(self.root.join(&rel)).ok();
             if let Some(meta) = &meta
                 && checker.is_ignored(&rel, kind_of(meta) == EntryKind::Dir)
@@ -614,6 +639,11 @@ impl Worker {
         }
         #[cfg(test)]
         self.folders_listed.set(listings.dirs.len());
+        if !removed.is_empty() {
+            let gone = |p: &Arc<Path>| p.ancestors().any(|a| removed.contains(a));
+            self.unloaded.borrow_mut().retain(|p| !gone(p));
+            self.loaded.borrow_mut().retain(|p| !gone(p));
+        }
         if !added.is_empty() || !removed.is_empty() {
             let mut entries: Vec<Entry> = snapshot
                 .entries()
@@ -713,6 +743,99 @@ impl Worker {
                 path: Arc::from(rel),
                 kind,
             });
+        }
+    }
+
+    /// Handles [`Command::Load`]: loads the unloaded folders on `rel`,
+    /// publishes, and reports the new entries as `Changed`.
+    fn load(&self, rel: &Path, opts: &ScanOptions) {
+        let mut checker = IgnoreChecker::new(&self.root, opts);
+        let mut added = Vec::new();
+        if !self.load_path(rel, &mut checker, &mut added) {
+            return;
+        }
+        let out: Vec<Change> = added
+            .iter()
+            .map(|e| Change {
+                path: e.path.clone(),
+                kind: ChangeKind::Added,
+            })
+            .collect();
+        let mut entries = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries()
+            .to_vec();
+        entries.extend(added);
+        self.publish(entries, true);
+        // Sent even when the folder is empty: it is no longer unloaded.
+        self.send(WorktreeEvent::Changed(out));
+    }
+
+    /// After a full scan: loads again the folders loaded on request that
+    /// still exist, shallowest first, adding what they hold to `entries`.
+    fn reload(&self, opts: &ScanOptions, entries: &mut Vec<Entry>) {
+        self.loaded
+            .borrow_mut()
+            .retain(|p| fs::symlink_metadata(self.root.join(p)).is_ok());
+        let mut paths: Vec<Arc<Path>> = self.loaded.borrow().iter().cloned().collect();
+        if paths.is_empty() {
+            return;
+        }
+        paths.sort_by_key(|p| p.components().count());
+        let mut checker = IgnoreChecker::new(&self.root, opts);
+        for path in paths {
+            self.load_path(&path, &mut checker, entries);
+        }
+    }
+
+    /// Loads every unloaded folder that is `rel` or an ancestor of it,
+    /// shallowest first, pushing what they hold to `out`. A folder that
+    /// loading its parent left unloaded is loaded too. Returns false if
+    /// none was unloaded.
+    fn load_path(&self, rel: &Path, checker: &mut IgnoreChecker, out: &mut Vec<Entry>) -> bool {
+        let mut ancestors: Vec<&Path> = rel.ancestors().collect();
+        ancestors.reverse();
+        let mut any = false;
+        for dir in ancestors {
+            let Some(dir) = self.unloaded.borrow_mut().take(dir) else {
+                continue;
+            };
+            self.load_dir(&dir, checker, out);
+            self.loaded.borrow_mut().insert(dir);
+            any = true;
+        }
+        any
+    }
+
+    /// Reads the unloaded folder `dir` one level. A child folder is left
+    /// unloaded, unless it holds a `.git`: then it is read in full.
+    fn load_dir(&self, dir: &Path, checker: &mut IgnoreChecker, out: &mut Vec<Entry>) {
+        let Ok(read) = fs::read_dir(self.root.join(dir)) else {
+            return;
+        };
+        for dirent in read.flatten() {
+            let name = dirent.file_name();
+            if always_skipped(&name) {
+                continue;
+            }
+            let Ok(file_type) = dirent.file_type() else {
+                continue;
+            };
+            let rel: Arc<Path> = Arc::from(dir.join(&name));
+            let kind = kind_of_type(file_type);
+            if checker.is_ignored(&rel, kind == EntryKind::Dir) {
+                continue;
+            }
+            if kind == EntryKind::Dir {
+                if self.root.join(&rel).join(GIT_DIR).exists() {
+                    self.collect_subtree(&rel, checker, out);
+                } else {
+                    self.unloaded.borrow_mut().insert(rel.clone());
+                }
+            }
+            out.push(Entry { path: rel, kind });
         }
     }
 
@@ -1037,6 +1160,7 @@ mod tests {
             ignores_case: Cell::new(None),
             root_status: RefCell::new(RootStatus::Readable),
             unloaded: RefCell::new(HashSet::new()),
+            loaded: RefCell::new(HashSet::new()),
             folders_listed: Cell::new(0),
             fail_next_scan: Arc::new(AtomicBool::new(false)),
             fail_next_apply: Arc::new(AtomicBool::new(false)),
