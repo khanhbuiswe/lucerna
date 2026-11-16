@@ -7,13 +7,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::FutureExt as _;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::hot_exit::store::{Backup, WorkspaceKey, backup_dir, read_backups};
-use lucerna_workbench::{AppState, OpenMode, Workbench};
+use lucerna_workbench::hot_exit::HotExit;
+use lucerna_workbench::hot_exit::store::{
+    Backup, WorkspaceKey, backup_dir, read_backups, text_sha256,
+};
+use lucerna_workbench::{AppState, OpenMode, SaveOptions, SaveReason, Workbench};
 use tempfile::TempDir;
 
 fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
@@ -118,6 +122,17 @@ fn set_text(
     text: &str,
     cx: &mut VisualTestContext,
 ) {
+    edit_text(wb, view, text, cx);
+    settle(cx);
+}
+
+/// [`set_text`] without running anything after it.
+fn edit_text(
+    wb: &Entity<Workbench>,
+    view: &Entity<CodeView>,
+    text: &str,
+    cx: &mut VisualTestContext,
+) {
     let docs = cx.update(|_, cx| wb.read(cx).documents().clone());
     let origin = view.entity_id();
     let text: Arc<str> = Arc::from(text);
@@ -133,7 +148,10 @@ fn set_text(
         )
         .expect("a.rs is loaded");
     });
-    settle(cx);
+}
+
+fn hot_exit(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<HotExit> {
+    cx.update(|_, cx| wb.read(cx).hot_exit().expect("a data dir").clone())
 }
 
 fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
@@ -230,14 +248,59 @@ fn backup_writes_keep_order(cx: &mut TestAppContext) {
     let project = Project::new(None);
     let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
     let view = open_a(&wb, cx);
-    set_text(&wb, &view, "a", cx);
-    advance(1000, cx);
-    set_text(&wb, &view, "ab", cx);
-    advance(1000, cx);
+    let hot_exit = hot_exit(&wb, cx);
+    // Both writes are queued before either runs; the executor may run
+    // them in either order.
+    edit_text(&wb, &view, "a", cx);
+    let first = hot_exit.update(cx, |h, cx| h.flush(cx));
+    edit_text(&wb, &view, "ab", cx);
+    let second = hot_exit.update(cx, |h, cx| h.flush(cx));
     settle(cx);
+    assert_eq!(first.now_or_never(), Some(Vec::new()));
+    assert_eq!(second.now_or_never(), Some(Vec::new()));
     let backups = project.backups();
     assert_eq!(backups.len(), 1);
     assert_eq!(backups[0].text, "ab");
+}
+
+#[gpui::test]
+fn save_while_edits_are_in_flight_leaves_a_backup_with_the_new_base(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    let hot_exit = hot_exit(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    let docs = cx.update(|_, cx| wb.read(cx).documents().clone());
+    let opts = SaveOptions {
+        reason: SaveReason::Explicit,
+        participants: false,
+    };
+    let save = cx
+        .update(|window, cx| docs.update(cx, |d, cx| d.save(Path::new("a.rs"), opts, window, cx)));
+    // Typed while the save writes, and backed up before the save ends: the
+    // backup still has the old base.
+    edit_text(&wb, &view, "hello world", cx);
+    let flushed = hot_exit.update(cx, |h, cx| h.flush(cx));
+    settle(cx);
+    assert_eq!(save.now_or_never().map(|r| r.is_ok()), Some(true));
+    assert_eq!(flushed.now_or_never(), Some(Vec::new()));
+    assert_eq!(
+        fs::read_to_string(project.root.path().join("a.rs")).unwrap(),
+        "hello"
+    );
+    // Quitting now writes what is not current.
+    hot_exit.update(cx, |h, cx| h.flush_blocking(cx));
+    let backups = project.backups();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(backups[0].text, "hello world");
+    assert_eq!(
+        backups[0].header.base_sha256,
+        Some(text_sha256("hello")),
+        "the base is the text just saved"
+    );
+    let meta = fs::metadata(project.root.path().join("a.rs")).unwrap();
+    assert_eq!(backups[0].header.size, Some(meta.len()));
 }
 
 #[gpui::test]

@@ -79,6 +79,14 @@ impl Queue {
         ticket
     }
 
+    /// Marks `path`'s backup as not current, though its text is: a write
+    /// asked for before now that has not run is dropped, and one running
+    /// now does not count as current.
+    fn invalidate(&self, path: &Arc<Path>) {
+        self.ticket(path);
+        self.tickets().written.remove(path);
+    }
+
     /// Runs the call of `ticket` on `path` unless a newer one was asked
     /// for. Blocks while another call runs: call it off the UI thread,
     /// except when quitting.
@@ -91,8 +99,12 @@ impl Queue {
             Op::Write { source, revision } => {
                 let backup = backup_of(path, source);
                 store::write_backup(&self.dir, key, &backup)?;
-                if let Some(revision) = revision {
-                    self.tickets().written.insert(path.clone(), revision);
+                // Not current if the backup went stale while it wrote.
+                let mut tickets = self.tickets();
+                if let Some(revision) = revision
+                    && tickets.latest.get(path) == Some(&ticket)
+                {
+                    tickets.written.insert(path.clone(), revision);
                 }
                 Ok(())
             }
@@ -198,8 +210,16 @@ impl HotExit {
             DocumentEvent::DirtyChanged {
                 path, dirty: false, ..
             } => self.remove(path, cx),
-            DocumentEvent::Saved { path, .. } if !self.documents.read(cx).is_dirty(path) => {
-                self.remove(path, cx)
+            DocumentEvent::Saved { path, .. } => {
+                if self.documents.read(cx).is_dirty(path) {
+                    // Edits made while it wrote are still unsaved: the text
+                    // is unchanged, but the backup's base and stamp are now
+                    // stale, so it is no longer current.
+                    self.queue.invalidate(path);
+                    self.schedule(path.clone(), cx);
+                } else {
+                    self.remove(path, cx);
+                }
             }
             // Outside a quit, a document closed with unsaved changes was
             // closed with Don't Save.
