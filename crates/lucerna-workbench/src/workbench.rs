@@ -1881,6 +1881,10 @@ impl Workbench {
         if paths.is_empty() && terminals == 0 && operations.get() == 0 {
             return Task::ready(true);
         }
+        // A sheet on a minimised window, or one on another Space, is never
+        // seen and the quit seems to do nothing: bring the window forward
+        // first, also when its prompt is already up (as Zed does).
+        window.activate_window();
         // The prompt is already up for an earlier quit or close.
         if self.confirming_quit {
             return Task::ready(false);
@@ -3250,6 +3254,9 @@ pub(crate) fn quit(cx: &mut App) {
     cx.spawn(async move |cx| {
         // What each window agreed to lose: its dirty files once it agreed.
         let mut agreed: HashMap<gpui::WindowId, Vec<Arc<Path>>> = HashMap::new();
+        // Asking a window brings it forward: the saved window list keeps
+        // the order from before.
+        let used = cx.update(|cx| crate::router::activity(cx));
         loop {
             let ask = cx.update(|cx| windows_to_ask(&agreed, cx));
             if ask.is_empty() {
@@ -3273,6 +3280,7 @@ pub(crate) fn quit(cx: &mut App) {
             }
         }
         cx.update(|cx| {
+            crate::router::restore_activity(&used, cx);
             crate::session::save_now(cx);
             crate::app::quit_now(cx);
         });
