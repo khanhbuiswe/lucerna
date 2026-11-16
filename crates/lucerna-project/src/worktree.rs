@@ -107,6 +107,9 @@ impl Worktree {
             watch_started: Cell::new(UNIX_EPOCH),
             initial_scan: Cell::new(true),
             replay_until: Cell::new(None),
+            ignores_case: Cell::new(None),
+            #[cfg(test)]
+            folders_listed: Cell::new(0),
             #[cfg(test)]
             fail_next_scan: fail_next_scan.clone(),
             #[cfg(test)]
@@ -293,6 +296,11 @@ struct Worker {
     initial_scan: Cell<bool>,
     /// End of the post-initial-scan grace period (monotonic).
     replay_until: Cell<Option<Instant>>,
+    /// Whether the root's file system ignores case, once a probe could tell.
+    ignores_case: Cell<Option<bool>>,
+    /// How many folders the last batch listed to catch respelled paths.
+    #[cfg(test)]
+    folders_listed: Cell<usize>,
     #[cfg(test)]
     fail_next_scan: Arc<AtomicBool>,
     #[cfg(test)]
@@ -436,6 +444,11 @@ impl Worker {
     /// known: Removed, with everything below it. Anything else is dropped.
     /// A path that exists only through a case-insensitive file system (one
     /// of its names is listed on disk with other case) counts as missing.
+    ///
+    /// Telling those apart costs one `read_dir` of each folder on the path,
+    /// each read once per batch. It runs only for existing, not-ignored
+    /// paths, and only when the root's file system ignores case (see
+    /// [`Worker::root_ignores_case`]); elsewhere it is skipped.
     fn apply_fs_events(&self, batch: Coalesced, opts: &ScanOptions) -> bool {
         let Coalesced::Changes(changes) = batch else {
             return true;
@@ -473,10 +486,17 @@ impl Worker {
         for change in changes {
             let mut rel = change.path;
             let mut meta = fs::symlink_metadata(self.root.join(&rel)).ok();
+            if let Some(meta) = &meta
+                && checker.is_ignored(&rel, kind_of(meta) == EntryKind::Dir)
+            {
+                continue;
+            }
             // On a case-insensitive file system `foo.rs` still resolves
             // after a rename to `Foo.rs`, but that spelling is gone, and so
             // is a folder spelled the old way, with everything below it.
+            // (Never an ignored path: the old spelling was in the snapshot.)
             if meta.is_some()
+                && self.root_ignores_case()
                 && let Some(gone) = listings.respelled_prefix(&self.root, &rel)
             {
                 rel = Arc::from(gone);
@@ -510,9 +530,6 @@ impl Worker {
                 continue;
             };
             let kind = kind_of(&meta);
-            if checker.is_ignored(&rel, kind == EntryKind::Dir) {
-                continue;
-            }
             if known(&rel, &added_paths) {
                 if kind != EntryKind::Dir && !self.is_stale(&meta) {
                     out.push(Change {
@@ -565,6 +582,8 @@ impl Worker {
                 return true;
             }
         }
+        #[cfg(test)]
+        self.folders_listed.set(listings.dirs.len());
         if !added.is_empty() || !removed.is_empty() {
             let mut entries: Vec<Entry> = snapshot
                 .entries()
@@ -597,6 +616,19 @@ impl Worker {
                 meta.ctime_nsec().clamp(0, 999_999_999) as u32,
             );
         changed < self.watch_started.get()
+    }
+
+    /// Whether the root's file system ignores case (APFS and HFS+ by
+    /// default, NTFS), probed once and then remembered. While the root holds
+    /// no name with a cased letter the probe cannot tell, and the answer is
+    /// true, so a case-only rename is still caught.
+    fn root_ignores_case(&self) -> bool {
+        if let Some(known) = self.ignores_case.get() {
+            return known;
+        }
+        let probed = probe_ignores_case(&self.root);
+        self.ignores_case.set(probed);
+        probed.unwrap_or(true)
     }
 
     fn in_replay_window(&self) -> bool {
@@ -735,6 +767,40 @@ impl Listings {
     }
 }
 
+/// Whether the file system holding `dir` ignores case: a name in it with
+/// its case flipped resolves to the very same entry. `None` if `dir` holds
+/// no name with a cased letter (or cannot be read).
+fn probe_ignores_case(dir: &Path) -> Option<bool> {
+    for dirent in fs::read_dir(dir).ok()?.flatten() {
+        let name = dirent.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let flipped: String = name
+            .chars()
+            .flat_map(|c| {
+                if c.is_lowercase() {
+                    c.to_uppercase().collect::<Vec<_>>()
+                } else {
+                    c.to_lowercase().collect()
+                }
+            })
+            .collect();
+        if flipped == name {
+            continue;
+        }
+        let same = match (
+            fs::symlink_metadata(dir.join(name)),
+            fs::symlink_metadata(dir.join(&flipped)),
+        ) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        };
+        return Some(same);
+    }
+    None
+}
+
 fn same_but_case(a: &OsStr, b: &OsStr) -> bool {
     match (a.to_str(), b.to_str()) {
         (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
@@ -820,6 +886,8 @@ mod tests {
             watch_started: Cell::new(SystemTime::now() + Duration::from_secs(3600)),
             initial_scan: Cell::new(false),
             replay_until: Cell::new(None),
+            ignores_case: Cell::new(None),
+            folders_listed: Cell::new(0),
             fail_next_scan: Arc::new(AtomicBool::new(false)),
             fail_next_apply: Arc::new(AtomicBool::new(false)),
         }
@@ -899,6 +967,57 @@ mod tests {
             assert_eq!(sorted_paths(&worker), ["Foo.rs"], "order {order:?}");
             fs::remove_file(dir.path().join("Foo.rs")).unwrap();
         }
+    }
+
+    #[test]
+    fn probe_tells_whether_the_file_system_ignores_case() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert_eq!(probe_ignores_case(dir.path()), None, "nothing to probe");
+        fs::write(dir.path().join("1-2"), "").unwrap();
+        assert_eq!(probe_ignores_case(dir.path()), None, "no cased letter");
+        fs::write(dir.path().join("a"), "").unwrap();
+        fs::remove_file(dir.path().join("1-2")).unwrap();
+        let expected = fs::symlink_metadata(dir.path().join("A")).is_ok();
+        assert_eq!(probe_ignores_case(dir.path()), Some(expected));
+    }
+
+    /// The listing walk is skipped for ignored paths and on a file system
+    /// that keeps case apart; it runs otherwise.
+    #[test]
+    fn folders_are_listed_only_for_not_ignored_paths_where_case_is_ignored() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        for f in ["target/debug/a", "target/debug/b", "src/main.rs"] {
+            fs::write(dir.path().join(f), "x").unwrap();
+        }
+        let opts = ScanOptions {
+            exclude: vec!["**/target".into()],
+        };
+        let batch = |paths: &[&str]| {
+            Coalesced::Changes(
+                paths
+                    .iter()
+                    .map(|p| change(p, ChangeKind::Modified))
+                    .collect(),
+            )
+        };
+        let worker = bare_worker(dir.path());
+        worker.publish(
+            vec![
+                entry("src", EntryKind::Dir),
+                entry("src/main.rs", EntryKind::File),
+            ],
+            true,
+        );
+        worker.ignores_case.set(Some(true));
+        worker.apply_fs_events(batch(&["target/debug/a", "target/debug/b"]), &opts);
+        assert_eq!(worker.folders_listed.get(), 0, "ignored paths");
+        worker.apply_fs_events(batch(&["src/main.rs"]), &opts);
+        assert_eq!(worker.folders_listed.get(), 2, "the root and src");
+        worker.ignores_case.set(Some(false));
+        worker.apply_fs_events(batch(&["src/main.rs"]), &opts);
+        assert_eq!(worker.folders_listed.get(), 0, "case-sensitive");
     }
 
     #[test]

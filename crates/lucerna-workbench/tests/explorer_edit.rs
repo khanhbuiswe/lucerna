@@ -849,6 +849,107 @@ fn case_only_rename_of_folder_with_unsaved_tab(cx: &mut TestAppContext) {
     assert_eq!(names(dir.path()), ["Src", "a.rs", "b.rs"]);
 }
 
+/// Delivers the worktree's real events (the app's event pump does not run
+/// on the test scheduler) until `done` holds, for at most 10 s.
+fn pump_until(
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    mut done: impl FnMut(&mut VisualTestContext) -> bool,
+) {
+    let events = wb.read_with(cx, |wb, _| wb.worktree().events());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done(cx) {
+        assert!(Instant::now() < deadline, "condition not met in time");
+        match events.try_recv() {
+            Ok(ev) => wb.update(cx, |wb, cx| wb.on_worktree_event(&ev, cx)),
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
+        draw(cx);
+    }
+}
+
+fn text_of(
+    view: &Entity<lucerna_workbench::code_view::CodeView>,
+    cx: &mut VisualTestContext,
+) -> String {
+    view.read_with(cx, |v, _| {
+        let s = v.snapshot();
+        s.text_for_range(0..s.len_bytes())
+    })
+}
+
+/// Another program (an agent's `mv` / `git mv`) renames the open, dirty
+/// `path`'s file or folder `old` to `new`, which differ only in case: the
+/// tab and its document follow with the edits, and saving keeps `new`.
+fn external_case_rename_moves_dirty_tab(path: &str, old: &str, new: &str, cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    if !ignores_case(dir.path()) {
+        return;
+    }
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    let view = open_file(&wb, path, cx);
+    cx.update(|window, cx| {
+        let focus = gpui::Focusable::focus_handle(view.read(cx), cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    type_text(cx, "xy");
+    let text = text_of(&view, cx);
+
+    std::fs::rename(root.join(old), root.join(new)).unwrap();
+    let rest = Path::new(path).strip_prefix(old).unwrap();
+    let moved = if rest.as_os_str().is_empty() {
+        root.join(new)
+    } else {
+        root.join(new).join(rest)
+    };
+    let open_paths = |cx: &mut VisualTestContext| {
+        wb.read_with(cx, |wb, cx| wb.documents().read(cx).open_paths())
+    };
+    pump_until(&wb, cx, |cx| {
+        wb.read_with(cx, |wb, _| {
+            let snapshot = wb.worktree().snapshot();
+            snapshot.contains(Path::new(new)) && !snapshot.contains(Path::new(old))
+        }) && open_paths(cx).iter().all(|p| **p == *moved)
+    });
+
+    let rel = moved.strip_prefix(&root).unwrap().to_path_buf();
+    assert_eq!(tabs(&wb, cx), [(rel, true)]);
+    assert_eq!(open_paths(cx), [Arc::from(moved.as_path())]);
+    let (dirty, state) = wb.read_with(cx, |wb, cx| {
+        let documents = wb.documents().read(cx);
+        (documents.is_dirty(&moved), documents.state(&moved).cloned())
+    });
+    assert!(dirty);
+    assert_eq!(state, Some(lucerna_workbench::DocState::Ready));
+    assert_eq!(text_of(&view, cx), text);
+    assert_eq!(
+        &*view.read_with(cx, |v, _| v.path().clone()),
+        moved.as_path()
+    );
+
+    keys("cmd-s", cx);
+    wait_until(cx, |_| {
+        std::fs::read_to_string(&moved).unwrap().starts_with("xy")
+    });
+    let mut want = vec![new.to_string(), "b.rs".to_string()];
+    want.push(if old == "src" { "a.rs" } else { "src" }.to_string());
+    want.sort();
+    assert_eq!(names(dir.path()), want, "the new spelling stays");
+}
+
+#[gpui::test]
+fn external_case_only_rename_of_file_moves_dirty_tab(cx: &mut TestAppContext) {
+    external_case_rename_moves_dirty_tab("a.rs", "a.rs", "A.rs", cx);
+}
+
+#[gpui::test]
+fn external_case_only_rename_of_folder_moves_dirty_tab(cx: &mut TestAppContext) {
+    external_case_rename_moves_dirty_tab("src/main.rs", "src", "Src", cx);
+}
+
 #[gpui::test]
 fn unchanged_name_just_ends(cx: &mut TestAppContext) {
     init(cx);

@@ -144,7 +144,7 @@ pub fn create_dir(path: &Path) -> io::Result<()> {
 }
 
 /// True when both paths are the very same file system entry.
-fn same_entry(a: &Path, b: &Path) -> bool {
+pub fn same_entry(a: &Path, b: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

@@ -1294,6 +1294,14 @@ impl Workbench {
             }
             _ => {}
         }
+        // Another program respelled a file or folder (an agent's `git mv
+        // src Src`): its open documents and tabs follow, as after Rename,
+        // instead of going Deleted at the old spelling.
+        if let WorktreeEvent::Changed(changes) = ev {
+            for (old, new) in respelled(&self.root, changes) {
+                self.paths_renamed(&old, &new, cx);
+            }
+        }
         let snapshot = self.worktree.snapshot();
         let decorate = decorates_external_changes(self.settings.read(cx).view(cx));
         // Open documents tell our own saves from other programs' writes
@@ -3027,6 +3035,46 @@ pub(crate) fn enabled_globs(settings: SettingsView<'_>, key: &str) -> Vec<String
         .filter(|(_, on)| *on == Value::Bool(true))
         .map(|(glob, _)| glob)
         .collect()
+}
+
+/// The entries a watcher batch shows respelled: a case-only rename on a
+/// case-insensitive file system, as root-relative `(old, new)` pairs, `old`
+/// Removed and `new` Added, the names equal but for case and the very same
+/// entry on disk. For a folder only its own pair is listed, not those of
+/// the paths below it.
+fn respelled(root: &Path, changes: &[Change]) -> Vec<(Arc<Path>, Arc<Path>)> {
+    let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+    let mut added: HashMap<String, Vec<&Arc<Path>>> = HashMap::new();
+    for change in changes.iter().filter(|c| c.kind == ChangeKind::Added) {
+        added
+            .entry(lower(&change.path))
+            .or_default()
+            .push(&change.path);
+    }
+    if added.is_empty() {
+        return Vec::new();
+    }
+    let mut removed: Vec<&Arc<Path>> = changes
+        .iter()
+        .filter(|c| c.kind == ChangeKind::Removed)
+        .map(|c| &c.path)
+        .collect();
+    removed.sort_by_key(|p| p.components().count());
+    let mut pairs: Vec<(Arc<Path>, Arc<Path>)> = Vec::new();
+    for old in removed {
+        if pairs.iter().any(|(o, _)| old.starts_with(o)) {
+            continue;
+        }
+        let Some(candidates) = added.get(&lower(old)) else {
+            continue;
+        };
+        if let Some(new) = candidates.iter().find(|new| {
+            **new != old && lucerna_project::fs_ops::same_entry(&root.join(old), &root.join(new))
+        }) {
+            pairs.push((old.clone(), (*new).clone()));
+        }
+    }
+    pairs
 }
 
 /// The single consumer of `worktree.events()`. `recv` blocks, so a

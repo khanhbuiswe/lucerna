@@ -305,4 +305,5 @@ fn case_only_rename_of_a_folder_leaves_only_the_new_subtree() {
         ["Src", "Src/a.rs", "Src/inner", "Src/inner/b.rs"],
         "{all:?}"
     );
+    assert!(has(&all, "src", ChangeKind::Removed), "{all:?}");
 }
