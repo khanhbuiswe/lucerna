@@ -309,6 +309,10 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
     một dòng JSON, đợi một dòng trả lời (timeout 5 s), in lỗi nếu có, thoát.
     `ECONNREFUSED` (file socket còn lại sau crash) thì xoá file và `bind`
     lại một lần.
+  - Kết nối bị đóng hoặc lỗi trước khi có trả lời (EOF, reset): giành
+    socket lại một lần. Thường là do `luc` khác vừa giữ socket một lúc rồi
+    nhả cho app nó khởi động (M1-1). Lần giành thứ hai nối tới app đó, hoặc
+    tự bind khi chưa có app. Bước 3 bên dưới cũng nối lại một lần như vậy.
   - Hết thời gian đợi trả lời mà yêu cầu đã gửi đi (app đang bận, ví dụ
     đang khôi phục cửa sổ): in "Lucerna is busy; the path will open when it
     is ready" và thoát mã 0, vì app vẫn mở đường dẫn khi rảnh.

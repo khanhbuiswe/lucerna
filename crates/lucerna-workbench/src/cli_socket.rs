@@ -395,14 +395,21 @@ pub enum SendError {
     /// The request was delivered, but the app did not answer in time: it
     /// opens the paths once it is ready.
     NoReplyInTime,
-    /// Anything else: writing, reading, a reply that does not parse.
+    /// The connection closed or failed before any reply came: the
+    /// listener that took it went away. Most often another `luc` held the
+    /// socket for a moment and released it to the app it starts (M1-1);
+    /// [`claim_and_send`] claims once more.
+    Dropped(String),
+    /// Anything else: a reply that does not parse.
     Failed(String),
 }
 
 impl fmt::Display for SendError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SendError::Unreachable(err) | SendError::Failed(err) => f.write_str(err),
+            SendError::Unreachable(err) | SendError::Dropped(err) | SendError::Failed(err) => {
+                f.write_str(err)
+            }
             SendError::NoReplyInTime => f.write_str("no reply from Lucerna in time"),
         }
     }
@@ -412,34 +419,82 @@ impl fmt::Display for SendError {
 ///
 /// # Errors
 /// [`SendError::NoReplyInTime`] when the reply does not come within
-/// `timeout`; [`SendError::Failed`] for the rest.
+/// `timeout`; [`SendError::Dropped`] when the connection closes or fails
+/// before any reply; [`SendError::Failed`] for a reply that does not
+/// parse.
 pub fn send(
     mut stream: UnixStream,
     request: &CliRequest,
     timeout: Duration,
 ) -> Result<CliReply, SendError> {
     let failed = |what: &str, err: &dyn fmt::Display| SendError::Failed(format!("{what}: {err}"));
+    // A connection the listener closed on is reset: on macOS even setting
+    // its timeouts fails (EINVAL).
+    let dropped = |what: &str, err: &dyn fmt::Display| SendError::Dropped(format!("{what}: {err}"));
     stream
         .set_write_timeout(Some(timeout))
         .and_then(|()| stream.set_read_timeout(Some(timeout)))
-        .map_err(|err| failed("socket", &err))?;
+        .map_err(|err| dropped("socket", &err))?;
     let mut line = serde_json::to_string(request).map_err(|err| failed("request", &err))?;
     line.push('\n');
     stream
         .write_all(line.as_bytes())
-        .map_err(|err| failed("could not send the request", &err))?;
+        .map_err(|err| dropped("could not send the request", &err))?;
     let mut reply = String::new();
     match BufReader::new(stream).read_line(&mut reply) {
         Ok(_) => {}
         Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
             return Err(SendError::NoReplyInTime);
         }
-        Err(err) => return Err(failed("no reply from Lucerna", &err)),
+        Err(err) => return Err(dropped("no reply from Lucerna", &err)),
     }
     if reply.is_empty() {
-        return Err(SendError::Failed("no reply from Lucerna".to_owned()));
+        return Err(SendError::Dropped("no reply from Lucerna".to_owned()));
     }
     serde_json::from_str(&reply).map_err(|err| failed("bad reply from Lucerna", &err))
+}
+
+/// How a [`claim_and_send`] ended.
+#[derive(Debug)]
+pub enum Handed {
+    /// An app held the socket: its reply, or why none came.
+    Reply(Result<CliReply, SendError>),
+    /// Nobody did: this process bound it and is the app.
+    Server(Bound),
+    /// No socket can be used ([`Claim::Unavailable`]).
+    Unavailable(io::Error),
+}
+
+/// [`claim`]s `path` and, when an app holds it, [`send`]s it `request`.
+/// A connection dropped before any reply ([`SendError::Dropped`]) is
+/// claimed once more (M1-1): the listener was most likely another `luc`'s,
+/// held for a moment before it let the app it starts claim. The second
+/// claim reaches that app, or binds when none came up.
+///
+/// Sending twice does not open a path twice. The app replies to every
+/// request it reads, so a dropped connection means the request was never
+/// read (the listener closed with it in its backlog) or the app died
+/// before replying. And a path that is open already is only focused
+/// (§6.3, rule 1).
+pub fn claim_and_send(path: &Path, request: &CliRequest, timeout: Duration) -> Handed {
+    let mut again = true;
+    loop {
+        match claim(path) {
+            Claim::Client(stream) => match send(stream, request, timeout) {
+                Err(SendError::Dropped(err)) if again => {
+                    tracing::info!(
+                        err,
+                        path = %path.display(),
+                        "the luc socket dropped the request; claiming it again"
+                    );
+                    again = false;
+                }
+                reply => return Handed::Reply(reply),
+            },
+            Claim::Server(bound) => return Handed::Server(bound),
+            Claim::Unavailable(err) => return Handed::Unavailable(err),
+        }
+    }
 }
 
 /// A request and where its reply goes.
@@ -846,6 +901,114 @@ mod tests {
         assert!(path.exists(), "the other app's socket stays");
         release(first);
         assert!(path.exists(), "release keeps it too");
+    }
+
+    /// Whether a connection comes into `listener`'s backlog within
+    /// `ms` milliseconds.
+    fn pending(listener: &UnixListener, ms: i32) -> bool {
+        let mut fd = libc::pollfd {
+            fd: listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `fd` is one valid `pollfd`.
+        unsafe { libc::poll(&raw mut fd, 1, ms) == 1 }
+    }
+
+    /// M1-1: a `luc` that connects while another `luc` holds the socket
+    /// for a moment, before it releases it to the app it starts, sits in
+    /// the backlog of a listener that closes without accepting it.
+    #[test]
+    fn release_drops_a_waiting_client() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(first) = claim(&path) else {
+            panic!("binds");
+        };
+        let Claim::Client(stream) = claim(&path) else {
+            panic!("connects to the first");
+        };
+        release(first);
+        let request = CliRequest::new(PathBuf::from("/w"), Vec::new());
+        let result = send(stream, &request, Duration::from_secs(1));
+        assert!(matches!(result, Err(SendError::Dropped(_))), "{result:?}");
+    }
+
+    #[test]
+    fn claim_and_send_reaches_the_app_that_came_up() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(first) = claim(&path) else {
+            panic!("binds");
+        };
+        let request = CliRequest::new(PathBuf::from("/w"), vec![PathBuf::from("b")]);
+        let client = {
+            let (path, request) = (path.clone(), request.clone());
+            std::thread::spawn(move || claim_and_send(&path, &request, Duration::from_secs(5)))
+        };
+        assert!(pending(&first.listener, 5_000), "the client connected");
+        // The first `luc` lets go, and the app it started claims before
+        // the listener with the second `luc` in its backlog closes.
+        let (tx, mut rx) = mpsc::unbounded::<CliMessage>();
+        release_with(first, || {
+            let Claim::Server(app) = claim(&path) else {
+                panic!("the app binds");
+            };
+            serve(app.listener, tx);
+        });
+        let (got_tx, got) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            while let Some((request, reply)) = futures::executor::block_on(rx.next()) {
+                reply.send(CliReply::ok()).unwrap();
+                got_tx.send(request).unwrap();
+            }
+        });
+        let Handed::Reply(reply) = client.join().unwrap() else {
+            panic!("an app held the socket");
+        };
+        assert_eq!(reply, Ok(CliReply::ok()));
+        assert_eq!(got.recv_timeout(Duration::from_secs(1)), Ok(request));
+        assert!(
+            got.recv_timeout(Duration::from_millis(100)).is_err(),
+            "sent once"
+        );
+    }
+
+    #[test]
+    fn claim_and_send_binds_when_no_app_came_up() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(first) = claim(&path) else {
+            panic!("binds");
+        };
+        let client = {
+            let path = path.clone();
+            let request = CliRequest::new(PathBuf::from("/w"), Vec::new());
+            std::thread::spawn(move || claim_and_send(&path, &request, Duration::from_secs(5)))
+        };
+        assert!(pending(&first.listener, 5_000), "the client connected");
+        release(first);
+        assert!(matches!(client.join().unwrap(), Handed::Server(_)));
+    }
+
+    #[test]
+    fn claim_and_send_claims_again_only_once() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(Bound { listener, .. }) = claim(&path) else {
+            panic!("binds");
+        };
+        let client = {
+            let path = path.clone();
+            let request = CliRequest::new(PathBuf::from("/w"), Vec::new());
+            std::thread::spawn(move || claim_and_send(&path, &request, Duration::from_secs(5)))
+        };
+        // An app that closes every connection without a reply.
+        for try_ in 1..=2 {
+            assert!(pending(&listener, 5_000), "try {try_} connected");
+            drop(listener.accept().unwrap());
+        }
+        let Handed::Reply(reply) = client.join().unwrap() else {
+            panic!("an app held the socket");
+        };
+        assert!(matches!(reply, Err(SendError::Dropped(_))), "{reply:?}");
+        assert!(!pending(&listener, 100), "no third try");
     }
 
     #[test]
