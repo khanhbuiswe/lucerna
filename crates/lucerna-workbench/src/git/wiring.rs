@@ -266,7 +266,10 @@ impl Workbench {
                 self.git.update(cx, |git, cx| git.paths_changed(paths, cx));
             }
             WorktreeEvent::Rescanned => self.git.update(cx, |git, cx| git.rescan(cx)),
-            WorktreeEvent::ScanProgress | WorktreeEvent::ScanComplete => {}
+            // Reading a folder changes no file.
+            WorktreeEvent::ScanProgress
+            | WorktreeEvent::ScanComplete
+            | WorktreeEvent::Loaded(_) => {}
         }
     }
 

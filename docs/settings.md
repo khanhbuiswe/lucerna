@@ -42,6 +42,7 @@ The settings use VS Code's names, for example:
 | `editor.autoClosingOvertype` | `"auto"` | Type over a closer: `always`, `auto` (only ones the editor inserted) or `never` |
 | `editor.autoClosingDelete` | `"auto"` | Delete the closer with its opener: `always`, `auto` or `never` |
 | `editor.autoSurround` | `"languageDefined"` | Wrap a selection when typing a bracket or quote: `languageDefined`, `quotes`, `brackets` or `never` |
+| `files.scanDepth` | `5` | Outside a git repository, folders this many levels deep load when you expand them. `0` scans everything. |
 | `files.eol` | `"auto"` | Line ending for new text |
 | `files.encoding` | `"utf8"` | Reserved: encoding for new files, not read yet (takes effect in a later release) |
 | `files.insertFinalNewline` | `false` | Add a final newline on save |

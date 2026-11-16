@@ -13,7 +13,7 @@ use gpui::{
     IntoElement, KeyDownEvent, ModifiersChangedEvent, ParentElement, Pixels, Render, Styled,
     Subscription, Task, WeakFocusHandle, Window, WindowHandle, div, prelude::*, px,
 };
-use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
+use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent, WorktreeSnapshot};
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution, SettingsView};
 use lucerna_text::Point;
 use serde_json::Value;
@@ -126,8 +126,13 @@ pub struct Workbench {
     file_operations: Rc<Cell<usize>>,
     /// What the Explorer's Cut or Copy last took.
     explorer_clipboard: Option<ExplorerClipboard>,
-    /// The options of the scan, from `files.exclude`.
+    /// The options of the scan, from `files.exclude` and `files.scanDepth`.
     scan_options: ScanOptions,
+    /// This window, for its status bar messages.
+    window_id: gpui::WindowId,
+    /// The message that folders past `files.scanDepth` load when expanded
+    /// was shown; it shows once per window.
+    unloaded_notice_shown: bool,
     /// Re-themes and rescans when [`AppState`] changes.
     _settings: Subscription,
     /// [`ConfigState::keymap_generation`] as last seen.
@@ -396,12 +401,18 @@ impl Workbench {
             let workbench = cx.weak_entity();
             cx.new(|cx| ExtensionsPage::new(workbench, cx))
         };
+        // Read once: the scan, search and git discovery share its `$HOME`.
+        let scan_options = scan_options(settings.read(cx).view(cx));
         let search_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
             let searchable = single_file.is_none();
+            let home = scan_options.home.clone();
             let (settings, documents) = (settings.clone(), documents.clone());
             cx.new(|cx| {
-                SearchView::new(root, workbench, documents, searchable, settings, window, cx)
+                let mut view =
+                    SearchView::new(root, workbench, documents, searchable, settings, window, cx);
+                view.set_home(home);
+                view
             })
         };
         let references_view = {
@@ -426,9 +437,11 @@ impl Workbench {
         let git = {
             let settings = settings.clone();
             let id = window.window_handle().window_id();
+            let home = scan_options.home.clone();
             cx.new(|cx| {
                 let mut store = GitStore::new(root.clone(), settings, cx);
                 store.set_window(id);
+                store.set_home(home);
                 store
             })
         };
@@ -581,9 +594,6 @@ impl Workbench {
         let document_status = {
             let (groups, docs) = (editor_groups.clone(), documents.clone());
             cx.new(|_| DocumentStatusItem::new(groups, docs))
-        };
-        let scan_options = ScanOptions {
-            exclude: enabled_globs(settings.read(cx).view(cx), "files.exclude"),
         };
         let scan_started = std::time::Instant::now();
         let scanning = single_file.is_none();
@@ -812,6 +822,8 @@ impl Workbench {
             file_operations: Rc::default(),
             explorer_clipboard: None,
             scan_options,
+            window_id: window.window_handle().window_id(),
+            unloaded_notice_shown: false,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
             languages_generation: settings.read(cx).languages_generation(),
@@ -1115,7 +1127,8 @@ impl Workbench {
         &self.worktree
     }
 
-    /// The options of the current scan; `files.exclude` changes replace them.
+    /// The options of the current scan; `files.exclude` and
+    /// `files.scanDepth` changes replace them.
     pub fn scan_options(&self) -> &ScanOptions {
         &self.scan_options
     }
@@ -1134,11 +1147,14 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Rescans when the window's `files.exclude` changed.
+    /// Rescans when the window's `files.exclude` or `files.scanDepth`
+    /// changed.
     fn excludes_changed(&mut self, cx: &mut Context<Self>) {
-        let exclude = enabled_globs(self.settings.read(cx).view(cx), "files.exclude");
-        if exclude != self.scan_options.exclude {
-            self.scan_options = ScanOptions { exclude };
+        let options = scan_options(self.settings.read(cx).view(cx));
+        if options.exclude != self.scan_options.exclude
+            || options.scan_depth != self.scan_options.scan_depth
+        {
+            self.scan_options = options;
             self.worktree.set_options(self.scan_options.clone());
         }
     }
@@ -1307,6 +1323,20 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Says once per window, after a scan that left folders past
+    /// `files.scanDepth` unloaded, that they load when expanded.
+    fn show_unloaded_notice(&mut self, snapshot: &WorktreeSnapshot, cx: &mut Context<Self>) {
+        if self.unloaded_notice_shown || snapshot.unloaded().is_empty() {
+            return;
+        }
+        let Some(depth) = self.scan_options.scan_depth else {
+            return;
+        };
+        self.unloaded_notice_shown = true;
+        let text = format!("Some folders deeper than {depth} levels load when expanded");
+        crate::status_message::show(self.window_id, text, cx);
+    }
+
     /// Hands a worktree event to every view that follows the tree. Called
     /// for each event the worktree sends; tests call it directly.
     pub fn on_worktree_event(&mut self, ev: &WorktreeEvent, cx: &mut Context<Self>) {
@@ -1331,6 +1361,16 @@ impl Workbench {
             }
         }
         let snapshot = self.worktree.snapshot();
+        // Set on the first `ScanComplete`: until then the unloaded folders
+        // are not all known, and searches wait.
+        if self.scan_complete_logged {
+            self.search_view
+                .update(cx, |view, cx| view.set_unloaded(snapshot.unloaded(), cx));
+        }
+        // Only a finished scan lists every unloaded folder.
+        if matches!(ev, WorktreeEvent::ScanComplete | WorktreeEvent::Rescanned) {
+            self.show_unloaded_notice(&snapshot, cx);
+        }
         let decorate = decorates_external_changes(self.settings.read(cx).view(cx));
         // Open documents tell our own saves from other programs' writes
         // once they reload (`DocumentEvent::ChangedOnDisk`).
@@ -3082,6 +3122,23 @@ fn extname(path: &Path) -> String {
 fn keymap_generation(cx: &App) -> u64 {
     cx.try_global::<ConfigState>()
         .map_or(0, ConfigState::keymap_generation)
+}
+
+/// The default `files.scanDepth`, for a value that is not an integer.
+const DEFAULT_SCAN_DEPTH: i64 = 5;
+
+/// The options of the folder scan: `files.exclude`, and `files.scanDepth`
+/// (`0` or less scans everything). Lookups above the root stop at `$HOME`,
+/// as search and git discovery do.
+fn scan_options(settings: SettingsView<'_>) -> ScanOptions {
+    let depth = settings
+        .get::<i64>("files.scanDepth", None)
+        .unwrap_or(DEFAULT_SCAN_DEPTH);
+    ScanOptions {
+        exclude: enabled_globs(settings, "files.exclude"),
+        scan_depth: usize::try_from(depth).ok().filter(|d| *d > 0),
+        home: std::env::home_dir(),
+    }
 }
 
 /// The globs of a glob → bool setting such as `files.exclude` that are

@@ -1074,3 +1074,45 @@ fn leaving_the_window_mid_theme_preview_reverts(cx: &mut TestAppContext) {
     );
     assert_eq!(theme_name(&mut vcx), "Lucerna Light", "settings apply");
 }
+
+/// A new `files.scanDepth` rescans with it, and the notice (not shown
+/// yet) names the new depth.
+#[gpui::test]
+fn scan_depth_change_rescans(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    std::fs::create_dir_all(dirs.root.path().join("a/b")).unwrap();
+    std::fs::write(dirs.root.path().join("a/b/c.txt"), "c\n").unwrap();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    assert!(wb.read_with(cx, |wb, _| {
+        wb.worktree().snapshot().contains(Path::new("a/b/c.txt"))
+    }));
+    let message = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            status_message::current(window.window_handle().window_id(), cx).map(|m| m.to_string())
+        })
+    };
+    assert_eq!(message(cx), None, "everything was loaded");
+
+    write(&dirs.settings(), "{ \"files.scanDepth\": 2 }", cx);
+    assert_eq!(
+        wb.read_with(cx, |wb, _| wb.scan_options().scan_depth),
+        Some(2)
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| {
+        let snapshot = wb.worktree().snapshot();
+        snapshot.scan_complete() && snapshot.is_unloaded(Path::new("a/b"))
+    }) {
+        assert!(Instant::now() < deadline, "the rescan did not unload a/b");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Rescanned, cx)
+    });
+    draw(cx);
+    assert_eq!(
+        message(cx).as_deref(),
+        Some("Some folders deeper than 2 levels load when expanded")
+    );
+}

@@ -215,6 +215,30 @@ impl ExplorerModel {
         }
     }
 
+    /// Whether `dir` (root-relative) is expanded.
+    pub fn is_expanded(&self, dir: &Path) -> bool {
+        self.expanded.contains(dir)
+    }
+
+    /// The folder on the way to `path` (root-relative), or `path` itself,
+    /// that the scan left unloaded (past `files.scanDepth`), if any.
+    pub fn unloaded_ancestor(&self, path: &Path) -> Option<Arc<Path>> {
+        path.ancestors()
+            .filter(|a| !a.as_os_str().is_empty())
+            .find(|a| self.snapshot.is_unloaded(a))
+            .map(Arc::from)
+    }
+
+    /// The expanded folders the scan left unloaded: they show nothing until
+    /// loaded.
+    pub fn expanded_unloaded(&self) -> Vec<Arc<Path>> {
+        self.expanded
+            .iter()
+            .filter(|dir| self.snapshot.is_unloaded(dir))
+            .cloned()
+            .collect()
+    }
+
     /// The rows in tree order; while a New File/Folder name is typed, its
     /// placeholder row too.
     pub fn visible_rows(&self) -> &[Row] {

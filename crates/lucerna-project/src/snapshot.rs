@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
@@ -41,6 +41,9 @@ pub struct WorktreeSnapshot {
     index: Arc<HashMap<Arc<Path>, Range<usize>>>,
     complete: bool,
     root_status: RootStatus,
+    /// Folders listed as entries but not scanned, because they lie past
+    /// `files.scanDepth` outside a git repository.
+    unloaded: Arc<HashSet<Arc<Path>>>,
 }
 
 impl WorktreeSnapshot {
@@ -79,7 +82,23 @@ impl WorktreeSnapshot {
             index: Arc::new(index),
             complete,
             root_status: RootStatus::Readable,
+            unloaded: Arc::new(HashSet::new()),
         }
+    }
+
+    pub(crate) fn with_unloaded(mut self, set: HashSet<Arc<Path>>) -> Self {
+        self.unloaded = Arc::new(set);
+        self
+    }
+
+    /// Whether the root-relative folder `dir` is left unscanned by the depth
+    /// limit.
+    pub fn is_unloaded(&self, dir: &Path) -> bool {
+        self.unloaded.contains(dir)
+    }
+
+    pub fn unloaded(&self) -> &HashSet<Arc<Path>> {
+        &self.unloaded
     }
 
     /// The same tree, scanned with the root in `status`. Test support too.

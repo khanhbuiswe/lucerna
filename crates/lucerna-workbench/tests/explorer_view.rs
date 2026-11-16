@@ -1119,3 +1119,167 @@ fn unreadable_root_says_why(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("explorer-root-message").is_none());
     assert_eq!(visible(&wb, cx), ["a.rs"]);
 }
+
+/// A folder outside any git repository with `a/b/c.txt`: with
+/// `files.scanDepth: 2`, `a/b` is left unloaded. The temp folder is not
+/// under `$HOME` nor a repository, so the depth limit applies.
+fn deep_project() -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+    std::fs::write(dir.path().join("a/b/c.txt"), "c\n").unwrap();
+    dir
+}
+
+/// Waits for the worktree to read `path`, then delivers `Loaded` for
+/// `folder` by hand (tests have no event pump).
+fn deliver_loaded(wb: &Entity<Workbench>, path: &str, folder: &str, cx: &mut VisualTestContext) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| {
+        wb.worktree().snapshot().contains(Path::new(path))
+    }) {
+        assert!(Instant::now() < deadline, "{folder} was never loaded");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ev = WorktreeEvent::Loaded(vec![p(folder)]);
+    wb.update(cx, |wb, cx| wb.on_worktree_event(&ev, cx));
+    draw(cx);
+}
+
+#[gpui::test]
+fn expanding_unloaded_folder_loads_it(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "files.scanDepth": 2 }"#));
+    let dir = deep_project();
+    let (wb, cx) = open(dir.path(), cx);
+    assert!(wb.read_with(cx, |wb, _| {
+        wb.worktree().snapshot().is_unloaded(Path::new("a/b"))
+    }));
+    click("explorer-row-a", cx);
+    click("explorer-row-a/b", cx);
+    deliver_loaded(&wb, "a/b/c.txt", "a/b", cx);
+    assert_eq!(visible(&wb, cx), ["a", "a/b", "a/b/c.txt"]);
+    assert!(cx.debug_bounds("explorer-row-a/b/c.txt").is_some());
+}
+
+#[gpui::test]
+fn revealing_file_in_unloaded_folder_loads_it(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "files.scanDepth": 2 }"#));
+    let dir = deep_project();
+    let (wb, cx) = open(dir.path(), cx);
+    assert!(!wb.read_with(cx, |wb, _| {
+        wb.worktree().snapshot().contains(Path::new("a/b/c.txt"))
+    }));
+    wb.update(cx, |wb, cx| {
+        wb.open_path(p("a/b/c.txt"), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    deliver_loaded(&wb, "a/b/c.txt", "a/b", cx);
+    assert_eq!(selection(&wb, cx), Selection::Path(p("a/b/c.txt")));
+    assert_eq!(visible(&wb, cx), ["a", "a/b", "a/b/c.txt"]);
+}
+
+fn status_message(cx: &mut VisualTestContext) -> Option<String> {
+    cx.update(|window, cx| {
+        lucerna_workbench::status_message::current(window.window_handle().window_id(), cx)
+            .map(|m| m.to_string())
+    })
+}
+
+#[gpui::test]
+fn status_message_once(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "files.scanDepth": 2 }"#));
+    let dir = deep_project();
+    let (wb, cx) = open(dir.path(), cx);
+    assert_eq!(
+        status_message(cx).as_deref(),
+        Some("Some folders deeper than 2 levels load when expanded")
+    );
+    cx.executor()
+        .advance_clock(lucerna_workbench::status_message::DURATION);
+    draw(cx);
+    assert_eq!(status_message(cx), None);
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::ScanComplete, cx)
+    });
+    draw(cx);
+    assert_eq!(status_message(cx), None);
+}
+
+#[gpui::test]
+fn no_status_message_when_everything_loaded(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = deep_project();
+    let (_wb, cx) = open(dir.path(), cx);
+    assert_eq!(status_message(cx), None);
+}
+
+#[gpui::test]
+fn scan_depth_zero_scans_all(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "files.scanDepth": 0 }"#));
+    let dir = deep_project();
+    let (wb, cx) = open(dir.path(), cx);
+    wb.read_with(cx, |wb, _| {
+        assert_eq!(wb.scan_options().scan_depth, None);
+        let snapshot = wb.worktree().snapshot();
+        assert!(snapshot.contains(Path::new("a/b/c.txt")));
+        assert!(snapshot.unloaded().is_empty());
+    });
+}
+
+#[gpui::test]
+fn scan_depth_setting_reaches_scan_options(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "files.scanDepth": 2 }"#));
+    let dir = deep_project();
+    let (wb, cx) = open(dir.path(), cx);
+    wb.read_with(cx, |wb, _| {
+        assert_eq!(wb.scan_options().scan_depth, Some(2));
+        assert_eq!(wb.scan_options().home, std::env::home_dir());
+    });
+}
+
+/// A `files.scanDepth` that is not an integer falls back to the default
+/// depth instead of meaning "no limit"; only `0` or less means that.
+#[gpui::test]
+fn scan_depth_of_wrong_type_is_the_default(cx: &mut TestAppContext) {
+    for json in [
+        r#"{ "files.scanDepth": "2" }"#,
+        r#"{ "files.scanDepth": 2.5 }"#,
+    ] {
+        init(cx, Some(json));
+        let dir = deep_project();
+        let (wb, vcx) = open(dir.path(), cx);
+        assert_eq!(
+            wb.read_with(vcx, |wb, _| wb.scan_options().scan_depth),
+            Some(5),
+            "{json}"
+        );
+    }
+    init(cx, Some(r#"{ "files.scanDepth": -1 }"#));
+    let dir = deep_project();
+    let (wb, vcx) = open(dir.path(), cx);
+    assert_eq!(
+        wb.read_with(vcx, |wb, _| wb.scan_options().scan_depth),
+        None
+    );
+}
+
+/// Opening a file inside an unloaded folder loads the folders on the way
+/// even with `explorer.autoReveal` off; the tree is not revealed.
+#[gpui::test]
+fn opening_file_in_unloaded_folder_loads_it_without_auto_reveal(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{ "files.scanDepth": 2, "explorer.autoReveal": false }"#),
+    );
+    let dir = deep_project();
+    let (wb, cx) = open(dir.path(), cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(p("a/b/c.txt"), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    deliver_loaded(&wb, "a/b/c.txt", "a/b", cx);
+    assert!(wb.read_with(cx, |wb, _| {
+        !wb.worktree().snapshot().is_unloaded(Path::new("a/b"))
+    }));
+    assert_eq!(selection(&wb, cx), Selection::Root);
+    assert_eq!(visible(&wb, cx), ["a"]);
+}

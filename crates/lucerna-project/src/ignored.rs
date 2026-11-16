@@ -4,26 +4,50 @@
 //! discovers while descending. For a path reported by the watcher we need the
 //! same answer without a walk, so this module consults the same sources:
 //! `.ignore`, `.gitignore` and `.git/info/exclude` in every directory from the
-//! filesystem root down to the path's parent (the walker's `parents(true)`),
-//! deepest directory first, plus the `files.exclude` overrides. A path is
-//! ignored when any of its ancestors (or itself) is, because the walker never
+//! path's parent up to the filesystem root, or up to `home` inclusive when
+//! the worktree root lies under it (see [`parent_ceiling`]), deepest
+//! directory first, plus the `files.exclude` overrides. A path is ignored
+//! when any of its ancestors (or itself) is, because the walker never
 //! descends into an ignored directory.
+//!
+//! Below a ceiling the walker cannot use the `ignore` crate's
+//! `parents(true)`, which always reads up to the filesystem root, and
+//! `WalkBuilder::add_ignore` anchors patterns at the current directory, not
+//! at the ignore file's folder. So it reads no parent files itself and asks
+//! [`ParentFilter`], which decides with this checker.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::overrides::{Override, OverrideBuilder};
 
-use crate::worktree::{ScanOptions, always_skipped};
+use crate::worktree::{ScanOptions, always_skipped, parent_ceiling};
 
 /// Per-directory matchers in the walker's precedence order.
 struct DirRules(Vec<Gitignore>);
 
+impl DirRules {
+    /// The first matcher's verdict on the absolute `abs`.
+    fn matched(&self, abs: &Path, is_dir: bool) -> Match<()> {
+        for matcher in &self.0 {
+            match matcher.matched(abs, is_dir) {
+                Match::Ignore(_) => return Match::Ignore(()),
+                Match::Whitelist(_) => return Match::Whitelist(()),
+                Match::None => {}
+            }
+        }
+        Match::None
+    }
+}
+
 /// Caches parsed ignore files, so create one per batch of paths.
 pub(crate) struct IgnoreChecker {
     root: PathBuf,
+    /// The last folder whose ignore files count; `None`: the filesystem root.
+    ceiling: Option<PathBuf>,
     overrides: Option<Override>,
     dirs: HashMap<PathBuf, DirRules>,
 }
@@ -37,6 +61,7 @@ impl IgnoreChecker {
         }
         Self {
             root: root.to_path_buf(),
+            ceiling: parent_ceiling(root, opts.home.as_deref()).map(Path::to_path_buf),
             overrides: builder.build().ok(),
             dirs: HashMap::new(),
         }
@@ -74,12 +99,13 @@ impl IgnoreChecker {
                 .dirs
                 .entry(d.to_path_buf())
                 .or_insert_with(|| load_rules(d));
-            for matcher in &rules.0 {
-                match matcher.matched(&abs, is_dir) {
-                    Match::Ignore(_) => return true,
-                    Match::Whitelist(_) => return false,
-                    Match::None => {}
-                }
+            match rules.matched(&abs, is_dir) {
+                Match::Ignore(()) => return true,
+                Match::Whitelist(()) => return false,
+                Match::None => {}
+            }
+            if self.ceiling.as_deref() == Some(d) {
+                break;
             }
             dir = d.parent();
         }
@@ -103,6 +129,76 @@ fn load_rules(dir: &Path) -> DirRules {
         })
         .collect();
     DirRules(matchers)
+}
+
+/// The walker's stand-in for `parents(true)` when [`parent_ceiling`] cuts
+/// the parent lookups at `home`: the ignore files of the folders from the
+/// root's parent up to the ceiling, decided as [`IgnoreChecker`] does.
+pub(crate) struct ParentFilter {
+    root: PathBuf,
+    /// The walker's overrides: a path they match is the walker's to decide.
+    overrides: Option<Override>,
+    /// The folders above the root, deepest first.
+    parents: Vec<DirRules>,
+    /// Weighs the root's own rules against `parents` for a path they ignore.
+    checker: Mutex<IgnoreChecker>,
+}
+
+impl ParentFilter {
+    /// `None` when no folder from the root's parent up to `ceiling` has an
+    /// ignore file, so nothing needs filtering.
+    pub(crate) fn new(
+        root: &Path,
+        opts: &ScanOptions,
+        ceiling: &Path,
+        overrides: Option<Override>,
+    ) -> Option<Self> {
+        let parents: Vec<DirRules> = root
+            .ancestors()
+            .skip(1)
+            .take_while(|dir| dir.starts_with(ceiling))
+            .map(load_rules)
+            .filter(|rules| !rules.0.is_empty())
+            .collect();
+        if parents.is_empty() {
+            return None;
+        }
+        Some(Self {
+            root: root.to_path_buf(),
+            overrides,
+            parents,
+            checker: Mutex::new(IgnoreChecker::new(root, opts)),
+        })
+    }
+
+    /// Whether the walker may keep `entry`, as far as the parent folders'
+    /// ignore files go. The walker has already applied its other rules.
+    pub(crate) fn keeps(&self, entry: &ignore::DirEntry) -> bool {
+        if entry.depth() == 0 {
+            return true;
+        }
+        let (path, is_dir) = (entry.path(), entry.file_type().is_some_and(|t| t.is_dir()));
+        if let Some(overrides) = &self.overrides
+            && !overrides.matched(path, is_dir).is_none()
+        {
+            return true;
+        }
+        // Most paths match no parent rule: skip the checker and its lock.
+        let parent_ignores = self
+            .parents
+            .iter()
+            .map(|rules| rules.matched(path, is_dir))
+            .find(|m| !m.is_none())
+            .is_some_and(|m| m.is_ignore());
+        if !parent_ignores {
+            return true;
+        }
+        let Ok(rel) = path.strip_prefix(&self.root) else {
+            return true;
+        };
+        let mut checker = self.checker.lock().unwrap_or_else(|e| e.into_inner());
+        !checker.single(rel, is_dir)
+    }
 }
 
 /// Files whose change alters what the walker would include.
@@ -175,12 +271,73 @@ mod tests {
                 "**/.git".into(),
                 "docs/*.md".into(),
             ],
+            ..Default::default()
         };
-        let walked: HashSet<PathBuf> = walk_builder(&root, &opts)
+        let walked: HashSet<PathBuf> = walk_builder(&root, &opts, |_| true)
             .build()
             .filter_map(Result::ok)
             .filter_map(|e| e.path().strip_prefix(&root).ok().map(Path::to_path_buf))
             .collect();
+        let mut on_disk = Vec::new();
+        all_paths(&root, &root, &mut on_disk);
+        let mut checker = IgnoreChecker::new(&root, &opts);
+        for (rel, is_dir) in on_disk {
+            assert_eq!(
+                checker.is_ignored(&rel, is_dir),
+                !walked.contains(&rel),
+                "disagreement on {}",
+                rel.display()
+            );
+        }
+    }
+
+    /// With `home` set, ignore files above it apply to neither, and the
+    /// root's own rules can still re-include what one in `home` ignores.
+    #[test]
+    fn agrees_with_the_walker_below_home() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let root = home.join("work/proj");
+        write(tmp.path(), ".gitignore", "*.txt\n");
+        write(&home, ".gitignore", "*.log\ngen/\n/work/proj/rooted.md\n");
+        write(&home, "work/.ignore", "scratch/\n");
+        write(&root, ".gitignore", "!keep.log\n");
+        write(&root, "sub/.gitignore", "!*.log\n");
+        for f in [
+            "a.txt",
+            "t.log",
+            "keep.log",
+            "rooted.md",
+            "sub/rooted.md",
+            "sub/t.log",
+            "gen/g",
+            "scratch/s",
+            "src/lib.rs",
+        ] {
+            write(&root, f, "x");
+        }
+        let opts = ScanOptions {
+            home: Some(home.clone()),
+            ..Default::default()
+        };
+        let walked: HashSet<PathBuf> = walk_builder(&root, &opts, |_| true)
+            .build()
+            .filter_map(Result::ok)
+            .filter_map(|e| e.path().strip_prefix(&root).ok().map(Path::to_path_buf))
+            .collect();
+        for (rel, kept) in [
+            ("a.txt", true),
+            ("t.log", false),
+            ("keep.log", true),
+            ("rooted.md", false),
+            ("sub/rooted.md", true),
+            ("sub/t.log", true),
+            ("gen", false),
+            ("scratch", false),
+            ("src/lib.rs", true),
+        ] {
+            assert_eq!(walked.contains(Path::new(rel)), kept, "walker on {rel}");
+        }
         let mut on_disk = Vec::new();
         all_paths(&root, &root, &mut on_disk);
         let mut checker = IgnoreChecker::new(&root, &opts);

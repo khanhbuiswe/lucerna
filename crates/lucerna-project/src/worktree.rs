@@ -15,7 +15,7 @@ use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
 
 use crate::coalesce::{Coalesced, RESCAN_THRESHOLD};
-use crate::ignored::{IgnoreChecker, is_ignore_source};
+use crate::ignored::{IgnoreChecker, ParentFilter, is_ignore_source};
 use crate::snapshot::{Entry, EntryKind, RootStatus, WorktreeSnapshot};
 use crate::watch::{Watcher, panic_message};
 
@@ -33,6 +33,13 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(16);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanOptions {
     pub exclude: Vec<String>,
+    /// Folders nested this many levels below the root are left unscanned
+    /// unless the root is inside a git repository. `None`: no limit.
+    pub scan_depth: Option<usize>,
+    /// Where lookups above the root stop when the root lies under it: the
+    /// search for an enclosing repository and the parent folders' ignore
+    /// files. `None`: no ceiling.
+    pub home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +61,11 @@ pub enum WorktreeEvent {
     ScanComplete,
     Changed(Vec<Change>),
     Rescanned,
+    /// These root-relative folders, unloaded until now, were read on
+    /// request ([`Worktree::load`]); the snapshot now holds what they
+    /// contain. Nothing changed on disk. Sent even for an empty folder,
+    /// since it is no longer unloaded.
+    Loaded(Vec<Arc<Path>>),
 }
 
 /// Input to the background thread.
@@ -62,6 +74,8 @@ enum Command {
     SetOptions(ScanOptions, u64),
     /// A coalesced batch from the file watcher.
     FsEvents(Coalesced),
+    /// Load the unloaded folders on this root-relative path.
+    Load(Arc<Path>),
     Shutdown,
 }
 
@@ -109,6 +123,8 @@ impl Worktree {
             replay_until: Cell::new(None),
             ignores_case: Cell::new(None),
             root_status: RefCell::new(RootStatus::Readable),
+            unloaded: RefCell::new(HashSet::new()),
+            loaded: RefCell::new(HashSet::new()),
             #[cfg(test)]
             folders_listed: Cell::new(0),
             #[cfg(test)]
@@ -186,6 +202,14 @@ impl Worktree {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let _ = self.commands.send(Command::SetOptions(opts, generation));
     }
+
+    /// Loads every unloaded folder that is `rel` (root-relative) or one of
+    /// its ancestors, one level each, then publishes and sends `Loaded`
+    /// with those folders. Does nothing if no folder on the path is
+    /// unloaded.
+    pub fn load(&self, rel: &Path) {
+        let _ = self.commands.send(Command::Load(Arc::from(rel)));
+    }
 }
 
 impl Drop for Worktree {
@@ -231,12 +255,21 @@ pub(crate) fn expand_plain_folder(pattern: &str) -> Vec<String> {
 /// The one walker configuration shared by the scan and by content search.
 ///
 /// Ignore-source policy: hidden files are shown; project-level sources apply
-/// (`.gitignore` including parent directories, `.git/info/exclude`, `.ignore`,
-/// even without a `.git` directory); the user's global gitignore does not, so
-/// results do not depend on the machine. `files.exclude` globs are overrides.
-/// Entries [`always_skipped`] names are skipped.
-pub(crate) fn walk_builder(root: &Path, opts: &ScanOptions) -> WalkBuilder {
-    walk_builder_with_includes(root, opts, &[])
+/// (`.gitignore` including parent directories up to `opts.home` (see
+/// [`parent_ceiling`]), `.git/info/exclude`, `.ignore`, even without a `.git`
+/// directory); the user's global gitignore does not, so results do not
+/// depend on the machine. `files.exclude` globs are overrides. Entries
+/// [`always_skipped`] names are skipped.
+///
+/// `filter` is the caller's own entry filter, asked only about entries the
+/// walker's filters keep. Callers must not call `filter_entry`, which
+/// would replace those.
+pub(crate) fn walk_builder(
+    root: &Path,
+    opts: &ScanOptions,
+    filter: impl Fn(&ignore::DirEntry) -> bool + Send + Sync + 'static,
+) -> WalkBuilder {
+    walk_builder_with_includes(root, opts, &[], filter)
 }
 
 /// `walk_builder` plus positive `include` globs in the same override set, so
@@ -247,7 +280,9 @@ pub(crate) fn walk_builder_with_includes(
     root: &Path,
     opts: &ScanOptions,
     include: &[String],
+    filter: impl Fn(&ignore::DirEntry) -> bool + Send + Sync + 'static,
 ) -> WalkBuilder {
+    let ceiling = parent_ceiling(root, opts.home.as_deref());
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -255,10 +290,10 @@ pub(crate) fn walk_builder_with_includes(
         .git_global(false)
         .git_exclude(true)
         .ignore(true)
-        .parents(true)
+        // Below a ceiling, `ParentFilter` reads the parent folders instead.
+        .parents(ceiling.is_none())
         .require_git(false)
-        .follow_links(false)
-        .filter_entry(|entry| !always_skipped(entry.file_name()));
+        .follow_links(false);
     let mut overrides = OverrideBuilder::new(root);
     for glob in include.iter().flat_map(|g| expand_plain_folder(g)) {
         if let Err(err) = overrides.add(&glob) {
@@ -270,13 +305,29 @@ pub(crate) fn walk_builder_with_includes(
             tracing::warn!(%glob, %err, "invalid files.exclude glob");
         }
     }
-    match overrides.build() {
+    let overrides = match overrides.build() {
         Ok(o) => {
-            builder.overrides(o);
+            builder.overrides(o.clone());
+            Some(o)
         }
-        Err(err) => tracing::warn!(%err, "could not build exclude overrides"),
-    }
+        Err(err) => {
+            tracing::warn!(%err, "could not build exclude overrides");
+            None
+        }
+    };
+    let parents = ceiling.and_then(|c| ParentFilter::new(root, opts, c, overrides));
+    builder.filter_entry(move |entry| {
+        !always_skipped(entry.file_name())
+            && parents.as_ref().is_none_or(|p| p.keeps(entry))
+            && filter(entry)
+    });
     builder
+}
+
+/// Where lookups above `root` stop: `home`, inclusive, when `root` lies
+/// under it (as in Zed). `None`: they go up to the filesystem root.
+pub(crate) fn parent_ceiling<'a>(root: &Path, home: Option<&'a Path>) -> Option<&'a Path> {
+    home.filter(|h| root.starts_with(h))
 }
 
 fn kind_of(meta: &fs::Metadata) -> EntryKind {
@@ -312,6 +363,10 @@ struct Worker {
     ignores_case: Cell<Option<bool>>,
     /// The root as the last scan found it; published with each snapshot.
     root_status: RefCell<RootStatus>,
+    /// Folders the last scan left unloaded; published with each snapshot.
+    unloaded: RefCell<HashSet<Arc<Path>>>,
+    /// Folders loaded on request; loaded again after each full scan.
+    loaded: RefCell<HashSet<Arc<Path>>>,
     /// How many folders the last batch listed to catch respelled paths.
     #[cfg(test)]
     folders_listed: Cell<usize>,
@@ -354,6 +409,7 @@ impl Worker {
                         }
                     }
                 }
+                Command::Load(rel) => self.load(&rel, &opts),
                 Command::SetOptions(o, g) => {
                     let (mut next_opts, mut generation) = (o, g);
                     // Coalesce queued requests down to the latest.
@@ -361,7 +417,9 @@ impl Worker {
                         match next {
                             Command::SetOptions(o, g) => (next_opts, generation) = (o, g),
                             Command::Shutdown => return,
-                            fs @ Command::FsEvents(_) => backlog.push_back(fs),
+                            other @ (Command::FsEvents(_) | Command::Load(_)) => {
+                                backlog.push_back(other)
+                            }
                         }
                     }
                     opts = next_opts;
@@ -398,6 +456,9 @@ impl Worker {
             });
             if matches!(outcome, ScanOutcome::Aborted) {
                 return false;
+            }
+            if matches!(outcome, ScanOutcome::Completed) {
+                self.reload(opts, &mut entries);
             }
             // After a panic, publish what was collected so waiters unblock.
             self.publish(entries, true);
@@ -505,8 +566,14 @@ impl Worker {
             added_paths.contains(path) || snapshot.contains(path)
         };
         let mut listings = Listings::default();
+        let unloaded = self.unloaded.borrow().clone();
         for change in changes {
             let mut rel = change.path;
+            // Inside a folder left unloaded: not in the snapshot, and not
+            // shown until the folder is loaded.
+            if rel.ancestors().skip(1).any(|a| unloaded.contains(a)) {
+                continue;
+            }
             let mut meta = fs::symlink_metadata(self.root.join(&rel)).ok();
             if let Some(meta) = &meta
                 && checker.is_ignored(&rel, kind_of(meta) == EntryKind::Dir)
@@ -606,6 +673,11 @@ impl Worker {
         }
         #[cfg(test)]
         self.folders_listed.set(listings.dirs.len());
+        if !removed.is_empty() {
+            let gone = |p: &Arc<Path>| p.ancestors().any(|a| removed.contains(a));
+            self.unloaded.borrow_mut().retain(|p| !gone(p));
+            self.loaded.borrow_mut().retain(|p| !gone(p));
+        }
         if !added.is_empty() || !removed.is_empty() {
             let mut entries: Vec<Entry> = snapshot
                 .entries()
@@ -708,13 +780,105 @@ impl Worker {
         }
     }
 
+    /// Handles [`Command::Load`]: loads the unloaded folders on `rel`,
+    /// publishes, and reports those folders as `Loaded`.
+    fn load(&self, rel: &Path, opts: &ScanOptions) {
+        let mut checker = IgnoreChecker::new(&self.root, opts);
+        let mut added = Vec::new();
+        let folders = self.load_path(rel, &mut checker, &mut added);
+        if folders.is_empty() {
+            return;
+        }
+        let mut entries = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries()
+            .to_vec();
+        entries.extend(added);
+        self.publish(entries, true);
+        self.send(WorktreeEvent::Loaded(folders));
+    }
+
+    /// After a full scan: loads again the folders loaded on request that
+    /// still exist, shallowest first, adding what they hold to `entries`.
+    fn reload(&self, opts: &ScanOptions, entries: &mut Vec<Entry>) {
+        self.loaded
+            .borrow_mut()
+            .retain(|p| fs::symlink_metadata(self.root.join(p)).is_ok());
+        let mut paths: Vec<Arc<Path>> = self.loaded.borrow().iter().cloned().collect();
+        if paths.is_empty() {
+            return;
+        }
+        paths.sort_by_key(|p| p.components().count());
+        let mut checker = IgnoreChecker::new(&self.root, opts);
+        for path in paths {
+            self.load_path(&path, &mut checker, entries);
+        }
+    }
+
+    /// Loads every unloaded folder that is `rel` or an ancestor of it,
+    /// shallowest first, pushing what they hold to `out`. A folder that
+    /// loading its parent left unloaded is loaded too. Returns the folders
+    /// loaded; empty if none was unloaded.
+    fn load_path(
+        &self,
+        rel: &Path,
+        checker: &mut IgnoreChecker,
+        out: &mut Vec<Entry>,
+    ) -> Vec<Arc<Path>> {
+        let mut ancestors: Vec<&Path> = rel.ancestors().collect();
+        ancestors.reverse();
+        let mut folders = Vec::new();
+        for dir in ancestors {
+            let Some(dir) = self.unloaded.borrow_mut().take(dir) else {
+                continue;
+            };
+            self.load_dir(&dir, checker, out);
+            self.loaded.borrow_mut().insert(dir.clone());
+            folders.push(dir);
+        }
+        folders
+    }
+
+    /// Reads the unloaded folder `dir` one level. A child folder is left
+    /// unloaded, unless it holds a `.git`: then it is read in full.
+    fn load_dir(&self, dir: &Path, checker: &mut IgnoreChecker, out: &mut Vec<Entry>) {
+        let Ok(read) = fs::read_dir(self.root.join(dir)) else {
+            return;
+        };
+        for dirent in read.flatten() {
+            let name = dirent.file_name();
+            if always_skipped(&name) {
+                continue;
+            }
+            let Ok(file_type) = dirent.file_type() else {
+                continue;
+            };
+            let rel: Arc<Path> = Arc::from(dir.join(&name));
+            let kind = kind_of_type(file_type);
+            if checker.is_ignored(&rel, kind == EntryKind::Dir) {
+                continue;
+            }
+            if kind == EntryKind::Dir {
+                if self.root.join(&rel).join(GIT_DIR).exists() {
+                    self.collect_subtree(&rel, checker, out);
+                } else {
+                    self.unloaded.borrow_mut().insert(rel.clone());
+                }
+            }
+            out.push(Entry { path: rel, kind });
+        }
+    }
+
     fn send(&self, event: WorktreeEvent) {
         let _ = self.events.send(event);
     }
 
     fn publish(&self, entries: Vec<Entry>, complete: bool) {
         let snap = WorktreeSnapshot::build(entries, complete)
-            .with_root_status(self.root_status.borrow().clone());
+            .with_root_status(self.root_status.borrow().clone())
+            .with_unloaded(self.unloaded.borrow().clone());
         *self.snapshot.lock().unwrap_or_else(|e| e.into_inner()) = snap;
     }
 
@@ -742,7 +906,16 @@ impl Worker {
             return ScanOutcome::Completed;
         }
         let mut last_publish = Instant::now();
-        for result in walk_builder(&self.root, opts).build() {
+        let rejected = Arc::new(Mutex::new(Vec::new()));
+        let in_repo = root_in_repo(&self.root, opts.home.as_deref());
+        let depth = match (in_repo, opts.scan_depth) {
+            (false, Some(depth)) => Some(depth_filter(depth, rejected.clone())),
+            _ => None,
+        };
+        let builder = walk_builder(&self.root, opts, move |entry| {
+            depth.as_ref().is_none_or(|keep| keep(entry))
+        });
+        for result in builder.build() {
             if self.superseded(generation) {
                 return ScanOutcome::Aborted;
             }
@@ -768,7 +941,68 @@ impl Worker {
                 last_publish = Instant::now();
             }
         }
+        let rejected = std::mem::take(&mut *rejected.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut unloaded = HashSet::new();
+        for dir in rejected {
+            let Ok(rel) = dir.strip_prefix(&self.root) else {
+                continue;
+            };
+            let rel: Arc<Path> = Arc::from(rel);
+            unloaded.insert(rel.clone());
+            entries.push(Entry {
+                path: rel,
+                kind: EntryKind::Dir,
+            });
+        }
+        *self.unloaded.borrow_mut() = unloaded;
         ScanOutcome::Completed
+    }
+}
+
+/// Whether `root` or one of its ancestors holds a `.git`. When `root` is
+/// under `home`, the search stops after `home`, so a repository above the
+/// home folder does not count.
+pub(crate) fn root_in_repo(root: &Path, home: Option<&Path>) -> bool {
+    let home = parent_ceiling(root, home);
+    for dir in root.ancestors() {
+        if dir.join(GIT_DIR).exists() {
+            return true;
+        }
+        if home == Some(dir) {
+            break;
+        }
+    }
+    false
+}
+
+/// The scan's walker filter for `files.scanDepth`: a folder `depth` or more
+/// levels below the root is refused (and recorded in `rejected`) unless it
+/// or an ancestor holds a `.git`.
+fn depth_filter(
+    depth: usize,
+    rejected: Arc<Mutex<Vec<PathBuf>>>,
+) -> impl Fn(&ignore::DirEntry) -> bool + Send + Sync + 'static {
+    // Folders that are, or lie inside, a repository found by this walk.
+    let repos = Mutex::new(HashSet::<PathBuf>::new());
+    move |entry| {
+        if entry.depth() == 0 || !entry.file_type().is_some_and(|t| t.is_dir()) {
+            return true;
+        }
+        let mut repos = repos.lock().unwrap_or_else(|e| e.into_inner());
+        let covered = entry.path().parent().is_some_and(|p| repos.contains(p))
+            || entry.path().join(GIT_DIR).exists();
+        if covered {
+            repos.insert(entry.path().to_path_buf());
+            return true;
+        }
+        if entry.depth() >= depth {
+            rejected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(entry.path().to_path_buf());
+            return false;
+        }
+        true
     }
 }
 
@@ -911,6 +1145,7 @@ mod tests {
         wt.fail_next_scan.store(true, Ordering::SeqCst);
         wt.set_options(ScanOptions {
             exclude: vec!["**/zzz".into()],
+            ..Default::default()
         });
         // The panicked scan unblocks waiters with ScanComplete, not Rescanned.
         wait(&wt, |e| matches!(e, WorktreeEvent::ScanComplete));
@@ -918,6 +1153,7 @@ mod tests {
 
         wt.set_options(ScanOptions {
             exclude: vec!["**/a.txt".into()],
+            ..Default::default()
         });
         wait(&wt, |e| matches!(e, WorktreeEvent::Rescanned));
         assert!(!wt.snapshot().contains(Path::new("a.txt")));
@@ -954,6 +1190,8 @@ mod tests {
             replay_until: Cell::new(None),
             ignores_case: Cell::new(None),
             root_status: RefCell::new(RootStatus::Readable),
+            unloaded: RefCell::new(HashSet::new()),
+            loaded: RefCell::new(HashSet::new()),
             folders_listed: Cell::new(0),
             fail_next_scan: Arc::new(AtomicBool::new(false)),
             fail_next_apply: Arc::new(AtomicBool::new(false)),
@@ -1094,6 +1332,7 @@ mod tests {
         }
         let opts = ScanOptions {
             exclude: vec!["**/target".into()],
+            ..Default::default()
         };
         let batch = |paths: &[&str]| {
             Coalesced::Changes(

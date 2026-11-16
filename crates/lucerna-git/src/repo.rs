@@ -44,6 +44,27 @@ fn trimmed(out: Vec<u8>) -> String {
 
 impl Repo {
     pub fn discover(git: GitBinary, workspace_root: &Path) -> Result<Option<Repo>, GitError> {
+        Self::discover_with_ceiling(git, workspace_root, None)
+    }
+
+    /// [`discover`](Self::discover), but when `workspace_root` lies under
+    /// `home` the search looks in `home` and no higher (as Zed does): a
+    /// repository above the home folder is not the project's.
+    pub fn discover_with_ceiling(
+        git: GitBinary,
+        workspace_root: &Path,
+        home: Option<&Path>,
+    ) -> Result<Option<Repo>, GitError> {
+        // Git stops below each ceiling, so `home`'s parent lets it examine
+        // `home` itself. A path that cannot be listed gets no ceiling.
+        let ceiling = home
+            .filter(|h| workspace_root.starts_with(h))
+            .and_then(Path::parent)
+            .and_then(|parent| std::env::join_paths([parent]).ok());
+        let probe = match ceiling {
+            Some(dirs) => git.clone().with_env("GIT_CEILING_DIRECTORIES", dirs),
+            None => git.clone(),
+        };
         let args = [
             "rev-parse",
             "--show-toplevel",
@@ -51,7 +72,7 @@ impl Repo {
             "--git-common-dir",
         ];
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        let out = match git.run(workspace_root, &args) {
+        let out = match probe.run(workspace_root, &args) {
             Ok(out) => out,
             Err(e) if e.is_not_a_repo() => return Ok(None),
             // A missing workspace directory cannot be a repo.

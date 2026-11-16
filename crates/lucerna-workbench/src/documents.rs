@@ -1892,7 +1892,10 @@ impl Documents {
                     }
                 }
             }
-            WorktreeEvent::ScanProgress | WorktreeEvent::ScanComplete => {}
+            // Reading a folder changes no file.
+            WorktreeEvent::ScanProgress
+            | WorktreeEvent::ScanComplete
+            | WorktreeEvent::Loaded(_) => {}
         }
         cx.notify();
     }

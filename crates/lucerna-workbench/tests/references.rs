@@ -78,10 +78,28 @@ fn setup(
     let fake = references(dir.path());
     let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
     let (wb, cx) = lsp_workbench_with(dir.path(), launcher, TRUSTED, cx);
+    finish_scan(&wb, cx);
     let view = open(&wb, "src/main.rs", cx);
     view.update(cx, |v, cx| v.set_cursor(pt(1, 8), cx));
     settle(cx);
     (dir, fake, wb, view, cx)
+}
+
+/// Waits for the worktree scan, then delivers its completion as the
+/// event pump would: Find in Files waits for it (`files.scanDepth`).
+fn finish_scan(wb: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| wb.worktree().snapshot().scan_complete()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the scan did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&lucerna_project::WorktreeEvent::ScanComplete, cx)
+    });
+    settle(cx);
 }
 
 fn keys(keystrokes: &str, cx: &mut VisualTestContext) {

@@ -125,6 +125,10 @@ pub struct ExplorerView {
     focus: FocusHandle,
     name_edit: Option<NameEdit>,
     pending_reveal: Option<PendingReveal>,
+    /// A file opened with `explorer.autoReveal` off inside an unloaded
+    /// folder: the folders on the way load, one `Loaded` at a time, but
+    /// nothing is revealed.
+    pending_load: Option<Arc<Path>>,
     /// The input of an edit ended because its folder vanished: if it still
     /// held the focus, the next frame gives the focus to the sidebar.
     refocus_sidebar: Option<FocusHandle>,
@@ -173,6 +177,7 @@ impl ExplorerView {
             focus,
             name_edit: None,
             pending_reveal: None,
+            pending_load: None,
             refocus_sidebar: None,
             pending_rename: None,
             cut: None,
@@ -391,7 +396,7 @@ impl ExplorerView {
             path,
             expand: false,
         });
-        self.reveal_pending();
+        self.reveal_pending(cx);
         cx.notify();
     }
 
@@ -862,7 +867,7 @@ impl ExplorerView {
                     path: target,
                     expand,
                 });
-                self.reveal_pending();
+                self.reveal_pending(cx);
             }
         }
     }
@@ -924,7 +929,7 @@ impl ExplorerView {
                     path: target.clone(),
                     expand: folder,
                 });
-                self.reveal_pending();
+                self.reveal_pending(cx);
                 if !folder {
                     let _ = self
                         .workbench
@@ -967,7 +972,7 @@ impl ExplorerView {
     }
 
     /// Selects, reveals and expands a just-created path once the tree has it.
-    fn reveal_pending(&mut self) {
+    fn reveal_pending(&mut self, cx: &mut Context<Self>) {
         let Some(pending) = self
             .pending_reveal
             .take_if(|p| self.model.contains(&p.path))
@@ -979,8 +984,41 @@ impl ExplorerView {
         }
         if pending.expand {
             self.model.expand(&pending.path);
+            if self.model.unloaded_ancestor(&pending.path).is_some() {
+                self.load(pending.path.clone(), cx);
+            }
         }
         self.model.select(Selection::Path(pending.path));
+    }
+
+    /// Asks the worktree to read `path` (root-relative) and every folder
+    /// on the way to it that the scan left unloaded; `Loaded` brings them
+    /// in. Deferred: this may run inside an update of the workbench.
+    fn load(&self, path: Arc<Path>, cx: &mut Context<Self>) {
+        let workbench = self.workbench.clone();
+        cx.defer(move |cx| {
+            let _ = workbench.update(cx, |wb, _| wb.worktree().load(&path));
+        });
+    }
+
+    /// Reveals `path` once loaded, when the tree lacks it because a folder
+    /// on the way is unloaded.
+    fn reveal_when_loaded(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if self.model.contains(path) || self.model.unloaded_ancestor(path).is_none() {
+            return;
+        }
+        let path: Arc<Path> = Arc::from(path);
+        self.pending_reveal = Some(PendingReveal {
+            path: path.clone(),
+            expand: false,
+        });
+        self.load(path, cx);
+    }
+
+    /// Loads the folders on the way to `path` without revealing it.
+    fn load_quietly(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        self.pending_load = Some(path.clone());
+        self.load(path, cx);
     }
 
     /// The icon the active icon theme gives the visible row at `path`
@@ -1012,7 +1050,7 @@ impl ExplorerView {
         {
             self.refocus_sidebar = Some(edit.input.focus_handle(cx));
         }
-        self.reveal_pending();
+        self.reveal_pending(cx);
         match ev {
             WorktreeEvent::Changed(changes) => {
                 let paths: Vec<Arc<Path>> = changes
@@ -1027,15 +1065,40 @@ impl ExplorerView {
                     self.schedule_expiry(cx);
                 }
             }
+            // A folder read on request: the snapshot taken above holds its
+            // contents, and nothing changed on disk, so nothing is marked.
+            // A reveal still waiting reads the next folder down, if any.
+            WorktreeEvent::Loaded(_) => {
+                if let Some(path) = self.pending_reveal.as_ref().map(|p| p.path.clone())
+                    && self.model.unloaded_ancestor(&path).is_some()
+                {
+                    self.load(path, cx);
+                }
+                if let Some(path) = self.pending_load.take()
+                    && self.model.unloaded_ancestor(&path).is_some()
+                {
+                    self.load_quietly(path, cx);
+                }
+            }
             // The active tab may have been opened before the tree had it.
             WorktreeEvent::ScanComplete => {
+                self.load_expanded(cx);
                 if let Some(path) = self.active.clone() {
                     self.auto_reveal(&path, false, cx);
                 }
             }
+            // A new `files.scanDepth` may leave open folders unloaded.
+            WorktreeEvent::Rescanned => self.load_expanded(cx),
             _ => {}
         }
         cx.notify();
+    }
+
+    /// Loads the expanded folders the scan left unloaded.
+    fn load_expanded(&self, cx: &mut Context<Self>) {
+        for dir in self.model.expanded_unloaded() {
+            self.load(dir, cx);
+        }
     }
 
     /// Marks `path` (absolute or root-relative) as changed on disk by
@@ -1077,6 +1140,10 @@ impl ExplorerView {
             .get::<bool>("explorer.autoReveal", None, cx)
             .unwrap_or(true);
         if !enabled {
+            // An opened file's folders still load (spec: scan depth).
+            if !self.model.contains(path) && self.model.unloaded_ancestor(path).is_some() {
+                self.load_quietly(Arc::from(path), cx);
+            }
             return;
         }
         // Reveal first: `select` keeps a hidden path, but its kind is only
@@ -1090,6 +1157,8 @@ impl ExplorerView {
         };
         if force || keep {
             self.model.select(Selection::Path(Arc::from(path)));
+            // In a folder past `files.scanDepth`: revealed once loaded.
+            self.reveal_when_loaded(path, cx);
         }
     }
 
@@ -1099,6 +1168,7 @@ impl ExplorerView {
     pub(crate) fn reveal_path(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
         let path = self.relative(&Arc::from(path));
         let Some(ix) = self.model.reveal(&path) else {
+            self.reveal_when_loaded(&path, cx);
             return false;
         };
         self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
@@ -1280,6 +1350,10 @@ impl ExplorerView {
             // The second click of a double click would undo the first.
             if ev.click_count() == 1 {
                 self.model.toggle(&path);
+                // Past `files.scanDepth`: its contents are read now.
+                if self.model.is_expanded(&path) && self.model.unloaded_ancestor(&path).is_some() {
+                    self.load(path, cx);
+                }
                 cx.notify();
             }
             return;

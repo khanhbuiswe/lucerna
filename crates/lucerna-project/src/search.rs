@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -107,6 +107,12 @@ pub fn build_pattern(pattern: &str, is_regex: bool, whole_word: bool) -> String 
 /// `MAX_RESULTS` matches are sent; reaching that limit ends the search with
 /// `truncated: true`. A cancelled search sends no `Done` and stops early.
 ///
+/// `home` is the worktree's [`ScanOptions::home`]: parent folders' ignore
+/// files are read up to it, as in the scan.
+///
+/// `skip_dirs` are root-relative folders the walk neither enters nor
+/// reports: the worktree's unloaded folders (`files.scanDepth`).
+///
 /// `buffers` are the `(path, text)` of open files with unsaved changes,
 /// paths as the walk yields them (`root` joined with the relative path).
 /// As in VS Code, a walked file found there is searched on that text
@@ -117,10 +123,13 @@ pub fn build_pattern(pattern: &str, is_regex: bool, whole_word: bool) -> String 
 /// file's events are sent, but a microscopic window remains between that
 /// check and the send. Consumers must therefore also drop events from
 /// superseded searches (use a fresh channel per search).
+#[allow(clippy::too_many_arguments)]
 pub fn search(
     root: &Path,
     query: &SearchQuery,
     settings_exclude: &[String],
+    home: Option<&Path>,
+    skip_dirs: &HashSet<Arc<Path>>,
     buffers: &[(Arc<Path>, String)],
     sink: Sender<SearchEvent>,
     cancel: Arc<AtomicBool>,
@@ -145,13 +154,27 @@ pub fn search(
     };
     let mut excludes = query.exclude.clone();
     excludes.extend_from_slice(settings_exclude);
-    let opts = ScanOptions { exclude: excludes };
+    let opts = ScanOptions {
+        exclude: excludes,
+        home: home.map(Path::to_path_buf),
+        ..Default::default()
+    };
     let buffers: HashMap<&Path, &str> = buffers
         .iter()
         .map(|(path, text)| (&**path, text.as_str()))
         .collect();
-    let walker: WalkParallel =
-        walk_builder_with_includes(root, &opts, &query.include).build_parallel();
+    let (skip, base): (HashSet<PathBuf>, PathBuf) = (
+        skip_dirs.iter().map(|p| p.to_path_buf()).collect(),
+        root.to_path_buf(),
+    );
+    let builder = walk_builder_with_includes(root, &opts, &query.include, move |entry| {
+        skip.is_empty()
+            || entry
+                .path()
+                .strip_prefix(&base)
+                .map_or(true, |rel| !skip.contains(rel))
+    });
+    let walker: WalkParallel = builder.build_parallel();
 
     // Matches reserved so far; never above MAX_RESULTS.
     let total = AtomicUsize::new(0);

@@ -89,8 +89,11 @@ impl GitBinary {
         self
     }
 
-    /// Adds an environment variable to every command. Meant for tests (e.g. to
-    /// isolate from the developer's git config); production never calls it.
+    /// Adds an environment variable to every command. Tests use it to isolate
+    /// from the developer's git config; [`Repo::discover_with_ceiling`] uses
+    /// it on a copy for one lookup.
+    ///
+    /// [`Repo::discover_with_ceiling`]: crate::Repo::discover_with_ceiling
     #[doc(hidden)]
     pub fn with_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> GitBinary {
         self.extra_env.push((key.into(), value.into()));
