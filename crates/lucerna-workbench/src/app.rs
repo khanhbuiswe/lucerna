@@ -36,7 +36,7 @@ use crate::startup::{StartupScreen, startup_screen};
 use crate::workspace_state::tilde_path;
 use crate::{
     AppState, ConfigPaths, Host, OnboardingEvent, OnboardingPage, OpenMode, WelcomeEvent,
-    WelcomeView, Workbench, WorkbenchEvent, default_data_dir, last_workspace,
+    WelcomeView, WindowSettings, Workbench, WorkbenchEvent, default_data_dir, last_workspace,
     restores_last_workspace, startup_choice, status_message, watch_config, window_options,
 };
 
@@ -248,7 +248,9 @@ impl Router {
     /// if it cannot.
     fn open_onboarding(this: &Rc<RefCell<Router>>, cx: &mut App) {
         let opened = cx.open_window(maximized_window_options(cx), |window, cx| {
-            let view = cx.new(|cx| OnboardingPage::new(Host::Window, window, cx));
+            // A window without a folder: the app's settings alone.
+            let settings = cx.new(|cx| WindowSettings::new(None, cx));
+            let view = cx.new(|cx| OnboardingPage::new(Host::Window, settings, window, cx));
             Router::route_onboarding(this, &view, cx);
             view
         });
@@ -301,7 +303,8 @@ impl Router {
         };
         let replaced = window.update(cx, |_, window, cx| {
             let view = window.replace_root(cx, |window, cx| {
-                OnboardingPage::new(Host::Window, window, cx)
+                let settings = cx.new(|cx| WindowSettings::new(None, cx));
+                OnboardingPage::new(Host::Window, settings, window, cx)
             });
             Router::route_onboarding(this, &view, cx);
         });

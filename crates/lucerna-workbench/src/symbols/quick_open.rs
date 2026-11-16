@@ -312,7 +312,7 @@ impl SymbolPicker {
                         div()
                             .flex_none()
                             .font_family(editor_font_family(
-                                cx.global::<crate::AppState>().settings.view(None),
+                                self.editor.read(cx).settings().read(cx).view(cx),
                                 None,
                             ))
                             .child(name),

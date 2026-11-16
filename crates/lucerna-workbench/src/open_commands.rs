@@ -244,7 +244,8 @@ impl Workbench {
             return;
         }
         let home = std::env::home_dir();
-        let picker = cx.new(|cx| RecentPicker::new(entries, home, cx));
+        let settings = self.settings().clone();
+        let picker = cx.new(|cx| RecentPicker::new(entries, home, settings, cx));
         let events = cx.subscribe_in(&picker, window, Self::on_recent_picker_event);
         let focus_before = window.focused(cx);
         window.focus(&picker.focus_handle(cx), cx);

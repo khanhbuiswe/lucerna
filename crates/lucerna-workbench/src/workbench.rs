@@ -414,7 +414,7 @@ impl Workbench {
         let breadcrumbs_target = cx.weak_entity();
         let command_target = cx.weak_entity();
         let editor_groups = cx.new(|cx| {
-            let mut groups = EditorGroupsView::default();
+            let mut groups = EditorGroupsView::new(settings.clone());
             let docs = documents.clone();
             let page = extensions_page.clone();
             let search = search_view.clone();
@@ -426,6 +426,7 @@ impl Workbench {
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
             let preview_root: Arc<Path> = Arc::from(root.as_path());
             let preview_settings = settings.clone();
+            let onboarding_settings = settings.clone();
             groups.set_tab_body_factory(
                 Rc::new(move |tab, window, cx| {
                     let path = match &tab.item {
@@ -455,8 +456,14 @@ impl Workbench {
                             return health.clone().into();
                         }
                         TabItem::Onboarding => {
-                            return onboarding::tab_page(&onboarding, &workbench, window, cx)
-                                .into();
+                            return onboarding::tab_page(
+                                &onboarding,
+                                &workbench,
+                                &onboarding_settings,
+                                window,
+                                cx,
+                            )
+                            .into();
                         }
                         TabItem::GitChanges | TabItem::FileDiff(_) | TabItem::BranchChanges => {
                             let kind = match &tab.item {
@@ -529,7 +536,6 @@ impl Workbench {
                 cx,
             );
             groups.set_documents(documents.clone());
-            groups.set_settings(settings.clone());
             groups.set_root(root.clone());
             groups.set_on_breadcrumbs_click(Rc::new(move |group, window, cx| {
                 breadcrumbs_target

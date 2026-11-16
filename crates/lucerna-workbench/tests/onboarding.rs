@@ -8,14 +8,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use gpui::Focusable as _;
-use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
+use gpui::{AppContext as _, Entity, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
     AppState, ConfigPaths, ConfigState, Host, OnboardingEvent, OnboardingPage, OpenMode, TabItem,
-    Workbench, reload_config, watch_config,
+    WindowSettings, Workbench, reload_config, watch_config,
 };
 use tempfile::TempDir;
 
@@ -61,7 +61,10 @@ fn init(settings: Option<&str>, cx: &mut TestAppContext) -> TempDir {
 /// `settings.json`.
 fn open<'a>(host: Host, settings: Option<&str>, cx: &'a mut TestAppContext) -> Page<'a> {
     let user = init(settings, cx);
-    let (view, cx) = cx.add_window_view(move |window, cx| OnboardingPage::new(host, window, cx));
+    let (view, cx) = cx.add_window_view(move |window, cx| {
+        let settings = cx.new(|cx| WindowSettings::new(None, cx));
+        OnboardingPage::new(host, settings, window, cx)
+    });
     let events: Events = Arc::default();
     let sink = events.clone();
     cx.update(|_, cx| {

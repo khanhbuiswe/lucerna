@@ -21,6 +21,7 @@ use super::picker::{
     wrap_index,
 };
 use super::query::{QuickOpenQuery, parse_query};
+use crate::fonts::{EDITOR_FONT_FAMILY, editor_font_family};
 use crate::layout::color;
 use crate::symbols::SymbolState;
 use crate::symbols::quick_open::{NO_SYMBOL_SOURCE, NO_SYMBOLS, SymbolId, SymbolPicker, SymbolRow};
@@ -634,10 +635,16 @@ impl QuickOpen {
             location,
         } = row
         {
+            // The window's `editor.fontFamily`.
+            let code_font = match self.workbench.upgrade() {
+                Some(wb) => editor_font_family(wb.read(cx).settings().read(cx).view(cx), None),
+                None => EDITOR_FONT_FAMILY.into(),
+            };
             let content = workspace::render_row(
                 &self.workspace_symbols[*item],
                 positions,
                 location.clone(),
+                code_font,
                 cx,
             );
             return picker_row_sized(

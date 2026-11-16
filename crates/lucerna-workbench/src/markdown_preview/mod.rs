@@ -220,6 +220,11 @@ impl MarkdownPreview {
         &self.image_cache
     }
 
+    /// The font of the preview's code: the window's `editor.fontFamily`.
+    pub fn code_font_family(&self, cx: &App) -> SharedString {
+        self.style(cx).code_font_family
+    }
+
     /// The previewed file.
     pub fn path(&self) -> &Arc<Path> {
         &self.path
@@ -571,6 +576,7 @@ impl MarkdownPreview {
             .map_or_else(|| SharedString::from(UI_FONT_FAMILY), SharedString::from);
         let mut style = MarkdownStyle::preview(font_size, line_height, None);
         style.font_family = family;
+        style.code_font_family = crate::fonts::editor_font_family(settings, None);
         style
     }
 

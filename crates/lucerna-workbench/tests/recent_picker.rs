@@ -5,12 +5,12 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use gpui::{Entity, TestAppContext, VisualTestContext};
+use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 use lucerna_workbench::recent::{RecentEntry, RecentKind};
-use lucerna_workbench::{AppState, RecentPicker, RecentPickerEvent};
+use lucerna_workbench::{AppState, RecentPicker, RecentPickerEvent, WindowSettings};
 
 fn init(cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
@@ -49,7 +49,8 @@ fn open(
 ) -> (Entity<RecentPicker>, Events, &mut VisualTestContext) {
     init(cx);
     let (picker, cx) = cx.add_window_view(move |_, cx| {
-        RecentPicker::new(entries, Some(PathBuf::from("/Users/me")), cx)
+        let settings = cx.new(|cx| WindowSettings::new(None, cx));
+        RecentPicker::new(entries, Some(PathBuf::from("/Users/me")), settings, cx)
     });
     let events: Events = Arc::default();
     let sink = events.clone();

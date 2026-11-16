@@ -22,6 +22,7 @@ use pulldown_cmark::{
 
 use crate::AppState;
 use crate::editor_groups::OpenMode;
+use crate::fonts::EDITOR_FONT_FAMILY;
 use crate::icons;
 use crate::layout::color;
 use crate::tasks::catch_panic;
@@ -221,10 +222,16 @@ impl MarkdownBlocks {
     /// The text [`render_markdown`] draws for code block `index` (document
     /// order, nested blocks included) and its highlight runs, which cover
     /// that text exactly. `None` when there is no such block. Computed on
-    /// first use per theme and registry, then cached.
-    pub fn code_runs(&self, index: usize, cx: &App) -> Option<(SharedString, Arc<Vec<TextRun>>)> {
+    /// first use per theme, registry and font, then cached. The code is
+    /// set in `family` (the window's `editor.fontFamily`).
+    pub fn code_runs(
+        &self,
+        index: usize,
+        family: &SharedString,
+        cx: &App,
+    ) -> Option<(SharedString, Arc<Vec<TextRun>>)> {
         let app = cx.global::<AppState>();
-        let family = code_font_family(cx);
+        let family = family.clone();
         let mut cache = self.code_runs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(c) = cache.get(&index)
             && c.theme_generation == app.theme_generation
@@ -348,10 +355,6 @@ pub(crate) fn visit_image_urls(blocks: &[Block], f: &mut impl FnMut(&str)) {
             Block::Code { .. } | Block::Rule => {}
         }
     }
-}
-
-fn code_font_family(cx: &App) -> SharedString {
-    crate::fonts::editor_font_family(cx.global::<crate::AppState>().settings.view(None), None)
 }
 
 /// Capture spans of `text` in `language`; empty when the parse does not
@@ -1039,6 +1042,9 @@ pub struct MarkdownStyle {
     pub images: Option<ImageLookup>,
     /// The font of text that is not code.
     pub font_family: SharedString,
+    /// The font of code (inline and blocks): the window's
+    /// `editor.fontFamily`, the bundled editor font by default.
+    pub code_font_family: SharedString,
 }
 
 impl MarkdownStyle {
@@ -1058,6 +1064,7 @@ impl MarkdownStyle {
             code_background: CodeBackground::Editor,
             images: None,
             font_family: UI_FONT_FAMILY.into(),
+            code_font_family: EDITOR_FONT_FAMILY.into(),
         }
     }
 
@@ -1076,6 +1083,7 @@ impl MarkdownStyle {
             code_background: CodeBackground::Elevated,
             images,
             font_family: UI_FONT_FAMILY.into(),
+            code_font_family: EDITOR_FONT_FAMILY.into(),
         }
     }
 }
@@ -1155,14 +1163,21 @@ pub fn render_markdown(blocks: &MarkdownBlocks, cx: &App) -> AnyElement {
                 cx.open_url(&url);
             }
         }),
+        EDITOR_FONT_FAMILY.into(),
         cx,
     )
 }
 
-/// Renders `blocks` as a hover popover; `on_link` gets the URL of a
-/// clicked link.
-pub fn render_markdown_with(blocks: &MarkdownBlocks, on_link: LinkHandler, cx: &App) -> AnyElement {
-    let style = MarkdownStyle::hover();
+/// Renders `blocks` as a hover popover, its code in `code_font_family`;
+/// `on_link` gets the URL of a clicked link.
+pub fn render_markdown_with(
+    blocks: &MarkdownBlocks,
+    on_link: LinkHandler,
+    code_font_family: SharedString,
+    cx: &App,
+) -> AnyElement {
+    let mut style = MarkdownStyle::hover();
+    style.code_font_family = code_font_family;
     div()
         .flex()
         .flex_col()
@@ -1534,7 +1549,7 @@ impl Renderer<'_> {
                 return;
             }
             let family: SharedString = if style.code {
-                code_font_family(self.cx)
+                self.style.code_font_family.clone()
             } else {
                 self.style.font_family.clone()
             };
@@ -1646,7 +1661,10 @@ impl Renderer<'_> {
         let index = self.codes;
         self.codes += 1;
         let ui = &self.cx.global::<AppState>().theme.ui;
-        let (text, runs) = self.blocks.code_runs(index, self.cx).unwrap_or_default();
+        let (text, runs) = self
+            .blocks
+            .code_runs(index, &self.style.code_font_family, self.cx)
+            .unwrap_or_default();
         let (px_, py_) = self.style.code_padding;
         let scroll = self.style.code_scroll_x;
         let code = div()

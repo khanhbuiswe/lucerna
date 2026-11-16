@@ -96,9 +96,8 @@ pub struct EditorGroupsView {
     hovered_tab: Option<TabId>,
     /// Consulted for each tab's title: deleted files are struck through.
     documents: Option<Entity<Documents>>,
-    /// The window's settings; the app's when unset (a view without a
-    /// workbench).
-    settings: Option<Entity<WindowSettings>>,
+    /// The window's settings the tabs, breadcrumbs and empty groups read.
+    settings: Entity<WindowSettings>,
     /// The workspace root: path bars show paths relative to it.
     root: Option<PathBuf>,
     /// The user's home folder, shown as `~` in path bars; read when the
@@ -118,8 +117,9 @@ pub struct EditorGroupsView {
     on_command: Option<RunCommand>,
 }
 
-impl Default for EditorGroupsView {
-    fn default() -> Self {
+impl EditorGroupsView {
+    /// An editor area of one empty group, reading the window's `settings`.
+    pub fn new(settings: Entity<WindowSettings>) -> Self {
         EditorGroupsView {
             model: EditorGroups::default(),
             widths: vec![1.0],
@@ -127,7 +127,7 @@ impl Default for EditorGroupsView {
             make_body: Rc::new(placeholder_body),
             hovered_tab: None,
             documents: None,
-            settings: None,
+            settings,
             root: None,
             home: std::env::home_dir(),
             search_title: None,
@@ -406,17 +406,9 @@ impl EditorGroupsView {
         self.documents = Some(documents);
     }
 
-    /// The window's settings the tabs, breadcrumbs and empty groups read.
-    pub(crate) fn set_settings(&mut self, settings: Entity<WindowSettings>) {
-        self.settings = Some(settings);
-    }
-
-    /// The window's settings, or the app's without a workbench.
+    /// The window's settings.
     fn settings_view<'a>(&'a self, cx: &'a App) -> SettingsView<'a> {
-        match &self.settings {
-            Some(settings) => settings.read(cx).view(cx),
-            None => cx.global::<AppState>().settings.view(None),
-        }
+        self.settings.read(cx).view(cx)
     }
 
     /// The Search tab's title: `title` when `Some`, else "Search".

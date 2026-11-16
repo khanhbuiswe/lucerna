@@ -11,7 +11,8 @@ use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::{AppState, OpenMode, Workbench};
+use lucerna_workbench::fonts::EDITOR_FONT_FAMILY;
+use lucerna_workbench::{AppState, FileView, MarkdownPreview, OpenMode, Workbench};
 use tempfile::TempDir;
 
 /// The folders the windows of a test show, dropped with the test's app.
@@ -43,10 +44,11 @@ fn init(cx: &mut TestAppContext) {
     cx.set_global(Folders(Vec::new()));
 }
 
-/// A folder with `a.rs` whose `.lucerna/settings.json` holds `workspace`.
+/// A folder with `a.rs` and `a.md` whose `.lucerna/settings.json` holds `workspace`.
 fn folder(workspace: &str) -> TempDir {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("a.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(root.path().join("a.md"), "# A\n\n```rust\nfn a() {}\n```\n").unwrap();
     std::fs::create_dir(root.path().join(".lucerna")).unwrap();
     std::fs::write(
         root.path().join(".lucerna").join("settings.json"),
@@ -57,7 +59,7 @@ fn folder(workspace: &str) -> TempDir {
 }
 
 /// Two windows, each a [`Workbench`] on its own folder: `ws_a` and `ws_b`
-/// are their `.lucerna/settings.json`. Each folder has `a.rs`, and lives
+/// are their `.lucerna/settings.json`. Each folder has `a.rs` and `a.md`, and lives
 /// as long as the test's app.
 fn open_two(
     cx: &mut TestAppContext,
@@ -152,6 +154,53 @@ fn editor_settings_per_window(cx: &mut TestAppContext) {
     assert_eq!(tab_size(&view_b, cx), 8);
     assert!(cx.update(|cx| view_a.read(cx).word_wrap()), "A wraps");
     assert!(!cx.update(|cx| view_b.read(cx).word_wrap()), "B does not");
+}
+
+/// Opens the static preview of `a.md` in the window.
+fn open_preview(
+    handle: WindowHandle<Workbench>,
+    cx: &mut TestAppContext,
+) -> Entity<MarkdownPreview> {
+    let groups = handle
+        .read_with(cx, |wb, _| wb.editor_groups().clone())
+        .unwrap();
+    let path: Arc<Path> = Arc::from(
+        handle
+            .read_with(cx, |wb, _| wb.root().join("a.md"))
+            .unwrap(),
+    );
+    cx.update(|cx| {
+        groups.update(cx, |groups, cx| {
+            groups.update_model(cx, |m| {
+                m.open_file(path, FileView::Preview, OpenMode::Pinned, true, false)
+            })
+        })
+    });
+    draw(handle, cx);
+    cx.update(|cx| {
+        groups
+            .read(cx)
+            .active_body()
+            .expect("drawn")
+            .downcast::<MarkdownPreview>()
+            .expect("a markdown preview")
+    })
+}
+
+#[gpui::test]
+fn markdown_code_font_per_window(cx: &mut TestAppContext) {
+    let (a, b) = open_two(cx, r#"{"editor.fontFamily": "Menlo"}"#, "{}");
+    let preview_a = open_preview(a, cx);
+    let preview_b = open_preview(b, cx);
+    assert_eq!(
+        cx.update(|cx| preview_a.read(cx).code_font_family(cx)),
+        "Menlo"
+    );
+    assert_eq!(
+        cx.update(|cx| preview_b.read(cx).code_font_family(cx)),
+        EDITOR_FONT_FAMILY,
+        "B has no workspace font: the default"
+    );
 }
 
 #[gpui::test]

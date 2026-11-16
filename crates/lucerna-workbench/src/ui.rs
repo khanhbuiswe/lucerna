@@ -6,6 +6,7 @@ use gpui::{
     Entity, Hsla, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Size,
     Stateful, Styled, Window, div, img, prelude::*, px, relative, svg,
 };
+use lucerna_settings::SettingsView;
 use lucerna_theme::{Appearance, IconSource, Rgba, Theme};
 
 use crate::AppState;
@@ -232,8 +233,8 @@ pub fn icon_button(
 
 /// A section title for a page or list: `title` in capitals (caption size,
 /// editor font, `text.muted`), then a 1 px `border.variant` rule filling the
-/// rest of the row.
-pub fn section_header(title: &str, cx: &App) -> Div {
+/// rest of the row. The editor font is the window's `settings`.
+pub fn section_header(title: &str, settings: SettingsView<'_>, cx: &App) -> Div {
     let ui = &cx.global::<AppState>().theme.ui;
     div()
         .flex()
@@ -243,10 +244,7 @@ pub fn section_header(title: &str, cx: &App) -> Div {
         .child(
             div()
                 .flex_none()
-                .font_family(crate::fonts::editor_font_family(
-                    cx.global::<crate::AppState>().settings.view(None),
-                    None,
-                ))
+                .font_family(crate::fonts::editor_font_family(settings, None))
                 .text_size(px(UI_FONT_SIZE_CAPTION))
                 .text_color(color(ui.text_muted))
                 .child(title.to_uppercase()),
