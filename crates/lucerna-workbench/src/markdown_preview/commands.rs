@@ -208,9 +208,11 @@ fn previews(wb: &Workbench, cx: &App) -> Vec<Entity<MarkdownPreview>> {
 }
 
 /// After a rename of `from` to `to` (absolute): every preview of a file
-/// at `from` or under it shows the file at its new path. Called before
-/// the documents' `Closed` event for `from` lands, so a preview never
-/// opens the gone path again (whose document would hold its name).
+/// at `from` or under it follows to the new path, keeping its place. It
+/// must run in the same update as `Documents::rename`: GPUI delivers that
+/// rename's `Closed` event for `from` only once the update ends, and by
+/// then no preview may still point at `from`, or it would open the gone
+/// path again (and that document would hold its name).
 pub(crate) fn retarget_previews(wb: &Workbench, from: &Path, to: &Path, cx: &mut App) {
     let moved: Vec<(Entity<MarkdownPreview>, Arc<Path>)> = previews(wb, cx)
         .into_iter()
@@ -220,7 +222,7 @@ pub(crate) fn retarget_previews(wb: &Workbench, from: &Path, to: &Path, cx: &mut
         })
         .collect();
     for (preview, path) in moved {
-        preview.update(cx, |p, cx| p.set_path(path, cx));
+        preview.update(cx, |p, cx| p.follow_rename(path, cx));
     }
 }
 

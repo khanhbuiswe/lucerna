@@ -266,6 +266,19 @@ impl MarkdownPreview {
         self.documents_changed(cx);
     }
 
+    /// The previewed file was renamed to `path`: its document (and the
+    /// view held here) already moved there, so the blocks and the reading
+    /// position stay. It parses again now, for relative images to resolve
+    /// from the new folder; the shown blocks keep the top line meanwhile.
+    pub fn follow_rename(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        if path == self.path {
+            return;
+        }
+        self.path = path;
+        self.pending = None;
+        self.parse_now(cx);
+    }
+
     /// Opens the document again when it was dropped under the preview: the
     /// new document starts its revisions over, so the old ones are
     /// forgotten (the blocks stay shown until the new text is parsed).

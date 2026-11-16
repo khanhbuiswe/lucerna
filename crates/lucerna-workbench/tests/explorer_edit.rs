@@ -1859,3 +1859,39 @@ fn rename_moves_dynamic_preview(cx: &mut TestAppContext) {
     assert_eq!(preview_path(&preview, cx), root.join("x.md"));
     assert!(!has_document(&wb, &root.join("doc.md"), cx));
 }
+
+/// A rename leaves the preview where it was read, and a preview of a
+/// file the rename does not touch stays as it is.
+#[gpui::test]
+fn rename_keeps_preview_position(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let text: String = (0..200).map(|i| format!("# h{i}\n\npara\n\n")).collect();
+    std::fs::write(dir.path().join("doc.md"), &text).unwrap();
+    std::fs::write(dir.path().join("other.md"), "# other\n").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    open_md(&wb, "other.md", cx);
+    open_md(&wb, "doc.md", cx);
+    let all = previews(&wb, cx);
+    let find = |name: &str, cx: &mut VisualTestContext| {
+        all.iter()
+            .find(|p| preview_path(p, cx) == root.join(name))
+            .cloned()
+            .expect("a preview")
+    };
+    let (preview, other) = (find("doc.md", cx), find("other.md", cx));
+    // `# h120` starts on line 480.
+    preview.update(cx, |p, cx| p.scroll_to_line(480., cx));
+    draw(cx);
+    assert_eq!(preview.read_with(cx, |p, _| p.top_line()), 480.);
+
+    rename_row("explorer-row-doc.md", "x", cx);
+    wait_until(cx, |_| root.join("x.md").is_file());
+    wait_until(cx, |cx| !editing(&wb, cx));
+    draw(cx);
+    assert_eq!(preview_path(&preview, cx), root.join("x.md"));
+    assert_eq!(preview.read_with(cx, |p, _| p.top_line()), 480.);
+    assert!(preview.read_with(cx, |p, _| p.blocks().is_some()));
+    assert_eq!(preview_path(&other, cx), root.join("other.md"));
+}
