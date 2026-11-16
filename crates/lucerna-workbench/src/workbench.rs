@@ -387,6 +387,7 @@ impl Workbench {
         // app (waiting at most 5 s across all windows, then killed; see the
         // `on_app_quit` below).
         cx.on_release(|wb, cx| {
+            wb.release_theme_picker(cx);
             wb.language_servers
                 .update(cx, |servers, _| servers.shutdown_all_in_background())
         })
@@ -1995,6 +1996,7 @@ impl Workbench {
     /// otherwise asks ([`Workbench::confirm_quit`]) and closes the window
     /// itself if told to go on.
     fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.close_theme_picker(true, window, cx);
         if self.documents.read(cx).dirty_paths().is_empty()
             && self.terminals_to_confirm(cx) == 0
             && self.file_operations.get() == 0
