@@ -22,7 +22,14 @@ fn query(pattern: &str) -> SearchQuery {
 
 fn run_with(root: &Path, q: &SearchQuery, settings: &[String]) -> Vec<SearchEvent> {
     let (tx, rx) = crossbeam_channel::unbounded();
-    search(root, q, settings, tx, Arc::new(AtomicBool::new(false)));
+    search(root, q, settings, &[], tx, Arc::new(AtomicBool::new(false)));
+    rx.try_iter().collect()
+}
+
+/// Searches with the given unsaved buffers `(path, text)` of open files.
+fn run_buffers(root: &Path, q: &SearchQuery, buffers: &[(Arc<Path>, String)]) -> Vec<SearchEvent> {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    search(root, q, &[], buffers, tx, Arc::new(AtomicBool::new(false)));
     rx.try_iter().collect()
 }
 
@@ -243,6 +250,7 @@ fn cancel_stops_without_done() {
         dir.path(),
         &query("needle"),
         &[],
+        &[],
         tx,
         Arc::new(AtomicBool::new(true)),
     );
@@ -267,7 +275,7 @@ fn cancel_during_walk_sends_no_done() {
     let handle = std::thread::spawn(move || {
         let mut q = query("needle");
         q.case_sensitive = true;
-        search(&root, &q, &[], tx, flag);
+        search(&root, &q, &[], &[], tx, flag);
     });
     // Wait for the search to be in progress, then cancel.
     let first = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -286,7 +294,14 @@ fn invalid_regex_with_cancel_sends_nothing() {
     let (tx, rx) = crossbeam_channel::unbounded();
     let mut q = query("(unclosed");
     q.is_regex = true;
-    search(dir.path(), &q, &[], tx, Arc::new(AtomicBool::new(true)));
+    search(
+        dir.path(),
+        &q,
+        &[],
+        &[],
+        tx,
+        Arc::new(AtomicBool::new(true)),
+    );
     assert!(rx.try_iter().next().is_none());
 }
 
@@ -404,4 +419,63 @@ fn match_past_the_cut_still_counts_as_match() {
     };
     assert_eq!(excerpts[0].match_count(), 1);
     assert_eq!(dones(&ev), vec![(1, false)]);
+}
+
+/// T5-6: an open file with unsaved changes is searched on its buffer text,
+/// not on the disk, so its line numbers are the buffer's (as VS Code).
+#[test]
+fn unsaved_buffer_replaces_the_disk_text() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.rs", numbered(60, &[50]));
+    write(dir.path(), "b.rs", "needle on disk\n");
+    // Ten unsaved lines inserted at the top of `a.rs`.
+    let buffer = format!("{}{}", "new\n".repeat(10), numbered(60, &[50]));
+    let buffers = [(Arc::from(dir.path().join("a.rs")), buffer)];
+    let lines: Vec<(String, Vec<u32>)> = files(
+        dir.path(),
+        &run_buffers(dir.path(), &query("needle"), &buffers),
+    )
+    .into_iter()
+    .map(|(path, lines)| (path, lines.iter().map(|l| l.line_number).collect()))
+    .collect();
+    assert_eq!(
+        lines,
+        vec![("a.rs".into(), vec![60]), ("b.rs".into(), vec![1])],
+        "a.rs from its buffer, b.rs from the disk"
+    );
+}
+
+/// Review Focus 2: text only in the buffer is found, text only on the disk
+/// of that file is not.
+#[test]
+fn text_only_in_the_buffer_is_found() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.rs", "old needle\n");
+    let buffers = [(
+        Arc::from(dir.path().join("a.rs")),
+        "fresh\nunsaved haystack\n".to_owned(),
+    )];
+    let found = files(
+        dir.path(),
+        &run_buffers(dir.path(), &query("haystack"), &buffers),
+    );
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].0, "a.rs");
+    assert_eq!(found[0].1[0].line_number, 2);
+    assert_eq!(found[0].1[0].line_text, "unsaved haystack");
+    assert_eq!(found[0].1[0].ranges, vec![8..16]);
+    let ev = run_buffers(dir.path(), &query("needle"), &buffers);
+    assert!(files(dir.path(), &ev).is_empty(), "{ev:?}");
+    assert_eq!(dones(&ev), vec![(0, false)]);
+}
+
+/// A buffer still obeys the include and exclude filters.
+#[test]
+fn unsaved_buffer_obeys_the_filters() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.rs", "x\n");
+    let buffers = [(Arc::from(dir.path().join("a.rs")), "needle\n".to_owned())];
+    let mut q = query("needle");
+    q.exclude = vec!["*.rs".into()];
+    assert!(files(dir.path(), &run_buffers(dir.path(), &q, &buffers)).is_empty());
 }

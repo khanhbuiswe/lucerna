@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -106,6 +107,12 @@ pub fn build_pattern(pattern: &str, is_regex: bool, whole_word: bool) -> String 
 /// `MAX_RESULTS` matches are sent; reaching that limit ends the search with
 /// `truncated: true`. A cancelled search sends no `Done` and stops early.
 ///
+/// `buffers` are the `(path, text)` of open files with unsaved changes,
+/// paths as the walk yields them (`root` joined with the relative path).
+/// As in VS Code, a walked file found there is searched on that text
+/// instead of the disk, so its line numbers are the buffer's; the filters
+/// still decide which files are searched.
+///
 /// `cancel` is re-checked inside the line loop and again right before a
 /// file's events are sent, but a microscopic window remains between that
 /// check and the send. Consumers must therefore also drop events from
@@ -114,6 +121,7 @@ pub fn search(
     root: &Path,
     query: &SearchQuery,
     settings_exclude: &[String],
+    buffers: &[(Arc<Path>, String)],
     sink: Sender<SearchEvent>,
     cancel: Arc<AtomicBool>,
 ) {
@@ -138,6 +146,10 @@ pub fn search(
     let mut excludes = query.exclude.clone();
     excludes.extend_from_slice(settings_exclude);
     let opts = ScanOptions { exclude: excludes };
+    let buffers: HashMap<&Path, &str> = buffers
+        .iter()
+        .map(|(path, text)| (&**path, text.as_str()))
+        .collect();
     let walker: WalkParallel =
         walk_builder_with_includes(root, &opts, &query.include).build_parallel();
 
@@ -151,7 +163,7 @@ pub fn search(
             .after_context(context)
             .binary_detection(BinaryDetection::quit(0))
             .build();
-        let (matcher, sink, cancel) = (&matcher, &sink, &cancel);
+        let (matcher, sink, cancel, buffers) = (&matcher, &sink, &cancel, &buffers);
         let (total, truncated) = (&total, &truncated);
         Box::new(move |entry| {
             if cancel.load(Ordering::Relaxed) {
@@ -165,7 +177,13 @@ pub fn search(
             }
             let path = entry.path();
             let result = catch_unwind(AssertUnwindSafe(|| {
-                search_file(&mut searcher, matcher, path, cancel)
+                search_file(
+                    &mut searcher,
+                    matcher,
+                    path,
+                    buffers.get(path).copied(),
+                    cancel,
+                )
             }));
             let mut excerpts = match result {
                 Ok(excerpts) => excerpts,
@@ -222,11 +240,13 @@ pub fn search(
     });
 }
 
-/// The excerpts of one file. Unreadable files yield nothing.
+/// The excerpts of one file: of `buffer` when it has unsaved text, else of
+/// the disk. Unreadable files yield nothing.
 fn search_file(
     searcher: &mut Searcher,
     matcher: &RegexMatcher,
     path: &Path,
+    buffer: Option<&str>,
     cancel: &AtomicBool,
 ) -> Vec<Excerpt> {
     let mut sink = ExcerptSink {
@@ -236,7 +256,11 @@ fn search_file(
         match_count: 0,
         new_excerpt: true,
     };
-    if let Err(err) = searcher.search_path(matcher, path, &mut sink) {
+    let result = match buffer {
+        Some(text) => searcher.search_slice(matcher, text.as_bytes(), &mut sink),
+        None => searcher.search_path(matcher, path, &mut sink),
+    };
+    if let Err(err) = result {
         tracing::debug!(path = %path.display(), %err, "could not search file");
     }
     sink.excerpts

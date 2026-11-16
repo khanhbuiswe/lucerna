@@ -398,8 +398,10 @@ impl Workbench {
         let search_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
             let searchable = single_file.is_none();
-            let settings = settings.clone();
-            cx.new(|cx| SearchView::new(root, workbench, searchable, settings, window, cx))
+            let (settings, documents) = (settings.clone(), documents.clone());
+            cx.new(|cx| {
+                SearchView::new(root, workbench, documents, searchable, settings, window, cx)
+            })
         };
         let references_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());

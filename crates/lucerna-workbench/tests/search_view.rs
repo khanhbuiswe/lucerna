@@ -1708,3 +1708,84 @@ fn gutter_width_holds_through_a_re_search(cx: &mut TestAppContext) {
     assert_eq!(files(&view, cx), vec![(p("short.txt"), 1)]);
     assert_eq!(digits(&view, cx), mid, "the code never shifts sideways");
 }
+
+/// The matching line numbers of each file, in the order shown.
+fn match_lines(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> Vec<(PathBuf, Vec<u32>)> {
+    cx.update(|_, cx| {
+        view.read(cx)
+            .results(cx)
+            .files()
+            .iter()
+            .map(|f| {
+                let lines = f
+                    .excerpts
+                    .iter()
+                    .flat_map(|e| &e.lines)
+                    .filter(|l| !l.ranges.is_empty())
+                    .map(|l| l.line_number)
+                    .collect();
+                (f.path.to_path_buf(), lines)
+            })
+            .collect()
+    })
+}
+
+/// T5-6: an open file with unsaved changes is searched on its buffer, as in
+/// VS Code: the result shows the buffer's line, and a click lands on it
+/// with the match highlighted. Text only in the buffer is found too
+/// (Review Focus 2).
+#[gpui::test]
+fn unsaved_changes_are_searched_and_clicked(cx: &mut TestAppContext) {
+    init(cx);
+    let text: String = (1..=60)
+        .map(|i| {
+            if i == 50 {
+                "    let needle = 50;\n".to_owned()
+            } else {
+                format!("line {i}\n")
+            }
+        })
+        .collect();
+    let dir = project(&[("a.rs", &text)]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let path: Arc<Path> = Arc::from(dir.path().join("a.rs"));
+    wb.update(cx, |wb, cx| {
+        wb.open_path(path.clone(), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    let code = active_view(&wb, cx);
+    // Ten unsaved lines at the top of `a.rs`.
+    let docs = cx.update(|_, cx| wb.read(cx).documents().clone());
+    let origin = code.entity_id();
+    let edit = (0..0, Arc::<str>::from("unsaved haystack\n".repeat(10)));
+    docs.update(cx, |d, cx| {
+        d.apply_edits(&path, vec![edit], None, None, origin, cx)
+    })
+    .expect("the document is loaded");
+    draw(cx);
+    assert!(docs.read_with(cx, |d, _| d.is_dirty(&path)));
+
+    keys("cmd-shift-f", cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    let view = search(&wb, cx);
+    assert_eq!(match_lines(&view, cx), vec![(p("a.rs"), vec![60])]);
+    // Line 0 of the excerpt is context, line 1 the match.
+    click("search-line-0-0-1", cx);
+    let code = active_view(&wb, cx);
+    let (cursor, highlights) =
+        code.read_with(cx, |v, _| (v.cursor(), v.match_highlights().to_vec()));
+    assert_eq!(cursor, Point { row: 59, column: 8 });
+    let start = 10 * "unsaved haystack\n".len() + text.find("needle").unwrap();
+    assert_eq!(highlights, vec![start..start + 6]);
+
+    // Text that is only in the buffer, not on disk.
+    // `⇧⌘F` again selects the query, so typing replaces it.
+    keys("cmd-shift-f", cx);
+    type_text("haystack", cx);
+    settle_search(cx);
+    assert_eq!(
+        match_lines(&view, cx),
+        vec![(p("a.rs"), (1..=10).collect())]
+    );
+}
