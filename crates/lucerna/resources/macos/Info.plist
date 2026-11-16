@@ -1,18 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Template for Lucerna.app; scripts/bundle-app.sh replaces @VERSION@ with
-     the Cargo version and @BUILD@ with the build time (YYYYMMDD.HHMMSS), so
-     the newest of several installed copies has the highest CFBundleVersion. -->
+<!-- Template for Lucerna.app; scripts/render-plist.sh replaces @VERSION@
+     with the Cargo version, @BUILD@ with the build time (YYYYMMDD.HHMMSS), so
+     the newest of several installed copies has the highest CFBundleVersion,
+     and @BUNDLE_ID@ and @BUNDLE_NAME@ with the channel's: dev builds are
+     dev.lucerna.Lucerna-Dev, "Lucerna Dev"; stable ones dev.lucerna.Lucerna,
+     "Lucerna". -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleName</key>
-	<string>Lucerna</string>
+	<string>@BUNDLE_NAME@</string>
 	<key>CFBundleDisplayName</key>
-	<string>Lucerna</string>
+	<string>@BUNDLE_NAME@</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.lucerna.Lucerna</string>
+	<string>@BUNDLE_ID@</string>
 	<key>CFBundleExecutable</key>
 	<string>luc</string>
 	<key>CFBundleIconFile</key>

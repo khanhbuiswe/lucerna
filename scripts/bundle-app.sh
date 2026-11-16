@@ -2,10 +2,14 @@
 # Builds Lucerna.app, so macOS shows "Lucerna" and its icon in the menu bar
 # and Dock instead of the bare `luc` process name.
 #
-# Usage: scripts/bundle-app.sh [--debug] [--install]
+# Usage: scripts/bundle-app.sh [--debug] [--stable] [--install]
 #   --debug    bundle the dev build (default: release)
-#   --install  copy the app to /Applications and put a `luc` shim on PATH
-#              ($LUC_BIN_DIR, default ~/.local/bin)
+#   --stable   the stable channel: bundle ID dev.lucerna.Lucerna, "Lucerna"
+#              (default: the dev channel, dev.lucerna.Lucerna-Dev, "Lucerna
+#              Dev", so a build run from the tree never takes the installed
+#              app's Open requests; see scripts/render-plist.sh)
+#   --install  build the stable channel, copy the app to /Applications and
+#              put a `luc` shim on PATH ($LUC_BIN_DIR, default ~/.local/bin)
 #
 # Uses only tools that ship with macOS: sips renders the SVG icon, iconutil
 # packs the .icns, plutil checks the plist, codesign signs ad hoc, python3
@@ -14,15 +18,22 @@
 set -eu
 
 profile=release
+channel=dev
 install=0
 for arg in "$@"; do
   case $arg in
     --debug) profile=debug ;;
-    --install) install=1 ;;
-    -h | --help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --stable) channel=stable ;;
+    --install) install=1; channel=stable ;;
+    -h | --help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "bundle-app: unknown option: $arg" >&2; exit 2 ;;
   esac
 done
+# For scripts/test_bundle_plist.py: the parsed channel, with no build.
+if [ "${LUCERNA_BUNDLE_DRY_RUN:-}" = 1 ]; then
+  echo "channel=$channel"
+  exit 0
+fi
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -62,9 +73,7 @@ mkdir -p "$contents/MacOS" "$contents/Resources"
 # CFBundleVersion is the build time, as Zed does: LaunchServices and Finder
 # then treat the latest build as the newest copy.
 build=$(date +%Y%m%d.%H%M%S)
-sed -e "s/@VERSION@/$version/g" -e "s/@BUILD@/$build/g" \
-  crates/lucerna/resources/macos/Info.plist \
-  > "$contents/Info.plist"
+scripts/render-plist.sh "$channel" "$version" "$build" > "$contents/Info.plist"
 plutil -lint -s "$contents/Info.plist"
 printf 'APPL????' > "$contents/PkgInfo"
 cp "$target/$profile/luc" "$contents/MacOS/luc"
@@ -89,7 +98,7 @@ done
 iconutil -c icns "$iconset" -o "$contents/Resources/Lucerna.icns"
 
 codesign --force --sign - "$app"
-echo "bundle-app: built $app ($version, build $build, $profile)"
+echo "bundle-app: built $app ($version, build $build, $profile, $channel)"
 
 if [ "$install" -eq 1 ]; then
   dest=/Applications/Lucerna.app

@@ -65,7 +65,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build Lucerna.app
-        run: scripts/bundle-app.sh
+        run: scripts/bundle-app.sh --stable
 
       # Replaces the ad hoc signature with a Developer ID one, notarizes the
       # app and staples the ticket. Skipped unless every APPLE_* secret is set.

@@ -55,9 +55,9 @@ if [ $build = 0 ]; then
     exit 1
   }
 elif [ "$profile" = debug ]; then
-  scripts/bundle-app.sh --debug
+  scripts/bundle-app.sh --debug --stable
 else
-  scripts/bundle-app.sh
+  scripts/bundle-app.sh --stable
 fi
 
 # A layout problem: fatal under --strict, otherwise a warning.
