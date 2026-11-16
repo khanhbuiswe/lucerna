@@ -277,18 +277,19 @@ fn open_urls(urls: &[String], cx: &mut App) {
 /// read in the background. Requests from `luc` and the platform wait
 /// until then (spec M14).
 async fn open_without_folder(cx: &mut AsyncApp) {
-    let (data_dir, mode, choice) = cx.update(|cx| {
+    let (data_dir, mode, choice, hot_exit) = cx.update(|cx| {
         router::begin_restore(cx);
         let settings = &cx.global::<AppState>().settings;
         (
             app_data_dir(cx),
             restore_windows(settings),
             startup_choice(settings),
+            hot_exit_on(settings),
         )
     });
     let dir = data_dir.clone();
     let screen = cx
-        .background_spawn(async move { screen_for(dir.as_deref(), mode, choice) })
+        .background_spawn(async move { screen_for(dir.as_deref(), mode, choice, hot_exit) })
         .await;
     cx.update(|cx| open_screen(screen, data_dir, cx));
 }
@@ -334,7 +335,13 @@ pub(crate) fn first_screen(data_dir: Option<&Path>, settings: &SettingsStore) ->
         data_dir,
         restore_windows(settings),
         startup_choice(settings),
+        hot_exit_on(settings),
     )
+}
+
+/// `files.hotExit` is not `"off"`.
+fn hot_exit_on(settings: &SettingsStore) -> bool {
+    settings.get::<String>("files.hotExit", None).as_deref() != Some("off")
 }
 
 /// What a start without a path shows, from the app data directory and the
@@ -342,10 +349,17 @@ pub(crate) fn first_screen(data_dir: Option<&Path>, settings: &SettingsStore) ->
 /// `window.restoreWindows` keeps, else (unless it is `"none"`) the newest
 /// recent entry that still exists, then the Get Started page on the first run, then what
 /// `workbench.startupEditor` says. Without a data directory there is no
-/// first run to remember, so no Get Started page. Reads `windows.json`,
-/// the recent list and `state.json`.
-fn screen_for(data_dir: Option<&Path>, mode: RestoreWindows, choice: Startup) -> StartupScreen {
-    let restore = match data_dir {
+/// first run to remember, so no Get Started page. With `hot_exit` on, the
+/// single-file windows that left backups join the list even when the
+/// restore mode keeps none (spec §5.4). Reads `windows.json`, the recent
+/// list, `state.json` and the backups.
+fn screen_for(
+    data_dir: Option<&Path>,
+    mode: RestoreWindows,
+    choice: Startup,
+    hot_exit: bool,
+) -> StartupScreen {
+    let mut restore = match data_dir {
         Some(dir) if mode != RestoreWindows::None => {
             let saved = session::load(&session_path(dir));
             let windows = session::to_restore(&saved, mode, Path::exists);
@@ -364,12 +378,39 @@ fn screen_for(data_dir: Option<&Path>, mode: RestoreWindows, choice: Startup) ->
         }
         _ => Vec::new(),
     };
+    if let (Some(dir), true) = (data_dir, hot_exit) {
+        add_backed_up_files(&mut restore, dir);
+    }
     // The flag is not needed when windows are reopened.
     let onboarded = match restore.is_empty() {
         true => data_dir.map(onboarded),
         false => None,
     };
     startup_screen(restore, onboarded, choice)
+}
+
+/// Adds a file window for each file with backups that is not already in
+/// `windows` (compared by canonical path) and still exists.
+fn add_backed_up_files(windows: &mut Vec<SessionWindow>, data_dir: &Path) {
+    let mut files = crate::hot_exit::store::file_windows_with_backups(data_dir);
+    files.sort();
+    let mut seen: Vec<PathBuf> = windows
+        .iter()
+        .filter_map(|window| window.path.canonicalize().ok())
+        .collect();
+    for file in files {
+        let Ok(canonical) = file.canonicalize() else {
+            continue;
+        };
+        if seen.contains(&canonical) {
+            continue;
+        }
+        seen.push(canonical);
+        windows.push(SessionWindow {
+            kind: crate::recent::RecentKind::File,
+            path: file,
+        });
+    }
 }
 
 /// Asks for a folder to open; quits on Cancel unless a window opened
@@ -509,6 +550,56 @@ mod tests {
     /// Writes `windows.json` in `dir` listing `windows`.
     fn write_session(dir: &Path, windows: Vec<SessionWindow>) {
         session::save(&session_path(dir), &session::Session { windows }).unwrap();
+    }
+
+    fn expected_window(screen: &StartupScreen) -> SessionWindow {
+        match screen {
+            StartupScreen::Restore(windows) => windows[0].clone(),
+            other => panic!("not a restore: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_window_with_backup_reopens() {
+        use crate::hot_exit::store::{
+            Backup, BackupHeader, WorkspaceKey, backup_dir, text_sha256, write_backup,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.rs");
+        std::fs::write(&file, "base").unwrap();
+        let key = WorkspaceKey::File(file.clone());
+        let backup = Backup {
+            header: BackupHeader {
+                path: file.clone(),
+                mtime: None,
+                size: None,
+                base_sha256: Some(text_sha256("base")),
+                encoding: "UTF-8".into(),
+                bom: false,
+                line_ending: lucerna_text::LineEnding::Lf,
+            },
+            text: "edited".into(),
+        };
+        write_backup(&backup_dir(dir.path(), &key), &key, &backup).unwrap();
+        let expected = StartupScreen::Restore(vec![SessionWindow {
+            kind: RecentKind::File,
+            path: file,
+        }]);
+        let none = with_user(r#"{"window.restoreWindows":"none"}"#);
+        assert_eq!(first_screen(Some(dir.path()), &none), expected);
+        assert_eq!(
+            first_screen(Some(dir.path()), &SettingsStore::with_defaults()),
+            expected
+        );
+        write_session(dir.path(), vec![expected_window(&expected)]);
+        assert_eq!(
+            first_screen(Some(dir.path()), &SettingsStore::with_defaults()),
+            expected,
+            "listed once when the session has it too"
+        );
+        write_session(dir.path(), Vec::new());
+        let off = with_user(r#"{"files.hotExit":"off"}"#);
+        assert_ne!(first_screen(Some(dir.path()), &off), expected);
     }
 
     #[test]

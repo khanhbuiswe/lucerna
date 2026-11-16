@@ -49,5 +49,6 @@ The settings use VS Code's names, for example:
 | `files.trimTrailingWhitespace` | `false` | Remove trailing whitespace on save |
 | `files.autoSave` | `"off"` | When to save automatically |
 | `files.autoSaveDelay` | `1000` | Milliseconds before an auto save |
+| `files.hotExit` | `"onExit"` | `"onExit"` keeps unsaved changes when Lucerna quits, without asking, and brings them back when the folder or file is reopened; `"off"` asks to save instead. User settings only |
 | `files.saveConflictResolution` | `"askUser"` | What to do when the file changed on disk |
 | `lucerna.externalChanges.autoMerge` | `true` | Merge an agent's non-overlapping changes into unsaved text |

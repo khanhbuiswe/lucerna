@@ -2,8 +2,8 @@
 
 /// Settings read from the Default and User layers only, as VS Code's
 /// `scope: application`: a value in a folder's `.lucerna/settings.json`
-/// is ignored. Theme, icon theme, startup editor, `window.*` and
-/// `extensions.*`.
+/// is ignored. Theme, icon theme, startup editor, `files.hotExit`,
+/// `window.*` and `extensions.*`.
 pub fn is_app_scope(key: &str) -> bool {
     matches!(
         key,
@@ -12,6 +12,7 @@ pub fn is_app_scope(key: &str) -> bool {
             | "workbench.preferredLightColorTheme"
             | "workbench.iconTheme"
             | "workbench.startupEditor"
+            | "files.hotExit"
     ) || key.starts_with("window.")
         || key.starts_with("extensions.")
 }
@@ -28,6 +29,7 @@ mod tests {
             "workbench.preferredLightColorTheme",
             "workbench.iconTheme",
             "workbench.startupEditor",
+            "files.hotExit",
             "window.restoreWindows",
             "window.autoDetectColorScheme",
             "extensions.autoCheckUpdates",

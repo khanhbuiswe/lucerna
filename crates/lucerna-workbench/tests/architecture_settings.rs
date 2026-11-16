@@ -20,6 +20,7 @@ const ALLOWED: &[&str] = &[
     "welcome.rs",
     "window_settings.rs",
     "app_menu.rs",
+    "hot_exit/tracker.rs",
 ];
 
 /// Every `.rs` file under `dir`.

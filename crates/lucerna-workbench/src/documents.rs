@@ -39,6 +39,7 @@ use lucerna_text::{
 use crate::WindowSettings;
 use crate::code_view::CodeView;
 use crate::editor_groups::EditorGroupsView;
+use crate::hot_exit::store::{Backup, text_sha256};
 use crate::save::{
     self, CONFLICT_ANSWERS, CONFLICT_MESSAGE, SaveOptions, SaveReason, WriteJob, WriteOutcome,
 };
@@ -126,6 +127,10 @@ pub enum DocumentEvent {
     /// the frame after (the workbench collects closed documents on each
     /// draw).
     Closed { path: Arc<Path> },
+    /// The unsaved text at `path` was let go on purpose (Don't Save, Close
+    /// on a deleted file's bar): sent by [`Documents::discard`] before any
+    /// `Closed`, so hot exit deletes the backup even while the app quits.
+    Discarded { path: Arc<Path> },
     /// An opened document now has another language (or none).
     LanguageChanged {
         path: Arc<Path>,
@@ -151,7 +156,47 @@ impl Stamp {
             len: meta.len(),
         }
     }
+
+    /// The modification time as seconds and nanoseconds since the Unix
+    /// epoch (`None` when unknown or before it), and the size: how a
+    /// hot exit backup keeps the stamp.
+    pub(crate) fn to_parts(self) -> (Option<(u64, u32)>, u64) {
+        let modified = self
+            .modified
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|d| (d.as_secs(), d.subsec_nanos()));
+        (modified, self.len)
+    }
+
+    /// The stamp [`Stamp::to_parts`] gave these parts.
+    pub(crate) fn from_parts(modified: Option<(u64, u32)>, len: u64) -> Stamp {
+        Stamp {
+            modified: modified.map(|(secs, nanos)| {
+                SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos)
+            }),
+            len,
+        }
+    }
 }
+
+/// What a hot exit backup of an unsaved document is made of
+/// ([`Documents::backup_source`]).
+pub(crate) struct BackupSource {
+    /// The unsaved text.
+    pub text: BufferSnapshot,
+    /// The file's text the unsaved changes were made on.
+    pub base: Option<BufferSnapshot>,
+    /// The file's stamp as last loaded or saved.
+    pub stamp: Option<Stamp>,
+    pub encoding: &'static str,
+    pub bom: bool,
+    pub line_ending: LineEnding,
+}
+
+/// The `base_hash` of a document restored from a backup whose base is not
+/// the file on disk: no file's bytes hash to it, so a save first asks
+/// before writing over the file (spec §5.4).
+pub(crate) const RESTORED_UNKNOWN_BASE: u64 = 0;
 
 pub(crate) type Edits = Vec<(Range<usize>, Arc<str>)>;
 
@@ -231,6 +276,11 @@ enum Job {
         base_hash: u64,
         base_epoch: u64,
     },
+    /// Make the text a hot exit backup's, checking the file on disk is
+    /// still the one it was made on.
+    Restore {
+        backup: Backup,
+    },
 }
 
 /// What a reload does to the text.
@@ -288,8 +338,19 @@ pub(crate) struct DiskText {
     stamp: Stamp,
 }
 
+/// A backup made into a buffer with unsaved changes, and what is known of
+/// the file it was made on.
+struct Restored {
+    buffer: Buffer,
+    /// The file's text, when it is still the backup's base.
+    base: Option<BufferSnapshot>,
+    base_hash: u64,
+    stamp: Option<Stamp>,
+}
+
 enum JobOutput {
     Loaded(Result<(Buffer, Stamp), LoadError>),
+    Restored(Restored),
     /// A reload's read, and the disk epoch it started in.
     Reloaded(u64, Result<Reloaded, ReadFailure>),
 }
@@ -365,6 +426,9 @@ struct Document {
     pending_go_to: Option<GoTo>,
     /// [`DocumentEvent::Opened`] was sent.
     announced: bool,
+    /// Made by [`Documents::open_from_backup`] for a tab whose view is not
+    /// made yet: kept without views until the first one comes.
+    awaiting_view: bool,
     /// Set by any view's selection change: the next edit starts a new
     /// undo step. A flag rather than a call, since views change their
     /// selections from inside `Documents` too.
@@ -372,6 +436,49 @@ struct Document {
 }
 
 impl Document {
+    /// A document not loaded yet, shown by `views`.
+    fn new(
+        language: Option<Arc<Language>>,
+        views: Vec<WeakEntity<CodeView>>,
+        pending_go_to: Option<GoTo>,
+        stop_requested: Rc<Cell<bool>>,
+    ) -> Document {
+        Document {
+            state: DocState::Loading,
+            buffer: None,
+            snapshot: None,
+            version: 0,
+            base_hash: 0,
+            disk_epoch: 0,
+            base: None,
+            conflict: None,
+            deleted_kept: false,
+            skip_disk_check: false,
+            revision: 0,
+            encoding: "UTF-8",
+            line_ending: LineEnding::Lf,
+            language,
+            indentation: None,
+            indentation_inputs: None,
+            syntax: None,
+            force_text: false,
+            stamp: None,
+            views,
+            job: None,
+            reload_again: false,
+            saving: Rc::default(),
+            reload_after_save: false,
+            last_save: None,
+            parse: None,
+            parse_cancel: None,
+            skip_view: None,
+            pending_go_to,
+            announced: false,
+            awaiting_view: false,
+            stop_requested,
+        }
+    }
+
     fn views(&self) -> impl Iterator<Item = Entity<CodeView>> + '_ {
         self.views
             .iter()
@@ -541,6 +648,7 @@ impl Documents {
                     .map(|v| v.read(cx).shared_diff_hunks())
                     .find(|h| !h.is_empty());
                 doc.views.push(view.downgrade());
+                doc.awaiting_view = false;
                 let state = doc.state.clone();
                 let (snapshot, syntax) = (doc.snapshot.clone(), doc.syntax.clone());
                 let language_id = doc.language.as_ref().map(|l| l.id.clone());
@@ -583,41 +691,15 @@ impl Documents {
                     v.set_language_id(language_id, cx);
                     v.set_doc_state(DocState::Loading, cx);
                 });
+                let pending_go_to = self.pending_go_to.remove(&key);
                 self.docs.insert(
                     key.clone(),
-                    Document {
-                        state: DocState::Loading,
-                        buffer: None,
-                        snapshot: None,
-                        version: 0,
-                        base_hash: 0,
-                        disk_epoch: 0,
-                        base: None,
-                        conflict: None,
-                        deleted_kept: false,
-                        skip_disk_check: false,
-                        revision: 0,
-                        encoding: "UTF-8",
-                        line_ending: LineEnding::Lf,
+                    Document::new(
                         language,
-                        indentation: None,
-                        indentation_inputs: None,
-                        syntax: None,
-                        force_text: false,
-                        stamp: None,
-                        views: vec![view.downgrade()],
-                        job: None,
-                        reload_again: false,
-                        saving: Rc::default(),
-                        reload_after_save: false,
-                        last_save: None,
-                        parse: None,
-                        parse_cancel: None,
-                        skip_view: None,
-                        pending_go_to: self.pending_go_to.remove(&key),
-                        announced: false,
+                        vec![view.downgrade()],
+                        pending_go_to,
                         stop_requested,
-                    },
+                    ),
                 );
                 self.start_job(&key, cx);
             }
@@ -971,6 +1053,21 @@ impl Documents {
             .get(&self.key(path))
             .and_then(|d| d.buffer.as_ref())
             .is_some_and(Buffer::is_dirty)
+    }
+
+    /// What a backup of the document at `path` holds: `None` unless its
+    /// text is loaded and has unsaved changes.
+    pub(crate) fn backup_source(&self, path: &Path) -> Option<BackupSource> {
+        let doc = self.docs.get(&self.key(path))?;
+        let buffer = doc.buffer.as_ref().filter(|b| b.is_dirty())?;
+        Some(BackupSource {
+            text: buffer.snapshot(),
+            base: doc.base.clone(),
+            stamp: doc.stamp,
+            encoding: buffer.encoding().name(),
+            bom: buffer.has_bom(),
+            line_ending: buffer.line_ending(),
+        })
     }
 
     /// Whether a document is open at `path` or under it (a tab of a file
@@ -1834,11 +1931,13 @@ impl Documents {
 
     /// Drops the document at `path` with its text and history now, even
     /// while a view of it lives on (the close prompt's Don't Save), sending
-    /// [`DocumentEvent::Closed`] if it was opened. The next open reads the
-    /// disk.
+    /// [`DocumentEvent::Discarded`], then [`DocumentEvent::Closed`] if it
+    /// was opened. The next open reads the disk.
     pub fn discard(&mut self, path: &Path, cx: &mut Context<Self>) {
         let key = self.key(path);
-        if self.docs.remove(&key).is_some_and(|doc| doc.announced) {
+        let removed = self.docs.remove(&key);
+        cx.emit(DocumentEvent::Discarded { path: key.clone() });
+        if removed.is_some_and(|doc| doc.announced) {
             cx.emit(DocumentEvent::Closed { path: key });
         }
     }
@@ -1850,7 +1949,7 @@ impl Documents {
         let pending_go_to = &mut self.pending_go_to;
         self.docs.retain(|key, doc| {
             doc.views.retain(|v| v.upgrade().is_some());
-            let keep = !doc.views.is_empty();
+            let keep = !doc.views.is_empty() || doc.awaiting_view;
             // A jump no view took yet (one only a picker's preview held the
             // document for) waits for the next view of the path.
             if !keep && let Some(point) = doc.pending_go_to.take() {
@@ -1908,14 +2007,27 @@ impl Documents {
                 force_text: doc.force_text,
             },
         };
-        let path = key.clone();
-        let work = spawn_contained(cx, move || run_job(&path, job));
-        let key = key.clone();
-        doc.job = Some(cx.spawn(async move |this, cx| {
-            let output = work.await;
-            this.update(cx, |docs, cx| docs.finish_job(&key, output, cx))
-                .ok();
-        }));
+        doc.job = Some(spawn_job(key, job, cx));
+    }
+
+    /// Opens the document a hot exit backup was made of, with the backup's
+    /// text as unsaved changes, for a tab whose view is made next (spec
+    /// §5.4). Returns its key. A document already loaded keeps its text.
+    pub(crate) fn open_from_backup(&mut self, backup: Backup, cx: &mut Context<Self>) -> Arc<Path> {
+        let key = self.key(&backup.header.path);
+        if !self.docs.contains_key(&key) {
+            let language = language_for(&self.root, &self.settings, &key, None, cx);
+            let pending_go_to = self.pending_go_to.remove(&key);
+            let mut doc = Document::new(language, Vec::new(), pending_go_to, Rc::default());
+            doc.awaiting_view = true;
+            self.docs.insert(key.clone(), doc);
+        }
+        let doc = self.docs.get_mut(&key).expect("inserted above");
+        if doc.buffer.is_none() {
+            // Replaces a load in flight.
+            doc.job = Some(spawn_job(&key, Job::Restore { backup }, cx));
+        }
+        key
     }
 
     /// Whether `lucerna.externalChanges.autoMerge` is on for the document
@@ -1940,10 +2052,20 @@ impl Documents {
         doc.job = None;
         let mut parse = false;
         match output {
-            Ok(JobOutput::Loaded(Ok((buffer, stamp)))) => {
+            Ok(output @ (JobOutput::Loaded(Ok(_)) | JobOutput::Restored(_))) => {
+                let (buffer, stamp, restored) = match output {
+                    JobOutput::Loaded(Ok((buffer, stamp))) => (buffer, Some(stamp), None),
+                    JobOutput::Restored(r) => (r.buffer, r.stamp, Some((r.base, r.base_hash))),
+                    _ => unreachable!("matched above"),
+                };
                 let snapshot = buffer.snapshot();
                 let old_snapshot = doc.snapshot.clone();
                 take_buffer(doc, buffer, stamp);
+                let dirty = restored.is_some();
+                if let Some((base, base_hash)) = restored {
+                    doc.base = base;
+                    doc.base_hash = base_hash;
+                }
                 let old_id = doc.language_id();
                 // Now with the first line, for `first_line_pattern`.
                 doc.language = language_for(&self.root, &self.settings, key, Some(&snapshot), cx);
@@ -2006,6 +2128,12 @@ impl Documents {
                     }
                 }
                 doc.set_state(DocState::Ready, cx);
+                if dirty {
+                    cx.emit(DocumentEvent::DirtyChanged {
+                        path: key.clone(),
+                        dirty: true,
+                    });
+                }
                 self.default_line_ending(key, cx);
                 parse = true;
             }
@@ -2474,7 +2602,7 @@ fn announce_return(doc: &Document, key: &Arc<Path>, cx: &mut Context<Documents>)
     }
 }
 
-fn take_buffer(doc: &mut Document, buffer: Buffer, stamp: Stamp) {
+fn take_buffer(doc: &mut Document, buffer: Buffer, stamp: Option<Stamp>) {
     doc.snapshot = Some(buffer.snapshot());
     doc.version = buffer.version();
     doc.base_hash = buffer.disk_hash();
@@ -2483,7 +2611,7 @@ fn take_buffer(doc: &mut Document, buffer: Buffer, stamp: Stamp) {
     doc.encoding = buffer.encoding().name();
     doc.line_ending = buffer.line_ending();
     doc.buffer = Some(buffer);
-    doc.stamp = Some(stamp);
+    doc.stamp = stamp;
     doc.revision += 1;
 }
 
@@ -2679,7 +2807,54 @@ fn run_job(path: &Path, job: Job) -> JobOutput {
                 }
             }),
         ),
+        Job::Restore { backup } => JobOutput::Restored(restore(path, backup)),
     }
+}
+
+/// The buffer of `backup`, its text unsaved and without undo history. Its
+/// base is the file on disk when that still decodes to the backup's base
+/// text; otherwise unknown, so a save asks before writing over the file.
+fn restore(path: &Path, backup: Backup) -> Restored {
+    let header = backup.header;
+    let disk = read(path)
+        .ok()
+        .and_then(|(bytes, stamp)| Some((decode_file(&bytes, false).ok()?, stamp)));
+    let mut buffer = Buffer::from_decoded(Decoded {
+        text: backup.text,
+        encoding: encoding_rs::Encoding::for_label(header.encoding.as_bytes())
+            .unwrap_or(encoding_rs::UTF_8),
+        has_bom: header.bom,
+        line_ending: header.line_ending,
+        hash: RESTORED_UNKNOWN_BASE,
+    });
+    buffer.clear_saved();
+    match disk {
+        Some((disk, stamp)) if header.base_sha256 == Some(text_sha256(&disk.text)) => Restored {
+            buffer,
+            base: Some(BufferSnapshot::from_text(&disk.text)),
+            base_hash: disk.hash,
+            stamp: Some(stamp),
+        },
+        _ => Restored {
+            buffer,
+            base: None,
+            base_hash: RESTORED_UNKNOWN_BASE,
+            stamp: header.size.map(|len| Stamp::from_parts(header.mtime, len)),
+        },
+    }
+}
+
+/// Runs `job` on the document at `key` in the background, then
+/// [`Documents::finish_job`].
+fn spawn_job(key: &Arc<Path>, job: Job, cx: &mut Context<Documents>) -> Task<()> {
+    let path = key.clone();
+    let work = spawn_contained(cx, move || run_job(&path, job));
+    let key = key.clone();
+    cx.spawn(async move |this, cx| {
+        let output = work.await;
+        this.update(cx, |docs, cx| docs.finish_job(&key, output, cx))
+            .ok();
+    })
 }
 
 /// Runs `f` on the background executor; a panic becomes
@@ -2749,5 +2924,21 @@ mod tests {
         let result = contain(|| -> u32 { panic!("boom") });
         assert_eq!(result, Err(LoadError::Io("internal error: boom".into())));
         assert_eq!(contain(|| 7), Ok(7));
+    }
+
+    #[test]
+    fn stamp_parts_round_trip() {
+        let stamp = Stamp {
+            modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 5)),
+            len: 42,
+        };
+        assert_eq!(stamp.to_parts(), (Some((1_700_000_000, 5)), 42));
+        let (modified, len) = stamp.to_parts();
+        assert_eq!(Stamp::from_parts(modified, len), stamp);
+        let unknown = Stamp {
+            modified: None,
+            len: 0,
+        };
+        assert_eq!(Stamp::from_parts(None, 0), unknown);
     }
 }

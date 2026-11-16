@@ -13,7 +13,7 @@ use gpui::{
 use lucerna_settings::SettingsView;
 use lucerna_theme::{IconSource, Rgba, UiColors};
 
-use super::model::{EditorGroups, GroupsState, Tab, TabId, TabItem};
+use super::model::{EditorGroups, FileView, GroupsState, OpenMode, Tab, TabId, TabItem};
 use crate::conflict_bar::{self, BarActions};
 use crate::documents::{DiskNotice, DocState, Documents};
 use crate::icons;
@@ -377,6 +377,48 @@ impl EditorGroupsView {
     ) -> Option<AnyView> {
         let tab = self.model.active_tab()?.clone();
         Some(self.body(&tab, window, cx))
+    }
+
+    /// Opens a pinned tab of absolute `path` at the end of the first group
+    /// unless a tab already shows it, leaving the active tabs and group as
+    /// they were (an empty first group shows the new tab). Then makes the
+    /// body of every tab of it now, so the document they show stays open
+    /// (a restored hot exit backup, spec §5.4).
+    pub(crate) fn open_restored(
+        &mut self,
+        path: Arc<Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let item = TabItem::File(path.clone());
+        let shows = |m: &EditorGroups| {
+            m.groups()
+                .iter()
+                .flat_map(|g| &g.tabs)
+                .any(|t| t.item == item)
+        };
+        if !shows(&self.model) {
+            self.update_model(cx, |m| {
+                let (group, active) = (m.active_group(), m.groups()[0].active);
+                m.focus_group(0);
+                m.open_file(path, FileView::Source, OpenMode::Pinned, false, false);
+                if let Some(active) = active {
+                    m.activate(active);
+                }
+                m.focus_group(group);
+            });
+        }
+        let tabs: Vec<Tab> = self
+            .model
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter(|t| t.item == item)
+            .cloned()
+            .collect();
+        for tab in &tabs {
+            self.body(tab, window, cx);
+        }
     }
 
     /// The bodies of every group's active tab, made now if they have not

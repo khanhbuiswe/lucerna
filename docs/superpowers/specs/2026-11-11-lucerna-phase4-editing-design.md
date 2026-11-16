@@ -202,7 +202,7 @@ Lệnh: `workbench.action.files.save` (⌘S, ghi cả khi không bẩn, như VS 
 
 - Đóng tab cuối cùng của một file bẩn: "Do you want to save the changes you made to {tên}?" / "Your changes will be lost if you don't save them." với **Save / Don't Save / Cancel** (VS Code). "Don't Save" bỏ thay đổi (document đóng, history mất).
 - Đóng cửa sổ hoặc thoát (⌘Q) khi có file bẩn: một prompt liệt kê các file, **Save All / Don't Save / Cancel**.
-- Không có hot exit trong Phase 4 (§19 Q4).
+- Không có hot exit trong Phase 4 (§19 Q4). Hot exit làm riêng, xem [2026-11-16-hot-exit-design.md](2026-11-16-hot-exit-design.md).
 
 ## 7. Xung đột khi agent ghi file
 

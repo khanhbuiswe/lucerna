@@ -88,7 +88,7 @@ Thành công nghĩa là:
     - `version`
     - `path`: đường dẫn tuyệt đối
     - `mtime` và `size` của file trên đĩa lúc document được đọc hoặc lưu lần cuối (stamp hiện có); `null` nếu file chưa tồn tại
-    - `base_sha256`: SHA-256 của các byte trên đĩa mà document dựa trên. Không dùng `base_hash` hiện có, vì `DefaultHasher` không ổn định giữa các phiên bản Rust. *(Quyết định của mình.)*
+    - `base_sha256`: SHA-256 của văn bản `base` mà document dựa trên (chuỗi UTF-8 với `\n`, đã giải mã, không phải byte trên đĩa). Lúc khôi phục, giải mã file trên đĩa rồi băm văn bản đó. Không dùng `base_hash` hiện có, vì `DefaultHasher` không ổn định giữa các phiên bản Rust. *(Quyết định của mình.)*
     - `encoding`, `bom`, `line_ending`: lấy từ buffer, để lưu ra đúng định dạng cũ
   - **Từ dòng thứ hai** là văn bản của buffer ở dạng UTF-8, xuống dòng `\n` (dạng trong bộ nhớ).
 - Ghi bằng temp rồi rename trong cùng thư mục.
@@ -132,6 +132,7 @@ Với các thao tác này, Don't Save xoá bản sao lưu của các file đó, 
 - **Cửa sổ nào được mở lại khi khởi động:**
   - Cửa sổ folder theo `window.restoreWindows` như hiện nay. Bản sao lưu của folder không được mở lại thì được giữ, tới khi người dùng mở lại folder đó.
   - Cửa sổ mở một file riêng mà có bản sao lưu thì luôn được mở lại, giống "empty window" của VS Code. Vì tên thư mục chỉ là hash, mỗi thư mục bản sao lưu có thêm một file `workspace.json` ghi loại cửa sổ (folder hoặc file) và đường dẫn, để lúc khởi động biết cần mở cửa sổ nào *(quyết định của mình)*.
+  - **Giới hạn đã biết:** cửa sổ một file chỉ được mở lại khi Lucerna khởi động không kèm đường dẫn; mở bằng `luc <đường dẫn>` hay từ Finder thì bản sao lưu chờ tới lần khởi động trơn kế tiếp. Nếu file của cửa sổ đó bị xoá trong lúc app tắt, cửa sổ chưa được mở lại: bản sao lưu vẫn được giữ và sẽ được khôi phục khi file có lại. Đã lên kế hoạch sửa sau.
 
 ### 5.5 Dọn dẹp
 

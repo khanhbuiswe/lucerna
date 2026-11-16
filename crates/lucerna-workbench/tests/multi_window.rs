@@ -885,11 +885,12 @@ fn status_message_stays_in_window(cx: &mut TestAppContext) {
 
 /// Two routed folder windows, A with a dirty `a.rs` and B with a dirty
 /// `b.rs`; B, opened last, is the most recently used. Quits are counted,
-/// not done.
+/// not done. Hot exit is off: the windows have a data dir, and with it on
+/// they would quit without asking.
 fn two_dirty_windows(
     cx: &mut TestAppContext,
 ) -> (WindowHandle<Workbench>, WindowHandle<Workbench>) {
-    routed(&[], cx);
+    hot_exit_off(&routed(&[], cx));
     cx.update(app_menu::install);
     cx.update(app::count_quits_for_test);
     let (a, b) = (project(cx), project(cx));
@@ -925,6 +926,18 @@ fn edit_file(handle: WindowHandle<Workbench>, path: &str, cx: &mut TestAppContex
     })
     .expect("the file is loaded");
     draw(handle, cx);
+}
+
+/// Turns hot exit off in the user `settings.json` the routed windows read
+/// from the data dir `data` (the router's config watch replaces the User
+/// layer with it). With hot exit on they would quit without asking.
+fn hot_exit_off(data: &Path) {
+    std::fs::create_dir_all(data.join("config")).unwrap();
+    std::fs::write(
+        data.join("config").join("settings.json"),
+        r#"{"files.hotExit":"off"}"#,
+    )
+    .unwrap();
 }
 
 fn quit(cx: &mut TestAppContext) {
@@ -992,6 +1005,8 @@ fn quit_survives_window_closed_during_prompt(cx: &mut TestAppContext) {
 #[gpui::test]
 fn quit_asks_again_for_window_edited_during_prompt(cx: &mut TestAppContext) {
     let data = routed(&[], cx);
+    // With hot exit on, the windows would quit without asking.
+    hot_exit_off(&data);
     cx.update(app_menu::install);
     cx.update(app::count_quits_for_test);
     let (a, b) = (project(cx), project(cx));
