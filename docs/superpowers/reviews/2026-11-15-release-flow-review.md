@@ -59,6 +59,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
   - Delete `foo.rs` thì xoá file thật. Mặc định là vào Thùng rác; nếu chọn Delete Permanently thì mất hẳn.
 - **Nguyên nhân:** `symlink_metadata("foo.rs")` vẫn thành công, nên đường dẫn cũ bị coi là Modified thay vì Removed.
 - **Hướng sửa:** đường dẫn đã biết mà "vẫn tồn tại" thì so tên thật trong `read_dir` của thư mục cha. Nếu khác thì coi là Removed.
+- **Đã sửa** (commit 1bae091): đường dẫn mà một tên trong đó chỉ có trên đĩa với hoa/thường khác được coi là Removed (folder kèm cả cây con), cho cả Explorer Rename lẫn `mv`/`git mv` của agent.
 
 ### T2-3 [P2] Thoát khi Paste (copy) đang chạy để lại bản copy dở
 
