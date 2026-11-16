@@ -1390,33 +1390,39 @@ impl Workbench {
         self.refresh_watched_open_files(cx);
     }
 
-    /// Open files the worktree does not follow (outside the root, or not
-    /// in the tree, e.g. ignored; all of them in single-file mode), which
-    /// the open-file watcher follows.
+    /// Open files the worktree does not follow (outside the root, not in
+    /// the tree, e.g. ignored, or reached through a symlink, whose target
+    /// the tree reports under its own path; all of them in single-file
+    /// mode), which the open-file watcher follows.
     pub fn watched_open_files(&self) -> &[PathBuf] {
         &self.watched_open_files
     }
 
     /// Re-picks [`Workbench::watched_open_files`] after the tabs or the
-    /// tree changed.
+    /// tree changed. The watcher is told even when the list is the same:
+    /// a link among it may point elsewhere now.
     fn refresh_watched_open_files(&mut self, cx: &App) {
         let snapshot = self.worktree.snapshot();
         let mut files: Vec<PathBuf> = self
             .open_tab_paths(cx)
             .into_iter()
             .filter(|path| match path.strip_prefix(&self.root) {
-                Ok(rel) => !self.scanning || !snapshot.contains(rel),
+                // The tree does not descend into linked folders, so only
+                // the file itself can be a link.
+                Ok(rel) => {
+                    !self.scanning
+                        || !snapshot.contains(rel)
+                        || path.symlink_metadata().is_ok_and(|m| m.is_symlink())
+                }
                 Err(_) => true,
             })
             .collect();
         files.sort();
         files.dedup();
-        if files != self.watched_open_files {
-            if let Some(watcher) = &self.open_file_watcher {
-                watcher.set_files(files.iter().chain(&self.git_head).cloned().collect());
-            }
-            self.watched_open_files = files;
+        if let Some(watcher) = &self.open_file_watcher {
+            watcher.set_files(files.iter().chain(&self.git_head).cloned().collect());
         }
+        self.watched_open_files = files;
     }
 
     /// Every open tab's path, once per path, with the file the dynamic
@@ -1498,6 +1504,8 @@ impl Workbench {
             .update(cx, |servers, cx| servers.on_worktree_event(&ev, cx));
         // Open files the worktree does not report (single-file mode).
         self.git_worktree_event(&ev, cx);
+        // A link outside the tree may point elsewhere now.
+        self.refresh_watched_open_files(cx);
     }
 
     /// A configuration batch arrived: an open `settings.json` (or other
