@@ -2,8 +2,10 @@
 //! document, written 1000 ms after its last change and deleted once the
 //! document is clean or closed with Don't Save.
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -722,6 +724,38 @@ fn quit_saves_auto_save_files(cx: &mut TestAppContext) {
         "hello"
     );
     assert!(project.backups().is_empty());
+}
+
+/// Dock Quit and Log Out reach only the `on_app_quit` hooks, which run in
+/// the order they were registered, and the first window's language-server
+/// shutdown can block for 5 s: every window's backups are written by the
+/// first window's hot exit hook, before any hook registered after it.
+#[gpui::test]
+fn app_quit_hook_writes_every_window_first(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (first, second) = (Project::new(None), Project::new(None));
+    let mut app = cx.clone();
+    let _ = open_with_data_dir(first.root.path(), first.data.path(), cx);
+    // Registered after the first window's hooks, before the second's.
+    let seen: Rc<RefCell<Option<Vec<String>>>> = Rc::default();
+    let dir = second.dir();
+    app.update(|cx| {
+        let seen = seen.clone();
+        cx.on_app_quit(move |_| {
+            let texts = read_backups(&dir).into_iter().map(|b| b.text).collect();
+            *seen.borrow_mut() = Some(texts);
+            async {}
+        })
+        .detach();
+    });
+    let (wb, vcx) = open_with_data_dir(second.root.path(), second.data.path(), &mut app);
+    let view = open_a(&wb, vcx);
+    // Before the 1000 ms backup delay.
+    set_text(&wb, &view, "hello", vcx);
+    assert!(second.backups().is_empty());
+    drop((wb, view));
+    app.quit();
+    assert_eq!(seen.take(), Some(vec!["hello".to_string()]));
 }
 
 #[gpui::test]

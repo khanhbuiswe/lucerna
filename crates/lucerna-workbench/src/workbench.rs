@@ -710,6 +710,14 @@ impl Workbench {
                 _ => {}
             }),
             crate::status_message::observe(cx, |_, cx| cx.notify()),
+            // Before the language servers' shutdown below, which can block
+            // for 5 s: Dock Quit and Log Out reach only these hooks, and the
+            // OS may not wait. The first window's hook writes every window's
+            // backups (hot exit spec §5.3).
+            cx.on_app_quit(|_, cx| {
+                HotExit::flush_all_on_quit(cx);
+                async {}
+            }),
             // The first window's hook shuts every window's servers down
             // against one 5 s deadline; the others find nothing left.
             cx.on_app_quit(|_, cx| {
@@ -946,14 +954,8 @@ impl Workbench {
             _subscriptions: vec![
                 cx.observe(&groups, |wb, _, cx| wb.layout_changed(cx)),
                 cx.on_app_quit(|wb, cx| {
-                    // First: Dock Quit and Log Out reach only this hook,
-                    // and the windows close after it.
-                    if let Some(hot_exit) = &wb.hot_exit {
-                        hot_exit.update(cx, |h, cx| {
-                            h.set_quitting();
-                            h.flush_blocking(cx);
-                        });
-                    }
+                    // The backups were written by the earlier hot exit hook
+                    // ([`HotExit::flush_all_on_quit`]).
                     wb.save_workspace_state(cx);
                     async {}
                 }),
@@ -1899,8 +1901,10 @@ impl Workbench {
         let documents = self.documents.clone();
         let auto_saved = self.auto_save_paths(cx);
         cx.spawn_in(window, async move |wb, cx| {
-            if !auto_saved.is_empty() {
-                save::save_each(documents, auto_saved, cx).await;
+            // A file that could not be saved stays dirty: its backup is
+            // written below.
+            if !auto_saved.is_empty() && !save::save_each(documents, auto_saved, cx).await {
+                tracing::warn!("could not auto-save every file as the app quits");
             }
             // Documents closed from here on keep their backups.
             let flush = hot_exit.update(cx, |h, cx| {

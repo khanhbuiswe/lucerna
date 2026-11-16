@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use gpui::{App, AppContext as _, Context, Entity, Subscription, Task};
+use gpui::{App, AppContext as _, Context, Entity, Global, Subscription, Task, WeakEntity};
 
 use super::store::{self, Backup, BackupHeader, WorkspaceKey};
 use crate::AppState;
@@ -32,6 +32,12 @@ pub struct HotExit {
     quitting: bool,
     _documents: Subscription,
 }
+
+/// Every window's [`HotExit`], for [`HotExit::flush_all_on_quit`].
+#[derive(Default)]
+struct AllHotExits(Vec<WeakEntity<HotExit>>);
+
+impl Global for AllHotExits {}
 
 /// The store calls of one backup folder. They run one at a time, since
 /// deleting a folder's last backup deletes the folder, which a write of
@@ -168,7 +174,7 @@ impl HotExit {
             })
             .detach();
         }
-        cx.new(|cx| HotExit {
+        let hot_exit = cx.new(|cx| HotExit {
             _documents: cx.subscribe(&documents, |this: &mut HotExit, _, ev, cx| {
                 this.document_event(ev, cx)
             }),
@@ -177,7 +183,30 @@ impl HotExit {
             queue,
             scheduled: HashMap::new(),
             quitting: false,
-        })
+        });
+        let all = &mut cx.default_global::<AllHotExits>().0;
+        all.retain(|h| h.upgrade().is_some());
+        all.push(hot_exit.downgrade());
+        hot_exit
+    }
+
+    /// The app is quitting (an `on_app_quit` hook): writes the backups of
+    /// every window on this thread ([`HotExit::flush_blocking`]), and
+    /// documents closed from now on keep theirs. Every window registers it
+    /// before its language-server shutdown, which can block for 5 s: the
+    /// first window's hook, the app's first to run, writes them all, and the
+    /// later ones find nothing left to write.
+    pub(crate) fn flush_all_on_quit(cx: &mut App) {
+        let all = cx
+            .try_global::<AllHotExits>()
+            .map(|all| all.0.clone())
+            .unwrap_or_default();
+        for hot_exit in all.iter().filter_map(WeakEntity::upgrade) {
+            hot_exit.update(cx, |h, cx| {
+                h.set_quitting();
+                h.flush_blocking(cx);
+            });
+        }
     }
 
     /// `files.hotExit` is not `"off"`. An app setting: a folder's own
