@@ -27,6 +27,7 @@ pub mod fonts;
 pub mod git;
 pub mod git_branch;
 pub mod goto;
+pub mod hot_exit;
 pub mod hover;
 pub mod icons;
 pub mod keys;
