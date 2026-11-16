@@ -59,6 +59,11 @@ pub enum WorktreeEvent {
     ScanComplete,
     Changed(Vec<Change>),
     Rescanned,
+    /// These root-relative folders, unloaded until now, were read on
+    /// request ([`Worktree::load`]); the snapshot now holds what they
+    /// contain. Nothing changed on disk. Sent even for an empty folder,
+    /// since it is no longer unloaded.
+    Loaded(Vec<Arc<Path>>),
 }
 
 /// Input to the background thread.
@@ -197,8 +202,8 @@ impl Worktree {
     }
 
     /// Loads every unloaded folder that is `rel` (root-relative) or one of
-    /// its ancestors, one level each, then publishes and sends `Changed`
-    /// with the new entries. Does nothing if no folder on the path is
+    /// its ancestors, one level each, then publishes and sends `Loaded`
+    /// with those folders. Does nothing if no folder on the path is
     /// unloaded.
     pub fn load(&self, rel: &Path) {
         let _ = self.commands.send(Command::Load(Arc::from(rel)));
@@ -747,20 +752,14 @@ impl Worker {
     }
 
     /// Handles [`Command::Load`]: loads the unloaded folders on `rel`,
-    /// publishes, and reports the new entries as `Changed`.
+    /// publishes, and reports those folders as `Loaded`.
     fn load(&self, rel: &Path, opts: &ScanOptions) {
         let mut checker = IgnoreChecker::new(&self.root, opts);
         let mut added = Vec::new();
-        if !self.load_path(rel, &mut checker, &mut added) {
+        let folders = self.load_path(rel, &mut checker, &mut added);
+        if folders.is_empty() {
             return;
         }
-        let out: Vec<Change> = added
-            .iter()
-            .map(|e| Change {
-                path: e.path.clone(),
-                kind: ChangeKind::Added,
-            })
-            .collect();
         let mut entries = self
             .snapshot
             .lock()
@@ -769,8 +768,7 @@ impl Worker {
             .to_vec();
         entries.extend(added);
         self.publish(entries, true);
-        // Sent even when the folder is empty: it is no longer unloaded.
-        self.send(WorktreeEvent::Changed(out));
+        self.send(WorktreeEvent::Loaded(folders));
     }
 
     /// After a full scan: loads again the folders loaded on request that
@@ -792,21 +790,26 @@ impl Worker {
 
     /// Loads every unloaded folder that is `rel` or an ancestor of it,
     /// shallowest first, pushing what they hold to `out`. A folder that
-    /// loading its parent left unloaded is loaded too. Returns false if
-    /// none was unloaded.
-    fn load_path(&self, rel: &Path, checker: &mut IgnoreChecker, out: &mut Vec<Entry>) -> bool {
+    /// loading its parent left unloaded is loaded too. Returns the folders
+    /// loaded; empty if none was unloaded.
+    fn load_path(
+        &self,
+        rel: &Path,
+        checker: &mut IgnoreChecker,
+        out: &mut Vec<Entry>,
+    ) -> Vec<Arc<Path>> {
         let mut ancestors: Vec<&Path> = rel.ancestors().collect();
         ancestors.reverse();
-        let mut any = false;
+        let mut folders = Vec::new();
         for dir in ancestors {
             let Some(dir) = self.unloaded.borrow_mut().take(dir) else {
                 continue;
             };
             self.load_dir(&dir, checker, out);
-            self.loaded.borrow_mut().insert(dir);
-            any = true;
+            self.loaded.borrow_mut().insert(dir.clone());
+            folders.push(dir);
         }
-        any
+        folders
     }
 
     /// Reads the unloaded folder `dir` one level. A child folder is left

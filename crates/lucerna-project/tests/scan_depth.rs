@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lucerna_project::{ScanOptions, Worktree, WorktreeEvent, WorktreeSnapshot};
@@ -107,6 +108,11 @@ fn wait_until(wt: &Worktree, done: impl Fn(&WorktreeSnapshot) -> bool) {
     }
 }
 
+/// Waits for the `Loaded` that answers a load.
+fn wait_loaded(wt: &Worktree) {
+    wait_event(wt, |e| matches!(e, WorktreeEvent::Loaded(_)));
+}
+
 /// Waits for an event that `want` accepts.
 fn wait_event(wt: &Worktree, want: impl Fn(&WorktreeEvent) -> bool) {
     let rx = wt.events();
@@ -126,7 +132,7 @@ fn load_reads_one_level() {
     tree_to_h(tmp.path());
     let wt = scan(tmp.path(), tmp.path(), Some(5));
     wt.load(Path::new("a/b/c/d/e"));
-    wait_event(&wt, |e| matches!(e, WorktreeEvent::Changed(_)));
+    wait_loaded(&wt);
     let snap = wt.snapshot();
     assert!(snap.contains(Path::new("a/b/c/d/e/f")));
     assert!(snap.is_unloaded(Path::new("a/b/c/d/e/f")));
@@ -140,7 +146,7 @@ fn load_path_of_file_loads_ancestors() {
     tree_to_h(tmp.path());
     let wt = scan(tmp.path(), tmp.path(), Some(5));
     wt.load(Path::new("a/b/c/d/e/f/g/h.txt"));
-    wait_event(&wt, |e| matches!(e, WorktreeEvent::Changed(_)));
+    wait_loaded(&wt);
     let snap = wt.snapshot();
     let file = Path::new("a/b/c/d/e/f/g/h.txt");
     assert!(snap.contains(file));
@@ -158,7 +164,7 @@ fn load_of_nested_repo_scans_it_fully() {
     touch(tmp.path(), "a/b/c/d/e/repo/x/y/z.txt");
     let wt = scan(tmp.path(), tmp.path(), Some(5));
     wt.load(Path::new("a/b/c/d/e"));
-    wait_event(&wt, |e| matches!(e, WorktreeEvent::Changed(_)));
+    wait_loaded(&wt);
     let snap = wt.snapshot();
     assert!(snap.contains(Path::new("a/b/c/d/e/repo/x/y/z.txt")));
     assert!(!snap.contains(Path::new("a/b/c/d/e/repo/.git")));
@@ -182,7 +188,7 @@ fn loaded_folder_survives_rescan() {
     tree_to_h(tmp.path());
     let wt = scan(tmp.path(), tmp.path(), Some(5));
     wt.load(Path::new("a/b/c/d/e"));
-    wait_event(&wt, |e| matches!(e, WorktreeEvent::Changed(_)));
+    wait_loaded(&wt);
     wt.set_options(ScanOptions {
         exclude: vec!["**/zzz".into()],
         scan_depth: Some(5),
@@ -212,7 +218,7 @@ fn loading_empty_folder_still_reports_change() {
     let wt = scan(tmp.path(), tmp.path(), Some(5));
     assert!(wt.snapshot().is_unloaded(Path::new("a/b/c/d/e")));
     wt.load(Path::new("a/b/c/d/e"));
-    wait_event(&wt, |e| matches!(e, WorktreeEvent::Changed(_)));
+    wait_loaded(&wt);
     assert!(wt.snapshot().unloaded().is_empty());
 }
 
@@ -221,14 +227,46 @@ fn load_of_loaded_path_does_nothing() {
     let tmp = TempDir::new().unwrap();
     tree_to_h(tmp.path());
     let wt = scan(tmp.path(), tmp.path(), Some(5));
+    let rx = wt.events();
     wt.load(Path::new("a/b"));
     wt.load(Path::new("../outside"));
     wt.load(Path::new("a/b/c/d/e"));
-    // The first Changed answers the last request: the others sent nothing.
-    let rx = wt.events();
-    let ev = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    let WorktreeEvent::Changed(changes) = ev else {
-        panic!("{ev:?}");
+    // The first `Loaded` answers the last request: the others sent none.
+    let folders = loop {
+        match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            WorktreeEvent::Loaded(folders) => break folders,
+            _ => continue,
+        }
     };
-    assert!(changes.iter().all(|c| c.path.starts_with("a/b/c/d/e")));
+    assert_eq!(folders, [Arc::from(Path::new("a/b/c/d/e"))]);
+}
+
+#[test]
+fn load_sends_loaded_not_changed() {
+    let tmp = TempDir::new().unwrap();
+    tree_to_h(tmp.path());
+    let wt = scan(tmp.path(), tmp.path(), Some(5));
+    let rx = wt.events();
+    wt.load(Path::new("a/b/c/d/e/f/g/h.txt"));
+    loop {
+        match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            WorktreeEvent::Loaded(folders) => {
+                assert_eq!(folders.len(), 3, "{folders:?}");
+                break;
+            }
+            WorktreeEvent::Changed(changes) => {
+                assert!(
+                    !changes.iter().any(|c| c.path.starts_with("a/b/c/d/e")),
+                    "load reported as a change: {changes:?}"
+                );
+            }
+            _ => {}
+        }
+    }
+    // Nothing about the loaded folders follows either.
+    while let Ok(ev) = rx.recv_timeout(Duration::from_millis(300)) {
+        if let WorktreeEvent::Changed(changes) = ev {
+            assert!(!changes.iter().any(|c| c.path.starts_with("a/b/c/d/e")));
+        }
+    }
 }

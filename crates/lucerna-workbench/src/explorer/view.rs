@@ -1027,6 +1027,9 @@ impl ExplorerView {
                     self.schedule_expiry(cx);
                 }
             }
+            // A folder read on request: the snapshot taken above holds its
+            // contents, and nothing changed on disk, so nothing is marked.
+            WorktreeEvent::Loaded(_) => {}
             // The active tab may have been opened before the tree had it.
             WorktreeEvent::ScanComplete => {
                 if let Some(path) = self.active.clone() {
