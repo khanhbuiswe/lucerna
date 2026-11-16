@@ -62,7 +62,7 @@ luc src/main.rs           # open a single file
 ```
 
 `luc` hands the path to the running Lucerna, which opens it in a new window, and returns
-the prompt right away. All windows share one app.
+the prompt right away. All windows share one process.
 
 | Keys | Action |
 |---|---|

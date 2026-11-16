@@ -460,7 +460,7 @@ Mỗi ô: trung vị (nhỏ nhất – lớn nhất).
 | Khung hình rớt ở A, B đứng yên | 0,0 % (0,0 – 0,0) | 0,0 % (0,0 – 0,5), trên 591 khung (591 – 595) | Đạt (trong sai số) |
 | Khung hình rớt ở A, B đang mở repo lớn | 0,0 % (0,0 – 0,0) | 0,0 % (0,0 – 0,0), trên 594 khung (590 – 594) | Đạt |
 | `startup_ms` một cửa sổ | 602 ms (569 – 619) | 587 ms (581 – 13138) | Đạt |
-| `idle_ram_mb` một cửa sổ | 181,3 MB (165,2 – 181,4) | 165,0 MB (131,6 – 181,5) | Đạt, nhưng số nhiễu (xem dưới) |
+| `idle_ram_mb` một cửa sổ | 181,3 MB (165,2 – 181,4) | 165,0 MB (131,6 – 181,5) | Không kết luận: hai trong năm vòng của bản mới cửa sổ bị che, không vẽ (xem dưới) |
 | `idle_cpu_pct` một cửa sổ | 1,30 % (0,50 – 1,33) | 0,81 % (0,00 – 1,50) | — |
 
 **RAM 2 cửa sổ chưa đạt ngưỡng.** Trung vị cao hơn bản cũ 11 MB. Lý do theo

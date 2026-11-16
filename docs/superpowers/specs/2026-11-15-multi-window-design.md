@@ -128,7 +128,7 @@ hai cách.
 | M13 | `luc` **giành socket trước** (`<data dir>/luc-<version>[-dev].sock`), trước cả khi khởi động GPUI. Bind được thì nó là app. `EADDRINUSE` thì nối vào làm client: gửi yêu cầu, đợi trả lời rồi thoát với mã 0 (lỗi thì in ra stderr, mã 1). | VS Code `claimInstance`. Giành trước để hai `luc` chạy gần như cùng lúc không thành hai app. Socket theo phiên bản và build để bản dev không đẩy đường dẫn vào bản release người dùng đang chạy. |
 | M18 | `luc` trong terminal **tách app khỏi terminal** rồi trả dấu nhắc ngay, như `code .`. Cờ ẩn `--foreground` giữ kiểu cũ (chạy app ngay trong terminal) cho `bench/compare`, `--trace-startup` và debug. | Người dùng chọn. Một tiến trình giữ mọi cửa sổ, nên tắt tab terminal hay Ctrl+C không được kéo theo mọi cửa sổ và bỏ qua bước hỏi lưu. |
 | M14 | Yêu cầu từ socket hoặc `on_open_urls` đến khi app chưa mở lại xong cửa sổ thì xếp hàng, xử lý sau khi restore xong. | Lỗi Zed #61346. |
-| M15 | Language server, terminal, git, workspace state: theo từng cửa sổ như nay. Trust: kho `trusted.json` chung; tin một thư mục ở cửa sổ này thì cửa sổ khác có gốc nằm trong đó cũng chuyển sang tin. | Cả hai bên làm vậy. |
+| M15 | Language server, terminal, git, workspace state: theo từng cửa sổ như nay. Trust: kho `trusted.json` chung. Tin một thư mục thì mọi cửa sổ có gốc là đúng thư mục đó chuyển sang tin. Chọn thêm "tin cả thư mục cha" thì mọi cửa sổ có gốc nằm trong thư mục cha đó cũng chuyển sang tin. Cửa sổ có gốc là thư mục con của thư mục được tin một mình thì vẫn ở Restricted Mode. | Cả hai bên làm vậy. |
 | M16 | `status_message` hiện ở cửa sổ gây ra nó. | Zed và VS Code đều có thông báo theo cửa sổ. |
 | M17 | Một file mở ở hai cửa sổ là hai buffer riêng. Cửa sổ này lưu thì cửa sổ kia nhận qua watcher file như với mọi thay đổi ngoài. | Cả hai bên làm vậy; watcher và xử lý xung đột đã có. |
 
@@ -532,7 +532,9 @@ Dùng `TestAppContext`, `cx.windows()`, `simulate_close`,
 9. Restore: `windows.json` có ba mục, một đã bị xoá → mở hai cửa sổ, đúng
    thứ tự; `"folders"` bỏ mục file; `"one"` mở một.
 10. Yêu cầu mở tới trong lúc restore → xếp hàng, không mở trùng.
-11. Trust thư mục ở cửa sổ A → cửa sổ B cùng gốc con chuyển sang tin.
+11. Trust ở cửa sổ A (gốc `/t`): chọn "tin cả thư mục cha" → cửa sổ B
+    gốc `/t/sub` chuyển sang tin. Tin `/t` một mình → B vẫn ở Restricted
+    Mode, còn cửa sổ khác có gốc đúng `/t` thì chuyển sang tin.
 12. `status_message` của A không hiện ở B.
 13. Tách settings không rò: mọi workbench cũ được giải phóng khi đóng cửa
     sổ (như test W8).
