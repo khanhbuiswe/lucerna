@@ -60,6 +60,7 @@ const ABOUT: &str = "workbench.action.showAboutDialog";
 const QUIT: &str = "workbench.action.quit";
 const OPEN_RECENT: &str = "workbench.action.openRecent";
 const CLEAR_RECENT: &str = "workbench.action.clearRecentFiles";
+const NEW_WINDOW: &str = crate::open_commands::NEW_WINDOW;
 
 /// One item of a [`MenuSpec`].
 pub enum Entry {
@@ -213,6 +214,7 @@ pub static MENUS: &[MenuSpec] = &[
         title: "File",
         role: Role::File,
         entries: &[
+            command("New Window", NEW_WINDOW),
             Entry::Only(
                 Platform::Mac,
                 &command("Open…", "workbench.action.files.openFileFolder"),
@@ -492,6 +494,7 @@ fn collapse_separators(items: Vec<MenuItem>) -> Vec<MenuItem> {
 /// macOS menu, so IDs bound only to chords have no key.
 pub fn menu_key_bindings<'a>(keymap: &Keymap, ids: &[&'a str]) -> Vec<(&'a str, String)> {
     let mut editor = WhenContext::default();
+    crate::keys::set_platform_flags(&mut editor);
     editor.set("editorFocus", ContextValue::Bool(true));
     editor.set("editorTextFocus", ContextValue::Bool(true));
     ids.iter()
@@ -587,6 +590,12 @@ pub fn install(cx: &mut App) {
             }
         })
     });
+    cx.set_dock_menu(vec![MenuItem::action(
+        "New Window",
+        RunCommand {
+            id: NEW_WINDOW.into(),
+        },
+    )]);
     cx.set_global(Installed);
     let mut seen = keymap_generation(cx);
     cx.observe_global::<ConfigState>(move |cx| {
@@ -726,6 +735,11 @@ fn menu_may_run(keymap: &Keymap, id: &str, context: &WhenContext) -> bool {
 /// command's key would run it ([`menu_may_run`]): AppKit fires a menu item
 /// for a key the workbench let through.
 fn run_command(id: &str, cx: &mut App) {
+    // Needs no window: the Dock menu runs it too.
+    if id == NEW_WINDOW {
+        crate::router::open_welcome(crate::router::Target::NewWindow, cx);
+        return;
+    }
     let Some(window) = active_window(cx) else {
         return;
     };
@@ -881,7 +895,8 @@ mod tests {
         assert!(app.iter().any(|t| t == "Hide Others"), "{app:?}");
         assert_eq!(app.first().map(String::as_str), Some("About Lucerna"));
         let file = titles(menu(&menus, "File"));
-        assert_eq!(file.first().map(String::as_str), Some("Open…"));
+        assert_eq!(file.first().map(String::as_str), Some("New Window"));
+        assert_eq!(file.get(1).map(String::as_str), Some("Open…"));
     }
 
     #[test]
@@ -898,7 +913,8 @@ mod tests {
         assert_eq!(help.last().map(String::as_str), Some("About Lucerna"));
         let file = menu(&menus, "File");
         assert_eq!(titles(file).last().map(String::as_str), Some("Exit"));
-        assert_eq!(titles(file).first().map(String::as_str), Some("Open File…"));
+        assert_eq!(titles(file).first().map(String::as_str), Some("New Window"));
+        assert_eq!(titles(file).get(1).map(String::as_str), Some("Open File…"));
         assert!(titles(submenu(file, "Preferences")).contains(&"Color Theme…".to_string()));
         for menu in &menus {
             let titles = titles(menu);
@@ -951,6 +967,27 @@ mod tests {
             .collect();
         let help = titles(menu(&mac(&without), "Help"));
         assert_eq!(help.first().map(String::as_str), Some("Show All Commands"));
+    }
+
+    #[test]
+    fn new_window_runs_on_welcome() {
+        let commands = Workbench::command_ids();
+        let menus = build_menus(&input(&commands, Platform::Mac, &[], WindowKind::Welcome));
+        assert!(!item(menu(&menus, "File"), "New Window").is_disabled());
+    }
+
+    #[test]
+    fn new_window_key_follows_platform() {
+        let (keymap, _) = Keymap::load(Keymap::default_bindings(), None);
+        let key = if cfg!(target_os = "macos") {
+            "cmd-shift-n"
+        } else {
+            "ctrl-shift-n"
+        };
+        assert_eq!(
+            menu_key_bindings(&keymap, &[NEW_WINDOW]),
+            vec![(NEW_WINDOW, key.to_string())]
+        );
     }
 
     #[test]

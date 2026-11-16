@@ -47,7 +47,7 @@ fn main() {
     let cwd = std::env::current_dir().ok();
     if cwd.is_some_and(|cwd| prompts_for_folder(cli.path.as_deref(), &cwd)) {
         tracing::info!("starting without a path");
-        app::run(None, resolver());
+        app::run(None);
         drop(guard);
         return;
     }
@@ -65,27 +65,11 @@ fn main() {
         }
     };
     tracing::info!(root = %root.display(), file = ?file, single_file, "starting");
-    app::run(
-        Some(Launch {
-            root,
-            file,
-            single_file,
-            on_first_frame,
-        }),
-        resolver(),
-    );
+    app::run(Some(Launch {
+        root,
+        file,
+        single_file,
+        on_first_frame,
+    }));
     drop(guard);
-}
-
-/// Resolves the paths Finder and other apps ask the running app to open,
-/// as `luc <path>` would.
-fn resolver() -> app::Resolve {
-    Box::new(|path| {
-        resolve_target(Some(path)).map(|target| Launch {
-            root: target.root,
-            file: target.file,
-            single_file: target.single_file,
-            on_first_frame: None,
-        })
-    })
 }

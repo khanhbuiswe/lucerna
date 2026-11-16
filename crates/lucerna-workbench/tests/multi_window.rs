@@ -1,5 +1,6 @@
 //! Several windows in one process: each reads its own folder's
-//! `.lucerna/settings.json` over the app's default and user layers.
+//! `.lucerna/settings.json` over the app's default and user layers, and
+//! the app's router opens paths among them.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    BorrowAppContext as _, Entity, Global, TestAppContext, VisualTestContext, WindowHandle,
+    AnyWindowHandle, BorrowAppContext as _, Entity, Focusable as _, Global, TestAppContext,
+    VisualTestContext, WindowHandle,
 };
 use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
 use lucerna_project::WorktreeEvent;
@@ -18,10 +20,12 @@ use lucerna_terminal::{Terminal, TerminalOptions};
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::fonts::EDITOR_FONT_FAMILY;
+use lucerna_workbench::recent::{RecentStore, recent_path};
+use lucerna_workbench::router::{self, Target, WindowKind};
 use lucerna_workbench::system_shell::{SystemShell, SystemShellGlobal};
 use lucerna_workbench::{
     AppState, FileView, GitState, LanguageServers, MarkdownPreview, OpenMode, PanelPosition,
-    TerminalSpawner, Workbench,
+    Replacement, TerminalSpawner, WelcomeEvent, WelcomeView, Workbench,
 };
 use serde_json::Value;
 use tempfile::TempDir;
@@ -543,4 +547,284 @@ fn window_settings_reach_every_reader(cx: &mut TestAppContext) {
         })
         .unwrap();
     assert!(b_dirty, "B holds the edit unsaved");
+}
+
+// One router for every window (spec §6.2–6.3): `router::open` focuses a
+// window already on the path, opens a file in the window whose root holds
+// it, reuses a Welcome window, and opens new windows in this process.
+
+/// The app state, and a data dir (with `recent.json` listing `recent`
+/// folders, newest first) the router records into; returns the data dir.
+fn routed(recent: &[&Path], cx: &mut TestAppContext) -> PathBuf {
+    init(cx);
+    let dir = tempfile::tempdir().unwrap();
+    let data = std::fs::canonicalize(dir.path()).unwrap();
+    let entries: Vec<Value> = recent
+        .iter()
+        .map(|path| serde_json::json!({ "path": path, "kind": "folder" }))
+        .collect();
+    let file = serde_json::json!({ "version": 1, "entries": entries });
+    std::fs::write(recent_path(&data), file.to_string()).unwrap();
+    cx.update(|cx| {
+        cx.global_mut::<Folders>().0.push(dir);
+        cx.set_global(RecentStore {
+            data_dir: Some(data.clone()),
+        });
+    });
+    data
+}
+
+/// A canonical folder holding `src/x.rs`, kept for the test's app.
+fn project(cx: &mut TestAppContext) -> PathBuf {
+    let dir = tempfile::tempdir().unwrap();
+    let path = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::create_dir(path.join("src")).unwrap();
+    std::fs::write(path.join("src").join("x.rs"), "fn x() {}\n").unwrap();
+    cx.update(|cx| cx.global_mut::<Folders>().0.push(dir));
+    path
+}
+
+fn open_routed(paths: Vec<PathBuf>, target: Target, cx: &mut TestAppContext) {
+    cx.update(|cx| router::open_for_test(paths, target, cx));
+    cx.run_until_parked();
+}
+
+fn routed_windows(cx: &mut TestAppContext) -> Vec<(AnyWindowHandle, WindowKind)> {
+    cx.update(|cx| router::windows(cx))
+}
+
+fn kinds(cx: &mut TestAppContext) -> Vec<WindowKind> {
+    routed_windows(cx).into_iter().map(|(_, k)| k).collect()
+}
+
+/// The workbench window the router shows on `kind`.
+fn routed_workbench(kind: &WindowKind, cx: &mut TestAppContext) -> WindowHandle<Workbench> {
+    let (handle, _) = routed_windows(cx)
+        .into_iter()
+        .find(|(_, k)| k == kind)
+        .unwrap_or_else(|| panic!("a window on {kind:?}"));
+    WindowHandle::new(handle.window_id())
+}
+
+/// The active tab's path in the workbench `handle`.
+fn active_tab(handle: WindowHandle<Workbench>, cx: &mut TestAppContext) -> Option<PathBuf> {
+    handle
+        .read_with(cx, |wb, cx| {
+            wb.editor_groups()
+                .read(cx)
+                .model()
+                .active_tab()
+                .and_then(|tab| tab.path().map(|p| p.to_path_buf()))
+        })
+        .unwrap()
+}
+
+#[gpui::test]
+fn open_two_folders_one_app(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let (a, b) = (project(cx), project(cx));
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    open_routed(vec![b.clone()], Target::Auto, cx);
+    assert_eq!(
+        kinds(cx),
+        vec![WindowKind::Folder(b), WindowKind::Folder(a)],
+        "two windows, the last opened first"
+    );
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+}
+
+#[gpui::test]
+fn reopen_focuses_existing(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let (a, b) = (project(cx), project(cx));
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    open_routed(vec![b.clone()], Target::Auto, cx);
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    assert_eq!(
+        kinds(cx),
+        vec![WindowKind::Folder(a.clone()), WindowKind::Folder(b)],
+        "still two windows; A is the most recently used"
+    );
+    open_routed(vec![a.clone()], Target::NewWindow, cx);
+    assert_eq!(
+        kinds(cx).len(),
+        2,
+        "a new window on an open folder focuses it"
+    );
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn open_through_symlink_focuses(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let a = project(cx);
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("link");
+    std::os::unix::fs::symlink(&a, &link).unwrap();
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    open_routed(vec![link], Target::Auto, cx);
+    assert_eq!(kinds(cx), vec![WindowKind::Folder(a)]);
+}
+
+#[gpui::test]
+fn file_inside_b_opens_in_b(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let (a, b) = (project(cx), project(cx));
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    open_routed(vec![b.clone()], Target::Auto, cx);
+    // A is the most recently used.
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    open_routed(vec![b.join("src").join("x.rs")], Target::Auto, cx);
+    assert_eq!(
+        kinds(cx),
+        vec![WindowKind::Folder(b.clone()), WindowKind::Folder(a.clone())],
+        "no new window; B is now the most recently used"
+    );
+    let in_b = active_tab(routed_workbench(&WindowKind::Folder(b), cx), cx);
+    assert!(
+        in_b.as_deref().is_some_and(|p| p.ends_with("src/x.rs")),
+        "{in_b:?}"
+    );
+    let in_a = active_tab(routed_workbench(&WindowKind::Folder(a), cx), cx);
+    assert_eq!(in_a, None, "A is unchanged");
+}
+
+#[gpui::test]
+fn new_window_then_pick_folder(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let (a, b, c) = (project(cx), project(cx), project(cx));
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    open_routed(vec![b.clone()], Target::Auto, cx);
+    cx.update(|cx| router::open_welcome(Target::NewWindow, cx));
+    cx.run_until_parked();
+    let windows = routed_windows(cx);
+    assert_eq!(windows.len(), 3);
+    assert_eq!(
+        windows[0].1,
+        WindowKind::Welcome,
+        "the new window is Welcome"
+    );
+    let welcome = windows[0].0;
+    let view = cx
+        .update(|cx| welcome.update(cx, |root, _, _| root.downcast::<WelcomeView>().ok()))
+        .unwrap()
+        .expect("the root is the Welcome view");
+    cx.update(|cx| {
+        view.update(cx, |_, cx| {
+            cx.emit(WelcomeEvent::Open {
+                path: c.clone(),
+                new_window: false,
+            })
+        })
+    });
+    cx.run_until_parked();
+    let windows = routed_windows(cx);
+    assert_eq!(windows.len(), 3, "the Welcome window turned into C");
+    assert_eq!(windows[0].0.window_id(), welcome.window_id());
+    assert_eq!(windows[0].1, WindowKind::Folder(c));
+}
+
+#[gpui::test]
+fn open_recent_cmd_enter_new_window(cx: &mut TestAppContext) {
+    let other = {
+        init(cx);
+        project(cx)
+    };
+    routed(&[&other], cx);
+    let a = project(cx);
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    let handle = routed_workbench(&WindowKind::Folder(a.clone()), cx);
+    let vcx = &mut VisualTestContext::from_window(handle.into(), cx);
+    vcx.simulate_keystrokes("ctrl-r");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    vcx.simulate_keystrokes("cmd-enter");
+    vcx.run_until_parked();
+    assert_eq!(
+        kinds(cx),
+        vec![WindowKind::Folder(other), WindowKind::Folder(a)],
+        "⌘Enter opens a new window; this one stays"
+    );
+}
+
+#[gpui::test]
+fn replace_releases_old_workbench(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let (a, b) = (project(cx), project(cx));
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    let handle = routed_workbench(&WindowKind::Folder(a), cx);
+    let released = handle
+        .update(cx, |_, _, cx| cx.entity().downgrade())
+        .unwrap();
+    handle
+        .update(cx, |wb, window, cx| {
+            wb.replace_with(Replacement::Path(b.clone()), window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let windows = routed_windows(cx);
+    assert_eq!(windows.len(), 1, "the same window");
+    assert_eq!(windows[0].0.window_id(), handle.window_id());
+    assert_eq!(windows[0].1, WindowKind::Folder(b));
+    assert!(
+        released.upgrade().is_none(),
+        "the old workbench is released"
+    );
+}
+
+#[gpui::test]
+fn same_file_two_windows_reload(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let a = project(cx);
+    let file = a.join("src").join("x.rs");
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    open_routed(vec![file.clone()], Target::Auto, cx);
+    open_routed(vec![file.clone()], Target::NewWindow, cx);
+    assert_eq!(
+        kinds(cx),
+        vec![
+            WindowKind::File(file.clone()),
+            WindowKind::Folder(a.clone())
+        ],
+        "the file opens alone in a new window"
+    );
+    let in_a = routed_workbench(&WindowKind::Folder(a), cx);
+    let in_b = routed_workbench(&WindowKind::File(file.clone()), cx);
+    let view = |handle: WindowHandle<Workbench>, cx: &mut TestAppContext| {
+        handle
+            .read_with(cx, |wb, cx| {
+                wb.editor_groups()
+                    .read(cx)
+                    .active_body()
+                    .expect("the file is open")
+                    .downcast::<CodeView>()
+                    .expect("tab bodies are code views")
+            })
+            .unwrap()
+    };
+    let text = |view: &Entity<CodeView>, cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let s = view.read(cx).snapshot();
+            s.text_for_range(0..s.len_bytes())
+        })
+    };
+    draw(in_a, cx);
+    draw(in_b, cx);
+    let (view_a, view_b) = (view(in_a, cx), view(in_b, cx));
+    // Save an edit in A.
+    let vcx = &mut VisualTestContext::from_window(in_a.into(), cx);
+    let focus = vcx.update(|_, cx| view_a.focus_handle(cx));
+    vcx.update(|window, cx| window.focus(&focus, cx));
+    vcx.simulate_input("y");
+    vcx.run_until_parked();
+    run(in_a, "workbench.action.files.save", None, cx);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "yfn x() {}\n");
+    assert_eq!(text(&view_b, cx), "fn x() {}\n", "B has its own buffer");
+    // B's watcher reports the change, as for any change on disk.
+    in_b.update(cx, |wb, _, cx| {
+        wb.on_open_file_changes(std::slice::from_ref(&file), cx)
+    })
+    .unwrap();
+    draw(in_b, cx);
+    assert_eq!(text(&view_b, cx), "yfn x() {}\n", "B reloads");
 }

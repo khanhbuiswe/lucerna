@@ -39,12 +39,11 @@ mod nav_history;
 mod onboarding;
 mod open_commands;
 mod open_files;
-pub mod open_requests;
-pub mod process;
 mod quick_open;
 pub mod recent;
 mod recent_picker;
 mod references_view;
+pub mod router;
 mod save;
 mod scrollbar;
 mod search_view;
@@ -63,6 +62,7 @@ pub mod ui;
 mod vim;
 mod vim_indicator;
 mod welcome;
+pub mod window_choice;
 mod window_settings;
 mod workbench;
 mod workspace_state;
@@ -115,7 +115,7 @@ pub use markdown_preview::{
 };
 pub use nav_history::{NavEntry, NavHistory};
 pub use onboarding::{Host, ONBOARDING_COMMANDS, OnboardingEvent, OnboardingPage};
-pub use open_commands::{OPEN_IN_BROWSER, WorkbenchEvent, browser_url};
+pub use open_commands::{OPEN_IN_BROWSER, Replacement, browser_url};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,

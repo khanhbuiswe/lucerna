@@ -101,6 +101,14 @@ fn canonical_key(key: &str) -> String {
     }
 }
 
+/// Sets `isMac`, `isLinux` and `isWindows` in `ctx`, as VS Code does.
+pub(crate) fn set_platform_flags(ctx: &mut WhenContext) {
+    use lucerna_settings::ContextValue;
+    ctx.set("isMac", ContextValue::Bool(cfg!(target_os = "macos")));
+    ctx.set("isLinux", ContextValue::Bool(cfg!(target_os = "linux")));
+    ctx.set("isWindows", ContextValue::Bool(cfg!(target_os = "windows")));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +241,8 @@ mod tests {
             (event("r", None, ctrl()), "ctrl+r"),
             (event("r", None, ctrl_shift()), "ctrl+shift+r"),
             (event("o", None, cmd()), "cmd+o"),
+            (event("n", None, cmd_shift()), "cmd+shift+n"),
+            (event("n", None, ctrl_shift()), "ctrl+shift+n"),
             (event("f", Some("f"), Modifiers::none()), "f"),
             // Markdown preview: toggle, and the second stroke of `cmd+k v`.
             (event("v", None, cmd_shift()), "cmd+shift+v"),

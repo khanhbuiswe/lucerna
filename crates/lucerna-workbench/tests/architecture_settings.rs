@@ -94,9 +94,9 @@ fn the_scan_finds_a_split_read() {
     assert!(!reads_app_settings("cx.global::<AppState>().settings_x"));
 }
 
-/// Processes start through the shared spawner, not `std::process` directly.
+/// Every window runs in this process (spec M1): nothing starts another
+/// `luc` to show one.
 #[test]
-#[ignore = "turned on by multi-window Task 7, which moves every spawn onto the shared spawner"]
 fn no_direct_process_spawn() {
     let offenders: Vec<String> = sources()
         .into_iter()

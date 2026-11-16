@@ -37,10 +37,12 @@ const PICKER_PREVIOUS: &str = "workbench.action.quickOpenNavigatePreviousInRecen
 const OPEN_ONBOARDING: &str = "lucerna.openOnboarding";
 const ABOUT: &str = "workbench.action.showAboutDialog";
 const QUIT: &str = "workbench.action.quit";
+const NEW_WINDOW: &str = crate::open_commands::NEW_WINDOW;
 
 /// The commands the Welcome screen runs; keys bound to any other command
 /// do nothing here.
 pub const WELCOME_COMMANDS: &[&str] = &[
+    NEW_WINDOW,
     OPEN_FILE_FOLDER,
     OPEN_FILE,
     OPEN_FOLDER,
@@ -263,6 +265,10 @@ impl WelcomeView {
             OPEN_ONBOARDING => cx.emit(WelcomeEvent::OpenOnboarding),
             ABOUT => crate::about::show(window, cx),
             QUIT => cx.emit(WelcomeEvent::Quit),
+            // Not inside this window's update: the router opens a window.
+            NEW_WINDOW => {
+                cx.defer(|cx| crate::router::open_welcome(crate::router::Target::NewWindow, cx))
+            }
             _ => return false,
         }
         true
@@ -449,6 +455,7 @@ impl WelcomeView {
         let mut ctx = WhenContext::default();
         ctx.set("inQuickOpen", ContextValue::Bool(self.picker.is_some()));
         ctx.set("inRecentPicker", ContextValue::Bool(self.picker.is_some()));
+        crate::keys::set_platform_flags(&mut ctx);
         let keymap = &cx.global::<AppState>().keymap;
         match keys::resolve_chord(&mut self.pending_chord, &stroke, &ctx, keymap) {
             Resolution::Command { command, .. } => {

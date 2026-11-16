@@ -2,22 +2,19 @@
 //! the events its buttons and keys emit. It runs standalone, as the app's
 //! router hosts it.
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui::{Entity, Focusable as _, Modifiers, TestAppContext, VisualTestContext, WindowHandle};
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
-use lucerna_workbench::app::{self, Launch};
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::process::{SpawnRequest, Spawner};
 use lucerna_workbench::recent::{RecentEntry, RecentKind, RecentStore, load, recent_path};
+use lucerna_workbench::router::{self, Target, WindowKind};
 use lucerna_workbench::{
-    AppState, OnboardingEvent, OnboardingPage, OpenMode, WelcomeEvent, WelcomeView, Workbench,
-    WorkbenchEvent, status_message,
+    AppState, OnboardingEvent, OnboardingPage, OpenMode, Replacement, WelcomeEvent, WelcomeView,
+    Workbench, status_message,
 };
 
 fn init(user_keymap: Option<&str>, data_dir: Option<PathBuf>, cx: &mut TestAppContext) {
@@ -404,27 +401,24 @@ fn no_data_dir_shows_get_started_only(cx: &mut TestAppContext) {
     );
 }
 
-type Spawns = Rc<RefCell<Vec<SpawnRequest>>>;
-
-/// A Welcome window opened through the app's router, with a fake process
-/// spawner; returns the window and its view.
+/// A Welcome window opened through the app's router; returns the window
+/// and its view.
 fn routed_welcome(
     fixture: &Fixture,
     cx: &mut TestAppContext,
-) -> (WindowHandle<WelcomeView>, Entity<WelcomeView>, Spawns) {
+) -> (WindowHandle<WelcomeView>, Entity<WelcomeView>) {
     init(None, Some(fixture.data_dir()), cx);
-    let spawns: Spawns = Rc::default();
-    let sink = spawns.clone();
     let handle = cx.update(|cx| {
-        cx.set_global(Spawner(Rc::new(move |request: &SpawnRequest| {
-            sink.borrow_mut().push(request.clone());
-            Ok(())
-        })));
-        app::open_welcome_for_test(cx)
+        // Reads the user configuration from the fixture's data dir.
+        router::open_for_test(Vec::new(), Target::Auto, cx);
+        router::open_welcome(Target::NewWindow, cx);
+        let windows = router::windows(cx);
+        assert_eq!(windows[0].1, WindowKind::Welcome);
+        WindowHandle::<WelcomeView>::new(windows[0].0.window_id())
     });
     cx.run_until_parked();
     let view = handle.root(cx).expect("the root is the Welcome view");
-    (handle, view, spawns)
+    (handle, view)
 }
 
 fn emit(view: &Entity<WelcomeView>, events: Vec<WelcomeEvent>, cx: &mut TestAppContext) {
@@ -449,8 +443,13 @@ fn only_workbench(cx: &mut TestAppContext) -> Option<Entity<Workbench>> {
     })
 }
 
+/// The folder of the router's most recently used window, when it shows
+/// a folder.
 fn shown_root(cx: &mut TestAppContext) -> Option<PathBuf> {
-    cx.update(app::router_shown_root_for_test)
+    cx.update(|cx| match router::windows(cx).into_iter().next() {
+        Some((_, WindowKind::Folder(root))) => Some(root),
+        _ => None,
+    })
 }
 
 fn stored_entries(fixture: &Fixture) -> Vec<RecentEntry> {
@@ -464,17 +463,16 @@ fn canonical(path: &Path) -> PathBuf {
 #[gpui::test]
 fn opening_a_recent_folder_replaces_the_root(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["proj"], &[]);
-    let (_, view, spawns) = routed_welcome(&fixture, cx);
+    let (_, view) = routed_welcome(&fixture, cx);
     emit(&view, vec![open_event(&fixture.path("proj"), false)], cx);
     assert!(only_workbench(cx).is_some());
     assert_eq!(shown_root(cx), Some(canonical(&fixture.path("proj"))));
-    assert!(spawns.borrow().is_empty());
 }
 
 #[gpui::test]
 fn opening_records_the_folder(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other", "proj"], &[]);
-    let (_, view, _) = routed_welcome(&fixture, cx);
+    let (_, view) = routed_welcome(&fixture, cx);
     emit(&view, vec![open_event(&fixture.path("proj"), false)], cx);
     assert_eq!(
         stored_entries(&fixture).first(),
@@ -486,23 +484,32 @@ fn opening_records_the_folder(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn new_window_spawns_instead(cx: &mut TestAppContext) {
+fn new_window_opens_beside(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["proj"], &[]);
-    let (handle, view, spawns) = routed_welcome(&fixture, cx);
+    let (handle, view) = routed_welcome(&fixture, cx);
     emit(&view, vec![open_event(&fixture.path("proj"), true)], cx);
-    assert_eq!(
-        *spawns.borrow(),
-        vec![SpawnRequest::Path(fixture.path("proj"))]
-    );
     assert!(handle.root(cx).is_ok(), "the window still shows Welcome");
-    assert_eq!(shown_root(cx), None);
+    let kinds: Vec<WindowKind> = cx.update(|cx| {
+        router::windows(cx)
+            .into_iter()
+            .map(|(_, kind)| kind)
+            .collect()
+    });
+    assert_eq!(
+        kinds,
+        vec![
+            WindowKind::Folder(canonical(&fixture.path("proj"))),
+            WindowKind::Welcome
+        ],
+        "a new window in this process"
+    );
 }
 
 #[gpui::test]
 fn a_second_open_after_the_root_changed_is_ignored(cx: &mut TestAppContext) {
     // A double-click on a recent row emits Open twice.
     let fixture = Fixture::new(&["a", "b"], &[]);
-    let (_, view, spawns) = routed_welcome(&fixture, cx);
+    let (_, view) = routed_welcome(&fixture, cx);
     emit(
         &view,
         vec![
@@ -512,9 +519,8 @@ fn a_second_open_after_the_root_changed_is_ignored(cx: &mut TestAppContext) {
         ],
         cx,
     );
-    assert!(only_workbench(cx).is_some());
+    assert!(only_workbench(cx).is_some(), "one window");
     assert_eq!(shown_root(cx), Some(canonical(&fixture.path("a"))));
-    assert!(spawns.borrow().is_empty());
 }
 
 #[gpui::test]
@@ -524,13 +530,7 @@ fn cli_launch_records_single_file_as_file(cx: &mut TestAppContext) {
     let file = fixture.path("notes.txt");
     std::fs::write(&file, "notes\n").unwrap();
     let file = canonical(&file);
-    let launch = Launch {
-        root: file.parent().unwrap().to_path_buf(),
-        file: Some(file.clone()),
-        single_file: true,
-        on_first_frame: None,
-    };
-    cx.update(|cx| app::open_launch_for_test(launch, cx));
+    cx.update(|cx| router::open_for_test(vec![file.clone()], Target::Auto, cx));
     cx.run_until_parked();
     assert_eq!(
         stored_entries(&fixture).first(),
@@ -545,7 +545,7 @@ fn cli_launch_records_single_file_as_file(cx: &mut TestAppContext) {
 fn quit_asks_the_replaced_window_about_unsaved_changes(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["proj"], &[]);
     std::fs::write(fixture.path("proj").join("file.txt"), "abc\n").unwrap();
-    let (_, view, _) = routed_welcome(&fixture, cx);
+    let (_, view) = routed_welcome(&fixture, cx);
     emit(&view, vec![open_event(&fixture.path("proj"), false)], cx);
     let wb = only_workbench(cx).expect("the root is a workbench");
     let window = cx.update(|cx| cx.windows()[0]);
@@ -583,10 +583,17 @@ fn quit_asks_the_replaced_window_about_unsaved_changes(cx: &mut TestAppContext) 
     settle(cx);
 }
 
-/// Emits [`WorkbenchEvent::Replace`] from `wb`, as Open Folder, Open
-/// Recent and Close Folder do once the save prompt is answered.
-fn emit_replace(wb: &Entity<Workbench>, request: SpawnRequest, cx: &mut TestAppContext) {
-    cx.update(|cx| wb.update(cx, |_, cx| cx.emit(WorkbenchEvent::Replace(request))));
+/// Replaces `wb` in its window, as Open Folder, Open Recent and Close
+/// Folder do.
+fn replace(wb: &Entity<Workbench>, replacement: Replacement, cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let window = cx.windows()[0];
+        window
+            .update(cx, |_, window, cx| {
+                wb.update(cx, |wb, cx| wb.replace_with(replacement, window, cx))
+            })
+            .unwrap()
+    });
     cx.run_until_parked();
 }
 
@@ -599,24 +606,19 @@ fn window_id(cx: &mut TestAppContext) -> gpui::WindowId {
 }
 
 /// A routed window showing the workbench on `name`.
-fn routed_workbench(
-    fixture: &Fixture,
-    name: &str,
-    cx: &mut TestAppContext,
-) -> (Entity<Workbench>, Spawns) {
-    let (_, view, spawns) = routed_welcome(fixture, cx);
+fn routed_workbench(fixture: &Fixture, name: &str, cx: &mut TestAppContext) -> Entity<Workbench> {
+    let (_, view) = routed_welcome(fixture, cx);
     emit(&view, vec![open_event(&fixture.path(name), false)], cx);
-    let wb = only_workbench(cx).expect("the root is a workbench");
-    (wb, spawns)
+    only_workbench(cx).expect("the root is a workbench")
 }
 
 #[gpui::test]
 fn replace_shows_the_folder_in_the_same_window(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["a", "b"], &[]);
-    let (first, spawns) = routed_workbench(&fixture, "a", cx);
+    let first = routed_workbench(&fixture, "a", cx);
     let window = window_id(cx);
     let released = first.downgrade();
-    emit_replace(&first, SpawnRequest::Path(fixture.path("b")), cx);
+    replace(&first, Replacement::Path(fixture.path("b")), cx);
     drop(first);
     cx.run_until_parked();
     let second = only_workbench(cx).expect("the root is a workbench");
@@ -630,10 +632,9 @@ fn replace_shows_the_folder_in_the_same_window(cx: &mut TestAppContext) {
         stored_entries(&fixture).first().map(|e| e.path.clone()),
         Some(canonical(&fixture.path("b")))
     );
-    assert!(spawns.borrow().is_empty(), "no new process");
 
     // The new workbench is routed too.
-    emit_replace(&second, SpawnRequest::Path(fixture.path("a")), cx);
+    replace(&second, Replacement::Path(fixture.path("a")), cx);
     assert_eq!(window_id(cx), window);
     assert_eq!(shown_root(cx), Some(canonical(&fixture.path("a"))));
 }
@@ -641,10 +642,10 @@ fn replace_shows_the_folder_in_the_same_window(cx: &mut TestAppContext) {
 #[gpui::test]
 fn replace_with_welcome_keeps_the_window(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["a", "b"], &[]);
-    let (wb, spawns) = routed_workbench(&fixture, "a", cx);
+    let wb = routed_workbench(&fixture, "a", cx);
     let window = window_id(cx);
     let released = wb.downgrade();
-    emit_replace(&wb, SpawnRequest::Welcome, cx);
+    replace(&wb, Replacement::Welcome, cx);
     drop(wb);
     cx.run_until_parked();
     assert_eq!(window_id(cx), window, "the same window");
@@ -657,7 +658,6 @@ fn replace_with_welcome_keeps_the_window(cx: &mut TestAppContext) {
         .update(|cx| cx.windows()[0].update(cx, |root, _, _| root.downcast::<WelcomeView>().ok()))
         .unwrap()
         .expect("the root is the Welcome view");
-    assert!(spawns.borrow().is_empty(), "no new process");
 
     // Welcome opens a folder in that window again.
     emit(&view, vec![open_event(&fixture.path("b"), false)], cx);
@@ -669,8 +669,8 @@ fn replace_with_welcome_keeps_the_window(cx: &mut TestAppContext) {
 #[gpui::test]
 fn replace_with_a_missing_folder_keeps_the_workbench(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["a"], &[]);
-    let (wb, spawns) = routed_workbench(&fixture, "a", cx);
-    emit_replace(&wb, SpawnRequest::Path(fixture.path("gone")), cx);
+    let wb = routed_workbench(&fixture, "a", cx);
+    replace(&wb, Replacement::Path(fixture.path("gone")), cx);
     let still = only_workbench(cx).expect("the root is a workbench");
     assert_eq!(still.entity_id(), wb.entity_id());
     assert_eq!(shown_root(cx), Some(canonical(&fixture.path("a"))));
@@ -679,7 +679,6 @@ fn replace_with_a_missing_folder_keeps_the_workbench(cx: &mut TestAppContext) {
         .map(|s| s.to_string())
         .unwrap_or_default();
     assert!(status.starts_with("Could not open "), "{status:?}");
-    assert!(spawns.borrow().is_empty());
 }
 
 /// The only window's root, when it is `V`.
@@ -701,7 +700,7 @@ fn emit_onboarding(page: &Entity<OnboardingPage>, event: OnboardingEvent, cx: &m
 #[gpui::test]
 fn get_started_and_finish_switch_the_root(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["a"], &[]);
-    let (_, view, spawns) = routed_welcome(&fixture, cx);
+    let (_, view) = routed_welcome(&fixture, cx);
     let window = window_id(cx);
     let released = view.downgrade();
     emit(&view, vec![WelcomeEvent::OpenOnboarding], cx);
@@ -714,7 +713,6 @@ fn get_started_and_finish_switch_the_root(cx: &mut TestAppContext) {
     emit_onboarding(&page, OnboardingEvent::Finish, cx);
     let view = only_root::<WelcomeView>(cx).expect("the root is the Welcome view");
     assert_eq!(window_id(cx), window, "the same window");
-    assert!(spawns.borrow().is_empty(), "no new process");
 
     // The new Welcome view is routed too.
     emit(&view, vec![open_event(&fixture.path("a"), false)], cx);
@@ -723,17 +721,34 @@ fn get_started_and_finish_switch_the_root(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn onboarding_open_settings_spawns_a_process(cx: &mut TestAppContext) {
+fn onboarding_open_settings_opens_a_window(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&[], &[]);
-    let (_, view, spawns) = routed_welcome(&fixture, cx);
+    let (handle, view) = routed_welcome(&fixture, cx);
     emit(&view, vec![WelcomeEvent::OpenOnboarding], cx);
     let page = only_root::<OnboardingPage>(cx).expect("the root is the Get Started page");
     let settings = fixture.path("config/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "{}\n").unwrap();
     emit_onboarding(
         &page,
         OnboardingEvent::OpenSettingsInNewWindow(settings.clone()),
         cx,
     );
-    assert_eq!(*spawns.borrow(), vec![SpawnRequest::Path(settings)]);
-    assert!(only_root::<OnboardingPage>(cx).is_some(), "the page stays");
+    let kinds: Vec<WindowKind> = cx.update(|cx| {
+        router::windows(cx)
+            .into_iter()
+            .map(|(_, kind)| kind)
+            .collect()
+    });
+    assert_eq!(
+        kinds,
+        vec![WindowKind::File(canonical(&settings)), WindowKind::Welcome],
+        "the settings file opens alone in a new window"
+    );
+    let stays = cx.update(|cx| {
+        WindowHandle::<OnboardingPage>::new(handle.window_id())
+            .read(cx)
+            .is_ok()
+    });
+    assert!(stays, "the page stays");
 }
