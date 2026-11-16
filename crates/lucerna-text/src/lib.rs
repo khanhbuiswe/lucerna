@@ -12,7 +12,7 @@ mod write;
 pub use buffer::{Buffer, BufferSnapshot, LineEnding, Point};
 pub use diff::diff_edits;
 pub use history::{HistoryState, SelectionsToken, TransactionId, UndoResult};
-pub use load::{Decoded, LoadError, MAX_OPEN_BYTES, check_size, decode_file};
+pub use load::{Decoded, LoadError, MAX_OPEN_BYTES, check_regular, check_size, decode_file};
 pub use patch::{Bias, Patch, PatchEdit};
 pub use reload::Reload;
 pub use write::{WriteError, Written, write_bytes};

@@ -56,6 +56,11 @@ impl Launch {
             ErrorKind::NotFound => format!("path not found: {}", path.display()),
             _ => format!("{}: {err}", path.display()),
         })?;
+        // A FIFO or device (`luc /dev/zero`) is no file to open: reading
+        // it would block or run out of memory.
+        if !canonical.is_dir() && !canonical.is_file() {
+            return Err(format!("{}: Not a regular file", path.display()));
+        }
         Ok(if canonical.is_dir() {
             Launch {
                 root: canonical,

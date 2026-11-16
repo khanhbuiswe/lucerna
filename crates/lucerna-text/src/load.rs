@@ -17,6 +17,8 @@ pub enum LoadError {
     PermissionDenied,
     Binary,
     TooLarge { bytes: u64 },
+    /// A FIFO, device or socket: reading it could block or never end.
+    NotRegular,
     Io(String),
 }
 
@@ -32,6 +34,7 @@ impl fmt::Display for LoadError {
                 bytes / (1024 * 1024),
                 MAX_OPEN_BYTES / (1024 * 1024)
             ),
+            LoadError::NotRegular => write!(f, "Not a regular file"),
             LoadError::Io(message) => write!(f, "Could not read the file: {message}"),
         }
     }
@@ -50,6 +53,20 @@ impl From<io::Error> for LoadError {
 }
 
 /// Rejects lengths above [`MAX_OPEN_BYTES`].
+/// Refuses what is not a regular file (FIFO, device, socket), which can
+/// report length 0 yet block or never end when read. `metadata` follows
+/// symlinks, so a link to a regular file passes.
+///
+/// # Errors
+/// [`LoadError::NotRegular`].
+pub fn check_regular(meta: &std::fs::Metadata) -> Result<(), LoadError> {
+    if meta.is_file() {
+        Ok(())
+    } else {
+        Err(LoadError::NotRegular)
+    }
+}
+
 pub fn check_size(len: u64) -> Result<(), LoadError> {
     if len > MAX_OPEN_BYTES {
         Err(LoadError::TooLarge { bytes: len })

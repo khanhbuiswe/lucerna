@@ -7,7 +7,7 @@ use encoding_rs::Encoding;
 use ropey::Rope;
 
 use crate::history::{History, HistoryState, Inverse, SelectionsToken, UndoResult, compose_all};
-use crate::load::{Decoded, LoadError, check_size, decode_file};
+use crate::load::{Decoded, LoadError, check_regular, check_size, decode_file};
 use crate::patch::{Patch, PatchEdit};
 
 /// The dominant line ending of a file, for the status bar.
@@ -37,8 +37,9 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn load(path: &Path) -> Result<Buffer, LoadError> {
-        let len = std::fs::metadata(path)?.len();
-        check_size(len)?;
+        let meta = std::fs::metadata(path)?;
+        check_regular(&meta)?;
+        check_size(meta.len())?;
         let bytes = std::fs::read(path)?;
         Buffer::from_bytes(&bytes, false)
     }

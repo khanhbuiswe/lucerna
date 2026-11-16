@@ -200,3 +200,12 @@ fn char_column_counts_chars_before_the_byte_column() {
     assert_eq!(col(2, 4), 4, "last line without newline");
     assert_eq!(col(9, 3), 0, "out-of-range row");
 }
+
+#[cfg(unix)]
+#[test]
+fn load_refuses_a_device() {
+    assert_eq!(
+        Buffer::load(std::path::Path::new("/dev/zero")).err(),
+        Some(LoadError::NotRegular)
+    );
+}
