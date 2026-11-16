@@ -55,6 +55,27 @@ class LucCommandsTest(unittest.TestCase):
             multiwindow.luc_commands("sideways", ["/r1"])
 
 
+class ScrollArgsTest(unittest.TestCase):
+    def test_before_targets_a_by_its_own_pid(self):
+        args = multiwindow.scroll_args("before", [11, 12])
+        self.assertEqual(args[:3], ["scroll", "--pid", "11,12"])
+        self.assertNotIn("--window-index", args)
+
+    def test_after_picks_the_older_window(self):
+        args = multiwindow.scroll_args("after", [11])
+        self.assertEqual(args[-2:], ["--window-index", "0"])
+
+
+class WatchArgsTest(unittest.TestCase):
+    def test_after_allows_the_zoom_animation(self):
+        self.assertIn("--allow-resize", multiwindow.watch_args("after", "/x/luc", []))
+
+    def test_before_keeps_the_baseline_rule(self):
+        args = multiwindow.watch_args("before", "/x/luc", [7])
+        self.assertNotIn("--allow-resize", args)
+        self.assertEqual(args[4:6], ["--exclude-pids", "7"])
+
+
 class ArgsTest(unittest.TestCase):
     def test_windows_list(self):
         a = multiwindow.parse_args(["--windows", "1,2,3", "--out", "o.json"])

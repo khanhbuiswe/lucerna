@@ -17,9 +17,17 @@ Metrics (one value per round, `None` = the round failed):
   after n windows on n different repos have settled.
 - `second_window_ms`: the second `luc` command -> first frame of the new window
   showing content. Window A is empty and small, so the new (larger) window is
-  the one the display watch measures, whichever process owns it.
+  the one the display watch measures, whichever process owns it. In the
+  after mode macOS animates the new window's zoom (the app is already
+  running), so the watch takes `--allow-resize` and the round also records
+  `second_window_settled_ms`, the first frame at the final size.
 - `drop_pct_idle_b` / `drop_pct_while_busy`: dropped frames while scrolling A
-  with B idle (a small repo) / while B opens the large repo.
+  with B idle (a small repo) / while B opens the large repo. The frame count
+  each percentage is taken over is kept as `drop_frames_idle_b` /
+  `drop_frames_while_busy`, so a 0 % is visibly a real measurement.
+
+In the after mode A and B are two windows of one pid: `frame` and `scroll`
+pick them with bench-helper's `--window-index` (0 = A, the older window).
 
 `--single-window` also records the existing single-window `startup_ms` and
 `idle_ram_mb` (metrics.py, Lucerna only), the baseline the one-window threshold
@@ -203,11 +211,24 @@ def _csv(pids) -> str:
     return metrics._csv(pids)
 
 
-def _frame(paths, pids, f: dict, timeout: int = 30) -> bool:
-    out = metrics._helper(paths, ["frame", "--pid", _csv(pids), "--x", str(f["x"]),
-                                  "--y", str(f["y"]), "--w", str(f["w"]), "--h", str(f["h"]),
-                                  "--timeout", str(timeout)])
-    return out is not None
+def _frame(paths, pids, f: dict, timeout: int = 30, index: int | None = None) -> bool:
+    args = ["frame", "--pid", _csv(pids), "--x", str(f["x"]), "--y", str(f["y"]),
+            "--w", str(f["w"]), "--h", str(f["h"]), "--timeout", str(timeout)]
+    if index is not None:
+        args += ["--window-index", str(index)]
+    return metrics._helper(paths, args) is not None
+
+
+def scroll_args(mode: str, pids) -> list[str]:
+    """bench-helper `scroll` of window A. In the after mode A and B share a
+    pid, so A is picked as the older window."""
+    args = ["scroll", "--pid", _csv(pids), "--unit", "pixel",
+            "--lines", str(metrics.SCROLL_EVENTS),
+            "--pixels-per-event", str(metrics.SCROLL_PIXELS_PER_EVENT),
+            "--timeout", "30"]
+    if mode == "after":
+        args += ["--window-index", "0"]
+    return args
 
 
 def _fresh_profile(paths: BenchPaths) -> None:
@@ -255,9 +276,24 @@ def ram_mb(paths: BenchPaths, mode: str, n: int) -> float | None:
         session.quit()
 
 
-def second_window_ms(paths: BenchPaths, mode: str, bg: str) -> float | None:
-    """A (empty file, small) is up; the second `luc` command opens marker.txt;
-    time to the first frame of the new window with content."""
+def watch_args(mode: str, exe: str, exclude) -> list[str]:
+    """bench-helper display watch for the second window."""
+    args = ["watch", "--display", "--exe", exe]
+    if exclude:
+        args += ["--exclude-pids", _csv(exclude)]
+    args += ["--since", "0", "--until", f"coverage:{metrics.COVERAGE}",
+             "--background", "{bg}", "--timeout", str(metrics.TIMEOUT_S),
+             "--hold-ms", str(metrics.POST_HOLD_MS)]
+    if mode == "after":
+        args.append("--allow-resize")
+    return args
+
+
+def second_window_ms(paths: BenchPaths, mode: str,
+                     bg: str) -> tuple[float | None, float | None]:
+    """A (empty file, small) is up; the second `luc` command opens marker.txt.
+    Returns (ms to the first frame of the new window with content, ms to the
+    first frame at its final size); (None, None) when the round failed."""
     _fresh_profile(paths)
     exe = editors.resolve_lucerna()["path"]
     exclude = editors.running_pids(exe)      # your own luc, never measured
@@ -266,39 +302,37 @@ def second_window_ms(paths: BenchPaths, mode: str, bg: str) -> float | None:
     try:
         pa = session.open(paths.data / "empty.txt", 0)
         if not _frame(paths, [pa], A_SMALL):
-            return None
+            return None, None
         time.sleep(WINDOW_UP_S)
-        args = ["watch", "--display", "--exe", exe]
-        if exclude:
-            args += ["--exclude-pids", _csv(exclude)]
-        args += ["--since", "0", "--until", f"coverage:{metrics.COVERAGE}",
-                 "--background", bg, "--timeout", str(metrics.TIMEOUT_S),
-                 "--hold-ms", str(metrics.POST_HOLD_MS)]
+        args = [bg if a == "{bg}" else a for a in watch_args(mode, exe, exclude)]
         watch = metrics._start_watch(paths, args, metrics.TIMEOUT_S)
         if watch is None:
-            return None
+            return None, None
         t0 = editors.now_ns()
         session.open(paths.marker_file, 1)
         out = watch.result(metrics.TIMEOUT_S)
         if out is None:
-            return None
+            return None, None
         if out.get("first_frame_hit") or out["t_ns"] < t0:
             _log("content already on the first frame; round dropped")
-            return None
+            return None, None
         post = out.get("post_change")
         if post is None or post > metrics.POST_CHANGE_MAX:
             _log(f"window changed after the first content frame ({post}); round dropped")
-            return None
-        return (out["t_ns"] - t0) / 1e6
+            return None, None
+        settled = out.get("settled_ns", out["t_ns"])
+        return (out["t_ns"] - t0) / 1e6, (settled - t0) / 1e6
     finally:
         if watch is not None:
             watch.close()
         session.quit()
 
 
-def drop_pct(paths: BenchPaths, mode: str, bg: str, busy: bool) -> float | None:
+def drop_pct(paths: BenchPaths, mode: str, bg: str,
+             busy: bool) -> tuple[float | None, int | None]:
     """Scroll A (`big.rs`) while B is idle on a small repo (busy=False) or has
-    just been asked to open the large repo (busy=True)."""
+    just been asked to open the large repo (busy=True). Returns (dropped %,
+    frames captured during the scroll); (None, None) when the round failed."""
     _fresh_profile(paths)
     session = Session(paths, mode)
     try:
@@ -306,46 +340,48 @@ def drop_pct(paths: BenchPaths, mode: str, bg: str, busy: bool) -> float | None:
         t_a = editors.now_ns()
         pa = session.open(scroll_dir(paths) / "big.rs", 0)
         if not _frame(paths, [pa], A_FRAME):
-            return None
+            return None, None
         out = metrics._helper(paths, [
             "watch", "--pid", _csv(session.pids()), "--since", str(t_a),
             "--until", f"coverage:{metrics.TEXT_COVERAGE}", "--background", bg,
             "--timeout", str(metrics._left(deadline))])
         if out is None:
-            return None
+            return None, None
         if not busy:
             pb = session.open(repo_dirs(paths)[0], 1)
-            _park_b(paths, mode, pb)
+            _park_b(paths, mode, pa, pb)
             time.sleep(WINDOW_UP_S + SETTLE_S)
         time.sleep(metrics.SETTLE_S)
         if busy:
             pb = session.open(paths.large_repo, 1)
-            _park_b(paths, mode, pb)
-        out = metrics._helper(paths, [
-            "scroll", "--pid", _csv(session.pids([pa])), "--unit", "pixel",
-            "--lines", str(metrics.SCROLL_EVENTS),
-            "--pixels-per-event", str(metrics.SCROLL_PIXELS_PER_EVENT),
-            "--timeout", "30"])
+            _park_b(paths, mode, pa, pb)
+        out = metrics._helper(paths, scroll_args(mode, session.pids([pa])))
         if not out or not out.get("frames"):
-            return None
-        return out["dropped"] / out["frames"] * 100
+            return None, None
+        return out["dropped"] / out["frames"] * 100, out["frames"]
     finally:
         session.quit()
 
 
-def _park_b(paths, mode: str, pb: int) -> None:
-    """Keep B off A's centre. Only the before mode can address B's window by
-    its own pid; in the after mode both windows share a pid, B keeps its
-    default frame and `scroll` refuses (round = None) if it covers A."""
+def _park_b(paths, mode: str, pa: int, pb: int) -> None:
+    """Keep B off A's centre. The before mode addresses B by its own pid; in
+    the after mode B is the second window of A's pid (`pb` is a client that
+    has already exited). If parking fails, `scroll` refuses (round = None)
+    when B covers A's centre."""
     if mode == "before":
         _frame(paths, [pb], B_FRAME, timeout=10)
+    else:
+        _frame(paths, [pa], B_FRAME, timeout=10, index=1)
 
 
-def single_window(paths: BenchPaths, bg_rounds: int) -> dict:
+def single_window(paths: BenchPaths, bg_rounds: int, ignore_preflight: bool = False,
+                  notes: list | None = None) -> dict:
     """Existing single-window metrics for Lucerna only (the one-window
-    threshold of spec 7.2 compares against them)."""
+    threshold of spec 7.2 compares against them). Each round first waits
+    for a quiet machine, like the multi-window rounds."""
     result = {"startup_ms": [], "idle_ram_mb": [], "idle_cpu_pct": []}
     for i in range(bg_rounds + 1):               # round 0 is the discarded warm-up
+        _wait_quiet(ignore_preflight, notes if notes is not None else [])
         _fresh_profile(paths)
         s = metrics.startup_ms("lucerna", paths)
         _fresh_profile(paths)
@@ -425,17 +461,24 @@ def main(argv=None) -> int:
                 row["ram_mb"] = {str(n): ram_mb(paths, a.mode, n) for n in a.windows}
                 _log(f"  ram_mb {row['ram_mb']}")
             if "second_window_ms" in a.selected:
-                row["second_window_ms"] = second_window_ms(paths, a.mode, bg)
-                _log(f"  second_window_ms {row['second_window_ms']}")
+                row["second_window_ms"], row["second_window_settled_ms"] = second_window_ms(
+                    paths, a.mode, bg)
+                _log(f"  second_window_ms {row['second_window_ms']} "
+                     f"(settled {row['second_window_settled_ms']})")
             if "drop" in a.selected:
-                row["drop_pct_idle_b"] = drop_pct(paths, a.mode, bg, busy=False)
-                row["drop_pct_while_busy"] = drop_pct(paths, a.mode, bg, busy=True)
-                _log(f"  drop idle {row['drop_pct_idle_b']} busy {row['drop_pct_while_busy']}")
+                row["drop_pct_idle_b"], row["drop_frames_idle_b"] = drop_pct(
+                    paths, a.mode, bg, busy=False)
+                row["drop_pct_while_busy"], row["drop_frames_while_busy"] = drop_pct(
+                    paths, a.mode, bg, busy=True)
+                _log(f"  drop idle {row['drop_pct_idle_b']} % of {row['drop_frames_idle_b']} "
+                     f"frames, busy {row['drop_pct_while_busy']} % of "
+                     f"{row['drop_frames_while_busy']} frames")
             result["rounds"].append(row)
             result["summary"] = summarize(result["rounds"])
             _write(out, result)
         if a.single_window:
-            result["single_window"] = single_window(paths, a.rounds)
+            result["single_window"] = single_window(paths, a.rounds, a.ignore_preflight,
+                                                    result["meta"]["preflight_ignored"])
             result["summary_single_window"] = summarize([
                 {k: result["single_window"][k][i] for k in result["single_window"]}
                 for i in range(a.rounds)])
