@@ -69,7 +69,10 @@ pub fn run(launch: Option<Launch>, listener: Option<CliListener>) {
     let (requests_tx, mut requests) = mpsc::unbounded::<Vec<String>>();
     let app = application().with_quit_mode(QuitMode::Default);
     app.on_open_urls(move |urls| {
-        requests_tx.unbounded_send(urls).ok();
+        tracing::info!(?urls, "the platform asks to open");
+        if let Err(err) = requests_tx.unbounded_send(urls) {
+            tracing::warn!(%err, "dropped a platform open request");
+        }
     });
     app.on_reopen(on_reopen);
     app.run(move |cx: &mut App| {
@@ -227,6 +230,7 @@ fn quit_if_no_window(what: &str, cx: &mut App) {
 /// screen in a new window, as VS Code opens an empty one. With windows
 /// that are only minimized, the most recently used comes forward.
 fn on_reopen(cx: &mut App) {
+    tracing::info!("the platform asks to reopen");
     router::reopen(cx);
 }
 
@@ -265,8 +269,10 @@ pub(crate) fn quit_now(cx: &mut App) {
 
 /// Opens the paths the platform asks for (Finder's "Open With", the Dock).
 fn open_urls(urls: &[String], cx: &mut App) {
+    let paths = file_paths(urls);
+    tracing::info!(?paths, "opening the platform's paths");
     let request = OpenRequest {
-        paths: file_paths(urls),
+        paths,
         target: Target::Auto,
         source: Source::Finder,
     };
