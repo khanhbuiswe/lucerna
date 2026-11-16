@@ -8,13 +8,14 @@ use std::rc::Rc;
 use gpui::private::schemars::JsonSchema;
 use gpui::{
     Action, App, AppContext as _, KeyBinding, KeyBindingContextPredicate, Menu, MenuItem, OsAction,
-    SharedString, SystemMenuType, WindowHandle, WindowId, actions,
+    PathPromptOptions, SharedString, SystemMenuType, WindowHandle, WindowId, actions,
 };
 use lucerna_settings::{Context as WhenContext, ContextValue, Keymap, Keystroke};
 use serde::Deserialize;
 
 use crate::config_files::ConfigState;
 use crate::recent::{self, RecentEntry, RecentStore};
+use crate::router::{self, OpenRequest, Source, Target};
 use crate::workspace_state::tilde_path;
 use crate::{
     AppState, ONBOARDING_COMMANDS, OnboardingPage, WELCOME_COMMANDS, WelcomeView, Workbench,
@@ -61,6 +62,22 @@ const QUIT: &str = "workbench.action.quit";
 const OPEN_RECENT: &str = "workbench.action.openRecent";
 const CLEAR_RECENT: &str = "workbench.action.clearRecentFiles";
 const NEW_WINDOW: &str = crate::open_commands::NEW_WINDOW;
+const OPEN_FILE_FOLDER: &str = "workbench.action.files.openFileFolder";
+const OPEN_FILE: &str = "workbench.action.files.openFile";
+const OPEN_FOLDER: &str = "workbench.action.files.openFolder";
+
+/// The commands the menu runs with no window open (spec M10), besides the
+/// entries of File ▸ Open Recent.
+pub const NO_WINDOW_COMMANDS: &[&str] = &[
+    NEW_WINDOW,
+    OPEN_FILE_FOLDER,
+    OPEN_FILE,
+    OPEN_FOLDER,
+    crate::config_files::OPEN_USER_SETTINGS,
+    crate::config_files::OPEN_USER_KEYBINDINGS,
+    ABOUT,
+    QUIT,
+];
 
 /// One item of a [`MenuSpec`].
 pub enum Entry {
@@ -129,6 +146,9 @@ pub enum WindowKind {
     /// The Get Started page as the root, before a folder is opened.
     Onboarding,
     Workbench,
+    /// No window is open (macOS keeps the app running): only
+    /// [`NO_WINDOW_COMMANDS`] run.
+    None,
 }
 
 /// What [`build_menus`] depends on besides [`MENUS`].
@@ -161,14 +181,17 @@ const ABOUT_ENTRY: Entry = command("About Lucerna", ABOUT);
 
 /// Lucerna ▸ Settings on macOS, File ▸ Preferences elsewhere.
 const SETTINGS_ENTRIES: &[Entry] = &[
-    command("Open Settings (JSON)", "workbench.action.openSettingsJson"),
+    command(
+        "Open Settings (JSON)",
+        crate::config_files::OPEN_USER_SETTINGS,
+    ),
     command(
         "Open Workspace Settings (JSON)",
         "workbench.action.openWorkspaceSettingsFile",
     ),
     command(
         "Open Keyboard Shortcuts (JSON)",
-        "workbench.action.openGlobalKeybindingsFile",
+        crate::config_files::OPEN_USER_KEYBINDINGS,
     ),
     Entry::Separator,
     command("Color Theme…", "workbench.action.selectTheme"),
@@ -215,18 +238,9 @@ pub static MENUS: &[MenuSpec] = &[
         role: Role::File,
         entries: &[
             command("New Window", NEW_WINDOW),
-            Entry::Only(
-                Platform::Mac,
-                &command("Open…", "workbench.action.files.openFileFolder"),
-            ),
-            Entry::Only(
-                Platform::Other,
-                &command("Open File…", "workbench.action.files.openFile"),
-            ),
-            Entry::Only(
-                Platform::Other,
-                &command("Open Folder…", "workbench.action.files.openFolder"),
-            ),
+            Entry::Only(Platform::Mac, &command("Open…", OPEN_FILE_FOLDER)),
+            Entry::Only(Platform::Other, &command("Open File…", OPEN_FILE)),
+            Entry::Only(Platform::Other, &command("Open Folder…", OPEN_FOLDER)),
             Entry::RecentSubmenu,
             Entry::Separator,
             command("Save", "workbench.action.files.save"),
@@ -349,7 +363,9 @@ pub static MENUS: &[MenuSpec] = &[
 /// The menu bar for `input` (spec §9.2). Commands that are not registered
 /// are left out, and so are separators left at an end or next to another.
 /// On Linux and Windows the app menu's items move to File and Help. In a
-/// Welcome or Get Started window only what that page runs is enabled.
+/// Welcome or Get Started window only what that page runs is enabled, and
+/// with no window only [`NO_WINDOW_COMMANDS`]. New Window is always
+/// enabled: the app runs it, not the window.
 pub fn build_menus(input: &BuildInput) -> Vec<Menu> {
     MENUS
         .iter()
@@ -414,11 +430,13 @@ fn command_item(
     if !input.commands.contains(&id) {
         return None;
     }
-    let enabled = match input.window {
-        WindowKind::Workbench => true,
-        WindowKind::Welcome => WELCOME_COMMANDS.contains(&id),
-        WindowKind::Onboarding => ONBOARDING_COMMANDS.contains(&id),
-    };
+    let enabled = id == NEW_WINDOW
+        || match input.window {
+            WindowKind::Workbench => true,
+            WindowKind::Welcome => WELCOME_COMMANDS.contains(&id),
+            WindowKind::Onboarding => ONBOARDING_COMMANDS.contains(&id),
+            WindowKind::None => NO_WINDOW_COMMANDS.contains(&id),
+        };
     let item = match (os, enabled) {
         (Some(os), true) => MenuItem::os_action(title, RunCommand { id: id.into() }, os),
         (None, true) => MenuItem::action(title, RunCommand { id: id.into() }),
@@ -689,10 +707,11 @@ fn set_menus(recent: &[RecentEntry], cx: &mut App) {
         .map(Workbench::opened_paths);
     let onboarding =
         active.is_some_and(|id| WindowHandle::<OnboardingPage>::new(id).read(cx).is_ok());
-    let window = match (&opened, onboarding) {
-        (Some(_), _) => WindowKind::Workbench,
-        (None, true) => WindowKind::Onboarding,
-        (None, false) => WindowKind::Welcome,
+    let window = match (active, &opened, onboarding) {
+        (None, _, _) => WindowKind::None,
+        (Some(_), Some(_), _) => WindowKind::Workbench,
+        (Some(_), None, true) => WindowKind::Onboarding,
+        (Some(_), None, false) => WindowKind::Welcome,
     };
     // Choosing the window's own folder would only reopen it.
     let opened = opened.unwrap_or_default();
@@ -731,16 +750,18 @@ fn menu_may_run(keymap: &Keymap, id: &str, context: &WhenContext) -> bool {
 }
 
 /// Runs `id` in the active window's workbench, Welcome screen or Get
-/// Started page; with no window, nothing. In a workbench, only where the
-/// command's key would run it ([`menu_may_run`]): AppKit fires a menu item
-/// for a key the workbench let through.
+/// Started page; with no window, as the app ([`run_without_window`]). In a
+/// workbench, only where the command's key would run it
+/// ([`menu_may_run`]): AppKit fires a menu item for a key the workbench
+/// let through.
 fn run_command(id: &str, cx: &mut App) {
     // Needs no window: the Dock menu runs it too.
     if id == NEW_WINDOW {
-        crate::router::open_welcome(crate::router::Target::NewWindow, cx);
+        router::open_welcome(Target::NewWindow, cx);
         return;
     }
     let Some(window) = active_window(cx) else {
+        run_without_window(id, cx);
         return;
     };
     let ran = WindowHandle::<Workbench>::new(window).update(cx, |wb, window, cx| {
@@ -764,8 +785,70 @@ fn run_command(id: &str, cx: &mut App) {
     }
 }
 
+/// Runs one of [`NO_WINDOW_COMMANDS`] with no window open (spec M10):
+/// what it opens goes to a new window.
+fn run_without_window(id: &str, cx: &mut App) {
+    match id {
+        OPEN_FILE_FOLDER => prompt_and_open(true, true, cx),
+        OPEN_FILE => prompt_and_open(true, false, cx),
+        OPEN_FOLDER => prompt_and_open(false, true, cx),
+        // A prompt needs a window: the one New Window would open.
+        ABOUT => {
+            router::open_welcome(Target::NewWindow, cx);
+            if let Some((handle, _)) = router::windows(cx).first() {
+                handle
+                    .update(cx, |_, window, cx| crate::about::show(window, cx))
+                    .ok();
+            }
+        }
+        QUIT => crate::workbench::quit(cx),
+        id => {
+            crate::config_files::open_user_file_in_new_window(id, cx);
+        }
+    }
+}
+
+/// Asks for a path with the app's Open dialog and opens it in a new
+/// window; Cancel does nothing.
+fn prompt_and_open(files: bool, directories: bool, cx: &mut App) {
+    let picked = cx.prompt_for_paths(PathPromptOptions {
+        files,
+        directories,
+        multiple: false,
+        prompt: Some("Open".into()),
+    });
+    cx.spawn(async move |cx| {
+        let paths = match picked.await {
+            Ok(Ok(Some(paths))) => paths,
+            Ok(Err(err)) => {
+                tracing::error!(%err, "could not show the open dialog");
+                return;
+            }
+            _ => return,
+        };
+        cx.update(|cx| {
+            let request = OpenRequest {
+                paths,
+                target: Target::NewWindow,
+                source: Source::Menu,
+            };
+            router::open(request, cx).ok();
+        });
+    })
+    .detach();
+}
+
+/// Opens a File ▸ Open Recent entry: in the active window as its Welcome
+/// screen or Open Recent picker would, or where the router puts it when
+/// no window is open.
 fn open_recent_entry(entry: RecentEntry, cx: &mut App) {
     let Some(window) = active_window(cx) else {
+        let request = OpenRequest {
+            paths: vec![entry.path],
+            target: Target::Auto,
+            source: Source::Menu,
+        };
+        router::open(request, cx).ok();
         return;
     };
     let opened = WindowHandle::<Workbench>::new(window).update(cx, |wb, window, cx| {
@@ -974,6 +1057,55 @@ mod tests {
         let commands = Workbench::command_ids();
         let menus = build_menus(&input(&commands, Platform::Mac, &[], WindowKind::Welcome));
         assert!(!item(menu(&menus, "File"), "New Window").is_disabled());
+    }
+
+    #[test]
+    fn new_window_runs_on_get_started() {
+        let commands = Workbench::command_ids();
+        let menus = build_menus(&input(
+            &commands,
+            Platform::Mac,
+            &[],
+            WindowKind::Onboarding,
+        ));
+        assert!(!item(menu(&menus, "File"), "New Window").is_disabled());
+    }
+
+    #[test]
+    fn no_window_enables_only_app_commands() {
+        let commands = Workbench::command_ids();
+        let recent = [RecentEntry {
+            path: PathBuf::from("/p"),
+            kind: RecentKind::Folder,
+        }];
+        let menus = build_menus(&input(&commands, Platform::Mac, &recent, WindowKind::None));
+        let file = menu(&menus, "File");
+        for title in ["New Window", "Open…"] {
+            assert!(!item(file, title).is_disabled(), "{title}");
+        }
+        for title in ["Save", "Close Editor", "Close Folder"] {
+            assert!(item(file, title).is_disabled(), "{title}");
+        }
+        let open_recent = submenu(file, "Open Recent");
+        assert!(!item(open_recent, "/p").is_disabled(), "entries open");
+        assert!(
+            item(open_recent, "More…").is_disabled(),
+            "the picker needs a window"
+        );
+        let app = menu(&menus, "Lucerna");
+        assert!(!item(app, "About Lucerna").is_disabled());
+        assert!(!item(app, "Quit Lucerna").is_disabled());
+        let settings = submenu(app, "Settings");
+        assert!(!item(settings, "Open Settings (JSON)").is_disabled());
+        assert!(!item(settings, "Open Keyboard Shortcuts (JSON)").is_disabled());
+        assert!(item(settings, "Open Workspace Settings (JSON)").is_disabled());
+        assert!(item(menu(&menus, "View"), "Toggle Sidebar").is_disabled());
+
+        let menus = build_menus(&input(&commands, Platform::Other, &[], WindowKind::None));
+        let file = menu(&menus, "File");
+        for title in ["Open File…", "Open Folder…", "Exit"] {
+            assert!(!item(file, title).is_disabled(), "{title}");
+        }
     }
 
     #[test]

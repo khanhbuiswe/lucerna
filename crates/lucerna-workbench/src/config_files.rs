@@ -655,7 +655,7 @@ fn debounce_loop(
 
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
-        "workbench.action.openSettingsJson",
+        OPEN_USER_SETTINGS,
         "Preferences: Open User Settings (JSON)",
         |wb, _, window, cx| {
             if let Some(path) = user_config_path(ConfigPaths::user_settings, cx) {
@@ -664,7 +664,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         },
     );
     commands.register(
-        "workbench.action.openGlobalKeybindingsFile",
+        OPEN_USER_KEYBINDINGS,
         "Preferences: Open Keyboard Shortcuts (JSON)",
         |wb, _, window, cx| {
             if let Some(path) = user_config_path(ConfigPaths::keybindings, cx) {
@@ -693,6 +693,54 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "Lucerna: Open Logs Folder",
         |_, _, _, _| open_logs_folder(),
     );
+}
+
+/// The commands that open a user configuration file, which the menu runs
+/// with no window open too ([`open_user_file_in_new_window`]).
+pub(crate) const OPEN_USER_SETTINGS: &str = "workbench.action.openSettingsJson";
+pub(crate) const OPEN_USER_KEYBINDINGS: &str = "workbench.action.openGlobalKeybindingsFile";
+
+/// Runs [`OPEN_USER_SETTINGS`] or [`OPEN_USER_KEYBINDINGS`] with no window
+/// (spec M10): creates the file from its template when missing, off the
+/// UI thread, then opens it alone in a new window. `false` for any other
+/// command.
+pub(crate) fn open_user_file_in_new_window(id: &str, cx: &mut App) -> bool {
+    let (file, template): (fn(&ConfigPaths) -> PathBuf, &'static str) = match id {
+        OPEN_USER_SETTINGS => (ConfigPaths::user_settings, USER_SETTINGS_TEMPLATE),
+        OPEN_USER_KEYBINDINGS => (ConfigPaths::keybindings, KEYBINDINGS_TEMPLATE),
+        _ => return false,
+    };
+    let Some(path) = user_config_path(file, cx) else {
+        return true;
+    };
+    cx.spawn(async move |cx| {
+        let created = {
+            let path = path.clone();
+            cx.background_spawn(async move { create_if_missing(&path, template) })
+                .await
+        };
+        match created {
+            Ok(created) => cx.update(|cx| {
+                if created
+                    && let Some(watcher) = cx
+                        .try_global::<ConfigState>()
+                        .and_then(|s| s.watcher.as_ref())
+                {
+                    // The watcher follows a directory made just now.
+                    watcher.rearm();
+                }
+                let request = crate::router::OpenRequest {
+                    paths: vec![path],
+                    target: crate::router::Target::NewWindow,
+                    source: crate::router::Source::Menu,
+                };
+                crate::router::open(request, cx).ok();
+            }),
+            Err(err) => tracing::error!(path = %path.display(), %err, "could not create the file"),
+        }
+    })
+    .detach();
+    true
 }
 
 /// A file in the user directory; `None` (and a warning) without

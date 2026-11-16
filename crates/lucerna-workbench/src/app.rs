@@ -12,7 +12,7 @@ use std::time::Duration;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::future::{self, Either};
-use gpui::{App, AppContext as _, PathPromptOptions};
+use gpui::{App, AppContext as _, Global, PathPromptOptions, QuitMode};
 use gpui_platform::application;
 use lucerna_extension::store::Store;
 use lucerna_settings::{Keymap, SettingsStore};
@@ -38,7 +38,9 @@ use crate::{
 /// path (Finder's "Open With") before it shows the folder picker.
 const OPEN_REQUEST_GRACE: Duration = Duration::from_millis(300);
 
-/// Runs the app until it quits; it quits when its last window closes.
+/// Runs the app until it quits. Closing the last window quits on Linux
+/// and Windows; on macOS the app keeps running with its menu bar, and
+/// clicking its Dock icon then opens the Welcome screen (spec M8, M9).
 ///
 /// With `launch`, a window opens on it. Without, as when Finder or the
 /// Dock starts the app bundle, the app waits briefly for a path to open and
@@ -48,10 +50,11 @@ const OPEN_REQUEST_GRACE: Duration = Duration::from_millis(300);
 /// asks to open later go through [`router::open`].
 pub fn run(launch: Option<Launch>) {
     let (requests_tx, mut requests) = mpsc::unbounded::<Vec<String>>();
-    let app = application();
+    let app = application().with_quit_mode(QuitMode::Default);
     app.on_open_urls(move |urls| {
         requests_tx.unbounded_send(urls).ok();
     });
+    app.on_reopen(on_reopen);
     app.run(move |cx: &mut App| {
         start(cx);
         // Once for the app: each window reads its own folder's settings.
@@ -95,6 +98,49 @@ pub(crate) fn start_failed(windows: usize) -> bool {
 fn quit_if_no_window(what: &str, cx: &mut App) {
     if start_failed(cx.windows().len()) {
         tracing::error!(what, "nothing opened at start; quitting");
+        cx.quit();
+    }
+}
+
+/// The Dock icon was clicked with no window shown (spec M9): the Welcome
+/// screen in a new window, as VS Code opens an empty one. With windows
+/// that are only minimized, the most recently used comes forward.
+fn on_reopen(cx: &mut App) {
+    match router::windows(cx).first() {
+        Some((handle, _)) => router::activate(*handle, cx),
+        None => router::open_welcome(Target::NewWindow, cx),
+    }
+}
+
+/// [`on_reopen`], which the test platform cannot call.
+#[doc(hidden)]
+pub fn on_reopen_for_test(cx: &mut App) {
+    on_reopen(cx);
+}
+
+/// Counts quits in place of quitting; set by [`count_quits_for_test`].
+struct QuitCount(usize);
+
+impl Global for QuitCount {}
+
+/// From now on [`quit_now`] counts instead of quitting: the test
+/// platform's `quit` does nothing.
+#[doc(hidden)]
+pub fn count_quits_for_test(cx: &mut App) {
+    cx.set_global(QuitCount(0));
+}
+
+/// How many times the app would have quit since [`count_quits_for_test`].
+#[doc(hidden)]
+pub fn quits_for_test(cx: &App) -> usize {
+    cx.try_global::<QuitCount>().map_or(0, |count| count.0)
+}
+
+/// Quits the app: `cx.quit()`, or a count in tests.
+pub(crate) fn quit_now(cx: &mut App) {
+    if cx.has_global::<QuitCount>() {
+        cx.global_mut::<QuitCount>().0 += 1;
+    } else {
         cx.quit();
     }
 }
@@ -205,13 +251,8 @@ fn start(cx: &mut App) {
     cx.set_global(RecentStore {
         data_dir: default_data_dir(),
     });
+    // Closing the last window is left to `QuitMode::Default` (spec M8).
     app_menu::install(cx);
-    cx.on_window_closed(|cx, _| {
-        if cx.windows().is_empty() {
-            cx.quit();
-        }
-    })
-    .detach();
 }
 
 /// The built-in defaults plus the installed extensions, read from the

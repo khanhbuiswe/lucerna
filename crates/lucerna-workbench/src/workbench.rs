@@ -3003,13 +3003,23 @@ fn prompt_terminate_terminals(
 }
 
 /// Quits the app once every workbench window agreed to
-/// ([`Workbench::confirm_quit`], one window after another). Quitting runs
-/// the `on_app_quit` hooks, which save the layout.
+/// ([`Workbench::confirm_quit`], one window after another, the most
+/// recently used first; spec M11). Cancel in any window stops the quit.
+/// Quitting runs the `on_app_quit` hooks, which save the layout.
 pub(crate) fn quit(cx: &mut App) {
+    let mut windows: Vec<gpui::AnyWindowHandle> = crate::router::windows(cx)
+        .into_iter()
+        .map(|(handle, _)| handle)
+        .collect();
+    // Windows the router did not open (tests build some directly) last.
+    for window in cx.windows() {
+        if !windows.contains(&window) {
+            windows.push(window);
+        }
+    }
     // Not `downcast`: a Welcome window that became a workbench keeps the
     // handle type it opened with. Updating a window of another root fails.
-    let windows: Vec<WindowHandle<Workbench>> = cx
-        .windows()
+    let windows: Vec<WindowHandle<Workbench>> = windows
         .into_iter()
         .map(|w| WindowHandle::new(w.window_id()))
         .collect();
@@ -3024,7 +3034,11 @@ pub(crate) fn quit(cx: &mut App) {
                 return;
             }
         }
-        cx.update(|cx| cx.quit());
+        cx.update(|cx| {
+            // Task 10: write `windows.json` synchronously here
+            // (`session::save_now(cx)`), before the app quits (spec §6.6).
+            crate::app::quit_now(cx);
+        });
     })
     .detach();
 }

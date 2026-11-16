@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyWindowHandle, BorrowAppContext as _, Entity, Focusable as _, Global, TestAppContext,
-    VisualTestContext, WindowHandle,
+    AnyWindowHandle, App, BorrowAppContext as _, Entity, Focusable as _, Global, OwnedMenuItem,
+    QuitMode, TestAppContext, VisualTestContext, WindowHandle,
 };
 use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
 use lucerna_project::WorktreeEvent;
@@ -18,9 +18,11 @@ use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_terminal::{Terminal, TerminalOptions};
 use lucerna_theme::ThemeRegistry;
+use lucerna_workbench::app;
+use lucerna_workbench::app_menu::{self, OpenRecentEntry, RunCommand};
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::fonts::EDITOR_FONT_FAMILY;
-use lucerna_workbench::recent::{RecentStore, recent_path};
+use lucerna_workbench::recent::{RecentEntry, RecentKind, RecentStore, recent_path};
 use lucerna_workbench::router::{self, Target, WindowKind};
 use lucerna_workbench::system_shell::{SystemShell, SystemShellGlobal};
 use lucerna_workbench::{
@@ -851,4 +853,213 @@ fn status_message_stays_in_window(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(shown(id_a, cx), None);
     assert_eq!(shown(id_b, cx), None);
+}
+
+// Quitting, the last window, the Dock and the menu with no window (spec
+// M8–M11).
+
+/// Two routed folder windows, A with a dirty `a.rs` and B with a dirty
+/// `b.rs`; B, opened last, is the most recently used. Quits are counted,
+/// not done.
+fn two_dirty_windows(
+    cx: &mut TestAppContext,
+) -> (WindowHandle<Workbench>, WindowHandle<Workbench>) {
+    routed(&[], cx);
+    cx.update(app_menu::install);
+    cx.update(app::count_quits_for_test);
+    let (a, b) = (project(cx), project(cx));
+    std::fs::write(a.join("a.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(b.join("b.rs"), "fn b() {}\n").unwrap();
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    open_routed(vec![b.clone()], Target::Auto, cx);
+    let in_a = routed_workbench(&WindowKind::Folder(a), cx);
+    let in_b = routed_workbench(&WindowKind::Folder(b), cx);
+    edit_file(in_a, "a.rs", cx);
+    edit_file(in_b, "b.rs", cx);
+    (in_a, in_b)
+}
+
+/// Inserts `x` at the start of `path` (root-relative), opening it.
+fn edit_file(handle: WindowHandle<Workbench>, path: &str, cx: &mut TestAppContext) {
+    let view = open_file(handle, path, cx);
+    let docs = handle
+        .read_with(cx, |wb, _| wb.documents().clone())
+        .unwrap();
+    let edit = (0..0, Arc::<str>::from("x"));
+    cx.update(|cx| {
+        docs.update(cx, |d, cx| {
+            d.apply_edits(
+                Path::new(path),
+                vec![edit],
+                None,
+                None,
+                view.entity_id(),
+                cx,
+            )
+        })
+    })
+    .expect("the file is loaded");
+    draw(handle, cx);
+}
+
+fn quit(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.dispatch_action(&app_menu::Quit));
+    cx.run_until_parked();
+}
+
+/// The pending prompt's message.
+fn prompt(cx: &mut TestAppContext) -> String {
+    cx.pending_prompt().expect("a prompt is up").0
+}
+
+#[gpui::test]
+fn quit_cancel_in_second_window_keeps_all(cx: &mut TestAppContext) {
+    two_dirty_windows(cx);
+    quit(cx);
+    assert!(prompt(cx).contains("b.rs"), "B, used last, asks first");
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    assert!(prompt(cx).contains("a.rs"), "then A");
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(cx.update(|cx| app::quits_for_test(cx)), 0, "no quit");
+    assert_eq!(routed_windows(cx).len(), 2, "both windows stay");
+}
+
+#[gpui::test]
+fn quit_dont_save_both_quits(cx: &mut TestAppContext) {
+    two_dirty_windows(cx);
+    quit(cx);
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(cx.update(|cx| app::quits_for_test(cx)), 1);
+}
+
+#[gpui::test]
+fn quit_survives_window_closed_during_prompt(cx: &mut TestAppContext) {
+    let (in_a, in_b) = two_dirty_windows(cx);
+    // A is the most recently used: it asks first.
+    cx.update(|cx| router::open_for_test(vec![root_of(in_a, cx)], Target::Auto, cx));
+    cx.run_until_parked();
+    quit(cx);
+    assert!(prompt(cx).contains("a.rs"), "A asks first");
+    in_b.update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt(), "B is gone and asks nothing");
+    assert_eq!(cx.update(|cx| app::quits_for_test(cx)), 1);
+}
+
+fn root_of(handle: WindowHandle<Workbench>, cx: &mut App) -> PathBuf {
+    handle
+        .read_with(cx, |wb, _| wb.root().to_path_buf())
+        .unwrap()
+}
+
+/// The File menu's item `title`, and whether it is disabled.
+fn file_item_disabled(title: &str, cx: &mut TestAppContext) -> bool {
+    let menus = cx.update(|cx| cx.get_menus()).expect("menus are set");
+    let file = menus
+        .iter()
+        .find(|m| m.name.as_ref() == "File")
+        .expect("a File menu");
+    file.items
+        .iter()
+        .find_map(|item| match item {
+            OwnedMenuItem::Action { name, disabled, .. } if name == title => Some(*disabled),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no {title} item"))
+}
+
+#[gpui::test]
+fn close_last_window_keeps_app(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    cx.update(|cx| cx.set_quit_mode(QuitMode::Explicit));
+    cx.update(app_menu::install);
+    let a = project(cx);
+    open_routed(vec![a], Target::Auto, cx);
+    assert!(!file_item_disabled("Save", cx));
+    for (handle, _) in routed_windows(cx) {
+        handle
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+    }
+    cx.run_until_parked();
+    assert!(routed_windows(cx).is_empty());
+    assert!(cx.update(|cx| cx.windows().is_empty()));
+    assert!(!file_item_disabled("New Window", cx), "New Window runs");
+    assert!(!file_item_disabled("Open…", cx) || !cfg!(target_os = "macos"));
+    assert!(file_item_disabled("Save", cx), "Save needs a workbench");
+    assert!(
+        file_item_disabled("Close Folder", cx),
+        "Close Folder needs a workbench"
+    );
+    let menus = cx.update(|cx| cx.get_menus()).expect("menus are set");
+    let settings_json = menus.iter().flat_map(|m| m.items.iter()).find_map(|item| {
+        let OwnedMenuItem::Submenu(menu) = item else {
+            return None;
+        };
+        menu.items.iter().find_map(|item| match item {
+            OwnedMenuItem::Action { name, disabled, .. } if name == "Open Settings (JSON)" => {
+                Some(*disabled)
+            }
+            _ => None,
+        })
+    });
+    assert_eq!(
+        settings_json,
+        Some(false),
+        "user settings open without a window"
+    );
+}
+
+#[gpui::test]
+fn menu_open_folder_without_window(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    cx.update(app_menu::install);
+    let a = project(cx);
+    assert!(cx.update(|cx| cx.windows().is_empty()));
+    let id = if cfg!(target_os = "macos") {
+        "workbench.action.files.openFileFolder"
+    } else {
+        "workbench.action.files.openFolder"
+    };
+    cx.update(|cx| cx.dispatch_action(&RunCommand { id: id.into() }));
+    cx.run_until_parked();
+    let picked = a.clone();
+    cx.simulate_path_prompt_response(move |_| Some(vec![picked]));
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![WindowKind::Folder(a)], "a folder window");
+}
+
+#[gpui::test]
+fn menu_open_recent_without_window(cx: &mut TestAppContext) {
+    let a = {
+        init(cx);
+        project(cx)
+    };
+    routed(&[&a], cx);
+    cx.update(app_menu::install);
+    let entry = RecentEntry {
+        path: a.clone(),
+        kind: RecentKind::Folder,
+    };
+    cx.update(|cx| cx.dispatch_action(&OpenRecentEntry { entry }));
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![WindowKind::Folder(a)]);
+}
+
+#[gpui::test]
+fn reopen_opens_welcome(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    cx.update(app::on_reopen_for_test);
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![WindowKind::Welcome]);
 }
