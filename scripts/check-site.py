@@ -13,6 +13,9 @@ from html.parser import HTMLParser
 ORIGIN = "https://lucerna.skynomadlabs.dev/"
 GITHUB = "https://github.com/khanhbuiswe/lucerna"
 METRICS = ["169MB", "1.40%", "50MB"]
+DMG_URL = re.compile(
+    re.escape(GITHUB) + r"/releases/download/v(?P<v>[^/]+)/Lucerna-(?P=v)-macos-aarch64\.dmg"
+)
 CSS_URL = re.compile(r"""url\(\s*['"]?([^'")]+)""")
 CSS_IMPORT = re.compile(r"""@import\s+['"]([^'"]+)""")
 
@@ -26,6 +29,7 @@ class _Page(HTMLParser):
         self.links = []  # (rel, href)
         self.ids = set()
         self.anchors = []  # every <a href>
+        self.downloads = []  # (href, data-dmg) of <a data-dmg> buttons
         self.srcs = []  # src attributes
         self.metrics = []  # text of class="v" elements
         self.inline_css = []  # <style> blocks and style="" attributes
@@ -53,6 +57,8 @@ class _Page(HTMLParser):
             self.links.append((a.get("rel", ""), a.get("href", "")))
         elif tag == "a" and "href" in a:
             self.anchors.append(a["href"])
+            if "data-dmg" in a:
+                self.downloads.append((a["href"], a["data-dmg"]))
         for attr in ("src", "poster", "data"):
             if a.get(attr):
                 self.srcs.append(a[attr])
@@ -171,6 +177,22 @@ def check_site(root):
             failures.append(f"index.html: link scheme not allowed: {href}")
         else:
             _check_local(root, root, href, "index.html <a>", failures)
+
+    # A download button links to the release page and carries the disk image
+    # in data-dmg; main.js swaps it in only on an Apple silicon Mac.
+    for href in page.anchors:
+        if href.startswith(GITHUB + "/releases/download/"):
+            failures.append(f"index.html: put release files in data-dmg, not href: {href}")
+    for href, dmg in page.downloads:
+        m = DMG_URL.fullmatch(dmg)
+        if not m:
+            failures.append(
+                f"index.html: data-dmg must be {GITHUB}/releases/download/vX/Lucerna-X-macos-aarch64.dmg: {dmg}"
+            )
+            continue
+        page_url = f"{GITHUB}/releases/tag/v{m['v']}"
+        if href != page_url:
+            failures.append(f"index.html: download href must be the release page {page_url}: {href}")
 
     for rel, href in page.links:
         if "canonical" in rel.split():

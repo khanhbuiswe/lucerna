@@ -144,8 +144,8 @@ jobs:
             echo "\`$ZIP\` holds the same app for scripts and other installers."
             echo
             if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
-              echo "This build is signed ad hoc and not notarized. The first time you open it,"
-              echo "right-click Lucerna in Applications and choose **Open**, or run:"
+              echo "This build is signed ad hoc and not notarized. The first time, open Lucerna,"
+              echo "then choose **Open Anyway** in System Settings > Privacy & Security, or run:"
               echo
               echo '```sh'
               echo 'xattr -dr com.apple.quarantine /Applications/Lucerna.app'

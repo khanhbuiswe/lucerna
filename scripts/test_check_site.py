@@ -150,5 +150,38 @@ class CheckSiteTest(unittest.TestCase):
         self.assertFailureMentions(check_site(self.write(html)), "1.40%")
 
 
+    # Download buttons: href is the release page (the fallback), data-dmg the
+    # disk image main.js swaps in on an Apple silicon Mac.
+    REL = "https://github.com/khanhbuiswe/lucerna/releases"
+
+    def download(self, href, dmg):
+        a = f'<a class="btn" href="{href}" data-dmg="{dmg}">Download</a>'
+        return VALID_HTML.replace("</body>", a + "\n</body>")
+
+    def test_download_button_passes(self):
+        html = self.download(f"{self.REL}/tag/v0.1.0", f"{self.REL}/download/v0.1.0/Lucerna-0.1.0-macos-aarch64.dmg")
+        self.assertEqual(check_site(self.write(html)), [])
+
+    def test_download_dmg_version_mismatch_fails(self):
+        html = self.download(f"{self.REL}/tag/v0.1.0", f"{self.REL}/download/v0.1.0/Lucerna-0.2.0-macos-aarch64.dmg")
+        self.assertFailureMentions(check_site(self.write(html)), "data-dmg")
+
+    def test_download_zip_fails(self):
+        html = self.download(f"{self.REL}/tag/v0.1.0", f"{self.REL}/download/v0.1.0/Lucerna-0.1.0-macos-aarch64.zip")
+        self.assertFailureMentions(check_site(self.write(html)), "data-dmg")
+
+    def test_download_fallback_other_release_fails(self):
+        html = self.download(f"{self.REL}/tag/v0.0.9", f"{self.REL}/download/v0.1.0/Lucerna-0.1.0-macos-aarch64.dmg")
+        self.assertFailureMentions(check_site(self.write(html)), "release page")
+
+    def test_download_dmg_without_fallback_fails(self):
+        html = self.download("#top", f"{self.REL}/download/v0.1.0/Lucerna-0.1.0-macos-aarch64.dmg")
+        self.assertFailureMentions(check_site(self.write(html)), "release page")
+
+    def test_bare_dmg_href_fails(self):
+        a = f'<a href="{self.REL}/download/v0.1.0/Lucerna-0.1.0-macos-aarch64.dmg">x</a>'
+        html = VALID_HTML.replace("</body>", a + "\n</body>")
+        self.assertFailureMentions(check_site(self.write(html)), "data-dmg")
+
 if __name__ == "__main__":
     unittest.main()

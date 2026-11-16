@@ -31,7 +31,8 @@ workflow). A manual run builds and packs only, and keeps the DMG and zip as a wo
 ## Opening an unnotarized build
 
 Until the app is notarized, macOS Gatekeeper blocks the first launch of a downloaded copy. Either
-right-click `Lucerna.app` and choose **Open**, or remove the quarantine flag:
+open it once, then choose **Open Anyway** in System Settings > Privacy & Security (on macOS 15 and later,
+right-click > Open no longer works), or remove the quarantine flag:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Lucerna.app
