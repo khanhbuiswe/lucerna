@@ -58,8 +58,11 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "zip=Lucerna-$version-macos-aarch64.zip" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "zip=Lucerna-$version-macos-aarch64.zip"
+            echo "dmg=Lucerna-$version-macos-aarch64.dmg"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build Lucerna.app
         run: scripts/bundle-app.sh
@@ -103,17 +106,26 @@ jobs:
 
           security delete-keychain "$keychain"
 
-      - name: Pack zip
+      # Packs the app as signed above, without rebuilding it. --strict fails
+      # the job if Finder cannot lay out the window, so an unarranged image
+      # never ships.
+      - name: Build DMG
         run: |
           mkdir -p dist
+          scripts/make-dmg.sh --no-build --strict
+          cp target/release/Lucerna.dmg "dist/${{ steps.version.outputs.dmg }}"
+          (cd dist && shasum -a 256 "${{ steps.version.outputs.dmg }}" | tee "${{ steps.version.outputs.dmg }}.sha256")
+
+      - name: Pack zip
+        run: |
           ditto -c -k --keepParent target/release/Lucerna.app "dist/${{ steps.version.outputs.zip }}"
-          shasum -a 256 "dist/${{ steps.version.outputs.zip }}" | tee "dist/${{ steps.version.outputs.zip }}.sha256"
+          (cd dist && shasum -a 256 "${{ steps.version.outputs.zip }}" | tee "${{ steps.version.outputs.zip }}.sha256")
 
       - name: Keep zip as workflow artifact
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.version.outputs.zip }}
+          name: Lucerna-${{ steps.version.outputs.version }}-macos-aarch64
           path: dist/
           retention-days: 7
 
@@ -122,14 +134,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZIP: ${{ steps.version.outputs.zip }}
+          DMG: ${{ steps.version.outputs.dmg }}
         run: |
           notes="$RUNNER_TEMP/notes.md"
           {
             echo "Lucerna $GITHUB_REF_NAME for macOS (Apple silicon)."
             echo
+            echo "Download \`$DMG\`, open it and drag Lucerna into Applications."
+            echo "\`$ZIP\` holds the same app for scripts and other installers."
+            echo
             if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
               echo "This build is signed ad hoc and not notarized. The first time you open it,"
-              echo "right-click Lucerna.app and choose **Open**, or run:"
+              echo "right-click Lucerna in Applications and choose **Open**, or run:"
               echo
               echo '```sh'
               echo 'xattr -dr com.apple.quarantine /Applications/Lucerna.app'
@@ -140,4 +156,4 @@ jobs:
             --title "Lucerna $GITHUB_REF_NAME" \
             --notes-file "$notes" \
             --verify-tag \
-            "dist/$ZIP" "dist/$ZIP.sha256"
+            "dist/$DMG" "dist/$DMG.sha256" "dist/$ZIP" "dist/$ZIP.sha256"

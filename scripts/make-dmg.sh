@@ -2,8 +2,12 @@
 # Packs Lucerna.app into a drag-to-install Lucerna.dmg: opening it shows a
 # fixed-size Finder window with the app, an arrow and an Applications link.
 #
-# Usage: scripts/make-dmg.sh [--debug]
-#   --debug  pack the dev build (default: release)
+# Usage: scripts/make-dmg.sh [--debug] [--no-build] [--strict]
+#   --debug     pack the dev build (default: release)
+#   --no-build  pack the Lucerna.app already built, as it is (keeps a
+#               Developer ID signature applied after bundling)
+#   --strict    fail if Finder cannot lay out the window, instead of
+#               shipping an image that opens unarranged
 # Builds Lucerna.app first (scripts/bundle-app.sh), so the image always holds
 # the current build, and ejects a Lucerna volume left mounted from an
 # earlier image.
@@ -16,10 +20,14 @@
 set -eu
 
 profile=release
+build=1
+strict=0
 for arg in "$@"; do
   case $arg in
     --debug) profile=debug ;;
-    -h | --help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --no-build) build=0 ;;
+    --strict) strict=1 ;;
+    -h | --help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "make-dmg: unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -41,11 +49,25 @@ forget_volume_app() {
   "$lsregister" -u "/Volumes/$volume/Lucerna.app" 2>/dev/null || true
 }
 
-if [ "$profile" = debug ]; then
+if [ $build = 0 ]; then
+  [ -d "$app" ] || {
+    echo "make-dmg: no app at $app; build it first" >&2
+    exit 1
+  }
+elif [ "$profile" = debug ]; then
   scripts/bundle-app.sh --debug
 else
   scripts/bundle-app.sh
 fi
+
+# A layout problem: fatal under --strict, otherwise a warning.
+layout_problem() {
+  if [ $strict = 1 ]; then
+    echo "make-dmg: error: $1" >&2
+    exit 1
+  fi
+  echo "make-dmg: warning: $1" >&2
+}
 
 # An earlier image still mounted: its old app would stay registered with
 # LaunchServices, and its volume name would clash with the new one.
@@ -127,9 +149,9 @@ then
     sleep 0.5
     tries=$((tries + 1))
   done
-  [ -f "$mount/.DS_Store" ] || echo "make-dmg: warning: Finder saved no layout" >&2
+  [ -f "$mount/.DS_Store" ] || layout_problem "Finder saved no layout"
 else
-  echo "make-dmg: warning: Finder layout failed; the DMG opens unarranged" >&2
+  layout_problem "Finder layout failed; the DMG opens unarranged"
 fi
 
 chmod -Rf go-w "$mount" || true

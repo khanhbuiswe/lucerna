@@ -3,9 +3,7 @@
 Releases are built on GitHub by `.github/workflows/release.yml`, so nothing large has to be built
 on a local machine.
 
-> Status: the workflow is ready but not in use yet. The plan is to make the repository public
-> first; GitHub's macOS runners are free for public repositories, while private ones bill macOS
-> minutes at a much higher rate.
+The repository is public, so the macOS runners the workflow uses are free.
 
 ## Cut a release
 
@@ -21,12 +19,14 @@ on a local machine.
    - checks that the tag matches the version in `Cargo.toml`,
    - builds `Lucerna.app` with `scripts/bundle-app.sh` (release, signed ad hoc),
    - signs with a Developer ID and notarizes, only if the `APPLE_*` secrets are set,
-   - packs the app with `ditto -c -k --keepParent` into `Lucerna-<version>-macos-aarch64.zip`
-     plus a `.sha256` file,
-   - creates the GitHub Release with `gh release create` and attaches both files.
+   - packs the signed app into `Lucerna-<version>-macos-aarch64.dmg` with
+     `scripts/make-dmg.sh --no-build --strict` (the job fails if Finder cannot lay out the window),
+   - packs the same app with `ditto -c -k --keepParent` into `Lucerna-<version>-macos-aarch64.zip`,
+   - writes a `.sha256` file beside each, checkable with `shasum -a 256 -c`,
+   - creates the GitHub Release with `gh release create` and attaches all four files.
 
 To try the pipeline without publishing, run the workflow by hand (Actions → Release → Run
-workflow). A manual run builds and packs only, and keeps the zip as a workflow artifact for 7 days.
+workflow). A manual run builds and packs only, and keeps the DMG and zip as a workflow artifact for 7 days.
 
 ## Opening an unnotarized build
 
@@ -62,7 +62,4 @@ runtime will need a `com.apple.security.cs.allow-jit` entitlements file passed t
   `x86_64-apple-darwin` target, build `luc` for both targets, merge them with
   `lipo -create -output luc <arm64> <x86_64>`, and bundle that. This needs a `--target` option (or a
   prebuilt binary path) in `scripts/bundle-app.sh`, which today always builds `target/release/luc`.
-- **Disk image.** `scripts/make-dmg.sh` lays the window out through Finder and AppleScript, which
-  needs automation permission a CI runner may not grant (the image then opens unarranged). Ship the
-  zip until that is tried on a runner.
 - **Linux and Windows** packages come with cross-platform support.

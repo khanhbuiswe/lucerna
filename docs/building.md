@@ -7,8 +7,8 @@ scripts/make-dmg.sh              # builds Lucerna.app, then target/release/Lucer
 open target/release/Lucerna.dmg  # drag Lucerna into Applications, choose Replace
 ```
 
-`make-dmg.sh` always packs the build it just made, and ejects a Lucerna disk image left mounted
-from an earlier run. Eject the image after you install, so macOS doesn't keep the copy on it.
+`make-dmg.sh` packs the build it just made (`--no-build` packs the app already built, as the
+release workflow does), and ejects a Lucerna disk image left mounted from an earlier run. Eject the image after you install, so macOS doesn't keep the copy on it.
 
 The app is ad-hoc signed and not notarized. The first time you open it, right-click it and choose **Open**.
 
