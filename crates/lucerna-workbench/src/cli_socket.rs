@@ -10,7 +10,9 @@ use std::fmt;
 use std::fs::{DirBuilder, Permissions};
 use std::io::{self, BufRead as _, BufReader, ErrorKind, Read as _, Write as _};
 use std::os::fd::AsRawFd as _;
-use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+use std::os::unix::fs::{
+    DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _,
+};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -180,7 +182,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[derive(Debug)]
 pub enum Claim {
     /// The socket is bound: this process is the app.
-    Server(UnixListener),
+    Server(Bound),
     /// An app listens on it: hand it the request.
     Client(UnixStream),
     /// No socket can be used (the data directory cannot be made, no
@@ -188,34 +190,131 @@ pub enum Claim {
     Unavailable(io::Error),
 }
 
+/// A socket this process bound: the listener, and the file it made.
+#[derive(Debug)]
+pub struct Bound {
+    pub listener: UnixListener,
+    pub file: SocketFile,
+}
+
+/// The file a [`Bound`] socket made: its path, and which file it was
+/// (device and inode) when bound.
+#[derive(Debug, Clone)]
+pub struct SocketFile {
+    path: PathBuf,
+    id: (u64, u64),
+}
+
+impl SocketFile {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Removes the file if it is still the one this process bound, under
+    /// the lock [`claim`] takes; `false` when another app's socket (or
+    /// nothing) is at the path now. A socket file of this app that
+    /// another `luc` took for a crash's leftover was replaced: removing
+    /// the path would cut the new app off from `luc`.
+    ///
+    /// # Errors
+    /// When the lock cannot be taken or the file cannot be read or removed.
+    pub fn remove(&self) -> io::Result<bool> {
+        let _lock = lock(&self.path)?;
+        match std::fs::symlink_metadata(&self.path) {
+            Ok(meta) if file_id(&meta) == self.id => {
+                std::fs::remove_file(&self.path)?;
+                Ok(true)
+            }
+            Ok(_) => Ok(false),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+fn file_id(meta: &std::fs::Metadata) -> (u64, u64) {
+    (meta.dev(), meta.ino())
+}
+
 /// Claims the socket at `path`, making its folder first (mode 0700; one
 /// another user owns is refused): binds it (mode 0600), or connects to
 /// the app that holds it. A socket file nobody listens on (left by a
-/// crash) is removed and bound once more.
+/// crash) is removed and bound once more, under an exclusive lock on
+/// `<path>.lock`: of several `luc` that find it so at once, one binds
+/// and the others connect to it.
 pub fn claim(path: &Path) -> Claim {
+    claim_with(path, || {})
+}
+
+/// [`claim`], running `before_lock` once the socket was found stale and
+/// before the lock is taken.
+fn claim_with(path: &Path, before_lock: impl FnOnce()) -> Claim {
     if let Some(parent) = path.parent()
         && let Err(err) = private_dir(parent)
     {
         return Claim::Unavailable(err);
     }
-    match bind(path) {
-        Ok(listener) => Claim::Server(listener),
-        Err(err) if err.kind() == ErrorKind::AddrInUse => match connect(path, CONNECT_TIMEOUT) {
-            Ok(stream) => Claim::Client(stream),
-            Err(err) if err.kind() == ErrorKind::ConnectionRefused => {
-                tracing::info!(path = %path.display(), "removing a stale socket");
-                if let Err(err) = std::fs::remove_file(path) {
-                    return Claim::Unavailable(err);
-                }
-                match bind(path) {
-                    Ok(listener) => Claim::Server(listener),
-                    Err(err) => Claim::Unavailable(err),
-                }
-            }
-            Err(err) => Claim::Unavailable(err),
-        },
-        Err(err) => Claim::Unavailable(err),
+    if let Some(claim) = attempt(path) {
+        return claim;
     }
+    before_lock();
+    let _lock = match lock(path) {
+        Ok(lock) => lock,
+        Err(err) => return Claim::Unavailable(err),
+    };
+    // Another claimer may have bound it while this one waited.
+    if let Some(claim) = attempt(path) {
+        return claim;
+    }
+    tracing::info!(path = %path.display(), "removing a stale socket");
+    if let Err(err) = std::fs::remove_file(path)
+        && err.kind() != ErrorKind::NotFound
+    {
+        return Claim::Unavailable(err);
+    }
+    attempt(path).unwrap_or_else(|| {
+        Claim::Unavailable(io::Error::new(
+            ErrorKind::AddrInUse,
+            "the luc socket stays refused",
+        ))
+    })
+}
+
+/// Binds `path`, or connects to the app bound to it; `None` when a
+/// socket file is there that nobody listens on (or it went away in
+/// between).
+fn attempt(path: &Path) -> Option<Claim> {
+    match bind(path) {
+        Ok(bound) => Some(Claim::Server(bound)),
+        Err(err) if err.kind() == ErrorKind::AddrInUse => match connect(path, CONNECT_TIMEOUT) {
+            Ok(stream) => Some(Claim::Client(stream)),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    ErrorKind::ConnectionRefused | ErrorKind::NotFound
+                ) =>
+            {
+                None
+            }
+            Err(err) => Some(Claim::Unavailable(err)),
+        },
+        Err(err) => Some(Claim::Unavailable(err)),
+    }
+}
+
+/// Takes an exclusive lock on `<path>.lock` (mode 0600, made if missing),
+/// held until the file returned is dropped.
+fn lock(path: &Path) -> io::Result<std::fs::File> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(SOCKET_MODE)
+        .open(PathBuf::from(name))?;
+    file.lock()?;
+    Ok(file)
 }
 
 /// Makes `dir` and its missing parents with mode 0700; an error when it
@@ -235,31 +334,47 @@ fn private_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// Binds `path` and makes it readable and writable by this user alone.
-fn bind(path: &Path) -> io::Result<UnixListener> {
+fn bind(path: &Path) -> io::Result<Bound> {
     let listener = UnixListener::bind(path)?;
-    if let Err(err) = std::fs::set_permissions(path, Permissions::from_mode(SOCKET_MODE)) {
-        std::fs::remove_file(path).ok();
-        return Err(err);
+    let made = std::fs::set_permissions(path, Permissions::from_mode(SOCKET_MODE))
+        .and_then(|()| std::fs::symlink_metadata(path));
+    match made {
+        Ok(meta) => Ok(Bound {
+            listener,
+            file: SocketFile {
+                path: path.to_path_buf(),
+                id: file_id(&meta),
+            },
+        }),
+        Err(err) => {
+            std::fs::remove_file(path).ok();
+            Err(err)
+        }
     }
-    Ok(listener)
 }
 
 /// Gives the socket up for another process to claim: the file goes
-/// first, then the listener closes. The other way round, a `luc` that
-/// connects in between finds the socket refusing, takes it for a crash's
-/// leftover and binds its own, which the removal would then unlink.
-pub fn release(listener: UnixListener, path: &Path) {
-    release_with(listener, path, || {});
+/// first (if still ours, [`SocketFile::remove`]), then the listener
+/// closes. The other way round, a `luc` that connects in between finds
+/// the socket refusing, takes it for a crash's leftover and binds its
+/// own, which the removal would then unlink.
+pub fn release(bound: Bound) {
+    release_with(bound, || {});
 }
 
 /// [`release`], running `between` after the file is removed and before
 /// the listener closes.
-fn release_with(listener: UnixListener, path: &Path, between: impl FnOnce()) {
-    if let Err(err) = std::fs::remove_file(path) {
-        tracing::warn!(%err, path = %path.display(), "could not release the luc socket");
+fn release_with(bound: Bound, between: impl FnOnce()) {
+    let path = bound.file.path();
+    match bound.file.remove() {
+        Ok(true) => {}
+        Ok(false) => tracing::info!(path = %path.display(), "the luc socket is no longer ours"),
+        Err(err) => {
+            tracing::warn!(%err, path = %path.display(), "could not release the luc socket");
+        }
     }
     between();
-    drop(listener);
+    drop(bound.listener);
 }
 
 /// Connects to `path`, giving up after `timeout`. The standard library
@@ -447,6 +562,8 @@ fn read_request(stream: &UnixStream) -> Result<CliRequest, String> {
 mod tests {
     use futures::StreamExt as _;
 
+    use std::sync::{Arc, Barrier};
+
     use super::*;
 
     fn temp_socket() -> (tempfile::TempDir, PathBuf) {
@@ -490,7 +607,7 @@ mod tests {
     #[test]
     fn request_round_trip() {
         let (_dir, path) = temp_socket();
-        let Claim::Server(listener) = claim(&path) else {
+        let Claim::Server(Bound { listener, .. }) = claim(&path) else {
             panic!("binds");
         };
         let (tx, mut rx) = mpsc::unbounded::<CliMessage>();
@@ -512,7 +629,7 @@ mod tests {
     #[test]
     fn bad_request_gets_an_error_reply() {
         let (_dir, path) = temp_socket();
-        let Claim::Server(listener) = claim(&path) else {
+        let Claim::Server(Bound { listener, .. }) = claim(&path) else {
             panic!("binds");
         };
         let (tx, _rx) = mpsc::unbounded::<CliMessage>();
@@ -639,8 +756,11 @@ mod tests {
         // Another `luc` (or the app this one starts) claims while the
         // first lets go.
         let mut second = None;
-        release_with(first, &path, || second = Some(claim(&path)));
-        let Some(Claim::Server(second)) = second else {
+        release_with(first, || second = Some(claim(&path)));
+        let Some(Claim::Server(Bound {
+            listener: second, ..
+        })) = second
+        else {
             panic!("the other claimer binds");
         };
         second.set_nonblocking(true).unwrap();
@@ -652,7 +772,7 @@ mod tests {
     #[test]
     fn send_times_out_after_delivery() {
         let (_dir, path) = temp_socket();
-        let Claim::Server(listener) = claim(&path) else {
+        let Claim::Server(Bound { listener, .. }) = claim(&path) else {
             panic!("binds");
         };
         let server = std::thread::spawn(move || {
@@ -679,5 +799,63 @@ mod tests {
         let old: CliRequest =
             serde_json::from_str(r#"{"version":1,"cwd":"/w","paths":[]}"#).unwrap();
         assert!(!old.activate, "defaults to false");
+    }
+
+    #[test]
+    fn racing_claims_on_a_stale_socket_make_one_app() {
+        for _ in 0..20 {
+            let (_dir, path) = temp_socket();
+            // Left by a crash: bound, then dropped without removing it.
+            drop(UnixListener::bind(&path).unwrap());
+            // Both find it refused before either removes it.
+            let barrier = Arc::new(Barrier::new(2));
+            let threads: Vec<_> = (0..2)
+                .map(|_| {
+                    let (path, barrier) = (path.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        claim_with(&path, || {
+                            barrier.wait();
+                        })
+                    })
+                })
+                .collect();
+            let claims: Vec<Claim> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+            let servers = claims
+                .iter()
+                .filter(|c| matches!(c, Claim::Server(_)))
+                .count();
+            let clients = claims
+                .iter()
+                .filter(|c| matches!(c, Claim::Client(_)))
+                .count();
+            assert_eq!((servers, clients), (1, 1), "{claims:?}");
+        }
+    }
+
+    #[test]
+    fn removal_keeps_a_socket_not_ours() {
+        let (dir, path) = temp_socket();
+        let Claim::Server(first) = claim(&path) else {
+            panic!("binds");
+        };
+        // Another app took the path: the first file moved away (its inode
+        // stays in use) and a new socket bound in its place.
+        std::fs::rename(&path, dir.path().join("old.sock")).unwrap();
+        let _other = UnixListener::bind(&path).unwrap();
+        assert!(!first.file.remove().unwrap(), "not ours");
+        assert!(path.exists(), "the other app's socket stays");
+        release(first);
+        assert!(path.exists(), "release keeps it too");
+    }
+
+    #[test]
+    fn removal_removes_our_socket() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(bound) = claim(&path) else {
+            panic!("binds");
+        };
+        assert!(bound.file.remove().unwrap());
+        assert!(!path.exists());
+        assert!(!bound.file.remove().unwrap(), "already gone");
     }
 }

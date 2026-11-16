@@ -375,6 +375,30 @@ fn associations_per_window(cx: &mut TestAppContext) {
     );
 }
 
+/// A folder's `files.associations` that is not an object adds nothing:
+/// the user's associations still apply.
+#[gpui::test]
+fn invalid_workspace_associations_keep_the_users(cx: &mut TestAppContext) {
+    set_user(cx, r#"{"files.associations": {"*.foo": "rust"}}"#);
+    // The app's registry carries the user's associations, as the app
+    // builds it.
+    cx.update(|cx| {
+        cx.update_global::<AppState, _>(|state, _| {
+            let map = std::collections::BTreeMap::from([("*.foo".to_owned(), "rust".to_owned())]);
+            state.languages = Arc::new(
+                LanguageRegistry::bundled()
+                    .with_associations(lucerna_syntax::Associations::new(&map)),
+            );
+        });
+    });
+    let a = open_window(folder(r#"{"files.associations": 5}"#), cx);
+    let view = open_file(a, "x.foo", cx);
+    assert_eq!(
+        cx.update(|cx| view.read(cx).language_id().map(str::to_owned)),
+        Some("rust".to_owned())
+    );
+}
+
 #[gpui::test]
 fn git_disabled_per_window(cx: &mut TestAppContext) {
     set_user(cx, r#"{ "session.trustAllWorktrees": true }"#);
@@ -930,7 +954,7 @@ fn quit_cancel_in_second_window_keeps_all(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn quit_dont_save_both_quits(cx: &mut TestAppContext) {
-    two_dirty_windows(cx);
+    let (in_a, in_b) = two_dirty_windows(cx);
     quit(cx);
     cx.simulate_prompt_answer("Don't Save");
     cx.run_until_parked();
@@ -938,6 +962,14 @@ fn quit_dont_save_both_quits(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!cx.has_pending_prompt());
     assert_eq!(cx.update(|cx| app::quits_for_test(cx)), 1);
+    let data = cx.update(|cx| cx.global::<RecentStore>().data_dir.clone().unwrap());
+    let saved: Vec<PathBuf> = session::load(&session_path(&data))
+        .windows
+        .into_iter()
+        .map(|w| w.path)
+        .collect();
+    let roots = cx.update(|cx| vec![root_of(in_b, cx), root_of(in_a, cx)]);
+    assert_eq!(saved, roots, "most recently used first");
 }
 
 #[gpui::test]
@@ -1420,4 +1452,77 @@ fn clear_trust_in_a_restricts_b(cx: &mut TestAppContext) {
     cx.executor().advance_clock(Duration::from_millis(200));
     settle(b, cx);
     assert!(!is_trusted(b, cx), "B is back in Restricted Mode");
+}
+
+#[gpui::test]
+fn trust_without_parent_reaches_the_folder_only(cx: &mut TestAppContext) {
+    init(cx);
+    let data = tempfile::tempdir().unwrap();
+    let base = tempfile::tempdir().unwrap();
+    let t = base.path().join("t");
+    let sub = t.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let a = trust_window(&t, data.path(), cx);
+    let b = trust_window(&sub, data.path(), cx);
+    let c = trust_window(&t, data.path(), cx);
+    trust_in(a, false, cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(b, cx);
+    settle(c, cx);
+    assert!(is_trusted(a, cx));
+    assert!(!is_trusted(b, cx), "B is under /t, which was trusted alone");
+    assert!(is_trusted(c, cx), "C is on /t itself");
+}
+
+/// Records the external terminals a window asks for.
+struct RecordingTerminal(std::sync::Mutex<Vec<(PathBuf, String)>>);
+
+impl SystemShell for RecordingTerminal {
+    fn reveal(&self, _: &Path, _: &gpui::App) {}
+
+    fn open_terminal(&self, dir: &Path, exec: &str) -> std::io::Result<()> {
+        self.0.lock().unwrap().push((dir.into(), exec.into()));
+        Ok(())
+    }
+
+    fn trash(&self, path: &Path) -> Result<(), String> {
+        Err(format!("unexpected trash of {}", path.display()))
+    }
+}
+
+/// `terminal.external.*Exec` names a program to run: an untrusted
+/// folder's own value is skipped (spec §6.3).
+#[gpui::test]
+fn external_terminal_exec_needs_trust(cx: &mut TestAppContext) {
+    let key = if cfg!(target_os = "macos") {
+        "terminal.external.osxExec"
+    } else if cfg!(target_os = "windows") {
+        "terminal.external.windowsExec"
+    } else {
+        "terminal.external.linuxExec"
+    };
+    set_user(
+        cx,
+        &format!(r#"{{ "terminal.explorerKind": "external", "{key}": "user-term" }}"#),
+    );
+    let shell = Arc::new(RecordingTerminal(std::sync::Mutex::new(Vec::new())));
+    cx.set_global(SystemShellGlobal(shell.clone()));
+    let data = tempfile::tempdir().unwrap();
+    let root = folder(&format!(r#"{{ "{key}": "workspace-term" }}"#));
+    let a = trust_window(root.path(), data.path(), cx);
+    assert!(!is_trusted(a, cx));
+    run(a, "openInTerminal", None, cx);
+    trust_in(a, false, cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(a, cx);
+    assert!(is_trusted(a, cx));
+    run(a, "openInTerminal", None, cx);
+    let execs: Vec<String> = shell
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, exec)| exec.clone())
+        .collect();
+    assert_eq!(execs, ["user-term", "workspace-term"]);
 }

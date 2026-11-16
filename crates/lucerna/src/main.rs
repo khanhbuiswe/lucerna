@@ -170,7 +170,7 @@ mod socket {
     /// and hands it `launch` once it listens.
     fn detach(listener: CliListener, socket: &Path, launch: &Launch, cwd: Option<PathBuf>) -> i32 {
         // For the app to claim: the file first, then the listener.
-        release(listener, socket);
+        release(listener);
         let exe = match std::env::current_exe() {
             Ok(exe) => exe,
             Err(err) => {

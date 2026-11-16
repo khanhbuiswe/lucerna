@@ -42,7 +42,7 @@ const OPEN_REQUEST_GRACE: Duration = Duration::from_millis(300);
 /// The socket `luc` claimed for this app ([`crate::cli_socket`]); none on
 /// platforms without Unix sockets yet.
 #[cfg(unix)]
-pub type CliListener = std::os::unix::net::UnixListener;
+pub type CliListener = crate::cli_socket::Bound;
 /// The socket `luc` claimed for this app; none on platforms without Unix
 /// sockets yet.
 #[cfg(not(unix))]
@@ -113,21 +113,20 @@ struct CliRequests {
     #[cfg(unix)]
     requests: mpsc::UnboundedReceiver<crate::cli_socket::CliMessage>,
     #[cfg(unix)]
-    socket: Option<PathBuf>,
+    socket: Option<crate::cli_socket::SocketFile>,
 }
 
 /// Serves `listener` on a thread from now on ([`cli_socket::serve`]).
 ///
 /// [`cli_socket::serve`]: crate::cli_socket::serve
 #[cfg(unix)]
-fn serve_cli(listener: CliListener) -> CliRequests {
-    let socket = listener
-        .local_addr()
-        .ok()
-        .and_then(|addr| addr.as_pathname().map(Path::to_path_buf));
+fn serve_cli(bound: CliListener) -> CliRequests {
     let (tx, requests) = mpsc::unbounded();
-    crate::cli_socket::serve(listener, tx);
-    CliRequests { requests, socket }
+    crate::cli_socket::serve(bound.listener, tx);
+    CliRequests {
+        requests,
+        socket: Some(bound.file),
+    }
 }
 
 #[cfg(not(unix))]
@@ -137,13 +136,21 @@ fn serve_cli(listener: CliListener) -> CliRequests {
 
 impl CliRequests {
     /// Removes the socket file when the app quits, so the next `luc`
-    /// binds at once.
+    /// binds at once; not when another app's socket replaced it
+    /// ([`SocketFile::remove`]).
+    ///
+    /// [`SocketFile::remove`]: crate::cli_socket::SocketFile::remove
     fn remove_on_quit(mut self, cx: &mut App) -> CliRequests {
         #[cfg(unix)]
         if let Some(socket) = self.socket.take() {
             cx.on_app_quit(move |_| {
-                if let Err(err) = std::fs::remove_file(&socket) {
-                    tracing::warn!(%err, path = %socket.display(), "could not remove the luc socket");
+                let path = socket.path();
+                match socket.remove() {
+                    Ok(true) => {}
+                    Ok(false) => tracing::info!(path = %path.display(), "the luc socket is no longer ours"),
+                    Err(err) => {
+                        tracing::warn!(%err, path = %path.display(), "could not remove the luc socket");
+                    }
                 }
                 async {}
             })

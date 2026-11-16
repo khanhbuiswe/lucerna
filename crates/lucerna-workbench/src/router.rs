@@ -507,14 +507,24 @@ pub(crate) fn open_launch(launch: Launch, target: Target, cx: &mut App) -> Optio
         Choice::OpenTab(index) => {
             let handle = handles[index];
             let file: Arc<Path> = Arc::from(path.as_path());
-            WindowHandle::<Workbench>::new(handle.window_id())
-                .update(cx, |workbench, window, cx| {
+            let opened = WindowHandle::<Workbench>::new(handle.window_id()).update(
+                cx,
+                |workbench, window, cx| {
                     workbench.open_path(file, OpenMode::Pinned, cx);
                     window.activate_window();
-                })
-                .ok();
-            cx.activate(true);
-            Some(handle)
+                },
+            );
+            match opened {
+                Ok(()) => {
+                    cx.activate(true);
+                    Some(handle)
+                }
+                // The window went away: the caller (and `luc`) gets an error.
+                Err(err) => {
+                    tracing::error!(%err, path = %path.display(), "could not open a tab in the window");
+                    None
+                }
+            }
         }
         Choice::ReplaceRoot(index) => {
             let handle = handles[index];

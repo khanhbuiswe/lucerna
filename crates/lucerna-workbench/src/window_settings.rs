@@ -132,9 +132,11 @@ impl WindowSettings {
         let view = self.view(cx);
         let merged = view.get::<BTreeMap<String, String>>("files.associations", None);
         let user = view.get_trusted::<BTreeMap<String, String>>("files.associations", None);
+        // A folder value that is not an object (`merged` is `None`) adds
+        // nothing: the app's registry, with the user's associations.
         LanguageInputs {
             app_generation: cx.global::<AppState>().languages_generation,
-            associations: (merged != user).then(|| merged.unwrap_or_default()),
+            associations: merged.filter(|merged| Some(merged) != user.as_ref()),
         }
     }
 
