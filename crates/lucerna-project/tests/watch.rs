@@ -121,6 +121,29 @@ fn gitignored_changes_silent() {
     assert!(!wt.snapshot().contains(Path::new("out/x")));
 }
 
+/// A copy written under its hidden name stays out of the tree; renamed to
+/// its real name, it is added with its contents.
+#[test]
+fn copy_temp_silent_until_renamed() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    let wt = started(r);
+    let temp = r.join(format!("{}1-1", lucerna_project::fs_ops::COPY_TEMP_PREFIX));
+    fs::create_dir(&temp).unwrap();
+    fs::write(temp.join("x.rs"), "1").unwrap();
+    let seen = collect_until(&wt, |_| false);
+    assert!(seen.is_empty(), "{seen:?}");
+    fs::rename(&temp, r.join("out")).unwrap();
+    let seen = collect_until(&wt, |s| has(s, "out", ChangeKind::Added));
+    assert!(has(&seen, "out", ChangeKind::Added), "{seen:?}");
+    wait_for_snapshot(&wt, |s| s.contains(Path::new("out/x.rs")));
+    assert!(!wt.snapshot().entries().iter().any(|e| {
+        e.path
+            .to_string_lossy()
+            .contains(lucerna_project::fs_ops::COPY_TEMP_PREFIX)
+    }));
+}
+
 #[test]
 fn bulk_write_5000_files_rescans() {
     let dir = TempDir::new().unwrap();

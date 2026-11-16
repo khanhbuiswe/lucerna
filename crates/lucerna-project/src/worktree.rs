@@ -200,6 +200,17 @@ impl Drop for Worktree {
 /// user `"**/.git": false` does not bring the repository's internals in.
 pub(crate) const GIT_DIR: &str = ".git";
 
+/// Whether an entry named `name` is never scanned, watched or searched:
+/// [`GIT_DIR`], and a copy still being written under its hidden name
+/// ([`crate::fs_ops::COPY_TEMP_PREFIX`]), which shows up once renamed to
+/// its real name.
+pub(crate) fn always_skipped(name: &std::ffi::OsStr) -> bool {
+    name == GIT_DIR
+        || name
+            .as_encoded_bytes()
+            .starts_with(crate::fs_ops::COPY_TEMP_PREFIX.as_bytes())
+}
+
 /// A pattern with no glob metacharacter (`*?[]{}`) names a path, and as in
 /// VS Code also covers everything under it: `src` becomes `src` and
 /// `src/**`. Any other pattern is returned unchanged. Used for include and
@@ -222,7 +233,7 @@ pub(crate) fn expand_plain_folder(pattern: &str) -> Vec<String> {
 /// (`.gitignore` including parent directories, `.git/info/exclude`, `.ignore`,
 /// even without a `.git` directory); the user's global gitignore does not, so
 /// results do not depend on the machine. `files.exclude` globs are overrides.
-/// Entries named [`GIT_DIR`] are always skipped.
+/// Entries [`always_skipped`] names are skipped.
 pub(crate) fn walk_builder(root: &Path, opts: &ScanOptions) -> WalkBuilder {
     walk_builder_with_includes(root, opts, &[])
 }
@@ -246,7 +257,7 @@ pub(crate) fn walk_builder_with_includes(
         .parents(true)
         .require_git(false)
         .follow_links(false)
-        .filter_entry(|entry| entry.file_name() != GIT_DIR);
+        .filter_entry(|entry| !always_skipped(entry.file_name()));
     let mut overrides = OverrideBuilder::new(root);
     for glob in include.iter().flat_map(|g| expand_plain_folder(g)) {
         if let Err(err) = overrides.add(&glob) {

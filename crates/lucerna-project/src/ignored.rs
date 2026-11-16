@@ -16,7 +16,7 @@ use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::overrides::{Override, OverrideBuilder};
 
-use crate::worktree::{GIT_DIR, ScanOptions};
+use crate::worktree::{ScanOptions, always_skipped};
 
 /// Per-directory matchers in the walker's precedence order.
 struct DirRules(Vec<Gitignore>);
@@ -43,10 +43,10 @@ impl IgnoreChecker {
     }
 
     /// Whether the root-relative `rel` is excluded from the worktree.
-    /// Anything named `.git`, and everything below it, always is (see
-    /// [`crate::worktree::walk_builder`]).
+    /// Anything named `.git` or a copy's hidden name, and everything below
+    /// it, always is (see [`crate::worktree::walk_builder`]).
     pub(crate) fn is_ignored(&mut self, rel: &Path, is_dir: bool) -> bool {
-        if rel.components().any(|c| c.as_os_str() == GIT_DIR) {
+        if rel.components().any(|c| always_skipped(c.as_os_str())) {
             return true;
         }
         let total = rel.components().count();

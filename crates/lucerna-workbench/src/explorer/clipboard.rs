@@ -242,8 +242,11 @@ pub(crate) fn transfer(
     };
     // A save still running would write the old path again after a move.
     let saves = (op == ClipOp::Cut).then(|| wb.documents().read(cx).saves_done_under(&src));
+    // A quit or close asks while it runs.
+    let operation = wb.begin_file_operation();
     Some(cx.spawn_in(window, async move |wb, cx| {
         let _in_flight = in_flight;
+        let _operation = operation;
         if let Some(saves) = saves {
             saves.await;
         }
@@ -288,32 +291,24 @@ pub(crate) fn transfer(
                         .await;
                 }
                 Err(e) => {
-                    // A failed folder copy may leave what it wrote so far.
-                    let partial = e.kind() != std::io::ErrorKind::AlreadyExists && {
-                        let to = target.clone();
-                        cx.background_executor()
-                            .spawn(async move { std::fs::symlink_metadata(&to).is_ok() })
-                            .await
-                    };
-                    // A taken target may be another paste's, and a partial
-                    // copy is Lucerna's own: both stay expected (until the
-                    // TTL); a source left in place does not.
-                    let forget = if e.kind() == std::io::ErrorKind::AlreadyExists || partial {
+                    // A taken target may be another paste's: it stays
+                    // expected (until the TTL). A failed copy leaves
+                    // nothing, and a source left in place is not expected.
+                    let forget = if e.kind() == std::io::ErrorKind::AlreadyExists {
                         &expected[1..]
                     } else {
                         &expected[..]
                     };
                     let _ = wb.update(cx, |wb, _| wb.forget_own_changes(forget));
-                    break Err((e, partial));
+                    break Err(e);
                 }
                 Ok(()) => break Ok(()),
             }
         };
         wb.update(cx, |wb, cx| match result {
-            Err((e, partial)) => {
+            Err(e) => {
                 let verb = after.verb();
-                let partial = if partial { " (partially copied)" } else { "" };
-                status_message::show(win, format!("Unable to {verb} '{name}': {e}{partial}"), cx);
+                status_message::show(win, format!("Unable to {verb} '{name}': {e}"), cx);
                 Err(e.kind())
             }
             Ok(()) => {

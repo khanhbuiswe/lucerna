@@ -191,6 +191,21 @@ fn git_dir_always_skipped() {
     assert_eq!(paths(&wt), ["sub", "a.rs"]);
 }
 
+/// A copy still running under its hidden name is never listed: the
+/// Explorer shows the copy only once it has its real name.
+#[test]
+fn copy_temp_never_scanned() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    let temp = format!("{}1-1", lucerna_project::fs_ops::COPY_TEMP_PREFIX);
+    touch(r, &format!("{temp}/x.rs"));
+    touch(r, &format!("sub/{temp}"));
+    touch(r, "a.rs");
+    let wt = Worktree::start(r.to_path_buf(), ScanOptions::default());
+    wait_complete(&wt);
+    assert_eq!(paths(&wt), ["sub", "a.rs"]);
+}
+
 /// A worktree for one loose file: complete at once, lists only that file,
 /// and never scans or watches the folder.
 #[test]

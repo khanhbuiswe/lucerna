@@ -400,7 +400,12 @@ async fn run_off_thread(
         })
         .ok()?;
     saves.await;
-    wb.update(cx, |wb, _| wb.expect_own_changes([deleted.rel.clone()]))
+    // A quit or close asks while it runs.
+    let _operation = wb
+        .update(cx, |wb, _| {
+            wb.expect_own_changes([deleted.rel.clone()]);
+            wb.begin_file_operation()
+        })
         .ok()?;
     Some(cx.background_executor().spawn(async move { op() }).await)
 }

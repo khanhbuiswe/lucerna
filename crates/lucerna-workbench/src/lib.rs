@@ -146,7 +146,7 @@ pub use trust::{TrustGeneration, TrustModal, TrustModalEvent, TrustStore};
 pub use vim::VimLayer;
 pub use welcome::{WELCOME_COMMANDS, WelcomeEvent, WelcomeView};
 pub use window_settings::WindowSettings;
-pub use workbench::{SidebarView, Workbench};
+pub use workbench::{FileOperation, SidebarView, Workbench};
 pub use workspace_state::{
     SearchState, WorkspaceState, WorkspaceStateStore, default_data_dir, load_state, save_state,
     state_path,
