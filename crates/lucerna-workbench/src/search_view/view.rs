@@ -41,7 +41,7 @@ use crate::ui::{
 };
 use crate::workbench::enabled_globs;
 use crate::workspace_state::SearchState;
-use crate::{AppState, CommandRegistry, DocState, OpenMode, Workbench};
+use crate::{AppState, CommandRegistry, DocState, OpenMode, WindowSettings, Workbench};
 
 /// How long the inputs must stay unchanged before a search starts.
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -103,6 +103,8 @@ pub struct SearchView {
     /// Input changes still to come from [`SearchView::restore`] setting the
     /// inputs, which must not start a search.
     restore_changes: usize,
+    /// The window's settings: `search.*` and `files.exclude`.
+    settings: Entity<WindowSettings>,
 }
 
 /// The most query characters the tab title shows.
@@ -113,6 +115,7 @@ impl SearchView {
         root: PathBuf,
         workbench: WeakEntity<Workbench>,
         searchable: bool,
+        settings: Entity<WindowSettings>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -129,7 +132,8 @@ impl SearchView {
         };
         let list = {
             let root = root.clone();
-            cx.new(|cx| ExcerptList::new(root, "search", cx))
+            let settings = settings.clone();
+            cx.new(|cx| ExcerptList::new(root, "search", settings, cx))
         };
         let list_focus = list.read(cx).focus_handle().clone();
         let list_events =
@@ -164,6 +168,7 @@ impl SearchView {
             _list_events: list_events,
             searchable,
             restore_changes: 0,
+            settings,
         }
     }
 
@@ -523,9 +528,8 @@ impl SearchView {
         self.list.update(cx, |list, cx| {
             list.update_results(Results::begin_update, cx)
         });
-        let context_lines = cx
-            .global::<AppState>()
-            .settings
+        let settings = self.settings.read(cx).view(cx);
+        let context_lines = settings
             .get::<u32>(CONTEXT_LINES_SETTING, None)
             .unwrap_or(1)
             .min(MAX_CONTEXT_LINES);
@@ -540,8 +544,8 @@ impl SearchView {
         };
         self.last_query = Some(query.clone());
         // VS Code: `search.exclude` inherits `files.exclude`.
-        let mut settings_exclude = enabled_globs(cx, "search.exclude");
-        settings_exclude.extend(enabled_globs(cx, "files.exclude"));
+        let mut settings_exclude = enabled_globs(settings, "search.exclude");
+        settings_exclude.extend(enabled_globs(settings, "files.exclude"));
         let (root, cancel, generation) = (self.root.clone(), self.cancel.clone(), self.generation);
         let (sink, events) = crossbeam_channel::unbounded();
         let (forward, mut received) = futures::channel::mpsc::unbounded();

@@ -39,7 +39,7 @@ use lucerna_lsp::{
 use lucerna_text::BufferSnapshot;
 use serde_json::Value;
 
-use crate::AppState;
+use crate::WindowSettings;
 use crate::documents::Documents;
 use crate::tasks::guarded;
 use crate::workspace_state::absolute_path;
@@ -131,6 +131,9 @@ struct OpenDoc {
 pub struct LanguageServers {
     root: PathBuf,
     documents: Entity<Documents>,
+    /// The window's settings: `lsp` (trusted layers only while untrusted),
+    /// `lucerna.lsp.*` and `lucerna.largeFile.*`.
+    settings: Entity<WindowSettings>,
     launcher: Arc<dyn Launcher>,
     /// The base of each server's `{data_dir}`.
     data_dir: PathBuf,
@@ -185,24 +188,24 @@ pub struct LanguageServers {
 impl EventEmitter<LanguageServersEvent> for LanguageServers {}
 
 impl LanguageServers {
-    /// The servers of the folder at `root`, following `documents`. Starts
-    /// processes with a [`ProcessLauncher`]. Trusted when the User setting
-    /// `session.trustAllWorktrees` is `true`; untrusted, nothing starts.
-    /// `data_dir` is the app's data directory: servers' `{data_dir}` lie
-    /// under its `lsp/`.
+    /// The servers of the folder at `root`, following `documents` and the
+    /// window's `settings`. Starts processes with a [`ProcessLauncher`].
+    /// Trusted when the User setting `session.trustAllWorktrees` is
+    /// `true`; untrusted, nothing starts. `data_dir` is the app's data
+    /// directory: servers' `{data_dir}` lie under its `lsp/`.
     pub fn new(
         root: PathBuf,
         documents: &Entity<Documents>,
+        settings: Entity<WindowSettings>,
         data_dir: PathBuf,
         cx: &mut Context<Self>,
     ) -> Self {
-        let trusted = cx
-            .global::<AppState>()
-            .settings
-            .get_trusted::<bool>("session.trustAllWorktrees", None)
+        let trusted = settings
+            .read(cx)
+            .get_trusted::<bool>("session.trustAllWorktrees", None, cx)
             == Some(true);
         lifecycle::QuitShutdown::register(cx);
-        let lsp_setting = lsp_setting(trusted, cx);
+        let lsp_setting = lsp_setting(&settings, trusted, cx);
         let registry = Registry::new(ServerTable::build(lsp_setting.as_ref()));
         LanguageServers {
             root,
@@ -235,9 +238,15 @@ impl LanguageServers {
             relay_waiting: Vec::new(),
             _subscriptions: vec![
                 cx.subscribe(documents, Self::on_document_event),
-                cx.observe_global::<AppState>(Self::settings_changed),
+                cx.observe(&settings, |servers, _, cx| servers.settings_changed(cx)),
             ],
+            settings,
         }
+    }
+
+    /// The window's settings the servers follow.
+    pub fn settings(&self) -> &Entity<WindowSettings> {
+        &self.settings
     }
 
     /// Replaces how servers are found and started (tests use fakes).
@@ -315,7 +324,7 @@ impl LanguageServers {
     /// changed. Returns the old and new table's difference for the slots,
     /// or `None` when nothing changed.
     pub(super) fn rebuild_table(&mut self, cx: &App) -> Option<lucerna_lsp::SettingsDiff> {
-        let lsp = lsp_setting(self.trusted, cx);
+        let lsp = lsp_setting(&self.settings, self.trusted, cx);
         if lsp == self.lsp_setting {
             return None;
         }
@@ -486,11 +495,11 @@ impl LanguageServers {
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<bool> {
-        let selection = selection(language, cx);
+        let selection = selection(&self.settings, language, cx);
         if !selection.enabled {
             return Task::ready(false);
         }
-        let table = ServerTable::build(lsp_setting(false, cx).as_ref());
+        let table = ServerTable::build(lsp_setting(&self.settings, false, cx).as_ref());
         let defs = select_servers(&selection.servers, &table, language, path);
         let has_path = defs.iter().any(|def| {
             def.binary
@@ -536,10 +545,10 @@ impl LanguageServers {
     }
 }
 
-/// The `lsp` setting the table is built from: every layer once the folder
-/// is trusted, without the Workspace layer before.
-fn lsp_setting(trusted: bool, cx: &App) -> Option<Value> {
-    let settings = &cx.global::<AppState>().settings;
+/// The `lsp` setting the table is built from: every layer of the window
+/// once the folder is trusted, without the Workspace layer before.
+fn lsp_setting(settings: &Entity<WindowSettings>, trusted: bool, cx: &App) -> Option<Value> {
+    let settings = settings.read(cx).view(cx);
     if trusted {
         settings.get::<Value>("lsp", None)
     } else {
@@ -548,10 +557,11 @@ fn lsp_setting(trusted: bool, cx: &App) -> Option<Value> {
 }
 
 /// `lucerna.lsp.enabled` and `lucerna.lsp.languageServers` for
-/// `language`; for a file without a language, the global
-/// `lucerna.lsp.enabled` and `["..."]`.
-fn selection(language: Option<&str>, cx: &App) -> Selection {
-    let settings = &cx.global::<AppState>().settings;
+/// `language`, from the window's settings (the folder's included: they
+/// choose among servers, they do not name what runs); for a file without
+/// a language, the global `lucerna.lsp.enabled` and `["..."]`.
+fn selection(settings: &Entity<WindowSettings>, language: Option<&str>, cx: &App) -> Selection {
+    let settings = settings.read(cx).view(cx);
     let servers = language.and_then(|language| {
         settings.get::<Vec<String>>("lucerna.lsp.languageServers", Some(language))
     });

@@ -1,11 +1,14 @@
-//! Lucerna workbench UI: the GPUI shell (Zed-style chrome), command
-//! registry and key dispatch.
+//! Lucerna workbench UI: the GPUI shell (a minimal UI), command registry
+//! and key dispatch. Every window of the app lives in one process; the
+//! [`router`] keeps track of them.
 
 mod about;
 pub mod app;
 pub mod app_menu;
 mod app_state;
 mod app_state_file;
+#[cfg(unix)]
+pub mod cli_socket;
 pub mod code_view;
 mod commands;
 mod config_files;
@@ -39,15 +42,15 @@ mod nav_history;
 mod onboarding;
 mod open_commands;
 mod open_files;
-pub mod open_requests;
-pub mod process;
 mod quick_open;
 pub mod recent;
 mod recent_picker;
 mod references_view;
+pub mod router;
 mod save;
 mod scrollbar;
 mod search_view;
+pub mod session;
 mod seti_svgs;
 mod settings_edit;
 mod startup;
@@ -63,6 +66,8 @@ pub mod ui;
 mod vim;
 mod vim_indicator;
 mod welcome;
+pub mod window_choice;
+mod window_settings;
 mod workbench;
 mod workspace_state;
 
@@ -114,7 +119,7 @@ pub use markdown_preview::{
 };
 pub use nav_history::{NavEntry, NavHistory};
 pub use onboarding::{Host, ONBOARDING_COMMANDS, OnboardingEvent, OnboardingPage};
-pub use open_commands::{OPEN_IN_BROWSER, WorkbenchEvent, browser_url};
+pub use open_commands::{OPEN_IN_BROWSER, Replacement, browser_url};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
@@ -123,7 +128,7 @@ pub use recent_picker::{RecentPicker, RecentPickerEvent};
 pub use references_view::{ReferencesView, find_references_in_tab};
 pub use save::{SaveOptions, SaveReason};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
-pub use startup::{Startup, last_workspace, restores_last_workspace, startup_choice};
+pub use startup::{RestoreWindows, Startup, last_workspace, restore_windows, startup_choice};
 pub use symbols::{
     BREADCRUMBS_BATCH, BreadcrumbMode, EMPTY_SYMBOLS_TTL, FilePathMode, MAX_WORKSPACE_SYMBOLS,
     SYMBOLS_DEBOUNCE, Segment, SymbolPathMode, SymbolSource, SymbolState,
@@ -136,9 +141,10 @@ pub use terminal::{
 };
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};
-pub use trust::{TrustModal, TrustModalEvent, TrustStore};
+pub use trust::{TrustGeneration, TrustModal, TrustModalEvent, TrustStore};
 pub use vim::VimLayer;
 pub use welcome::{WELCOME_COMMANDS, WelcomeEvent, WelcomeView};
+pub use window_settings::WindowSettings;
 pub use workbench::{SidebarView, Workbench};
 pub use workspace_state::{
     SearchState, WorkspaceState, WorkspaceStateStore, default_data_dir, load_state, save_state,

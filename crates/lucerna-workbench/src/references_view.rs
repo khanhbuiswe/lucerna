@@ -91,8 +91,8 @@ impl ReferencesView {
         cx: &mut Context<Self>,
     ) -> Self {
         let list = {
-            let root = root.clone();
-            cx.new(|cx| ExcerptList::new(root, "references", cx))
+            let (root, settings) = (root.clone(), documents.read(cx).settings().clone());
+            cx.new(|cx| ExcerptList::new(root, "references", settings, cx))
         };
         let list_focus = list.read(cx).focus_handle().clone();
         let list_events =

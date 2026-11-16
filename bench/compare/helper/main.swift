@@ -18,7 +18,10 @@
 //
 // --pid takes a comma-separated list: Python passes every pid of the bench
 // session (helpers included) and the helper picks the largest on-screen
-// layer-0 window owned by any of them.
+// layer-0 window owned by any of them. `frame` and `scroll` also take
+// --window-index <n>: the n-th (0 = oldest) on-screen layer-0 window of the
+// pids, ordered by CGWindowID, which macOS hands out in creation order. It
+// picks one window when one process shows several (the one-process app).
 //
 // `watch --display` is for startup: it starts capturing the main display
 // BEFORE the editor is launched, so the first frame of the new window is
@@ -61,11 +64,14 @@ usage: bench-helper <command> [options]      (<pids> = pid[,pid...])
          [--min-change <0..1>] [--dump-dir <dir>]     (the last two: change only)
   watch  --display --exe <absolute path> [--exclude-pids <pids>] --since <t0_ns|0>
          --until coverage:<0..1> --background RRGGBB [--timeout <s>] [--hold-ms <ms>]
+         [--allow-resize]                              (needs --hold-ms > 0)
   frame  --pid <pids> --x <pt> --y <pt> --w <pt> --h <pt> [--timeout <s>]
+         [--window-index <n>]
   activate --pid <pids> [--timeout <s>]
   display
   scroll --pid <pids> --lines <n> [--rate <events/s>] [--timeout <s>]
          [--unit line|pixel] [--pixels-per-event <n>] [--dump-dir <dir>]
+         [--window-index <n>]
   record --pid <pids> --seconds <s> [--dump-dir <dir>] [--timeout <s>]
   type   --pid <pids> --text <s> [--interval-ms <ms>] [--timeout <s>]
   key    --pid <pids> --combo <cmd+p> [--timeout <s>]
@@ -201,6 +207,20 @@ func requirePermissions(screen needScreen: Bool, accessibility needAx: Bool) {
 /// Largest on-screen layer-0 window owned by any of `pids`, polled until
 /// `deadline` because a freshly launched app may not have a window yet.
 func findWindow(pids: Set<pid_t>, deadline: UInt64) async -> SCWindow {
+    if let index = windowIndex {
+        while true {
+            if let chosen = indexedWindow(pids: pids, index: index),
+               let content = try? await SCShareableContent.excludingDesktopWindows(
+                false, onScreenWindowsOnly: true),
+               let win = content.windows.first(where: { $0.windowID == chosen.id }) {
+                return win
+            }
+            if nowNs() >= deadline {
+                fail("timeout: no window #\(index) for pid \(pids.sorted())", code: 2)
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
     while true {
         if let content = try? await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true) {
@@ -262,6 +282,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private var continuation: CheckedContinuation<Bool, Never>?
     private var finished = false
     private var sawFirst = false
+    private var stopGeneration = 0
     private var stream: SCStream?
     private let onFrame: (Frame) -> Bool
     let width: Int
@@ -323,9 +344,12 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
 
     /// Stops the capture (as a hit) `ms` milliseconds from now, even when
     /// no new frame arrives: an unchanged screen sends only idle frames.
+    /// A later call replaces the earlier one.
     func stop(afterMs ms: Int) {
+        let gen: Int = lock.withLock { stopGeneration += 1; return stopGeneration }
         queue.asyncAfter(deadline: .now() + .milliseconds(ms)) { [weak self] in
-            self?.finish(true)
+            guard let self, self.lock.withLock({ self.stopGeneration == gen }) else { return }
+            self.finish(true)
         }
     }
 
@@ -777,8 +801,14 @@ func refreshHz(display id: CGDirectDisplayID) -> Int {
 /// that differs: a dialog or overlay appearing, or a hit taken before the
 /// real content, shows up as a large later change. A window whose size
 /// changed counts as 1.0. `post_frames` counts the frames compared.
+///
+/// `allowResize` (needs `holdMs` > 0): a window that animates to its final
+/// size after the hit (macOS zooming a new window of an app already running)
+/// is not a change. Each size change re-takes the reference at the new size
+/// and restarts the hold; `settled_ns` is the first frame at the final size
+/// (`t_ns` when the size never changed).
 func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
-                  background bg: [UInt8], holdMs: Int,
+                  background bg: [UInt8], holdMs: Int, allowResize: Bool = false,
                   timeout: (seconds: Double, deadline: UInt64)) async {
     let display = await mainDisplay(deadline: timeout.deadline)
     let origin = CGDisplayBounds(display.displayID).origin
@@ -788,6 +818,7 @@ func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
     var hitWindow: CGRect = .zero
     var hitCrop: Bitmap? = nil
     var postChange = 0.0, postFrames = 0
+    var settledNs: UInt64 = 0, resizes = 0
     var captureRef: Capture? = nil
     /// The window's rectangle in capture pixels, nil when too small.
     func crop(_ f: Frame, _ bounds: CGRect) -> (x: Range<Int>, y: Range<Int>)? {
@@ -816,6 +847,16 @@ func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
                 let b = win.bounds
                 let onTop = topmostWindowOwner(in: list, at: CGPoint(x: b.midX, y: b.midY))
                     .map { matcher.matches($0) } ?? false
+                if onTop && allowResize && b.size != hitWindow.size,
+                   let r = crop(f, b) {
+                    let c = centerRegion(x: r.x, y: r.y)
+                    hitWindow = b
+                    hitCrop = cropBitmap(f, x: c.x, y: c.y)
+                    settledNs = f.tNs
+                    resizes += 1
+                    captureRef?.stop(afterMs: holdMs)
+                    return false
+                }
                 if onTop {
                     let fraction: Double
                     if b.size != hitWindow.size {
@@ -830,7 +871,7 @@ func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
                     postChange = max(postChange, fraction)
                 }
             }
-            return f.tNs >= hitNs + UInt64(holdMs) * 1_000_000
+            return f.tNs >= max(hitNs, settledNs) + UInt64(holdMs) * 1_000_000
         }
         guard let win = largestWindow(in: list, where: { matcher.matches($0) }) else {
             return false
@@ -875,6 +916,10 @@ func watchDisplay(matcher: ExecutableMatcher, since: UInt64, threshold: Double,
         result["post_change"] = postChange
         result["post_frames"] = postFrames
     }
+    if allowResize {
+        result["settled_ns"] = max(hitNs, settledNs)
+        result["resizes"] = resizes
+    }
     emit(result)
 }
 
@@ -908,14 +953,26 @@ func setFrame(pids: Set<pid_t>, rect: CGRect, deadline: UInt64) async {
     let owner = await findWindowOwner(pids: pids, deadline: deadline)
     let app = AXUIElementCreateApplication(owner)
     var last: CGRect? = nil
+    // With --window-index the AX window is the one whose frame is the chosen
+    // window's bounds; chosen once, then followed as it moves.
+    var picked: AXUIElement? = nil
     while true {
         var ref: CFTypeRef?
         if AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &ref) == .success,
            let windows = ref as? [AXUIElement] {
             let sized = windows.compactMap { w in axFrame(w).map { (w, $0) } }
-            if let (window, _) = sized.max(by: {
-                $0.1.width * $0.1.height < $1.1.width * $1.1.height
-            }) {
+            if windowIndex != nil && picked == nil {
+                picked = axWindow(pids: pids, in: sized)
+            }
+            let target: AXUIElement?
+            if windowIndex != nil {
+                target = picked
+            } else {
+                target = sized.max(by: {
+                    $0.1.width * $0.1.height < $1.1.width * $1.1.height
+                })?.0
+            }
+            if let window = target {
                 var origin = rect.origin, size = rect.size
                 if let pv = AXValueCreate(.cgPoint, &origin), let sv = AXValueCreate(.cgSize, &size) {
                     // Position, size, position again: an app may clamp the
@@ -1089,6 +1146,70 @@ func largestWindow(in list: [WindowInfo],
     return best
 }
 
+/// --window-index, parsed once (frame and scroll only).
+let windowIndex: Int? = option("window-index").map { _ in intOption("window-index", min: 0) }
+
+/// The `index`-th on-screen layer-0 window (>= 100x100 pt) of `pids`,
+/// oldest first by CGWindowID; nil while there are not that many.
+func indexedWindow(pids: Set<pid_t>, index: Int)
+    -> (id: CGWindowID, pid: pid_t, bounds: CGRect)? {
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                          kCGNullWindowID) as? [[String: Any]] ?? []
+    let mine: [(id: CGWindowID, pid: pid_t, bounds: CGRect)] = list.compactMap { info in
+        guard let owner = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+              pids.contains(owner),
+              let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue, layer == 0,
+              let id = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+              let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+              let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+              bounds.width >= 100, bounds.height >= 100
+        else { return nil }
+        return (id, owner, bounds)
+    }.sorted { $0.id < $1.id }
+    return index < mine.count ? mine[index] : nil
+}
+
+/// AX windows of `pid` with their frames (empty when unreadable).
+func axWindows(pid: pid_t?) -> [(AXUIElement, CGRect)] {
+    guard let pid else { return [] }
+    var ref: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
+                                        kAXWindowsAttribute as CFString, &ref) == .success,
+          let windows = ref as? [AXUIElement] else { return [] }
+    return windows.compactMap { w in axFrame(w).map { (w, $0) } }
+}
+
+/// The AX window among `sized` whose frame is the bounds of window
+/// #`windowIndex` of `pids` (within 2 pt), nil if none matches.
+func axWindow(pids: Set<pid_t>, in sized: [(AXUIElement, CGRect)]) -> AXUIElement? {
+    guard let index = windowIndex, let chosen = indexedWindow(pids: pids, index: index) else {
+        return nil
+    }
+    let b = chosen.bounds
+    return sized.first(where: {
+        abs($0.1.minX - b.minX) <= 2 && abs($0.1.minY - b.minY) <= 2
+            && abs($0.1.width - b.width) <= 2 && abs($0.1.height - b.height) <= 2
+    })?.0
+}
+
+/// CGWindowID of the topmost visible window containing `point`, with the
+/// same skips as `topmostWindowOwner`.
+func topmostWindowID(at point: CGPoint) -> CGWindowID? {
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                          kCGNullWindowID) as? [[String: Any]] ?? []
+    let menuLevel = Int(CGWindowLevelForKey(.mainMenuWindow))
+    for info in list {
+        guard let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue,
+              let id = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+              let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+              let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
+        else { continue }
+        let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+        if alpha > 0 && layer < menuLevel && bounds.contains(point) { return id }
+    }
+    return nil
+}
+
 /// Owner of the topmost visible window containing `point` (global top-left
 /// points). Windows that are fully transparent (alpha 0) and system overlays
 /// at or above the main-menu level (menu bar, status items, cursor) are
@@ -1216,6 +1337,18 @@ func scroll(pids: Set<pid_t>, lines: Int, rateOption: Double?, unit: ScrollUnit,
     // Wheel events go to the window under the pointer: bring the editor
     // frontmost, then refuse unless its window is the topmost one there.
     _ = await activateOwner(pids: pids, deadline: timeout.deadline)
+    if windowIndex != nil {
+        // One process, several windows: raise the chosen one, then require
+        // that very window (not just its pid) on top at its centre.
+        if let ax = axWindow(pids: pids, in: axWindows(pid: window.owningApplication?.processID)) {
+            AXUIElementPerformAction(ax, kAXRaiseAction as CFString)
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        guard topmostWindowID(at: center) == window.windowID else {
+            fail("another window is on top at the centre \(center) of window #"
+                 + "\(windowIndex!) of pid \(pids.sorted()); no scroll events sent", code: 1)
+        }
+    }
     guard let top = topmostWindowOwner(at: center), pids.contains(top) else {
         let who = topmostWindowOwner(at: center).map { "pid \($0)" } ?? "no window"
         fail("another window (\(who)) is on top at the centre \(center) of the window of "
@@ -1341,6 +1474,10 @@ func record(pids: Set<pid_t>, seconds: Double, dumpDir: String?,
 
 // MARK: - Dispatch (parse, then check permissions, then measure)
 
+if windowIndex != nil && command != "frame" && command != "scroll" {
+    fail("--window-index is for frame and scroll only", code: 1)
+}
+
 switch command {
 case "now":
     emit(["t_ns": nowNs()])
@@ -1391,14 +1528,17 @@ case "watch":
         }
         let holdMs = intOption("hold-ms", default: 0, min: 0)
         if holdMs > 60_000 { fail("--hold-ms must be at most 60000", code: 1) }
+        let allowResize = flag("allow-resize")
+        if allowResize && holdMs <= 0 { fail("--allow-resize needs --hold-ms > 0", code: 1) }
         let excluded = option("exclude-pids").map { pidList("exclude-pids", $0) } ?? []
         let timeout = deadlineOption()
         requirePermissions(screen: true, accessibility: false)
         await watchDisplay(matcher: ExecutableMatcher(exe: exe, excluded: excluded),
                            since: since, threshold: threshold, background: bg,
-                           holdMs: holdMs, timeout: timeout)
+                           holdMs: holdMs, allowResize: allowResize, timeout: timeout)
     } else {
         if flag("hold-ms") { fail("--hold-ms needs watch --display", code: 1) }
+        if flag("allow-resize") { fail("--allow-resize needs watch --display", code: 1) }
         let minChange = fractionOption("min-change") ?? 0.005
         let dumpDir = dumpDirOption()
         if case .coverage = mode, option("min-change") != nil || dumpDir != nil {

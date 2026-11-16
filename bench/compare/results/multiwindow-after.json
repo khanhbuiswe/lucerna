@@ -1,0 +1,206 @@
+{
+  "meta": {
+    "date": "2026-11-16",
+    "mode": "after",
+    "rounds": 5,
+    "windows": [
+      1,
+      2,
+      3
+    ],
+    "selected": [
+      "ram_mb",
+      "second_window_ms",
+      "drop"
+    ],
+    "lucerna_commit": "6e6fc30",
+    "lucerna_binary": {
+      "path": "/Users/duykhanh/Projects.nosync/lucerna/target/release/Lucerna.app/Contents/MacOS/luc",
+      "mtime": "2026-11-16T04:10:14+00:00",
+      "version": "luc 0.1.0",
+      "foreground": true
+    },
+    "macos": "26.7.1",
+    "chip": "Apple M4",
+    "preflight_ignored": [],
+    "recorded_at": "2026-11-16T04:15:18+00:00"
+  },
+  "rounds": [
+    {
+      "ram_mb": {
+        "1": 86.29779052734375,
+        "2": 162.65721130371094,
+        "3": 219.59471130371094
+      },
+      "second_window_ms": 443.133542,
+      "second_window_settled_ms": 443.133542,
+      "drop_pct_idle_b": 0.0,
+      "drop_frames_idle_b": 591,
+      "drop_pct_while_busy": 0.0,
+      "drop_frames_while_busy": 590
+    },
+    {
+      "ram_mb": {
+        "1": 86.57906341552734,
+        "2": 163.04785919189453,
+        "3": 219.20408630371094
+      },
+      "second_window_ms": 429.61675,
+      "second_window_settled_ms": 429.61675,
+      "drop_pct_idle_b": 0.0,
+      "drop_frames_idle_b": 591,
+      "drop_pct_while_busy": 0.0,
+      "drop_frames_while_busy": 594
+    },
+    {
+      "ram_mb": {
+        "1": 100.82904052734375,
+        "2": 183.61033630371094,
+        "3": 217.62593841552734
+      },
+      "second_window_ms": 441.199208,
+      "second_window_settled_ms": 441.199208,
+      "drop_pct_idle_b": 0.0,
+      "drop_frames_idle_b": 595,
+      "drop_pct_while_busy": 0.0,
+      "drop_frames_while_busy": 594
+    },
+    {
+      "ram_mb": {
+        "1": 86.89156341552734,
+        "2": 185.36031341552734,
+        "3": 219.61033630371094
+      },
+      "second_window_ms": 427.935125,
+      "second_window_settled_ms": 427.935125,
+      "drop_pct_idle_b": 0.0,
+      "drop_frames_idle_b": 591,
+      "drop_pct_while_busy": 0.0,
+      "drop_frames_while_busy": 594
+    },
+    {
+      "ram_mb": {
+        "1": 129.62593841552734,
+        "2": 172.67283630371094,
+        "3": 217.45413208007812
+      },
+      "second_window_ms": 432.002625,
+      "second_window_settled_ms": 432.002625,
+      "drop_pct_idle_b": 0.5059021922428331,
+      "drop_frames_idle_b": 593,
+      "drop_pct_while_busy": 0.0,
+      "drop_frames_while_busy": 594
+    }
+  ],
+  "summary": {
+    "ram_mb[1]": {
+      "median": 86.89156341552734,
+      "min": 86.29779052734375,
+      "max": 129.62593841552734,
+      "n": 5,
+      "failed": 0
+    },
+    "ram_mb[2]": {
+      "median": 172.67283630371094,
+      "min": 162.65721130371094,
+      "max": 185.36031341552734,
+      "n": 5,
+      "failed": 0
+    },
+    "ram_mb[3]": {
+      "median": 219.20408630371094,
+      "min": 217.45413208007812,
+      "max": 219.61033630371094,
+      "n": 5,
+      "failed": 0
+    },
+    "second_window_ms": {
+      "median": 432.002625,
+      "min": 427.935125,
+      "max": 443.133542,
+      "n": 5,
+      "failed": 0
+    },
+    "second_window_settled_ms": {
+      "median": 432.002625,
+      "min": 427.935125,
+      "max": 443.133542,
+      "n": 5,
+      "failed": 0
+    },
+    "drop_pct_idle_b": {
+      "median": 0.0,
+      "min": 0.0,
+      "max": 0.5059021922428331,
+      "n": 5,
+      "failed": 0
+    },
+    "drop_frames_idle_b": {
+      "median": 591,
+      "min": 591,
+      "max": 595,
+      "n": 5,
+      "failed": 0
+    },
+    "drop_pct_while_busy": {
+      "median": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "n": 5,
+      "failed": 0
+    },
+    "drop_frames_while_busy": {
+      "median": 594,
+      "min": 590,
+      "max": 594,
+      "n": 5,
+      "failed": 0
+    }
+  },
+  "single_window": {
+    "startup_ms": [
+      581.536666,
+      587.014167,
+      13137.556334,
+      593.389292,
+      581.156041
+    ],
+    "idle_ram_mb": [
+      165.03244018554688,
+      181.53246307373047,
+      135.50119018554688,
+      165.61054229736328,
+      131.56369018554688
+    ],
+    "idle_cpu_pct": [
+      1.4987082744608435,
+      0.8140374278584275,
+      0.0,
+      1.437181295685462,
+      0.0
+    ]
+  },
+  "summary_single_window": {
+    "startup_ms": {
+      "median": 587.014167,
+      "min": 581.156041,
+      "max": 13137.556334,
+      "n": 5,
+      "failed": 0
+    },
+    "idle_ram_mb": {
+      "median": 165.03244018554688,
+      "min": 131.56369018554688,
+      "max": 181.53246307373047,
+      "n": 5,
+      "failed": 0
+    },
+    "idle_cpu_pct": {
+      "median": 0.8140374278584275,
+      "min": 0.0,
+      "max": 1.4987082744608435,
+      "n": 5,
+      "failed": 0
+    }
+  }
+}

@@ -311,7 +311,10 @@ impl SymbolPicker {
                     .child(
                         div()
                             .flex_none()
-                            .font_family(editor_font_family(None, cx))
+                            .font_family(editor_font_family(
+                                self.editor.read(cx).settings().read(cx).view(cx),
+                                None,
+                            ))
                             .child(name),
                     )
                     .children(

@@ -167,7 +167,9 @@ fn drawn(selector: &'static str, cx: &mut VisualTestContext) -> bool {
 }
 
 fn message(cx: &mut VisualTestContext) -> Option<String> {
-    cx.update(|_, cx| status_message::current(cx).map(|m| m.to_string()))
+    cx.update(|window, cx| {
+        status_message::current(window.window_handle().window_id(), cx).map(|m| m.to_string())
+    })
 }
 
 /// Every event `Documents` emits from now on.
@@ -430,9 +432,9 @@ fn failed_save_keeps_dirty_and_reports(cx: &mut TestAppContext) {
 fn status_message_clears_after_four_seconds(cx: &mut TestAppContext) {
     init(cx, None);
     let (_dir, _wb, _view, cx) = editor("abc\n", cx);
-    cx.update(|_, cx| status_message::show("first", cx));
+    cx.update(|window, cx| status_message::show(window.window_handle().window_id(), "first", cx));
     cx.executor().advance_clock(Duration::from_secs(2));
-    cx.update(|_, cx| status_message::show("second", cx));
+    cx.update(|window, cx| status_message::show(window.window_handle().window_id(), "second", cx));
     cx.executor().advance_clock(Duration::from_secs(3));
     assert_eq!(
         message(cx).as_deref(),

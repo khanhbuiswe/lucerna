@@ -17,6 +17,7 @@ use gpui::{
 use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
 use serde_json::json;
 
+use crate::WindowSettings;
 use crate::config_files::{ConfigPaths, ConfigState, USER_SETTINGS_TEMPLATE, create_if_missing};
 use crate::layout::{color, title_bar};
 use crate::settings_edit::save_user_settings;
@@ -110,6 +111,8 @@ pub struct OnboardingPage {
     drawn_font_size: Option<u32>,
     /// Whether a press began on the title bar, for its drag.
     title_bar_pressed: Rc<Cell<bool>>,
+    /// The window's settings: the section headers use its editor font.
+    window_settings: Entity<WindowSettings>,
     _settings: Subscription,
 }
 
@@ -118,7 +121,13 @@ impl EventEmitter<OnboardingEvent> for OnboardingPage {}
 impl OnboardingPage {
     /// Focuses the page on the selected theme button. It draws from the
     /// settings each frame and redraws when they change.
-    pub fn new(host: Host, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `settings` are the window's.
+    pub fn new(
+        host: Host,
+        settings: Entity<WindowSettings>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         if host == Host::Window {
             crate::config_files::follow_system_appearance(window, cx);
         }
@@ -140,6 +149,7 @@ impl OnboardingPage {
             pending_chord: Vec::new(),
             drawn_font_size: None,
             title_bar_pressed: Rc::default(),
+            window_settings: settings,
             _settings: cx.observe_global::<AppState>(|_, cx| cx.notify()),
         }
     }
@@ -462,7 +472,10 @@ impl OnboardingPage {
                     .flex()
                     .items_center()
                     .gap(px(4. * GRID))
-                    .child(section_header("Theme", cx).flex_1())
+                    .child(
+                        section_header("Theme", self.window_settings.read(cx).view(cx), cx)
+                            .flex_1(),
+                    )
                     .child(segmented_group(cx).children(buttons)),
             )
             .child(preview)
@@ -520,7 +533,11 @@ impl OnboardingPage {
             .flex()
             .flex_col()
             .gap(px(4. * GRID))
-            .child(section_header("Editor", cx))
+            .child(section_header(
+                "Editor",
+                self.window_settings.read(cx).view(cx),
+                cx,
+            ))
             .child(setting_row("Font Size", None, stepper, cx))
             .child(setting_row(
                 "Vim Mode",
@@ -626,6 +643,7 @@ pub(crate) type TabPage = Rc<RefCell<Option<Entity<OnboardingPage>>>>;
 pub(crate) fn tab_page(
     slot: &TabPage,
     workbench: &WeakEntity<Workbench>,
+    settings: &Entity<WindowSettings>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<OnboardingPage> {
@@ -633,7 +651,8 @@ pub(crate) fn tab_page(
     if let Some(page) = made {
         return page;
     }
-    let page = cx.new(|cx| OnboardingPage::new(Host::Tab, window, cx));
+    let settings = settings.clone();
+    let page = cx.new(|cx| OnboardingPage::new(Host::Tab, settings, window, cx));
     let workbench = workbench.clone();
     window
         .subscribe(&page, cx, move |_, event: &OnboardingEvent, window, cx| {
@@ -663,7 +682,8 @@ impl Workbench {
     /// Opens (or activates) the Get Started tab in the active group and
     /// focuses its page.
     pub fn show_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let page = tab_page(&self.onboarding, &cx.weak_entity(), window, cx);
+        let settings = self.settings().clone();
+        let page = tab_page(&self.onboarding, &cx.weak_entity(), &settings, window, cx);
         self.update_editor_groups(cx, |m| {
             m.open_onboarding();
         });

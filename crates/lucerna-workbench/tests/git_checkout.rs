@@ -146,7 +146,9 @@ fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
 }
 
 fn message(cx: &mut VisualTestContext) -> Option<String> {
-    cx.update(|_, cx| status_message::current(cx).map(|m| m.to_string()))
+    cx.update(|window, cx| {
+        status_message::current(window.window_handle().window_id(), cx).map(|m| m.to_string())
+    })
 }
 
 fn switches(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> usize {

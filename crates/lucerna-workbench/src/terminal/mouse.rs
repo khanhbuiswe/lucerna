@@ -130,7 +130,7 @@ impl TerminalView {
         let Some(cell) = self.cell_at(ev.position) else {
             return;
         };
-        let settings = mouse_settings(cx);
+        let settings = mouse_settings(self.settings.read(cx).view(cx));
         let mode = self.painted_mode();
         if mode.intersects(Modes::MOUSE_MODE) && !forces_selection(&ev.modifiers, &settings) {
             if let Some(button) = button_kind(ev.button) {
@@ -281,7 +281,7 @@ impl TerminalView {
                 self.report(button, MouseAction::Release, at, &ev.modifiers);
             }
             Some(Press::Selecting { started: true, .. }) => {
-                let settings = mouse_settings(cx);
+                let settings = mouse_settings(self.settings.read(cx).view(cx));
                 self.selection_made(&settings, cx);
                 cx.notify();
             }
@@ -308,7 +308,7 @@ impl TerminalView {
         let Some(frame) = self.last_frame.clone() else {
             return;
         };
-        let settings = mouse_settings(cx);
+        let settings = mouse_settings(self.settings.read(cx).view(cx));
         let delta = match ev.delta {
             ScrollDelta::Lines(d) => d.y,
             ScrollDelta::Pixels(d) => f32::from(d.y) / f32::from(frame.geometry.cell_h),
@@ -379,7 +379,7 @@ impl TerminalView {
         }
         let multi_line = text.contains('\n') || text.contains('\r');
         let warn = multi_line
-            && match mouse_settings(cx).paste_warning {
+            && match mouse_settings(self.settings.read(cx).view(cx)).paste_warning {
                 PasteWarning::Never => false,
                 PasteWarning::Always => true,
                 PasteWarning::Auto => !self.terminal.mode().contains(Modes::BRACKETED_PASTE),

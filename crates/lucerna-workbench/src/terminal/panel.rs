@@ -12,10 +12,10 @@ use gpui::{
 
 use super::links::LinkTarget;
 use super::view::{TerminalView, TerminalViewEvent};
-use crate::AppState;
 use crate::icons;
 use crate::layout::color;
 use crate::ui::{self, GRID, TAB_PADDING_X, UI_FONT_SIZE_SMALL};
+use crate::{AppState, WindowSettings};
 
 /// The title a new terminal shows until its shell names it.
 const DEFAULT_TITLE: &str = "Terminal";
@@ -61,13 +61,20 @@ pub struct TerminalPanel {
     hovered: Option<u64>,
     /// Each tab's subscription to its view's events, by tab id.
     view_events: HashMap<u64, Subscription>,
+    /// The window's settings, which its terminals start from and follow.
+    settings: Entity<WindowSettings>,
     _focus_forward: Subscription,
 }
 
 impl EventEmitter<PanelEvent> for TerminalPanel {}
 
 impl TerminalPanel {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `settings` are the window's: its terminals read them.
+    pub fn new(
+        settings: Entity<WindowSettings>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle();
         // The frame tracks this handle, so a press anywhere in the tab bar
         // focuses it: hand the focus on to the shown terminal, which
@@ -85,8 +92,14 @@ impl TerminalPanel {
             next_id: 1,
             hovered: None,
             view_events: HashMap::new(),
+            settings,
             _focus_forward: forward,
         }
+    }
+
+    /// The window's settings, which its terminals start from and follow.
+    pub fn settings(&self) -> &Entity<WindowSettings> {
+        &self.settings
     }
 
     /// Runs `change` (which may show another tab), then focuses the shown

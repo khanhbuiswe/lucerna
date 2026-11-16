@@ -14,7 +14,7 @@ use gpui::{
     Subscription, Task, WeakFocusHandle, Window, WindowHandle, div, prelude::*, px,
 };
 use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
-use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
+use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution, SettingsView};
 use lucerna_text::Point;
 use serde_json::Value;
 
@@ -65,7 +65,7 @@ use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
 use crate::vim::{self, VimLayer};
 use crate::vim_indicator::ModeIndicator;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateStore, absolute_path};
-use crate::{AppState, CommandRegistry, find_widget, keys};
+use crate::{AppState, CommandRegistry, WindowSettings, find_widget, keys};
 
 /// What the sidebar shows. Only the Explorer: Search and Extensions are
 /// editor tabs. A saved `"search"` or `"extensions"` restores the Explorer.
@@ -127,7 +127,7 @@ pub struct Workbench {
     _settings: Subscription,
     /// [`ConfigState::keymap_generation`] as last seen.
     keymap_generation: u64,
-    /// [`AppState::languages_generation`] as last seen.
+    /// [`WindowSettings::languages_generation`] as last seen.
     languages_generation: u64,
     explorer: Entity<ExplorerView>,
     /// The body of the Search tab when it is open. Kept while the tab is
@@ -192,6 +192,11 @@ pub struct Workbench {
     pub(crate) git: Entity<GitStore>,
     /// The [`ConfigState`] batch last forwarded to the documents.
     config_batch: u64,
+    /// This window's settings: the folder's `.lucerna/settings.json` over
+    /// the user's.
+    settings: Entity<WindowSettings>,
+    /// [`WindowSettings::generation`] last forwarded to the documents.
+    settings_generation: u64,
     _subscriptions: Vec<Subscription>,
     commands: Rc<CommandRegistry>,
     focus: FocusHandle,
@@ -343,11 +348,20 @@ impl Workbench {
             "set the AppState global before creating the Workbench"
         );
         crate::config_files::follow_system_appearance(window, cx);
+        // Before every other entity: they read settings through it.
+        let settings = {
+            let folder = single_file.is_none().then_some(root.as_path());
+            cx.new(|cx| WindowSettings::new(folder, cx))
+        };
         let focus = cx.focus_handle();
         let editor_focus = cx.focus_handle();
         window.focus(&editor_focus, cx);
         let commands = default_registry();
-        let documents = cx.new(|_| Documents::new(root.clone()));
+        let documents = cx.new(|_| {
+            let mut documents = Documents::new(root.clone(), settings.clone());
+            documents.set_window(window.window_handle().window_id());
+            documents
+        });
         let language_servers = {
             let root = root.clone();
             // Servers' `{data_dir}`: the workspace's data dir, else the
@@ -357,7 +371,8 @@ impl Workbench {
                 .map(|store| store.data_dir().to_path_buf())
                 .or_else(crate::default_data_dir)
                 .unwrap_or_else(|| std::env::temp_dir().join("Lucerna"));
-            cx.new(|cx| LanguageServers::new(root, &documents, data_dir, cx))
+            let settings = settings.clone();
+            cx.new(|cx| LanguageServers::new(root, &documents, settings, data_dir, cx))
         };
         let symbols = SymbolSource::new(root.clone(), &documents, &language_servers, cx);
         // Servers end with the window (without waiting for them) or the
@@ -375,7 +390,8 @@ impl Workbench {
         let search_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
             let searchable = single_file.is_none();
-            cx.new(|cx| SearchView::new(root, workbench, searchable, window, cx))
+            let settings = settings.clone();
+            cx.new(|cx| SearchView::new(root, workbench, searchable, settings, window, cx))
         };
         let references_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
@@ -396,14 +412,22 @@ impl Workbench {
             cx.new(|cx| LspStatusItem::new(workbench, servers, cx))
         };
         // Before the editor groups: the diff tabs read them.
-        let git = cx.new(|cx| GitStore::new(root.clone(), cx));
+        let git = {
+            let settings = settings.clone();
+            let id = window.window_handle().window_id();
+            cx.new(|cx| {
+                let mut store = GitStore::new(root.clone(), settings, cx);
+                store.set_window(id);
+                store
+            })
+        };
         let branch_base = cx.new(|_| BranchBase(None));
         let onboarding = TabPage::default();
         let workbench = cx.weak_entity();
         let breadcrumbs_target = cx.weak_entity();
         let command_target = cx.weak_entity();
         let editor_groups = cx.new(|cx| {
-            let mut groups = EditorGroupsView::default();
+            let mut groups = EditorGroupsView::new(settings.clone());
             let docs = documents.clone();
             let page = extensions_page.clone();
             let search = search_view.clone();
@@ -414,6 +438,8 @@ impl Workbench {
             let branch_base = branch_base.clone();
             let (logs, servers) = (lsp_logs.clone(), language_servers.clone());
             let preview_root: Arc<Path> = Arc::from(root.as_path());
+            let preview_settings = settings.clone();
+            let onboarding_settings = settings.clone();
             groups.set_tab_body_factory(
                 Rc::new(move |tab, window, cx| {
                     let path = match &tab.item {
@@ -422,9 +448,12 @@ impl Workbench {
                             let dynamic = matches!(tab.item, TabItem::MarkdownPreviewDynamic(_));
                             let (path, docs) = (path.clone(), docs.clone());
                             let (workbench, root) = (workbench.clone(), preview_root.clone());
+                            let settings = preview_settings.clone();
                             return cx
                                 .new(|cx| {
-                                    MarkdownPreview::new(path, dynamic, root, docs, workbench, cx)
+                                    MarkdownPreview::new(
+                                        path, dynamic, root, docs, workbench, settings, cx,
+                                    )
                                 })
                                 .into();
                         }
@@ -440,8 +469,14 @@ impl Workbench {
                             return health.clone().into();
                         }
                         TabItem::Onboarding => {
-                            return onboarding::tab_page(&onboarding, &workbench, window, cx)
-                                .into();
+                            return onboarding::tab_page(
+                                &onboarding,
+                                &workbench,
+                                &onboarding_settings,
+                                window,
+                                cx,
+                            )
+                            .into();
                         }
                         TabItem::GitChanges | TabItem::FileDiff(_) | TabItem::BranchChanges => {
                             let kind = match &tab.item {
@@ -459,6 +494,7 @@ impl Workbench {
                                 .new(|cx| {
                                     let mut view =
                                         DiffView::new(kind, git, docs, root, workbench, cx);
+                                    view.set_window(window.window_handle().window_id());
                                     if branch {
                                         view.follow_branch_base(base, cx);
                                     }
@@ -536,7 +572,7 @@ impl Workbench {
             cx.new(|_| DocumentStatusItem::new(groups, docs))
         };
         let scan_options = ScanOptions {
-            exclude: enabled_globs(cx, "files.exclude"),
+            exclude: enabled_globs(settings.read(cx).view(cx), "files.exclude"),
         };
         let scan_started = std::time::Instant::now();
         let scanning = single_file.is_none();
@@ -581,21 +617,22 @@ impl Workbench {
         let panel_state = match &restored {
             Some(state) => state.panel.clone().sanitized(),
             None => PanelState {
-                position: PanelPosition::from_setting(cx),
+                position: PanelPosition::from_setting(settings.read(cx).view(cx)),
                 ..PanelState::default()
             },
         };
-        let terminal_panel = cx.new(|cx| TerminalPanel::new(window, cx));
+        let terminal_panel = cx.new(|cx| TerminalPanel::new(settings.clone(), window, cx));
         let sidebar_focus = cx.focus_handle();
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let lone = single_file_path.is_some();
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
             let focus = sidebar_focus.clone();
-            let docs = documents.downgrade();
+            let (docs, settings) = (documents.downgrade(), settings.clone());
             cx.new(|cx| {
-                let mut explorer =
-                    ExplorerView::new(root, lone, snapshot, workbench, &groups, focus, cx);
+                let mut explorer = ExplorerView::new(
+                    root, lone, snapshot, workbench, &groups, settings, focus, cx,
+                );
                 explorer.set_documents(docs);
                 explorer
             })
@@ -621,14 +658,33 @@ impl Workbench {
                 markdown_preview::follow_active(wb, window, cx)
             }),
             cx.observe_in(&editor_groups, window, |wb, groups, window, cx| {
-                wb.scroll_sync.refresh(&groups, &wb.root, window, cx)
+                wb.scroll_sync
+                    .refresh(&groups, &wb.root, &wb.settings, window, cx)
             }),
             cx.observe_global::<ConfigState>(Self::config_files_changed),
+            cx.observe(&settings, |wb, _, cx| {
+                wb.workspace_settings_changed(cx);
+                wb.excludes_changed(cx);
+                wb.languages_changed(cx);
+                wb.editor_settings_changed(cx);
+            }),
+            // Saving `.lucerna/settings.json` here applies it at once.
+            cx.subscribe(&documents, |wb, _, ev: &DocumentEvent, cx| {
+                if let DocumentEvent::Saved { path, .. } = ev {
+                    let saved = wb.absolute_path(path);
+                    let settings = wb.settings.clone();
+                    if settings.read(cx).settings_path() == Some(&*saved) {
+                        settings.update(cx, WindowSettings::reload);
+                    }
+                }
+            }),
             // VS Code: a preview tab whose file gets unsaved changes is
             // pinned, so opening another file never replaces it.
             cx.subscribe(&documents, |wb, _, ev: &DocumentEvent, cx| match ev {
                 DocumentEvent::DirtyChanged { dirty: true, .. } => wb.pin_dirty_previews(cx),
-                DocumentEvent::ChangedOnDisk { path } if decorates_external_changes(cx) => {
+                DocumentEvent::ChangedOnDisk { path }
+                    if decorates_external_changes(wb.settings.read(cx).view(cx)) =>
+                {
                     wb.explorer
                         .update(cx, |explorer, cx| explorer.mark_external_change(path, cx));
                 }
@@ -673,9 +729,13 @@ impl Workbench {
             .map_or(0, |s| s.fresh_installs().len());
         let config_error = {
             let workbench = cx.weak_entity();
-            cx.new(|cx| ConfigErrorItem::new(workbench, cx))
+            let settings = settings.clone();
+            cx.new(|cx| ConfigErrorItem::new(workbench, settings, cx))
         };
-        let vim = cx.new(VimLayer::new);
+        let vim = {
+            let settings = settings.clone();
+            cx.new(|cx| VimLayer::new(settings, cx))
+        };
         vim.update(cx, |vim, cx| vim.attach(&editor_groups, cx));
         let mode_indicator = {
             let (vim, groups) = (vim.clone(), editor_groups.clone());
@@ -717,7 +777,7 @@ impl Workbench {
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
-            languages_generation: cx.global::<AppState>().languages_generation,
+            languages_generation: settings.read(cx).languages_generation(),
             _worktree_events: worktree_events,
             scanning,
             single_file: single_file_path,
@@ -730,6 +790,8 @@ impl Workbench {
             config_batch: cx
                 .try_global::<ConfigState>()
                 .map_or(0, |state| state.last_changed().0),
+            settings_generation: settings.read(cx).generation(),
+            settings,
             _subscriptions: subscriptions,
             panel: panel_state,
             terminal_panel: terminal_panel.clone(),
@@ -821,6 +883,11 @@ impl Workbench {
         let documents = workbench.documents.clone();
         let trust_events = workbench.start_trust(&documents, window, cx);
         workbench._subscriptions.push(trust_events);
+        workbench._subscriptions.push(
+            cx.observe_global_in::<trust::TrustGeneration>(window, |wb, window, cx| {
+                wb.trust_changed(window, cx)
+            }),
+        );
         if workbench.language_servers().read(cx).trust_known() {
             workbench.open_restored_terminal(window, cx);
         }
@@ -836,7 +903,8 @@ impl Workbench {
         // A restored layout may already show a preview beside its editor.
         cx.defer_in(window, |wb, window, cx| {
             let groups = wb.editor_groups.clone();
-            wb.scroll_sync.refresh(&groups, &wb.root, window, cx);
+            wb.scroll_sync
+                .refresh(&groups, &wb.root, &wb.settings, window, cx);
         });
         workbench
     }
@@ -1009,36 +1077,47 @@ impl Workbench {
         &self.scan_options
     }
 
-    /// After any [`AppState`] change: rescans when `files.exclude`
-    /// changed, drops a pending chord when the keymap was reloaded, and
-    /// redraws (the theme may have changed).
+    /// After any [`AppState`] change: drops a pending chord when the
+    /// keymap was reloaded, and redraws (the theme may have changed).
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
-        let exclude = enabled_globs(cx, "files.exclude");
-        if exclude != self.scan_options.exclude {
-            self.scan_options = ScanOptions { exclude };
-            self.worktree.set_options(self.scan_options.clone());
-        }
         // A chord typed against the old keymap means nothing now.
         let generation = keymap_generation(cx);
         if generation != self.keymap_generation {
             self.keymap_generation = generation;
             self.pending_chord.clear();
         }
-        // A new language registry: open documents look theirs up again.
-        let generation = cx.global::<AppState>().languages_generation;
+        // `session.trustAllWorktrees` may have changed.
+        self.apply_trust(cx);
+        cx.notify();
+    }
+
+    /// Rescans when the window's `files.exclude` changed.
+    fn excludes_changed(&mut self, cx: &mut Context<Self>) {
+        let exclude = enabled_globs(self.settings.read(cx).view(cx), "files.exclude");
+        if exclude != self.scan_options.exclude {
+            self.scan_options = ScanOptions { exclude };
+            self.worktree.set_options(self.scan_options.clone());
+        }
+    }
+
+    /// A new language registry for this window (the app's changed, or the
+    /// folder's `files.associations`): open documents look theirs up again.
+    fn languages_changed(&mut self, cx: &mut Context<Self>) {
+        let generation = self.settings.read(cx).languages_generation();
         if generation != self.languages_generation {
             self.languages_generation = generation;
             self.documents
                 .update(cx, |documents, cx| documents.languages_changed(cx));
         }
+    }
+
+    /// After any change to the window's settings (its workspace layer, or
+    /// the app's user layer under it): the editor area reads them again.
+    fn editor_settings_changed(&mut self, cx: &mut Context<Self>) {
         // `editor.detectIndentation`, `editor.tabSize` or
         // `editor.insertSpaces` may have changed.
         self.documents
             .update(cx, |documents, cx| documents.settings_changed(cx));
-        // `session.trustAllWorktrees` may have changed.
-        self.apply_trust(cx);
-        // `git.*` may have changed.
-        self.git.update(cx, |git, cx| git.settings_changed(cx));
         // `breadcrumbs.*` may have changed.
         self.breadcrumbs_changed(cx);
         cx.notify();
@@ -1186,7 +1265,7 @@ impl Workbench {
             _ => {}
         }
         let snapshot = self.worktree.snapshot();
-        let decorate = decorates_external_changes(cx);
+        let decorate = decorates_external_changes(self.settings.read(cx).view(cx));
         // Open documents tell our own saves from other programs' writes
         // once they reload (`DocumentEvent::ChangedOnDisk`).
         let now = Instant::now();
@@ -1370,6 +1449,26 @@ impl Workbench {
             self.config_batch = batch;
             self.on_open_file_changes(&changed, cx);
         }
+    }
+
+    /// The workspace settings reloaded: an open `.lucerna/settings.json`
+    /// reloads too.
+    fn workspace_settings_changed(&mut self, cx: &mut Context<Self>) {
+        let settings = self.settings.read(cx);
+        let generation = settings.generation();
+        if generation == self.settings_generation {
+            return;
+        }
+        self.settings_generation = generation;
+        if let Some(path) = settings.settings_path().map(Path::to_path_buf) {
+            self.on_open_file_changes(&[path], cx);
+        }
+    }
+
+    /// This window's settings: its folder's `.lucerna/settings.json` over
+    /// the app's default and user layers.
+    pub fn settings(&self) -> &Entity<WindowSettings> {
+        &self.settings
     }
 
     /// The Search tab's body.
@@ -1597,7 +1696,8 @@ impl Workbench {
     /// source (spec §4.1). Otherwise like [`Workbench::open_source`].
     pub fn open_path(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
         let path = self.absolute_path(&path);
-        let view = markdown_preview::associated_editor(&self.root, &path, cx);
+        let view =
+            markdown_preview::associated_editor(&self.root, &path, self.settings.read(cx).view(cx));
         self.open_file(path, view, mode, true, cx);
     }
 
@@ -1632,10 +1732,10 @@ impl Workbench {
         // An F8 hover still waiting for its tab is for an earlier open.
         self.marker_hover = None;
         self.recent_files.record(path.clone());
-        let preview_enabled = cx
-            .global::<AppState>()
+        let preview_enabled = self
             .settings
-            .get::<bool>("workbench.editor.enablePreview", None)
+            .read(cx)
+            .get::<bool>("workbench.editor.enablePreview", None, cx)
             .unwrap_or(true);
         self.update_editor_groups(cx, |m| {
             m.open_file(path, view, mode, preview_enabled, reuse_any)
@@ -1720,7 +1820,7 @@ impl Workbench {
     /// `always`, those running something other than their shell (as of the
     /// last poll) with `hasChildProcesses`, none with `never`.
     fn terminals_to_confirm(&self, cx: &App) -> usize {
-        let mode = confirm_on_exit(cx);
+        let mode = confirm_on_exit(self.settings.read(cx).view(cx));
         if mode == ConfirmOnExit::Never {
             return 0;
         }
@@ -2027,7 +2127,10 @@ impl Workbench {
             None => path
                 .and_then(|p| {
                     let rel = p.strip_prefix(&self.root).unwrap_or(p);
-                    cx.global::<AppState>().languages.language_for_file(rel, "")
+                    self.settings
+                        .read(cx)
+                        .languages(cx)
+                        .language_for_file(rel, "")
                 })
                 .map(|lang| lang.id.to_string())
                 .unwrap_or_default(),
@@ -2209,11 +2312,13 @@ impl Workbench {
         // Never asks for trust (spec §6.3): Restricted Mode only drops the
         // Workspace layer of the shell settings.
         let restricted = self.is_restricted(cx);
+        let settings = self.terminal_panel.read(cx).settings().clone();
         match spawn_view(
             &self.terminal_spawner,
             &self.root,
             cwd,
             restricted,
+            &settings,
             window,
             cx,
         ) {
@@ -2345,10 +2450,10 @@ impl Workbench {
     ) {
         match event {
             PanelEvent::Empty => {
-                let hide = cx
-                    .global::<AppState>()
+                let hide = self
                     .settings
-                    .get::<bool>("terminal.integrated.hideOnLastClosed", None)
+                    .read(cx)
+                    .get::<bool>("terminal.integrated.hideOnLastClosed", None, cx)
                     .unwrap_or(true);
                 if hide {
                     self.hide_panel(window, cx);
@@ -2722,14 +2827,16 @@ impl Workbench {
         let cmd = cfg!(target_os = "macos") && ev.keystroke.modifiers.platform;
         match resolution {
             Resolution::Command { command, args }
-                if completes_chord || cmd || skips_shell(&command, cx) =>
+                if completes_chord
+                    || cmd
+                    || skips_shell(&command, self.settings.read(cx).view(cx)) =>
             {
                 cx.stop_propagation();
                 if !self.run_command(&command, args.as_ref(), window, cx) {
                     tracing::debug!(command, "key bound to an unregistered command");
                 }
             }
-            Resolution::Pending if allow_chords(cx) => {
+            Resolution::Pending if allow_chords(self.settings.read(cx).view(cx)) => {
                 cx.stop_propagation();
                 self.pending_chord = chord;
             }
@@ -2767,7 +2874,7 @@ impl Workbench {
             cx.stop_propagation();
             return;
         }
-        let meta = option_is_meta(cx);
+        let meta = option_is_meta(self.settings.read(cx).view(cx));
         if view.read(cx).input_handler_takes(ev, meta) {
             return;
         }
@@ -2800,9 +2907,8 @@ fn keymap_generation(cx: &App) -> u64 {
 
 /// The globs of a glob → bool setting such as `files.exclude` that are
 /// switched on.
-pub(crate) fn enabled_globs(cx: &App, key: &str) -> Vec<String> {
-    cx.global::<AppState>()
-        .settings
+pub(crate) fn enabled_globs(settings: SettingsView<'_>, key: &str) -> Vec<String> {
+    settings
         .get::<serde_json::Map<String, Value>>(key, None)
         .unwrap_or_default()
         .into_iter()
@@ -2902,30 +3008,79 @@ fn prompt_terminate_terminals(
 }
 
 /// Quits the app once every workbench window agreed to
-/// ([`Workbench::confirm_quit`], one window after another). Quitting runs
-/// the `on_app_quit` hooks, which save the layout.
+/// ([`Workbench::confirm_quit`], one window after another, the most
+/// recently used first; spec M11). Cancel in any window stops the quit.
+/// Before quitting, every window is checked again: one opened meanwhile,
+/// or one edited since it agreed (beyond what it agreed to lose), is asked
+/// too, so nothing unsaved is lost without a question. Then the window
+/// list is written (spec §6.6). Quitting runs the `on_app_quit` hooks,
+/// which save the layout.
 pub(crate) fn quit(cx: &mut App) {
-    // Not `downcast`: a Welcome window that became a workbench keeps the
-    // handle type it opened with. Updating a window of another root fails.
-    let windows: Vec<WindowHandle<Workbench>> = cx
-        .windows()
-        .into_iter()
-        .map(|w| WindowHandle::new(w.window_id()))
-        .collect();
     cx.spawn(async move |cx| {
-        for handle in windows {
-            let Ok(confirm) = handle.update(cx, |wb, window, cx| wb.confirm_quit(window, cx))
-            else {
-                // The window closed meanwhile, or shows Welcome.
-                continue;
-            };
-            if !confirm.await {
-                return;
+        // What each window agreed to lose: its dirty files once it agreed.
+        let mut agreed: HashMap<gpui::WindowId, Vec<Arc<Path>>> = HashMap::new();
+        loop {
+            let ask = cx.update(|cx| windows_to_ask(&agreed, cx));
+            if ask.is_empty() {
+                break;
+            }
+            for handle in ask {
+                let Ok(confirm) = handle.update(cx, |wb, window, cx| wb.confirm_quit(window, cx))
+                else {
+                    // The window closed meanwhile.
+                    continue;
+                };
+                if !confirm.await {
+                    return;
+                }
+                let dirty = handle
+                    .read_with(cx, |wb, cx| wb.documents.read(cx).dirty_paths())
+                    .unwrap_or_default();
+                agreed.insert(handle.window_id(), dirty);
             }
         }
-        cx.update(|cx| cx.quit());
+        cx.update(|cx| {
+            crate::session::save_now(cx);
+            crate::app::quit_now(cx);
+        });
     })
     .detach();
+}
+
+/// The workbench windows [`quit`] must still ask, the most recently used
+/// first: those that have not agreed, and those with a dirty file they did
+/// not agree to lose.
+fn windows_to_ask(
+    agreed: &HashMap<gpui::WindowId, Vec<Arc<Path>>>,
+    cx: &mut App,
+) -> Vec<WindowHandle<Workbench>> {
+    let mut windows: Vec<gpui::AnyWindowHandle> = crate::router::windows(cx)
+        .into_iter()
+        .map(|(handle, _)| handle)
+        .collect();
+    // Windows the router did not open (tests build some directly) last.
+    for window in cx.windows() {
+        if !windows.contains(&window) {
+            windows.push(window);
+        }
+    }
+    // Not `downcast`: a Welcome window that became a workbench keeps the
+    // handle type it opened with. Reading a window of another root fails.
+    windows
+        .into_iter()
+        .map(|w| WindowHandle::<Workbench>::new(w.window_id()))
+        .filter(|handle| {
+            let Ok(dirty) = handle.read_with(cx, |wb, cx| wb.documents.read(cx).dirty_paths())
+            else {
+                // Closed, or the Welcome screen.
+                return false;
+            };
+            match agreed.get(&handle.window_id()) {
+                None => true,
+                Some(lost) => dirty.iter().any(|path| !lost.contains(path)),
+            }
+        })
+        .collect()
 }
 
 /// The commands every workbench registers, as [`Workbench::new`] builds
@@ -3061,7 +3216,7 @@ impl Render for Workbench {
         let right_panel = panel_at(PanelPosition::Right)
             .map(|state| panel::render(state, &self.terminal_panel, cx));
 
-        let status_message = crate::status_message::current(cx);
+        let status_message = crate::status_message::current(window.window_handle().window_id(), cx);
         div()
             .id("workbench")
             .track_focus(&self.focus)
@@ -3162,9 +3317,8 @@ impl Render for Workbench {
 
 /// `explorer.decorations.externalChanges`: whether the Explorer marks files
 /// that other programs changed.
-fn decorates_external_changes(cx: &App) -> bool {
-    cx.global::<AppState>()
-        .settings
+fn decorates_external_changes(settings: SettingsView<'_>) -> bool {
+    settings
         .get::<bool>("explorer.decorations.externalChanges", None)
         .unwrap_or(true)
 }

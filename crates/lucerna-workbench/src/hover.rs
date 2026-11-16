@@ -17,10 +17,11 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AvailableSpace, Bounds, Context, Entity, InteractiveElement, IntoElement,
-    ParentElement, Pixels, Styled, Task, WeakEntity, Window, div, point, prelude::*, px, size,
+    ParentElement, Pixels, SharedString, Styled, Task, WeakEntity, Window, div, point, prelude::*,
+    px, size,
 };
 use lucerna_lsp::diagnostics::{Diagnostic, Severity};
-use lucerna_settings::SettingsStore;
+use lucerna_settings::SettingsView;
 use lucerna_text::{BufferSnapshot, Point};
 
 use crate::code_view::{CodeView, word_at};
@@ -57,7 +58,7 @@ pub struct HoverConfig {
 
 impl HoverConfig {
     /// The settings for a view of `language`.
-    pub fn read(settings: &SettingsStore, language: Option<&str>) -> HoverConfig {
+    pub fn read(settings: SettingsView<'_>, language: Option<&str>) -> HoverConfig {
         let ms = |key: &str, default: u64| {
             Duration::from_millis(settings.get::<u64>(key, language).unwrap_or(default))
         };
@@ -478,7 +479,14 @@ pub(crate) fn prepaint_popover(
         let max_w = (a.editor.size.width / 2.).min(a.char_width * MAX_WIDTH_CHARS);
         let min_w = (a.char_width * MIN_WIDTH_CHARS).min(max_w);
         let max_h = (a.editor.size.height / 2.).min(a.line_height * MAX_HEIGHT_LINES);
-        Some((hover.render_popover(min_w, max_w, max_h, cx)?, a, max_w))
+        // The window's `editor.fontFamily`, as the preview's code uses.
+        let settings = view.read(cx).settings().read(cx).view(cx);
+        let code_font = crate::fonts::editor_font_family(settings, None);
+        Some((
+            hover.render_popover(min_w, max_w, max_h, code_font, cx)?,
+            a,
+            max_w,
+        ))
     });
     let Some((mut element, a, max_w)) = element else {
         if view.read(cx).hover().popover_bounds().is_some() {
@@ -533,6 +541,7 @@ impl HoverController {
         min_w: Pixels,
         max_w: Pixels,
         max_h: Pixels,
+        code_font_family: SharedString,
         cx: &App,
     ) -> Option<AnyElement> {
         let shown = self.shown.as_ref().filter(|_| self.is_visible())?;
@@ -555,7 +564,12 @@ impl HoverController {
             div()
                 .debug_selector(|| "hover-markdown".into())
                 .min_w_0()
-                .child(render_markdown_with(blocks, on_link.clone(), cx))
+                .child(render_markdown_with(
+                    blocks,
+                    on_link.clone(),
+                    code_font_family,
+                    cx,
+                ))
         });
         Some(
             popover(cx)

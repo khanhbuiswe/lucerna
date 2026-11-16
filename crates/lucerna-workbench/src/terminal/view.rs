@@ -26,7 +26,7 @@ use super::element::{Frame, TerminalElement};
 use super::links::{LinkState, LinkTarget};
 use super::mouse::MouseState;
 use super::settings::{bell_enabled, cursor_style, mouse_settings, scrollback, spawn_plan};
-use crate::ui;
+use crate::{WindowSettings, ui};
 
 /// How long events are gathered after the first one before the view
 /// handles them together (spec §5.1).
@@ -62,18 +62,19 @@ pub(crate) fn default_spawner(cx: &App) -> TerminalSpawner {
 }
 
 /// Starts a terminal for the workspace at `root` with `spawner`, as the
-/// settings say (their Workspace layer skipped when `restricted`), and
-/// makes its view; the error text when it could not start. Links resolve
-/// against `root` last.
+/// window's `settings` say (their Workspace layer skipped when
+/// `restricted`), and makes its view; the error text when it could not
+/// start. Links resolve against `root` last.
 pub(crate) fn spawn_view(
     spawner: &TerminalSpawner,
     root: &Path,
     cwd: Option<&Path>,
     restricted: bool,
+    settings: &Entity<WindowSettings>,
     window: &mut Window,
     cx: &mut App,
 ) -> Result<Entity<TerminalView>, SharedString> {
-    let mut plan = spawn_plan(root, restricted, cx);
+    let mut plan = spawn_plan(root, restricted, settings.read(cx).view(cx));
     // An explicit folder (Explorer: Open in Integrated Terminal) wins over
     // `terminal.integrated.cwd`.
     if let Some(cwd) = cwd {
@@ -82,7 +83,7 @@ pub(crate) fn spawn_view(
     let cwd = plan.options.cwd.clone();
     match spawner(plan.options) {
         Ok((terminal, events)) => Ok(cx.new(|cx| {
-            let mut view = TerminalView::new(terminal, events, window, cx);
+            let mut view = TerminalView::new(terminal, events, settings.clone(), window, cx);
             view.cwd_start = cwd;
             view.root = root.to_path_buf();
             if let Some(warning) = plan.warning {
@@ -127,6 +128,8 @@ pub struct TerminalView {
     pub(super) root: PathBuf,
     pub(super) links: LinkState,
     pub(super) focus: FocusHandle,
+    /// The window's settings, which the terminal follows (spec §6.7).
+    pub(super) settings: Entity<WindowSettings>,
     title_state: TitleState,
     /// The last OSC title, to tell a new title from alacritty repeating
     /// the current one when its config changes.
@@ -172,9 +175,12 @@ pub struct TerminalView {
 impl EventEmitter<TerminalViewEvent> for TerminalView {}
 
 impl TerminalView {
+    /// `settings` are the window's: the view reads its `terminal.integrated.*`
+    /// settings from them and follows their changes (and the theme's).
     pub fn new(
         terminal: Terminal,
         events: UnboundedReceiver<TerminalEvent>,
+        settings: Entity<WindowSettings>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -183,7 +189,9 @@ impl TerminalView {
         let subscriptions = vec![
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
-            cx.observe_global::<crate::AppState>(|view, cx| {
+            // Notified on the window's workspace layer and on any app
+            // state change (user layer, theme).
+            cx.observe(&settings, |view, _, cx| {
                 view.apply_settings(cx);
                 view.sync_query_palette(cx);
                 cx.notify();
@@ -198,6 +206,7 @@ impl TerminalView {
             root: PathBuf::new(),
             links: LinkState::default(),
             focus,
+            settings,
             title_state: TitleState::default(),
             osc_title: None,
             title: String::new(),
@@ -240,10 +249,17 @@ impl TerminalView {
     /// Hands the settings an open terminal follows to its terminal
     /// (spec §8.2); the font and colours are read at every layout.
     fn apply_settings(&self, cx: &App) {
-        self.terminal.set_scrollback(scrollback(cx));
-        self.terminal.set_default_cursor_shape(cursor_style(cx));
+        let settings = self.settings.read(cx).view(cx);
+        self.terminal.set_scrollback(scrollback(settings));
         self.terminal
-            .set_word_separators(&mouse_settings(cx).word_separators);
+            .set_default_cursor_shape(cursor_style(settings));
+        self.terminal
+            .set_word_separators(&mouse_settings(settings).word_separators);
+    }
+
+    /// The window's settings this terminal reads.
+    pub fn settings(&self) -> &Entity<WindowSettings> {
+        &self.settings
     }
 
     /// Handles the first event at once, then gathers the next ones for
@@ -304,7 +320,7 @@ impl TerminalView {
                 }
                 TerminalEvent::Bell => {
                     self.bells += 1;
-                    if bell_enabled(cx) {
+                    if bell_enabled(self.settings.read(cx).view(cx)) {
                         cx.emit(TerminalViewEvent::Bell);
                     }
                 }

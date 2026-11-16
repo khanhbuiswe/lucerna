@@ -73,9 +73,9 @@ fn with_terminal(
     let (wb, cx) =
         cx.add_window_view(|window, cx| Workbench::new(PathBuf::from("/tmp/project"), window, cx));
     wb.update(cx, |wb, cx| {
-        wb.editor_groups().update(cx, |groups, cx| {
-            groups.set_tab_body_factory(Rc::new(CodeView::tab_body), cx)
-        })
+        let body = CodeView::tab_body(wb.settings().clone());
+        wb.editor_groups()
+            .update(cx, |groups, cx| groups.set_tab_body_factory(body, cx))
     });
     draw(cx);
     keys("ctrl-`", cx);

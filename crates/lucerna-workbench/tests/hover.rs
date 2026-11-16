@@ -43,6 +43,11 @@ fn init(cx: &mut TestAppContext) {
     });
 }
 
+/// The code font of hover popovers without settings: the bundled one.
+fn lilex() -> gpui::SharedString {
+    lucerna_workbench::fonts::EDITOR_FONT_FAMILY.into()
+}
+
 fn draw(cx: &mut VisualTestContext) {
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -85,15 +90,18 @@ fn renders_without_panic_and_highlights_rust_block(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("md-code-1").is_some(), "no md-code-1");
     assert!(cx.debug_bounds("md-code-2").is_none());
     cx.update(|_, cx| {
-        let (text, rust) = blocks.code_runs(0, cx).unwrap();
+        let (text, rust) = blocks.code_runs(0, &lilex(), cx).unwrap();
         assert_eq!(text, "fn main() {\n    let x = 1;\n}");
         assert!(rust.len() > 1, "{} runs", rust.len());
         assert_eq!(rust.iter().map(|r| r.len).sum::<usize>(), text.len());
         // Cached: the second call hands out the same runs.
-        assert!(Arc::ptr_eq(&rust, &blocks.code_runs(0, cx).unwrap().1));
+        assert!(Arc::ptr_eq(
+            &rust,
+            &blocks.code_runs(0, &lilex(), cx).unwrap().1
+        ));
         // Unknown language and no fallback: one plain run.
-        assert_eq!(blocks.code_runs(1, cx).unwrap().1.len(), 1);
-        assert!(blocks.code_runs(2, cx).is_none());
+        assert_eq!(blocks.code_runs(1, &lilex(), cx).unwrap().1.len(), 1);
+        assert!(blocks.code_runs(2, &lilex(), cx).is_none());
     });
 }
 
@@ -109,13 +117,13 @@ fn hover_layout_unchanged(cx: &mut TestAppContext) {
 fn fence_without_language_uses_the_file_language(cx: &mut TestAppContext) {
     let (blocks, cx) = host("```\nfn main() {}\n```", Some("rust"), cx);
     assert!(cx.debug_bounds("md-code-0").is_some());
-    cx.update(|_, cx| assert!(blocks.code_runs(0, cx).unwrap().1.len() > 1));
+    cx.update(|_, cx| assert!(blocks.code_runs(0, &lilex(), cx).unwrap().1.len() > 1));
 }
 
 #[gpui::test]
 fn fence_without_any_language_is_plain(cx: &mut TestAppContext) {
     let (blocks, cx) = host("```\nfn main() {}\n```", None, cx);
-    cx.update(|_, cx| assert_eq!(blocks.code_runs(0, cx).unwrap().1.len(), 1));
+    cx.update(|_, cx| assert_eq!(blocks.code_runs(0, &lilex(), cx).unwrap().1.len(), 1));
 }
 
 #[gpui::test]

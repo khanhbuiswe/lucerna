@@ -3502,6 +3502,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "jsonc-parser",
+ "libc",
  "lsp-types",
  "lucerna-editor",
  "lucerna-extension",

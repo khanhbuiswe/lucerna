@@ -510,7 +510,7 @@ impl TerminalView {
     /// Lays out one frame for `bounds`: resizes the terminal when the grid
     /// changed, then snapshots it and shapes the visible rows.
     fn layout(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) -> Rc<Frame> {
-        let font = terminal_font(cx);
+        let font = terminal_font(self.settings.read(cx).view(cx));
         let generation = cx.global::<AppState>().theme_generation;
         let palette: Rc<TerminalPalette> = match &self.palette {
             Some((g, p)) if *g == generation => p.clone(),
@@ -520,7 +520,10 @@ impl TerminalView {
                 p
             }
         };
-        let (min_contrast, bold_bright) = (minimum_contrast(cx), bold_is_bright(cx));
+        let (min_contrast, bold_bright) = {
+            let settings = self.settings.read(cx).view(cx);
+            (minimum_contrast(settings), bold_is_bright(settings))
+        };
         let scale = window.scale_factor();
 
         let base = base_font(&font);
@@ -619,7 +622,7 @@ impl TerminalView {
         let shape = if focused {
             None
         } else {
-            Some(inactive_cursor(cx))
+            Some(inactive_cursor(self.settings.read(cx).view(cx)))
         };
         let cursor = cursor_paint(&snapshot, &palette, shape, &shaper, &cell, window);
         let cursor_cell = snapshot.cursor.map(|c| cell(c.row, c.col, 1));

@@ -24,18 +24,19 @@ use futures::channel::oneshot;
 use futures::future::Shared;
 use gpui::{
     App, AppContext, Context, Entity, EntityId, EventEmitter, IntoElement, ParentElement,
-    PromptLevel, Render, Styled, Task, WeakEntity, Window, div, prelude::*, px,
+    PromptLevel, Render, Styled, Task, WeakEntity, Window, WindowId, div, prelude::*, px,
 };
 use lucerna_editor::indentation::{self, Indentation};
 use lucerna_editor::merge::merge;
 use lucerna_project::{ChangeKind, WorktreeEvent};
+use lucerna_settings::SettingsView;
 use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{
     Buffer, BufferSnapshot, Decoded, HistoryState, LineEnding, LoadError, Patch, PatchEdit, Point,
     SelectionsToken, WriteError, check_size, decode_file, diff_edits,
 };
 
-use crate::AppState;
+use crate::WindowSettings;
 use crate::code_view::CodeView;
 use crate::editor_groups::EditorGroupsView;
 use crate::save::{
@@ -449,26 +450,43 @@ pub(crate) fn char_point(snapshot: &BufferSnapshot, row: u32, char_col: u32) -> 
 /// the [`crate::Workbench`].
 pub struct Documents {
     root: PathBuf,
+    /// The window's settings: indentation, save and large-file settings
+    /// are read from them, and each view is made with them.
+    settings: Entity<WindowSettings>,
     docs: HashMap<Arc<Path>, Document>,
     /// Jumps requested for paths whose document does not exist yet.
     pending_go_to: HashMap<Arc<Path>, GoTo>,
     /// Scroll rows restored for paths whose text is not loaded yet; the
     /// first view to have the text takes its row.
     pending_scroll: HashMap<Arc<Path>, u32>,
+    /// The window whose status bar shows what goes wrong here.
+    window: Option<WindowId>,
 }
 
 impl EventEmitter<DocumentEvent> for Documents {}
 
 impl Documents {
     /// Documents of the folder at `root`; relative paths are resolved
-    /// against it.
-    pub fn new(root: PathBuf) -> Self {
+    /// against it. They read the window's `settings`.
+    /// Tells the documents which window they belong to.
+    pub fn set_window(&mut self, window: WindowId) {
+        self.window = Some(window);
+    }
+
+    pub fn new(root: PathBuf, settings: Entity<WindowSettings>) -> Self {
         Documents {
             root,
+            settings,
             docs: HashMap::new(),
             pending_go_to: HashMap::new(),
             pending_scroll: HashMap::new(),
+            window: None,
         }
+    }
+
+    /// The window's settings the documents and their views read.
+    pub fn settings(&self) -> &Entity<WindowSettings> {
+        &self.settings
     }
 
     /// The key for `path`: as given when absolute, else joined onto the
@@ -505,8 +523,9 @@ impl Documents {
             .get(&key)
             .map(|d| d.stop_requested.clone())
             .unwrap_or_default();
+        let settings = self.settings.clone();
         let view = cx.new(|cx| {
-            let mut view = CodeView::new(path, cx);
+            let mut view = CodeView::new(path, settings, cx);
             view.set_documents(documents, stop_requested.clone());
             view.set_passive(passive);
             view
@@ -558,7 +577,7 @@ impl Documents {
             }
             None => {
                 // The first line is not known yet; the load looks again.
-                let language = language_for(&self.root, &key, None, cx);
+                let language = language_for(&self.root, &self.settings, &key, None, cx);
                 let language_id = language.as_ref().map(|l| l.id.clone());
                 view.update(cx, |v, cx| {
                     v.set_language_id(language_id, cx);
@@ -615,9 +634,10 @@ impl Documents {
     pub fn settings_changed(&mut self, cx: &mut Context<Self>) {
         for doc in self.docs.values_mut() {
             if doc.indentation_inputs.is_some()
-                && doc.indentation_inputs != Some(indentation_inputs(doc, cx))
+                && doc.indentation_inputs
+                    != Some(indentation_inputs(doc, self.settings.read(cx).view(cx)))
             {
-                detect_indentation(doc, cx);
+                detect_indentation(doc, &self.settings, cx);
             }
         }
     }
@@ -633,7 +653,8 @@ impl Documents {
             // Even an unchanged root language is parsed again: the new
             // registry may add or drop the languages it injects.
             let old_id = doc.language_id();
-            doc.language = language_for(&self.root, &key, doc.snapshot.as_ref(), cx);
+            doc.language =
+                language_for(&self.root, &self.settings, &key, doc.snapshot.as_ref(), cx);
             sync_language_id(doc, cx);
             if doc.announced
                 && doc.language_id() != old_id
@@ -693,12 +714,14 @@ impl Documents {
                 view.update(cx, |v, cx| v.set_path(new, cx));
             }
             let old_id = doc.language_id();
-            doc.language = language_for(&self.root, &new, doc.snapshot.as_ref(), cx);
+            doc.language =
+                language_for(&self.root, &self.settings, &new, doc.snapshot.as_ref(), cx);
             sync_language_id(&doc, cx);
             if doc.indentation_inputs.is_some()
-                && doc.indentation_inputs != Some(indentation_inputs(&doc, cx))
+                && doc.indentation_inputs
+                    != Some(indentation_inputs(&doc, self.settings.read(cx).view(cx)))
             {
-                detect_indentation(&mut doc, cx);
+                detect_indentation(&mut doc, &self.settings, cx);
             }
             let language_changed = doc.language_id() != old_id;
             // Lands by key: started again below at the new one.
@@ -1226,9 +1249,9 @@ impl Documents {
     /// says to write over a changed file without asking.
     fn overwrites(&self, key: &Arc<Path>, cx: &App) -> bool {
         let language = self.docs.get(key).and_then(Document::language_id);
-        cx.global::<AppState>()
-            .settings
-            .get::<String>("files.saveConflictResolution", language.as_deref())
+        self.settings
+            .read(cx)
+            .get::<String>("files.saveConflictResolution", language.as_deref(), cx)
             .as_deref()
             == Some("overwriteFileOnDisk")
     }
@@ -1249,6 +1272,7 @@ impl Documents {
         cx: &mut Context<Self>,
     ) -> Option<StartedWrite> {
         let check = !overwrite && !self.overwrites(key, cx);
+        let window = self.window;
         let doc = self.docs.get_mut(key)?;
         let check = !std::mem::take(&mut doc.skip_disk_check) && check;
         // Only a file that never loaded has no text to save (a failed
@@ -1259,14 +1283,14 @@ impl Documents {
             .filter(|_| matches!(doc.state, DocState::Ready | DocState::Deleted))
         else {
             let reason = WriteError::Io("the file's text is not loaded".into());
-            status_message::show(save::failure_message(key, &reason), cx);
+            status_message::show_or_log(window, save::failure_message(key, &reason), cx);
             return None;
         };
         buffer.push_stop();
         if opts.participants {
             let language = doc.language_id();
             let participants = save::participants(
-                &cx.global::<AppState>().settings,
+                self.settings.read(cx).view(cx),
                 language.as_deref(),
                 opts.reason,
             );
@@ -1419,7 +1443,7 @@ impl Documents {
             }
             Err(err) => {
                 tracing::warn!(path = %key.display(), %err, "save failed");
-                status_message::show(save::failure_message(key, &err), cx);
+                status_message::show_or_log(self.window, save::failure_message(key, &err), cx);
                 SaveStep::Done(Err(err))
             }
         };
@@ -1526,7 +1550,11 @@ impl Documents {
                     || key.display().to_string(),
                     |n| n.to_string_lossy().into_owned(),
                 );
-                status_message::show(format!("Failed to revert '{name}': {err}"), cx);
+                status_message::show_or_log(
+                    self.window,
+                    format!("Failed to revert '{name}': {err}"),
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -1894,9 +1922,9 @@ impl Documents {
     /// at `key`.
     fn auto_merge(&self, key: &Arc<Path>, cx: &App) -> bool {
         let language = self.docs.get(key).and_then(Document::language_id);
-        cx.global::<AppState>()
-            .settings
-            .get::<bool>("lucerna.externalChanges.autoMerge", language.as_deref())
+        self.settings
+            .read(cx)
+            .get::<bool>("lucerna.externalChanges.autoMerge", language.as_deref(), cx)
             .unwrap_or(true)
     }
 
@@ -1918,9 +1946,9 @@ impl Documents {
                 take_buffer(doc, buffer, stamp);
                 let old_id = doc.language_id();
                 // Now with the first line, for `first_line_pattern`.
-                doc.language = language_for(&self.root, key, Some(&snapshot), cx);
+                doc.language = language_for(&self.root, &self.settings, key, Some(&snapshot), cx);
                 sync_language_id(doc, cx);
-                detect_indentation(doc, cx);
+                detect_indentation(doc, &self.settings, cx);
                 let (path, language_id) = (key.clone(), doc.language_id());
                 // A document loaded again (after an error, or as text) was
                 // already announced: it changed rather than opened.
@@ -1999,10 +2027,10 @@ impl Documents {
             }
             Ok(JobOutput::Reloaded(_, Err(failure))) => {
                 let seen = failure.stamp.map(|stamp| (stamp, failure.hash));
-                reload_failed(doc, key, failure.err, seen, cx);
+                reload_failed(doc, key, failure.err, seen, self.window, cx);
             }
             // The job panicked; a loaded buffer is still here.
-            Err(err) if doc.buffer.is_some() => reload_failed(doc, key, err, None, cx),
+            Err(err) if doc.buffer.is_some() => reload_failed(doc, key, err, None, self.window, cx),
             Err(err) => doc.set_state(DocState::Error(err), cx),
         }
         let Some(doc) = self.docs.get_mut(key) else {
@@ -2144,7 +2172,7 @@ impl Documents {
         self.commit_edit(key, old, &patch, was_dirty, None, cx);
         self.default_line_ending(key, cx);
         if merged {
-            status_message::show("Merged changes from disk", cx);
+            status_message::show_or_log(self.window, "Merged changes from disk", cx);
         }
     }
 
@@ -2190,7 +2218,7 @@ impl Documents {
         self.commit_edit(key, old, &patch, was_dirty, None, cx);
         self.default_line_ending(key, cx);
         if let Some(doc) = self.docs.get_mut(key) {
-            detect_indentation(doc, cx);
+            detect_indentation(doc, &self.settings, cx);
         }
     }
 
@@ -2208,10 +2236,10 @@ impl Documents {
             return;
         }
         let language = doc.language.as_ref().map(|l| l.id.clone());
-        let eol = cx
-            .global::<AppState>()
+        let eol = self
             .settings
-            .get::<String>("files.eol", language.as_deref());
+            .read(cx)
+            .get::<String>("files.eol", language.as_deref(), cx);
         let line_ending = match eol.as_deref() {
             Some("\n") => LineEnding::Lf,
             Some("\r\n") => LineEnding::CrLf,
@@ -2239,8 +2267,8 @@ impl Documents {
         let Some(doc) = self.docs.get_mut(key) else {
             return;
         };
-        let settings = &cx.global::<AppState>().settings;
-        let registry = cx.global::<AppState>().languages.clone();
+        let registry = self.settings.read(cx).languages(cx);
+        let settings = self.settings.read(cx).view(cx);
         let language = doc.language.as_ref().map(|l| l.id.clone());
         let max_bytes = settings
             .get::<u64>("lucerna.largeFile.maxBytes", language.as_deref())
@@ -2372,6 +2400,7 @@ fn reload_failed(
     key: &Arc<Path>,
     err: LoadError,
     seen: Option<(Stamp, Option<u64>)>,
+    window: Option<WindowId>,
     cx: &mut Context<Documents>,
 ) {
     if doc.buffer.is_none() || err == LoadError::NotFound {
@@ -2396,7 +2425,7 @@ fn reload_failed(
         announce_return(doc, key, cx);
     }
     let name = save::display_name(key);
-    status_message::show(format!("Failed to reload '{name}': {err}"), cx);
+    status_message::show_or_log(window, format!("Failed to reload '{name}': {err}"), cx);
 }
 
 /// Puts a save or revert of `doc` in line: returns the sender to drop when
@@ -2472,8 +2501,8 @@ fn failure_state(doc: &Document, err: LoadError) -> DocState {
 /// `editor.detectIndentation` holds for its language (else none), and
 /// hands it to the views. Runs on the main thread: it scans at most 10 000
 /// lines.
-fn detect_indentation(doc: &mut Document, cx: &mut App) {
-    let inputs = indentation_inputs(doc, cx);
+fn detect_indentation(doc: &mut Document, settings: &Entity<WindowSettings>, cx: &mut App) {
+    let inputs = indentation_inputs(doc, settings.read(cx).view(cx));
     doc.indentation_inputs = Some(inputs);
     let (detect, default) = inputs;
     doc.indentation = match (&doc.snapshot, detect) {
@@ -2488,9 +2517,8 @@ fn detect_indentation(doc: &mut Document, cx: &mut App) {
 
 /// `editor.detectIndentation` and the default indentation (`editor.insertSpaces`,
 /// `editor.tabSize`) for the document's language.
-fn indentation_inputs(doc: &Document, cx: &App) -> (bool, Indentation) {
+fn indentation_inputs(doc: &Document, settings: SettingsView<'_>) -> (bool, Indentation) {
     let language = doc.language_id();
-    let settings = &cx.global::<AppState>().settings;
     let detect = settings
         .get("editor.detectIndentation", language.as_deref())
         .unwrap_or(true);
@@ -2534,16 +2562,20 @@ fn sync_language_id(doc: &Document, cx: &mut App) {
 
 /// The language of the file at `key`: by `files.associations` against its
 /// path relative to `root`, its name, and the first line of `snapshot`.
+/// The registry is the window's (`settings`): its folder may add
+/// associations.
 fn language_for(
     root: &Path,
+    settings: &Entity<WindowSettings>,
     key: &Path,
     snapshot: Option<&BufferSnapshot>,
     cx: &App,
 ) -> Option<Arc<Language>> {
     let path = key.strip_prefix(root).unwrap_or(key);
     let first_line = snapshot.map(first_line).unwrap_or_default();
-    cx.global::<AppState>()
-        .languages
+    settings
+        .read(cx)
+        .languages(cx)
         .language_for_file(path, &first_line)
 }
 

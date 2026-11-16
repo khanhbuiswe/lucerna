@@ -103,7 +103,7 @@ impl Env {
 fn init(env: &Env, cx: &mut TestAppContext) {
     let store = env.store();
     cx.update(|cx| lucerna_workbench::app::set_app_state_with_store(store, cx));
-    let paths = ConfigPaths::with_user_dir(env.user.path(), env.project.path());
+    let paths = ConfigPaths::user_only_with_user_dir(env.user.path());
     cx.update(|cx| watch_config(paths, cx));
 }
 

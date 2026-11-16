@@ -3,11 +3,12 @@
 
 use std::collections::BTreeSet;
 
-use gpui::{App, KeyDownEvent};
+use gpui::KeyDownEvent;
+use lucerna_settings::SettingsView;
 use lucerna_terminal::{KeyInput, Modes, Scroll, key_to_bytes};
 use serde_json::Value;
 
-use crate::{AppState, CommandRegistry, Workbench};
+use crate::{CommandRegistry, Workbench};
 
 const SKIP_SHELL_SETTING: &str = "terminal.integrated.commandsToSkipShell";
 
@@ -59,12 +60,8 @@ pub const DEFAULT_COMMANDS_TO_SKIP_SHELL: &[&str] = &[
 /// [`DEFAULT_COMMANDS_TO_SKIP_SHELL`] plus the ids in
 /// `terminal.integrated.commandsToSkipShell`, minus those written there
 /// with a leading `-` (as VS Code).
-pub fn skips_shell(command: &str, cx: &App) -> bool {
-    let user: Vec<String> = cx
-        .global::<AppState>()
-        .settings
-        .get(SKIP_SHELL_SETTING, None)
-        .unwrap_or_default();
+pub fn skips_shell(command: &str, settings: SettingsView<'_>) -> bool {
+    let user: Vec<String> = settings.get(SKIP_SHELL_SETTING, None).unwrap_or_default();
     let mut list: BTreeSet<&str> = DEFAULT_COMMANDS_TO_SKIP_SHELL.iter().copied().collect();
     for id in &user {
         match id.strip_prefix('-') {
@@ -81,9 +78,8 @@ pub fn skips_shell(command: &str, cx: &App) -> bool {
 
 /// `terminal.integrated.allowChords`: a chord's first key pressed in the
 /// terminal waits for the next one (default true, as VS Code).
-pub(crate) fn allow_chords(cx: &App) -> bool {
-    cx.global::<AppState>()
-        .settings
+pub(crate) fn allow_chords(settings: SettingsView<'_>) -> bool {
+    settings
         .get("terminal.integrated.allowChords", None)
         .unwrap_or(true)
 }
@@ -91,10 +87,8 @@ pub(crate) fn allow_chords(cx: &App) -> bool {
 /// Whether alt sends ESC + the key: on macOS only with
 /// `terminal.integrated.macOptionIsMeta` (default false, as VS Code), so
 /// ⌥ types the layout's characters; on other platforms always.
-pub(crate) fn option_is_meta(cx: &App) -> bool {
-    let setting = cx
-        .global::<AppState>()
-        .settings
+pub(crate) fn option_is_meta(settings: SettingsView<'_>) -> bool {
+    let setting = settings
         .get("terminal.integrated.macOptionIsMeta", None)
         .unwrap_or(false);
     alt_is_meta(cfg!(target_os = "macos"), setting)

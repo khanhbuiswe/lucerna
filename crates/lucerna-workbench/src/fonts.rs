@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 
 use gpui::{App, SharedString, TextSystem};
+use lucerna_settings::SettingsView;
 
 /// Family name of the bundled editor font.
 pub const EDITOR_FONT_FAMILY: &str = "Lilex";
@@ -21,9 +22,8 @@ const FONTS: [&[u8]; 6] = [
 
 /// `editor.fontFamily` for `language` (its `[lang]` override applies),
 /// else the bundled editor font.
-pub fn editor_font_family(language: Option<&str>, cx: &App) -> SharedString {
-    cx.global::<crate::AppState>()
-        .settings
+pub fn editor_font_family(settings: SettingsView<'_>, language: Option<&str>) -> SharedString {
+    settings
         .get::<String>("editor.fontFamily", language)
         .unwrap_or_else(|| EDITOR_FONT_FAMILY.into())
         .into()

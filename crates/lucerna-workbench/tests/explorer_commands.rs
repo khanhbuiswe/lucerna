@@ -315,7 +315,9 @@ fn terminal_error_shows_status(cx: &mut TestAppContext) {
     let (_wb, cx) = open(dir.path(), cx);
     right_click("explorer-row-a.rs", cx);
     click("context-menu-item-openInTerminal", cx);
-    let message = cx.update(|_, cx| lucerna_workbench::status_message::current(cx));
+    let message = cx.update(|window, cx| {
+        lucerna_workbench::status_message::current(window.window_handle().window_id(), cx)
+    });
     let message = message.expect("a status message");
     assert!(message.contains("Couldn't open the terminal"), "{message}");
 }

@@ -40,12 +40,9 @@ fn trust_workbench<'a>(
 ) -> (Entity<Workbench>, &'a mut VisualTestContext) {
     init_with(user, cx);
     if let Some(workspace) = workspace {
-        cx.update_global::<AppState, _>(|state, _| {
-            state
-                .settings
-                .set_layer(Layer::Workspace, workspace)
-                .expect("valid workspace settings");
-        });
+        // The window reads its folder's settings when it is made.
+        fs::create_dir_all(root.join(".lucerna")).unwrap();
+        fs::write(root.join(".lucerna").join("settings.json"), workspace).unwrap();
     }
     let (root, data_dir) = (root.to_path_buf(), data_dir.to_path_buf());
     let (wb, cx) =

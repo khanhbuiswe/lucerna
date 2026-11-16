@@ -221,25 +221,29 @@ fn untrusted_workspace_server_not_listed_as_found(cx: &mut TestAppContext) {
     let dir = rust_project();
     let launcher = Arc::new(FakeLauncher::new().with_server("evil", FakeServer::new()));
     let (wb, cx) = lsp_workbench_with(dir.path(), launcher, "{}", cx);
-    cx.update(|_, cx| {
-        cx.update_global::<AppState, _>(|state, _| {
-            state
-                .settings
-                .set_layer(
-                    Layer::Workspace,
-                    r#"{ "lsp": { "evil": { "command": "evil", "file_types": ["rb"] } } }"#,
-                )
-                .unwrap();
+    let settings = cx.update(|_, cx| wb.read(cx).settings().clone());
+    settings
+        .update(cx, |s, cx| {
+            s.set_workspace_json(
+                r#"{ "lsp": { "evil": { "command": "evil", "file_types": ["rb"] } } }"#,
+                cx,
+            )
         })
-    });
+        .unwrap();
     settle(cx);
     let servers = language_servers(&wb, cx);
     assert!(!cx.update(|_, cx| servers.read(cx).is_trusted()));
 
     show_health(&wb, cx);
-    let rows = rows(&wb, cx);
-    assert!(!rows.is_empty());
-    assert!(!found(&rows, "evil"), "{rows:#?}");
+    let untrusted = rows(&wb, cx);
+    assert!(!untrusted.is_empty());
+    assert!(!found(&untrusted, "evil"), "{untrusted:#?}");
+
+    // The folder's setting does reach the servers: trusted, it is listed.
+    servers.update(cx, |servers, cx| servers.set_trusted(true, cx));
+    settle(cx);
+    let trusted = rows(&wb, cx);
+    assert!(found(&trusted, "evil"), "{trusted:#?}");
 }
 
 /// Version probes of an untrusted folder run in `$HOME`: a rustup, asdf or

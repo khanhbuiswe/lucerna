@@ -25,6 +25,11 @@ const NULL: &str = "NUL";
 #[cfg(not(windows))]
 const NULL: &str = "/dev/null";
 
+/// Settings for a store with no folder settings: the app's alone.
+fn window_settings(cx: &mut gpui::App) -> Entity<lucerna_workbench::WindowSettings> {
+    cx.new(|cx| lucerna_workbench::WindowSettings::new(None, cx))
+}
+
 fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     assert!(error.is_none(), "keymap error: {error:?}");
@@ -90,7 +95,7 @@ fn isolated_git() -> GitBinary {
 fn store(root: &Path, cx: &mut TestAppContext) -> Entity<GitStore> {
     let root = root.to_path_buf();
     let store = cx.new(|cx| {
-        let mut store = GitStore::new(root, cx);
+        let mut store = GitStore::new(root, window_settings(cx), cx);
         store.use_git_for_test(isolated_git());
         store
     });
@@ -283,7 +288,7 @@ fn untrusted_runs_nothing(cx: &mut TestAppContext) {
     std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
     assert!(GitStore::has_repo_hint(&dir));
     let store = cx.new(|cx| {
-        let mut store = GitStore::new(dir.clone(), cx);
+        let mut store = GitStore::new(dir.clone(), window_settings(cx), cx);
         store.use_git_for_test(isolated_git());
         store
     });
@@ -353,7 +358,7 @@ fn failed_base_read_keeps_hunks_and_retries(cx: &mut TestAppContext) {
         .with_env("LUC_FAIL_BLOBS", &flag);
     let root = dir.clone();
     let store = cx.new(|cx| {
-        let mut store = GitStore::new(root, cx);
+        let mut store = GitStore::new(root, window_settings(cx), cx);
         store.use_git_for_test(git_bin);
         store
     });
@@ -423,7 +428,7 @@ fn buffer_tracked_before_first_rescan_gets_hunks(cx: &mut TestAppContext) {
     let (_t, dir) = repo();
     let root = dir.clone();
     let store = cx.new(|cx| {
-        let mut store = GitStore::new(root, cx);
+        let mut store = GitStore::new(root, window_settings(cx), cx);
         store.use_git_for_test(isolated_git());
         store
     });

@@ -62,7 +62,7 @@ fn init(dirs: &Dirs, cx: &mut TestAppContext) {
             .0
             .resolve("Lucide"),
     });
-    let paths = ConfigPaths::with_user_dir(dirs.user.path(), dirs.root.path());
+    let paths = ConfigPaths::user_only_with_user_dir(dirs.user.path());
     cx.update(|cx| watch_config(paths, cx));
 }
 

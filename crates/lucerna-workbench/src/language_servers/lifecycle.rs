@@ -468,7 +468,7 @@ impl LanguageServers {
             .ok()
     }
 
-    /// After any [`crate::AppState`] change: rebuilds the server table
+    /// After any change to the window's settings: rebuilds the server table
     /// when the `lsp` setting changed and applies the difference (stop,
     /// restart, retry or reconfigure), stops servers no longer selected,
     /// and finds the servers again for documents whose selection or table
@@ -528,7 +528,9 @@ impl LanguageServers {
             .docs
             .iter()
             .filter(|(_, doc)| {
-                table_changed || Some(selection(doc.language_id.as_deref(), cx)) != doc.selection
+                table_changed
+                    || Some(selection(&self.settings, doc.language_id.as_deref(), cx))
+                        != doc.selection
             })
             .map(|(path, _)| path.clone())
             .collect();
@@ -550,11 +552,12 @@ impl LanguageServers {
         let Some(def) = table.get(server) else {
             return false;
         };
-        let by_file_type =
-            || !def.file_types.is_empty() && def.enabled && selection(None, cx).enabled;
+        let by_file_type = || {
+            !def.file_types.is_empty() && def.enabled && selection(&self.settings, None, cx).enabled
+        };
         by_file_type()
             || def.languages.iter().any(|lang| {
-                let selection = selection(Some(lang), cx);
+                let selection = selection(&self.settings, Some(lang), cx);
                 selection.enabled
                     && select_servers(&selection.servers, table, Some(lang), Path::new(""))
                         .iter()

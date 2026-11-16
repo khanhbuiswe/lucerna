@@ -62,6 +62,7 @@ class LaunchTests(unittest.TestCase):
             paths = env.BenchPaths(Path(d))
             with mock.patch.object(editors.subprocess, "Popen") as popen, \
                     mock.patch.object(editors, "_lucerna_bin", return_value="/x/luc"), \
+                    mock.patch.object(editors, "_lucerna_foreground", return_value=True), \
                     mock.patch.object(editors, "_check_executable"), \
                     mock.patch.object(editors, "_lstart", return_value="T1"):
                 popen.return_value.pid = 123
@@ -69,7 +70,23 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(popen.call_args.kwargs["env"]["HOME"], str(paths.lucerna_home))
             rec = json.loads((paths.lucerna_home / editors.PIDFILE_NAME).read_text())
             self.assertEqual(rec, {"pid": 123, "lstart": "T1", "exe": "/x/luc"})
-        self.assertEqual(popen.call_args.args[0][0], "/x/luc")
+        self.assertEqual(popen.call_args.args[0],
+                         ["/x/luc", "--foreground", "/bench/data/medium"])
+
+    def test_lucerna_cmd_foreground_only_when_supported(self):
+        self.assertEqual(editors.lucerna_cmd("/x/luc", Path("/t"), True),
+                         ["/x/luc", "--foreground", "/t"])
+        self.assertEqual(editors.lucerna_cmd("/x/luc", Path("/t"), False), ["/x/luc", "/t"])
+
+    def test_lucerna_launch_refused_with_users_home(self):
+        paths = mock.Mock(lucerna_home=Path.home())
+        with mock.patch.object(editors, "_lucerna_bin", return_value="/x/luc"), \
+                mock.patch.object(editors, "_lucerna_foreground", return_value=True), \
+                mock.patch.object(editors, "_check_executable"), \
+                mock.patch.object(editors.subprocess, "Popen") as popen:
+            with self.assertRaises(ValueError):
+                editors.launch("lucerna", paths, Path("/t"))
+        popen.assert_not_called()
 
     def test_lucerna_launch_refused_when_binary_vanished(self):
         with mock.patch.object(editors, "_lucerna_bin", return_value="/nonexistent/luc"), \
@@ -99,6 +116,7 @@ class ResolveLucernaTests(unittest.TestCase):
                 self.assertIn("luc 9.9.9", editors.version("lucerna"))
         self.assertEqual(rec["path"], os.path.realpath(self.bin))
         self.assertEqual(rec["version"], "luc 9.9.9")
+        self.assertTrue(rec["foreground"], "the fake accepts any flag")
         self.assertRegex(rec["mtime"], r"^\d{4}-\d\d-\d\dT")
 
     def test_missing_or_not_executable_raises(self):

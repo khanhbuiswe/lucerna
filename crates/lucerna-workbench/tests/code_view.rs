@@ -11,7 +11,7 @@ use lucerna_syntax::{LanguageRegistry, SyntaxState};
 use lucerna_text::{Buffer, BufferSnapshot, Point, Reload, decode_file, diff_edits};
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::{AppState, OpenMode, Workbench};
+use lucerna_workbench::{AppState, OpenMode, WindowSettings, Workbench};
 
 /// Reloads `buffer` with `bytes` the way `Documents` does (a line diff
 /// applied as an edit) and shows the result in `view`; returns the changed
@@ -68,13 +68,18 @@ fn draw(cx: &mut VisualTestContext) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
 }
 
+/// The settings of a window without a folder: the app's alone.
+fn no_folder(cx: &mut gpui::App) -> Entity<WindowSettings> {
+    cx.new(|cx| WindowSettings::new(None, cx))
+}
+
 /// A code view alone in a window, showing `text`.
 fn code_view<'a>(
     text: &str,
     cx: &'a mut TestAppContext,
 ) -> (Entity<CodeView>, &'a mut VisualTestContext) {
     let snapshot = snapshot(text);
-    let (view, cx) = cx.add_window_view(|_, cx| CodeView::new(p("src/main.rs"), cx));
+    let (view, cx) = cx.add_window_view(|_, cx| CodeView::new(p("src/main.rs"), no_folder(cx), cx));
     view.update(cx, |v, cx| v.set_buffer(snapshot, cx));
     draw(cx);
     (view, cx)
@@ -85,9 +90,9 @@ fn workbench(cx: &mut TestAppContext) -> (Entity<Workbench>, &mut VisualTestCont
     let (wb, cx) =
         cx.add_window_view(|window, cx| Workbench::new(PathBuf::from("/tmp/project"), window, cx));
     wb.update(cx, |wb, cx| {
-        wb.editor_groups().update(cx, |groups, cx| {
-            groups.set_tab_body_factory(Rc::new(CodeView::tab_body), cx)
-        })
+        let body = CodeView::tab_body(wb.settings().clone());
+        wb.editor_groups()
+            .update(cx, |groups, cx| groups.set_tab_body_factory(body, cx))
     });
     (wb, cx)
 }
@@ -586,8 +591,8 @@ fn language_overrides_apply_to_their_language(cx: &mut TestAppContext) {
         cx,
         Some(r#"{"[rust]": {"editor.tabSize": 2}, "[python]": {"editor.wordWrap": "on"}}"#),
     );
-    let (rust, cx) = cx.add_window_view(|_, cx| CodeView::new(p("src/main.rs"), cx));
-    let python = cx.update(|_, cx| cx.new(|cx| CodeView::new(p("tool.py"), cx)));
+    let (rust, cx) = cx.add_window_view(|_, cx| CodeView::new(p("src/main.rs"), no_folder(cx), cx));
+    let python = cx.update(|_, cx| cx.new(|cx| CodeView::new(p("tool.py"), no_folder(cx), cx)));
     rust.read_with(cx, |v, _| {
         assert_eq!(v.tab_size(), 2);
         assert!(!v.word_wrap());
@@ -852,7 +857,7 @@ fn set_cursor_before_first_paint_centers(cx: &mut TestAppContext) {
     init(cx, None);
     // Called while the view is built, before the window first draws.
     let (view, cx) = cx.add_window_view(|_, cx| {
-        let mut v = CodeView::new(p("src/main.rs"), cx);
+        let mut v = CodeView::new(p("src/main.rs"), no_folder(cx), cx);
         v.set_buffer(snapshot(&numbered(1000)), cx);
         assert_eq!(v.visible_rows(), 0);
         v.set_cursor(pt(500, 0), cx);

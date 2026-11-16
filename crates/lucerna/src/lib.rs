@@ -1,6 +1,8 @@
 //! Lucerna (`luc`): what the command line opens, logging and the `luc` subcommands.
 
 pub mod ext_cli;
+#[cfg(unix)]
+pub mod launch;
 pub mod logging;
 pub mod lsp_cli;
 mod target;

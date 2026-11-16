@@ -78,9 +78,9 @@ fn workbench(cx: &mut TestAppContext) -> (Entity<Workbench>, &mut VisualTestCont
     let (wb, cx) =
         cx.add_window_view(|window, cx| Workbench::new(PathBuf::from("/tmp/project"), window, cx));
     wb.update(cx, |wb, cx| {
-        wb.editor_groups().update(cx, |groups, cx| {
-            groups.set_tab_body_factory(Rc::new(CodeView::tab_body), cx)
-        })
+        let body = CodeView::tab_body(wb.settings().clone());
+        wb.editor_groups()
+            .update(cx, |groups, cx| groups.set_tab_body_factory(body, cx))
     });
     (wb, cx)
 }
@@ -799,13 +799,14 @@ fn keys_go_to_search_panel_input(cx: &mut TestAppContext) {
     // The Search tab shows the workbench's search view; files code views.
     wb.update(cx, |wb, cx| {
         let search = wb.search_view().clone();
+        let code = CodeView::tab_body(wb.settings().clone());
         wb.editor_groups().update(cx, |groups, cx| {
             let body = move |tab: &lucerna_workbench::Tab,
                              window: &mut gpui::Window,
                              cx: &mut gpui::App| {
                 match tab.item {
                     TabItem::Search => search.clone().into(),
-                    _ => CodeView::tab_body(tab, window, cx),
+                    _ => code(tab, window, cx),
                 }
             };
             groups.set_tab_body_factory(Rc::new(body), cx)

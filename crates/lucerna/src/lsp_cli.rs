@@ -38,8 +38,7 @@ pub fn run(args: LspArgs) -> i32 {
 /// the app reads. The current folder's Workspace settings are never read:
 /// they could name any program.
 fn user_table() -> ServerTable {
-    let home = std::env::home_dir().unwrap_or_else(|| "/".into());
-    let path = ConfigPaths::for_root(&home).user_settings();
+    let path = ConfigPaths::user_only().user_settings();
     let mut settings = SettingsStore::with_defaults();
     if let Some(text) = read_settings(&path)
         && let Err(e) = settings.set_layer(Layer::User, &text)

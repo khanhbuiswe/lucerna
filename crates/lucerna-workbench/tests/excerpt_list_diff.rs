@@ -6,14 +6,14 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{Entity, Hsla, Modifiers, TestAppContext, VisualTestContext};
+use gpui::{AppContext as _, Entity, Hsla, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_project::{Excerpt, LineKind, LineMatch};
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::{
     AppState, ExcerptList, ExcerptListEvent, FileMeta, SearchLineRef as LineRef,
-    SearchResults as Results, SearchRow as Row, TextSource,
+    SearchResults as Results, SearchRow as Row, TextSource, WindowSettings,
 };
 use tempfile::TempDir;
 
@@ -76,7 +76,10 @@ fn diff_list(cx: &mut TestAppContext) -> (TempDir, Entity<ExcerptList>, &mut Vis
     init(cx);
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
-    let (list, cx) = cx.add_window_view(move |_, cx| ExcerptList::new(root, "diff", cx));
+    let (list, cx) = cx.add_window_view(move |_, cx| {
+        let settings = cx.new(|cx| WindowSettings::new(None, cx));
+        ExcerptList::new(root, "diff", settings, cx)
+    });
     (dir, list, cx)
 }
 

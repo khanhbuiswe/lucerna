@@ -120,7 +120,7 @@ fn init(dirs: &Dirs, cx: &mut TestAppContext) {
 
 fn init_with_config(dirs: &Dirs, cx: &mut TestAppContext) {
     init(dirs, cx);
-    let paths = ConfigPaths::with_user_dir(dirs.user.path(), dirs.project.path());
+    let paths = ConfigPaths::user_only_with_user_dir(dirs.user.path());
     cx.update(|cx| watch_config(paths, cx));
 }
 

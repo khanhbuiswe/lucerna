@@ -25,7 +25,7 @@ use crate::ui::{
     icon_button, list_button, popover_overlay, section_header, tooltip, warning_row,
 };
 use crate::workspace_state::tilde_path;
-use crate::{AppState, RecentPicker, RecentPickerEvent};
+use crate::{AppState, RecentPicker, RecentPickerEvent, WindowSettings};
 
 const OPEN_FILE_FOLDER: &str = "workbench.action.files.openFileFolder";
 const OPEN_FILE: &str = "workbench.action.files.openFile";
@@ -37,10 +37,12 @@ const PICKER_PREVIOUS: &str = "workbench.action.quickOpenNavigatePreviousInRecen
 const OPEN_ONBOARDING: &str = "lucerna.openOnboarding";
 const ABOUT: &str = "workbench.action.showAboutDialog";
 const QUIT: &str = "workbench.action.quit";
+const NEW_WINDOW: &str = crate::open_commands::NEW_WINDOW;
 
 /// The commands the Welcome screen runs; keys bound to any other command
 /// do nothing here.
 pub const WELCOME_COMMANDS: &[&str] = &[
+    NEW_WINDOW,
     OPEN_FILE_FOLDER,
     OPEN_FILE,
     OPEN_FOLDER,
@@ -152,6 +154,8 @@ pub struct WelcomeView {
     pending_chord: Vec<Keystroke>,
     /// Whether a press began on the title bar, for its drag.
     title_bar_pressed: Rc<Cell<bool>>,
+    /// This window's settings; it has no folder, so no workspace layer.
+    settings: Entity<WindowSettings>,
     _load: Task<()>,
 }
 
@@ -196,6 +200,8 @@ impl WelcomeView {
             picker: None,
             pending_chord: Vec::new(),
             title_bar_pressed: Rc::default(),
+            // A window without a folder: the app's settings alone.
+            settings: cx.new(|cx| WindowSettings::new(None, cx)),
             _load: load,
         }
     }
@@ -238,7 +244,8 @@ impl WelcomeView {
         }
         let entries = self.recent.clone().unwrap_or_default();
         let home = self.home.clone();
-        let picker = cx.new(|cx| RecentPicker::new(entries, home, cx));
+        let settings = self.settings.clone();
+        let picker = cx.new(|cx| RecentPicker::new(entries, home, settings, cx));
         let events = cx.subscribe_in(&picker, window, Self::on_picker_event);
         window.focus(&picker.focus_handle(cx), cx);
         self.picker = Some((picker, events));
@@ -258,6 +265,10 @@ impl WelcomeView {
             OPEN_ONBOARDING => cx.emit(WelcomeEvent::OpenOnboarding),
             ABOUT => crate::about::show(window, cx),
             QUIT => cx.emit(WelcomeEvent::Quit),
+            // Not inside this window's update: the router opens a window.
+            NEW_WINDOW => {
+                cx.defer(|cx| crate::router::open_welcome(crate::router::Target::NewWindow, cx))
+            }
             _ => return false,
         }
         true
@@ -444,6 +455,7 @@ impl WelcomeView {
         let mut ctx = WhenContext::default();
         ctx.set("inQuickOpen", ContextValue::Bool(self.picker.is_some()));
         ctx.set("inRecentPicker", ContextValue::Bool(self.picker.is_some()));
+        crate::keys::set_platform_flags(&mut ctx);
         let keymap = &cx.global::<AppState>().keymap;
         match keys::resolve_chord(&mut self.pending_chord, &stroke, &ctx, keymap) {
             Resolution::Command { command, .. } => {
@@ -557,7 +569,11 @@ impl WelcomeView {
                 .into_any_element()
             })
             .collect();
-        section(section_header("Get Started", cx), rows).into_any_element()
+        section(
+            section_header("Get Started", self.settings.read(cx).view(cx), cx),
+            rows,
+        )
+        .into_any_element()
     }
 
     fn render_recent(&self, recent: &[RecentEntry], cx: &mut Context<Self>) -> AnyElement {
@@ -584,7 +600,11 @@ impl WelcomeView {
                 .into_any_element(),
             );
         }
-        section(section_header("Recent", cx), rows).into_any_element()
+        section(
+            section_header("Recent", self.settings.read(cx).view(cx), cx),
+            rows,
+        )
+        .into_any_element()
     }
 
     /// Name, folder, shortcut, then a × that shows on hover or focus.

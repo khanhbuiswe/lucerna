@@ -25,6 +25,11 @@ const NULL: &str = "NUL";
 #[cfg(not(windows))]
 const NULL: &str = "/dev/null";
 
+/// Settings for a store with no folder settings: the app's alone.
+fn window_settings(cx: &mut gpui::App) -> Entity<lucerna_workbench::WindowSettings> {
+    cx.new(|cx| lucerna_workbench::WindowSettings::new(None, cx))
+}
+
 fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     assert!(error.is_none(), "keymap error: {error:?}");
@@ -100,7 +105,7 @@ fn git_store_timings(cx: &mut TestAppContext) {
     let store: Entity<GitStore> = {
         let root = dir.clone();
         let store = cx.new(|cx| {
-            let mut s = GitStore::new(root, cx);
+            let mut s = GitStore::new(root, window_settings(cx), cx);
             s.use_git_for_test(
                 GitBinary::new(PathBuf::from("git"))
                     .with_env("GIT_CONFIG_GLOBAL", NULL)

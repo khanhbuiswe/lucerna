@@ -2,6 +2,14 @@
 
 Ngày 2026-11-12. Trạng thái: đã triển khai (commit 336a5e5–a03b07b). Phần kiểm tra thủ công trên app thật (§12) chưa làm. Phần menu bar (W11, W13, W14, §9) được gộp vào theo yêu cầu bổ sung của người dùng.
 
+> **Thay một phần** bởi spec nhiều cửa sổ
+> (`2026-11-15-multi-window-design.md`): mọi cửa sổ Lucerna giờ chạy trong
+> một tiến trình `luc`. Chỗ nào spec này nói "một tiến trình một cửa sổ",
+> "khởi động `luc <path>` ở tiến trình mới" hay "nhiều tiến trình cùng ghi"
+> (W1, W8, §1 phần không làm, ghi `recent.json`, bảng `open_requests.rs`,
+> báo lỗi) thì theo spec nhiều cửa sổ: "Cửa sổ mới" mở một cửa sổ trong cùng
+> tiến trình qua `router::open`, `process.rs`/`spawn_process` đã bỏ.
+
 Những chỗ khác spec khi triển khai:
 - **Bảng menu (§9.1):** có thêm hai biến thể `Entry::Submenu` (cho Settings ▸) và `Entry::Only(Platform, …)` (cho Open… chỉ có trên macOS).
 - **Mục gần đây trong File ▸ Open Recent** chạy action riêng `OpenRecentEntry`.
@@ -26,14 +34,14 @@ Quyết định (W1–W4 là phạm vi người dùng đã đồng ý; W5–W12 
 
 | # | Quyết định | Lý do |
 |---|---|---|
-| W1 | Welcome là **root view riêng** của cửa sổ không có thư mục (`WelcomeView`), gồm title bar và một cột nội dung căn giữa. Chọn thư mục thì cửa sổ đổi root sang `Workbench` (`window.replace_root`), không mở cửa sổ mới. | `Workbench` luôn cần root, và cấu hình workspace là global gắn với một root. Zed vẽ Welcome trong workspace không có worktree, còn Lucerna không có workbench rỗng. Đổi root ngay trong cửa sổ thì không bị nháy. |
+| W1 | Welcome là **root view riêng** của cửa sổ không có thư mục (`WelcomeView`), gồm title bar và một cột nội dung căn giữa. Chọn thư mục thì cửa sổ đổi root sang `Workbench` (`window.replace_root`), không mở cửa sổ mới. | `Workbench` luôn cần root, và cấu hình workspace là global gắn với một root. Zed vẽ Welcome trong workspace không có worktree, còn Lucerna không có workbench rỗng. Đổi root ngay trong cửa sổ thì không bị nháy. *(Ghi chú 2026-11-16: "cấu hình workspace là global" không còn đúng; mỗi cửa sổ có `WindowSettings` riêng, xem spec nhiều cửa sổ §6.1. Welcome vẫn là root view riêng.)* |
 | W2 | Lệnh `workbench.action.openRecent`, phím `ctrl+r`. Picker dùng lại khung picker sẵn có (`popover`, `picker_input_row`, `picker_list`, `picker_row`, `fuzzy_filter`). | Lệnh và phím theo VS Code, giao diện dùng chung với Quick Open và theme picker. |
 | W3 | Vùng editor trống hiện watermark gồm các lệnh và phím, lấy nhãn từ keymap của người dùng. Bật/tắt bằng `workbench.tips.enabled`. | VS Code làm vậy. Zed để trống pane khi có thư mục; Lucerna lệch khỏi Zed ở đây vì người dùng đến từ VS Code cần thấy phím. Watermark đã có, chỉ mở rộng thêm. |
 | W4 | Setting `workbench.startupEditor`, mặc định `"welcomePage"`. | Theo VS Code (§5). |
 | W5 | Danh sách lưu ở `<data_dir>/recent.json`, tối đa 100 mục, mới nhất đứng đầu. Đường dẫn không còn tồn tại thì **bị ẩn khi đọc** (như Zed) và **bị loại khỏi file ở lần ghi kế tiếp**. | "Tự bỏ" đúng như yêu cầu. Kiểm tra tồn tại chạy ở luồng nền. |
 | W6 | Danh sách ghi **cấp cửa sổ**: một thư mục mở thành cửa sổ, hoặc một file mở riêng (`single_file`). File mở thành tab bên trong một thư mục thì không ghi (Quick Open đã có `RecentFiles` cho việc đó). | VS Code ghi cả file. Lucerna chỉ để màn Welcome và Open Recent đưa người dùng về đúng cửa sổ; danh sách file trong project đã có chỗ khác. |
 | W7 | Trong picker, Enter mở **thay cửa sổ hiện tại**, ⌘Enter mở **cửa sổ mới**. Ở Welcome, bấm chuột mở trong cửa sổ đó, giữ ⌘ khi bấm thì mở cửa sổ mới. | Theo VS Code. |
-| W8 | "Thay cửa sổ hiện tại" khi đang mở một thư mục: hỏi lưu như lúc đóng cửa sổ (`confirm_quit`), lưu layout, rồi **đổi root của chính cửa sổ này** sang `Workbench` của thư mục mới (`window.replace_root`), như W1. "Cửa sổ mới" thì khởi động `luc <path>` ở tiến trình mới. *(Sửa 2026-11-13; bản đầu khởi động tiến trình mới rồi đóng cửa sổ, làm cửa sổ mở lại kèm animation phóng to.)* | VS Code (File > Open Folder, `window.openFoldersInNewWindow: "default"`) và Zed (File > Open) đều đổi thư mục trong cửa sổ hiện tại. `Workbench` phát `WorkbenchEvent::Replace`; `Router` nghe rồi đổi root, cập nhật `watch_config`, danh sách gần đây và menu bar. `Workbench` cũ được giải phóng: `on_release` tắt LSP ở nền, `Worktree` dừng watcher khi drop, các view khác chỉ giữ `WeakEntity`. Test kiểm tra `Workbench` cũ không còn upgrade được. |
+| W8 | "Thay cửa sổ hiện tại" khi đang mở một thư mục: hỏi lưu như lúc đóng cửa sổ (`confirm_quit`), lưu layout, rồi **đổi root của chính cửa sổ này** sang `Workbench` của thư mục mới (`window.replace_root`), như W1. "Cửa sổ mới" thì khởi động `luc <path>` ở tiến trình mới. *(Sửa 2026-11-13; bản đầu khởi động tiến trình mới rồi đóng cửa sổ, làm cửa sổ mở lại kèm animation phóng to.)* *(Thay bởi `2026-11-15-multi-window-design.md`: "Cửa sổ mới" mở cửa sổ trong cùng tiến trình, không khởi động tiến trình nào.)* | VS Code (File > Open Folder, `window.openFoldersInNewWindow: "default"`) và Zed (File > Open) đều đổi thư mục trong cửa sổ hiện tại. `Workbench` phát `WorkbenchEvent::Replace`; `Router` nghe rồi đổi root, cập nhật `watch_config`, danh sách gần đây và menu bar. `Workbench` cũ được giải phóng: `on_release` tắt LSP ở nền, `Worktree` dừng watcher khi drop, các view khác chỉ giữ `WeakEntity`. Test kiểm tra `Workbench` cũ không còn upgrade được. |
 | W9 | Welcome trên macOS có "Open…" (⌘O, `workbench.action.files.openFileFolder`, hộp thoại chọn được cả file lẫn thư mục) và "Open Recent…" (⌃R). Trên Linux và Windows thì thay "Open…" bằng "Open File…" và "Open Folder…". | Theo VS Code ở từng nền tảng. Phím và nhãn theo nền tảng nằm ở `cfg`, nên không thêm giả định chỉ có macOS vào chỗ khác. |
 | W10 | Thêm `workbench.action.closeFolder` (`cmd+k f`): hỏi lưu, rồi **đổi root của cửa sổ này sang Welcome**, đọc lại cấu hình chỉ của người dùng (`ConfigPaths::user_only`). *(Sửa 2026-11-13, cùng lý do W8.)* | VS Code có lệnh này và ở lại cửa sổ đó. Có Welcome mà không quay lại được thì thiếu. |
 | W11 | **Menu bar đầy đủ** (§9): Lucerna, File, Edit, Selection, View, Go, Window, Help. Mục menu khai báo một lần trong một bảng ID lệnh kiểu VS Code; mục có ID chưa đăng ký thì bị ẩn. Phím cạnh mỗi mục theo keymap hiện hành của người dùng. | Yêu cầu bổ sung của người dùng. Cả VS Code lẫn Zed đều dựng menu từ chính các lệnh của editor. |

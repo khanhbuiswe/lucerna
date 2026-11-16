@@ -16,6 +16,7 @@ use gpui::{
     AnyElement, App, Context, IntoElement, Modifiers, ParentElement, Pixels, Point, Styled, Task,
     div, point, prelude::*, px,
 };
+use lucerna_settings::SettingsView;
 use lucerna_terminal::{
     LinkKind, ResolveCtx, Resolved, ViewStamp, foreground_process, link_at, resolve_path,
 };
@@ -170,8 +171,7 @@ struct LinkSettings {
     schemes: Vec<String>,
 }
 
-fn link_settings(cx: &App) -> LinkSettings {
-    let settings = &cx.global::<AppState>().settings;
+fn link_settings(settings: SettingsView<'_>) -> LinkSettings {
     let file_links = settings
         .get::<serde_json::Value>("terminal.integrated.enableFileLinks", None)
         .is_none_or(|v| match v {
@@ -423,7 +423,7 @@ impl TerminalView {
     /// the cache or on a background thread. Whether `c` is, or may turn out
     /// to be, a link.
     fn take_candidate(&mut self, c: Candidate, open: bool, cx: &mut Context<Self>) -> bool {
-        let settings = link_settings(cx);
+        let settings = link_settings(self.settings.read(cx).view(cx));
         let shown = |target| ShownLink {
             start: c.start,
             end: c.end,

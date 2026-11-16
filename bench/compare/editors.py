@@ -83,7 +83,7 @@ def _zed_dir(paths: BenchPaths) -> str:
     return str(paths.profiles / "zed")
 
 
-_LUCERNA: dict = {}   # cached resolution: {"path", "mtime", "version"}
+_LUCERNA: dict = {}   # cached resolution: {"path", "mtime", "version", "foreground"}
 
 
 def _find_lucerna() -> str:
@@ -113,7 +113,9 @@ def _check_executable(path: str) -> None:
 
 def resolve_lucerna(refresh: bool = False) -> dict:
     """Resolve the Lucerna binary once and cache it: {"path", "mtime" (ISO,
-    UTC), "version" (`luc --version`)}. Raises BinaryMissing."""
+    UTC), "version" (`luc --version`), "foreground" (it takes `--foreground`:
+    builds since the one-process app; older ones reject the flag)}. Raises
+    BinaryMissing."""
     if _LUCERNA and not refresh:
         return dict(_LUCERNA)
     path = os.path.realpath(_find_lucerna())
@@ -124,14 +126,32 @@ def resolve_lucerna(refresh: bool = False) -> dict:
                            timeout=30).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         v = ""
+    try:
+        foreground = subprocess.run([path, "--foreground", "--version"],
+                                    capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        foreground = False
     _LUCERNA.clear()
     _LUCERNA.update({"path": path, "mtime": mtime.isoformat(timespec="seconds"),
-                     "version": v})
+                     "version": v, "foreground": foreground})
     return dict(_LUCERNA)
 
 
 def _lucerna_bin() -> str:
     return resolve_lucerna()["path"]
+
+
+def _lucerna_foreground() -> bool:
+    return resolve_lucerna().get("foreground", False)
+
+
+def lucerna_cmd(exe: str, target: Path, foreground: bool) -> list[str]:
+    """The command that runs Lucerna on `target` as the measured process.
+    Since the one-process app, a bare `luc <path>` hands the path to a
+    running app or starts one apart from the terminal and exits, so the
+    pid would not be the app's: `--foreground` runs the app in the process
+    started here. Older builds have no such flag and always do."""
+    return [exe, "--foreground", str(target)] if foreground else [exe, str(target)]
 
 
 def main_executable(editor: str) -> str:
@@ -168,7 +188,12 @@ def launch(editor: str, paths: BenchPaths, target: Path) -> Launched:
     elif editor == "lucerna":
         exe = _lucerna_bin()
         _check_executable(exe)   # vanished since the run started (rebuild, clean)
-        cmd = [exe, str(target)]
+        cmd = lucerna_cmd(exe, target, _lucerna_foreground())
+        # A HOME of its own: the bench app has its own data dir, so its own
+        # `luc` socket, and never hands paths to (or takes them from) the
+        # Lucerna the user runs.
+        if Path(paths.lucerna_home).resolve() == Path.home().resolve():
+            raise ValueError("the Lucerna bench HOME must not be the user's HOME")
         env = {**os.environ, "HOME": str(paths.lucerna_home)}
     else:
         raise ValueError(f"unknown editor: {editor}")

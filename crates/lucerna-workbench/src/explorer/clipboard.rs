@@ -203,6 +203,7 @@ pub(crate) fn transfer(
     window: &mut Window,
     cx: &mut Context<Workbench>,
 ) -> Option<Task<Result<(), std::io::ErrorKind>>> {
+    let win = window.window_handle().window_id();
     let name = src.file_name()?.to_string_lossy().into_owned();
     let root = wb.root().to_path_buf();
     let src_rel = src.strip_prefix(&root).ok()?;
@@ -214,7 +215,7 @@ pub(crate) fn transfer(
         return None;
     }
     if fs_ops::is_within(&dest_dir, &src) {
-        status_message::show(format!("Cannot paste '{name}' into itself."), cx);
+        status_message::show(win, format!("Cannot paste '{name}' into itself."), cx);
         return None;
     }
     let snapshot = wb.worktree().snapshot();
@@ -312,7 +313,7 @@ pub(crate) fn transfer(
             Err((e, partial)) => {
                 let verb = after.verb();
                 let partial = if partial { " (partially copied)" } else { "" };
-                status_message::show(format!("Unable to {verb} '{name}': {e}{partial}"), cx);
+                status_message::show(win, format!("Unable to {verb} '{name}': {e}{partial}"), cx);
                 Err(e.kind())
             }
             Ok(()) => {

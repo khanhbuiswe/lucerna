@@ -34,6 +34,7 @@ use lucerna_editor::indentation::Indentation;
 use lucerna_editor::{EditKind, Goal, Motion, Selection, SelectionSet, autoclose, move_selections};
 use lucerna_git::Hunk;
 use lucerna_lsp::diagnostics::Diagnostic;
+use lucerna_settings::SettingsView;
 use lucerna_syntax::{SyntaxState, indent_folds};
 use lucerna_text::{Bias, Buffer, BufferSnapshot, LoadError, Patch, Point, Reload};
 
@@ -58,7 +59,7 @@ use crate::language_servers::LanguageServers;
 use crate::layout::color;
 use crate::tasks::{catch_panic, guarded};
 use crate::ui::{GRID, ScrollMetrics, ScrollbarSource, ScrollbarState, scrollbar};
-use crate::{AppState, CommandRegistry, Workbench};
+use crate::{AppState, CommandRegistry, WindowSettings, Workbench};
 
 /// The status-bar text shown while the active view is a large file.
 pub const LARGE_FILE_STATUS: &str = "Large file: highlighting disabled";
@@ -112,13 +113,12 @@ impl Config {
     /// The settings for a view of `language` (a language id such as
     /// `"rust"`), so `"[rust]": {...}` overrides apply.
     fn read(
+        settings: SettingsView<'_>,
         language: Option<&str>,
         detected: Option<Indentation>,
-        cx: &App,
     ) -> (Config, f32, bool) {
-        let settings = &cx.global::<AppState>().settings;
         let config = Config {
-            font_family: crate::fonts::editor_font_family(language, cx),
+            font_family: crate::fonts::editor_font_family(settings, language),
             line_height: settings.get("editor.lineHeight", language).unwrap_or(1.6),
             minimap: settings
                 .get("editor.minimap.enabled", language)
@@ -297,7 +297,9 @@ pub struct CodeView {
     /// change overrides zoom and the wrap toggle only when these change.
     settings_font_size: f32,
     settings_word_wrap: bool,
-    /// Re-reads the config whenever [`AppState`] changes.
+    /// The window's settings, which the config is read from.
+    settings: Entity<WindowSettings>,
+    /// Re-reads the config whenever the window's settings change.
     _settings: Subscription,
     scroll: Scroll,
     scroll_x: f32,
@@ -419,14 +421,15 @@ pub struct CodeView {
 
 impl CodeView {
     /// An empty view of `path`; [`CodeView::set_buffer`] gives it text.
-    pub fn new(path: Arc<Path>, cx: &mut Context<Self>) -> Self {
+    pub fn new(path: Arc<Path>, settings: Entity<WindowSettings>, cx: &mut Context<Self>) -> Self {
         // A first guess; `Documents` sets the language it resolves.
-        let language_id = cx
-            .global::<AppState>()
-            .languages
+        let language_id = settings
+            .read(cx)
+            .languages(cx)
             .language_for_file(&path, "")
             .map(|lang| lang.id.clone());
-        let (config, font_size, word_wrap) = Config::read(language_id.as_deref(), None, cx);
+        let (config, font_size, word_wrap) =
+            Config::read(settings.read(cx).view(cx), language_id.as_deref(), None);
         let snapshot = Buffer::from_bytes(b"", false)
             .expect("empty text decodes")
             .snapshot();
@@ -446,7 +449,8 @@ impl CodeView {
             word_wrap,
             settings_font_size: font_size,
             settings_word_wrap: word_wrap,
-            _settings: cx.observe_global::<AppState>(Self::reload_config),
+            _settings: cx.observe(&settings, |view, _, cx| view.reload_config(cx)),
+            settings,
             scroll: Scroll::default(),
             scroll_x: 0.,
             max_line_width: 0.,
@@ -502,15 +506,24 @@ impl CodeView {
     }
 
     /// A [`crate::TabBodyFactory`] that gives each file tab an empty code
-    /// view (other tabs get [`crate::placeholder_body`]).
-    pub fn tab_body(tab: &Tab, window: &mut Window, cx: &mut App) -> AnyView {
-        match tab.path() {
-            Some(path) => {
-                let path = path.clone();
-                cx.new(|cx| CodeView::new(path, cx)).into()
-            }
-            None => crate::placeholder_body(tab, window, cx),
-        }
+    /// view reading `settings` (other tabs get [`crate::placeholder_body`]).
+    pub fn tab_body(settings: Entity<WindowSettings>) -> crate::TabBodyFactory {
+        Rc::new(
+            move |tab: &Tab, window: &mut Window, cx: &mut App| -> AnyView {
+                match tab.path() {
+                    Some(path) => {
+                        let (path, settings) = (path.clone(), settings.clone());
+                        cx.new(|cx| CodeView::new(path, settings, cx)).into()
+                    }
+                    None => crate::placeholder_body(tab, window, cx),
+                }
+            },
+        )
+    }
+
+    /// The window's settings this view reads.
+    pub fn settings(&self) -> &Entity<WindowSettings> {
+        &self.settings
     }
 
     pub fn path(&self) -> &Arc<Path> {
@@ -720,10 +733,14 @@ impl CodeView {
     /// Re-reads the `editor.*` settings and applies what changed:
     /// font, line height, wrap, minimap, whitespace, tab size and the
     /// large-file limits. Font-size zoom and the wrap toggle survive
-    /// unless their setting changed, and the top visible row stays. Called on every [`AppState`] change.
+    /// unless their setting changed, and the top visible row stays. Called
+    /// on every change to the window's settings.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
-        let (config, font_size, word_wrap) =
-            Config::read(self.language_id.as_deref(), self.indentation, cx);
+        let (config, font_size, word_wrap) = Config::read(
+            self.settings.read(cx).view(cx),
+            self.language_id.as_deref(),
+            self.indentation,
+        );
         let old_line_height = self.line_height();
         let mut changed = false;
         let mut wrap_changed = false;

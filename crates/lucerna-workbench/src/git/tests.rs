@@ -44,8 +44,9 @@ fn job_moving_the_base_rediffs_buffers_it_did_not_reload(cx: &mut TestAppContext
     git(&dir, &["commit", "-q", "-am", "two"]);
 
     let root = dir.clone();
+    let settings = cx.new(|cx| WindowSettings::new(None, cx));
     let store = cx.new(|cx| {
-        let mut store = GitStore::new(root, cx);
+        let mut store = GitStore::new(root, settings, cx);
         store.use_git_for_test(
             GitBinary::new(PathBuf::from("git"))
                 .with_env("GIT_CONFIG_GLOBAL", NULL)
@@ -99,33 +100,40 @@ fn job_moving_the_base_rediffs_buffers_it_did_not_reload(cx: &mut TestAppContext
     assert_eq!(hunks.as_deref(), Some(&[][..]));
 }
 
-/// `git.path` is read from the User layer only, and only when absolute.
+/// `git.path` is read from the User layer only, and only when absolute:
+/// a window's view holds its folder's settings, which choose
+/// `git.enabled` but never the binary.
 #[test]
 fn git_path_comes_from_the_user_layer_only() {
-    use lucerna_settings::Layer;
+    use lucerna_settings::{Layer, SettingsStore, WorkspaceLayer};
     let abs = if cfg!(windows) {
         r"C:\\git\\git.exe"
     } else {
         "/opt/git/bin/git"
     };
     let mut store = SettingsStore::with_defaults();
-    store
-        .set_layer(Layer::Workspace, &format!(r#"{{ "git.path": "{abs}" }}"#))
-        .unwrap();
-    assert_eq!(GitSettings::from_store(&store).path, None);
+    let workspace = WorkspaceLayer::parse(&format!(
+        r#"{{ "git.path": "{abs}", "git.enabled": false }}"#
+    ))
+    .unwrap();
+    // The window's view, as `GitStore` reads it: the folder's layer is
+    // there (it turns git off) but its `git.path` is skipped.
+    let settings = GitSettings::from_view(store.view(Some(&workspace)));
+    assert!(!settings.enabled, "the workspace layer is read");
+    assert_eq!(settings.path, None);
 
     store
         .set_layer(Layer::User, &format!(r#"{{ "git.path": "{abs}" }}"#))
         .unwrap();
     assert_eq!(
-        GitSettings::from_store(&store).path,
+        GitSettings::from_view(store.view(Some(&workspace))).path,
         Some(PathBuf::from(abs))
     );
 
     store
         .set_layer(Layer::User, r#"{ "git.path": "bin/git" }"#)
         .unwrap();
-    assert_eq!(GitSettings::from_store(&store).path, None);
+    assert_eq!(GitSettings::from_view(store.view(None)).path, None);
 }
 
 #[test]

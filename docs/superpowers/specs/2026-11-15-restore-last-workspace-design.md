@@ -2,6 +2,11 @@
 
 Ngày: 2026-11-15. Trạng thái: người dùng chọn "làm như Zed".
 
+> **Đã thay thế** bởi spec nhiều cửa sổ
+> (`2026-11-15-multi-window-design.md`, M12 và §6.6): `window.restoreWindows`
+> mặc định `"all"`, mở lại mọi cửa sổ trong `windows.json`; `recent.json`
+> chỉ còn là fallback khi danh sách cửa sổ rỗng.
+
 ## Ý định
 
 Mở một folder, thoát Lucerna, mở lại từ Dock thì Lucerna hiện Welcome

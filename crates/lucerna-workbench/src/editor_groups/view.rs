@@ -10,10 +10,10 @@ use gpui::{
     AnyView, App, ClickEvent, Context, Div, DragMoveEvent, Entity, IntoElement, MouseButton,
     ParentElement, Pixels, Render, SharedString, Styled, Window, div, prelude::*, px, relative,
 };
+use lucerna_settings::SettingsView;
 use lucerna_theme::{IconSource, Rgba, UiColors};
 
 use super::model::{EditorGroups, GroupsState, Tab, TabId, TabItem};
-use crate::AppState;
 use crate::conflict_bar::{self, BarActions};
 use crate::documents::{DiskNotice, DocState, Documents};
 use crate::icons;
@@ -27,6 +27,7 @@ use crate::ui::{
     self, ClickHandler, GRID, PATH_BAR_HEIGHT, SashGhost, TAB_PADDING_X, UI_FONT_SIZE,
     UI_FONT_SIZE_SMALL, icon_button, tooltip,
 };
+use crate::{AppState, WindowSettings};
 
 /// What a file tab's dot says about its document.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -95,6 +96,8 @@ pub struct EditorGroupsView {
     hovered_tab: Option<TabId>,
     /// Consulted for each tab's title: deleted files are struck through.
     documents: Option<Entity<Documents>>,
+    /// The window's settings the tabs, breadcrumbs and empty groups read.
+    settings: Entity<WindowSettings>,
     /// The workspace root: path bars show paths relative to it.
     root: Option<PathBuf>,
     /// The user's home folder, shown as `~` in path bars; read when the
@@ -114,8 +117,9 @@ pub struct EditorGroupsView {
     on_command: Option<RunCommand>,
 }
 
-impl Default for EditorGroupsView {
-    fn default() -> Self {
+impl EditorGroupsView {
+    /// An editor area of one empty group, reading the window's `settings`.
+    pub fn new(settings: Entity<WindowSettings>) -> Self {
         EditorGroupsView {
             model: EditorGroups::default(),
             widths: vec![1.0],
@@ -123,6 +127,7 @@ impl Default for EditorGroupsView {
             make_body: Rc::new(placeholder_body),
             hovered_tab: None,
             documents: None,
+            settings,
             root: None,
             home: std::env::home_dir(),
             search_title: None,
@@ -136,8 +141,7 @@ impl Default for EditorGroupsView {
 }
 
 /// `workbench.editor.showIcons`: icons on every tab, default on.
-fn show_tab_icons(cx: &App) -> bool {
-    let settings = &cx.global::<AppState>().settings;
+fn show_tab_icons(settings: SettingsView<'_>) -> bool {
     settings
         .get("workbench.editor.showIcons", None)
         .unwrap_or(true)
@@ -165,7 +169,7 @@ impl EditorGroupsView {
     /// The icon of tab `ti` in group `gi`; `None` when the tab does not
     /// exist or `workbench.editor.showIcons` is off.
     pub fn tab_icon(&self, gi: usize, ti: usize, cx: &App) -> Option<IconSource> {
-        if !show_tab_icons(cx) {
+        if !show_tab_icons(self.settings_view(cx)) {
             return None;
         }
         let tab = self.model.groups().get(gi)?.tabs.get(ti)?;
@@ -402,6 +406,11 @@ impl EditorGroupsView {
         self.documents = Some(documents);
     }
 
+    /// The window's settings.
+    fn settings_view<'a>(&'a self, cx: &'a App) -> SettingsView<'a> {
+        self.settings.read(cx).view(cx)
+    }
+
     /// The Search tab's title: `title` when `Some`, else "Search".
     pub fn set_search_title(&mut self, title: Option<SharedString>, cx: &mut Context<Self>) {
         if self.search_title != title {
@@ -501,7 +510,7 @@ impl EditorGroupsView {
         let source = match &tab.item {
             TabItem::File(path) => {
                 let root = self.root.as_deref().unwrap_or(Path::new(""));
-                if !markdown_preview::is_markdown(root, path, cx) {
+                if !markdown_preview::is_markdown(root, path, &self.settings, cx) {
                     return None;
                 }
                 true
@@ -553,7 +562,7 @@ impl EditorGroupsView {
         let text = self.path_bar_text(group)?;
         Some(Crumbs {
             segments: breadcrumb_segments(&text, &[], settings.file_path, settings.symbol_path),
-            font: crate::fonts::editor_font_family(None, cx),
+            font: crate::fonts::editor_font_family(self.settings_view(cx), None),
         })
     }
 
@@ -562,7 +571,7 @@ impl EditorGroupsView {
     /// [`EditorGroupsView::path_bar_text`]) when they are disabled or the
     /// tab is not a file.
     pub fn breadcrumbs_text(&self, group: usize, cx: &App) -> Option<String> {
-        match self.crumbs(group, &BreadcrumbSettings::read(cx), cx) {
+        match self.crumbs(group, &BreadcrumbSettings::read(self.settings_view(cx)), cx) {
             Some(crumbs) => Some(segments_text(&crumbs.segments)),
             None => self.path_bar_text(group),
         }
@@ -660,8 +669,8 @@ impl Render for EditorGroupsView {
             .collect();
         let count = self.model.groups().len();
         let focused_group = self.model.active_group();
-        let crumbs_settings = BreadcrumbSettings::read(cx);
-        let show_icons = show_tab_icons(cx);
+        let crumbs_settings = BreadcrumbSettings::read(self.settings_view(cx));
+        let show_icons = show_tab_icons(self.settings_view(cx));
         let appearance = cx.global::<AppState>().theme.appearance;
         self.breadcrumbs.retain(|id, _| live.contains(id));
         let mut row = div()
@@ -817,7 +826,7 @@ impl Render for EditorGroupsView {
                 .and_then(|tab| self.disk_bar(gi, tab, cx));
             let body = match body {
                 Some(body) => body.into_any_element(),
-                None => empty_hint(ui, cx),
+                None => empty_hint(ui, self.settings_view(cx), cx),
             };
             let sash = (gi + 1 < count).then(|| {
                 div()
@@ -910,10 +919,9 @@ const WATERMARK_COMMANDS: [(&str, &str); 5] = [
 /// user's current shortcuts (labels right-aligned, keys left-aligned).
 /// Commands without a key are skipped. `workbench.tips.enabled = false`
 /// leaves just the area background.
-fn empty_hint(ui: &UiColors, cx: &App) -> gpui::AnyElement {
+fn empty_hint(ui: &UiColors, settings: SettingsView<'_>, cx: &App) -> gpui::AnyElement {
     let state = cx.global::<AppState>();
-    let enabled = state
-        .settings
+    let enabled = settings
         .get::<bool>("workbench.tips.enabled", None)
         .unwrap_or(true);
     if !enabled {

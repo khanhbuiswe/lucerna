@@ -19,12 +19,12 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{Entity, TestAppContext, TestDispatcher, VisualTestContext, size};
+use gpui::{AppContext as _, Entity, TestAppContext, TestDispatcher, VisualTestContext, size};
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_terminal::{Rgba8, Terminal, TerminalPalette, layout_line};
 use lucerna_theme::ThemeRegistry;
-use lucerna_workbench::{AppState, TerminalView, fonts, terminal_font};
+use lucerna_workbench::{AppState, TerminalView, WindowSettings, fonts, terminal_font};
 
 const ROWS: u16 = 60;
 const COLS: u16 = 200;
@@ -152,7 +152,7 @@ fn check_baseline(view: &Entity<TerminalView>, cx: &mut VisualTestContext) {
         cell.expect("a drawn cell"),
     );
     let layout = cx.update(|window, cx| {
-        let font = terminal_font(cx);
+        let font = terminal_font(view.read(cx).settings().read(cx).view(cx));
         let runs = [gpui::TextRun {
             len: 1,
             font: gpui::Font {
@@ -189,7 +189,8 @@ fn main() {
 
     let (view, cx) = app.add_window_view(|window, cx| {
         let (terminal, events) = Terminal::fake_with_events(ROWS, COLS, 10_000);
-        TerminalView::new(terminal, events, window, cx)
+        let settings = cx.new(|cx| WindowSettings::new(None, cx));
+        TerminalView::new(terminal, events, settings, window, cx)
     });
     // An M1's display, and a window just big enough for 200×60.
     cx.simulate_scale_factor_change(2.0);

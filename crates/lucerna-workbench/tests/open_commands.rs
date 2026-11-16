@@ -1,14 +1,10 @@
 //! Opening from the workbench: the Open Recent picker (`ctrl-r`), Enter
-//! asking to replace the workbench in its window, `⌘Enter` opening a new
-//! one, Close Folder going back to Welcome, Clear Recently Opened, and
-//! Open… on a picked path. A fake process spawner records what a new `luc`
-//! would open; the [`WorkbenchEvent::Replace`] events are recorded too
-//! (the app's router acts on them; `tests/welcome.rs` covers that).
+//! replacing the workbench in its window, `⌘Enter` opening a new window in
+//! this process, Close Folder going back to Welcome, Clear Recently
+//! Opened, and Open… on a picked path. The app's router does the opening
+//! (`tests/multi_window.rs` covers it).
 
-use std::cell::RefCell;
-use std::io;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
@@ -16,15 +12,10 @@ use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::{IconThemeRegistry, ThemeRegistry};
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::process::{SpawnRequest, Spawner};
 use lucerna_workbench::recent::{RecentStore, load, recent_path};
-use lucerna_workbench::{
-    AppState, OpenMode, WelcomeView, Workbench, WorkbenchEvent, browser_url, status_message,
-};
+use lucerna_workbench::{AppState, OpenMode, WelcomeView, Workbench, browser_url, status_message};
 
 const CLEAR_MESSAGE: &str = "Do you want to clear all recently opened folders?";
-
-type Spawns = Rc<RefCell<Vec<SpawnRequest>>>;
 
 /// A temporary folder holding the data dir (`data/recent.json`), the
 /// workbench's `root`, and the recent folders named.
@@ -67,9 +58,8 @@ impl Fixture {
     }
 }
 
-/// Sets the app state, the recent store on the fixture's data dir, and a
-/// spawner that records requests (and fails them when `fail`).
-fn init(fixture: &Fixture, fail: bool, cx: &mut TestAppContext) -> Spawns {
+/// Sets the app state and the recent store on the fixture's data dir.
+fn init(fixture: &Fixture, cx: &mut TestAppContext) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     assert!(error.is_none(), "keymap error: {error:?}");
     let themes = ThemeRegistry::builtin();
@@ -88,17 +78,6 @@ fn init(fixture: &Fixture, fail: bool, cx: &mut TestAppContext) -> Spawns {
     cx.set_global(RecentStore {
         data_dir: Some(fixture.path("data")),
     });
-    let spawns: Spawns = Rc::default();
-    let sink = spawns.clone();
-    cx.set_global(Spawner(Rc::new(move |request: &SpawnRequest| {
-        sink.borrow_mut().push(request.clone());
-        if fail {
-            Err(io::Error::other("no such program"))
-        } else {
-            Ok(())
-        }
-    })));
-    spawns
 }
 
 fn workbench<'a>(
@@ -111,19 +90,18 @@ fn workbench<'a>(
     (wb, cx)
 }
 
-type Replaced = Rc<RefCell<Vec<SpawnRequest>>>;
+/// The folder of the workbench the test's window shows, if it shows one.
+fn shown_root(cx: &mut VisualTestContext) -> Option<PathBuf> {
+    cx.update(|window, cx| {
+        window
+            .root::<Workbench>()
+            .flatten()
+            .map(|wb| wb.read(cx).root().to_path_buf())
+    })
+}
 
-/// Records the workbench's [`WorkbenchEvent::Replace`] requests.
-fn record_replace(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Replaced {
-    let replaced: Replaced = Rc::default();
-    let sink = replaced.clone();
-    cx.update(|_, cx| {
-        cx.subscribe(wb, move |_, event: &WorkbenchEvent, _| match event {
-            WorkbenchEvent::Replace(request) => sink.borrow_mut().push(request.clone()),
-        })
-        .detach();
-    });
-    replaced
+fn shows_welcome(cx: &mut VisualTestContext) -> bool {
+    cx.update(|window, _| window.root::<WelcomeView>().flatten().is_some())
 }
 
 fn draw(cx: &mut VisualTestContext) {
@@ -161,7 +139,7 @@ fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
 }
 
 fn status(cx: &mut VisualTestContext) -> String {
-    cx.update(|_, cx| status_message::current(cx))
+    cx.update(|window, cx| status_message::current(window.window_handle().window_id(), cx))
         .map(|s| s.to_string())
         .unwrap_or_default()
 }
@@ -194,7 +172,7 @@ fn dirty_file(wb: &Entity<Workbench>, fixture: &Fixture, cx: &mut VisualTestCont
 #[gpui::test]
 fn ctrl_r_shows_picker_without_current_folder(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["root", "other"]);
-    init(&fixture, false, cx);
+    init(&fixture, cx);
     let (wb, cx) = workbench(&fixture, cx);
     keys("ctrl-r", cx);
     let rows = picker_rows(&wb, cx);
@@ -205,7 +183,7 @@ fn ctrl_r_shows_picker_without_current_folder(cx: &mut TestAppContext) {
 #[gpui::test]
 fn ctrl_r_again_moves_selection(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other", "third"]);
-    init(&fixture, false, cx);
+    init(&fixture, cx);
     let (wb, cx) = workbench(&fixture, cx);
     keys("ctrl-r", cx);
     keys("ctrl-r", cx);
@@ -231,7 +209,7 @@ fn ctrl_r_again_moves_selection(cx: &mut TestAppContext) {
 #[gpui::test]
 fn escape_closes_the_picker(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other"]);
-    init(&fixture, false, cx);
+    init(&fixture, cx);
     let (wb, cx) = workbench(&fixture, cx);
     keys("ctrl-r", cx);
     keys("escape", cx);
@@ -241,86 +219,60 @@ fn escape_closes_the_picker(cx: &mut TestAppContext) {
 #[gpui::test]
 fn enter_replaces_the_window(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other"]);
-    let spawns = init(&fixture, false, cx);
-    let (wb, cx) = workbench(&fixture, cx);
-    let replaced = record_replace(&wb, cx);
+    init(&fixture, cx);
+    let (_wb, cx) = workbench(&fixture, cx);
     keys("ctrl-r", cx);
     keys("enter", cx);
-    assert_eq!(
-        *replaced.borrow(),
-        vec![SpawnRequest::Path(fixture.path("other"))]
-    );
-    assert!(spawns.borrow().is_empty(), "no new process");
-    assert_eq!(window_count(cx), 1, "the window stays");
+    assert_eq!(shown_root(cx), Some(fixture.path("other")));
+    assert_eq!(window_count(cx), 1, "the same window");
 }
 
 #[gpui::test]
-fn cmd_enter_spawns_and_keeps_the_window(cx: &mut TestAppContext) {
+fn cmd_enter_opens_a_new_window(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other"]);
-    let spawns = init(&fixture, false, cx);
+    init(&fixture, cx);
     let (wb, cx) = workbench(&fixture, cx);
     keys("ctrl-r", cx);
     keys("cmd-enter", cx);
-    assert_eq!(
-        *spawns.borrow(),
-        vec![SpawnRequest::Path(fixture.path("other"))]
-    );
-    assert_eq!(window_count(cx), 1);
+    assert_eq!(window_count(cx), 2, "a new window in this process");
+    assert_eq!(shown_root(cx), Some(fixture.path("root")), "this one stays");
     assert!(cx.update(|_, cx| wb.read(cx).recent_picker().is_none()));
 }
 
 #[gpui::test]
 fn cancel_on_unsaved_prompt_keeps_everything(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other"]);
-    let spawns = init(&fixture, false, cx);
+    init(&fixture, cx);
     let (wb, cx) = workbench(&fixture, cx);
-    let replaced = record_replace(&wb, cx);
     dirty_file(&wb, &fixture, cx);
     keys("ctrl-r", cx);
     keys("enter", cx);
     assert!(cx.has_pending_prompt(), "asks to save");
     cx.simulate_prompt_answer("Cancel");
     settle(cx);
-    assert!(spawns.borrow().is_empty());
-    assert!(replaced.borrow().is_empty());
+    assert_eq!(shown_root(cx), Some(fixture.path("root")));
     assert_eq!(window_count(cx), 1);
 }
 
 #[gpui::test]
-fn failed_spawn_keeps_window_and_reports(cx: &mut TestAppContext) {
-    let fixture = Fixture::new(&["other"]);
-    let spawns = init(&fixture, true, cx);
-    let (_wb, cx) = workbench(&fixture, cx);
-    keys("ctrl-r", cx);
-    keys("cmd-enter", cx);
-    assert_eq!(spawns.borrow().len(), 1);
-    assert_eq!(window_count(cx), 1);
-    let status = status(cx);
-    assert!(status.starts_with("Could not open "), "{status:?}");
-    assert!(status.contains("other"), "{status:?}");
-}
-
-#[gpui::test]
-fn close_folder_asks_for_welcome(cx: &mut TestAppContext) {
+fn close_folder_shows_welcome(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&[]);
-    let spawns = init(&fixture, false, cx);
-    let (wb, cx) = workbench(&fixture, cx);
-    let replaced = record_replace(&wb, cx);
+    init(&fixture, cx);
+    let (_wb, cx) = workbench(&fixture, cx);
     keys("cmd-k f", cx);
-    assert_eq!(*replaced.borrow(), vec![SpawnRequest::Welcome]);
-    assert!(spawns.borrow().is_empty(), "no new process");
-    assert_eq!(window_count(cx), 1, "the window stays");
+    assert!(shows_welcome(cx));
+    assert_eq!(window_count(cx), 1, "the same window");
 }
 
 #[gpui::test]
 fn vanished_folder_in_picker_reports(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other", "third"]);
-    let spawns = init(&fixture, false, cx);
+    init(&fixture, cx);
     let (_wb, cx) = workbench(&fixture, cx);
     keys("ctrl-r", cx);
     std::fs::remove_dir(fixture.path("other")).unwrap();
     keys("enter", cx);
-    assert!(spawns.borrow().is_empty());
+    assert_eq!(shown_root(cx), Some(fixture.path("root")));
     assert_eq!(window_count(cx), 1);
     let status = status(cx);
     assert!(status.ends_with("other no longer exists"), "{status:?}");
@@ -330,7 +282,7 @@ fn vanished_folder_in_picker_reports(cx: &mut TestAppContext) {
 #[gpui::test]
 fn clear_recent_asks_then_clears(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other", "third"]);
-    init(&fixture, false, cx);
+    init(&fixture, cx);
     let (wb, cx) = workbench(&fixture, cx);
     run(&wb, "workbench.action.clearRecentFiles", cx);
     assert_eq!(
@@ -349,7 +301,7 @@ fn clear_recent_asks_then_clears(cx: &mut TestAppContext) {
 #[gpui::test]
 fn open_file_outside_root_opens_a_tab(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&[]);
-    let spawns = init(&fixture, false, cx);
+    init(&fixture, cx);
     let (wb, cx) = workbench(&fixture, cx);
     let file = fixture.path("outside.txt");
     std::fs::write(&file, "hello\n").unwrap();
@@ -368,16 +320,14 @@ fn open_file_outside_root_opens_a_tab(cx: &mut TestAppContext) {
             .and_then(|tab| tab.path().map(|p| p.to_path_buf()))
     });
     assert_eq!(active, Some(file));
-    assert!(spawns.borrow().is_empty());
     assert_eq!(window_count(cx), 1);
 }
 
 #[gpui::test]
 fn open_folder_replaces_the_window(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other"]);
-    let spawns = init(&fixture, false, cx);
+    init(&fixture, cx);
     let (wb, cx) = workbench(&fixture, cx);
-    let replaced = record_replace(&wb, cx);
     let folder = fixture.path("other");
     cx.update(|window, cx| {
         wb.update(cx, |wb, cx| {
@@ -385,15 +335,14 @@ fn open_folder_replaces_the_window(cx: &mut TestAppContext) {
         })
     });
     cx.run_until_parked();
-    assert_eq!(*replaced.borrow(), vec![SpawnRequest::Path(folder)]);
-    assert!(spawns.borrow().is_empty(), "no new process");
-    assert_eq!(window_count(cx), 1, "the window stays");
+    assert_eq!(shown_root(cx), Some(folder));
+    assert_eq!(window_count(cx), 1, "the same window");
 }
 
 #[gpui::test]
 fn welcome_clear_recent_hides_the_list(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other"]);
-    init(&fixture, false, cx);
+    init(&fixture, cx);
     let (view, cx) = cx.add_window_view(WelcomeView::new);
     settle(cx);
     assert_eq!(
@@ -422,7 +371,7 @@ fn welcome_clear_recent_hides_the_list(cx: &mut TestAppContext) {
 #[gpui::test]
 fn welcome_ctrl_r_in_picker_moves_selection(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other", "third"]);
-    init(&fixture, false, cx);
+    init(&fixture, cx);
     let (view, cx) = cx.add_window_view(WelcomeView::new);
     settle(cx);
     keys("ctrl-r", cx);
@@ -453,7 +402,7 @@ fn open_in_browser_url_is_file_url() {
 fn palette_rows_with(name: &str, cx: &mut TestAppContext) -> Vec<String> {
     let fixture = Fixture::new(&[]);
     std::fs::write(fixture.path("root").join(name), "x").unwrap();
-    init(&fixture, false, cx);
+    init(&fixture, cx);
     let (wb, cx) = workbench(&fixture, cx);
     let path = fixture.path("root").join(name);
     wb.update(cx, |wb, cx| {

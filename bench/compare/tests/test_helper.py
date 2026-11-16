@@ -237,6 +237,16 @@ class HelperTests(unittest.TestCase):
             ["record", "--pid", "1", "--seconds", "-2"],
             ["record", "--pid", "1,x", "--seconds", "5"],
             ["record", "--pid", "1", "--seconds", "5", "--dump-dir"],
+            # --allow-resize: watch --display with --hold-ms > 0
+            ["watch", "--display", "--exe", "/x/luc", "--since", "0",
+             "--until", "coverage:0.3", "--background", "000000", "--allow-resize"],
+            ["watch", "--pid", "1", "--since", "0", "--until", "change", "--allow-resize"],
+            # --window-index: a number >= 0, for frame and scroll only
+            ["frame", "--pid", "1", "--x", "0", "--y", "25", "--w", "1280", "--h", "800",
+             "--window-index", "-1"],
+            ["scroll", "--pid", "1", "--lines", "5", "--window-index", "x"],
+            ["activate", "--pid", "1", "--window-index", "0"],
+            ["watch", "--pid", "1", "--since", "0", "--until", "change", "--window-index", "1"],
         ]
         for args in bad:
             args = [a.encode().decode("unicode_escape") for a in args]
@@ -261,6 +271,7 @@ class HelperTests(unittest.TestCase):
              "--until", "coverage:0.3", "--background", "1E1E1E"],
             DISPLAY_WATCH + ["--hold-ms", "1500"],
             DISPLAY_WATCH + ["--hold-ms", "0"],
+            DISPLAY_WATCH + ["--hold-ms", "1500", "--allow-resize"],
             ["frame", "--pid", "11,12", "--x", "-10", "--y", "25", "--w", "1280", "--h", "800"],
             ["activate", "--pid", "11,12"],
             ["watch", "--pid", "11", "--since", "0", "--until", "change",
@@ -271,6 +282,9 @@ class HelperTests(unittest.TestCase):
              "--pixels-per-event", "12", "--dump-dir", "/tmp/never-created"],
             ["record", "--pid", "11,12", "--seconds", "2.5"],
             ["record", "--pid", "11", "--seconds", "5", "--dump-dir", "/tmp/never-created"],
+            ["frame", "--pid", "11", "--x", "0", "--y", "25", "--w", "600", "--h", "400",
+             "--window-index", "1"],
+            ["scroll", "--pid", "11", "--lines", "5", "--unit", "pixel", "--window-index", "0"],
         ]
         for args in good:
             args = [a.encode().decode("unicode_escape") for a in args]
@@ -292,7 +306,8 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         for text in ("watch  --display --exe", "frame  --pid", "activate --pid", "display",
                      "--min-change", "--unit line|pixel", "--pixels-per-event",
-                     "record --pid", "--hold-ms"):
+                     "record --pid", "--hold-ms", "--window-index",
+                     "--allow-resize"):
             self.assertIn(text, r.stderr)
 
     def test_bad_usage_exits_nonzero(self):

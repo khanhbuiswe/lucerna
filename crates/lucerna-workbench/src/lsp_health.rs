@@ -257,7 +257,10 @@ impl Render for LspHealthView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = &cx.global::<AppState>().theme.ui;
         let background = color(ui.editor_background);
-        let code_font = crate::fonts::editor_font_family(None, cx);
+        let code_font = {
+            let settings = self.servers.read(cx).settings().read(cx);
+            crate::fonts::editor_font_family(settings.view(cx), None)
+        };
         // The `lsp` setting's invalid entries, above the languages.
         let errors = self.table_error_lines(cx);
         let errors =

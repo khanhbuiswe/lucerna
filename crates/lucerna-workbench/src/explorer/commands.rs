@@ -125,10 +125,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "openInTerminal",
         "Explorer: Open in External Terminal",
-        |wb, args, _, cx| {
+        |wb, args, window, cx| {
             if editing(wb, cx) {
                 return;
             }
+            let win = window.window_handle().window_id();
             let dir = terminal_dir(wb, args, cx);
             let key = if cfg!(target_os = "macos") {
                 "terminal.external.osxExec"
@@ -137,12 +138,17 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             } else {
                 "terminal.external.linuxExec"
             };
-            // The bundled defaults always provide a value.
-            let exec = cx
-                .global::<crate::AppState>()
-                .settings
-                .get::<String>(key, None)
-                .unwrap_or_default();
+            // The bundled defaults always provide a value. It names the
+            // program to run: in Restricted Mode the folder's own value is
+            // skipped (spec §6.3), as for the integrated terminal's shell.
+            let restricted = wb.is_restricted(cx);
+            let settings = wb.settings().read(cx).view(cx);
+            let exec = if restricted {
+                settings.get_trusted::<String>(key, None)
+            } else {
+                settings.get::<String>(key, None)
+            }
+            .unwrap_or_default();
             // The launcher is waited for: off the UI thread.
             let shell = system_shell(cx);
             let opened = cx
@@ -151,7 +157,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             cx.spawn(async move |_, cx| {
                 if let Err(e) = opened.await {
                     cx.update(|cx| {
-                        status_message::show(format!("Couldn't open the terminal: {e}"), cx)
+                        status_message::show(win, format!("Couldn't open the terminal: {e}"), cx)
                     });
                 }
             })
@@ -175,10 +181,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
                 return;
             }
             let (target, _) = command_target(wb, args, cx);
-            let setting = cx
-                .global::<crate::AppState>()
-                .settings
-                .get::<String>("explorer.copyRelativePathSeparator", None);
+            let setting = wb.settings().read(cx).get::<String>(
+                "explorer.copyRelativePathSeparator",
+                None,
+                cx,
+            );
             let separator = match setting.as_deref() {
                 Some("/") => "/",
                 Some("\\") => "\\",
@@ -204,6 +211,7 @@ fn delete(
     if editing(wb, cx) || wb.is_single_file() {
         return;
     }
+    let win = window.window_handle().window_id();
     let (target, kind) = target_kind(wb, args, cx);
     // A path the worktree does not know is not offered.
     let Some(is_dir) = kind else {
@@ -220,10 +228,10 @@ fn delete(
     let neighbour = wb.explorer().read(cx).neighbour_after_delete(&rel);
     let name = crate::save::display_name(&target);
     let confirm = permanent
-        || cx
-            .global::<crate::AppState>()
-            .settings
-            .get::<bool>("explorer.confirmDelete", None)
+        || wb
+            .settings()
+            .read(cx)
+            .get::<bool>("explorer.confirmDelete", None, cx)
             .unwrap_or(true);
     let answer = confirm.then(|| {
         if permanent {
@@ -276,7 +284,7 @@ fn delete(
             }
             Err(e) => {
                 wb.forget_own_changes(std::slice::from_ref(&deleted.rel));
-                status_message::show(format!("Unable to delete '{}': {e}", deleted.name), cx);
+                status_message::show(win, format!("Unable to delete '{}': {e}", deleted.name), cx);
             }
         });
     })

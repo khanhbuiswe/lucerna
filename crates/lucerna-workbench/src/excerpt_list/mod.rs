@@ -21,13 +21,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, Hsla, KeyDownEvent, ListAlignment, ListOffset,
-    ListState, Pixels, Task, px,
+    App, Context, Entity, EventEmitter, FocusHandle, Hsla, KeyDownEvent, ListAlignment, ListOffset,
+    ListState, Pixels, Subscription, Task, px,
 };
 use lucerna_project::{Excerpt, LineKind};
 
-use crate::AppState;
 use crate::layout::color;
+use crate::{AppState, WindowSettings};
 use highlight::{FileHighlights, HighlightCache, LineSpans};
 use model::{FileMeta, LineAnchor, LineRef, Results, Row};
 use render::{editor_line_height, header_height, row_height};
@@ -59,6 +59,9 @@ pub struct ExcerptList {
     /// Starts the debug selectors of the rows (`"search"` gives
     /// `search-file-0`, `search-line-…`), so each host's are distinct.
     id_prefix: &'static str,
+    /// The window's settings: the rows use the editor's font and sizes.
+    settings: Entity<WindowSettings>,
+    _settings: Subscription,
     /// Focus of the list: the host tracks it on the list area and passes
     /// keys to [`ExcerptList::key_down`].
     focus: FocusHandle,
@@ -106,10 +109,17 @@ impl EventEmitter<ExcerptListEvent> for ExcerptList {}
 impl ExcerptList {
     /// A list of the files under `root`; `id_prefix` starts its debug
     /// selectors.
-    pub fn new(root: PathBuf, id_prefix: &'static str, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        root: PathBuf,
+        id_prefix: &'static str,
+        settings: Entity<WindowSettings>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         ExcerptList {
             root,
             id_prefix,
+            _settings: cx.observe(&settings, |_, _, cx| cx.notify()),
+            settings,
             focus: cx.focus_handle(),
             results: Results::default(),
             selected: None,
@@ -500,7 +510,7 @@ impl ExcerptList {
             .take(room)
             .take_while(same)
             .count();
-        let lh = editor_line_height(self.scale_factor, cx);
+        let lh = editor_line_height(self.scale_factor, self.settings.read(cx).view(cx));
         let top = self.list.logical_scroll_top();
         let scrolled: Pixels = old[..top.item_ix.min(old.len())]
             .iter()
@@ -554,7 +564,7 @@ impl ExcerptList {
     /// for a line. Row heights are known exactly, so this holds for rows
     /// the list has not measured yet.
     fn reveal_row(&mut self, ix: usize, cx: &App) {
-        let lh = editor_line_height(self.scale_factor, cx);
+        let lh = editor_line_height(self.scale_factor, self.settings.read(cx).view(cx));
         let rows = self.results.rows();
         let Some(row) = rows.get(ix) else {
             return;

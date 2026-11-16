@@ -1,22 +1,22 @@
 //! Opening folders and files from the workbench: Open Recent (`ctrl+r`),
 //! Open…, Open File…, Open Folder…, Close Folder and Clear Recently
-//! Opened. Another folder replaces this window's workbench after the save
-//! prompt (spec W8; the app's router does the swap on
-//! [`WorkbenchEvent::Replace`]), or opens beside it in a new `luc`
-//! process, since a process shows one window. A file opens as a tab here,
-//! as VS Code does.
+//! Opened, New Window. Another folder replaces this window's workbench
+//! after the save prompt (spec W8; the app's [`router`] does the swap), or
+//! opens in a new window of this process; a folder open in another window
+//! already brings that window to the front. A file opens as a tab here, as
+//! VS Code does.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, PathPromptOptions, PromptLevel,
-    Subscription, Task, Window, prelude::*,
+    App, Context, Entity, FocusHandle, Focusable, PathPromptOptions, PromptLevel, Subscription,
+    Task, Window, prelude::*,
 };
 
 use crate::app_menu;
-use crate::process::{self, SpawnRequest};
 use crate::recent::{self, RecentEntry, RecentKind, RecentStore};
+use crate::router::{self, OpenRequest, Source, Target};
 use crate::status_message;
 use crate::workspace_state::tilde_path;
 use crate::{CommandRegistry, OpenMode, RecentPicker, RecentPickerEvent, Workbench};
@@ -24,16 +24,18 @@ use crate::{CommandRegistry, OpenMode, RecentPicker, RecentPickerEvent, Workbenc
 const CLEAR_MESSAGE: &str = "Do you want to clear all recently opened folders?";
 const CLEAR_ANSWERS: [&str; 2] = ["Clear", "Cancel"];
 
-/// What a [`Workbench`] asks of the window that shows it.
+/// What a workbench window shows in place of the workbench (spec W8,
+/// W10), through [`Workbench::replace_with`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkbenchEvent {
-    /// Show `request` in this window in place of the workbench (spec W8,
-    /// W10). The user already answered the save prompt and the layout is
-    /// saved.
-    Replace(SpawnRequest),
+pub enum Replacement {
+    /// A workbench on this folder or file.
+    Path(PathBuf),
+    /// The Welcome screen.
+    Welcome,
 }
 
-impl EventEmitter<WorkbenchEvent> for Workbench {}
+/// Opens a new window on the Welcome screen (spec M7).
+pub(crate) const NEW_WINDOW: &str = "workbench.action.newWindow";
 
 /// The shown Open Recent picker.
 pub(crate) struct ShownRecentPicker {
@@ -61,6 +63,10 @@ fn is_html(path: &Path) -> bool {
 }
 
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
+    commands.register(NEW_WINDOW, "New Window", |_, _, _, cx| {
+        // Not inside this window's update: the router opens a window.
+        cx.defer(|cx| router::open_welcome(Target::NewWindow, cx));
+    });
     commands.register_when(
         OPEN_IN_BROWSER,
         "Open in Browser",
@@ -105,7 +111,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "workbench.action.closeFolder",
         "File: Close Folder",
-        |wb, _, window, cx| wb.replace_with(SpawnRequest::Welcome, window, cx),
+        |wb, _, window, cx| wb.replace_with(Replacement::Welcome, window, cx),
     );
     // Picker keys only: not listed in the Command Palette.
     commands.register(
@@ -177,17 +183,18 @@ fn forget(path: PathBuf, cx: &mut App) {
     .detach();
 }
 
-/// Starts the process `request` describes; on failure says why in the
-/// status bar.
-fn spawn_or_report(request: &SpawnRequest, cx: &mut App) {
-    if let Err(err) = process::spawn(request, cx) {
-        let what = match request {
-            SpawnRequest::Path(path) => tilde_path(path, std::env::home_dir().as_deref()),
-            SpawnRequest::Welcome => "Lucerna".into(),
-        };
-        tracing::error!(%err, "could not start a new process");
-        status_message::show(format!("Could not open {what}: {err}"), cx);
-    }
+/// Opens `path` in a new window of this process, or brings forward the
+/// window showing it.
+fn open_in_new_window(path: PathBuf, cx: &mut App) {
+    let request = OpenRequest {
+        paths: vec![path],
+        target: Target::NewWindow,
+        source: Source::Menu,
+    };
+    // Not inside this window's update: the router may update it.
+    cx.defer(move |cx| {
+        router::open(request, cx).ok();
+    });
 }
 
 impl Workbench {
@@ -244,7 +251,8 @@ impl Workbench {
             return;
         }
         let home = std::env::home_dir();
-        let picker = cx.new(|cx| RecentPicker::new(entries, home, cx));
+        let settings = self.settings().clone();
+        let picker = cx.new(|cx| RecentPicker::new(entries, home, settings, cx));
         let events = cx.subscribe_in(&picker, window, Self::on_recent_picker_event);
         let focus_before = window.focused(cx);
         window.focus(&picker.focus_handle(cx), cx);
@@ -307,6 +315,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let win = window.window_handle().window_id();
         cx.spawn_in(window, async move |wb, cx| {
             let exists = {
                 let entry = entry.clone();
@@ -315,14 +324,15 @@ impl Workbench {
             wb.update_in(cx, |wb, window, cx| {
                 if !exists {
                     let path = tilde_path(&entry.path, std::env::home_dir().as_deref());
-                    status_message::show(format!("{path} no longer exists"), cx);
+                    status_message::show(win, format!("{path} no longer exists"), cx);
                     forget(entry.path, cx);
                     return;
                 }
-                let request = SpawnRequest::Path(entry.path.clone());
                 match (entry.kind, new_window) {
-                    (_, true) => spawn_or_report(&request, cx),
-                    (RecentKind::Folder, false) => wb.replace_with(request, window, cx),
+                    (_, true) => open_in_new_window(entry.path, cx),
+                    (RecentKind::Folder, false) => {
+                        wb.replace_with(Replacement::Path(entry.path), window, cx)
+                    }
                     (RecentKind::File, false) => {
                         wb.open_path(Arc::from(entry.path), OpenMode::Pinned, cx)
                     }
@@ -377,7 +387,7 @@ impl Workbench {
                 .background_spawn(async move { paths.into_iter().partition(|p| p.is_dir()) })
                 .await;
             wb.update_in(cx, |wb, window, cx| match folders.into_iter().next() {
-                Some(folder) => wb.replace_with(SpawnRequest::Path(folder), window, cx),
+                Some(folder) => wb.replace_with(Replacement::Path(folder), window, cx),
                 None => {
                     for file in files {
                         wb.open_path(Arc::from(file.as_path()), OpenMode::Pinned, cx);
@@ -389,26 +399,43 @@ impl Workbench {
         .detach();
     }
 
-    /// Replaces this workbench with `request` in the same window (spec
-    /// W8, W10): asks to save as closing the window does, saves the
-    /// layout, then emits [`WorkbenchEvent::Replace`] for the app's router
-    /// to swap the window's root. Cancel does nothing.
-    pub(crate) fn replace_with(
+    /// Replaces this workbench with `replacement` in the same window
+    /// (spec W8, W10): asks to save as closing the window does, saves the
+    /// layout, then has the app's router swap the window's root. A path
+    /// open in a window already brings that window forward instead,
+    /// without asking. Cancel does nothing.
+    pub fn replace_with(
         &mut self,
-        request: SpawnRequest,
+        replacement: Replacement,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Replacement::Path(path) = &replacement
+            && let Some(showing) = router::window_showing(path, cx)
+        {
+            cx.defer(move |cx| router::activate(showing, cx));
+            return;
+        }
+        let handle = window.window_handle();
         let confirm = self.confirm_quit(window, cx);
-        cx.spawn_in(window, async move |wb, cx| {
+        cx.spawn(async move |wb, cx| {
             if !confirm.await {
                 return;
             }
-            wb.update(cx, |wb, cx| {
-                wb.save_workspace_state(cx);
-                cx.emit(WorkbenchEvent::Replace(request));
-            })
-            .ok();
+            if wb.update(cx, |wb, cx| wb.save_workspace_state(cx)).is_err() {
+                return;
+            }
+            cx.update(|cx| match replacement {
+                Replacement::Path(path) => {
+                    let request = OpenRequest {
+                        paths: vec![path],
+                        target: Target::ReplaceIn(handle),
+                        source: Source::Menu,
+                    };
+                    router::open(request, cx).ok();
+                }
+                Replacement::Welcome => router::open_welcome(Target::ReplaceIn(handle), cx),
+            });
         })
         .detach();
     }

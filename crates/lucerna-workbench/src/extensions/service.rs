@@ -345,6 +345,21 @@ fn apply_associations(cx: &mut App) {
     set_languages(languages, cx);
 }
 
+/// The app's language registry with `associations` instead of the user's,
+/// for a window whose folder adds its own (spec §6.1.3). Made from the
+/// same extension index as the registry in use, so the languages, their
+/// compiled queries and loaded grammars are shared; nothing is rebuilt.
+/// Each window follows `AppState::languages_generation` to make it again
+/// when the app's registry changes.
+pub(crate) fn registry_with_associations(
+    associations: Associations,
+    cx: &App,
+) -> Task<LanguageRegistry> {
+    let languages = cx.global::<AppState>().languages.clone();
+    cx.background_executor()
+        .spawn(async move { languages.with_associations(associations) })
+}
+
 /// After settings changed: applies `files.associations` and resolves
 /// `workbench.iconTheme` again.
 pub(crate) fn settings_changed(cx: &mut App) {

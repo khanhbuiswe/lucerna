@@ -19,7 +19,6 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use super::kind_icon;
 use super::quick_open::matched;
 use crate::AppState;
-use crate::fonts::editor_font_family;
 use crate::layout::color;
 use crate::ui::{FILE_ICON_SIZE, GRID, UI_FONT_SIZE_SMALL};
 
@@ -175,6 +174,7 @@ pub(crate) fn render_row(
     item: &WorkspaceSymbolItem,
     positions: &[u32],
     location: SharedString,
+    code_font_family: SharedString,
     cx: &App,
 ) -> AnyElement {
     let ui = &cx.global::<AppState>().theme.ui;
@@ -198,12 +198,7 @@ pub(crate) fn render_row(
                         .size(px(FILE_ICON_SIZE))
                         .text_color(color(ui.icon_muted)),
                 )
-                .child(
-                    div()
-                        .flex_none()
-                        .font_family(editor_font_family(None, cx))
-                        .child(name),
-                )
+                .child(div().flex_none().font_family(code_font_family).child(name))
                 .children(
                     item.container
                         .clone()

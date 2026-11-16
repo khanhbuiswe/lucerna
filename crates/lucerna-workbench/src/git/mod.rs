@@ -19,12 +19,12 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::StreamExt as _;
-use gpui::{App, Context, EventEmitter, Task};
+use gpui::{App, Context, Entity, EventEmitter, Subscription, Task};
 use lucerna_git::{FileStatus, GitBinary, GitDirWatcher, GitError, Hunk, Repo};
-use lucerna_settings::SettingsStore;
+use lucerna_settings::SettingsView;
 use lucerna_text::BufferSnapshot;
 
-use crate::AppState;
+use crate::{AppState, WindowSettings};
 use hunks::{Diffed, HunkWork};
 use job::{Job, JobError, JobInput, JobOutput, run_job};
 use rollup::Rollup;
@@ -86,19 +86,21 @@ struct GitSettings {
 }
 
 impl GitSettings {
-    fn read(cx: &App) -> GitSettings {
-        match cx.try_global::<AppState>() {
-            Some(state) => GitSettings::from_store(&state.settings),
-            None => GitSettings {
+    /// The window's `git.*` settings; the defaults when the app has no
+    /// settings (unit tests).
+    fn read(settings: &Entity<WindowSettings>, cx: &App) -> GitSettings {
+        if !cx.has_global::<AppState>() {
+            return GitSettings {
                 enabled: true,
                 path: None,
                 diff_base: DiffBase::Head,
                 status_limit: 10_000,
-            },
+            };
         }
+        GitSettings::from_view(settings.read(cx).view(cx))
     }
 
-    fn from_store(s: &SettingsStore) -> GitSettings {
+    fn from_view(s: SettingsView<'_>) -> GitSettings {
         GitSettings {
             enabled: s.get::<bool>("git.enabled", None).unwrap_or(true),
             path: git_path_setting(s),
@@ -117,7 +119,7 @@ impl GitSettings {
 /// folder's `.lucerna/settings.json` must not choose it (as with language
 /// server binaries). A relative path would resolve against the process's
 /// working directory and is ignored.
-fn git_path_setting(s: &SettingsStore) -> Option<PathBuf> {
+fn git_path_setting(s: SettingsView<'_>) -> Option<PathBuf> {
     static WARNED: AtomicBool = AtomicBool::new(false);
     let path = PathBuf::from(
         s.get_trusted::<String>("git.path", None)
@@ -166,6 +168,8 @@ type WatchReceiver = futures::channel::mpsc::UnboundedReceiver<()>;
 
 pub struct GitStore {
     root: PathBuf,
+    /// The window's settings, followed for `git.*`.
+    window_settings: Entity<WindowSettings>,
     settings: GitSettings,
     trusted: bool,
     state: GitState,
@@ -187,16 +191,27 @@ pub struct GitStore {
     not_found_reported: bool,
     too_many_reported: bool,
     git_override: Option<GitBinary>,
+    /// The window whose status bar shows what goes wrong here.
+    window: Option<gpui::WindowId>,
+    _settings: Subscription,
 }
 
 impl EventEmitter<GitStoreEvent> for GitStore {}
 
 impl GitStore {
+    /// Tells the store which window it belongs to.
+    pub fn set_window(&mut self, window: gpui::WindowId) {
+        self.window = Some(window);
+    }
+
     /// Starts in [`GitState::Off`]; nothing runs until `set_trusted(true)`.
-    pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
+    /// Reads `git.*` from the window's `settings` and follows them.
+    pub fn new(root: PathBuf, settings: Entity<WindowSettings>, cx: &mut Context<Self>) -> Self {
         GitStore {
             root,
-            settings: GitSettings::read(cx),
+            settings: GitSettings::read(&settings, cx),
+            _settings: cx.observe(&settings, |store, _, cx| store.settings_changed(cx)),
+            window_settings: settings,
             trusted: false,
             state: GitState::Off,
             epoch: 0,
@@ -214,6 +229,7 @@ impl GitStore {
             error_reported: false,
             not_found_reported: false,
             too_many_reported: false,
+            window: None,
             git_override: None,
         }
     }
@@ -322,7 +338,7 @@ impl GitStore {
     /// Re-reads the `git.*` settings: `enabled` or `path` restarts,
     /// `diffBase` or `statusLimit` rescans.
     pub fn settings_changed(&mut self, cx: &mut Context<Self>) {
-        let new = GitSettings::read(cx);
+        let new = GitSettings::read(&self.window_settings, cx);
         if new == self.settings {
             return;
         }
@@ -440,7 +456,7 @@ impl GitStore {
             Setup::NoGit => {
                 self.set_state(GitState::NoGit, cx);
                 if !std::mem::replace(&mut self.not_found_reported, true) {
-                    crate::status_message::show(NOT_FOUND_MESSAGE, cx);
+                    crate::status_message::show_or_log(self.window, NOT_FOUND_MESSAGE, cx);
                 }
             }
             Setup::NoRepo => self.set_state(GitState::NoRepo, cx),
@@ -595,7 +611,7 @@ impl GitStore {
                 if out.too_many {
                     self.set_state(GitState::TooManyChanges, cx);
                     if !std::mem::replace(&mut self.too_many_reported, true) {
-                        crate::status_message::show(TOO_MANY_MESSAGE, cx);
+                        crate::status_message::show_or_log(self.window, TOO_MANY_MESSAGE, cx);
                     }
                 } else {
                     self.set_state(GitState::Ready, cx);
@@ -611,7 +627,7 @@ impl GitStore {
     fn report_error(&mut self, err: &GitError, cx: &mut Context<Self>) {
         tracing::warn!(%err, root = %self.root.display(), "git failed");
         if !std::mem::replace(&mut self.error_reported, true) {
-            crate::status_message::show(format!("Git: {err}"), cx);
+            crate::status_message::show_or_log(self.window, format!("Git: {err}"), cx);
         }
     }
 

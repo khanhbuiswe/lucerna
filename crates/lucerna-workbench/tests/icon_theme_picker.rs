@@ -77,7 +77,7 @@ fn init(dirs: &Dirs, settings: Option<&str>, cx: &mut TestAppContext) {
         icons: icon_themes.resolve(DEFAULT_ICON_THEME),
         icon_themes,
     });
-    let paths = ConfigPaths::with_user_dir(dirs.user.path(), dirs.root.path());
+    let paths = ConfigPaths::user_only_with_user_dir(dirs.user.path());
     cx.update(|cx| watch_config(paths, cx));
 }
 

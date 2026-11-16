@@ -8,13 +8,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use gpui::{App, Context, Entity, EntityId, WeakEntity, Window};
+use lucerna_settings::SettingsView;
 use lucerna_syntax::Associations;
 use lucerna_text::Point;
 
 use super::{LinkAction, MarkdownPreview};
 use crate::code_view::CodeView;
 use crate::editor_groups::{FileView, OpenMode, TabId, TabItem};
-use crate::{AppState, CommandRegistry, Workbench};
+use crate::{CommandRegistry, WindowSettings, Workbench};
 
 /// The editor id of the Markdown preview in `workbench.editorAssociations`.
 pub const PREVIEW_EDITOR_ID: &str = "vscode.markdown.preview.editor";
@@ -56,7 +57,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             // From the Explorer's menu: the row's file, whatever is open.
             if let Some(rel) = args.and_then(|a| a.get("path")).and_then(|p| p.as_str()) {
                 let path = wb.absolute_path(Path::new(rel));
-                if is_markdown(wb.root(), &path, cx) {
+                if is_markdown(wb.root(), &path, wb.settings(), cx) {
                     wb.open_markdown_preview(path, cx);
                     wb.focus_editor_area(window, cx);
                 }
@@ -132,10 +133,8 @@ pub fn editor_for(path: &Path, rel: &Path, map: &BTreeMap<String, String>) -> Fi
 }
 
 /// The editor `path` (absolute) opens in, by the user's associations.
-pub(crate) fn associated_editor(root: &Path, path: &Path, cx: &App) -> FileView {
-    let map = cx
-        .global::<AppState>()
-        .settings
+pub(crate) fn associated_editor(root: &Path, path: &Path, settings: SettingsView<'_>) -> FileView {
+    let map = settings
         .get::<BTreeMap<String, String>>(EDITOR_ASSOCIATIONS, None)
         .unwrap_or_default();
     let rel = path.strip_prefix(root).unwrap_or(path);
@@ -143,11 +142,18 @@ pub(crate) fn associated_editor(root: &Path, path: &Path, cx: &App) -> FileView 
 }
 
 /// Whether `path` (absolute) is a markdown file, by its language
-/// (`files.associations` included).
-pub(crate) fn is_markdown(root: &Path, path: &Path, cx: &App) -> bool {
+/// (`files.associations` included). `settings` are the window's: its
+/// folder may add associations.
+pub(crate) fn is_markdown(
+    root: &Path,
+    path: &Path,
+    settings: &Entity<WindowSettings>,
+    cx: &App,
+) -> bool {
     let rel = path.strip_prefix(root).unwrap_or(path);
-    cx.global::<AppState>()
-        .languages
+    settings
+        .read(cx)
+        .languages(cx)
         .language_for_file(rel, "")
         .is_some_and(|lang| &*lang.id == MARKDOWN)
 }
@@ -166,7 +172,7 @@ enum Active {
 fn active(wb: &Workbench, cx: &App) -> Option<Active> {
     let tab = wb.editor_groups().read(cx).model().active_tab()?.clone();
     match tab.item {
-        TabItem::File(path) if is_markdown(wb.root(), &path, cx) => {
+        TabItem::File(path) if is_markdown(wb.root(), &path, wb.settings(), cx) => {
             Some(Active::Source { tab: tab.id, path })
         }
         TabItem::MarkdownPreview(path) => Some(Active::Static { tab: tab.id, path }),
@@ -339,7 +345,7 @@ pub(crate) fn follow_active(wb: &mut Workbench, window: &mut Window, cx: &mut Co
         return;
     };
     let path = match &tab.item {
-        TabItem::File(path) if is_markdown(wb.root(), path, cx) => path.clone(),
+        TabItem::File(path) if is_markdown(wb.root(), path, wb.settings(), cx) => path.clone(),
         TabItem::MarkdownPreview(path) => path.clone(),
         _ => return,
     };
@@ -366,10 +372,10 @@ pub(crate) fn double_clicked(
     window: &mut Window,
     cx: &mut Context<Workbench>,
 ) {
-    let enabled = cx
-        .global::<AppState>()
-        .settings
-        .get::<bool>(DOUBLE_CLICK_TO_SWITCH, None)
+    let enabled = wb
+        .settings()
+        .read(cx)
+        .get::<bool>(DOUBLE_CLICK_TO_SWITCH, None, cx)
         .unwrap_or(true);
     if !enabled {
         return;
@@ -455,10 +461,10 @@ pub(crate) fn follow_link(
         }
         LinkAction::Markdown { path, slug } => {
             let path: Arc<Path> = Arc::from(path);
-            let in_editor = cx
-                .global::<AppState>()
-                .settings
-                .get::<String>(OPEN_MARKDOWN_LINKS, None)
+            let in_editor = wb
+                .settings()
+                .read(cx)
+                .get::<String>(OPEN_MARKDOWN_LINKS, None, cx)
                 .is_some_and(|v| v == "inEditor");
             if in_editor {
                 wb.open_source(path, OpenMode::Preview, cx);

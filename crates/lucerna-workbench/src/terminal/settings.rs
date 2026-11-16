@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui::{App, FontWeight, Pixels, SharedString, px};
+use lucerna_settings::SettingsView;
 use lucerna_terminal::{
     CursorShape, MAX_SCROLLBACK, Rgba8, TerminalOptions, TerminalPalette, build_env, resolve_shell,
 };
@@ -47,13 +48,12 @@ impl TerminalFont {
 /// `editor.fontFamily`, an unset `fontSize` is `editor.fontSize`,
 /// `lineHeight` defaults to 1.2, `letterSpacing` to 0, the weights to
 /// normal and bold.
-pub fn terminal_font(cx: &App) -> TerminalFont {
-    let settings = &cx.global::<AppState>().settings;
+pub fn terminal_font(settings: SettingsView<'_>) -> TerminalFont {
     let family = settings
         .get::<String>("terminal.integrated.fontFamily", None)
         .filter(|f| !f.trim().is_empty())
         .map(SharedString::from)
-        .unwrap_or_else(|| editor_font_family(None, cx));
+        .unwrap_or_else(|| editor_font_family(settings, None));
     let positive = |key: &str| settings.get::<f32>(key, None).filter(|v| *v > 0.);
     let size = positive("terminal.integrated.fontSize")
         .or_else(|| positive("editor.fontSize"))
@@ -99,9 +99,8 @@ fn parse_weight(value: &serde_json::Value) -> Option<FontWeight> {
 }
 
 /// `terminal.integrated.minimumContrastRatio`; 1 turns it off.
-pub(crate) fn minimum_contrast(cx: &App) -> f32 {
-    cx.global::<AppState>()
-        .settings
+pub(crate) fn minimum_contrast(settings: SettingsView<'_>) -> f32 {
+    settings
         .get::<f32>("terminal.integrated.minimumContrastRatio", None)
         .filter(|v| v.is_finite())
         .unwrap_or(4.5)
@@ -109,9 +108,8 @@ pub(crate) fn minimum_contrast(cx: &App) -> f32 {
 }
 
 /// `terminal.integrated.drawBoldTextInBrightColors`.
-pub(crate) fn bold_is_bright(cx: &App) -> bool {
-    cx.global::<AppState>()
-        .settings
+pub(crate) fn bold_is_bright(settings: SettingsView<'_>) -> bool {
+    settings
         .get::<bool>("terminal.integrated.drawBoldTextInBrightColors", None)
         .unwrap_or(true)
 }
@@ -175,8 +173,7 @@ pub(crate) struct MouseSettings {
     pub paste_warning: PasteWarning,
 }
 
-pub(crate) fn mouse_settings(cx: &App) -> MouseSettings {
-    let settings = &cx.global::<AppState>().settings;
+pub(crate) fn mouse_settings(settings: SettingsView<'_>) -> MouseSettings {
     let key = |name: &str| format!("terminal.integrated.{name}");
     let sensitivity = |name: &str, default: f32| {
         settings
@@ -257,8 +254,11 @@ fn os_key() -> &'static str {
 /// The settings that pick a program and its environment (spec §6.3): in
 /// Restricted Mode (`restricted`) the Workspace layer is skipped, since a
 /// strange repository could point the shell at its own binary.
-fn shell_setting(key: &str, restricted: bool, cx: &App) -> Option<serde_json::Value> {
-    let settings = &cx.global::<AppState>().settings;
+fn shell_setting(
+    key: &str,
+    restricted: bool,
+    settings: SettingsView<'_>,
+) -> Option<serde_json::Value> {
     let key = format!("terminal.integrated.{key}");
     if restricted {
         settings.get_trusted(&key, None)
@@ -290,11 +290,11 @@ struct Profile {
     env: HashMap<String, Option<String>>,
 }
 
-fn default_profile(restricted: bool, cx: &App) -> Option<Profile> {
+fn default_profile(restricted: bool, settings: SettingsView<'_>) -> Option<Profile> {
     let os = os_key();
-    let name = shell_setting(&format!("defaultProfile.{os}"), restricted, cx)?;
+    let name = shell_setting(&format!("defaultProfile.{os}"), restricted, settings)?;
     let name = name.as_str()?;
-    let profiles = shell_setting(&format!("profiles.{os}"), restricted, cx)?;
+    let profiles = shell_setting(&format!("profiles.{os}"), restricted, settings)?;
     let profile = profiles.get(name)?.as_object()?;
     let path = match profile.get("path") {
         Some(serde_json::Value::String(p)) => Some(PathBuf::from(p)),
@@ -328,8 +328,12 @@ fn default_profile(restricted: bool, cx: &App) -> Option<Profile> {
 /// `terminal.integrated.cwd` against `root`: empty is `root`, relative is
 /// under it, `~` is home. A folder that does not exist gives home and a
 /// warning.
-fn start_folder(root: &Path, restricted: bool, cx: &App) -> (PathBuf, Option<String>) {
-    let setting = shell_setting("cwd", restricted, cx)
+fn start_folder(
+    root: &Path,
+    restricted: bool,
+    settings: SettingsView<'_>,
+) -> (PathBuf, Option<String>) {
+    let setting = shell_setting("cwd", restricted, settings)
         .and_then(|v| v.as_str().map(|s| s.trim().to_string()))
         .filter(|s| !s.is_empty());
     let Some(setting) = setting else {
@@ -364,9 +368,8 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 }
 
 /// `terminal.integrated.scrollback`, at most [`MAX_SCROLLBACK`].
-pub(crate) fn scrollback(cx: &App) -> usize {
-    cx.global::<AppState>()
-        .settings
+pub(crate) fn scrollback(settings: SettingsView<'_>) -> usize {
+    settings
         .get::<f64>("terminal.integrated.scrollback", None)
         .filter(|v| v.is_finite() && *v >= 0.)
         .map_or(DEFAULT_SCROLLBACK, |v| {
@@ -375,10 +378,8 @@ pub(crate) fn scrollback(cx: &App) -> usize {
 }
 
 /// `terminal.integrated.cursorStyle`: the shape until an app sets one.
-pub(crate) fn cursor_style(cx: &App) -> CursorShape {
-    match cx
-        .global::<AppState>()
-        .settings
+pub(crate) fn cursor_style(settings: SettingsView<'_>) -> CursorShape {
+    match settings
         .get::<String>("terminal.integrated.cursorStyle", None)
         .as_deref()
     {
@@ -399,10 +400,8 @@ pub(crate) enum InactiveCursor {
     Hidden,
 }
 
-pub(crate) fn inactive_cursor(cx: &App) -> InactiveCursor {
-    match cx
-        .global::<AppState>()
-        .settings
+pub(crate) fn inactive_cursor(settings: SettingsView<'_>) -> InactiveCursor {
+    match settings
         .get::<String>("terminal.integrated.cursorStyleInactive", None)
         .as_deref()
     {
@@ -415,9 +414,8 @@ pub(crate) fn inactive_cursor(cx: &App) -> InactiveCursor {
 }
 
 /// `terminal.integrated.enableBell`.
-pub(crate) fn bell_enabled(cx: &App) -> bool {
-    cx.global::<AppState>()
-        .settings
+pub(crate) fn bell_enabled(settings: SettingsView<'_>) -> bool {
+    settings
         .get::<bool>("terminal.integrated.enableBell", None)
         .unwrap_or(false)
 }
@@ -431,10 +429,8 @@ pub(crate) enum ConfirmOnExit {
     HasChildProcesses,
 }
 
-pub(crate) fn confirm_on_exit(cx: &App) -> ConfirmOnExit {
-    match cx
-        .global::<AppState>()
-        .settings
+pub(crate) fn confirm_on_exit(settings: SettingsView<'_>) -> ConfirmOnExit {
+    match settings
         .get::<String>("terminal.integrated.confirmOnExit", None)
         .as_deref()
     {
@@ -449,8 +445,8 @@ pub(crate) fn confirm_on_exit(cx: &App) -> ConfirmOnExit {
 /// setting's folder, with Lucerna's environment, then `env.<os>`, then the
 /// profile's `env`, then the terminal variables. `restricted`: Restricted
 /// Mode, where the Workspace layer of these settings is ignored.
-pub(crate) fn spawn_plan(root: &Path, restricted: bool, cx: &App) -> SpawnPlan {
-    let profile = default_profile(restricted, cx);
+pub(crate) fn spawn_plan(root: &Path, restricted: bool, settings: SettingsView<'_>) -> SpawnPlan {
+    let profile = default_profile(restricted, settings);
     let (program, args) = match &profile {
         Some(p) => resolve_shell(
             p.path.as_deref(),
@@ -460,11 +456,9 @@ pub(crate) fn spawn_plan(root: &Path, restricted: bool, cx: &App) -> SpawnPlan {
         None => resolve_shell(None, None, std::env::var_os("SHELL").as_deref()),
     };
     let setting_env =
-        env_layer(shell_setting(&format!("env.{}", os_key()), restricted, cx).as_ref());
+        env_layer(shell_setting(&format!("env.{}", os_key()), restricted, settings).as_ref());
     let profile_env = profile.map(|p| p.env).unwrap_or_default();
-    let detect_locale = cx
-        .global::<AppState>()
-        .settings
+    let detect_locale = settings
         .get::<String>("terminal.integrated.detectLocale", None)
         .is_none_or(|v| v != "off");
     let mut env: HashMap<String, Option<String>> = build_env(
@@ -484,7 +478,7 @@ pub(crate) fn spawn_plan(root: &Path, restricted: bool, cx: &App) -> SpawnPlan {
             env.insert(key.clone(), None);
         }
     }
-    let (cwd, warning) = start_folder(root, restricted, cx);
+    let (cwd, warning) = start_folder(root, restricted, settings);
     SpawnPlan {
         options: TerminalOptions {
             program,
@@ -495,7 +489,7 @@ pub(crate) fn spawn_plan(root: &Path, restricted: bool, cx: &App) -> SpawnPlan {
             cols: INITIAL_COLS,
             cell_width: 8,
             cell_height: 16,
-            scrollback: scrollback(cx),
+            scrollback: scrollback(settings),
         },
         warning,
     }

@@ -15,7 +15,7 @@ use lucerna_project::{ChangeKind, WorktreeEvent};
 use lucerna_text::{BufferSnapshot, Patch};
 
 use super::{LanguageServers, LanguageServersEvent, OpenDoc, selection};
-use crate::AppState;
+use crate::WindowSettings;
 use crate::documents::{DocState, DocumentEvent, Documents};
 use crate::tasks::guarded;
 use crate::workspace_state::absolute_path;
@@ -155,7 +155,8 @@ impl LanguageServers {
         let Some(doc) = self.docs.get_mut(path) else {
             return;
         };
-        let (max_bytes, max_lines) = large_file_limits(doc.language_id.as_deref(), cx);
+        let (max_bytes, max_lines) =
+            large_file_limits(&self.settings, doc.language_id.as_deref(), cx);
         // O(1): sizes only; `find_servers` checks long lines too.
         let over = snapshot.len_bytes() as u64 > max_bytes || snapshot.line_count() > max_lines;
         doc.snapshot = snapshot.clone();
@@ -216,7 +217,7 @@ impl LanguageServers {
         doc.search += 1;
         let search = doc.search;
         let language = doc.language_id.clone();
-        let selection = selection(language.as_deref(), cx);
+        let selection = selection(&self.settings, language.as_deref(), cx);
         let defs: Vec<ServerDef> = if selection.enabled {
             select_servers(
                 &selection.servers,
@@ -237,7 +238,7 @@ impl LanguageServers {
             self.set_keys(path, Vec::new(), cx);
             return;
         }
-        let (max_bytes, max_lines) = large_file_limits(language.as_deref(), cx);
+        let (max_bytes, max_lines) = large_file_limits(&self.settings, language.as_deref(), cx);
         let (snapshot, file, root) = (doc.snapshot.clone(), path.clone(), self.root.clone());
         // A file outside the workspace (a library, the standard library)
         // never starts a server: it joins one already running here.
@@ -367,9 +368,14 @@ impl LanguageServers {
     }
 }
 
-/// `lucerna.largeFile.maxBytes` and `.maxLines` for `language`.
-fn large_file_limits(language: Option<&str>, cx: &gpui::App) -> (u64, u32) {
-    let settings = &cx.global::<AppState>().settings;
+/// `lucerna.largeFile.maxBytes` and `.maxLines` for `language`, from the
+/// window's settings.
+fn large_file_limits(
+    settings: &Entity<WindowSettings>,
+    language: Option<&str>,
+    cx: &gpui::App,
+) -> (u64, u32) {
+    let settings = settings.read(cx).view(cx);
     let max_bytes = settings
         .get::<u64>("lucerna.largeFile.maxBytes", language)
         .unwrap_or(20 * 1024 * 1024);

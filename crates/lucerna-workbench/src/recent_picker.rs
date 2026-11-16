@@ -12,7 +12,6 @@ use gpui::{
     Styled, Window, div, prelude::*, px, svg,
 };
 
-use crate::AppState;
 use crate::icons;
 use crate::layout::color;
 use crate::quick_open::picker::{
@@ -24,6 +23,7 @@ use crate::ui::{
     CLOSE_ICON, FILE_ICON_SIZE, GRID, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, icon_button, popover,
     section_header, tooltip,
 };
+use crate::{AppState, WindowSettings};
 
 /// The search box's hint, naming the key that opens a new window.
 #[cfg(target_os = "macos")]
@@ -58,13 +58,21 @@ pub struct RecentPicker {
     query: String,
     selected: usize,
     scroll: ScrollHandle,
+    /// The window's settings: the section headers use its editor font.
+    settings: Entity<WindowSettings>,
 }
 
 impl EventEmitter<RecentPickerEvent> for RecentPicker {}
 
 impl RecentPicker {
     /// Lists `entries` (newest first); `home` shortens folders to `~`.
-    pub fn new(entries: Vec<RecentEntry>, home: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+    /// `settings` are the window's.
+    pub fn new(
+        entries: Vec<RecentEntry>,
+        home: Option<PathBuf>,
+        settings: Entity<WindowSettings>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let this = cx.weak_entity();
         let input = cx.new(|cx| {
             let mut input = TextInput::new(cx);
@@ -96,6 +104,7 @@ impl RecentPicker {
             query: String::new(),
             selected: 0,
             scroll: ScrollHandle::new(),
+            settings,
         }
     }
 
@@ -307,7 +316,7 @@ impl RecentPicker {
     }
 
     fn render_header(&self, title: &'static str, selector: &'static str, cx: &App) -> AnyElement {
-        section_header(title, cx)
+        section_header(title, self.settings.read(cx).view(cx), cx)
             .debug_selector(|| selector.to_string())
             .px(px(2. * GRID))
             .pt(px(2. * GRID))
