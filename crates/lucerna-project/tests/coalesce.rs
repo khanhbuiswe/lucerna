@@ -108,11 +108,27 @@ fn overflow_rescans() {
 fn outside_root_dropped() {
     let out = run(vec![
         RawEvent::Modified(PathBuf::from("/elsewhere/x")),
-        RawEvent::Modified(PathBuf::from(ROOT)),
         RawEvent::Modified(p("in/side")),
     ]);
     assert_eq!(
         out,
         Coalesced::Changes(vec![change("in/side", ChangeKind::Modified)])
+    );
+}
+
+/// T4-1: a report about the root itself (renamed away, back, chmod) comes
+/// out as the empty path, which the worktree takes as a rescan signal.
+#[test]
+fn root_itself_is_kept_as_the_empty_path() {
+    let out = run(vec![
+        RawEvent::Removed(PathBuf::from(ROOT)),
+        RawEvent::Modified(p("in/side")),
+    ]);
+    assert_eq!(
+        out,
+        Coalesced::Changes(vec![
+            change("", ChangeKind::Removed),
+            change("in/side", ChangeKind::Modified),
+        ])
     );
 }

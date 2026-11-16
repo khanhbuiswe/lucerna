@@ -47,7 +47,9 @@ pub fn spawn_detached(exe: &Path, args: &[OsString], cwd: &Path) -> io::Result<(
 
 /// Sends `request` to the app starting at `path` (spec §6.5): tries to
 /// connect every 50 ms for up to `connect_within`, then waits up to
-/// `reply_within` for the reply, so at most their sum in all.
+/// `reply_within` for the reply. A connection dropped before any reply
+/// is made once more (M1-1): another `luc` that claimed the socket
+/// meanwhile held it for a moment before it let its own app claim.
 ///
 /// # Errors
 /// [`SendError::Unreachable`] when no app listened within
@@ -59,9 +61,19 @@ pub fn send_with_retry(
     reply_within: Duration,
 ) -> Result<CliReply, SendError> {
     let start = Instant::now();
+    let mut again = true;
     loop {
         match std::os::unix::net::UnixStream::connect(path) {
-            Ok(stream) => return cli_socket::send(stream, request, reply_within),
+            Ok(stream) => match cli_socket::send(stream, request, reply_within) {
+                Err(SendError::Dropped(err)) if again => {
+                    tracing::info!(
+                        err,
+                        "the app's socket dropped the request; connecting again"
+                    );
+                    again = false;
+                }
+                reply => return reply,
+            },
             Err(err) if start.elapsed() >= connect_within => {
                 return Err(SendError::Unreachable(format!(
                     "could not reach Lucerna: {err}"
@@ -105,6 +117,65 @@ mod tests {
         assert_eq!(reply, CliReply::ok());
         let sent: CliRequest = serde_json::from_str(&server.join().unwrap()).unwrap();
         assert_eq!(sent, request);
+    }
+
+    #[test]
+    fn send_with_retry_sends_again_when_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            // Another `luc`'s listener for a moment: the first connection
+            // closes unanswered.
+            drop(listener.accept().unwrap());
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            (&stream).write_all(b"{\"ok\":true}\n").unwrap();
+            line
+        });
+        let request = CliRequest::new(PathBuf::from("/w"), Vec::new());
+        let within = Duration::from_secs(5);
+        assert_eq!(
+            send_with_retry(&path, &request, within, within),
+            Ok(CliReply::ok())
+        );
+        let sent: CliRequest = serde_json::from_str(&server.join().unwrap()).unwrap();
+        assert_eq!(sent, request);
+    }
+
+    #[test]
+    fn send_with_retry_sends_again_only_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let client = std::thread::spawn(move || {
+            let request = CliRequest::new(PathBuf::from("/w"), Vec::new());
+            let within = Duration::from_secs(5);
+            send_with_retry(&path, &request, within, within)
+        });
+        // Closes every connection without a reply.
+        let accept_within = |within: Duration| {
+            let deadline = Instant::now() + within;
+            while Instant::now() < deadline {
+                if let Ok((stream, _)) = listener.accept() {
+                    return Some(stream);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            None
+        };
+        for try_ in 1..=2 {
+            let stream = accept_within(Duration::from_secs(5));
+            assert!(stream.is_some(), "try {try_} connected");
+        }
+        let result = client.join().unwrap();
+        assert!(matches!(result, Err(SendError::Dropped(_))), "{result:?}");
+        assert!(
+            accept_within(Duration::from_millis(100)).is_none(),
+            "no third try"
+        );
     }
 
     #[test]

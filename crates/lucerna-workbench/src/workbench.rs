@@ -121,6 +121,9 @@ pub struct Workbench {
     /// moving; another Delete or move of them (or of a path inside or
     /// around them) is ignored meanwhile.
     pub(crate) deletes_in_flight: Rc<std::cell::RefCell<HashSet<PathBuf>>>,
+    /// How many Explorer file operations (Paste, Duplicate, Delete) are
+    /// writing to disk; a quit or close asks first while any is.
+    file_operations: Rc<Cell<usize>>,
     /// What the Explorer's Cut or Copy last took.
     explorer_clipboard: Option<ExplorerClipboard>,
     /// The options of the scan, from `files.exclude`.
@@ -384,6 +387,7 @@ impl Workbench {
         // app (waiting at most 5 s across all windows, then killed; see the
         // `on_app_quit` below).
         cx.on_release(|wb, cx| {
+            wb.release_theme_picker(cx);
             wb.language_servers
                 .update(cx, |servers, _| servers.shutdown_all_in_background())
         })
@@ -395,8 +399,10 @@ impl Workbench {
         let search_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
             let searchable = single_file.is_none();
-            let settings = settings.clone();
-            cx.new(|cx| SearchView::new(root, workbench, searchable, settings, window, cx))
+            let (settings, documents) = (settings.clone(), documents.clone());
+            cx.new(|cx| {
+                SearchView::new(root, workbench, documents, searchable, settings, window, cx)
+            })
         };
         let references_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
@@ -586,7 +592,10 @@ impl Workbench {
             Some(file) => Worktree::without_scan(root.clone(), vec![file]),
             None => Worktree::start(root.clone(), scan_options.clone()),
         };
-        let trust = Trust::new(store.as_ref().map(|s| s.data_dir().to_path_buf()));
+        let trust = Trust::new(
+            store.as_ref().map(|s| s.data_dir().to_path_buf()),
+            window.window_handle().window_id(),
+        );
         let hot_exit = store.as_ref().map(|store| {
             let key = match &single_file_path {
                 Some(file) => WorkspaceKey::File(file.clone()),
@@ -800,6 +809,7 @@ impl Workbench {
             scan_complete_logged: false,
             own_changes: HashMap::new(),
             deletes_in_flight: Rc::default(),
+            file_operations: Rc::default(),
             explorer_clipboard: None,
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
@@ -1055,11 +1065,14 @@ impl Workbench {
     }
 
     /// What this window shows, which Open Recent leaves out: the folder,
-    /// and in single-file mode the file too.
+    /// or in single-file mode only the file (its parent folder is not
+    /// open).
     pub fn opened_paths(&self) -> Vec<PathBuf> {
-        let mut paths = vec![self.root.clone()];
-        paths.extend(self.single_file.clone());
-        paths
+        vec![
+            self.single_file
+                .clone()
+                .unwrap_or_else(|| self.root.clone()),
+        ]
     }
 
     /// Whether the window shows one file alone (single-file mode).
@@ -1156,6 +1169,20 @@ impl Workbench {
     /// The Explorer, installed in the Explorer sidebar slot by [`Workbench::new`].
     pub fn explorer(&self) -> &Entity<ExplorerView> {
         &self.explorer
+    }
+
+    /// How many Explorer file operations (Paste, Duplicate, Delete) are
+    /// running.
+    pub fn file_operations_running(&self) -> usize {
+        self.file_operations.get()
+    }
+
+    /// Counts a file operation as running until the guard is dropped.
+    /// Public for tests, which hold one in place of a long copy.
+    #[doc(hidden)]
+    pub fn begin_file_operation(&self) -> FileOperation {
+        self.file_operations.set(self.file_operations.get() + 1);
+        FileOperation(self.file_operations.clone())
     }
 
     /// What the Explorer's Cut or Copy last took, if anything.
@@ -1294,6 +1321,14 @@ impl Workbench {
             }
             _ => {}
         }
+        // Another program respelled a file or folder (an agent's `git mv
+        // src Src`): its open documents and tabs follow, as after Rename,
+        // instead of going Deleted at the old spelling.
+        if let WorktreeEvent::Changed(changes) = ev {
+            for (old, new) in respelled(&self.root, changes) {
+                self.paths_renamed(&old, &new, cx);
+            }
+        }
         let snapshot = self.worktree.snapshot();
         let decorate = decorates_external_changes(self.settings.read(cx).view(cx));
         // Open documents tell our own saves from other programs' writes
@@ -1355,33 +1390,39 @@ impl Workbench {
         self.refresh_watched_open_files(cx);
     }
 
-    /// Open files the worktree does not follow (outside the root, or not
-    /// in the tree, e.g. ignored; all of them in single-file mode), which
-    /// the open-file watcher follows.
+    /// Open files the worktree does not follow (outside the root, not in
+    /// the tree, e.g. ignored, or reached through a symlink, whose target
+    /// the tree reports under its own path; all of them in single-file
+    /// mode), which the open-file watcher follows.
     pub fn watched_open_files(&self) -> &[PathBuf] {
         &self.watched_open_files
     }
 
     /// Re-picks [`Workbench::watched_open_files`] after the tabs or the
-    /// tree changed.
+    /// tree changed. The watcher is told even when the list is the same:
+    /// a link among it may point elsewhere now.
     fn refresh_watched_open_files(&mut self, cx: &App) {
         let snapshot = self.worktree.snapshot();
         let mut files: Vec<PathBuf> = self
             .open_tab_paths(cx)
             .into_iter()
             .filter(|path| match path.strip_prefix(&self.root) {
-                Ok(rel) => !self.scanning || !snapshot.contains(rel),
+                // The tree does not descend into linked folders, so only
+                // the file itself can be a link.
+                Ok(rel) => {
+                    !self.scanning
+                        || !snapshot.contains(rel)
+                        || path.symlink_metadata().is_ok_and(|m| m.is_symlink())
+                }
                 Err(_) => true,
             })
             .collect();
         files.sort();
         files.dedup();
-        if files != self.watched_open_files {
-            if let Some(watcher) = &self.open_file_watcher {
-                watcher.set_files(files.iter().chain(&self.git_head).cloned().collect());
-            }
-            self.watched_open_files = files;
+        if let Some(watcher) = &self.open_file_watcher {
+            watcher.set_files(files.iter().chain(&self.git_head).cloned().collect());
         }
+        self.watched_open_files = files;
     }
 
     /// Every open tab's path, once per path, with the file the dynamic
@@ -1463,6 +1504,8 @@ impl Workbench {
             .update(cx, |servers, cx| servers.on_worktree_event(&ev, cx));
         // Open files the worktree does not report (single-file mode).
         self.git_worktree_event(&ev, cx);
+        // A link outside the tree may point elsewhere now.
+        self.refresh_watched_open_files(cx);
     }
 
     /// A configuration batch arrived: an open `settings.json` (or other
@@ -1805,14 +1848,16 @@ impl Workbench {
     /// goes on (deleting their hot exit backups), Cancel (or a dismissed
     /// prompt) stops. Then, when
     /// `terminal.integrated.confirmOnExit` asks about running terminals
-    /// (terminal spec §6.1), whether to terminate them. Nothing to ask:
-    /// `true` at once.
+    /// (terminal spec §6.1), whether to terminate them. Then, while an
+    /// Explorer file operation runs, whether to quit anyway (a copy cut
+    /// short leaves only its hidden name). Nothing to ask: `true` at once.
     pub fn confirm_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
         let paths = self.documents.read(cx).dirty_paths();
         self.confirm_unsaved(paths, false, window, cx)
     }
 
-    /// [`Workbench::confirm_quit`] for only `paths` (and the terminals):
+    /// [`Workbench::confirm_quit`] for only `paths` (and the terminals and
+    /// file operations):
     /// the files whose hot exit backup failed as the app quits. The other
     /// unsaved files are neither saved nor checked.
     pub fn confirm_quit_for(
@@ -1843,9 +1888,14 @@ impl Workbench {
                 .collect()
         };
         let terminals = self.terminals_to_confirm(cx);
-        if paths.is_empty() && terminals == 0 {
+        let operations = self.file_operations.clone();
+        if paths.is_empty() && terminals == 0 && operations.get() == 0 {
             return Task::ready(true);
         }
+        // A sheet on a minimised window, or one on another Space, is never
+        // seen and the quit seems to do nothing: bring the window forward
+        // first, also when its prompt is already up (as Zed does).
+        window.activate_window();
         // The prompt is already up for an earlier quit or close.
         if self.confirming_quit {
             return Task::ready(false);
@@ -1885,6 +1935,17 @@ impl Workbench {
                     Err(_) => false,
                 };
             }
+            // Asked only if one still runs once the questions before are
+            // answered.
+            if go_on && operations.get() > 0 {
+                let answer = wb.update_in(cx, |_, window, cx| {
+                    prompt_file_operation_running(window, cx)
+                });
+                go_on = match answer {
+                    Ok(answer) => answer.await == Ok(0),
+                    Err(_) => false,
+                };
+            }
             if go_on
                 && discard
                 && let Some(hot_exit) = &hot_exit
@@ -1899,8 +1960,9 @@ impl Workbench {
 
     /// What Cmd+Q asks of this window (hot exit spec §5.3). With hot exit
     /// on: saves the files `files.autoSave` saves, writes every backup now,
-    /// and asks only about the files whose backup failed, and running
-    /// terminals. Otherwise (or without a data dir) [`Workbench::confirm_quit`].
+    /// and asks only about the files whose backup failed, running
+    /// terminals and running file operations. Otherwise (or without a data
+    /// dir) [`Workbench::confirm_quit`].
     fn confirm_app_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
         let Some(hot_exit) = self.hot_exit.clone().filter(|_| HotExit::enabled(cx)) else {
             return self.confirm_quit(window, cx);
@@ -1949,12 +2011,16 @@ impl Workbench {
             .count()
     }
 
-    /// The window's close button: closes at once when nothing is dirty
-    /// and no terminal needs confirming;
+    /// The window's close button: closes at once when nothing is dirty,
+    /// no terminal needs confirming and no file operation runs;
     /// otherwise asks ([`Workbench::confirm_quit`]) and closes the window
     /// itself if told to go on.
     fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.documents.read(cx).dirty_paths().is_empty() && self.terminals_to_confirm(cx) == 0 {
+        self.close_theme_picker(true, window, cx);
+        if self.documents.read(cx).dirty_paths().is_empty()
+            && self.terminals_to_confirm(cx) == 0
+            && self.file_operations.get() == 0
+        {
             self.save_workspace_state(cx);
             return true;
         }
@@ -3029,6 +3095,46 @@ pub(crate) fn enabled_globs(settings: SettingsView<'_>, key: &str) -> Vec<String
         .collect()
 }
 
+/// The entries a watcher batch shows respelled: a case-only rename on a
+/// case-insensitive file system, as root-relative `(old, new)` pairs, `old`
+/// Removed and `new` Added, the names equal but for case and the very same
+/// entry on disk. For a folder only its own pair is listed, not those of
+/// the paths below it.
+fn respelled(root: &Path, changes: &[Change]) -> Vec<(Arc<Path>, Arc<Path>)> {
+    let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+    let mut added: HashMap<String, Vec<&Arc<Path>>> = HashMap::new();
+    for change in changes.iter().filter(|c| c.kind == ChangeKind::Added) {
+        added
+            .entry(lower(&change.path))
+            .or_default()
+            .push(&change.path);
+    }
+    if added.is_empty() {
+        return Vec::new();
+    }
+    let mut removed: Vec<&Arc<Path>> = changes
+        .iter()
+        .filter(|c| c.kind == ChangeKind::Removed)
+        .map(|c| &c.path)
+        .collect();
+    removed.sort_by_key(|p| p.components().count());
+    let mut pairs: Vec<(Arc<Path>, Arc<Path>)> = Vec::new();
+    for old in removed {
+        if pairs.iter().any(|(o, _)| old.starts_with(o)) {
+            continue;
+        }
+        let Some(candidates) = added.get(&lower(old)) else {
+            continue;
+        };
+        if let Some(new) = candidates.iter().find(|new| {
+            **new != old && lucerna_project::fs_ops::same_entry(&root.join(old), &root.join(new))
+        }) {
+            pairs.push((old.clone(), (*new).clone()));
+        }
+    }
+    pairs
+}
+
 /// The single consumer of `worktree.events()`. `recv` blocks, so a
 /// dedicated thread receives and the foreground task delivers each event
 /// to [`Workbench::on_worktree_event`]. Both stop once the worktree or the
@@ -3098,6 +3204,17 @@ fn pump_open_file_changes(cx: &mut Context<Workbench>) -> (Option<OpenFileWatche
     }
 }
 
+/// An Explorer file operation counted as running
+/// ([`Workbench::begin_file_operation`]) until dropped.
+#[must_use]
+pub struct FileOperation(Rc<Cell<usize>>);
+
+impl Drop for FileOperation {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(1));
+    }
+}
+
 /// VS Code's `confirmOnExit` prompt for `count` running terminals; the
 /// answer is 0 for Terminate.
 fn prompt_terminate_terminals(
@@ -3119,6 +3236,21 @@ fn prompt_terminate_terminals(
     )
 }
 
+/// Asks whether to quit (or close the window) while an Explorer file
+/// operation runs: Quit (0) or Cancel.
+fn prompt_file_operation_running(
+    window: &mut Window,
+    cx: &mut App,
+) -> futures::channel::oneshot::Receiver<usize> {
+    window.prompt(
+        gpui::PromptLevel::Warning,
+        "A file operation is still running",
+        None,
+        &["Quit", "Cancel"],
+        cx,
+    )
+}
+
 /// Quits the app once every workbench window agreed to
 /// ([`Workbench::confirm_app_quit`], one window after another, the most
 /// recently used first; spec M11). With hot exit on, a window agrees
@@ -3133,6 +3265,9 @@ pub(crate) fn quit(cx: &mut App) {
     cx.spawn(async move |cx| {
         // What each window agreed to lose: its dirty files once it agreed.
         let mut agreed: HashMap<gpui::WindowId, Vec<Arc<Path>>> = HashMap::new();
+        // Asking a window brings it forward: the saved window list keeps
+        // the order from before.
+        let used = cx.update(|cx| crate::router::activity(cx));
         loop {
             let ask = cx.update(|cx| windows_to_ask(&agreed, cx));
             if ask.is_empty() {
@@ -3156,6 +3291,7 @@ pub(crate) fn quit(cx: &mut App) {
             }
         }
         cx.update(|cx| {
+            crate::router::restore_activity(&used, cx);
             crate::session::save_now(cx);
             crate::app::quit_now(cx);
         });

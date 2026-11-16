@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{Entity, TestAppContext, VisualTestContext};
+use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
 use lucerna_project::WorktreeEvent;
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
@@ -473,4 +473,197 @@ fn dynamic_preview_of_ignored_file_follows_writes(cx: &mut TestAppContext) {
     });
     let text = preview.read_with(cx, |p, _| p.blocks().map(|b| format!("{:?}", b.blocks())));
     assert!(text.unwrap().contains("New title"));
+}
+
+/// A project with `CLAUDE.md` and `AGENTS.md -> CLAUDE.md`, as agents'
+/// repos have, plus `docs/OUT.md` linking to `outside.md` beyond the root.
+#[cfg(unix)]
+fn symlink_dirs() -> (Dirs, TempDir) {
+    let dirs = Dirs::new();
+    let root = dirs.root.path();
+    std::fs::write(root.join("CLAUDE.md"), "one\ntwo\nthree\n").unwrap();
+    std::os::unix::fs::symlink("CLAUDE.md", root.join("AGENTS.md")).unwrap();
+    let outside = TempDir::new().unwrap();
+    std::fs::write(outside.path().join("outside.md"), "far\n").unwrap();
+    std::fs::create_dir(root.join("docs")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("outside.md"), root.join("docs/OUT.md"))
+        .unwrap();
+    (dirs, outside)
+}
+
+/// `.md` files open as text, so the tests see their code views.
+#[cfg(unix)]
+fn md_as_source(dirs: &Dirs, cx: &mut VisualTestContext) {
+    user_settings(
+        dirs,
+        r#"{ "workbench.editorAssociations": { "*.md": "default" } }"#,
+        cx,
+    );
+}
+
+/// What the worktree and the open-file watcher deliver after another
+/// program changed `rel` (relative to the root) and the watched `links`.
+#[cfg(unix)]
+fn report(wb: &Entity<Workbench>, rel: &str, links: &[&Path], cx: &mut VisualTestContext) {
+    let change = lucerna_project::Change {
+        path: Arc::from(Path::new(rel)),
+        kind: lucerna_project::ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    let links: Vec<PathBuf> = links.iter().map(|p| p.to_path_buf()).collect();
+    wb.update(cx, |wb, cx| wb.on_open_file_changes(&links, cx));
+    draw(cx);
+}
+
+/// T4-2: a tab opened through a symlink (`AGENTS.md -> CLAUDE.md`) is
+/// watched, and reloads when the agent writes the target, as does the
+/// target's own tab: two documents for one file, both current.
+#[cfg(unix)]
+#[gpui::test]
+fn symlinked_tab_reloads_when_its_target_changes(cx: &mut TestAppContext) {
+    let (dirs, outside) = symlink_dirs();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    md_as_source(&dirs, cx);
+    let root = dirs.root.path();
+    let (agents, out) = (root.join("AGENTS.md"), root.join("docs/OUT.md"));
+    let link = open_file(&wb, Path::new("AGENTS.md"), cx);
+    let target = open_file(&wb, Path::new("CLAUDE.md"), cx);
+    let far = open_file(&wb, Path::new("docs/OUT.md"), cx);
+    assert_eq!(text(&link, cx), "one\ntwo\nthree\n");
+    assert_eq!(text(&far, cx), "far\n");
+    let mut want = vec![agents.clone(), out.clone()];
+    want.sort();
+    assert_eq!(
+        wb.read_with(cx, |wb, _| wb.watched_open_files().to_vec()),
+        want,
+        "tabs reached through a symlink are watched; CLAUDE.md is the tree's"
+    );
+
+    std::fs::write(root.join("CLAUDE.md"), "one\ntwo\nTHREE\n").unwrap();
+    report(&wb, "CLAUDE.md", &[&agents], cx);
+    assert_eq!(text(&link, cx), "one\ntwo\nTHREE\n");
+    assert_eq!(text(&target, cx), "one\ntwo\nTHREE\n");
+
+    // A target outside the root.
+    std::fs::write(outside.path().join("outside.md"), "near\n").unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.on_open_file_changes(std::slice::from_ref(&out), cx)
+    });
+    draw(cx);
+    assert_eq!(text(&far, cx), "near\n");
+}
+
+/// The agent points the link elsewhere: the tab shows the new target,
+/// and follows it from then on. Removing the target marks it deleted.
+#[cfg(unix)]
+#[gpui::test]
+fn retargeted_symlink_tab_follows_the_new_target(cx: &mut TestAppContext) {
+    let (dirs, _outside) = symlink_dirs();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    md_as_source(&dirs, cx);
+    let root = dirs.root.path();
+    let agents = root.join("AGENTS.md");
+    let link = open_file(&wb, Path::new("AGENTS.md"), cx);
+
+    std::fs::write(root.join("docs/RULES.md"), "rules\n").unwrap();
+    std::fs::remove_file(&agents).unwrap();
+    std::os::unix::fs::symlink("docs/RULES.md", &agents).unwrap();
+    report(&wb, "AGENTS.md", &[&agents], cx);
+    assert_eq!(text(&link, cx), "rules\n");
+
+    std::fs::write(root.join("docs/RULES.md"), "more rules\n").unwrap();
+    report(&wb, "docs/RULES.md", &[&agents], cx);
+    assert_eq!(text(&link, cx), "more rules\n");
+
+    std::fs::remove_file(root.join("docs/RULES.md")).unwrap();
+    report(&wb, "docs/RULES.md", &[&agents], cx);
+    assert_eq!(
+        link.read_with(cx, |v, _| v.doc_state().clone()),
+        lucerna_workbench::DocState::Deleted
+    );
+}
+
+/// Unsaved edits in a symlinked tab merge with the agent's write to the
+/// target, as in any tab.
+#[cfg(unix)]
+#[gpui::test]
+fn dirty_symlinked_tab_merges_the_targets_change(cx: &mut TestAppContext) {
+    let (dirs, _outside) = symlink_dirs();
+    init(&dirs, cx);
+    let (wb, cx) = open(dirs.root.path(), cx);
+    md_as_source(&dirs, cx);
+    let root = dirs.root.path();
+    let agents = root.join("AGENTS.md");
+    let link = open_file(&wb, Path::new("AGENTS.md"), cx);
+    cx.update(|window, cx| {
+        let focus = link.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    cx.simulate_input("x");
+    draw(cx);
+    assert_eq!(text(&link, cx), "xone\ntwo\nthree\n");
+
+    std::fs::write(root.join("CLAUDE.md"), "one\ntwo\nTHREE\n").unwrap();
+    report(&wb, "CLAUDE.md", &[&agents], cx);
+    assert_eq!(text(&link, cx), "xone\ntwo\nTHREE\n");
+    let docs = cx.update(|_, cx| wb.read(cx).documents().clone());
+    docs.read_with(cx, |d, _| {
+        assert!(d.is_dirty(&agents));
+        assert!(!d.has_conflict(&agents));
+    });
+}
+
+/// The real watcher follows a link's target in another directory, and
+/// reports the link (as given) when the target changes or goes away, or
+/// once retargeted, when the new target changes.
+#[cfg(unix)]
+#[test]
+fn open_file_watcher_follows_a_links_target() {
+    let (dir, far) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let target = far.path().join("target.md");
+    let link = dir.path().join("link.md");
+    std::fs::write(&target, "1").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let watcher = OpenFileWatcher::start(move |batch| {
+        let _ = tx.send(batch);
+    })
+    .unwrap();
+    watcher.set_files(vec![link.clone()]);
+    std::thread::sleep(Duration::from_millis(300));
+    while rx.try_recv().is_ok() {}
+
+    let wait_for_link = |what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let batch: Vec<PathBuf> = rx
+                .recv_timeout(left)
+                .unwrap_or_else(|_| panic!("a batch arrives after {what}"));
+            if batch.contains(&link) {
+                break;
+            }
+        }
+    };
+    std::fs::write(&target, "2").unwrap();
+    wait_for_link("a write");
+    std::fs::remove_file(&target).unwrap();
+    wait_for_link("a removal");
+
+    // Pointed elsewhere, and told again: the new target is followed.
+    let other = TempDir::new().unwrap();
+    let new_target = other.path().join("new.md");
+    std::fs::write(&new_target, "1").unwrap();
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&new_target, &link).unwrap();
+    watcher.set_files(vec![link.clone()]);
+    std::thread::sleep(Duration::from_millis(300));
+    while rx.try_recv().is_ok() {}
+    std::fs::write(&new_target, "2").unwrap();
+    wait_for_link("a write to the new target");
 }

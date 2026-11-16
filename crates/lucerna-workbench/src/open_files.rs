@@ -4,9 +4,13 @@
 //! parent directory of each, non-recursively, and reports writes to those
 //! files in batches debounced by [`OPEN_FILE_DEBOUNCE`]; the workbench
 //! hands them to its documents as it does worktree changes.
+//!
+//! A file reached through a symlink (`AGENTS.md -> CLAUDE.md`) is
+//! reported as given when its target changes: the target's directory is
+//! watched too.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -29,7 +33,9 @@ pub struct OpenFileWatcher {
 
 struct WatchState {
     watcher: RecommendedWatcher,
-    files: Vec<PathBuf>,
+    /// Each file as given, with its real path when given, which still
+    /// names a link's target once the target is removed.
+    files: Vec<(PathBuf, PathBuf)>,
     /// Directories watched, non-recursively.
     dirs: Vec<PathBuf>,
 }
@@ -58,7 +64,8 @@ impl OpenFileWatcher {
         Ok(OpenFileWatcher { state })
     }
 
-    /// Follows exactly `files` from now on.
+    /// Follows exactly `files` from now on. Call it again when a link
+    /// among them may point elsewhere: links are resolved here.
     pub fn set_files(&self, files: Vec<PathBuf>) {
         lock(&self.state).set_files(files);
     }
@@ -70,12 +77,30 @@ fn lock(state: &Mutex<WatchState>) -> std::sync::MutexGuard<'_, WatchState> {
 
 impl WatchState {
     fn set_files(&mut self, files: Vec<PathBuf>) {
-        let wanted: BTreeSet<PathBuf> = files
-            .iter()
-            .filter_map(|f| f.parent())
-            .filter(|dir| dir.is_dir())
-            .map(Path::to_path_buf)
+        let files: Vec<(PathBuf, PathBuf)> = files
+            .into_iter()
+            .map(|f| {
+                let real = real_path(&f);
+                (f, real)
+            })
             .collect();
+        if files == self.files {
+            return;
+        }
+        let mut wanted = BTreeSet::new();
+        for (file, real) in &files {
+            let Some(parent) = file.parent() else {
+                continue;
+            };
+            wanted.insert(parent.to_path_buf());
+            // A link elsewhere: its target's directory reports the writes.
+            if let Some(real_parent) = real.parent()
+                && real_path(parent) != real_parent
+            {
+                wanted.insert(real_parent.to_path_buf());
+            }
+        }
+        wanted.retain(|dir| dir.is_dir());
         for dir in &self.dirs {
             if !wanted.contains(dir) {
                 let _ = self.watcher.unwatch(dir);
@@ -123,6 +148,7 @@ fn debounce_loop(
         };
         let files = lock(&state).files.clone();
         drop(state);
+        let (given, reals): (Vec<PathBuf>, Vec<PathBuf>) = files.into_iter().unzip();
         let mut changed = Vec::new();
         let mut everything = false;
         for event in events {
@@ -136,9 +162,17 @@ fn debounce_loop(
             }
         }
         let batch = if everything {
-            files
+            given
         } else {
-            matching_files(&files, &changed)
+            let changed: BTreeSet<PathBuf> = changed.iter().map(|p| real_path(p)).collect();
+            // A link matches by its target now, or by the target it had
+            // when set, which a removed target no longer resolves to.
+            given
+                .into_iter()
+                .zip(reals)
+                .filter(|(file, real)| changed.contains(&real_path(file)) || changed.contains(real))
+                .map(|(file, _)| file)
+                .collect()
         };
         if !batch.is_empty() {
             on_batch(batch);

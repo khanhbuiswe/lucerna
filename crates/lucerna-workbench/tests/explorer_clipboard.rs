@@ -840,11 +840,11 @@ impl Drop for Readable {
     }
 }
 
-/// A folder copy that fails halfway says so, and what it wrote is not
-/// decorated as another program's.
+/// A folder copy that fails halfway says so and leaves nothing behind:
+/// no half-written copy under the target's name, nor its hidden name.
 #[cfg(unix)]
 #[gpui::test]
-fn failed_folder_copy_reports_partial_copy(cx: &mut TestAppContext) {
+fn failed_folder_copy_leaves_nothing(cx: &mut TestAppContext) {
     use std::os::unix::fs::PermissionsExt;
     init(cx);
     let dir = project();
@@ -862,10 +862,144 @@ fn failed_folder_copy_reports_partial_copy(cx: &mut TestAppContext) {
     wait_until(cx, |cx| status(cx).is_some());
     let message = status(cx).unwrap();
     assert!(message.starts_with("Unable to paste 'src': "), "{message}");
-    assert!(message.ends_with(" (partially copied)"), "{message}");
-    assert!(root.join("src copy").is_dir());
-    deliver_added(&wb, &["src copy"], cx);
-    assert!(!decorated(&wb, "src copy", cx));
+    assert!(!message.contains("partially"), "{message}");
+    assert!(!root.join("src copy").exists());
+    let left: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(lucerna_project::fs_ops::COPY_TEMP_PREFIX))
+        .collect();
+    assert_eq!(left, Vec::<String>::new());
+}
+
+fn file_operations(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> usize {
+    cx.update(|_, cx| wb.read(cx).file_operations_running())
+}
+
+/// Runs `command` on `path` without letting its task run yet.
+fn start(wb: &Entity<Workbench>, command: &str, path: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        let args = serde_json::json!({ "path": path });
+        wb.update(cx, |wb, cx| {
+            wb.run_command(command, Some(&args), window, cx)
+        });
+    });
+}
+
+/// Paste (copy and move) and Duplicate count as running file operations
+/// until they are done: a quit or close asks meanwhile.
+#[gpui::test]
+fn paste_and_duplicate_count_as_running(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    assert_eq!(file_operations(&wb, cx), 0);
+
+    click("explorer-row-a.rs", cx);
+    keys("cmd-c", cx);
+    start(&wb, "filesExplorer.paste", "src", cx);
+    assert_eq!(file_operations(&wb, cx), 1, "a copy runs");
+    wait_until(cx, |_| root.join("src/a.rs").is_file());
+    draw(cx);
+    assert_eq!(file_operations(&wb, cx), 0);
+
+    start(&wb, "filesExplorer.duplicate", "b.rs", cx);
+    assert_eq!(file_operations(&wb, cx), 1, "a duplicate runs");
+    wait_until(cx, |_| root.join("b copy.rs").is_file());
+    draw(cx);
+    assert_eq!(file_operations(&wb, cx), 0);
+    keys("escape", cx);
+
+    click("explorer-row-b.rs", cx);
+    keys("cmd-x", cx);
+    start(&wb, "filesExplorer.paste", "src", cx);
+    assert_eq!(file_operations(&wb, cx), 1, "a move runs");
+    wait_until(cx, |_| root.join("src/b.rs").is_file());
+    draw(cx);
+    assert_eq!(file_operations(&wb, cx), 0);
+}
+
+/// File: Quit (Cmd+Q); quits are counted ([`count_quits`]).
+fn quit_app(wb: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command("workbench.action.quit", None, window, cx)
+        });
+    });
+    cx.run_until_parked();
+}
+
+/// From now on quits are counted instead of done.
+fn count_quits(cx: &mut VisualTestContext) {
+    cx.update(|_, cx| lucerna_workbench::app::count_quits_for_test(cx));
+}
+
+fn quits(cx: &mut VisualTestContext) -> usize {
+    cx.update(|_, cx| lucerna_workbench::app::quits_for_test(cx))
+}
+
+const STILL_RUNNING: &str = "A file operation is still running";
+
+/// Cmd+Q while a file operation runs asks first: Cancel keeps the app,
+/// Quit quits. Once it is done, nothing is asked.
+#[gpui::test]
+fn quit_asks_while_a_file_operation_runs(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let op = cx.update(|_, cx| wb.read(cx).begin_file_operation());
+    count_quits(cx);
+
+    quit_app(&wb, cx);
+    let (message, _) = cx
+        .pending_prompt()
+        .expect("the running operation is asked about");
+    assert_eq!(message, STILL_RUNNING);
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(quits(cx), 0, "Cancel stops the quit");
+
+    quit_app(&wb, cx);
+    assert_eq!(
+        cx.pending_prompt().map(|(m, _)| m).as_deref(),
+        Some(STILL_RUNNING)
+    );
+    cx.simulate_prompt_answer("Quit");
+    cx.run_until_parked();
+    assert_eq!(quits(cx), 1);
+
+    drop(op);
+    quit_app(&wb, cx);
+    assert!(!cx.has_pending_prompt(), "nothing runs: nothing to ask");
+    assert_eq!(quits(cx), 2);
+}
+
+/// Closing the window while a file operation runs asks the same.
+#[gpui::test]
+fn close_window_asks_while_a_file_operation_runs(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    let _op = cx.update(|_, cx| wb.read(cx).begin_file_operation());
+    drop(wb);
+
+    assert!(!cx.simulate_close(), "the window waits for the answer");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.pending_prompt().map(|(m, _)| m).as_deref(),
+        Some(STILL_RUNNING)
+    );
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    assert_eq!(cx.windows().len(), 1, "Cancel keeps the window");
+
+    assert!(!cx.simulate_close());
+    cx.run_until_parked();
+    cx.simulate_prompt_answer("Quit");
+    cx.run_until_parked();
+    assert!(cx.windows().is_empty(), "Quit closes the window");
 }
 
 #[gpui::test]

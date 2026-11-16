@@ -13,7 +13,7 @@ use gpui::{
     WeakEntity, Window, anchored, deferred, div, point, prelude::*, px, uniform_list,
 };
 use lucerna_project::fs_ops::{self, NameError};
-use lucerna_project::{ChangeKind, EntryKind, WorktreeEvent, WorktreeSnapshot};
+use lucerna_project::{ChangeKind, EntryKind, RootStatus, WorktreeEvent, WorktreeSnapshot};
 use lucerna_theme::{IconSource, ResolvedIcons, Rgba};
 
 use super::menu::build_menu;
@@ -24,7 +24,8 @@ use crate::layout::color;
 use crate::text_input::TextInput;
 use crate::ui::{
     ContextMenu, DeployedMenu, GRID, ScrollHandleSource, ScrollbarState, TREE_ROW_HEIGHT,
-    UI_FONT_SIZE, UI_FONT_SIZE_SMALL, deploy_context_menu, file_icon_sized, render_deployed,
+    UI_FONT_SIZE, UI_FONT_SIZE_SMALL, centered_message, deploy_context_menu, file_icon_sized,
+    render_deployed,
 };
 use crate::{
     AppState, Documents, EditorGroupsView, OpenMode, WindowSettings, Workbench, status_message,
@@ -193,6 +194,17 @@ impl ExplorerView {
     /// The root row's label: the project folder's name, as on disk.
     pub fn root_label(&self) -> &str {
         &self.root_label
+    }
+
+    /// What the Explorer shows in place of the tree when the folder
+    /// itself is gone or cannot be read; `None` while it can.
+    pub fn root_message(&self) -> Option<String> {
+        let name = &self.root_label;
+        match self.model.root_status() {
+            RootStatus::Readable => None,
+            RootStatus::Missing => Some(format!("Folder {name} no longer exists")),
+            RootStatus::Unreadable(why) => Some(format!("Can't read folder {name}: {why}")),
+        }
     }
 
     /// The scrollbar thumb as last painted, in window coordinates; `None`
@@ -1681,16 +1693,26 @@ impl Render for ExplorerView {
                         }),
                     )
                     .relative()
-                    .child(
-                        uniform_list(
-                            "explorer-rows",
-                            self.model.visible_rows().len(),
-                            cx.processor(|this, range, _, cx| this.render_rows(range, cx)),
-                        )
-                        .size_full()
-                        .track_scroll(&self.scroll),
-                    )
-                    .child(scrollbar),
+                    .map(|el| match self.root_message() {
+                        // The folder is gone or unreadable: say so, as
+                        // the Search tab says "No results found".
+                        Some(message) => el.child(centered_message(
+                            "explorer-root-message",
+                            message,
+                            color(cx.global::<AppState>().theme.ui.text_muted),
+                        )),
+                        None => el
+                            .child(
+                                uniform_list(
+                                    "explorer-rows",
+                                    self.model.visible_rows().len(),
+                                    cx.processor(|this, range, _, cx| this.render_rows(range, cx)),
+                                )
+                                .size_full()
+                                .track_scroll(&self.scroll),
+                            )
+                            .child(scrollbar),
+                    }),
             )
             .children(self.context_menu.as_ref().map(render_deployed))
     }

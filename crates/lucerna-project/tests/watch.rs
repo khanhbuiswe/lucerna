@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use lucerna_project::{ChangeKind, ScanOptions, Worktree, WorktreeEvent};
+use lucerna_project::{ChangeKind, RootStatus, ScanOptions, Worktree, WorktreeEvent};
 use tempfile::TempDir;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
@@ -121,6 +121,29 @@ fn gitignored_changes_silent() {
     assert!(!wt.snapshot().contains(Path::new("out/x")));
 }
 
+/// A copy written under its hidden name stays out of the tree; renamed to
+/// its real name, it is added with its contents.
+#[test]
+fn copy_temp_silent_until_renamed() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    let wt = started(r);
+    let temp = r.join(format!("{}1-1", lucerna_project::fs_ops::COPY_TEMP_PREFIX));
+    fs::create_dir(&temp).unwrap();
+    fs::write(temp.join("x.rs"), "1").unwrap();
+    let seen = collect_until(&wt, |_| false);
+    assert!(seen.is_empty(), "{seen:?}");
+    fs::rename(&temp, r.join("out")).unwrap();
+    let seen = collect_until(&wt, |s| has(s, "out", ChangeKind::Added));
+    assert!(has(&seen, "out", ChangeKind::Added), "{seen:?}");
+    wait_for_snapshot(&wt, |s| s.contains(Path::new("out/x.rs")));
+    assert!(!wt.snapshot().entries().iter().any(|e| {
+        e.path
+            .to_string_lossy()
+            .contains(lucerna_project::fs_ops::COPY_TEMP_PREFIX)
+    }));
+}
+
 #[test]
 fn bulk_write_5000_files_rescans() {
     let dir = TempDir::new().unwrap();
@@ -235,4 +258,154 @@ fn edit_after_the_replay_window_is_reported_despite_old_mtime() {
 
     let seen = collect_until(&wt, |s| has(s, "f", ChangeKind::Modified));
     assert!(has(&seen, "f", ChangeKind::Modified), "{seen:?}");
+}
+
+/// True if the file system holding `dir` ignores case (APFS and HFS+ by
+/// default, NTFS): a file created as `a` can be looked up as `A`.
+fn ignores_case(dir: &Path) -> bool {
+    let probe = dir.join("case-probe-a");
+    fs::write(&probe, "").unwrap();
+    let ignores = fs::symlink_metadata(dir.join("CASE-PROBE-A")).is_ok();
+    fs::remove_file(probe).unwrap();
+    ignores
+}
+
+/// Waits until `cond` holds on the snapshot, for at most the timeout.
+fn wait_for_snapshot(wt: &Worktree, cond: impl Fn(&lucerna_project::WorktreeSnapshot) -> bool) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !cond(&wt.snapshot()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn case_only_rename_of_a_file_leaves_only_the_new_name() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    if !ignores_case(r) {
+        return;
+    }
+    fs::write(r.join("foo.rs"), "x").unwrap();
+    let wt = started(r);
+
+    fs::rename(r.join("foo.rs"), r.join("Foo.rs")).unwrap();
+    let seen = collect_until(&wt, |s| has(s, "Foo.rs", ChangeKind::Added));
+    let more = collect_until(&wt, |_| false);
+    let all: Vec<_> = seen.into_iter().chain(more).collect();
+    wait_for_snapshot(&wt, |s| !s.contains(Path::new("foo.rs")));
+    let snapshot = wt.snapshot();
+    assert!(snapshot.contains(Path::new("Foo.rs")), "{all:?}");
+    assert!(!snapshot.contains(Path::new("foo.rs")), "{all:?}");
+    assert!(has(&all, "foo.rs", ChangeKind::Removed), "{all:?}");
+}
+
+#[test]
+fn case_only_rename_of_a_folder_leaves_only_the_new_subtree() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    if !ignores_case(r) {
+        return;
+    }
+    fs::create_dir_all(r.join("src/inner")).unwrap();
+    fs::write(r.join("src/a.rs"), "x").unwrap();
+    fs::write(r.join("src/inner/b.rs"), "x").unwrap();
+    let wt = started(r);
+
+    fs::rename(r.join("src"), r.join("Src")).unwrap();
+    let seen = collect_until(&wt, |s| has(s, "Src/inner/b.rs", ChangeKind::Added));
+    let more = collect_until(&wt, |_| false);
+    let all: Vec<_> = seen.into_iter().chain(more).collect();
+    wait_for_snapshot(&wt, |s| !s.contains(Path::new("src")));
+    let snapshot = wt.snapshot();
+    let mut paths: Vec<String> = snapshot
+        .entries()
+        .iter()
+        .map(|e| e.path.to_string_lossy().into_owned())
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        ["Src", "Src/a.rs", "Src/inner", "Src/inner/b.rs"],
+        "{all:?}"
+    );
+    assert!(has(&all, "src", ChangeKind::Removed), "{all:?}");
+}
+
+/// Waits for a `Rescanned` event, for at most the timeout.
+fn wait_for_rescan(wt: &Worktree) -> bool {
+    let rx = wt.events();
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(WorktreeEvent::Rescanned) => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+}
+
+/// T4-1: the opened folder renamed away (Move to Trash is a rename too):
+/// the tree empties and says the root is missing; renamed back, it is
+/// whole again.
+#[test]
+fn root_renamed_away_and_back() {
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("proj");
+    fs::create_dir(&proj).unwrap();
+    fs::write(proj.join("a.txt"), "x").unwrap();
+    let wt = started(&proj);
+
+    let away = dir.path().join("proj2");
+    fs::rename(&proj, &away).unwrap();
+    assert!(wait_for_rescan(&wt), "no rescan after the root moved away");
+    let snapshot = wt.snapshot();
+    assert_eq!(*snapshot.root_status(), RootStatus::Missing);
+    assert!(snapshot.entries().is_empty(), "{:?}", snapshot.entries());
+
+    fs::rename(&away, &proj).unwrap();
+    assert!(wait_for_rescan(&wt), "no rescan after the root came back");
+    let snapshot = wt.snapshot();
+    assert_eq!(*snapshot.root_status(), RootStatus::Readable);
+    assert!(snapshot.contains(Path::new("a.txt")));
+}
+
+/// Gives the folder its permissions back, so the temporary folder can go.
+#[cfg(unix)]
+struct Restore<'a>(&'a Path);
+
+#[cfg(unix)]
+impl Drop for Restore<'_> {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// T3-5: a root that cannot be listed (`chmod 000`, a privacy denial)
+/// says why instead of looking empty, until it can be read again.
+#[cfg(unix)]
+#[test]
+fn unreadable_root_says_why_until_it_can_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("proj");
+    fs::create_dir(&proj).unwrap();
+    fs::write(proj.join("a.txt"), "x").unwrap();
+    fs::set_permissions(&proj, fs::Permissions::from_mode(0o000)).unwrap();
+    let _restore = Restore(&proj);
+    if fs::read_dir(&proj).is_ok() {
+        return; // root ignores permissions
+    }
+    let wt = started(&proj);
+    let status = wt.snapshot().root_status().clone();
+    assert!(
+        matches!(&status, RootStatus::Unreadable(why) if &**why == "Permission denied"),
+        "{status:?}"
+    );
+
+    fs::set_permissions(&proj, fs::Permissions::from_mode(0o755)).unwrap();
+    wait_for_snapshot(&wt, |s| s.contains(Path::new("a.txt")));
+    assert_eq!(*wt.snapshot().root_status(), RootStatus::Readable);
+    assert!(wt.snapshot().contains(Path::new("a.txt")));
 }

@@ -33,7 +33,7 @@ use lucerna_settings::SettingsView;
 use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{
     Buffer, BufferSnapshot, Decoded, HistoryState, LineEnding, LoadError, Patch, PatchEdit, Point,
-    SelectionsToken, WriteError, check_size, decode_file, diff_edits,
+    SelectionsToken, WriteError, check_regular, check_size, decode_file, diff_edits,
 };
 
 use crate::WindowSettings;
@@ -2735,6 +2735,7 @@ fn first_line(snapshot: &BufferSnapshot) -> String {
 /// Reads `path` whole, refusing files over the size limit.
 fn read(path: &Path) -> Result<(Vec<u8>, Stamp), LoadError> {
     let meta = fs::metadata(path)?;
+    check_regular(&meta)?;
     check_size(meta.len())?;
     let bytes = fs::read(path)?;
     Ok((bytes, Stamp::of(&meta)))
@@ -2754,6 +2755,7 @@ fn read_text(path: &Path, force_text: bool) -> Result<(Decoded, Stamp), ReadFail
         stamp: Some(stamp),
         hash,
     };
+    check_regular(&meta).map_err(|err| fail(err, None))?;
     check_size(meta.len()).map_err(|err| fail(err, None))?;
     let bytes = fs::read(path).map_err(|err| fail(err.into(), None))?;
     let decoded =

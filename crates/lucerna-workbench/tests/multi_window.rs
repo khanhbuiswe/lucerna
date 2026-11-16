@@ -965,6 +965,27 @@ fn quit_cancel_in_second_window_keeps_all(cx: &mut TestAppContext) {
     assert_eq!(routed_windows(cx).len(), 2, "both windows stay");
 }
 
+/// M2-1: a window is brought forward (a minimised one comes back, one on
+/// another Space is shown) before it is asked, or its sheet is never seen.
+#[gpui::test]
+fn quit_brings_the_asked_window_forward(cx: &mut TestAppContext) {
+    let (in_a, in_b) = two_dirty_windows(cx);
+    in_a.update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| cx.active_window()), Some(in_a.into()));
+    quit(cx);
+    assert!(prompt(cx).contains("a.rs"), "A, used last, asks first");
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    assert!(prompt(cx).contains("b.rs"), "then B");
+    assert_eq!(
+        cx.update(|cx| cx.active_window()),
+        Some(in_b.into()),
+        "B is brought forward before it asks"
+    );
+}
+
 #[gpui::test]
 fn quit_dont_save_both_quits(cx: &mut TestAppContext) {
     let (in_a, in_b) = two_dirty_windows(cx);
@@ -1540,4 +1561,96 @@ fn external_terminal_exec_needs_trust(cx: &mut TestAppContext) {
         .map(|(_, exec)| exec.clone())
         .collect();
     assert_eq!(execs, ["user-term", "workspace-term"]);
+}
+
+/// Makes `trusted.json` impossible to write: a folder with a file in it.
+fn break_trust_file(data: &Path) {
+    std::fs::create_dir_all(data.join("trusted.json").join("x")).unwrap();
+}
+
+fn fix_trust_file(data: &Path) {
+    std::fs::remove_dir_all(data.join("trusted.json")).unwrap();
+}
+
+fn trust_generation(cx: &mut TestAppContext) -> u64 {
+    cx.update(|cx| {
+        cx.try_global::<lucerna_workbench::TrustGeneration>()
+            .map_or(0, |g| g.0)
+    })
+}
+
+fn status(handle: WindowHandle<Workbench>, cx: &mut TestAppContext) -> Option<String> {
+    let id = handle.window_id();
+    cx.update(|cx| lucerna_workbench::status_message::current(id, cx).map(|m| m.to_string()))
+}
+
+#[gpui::test]
+fn failed_trust_survives_another_windows_later_write(cx: &mut TestAppContext) {
+    init(cx);
+    let data = tempfile::tempdir().unwrap();
+    let base = tempfile::tempdir().unwrap();
+    let (one, two) = (base.path().join("one"), base.path().join("two"));
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    let a = trust_window(&one, data.path(), cx);
+    let b = trust_window(&two, data.path(), cx);
+    break_trust_file(data.path());
+    let before = trust_generation(cx);
+    trust_in(a, false, cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(a, cx);
+    assert!(is_trusted(a, cx));
+    assert_eq!(trust_generation(cx), before, "a failed write bumps nothing");
+    assert!(data.path().join("trusted.json").is_dir(), "file unchanged");
+    assert!(status(a, cx).is_some_and(|m| m.starts_with("Couldn't save the trusted folders list")),);
+
+    // Another window saves fine; A's in-memory trust is not read away.
+    fix_trust_file(data.path());
+    trust_in(b, false, cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(a, cx);
+    settle(b, cx);
+    assert!(is_trusted(b, cx));
+    assert!(is_trusted(a, cx), "A keeps its trust for the session");
+}
+
+#[gpui::test]
+fn failed_untrust_survives_another_windows_later_write(cx: &mut TestAppContext) {
+    init(cx);
+    let data = tempfile::tempdir().unwrap();
+    let base = tempfile::tempdir().unwrap();
+    let (one, two) = (base.path().join("one"), base.path().join("two"));
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    let a = trust_window(&one, data.path(), cx);
+    let b = trust_window(&two, data.path(), cx);
+    trust_in(a, false, cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(a, cx);
+    assert!(is_trusted(a, cx));
+    let saved = std::fs::read(data.path().join("trusted.json")).unwrap();
+
+    // Make the next write fail: a stale tmp name is a directory.
+    std::fs::create_dir_all(data.path().join("trusted.json.tmp").join("x")).unwrap();
+    let before = trust_generation(cx);
+    a.update(cx, |wb, _, cx| wb.clear_trust(cx)).unwrap();
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(a, cx);
+    assert!(!is_trusted(a, cx));
+    assert_eq!(trust_generation(cx), before);
+    assert_eq!(
+        std::fs::read(data.path().join("trusted.json")).unwrap(),
+        saved,
+        "file unchanged"
+    );
+    let message = status(a, cx).unwrap();
+    assert!(message.starts_with("Couldn't save the trusted folders list"));
+    assert!(message.contains("stays trusted"), "{message}");
+
+    // Another window saves fine; A is not re-trusted from the old file.
+    std::fs::remove_dir_all(data.path().join("trusted.json.tmp")).unwrap();
+    trust_in(b, false, cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(a, cx);
+    assert!(!is_trusted(a, cx), "A stays in Restricted Mode");
 }

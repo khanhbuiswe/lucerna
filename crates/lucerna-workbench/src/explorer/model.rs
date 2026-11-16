@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use lucerna_project::{EntryKind, WorktreeSnapshot};
+use lucerna_project::{EntryKind, RootStatus, WorktreeSnapshot};
 
 /// How long a file stays decorated after it changed on disk.
 pub const CHANGE_DECORATION: Duration = Duration::from_secs(10);
@@ -92,11 +92,20 @@ impl ExplorerModel {
         model
     }
 
+    /// Whether the root itself could be read (see [`RootStatus`]).
+    pub fn root_status(&self) -> &RootStatus {
+        self.snapshot.root_status()
+    }
+
     /// Replaces the tree. Directories that are still in it stay expanded.
     pub fn set_snapshot(&mut self, snapshot: WorktreeSnapshot) {
         self.snapshot = snapshot;
         let snapshot = &self.snapshot;
-        self.expanded.retain(|dir| is_dir(snapshot, dir));
+        // A root that is gone for now (renamed away, unreadable) comes
+        // back with its folders open as they were.
+        if *snapshot.root_status() == RootStatus::Readable {
+            self.expanded.retain(|dir| is_dir(snapshot, dir));
+        }
         // A name typed in a folder that is gone has nowhere to go; an
         // entry being renamed that is gone has nothing to rename.
         if self.edit.as_ref().is_some_and(|e| {

@@ -1062,3 +1062,60 @@ fn glyph_color_tracks_color_theme(cx: &mut TestAppContext) {
     assert_ne!(glyph.0, glyph.1);
     assert!(cx.debug_bounds("explorer-row-x.ts").is_some());
 }
+
+/// Gives the folder its permissions back, so the temporary folder can go.
+#[cfg(unix)]
+struct Restore(PathBuf);
+
+#[cfg(unix)]
+impl Drop for Restore {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+fn root_message(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<String> {
+    cx.update(|_, cx| wb.read(cx).explorer().read(cx).root_message())
+}
+
+/// T3-5: a root that cannot be listed (`chmod 000`, a macOS privacy
+/// denial) says so in the Explorer instead of looking empty; once it can
+/// be read, the tree is back.
+#[cfg(unix)]
+#[gpui::test]
+fn unreadable_root_says_why(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    init(cx, None);
+    let dir = tempfile::tempdir().unwrap();
+    let proj = dir.path().join("proj");
+    std::fs::create_dir(&proj).unwrap();
+    std::fs::write(proj.join("a.rs"), "").unwrap();
+    std::fs::set_permissions(&proj, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let _restore = Restore(proj.clone());
+    if std::fs::read_dir(&proj).is_ok() {
+        return; // root ignores permissions
+    }
+    let (wb, cx) = open(&proj, cx);
+    assert_eq!(
+        root_message(&wb, cx).as_deref(),
+        Some("Can't read folder proj: Permission denied")
+    );
+    assert!(cx.debug_bounds("explorer-root-message").is_some());
+
+    std::fs::set_permissions(&proj, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| {
+        wb.worktree().snapshot().contains(Path::new("a.rs"))
+    }) {
+        assert!(Instant::now() < deadline, "the tree never came back");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Rescanned, cx)
+    });
+    draw(cx);
+    assert_eq!(root_message(&wb, cx), None);
+    assert!(cx.debug_bounds("explorer-root-message").is_none());
+    assert_eq!(visible(&wb, cx), ["a.rs"]);
+}

@@ -281,3 +281,31 @@ fn open_recent_menu_hides_the_single_file(cx: &mut TestAppContext) {
     assert!(shown(&other), "{titles:?}");
     assert!(!shown(&file), "{titles:?}");
 }
+
+/// T3-2: in single-file mode the file's parent folder is not open, so
+/// Open Recent still lists it.
+#[gpui::test]
+fn open_recent_menu_keeps_the_single_files_parent_folder(cx: &mut TestAppContext) {
+    app_state(cx);
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("README.md");
+    fs::write(&file, "").unwrap();
+    let data = tmp.path().join("data");
+    let entry = RecentEntry {
+        path: tmp.path().to_path_buf(),
+        kind: RecentKind::Folder,
+    };
+    recent::record(&data, entry).unwrap();
+    cx.set_global(RecentStore {
+        data_dir: Some(data),
+    });
+    let (root, single) = (tmp.path().to_path_buf(), file.clone());
+    let (_wb, cx) =
+        cx.add_window_view(|window, cx| Workbench::single_file(root, &single, None, window, cx));
+    cx.update(|_, cx| app_menu::install(cx));
+    settle(cx);
+    let menus = cx.update(|_, cx| cx.get_menus()).expect("menus are set");
+    let titles = open_recent_titles(&menus);
+    let dir = tmp.path().to_string_lossy().into_owned();
+    assert!(titles.iter().any(|t| t.ends_with(&dir)), "{titles:?}");
+}

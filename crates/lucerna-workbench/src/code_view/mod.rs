@@ -2030,6 +2030,7 @@ impl CodeView {
         let (message, action) = match err {
             LoadError::Binary => ("Binary file".to_string(), ErrorAction::OpenAsText),
             LoadError::TooLarge { .. } => ("File is larger than 512 MB".into(), ErrorAction::None),
+            err @ LoadError::NotRegular => (err.to_string(), ErrorAction::None),
             err @ (LoadError::NotFound | LoadError::PermissionDenied | LoadError::Io(_)) => {
                 (err.to_string(), ErrorAction::Retry)
             }

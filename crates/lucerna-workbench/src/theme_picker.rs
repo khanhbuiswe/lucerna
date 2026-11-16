@@ -14,7 +14,7 @@ use lucerna_theme::{Appearance, ResolvedIcons, Theme};
 use serde_json::Value;
 
 use crate::config_files::{
-    COLOR_THEME_KEY, ConfigState, apply_configured_theme, color_theme_setting_key,
+    COLOR_THEME_KEY, ConfigState, apply_configured_theme, color_theme_setting_key, icon_previewing,
     set_icon_preview, set_theme_preview, system_appearance,
 };
 use crate::extensions::service::resolve_icons;
@@ -184,6 +184,7 @@ enum Picking {
 pub(crate) struct ShownThemePicker {
     picker: Entity<ThemePicker>,
     _events: Subscription,
+    _activation: Subscription,
     picking: Picking,
     focus_before: Option<FocusHandle>,
 }
@@ -278,11 +279,20 @@ impl Workbench {
         self.close_modal_overlays(window, cx);
         let picker = cx.new(|cx| ThemePicker::new(names, current, placeholder, cx));
         let events = cx.subscribe_in(&picker, window, Self::on_theme_picker_event);
+        // As VS Code's `workbench.quickOpen.closeOnFocusLost`: going to
+        // another window closes the picker, so no other window keeps
+        // this one's preview or ignores its settings meanwhile (M3-1).
+        let activation = cx.observe_window_activation(window, |wb, window, cx| {
+            if !window.is_window_active() {
+                wb.close_theme_picker(true, window, cx);
+            }
+        });
         let focus_before = window.focused(cx);
         window.focus(&picker.focus_handle(cx), cx);
         self.theme_picker = Some(ShownThemePicker {
             picker,
             _events: events,
+            _activation: activation,
             picking,
             focus_before,
         });
@@ -315,6 +325,18 @@ impl Workbench {
             }
         }
         cx.notify();
+    }
+
+    /// Closes the theme picker with revert as its window goes: the close
+    /// button, or the workbench being released without a window to hand.
+    /// The preview flags never outlive the picker (M3-1).
+    pub(crate) fn release_theme_picker(&mut self, cx: &mut App) {
+        let Some(shown) = self.theme_picker.take() else {
+            return;
+        };
+        set_theme_preview(false, cx);
+        set_icon_preview(false, cx);
+        revert_preview(shown.picking, cx);
     }
 
     fn on_theme_picker_event(
@@ -399,9 +421,13 @@ fn revert_preview(picking: Picking, cx: &mut App) {
         }
         Picking::IconTheme(original) => {
             if has_config {
+                // Resolves the configured theme, then leaves the flag as
+                // it was: a closed picker's revert must not turn it back
+                // on (M3-1).
+                let previewing = icon_previewing(cx);
                 set_icon_preview(false, cx);
                 resolve_icons(cx);
-                set_icon_preview(true, cx);
+                set_icon_preview(previewing, cx);
             } else {
                 cx.global_mut::<AppState>().icons = original;
             }

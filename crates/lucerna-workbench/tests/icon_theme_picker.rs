@@ -261,3 +261,68 @@ fn lucide_setting_kept(cx: &mut TestAppContext) {
     draw(cx);
     assert_eq!(icon_name(cx), "Lucide");
 }
+
+/// A window on `root` beside others, once its scan finished.
+fn open_window(root: &Path, cx: &mut TestAppContext) -> gpui::WindowHandle<Workbench> {
+    let root = root.to_path_buf();
+    let handle = cx.add_window(move |window, cx| Workbench::new(root, window, cx));
+    let mut vcx = VisualTestContext::from_window(handle.into(), cx);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !handle
+        .read_with(&vcx, |wb, _| wb.worktree().snapshot().scan_complete())
+        .unwrap()
+    {
+        assert!(Instant::now() < deadline, "worktree scan did not finish");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    handle
+        .update(&mut vcx, |wb, _, cx| {
+            wb.on_worktree_event(&WorktreeEvent::ScanComplete, cx)
+        })
+        .unwrap();
+    draw(&mut vcx);
+    handle
+}
+
+/// Closing a window while its icon theme picker previews puts the
+/// configured icon theme back, and later settings apply (M3-1). With
+/// `button`, the close button asks first; otherwise the window just goes.
+fn closing_window_mid_icon_preview_reverts(button: bool, cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init(&dirs, Some("{}"), cx);
+    let other = tempfile::tempdir().unwrap();
+    let b = open_window(other.path(), cx);
+    let a = open_window(dirs.root.path(), cx);
+    {
+        let mut vcx = VisualTestContext::from_window(a.into(), cx);
+        // Held only here, so removing the window releases the workbench.
+        let wb = a.root(&mut vcx).unwrap();
+        show_picker(&wb, &mut vcx);
+        drop(wb);
+        keys("down down", &mut vcx);
+        assert_eq!(icon_name(&mut vcx), "Ext Icons", "the preview");
+        if button {
+            assert!(vcx.simulate_close(), "nothing to ask about");
+        }
+        vcx.update(|window, _| window.remove_window());
+    }
+    cx.run_until_parked();
+
+    let mut vcx = VisualTestContext::from_window(b.into(), cx);
+    assert_eq!(icon_name(&mut vcx), "Seti", "the configured icon theme");
+    std::fs::write(dirs.settings(), "{ \"workbench.iconTheme\": \"Lucide\" }").unwrap();
+    let changed = dirs.settings();
+    vcx.update(|_, cx| reload_config(&[changed], cx));
+    draw(&mut vcx);
+    assert_eq!(icon_name(&mut vcx), "Lucide", "settings apply again");
+}
+
+#[gpui::test]
+fn close_button_mid_icon_preview_reverts(cx: &mut TestAppContext) {
+    closing_window_mid_icon_preview_reverts(true, cx);
+}
+
+#[gpui::test]
+fn released_window_mid_icon_preview_reverts(cx: &mut TestAppContext) {
+    closing_window_mid_icon_preview_reverts(false, cx);
+}

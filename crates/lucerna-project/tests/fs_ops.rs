@@ -292,3 +292,94 @@ fn copy_refuses_fifo() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert!(!d.path().join("out").exists());
 }
+
+/// Hidden names in `dir` that a copy writes under until it is done.
+fn copy_temps(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(lucerna_project::fs_ops::COPY_TEMP_PREFIX))
+        .collect()
+}
+
+/// A copy is written under a hidden name next to its target and only
+/// takes the target's name once complete: while it runs, the target does
+/// not exist.
+#[test]
+fn copy_runs_under_hidden_name_until_done() {
+    let d = tempfile::tempdir().unwrap();
+    let src = d.path().join("src");
+    std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::write(src.join("a.txt"), "a").unwrap();
+    std::fs::write(src.join("sub/b.txt"), "b").unwrap();
+    let dst = d.path().join("src copy");
+    let mut seen = 0;
+    lucerna_project::fs_ops::copy_entry_observed(&src, &dst, &mut |_| {
+        seen += 1;
+        assert!(!dst.exists(), "the target appears only once complete");
+        assert_eq!(copy_temps(d.path()).len(), 1);
+    })
+    .unwrap();
+    assert!(seen >= 3, "{seen}");
+    assert_eq!(std::fs::read_to_string(dst.join("sub/b.txt")).unwrap(), "b");
+    assert_eq!(copy_temps(d.path()), Vec::<String>::new());
+}
+
+/// A file copy too: the target appears whole or not at all.
+#[test]
+fn file_copy_runs_under_hidden_name_until_done() {
+    let d = tempfile::tempdir().unwrap();
+    let a = d.path().join("a.txt");
+    std::fs::write(&a, "hello").unwrap();
+    let b = d.path().join("a copy.txt");
+    lucerna_project::fs_ops::copy_entry_observed(&a, &b, &mut |_| {
+        assert!(!b.exists());
+    })
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "hello");
+    assert_eq!(copy_temps(d.path()), Vec::<String>::new());
+}
+
+/// A copy cut short (the app quit, the process died) leaves only its
+/// hidden name, never a target that looks complete (Review Focus 4).
+#[test]
+fn interrupted_copy_leaves_only_hidden_name() {
+    let d = tempfile::tempdir().unwrap();
+    let src = d.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    for i in 0..5 {
+        std::fs::write(src.join(format!("{i}.txt")), "x").unwrap();
+    }
+    let dst = d.path().join("src copy");
+    let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        lucerna_project::fs_ops::copy_entry_observed(&src, &dst, &mut |_| {
+            panic!("the process dies mid-copy")
+        })
+    }));
+    assert!(interrupted.is_err());
+    assert!(!dst.exists(), "no target that looks complete");
+    assert_eq!(copy_temps(d.path()).len(), 1);
+}
+
+/// A copy that fails leaves nothing behind: neither the target nor its
+/// hidden name.
+#[cfg(unix)]
+#[test]
+fn failed_copy_leaves_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let src = d.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::write(src.join("a.txt"), "a").unwrap();
+    std::fs::write(src.join("z.txt"), "z").unwrap();
+    std::fs::set_permissions(src.join("z.txt"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Root reads anything: nothing to fail.
+    if std::fs::File::open(src.join("z.txt")).is_ok() {
+        return;
+    }
+    let dst = d.path().join("src copy");
+    let err = copy_entry(&src, &dst).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::PermissionDenied);
+    assert!(!dst.exists());
+    assert_eq!(copy_temps(d.path()), Vec::<String>::new());
+}

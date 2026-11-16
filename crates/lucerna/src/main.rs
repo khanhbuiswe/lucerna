@@ -115,7 +115,7 @@ mod socket {
     use lucerna::launch::{send_with_retry, spawn_detached};
     use lucerna_workbench::app::{self, CliListener, Launch};
     use lucerna_workbench::cli_socket::{
-        self, Claim, CliReply, CliRequest, SendError, claim, release, socket_path,
+        CliReply, CliRequest, Handed, SendError, claim_and_send, release, socket_path,
     };
     use lucerna_workbench::default_data_dir;
 
@@ -139,25 +139,28 @@ mod socket {
             return 0;
         };
         let socket = socket_path(&data_dir);
-        match claim(&socket) {
-            Claim::Client(stream) => {
-                let request = match &launch {
-                    Some(launch) => request_for(launch, cwd),
-                    // `luc` in `/` with no path: `/` is not opened; the
-                    // app comes forward as from its Dock icon.
-                    None => CliRequest::activate(cwd.unwrap_or_else(|| PathBuf::from("/"))),
-                };
-                tracing::info!(socket = %socket.display(), "handing the request to the running app");
-                reply_code(cli_socket::send(stream, &request, REPLY_TIMEOUT))
+        let request = match &launch {
+            Some(launch) => request_for(launch, cwd.clone()),
+            // `luc` in `/` with no path: `/` is not opened; the app comes
+            // forward as from its Dock icon.
+            None => CliRequest::activate(cwd.clone().unwrap_or_else(|| PathBuf::from("/"))),
+        };
+        // An app that holds the socket gets the request; a connection
+        // another `luc` dropped while handing the socket to the app it
+        // starts is claimed once more (M1-1).
+        match claim_and_send(&socket, &request, REPLY_TIMEOUT) {
+            Handed::Reply(reply) => {
+                tracing::info!(socket = %socket.display(), "handed the request to the running app");
+                reply_code(reply)
             }
-            Claim::Server(listener) => match launch {
+            Handed::Server(listener) => match launch {
                 Some(launch) if !in_place => detach(listener, &socket, &launch, cwd),
                 launch => {
                     app::run(launch, Some(listener));
                     0
                 }
             },
-            Claim::Unavailable(err) => {
+            Handed::Unavailable(err) => {
                 tracing::warn!(%err, socket = %socket.display(), "running without the luc socket");
                 eprintln!("luc: warning: running without the luc socket: {err}");
                 app::run(launch, None);

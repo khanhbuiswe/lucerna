@@ -672,6 +672,27 @@ fn quit_with_hot_exit_does_not_ask(cx: &mut TestAppContext) {
     assert_eq!(backups[0].text, "hello");
 }
 
+/// With hot exit on, Cmd+Q asks no unsaved question but still asks about
+/// an Explorer file operation that is running.
+#[gpui::test]
+fn quit_with_hot_exit_asks_while_a_file_operation_runs(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    let _op = cx.update(|_, cx| wb.read(cx).begin_file_operation());
+    quit_app(cx);
+    let (message, _) = cx
+        .pending_prompt()
+        .expect("the running operation is asked about");
+    assert_eq!(message, "A file operation is still running");
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    assert_eq!(quits(cx), 0, "Cancel stops the quit");
+    assert_eq!(project.backups().len(), 1, "the backup stays");
+}
+
 #[gpui::test]
 fn quit_asks_for_files_whose_backup_failed(cx: &mut TestAppContext) {
     init(cx, None);

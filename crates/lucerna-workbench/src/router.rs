@@ -56,6 +56,11 @@ impl Launch {
             ErrorKind::NotFound => format!("path not found: {}", path.display()),
             _ => format!("{}: {err}", path.display()),
         })?;
+        // A FIFO or device (`luc /dev/zero`) is no file to open: reading
+        // it would block or run out of memory.
+        if !canonical.is_dir() && !canonical.is_file() {
+            return Err(format!("{}: Not a regular file", path.display()));
+        }
         Ok(if canonical.is_dir() {
             Launch {
                 root: canonical,
@@ -339,6 +344,34 @@ pub fn finish_restore(cx: &mut App) {
         let result = open_now(request, cx);
         if let Some(done) = done {
             done(result, cx);
+        }
+    }
+}
+
+/// When each window was last used, to put back with [`restore_activity`].
+pub(crate) fn activity(cx: &App) -> Vec<(WindowId, u64)> {
+    let Some(router) = cx.try_global::<RouterGlobal>() else {
+        return Vec::new();
+    };
+    let router = router.0.borrow();
+    router
+        .entries
+        .iter()
+        .map(|e| (e.handle.window_id(), e.last_active))
+        .collect()
+}
+
+/// Puts back the order [`activity`] read, for the windows still open: the
+/// quit brings each window forward to ask it, which must not reorder the
+/// window list it writes.
+pub(crate) fn restore_activity(saved: &[(WindowId, u64)], cx: &App) {
+    let Some(router) = cx.try_global::<RouterGlobal>() else {
+        return;
+    };
+    let mut router = router.0.borrow_mut();
+    for entry in &mut router.entries {
+        if let Some((_, last)) = saved.iter().find(|(id, _)| *id == entry.handle.window_id()) {
+            entry.last_active = *last;
         }
     }
 }
@@ -760,9 +793,9 @@ fn index_or_adopt(handle: AnyWindowHandle, cx: &mut App) -> Option<usize> {
     }
     let id = handle.window_id();
     let shown = if let Ok(kind) =
-        WindowHandle::<Workbench>::new(id).read_with(cx, |wb, _| match wb.opened_paths().get(1) {
-            Some(file) => WindowKind::File(file.clone()),
-            None => WindowKind::Folder(wb.root().to_path_buf()),
+        WindowHandle::<Workbench>::new(id).read_with(cx, |wb, _| match wb.opened_paths().pop() {
+            Some(file) if wb.is_single_file() => WindowKind::File(file),
+            _ => WindowKind::Folder(wb.root().to_path_buf()),
         }) {
         Shown::Workbench(kind)
     } else if WindowHandle::<OnboardingPage>::new(id).read(cx).is_ok() {

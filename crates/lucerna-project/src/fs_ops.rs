@@ -144,7 +144,7 @@ pub fn create_dir(path: &Path) -> io::Result<()> {
 }
 
 /// True when both paths are the very same file system entry.
-fn same_entry(a: &Path, b: &Path) -> bool {
+pub fn same_entry(a: &Path, b: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -311,26 +311,75 @@ fn copy_symlink(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+/// How the hidden name a copy is written under starts, in the target's
+/// folder, until it is complete and takes the target's name.
+pub const COPY_TEMP_PREFIX: &str = ".luc-copy~";
+
 /// Copies a file, directory tree or symlink from `from` to `to` without ever
 /// replacing anything: an existing `to` fails with `AlreadyExists`. Symlinks
 /// are recreated, not followed. Refuses (`InvalidInput`) when `to` is inside
-/// `from`. A failed file copy removes the file this call created; a failed
-/// directory copy leaves the entries it already created, never touching
-/// existing ones.
+/// `from`.
+///
+/// The copy is written under a hidden name next to `to`
+/// ([`COPY_TEMP_PREFIX`]) and renamed to `to` once complete, so `to` never
+/// exists half-written: a copy cut short (the app quit) leaves only the
+/// hidden name. A failed copy removes what it wrote, never touching
+/// existing entries.
 pub fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
+    copy_entry_observed(from, to, &mut |_| {})
+}
+
+/// [`copy_entry`], calling `written` with each entry's path once it is
+/// written. For tests that look at the disk while a copy runs.
+#[doc(hidden)]
+pub fn copy_entry_observed(
+    from: &Path,
+    to: &Path,
+    written: &mut dyn FnMut(&Path),
+) -> io::Result<()> {
     if is_within(to, from) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot copy into itself",
         ));
     }
-    copy_entry_inner(from, to)
+    // A taken name fails before anything is copied.
+    if std::fs::symlink_metadata(to).is_ok() {
+        return Err(already_exists());
+    }
+    let temp = copy_temp_path(to)?;
+    let result = copy_entry_inner(from, &temp, written).and_then(|()| rename_no_replace(&temp, to));
+    if result.is_err() {
+        // Only what this copy wrote: the hidden name was free when it began.
+        let _ = delete_permanently(&temp);
+    }
+    result
 }
 
-fn copy_entry_inner(from: &Path, to: &Path) -> io::Result<()> {
+/// A free hidden name next to `to` for a copy to be written under: the
+/// process id and a counter keep it apart from every other copy running.
+fn copy_temp_path(to: &Path) -> io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = to
+        .parent()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let temp = dir.join(format!("{COPY_TEMP_PREFIX}{}-{n}", std::process::id()));
+        // One a copy cut short by a quit left behind is skipped.
+        match std::fs::symlink_metadata(&temp) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(temp),
+            Err(e) => return Err(e),
+            Ok(_) => {}
+        }
+    }
+}
+
+fn copy_entry_inner(from: &Path, to: &Path, written: &mut dyn FnMut(&Path)) -> io::Result<()> {
     let meta = std::fs::symlink_metadata(from)?;
     let ty = meta.file_type();
-    if ty.is_symlink() {
+    let result = if ty.is_symlink() {
         copy_symlink(from, to)
     } else if ty.is_dir() {
         std::fs::create_dir(to)?;
@@ -341,7 +390,7 @@ fn copy_entry_inner(from: &Path, to: &Path) -> io::Result<()> {
             if entry.path() == to {
                 continue;
             }
-            copy_entry_inner(&entry.path(), &to.join(entry.file_name()))?;
+            copy_entry_inner(&entry.path(), &to.join(entry.file_name()), written)?;
         }
         // Directory permissions last, so a read-only source stays writable
         // while its contents are copied.
@@ -366,7 +415,11 @@ fn copy_entry_inner(from: &Path, to: &Path) -> io::Result<()> {
             io::ErrorKind::Unsupported,
             "cannot copy special files",
         ))
+    };
+    if result.is_ok() {
+        written(to);
     }
+    result
 }
 
 #[cfg(all(test, target_os = "macos"))]
