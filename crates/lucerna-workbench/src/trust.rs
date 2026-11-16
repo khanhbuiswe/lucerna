@@ -331,6 +331,10 @@ pub(crate) struct Trust {
     /// Whether the store trusts the root (or the user just did); `None`
     /// until the store is read.
     stored: Option<bool>,
+    /// Set when saving this window's choice failed: the choice holds for
+    /// the session, and a re-read of the (unchanged) file does not undo it.
+    /// The next save from this window that works clears it.
+    session_override: Option<bool>,
     /// The modal opened by itself, or the user stayed in Restricted Mode:
     /// it does not open by itself again this session.
     prompted: bool,
@@ -376,6 +380,7 @@ impl Trust {
     pub(crate) fn new(data_dir: Option<PathBuf>, window: gpui::WindowId) -> Self {
         Trust {
             window,
+            session_override: None,
             stored: data_dir.is_none().then_some(false),
             data_dir,
             prompted: false,
@@ -471,7 +476,9 @@ impl Workbench {
     }
 
     fn trust_reloaded(&mut self, trusted: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.trust.stored.is_none() {
+        if self.trust.session_override.is_some() {
+            // The file could not take this window's choice; keep it.
+        } else if self.trust.stored.is_none() {
             self.trust_loaded(trusted, window, cx);
         } else if self.trust.stored != Some(trusted) {
             self.trust.stored = Some(trusted);
@@ -662,7 +669,9 @@ impl Workbench {
         self.trust.stored = Some(true);
         self.apply_trust(cx);
         let root = self.root().to_path_buf();
-        self.write_trust("trust-save", cx, move |store| store.trust(&root, parent));
+        self.write_trust("trust-save", true, cx, move |store| {
+            store.trust(&root, parent)
+        });
     }
 
     /// `workbench.trust.clear`: forgets every trusted folder and puts this
@@ -672,7 +681,7 @@ impl Workbench {
         self.trust.stored = Some(false);
         self.trust.prompted = false;
         self.apply_trust(cx);
-        self.write_trust("trust-clear", cx, TrustStore::clear);
+        self.write_trust("trust-clear", false, cx, TrustStore::clear);
         cx.notify();
     }
 
@@ -681,6 +690,7 @@ impl Workbench {
     fn write_trust(
         &mut self,
         name: &'static str,
+        trusted: bool,
         cx: &mut Context<Self>,
         change: impl FnOnce(&mut TrustStore) -> io::Result<()> + Send + 'static,
     ) {
@@ -714,19 +724,32 @@ impl Workbench {
         // for the session and says so.
         let written = self.trust.write.clone();
         let window = self.trust.window;
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             if let Some(written) = written {
                 let _ = written.await;
             }
             match failed_rx.await {
-                Ok(err) => cx.update(|cx| {
-                    crate::status_message::show(
-                        window,
-                        format!("Couldn't save the trusted folders list: {err}"),
-                        cx,
-                    );
-                }),
-                Err(_) => cx.update(bump_trust_generation),
+                Ok(err) => {
+                    this.update(cx, |wb, _| wb.trust.session_override = Some(trusted))
+                        .ok();
+                    let rest = if trusted {
+                        ""
+                    } else {
+                        ". The folder stays trusted in other windows and the next time it opens"
+                    };
+                    cx.update(|cx| {
+                        crate::status_message::show(
+                            window,
+                            format!("Couldn't save the trusted folders list: {err}{rest}"),
+                            cx,
+                        );
+                    });
+                }
+                Err(_) => {
+                    this.update(cx, |wb, _| wb.trust.session_override = None)
+                        .ok();
+                    cx.update(bump_trust_generation);
+                }
             }
         })
         .detach();
