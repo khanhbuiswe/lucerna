@@ -965,6 +965,27 @@ fn quit_cancel_in_second_window_keeps_all(cx: &mut TestAppContext) {
     assert_eq!(routed_windows(cx).len(), 2, "both windows stay");
 }
 
+/// M2-1: a window is brought forward (a minimised one comes back, one on
+/// another Space is shown) before it is asked, or its sheet is never seen.
+#[gpui::test]
+fn quit_brings_the_asked_window_forward(cx: &mut TestAppContext) {
+    let (in_a, in_b) = two_dirty_windows(cx);
+    in_a.update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| cx.active_window()), Some(in_a.into()));
+    quit(cx);
+    assert!(prompt(cx).contains("a.rs"), "A, used last, asks first");
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    assert!(prompt(cx).contains("b.rs"), "then B");
+    assert_eq!(
+        cx.update(|cx| cx.active_window()),
+        Some(in_b.into()),
+        "B is brought forward before it asks"
+    );
+}
+
 #[gpui::test]
 fn quit_dont_save_both_quits(cx: &mut TestAppContext) {
     let (in_a, in_b) = two_dirty_windows(cx);

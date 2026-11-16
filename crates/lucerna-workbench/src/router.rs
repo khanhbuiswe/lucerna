@@ -343,6 +343,34 @@ pub fn finish_restore(cx: &mut App) {
     }
 }
 
+/// When each window was last used, to put back with [`restore_activity`].
+pub(crate) fn activity(cx: &App) -> Vec<(WindowId, u64)> {
+    let Some(router) = cx.try_global::<RouterGlobal>() else {
+        return Vec::new();
+    };
+    let router = router.0.borrow();
+    router
+        .entries
+        .iter()
+        .map(|e| (e.handle.window_id(), e.last_active))
+        .collect()
+}
+
+/// Puts back the order [`activity`] read, for the windows still open: the
+/// quit brings each window forward to ask it, which must not reorder the
+/// window list it writes.
+pub(crate) fn restore_activity(saved: &[(WindowId, u64)], cx: &App) {
+    let Some(router) = cx.try_global::<RouterGlobal>() else {
+        return;
+    };
+    let mut router = router.0.borrow_mut();
+    for entry in &mut router.entries {
+        if let Some((_, last)) = saved.iter().find(|(id, _)| *id == entry.handle.window_id()) {
+            entry.last_active = *last;
+        }
+    }
+}
+
 /// The router's windows and what they show, most recently used first.
 pub fn windows(cx: &App) -> Vec<(AnyWindowHandle, WindowKind)> {
     let Some(router) = cx.try_global::<RouterGlobal>() else {
