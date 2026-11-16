@@ -1209,3 +1209,59 @@ fn requests_wait_for_restore(cx: &mut TestAppContext) {
         vec![folder_window(&a), folder_window(&b)]
     );
 }
+
+/// `luc`'s reply waits for the restore and carries the real result of
+/// its open, also for a request that waited (spec M13, M14).
+#[cfg(unix)]
+#[gpui::test]
+fn cli_reply_waits_for_restore(cx: &mut TestAppContext) {
+    use futures::channel::oneshot;
+    use lucerna_workbench::cli_socket::{CliReply, CliRequest};
+
+    routed(&[], cx);
+    let a = project(cx);
+    // Reads the user configuration as `app::run` does; opens nothing.
+    open_routed(Vec::new(), Target::Auto, cx);
+    cx.update(router::begin_restore);
+    let (ok_tx, mut ok_rx) = oneshot::channel();
+    let (err_tx, mut err_rx) = oneshot::channel();
+    cx.update(|cx| {
+        router::answer_cli(CliRequest::new(a.clone(), Vec::new()), ok_tx, cx);
+        let missing = CliRequest::new(a.clone(), vec![PathBuf::from("nope")]);
+        router::answer_cli(missing, err_tx, cx);
+    });
+    assert_eq!(
+        ok_rx.try_recv().unwrap(),
+        None,
+        "no reply before the restore"
+    );
+    cx.update(|cx| router::restore(Vec::new(), cx));
+    cx.run_until_parked();
+    assert_eq!(ok_rx.try_recv().unwrap(), Some(CliReply::ok()));
+    let expected = format!("path not found: {}", a.join("nope").display());
+    assert_eq!(err_rx.try_recv().unwrap(), Some(CliReply::error(expected)));
+    assert_eq!(kinds(cx), vec![WindowKind::Folder(a)]);
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn cli_newer_version_rejected(cx: &mut TestAppContext) {
+    use futures::channel::oneshot;
+    use lucerna_workbench::cli_socket::{CliReply, CliRequest, PROTOCOL_VERSION};
+
+    routed(&[], cx);
+    let a = project(cx);
+    open_routed(Vec::new(), Target::Auto, cx);
+    let (tx, mut rx) = oneshot::channel();
+    let mut request = CliRequest::new(a, Vec::new());
+    request.version = PROTOCOL_VERSION + 1;
+    cx.update(|cx| router::answer_cli(request, tx, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        rx.try_recv().unwrap(),
+        Some(CliReply::error(
+            "this Lucerna is older than luc; update Lucerna"
+        ))
+    );
+    assert!(kinds(cx).is_empty(), "nothing opens");
+}

@@ -6,6 +6,8 @@ pub mod app;
 pub mod app_menu;
 mod app_state;
 mod app_state_file;
+#[cfg(unix)]
+pub mod cli_socket;
 pub mod code_view;
 mod commands;
 mod config_files;

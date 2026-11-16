@@ -123,6 +123,10 @@ pub struct OpenRequest {
     pub source: Source,
 }
 
+/// Called with the result of an [`open_then`], once the paths opened
+/// (after the restore when the request waited for it).
+pub type OpenDone = Box<dyn FnOnce(Result<(), String>, &mut App)>;
+
 /// What a router window shows; [`WindowKind`] without telling Welcome from
 /// the Get Started page.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,7 +170,7 @@ struct Router {
     /// The last session's windows are being reopened: requests from `luc`
     /// and the platform wait in `queue`, and the session is not written.
     restoring: bool,
-    queue: Vec<OpenRequest>,
+    queue: Vec<(OpenRequest, Option<OpenDone>)>,
     /// The app is quitting: its windows close, but the session keeps them.
     quitting: bool,
     /// What the last background write wrote, so the same list is not
@@ -331,8 +335,11 @@ pub fn finish_restore(cx: &mut App) {
         std::mem::take(&mut router.queue)
     };
     changed(cx);
-    for request in queue {
-        open(request, cx).ok();
+    for (request, done) in queue {
+        let result = open_now(request, cx);
+        if let Some(done) = done {
+            done(result, cx);
+        }
     }
 }
 
@@ -353,25 +360,88 @@ pub fn windows(cx: &App) -> Vec<(AnyWindowHandle, WindowKind)> {
 /// Opens `request`'s paths, each where [`window_choice::choose`] says,
 /// then records them as recently opened. A path that cannot be opened is
 /// skipped and logged; the UI says why in the status bar. While a
-/// [`restore`] runs, a request from `luc` or the platform waits for it.
+/// [`restore`] runs, a request from `luc` or the platform waits for it
+/// and this returns `Ok`; [`open_then`] reports the real result.
 ///
 /// # Errors
 /// What went wrong, one line per path, for `luc` to print.
 pub fn open(request: OpenRequest, cx: &mut App) -> Result<(), String> {
+    match wait_for_restore(request, None, cx) {
+        Some((request, _)) => open_now(request, cx),
+        None => Ok(()),
+    }
+}
+
+/// [`open`], then `done` with its result: at once, or once the restore
+/// the request waits for is over.
+pub fn open_then(request: OpenRequest, done: OpenDone, cx: &mut App) {
+    if let Some((request, done)) = wait_for_restore(request, Some(done), cx) {
+        let result = open_now(request, cx);
+        if let Some(done) = done {
+            done(result, cx);
+        }
+    }
+}
+
+/// Answers a request `luc` sent over the socket ([`crate::cli_socket`]):
+/// opens its paths ([`Source::Cli`], [`Target::Auto`]) and replies with
+/// the result, after the restore when one runs. A request from a newer
+/// `luc` is refused.
+#[cfg(unix)]
+pub fn answer_cli(
+    request: crate::cli_socket::CliRequest,
+    reply: futures::channel::oneshot::Sender<crate::cli_socket::CliReply>,
+    cx: &mut App,
+) {
+    use crate::cli_socket::{CliReply, reply_for_version};
+
+    if let Some(refused) = reply_for_version(request.version) {
+        tracing::warn!(version = request.version, "a newer luc asked to open");
+        reply.send(refused).ok();
+        return;
+    }
+    let request = OpenRequest {
+        paths: request.paths_to_open(),
+        target: Target::Auto,
+        source: Source::Cli,
+    };
+    let done: OpenDone = Box::new(move |result, _| {
+        // `luc` may have given up waiting.
+        reply.send(CliReply::from(result)).ok();
+    });
+    open_then(request, done, cx);
+}
+
+/// Queues a request from `luc` or the platform while a restore runs
+/// (`None`); otherwise gives it back to open now.
+fn wait_for_restore(
+    request: OpenRequest,
+    done: Option<OpenDone>,
+    cx: &mut App,
+) -> Option<(OpenRequest, Option<OpenDone>)> {
     if matches!(request.source, Source::Cli | Source::Finder) {
         let router = router(cx);
         let mut router = router.borrow_mut();
         if router.restoring {
             tracing::info!(paths = ?request.paths, "waiting for the restore");
-            router.queue.push(request);
-            return Ok(());
+            router.queue.push((request, done));
+            return None;
         }
     }
+    Some((request, done))
+}
+
+/// [`open`] without waiting for a restore.
+fn open_now(request: OpenRequest, cx: &mut App) -> Result<(), String> {
     let mut errors = Vec::new();
     for path in request.paths {
         match Launch::for_path(path.clone()) {
             Ok(launch) => {
-                open_launch(launch, request.target, cx);
+                if open_launch(launch, request.target, cx).is_none() {
+                    let err = format!("could not open a window for {}", path.display());
+                    tracing::error!(err, source = ?request.source, "could not open");
+                    errors.push(err);
+                }
             }
             Err(err) => {
                 tracing::error!(err, path = %path.display(), source = ?request.source, "could not open");

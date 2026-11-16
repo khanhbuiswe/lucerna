@@ -39,6 +39,15 @@ use crate::{
 /// path (Finder's "Open With") before it shows the folder picker.
 const OPEN_REQUEST_GRACE: Duration = Duration::from_millis(300);
 
+/// The socket `luc` claimed for this app ([`crate::cli_socket`]); none on
+/// platforms without Unix sockets yet.
+#[cfg(unix)]
+pub type CliListener = std::os::unix::net::UnixListener;
+/// The socket `luc` claimed for this app; none on platforms without Unix
+/// sockets yet.
+#[cfg(not(unix))]
+pub type CliListener = std::convert::Infallible;
+
 /// Runs the app until it quits. Closing the last window quits on Linux
 /// and Windows; on macOS the app keeps running with its menu bar, and
 /// clicking its Dock icon then opens the Welcome screen (spec M8, M9).
@@ -51,7 +60,12 @@ const OPEN_REQUEST_GRACE: Duration = Duration::from_millis(300);
 /// asks for a folder when `workbench.startupEditor` is `"none"` (Cancel
 /// quits). Paths the platform asks to open later go through
 /// [`router::open`].
-pub fn run(launch: Option<Launch>) {
+///
+/// With `listener`, the socket `luc` bound, requests from later `luc`
+/// commands are read on a thread from the start and answered once the
+/// first windows are up (spec §6.5); quitting removes the socket file.
+pub fn run(launch: Option<Launch>, listener: Option<CliListener>) {
+    let cli = listener.map(serve_cli);
     let (requests_tx, mut requests) = mpsc::unbounded::<Vec<String>>();
     let app = application().with_quit_mode(QuitMode::Default);
     app.on_open_urls(move |urls| {
@@ -60,6 +74,7 @@ pub fn run(launch: Option<Launch>) {
     app.on_reopen(on_reopen);
     app.run(move |cx: &mut App| {
         start(cx);
+        let cli = cli.map(|cli| cli.remove_on_quit(cx));
         // Once for the app: each window reads its own folder's settings.
         watch_config(ConfigPaths::user_only(), cx);
         let waiting = launch.is_none();
@@ -76,9 +91,14 @@ pub fn run(launch: Option<Launch>) {
                         open_urls(&urls, cx);
                         quit_if_no_window("the requested paths", cx);
                     }),
-                    Either::Left((None, _)) => return,
+                    Either::Left((None, _)) => {}
                     Either::Right(_) => open_without_folder(cx).await,
                 }
+            }
+            // Only now: a request during the wait above would race the
+            // first screen; one during a restore waits in the router.
+            if let Some(cli) = cli {
+                cli.answer(cx);
             }
             while let Some(urls) = requests.next().await {
                 cx.update(|cx| open_urls(&urls, cx));
@@ -86,6 +106,69 @@ pub fn run(launch: Option<Launch>) {
         })
         .detach();
     });
+}
+
+/// The socket's requests on their way to the main thread.
+struct CliRequests {
+    #[cfg(unix)]
+    requests: mpsc::UnboundedReceiver<crate::cli_socket::CliMessage>,
+    #[cfg(unix)]
+    socket: Option<PathBuf>,
+}
+
+/// Serves `listener` on a thread from now on ([`cli_socket::serve`]).
+///
+/// [`cli_socket::serve`]: crate::cli_socket::serve
+#[cfg(unix)]
+fn serve_cli(listener: CliListener) -> CliRequests {
+    let socket = listener
+        .local_addr()
+        .ok()
+        .and_then(|addr| addr.as_pathname().map(Path::to_path_buf));
+    let (tx, requests) = mpsc::unbounded();
+    crate::cli_socket::serve(listener, tx);
+    CliRequests { requests, socket }
+}
+
+#[cfg(not(unix))]
+fn serve_cli(listener: CliListener) -> CliRequests {
+    match listener {}
+}
+
+impl CliRequests {
+    /// Removes the socket file when the app quits, so the next `luc`
+    /// binds at once.
+    fn remove_on_quit(mut self, cx: &mut App) -> CliRequests {
+        #[cfg(unix)]
+        if let Some(socket) = self.socket.take() {
+            cx.on_app_quit(move |_| {
+                if let Err(err) = std::fs::remove_file(&socket) {
+                    tracing::warn!(%err, path = %socket.display(), "could not remove the luc socket");
+                }
+                async {}
+            })
+            .detach();
+        }
+        let _ = cx;
+        self
+    }
+
+    /// Answers each request on the main thread ([`router::answer_cli`]).
+    fn answer(self, cx: &mut AsyncApp) {
+        #[cfg(unix)]
+        {
+            let mut requests = self.requests;
+            cx.spawn(async move |cx| {
+                while let Some((request, reply)) = requests.next().await {
+                    tracing::info!(paths = ?request.paths, "luc asks to open");
+                    cx.update(|cx| router::answer_cli(request, reply, cx));
+                }
+            })
+            .detach();
+        }
+        #[cfg(not(unix))]
+        let _ = (self, cx);
+    }
 }
 
 /// Opens `launch`, the path `luc` was started with. With

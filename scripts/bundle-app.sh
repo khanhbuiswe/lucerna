@@ -98,7 +98,10 @@ if [ "$install" -eq 1 ]; then
   bin_dir=${LUC_BIN_DIR:-"$HOME/.local/bin"}
   mkdir -p "$bin_dir"
   # A shim, not a symlink or `open -a`: running the bundled binary keeps the
-  # caller's cwd, stdio and exit code, as `luc` does today.
+  # caller's cwd, stdio and exit code. `luc` itself hands the path to the
+  # running app over its socket, or starts the app apart from the terminal
+  # (its own session, stdio on /dev/null) and returns once the window is
+  # open; `luc --foreground` runs the app in the calling process.
   cat > "$bin_dir/luc" <<EOF
 #!/bin/sh
 exec "$dest/Contents/MacOS/luc" "\$@"
