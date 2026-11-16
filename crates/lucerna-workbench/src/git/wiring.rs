@@ -107,7 +107,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         let Some(path) = workspace_relative(self.root(), &path) else {
-            crate::status_message::show(NO_FILE_MESSAGE, cx);
+            crate::status_message::show(window.window_handle().window_id(), NO_FILE_MESSAGE, cx);
             return;
         };
         self.update_editor_groups(cx, |groups| groups.open_file_diff(path));
@@ -132,7 +132,9 @@ impl Workbench {
             Some(TabItem::File(path) | TabItem::FileDiff(path)) => {
                 self.open_file_diff(path, None, window, cx)
             }
-            _ => crate::status_message::show(NO_FILE_MESSAGE, cx),
+            _ => {
+                crate::status_message::show(window.window_handle().window_id(), NO_FILE_MESSAGE, cx)
+            }
         }
     }
 
@@ -245,7 +247,7 @@ impl Workbench {
             return;
         };
         if !view.update(cx, |v, cx| v.next_change(forward, cx)) {
-            crate::status_message::show("No changes", cx);
+            crate::status_message::show(window.window_handle().window_id(), "No changes", cx);
         }
     }
 

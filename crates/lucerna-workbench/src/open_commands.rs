@@ -315,6 +315,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let win = window.window_handle().window_id();
         cx.spawn_in(window, async move |wb, cx| {
             let exists = {
                 let entry = entry.clone();
@@ -323,7 +324,7 @@ impl Workbench {
             wb.update_in(cx, |wb, window, cx| {
                 if !exists {
                     let path = tilde_path(&entry.path, std::env::home_dir().as_deref());
-                    status_message::show(format!("{path} no longer exists"), cx);
+                    status_message::show(win, format!("{path} no longer exists"), cx);
                     forget(entry.path, cx);
                     return;
                 }

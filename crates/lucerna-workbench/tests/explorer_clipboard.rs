@@ -141,8 +141,10 @@ fn clipboard(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<(Clip
 }
 
 fn status(cx: &mut VisualTestContext) -> Option<String> {
-    cx.update(|_, cx| lucerna_workbench::status_message::current(cx))
-        .map(|s| s.to_string())
+    cx.update(|window, cx| {
+        lucerna_workbench::status_message::current(window.window_handle().window_id(), cx)
+    })
+    .map(|s| s.to_string())
 }
 
 /// Waits for `cond`, drawing in between, for at most 10 s.

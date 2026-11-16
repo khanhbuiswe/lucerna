@@ -682,7 +682,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
                 .settings_path()
                 .map(Path::to_path_buf);
             let Some(path) = path else {
-                status_message::show("No folder is open", cx);
+                status_message::show(window.window_handle().window_id(), "No folder is open", cx);
                 return;
             };
             open_config_file(wb, path, WORKSPACE_SETTINGS_TEMPLATE, window, cx);

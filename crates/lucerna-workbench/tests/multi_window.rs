@@ -25,7 +25,7 @@ use lucerna_workbench::router::{self, Target, WindowKind};
 use lucerna_workbench::system_shell::{SystemShell, SystemShellGlobal};
 use lucerna_workbench::{
     AppState, FileView, GitState, LanguageServers, MarkdownPreview, OpenMode, PanelPosition,
-    Replacement, TerminalSpawner, WelcomeEvent, WelcomeView, Workbench,
+    Replacement, TerminalSpawner, WelcomeEvent, WelcomeView, Workbench, status_message,
 };
 use serde_json::Value;
 use tempfile::TempDir;
@@ -827,4 +827,28 @@ fn same_file_two_windows_reload(cx: &mut TestAppContext) {
     .unwrap();
     draw(in_b, cx);
     assert_eq!(text(&view_b, cx), "yfn x() {}\n", "B reloads");
+}
+
+#[gpui::test]
+fn status_message_stays_in_window(cx: &mut TestAppContext) {
+    let (a, b) = open_two(cx, "{}", "{}");
+    let (id_a, id_b) = (a.window_id(), b.window_id());
+    cx.update(|cx| status_message::show(id_a, "hi", cx));
+    draw(a, cx);
+    draw(b, cx);
+    let shown = |id, cx: &mut TestAppContext| {
+        cx.update(|cx| status_message::current(id, cx).map(|m| m.to_string()))
+    };
+    assert_eq!(shown(id_a, cx).as_deref(), Some("hi"));
+    assert_eq!(shown(id_b, cx), None, "B shows nothing");
+
+    // B's own message replaces nothing in A; A's timer clears only A's.
+    cx.update(|cx| status_message::show(id_b, "there", cx));
+    cx.update(|cx| status_message::show(id_a, "again", cx));
+    assert_eq!(shown(id_b, cx).as_deref(), Some("there"));
+    cx.executor()
+        .advance_clock(status_message::DURATION + Duration::from_millis(1));
+    cx.run_until_parked();
+    assert_eq!(shown(id_a, cx), None);
+    assert_eq!(shown(id_b, cx), None);
 }

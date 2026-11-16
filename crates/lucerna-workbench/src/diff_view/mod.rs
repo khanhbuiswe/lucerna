@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, Subscription, Task, WeakEntity,
-    Window,
+    Window, WindowId,
 };
 use lucerna_git::{FileStatus, GitError};
 use lucerna_project::LineKind;
@@ -93,6 +93,8 @@ pub struct DiffView {
     git: Entity<GitStore>,
     documents: Entity<Documents>,
     workbench: WeakEntity<Workbench>,
+    /// The window whose status bar says "No changes".
+    window: Option<WindowId>,
     root: PathBuf,
     focus: FocusHandle,
     list: Entity<ExcerptList>,
@@ -173,6 +175,7 @@ impl DiffView {
             git,
             documents,
             workbench,
+            window: None,
             root,
             focus: cx.focus_handle(),
             list,
@@ -277,6 +280,11 @@ impl DiffView {
         Some(text.to_string())
     }
 
+    /// Tells the tab which window it is in.
+    pub fn set_window(&mut self, window: WindowId) {
+        self.window = Some(window);
+    }
+
     /// Selects the first line of the next or previous change, across
     /// files and wrapping (Alt+F5 / Shift+Alt+F5 in the tab).
     pub fn step_change(&mut self, forward: bool, cx: &mut Context<Self>) {
@@ -284,7 +292,7 @@ impl DiffView {
             .list
             .update(cx, |list, cx| list.step_change(forward, cx));
         if found.is_none() {
-            crate::status_message::show("No changes", cx);
+            crate::status_message::show_or_log(self.window, "No changes", cx);
         }
     }
 

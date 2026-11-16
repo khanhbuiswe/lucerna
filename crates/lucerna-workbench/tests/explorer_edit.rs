@@ -405,7 +405,9 @@ fn create_error_shows_status(cx: &mut TestAppContext) {
     type_text(cx, "x.rs");
     keys("enter", cx);
     wait_until(cx, |cx| !editing(&wb, cx));
-    let message = cx.update(|_, cx| lucerna_workbench::status_message::current(cx));
+    let message = cx.update(|window, cx| {
+        lucerna_workbench::status_message::current(window.window_handle().window_id(), cx)
+    });
     let message = message.expect("a status message");
     assert!(message.contains("x.rs"), "{message}");
     assert!(!src.join("x.rs").exists());

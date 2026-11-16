@@ -27,9 +27,9 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "workbench.action.openThirdPartyLicenses",
         "Help: Third-Party Licenses",
-        |wb, _, _, cx| match licenses_path() {
+        |wb, _, window, cx| match licenses_path() {
             Some(path) => wb.open_path(Arc::from(path), OpenMode::Pinned, cx),
-            None => status_message::show(NO_LICENSES, cx),
+            None => status_message::show(window.window_handle().window_id(), NO_LICENSES, cx),
         },
     );
 }
@@ -38,6 +38,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 /// text on the clipboard; Licenses opens the notices with the system's
 /// default app, since the Welcome screen has no editor to open them in.
 pub(crate) fn show(window: &mut Window, cx: &mut App) {
+    let id = window.window_handle().window_id();
     let answer = window.prompt(PromptLevel::Info, ABOUT_TEXT, None, &ANSWERS[..], cx);
     cx.spawn(async move |cx| match answer.await {
         Ok(1) => {
@@ -45,7 +46,7 @@ pub(crate) fn show(window: &mut Window, cx: &mut App) {
         }
         Ok(2) => cx.update(|cx| match licenses_path() {
             Some(path) => cx.open_with_system(&path),
-            None => status_message::show(NO_LICENSES, cx),
+            None => status_message::show(id, NO_LICENSES, cx),
         }),
         _ => {}
     })

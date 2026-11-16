@@ -191,12 +191,19 @@ pub struct GitStore {
     not_found_reported: bool,
     too_many_reported: bool,
     git_override: Option<GitBinary>,
+    /// The window whose status bar shows what goes wrong here.
+    window: Option<gpui::WindowId>,
     _settings: Subscription,
 }
 
 impl EventEmitter<GitStoreEvent> for GitStore {}
 
 impl GitStore {
+    /// Tells the store which window it belongs to.
+    pub fn set_window(&mut self, window: gpui::WindowId) {
+        self.window = Some(window);
+    }
+
     /// Starts in [`GitState::Off`]; nothing runs until `set_trusted(true)`.
     /// Reads `git.*` from the window's `settings` and follows them.
     pub fn new(root: PathBuf, settings: Entity<WindowSettings>, cx: &mut Context<Self>) -> Self {
@@ -222,6 +229,7 @@ impl GitStore {
             error_reported: false,
             not_found_reported: false,
             too_many_reported: false,
+            window: None,
             git_override: None,
         }
     }
@@ -448,7 +456,7 @@ impl GitStore {
             Setup::NoGit => {
                 self.set_state(GitState::NoGit, cx);
                 if !std::mem::replace(&mut self.not_found_reported, true) {
-                    crate::status_message::show(NOT_FOUND_MESSAGE, cx);
+                    crate::status_message::show_or_log(self.window, NOT_FOUND_MESSAGE, cx);
                 }
             }
             Setup::NoRepo => self.set_state(GitState::NoRepo, cx),
@@ -603,7 +611,7 @@ impl GitStore {
                 if out.too_many {
                     self.set_state(GitState::TooManyChanges, cx);
                     if !std::mem::replace(&mut self.too_many_reported, true) {
-                        crate::status_message::show(TOO_MANY_MESSAGE, cx);
+                        crate::status_message::show_or_log(self.window, TOO_MANY_MESSAGE, cx);
                     }
                 } else {
                     self.set_state(GitState::Ready, cx);
@@ -619,7 +627,7 @@ impl GitStore {
     fn report_error(&mut self, err: &GitError, cx: &mut Context<Self>) {
         tracing::warn!(%err, root = %self.root.display(), "git failed");
         if !std::mem::replace(&mut self.error_reported, true) {
-            crate::status_message::show(format!("Git: {err}"), cx);
+            crate::status_message::show_or_log(self.window, format!("Git: {err}"), cx);
         }
     }
 

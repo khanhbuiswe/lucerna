@@ -674,8 +674,9 @@ fn replace_with_a_missing_folder_keeps_the_workbench(cx: &mut TestAppContext) {
     let still = only_workbench(cx).expect("the root is a workbench");
     assert_eq!(still.entity_id(), wb.entity_id());
     assert_eq!(shown_root(cx), Some(canonical(&fixture.path("a"))));
+    let id = window_id(cx);
     let status = cx
-        .update(|cx| status_message::current(cx))
+        .update(|cx| status_message::current(id, cx))
         .map(|s| s.to_string())
         .unwrap_or_default();
     assert!(status.starts_with("Could not open "), "{status:?}");

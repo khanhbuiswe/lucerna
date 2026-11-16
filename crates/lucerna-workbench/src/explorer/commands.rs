@@ -125,10 +125,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "openInTerminal",
         "Explorer: Open in External Terminal",
-        |wb, args, _, cx| {
+        |wb, args, window, cx| {
             if editing(wb, cx) {
                 return;
             }
+            let win = window.window_handle().window_id();
             let dir = terminal_dir(wb, args, cx);
             let key = if cfg!(target_os = "macos") {
                 "terminal.external.osxExec"
@@ -156,7 +157,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             cx.spawn(async move |_, cx| {
                 if let Err(e) = opened.await {
                     cx.update(|cx| {
-                        status_message::show(format!("Couldn't open the terminal: {e}"), cx)
+                        status_message::show(win, format!("Couldn't open the terminal: {e}"), cx)
                     });
                 }
             })
@@ -210,6 +211,7 @@ fn delete(
     if editing(wb, cx) || wb.is_single_file() {
         return;
     }
+    let win = window.window_handle().window_id();
     let (target, kind) = target_kind(wb, args, cx);
     // A path the worktree does not know is not offered.
     let Some(is_dir) = kind else {
@@ -282,7 +284,7 @@ fn delete(
             }
             Err(e) => {
                 wb.forget_own_changes(std::slice::from_ref(&deleted.rel));
-                status_message::show(format!("Unable to delete '{}': {e}", deleted.name), cx);
+                status_message::show(win, format!("Unable to delete '{}': {e}", deleted.name), cx);
             }
         });
     })

@@ -69,7 +69,11 @@ impl Workbench {
         };
         let repo = git.repo();
         let (None, Some(repo)) = (message, repo) else {
-            status_message::show(message.unwrap_or(GIT_UNAVAILABLE), cx);
+            status_message::show(
+                window.window_handle().window_id(),
+                message.unwrap_or(GIT_UNAVAILABLE),
+                cx,
+            );
             return;
         };
         let checkout_shown = self
@@ -154,11 +158,11 @@ impl Workbench {
         let unsaved = !docs.dirty_paths().is_empty()
             || docs.open_paths().iter().any(|path| docs.has_conflict(path));
         if unsaved {
-            status_message::show(UNSAVED_FILES, cx);
+            status_message::show(window.window_handle().window_id(), UNSAVED_FILES, cx);
             return;
         }
         let Some(repo) = self.git.read(cx).repo() else {
-            status_message::show(GIT_UNAVAILABLE, cx);
+            status_message::show(window.window_handle().window_id(), GIT_UNAVAILABLE, cx);
             return;
         };
         self.switching_branch = true;

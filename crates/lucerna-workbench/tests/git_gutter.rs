@@ -241,8 +241,10 @@ fn next_change_without_hunks_says_so(cx: &mut TestAppContext) {
     assert!(!view.update(cx, |v, cx| v.next_change(true, cx)));
     run(&wb, "workbench.action.editor.nextChange", cx);
     assert_eq!(cursor(&view, cx), Point { row: 5, column: 1 });
-    let message =
-        cx.update(|_, cx| lucerna_workbench::status_message::current(cx).map(|m| m.to_string()));
+    let message = cx.update(|window, cx| {
+        lucerna_workbench::status_message::current(window.window_handle().window_id(), cx)
+            .map(|m| m.to_string())
+    });
     assert_eq!(message.as_deref(), Some("No changes"));
 }
 

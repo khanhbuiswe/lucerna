@@ -833,7 +833,11 @@ impl ExplorerView {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    status_message::show(format!("Unable to rename '{old}': {e}"), cx);
+                    status_message::show(
+                        window.window_handle().window_id(),
+                        format!("Unable to rename '{old}': {e}"),
+                        cx,
+                    );
                 }
             }
             Ok(()) => {
@@ -895,7 +899,11 @@ impl ExplorerView {
             Err(e) => {
                 self.end_name_edit(focused, window, cx);
                 let kind = if folder { "folder" } else { "file" };
-                status_message::show(format!("Unable to create {kind} '{name}': {e}"), cx);
+                status_message::show(
+                    window.window_handle().window_id(),
+                    format!("Unable to create {kind} '{name}': {e}"),
+                    cx,
+                );
             }
             Ok(()) => {
                 self.end_name_edit(focused, window, cx);

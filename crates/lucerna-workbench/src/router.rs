@@ -232,6 +232,7 @@ fn router(cx: &mut App) -> Rc<RefCell<Router>> {
     if !cx.has_global::<RouterGlobal>() {
         cx.default_global::<RouterGlobal>();
         cx.on_window_closed(|cx, id| {
+            status_message::forget(id, cx);
             let removed = router(cx).borrow_mut().remove(id);
             if removed {
                 changed(cx);
@@ -280,7 +281,13 @@ pub fn open(request: OpenRequest, cx: &mut App) -> Result<(), String> {
                 tracing::error!(err, path = %path.display(), source = ?request.source, "could not open");
                 if request.source == Source::Menu {
                     let what = tilde_path(&path, std::env::home_dir().as_deref());
-                    status_message::show(format!("Could not open {what}: {err}"), cx);
+                    // The window the user is in, the one most recently used.
+                    let window = windows(cx).first().map(|(handle, _)| handle.window_id());
+                    status_message::show_or_log(
+                        window,
+                        format!("Could not open {what}: {err}"),
+                        cx,
+                    );
                 }
                 errors.push(err);
             }

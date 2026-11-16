@@ -139,7 +139,7 @@ fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
 }
 
 fn status(cx: &mut VisualTestContext) -> String {
-    cx.update(|_, cx| status_message::current(cx))
+    cx.update(|window, cx| status_message::current(window.window_handle().window_id(), cx))
         .map(|s| s.to_string())
         .unwrap_or_default()
 }

@@ -161,7 +161,9 @@ fn external_write(wb: &Entity<Workbench>, dir: &TempDir, text: &str, cx: &mut Vi
 }
 
 fn message(cx: &mut VisualTestContext) -> Option<String> {
-    cx.update(|_, cx| status_message::current(cx).map(|m| m.to_string()))
+    cx.update(|window, cx| {
+        status_message::current(window.window_handle().window_id(), cx).map(|m| m.to_string())
+    })
 }
 
 /// The user typed `x` on the first line; the agent changed the last.

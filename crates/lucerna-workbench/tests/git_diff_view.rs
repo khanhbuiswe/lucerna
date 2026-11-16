@@ -704,8 +704,10 @@ fn open_change_untracked_all_added(cx: &mut TestAppContext) {
 fn open_change_without_file_tab_shows_message(cx: &mut TestAppContext) {
     let (_t, _dir, wb, cx) = workbench(|dir| write(dir, "a.txt", "one\nTWO\nthree\n"), cx);
     run(&wb, "git.openChange", cx);
-    let message =
-        cx.update(|_, cx| lucerna_workbench::status_message::current(cx).map(|m| m.to_string()));
+    let message = cx.update(|window, cx| {
+        lucerna_workbench::status_message::current(window.window_handle().window_id(), cx)
+            .map(|m| m.to_string())
+    });
     assert_eq!(message.as_deref(), Some("No file to compare"));
     assert!(tab_items(&wb, cx).is_empty());
 }

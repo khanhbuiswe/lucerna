@@ -697,7 +697,9 @@ fn workspace_settings_command_without_a_folder_reports_it(cx: &mut TestAppContex
         )
     });
     draw(cx);
-    let message = cx.update(|_, cx| status_message::current(cx).map(|m| m.to_string()));
+    let message = cx.update(|window, cx| {
+        status_message::current(window.window_handle().window_id(), cx).map(|m| m.to_string())
+    });
     assert_eq!(message.as_deref(), Some("No folder is open"));
     assert_eq!(active_tab_path(&wb, cx), before);
     assert!(!dirs.root.path().join(".lucerna").exists());

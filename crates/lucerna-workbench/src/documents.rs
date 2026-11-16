@@ -24,7 +24,7 @@ use futures::channel::oneshot;
 use futures::future::Shared;
 use gpui::{
     App, AppContext, Context, Entity, EntityId, EventEmitter, IntoElement, ParentElement,
-    PromptLevel, Render, Styled, Task, WeakEntity, Window, div, prelude::*, px,
+    PromptLevel, Render, Styled, Task, WeakEntity, Window, WindowId, div, prelude::*, px,
 };
 use lucerna_editor::indentation::{self, Indentation};
 use lucerna_editor::merge::merge;
@@ -459,6 +459,8 @@ pub struct Documents {
     /// Scroll rows restored for paths whose text is not loaded yet; the
     /// first view to have the text takes its row.
     pending_scroll: HashMap<Arc<Path>, u32>,
+    /// The window whose status bar shows what goes wrong here.
+    window: Option<WindowId>,
 }
 
 impl EventEmitter<DocumentEvent> for Documents {}
@@ -466,6 +468,11 @@ impl EventEmitter<DocumentEvent> for Documents {}
 impl Documents {
     /// Documents of the folder at `root`; relative paths are resolved
     /// against it. They read the window's `settings`.
+    /// Tells the documents which window they belong to.
+    pub fn set_window(&mut self, window: WindowId) {
+        self.window = Some(window);
+    }
+
     pub fn new(root: PathBuf, settings: Entity<WindowSettings>) -> Self {
         Documents {
             root,
@@ -473,6 +480,7 @@ impl Documents {
             docs: HashMap::new(),
             pending_go_to: HashMap::new(),
             pending_scroll: HashMap::new(),
+            window: None,
         }
     }
 
@@ -1264,6 +1272,7 @@ impl Documents {
         cx: &mut Context<Self>,
     ) -> Option<StartedWrite> {
         let check = !overwrite && !self.overwrites(key, cx);
+        let window = self.window;
         let doc = self.docs.get_mut(key)?;
         let check = !std::mem::take(&mut doc.skip_disk_check) && check;
         // Only a file that never loaded has no text to save (a failed
@@ -1274,7 +1283,7 @@ impl Documents {
             .filter(|_| matches!(doc.state, DocState::Ready | DocState::Deleted))
         else {
             let reason = WriteError::Io("the file's text is not loaded".into());
-            status_message::show(save::failure_message(key, &reason), cx);
+            status_message::show_or_log(window, save::failure_message(key, &reason), cx);
             return None;
         };
         buffer.push_stop();
@@ -1434,7 +1443,7 @@ impl Documents {
             }
             Err(err) => {
                 tracing::warn!(path = %key.display(), %err, "save failed");
-                status_message::show(save::failure_message(key, &err), cx);
+                status_message::show_or_log(self.window, save::failure_message(key, &err), cx);
                 SaveStep::Done(Err(err))
             }
         };
@@ -1541,7 +1550,11 @@ impl Documents {
                     || key.display().to_string(),
                     |n| n.to_string_lossy().into_owned(),
                 );
-                status_message::show(format!("Failed to revert '{name}': {err}"), cx);
+                status_message::show_or_log(
+                    self.window,
+                    format!("Failed to revert '{name}': {err}"),
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -2014,10 +2027,10 @@ impl Documents {
             }
             Ok(JobOutput::Reloaded(_, Err(failure))) => {
                 let seen = failure.stamp.map(|stamp| (stamp, failure.hash));
-                reload_failed(doc, key, failure.err, seen, cx);
+                reload_failed(doc, key, failure.err, seen, self.window, cx);
             }
             // The job panicked; a loaded buffer is still here.
-            Err(err) if doc.buffer.is_some() => reload_failed(doc, key, err, None, cx),
+            Err(err) if doc.buffer.is_some() => reload_failed(doc, key, err, None, self.window, cx),
             Err(err) => doc.set_state(DocState::Error(err), cx),
         }
         let Some(doc) = self.docs.get_mut(key) else {
@@ -2159,7 +2172,7 @@ impl Documents {
         self.commit_edit(key, old, &patch, was_dirty, None, cx);
         self.default_line_ending(key, cx);
         if merged {
-            status_message::show("Merged changes from disk", cx);
+            status_message::show_or_log(self.window, "Merged changes from disk", cx);
         }
     }
 
@@ -2387,6 +2400,7 @@ fn reload_failed(
     key: &Arc<Path>,
     err: LoadError,
     seen: Option<(Stamp, Option<u64>)>,
+    window: Option<WindowId>,
     cx: &mut Context<Documents>,
 ) {
     if doc.buffer.is_none() || err == LoadError::NotFound {
@@ -2411,7 +2425,7 @@ fn reload_failed(
         announce_return(doc, key, cx);
     }
     let name = save::display_name(key);
-    status_message::show(format!("Failed to reload '{name}': {err}"), cx);
+    status_message::show_or_log(window, format!("Failed to reload '{name}': {err}"), cx);
 }
 
 /// Puts a save or revert of `doc` in line: returns the sender to drop when

@@ -357,7 +357,11 @@ impl Workbench {
         let editor_focus = cx.focus_handle();
         window.focus(&editor_focus, cx);
         let commands = default_registry();
-        let documents = cx.new(|_| Documents::new(root.clone(), settings.clone()));
+        let documents = cx.new(|_| {
+            let mut documents = Documents::new(root.clone(), settings.clone());
+            documents.set_window(window.window_handle().window_id());
+            documents
+        });
         let language_servers = {
             let root = root.clone();
             // Servers' `{data_dir}`: the workspace's data dir, else the
@@ -410,7 +414,12 @@ impl Workbench {
         // Before the editor groups: the diff tabs read them.
         let git = {
             let settings = settings.clone();
-            cx.new(|cx| GitStore::new(root.clone(), settings, cx))
+            let id = window.window_handle().window_id();
+            cx.new(|cx| {
+                let mut store = GitStore::new(root.clone(), settings, cx);
+                store.set_window(id);
+                store
+            })
         };
         let branch_base = cx.new(|_| BranchBase(None));
         let onboarding = TabPage::default();
@@ -485,6 +494,7 @@ impl Workbench {
                                 .new(|cx| {
                                     let mut view =
                                         DiffView::new(kind, git, docs, root, workbench, cx);
+                                    view.set_window(window.window_handle().window_id());
                                     if branch {
                                         view.follow_branch_base(base, cx);
                                     }
@@ -3152,7 +3162,7 @@ impl Render for Workbench {
         let right_panel = panel_at(PanelPosition::Right)
             .map(|state| panel::render(state, &self.terminal_panel, cx));
 
-        let status_message = crate::status_message::current(cx);
+        let status_message = crate::status_message::current(window.window_handle().window_id(), cx);
         div()
             .id("workbench")
             .track_focus(&self.focus)
