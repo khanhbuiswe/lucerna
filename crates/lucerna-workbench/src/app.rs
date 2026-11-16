@@ -59,6 +59,7 @@ pub fn run(launch: Option<Launch>) {
         let waiting = launch.is_none();
         if let Some(launch) = launch {
             router::open_launch(launch, Target::Auto, cx);
+            quit_if_no_window("the first window", cx);
         } else {
             cx.activate(true);
         }
@@ -66,7 +67,10 @@ pub fn run(launch: Option<Launch>) {
             if waiting {
                 let grace = cx.background_executor().timer(OPEN_REQUEST_GRACE);
                 match future::select(requests.next(), pin!(grace)).await {
-                    Either::Left((Some(urls), _)) => cx.update(|cx| open_urls(&urls, cx)),
+                    Either::Left((Some(urls), _)) => cx.update(|cx| {
+                        open_urls(&urls, cx);
+                        quit_if_no_window("the requested paths", cx);
+                    }),
                     Either::Left((None, _)) => return,
                     Either::Right(_) => cx.update(open_without_folder),
                 }
@@ -77,6 +81,22 @@ pub fn run(launch: Option<Launch>) {
         })
         .detach();
     });
+}
+
+/// Whether a start must quit after trying to open its first window: no
+/// window opened, so nothing would ever show (opening a window can fail).
+/// Later opens, with windows already up, never quit the app.
+pub(crate) fn start_failed(windows: usize) -> bool {
+    windows == 0
+}
+
+/// Quits when the start opened no window ([`start_failed`]); `what` names
+/// what it tried to open, for the log.
+fn quit_if_no_window(what: &str, cx: &mut App) {
+    if start_failed(cx.windows().len()) {
+        tracing::error!(what, "nothing opened at start; quitting");
+        cx.quit();
+    }
 }
 
 /// Opens the paths the platform asks for (Finder's "Open With", the Dock).
@@ -102,6 +122,7 @@ fn open_without_folder(cx: &mut App) {
                 source: Source::Restore,
             };
             router::open(request, cx).ok();
+            quit_if_no_window("the last workspace", cx);
         }
         StartupScreen::Onboarding => {
             if let Some(dir) = data_dir {
@@ -113,8 +134,12 @@ fn open_without_folder(cx: &mut App) {
                 .detach();
             }
             router::open_onboarding(cx);
+            quit_if_no_window("the Get Started page", cx);
         }
-        StartupScreen::Welcome => router::open_welcome(Target::NewWindow, cx),
+        StartupScreen::Welcome => {
+            router::open_welcome(Target::NewWindow, cx);
+            quit_if_no_window("the Welcome screen", cx);
+        }
         StartupScreen::FolderPrompt => pick_folder(cx),
     }
 }
@@ -252,6 +277,13 @@ mod tests {
         let mut store = SettingsStore::with_defaults();
         store.set_layer(Layer::User, json).unwrap();
         store
+    }
+
+    #[test]
+    fn start_quits_only_without_a_window() {
+        assert!(start_failed(0), "a failed first window quits");
+        assert!(!start_failed(1));
+        assert!(!start_failed(3));
     }
 
     #[test]

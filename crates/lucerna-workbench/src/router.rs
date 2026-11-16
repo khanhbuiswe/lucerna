@@ -571,7 +571,9 @@ fn index_or_adopt(handle: AnyWindowHandle, cx: &mut App) -> Option<usize> {
     router.borrow().index(handle)
 }
 
-/// Opens a window like the workbench's on the root `build` makes.
+/// Opens a window like the workbench's on the root `build` makes; `None`
+/// (logged) when the platform cannot. The start quits when its first
+/// window fails (`app::start_failed`); later failures leave the app as is.
 fn open_window<V: 'static + gpui::Render>(
     cx: &mut App,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,

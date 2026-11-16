@@ -1,7 +1,8 @@
 //! Which folder and file a `luc [PATH]` invocation opens.
 
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+
+use lucerna_workbench::router::Launch;
 
 /// What `luc` opens: a canonical root folder and, for a file, the file to
 /// open as a pinned tab.
@@ -49,6 +50,8 @@ pub fn resolve_target(path: Option<PathBuf>) -> Result<Target, String> {
 /// Resolves the command-line path to what [`Target`] opens:
 ///
 /// - `None`: the current directory.
+/// - Any other path as [`Launch::for_path`] resolves it, the paths Finder
+///   sends the running app too:
 /// - A directory: that directory.
 /// - A file: the file alone ([`Target::single_file`]), rooted at its
 ///   parent, as Zed and VS Code open one. Neither its folder nor the git
@@ -67,17 +70,11 @@ pub fn resolve_target_with_home(
         Some(path) => path,
         None => std::env::current_dir().map_err(|err| format!("current directory: {err}"))?,
     };
-    let canonical = std::fs::canonicalize(&path).map_err(|err| match err.kind() {
-        ErrorKind::NotFound => format!("path not found: {}", path.display()),
-        _ => format!("{}: {err}", path.display()),
-    })?;
-    if canonical.is_dir() {
-        return Ok(Target::folder(canonical));
-    }
-    let parent = canonical.parent().unwrap_or(Path::new("/"));
+    // One resolution for `luc` and for paths Finder sends the running app.
+    let launch = Launch::for_path(path)?;
     Ok(Target {
-        root: parent.to_path_buf(),
-        file: Some(canonical),
-        single_file: true,
+        root: launch.root,
+        file: launch.file,
+        single_file: launch.single_file,
     })
 }

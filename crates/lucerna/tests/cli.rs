@@ -117,6 +117,26 @@ fn resolve_missing_errors() {
     );
 }
 
+/// `luc <path>` and the paths Finder sends the running app resolve the
+/// same way.
+#[test]
+fn resolve_matches_the_router() {
+    use lucerna_workbench::router::Launch;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.rs");
+    fs::write(&file, "\n").unwrap();
+    let missing = dir.path().join("nope");
+    for path in [dir.path().to_path_buf(), file, missing] {
+        let cli = resolve_target(Some(path.clone()));
+        let router = Launch::for_path(path).map(|l| Target {
+            root: l.root,
+            file: l.file,
+            single_file: l.single_file,
+        });
+        assert_eq!(cli, router);
+    }
+}
+
 #[test]
 fn missing_path_exits_1() {
     let dir = tempfile::tempdir().unwrap();
