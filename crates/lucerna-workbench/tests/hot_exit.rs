@@ -439,10 +439,84 @@ fn reopen_restores_dirty_tab(cx: &mut TestAppContext) {
     quit(wb, cx);
     let (wb, cx) = reopen(&project, cx);
     let a = project.root.path().join("a.rs");
-    assert!(tab_paths(&wb, cx).contains(&a));
+    let tabs = tab_paths(&wb, cx);
+    assert_eq!(
+        tabs.iter().filter(|p| **p == a).count(),
+        1,
+        "one tab: {tabs:?}"
+    );
     assert!(is_dirty(&wb, &a, cx));
     assert_eq!(text_of(&wb, &a, cx), "mine");
     assert_eq!(project.backups().len(), 1, "the backup stays until saved");
+}
+
+#[gpui::test]
+fn restored_inactive_tab_keeps_its_document(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let a = project.root.path().join("a.rs");
+    let b = project.root.path().join("b.rs");
+    fs::write(&b, "fn b() {}\n").unwrap();
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open(&wb, &a, cx);
+    edit_range(&wb, &view, &a, 0..2, "pub fn", cx);
+    let view_b = open(&wb, &b, cx);
+    edit_range(&wb, &view_b, &b, 0..2, "pub fn", cx);
+    drop((view, view_b));
+    quit(wb, cx);
+    let (wb, cx) = reopen(&project, cx);
+    // Draws: only one restored tab is active, the other is never drawn.
+    settle(cx);
+    advance(2000, cx);
+    let active = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups
+            .model()
+            .active_tab()
+            .and_then(|t| t.path())
+            .map(|p| p.to_path_buf())
+    });
+    let inactive = if active.as_deref() == Some(a.as_path()) {
+        &b
+    } else {
+        &a
+    };
+    assert!(is_dirty(&wb, inactive, cx), "{inactive:?} is still unsaved");
+    let expected = if inactive == &a {
+        "pub fn main() {}\n"
+    } else {
+        "pub fn b() {}\n"
+    };
+    assert_eq!(text_of(&wb, inactive, cx), expected);
+    let backups = project.backups();
+    assert!(
+        backups.iter().any(|backup| &backup.header.path == inactive),
+        "{inactive:?} keeps its backup"
+    );
+    assert_eq!(backups.len(), 2);
+
+    // Closing the never-drawn tab with Save closes its document too.
+    let id = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        let tab = groups.model().groups().iter().flat_map(|g| &g.tabs);
+        tab.clone()
+            .find(|t| t.path().is_some_and(|p| **p == **inactive))
+            .map(|t| t.id)
+            .expect("a tab of the inactive file")
+    });
+    let groups = cx.update(|_, cx| wb.read(cx).editor_groups().clone());
+    cx.update(|window, cx| groups.update(cx, |g, cx| g.request_close(id, window, cx)));
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    advance(2000, cx);
+    assert_eq!(fs::read_to_string(inactive).unwrap(), expected);
+    assert!(!tab_paths(&wb, cx).contains(inactive));
+    let docs = docs(&wb, cx);
+    assert!(
+        docs.read_with(cx, |d, _| d.snapshot_of(inactive).is_none()),
+        "no document is left open without a tab"
+    );
+    assert_eq!(project.backups().len(), 1);
 }
 
 #[gpui::test]
