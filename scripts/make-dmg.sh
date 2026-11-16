@@ -59,6 +59,8 @@ elif [ "$profile" = debug ]; then
 else
   scripts/bundle-app.sh --stable
 fi
+# Only the stable channel ships, even an app built earlier (--no-build).
+scripts/check-stable-app.sh "$app"
 
 # A layout problem: fatal under --strict, otherwise a warning.
 layout_problem() {

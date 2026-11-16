@@ -8,11 +8,13 @@ import os
 import pathlib
 import plistlib
 import subprocess
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 RENDER = ROOT / "scripts" / "render-plist.sh"
 BUNDLE = ROOT / "scripts" / "bundle-app.sh"
+CHECK = ROOT / "scripts" / "check-stable-app.sh"
 CHANNELS = ("dev", "stable")
 
 
@@ -91,6 +93,28 @@ class BundleChannelTest(unittest.TestCase):
         self.assertIn("channel=stable", dry_run("--install"))
         self.assertIn("channel=dev", dry_run())
         self.assertIn("channel=stable", dry_run("--stable"))
+
+
+class CheckStableAppTest(unittest.TestCase):
+    """make-dmg.sh packs only a stable app, even with --no-build."""
+
+    def check(self, channel):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = pathlib.Path(tmp) / "Lucerna.app"
+            (app / "Contents").mkdir(parents=True)
+            (app / "Contents" / "Info.plist").write_text(raw_output(channel))
+            return subprocess.run(
+                [str(CHECK), str(app)], capture_output=True, text=True, check=False
+            )
+
+    def test_stable_app_passes(self):
+        self.assertEqual(self.check("stable").returncode, 0)
+
+    def test_dev_app_fails(self):
+        result = self.check("dev")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("dev.lucerna.Lucerna-Dev", result.stderr)
+        self.assertIn("--stable", result.stderr)
 
 
 if __name__ == "__main__":
