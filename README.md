@@ -46,9 +46,9 @@ agent; Lucerna leaves the agent to the tool you already use.
 
 Lucerna runs on macOS 13 or later today. Linux and Windows are planned.
 
-- **Release build:** download `Lucerna-<version>-macos-aarch64.zip` from the Releases page, unzip
-  it and move `Lucerna.app` to Applications. Builds are not notarized yet, so right-click the app
-  and choose **Open** the first time, or run
+- **Release build:** download `Lucerna-<version>-macos-aarch64.dmg` from the Releases page, open it
+  and drag Lucerna into Applications. Builds are not notarized yet, so the first time, open Lucerna,
+  then choose **Open Anyway** in System Settings > Privacy & Security, or run
   `xattr -dr com.apple.quarantine /Applications/Lucerna.app`.
 - **From source:** with Rust and the Xcode Command Line Tools installed, run
   `scripts/bundle-app.sh --install`. It puts `Lucerna.app` in `/Applications` and `luc` in
