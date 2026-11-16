@@ -316,3 +316,32 @@ fn hung_cat_file_times_out_and_next_read_restarts() {
         Some(b"one\n".to_vec())
     );
 }
+
+/// A repository above `home` is not found from below it.
+#[test]
+fn discover_stops_at_home() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    git(&dir, &["init", "-q"]);
+    let (home, root) = (dir.join("home"), dir.join("home/proj"));
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(Repo::discover(bin(), &root).unwrap().is_some());
+    assert!(matches!(
+        Repo::discover_with_ceiling(bin(), &root, Some(&home)),
+        Ok(None)
+    ));
+}
+
+/// A repository at `home` itself is still found.
+#[test]
+fn discover_finds_repo_at_home() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().canonicalize().unwrap();
+    git(&home, &["init", "-q"]);
+    let root = home.join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+    let r = Repo::discover_with_ceiling(bin(), &root, Some(&home))
+        .unwrap()
+        .expect("a repo");
+    assert_eq!(r.workdir, home);
+}

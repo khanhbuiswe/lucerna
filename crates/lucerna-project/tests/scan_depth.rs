@@ -270,3 +270,45 @@ fn load_sends_loaded_not_changed() {
         }
     }
 }
+
+/// `.git` above `home` is not this project's repository: depth applies.
+#[test]
+fn repo_above_home_does_not_count() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join(".git")).unwrap();
+    let (home, root) = (tmp.path().join("home"), tmp.path().join("home/proj"));
+    deep_tree(&root);
+    let snap = scan(&root, &home, Some(2)).snapshot();
+    assert!(snap.is_unloaded(Path::new("a/b")));
+    assert!(!snap.contains(Path::new("a/b/c")));
+}
+
+#[test]
+fn gitignore_above_home_is_ignored() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join(".gitignore"), "*.log\n").unwrap();
+    let (home, root) = (tmp.path().join("home"), tmp.path().join("home/proj"));
+    touch(&root, "a.log");
+    let wt = scan(&root, &home, None);
+    assert!(wt.snapshot().contains(Path::new("a.log")));
+    // A watcher-reported file goes through `IgnoreChecker`.
+    touch(&root, "b.log");
+    wait_until(&wt, |s| s.contains(Path::new("b.log")));
+}
+
+#[test]
+fn gitignore_in_home_still_applies() {
+    let tmp = TempDir::new().unwrap();
+    let (home, root) = (tmp.path().join("home"), tmp.path().join("home/proj"));
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join(".gitignore"), "*.log\n").unwrap();
+    touch(&root, "a.log");
+    touch(&root, "keep.txt");
+    let wt = scan(&root, &home, None);
+    assert!(wt.snapshot().contains(Path::new("keep.txt")));
+    assert!(!wt.snapshot().contains(Path::new("a.log")));
+    touch(&root, "b.log");
+    touch(&root, "c.txt");
+    wait_until(&wt, |s| s.contains(Path::new("c.txt")));
+    assert!(!wt.snapshot().contains(Path::new("b.log")));
+}

@@ -576,6 +576,8 @@ impl SearchView {
         };
         let (root, cancel, generation) = (self.root.clone(), self.cancel.clone(), self.generation);
         let unloaded = self.unloaded.clone();
+        // As in the scan: parent folders' ignore files count up to `$HOME`.
+        let home = std::env::home_dir();
         let (sink, events) = crossbeam_channel::unbounded();
         let (forward, mut received) = futures::channel::mpsc::unbounded();
         // `search` blocks: it runs on its own thread while this background
@@ -588,9 +590,9 @@ impl SearchView {
                     .collect();
                 std::thread::scope(|scope| {
                     let (root, query, exclude) = (&root, &query, &settings_exclude);
-                    let buffers = &buffers;
+                    let (buffers, home) = (&buffers, home.as_deref());
                     scope.spawn(move || {
-                        search(root, query, exclude, &unloaded, buffers, sink, cancel)
+                        search(root, query, exclude, home, &unloaded, buffers, sink, cancel)
                     });
                     for event in events {
                         if forward.unbounded_send(event).is_err() {

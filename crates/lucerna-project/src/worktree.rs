@@ -15,7 +15,7 @@ use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
 
 use crate::coalesce::{Coalesced, RESCAN_THRESHOLD};
-use crate::ignored::{IgnoreChecker, is_ignore_source};
+use crate::ignored::{IgnoreChecker, ParentFilter, is_ignore_source};
 use crate::snapshot::{Entry, EntryKind, RootStatus, WorktreeSnapshot};
 use crate::watch::{Watcher, panic_message};
 
@@ -36,7 +36,9 @@ pub struct ScanOptions {
     /// Folders nested this many levels below the root are left unscanned
     /// unless the root is inside a git repository. `None`: no limit.
     pub scan_depth: Option<usize>,
-    /// Where the search for an enclosing repository stops. `None`: no ceiling.
+    /// Where lookups above the root stop when the root lies under it: the
+    /// search for an enclosing repository and the parent folders' ignore
+    /// files. `None`: no ceiling.
     pub home: Option<PathBuf>,
 }
 
@@ -253,12 +255,21 @@ pub(crate) fn expand_plain_folder(pattern: &str) -> Vec<String> {
 /// The one walker configuration shared by the scan and by content search.
 ///
 /// Ignore-source policy: hidden files are shown; project-level sources apply
-/// (`.gitignore` including parent directories, `.git/info/exclude`, `.ignore`,
-/// even without a `.git` directory); the user's global gitignore does not, so
-/// results do not depend on the machine. `files.exclude` globs are overrides.
-/// Entries [`always_skipped`] names are skipped.
-pub(crate) fn walk_builder(root: &Path, opts: &ScanOptions) -> WalkBuilder {
-    walk_builder_with_includes(root, opts, &[])
+/// (`.gitignore` including parent directories up to `opts.home` (see
+/// [`parent_ceiling`]), `.git/info/exclude`, `.ignore`, even without a `.git`
+/// directory); the user's global gitignore does not, so results do not
+/// depend on the machine. `files.exclude` globs are overrides. Entries
+/// [`always_skipped`] names are skipped.
+///
+/// `filter` is the caller's own entry filter, asked only about entries the
+/// walker's filters keep. Callers must not call `filter_entry`, which
+/// would replace those.
+pub(crate) fn walk_builder(
+    root: &Path,
+    opts: &ScanOptions,
+    filter: impl Fn(&ignore::DirEntry) -> bool + Send + Sync + 'static,
+) -> WalkBuilder {
+    walk_builder_with_includes(root, opts, &[], filter)
 }
 
 /// `walk_builder` plus positive `include` globs in the same override set, so
@@ -269,7 +280,9 @@ pub(crate) fn walk_builder_with_includes(
     root: &Path,
     opts: &ScanOptions,
     include: &[String],
+    filter: impl Fn(&ignore::DirEntry) -> bool + Send + Sync + 'static,
 ) -> WalkBuilder {
+    let ceiling = parent_ceiling(root, opts.home.as_deref());
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -277,10 +290,10 @@ pub(crate) fn walk_builder_with_includes(
         .git_global(false)
         .git_exclude(true)
         .ignore(true)
-        .parents(true)
+        // Below a ceiling, `ParentFilter` reads the parent folders instead.
+        .parents(ceiling.is_none())
         .require_git(false)
-        .follow_links(false)
-        .filter_entry(|entry| !always_skipped(entry.file_name()));
+        .follow_links(false);
     let mut overrides = OverrideBuilder::new(root);
     for glob in include.iter().flat_map(|g| expand_plain_folder(g)) {
         if let Err(err) = overrides.add(&glob) {
@@ -292,13 +305,29 @@ pub(crate) fn walk_builder_with_includes(
             tracing::warn!(%glob, %err, "invalid files.exclude glob");
         }
     }
-    match overrides.build() {
+    let overrides = match overrides.build() {
         Ok(o) => {
-            builder.overrides(o);
+            builder.overrides(o.clone());
+            Some(o)
         }
-        Err(err) => tracing::warn!(%err, "could not build exclude overrides"),
-    }
+        Err(err) => {
+            tracing::warn!(%err, "could not build exclude overrides");
+            None
+        }
+    };
+    let parents = ceiling.and_then(|c| ParentFilter::new(root, opts, c, overrides));
+    builder.filter_entry(move |entry| {
+        !always_skipped(entry.file_name())
+            && parents.as_ref().is_none_or(|p| p.keeps(entry))
+            && filter(entry)
+    });
     builder
+}
+
+/// Where lookups above `root` stop: `home`, inclusive, when `root` lies
+/// under it (as in Zed). `None`: they go up to the filesystem root.
+pub(crate) fn parent_ceiling<'a>(root: &Path, home: Option<&'a Path>) -> Option<&'a Path> {
+    home.filter(|h| root.starts_with(h))
 }
 
 fn kind_of(meta: &fs::Metadata) -> EntryKind {
@@ -879,10 +908,13 @@ impl Worker {
         let mut last_publish = Instant::now();
         let rejected = Arc::new(Mutex::new(Vec::new()));
         let in_repo = root_in_repo(&self.root, opts.home.as_deref());
-        let mut builder = walk_builder(&self.root, opts);
-        if let (false, Some(depth)) = (in_repo, opts.scan_depth) {
-            builder.filter_entry(depth_filter(depth, rejected.clone()));
-        }
+        let depth = match (in_repo, opts.scan_depth) {
+            (false, Some(depth)) => Some(depth_filter(depth, rejected.clone())),
+            _ => None,
+        };
+        let builder = walk_builder(&self.root, opts, move |entry| {
+            depth.as_ref().is_none_or(|keep| keep(entry))
+        });
         for result in builder.build() {
             if self.superseded(generation) {
                 return ScanOutcome::Aborted;
@@ -931,7 +963,7 @@ impl Worker {
 /// under `home`, the search stops after `home`, so a repository above the
 /// home folder does not count.
 pub(crate) fn root_in_repo(root: &Path, home: Option<&Path>) -> bool {
-    let home = home.filter(|h| root.starts_with(h));
+    let home = parent_ceiling(root, home);
     for dir in root.ancestors() {
         if dir.join(GIT_DIR).exists() {
             return true;
@@ -945,8 +977,7 @@ pub(crate) fn root_in_repo(root: &Path, home: Option<&Path>) -> bool {
 
 /// The scan's walker filter for `files.scanDepth`: a folder `depth` or more
 /// levels below the root is refused (and recorded in `rejected`) unless it
-/// or an ancestor holds a `.git`. Keeps the [`always_skipped`] check, since
-/// a new filter replaces the one the builder has.
+/// or an ancestor holds a `.git`.
 fn depth_filter(
     depth: usize,
     rejected: Arc<Mutex<Vec<PathBuf>>>,
@@ -954,9 +985,6 @@ fn depth_filter(
     // Folders that are, or lie inside, a repository found by this walk.
     let repos = Mutex::new(HashSet::<PathBuf>::new());
     move |entry| {
-        if always_skipped(entry.file_name()) {
-            return false;
-        }
         if entry.depth() == 0 || !entry.file_type().is_some_and(|t| t.is_dir()) {
             return true;
         }

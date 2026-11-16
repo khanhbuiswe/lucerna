@@ -27,6 +27,7 @@ fn run_with(root: &Path, q: &SearchQuery, settings: &[String]) -> Vec<SearchEven
         root,
         q,
         settings,
+        None,
         &HashSet::new(),
         &[],
         tx,
@@ -42,8 +43,25 @@ fn run_buffers(root: &Path, q: &SearchQuery, buffers: &[(Arc<Path>, String)]) ->
         root,
         q,
         &[],
+        None,
         &HashSet::new(),
         buffers,
+        tx,
+        Arc::new(AtomicBool::new(false)),
+    );
+    rx.try_iter().collect()
+}
+
+/// Searches with parent ignore files read only up to `home`.
+fn run_home(root: &Path, q: &SearchQuery, home: &Path) -> Vec<SearchEvent> {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    search(
+        root,
+        q,
+        &[],
+        Some(home),
+        &HashSet::new(),
+        &[],
         tx,
         Arc::new(AtomicBool::new(false)),
     );
@@ -267,6 +285,7 @@ fn cancel_stops_without_done() {
         dir.path(),
         &query("needle"),
         &[],
+        None,
         &HashSet::new(),
         &[],
         tx,
@@ -293,7 +312,7 @@ fn cancel_during_walk_sends_no_done() {
     let handle = std::thread::spawn(move || {
         let mut q = query("needle");
         q.case_sensitive = true;
-        search(&root, &q, &[], &HashSet::new(), &[], tx, flag);
+        search(&root, &q, &[], None, &HashSet::new(), &[], tx, flag);
     });
     // Wait for the search to be in progress, then cancel.
     let first = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -316,6 +335,7 @@ fn invalid_regex_with_cancel_sends_nothing() {
         dir.path(),
         &q,
         &[],
+        None,
         &HashSet::new(),
         &[],
         tx,
@@ -510,6 +530,7 @@ fn search_skips_unloaded_dirs() {
             dir.path(),
             &query("needle"),
             &[],
+            None,
             skip,
             &[],
             tx,
@@ -536,4 +557,39 @@ fn search_skips_unloaded_dirs() {
         run_skipping(&HashSet::new()),
         vec!["deep/needle.txt", "top.txt"]
     );
+}
+
+/// Ignore files above `home` do not apply; those in `home` do.
+#[test]
+fn parent_ignores_stop_at_home() {
+    let tmp = TempDir::new().unwrap();
+    let (home, root) = (tmp.path().join("home"), tmp.path().join("home/proj"));
+    write(tmp.path(), ".gitignore", "*.log\n");
+    write(&home, ".gitignore", "*.tmp\n");
+    for f in ["a.log", "b.tmp", "c.txt"] {
+        write(&root, f, "needle\n");
+    }
+    let ev = run_home(&root, &query("needle"), &home);
+    let names: Vec<String> = files(&root, &ev).into_iter().map(|(p, _)| p).collect();
+    assert_eq!(names, ["a.log", "c.txt"]);
+}
+
+/// An include glob wins over an ignore file in `home`, as over the root's.
+#[test]
+fn include_beats_ignore_file_in_home() {
+    let tmp = TempDir::new().unwrap();
+    let (home, root) = (tmp.path().join("home"), tmp.path().join("home/proj"));
+    write(&home, ".gitignore", "*.tmp\n");
+    write(&root, "b.tmp", "needle\n");
+    let mut q = query("needle");
+    q.include = vec!["*.tmp".into()];
+    let in_home = run_home(&root, &q, &home);
+    let names: Vec<String> = files(&root, &in_home).into_iter().map(|(p, _)| p).collect();
+    let unbounded = run(&root, &q);
+    let expected: Vec<String> = files(&root, &unbounded)
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    assert_eq!(names, expected);
+    assert_eq!(names, ["b.tmp"]);
 }

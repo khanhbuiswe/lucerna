@@ -772,7 +772,8 @@ fn discover(
             }
         }
     };
-    match Repo::discover(git, root) {
+    // As in Zed, a repository above the home folder is not the project's.
+    match Repo::discover_with_ceiling(git, root, std::env::home_dir().as_deref()) {
         Err(GitError::NotFound) => Setup::NoGit,
         Ok(Some(repo)) => {
             let watcher = watch.and_then(|tx| {
