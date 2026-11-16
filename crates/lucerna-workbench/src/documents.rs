@@ -36,6 +36,7 @@ use lucerna_text::{
     SelectionsToken, WriteError, check_size, decode_file, diff_edits,
 };
 
+use crate::WindowSettings;
 use crate::code_view::CodeView;
 use crate::editor_groups::EditorGroupsView;
 use crate::save::{
@@ -45,7 +46,6 @@ use crate::status_message;
 use crate::tasks::catch_panic;
 use crate::ui::GRID;
 use crate::workspace_state::absolute_path;
-use crate::{AppState, WindowSettings};
 
 /// Where a document is in its life.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -569,7 +569,7 @@ impl Documents {
             }
             None => {
                 // The first line is not known yet; the load looks again.
-                let language = language_for(&self.root, &key, None, cx);
+                let language = language_for(&self.root, &self.settings, &key, None, cx);
                 let language_id = language.as_ref().map(|l| l.id.clone());
                 view.update(cx, |v, cx| {
                     v.set_language_id(language_id, cx);
@@ -645,7 +645,8 @@ impl Documents {
             // Even an unchanged root language is parsed again: the new
             // registry may add or drop the languages it injects.
             let old_id = doc.language_id();
-            doc.language = language_for(&self.root, &key, doc.snapshot.as_ref(), cx);
+            doc.language =
+                language_for(&self.root, &self.settings, &key, doc.snapshot.as_ref(), cx);
             sync_language_id(doc, cx);
             if doc.announced
                 && doc.language_id() != old_id
@@ -705,7 +706,8 @@ impl Documents {
                 view.update(cx, |v, cx| v.set_path(new, cx));
             }
             let old_id = doc.language_id();
-            doc.language = language_for(&self.root, &new, doc.snapshot.as_ref(), cx);
+            doc.language =
+                language_for(&self.root, &self.settings, &new, doc.snapshot.as_ref(), cx);
             sync_language_id(&doc, cx);
             if doc.indentation_inputs.is_some()
                 && doc.indentation_inputs
@@ -1931,7 +1933,7 @@ impl Documents {
                 take_buffer(doc, buffer, stamp);
                 let old_id = doc.language_id();
                 // Now with the first line, for `first_line_pattern`.
-                doc.language = language_for(&self.root, key, Some(&snapshot), cx);
+                doc.language = language_for(&self.root, &self.settings, key, Some(&snapshot), cx);
                 sync_language_id(doc, cx);
                 detect_indentation(doc, &self.settings, cx);
                 let (path, language_id) = (key.clone(), doc.language_id());
@@ -2252,8 +2254,8 @@ impl Documents {
         let Some(doc) = self.docs.get_mut(key) else {
             return;
         };
+        let registry = self.settings.read(cx).languages(cx);
         let settings = self.settings.read(cx).view(cx);
-        let registry = cx.global::<AppState>().languages.clone();
         let language = doc.language.as_ref().map(|l| l.id.clone());
         let max_bytes = settings
             .get::<u64>("lucerna.largeFile.maxBytes", language.as_deref())
@@ -2546,16 +2548,20 @@ fn sync_language_id(doc: &Document, cx: &mut App) {
 
 /// The language of the file at `key`: by `files.associations` against its
 /// path relative to `root`, its name, and the first line of `snapshot`.
+/// The registry is the window's (`settings`): its folder may add
+/// associations.
 fn language_for(
     root: &Path,
+    settings: &Entity<WindowSettings>,
     key: &Path,
     snapshot: Option<&BufferSnapshot>,
     cx: &App,
 ) -> Option<Arc<Language>> {
     let path = key.strip_prefix(root).unwrap_or(key);
     let first_line = snapshot.map(first_line).unwrap_or_default();
-    cx.global::<AppState>()
-        .languages
+    settings
+        .read(cx)
+        .languages(cx)
         .language_for_file(path, &first_line)
 }
 

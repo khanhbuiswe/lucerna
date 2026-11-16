@@ -116,11 +116,8 @@ impl Focusable for LspLogView {
 
 impl Render for LspLogView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = &cx.global::<AppState>().settings;
-        let font = crate::fonts::editor_font_family(
-            cx.global::<crate::AppState>().settings.view(None),
-            None,
-        );
+        let settings = self.servers.read(cx).settings().read(cx).view(cx);
+        let font = crate::fonts::editor_font_family(settings, None);
         let size = settings
             .get::<f32>("editor.fontSize", None)
             .unwrap_or(14.)

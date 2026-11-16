@@ -235,9 +235,15 @@ fn untrusted_workspace_server_not_listed_as_found(cx: &mut TestAppContext) {
     assert!(!cx.update(|_, cx| servers.read(cx).is_trusted()));
 
     show_health(&wb, cx);
-    let rows = rows(&wb, cx);
-    assert!(!rows.is_empty());
-    assert!(!found(&rows, "evil"), "{rows:#?}");
+    let untrusted = rows(&wb, cx);
+    assert!(!untrusted.is_empty());
+    assert!(!found(&untrusted, "evil"), "{untrusted:#?}");
+
+    // The folder's setting does reach the servers: trusted, it is listed.
+    servers.update(cx, |servers, cx| servers.set_trusted(true, cx));
+    settle(cx);
+    let trusted = rows(&wb, cx);
+    assert!(found(&trusted, "evil"), "{trusted:#?}");
 }
 
 /// Version probes of an untrusted folder run in `$HOME`: a rustup, asdf or

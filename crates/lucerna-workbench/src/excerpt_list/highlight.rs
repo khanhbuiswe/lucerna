@@ -528,8 +528,9 @@ impl ExcerptList {
                 self.highlight_pending.remove(&path);
                 continue;
             };
-            let state = cx.global::<AppState>();
-            let (languages, theme) = (state.languages.clone(), state.theme.clone());
+            // The window's registry: its folder may add associations.
+            let languages = self.settings.read(cx).languages(cx);
+            let theme = cx.global::<AppState>().theme.clone();
             let (abs, rel, epoch) = (self.root.join(&path), path.clone(), self.highlight_epoch);
             let source = self.text_sources.get(&path).cloned();
             let generation = source.as_ref().map_or(0, |(_, g)| *g);

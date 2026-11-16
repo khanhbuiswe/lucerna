@@ -423,9 +423,9 @@ impl CodeView {
     /// An empty view of `path`; [`CodeView::set_buffer`] gives it text.
     pub fn new(path: Arc<Path>, settings: Entity<WindowSettings>, cx: &mut Context<Self>) -> Self {
         // A first guess; `Documents` sets the language it resolves.
-        let language_id = cx
-            .global::<AppState>()
-            .languages
+        let language_id = settings
+            .read(cx)
+            .languages(cx)
             .language_for_file(&path, "")
             .map(|lang| lang.id.clone());
         let (config, font_size, word_wrap) =

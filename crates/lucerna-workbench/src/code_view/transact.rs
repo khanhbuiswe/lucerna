@@ -16,7 +16,6 @@ use lucerna_vim::Typed;
 use serde::{Deserialize, Serialize};
 
 use super::{CodeView, DEFAULT_WORD_SEPARATORS, SelectionChange};
-use crate::AppState;
 use crate::documents::{DocState, ViewUpdate};
 use crate::tasks::catch_panic;
 
@@ -105,7 +104,7 @@ impl CodeView {
             return Some(syntax.language().clone());
         }
         let id = self.language_id.as_deref()?;
-        let languages = &cx.global::<AppState>().languages;
+        let languages = self.settings().read(cx).languages(cx);
         languages.languages().iter().find(|l| &*l.id == id).cloned()
     }
 

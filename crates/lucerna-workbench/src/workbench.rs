@@ -127,7 +127,7 @@ pub struct Workbench {
     _settings: Subscription,
     /// [`ConfigState::keymap_generation`] as last seen.
     keymap_generation: u64,
-    /// [`AppState::languages_generation`] as last seen.
+    /// [`WindowSettings::languages_generation`] as last seen.
     languages_generation: u64,
     explorer: Entity<ExplorerView>,
     /// The body of the Search tab when it is open. Kept while the tab is
@@ -367,7 +367,8 @@ impl Workbench {
                 .map(|store| store.data_dir().to_path_buf())
                 .or_else(crate::default_data_dir)
                 .unwrap_or_else(|| std::env::temp_dir().join("Lucerna"));
-            cx.new(|cx| LanguageServers::new(root, &documents, data_dir, cx))
+            let settings = settings.clone();
+            cx.new(|cx| LanguageServers::new(root, &documents, settings, data_dir, cx))
         };
         let symbols = SymbolSource::new(root.clone(), &documents, &language_servers, cx);
         // Servers end with the window (without waiting for them) or the
@@ -407,7 +408,10 @@ impl Workbench {
             cx.new(|cx| LspStatusItem::new(workbench, servers, cx))
         };
         // Before the editor groups: the diff tabs read them.
-        let git = cx.new(|cx| GitStore::new(root.clone(), cx));
+        let git = {
+            let settings = settings.clone();
+            cx.new(|cx| GitStore::new(root.clone(), settings, cx))
+        };
         let branch_base = cx.new(|_| BranchBase(None));
         let onboarding = TabPage::default();
         let workbench = cx.weak_entity();
@@ -649,6 +653,7 @@ impl Workbench {
             cx.observe_global::<ConfigState>(Self::config_files_changed),
             cx.observe(&settings, |wb, _, cx| {
                 wb.workspace_settings_changed(cx);
+                wb.languages_changed(cx);
                 wb.editor_settings_changed(cx);
             }),
             // Saving `.lucerna/settings.json` here applies it at once.
@@ -758,7 +763,7 @@ impl Workbench {
             scan_options,
             _settings: cx.observe_global::<AppState>(Self::settings_changed),
             keymap_generation: keymap_generation(cx),
-            languages_generation: cx.global::<AppState>().languages_generation,
+            languages_generation: settings.read(cx).languages_generation(),
             _worktree_events: worktree_events,
             scanning,
             single_file: single_file_path,
@@ -1068,18 +1073,20 @@ impl Workbench {
             self.keymap_generation = generation;
             self.pending_chord.clear();
         }
-        // A new language registry: open documents look theirs up again.
-        let generation = cx.global::<AppState>().languages_generation;
+        // `session.trustAllWorktrees` may have changed.
+        self.apply_trust(cx);
+        cx.notify();
+    }
+
+    /// A new language registry for this window (the app's changed, or the
+    /// folder's `files.associations`): open documents look theirs up again.
+    fn languages_changed(&mut self, cx: &mut Context<Self>) {
+        let generation = self.settings.read(cx).languages_generation();
         if generation != self.languages_generation {
             self.languages_generation = generation;
             self.documents
                 .update(cx, |documents, cx| documents.languages_changed(cx));
         }
-        // `session.trustAllWorktrees` may have changed.
-        self.apply_trust(cx);
-        // `git.*` may have changed.
-        self.git.update(cx, |git, cx| git.settings_changed(cx));
-        cx.notify();
     }
 
     /// After any change to the window's settings (its workspace layer, or
@@ -2098,7 +2105,10 @@ impl Workbench {
             None => path
                 .and_then(|p| {
                     let rel = p.strip_prefix(&self.root).unwrap_or(p);
-                    cx.global::<AppState>().languages.language_for_file(rel, "")
+                    self.settings
+                        .read(cx)
+                        .languages(cx)
+                        .language_for_file(rel, "")
                 })
                 .map(|lang| lang.id.to_string())
                 .unwrap_or_default(),

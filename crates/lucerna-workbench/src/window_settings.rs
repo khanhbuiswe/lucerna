@@ -2,15 +2,19 @@
 //! workspace layer) over the app's default and user layers in
 //! [`AppState::settings`].
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use futures::StreamExt as _;
 use gpui::{App, AppContext as _, Context, Subscription, Task};
 use lucerna_settings::{SettingsError, SettingsView, WorkspaceLayer};
+use lucerna_syntax::{Associations, LanguageRegistry};
 use serde::de::DeserializeOwned;
 
 use crate::AppState;
 use crate::config_files::{ConfigError, ConfigFile, ConfigWatcher, read, real_path};
+use crate::extensions::service::registry_with_associations;
 
 /// The workspace layer of one window, its file, the error reading it, and
 /// the watcher that reloads it. A GPUI entity each `Workbench` owns.
@@ -28,6 +32,23 @@ pub struct WindowSettings {
     _pump: Task<()>,
     _user: Subscription,
     reloading: Task<()>,
+    /// The window's own language registry, when its folder's
+    /// `files.associations` adds to the user's; else the app's is used.
+    languages: Option<Arc<LanguageRegistry>>,
+    /// What the registry in use (or being built) was made from.
+    languages_inputs: LanguageInputs,
+    /// Bumped whenever [`WindowSettings::languages`] changes.
+    languages_generation: u64,
+    building: Task<()>,
+}
+
+/// The inputs of a window's language registry: the app's registry
+/// (by its generation) and the merged associations, `None` when the
+/// folder adds none (the app's registry is used as is).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LanguageInputs {
+    app_generation: u64,
+    associations: Option<BTreeMap<String, String>>,
 }
 
 impl WindowSettings {
@@ -53,16 +74,97 @@ impl WindowSettings {
             Some(path) if !cx.background_executor().is_test() => watch(path, cx),
             _ => (None, Task::ready(())),
         };
-        WindowSettings {
+        let mut settings = WindowSettings {
             path,
             workspace,
             error,
             generation: 0,
             watcher,
             _pump: pump,
-            _user: cx.observe_global::<AppState>(|_, cx| cx.notify()),
+            _user: cx.observe_global::<AppState>(|this, cx| {
+                this.refresh_languages(cx);
+                cx.notify();
+            }),
             reloading: Task::ready(()),
+            languages: None,
+            languages_inputs: LanguageInputs {
+                app_generation: 0,
+                associations: None,
+            },
+            languages_generation: 0,
+            building: Task::ready(()),
+        };
+        // The first registry is made here, so documents restored with the
+        // window get their language at once. It reads no file and shares
+        // the app's languages: only the association globs are compiled.
+        if !cx.has_global::<AppState>() {
+            return settings;
         }
+        let inputs = settings.language_inputs(cx);
+        if let Some(associations) = &inputs.associations {
+            let registry = cx
+                .global::<AppState>()
+                .languages
+                .with_associations(Associations::new(associations));
+            settings.languages = Some(Arc::new(registry));
+        }
+        settings.languages_inputs = inputs;
+        settings
+    }
+
+    /// The language registry of this window: the app's, unless the
+    /// folder's `files.associations` adds to the user's; then the same
+    /// languages with the merged associations (spec §6.1.3).
+    pub fn languages(&self, cx: &App) -> Arc<LanguageRegistry> {
+        match &self.languages {
+            Some(languages) => languages.clone(),
+            None => cx.global::<AppState>().languages.clone(),
+        }
+    }
+
+    /// Bumped whenever [`WindowSettings::languages`] changes: open
+    /// documents then look their language up again.
+    pub fn languages_generation(&self) -> u64 {
+        self.languages_generation
+    }
+
+    fn language_inputs(&self, cx: &App) -> LanguageInputs {
+        let view = self.view(cx);
+        let merged = view.get::<BTreeMap<String, String>>("files.associations", None);
+        let user = view.get_trusted::<BTreeMap<String, String>>("files.associations", None);
+        LanguageInputs {
+            app_generation: cx.global::<AppState>().languages_generation,
+            associations: (merged != user).then(|| merged.unwrap_or_default()),
+        }
+    }
+
+    /// After the app's registry or this window's settings changed: uses
+    /// the app's registry, or builds the window's own in the background.
+    fn refresh_languages(&mut self, cx: &mut Context<Self>) {
+        if !cx.has_global::<AppState>() {
+            return;
+        }
+        let inputs = self.language_inputs(cx);
+        if inputs == self.languages_inputs {
+            return;
+        }
+        self.languages_inputs = inputs.clone();
+        let Some(associations) = inputs.associations else {
+            self.building = Task::ready(());
+            self.languages = None;
+            self.languages_generation += 1;
+            return;
+        };
+        let build = registry_with_associations(Associations::new(&associations), cx);
+        self.building = cx.spawn(async move |this, cx| {
+            let registry = build.await;
+            this.update(cx, |this, cx| {
+                this.languages = Some(Arc::new(registry));
+                this.languages_generation += 1;
+                cx.notify();
+            })
+            .ok();
+        });
     }
 
     /// The app's default and user layers with this window's workspace
@@ -126,6 +228,7 @@ impl WindowSettings {
             Err(error) => self.error = Some(config_error(path, error)),
         }
         self.generation += 1;
+        self.refresh_languages(cx);
         cx.notify();
     }
 
@@ -139,6 +242,7 @@ impl WindowSettings {
         self.workspace = WorkspaceLayer::parse(jsonc)?;
         self.error = None;
         self.generation += 1;
+        self.refresh_languages(cx);
         cx.notify();
         Ok(())
     }

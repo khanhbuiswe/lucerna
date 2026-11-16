@@ -455,10 +455,10 @@ impl Workbench {
     /// `session.trustAllWorktrees`. Called after the store is read and
     /// after every settings change.
     pub(crate) fn apply_trust(&mut self, cx: &mut Context<Self>) {
-        let all = cx
-            .global::<AppState>()
-            .settings
-            .get_trusted::<bool>(TRUST_ALL_KEY, None)
+        let all = self
+            .settings()
+            .read(cx)
+            .get_trusted::<bool>(TRUST_ALL_KEY, None, cx)
             == Some(true);
         let trusted = all || self.trust.stored == Some(true);
         let known = all || self.trust.stored.is_some();

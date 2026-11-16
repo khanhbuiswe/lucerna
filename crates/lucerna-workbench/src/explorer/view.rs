@@ -1125,7 +1125,19 @@ impl ExplorerView {
             .map(|rel| rel.to_string_lossy().into_owned())
             .unwrap_or_default();
         let can_paste = self.clipboard_filled;
-        let menu = cx.new(|cx| build_menu(kind, single_file, path, can_paste, owner, cx));
+        // By the window's languages (through the documents: the workbench
+        // may be the one updating). `path` is root-relative, so the root
+        // to strip is empty.
+        let is_markdown = self.documents.upgrade().is_some_and(|docs| {
+            crate::markdown_preview::is_markdown(
+                Path::new(""),
+                Path::new(&path),
+                docs.read(cx).settings(),
+                cx,
+            )
+        });
+        let menu =
+            cx.new(|cx| build_menu(kind, single_file, path, is_markdown, can_paste, owner, cx));
         self.menu_generation += 1;
         let generation = self.menu_generation;
         self.context_menu = Some(deploy_context_menu(

@@ -510,7 +510,7 @@ impl EditorGroupsView {
         let source = match &tab.item {
             TabItem::File(path) => {
                 let root = self.root.as_deref().unwrap_or(Path::new(""));
-                if !markdown_preview::is_markdown(root, path, cx) {
+                if !markdown_preview::is_markdown(root, path, &self.settings, cx) {
                     return None;
                 }
                 true

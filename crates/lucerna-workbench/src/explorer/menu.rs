@@ -32,23 +32,20 @@ pub(super) const REVEAL_TITLE: &str = if cfg!(target_os = "macos") {
 /// carries it as `args.path`, so a command never falls back to whatever is
 /// selected when it runs (the row may vanish while the menu is open).
 /// `can_paste`: the Explorer's clipboard holds an entry.
+/// `is_markdown`: whether the selection is a markdown file, by the
+/// window's languages.
 pub(super) fn build_menu(
     kind: SelectedKind,
     single_file: bool,
     path: String,
+    is_markdown: bool,
     can_paste: bool,
     owner: FocusHandle,
     cx: &mut Context<ContextMenu>,
 ) -> ContextMenu {
     let is_file = kind == SelectedKind::File;
     let is_root = kind == SelectedKind::Root;
-    // `path` is root-relative, so the root to strip is empty.
-    let is_markdown = is_file
-        && crate::markdown_preview::is_markdown(
-            std::path::Path::new(""),
-            std::path::Path::new(&path),
-            cx,
-        );
+    let is_markdown = is_file && is_markdown;
     let args: Value = json!({ "path": path });
     let entry = |m: ContextMenu, label: &'static str, command: &'static str| {
         m.entry_with_args(label, command, args.clone())
