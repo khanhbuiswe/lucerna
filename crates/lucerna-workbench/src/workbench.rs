@@ -1243,6 +1243,7 @@ impl Workbench {
         self.documents
             .update(cx, |documents, cx| documents.rename(&from, &to, cx));
         self.update_editor_groups(cx, |m| m.retarget(&from, &to));
+        crate::markdown_preview::retarget_previews(self, &from, &to, cx);
         self.recent_files.retarget(&from, &to);
         for history in self.nav_history.values_mut() {
             history.retarget(&from, &to);

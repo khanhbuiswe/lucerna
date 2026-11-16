@@ -17,7 +17,9 @@ pub use commands::{
     PREVIEW_EDITOR_ID, REFRESH_PREVIEW, SHOW_PREVIEW, SHOW_PREVIEW_TO_SIDE, SHOW_SOURCE,
     TOGGLE_PREVIEW, editor_for,
 };
-pub(crate) use commands::{associated_editor, follow_active, is_markdown, register_commands};
+pub(crate) use commands::{
+    associated_editor, follow_active, is_markdown, register_commands, retarget_previews,
+};
 pub use resolve::{
     ImageContext, ImageSrc, LinkAction, MAX_IMAGE_BYTES, heading_slugs, resolve_image, resolve_link,
 };

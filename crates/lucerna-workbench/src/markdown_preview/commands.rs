@@ -207,6 +207,23 @@ fn previews(wb: &Workbench, cx: &App) -> Vec<Entity<MarkdownPreview>> {
         .collect()
 }
 
+/// After a rename of `from` to `to` (absolute): every preview of a file
+/// at `from` or under it shows the file at its new path. Called before
+/// the documents' `Closed` event for `from` lands, so a preview never
+/// opens the gone path again (whose document would hold its name).
+pub(crate) fn retarget_previews(wb: &Workbench, from: &Path, to: &Path, cx: &mut App) {
+    let moved: Vec<(Entity<MarkdownPreview>, Arc<Path>)> = previews(wb, cx)
+        .into_iter()
+        .filter_map(|preview| {
+            let new = crate::workspace_state::moved_path(preview.read(cx).path(), from, to)?;
+            Some((preview, Arc::from(new)))
+        })
+        .collect();
+    for (preview, path) in moved {
+        preview.update(cx, |p, cx| p.set_path(path, cx));
+    }
+}
+
 /// Replaces the source tab `tab` with the preview of `path` in its place,
 /// showing the editor's top line at the top, and focuses it.
 fn preview_in_place(

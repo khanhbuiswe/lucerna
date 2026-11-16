@@ -14,7 +14,7 @@ use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::system_shell::{SystemShell, SystemShellGlobal};
-use lucerna_workbench::{AppState, Selection, Workbench};
+use lucerna_workbench::{AppState, OpenMode, Selection, Workbench};
 use tempfile::TempDir;
 
 /// Trusted, so opening a file raises no trust modal; no language servers,
@@ -1698,4 +1698,164 @@ fn own_change_survives_removed_report(cx: &mut TestAppContext) {
     changed(&wb, "a.rs", ChangeKind::Removed, cx);
     changed(&wb, "a.rs", ChangeKind::Added, cx);
     assert!(!decorated(&wb, "a.rs", cx));
+}
+
+/// Every Markdown preview made so far, static or dynamic.
+fn previews(
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+) -> Vec<Entity<lucerna_workbench::MarkdownPreview>> {
+    cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter(|t| t.previewed_path().is_some())
+            .filter_map(|t| groups.body_of(t.id)?.downcast().ok())
+            .collect()
+    })
+}
+
+fn preview_path(
+    preview: &Entity<lucerna_workbench::MarkdownPreview>,
+    cx: &mut VisualTestContext,
+) -> PathBuf {
+    preview.read_with(cx, |p, _| p.path().to_path_buf())
+}
+
+/// Opens the Markdown file `path`, which shows its preview.
+fn open_md(wb: &Entity<Workbench>, path: &str, cx: &mut VisualTestContext) {
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new(path)), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+}
+
+/// Whether a document is open at `path` (absolute).
+fn has_document(wb: &Entity<Workbench>, path: &Path, cx: &mut VisualTestContext) -> bool {
+    wb.read_with(cx, |wb, cx| wb.documents().read(cx).state(path).is_some())
+}
+
+/// Renames the row `selector` by typing `stem` over the selected stem.
+fn rename_row(selector: &'static str, stem: &str, cx: &mut VisualTestContext) {
+    click(selector, cx);
+    keys("enter", cx);
+    type_text(cx, stem);
+    keys("enter", cx);
+}
+
+/// A preview of a renamed file shows it at its new path, and leaves no
+/// document at the old one, so renaming back is allowed.
+#[gpui::test]
+fn rename_previewed_file_and_back(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    std::fs::write(dir.path().join("doc.md"), "# hi\n").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    open_md(&wb, "doc.md", cx);
+    let [preview] = previews(&wb, cx).try_into().expect("one preview");
+
+    rename_row("explorer-row-doc.md", "x", cx);
+    wait_until(cx, |_| root.join("x.md").is_file());
+    wait_until(cx, |cx| !editing(&wb, cx));
+    draw(cx);
+    assert_eq!(preview_path(&preview, cx), root.join("x.md"));
+    assert!(!has_document(&wb, &root.join("doc.md"), cx));
+
+    // The watcher's report of the rename, as the app gets it.
+    wait_until(cx, |cx| {
+        wb.read_with(cx, |wb, _| {
+            wb.worktree().snapshot().contains(Path::new("x.md"))
+        })
+    });
+    let changes = vec![
+        Change {
+            path: Arc::from(Path::new("doc.md")),
+            kind: ChangeKind::Removed,
+        },
+        Change {
+            path: Arc::from(Path::new("x.md")),
+            kind: ChangeKind::Added,
+        },
+    ];
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(changes), cx)
+    });
+    draw(cx);
+    assert!(!has_document(&wb, &root.join("doc.md"), cx));
+    click("explorer-row-x.md", cx);
+    keys("enter", cx);
+    type_text(cx, "doc");
+    let error = cx.update(|_, cx| {
+        wb.read(cx)
+            .explorer()
+            .read(cx)
+            .edit_error()
+            .map(str::to_string)
+    });
+    assert_eq!(error, None);
+    keys("enter", cx);
+    wait_until(cx, |_| root.join("doc.md").is_file());
+    wait_until(cx, |cx| !editing(&wb, cx));
+    assert_eq!(preview_path(&preview, cx), root.join("doc.md"));
+}
+
+#[gpui::test]
+fn rename_folder_moves_preview(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    std::fs::write(dir.path().join("src/guide.md"), "# hi\n").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    open_md(&wb, "src/guide.md", cx);
+    let [preview] = previews(&wb, cx).try_into().expect("one preview");
+
+    rename_row("explorer-row-src", "lib", cx);
+    wait_until(cx, |_| root.join("lib/guide.md").is_file());
+    wait_until(cx, |cx| !editing(&wb, cx));
+    draw(cx);
+    assert_eq!(preview_path(&preview, cx), root.join("lib/guide.md"));
+    assert!(!has_document(&wb, &root.join("src/guide.md"), cx));
+}
+
+#[gpui::test]
+fn rename_moves_dynamic_preview(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    std::fs::write(dir.path().join("doc.md"), "# hi\n").unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_source(Arc::from(Path::new("doc.md")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    let view = cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .expect("a tab body")
+            .downcast::<lucerna_workbench::code_view::CodeView>()
+            .expect("a code view")
+    });
+    cx.update(|window, cx| {
+        let focus = view.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    run(&wb, "markdown.showPreviewToSide", cx);
+    let preview = previews(&wb, cx)
+        .into_iter()
+        .find(|p| p.read_with(cx, |p, _| p.is_dynamic()))
+        .expect("a dynamic preview");
+
+    rename_row("explorer-row-doc.md", "x", cx);
+    wait_until(cx, |_| root.join("x.md").is_file());
+    wait_until(cx, |cx| !editing(&wb, cx));
+    draw(cx);
+    assert_eq!(preview_path(&preview, cx), root.join("x.md"));
+    assert!(!has_document(&wb, &root.join("doc.md"), cx));
 }
