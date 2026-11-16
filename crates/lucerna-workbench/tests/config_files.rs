@@ -961,3 +961,116 @@ fn broken_workspace_settings_show_in_the_status_bar(cx: &mut TestAppContext) {
     assert_eq!(error_texts(cx).len(), 1);
     assert!(cx.debug_bounds("settings-error").is_some());
 }
+
+/// A second window on `root`, beside the one [`open`] made, once its scan
+/// finished. Its own [`VisualTestContext`] drives it.
+fn open_window(root: &Path, cx: &mut TestAppContext) -> gpui::WindowHandle<Workbench> {
+    let root = root.to_path_buf();
+    let handle = cx.add_window(move |window, cx| Workbench::new(root, window, cx));
+    let wb = handle.root(cx).unwrap();
+    let mut vcx = VisualTestContext::from_window(handle.into(), cx);
+    wait_for_scan(&wb, &mut vcx);
+    handle
+}
+
+/// How a window with a previewing picker goes away.
+#[derive(Clone, Copy)]
+enum Close {
+    /// The close button: `should_close_window` agrees, then the window goes.
+    Button,
+    /// The window goes without asking, releasing its workbench.
+    Release,
+}
+
+fn close_window(handle: gpui::WindowHandle<Workbench>, how: Close, cx: &mut TestAppContext) {
+    let mut vcx = VisualTestContext::from_window(handle.into(), cx);
+    if let Close::Button = how {
+        assert!(vcx.simulate_close(), "nothing to ask about");
+    }
+    vcx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
+/// Closing a window while its theme picker previews puts the configured
+/// theme back everywhere, and later setting and system mode changes apply
+/// (M3-1).
+fn closing_window_mid_preview_reverts(how: Close, cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let settings = "{ \"window.autoDetectColorScheme\": false }";
+    std::fs::write(dirs.settings(), settings).unwrap();
+    init(&dirs, cx);
+    let other = tempfile::tempdir().unwrap();
+    let b = open_window(other.path(), cx);
+    let a = open_window(dirs.root.path(), cx);
+    {
+        let mut vcx = VisualTestContext::from_window(a.into(), cx);
+        keys("cmd-k cmd-t", &mut vcx);
+        keys("down", &mut vcx);
+        assert_eq!(theme_name(&mut vcx), "Lucerna Light", "the preview");
+    }
+    close_window(a, how, cx);
+
+    let mut vcx = VisualTestContext::from_window(b.into(), cx);
+    assert_eq!(theme_name(&mut vcx), "Lucerna Dark", "the configured theme");
+    write(
+        &dirs.settings(),
+        "{ \"window.autoDetectColorScheme\": false, \"workbench.colorTheme\": \"Lucerna Light\" }",
+        &mut vcx,
+    );
+    assert_eq!(
+        theme_name(&mut vcx),
+        "Lucerna Light",
+        "settings apply again"
+    );
+    write(&dirs.settings(), "{}", &mut vcx);
+    system_mode(lucerna_theme::Appearance::Dark, &mut vcx);
+    assert_eq!(
+        theme_name(&mut vcx),
+        "Lucerna Dark",
+        "the system mode applies"
+    );
+}
+
+#[gpui::test]
+fn close_button_mid_theme_preview_reverts(cx: &mut TestAppContext) {
+    closing_window_mid_preview_reverts(Close::Button, cx);
+}
+
+#[gpui::test]
+fn released_window_mid_theme_preview_reverts(cx: &mut TestAppContext) {
+    closing_window_mid_preview_reverts(Close::Release, cx);
+}
+
+/// Going to another window closes the theme picker with revert, as VS
+/// Code's `workbench.quickOpen.closeOnFocusLost`: the other window shows
+/// the configured theme and follows its settings (M3-1).
+#[gpui::test]
+fn leaving_the_window_mid_theme_preview_reverts(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let settings = "{ \"window.autoDetectColorScheme\": false }";
+    std::fs::write(dirs.settings(), settings).unwrap();
+    init(&dirs, cx);
+    let other = tempfile::tempdir().unwrap();
+    let b = open_window(other.path(), cx);
+    let a = open_window(dirs.root.path(), cx);
+    let mut vcx = VisualTestContext::from_window(a.into(), cx);
+    vcx.update(|window, _| window.activate_window());
+    draw(&mut vcx);
+    let wb = a.root(&mut vcx).unwrap();
+    keys("cmd-k cmd-t", &mut vcx);
+    keys("down", &mut vcx);
+    assert_eq!(theme_name(&mut vcx), "Lucerna Light", "the preview");
+
+    // A click into B.
+    let mut vcx = VisualTestContext::from_window(b.into(), cx);
+    vcx.update(|window, _| window.activate_window());
+    draw(&mut vcx);
+    assert!(theme_picker(&wb, &mut vcx).is_none(), "A's picker closed");
+    assert_eq!(theme_name(&mut vcx), "Lucerna Dark", "the configured theme");
+    write(
+        &dirs.settings(),
+        "{ \"window.autoDetectColorScheme\": false, \"workbench.colorTheme\": \"Lucerna Light\" }",
+        &mut vcx,
+    );
+    assert_eq!(theme_name(&mut vcx), "Lucerna Light", "settings apply");
+}
