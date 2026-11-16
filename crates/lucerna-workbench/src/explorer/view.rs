@@ -26,7 +26,9 @@ use crate::ui::{
     ContextMenu, DeployedMenu, GRID, ScrollHandleSource, ScrollbarState, TREE_ROW_HEIGHT,
     UI_FONT_SIZE, UI_FONT_SIZE_SMALL, deploy_context_menu, file_icon_sized, render_deployed,
 };
-use crate::{AppState, Documents, EditorGroupsView, OpenMode, Workbench, status_message};
+use crate::{
+    AppState, Documents, EditorGroupsView, OpenMode, WindowSettings, Workbench, status_message,
+};
 
 /// Indentation per tree level: one icon slot, so each level's indent
 /// guide runs under its parent's chevron.
@@ -131,16 +133,21 @@ pub struct ExplorerView {
     cut: Option<Arc<Path>>,
     /// The clipboard holds an entry: the menu's Paste is enabled.
     clipboard_filled: bool,
+    /// The window's settings: `explorer.*`, `git.decorations.*`.
+    settings: Entity<WindowSettings>,
     _active_tab: Subscription,
+    _settings: Subscription,
 }
 
 impl ExplorerView {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         root: PathBuf,
         single_file: bool,
         snapshot: WorktreeSnapshot,
         workbench: WeakEntity<Workbench>,
         editor_groups: &Entity<EditorGroupsView>,
+        settings: Entity<WindowSettings>,
         focus: FocusHandle,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -172,6 +179,9 @@ impl ExplorerView {
             _active_tab: cx.observe(editor_groups, |this, groups, cx| {
                 this.sync_active_tab(&groups, cx)
             }),
+            // The decorations follow the settings.
+            _settings: cx.observe(&settings, |_, _, cx| cx.notify()),
+            settings,
         }
     }
 
@@ -251,7 +261,7 @@ impl ExplorerView {
         is_dir: bool,
         cx: &App,
     ) -> (Option<Rgba>, Option<&'static str>) {
-        let settings = &cx.global::<AppState>().settings;
+        let settings = self.settings.read(cx).view(cx);
         let on = |key| settings.get::<bool>(key, None).unwrap_or(true);
         if !on("git.decorations.enabled") {
             return (None, None);
@@ -1041,10 +1051,10 @@ impl ExplorerView {
     /// Reveals `path`; selects it when `force`, else only when the selection
     /// is the root or already `path` (a late scan must not undo a click).
     fn auto_reveal(&mut self, path: &Path, force: bool, cx: &mut Context<Self>) {
-        let enabled = cx
-            .global::<AppState>()
+        let enabled = self
             .settings
-            .get::<bool>("explorer.autoReveal", None)
+            .read(cx)
+            .get::<bool>("explorer.autoReveal", None, cx)
             .unwrap_or(true);
         if !enabled {
             return;
@@ -1125,19 +1135,30 @@ impl ExplorerView {
             .map(|rel| rel.to_string_lossy().into_owned())
             .unwrap_or_default();
         let can_paste = self.clipboard_filled;
-        // By the window's languages (through the documents: the workbench
-        // may be the one updating). `path` is root-relative, so the root
+        // By the window's languages. `path` is root-relative, so the root
         // to strip is empty.
-        let is_markdown = self.documents.upgrade().is_some_and(|docs| {
-            crate::markdown_preview::is_markdown(
-                Path::new(""),
-                Path::new(&path),
-                docs.read(cx).settings(),
+        let is_markdown = crate::markdown_preview::is_markdown(
+            Path::new(""),
+            Path::new(&path),
+            &self.settings,
+            cx,
+        );
+        let terminal_kind = self
+            .settings
+            .read(cx)
+            .get::<String>("terminal.explorerKind", None, cx);
+        let menu = cx.new(|cx| {
+            build_menu(
+                kind,
+                single_file,
+                path,
+                is_markdown,
+                terminal_kind.as_deref(),
+                can_paste,
+                owner,
                 cx,
             )
         });
-        let menu =
-            cx.new(|cx| build_menu(kind, single_file, path, is_markdown, can_paste, owner, cx));
         self.menu_generation += 1;
         let generation = self.menu_generation;
         self.context_menu = Some(deploy_context_menu(

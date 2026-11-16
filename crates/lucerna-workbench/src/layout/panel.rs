@@ -37,11 +37,8 @@ pub enum PanelPosition {
 impl PanelPosition {
     /// `workbench.panel.defaultLocation`: `"bottom"` (the default) or
     /// `"right"`.
-    pub(crate) fn from_setting(cx: &gpui::App) -> Self {
-        let value = cx
-            .global::<AppState>()
-            .settings
-            .get::<String>("workbench.panel.defaultLocation", None);
+    pub(crate) fn from_setting(settings: lucerna_settings::SettingsView<'_>) -> Self {
+        let value = settings.get::<String>("workbench.panel.defaultLocation", None);
         match value.as_deref() {
             Some("right") => PanelPosition::Right,
             _ => PanelPosition::Bottom,

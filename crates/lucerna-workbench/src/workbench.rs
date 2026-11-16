@@ -14,7 +14,7 @@ use gpui::{
     Subscription, Task, WeakFocusHandle, Window, WindowHandle, div, prelude::*, px,
 };
 use lucerna_project::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
-use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution};
+use lucerna_settings::{Context as WhenContext, ContextValue, Keystroke, Resolution, SettingsView};
 use lucerna_text::Point;
 use serde_json::Value;
 
@@ -562,7 +562,7 @@ impl Workbench {
             cx.new(|_| DocumentStatusItem::new(groups, docs))
         };
         let scan_options = ScanOptions {
-            exclude: enabled_globs(cx, "files.exclude"),
+            exclude: enabled_globs(settings.read(cx).view(cx), "files.exclude"),
         };
         let scan_started = std::time::Instant::now();
         let scanning = single_file.is_none();
@@ -607,21 +607,22 @@ impl Workbench {
         let panel_state = match &restored {
             Some(state) => state.panel.clone().sanitized(),
             None => PanelState {
-                position: PanelPosition::from_setting(cx),
+                position: PanelPosition::from_setting(settings.read(cx).view(cx)),
                 ..PanelState::default()
             },
         };
-        let terminal_panel = cx.new(|cx| TerminalPanel::new(window, cx));
+        let terminal_panel = cx.new(|cx| TerminalPanel::new(settings.clone(), window, cx));
         let sidebar_focus = cx.focus_handle();
         let explorer = {
             let (root, snapshot) = (root.clone(), worktree.snapshot());
             let lone = single_file_path.is_some();
             let (workbench, groups) = (cx.weak_entity(), editor_groups.clone());
             let focus = sidebar_focus.clone();
-            let docs = documents.downgrade();
+            let (docs, settings) = (documents.downgrade(), settings.clone());
             cx.new(|cx| {
-                let mut explorer =
-                    ExplorerView::new(root, lone, snapshot, workbench, &groups, focus, cx);
+                let mut explorer = ExplorerView::new(
+                    root, lone, snapshot, workbench, &groups, settings, focus, cx,
+                );
                 explorer.set_documents(docs);
                 explorer
             })
@@ -653,6 +654,7 @@ impl Workbench {
             cx.observe_global::<ConfigState>(Self::config_files_changed),
             cx.observe(&settings, |wb, _, cx| {
                 wb.workspace_settings_changed(cx);
+                wb.excludes_changed(cx);
                 wb.languages_changed(cx);
                 wb.editor_settings_changed(cx);
             }),
@@ -670,7 +672,9 @@ impl Workbench {
             // pinned, so opening another file never replaces it.
             cx.subscribe(&documents, |wb, _, ev: &DocumentEvent, cx| match ev {
                 DocumentEvent::DirtyChanged { dirty: true, .. } => wb.pin_dirty_previews(cx),
-                DocumentEvent::ChangedOnDisk { path } if decorates_external_changes(cx) => {
+                DocumentEvent::ChangedOnDisk { path }
+                    if decorates_external_changes(wb.settings.read(cx).view(cx)) =>
+                {
                     wb.explorer
                         .update(cx, |explorer, cx| explorer.mark_external_change(path, cx));
                 }
@@ -1058,15 +1062,9 @@ impl Workbench {
         &self.scan_options
     }
 
-    /// After any [`AppState`] change: rescans when `files.exclude`
-    /// changed, drops a pending chord when the keymap was reloaded, and
-    /// redraws (the theme may have changed).
+    /// After any [`AppState`] change: drops a pending chord when the
+    /// keymap was reloaded, and redraws (the theme may have changed).
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
-        let exclude = enabled_globs(cx, "files.exclude");
-        if exclude != self.scan_options.exclude {
-            self.scan_options = ScanOptions { exclude };
-            self.worktree.set_options(self.scan_options.clone());
-        }
         // A chord typed against the old keymap means nothing now.
         let generation = keymap_generation(cx);
         if generation != self.keymap_generation {
@@ -1076,6 +1074,15 @@ impl Workbench {
         // `session.trustAllWorktrees` may have changed.
         self.apply_trust(cx);
         cx.notify();
+    }
+
+    /// Rescans when the window's `files.exclude` changed.
+    fn excludes_changed(&mut self, cx: &mut Context<Self>) {
+        let exclude = enabled_globs(self.settings.read(cx).view(cx), "files.exclude");
+        if exclude != self.scan_options.exclude {
+            self.scan_options = ScanOptions { exclude };
+            self.worktree.set_options(self.scan_options.clone());
+        }
     }
 
     /// A new language registry for this window (the app's changed, or the
@@ -1243,7 +1250,7 @@ impl Workbench {
             _ => {}
         }
         let snapshot = self.worktree.snapshot();
-        let decorate = decorates_external_changes(cx);
+        let decorate = decorates_external_changes(self.settings.read(cx).view(cx));
         // Open documents tell our own saves from other programs' writes
         // once they reload (`DocumentEvent::ChangedOnDisk`).
         let now = Instant::now();
@@ -1710,10 +1717,10 @@ impl Workbench {
         // An F8 hover still waiting for its tab is for an earlier open.
         self.marker_hover = None;
         self.recent_files.record(path.clone());
-        let preview_enabled = cx
-            .global::<AppState>()
+        let preview_enabled = self
             .settings
-            .get::<bool>("workbench.editor.enablePreview", None)
+            .read(cx)
+            .get::<bool>("workbench.editor.enablePreview", None, cx)
             .unwrap_or(true);
         self.update_editor_groups(cx, |m| {
             m.open_file(path, view, mode, preview_enabled, reuse_any)
@@ -1798,7 +1805,7 @@ impl Workbench {
     /// `always`, those running something other than their shell (as of the
     /// last poll) with `hasChildProcesses`, none with `never`.
     fn terminals_to_confirm(&self, cx: &App) -> usize {
-        let mode = confirm_on_exit(cx);
+        let mode = confirm_on_exit(self.settings.read(cx).view(cx));
         if mode == ConfirmOnExit::Never {
             return 0;
         }
@@ -2290,11 +2297,13 @@ impl Workbench {
         // Never asks for trust (spec §6.3): Restricted Mode only drops the
         // Workspace layer of the shell settings.
         let restricted = self.is_restricted(cx);
+        let settings = self.terminal_panel.read(cx).settings().clone();
         match spawn_view(
             &self.terminal_spawner,
             &self.root,
             cwd,
             restricted,
+            &settings,
             window,
             cx,
         ) {
@@ -2426,10 +2435,10 @@ impl Workbench {
     ) {
         match event {
             PanelEvent::Empty => {
-                let hide = cx
-                    .global::<AppState>()
+                let hide = self
                     .settings
-                    .get::<bool>("terminal.integrated.hideOnLastClosed", None)
+                    .read(cx)
+                    .get::<bool>("terminal.integrated.hideOnLastClosed", None, cx)
                     .unwrap_or(true);
                 if hide {
                     self.hide_panel(window, cx);
@@ -2803,14 +2812,16 @@ impl Workbench {
         let cmd = cfg!(target_os = "macos") && ev.keystroke.modifiers.platform;
         match resolution {
             Resolution::Command { command, args }
-                if completes_chord || cmd || skips_shell(&command, cx) =>
+                if completes_chord
+                    || cmd
+                    || skips_shell(&command, self.settings.read(cx).view(cx)) =>
             {
                 cx.stop_propagation();
                 if !self.run_command(&command, args.as_ref(), window, cx) {
                     tracing::debug!(command, "key bound to an unregistered command");
                 }
             }
-            Resolution::Pending if allow_chords(cx) => {
+            Resolution::Pending if allow_chords(self.settings.read(cx).view(cx)) => {
                 cx.stop_propagation();
                 self.pending_chord = chord;
             }
@@ -2848,7 +2859,7 @@ impl Workbench {
             cx.stop_propagation();
             return;
         }
-        let meta = option_is_meta(cx);
+        let meta = option_is_meta(self.settings.read(cx).view(cx));
         if view.read(cx).input_handler_takes(ev, meta) {
             return;
         }
@@ -2881,9 +2892,8 @@ fn keymap_generation(cx: &App) -> u64 {
 
 /// The globs of a glob → bool setting such as `files.exclude` that are
 /// switched on.
-pub(crate) fn enabled_globs(cx: &App, key: &str) -> Vec<String> {
-    cx.global::<AppState>()
-        .settings
+pub(crate) fn enabled_globs(settings: SettingsView<'_>, key: &str) -> Vec<String> {
+    settings
         .get::<serde_json::Map<String, Value>>(key, None)
         .unwrap_or_default()
         .into_iter()
@@ -3243,9 +3253,8 @@ impl Render for Workbench {
 
 /// `explorer.decorations.externalChanges`: whether the Explorer marks files
 /// that other programs changed.
-fn decorates_external_changes(cx: &App) -> bool {
-    cx.global::<AppState>()
-        .settings
+fn decorates_external_changes(settings: SettingsView<'_>) -> bool {
+    settings
         .get::<bool>("explorer.decorations.externalChanges", None)
         .unwrap_or(true)
 }

@@ -137,12 +137,17 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             } else {
                 "terminal.external.linuxExec"
             };
-            // The bundled defaults always provide a value.
-            let exec = cx
-                .global::<crate::AppState>()
-                .settings
-                .get::<String>(key, None)
-                .unwrap_or_default();
+            // The bundled defaults always provide a value. It names the
+            // program to run: in Restricted Mode the folder's own value is
+            // skipped (spec §6.3), as for the integrated terminal's shell.
+            let restricted = wb.is_restricted(cx);
+            let settings = wb.settings().read(cx).view(cx);
+            let exec = if restricted {
+                settings.get_trusted::<String>(key, None)
+            } else {
+                settings.get::<String>(key, None)
+            }
+            .unwrap_or_default();
             // The launcher is waited for: off the UI thread.
             let shell = system_shell(cx);
             let opened = cx
@@ -175,10 +180,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
                 return;
             }
             let (target, _) = command_target(wb, args, cx);
-            let setting = cx
-                .global::<crate::AppState>()
-                .settings
-                .get::<String>("explorer.copyRelativePathSeparator", None);
+            let setting = wb.settings().read(cx).get::<String>(
+                "explorer.copyRelativePathSeparator",
+                None,
+                cx,
+            );
             let separator = match setting.as_deref() {
                 Some("/") => "/",
                 Some("\\") => "\\",
@@ -220,10 +226,10 @@ fn delete(
     let neighbour = wb.explorer().read(cx).neighbour_after_delete(&rel);
     let name = crate::save::display_name(&target);
     let confirm = permanent
-        || cx
-            .global::<crate::AppState>()
-            .settings
-            .get::<bool>("explorer.confirmDelete", None)
+        || wb
+            .settings()
+            .read(cx)
+            .get::<bool>("explorer.confirmDelete", None, cx)
             .unwrap_or(true);
     let answer = confirm.then(|| {
         if permanent {

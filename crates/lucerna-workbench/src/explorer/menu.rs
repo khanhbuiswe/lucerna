@@ -33,12 +33,15 @@ pub(super) const REVEAL_TITLE: &str = if cfg!(target_os = "macos") {
 /// selected when it runs (the row may vanish while the menu is open).
 /// `can_paste`: the Explorer's clipboard holds an entry.
 /// `is_markdown`: whether the selection is a markdown file, by the
-/// window's languages.
+/// window's languages. `terminal_kind`: the window's
+/// `terminal.explorerKind`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_menu(
     kind: SelectedKind,
     single_file: bool,
     path: String,
     is_markdown: bool,
+    terminal_kind: Option<&str>,
     can_paste: bool,
     owner: FocusHandle,
     cx: &mut Context<ContextMenu>,
@@ -65,11 +68,7 @@ pub(super) fn build_menu(
     let menu = entry(menu, REVEAL_LABEL, "revealFileInOS");
     // `terminal.explorerKind` (VS Code): "integrated" (default),
     // "external" or "both".
-    let kind_setting = cx
-        .global::<crate::AppState>()
-        .settings
-        .get::<String>("terminal.explorerKind", None);
-    let (integrated, external) = match kind_setting.as_deref() {
+    let (integrated, external) = match terminal_kind {
         Some("external") => (false, true),
         Some("both") => (true, true),
         _ => (true, false),

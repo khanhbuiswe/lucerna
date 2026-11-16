@@ -228,7 +228,7 @@ fn resize_follows_panel(cx: &mut TestAppContext) {
     );
 
     let after = view.read_with(cx, |v, _| v.grid_size());
-    let size = cx.update(|_, cx| terminal_font(cx).size);
+    let size = cx.update(|_, cx| terminal_font(wb.read(cx).settings().read(cx).view(cx)).size);
     let expected = (160. / (f32::from(size) * 1.2)).floor() as i32;
     let grew = after.0 as i32 - before.0 as i32;
     assert!(
@@ -396,12 +396,12 @@ fn theme_change_recolors(cx: &mut TestAppContext) {
 #[gpui::test]
 fn font_falls_back_to_editor(cx: &mut TestAppContext) {
     init(cx);
-    let (_wb, cx, _view) = open_terminal(cx);
+    let (wb, cx, _view) = open_terminal(cx);
     set_user_settings(
         r#"{ "editor.fontSize": 17, "editor.fontFamily": "Menlo" }"#,
         cx,
     );
-    let font = cx.update(|_, cx| terminal_font(cx));
+    let font = cx.update(|_, cx| terminal_font(wb.read(cx).settings().read(cx).view(cx)));
     assert_eq!(font.size, px(17.));
     assert_eq!(font.family.as_ref(), "Menlo");
     assert_eq!(font.line_height, 1.2);
@@ -415,7 +415,7 @@ fn font_falls_back_to_editor(cx: &mut TestAppContext) {
              "terminal.integrated.fontWeight": "300", "terminal.integrated.fontWeightBold": 800 }"#,
         cx,
     );
-    let font = cx.update(|_, cx| terminal_font(cx));
+    let font = cx.update(|_, cx| terminal_font(wb.read(cx).settings().read(cx).view(cx)));
     assert_eq!(font.size, px(11.));
     assert_eq!(font.family.as_ref(), "Courier");
     assert_eq!(font.line_height, 1.5);

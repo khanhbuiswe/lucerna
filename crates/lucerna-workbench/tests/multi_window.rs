@@ -1,7 +1,9 @@
 //! Several windows in one process: each reads its own folder's
 //! `.lucerna/settings.json` over the app's default and user layers.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,12 +14,16 @@ use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
 use lucerna_project::WorktreeEvent;
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
+use lucerna_terminal::{Terminal, TerminalOptions};
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::fonts::EDITOR_FONT_FAMILY;
+use lucerna_workbench::system_shell::{SystemShell, SystemShellGlobal};
 use lucerna_workbench::{
-    AppState, FileView, GitState, LanguageServers, MarkdownPreview, OpenMode, Workbench,
+    AppState, FileView, GitState, LanguageServers, MarkdownPreview, OpenMode, PanelPosition,
+    TerminalSpawner, Workbench,
 };
+use serde_json::Value;
 use tempfile::TempDir;
 
 /// The folders the windows of a test show, dropped with the test's app.
@@ -378,4 +384,163 @@ fn git_disabled_per_window(cx: &mut TestAppContext) {
     let (enabled, b_state) = state(b, cx);
     assert!(enabled);
     assert_ne!(b_state, GitState::Off, "B looks for git and a repository");
+}
+
+/// A Trash that deletes at once and records what it was given.
+struct RecordingTrash(std::sync::Mutex<Vec<PathBuf>>);
+
+impl SystemShell for RecordingTrash {
+    fn reveal(&self, _: &Path, _: &gpui::App) {}
+
+    fn open_terminal(&self, _: &Path, _: &str) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn trash(&self, path: &Path) -> Result<(), String> {
+        self.0.lock().unwrap().push(path.to_path_buf());
+        lucerna_project::fs_ops::delete_permanently(path).map_err(|e| e.to_string())
+    }
+}
+
+/// Starts terminals as fakes and keeps the options each was started with.
+fn fake_terminals(
+    handle: WindowHandle<Workbench>,
+    cx: &mut TestAppContext,
+) -> Rc<RefCell<Vec<TerminalOptions>>> {
+    let started = Rc::new(RefCell::new(Vec::new()));
+    let record = started.clone();
+    let spawner: TerminalSpawner = Rc::new(move |opts: TerminalOptions| {
+        record.borrow_mut().push(opts.clone());
+        let (_tx, rx) = futures::channel::mpsc::unbounded();
+        Ok((Terminal::fake(opts.rows, opts.cols, opts.scrollback), rx))
+    });
+    handle
+        .update(cx, |wb, _, _| wb.set_terminal_spawner(spawner))
+        .unwrap();
+    started
+}
+
+fn run(
+    handle: WindowHandle<Workbench>,
+    command: &str,
+    args: Option<Value>,
+    cx: &mut TestAppContext,
+) {
+    handle
+        .update(cx, |wb, window, cx| {
+            wb.run_command(command, args.as_ref(), window, cx);
+        })
+        .unwrap();
+    draw(handle, cx);
+}
+
+/// Inserts `x` at the start of `a.rs`, open in the window (through the
+/// documents: vim, on in one window, would take typed keys).
+fn edit_a(handle: WindowHandle<Workbench>, cx: &mut TestAppContext) {
+    let view = open_a(handle, cx);
+    let docs = handle
+        .read_with(cx, |wb, _| wb.documents().clone())
+        .unwrap();
+    let edit = (0..0, Arc::<str>::from("x"));
+    cx.update(|cx| {
+        docs.update(cx, |d, cx| {
+            d.apply_edits(
+                Path::new("a.rs"),
+                vec![edit],
+                None,
+                None,
+                view.entity_id(),
+                cx,
+            )
+        })
+    })
+    .expect("a.rs is loaded");
+    draw(handle, cx);
+}
+
+#[gpui::test]
+fn window_settings_reach_every_reader(cx: &mut TestAppContext) {
+    let (a, b) = open_two(
+        cx,
+        r#"{
+            "terminal.integrated.scrollback": 123,
+            "explorer.confirmDelete": false,
+            "workbench.panel.defaultLocation": "right",
+            "vim.enabled": true,
+            "files.autoSave": "afterDelay"
+        }"#,
+        "{}",
+    );
+
+    // Terminal: a new terminal's scrollback.
+    let (started_a, started_b) = (fake_terminals(a, cx), fake_terminals(b, cx));
+    run(a, "workbench.action.terminal.new", None, cx);
+    run(b, "workbench.action.terminal.new", None, cx);
+    assert_eq!(started_a.borrow().last().map(|o| o.scrollback), Some(123));
+    assert_eq!(
+        started_b.borrow().last().map(|o| o.scrollback),
+        Some(10_000)
+    );
+
+    // Explorer: A moves to the Trash without asking, B asks.
+    let trash = Arc::new(RecordingTrash(Default::default()));
+    cx.set_global(SystemShellGlobal(trash.clone()));
+    let x_foo = |handle: WindowHandle<Workbench>, cx: &mut TestAppContext| {
+        handle
+            .read_with(cx, |wb, _| wb.root().join("x.foo"))
+            .unwrap()
+    };
+    let args = Some(serde_json::json!({ "path": "x.foo" }));
+    run(a, "moveFileToTrash", args.clone(), cx);
+    assert!(!cx.has_pending_prompt(), "A does not ask");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while trash.0.lock().unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "A's delete did not run");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(*trash.0.lock().unwrap(), [x_foo(a, cx)]);
+    run(b, "moveFileToTrash", args, cx);
+    assert!(cx.has_pending_prompt(), "B asks first");
+    cx.simulate_prompt_answer("Cancel");
+    draw(b, cx);
+    assert!(x_foo(b, cx).is_file());
+
+    // Panel position.
+    let position = |handle: WindowHandle<Workbench>, cx: &mut TestAppContext| {
+        handle
+            .read_with(cx, |wb, _| wb.panel_state().position)
+            .unwrap()
+    };
+    assert_eq!(position(a, cx), PanelPosition::Right);
+    assert_eq!(position(b, cx), PanelPosition::Bottom);
+
+    // Vim layer.
+    let vim = |handle: WindowHandle<Workbench>, cx: &mut TestAppContext| {
+        handle
+            .read_with(cx, |wb, cx| wb.vim().read(cx).enabled())
+            .unwrap()
+    };
+    assert!(vim(a, cx), "A turns vim on");
+    assert!(!vim(b, cx), "B leaves it off");
+
+    // Auto-save: A saves after the default 1000 ms delay, B never.
+    edit_a(a, cx);
+    edit_a(b, cx);
+    cx.executor().advance_clock(Duration::from_millis(1500));
+    cx.run_until_parked();
+    let disk = |handle: WindowHandle<Workbench>, cx: &mut TestAppContext| {
+        let path = handle
+            .read_with(cx, |wb, _| wb.root().join("a.rs"))
+            .unwrap();
+        std::fs::read_to_string(path).unwrap()
+    };
+    assert_eq!(disk(a, cx), "xfn main() {}\n", "A auto-saved");
+    assert_eq!(disk(b, cx), "fn main() {}\n", "B did not");
+    let b_dirty = b
+        .read_with(cx, |wb, cx| {
+            wb.documents().read(cx).is_dirty(Path::new("a.rs"))
+        })
+        .unwrap();
+    assert!(b_dirty, "B holds the edit unsaved");
 }
