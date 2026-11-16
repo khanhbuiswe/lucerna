@@ -123,6 +123,61 @@ fn close_activates_mru() {
 }
 
 #[test]
+fn close_last_tab_of_first_group_removes_it_when_others_remain() {
+    let mut g = EditorGroups::default();
+    let a = g.open(p("a.rs"), OpenMode::Pinned, true);
+    let b = g.open(p("b.rs"), OpenMode::ToSide, true);
+    assert_eq!(g.groups().len(), 2);
+    // Closing the only tab of group 0 drops group 0, not leaves it empty.
+    assert_eq!(g.close(a), Some(b));
+    assert_eq!(g.groups().len(), 1);
+    assert_eq!(g.active_group(), 0);
+    assert_eq!(tabs(&g, 0), owned(&[("b.rs", true)]));
+
+    // Active group on the right of the removed one stays on its tab.
+    let mut g = EditorGroups::default();
+    let a = g.open(p("a.rs"), OpenMode::Pinned, true);
+    let b = g.open(p("b.rs"), OpenMode::ToSide, true);
+    let c = g.open(p("c.rs"), OpenMode::ToSide, true);
+    assert_eq!(g.groups().len(), 3);
+    g.activate(c);
+    g.close(a);
+    assert_eq!(g.groups().len(), 2);
+    assert_eq!(g.active_group(), 1);
+    assert_eq!(active_path(&g).as_deref(), Some("c.rs"));
+    g.activate(b);
+    assert_eq!(g.active_group(), 0);
+}
+
+#[test]
+fn restore_drops_empty_first_group_when_others_remain() {
+    let state = GroupsState {
+        groups: vec![saved(&[], None), saved(&[("b.rs", true)], Some(0))],
+        active_group: 1,
+    };
+    let g = EditorGroups::restore(&state);
+    assert_eq!(g.groups().len(), 1);
+    assert_eq!(g.active_group(), 0);
+    assert_eq!(active_path(&g).as_deref(), Some("b.rs"));
+
+    // Active empty group 0 falls back to the first kept group.
+    let g = EditorGroups::restore(&GroupsState {
+        active_group: 0,
+        ..state
+    });
+    assert_eq!(g.active_group(), 0);
+    assert_eq!(active_path(&g).as_deref(), Some("b.rs"));
+
+    // All empty: still one group.
+    let g = EditorGroups::restore(&GroupsState {
+        groups: vec![saved(&[], None), saved(&[], None)],
+        active_group: 1,
+    });
+    assert_eq!(g.groups().len(), 1);
+    assert_eq!(g.active_group(), 0);
+}
+
+#[test]
 fn close_last_tab_removes_non_first_group() {
     let mut g = EditorGroups::default();
     let a = g.open(p("a.rs"), OpenMode::Pinned, true);
@@ -132,7 +187,7 @@ fn close_last_tab_removes_non_first_group() {
     assert_eq!(g.groups().len(), 1);
     assert_eq!(g.active_group(), 0);
 
-    // The first group survives losing its last tab.
+    // A lone group survives losing its last tab.
     assert_eq!(g.close(a), None);
     assert_eq!(g.groups().len(), 1);
 }
