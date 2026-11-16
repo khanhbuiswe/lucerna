@@ -166,3 +166,11 @@ fn prompts_for_folder_only_without_path_at_filesystem_root() {
     // An explicit path always wins, even `/`.
     assert!(!prompts_for_folder(Some(Path::new("/")), Path::new("/")));
 }
+
+/// `luc /dev/zero` is refused before any window: reading it never ends.
+#[cfg(unix)]
+#[test]
+fn resolve_refuses_a_device() {
+    let err = resolve_target(Some(PathBuf::from("/dev/zero"))).unwrap_err();
+    assert!(err.contains("Not a regular file"), "{err}");
+}

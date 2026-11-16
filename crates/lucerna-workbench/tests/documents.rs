@@ -957,3 +957,28 @@ fn rename_after_removed_event_comes_back(cx: &mut TestAppContext) {
     assert!(is_dirty(&wb, "lib/a.rs", cx));
     assert_eq!(text(&view, cx), "// x\nfn a() {}\n");
 }
+
+#[cfg(unix)]
+#[gpui::test]
+fn fifo_shows_not_a_regular_file_at_once(cx: &mut TestAppContext) {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    let fifo = dir.path().join("pipe");
+    let c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let link = dir.path().join("link.txt");
+    let real = dir.path().join("real.txt");
+    fs::write(&real, "hi\n").unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    open(&wb, "pipe", cx);
+    assert_eq!(
+        state(&wb, &fifo, cx),
+        Some(DocState::Error(LoadError::NotRegular))
+    );
+    // A symlink to a regular file still opens.
+    let view = open(&wb, "link.txt", cx);
+    assert_eq!(text(&view, cx), "hi\n");
+}
