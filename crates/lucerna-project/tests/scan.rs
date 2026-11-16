@@ -96,6 +96,7 @@ fn hidden_files_shown_but_files_exclude_applies() {
         r.to_path_buf(),
         ScanOptions {
             exclude: vec!["**/.git".into()],
+            ..Default::default()
         },
     );
     wait_complete(&wt);
@@ -141,6 +142,7 @@ fn set_options_rescans() {
     assert!(wt.snapshot().contains(Path::new("x.log")));
     wt.set_options(ScanOptions {
         exclude: vec!["**/*.log".into()],
+        ..Default::default()
     });
     wait_for(&wt, |e| matches!(e, WorktreeEvent::Rescanned));
     let snap = wt.snapshot();
@@ -159,9 +161,11 @@ fn rapid_set_options_coalesce_to_latest() {
     wait_complete(&wt);
     wt.set_options(ScanOptions {
         exclude: vec!["**/*.rs".into()],
+        ..Default::default()
     });
     wt.set_options(ScanOptions {
         exclude: vec!["**/*.log".into()],
+        ..Default::default()
     });
     wait_for(&wt, |e| matches!(e, WorktreeEvent::Rescanned));
     let snap = wt.snapshot();

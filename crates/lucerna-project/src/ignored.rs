@@ -175,6 +175,7 @@ mod tests {
                 "**/.git".into(),
                 "docs/*.md".into(),
             ],
+            ..Default::default()
         };
         let walked: HashSet<PathBuf> = walk_builder(&root, &opts)
             .build()

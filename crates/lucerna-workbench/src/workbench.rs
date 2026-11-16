@@ -584,6 +584,7 @@ impl Workbench {
         };
         let scan_options = ScanOptions {
             exclude: enabled_globs(settings.read(cx).view(cx), "files.exclude"),
+            ..Default::default()
         };
         let scan_started = std::time::Instant::now();
         let scanning = single_file.is_none();
@@ -1138,7 +1139,10 @@ impl Workbench {
     fn excludes_changed(&mut self, cx: &mut Context<Self>) {
         let exclude = enabled_globs(self.settings.read(cx).view(cx), "files.exclude");
         if exclude != self.scan_options.exclude {
-            self.scan_options = ScanOptions { exclude };
+            self.scan_options = ScanOptions {
+                exclude,
+                ..Default::default()
+            };
             self.worktree.set_options(self.scan_options.clone());
         }
     }

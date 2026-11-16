@@ -145,7 +145,10 @@ pub fn search(
     };
     let mut excludes = query.exclude.clone();
     excludes.extend_from_slice(settings_exclude);
-    let opts = ScanOptions { exclude: excludes };
+    let opts = ScanOptions {
+        exclude: excludes,
+        ..Default::default()
+    };
     let buffers: HashMap<&Path, &str> = buffers
         .iter()
         .map(|(path, text)| (&**path, text.as_str()))

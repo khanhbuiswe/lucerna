@@ -33,6 +33,11 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(16);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanOptions {
     pub exclude: Vec<String>,
+    /// Folders nested this many levels below the root are left unscanned
+    /// unless the root is inside a git repository. `None`: no limit.
+    pub scan_depth: Option<usize>,
+    /// Where the search for an enclosing repository stops. `None`: no ceiling.
+    pub home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +114,7 @@ impl Worktree {
             replay_until: Cell::new(None),
             ignores_case: Cell::new(None),
             root_status: RefCell::new(RootStatus::Readable),
+            unloaded: RefCell::new(HashSet::new()),
             #[cfg(test)]
             folders_listed: Cell::new(0),
             #[cfg(test)]
@@ -312,6 +318,8 @@ struct Worker {
     ignores_case: Cell<Option<bool>>,
     /// The root as the last scan found it; published with each snapshot.
     root_status: RefCell<RootStatus>,
+    /// Folders the last scan left unloaded; published with each snapshot.
+    unloaded: RefCell<HashSet<Arc<Path>>>,
     /// How many folders the last batch listed to catch respelled paths.
     #[cfg(test)]
     folders_listed: Cell<usize>,
@@ -714,7 +722,8 @@ impl Worker {
 
     fn publish(&self, entries: Vec<Entry>, complete: bool) {
         let snap = WorktreeSnapshot::build(entries, complete)
-            .with_root_status(self.root_status.borrow().clone());
+            .with_root_status(self.root_status.borrow().clone())
+            .with_unloaded(self.unloaded.borrow().clone());
         *self.snapshot.lock().unwrap_or_else(|e| e.into_inner()) = snap;
     }
 
@@ -742,7 +751,13 @@ impl Worker {
             return ScanOutcome::Completed;
         }
         let mut last_publish = Instant::now();
-        for result in walk_builder(&self.root, opts).build() {
+        let rejected = Arc::new(Mutex::new(Vec::new()));
+        let in_repo = root_in_repo(&self.root, opts.home.as_deref());
+        let mut builder = walk_builder(&self.root, opts);
+        if let (false, Some(depth)) = (in_repo, opts.scan_depth) {
+            builder.filter_entry(depth_filter(depth, rejected.clone()));
+        }
+        for result in builder.build() {
             if self.superseded(generation) {
                 return ScanOutcome::Aborted;
             }
@@ -768,7 +783,72 @@ impl Worker {
                 last_publish = Instant::now();
             }
         }
+        let rejected = std::mem::take(&mut *rejected.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut unloaded = HashSet::new();
+        for dir in rejected {
+            let Ok(rel) = dir.strip_prefix(&self.root) else {
+                continue;
+            };
+            let rel: Arc<Path> = Arc::from(rel);
+            unloaded.insert(rel.clone());
+            entries.push(Entry {
+                path: rel,
+                kind: EntryKind::Dir,
+            });
+        }
+        *self.unloaded.borrow_mut() = unloaded;
         ScanOutcome::Completed
+    }
+}
+
+/// Whether `root` or one of its ancestors holds a `.git`. When `root` is
+/// under `home`, the search stops after `home`, so a repository above the
+/// home folder does not count.
+pub(crate) fn root_in_repo(root: &Path, home: Option<&Path>) -> bool {
+    let home = home.filter(|h| root.starts_with(h));
+    for dir in root.ancestors() {
+        if dir.join(GIT_DIR).exists() {
+            return true;
+        }
+        if home == Some(dir) {
+            break;
+        }
+    }
+    false
+}
+
+/// The scan's walker filter for `files.scanDepth`: a folder `depth` or more
+/// levels below the root is refused (and recorded in `rejected`) unless it
+/// or an ancestor holds a `.git`. Keeps the [`always_skipped`] check, since
+/// a new filter replaces the one the builder has.
+fn depth_filter(
+    depth: usize,
+    rejected: Arc<Mutex<Vec<PathBuf>>>,
+) -> impl Fn(&ignore::DirEntry) -> bool + Send + Sync + 'static {
+    // Folders that are, or lie inside, a repository found by this walk.
+    let repos = Mutex::new(HashSet::<PathBuf>::new());
+    move |entry| {
+        if always_skipped(entry.file_name()) {
+            return false;
+        }
+        if entry.depth() == 0 || !entry.file_type().is_some_and(|t| t.is_dir()) {
+            return true;
+        }
+        let mut repos = repos.lock().unwrap_or_else(|e| e.into_inner());
+        let covered = entry.path().parent().is_some_and(|p| repos.contains(p))
+            || entry.path().join(GIT_DIR).exists();
+        if covered {
+            repos.insert(entry.path().to_path_buf());
+            return true;
+        }
+        if entry.depth() >= depth {
+            rejected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(entry.path().to_path_buf());
+            return false;
+        }
+        true
     }
 }
 
@@ -911,6 +991,7 @@ mod tests {
         wt.fail_next_scan.store(true, Ordering::SeqCst);
         wt.set_options(ScanOptions {
             exclude: vec!["**/zzz".into()],
+            ..Default::default()
         });
         // The panicked scan unblocks waiters with ScanComplete, not Rescanned.
         wait(&wt, |e| matches!(e, WorktreeEvent::ScanComplete));
@@ -918,6 +999,7 @@ mod tests {
 
         wt.set_options(ScanOptions {
             exclude: vec!["**/a.txt".into()],
+            ..Default::default()
         });
         wait(&wt, |e| matches!(e, WorktreeEvent::Rescanned));
         assert!(!wt.snapshot().contains(Path::new("a.txt")));
@@ -954,6 +1036,7 @@ mod tests {
             replay_until: Cell::new(None),
             ignores_case: Cell::new(None),
             root_status: RefCell::new(RootStatus::Readable),
+            unloaded: RefCell::new(HashSet::new()),
             folders_listed: Cell::new(0),
             fail_next_scan: Arc::new(AtomicBool::new(false)),
             fail_next_apply: Arc::new(AtomicBool::new(false)),
@@ -1094,6 +1177,7 @@ mod tests {
         }
         let opts = ScanOptions {
             exclude: vec!["**/target".into()],
+            ..Default::default()
         };
         let batch = |paths: &[&str]| {
             Coalesced::Changes(
