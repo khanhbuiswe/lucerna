@@ -46,6 +46,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
   - Delegate macOS của GPUI (rev `b5cd310`, `gpui_macos/src/platform.rs:91`) chỉ đăng ký `applicationWillTerminate:`, không đăng ký `applicationShouldTerminate:`. Vì vậy `-[NSApp terminate:]` thoát ngay.
   - Hook `on_app_quit` của Lucerna chỉ lưu layout và tắt LSP.
   - Không có hot exit hay bản sao lưu nào.
+- **Đã sửa bằng hot exit** trên nhánh `claude/hot-exit` (commit 5d402f7..4dbd405 and the commit after it): thoát bằng mọi cách giữ thay đổi chưa lưu trong bản sao lưu, không cần hỏi. Còn chờ kiểm tra tay Dock Quit, Log Out và `kill -9`.
 - **Hướng sửa:** chặn terminate ở tầng platform: `applicationShouldTerminate:` trả `NSTerminateCancel` rồi chạy `quit(cx)`. GPUI là code của Zed, nên cần patch hoặc hook riêng. Một lựa chọn khác là ghi bản sao lưu các buffer chưa lưu trong hook quit.
 - **Sau merge multi-window:** vẫn còn. GPUI vẫn ở `b5cd310`. `quit` giờ ở [workbench.rs:3018](../../../crates/lucerna-workbench/src/workbench.rs) và hỏi mọi cửa sổ, nhưng Dock Quit và Log Out vẫn đi thẳng qua `terminate:`. Spec multi-window §6.6 ghi nhận đây là giới hạn đã biết.
 

@@ -88,7 +88,7 @@ Thành công nghĩa là:
     - `version`
     - `path`: đường dẫn tuyệt đối
     - `mtime` và `size` của file trên đĩa lúc document được đọc hoặc lưu lần cuối (stamp hiện có); `null` nếu file chưa tồn tại
-    - `base_sha256`: SHA-256 của các byte trên đĩa mà document dựa trên. Không dùng `base_hash` hiện có, vì `DefaultHasher` không ổn định giữa các phiên bản Rust. *(Quyết định của mình.)*
+    - `base_sha256`: SHA-256 của văn bản `base` mà document dựa trên (chuỗi UTF-8 với `\n`, đã giải mã, không phải byte trên đĩa). Lúc khôi phục, giải mã file trên đĩa rồi băm văn bản đó. Không dùng `base_hash` hiện có, vì `DefaultHasher` không ổn định giữa các phiên bản Rust. *(Quyết định của mình.)*
     - `encoding`, `bom`, `line_ending`: lấy từ buffer, để lưu ra đúng định dạng cũ
   - **Từ dòng thứ hai** là văn bản của buffer ở dạng UTF-8, xuống dòng `\n` (dạng trong bộ nhớ).
 - Ghi bằng temp rồi rename trong cùng thư mục.

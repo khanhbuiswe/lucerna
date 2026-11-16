@@ -79,7 +79,11 @@ example "Open in → Default app" in Claude Desktop.
   and Revert; `files.trimTrailingWhitespace`, `files.insertFinalNewline`, `files.trimFinalNewlines`,
   `files.eol` and `files.autoSave`. Writes are atomic and keep the file's encoding, BOM and line
   ending. Tabs show a dirty dot, and a conflict dot when the file changed on disk. Saving over
-  a changed file asks first, and closing or quitting with unsaved changes prompts.
+  a changed file asks first, and closing a tab or window with unsaved changes prompts. Hot exit: unsaved changes are
+  backed up about a second after you stop typing. Quitting by any means (Cmd+Q, Dock Quit, Log
+  Out, a crash) keeps them without asking, and they come back when the folder or file is
+  reopened; a file that changed on disk meanwhile asks before you overwrite it.
+  `files.hotExit: "off"` restores the old asking behaviour.
 - **Smart typing.** Brackets and quotes close themselves, type over their closer, delete as a
   pair and wrap a selection. They follow the language and stay out of strings and comments.
   Enter indents after brackets (and by the extension's `indents.scm`), and typing a closer

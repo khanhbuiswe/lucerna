@@ -545,6 +545,13 @@ fn cli_launch_records_single_file_as_file(cx: &mut TestAppContext) {
 fn quit_asks_the_replaced_window_about_unsaved_changes(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["proj"], &[]);
     std::fs::write(fixture.path("proj").join("file.txt"), "abc\n").unwrap();
+    // With hot exit on, quitting keeps the change without asking.
+    std::fs::create_dir_all(fixture.data_dir().join("config")).unwrap();
+    std::fs::write(
+        fixture.data_dir().join("config").join("settings.json"),
+        r#"{"files.hotExit":"off"}"#,
+    )
+    .unwrap();
     let (_, view) = routed_welcome(&fixture, cx);
     emit(&view, vec![open_event(&fixture.path("proj"), false)], cx);
     let wb = only_workbench(cx).expect("the root is a workbench");
