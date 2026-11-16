@@ -454,7 +454,7 @@ Mỗi ô: trung vị (nhỏ nhất – lớn nhất).
 | Số đo | Trước (mỗi cửa sổ một tiến trình) | Sau (một tiến trình) | Ngưỡng spec §7.2 |
 |---|---|---|---|
 | RAM, 1 cửa sổ | 86,3 MB (85,9 – 86,4) | 86,9 MB (86,3 – 129,6) | — |
-| RAM, 2 cửa sổ | 161,3 MB (160,2 – 181,9) | 172,7 MB (162,7 – 185,4) | **Không đạt**: phải thấp hơn 161,3 |
+| RAM, 2 cửa sổ | 161,3 MB (160,2 – 181,9) | 172,7 MB (162,7 – 185,4) | Đạt theo ngưỡng đã sửa (+7,1 %, dưới 10 %); không đạt ngưỡng ban đầu "thấp hơn 161,3" |
 | RAM, 3 cửa sổ | 230,6 MB (230,3 – 273,2) | 219,2 MB (217,5 – 219,6) | Đạt (thấp hơn 11 MB) |
 | Mở cửa sổ thứ hai | 552 ms (518 – 586) | 432 ms (428 – 443) | Đạt |
 | Khung hình rớt ở A, B đứng yên | 0,0 % (0,0 – 0,0) | 0,0 % (0,0 – 0,5), trên 591 khung (591 – 595) | Đạt (trong sai số) |
@@ -463,8 +463,10 @@ Mỗi ô: trung vị (nhỏ nhất – lớn nhất).
 | `idle_ram_mb` một cửa sổ | 181,3 MB (165,2 – 181,4) | 165,0 MB (131,6 – 181,5) | Không kết luận: hai trong năm vòng của bản mới cửa sổ bị che, không vẽ (xem dưới) |
 | `idle_cpu_pct` một cửa sổ | 1,30 % (0,50 – 1,33) | 0,81 % (0,00 – 1,50) | — |
 
-**RAM 2 cửa sổ chưa đạt ngưỡng.** Trung vị cao hơn bản cũ 11 MB. Lý do theo
-những gì đo được:
+**RAM 2 cửa sổ: trung vị cao hơn bản cũ 11 MB (+7,1 %).** Bản đầu của spec
+§7.2 đòi thấp hơn bản cũ; ngày 2026-11-16 người dùng sửa ngưỡng thành "không
+cao hơn quá 10 %, và 3 cửa sổ phải thấp hơn". Theo ngưỡng mới thì đạt. Lý do
+chênh lệch theo những gì đo được:
 
 - Phần lớn RAM của mỗi cửa sổ là bộ đệm vẽ của cửa sổ (`IOSurface`), không
   phải phần chung của tiến trình. `footprint` của một tiến trình có hai cửa
@@ -480,7 +482,7 @@ những gì đo được:
   cũ 11 MB.
 
 Năm vòng không đủ để tách mức tiết kiệm nhỏ (vài MB) khỏi dao động 20 MB của
-bộ đệm vẽ. Spec coi ngưỡng này là bắt buộc; người duyệt quyết định.
+bộ đệm vẽ. Vì vậy ngưỡng 2–3 cửa sổ được nới thành "không cao hơn quá 10 %".
 
 Cách đo và giới hạn:
 

@@ -489,7 +489,11 @@ cùng bộ repo. Số khởi động đã công bố trước đây đã bị r�
 - Một cửa sổ: thời gian khởi động và RAM không tệ hơn mốc (trong sai số đo
   của `bench/compare`).
 - Cửa sổ thứ hai mở nhanh hơn bản cũ (không phải khởi động tiến trình).
-- RAM 2–3 cửa sổ: thấp hơn tổng của bản cũ.
+- RAM 2–3 cửa sổ: không cao hơn tổng của bản cũ quá 10 %, và 3 cửa sổ phải
+  thấp hơn tổng của bản cũ. *(Sửa 2026-11-16 theo quyết định của người dùng;
+  bản đầu là "thấp hơn tổng của bản cũ". Bộ đệm vẽ `IOSurface` của mỗi cửa
+  sổ chiếm phần lớn RAM và dao động khoảng 20 MB khi app đứng yên, nên năm
+  vòng đo không tách được mức tiết kiệm vài MB của việc gộp tiến trình.)*
 - Cửa sổ A không rớt khung hình nào nhiều hơn khi B đứng yên, trong sai số.
 - Mọi việc nặng của một cửa sổ chạy ở luồng nền.
 
