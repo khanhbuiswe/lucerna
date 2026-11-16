@@ -20,10 +20,11 @@ use gpui::{
     Window, div, prelude::*, px, svg,
 };
 use lucerna_project::{SearchEvent, SearchQuery, search};
-use lucerna_text::Point;
+use lucerna_text::{BufferSnapshot, Point};
 
 use super::model::{first_match, globs, summary};
 use crate::code_view::CodeView;
+use crate::documents::Documents;
 use crate::excerpt_list::highlight::FileHighlights;
 use crate::excerpt_list::model::{LineRef, Results, thousands};
 use crate::excerpt_list::{ExcerptList, ExcerptListEvent};
@@ -57,6 +58,9 @@ const MAX_CONTEXT_LINES: u32 = 5;
 
 pub struct SearchView {
     workbench: WeakEntity<Workbench>,
+    /// The window's documents: open files with unsaved changes are
+    /// searched on their text.
+    documents: Entity<Documents>,
     root: PathBuf,
     focus: FocusHandle,
     /// The results: files with excerpts, the selection and their colors.
@@ -114,6 +118,7 @@ impl SearchView {
     pub fn new(
         root: PathBuf,
         workbench: WeakEntity<Workbench>,
+        documents: Entity<Documents>,
         searchable: bool,
         settings: Entity<WindowSettings>,
         window: &mut Window,
@@ -142,6 +147,7 @@ impl SearchView {
             });
         SearchView {
             workbench,
+            documents,
             root,
             focus: cx.focus_handle(),
             list,
@@ -546,6 +552,16 @@ impl SearchView {
         // VS Code: `search.exclude` inherits `files.exclude`.
         let mut settings_exclude = enabled_globs(settings, "search.exclude");
         settings_exclude.extend(enabled_globs(settings, "files.exclude"));
+        // VS Code: open files with unsaved changes are searched on their
+        // text, so lines and clicks match the buffer (T5-6). Snapshots are
+        // cheap to clone; their text is copied on the background thread.
+        let dirty: Vec<(Arc<Path>, BufferSnapshot)> = {
+            let docs = self.documents.read(cx);
+            docs.dirty_paths()
+                .into_iter()
+                .filter_map(|path| Some((path.clone(), docs.snapshot_of(&path)?)))
+                .collect()
+        };
         let (root, cancel, generation) = (self.root.clone(), self.cancel.clone(), self.generation);
         let (sink, events) = crossbeam_channel::unbounded();
         let (forward, mut received) = futures::channel::mpsc::unbounded();
@@ -553,9 +569,14 @@ impl SearchView {
         // task forwards its events to the foreground as they come.
         let job = cx.background_spawn(async move {
             guarded("search", || {
+                let buffers: Vec<(Arc<Path>, String)> = dirty
+                    .iter()
+                    .map(|(path, snapshot)| (path.clone(), snapshot.text()))
+                    .collect();
                 std::thread::scope(|scope| {
                     let (root, query, exclude) = (&root, &query, &settings_exclude);
-                    scope.spawn(move || search(root, query, exclude, sink, cancel));
+                    let buffers = &buffers;
+                    scope.spawn(move || search(root, query, exclude, buffers, sink, cancel));
                     for event in events {
                         if forward.unbounded_send(event).is_err() {
                             break;
