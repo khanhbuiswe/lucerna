@@ -180,6 +180,24 @@ fn ctrl_r_shows_picker_without_current_folder(cx: &mut TestAppContext) {
     assert!(rows[0].starts_with("other "), "{rows:?}");
 }
 
+/// T3-2: a single-file window hides only its file; the parent folder is
+/// not open, so it stays listed.
+#[gpui::test]
+fn ctrl_r_in_single_file_mode_keeps_the_parent_folder(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&["root", "other"]);
+    init(&fixture, cx);
+    let file = fixture.path("root").join("README.md");
+    std::fs::write(&file, "").unwrap();
+    let root = fixture.path("root");
+    let (wb, cx) =
+        cx.add_window_view(|window, cx| Workbench::single_file(root, &file, None, window, cx));
+    settle(cx);
+    keys("ctrl-r", cx);
+    let rows = picker_rows(&wb, cx);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows.iter().any(|r| r.starts_with("root ")), "{rows:?}");
+}
+
 #[gpui::test]
 fn ctrl_r_again_moves_selection(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other", "third"]);
