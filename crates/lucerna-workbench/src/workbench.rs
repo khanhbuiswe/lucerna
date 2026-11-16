@@ -883,6 +883,11 @@ impl Workbench {
         let documents = workbench.documents.clone();
         let trust_events = workbench.start_trust(&documents, window, cx);
         workbench._subscriptions.push(trust_events);
+        workbench._subscriptions.push(
+            cx.observe_global_in::<trust::TrustGeneration>(window, |wb, window, cx| {
+                wb.trust_changed(window, cx)
+            }),
+        );
         if workbench.language_servers().read(cx).trust_known() {
             workbench.open_restored_terminal(window, cx);
         }

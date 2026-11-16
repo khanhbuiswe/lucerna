@@ -140,7 +140,7 @@ pub use terminal::{
 };
 pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};
-pub use trust::{TrustModal, TrustModalEvent, TrustStore};
+pub use trust::{TrustGeneration, TrustModal, TrustModalEvent, TrustStore};
 pub use vim::VimLayer;
 pub use welcome::{WELCOME_COMMANDS, WelcomeEvent, WelcomeView};
 pub use window_settings::WindowSettings;

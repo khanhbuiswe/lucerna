@@ -1332,3 +1332,92 @@ fn cli_same_file_as_launch_opens_once(cx: &mut TestAppContext) {
     assert_eq!(tabs, 1, "one tab on the file");
     assert_eq!(active_tab(handle, cx), Some(file));
 }
+
+/// A window on `root` keeping its trust in `data`, started untrusted.
+fn trust_window(root: &Path, data: &Path, cx: &mut TestAppContext) -> WindowHandle<Workbench> {
+    let (root, data) = (root.to_path_buf(), data.to_path_buf());
+    let handle = cx.add_window(move |window, cx| Workbench::with_data_dir(root, data, window, cx));
+    settle(handle, cx);
+    handle
+}
+
+fn is_trusted(handle: WindowHandle<Workbench>, cx: &mut TestAppContext) -> bool {
+    let servers = language_servers(handle, cx);
+    cx.update(|cx| servers.read(cx).is_trusted())
+}
+
+/// Opens the trust modal in the window and clicks `Trust and Continue`,
+/// with the parent checkbox when `parent`.
+fn trust_in(handle: WindowHandle<Workbench>, parent: bool, cx: &mut TestAppContext) {
+    handle
+        .update(cx, |wb, window, cx| wb.show_trust_modal(window, cx))
+        .unwrap();
+    draw(handle, cx);
+    let vcx = &mut VisualTestContext::from_window(handle.into(), cx);
+    let mut click = |selector: &'static str| {
+        let bounds = vcx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"));
+        vcx.simulate_click(bounds.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+    };
+    if parent {
+        click("trust-parent-checkbox");
+    }
+    click("trust-continue");
+}
+
+#[gpui::test]
+fn trust_in_a_reaches_b(cx: &mut TestAppContext) {
+    init(cx);
+    let data = tempfile::tempdir().unwrap();
+    let base = tempfile::tempdir().unwrap();
+    let t = base.path().join("t");
+    let sub = t.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let a = trust_window(&t, data.path(), cx);
+    let b = trust_window(&sub, data.path(), cx);
+    assert!(!is_trusted(a, cx) && !is_trusted(b, cx));
+    trust_in(a, true, cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(b, cx);
+    assert!(is_trusted(a, cx));
+    assert!(is_trusted(b, cx), "B is under the parent A trusted");
+}
+
+#[gpui::test]
+fn trust_other_folder_leaves_b(cx: &mut TestAppContext) {
+    init(cx);
+    let data = tempfile::tempdir().unwrap();
+    let base = tempfile::tempdir().unwrap();
+    let (one, two) = (base.path().join("one"), base.path().join("two"));
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    let a = trust_window(&one, data.path(), cx);
+    let b = trust_window(&two, data.path(), cx);
+    trust_in(a, false, cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(b, cx);
+    assert!(is_trusted(a, cx));
+    assert!(!is_trusted(b, cx), "B's folder was not trusted");
+}
+
+#[gpui::test]
+fn clear_trust_in_a_restricts_b(cx: &mut TestAppContext) {
+    init(cx);
+    let data = tempfile::tempdir().unwrap();
+    let base = tempfile::tempdir().unwrap();
+    let t = base.path().join("t");
+    let sub = t.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let a = trust_window(&t, data.path(), cx);
+    let b = trust_window(&sub, data.path(), cx);
+    trust_in(a, true, cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(b, cx);
+    assert!(is_trusted(b, cx));
+    a.update(cx, |wb, _, cx| wb.clear_trust(cx)).unwrap();
+    cx.executor().advance_clock(Duration::from_millis(200));
+    settle(b, cx);
+    assert!(!is_trusted(b, cx), "B is back in Restricted Mode");
+}

@@ -20,8 +20,9 @@ use futures::channel::oneshot;
 use futures::future::Shared;
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, IntoElement,
-    KeyDownEvent, Render, Subscription, Task, Window, div, prelude::*, px, svg,
+    App, BorrowAppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    Global, IntoElement, KeyDownEvent, Render, Subscription, Task, Window, div, prelude::*, px,
+    svg,
 };
 use serde::{Deserialize, Serialize};
 
@@ -343,6 +344,24 @@ pub(crate) struct Trust {
     /// the window right after a choice does not lose it.
     write: Option<Shared<oneshot::Receiver<()>>>,
     _load: Option<Task<()>>,
+    /// The latest re-read after another window changed `trusted.json`.
+    _reload: Option<Task<()>>,
+}
+
+/// Counts the writes of `trusted.json` made by any window in this app; a
+/// window that observes it reads the file again for its own root.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TrustGeneration(pub u64);
+
+impl Global for TrustGeneration {}
+
+/// Tells every window that `trusted.json` changed.
+fn bump_trust_generation(cx: &mut App) {
+    if cx.has_global::<TrustGeneration>() {
+        cx.update_global::<TrustGeneration, _>(|generation, _| generation.0 += 1);
+    } else {
+        cx.set_global(TrustGeneration(1));
+    }
 }
 
 struct ShownTrustModal {
@@ -362,6 +381,7 @@ impl Trust {
             press_closed: false,
             write: None,
             _load: None,
+            _reload: None,
         }
     }
 }
@@ -389,21 +409,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> Subscription {
         if let Some(dir) = self.trust.data_dir.clone() {
-            let root = self.root().to_path_buf();
-            // A lone file is also trusted inside a trusted folder, such as
-            // its repository opened earlier as a project.
-            let lone = self.is_single_file();
-            let read = cx.background_executor().spawn(async move {
-                guarded("trust-load", move || {
-                    let store = TrustStore::load(&dir);
-                    if lone {
-                        root.ancestors().any(|folder| store.is_trusted(folder))
-                    } else {
-                        store.is_trusted(&root)
-                    }
-                })
-                .unwrap_or(false)
-            });
+            let read = self.read_trust(dir, None, cx);
             self.trust._load = Some(cx.spawn_in(window, async move |wb, cx| {
                 let trusted = read.await;
                 wb.update_in(cx, |wb, window, cx| wb.trust_loaded(trusted, window, cx))
@@ -413,6 +419,65 @@ impl Workbench {
         // Without a store (`stored` is already known) nothing is read.
         self.apply_trust(cx);
         cx.subscribe_in(documents, window, Self::trust_document_event)
+    }
+
+    /// Whether the store in `dir` trusts this window's root, read off the
+    /// UI thread after `after` (a write of this window) is done.
+    fn read_trust(
+        &self,
+        dir: PathBuf,
+        after: Option<Shared<oneshot::Receiver<()>>>,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
+        let root = self.root().to_path_buf();
+        // A lone file is also trusted inside a trusted folder, such as
+        // its repository opened earlier as a project.
+        let lone = self.is_single_file();
+        cx.background_executor().spawn(async move {
+            if let Some(after) = after {
+                let _ = after.await;
+            }
+            guarded("trust-load", move || {
+                let _file = TRUST_FILE_LOCK
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let store = TrustStore::load(&dir);
+                if lone {
+                    root.ancestors().any(|folder| store.is_trusted(folder))
+                } else {
+                    store.is_trusted(&root)
+                }
+            })
+            .unwrap_or(false)
+        })
+    }
+
+    /// Another window (or this one) changed `trusted.json`: reads it again
+    /// for this root. A folder no longer trusted goes back to Restricted
+    /// Mode, as `workbench.trust.clear` does.
+    pub(crate) fn trust_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dir) = self.trust.data_dir.clone() else {
+            return;
+        };
+        let read = self.read_trust(dir, self.trust.write.clone(), cx);
+        self.trust._reload = Some(cx.spawn_in(window, async move |wb, cx| {
+            let trusted = read.await;
+            wb.update_in(cx, |wb, window, cx| wb.trust_reloaded(trusted, window, cx))
+                .ok();
+        }));
+    }
+
+    fn trust_reloaded(&mut self, trusted: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.trust.stored.is_none() {
+            self.trust_loaded(trusted, window, cx);
+        } else if self.trust.stored != Some(trusted) {
+            self.trust.stored = Some(trusted);
+            if !trusted {
+                self.trust.prompted = false;
+            }
+            self.apply_trust(cx);
+            cx.notify();
+        }
     }
 
     /// Whether the window is in Restricted Mode: its servers do not run.
@@ -638,5 +703,14 @@ impl Workbench {
                 let _ = done.send(());
             })
             .detach();
+        // Once written, every window reads the file again.
+        let written = self.trust.write.clone();
+        cx.spawn(async move |_, cx| {
+            if let Some(written) = written {
+                let _ = written.await;
+            }
+            cx.update(bump_trust_generation);
+        })
+        .detach();
     }
 }
