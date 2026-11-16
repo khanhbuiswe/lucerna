@@ -590,7 +590,8 @@ impl EditorGroups {
     }
 
     /// Closes tab `id`. Its group then shows its most recently used
-    /// remaining tab; an emptied group other than the first is removed.
+    /// remaining tab; an emptied group is removed while others remain
+    /// (VS Code's `closeEmptyGroups`), so at least one group always exists.
     /// Returns the active tab afterwards.
     pub fn close(&mut self, id: TabId) -> Option<TabId> {
         if let Some(g) = self.group_of(id) {
@@ -602,10 +603,11 @@ impl EditorGroups {
             if group.active == Some(id) {
                 group.active = group.mru.first().copied();
             }
-            if group.tabs.is_empty() && g > 0 {
+            if group.tabs.is_empty() && self.groups.len() > 1 {
                 self.groups.remove(g);
+                // The group left of the removed one, or the new first.
                 if self.active_group >= g {
-                    self.active_group -= 1;
+                    self.active_group = self.active_group.saturating_sub(1);
                 }
             }
         }
@@ -682,8 +684,9 @@ impl EditorGroups {
     ///   groups are kept, pinned;
     /// - of several unpinned tabs only the last stays a preview;
     /// - a missing or out-of-range active tab becomes the group's last tab;
-    /// - empty groups other than the first are dropped, and an active group
-    ///   that was dropped falls back to its left neighbour.
+    /// - empty groups are dropped (one empty group is kept when all are
+    ///   empty), and an active group that was dropped falls back to its
+    ///   left neighbour, or the first group.
     pub fn restore(state: &GroupsState) -> Self {
         let mut model = EditorGroups {
             groups: Vec::new(),
@@ -732,7 +735,7 @@ impl EditorGroups {
             if let Some(id) = saved_active.or(group.tabs.last()).map(|t| t.id) {
                 group.activate(id);
             }
-            if model.groups.is_empty() || !group.tabs.is_empty() {
+            if !group.tabs.is_empty() {
                 restored_index.push(Some(model.groups.len()));
                 model.groups.push(group);
             } else {
@@ -746,8 +749,7 @@ impl EditorGroups {
         let last = model.groups.len() - 1;
         model.active_group = match restored_index.get(state.active_group) {
             Some(Some(index)) => *index,
-            // Dropped: the nearest kept group to its left (the first group
-            // is always kept).
+            // Dropped: the nearest kept group to its left, else the first.
             Some(None) => restored_index[..state.active_group]
                 .iter()
                 .rev()
