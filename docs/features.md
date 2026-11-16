@@ -16,7 +16,9 @@ Set `"window.restoreWindows": "none"` to get the Welcome page with your recent f
 (and `"workbench.startupEditor": "none"` for a folder picker). Open Folder, Open Recent
 and Close Folder (Cmd+K F) switch the window in place. A file opens on its own:
 the sidebar lists only that file, and neither its folder nor its git repository is
-scanned. Open the folder to work on the whole project.
+scanned. Open the folder to work on the whole project. A folder outside a git repository
+(say `~/Downloads`) is scanned `"files.scanDepth"` levels deep (5 by default); deeper folders
+load when you expand them.
 
 Lucerna also appears in Finder's "Open With" menu for folders, text files and source files. A file
 inside the folder that is already open opens as a tab; anything else opens in a new window. To make
