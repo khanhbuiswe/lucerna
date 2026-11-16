@@ -174,8 +174,15 @@ fn fuzzy_query(
             continue;
         }
         let text = entry.path.to_string_lossy();
-        nfc_chars(&text, &mut buf, &mut spans);
-        let Some(score) = pattern.score(Utf32Str::Unicode(&buf), &mut matcher) else {
+        // ASCII paths (the common case) skip normalisation and keep nucleo's
+        // allocation-free ASCII matcher.
+        let haystack = if text.is_ascii() {
+            Utf32Str::Ascii(text.as_bytes())
+        } else {
+            nfc_chars(&text, &mut buf, &mut spans);
+            Utf32Str::Unicode(&buf)
+        };
+        let Some(score) = pattern.score(haystack, &mut matcher) else {
             continue;
         };
         candidates.push(Candidate {
@@ -197,12 +204,20 @@ fn fuzzy_query(
     for c in candidates {
         let text = c.path.to_string_lossy();
         let mut positions = Vec::new();
-        nfc_chars(&text, &mut buf, &mut spans);
-        let mut matched = Vec::new();
-        pattern.indices(Utf32Str::Unicode(&buf), &mut matcher, &mut matched);
-        for m in matched {
-            if let Some(&(from, to)) = spans.get(m as usize) {
-                positions.extend(from..to);
+        if text.is_ascii() {
+            pattern.indices(
+                Utf32Str::Ascii(text.as_bytes()),
+                &mut matcher,
+                &mut positions,
+            );
+        } else {
+            nfc_chars(&text, &mut buf, &mut spans);
+            let mut matched = Vec::new();
+            pattern.indices(Utf32Str::Unicode(&buf), &mut matcher, &mut matched);
+            for m in matched {
+                if let Some(&(from, to)) = spans.get(m as usize) {
+                    positions.extend(from..to);
+                }
             }
         }
         positions.sort_unstable();

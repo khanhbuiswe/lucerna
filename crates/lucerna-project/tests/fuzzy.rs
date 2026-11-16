@@ -157,3 +157,13 @@ fn emoji_names_do_not_panic_and_positions_are_valid() {
     assert!(m[0].positions.iter().all(|&p| p < chars));
     assert_eq!(m[0].positions, vec![3, 4, 5]);
 }
+
+#[test]
+fn emoji_and_combining_mark_in_one_name() {
+    // chars: ❤0 FE0F1 -2 c3 h4 u5 U+0301 6 .7 m8 d9
+    let name = "\u{2764}\u{fe0f}-chu\u{301}.md";
+    let s = snapshot(&[name]);
+    let m = run(&s, "chú", &[], 10);
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].positions, vec![3, 4, 5, 6]);
+}
