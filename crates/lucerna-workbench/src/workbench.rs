@@ -1856,6 +1856,9 @@ impl Workbench {
             save::prompt_unsaved_all(&names, window, cx)
         });
         cx.spawn_in(window, async move |wb, cx| {
+            // Don't Save: the backups go only once nothing else stops the
+            // close or quit, so a Cancel at the terminal prompt keeps them.
+            let mut discard = false;
             let mut go_on = match unsaved {
                 None => true,
                 Some(answer) => match SaveChoice::of(answer.await) {
@@ -1867,10 +1870,7 @@ impl Workbench {
                             && documents.read_with(cx, |d, _| dirty_now(d).is_empty())
                     }
                     SaveChoice::DontSave => {
-                        if let Some(hot_exit) = &hot_exit {
-                            let paths = documents.read_with(cx, |d, _| dirty_now(d));
-                            hot_exit.update(cx, |h, cx| h.discard(&paths, cx));
-                        }
+                        discard = true;
                         true
                     }
                     SaveChoice::Cancel => false,
@@ -1884,6 +1884,13 @@ impl Workbench {
                     Ok(answer) => answer.await == Ok(0),
                     Err(_) => false,
                 };
+            }
+            if go_on
+                && discard
+                && let Some(hot_exit) = &hot_exit
+            {
+                let paths = documents.read_with(cx, |d, _| dirty_now(d));
+                hot_exit.update(cx, |h, cx| h.discard(&paths, cx));
             }
             wb.update(cx, |wb, _| wb.confirming_quit = false).ok();
             go_on

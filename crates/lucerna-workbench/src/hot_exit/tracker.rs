@@ -3,7 +3,7 @@
 //! off the UI thread, and deleted once the document has no unsaved changes
 //! or is closed with Don't Save.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -30,6 +30,10 @@ pub struct HotExit {
     scheduled: HashMap<Arc<Path>, Task<()>>,
     /// The app is quitting: a document closed now keeps its backup.
     quitting: bool,
+    /// Paths whose unsaved text was let go with Don't Save while their
+    /// document lives on (the quit's or window close's prompt): no backup
+    /// is written for them until their next edit, not even by the quit hook.
+    discarded: HashSet<Arc<Path>>,
     _documents: Subscription,
 }
 
@@ -183,6 +187,7 @@ impl HotExit {
             queue,
             scheduled: HashMap::new(),
             quitting: false,
+            discarded: HashSet::new(),
         });
         let all = &mut cx.default_global::<AllHotExits>().0;
         all.retain(|h| h.upgrade().is_some());
@@ -239,11 +244,17 @@ impl HotExit {
     }
 
     /// Deletes the backups of `paths`: their changes were let go with
-    /// Don't Save as the window closes, which emits no `Closed`.
+    /// Don't Save as the window closes or the app quits, which drops no
+    /// document. None is written again until the path's next edit.
     pub fn discard(&mut self, paths: &[Arc<Path>], cx: &mut Context<Self>) {
         for path in paths {
-            self.remove(path, cx);
+            self.discard_one(path, cx);
         }
+    }
+
+    fn discard_one(&mut self, path: &Arc<Path>, cx: &mut Context<Self>) {
+        self.discarded.insert(path.clone());
+        self.remove(path, cx);
     }
 
     fn document_event(&mut self, ev: &DocumentEvent, cx: &mut Context<Self>) {
@@ -253,6 +264,7 @@ impl HotExit {
             | DocumentEvent::DirtyChanged {
                 path, dirty: true, ..
             } => {
+                self.discarded.remove(path);
                 if self.documents.read(cx).is_dirty(path) {
                     self.schedule(path.clone(), cx);
                 }
@@ -271,6 +283,8 @@ impl HotExit {
                     self.remove(path, cx);
                 }
             }
+            // Let go on purpose: deleted even while the app quits.
+            DocumentEvent::Discarded { path } => self.discard_one(path, cx),
             // Outside a quit, a document closed with unsaved changes was
             // closed with Don't Save.
             DocumentEvent::Closed { path } => {
@@ -301,8 +315,12 @@ impl HotExit {
     }
 
     /// Writes `path`'s backup in the background, now; resolves to whether
-    /// it failed. Nothing to write (no unsaved changes) is no failure.
+    /// it failed. Nothing to write (no unsaved changes, or discarded) is no
+    /// failure.
     fn write(&mut self, path: &Arc<Path>, cx: &mut Context<Self>) -> Task<bool> {
+        if self.discarded.contains(path) {
+            return Task::ready(false);
+        }
         let documents = self.documents.read(cx);
         let Some(source) = documents.backup_source(path) else {
             return Task::ready(false);
@@ -343,7 +361,8 @@ impl HotExit {
         if !Self::enabled(cx) {
             return Task::ready(Vec::new());
         }
-        let paths = self.documents.read(cx).dirty_paths();
+        let mut paths = self.documents.read(cx).dirty_paths();
+        paths.retain(|p| !self.discarded.contains(p));
         let writes: Vec<(Arc<Path>, Task<bool>)> = paths
             .into_iter()
             .map(|path| {
@@ -372,6 +391,9 @@ impl HotExit {
         }
         let documents = self.documents.read(cx);
         for path in documents.dirty_paths() {
+            if self.discarded.contains(&path) {
+                continue;
+            }
             let revision = documents.revision_of(&path);
             if revision.is_some() && self.queue.tickets().written.get(&path) == revision.as_ref() {
                 continue;

@@ -127,6 +127,10 @@ pub enum DocumentEvent {
     /// the frame after (the workbench collects closed documents on each
     /// draw).
     Closed { path: Arc<Path> },
+    /// The unsaved text at `path` was let go on purpose (Don't Save, Close
+    /// on a deleted file's bar): sent by [`Documents::discard`] before any
+    /// `Closed`, so hot exit deletes the backup even while the app quits.
+    Discarded { path: Arc<Path> },
     /// An opened document now has another language (or none).
     LanguageChanged {
         path: Arc<Path>,
@@ -1927,11 +1931,13 @@ impl Documents {
 
     /// Drops the document at `path` with its text and history now, even
     /// while a view of it lives on (the close prompt's Don't Save), sending
-    /// [`DocumentEvent::Closed`] if it was opened. The next open reads the
-    /// disk.
+    /// [`DocumentEvent::Discarded`], then [`DocumentEvent::Closed`] if it
+    /// was opened. The next open reads the disk.
     pub fn discard(&mut self, path: &Path, cx: &mut Context<Self>) {
         let key = self.key(path);
-        if self.docs.remove(&key).is_some_and(|doc| doc.announced) {
+        let removed = self.docs.remove(&key);
+        cx.emit(DocumentEvent::Discarded { path: key.clone() });
+        if removed.is_some_and(|doc| doc.announced) {
             cx.emit(DocumentEvent::Closed { path: key });
         }
     }

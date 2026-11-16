@@ -179,6 +179,7 @@ impl SymbolSource {
             | DocumentEvent::Saved { .. }
             | DocumentEvent::ConflictChanged { .. }
             | DocumentEvent::ChangedOnDisk { .. }
+            | DocumentEvent::Discarded { .. }
             | DocumentEvent::FocusLost { .. } => {}
             DocumentEvent::Closed { path } => {
                 self.entries.remove(path);

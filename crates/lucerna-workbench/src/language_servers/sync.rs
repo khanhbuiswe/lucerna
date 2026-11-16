@@ -138,7 +138,8 @@ impl LanguageServers {
             // The servers parse for themselves.
             DocumentEvent::Parsed { .. }
             | DocumentEvent::FocusLost { .. }
-            | DocumentEvent::ChangedOnDisk { .. } => {}
+            | DocumentEvent::ChangedOnDisk { .. }
+            | DocumentEvent::Discarded { .. } => {}
         }
     }
 

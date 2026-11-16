@@ -775,3 +775,156 @@ fn close_window_still_asks(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(project.backups().is_empty());
 }
+
+// ---- Don't Save while a quit or close waits on the terminal prompt ----
+
+/// Makes every terminal a fake that never exits. Before the window opens:
+/// it takes the spawner as it is made.
+fn fake_terminals(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        lucerna_workbench::set_default_terminal_spawner(
+            Rc::new(|opts: lucerna_terminal::TerminalOptions| {
+                let (tx, rx) = futures::channel::mpsc::unbounded();
+                // Kept open: the terminal runs until the test ends.
+                std::mem::forget(tx);
+                Ok((
+                    lucerna_terminal::Terminal::fake(opts.rows, opts.cols, opts.scrollback),
+                    rx,
+                ))
+            }),
+            cx,
+        )
+    });
+}
+
+/// Opens a (fake) terminal in `wb`: with `confirmOnExit: always` a quit
+/// or close asks about it.
+fn open_running_terminal(wb: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    run(wb, "workbench.action.terminal.new", cx);
+}
+
+const CONFIRM_TERMINALS: &str = r#"{"terminal.integrated.confirmOnExit":"always"}"#;
+
+/// Cmd+Q writes the backup and waits on the terminal prompt; meanwhile the
+/// tab of `a.rs` is closed with Don't Save. Returns once that is done.
+fn dont_save_tab_while_quit_waits<'a>(
+    project: &Project,
+    cx: &'a mut TestAppContext,
+) -> &'a mut VisualTestContext {
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    open_running_terminal(&wb, cx);
+    // Only the tab holds the view, so closing it closes the document.
+    drop(view);
+    // The tab's prompt is asked first; Cmd+Q comes while it is up.
+    run(&wb, "workbench.action.closeActiveEditor", cx);
+    quit_app(cx);
+    assert_eq!(project.backups().len(), 1, "the quit wrote the backup");
+    cx.simulate_prompt_answer("Don't Save");
+    settle(cx);
+    assert!(cx.has_pending_prompt(), "the terminal prompt is still up");
+    cx
+}
+
+#[gpui::test]
+fn dont_save_during_quit_then_cancel_leaves_no_backup(cx: &mut TestAppContext) {
+    init(cx, Some(CONFIRM_TERMINALS));
+    fake_terminals(cx);
+    let project = Project::new(None);
+    let cx = dont_save_tab_while_quit_waits(&project, cx);
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(quits(cx), 0);
+    assert!(project.backups().is_empty());
+}
+
+#[gpui::test]
+fn dont_save_during_quit_then_terminate_leaves_no_backup(cx: &mut TestAppContext) {
+    init(cx, Some(CONFIRM_TERMINALS));
+    fake_terminals(cx);
+    let project = Project::new(None);
+    let app = cx.clone();
+    let cx = dont_save_tab_while_quit_waits(&project, cx);
+    cx.simulate_prompt_answer("Terminate");
+    settle(cx);
+    assert_eq!(quits(cx), 1);
+    // The quit hooks run as the app quits.
+    app.quit();
+    assert!(project.backups().is_empty());
+}
+
+/// Don't Save at the quit's prompt for a file whose backup failed: the
+/// quit hook does not write it once the failure has passed.
+#[gpui::test]
+fn dont_save_at_failed_backup_prompt_survives_quit_hook(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    // A file where the backups folder goes: no backup can be written.
+    let blocker = project.data.path().join("backups");
+    fs::write(&blocker, "").unwrap();
+    let app = cx.clone();
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    quit_app(cx);
+    assert!(cx.has_pending_prompt(), "the failed file is asked about");
+    // The failure was transient.
+    fs::remove_file(&blocker).unwrap();
+    cx.simulate_prompt_answer("Don't Save");
+    settle(cx);
+    assert_eq!(quits(cx), 1);
+    drop((wb, view));
+    app.quit();
+    assert!(project.backups().is_empty());
+}
+
+/// Don't Save, then Cancel at the terminal prompt, as the window closes:
+/// the window stays with its unsaved files, which keep their backups.
+#[gpui::test]
+fn close_window_dont_save_then_cancel_keeps_backup(cx: &mut TestAppContext) {
+    init(cx, Some(CONFIRM_TERMINALS));
+    fake_terminals(cx);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    advance(1001, cx);
+    assert_eq!(project.backups().len(), 1);
+    open_running_terminal(&wb, cx);
+    assert!(!cx.simulate_close(), "the window waits for the answer");
+    settle(cx);
+    cx.simulate_prompt_answer("Don't Save");
+    settle(cx);
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert!(!cx.has_pending_prompt());
+    assert!(is_dirty(&wb, Path::new("a.rs"), cx));
+    let backups = project.backups();
+    assert_eq!(backups.len(), 1, "the window kept its unsaved file");
+    assert_eq!(backups[0].text, "hello");
+}
+
+/// A discarded path is skipped by flushes only until its next edit.
+#[gpui::test]
+fn discarded_path_is_backed_up_again_after_an_edit(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    let hot_exit = hot_exit(&wb, cx);
+    let a: Arc<Path> = Arc::from(project.root.path().join("a.rs"));
+    hot_exit.update(cx, |h, cx| h.discard(&[a], cx));
+    let flushed = hot_exit.update(cx, |h, cx| h.flush(cx));
+    settle(cx);
+    assert_eq!(flushed.now_or_never(), Some(Vec::new()));
+    assert!(project.backups().is_empty(), "the flush skips it");
+    set_text(&wb, &view, "hello again", cx);
+    let flushed = hot_exit.update(cx, |h, cx| h.flush(cx));
+    settle(cx);
+    assert_eq!(flushed.now_or_never(), Some(Vec::new()));
+    let backups = project.backups();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(backups[0].text, "hello again");
+}
