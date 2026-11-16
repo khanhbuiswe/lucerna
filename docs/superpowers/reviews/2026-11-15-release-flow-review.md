@@ -12,10 +12,10 @@ Ngày: 2026-11-15. Spec: [2026-11-15-release-flow-review-design.md](../specs/202
 |---|---|
 | P0 (mất/hỏng dữ liệu, crash) | 2 |
 | P1 (flow cơ bản không làm được) | 0 |
-| P2 (sai nhưng có cách khác) | 14 (10 cũ còn mở, 4 mới) |
+| P2 (sai nhưng có cách khác) | 14, đều đã sửa trên nhánh `claude/p2-fixes` |
 | P3 (nhỏ) | 21 (13 cũ, 8 mới) |
 
-Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được sửa trong lần merge multi-window.
+Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được sửa trong lần merge multi-window. T2-1 đã sửa bằng hot exit; T2-2, T2-3, T3-2, T3-4, T3-5, T4-1, T4-2, T5-2, T5-3, T5-6, M1-1, M2-1, M3-1, M3-2 (và M2-2) đã sửa trên nhánh `claude/p2-fixes`. Các mục P3 còn lại chưa sửa.
 
 **Nên sửa trước release:**
 - **T2-1 [P0]:** Quit từ Dock, Log Out hoặc Restart máy thoát ngay mà không hỏi lưu, nên mất thay đổi chưa lưu.
@@ -82,6 +82,8 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 
 ### T3-2 [P2] Ở chế độ mở một file, Open Recent ẩn folder cha
 
+- **Đã sửa** (commit 58aca46): ở chế độ một file, Open Recent (picker và menu) chỉ ẩn chính file đó, không ẩn folder cha.
+
 - **Flow:** Open Recent (Ctrl+R và menu).
 - **Vị trí:** [workbench.rs:961](../../../crates/lucerna-workbench/src/workbench.rs).
 - **Tái hiện:** mở `~/proj` một lần. Sau đó chạy `luc ~/proj/README.md` rồi bấm Ctrl+R: không thấy `~/proj`.
@@ -90,6 +92,8 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Sau merge multi-window:** vẫn còn. `opened_paths` giờ ở [workbench.rs:1029](../../../crates/lucerna-workbench/src/workbench.rs). Lỗi cũng ảnh hưởng menu File ▸ Open Recent ([app_menu.rs:705](../../../crates/lucerna-workbench/src/app_menu.rs)).
 
 ### T3-4 [P2] Mở FIFO thì tab kẹt Loading; `luc /dev/zero` dùng hết RAM rồi crash
+
+- **Đã sửa** (commit 77df9d9): FIFO hoặc thiết bị mở ra lỗi "Not a regular file" ngay, không đọc; `luc /dev/zero` báo lỗi và thoát mã 1.
 
 - **Flow:** mở file đặc biệt.
 - **Vị trí:** [documents.rs:2576](../../../crates/lucerna-workbench/src/documents.rs), [worktree.rs:270](../../../crates/lucerna-project/src/worktree.rs), [target.rs:74](../../../crates/lucerna/src/target.rs).
@@ -124,6 +128,8 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 
 ### T4-2 [P2] Tab mở qua symlink không tự reload khi file đích đổi
 
+- **Đã sửa** (commit 8f24c26): tab mở qua symlink được đưa vào watcher của file đang mở và theo dõi cả thư mục của file đích, nên tự reload khi file đích đổi. Lưu qua symlink vẫn ghi vào file đích.
+
 - **Flow:** reload khi agent sửa file.
 - **Vị trí:** [workbench.rs:1264](../../../crates/lucerna-workbench/src/workbench.rs), [documents.rs:476](../../../crates/lucerna-workbench/src/documents.rs).
 - **Tái hiện:** trong repo có `AGENTS.md -> CLAUDE.md`. Mở `AGENTS.md` từ Explorer, sau đó agent sửa `CLAUDE.md`: tab vẫn hiện nội dung cũ.
@@ -135,6 +141,8 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 
 ### T5-2 [P2] Group bên trái rỗng không tự đóng
 
+- **Đã sửa** (commit 09c8f81): group rỗng bị bỏ khi còn group khác, kể cả group đầu; bố cục khôi phục cũng không giữ group rỗng.
+
 - **Flow:** split editor.
 - **Vị trí:** [editor_groups/model.rs:605](../../../crates/lucerna-workbench/src/editor_groups/model.rs).
 - **Tái hiện:** mở `a.rs`, bấm Cmd+\, rồi Cmd+W ở group trái: một nửa màn hình trống. Không có lệnh đóng group, và trạng thái này còn lại cả sau khi khôi phục workspace.
@@ -143,6 +151,8 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Hướng sửa:** bỏ group 0 khi nó rỗng mà vẫn còn group khác.
 
 ### T5-3 [P2] Quick Open không khớp tên file tiếng Việt dạng NFD, highlight lệch
+
+- **Đã sửa** (commit 3be5141, ff586be): đường dẫn và query được chuẩn hoá NFC trước khi khớp, vị trí tô sáng tính theo char của chuỗi hiển thị; đường dẫn ASCII giữ đường đi nhanh (đo debug 80k file: 95,4 ms trước, 95,9 ms sau).
 
 - **Flow:** Quick Open.
 - **Vị trí:** [fuzzy.rs:144](../../../crates/lucerna-project/src/fuzzy.rs), [quick_open/picker.rs:73](../../../crates/lucerna-workbench/src/quick_open/picker.rs).
@@ -153,6 +163,8 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Hướng sửa:** chuẩn hoá NFC cả đường dẫn lẫn query, rồi map vị trí về chỉ số char.
 
 ### T5-6 [P2] Tìm trong project bỏ qua thay đổi chưa lưu, click nhảy sai dòng
+
+- **Đã sửa** (commit ac9452f): file đang mở có thay đổi chưa lưu được tìm trên nội dung buffer thay vì trên đĩa.
 
 - **Flow:** Cmd+Shift+F.
 - **Vị trí:** [search.rs:107](../../../crates/lucerna-project/src/search.rs), [search_view/view.rs:658](../../../crates/lucerna-workbench/src/search_view/view.rs).
@@ -282,6 +294,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 
 ### M1-1 [P2] Hai lệnh `luc` chạy cùng lúc khi app chưa mở: lệnh thứ hai có thể thất bại
 
+- **Đã sửa** (commit 53828ad): `luc` gặp kết nối bị đóng trước khi có trả lời thì claim lại socket một lần.
+
 - **Flow:** mở bằng `luc` (ví dụ agent chạy `luc a & luc b`).
 - **Vị trí:** [main.rs:173](../../../crates/lucerna/src/main.rs), [cli_socket.rs:289](../../../crates/lucerna-workbench/src/cli_socket.rs), [cli_socket.rs:367](../../../crates/lucerna-workbench/src/cli_socket.rs).
 - **Tái hiện:** app chưa chạy, chạy `luc a & luc b`. Đôi khi `b` báo "no reply from Lucerna", thoát với mã 1, và không mở gì.
@@ -293,6 +307,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 
 ### M2-1 [P2] Cmd+Q khi cửa sổ có file chưa lưu đang thu nhỏ: hộp thoại lưu không hiện ra
 
+- **Đã sửa** (commit 036bb30): trước mọi câu hỏi lúc quit, cửa sổ được đưa ra trước. Còn cần thử tay việc bỏ thu nhỏ trên macOS.
+
 - **Flow:** thoát app với nhiều cửa sổ.
 - **Vị trí:** [workbench.rs:3028](../../../crates/lucerna-workbench/src/workbench.rs), [save.rs:105](../../../crates/lucerna-workbench/src/save.rs).
 - **Tái hiện:** mở folder A và B. Sửa một file ở B, không lưu, rồi thu nhỏ B (hoặc chuyển B sang Space khác). Đứng ở A bấm Cmd+Q: không có gì xảy ra. Bấm Cmd+Q lần hai cũng không, vì việc thoát bị huỷ im lặng.
@@ -301,6 +317,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 - **Hướng sửa:** gọi `activate_window()` cho cửa sổ trước khi gọi `confirm_quit`, như Zed làm.
 
 ### M3-1 [P2] Đóng cửa sổ khi picker theme còn mở làm theme xem thử bị kẹt ở mọi cửa sổ
+
+- **Đã sửa** (commit baa0342): đóng cửa sổ, Workbench bị release, hoặc cửa sổ mất focus khi picker theme/icon đang mở thì picker đóng kèm revert; revert icon theme không còn bật lại cờ xem thử.
 
 - **Flow:** chọn theme khi có nhiều cửa sổ.
 - **Vị trí:** [workbench.rs:1844](../../../crates/lucerna-workbench/src/workbench.rs), [theme_picker.rs:247](../../../crates/lucerna-workbench/src/theme_picker.rs), [config_files.rs:295](../../../crates/lucerna-workbench/src/config_files.rs).
@@ -313,6 +331,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 - **Hướng sửa:** đóng picker kèm revert trong `should_close_window` và trong `on_release` của Workbench; hoặc gắn cờ xem thử với `WindowId`.
 
 ### M3-2 [P2] Không ghi được `trusted.json` thì cửa sổ vừa bấm Trust bị đưa về Restricted Mode mà không báo
+
+- **Đã sửa** (commit 31b6754, e38026c): ghi lỗi thì không bump TrustGeneration, cửa sổ giữ trust (hoặc untrust) trong suốt phiên kể cả khi cửa sổ khác ghi sau đó, và có status message.
 
 - **Flow:** trust folder.
 - **Vị trí:** [trust.rs:712](../../../crates/lucerna-workbench/src/trust.rs), [trust.rs:473](../../../crates/lucerna-workbench/src/trust.rs).
@@ -366,6 +386,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 - **Hướng sửa:** khi có `--trace-startup` mà socket đã bị giữ thì báo lỗi rõ.
 
 ### M2-2 [P3] Cmd+Q khi một cửa sổ khác đang có hộp thoại lưu thì bị huỷ im lặng
+
+- **Đã sửa** cùng M2-1 (commit 036bb30): cửa sổ đang có hộp thoại được đưa ra trước.
 
 - **Flow:** thoát app với nhiều cửa sổ. Lỗi này gộp M3-5.
 - **Vị trí:** [workbench.rs:1781](../../../crates/lucerna-workbench/src/workbench.rs).
