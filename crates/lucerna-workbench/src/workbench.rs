@@ -616,6 +616,13 @@ impl Workbench {
                 }
             });
         }
+        // After the saved tabs: a backup of a file without one opens a tab.
+        if let Some(hot_exit) = hot_exit.as_ref().filter(|_| HotExit::enabled(cx)) {
+            for backup in hot_exit.read(cx).read_backups() {
+                let path = documents.update(cx, |docs, cx| docs.open_from_backup(backup, cx));
+                editor_groups.update(cx, |view, cx| view.open_restored(path, window, cx));
+            }
+        }
         if let Some(state) = &restored {
             branch_base.update(cx, |base, _| base.0 = state.branch_diff_base.clone());
             search_view.update(cx, |view, cx| {

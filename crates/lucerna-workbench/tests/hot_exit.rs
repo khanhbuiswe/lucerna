@@ -326,3 +326,240 @@ fn workspace_value_is_ignored(cx: &mut TestAppContext) {
     assert_eq!(backups.len(), 1);
     assert_eq!(backups[0].text, "hello");
 }
+
+// ---- Restore (spec §5.4) ----
+
+/// The document of `path` (relative to the root, or absolute).
+fn docs(
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+) -> Entity<lucerna_workbench::Documents> {
+    cx.update(|_, cx| wb.read(cx).documents().clone())
+}
+
+/// Replaces bytes `range` of `path`'s text with `text`, as an edit from
+/// `view`.
+fn edit_range(
+    wb: &Entity<Workbench>,
+    view: &Entity<CodeView>,
+    path: &Path,
+    range: std::ops::Range<usize>,
+    text: &str,
+    cx: &mut VisualTestContext,
+) {
+    let docs = docs(wb, cx);
+    let origin = view.entity_id();
+    let text: Arc<str> = Arc::from(text);
+    docs.update(cx, |d, cx| {
+        d.apply_edits(path, vec![(range, text)], None, None, origin, cx)
+            .expect("the document is loaded");
+    });
+    settle(cx);
+}
+
+/// Opens `path` and returns its view once loaded.
+fn open(wb: &Entity<Workbench>, path: &Path, cx: &mut VisualTestContext) -> Entity<CodeView> {
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(path), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+    active_view(wb, cx)
+}
+
+fn active_view(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<CodeView> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .expect("the active tab has a body")
+            .downcast::<CodeView>()
+            .expect("tab bodies are code views")
+    })
+}
+
+/// The paths of every tab, in every group.
+fn tab_paths(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<PathBuf> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| g.tabs.iter().filter_map(|t| t.path()))
+            .map(|p| p.to_path_buf())
+            .collect()
+    })
+}
+
+fn text_of(wb: &Entity<Workbench>, path: &Path, cx: &mut VisualTestContext) -> String {
+    let docs = docs(wb, cx);
+    docs.read_with(cx, |d, _| {
+        let s = d.snapshot_of(path).expect("the document is loaded");
+        s.text_for_range(0..s.len_bytes())
+    })
+}
+
+/// Quits the window the way Cmd+Q does once its backups are written: the
+/// backups stay.
+fn quit(wb: Entity<Workbench>, cx: &mut VisualTestContext) {
+    let hot_exit = hot_exit(&wb, cx);
+    hot_exit.update(cx, |h, _| h.set_quitting());
+    let flushed = hot_exit.update(cx, |h, cx| h.flush(cx));
+    settle(cx);
+    assert_eq!(flushed.now_or_never(), Some(Vec::new()));
+    drop((wb, hot_exit));
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
+/// Opens the project's folder window again, with the same data dir.
+fn reopen<'a>(
+    project: &Project,
+    cx: &'a mut VisualTestContext,
+) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+    let app: &'a mut TestAppContext = cx;
+    open_with_data_dir(project.root.path(), project.data.path(), app)
+}
+
+fn is_dirty(wb: &Entity<Workbench>, path: &Path, cx: &mut VisualTestContext) -> bool {
+    let docs = docs(wb, cx);
+    docs.read_with(cx, |d, _| d.is_dirty(path))
+}
+
+#[gpui::test]
+fn reopen_restores_dirty_tab(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "mine", cx);
+    drop(view);
+    quit(wb, cx);
+    let (wb, cx) = reopen(&project, cx);
+    let a = project.root.path().join("a.rs");
+    assert!(tab_paths(&wb, cx).contains(&a));
+    assert!(is_dirty(&wb, &a, cx));
+    assert_eq!(text_of(&wb, &a, cx), "mine");
+    assert_eq!(project.backups().len(), 1, "the backup stays until saved");
+}
+
+#[gpui::test]
+fn restore_keeps_encoding_and_line_ending(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let a = project.root.path().join("a.txt");
+    let utf16 = |s: &str| -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(s.encode_utf16().flat_map(u16::to_le_bytes));
+        bytes
+    };
+    fs::write(&a, utf16("x\r\ny\r\n")).unwrap();
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open(&wb, &a, cx);
+    edit_range(&wb, &view, &a, 0..1, "z", cx);
+    drop(view);
+    quit(wb, cx);
+    let (wb, cx) = reopen(&project, cx);
+    assert_eq!(text_of(&wb, &a, cx), "z\ny\n");
+    run(&wb, "workbench.action.files.save", cx);
+    settle(cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(fs::read(&a).unwrap(), utf16("z\r\ny\r\n"));
+    assert!(!is_dirty(&wb, &a, cx));
+}
+
+#[gpui::test]
+fn changed_on_disk_while_closed_asks_on_save(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let a = project.root.path().join("a.rs");
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "mine", cx);
+    drop(view);
+    quit(wb, cx);
+    fs::write(&a, "agent").unwrap();
+    let (wb, cx) = reopen(&project, cx);
+    assert_eq!(text_of(&wb, &a, cx), "mine");
+    assert!(is_dirty(&wb, &a, cx));
+    assert!(!cx.has_pending_prompt(), "no notice at restore");
+    run(&wb, "workbench.action.files.save", cx);
+    assert!(
+        cx.has_pending_prompt(),
+        "the file changed on disk: asks first"
+    );
+    assert_eq!(fs::read_to_string(&a).unwrap(), "agent");
+}
+
+#[gpui::test]
+fn unchanged_disk_auto_merges_later(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let a = project.root.path().join("a.rs");
+    let lines: Vec<String> = (1..=12).map(|i| format!("line {i}")).collect();
+    let original = lines.join("\n") + "\n";
+    fs::write(&a, &original).unwrap();
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    edit_range(&wb, &view, &a, 0.."line 1".len(), "mine", cx);
+    drop(view);
+    quit(wb, cx);
+    let (wb, cx) = reopen(&project, cx);
+    let theirs = original.replace("line 10\n", "agent\n");
+    fs::write(&a, &theirs).unwrap();
+    let change = lucerna_project::Change {
+        path: Arc::from(Path::new("a.rs")),
+        kind: lucerna_project::ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&lucerna_project::WorktreeEvent::Changed(vec![change]), cx)
+    });
+    settle(cx);
+    let docs = docs(&wb, cx);
+    assert!(!docs.read_with(cx, |d, _| d.has_conflict(&a)));
+    assert_eq!(
+        text_of(&wb, &a, cx),
+        theirs.replacen("line 1\n", "mine\n", 1)
+    );
+    assert!(is_dirty(&wb, &a, cx));
+}
+
+#[gpui::test]
+fn deleted_while_closed_recreates_on_save(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let a = project.root.path().join("a.rs");
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "mine", cx);
+    drop(view);
+    quit(wb, cx);
+    fs::remove_file(&a).unwrap();
+    let (wb, cx) = reopen(&project, cx);
+    assert!(tab_paths(&wb, cx).contains(&a));
+    assert_eq!(text_of(&wb, &a, cx), "mine");
+    run(&wb, "workbench.action.files.save", cx);
+    settle(cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(fs::read_to_string(&a).unwrap(), "mine");
+}
+
+#[gpui::test]
+fn outside_root_file_restored(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let outside = TempDir::new().unwrap();
+    let b = outside.path().join("b.rs");
+    fs::write(&b, "fn b() {}\n").unwrap();
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open(&wb, &b, cx);
+    edit_range(&wb, &view, &b, 0..2, "pub fn", cx);
+    drop(view);
+    quit(wb, cx);
+    let (wb, cx) = reopen(&project, cx);
+    assert!(tab_paths(&wb, cx).contains(&b));
+    assert!(is_dirty(&wb, &b, cx));
+    assert_eq!(text_of(&wb, &b, cx), "pub fn b() {}\n");
+}

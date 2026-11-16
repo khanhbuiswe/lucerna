@@ -190,6 +190,13 @@ impl HotExit {
             != Some("off")
     }
 
+    /// The backups the window left when it last quit, to restore as it
+    /// opens (spec §5.4). Reads them on this thread.
+    pub fn read_backups(&self) -> Vec<Backup> {
+        let _io = self.queue.io.lock().unwrap_or_else(PoisonError::into_inner);
+        store::read_backups(&self.queue.dir)
+    }
+
     /// The app is quitting: documents closed from now on keep their
     /// backups.
     pub fn set_quitting(&mut self) {
