@@ -83,7 +83,10 @@ example "Open in → Default app" in Claude Desktop.
   backed up about a second after you stop typing. Quitting by any means (Cmd+Q, Dock Quit, Log
   Out, a crash) keeps them without asking, and they come back when the folder or file is
   reopened; a file that changed on disk meanwhile asks before you overwrite it.
-  `files.hotExit: "off"` restores the old asking behaviour.
+  `files.hotExit: "off"` restores the old asking behaviour. Known limits: a single-file window
+  comes back only when Lucerna starts with no path (not with `luc <path>` or a Finder open), and
+  if its file was deleted while Lucerna was closed the window does not come back yet; its
+  backup is kept and restored once the file exists again (a fix is planned).
 - **Smart typing.** Brackets and quotes close themselves, type over their closer, delete as a
   pair and wrap a selection. They follow the language and stay out of strings and comments.
   Enter indents after brackets (and by the extension's `indents.scm`), and typing a closer
