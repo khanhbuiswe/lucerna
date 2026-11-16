@@ -107,6 +107,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** chạy `chmod 000 proj; luc proj`: cây trống. Người dùng tưởng folder rỗng.
 - **Nguyên nhân:** `let Ok(dirent) = result else { continue }` bỏ qua mọi lỗi khi duyệt thư mục.
 - **Hướng sửa:** lỗi ở chính root thì gửi một sự kiện lỗi để Explorer hiện thông báo.
+- **Đã sửa** (commit 38933d7): mỗi lần quét kiểm tra root trước; không liệt kê được thì cây rỗng và Explorer hiện "Can't read folder <tên>: <lý do>", quét lại thành công thì trở về bình thường.
 
 ### T4-1 [P2] Thư mục gốc bị đổi tên, vào Thùng rác hoặc ổ bị eject: không ai phát hiện
 
@@ -119,6 +120,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
   - Không chỗ nào kiểm tra `root.exists()`.
 - **Mức độ:** không mất dữ liệu, vì save kiểm tra đĩa trước khi ghi.
 - **Hướng sửa:** coi sự kiện ở root là tín hiệu rescan. Rescan thấy root không còn thì báo và đánh dấu các tab là Deleted.
+- **Đã sửa** (commit 38933d7): sự kiện ở root (đường dẫn rỗng) giờ gây rescan; root không còn thì mọi tab chuyển Deleted (giữ văn bản chưa lưu), dấu git bị bỏ và Explorer hiện "Folder <tên> no longer exists"; đổi tên trở lại thì tab, cây và git trở lại bình thường.
 
 ### T4-2 [P2] Tab mở qua symlink không tự reload khi file đích đổi
 
