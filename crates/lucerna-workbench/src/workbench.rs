@@ -589,7 +589,10 @@ impl Workbench {
             Some(file) => Worktree::without_scan(root.clone(), vec![file]),
             None => Worktree::start(root.clone(), scan_options.clone()),
         };
-        let trust = Trust::new(store.as_ref().map(|s| s.data_dir().to_path_buf()));
+        let trust = Trust::new(
+            store.as_ref().map(|s| s.data_dir().to_path_buf()),
+            window.window_handle().window_id(),
+        );
         let hot_exit = store.as_ref().map(|store| {
             let key = match &single_file_path {
                 Some(file) => WorkspaceKey::File(file.clone()),

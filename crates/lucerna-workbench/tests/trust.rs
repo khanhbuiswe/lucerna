@@ -716,3 +716,39 @@ fn modal_mentions_git(cx: &mut TestAppContext) {
         ]
     );
 }
+
+#[gpui::test]
+fn failed_trust_save_keeps_the_window_trusted_and_says_so(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    // `trusted.json` cannot be replaced: a folder with something in it.
+    fs::create_dir_all(data.path().join("trusted.json").join("x")).unwrap();
+    let fake = FakeServer::new();
+    let (wb, cx) = trust_workbench(
+        dir.path(),
+        data.path(),
+        rust_launcher(&fake),
+        "{}",
+        None,
+        cx,
+    );
+    open(&wb, "src/main.rs", cx);
+    assert!(shown("trust-modal", cx));
+    click("trust-continue", cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    settle(cx);
+
+    assert!(
+        is_trusted(&wb, cx),
+        "the window keeps its trust this session"
+    );
+    assert!(!shown("restricted-mode", cx));
+    let message = cx.update(|window, cx| {
+        lucerna_workbench::status_message::current(window.window_handle().window_id(), cx)
+            .map(|m| m.to_string())
+    });
+    assert!(
+        message.is_some_and(|m| m.starts_with("Couldn't save the trusted folders list: ")),
+        "the failure is shown"
+    );
+}

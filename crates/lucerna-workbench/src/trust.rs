@@ -326,6 +326,8 @@ static TRUST_FILE_LOCK: Mutex<()> = Mutex::new(());
 pub(crate) struct Trust {
     /// Where `trusted.json` is; `None` keeps choices for this session only.
     data_dir: Option<PathBuf>,
+    /// The window whose status bar shows a failed save.
+    window: gpui::WindowId,
     /// Whether the store trusts the root (or the user just did); `None`
     /// until the store is read.
     stored: Option<bool>,
@@ -371,8 +373,9 @@ struct ShownTrustModal {
 }
 
 impl Trust {
-    pub(crate) fn new(data_dir: Option<PathBuf>) -> Self {
+    pub(crate) fn new(data_dir: Option<PathBuf>, window: gpui::WindowId) -> Self {
         Trust {
+            window,
             stored: data_dir.is_none().then_some(false),
             data_dir,
             prompted: false,
@@ -686,6 +689,7 @@ impl Workbench {
         };
         let previous = self.trust.write.take();
         let (done, done_rx) = oneshot::channel::<()>();
+        let (failed, failed_rx) = oneshot::channel::<String>();
         self.trust.write = Some(done_rx.shared());
         cx.background_executor()
             .spawn(async move {
@@ -698,18 +702,32 @@ impl Workbench {
                     let mut store = TrustStore::load(&dir);
                     if let Err(err) = change(&mut store) {
                         tracing::error!(%err, path = %store.path.display(), "cannot save the trust file");
+                        let _ = failed.send(err.to_string());
                     }
                 });
                 let _ = done.send(());
             })
             .detach();
-        // Once written, every window reads the file again.
+        // Once written, every window reads the file again. When it could
+        // not be written the file is unchanged: reading it again would put
+        // this window back to what the file says, so it keeps its choice
+        // for the session and says so.
         let written = self.trust.write.clone();
+        let window = self.trust.window;
         cx.spawn(async move |_, cx| {
             if let Some(written) = written {
                 let _ = written.await;
             }
-            cx.update(bump_trust_generation);
+            match failed_rx.await {
+                Ok(err) => cx.update(|cx| {
+                    crate::status_message::show(
+                        window,
+                        format!("Couldn't save the trusted folders list: {err}"),
+                        cx,
+                    );
+                }),
+                Err(_) => cx.update(bump_trust_generation),
+            }
         })
         .detach();
     }
