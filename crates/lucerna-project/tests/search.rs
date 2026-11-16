@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -22,14 +23,30 @@ fn query(pattern: &str) -> SearchQuery {
 
 fn run_with(root: &Path, q: &SearchQuery, settings: &[String]) -> Vec<SearchEvent> {
     let (tx, rx) = crossbeam_channel::unbounded();
-    search(root, q, settings, &[], tx, Arc::new(AtomicBool::new(false)));
+    search(
+        root,
+        q,
+        settings,
+        &HashSet::new(),
+        &[],
+        tx,
+        Arc::new(AtomicBool::new(false)),
+    );
     rx.try_iter().collect()
 }
 
 /// Searches with the given unsaved buffers `(path, text)` of open files.
 fn run_buffers(root: &Path, q: &SearchQuery, buffers: &[(Arc<Path>, String)]) -> Vec<SearchEvent> {
     let (tx, rx) = crossbeam_channel::unbounded();
-    search(root, q, &[], buffers, tx, Arc::new(AtomicBool::new(false)));
+    search(
+        root,
+        q,
+        &[],
+        &HashSet::new(),
+        buffers,
+        tx,
+        Arc::new(AtomicBool::new(false)),
+    );
     rx.try_iter().collect()
 }
 
@@ -250,6 +267,7 @@ fn cancel_stops_without_done() {
         dir.path(),
         &query("needle"),
         &[],
+        &HashSet::new(),
         &[],
         tx,
         Arc::new(AtomicBool::new(true)),
@@ -275,7 +293,7 @@ fn cancel_during_walk_sends_no_done() {
     let handle = std::thread::spawn(move || {
         let mut q = query("needle");
         q.case_sensitive = true;
-        search(&root, &q, &[], &[], tx, flag);
+        search(&root, &q, &[], &HashSet::new(), &[], tx, flag);
     });
     // Wait for the search to be in progress, then cancel.
     let first = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -298,6 +316,7 @@ fn invalid_regex_with_cancel_sends_nothing() {
         dir.path(),
         &q,
         &[],
+        &HashSet::new(),
         &[],
         tx,
         Arc::new(AtomicBool::new(true)),
@@ -478,4 +497,43 @@ fn unsaved_buffer_obeys_the_filters() {
     let mut q = query("needle");
     q.exclude = vec!["*.rs".into()];
     assert!(files(dir.path(), &run_buffers(dir.path(), &q, &buffers)).is_empty());
+}
+
+#[test]
+fn search_skips_unloaded_dirs() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "deep/needle.txt", "needle\n");
+    write(dir.path(), "top.txt", "needle\n");
+    let run_skipping = |skip: &HashSet<Arc<Path>>| {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        search(
+            dir.path(),
+            &query("needle"),
+            &[],
+            skip,
+            &[],
+            tx,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let mut paths: Vec<String> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                SearchEvent::File { path, .. } => Some(
+                    path.strip_prefix(dir.path())
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                _ => None,
+            })
+            .collect();
+        paths.sort();
+        paths
+    };
+    let skip: HashSet<Arc<Path>> = [Arc::from(Path::new("deep"))].into();
+    assert_eq!(run_skipping(&skip), vec!["top.txt"]);
+    assert_eq!(
+        run_skipping(&HashSet::new()),
+        vec!["deep/needle.txt", "top.txt"]
+    );
 }

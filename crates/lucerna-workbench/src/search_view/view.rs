@@ -7,6 +7,7 @@
 //! channel and a generation; events of a superseded search are dropped
 //! (ruling R17).
 
+use std::collections::HashSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -109,6 +110,9 @@ pub struct SearchView {
     restore_changes: usize,
     /// The window's settings: `search.*` and `files.exclude`.
     settings: Entity<WindowSettings>,
+    /// Folders the worktree has not loaded (`files.scanDepth`): searches
+    /// skip them. Kept current by the workbench.
+    unloaded: Arc<HashSet<Arc<Path>>>,
 }
 
 /// The most query characters the tab title shows.
@@ -175,6 +179,14 @@ impl SearchView {
             searchable,
             restore_changes: 0,
             settings,
+            unloaded: Arc::default(),
+        }
+    }
+
+    /// Sets the folders later searches skip: the worktree's unloaded ones.
+    pub fn set_unloaded(&mut self, unloaded: &HashSet<Arc<Path>>) {
+        if *self.unloaded != *unloaded {
+            self.unloaded = Arc::new(unloaded.clone());
         }
     }
 
@@ -563,6 +575,7 @@ impl SearchView {
                 .collect()
         };
         let (root, cancel, generation) = (self.root.clone(), self.cancel.clone(), self.generation);
+        let unloaded = self.unloaded.clone();
         let (sink, events) = crossbeam_channel::unbounded();
         let (forward, mut received) = futures::channel::mpsc::unbounded();
         // `search` blocks: it runs on its own thread while this background
@@ -576,7 +589,9 @@ impl SearchView {
                 std::thread::scope(|scope| {
                     let (root, query, exclude) = (&root, &query, &settings_exclude);
                     let buffers = &buffers;
-                    scope.spawn(move || search(root, query, exclude, buffers, sink, cancel));
+                    scope.spawn(move || {
+                        search(root, query, exclude, &unloaded, buffers, sink, cancel)
+                    });
                     for event in events {
                         if forward.unbounded_send(event).is_err() {
                             break;

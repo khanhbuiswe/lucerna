@@ -1334,6 +1334,8 @@ impl Workbench {
             }
         }
         let snapshot = self.worktree.snapshot();
+        self.search_view
+            .update(cx, |view, _| view.set_unloaded(snapshot.unloaded()));
         let decorate = decorates_external_changes(self.settings.read(cx).view(cx));
         // Open documents tell our own saves from other programs' writes
         // once they reload (`DocumentEvent::ChangedOnDisk`).

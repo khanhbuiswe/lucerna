@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -12,7 +12,7 @@ use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContex
 use ignore::{WalkParallel, WalkState};
 
 use crate::watch::panic_message;
-use crate::worktree::{ScanOptions, walk_builder_with_includes};
+use crate::worktree::{ScanOptions, always_skipped, walk_builder_with_includes};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchQuery {
@@ -107,6 +107,9 @@ pub fn build_pattern(pattern: &str, is_regex: bool, whole_word: bool) -> String 
 /// `MAX_RESULTS` matches are sent; reaching that limit ends the search with
 /// `truncated: true`. A cancelled search sends no `Done` and stops early.
 ///
+/// `skip_dirs` are root-relative folders the walk neither enters nor
+/// reports: the worktree's unloaded folders (`files.scanDepth`).
+///
 /// `buffers` are the `(path, text)` of open files with unsaved changes,
 /// paths as the walk yields them (`root` joined with the relative path).
 /// As in VS Code, a walked file found there is searched on that text
@@ -121,6 +124,7 @@ pub fn search(
     root: &Path,
     query: &SearchQuery,
     settings_exclude: &[String],
+    skip_dirs: &HashSet<Arc<Path>>,
     buffers: &[(Arc<Path>, String)],
     sink: Sender<SearchEvent>,
     cancel: Arc<AtomicBool>,
@@ -153,8 +157,24 @@ pub fn search(
         .iter()
         .map(|(path, text)| (&**path, text.as_str()))
         .collect();
-    let walker: WalkParallel =
-        walk_builder_with_includes(root, &opts, &query.include).build_parallel();
+    let mut builder = walk_builder_with_includes(root, &opts, &query.include);
+    if !skip_dirs.is_empty() {
+        // A new filter replaces the builder's: keep `always_skipped`.
+        let (skip, base): (HashSet<PathBuf>, PathBuf) = (
+            skip_dirs.iter().map(|p| p.to_path_buf()).collect(),
+            root.to_path_buf(),
+        );
+        builder.filter_entry(move |entry| {
+            if always_skipped(entry.file_name()) {
+                return false;
+            }
+            entry
+                .path()
+                .strip_prefix(&base)
+                .map_or(true, |rel| !skip.contains(rel))
+        });
+    }
+    let walker: WalkParallel = builder.build_parallel();
 
     // Matches reserved so far; never above MAX_RESULTS.
     let total = AtomicUsize::new(0);
