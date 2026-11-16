@@ -3005,8 +3005,50 @@ fn prompt_terminate_terminals(
 /// Quits the app once every workbench window agreed to
 /// ([`Workbench::confirm_quit`], one window after another, the most
 /// recently used first; spec M11). Cancel in any window stops the quit.
-/// Quitting runs the `on_app_quit` hooks, which save the layout.
+/// Before quitting, every window is checked again: one opened meanwhile,
+/// or one edited since it agreed (beyond what it agreed to lose), is asked
+/// too, so nothing unsaved is lost without a question. Then the window
+/// list is written (spec §6.6). Quitting runs the `on_app_quit` hooks,
+/// which save the layout.
 pub(crate) fn quit(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        // What each window agreed to lose: its dirty files once it agreed.
+        let mut agreed: HashMap<gpui::WindowId, Vec<Arc<Path>>> = HashMap::new();
+        loop {
+            let ask = cx.update(|cx| windows_to_ask(&agreed, cx));
+            if ask.is_empty() {
+                break;
+            }
+            for handle in ask {
+                let Ok(confirm) = handle.update(cx, |wb, window, cx| wb.confirm_quit(window, cx))
+                else {
+                    // The window closed meanwhile.
+                    continue;
+                };
+                if !confirm.await {
+                    return;
+                }
+                let dirty = handle
+                    .read_with(cx, |wb, cx| wb.documents.read(cx).dirty_paths())
+                    .unwrap_or_default();
+                agreed.insert(handle.window_id(), dirty);
+            }
+        }
+        cx.update(|cx| {
+            crate::session::save_now(cx);
+            crate::app::quit_now(cx);
+        });
+    })
+    .detach();
+}
+
+/// The workbench windows [`quit`] must still ask, the most recently used
+/// first: those that have not agreed, and those with a dirty file they did
+/// not agree to lose.
+fn windows_to_ask(
+    agreed: &HashMap<gpui::WindowId, Vec<Arc<Path>>>,
+    cx: &mut App,
+) -> Vec<WindowHandle<Workbench>> {
     let mut windows: Vec<gpui::AnyWindowHandle> = crate::router::windows(cx)
         .into_iter()
         .map(|(handle, _)| handle)
@@ -3018,29 +3060,22 @@ pub(crate) fn quit(cx: &mut App) {
         }
     }
     // Not `downcast`: a Welcome window that became a workbench keeps the
-    // handle type it opened with. Updating a window of another root fails.
-    let windows: Vec<WindowHandle<Workbench>> = windows
+    // handle type it opened with. Reading a window of another root fails.
+    windows
         .into_iter()
-        .map(|w| WindowHandle::new(w.window_id()))
-        .collect();
-    cx.spawn(async move |cx| {
-        for handle in windows {
-            let Ok(confirm) = handle.update(cx, |wb, window, cx| wb.confirm_quit(window, cx))
+        .map(|w| WindowHandle::<Workbench>::new(w.window_id()))
+        .filter(|handle| {
+            let Ok(dirty) = handle.read_with(cx, |wb, cx| wb.documents.read(cx).dirty_paths())
             else {
-                // The window closed meanwhile, or shows Welcome.
-                continue;
+                // Closed, or the Welcome screen.
+                return false;
             };
-            if !confirm.await {
-                return;
+            match agreed.get(&handle.window_id()) {
+                None => true,
+                Some(lost) => dirty.iter().any(|path| !lost.contains(path)),
             }
-        }
-        cx.update(|cx| {
-            // Task 10: write `windows.json` synchronously here
-            // (`session::save_now(cx)`), before the app quits (spec §6.6).
-            crate::app::quit_now(cx);
-        });
-    })
-    .detach();
+        })
+        .collect()
 }
 
 /// The commands every workbench registers, as [`Workbench::new`] builds

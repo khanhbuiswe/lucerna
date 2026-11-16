@@ -10,7 +10,8 @@ luc ~/code/my-project     # open a folder
 luc src/main.rs           # open a file on its own
 ```
 
-If you open Lucerna from Finder or the Dock, it reopens the folder (or file) you used last.
+If you open Lucerna from Finder or the Dock, it reopens every window you had open when it quit
+(`"window.restoreWindows"`: `"all"`, or `"folders"`, `"one"`, `"preserve"`).
 Set `"window.restoreWindows": "none"` to get the Welcome page with your recent folders instead
 (and `"workbench.startupEditor": "none"` for a folder picker). Open Folder, Open Recent
 and Close Folder (Cmd+K F) switch the window in place. A file opens on its own:

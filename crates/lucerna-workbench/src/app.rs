@@ -12,7 +12,7 @@ use std::time::Duration;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::future::{self, Either};
-use gpui::{App, AppContext as _, Global, PathPromptOptions, QuitMode};
+use gpui::{App, AppContext as _, AsyncApp, Global, PathPromptOptions, QuitMode};
 use gpui_platform::application;
 use lucerna_extension::store::Store;
 use lucerna_settings::{Keymap, SettingsStore};
@@ -24,14 +24,15 @@ use crate::app_state_file::{mark_onboarded, onboarded};
 use crate::extensions::{
     ExtensionService, WasmGrammarValidator, extension_languages, extensions_root,
 };
-use crate::recent::{self, RecentList, RecentStore};
+use crate::recent::{self, RecentStore};
 pub use crate::router::Launch;
 use crate::router::{self, OpenRequest, Source, Target, app_data_dir};
-use crate::startup::{StartupScreen, startup_screen};
+use crate::session::{self, SessionWindow, session_path};
+use crate::startup::{RestoreWindows, Startup, StartupScreen, startup_screen};
 use crate::window_choice::file_paths;
 use crate::{
-    AppState, ConfigPaths, default_data_dir, last_workspace, restores_last_workspace,
-    startup_choice, watch_config,
+    AppState, ConfigPaths, default_data_dir, last_workspace, restore_windows, startup_choice,
+    watch_config,
 };
 
 /// How long a launch without a path waits for the platform to ask for a
@@ -42,12 +43,14 @@ const OPEN_REQUEST_GRACE: Duration = Duration::from_millis(300);
 /// and Windows; on macOS the app keeps running with its menu bar, and
 /// clicking its Dock icon then opens the Welcome screen (spec M8, M9).
 ///
-/// With `launch`, a window opens on it. Without, as when Finder or the
-/// Dock starts the app bundle, the app waits briefly for a path to open and
-/// otherwise reopens the last workspace, shows the Get Started page on the
-/// first run, or the Welcome screen, or asks for a folder when
-/// `workbench.startupEditor` is `"none"` (Cancel quits). Paths the platform
-/// asks to open later go through [`router::open`].
+/// With `launch`, a window opens on it, after the last session's windows
+/// when `window.restoreWindows` is `"preserve"`. Without, as when Finder
+/// or the Dock starts the app bundle, the app waits briefly for a path to
+/// open and otherwise reopens the last session's windows (spec §6.6),
+/// shows the Get Started page on the first run, or the Welcome screen, or
+/// asks for a folder when `workbench.startupEditor` is `"none"` (Cancel
+/// quits). Paths the platform asks to open later go through
+/// [`router::open`].
 pub fn run(launch: Option<Launch>) {
     let (requests_tx, mut requests) = mpsc::unbounded::<Vec<String>>();
     let app = application().with_quit_mode(QuitMode::Default);
@@ -61,8 +64,7 @@ pub fn run(launch: Option<Launch>) {
         watch_config(ConfigPaths::user_only(), cx);
         let waiting = launch.is_none();
         if let Some(launch) = launch {
-            router::open_launch(launch, Target::Auto, cx);
-            quit_if_no_window("the first window", cx);
+            open_launch_at_start(launch, cx);
         } else {
             cx.activate(true);
         }
@@ -75,7 +77,7 @@ pub fn run(launch: Option<Launch>) {
                         quit_if_no_window("the requested paths", cx);
                     }),
                     Either::Left((None, _)) => return,
-                    Either::Right(_) => cx.update(open_without_folder),
+                    Either::Right(_) => open_without_folder(cx).await,
                 }
             }
             while let Some(urls) = requests.next().await {
@@ -84,6 +86,35 @@ pub fn run(launch: Option<Launch>) {
         })
         .detach();
     });
+}
+
+/// Opens `launch`, the path `luc` was started with. With
+/// `window.restoreWindows: "preserve"` the last session's windows reopen
+/// first (read in the background); otherwise only `launch` opens, as in
+/// VS Code.
+fn open_launch_at_start(launch: Launch, cx: &mut App) {
+    let preserve = restore_windows(&cx.global::<AppState>().settings) == RestoreWindows::Preserve;
+    let data_dir = app_data_dir(cx);
+    let Some(data_dir) = data_dir.filter(|_| preserve) else {
+        router::open_launch(launch, Target::Auto, cx);
+        quit_if_no_window("the first window", cx);
+        return;
+    };
+    router::begin_restore(cx);
+    cx.spawn(async move |cx| {
+        let windows = cx
+            .background_spawn(async move {
+                let saved = session::load(&session_path(&data_dir));
+                session::to_restore(&saved, RestoreWindows::Preserve, Path::exists)
+            })
+            .await;
+        cx.update(|cx| {
+            router::restore(windows, cx);
+            router::open_launch(launch, Target::Auto, cx);
+            quit_if_no_window("the first window", cx);
+        });
+    })
+    .detach();
 }
 
 /// Whether a start must quit after trying to open its first window: no
@@ -155,20 +186,38 @@ fn open_urls(urls: &[String], cx: &mut App) {
     router::open(request, cx).ok();
 }
 
-/// With no folder to open: opens what [`first_screen`] picks. The Get
-/// Started page is remembered as shown as soon as it opens (spec O3).
-fn open_without_folder(cx: &mut App) {
-    let data_dir = app_data_dir(cx);
-    match first_screen(data_dir.as_deref(), &cx.global::<AppState>().settings) {
-        StartupScreen::Restore(path) => {
-            tracing::info!(path = %path.display(), "reopening the last workspace");
-            let request = OpenRequest {
-                paths: vec![path],
-                target: Target::Auto,
-                source: Source::Restore,
-            };
-            router::open(request, cx).ok();
-            quit_if_no_window("the last workspace", cx);
+/// With no folder to open: opens what [`screen_for`] picks, its files
+/// read in the background. Requests from `luc` and the platform wait
+/// until then (spec M14).
+async fn open_without_folder(cx: &mut AsyncApp) {
+    let (data_dir, mode, choice) = cx.update(|cx| {
+        router::begin_restore(cx);
+        let settings = &cx.global::<AppState>().settings;
+        (
+            app_data_dir(cx),
+            restore_windows(settings),
+            startup_choice(settings),
+        )
+    });
+    let dir = data_dir.clone();
+    let screen = cx
+        .background_spawn(async move { screen_for(dir.as_deref(), mode, choice) })
+        .await;
+    cx.update(|cx| open_screen(screen, data_dir, cx));
+}
+
+/// Opens `screen`, then the requests that waited for it. The Get Started
+/// page is remembered as shown as soon as it opens (spec O3).
+fn open_screen(screen: StartupScreen, data_dir: Option<PathBuf>, cx: &mut App) {
+    match screen {
+        StartupScreen::Restore(windows) => {
+            tracing::info!(
+                count = windows.len(),
+                "reopening the last session's windows"
+            );
+            router::restore(windows, cx);
+            quit_if_no_window("the last session's windows", cx);
+            return;
         }
         StartupScreen::Onboarding => {
             if let Some(dir) = data_dir {
@@ -188,26 +237,52 @@ fn open_without_folder(cx: &mut App) {
         }
         StartupScreen::FolderPrompt => pick_folder(cx),
     }
+    router::finish_restore(cx);
+}
+
+/// [`screen_for`] with `settings` read as a start reads them.
+#[cfg(test)]
+pub(crate) fn first_screen(data_dir: Option<&Path>, settings: &SettingsStore) -> StartupScreen {
+    screen_for(
+        data_dir,
+        restore_windows(settings),
+        startup_choice(settings),
+    )
 }
 
 /// What a start without a path shows, from the app data directory and the
-/// user settings: the last workspace when `window.restoreWindows` allows
-/// it, then the Get Started page on the first run, then what
+/// user settings (`mode`, `choice`): the last session's windows that
+/// `window.restoreWindows` keeps, else (unless it is `"none"`) the newest
+/// recent entry that still exists, then the Get Started page on the first run, then what
 /// `workbench.startupEditor` says. Without a data directory there is no
-/// first run to remember, so no Get Started page. Reads the recent list
-/// and `state.json` on this thread.
-pub(crate) fn first_screen(data_dir: Option<&Path>, settings: &SettingsStore) -> StartupScreen {
-    let recent = match data_dir {
-        Some(dir) if restores_last_workspace(settings) => recent::load(&recent::recent_path(dir)),
-        _ => RecentList::default(),
+/// first run to remember, so no Get Started page. Reads `windows.json`,
+/// the recent list and `state.json`.
+fn screen_for(data_dir: Option<&Path>, mode: RestoreWindows, choice: Startup) -> StartupScreen {
+    let restore = match data_dir {
+        Some(dir) if mode != RestoreWindows::None => {
+            let saved = session::load(&session_path(dir));
+            let windows = session::to_restore(&saved, mode, Path::exists);
+            if windows.is_empty() {
+                let recent = recent::load(&recent::recent_path(dir));
+                last_workspace(&recent)
+                    .map(|entry| SessionWindow {
+                        kind: entry.kind,
+                        path: entry.path.clone(),
+                    })
+                    .into_iter()
+                    .collect()
+            } else {
+                windows
+            }
+        }
+        _ => Vec::new(),
     };
-    let restore = last_workspace(&recent);
-    // The flag is not needed when a workspace is reopened.
-    let onboarded = match restore {
-        Some(_) => None,
-        None => data_dir.map(onboarded),
+    // The flag is not needed when windows are reopened.
+    let onboarded = match restore.is_empty() {
+        true => data_dir.map(onboarded),
+        false => None,
     };
-    startup_screen(restore, onboarded, startup_choice(settings))
+    startup_screen(restore, onboarded, choice)
 }
 
 /// Asks for a folder to open; quits on Cancel unless a window opened
@@ -299,6 +374,7 @@ mod tests {
     use lucerna_settings::Layer;
 
     use super::*;
+    use crate::recent::RecentKind;
     use crate::startup::StartupScreen;
 
     /// A data dir whose `recent.json` lists one folder that exists.
@@ -336,12 +412,92 @@ mod tests {
         );
     }
 
+    fn folder_window(path: PathBuf) -> SessionWindow {
+        SessionWindow {
+            kind: RecentKind::Folder,
+            path,
+        }
+    }
+
+    /// Writes `windows.json` in `dir` listing `windows`.
+    fn write_session(dir: &Path, windows: Vec<SessionWindow>) {
+        session::save(&session_path(dir), &session::Session { windows }).unwrap();
+    }
+
     #[test]
     fn first_screen_restores_existing_folder() {
         let (dir, folder) = with_recent_folder();
         assert_eq!(
             first_screen(Some(dir.path()), &SettingsStore::with_defaults()),
-            StartupScreen::Restore(folder)
+            StartupScreen::Restore(vec![folder_window(folder)])
+        );
+    }
+
+    #[test]
+    fn first_screen_restores_all_windows() {
+        let (dir, recent_folder) = with_recent_folder();
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let file = dir.path().join("notes.md");
+        std::fs::write(&file, "").unwrap();
+        let file_window = SessionWindow {
+            kind: RecentKind::File,
+            path: file,
+        };
+        write_session(
+            dir.path(),
+            vec![
+                folder_window(other.clone()),
+                folder_window(dir.path().join("gone")),
+                file_window.clone(),
+                folder_window(recent_folder.clone()),
+            ],
+        );
+        assert_eq!(
+            first_screen(Some(dir.path()), &SettingsStore::with_defaults()),
+            StartupScreen::Restore(vec![
+                folder_window(other.clone()),
+                file_window,
+                folder_window(recent_folder.clone()),
+            ])
+        );
+        let store = with_user(r#"{"window.restoreWindows":"folders"}"#);
+        assert_eq!(
+            first_screen(Some(dir.path()), &store),
+            StartupScreen::Restore(vec![folder_window(other), folder_window(recent_folder)])
+        );
+    }
+
+    #[test]
+    fn first_screen_empty_session_falls_back_to_recent() {
+        let (dir, folder) = with_recent_folder();
+        write_session(dir.path(), Vec::new());
+        assert_eq!(
+            first_screen(Some(dir.path()), &SettingsStore::with_defaults()),
+            StartupScreen::Restore(vec![folder_window(folder.clone())])
+        );
+        // Every window of the session is gone.
+        write_session(dir.path(), vec![folder_window(dir.path().join("gone"))]);
+        let store = with_user(r#"{"window.restoreWindows":"one"}"#);
+        assert_eq!(
+            first_screen(Some(dir.path()), &store),
+            StartupScreen::Restore(vec![folder_window(folder)])
+        );
+    }
+
+    #[test]
+    fn first_screen_none_ignores_session() {
+        let (dir, folder) = with_recent_folder();
+        write_session(dir.path(), vec![folder_window(folder)]);
+        let store = with_user(r#"{"window.restoreWindows":"none"}"#);
+        assert_eq!(
+            first_screen(Some(dir.path()), &store),
+            StartupScreen::Onboarding
+        );
+        crate::app_state_file::mark_onboarded(dir.path()).unwrap();
+        assert_eq!(
+            first_screen(Some(dir.path()), &store),
+            StartupScreen::Welcome
         );
     }
 

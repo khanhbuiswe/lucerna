@@ -24,6 +24,7 @@ use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::fonts::EDITOR_FONT_FAMILY;
 use lucerna_workbench::recent::{RecentEntry, RecentKind, RecentStore, recent_path};
 use lucerna_workbench::router::{self, Target, WindowKind};
+use lucerna_workbench::session::{self, Session, SessionWindow, session_path};
 use lucerna_workbench::system_shell::{SystemShell, SystemShellGlobal};
 use lucerna_workbench::{
     AppState, FileView, GitState, LanguageServers, MarkdownPreview, OpenMode, PanelPosition,
@@ -956,6 +957,42 @@ fn quit_survives_window_closed_during_prompt(cx: &mut TestAppContext) {
     assert_eq!(cx.update(|cx| app::quits_for_test(cx)), 1);
 }
 
+#[gpui::test]
+fn quit_asks_again_for_window_edited_during_prompt(cx: &mut TestAppContext) {
+    let data = routed(&[], cx);
+    cx.update(app_menu::install);
+    cx.update(app::count_quits_for_test);
+    let (a, b) = (project(cx), project(cx));
+    std::fs::write(a.join("a.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(b.join("c.rs"), "fn c() {}\n").unwrap();
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    open_routed(vec![b.clone()], Target::Auto, cx);
+    let in_a = routed_workbench(&WindowKind::Folder(a), cx);
+    let in_b = routed_workbench(&WindowKind::Folder(b), cx);
+    // B, used last, is clean when its turn comes; A asks after it.
+    edit_file(in_a, "a.rs", cx);
+    quit(cx);
+    assert!(prompt(cx).contains("a.rs"), "B is clean: A asks");
+    // B is edited while A's prompt is up.
+    edit_file(in_b, "c.rs", cx);
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| app::quits_for_test(cx)),
+        0,
+        "B was not asked"
+    );
+    assert!(prompt(cx).contains("c.rs"), "B asks now");
+    // Only the quit's own write brings the list back.
+    std::fs::remove_file(session_path(&data)).unwrap();
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(cx.update(|cx| app::quits_for_test(cx)), 1);
+    let saved = session::load(&session_path(&data));
+    assert_eq!(saved.windows.len(), 2, "the quit wrote both windows");
+}
+
 fn root_of(handle: WindowHandle<Workbench>, cx: &mut App) -> PathBuf {
     handle
         .read_with(cx, |wb, _| wb.root().to_path_buf())
@@ -1067,4 +1104,108 @@ fn reopen_opens_welcome(cx: &mut TestAppContext) {
     cx.update(app::on_reopen_for_test);
     cx.run_until_parked();
     assert_eq!(kinds(cx), vec![WindowKind::Welcome]);
+}
+
+// `windows.json` (spec §6.6): the router writes its workbench windows,
+// most recently used first, and a start reopens them.
+
+fn folder_window(path: &Path) -> SessionWindow {
+    SessionWindow {
+        kind: RecentKind::Folder,
+        path: path.to_path_buf(),
+    }
+}
+
+/// `windows.json` in `data` once the background writes are done.
+fn saved_session(data: &Path, cx: &mut TestAppContext) -> Session {
+    cx.run_until_parked();
+    session::load(&session_path(data))
+}
+
+#[gpui::test]
+fn session_follows_open_and_close(cx: &mut TestAppContext) {
+    let data = routed(&[], cx);
+    let (a, b) = (project(cx), project(cx));
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    open_routed(vec![b.clone()], Target::Auto, cx);
+    assert_eq!(
+        saved_session(&data, cx).windows,
+        vec![folder_window(&b), folder_window(&a)],
+        "most recently used first"
+    );
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    assert_eq!(
+        saved_session(&data, cx).windows,
+        vec![folder_window(&a), folder_window(&b)],
+        "A, focused again, comes first"
+    );
+    let in_b = routed_workbench(&WindowKind::Folder(b), cx);
+    in_b.update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    assert_eq!(
+        saved_session(&data, cx).windows,
+        vec![folder_window(&a)],
+        "a closed window leaves the list"
+    );
+    cx.update(|cx| router::open_welcome(Target::NewWindow, cx));
+    assert_eq!(kinds(cx).len(), 2);
+    assert_eq!(
+        saved_session(&data, cx).windows,
+        vec![folder_window(&a)],
+        "Welcome is not written"
+    );
+}
+
+#[gpui::test]
+fn restore_opens_in_reverse_order(cx: &mut TestAppContext) {
+    let data = routed(&[], cx);
+    let (a, c) = (project(cx), project(cx));
+    let gone = data.join("gone");
+    let saved = Session {
+        windows: vec![folder_window(&c), folder_window(&gone), folder_window(&a)],
+    };
+    session::save(&session_path(&data), &saved).unwrap();
+    cx.update(|cx| {
+        let windows = session::to_restore(
+            &session::load(&session_path(&data)),
+            lucerna_workbench::RestoreWindows::All,
+            Path::exists,
+        );
+        router::restore(windows, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        kinds(cx),
+        vec![WindowKind::Folder(c.clone()), WindowKind::Folder(a.clone())],
+        "two windows; C, used last before, is the most recently used"
+    );
+    assert_eq!(
+        saved_session(&data, cx).windows,
+        vec![folder_window(&c), folder_window(&a)],
+        "the missing folder is dropped from the list"
+    );
+}
+
+#[gpui::test]
+fn requests_wait_for_restore(cx: &mut TestAppContext) {
+    let data = routed(&[], cx);
+    let (a, b) = (project(cx), project(cx));
+    cx.update(router::begin_restore);
+    open_routed(vec![a.clone()], Target::Auto, cx);
+    assert!(
+        cx.update(|cx| cx.windows().is_empty()),
+        "the request waits for the restore"
+    );
+    cx.update(|cx| router::restore(vec![folder_window(&b), folder_window(&a)], cx));
+    cx.run_until_parked();
+    assert_eq!(
+        kinds(cx),
+        vec![WindowKind::Folder(a.clone()), WindowKind::Folder(b.clone())],
+        "one window each; A, asked for, in front"
+    );
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+    assert_eq!(
+        saved_session(&data, cx).windows,
+        vec![folder_window(&a), folder_window(&b)]
+    );
 }

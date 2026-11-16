@@ -55,10 +55,12 @@
   // "welcomePage" | "welcomePageInEmptyWorkbench": the Welcome screen when Lucerna starts without a folder.
   // "none": ask for a folder instead; Cancel quits.
   "workbench.startupEditor": "welcomePage",
-  // Starting without a folder (Dock, Finder) reopens the last folder or file, as Zed's
-  // "restore_on_startup": "last_workspace" does. "none": show the startup editor instead.
-  // "one" | "all" | "folders" | "preserve" all reopen one window for now.
-  "window.restoreWindows": "one",
+  // Which windows reopen when Lucerna starts without a path (Dock, Finder).
+  // "all": every window open when it quit. "folders": only folder windows. "one": the window
+  // used last. "preserve": every window, also when started with a path (`luc <path>`).
+  // "none": show the startup editor instead. With no windows to reopen, the last recent
+  // folder or file opens.
+  "window.restoreWindows": "all",
   "workbench.tips.enabled": true,
   "files.associations": {},
   "extensions.autoCheckUpdates": true,

@@ -3,8 +3,11 @@
 //! [`open`], the one way a path opens, whoever asks (`luc`, Finder, the
 //! Welcome screen, Open Recent, the Open dialog, New Window).
 //!
-//! Every change to the list of windows goes through [`Router::set`] or
-//! [`Router::remove`] and then [`changed`].
+//! Every change to the list of windows goes through [`Router::set`],
+//! [`Router::remove`] or [`Router::touch`] and then [`changed`], which
+//! also writes the list to `windows.json` ([`save_session`]). A start
+//! reopens that list with [`restore`]; paths `luc` or the platform ask
+//! for meanwhile wait until it is done (spec M14).
 
 use std::cell::RefCell;
 use std::io::ErrorKind;
@@ -20,6 +23,7 @@ use gpui::{
 use crate::app_menu;
 use crate::extensions::ExtensionService;
 use crate::recent::{self, RecentEntry, RecentKind, RecentStore};
+use crate::session::{self, Session, SessionWindow, session_path};
 pub use crate::window_choice::WindowKind;
 use crate::window_choice::{self, Choice, WindowInfo};
 use crate::workspace_state::tilde_path;
@@ -159,6 +163,15 @@ struct Router {
     /// The extension registry check is scheduled once per app, after the
     /// first workbench's first frame.
     startup_refresh_scheduled: bool,
+    /// The last session's windows are being reopened: requests from `luc`
+    /// and the platform wait in `queue`, and the session is not written.
+    restoring: bool,
+    queue: Vec<OpenRequest>,
+    /// The app is quitting: its windows close, but the session keeps them.
+    quitting: bool,
+    /// What the last background write wrote, so the same list is not
+    /// written twice.
+    last_saved: Option<Session>,
 }
 
 impl Router {
@@ -231,6 +244,11 @@ impl Global for RouterGlobal {}
 fn router(cx: &mut App) -> Rc<RefCell<Router>> {
     if !cx.has_global::<RouterGlobal>() {
         cx.default_global::<RouterGlobal>();
+        cx.on_app_quit(|cx| {
+            router(cx).borrow_mut().quitting = true;
+            async {}
+        })
+        .detach();
         cx.on_window_closed(|cx, id| {
             status_message::forget(id, cx);
             let removed = router(cx).borrow_mut().remove(id);
@@ -244,10 +262,78 @@ fn router(cx: &mut App) -> Rc<RefCell<Router>> {
 }
 
 /// After every change to the router's windows: the menu bar follows the
-/// active window's kind. (The session file is written here too, once it
-/// exists.)
+/// active window's kind, and `windows.json` the windows.
 fn changed(cx: &mut App) {
     app_menu::refresh(cx);
+    save_session(cx);
+}
+
+/// Writes the workbench windows, most recently used first, to
+/// `windows.json` in the background (spec §6.6), so that even a crash
+/// leaves the list right. Nothing while a restore runs (it writes once
+/// done) or the app quits (`session::save_now` wrote the list), nor when
+/// the list did not change since the last write.
+pub fn save_session(cx: &mut App) {
+    let Some(data_dir) = app_data_dir(cx) else {
+        return;
+    };
+    let router = router(cx);
+    let session = session::current(cx);
+    {
+        let mut router = router.borrow_mut();
+        if router.restoring || router.quitting || router.last_saved.as_ref() == Some(&session) {
+            return;
+        }
+        router.last_saved = Some(session.clone());
+    }
+    let write = session::next_write();
+    cx.background_spawn(async move {
+        if let Err(err) = session::save_in_order(&session_path(&data_dir), &session, write) {
+            tracing::warn!(%err, "could not write the window list");
+        }
+    })
+    .detach();
+}
+
+/// From now until [`finish_restore`], requests from `luc` and the
+/// platform wait (spec M14).
+pub fn begin_restore(cx: &mut App) {
+    router(cx).borrow_mut().restoring = true;
+}
+
+/// Reopens the last session's `windows` (most recently used first): the
+/// oldest first, so that the most recently used ends up in front and
+/// used last, as Zed does. A file comes back alone, not as a tab of a
+/// folder window. Then [`finish_restore`].
+pub fn restore(windows: Vec<SessionWindow>, cx: &mut App) {
+    begin_restore(cx);
+    for window in windows.into_iter().rev() {
+        match Launch::for_path(window.path.clone()) {
+            Ok(launch) => {
+                open_launch(launch, Target::NewWindow, cx);
+            }
+            Err(err) => {
+                tracing::warn!(err, path = %window.path.display(), "could not reopen the window");
+            }
+        }
+    }
+    finish_restore(cx);
+}
+
+/// Ends a restore: writes the session, then opens the requests that
+/// waited, in order. A path the restore already opened is only focused
+/// (rule 1 of spec §6.3).
+pub fn finish_restore(cx: &mut App) {
+    let queue = {
+        let router = router(cx);
+        let mut router = router.borrow_mut();
+        router.restoring = false;
+        std::mem::take(&mut router.queue)
+    };
+    changed(cx);
+    for request in queue {
+        open(request, cx).ok();
+    }
 }
 
 /// The router's windows and what they show, most recently used first.
@@ -266,11 +352,21 @@ pub fn windows(cx: &App) -> Vec<(AnyWindowHandle, WindowKind)> {
 
 /// Opens `request`'s paths, each where [`window_choice::choose`] says,
 /// then records them as recently opened. A path that cannot be opened is
-/// skipped and logged; the UI says why in the status bar.
+/// skipped and logged; the UI says why in the status bar. While a
+/// [`restore`] runs, a request from `luc` or the platform waits for it.
 ///
 /// # Errors
 /// What went wrong, one line per path, for `luc` to print.
 pub fn open(request: OpenRequest, cx: &mut App) -> Result<(), String> {
+    if matches!(request.source, Source::Cli | Source::Finder) {
+        let router = router(cx);
+        let mut router = router.borrow_mut();
+        if router.restoring {
+            tracing::info!(paths = ?request.paths, "waiting for the restore");
+            router.queue.push(request);
+            return Ok(());
+        }
+    }
     let mut errors = Vec::new();
     for path in request.paths {
         match Launch::for_path(path.clone()) {

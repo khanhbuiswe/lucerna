@@ -47,6 +47,7 @@ pub mod router;
 mod save;
 mod scrollbar;
 mod search_view;
+pub mod session;
 mod seti_svgs;
 mod settings_edit;
 mod startup;
@@ -124,7 +125,7 @@ pub use recent_picker::{RecentPicker, RecentPickerEvent};
 pub use references_view::{ReferencesView, find_references_in_tab};
 pub use save::{SaveOptions, SaveReason};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
-pub use startup::{Startup, last_workspace, restores_last_workspace, startup_choice};
+pub use startup::{RestoreWindows, Startup, last_workspace, restore_windows, startup_choice};
 pub use symbols::{
     BREADCRUMBS_BATCH, BreadcrumbMode, EMPTY_SYMBOLS_TTL, FilePathMode, MAX_WORKSPACE_SYMBOLS,
     SYMBOLS_DEBOUNCE, Segment, SymbolPathMode, SymbolSource, SymbolState,

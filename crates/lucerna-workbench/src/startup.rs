@@ -1,10 +1,9 @@
 //! What Lucerna shows when it starts without a folder to open.
 
-use std::path::PathBuf;
-
 use lucerna_settings::SettingsStore;
 
 use crate::recent::{RecentEntry, RecentList};
+use crate::session::SessionWindow;
 
 /// The window opened at startup when no folder was requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,16 +26,35 @@ pub fn startup_choice(settings: &SettingsStore) -> Startup {
     }
 }
 
-/// Reads `window.restoreWindows`: whether a start without a path reopens
-/// the last workspace, as Zed's `restore_on_startup: "last_workspace"`
-/// does. `"none"` does not; any other value (or none) does, one window
-/// only, since each Lucerna window is a process of its own. Spec:
-/// `docs/superpowers/specs/2026-11-15-restore-last-workspace-design.md`.
-pub fn restores_last_workspace(settings: &SettingsStore) -> bool {
-    settings
+/// Which windows a start reopens: `window.restoreWindows` (spec M12 of
+/// the multi-window design, VS Code's values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreWindows {
+    /// Every window, also when the start opens a path.
+    Preserve,
+    /// Every window.
+    All,
+    /// The folder windows.
+    Folders,
+    /// The most recently used window.
+    One,
+    /// None: the startup editor shows instead.
+    None,
+}
+
+/// Reads `window.restoreWindows`; a value it does not know (or none) is
+/// `"all"`, VS Code's default.
+pub fn restore_windows(settings: &SettingsStore) -> RestoreWindows {
+    match settings
         .get::<String>("window.restoreWindows", None)
         .as_deref()
-        != Some("none")
+    {
+        Some("preserve") => RestoreWindows::Preserve,
+        Some("folders") => RestoreWindows::Folders,
+        Some("one") => RestoreWindows::One,
+        Some("none") => RestoreWindows::None,
+        _ => RestoreWindows::All,
+    }
 }
 
 /// The workspace to reopen: the newest recent entry, folder or file
@@ -48,24 +66,24 @@ pub fn last_workspace(list: &RecentList) -> Option<&RecentEntry> {
 /// What the window opened without a path shows first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupScreen {
-    /// Reopen this workspace.
-    Restore(PathBuf),
+    /// Reopen these windows, most recently used first.
+    Restore(Vec<SessionWindow>),
     /// The first-run onboarding page.
     Onboarding,
     Welcome,
     FolderPrompt,
 }
 
-/// Picks the startup screen: the workspace to restore wins, then the
-/// first-run onboarding (`onboarded` is `Some(false)`), then `choice`.
-/// `onboarded` is `None` when there is no data directory to remember it in.
+/// Picks the startup screen: windows to restore win, then the first-run
+/// onboarding (`onboarded` is `Some(false)`), then `choice`. `onboarded`
+/// is `None` when there is no data directory to remember it in.
 pub fn startup_screen(
-    restore: Option<&RecentEntry>,
+    restore: Vec<SessionWindow>,
     onboarded: Option<bool>,
     choice: Startup,
 ) -> StartupScreen {
-    if let Some(entry) = restore {
-        return StartupScreen::Restore(entry.path.clone());
+    if !restore.is_empty() {
+        return StartupScreen::Restore(restore);
     }
     if onboarded == Some(false) {
         return StartupScreen::Onboarding;
@@ -88,15 +106,27 @@ mod tests {
     }
 
     #[test]
-    fn restores_unless_none() {
-        assert!(restores_last_workspace(&SettingsStore::with_defaults()));
-        assert!(restores_last_workspace(&SettingsStore::default()));
-        for value in [r#""one""#, r#""all""#, r#""folders""#, r#""preserve""#] {
+    fn restore_windows_default_is_all() {
+        assert_eq!(
+            restore_windows(&SettingsStore::with_defaults()),
+            RestoreWindows::All
+        );
+        assert_eq!(
+            restore_windows(&SettingsStore::default()),
+            RestoreWindows::All
+        );
+        for (value, mode) in [
+            (r#""preserve""#, RestoreWindows::Preserve),
+            (r#""all""#, RestoreWindows::All),
+            (r#""folders""#, RestoreWindows::Folders),
+            (r#""one""#, RestoreWindows::One),
+            (r#""none""#, RestoreWindows::None),
+            (r#""most""#, RestoreWindows::All),
+            ("42", RestoreWindows::All),
+        ] {
             let store = with_user(&format!(r#"{{"window.restoreWindows":{value}}}"#));
-            assert!(restores_last_workspace(&store), "{value}");
+            assert_eq!(restore_windows(&store), mode, "{value}");
         }
-        let store = with_user(r#"{"window.restoreWindows":"none"}"#);
-        assert!(!restores_last_workspace(&store));
     }
 
     #[test]
@@ -153,26 +183,22 @@ mod tests {
         }
     }
 
-    fn entry(path: &str) -> RecentEntry {
-        RecentEntry {
-            path: PathBuf::from(path),
-            kind: crate::recent::RecentKind::Folder,
-        }
-    }
-
     #[test]
     fn restore_wins() {
-        let e = entry("/p");
+        let windows = vec![SessionWindow {
+            kind: crate::recent::RecentKind::Folder,
+            path: std::path::PathBuf::from("/p"),
+        }];
         assert_eq!(
-            startup_screen(Some(&e), Some(false), Startup::Welcome),
-            StartupScreen::Restore(PathBuf::from("/p"))
+            startup_screen(windows.clone(), Some(false), Startup::Welcome),
+            StartupScreen::Restore(windows)
         );
     }
 
     #[test]
     fn first_run_onboarding() {
         assert_eq!(
-            startup_screen(None, Some(false), Startup::Welcome),
+            startup_screen(Vec::new(), Some(false), Startup::Welcome),
             StartupScreen::Onboarding
         );
     }
@@ -180,7 +206,7 @@ mod tests {
     #[test]
     fn first_run_beats_folder_prompt() {
         assert_eq!(
-            startup_screen(None, Some(false), Startup::FolderPrompt),
+            startup_screen(Vec::new(), Some(false), Startup::FolderPrompt),
             StartupScreen::Onboarding
         );
     }
@@ -188,11 +214,11 @@ mod tests {
     #[test]
     fn onboarded_follows_choice() {
         assert_eq!(
-            startup_screen(None, Some(true), Startup::Welcome),
+            startup_screen(Vec::new(), Some(true), Startup::Welcome),
             StartupScreen::Welcome
         );
         assert_eq!(
-            startup_screen(None, Some(true), Startup::FolderPrompt),
+            startup_screen(Vec::new(), Some(true), Startup::FolderPrompt),
             StartupScreen::FolderPrompt
         );
     }
@@ -200,11 +226,11 @@ mod tests {
     #[test]
     fn no_data_dir_follows_choice() {
         assert_eq!(
-            startup_screen(None, None, Startup::Welcome),
+            startup_screen(Vec::new(), None, Startup::Welcome),
             StartupScreen::Welcome
         );
         assert_eq!(
-            startup_screen(None, None, Startup::FolderPrompt),
+            startup_screen(Vec::new(), None, Startup::FolderPrompt),
             StartupScreen::FolderPrompt
         );
     }
