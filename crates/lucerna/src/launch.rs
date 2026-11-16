@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use lucerna_workbench::cli_socket::{self, CliReply, CliRequest};
+use lucerna_workbench::cli_socket::{self, CliReply, CliRequest, SendError};
 
 /// How often [`send_with_retry`] tries to connect while the app starts.
 const RETRY_EVERY: Duration = Duration::from_millis(50);
@@ -45,23 +45,27 @@ pub fn spawn_detached(exe: &Path, args: &[OsString], cwd: &Path) -> io::Result<(
     Ok(())
 }
 
-/// Sends `request` to the app listening at `path`, trying to connect
-/// every 50 ms for up to `total` while it starts, then waiting up to
-/// `total` for its reply.
+/// Sends `request` to the app starting at `path` (spec §6.5): tries to
+/// connect every 50 ms for up to `connect_within`, then waits up to
+/// `reply_within` for the reply, so at most their sum in all.
 ///
 /// # Errors
-/// No app listened within `total`, or it did not answer.
+/// [`SendError::Unreachable`] when no app listened within
+/// `connect_within`; otherwise as [`cli_socket::send`].
 pub fn send_with_retry(
     path: &Path,
     request: &CliRequest,
-    total: Duration,
-) -> Result<CliReply, String> {
+    connect_within: Duration,
+    reply_within: Duration,
+) -> Result<CliReply, SendError> {
     let start = Instant::now();
     loop {
         match std::os::unix::net::UnixStream::connect(path) {
-            Ok(stream) => return cli_socket::send(stream, request, total),
-            Err(err) if start.elapsed() >= total => {
-                return Err(format!("could not reach Lucerna: {err}"));
+            Ok(stream) => return cli_socket::send(stream, request, reply_within),
+            Err(err) if start.elapsed() >= connect_within => {
+                return Err(SendError::Unreachable(format!(
+                    "could not reach Lucerna: {err}"
+                )));
             }
             Err(_) => std::thread::sleep(RETRY_EVERY),
         }
@@ -91,7 +95,13 @@ mod tests {
             line
         });
         let request = CliRequest::new(PathBuf::from("/w"), Vec::new());
-        let reply = send_with_retry(&path, &request, Duration::from_secs(5)).unwrap();
+        let reply = send_with_retry(
+            &path,
+            &request,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        )
+        .unwrap();
         assert_eq!(reply, CliReply::ok());
         let sent: CliRequest = serde_json::from_str(&server.join().unwrap()).unwrap();
         assert_eq!(sent, request);
@@ -106,8 +116,9 @@ mod tests {
             &dir.path().join("none.sock"),
             &request,
             Duration::from_millis(200),
+            Duration::from_secs(5),
         );
-        assert!(result.is_err());
+        assert!(matches!(result, Err(SendError::Unreachable(_))));
         assert!(start.elapsed() < Duration::from_secs(2));
     }
 

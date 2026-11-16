@@ -114,14 +114,20 @@ mod socket {
 
     use lucerna::launch::{send_with_retry, spawn_detached};
     use lucerna_workbench::app::{self, CliListener, Launch};
-    use lucerna_workbench::cli_socket::{self, Claim, CliReply, CliRequest, claim, socket_path};
+    use lucerna_workbench::cli_socket::{
+        self, Claim, CliReply, CliRequest, SendError, claim, release, socket_path,
+    };
     use lucerna_workbench::default_data_dir;
 
-    /// How long `luc` waits for the running app's reply.
+    /// How long `luc` waits for the running app's reply. Past it the
+    /// request is delivered all the same: the app opens the path once it
+    /// is ready.
     const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
-    /// How long `luc` waits for an app it started to listen, and then to
-    /// reply.
-    const START_TIMEOUT: Duration = Duration::from_secs(10);
+    /// How long `luc` tries to connect to an app it started (spec §6.5).
+    const START_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Then how long it waits for that app's reply: it binds the socket
+    /// before its first window, so the reply also waits for the start.
+    const START_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Claims the socket, then: hands `launch` to the app that holds it;
     /// runs the app here (`in_place`, or no socket to use); or starts the
@@ -135,13 +141,13 @@ mod socket {
         let socket = socket_path(&data_dir);
         match claim(&socket) {
             Claim::Client(stream) => {
-                let Some(launch) = launch else {
-                    // `luc` in `/` with no path: `/` is not opened.
-                    eprintln!("luc: Lucerna is already running; give it a folder to open");
-                    return 0;
+                let request = match &launch {
+                    Some(launch) => request_for(launch, cwd),
+                    // `luc` in `/` with no path: `/` is not opened; the
+                    // app comes forward as from its Dock icon.
+                    None => CliRequest::activate(cwd.unwrap_or_else(|| PathBuf::from("/"))),
                 };
-                tracing::info!(socket = %socket.display(), "handing the path to the running app");
-                let request = request_for(&launch, cwd);
+                tracing::info!(socket = %socket.display(), "handing the request to the running app");
                 reply_code(cli_socket::send(stream, &request, REPLY_TIMEOUT))
             }
             Claim::Server(listener) => match launch {
@@ -163,11 +169,8 @@ mod socket {
     /// Starts the app apart from the terminal (`luc --foreground <path>`)
     /// and hands it `launch` once it listens.
     fn detach(listener: CliListener, socket: &Path, launch: &Launch, cwd: Option<PathBuf>) -> i32 {
-        // For the app to claim.
-        drop(listener);
-        if let Err(err) = std::fs::remove_file(socket) {
-            tracing::warn!(%err, "could not release the luc socket");
-        }
+        // For the app to claim: the file first, then the listener.
+        release(listener, socket);
         let exe = match std::env::current_exe() {
             Ok(exe) => exe,
             Err(err) => {
@@ -185,13 +188,13 @@ mod socket {
         }
         tracing::info!(path = %path.display(), "started the app apart from the terminal");
         let request = request_for(launch, cwd);
-        match send_with_retry(socket, &request, START_TIMEOUT) {
-            Ok(reply) => reply_code(Ok(reply)),
-            Err(err) => {
-                tracing::error!(err, "the app did not answer");
+        match send_with_retry(socket, &request, START_CONNECT_TIMEOUT, START_REPLY_TIMEOUT) {
+            Err(SendError::Unreachable(err)) => {
+                tracing::error!(err, "the app did not listen");
                 eprintln!("luc: Lucerna is starting; could not confirm the window opened");
                 1
             }
+            reply => reply_code(reply),
         }
     }
 
@@ -209,8 +212,9 @@ mod socket {
         CliRequest::new(cwd.unwrap_or_else(|| path.clone()), vec![path])
     }
 
-    /// 0 when the app opened the paths; otherwise prints why and 1.
-    fn reply_code(reply: Result<CliReply, String>) -> i32 {
+    /// 0 when the app opened the paths, or has the request and opens them
+    /// once it is ready; otherwise prints why and 1.
+    fn reply_code(reply: Result<CliReply, SendError>) -> i32 {
         match reply {
             Ok(CliReply { ok: true, .. }) => 0,
             Ok(CliReply { error, .. }) => {
@@ -219,6 +223,11 @@ mod socket {
                     eprintln!("luc: {line}");
                 }
                 1
+            }
+            Err(SendError::NoReplyInTime) => {
+                tracing::warn!("the app did not reply in time");
+                eprintln!("luc: Lucerna is busy; the path will open when it is ready");
+                0
             }
             Err(err) => {
                 eprintln!("luc: {err}");

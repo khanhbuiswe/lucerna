@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin;
+use lucerna_workbench::cli_socket::socket_path;
 
 /// The app processes a test started: `luc --foreground` of this build
 /// on `dir` (canonical), the folder the test opened first; by pid.
@@ -34,9 +35,11 @@ fn app_pids(exe: &Path, dir: &Path) -> Vec<i32> {
         .collect()
 }
 
-/// Kills the app processes of a test ([`app_pids`]) when it ends, passed
-/// or not.
-struct KillApps(PathBuf, PathBuf);
+/// Kills the app processes of a test ([`app_pids`]: executable, first
+/// folder) when it ends, passed or not, and removes the socket of its
+/// `HOME`, which a killed app leaves (a temporary HOME is long, so the
+/// socket is in the temporary directory, not in the HOME).
+struct KillApps(PathBuf, PathBuf, PathBuf);
 
 impl Drop for KillApps {
     fn drop(&mut self) {
@@ -44,6 +47,12 @@ impl Drop for KillApps {
             // SAFETY: a plain signal to a process this test started.
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
+        let data_dir = self
+            .2
+            .join("Library")
+            .join("Application Support")
+            .join("Lucerna");
+        std::fs::remove_file(socket_path(&data_dir)).ok();
     }
 }
 
@@ -79,7 +88,7 @@ fn luc_hands_paths_to_one_detached_app() {
     let home = tempfile::tempdir().unwrap();
     let (dir1, dir2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let first = std::fs::canonicalize(dir1.path()).unwrap();
-    let _kill = KillApps(exe.clone(), first.clone());
+    let _kill = KillApps(exe.clone(), first.clone(), home.path().to_path_buf());
 
     let (output, took) = luc(home.path(), &[dir1.path()]);
     assert!(
@@ -118,7 +127,7 @@ fn foreground_runs_the_app_in_the_calling_process() {
     let home = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let canonical = std::fs::canonicalize(dir.path()).unwrap();
-    let _kill = KillApps(exe.clone(), canonical.clone());
+    let _kill = KillApps(exe.clone(), canonical.clone(), home.path().to_path_buf());
     let mut child = std::process::Command::new(&exe)
         .env("HOME", home.path())
         .arg("--foreground")
@@ -131,4 +140,26 @@ fn foreground_runs_the_app_in_the_calling_process() {
     assert!(child.try_wait().unwrap().is_none(), "still running");
     child.kill().unwrap();
     child.wait().unwrap();
+}
+
+/// `luc <file>` with no app: the started app opens the file, `luc` sends
+/// it again, and it all ends in one app (the router test
+/// `cli_same_file_as_launch_opens_once` checks one window and one tab).
+#[test]
+#[ignore = "starts the app: needs a display"]
+fn luc_file_starts_one_app() {
+    let exe = cargo_bin("luc");
+    let home = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = std::fs::canonicalize(dir.path()).unwrap().join("notes.txt");
+    std::fs::write(&file, "hi\n").unwrap();
+    let _kill = KillApps(exe.clone(), file.clone(), home.path().to_path_buf());
+    let (output, took) = luc(home.path(), &[&file]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(took < Duration::from_secs(10), "returned after {took:?}");
+    wait_for(&exe, &file, "one app", |pids| pids.len() == 1);
 }

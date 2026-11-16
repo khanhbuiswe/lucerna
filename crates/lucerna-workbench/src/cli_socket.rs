@@ -6,7 +6,11 @@
 //! thread; a later `luc` finds the socket taken, connects and [`send`]s
 //! its request instead of starting a second app.
 
+use std::fmt;
+use std::fs::{DirBuilder, Permissions};
 use std::io::{self, BufRead as _, BufReader, ErrorKind, Read as _, Write as _};
+use std::os::fd::AsRawFd as _;
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -27,6 +31,10 @@ const MAX_REQUEST_BYTES: u64 = 1 << 20;
 /// `sun_path` holds 104 bytes on macOS (108 on Linux); longer paths are
 /// replaced by one in the temporary directory.
 const MAX_SOCKET_PATH: usize = 100;
+/// Only this user may connect to the socket, nor list its folder when
+/// `luc` makes it.
+const SOCKET_MODE: u32 = 0o600;
+const DIR_MODE: u32 = 0o700;
 
 /// What `luc` asks the running app to open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +47,12 @@ pub struct CliRequest {
     /// Kept for `luc -n`; always `false` for now.
     #[serde(default)]
     pub new_window: bool,
+    /// With no `paths`: bring the app forward as a click on its Dock icon
+    /// does (spec M9) instead of opening `cwd`. Sent by `luc` in `/` with
+    /// no path. The protocol stays at version 1: an app without the field
+    /// ignores it, and the socket is per build anyway.
+    #[serde(default)]
+    pub activate: bool,
 }
 
 impl CliRequest {
@@ -49,6 +63,15 @@ impl CliRequest {
             cwd,
             paths,
             new_window: false,
+            activate: false,
+        }
+    }
+
+    /// Brings the running app forward ([`CliRequest::activate`]).
+    pub fn activate(cwd: PathBuf) -> CliRequest {
+        CliRequest {
+            activate: true,
+            ..CliRequest::new(cwd, Vec::new())
         }
     }
 
@@ -105,8 +128,9 @@ pub fn reply_for_version(version: u32) -> Option<CliReply> {
 
 /// The socket in `data_dir`: `luc-<version>.sock`, `luc-<version>-dev.sock`
 /// for a debug build, so a dev build never hands paths to the release the
-/// user runs. A path too long for `sun_path` is replaced by one in the
-/// temporary directory, named by a hash of the full path.
+/// user runs. A path too long for `sun_path` is replaced by one in a
+/// folder only this user can use ([`fallback_dir`]), named by a hash of
+/// the full path.
 pub fn socket_path(data_dir: &Path) -> PathBuf {
     let dev = if cfg!(debug_assertions) { "-dev" } else { "" };
     let name = format!("luc-{}{dev}.sock", env!("CARGO_PKG_VERSION"));
@@ -114,10 +138,35 @@ pub fn socket_path(data_dir: &Path) -> PathBuf {
     if path.as_os_str().len() <= MAX_SOCKET_PATH {
         return path;
     }
-    std::env::temp_dir().join(format!(
+    fallback_dir().join(format!(
         "lucerna-{:016x}.sock",
         fnv1a(path.as_os_str().as_encoded_bytes())
     ))
+}
+
+/// Where a socket whose path is too long goes. macOS: `$TMPDIR`, a
+/// folder of this user's own (`/var/folders/…/T`). Elsewhere `/tmp` is
+/// shared: `$XDG_RUNTIME_DIR`, else `lucerna-<uid>` in the temporary
+/// directory, which [`claim`] makes with mode 0700 and refuses when
+/// another user owns it.
+pub fn fallback_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::temp_dir()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("lucerna-{}", euid())))
+    }
+}
+
+/// This process's effective user id.
+fn euid() -> u32 {
+    // SAFETY: `geteuid` cannot fail and touches no memory.
+    unsafe { libc::geteuid() }
 }
 
 /// FNV-1a, 64 bits: a hash that stays the same across builds.
@@ -139,16 +188,17 @@ pub enum Claim {
     Unavailable(io::Error),
 }
 
-/// Claims the socket at `path`, making its folder first: binds it, or
-/// connects to the app that holds it. A socket file nobody listens on
-/// (left by a crash) is removed and bound once more.
+/// Claims the socket at `path`, making its folder first (mode 0700; one
+/// another user owns is refused): binds it (mode 0600), or connects to
+/// the app that holds it. A socket file nobody listens on (left by a
+/// crash) is removed and bound once more.
 pub fn claim(path: &Path) -> Claim {
     if let Some(parent) = path.parent()
-        && let Err(err) = std::fs::create_dir_all(parent)
+        && let Err(err) = private_dir(parent)
     {
         return Claim::Unavailable(err);
     }
-    match UnixListener::bind(path) {
+    match bind(path) {
         Ok(listener) => Claim::Server(listener),
         Err(err) if err.kind() == ErrorKind::AddrInUse => match connect(path, CONNECT_TIMEOUT) {
             Ok(stream) => Claim::Client(stream),
@@ -157,7 +207,7 @@ pub fn claim(path: &Path) -> Claim {
                 if let Err(err) = std::fs::remove_file(path) {
                     return Claim::Unavailable(err);
                 }
-                match UnixListener::bind(path) {
+                match bind(path) {
                     Ok(listener) => Claim::Server(listener),
                     Err(err) => Claim::Unavailable(err),
                 }
@@ -166,6 +216,50 @@ pub fn claim(path: &Path) -> Claim {
         },
         Err(err) => Claim::Unavailable(err),
     }
+}
+
+/// Makes `dir` and its missing parents with mode 0700; an error when it
+/// belongs to another user.
+fn private_dir(dir: &Path) -> io::Result<()> {
+    DirBuilder::new()
+        .recursive(true)
+        .mode(DIR_MODE)
+        .create(dir)?;
+    if std::fs::metadata(dir)?.uid() != euid() {
+        return Err(io::Error::new(
+            ErrorKind::PermissionDenied,
+            format!("{} belongs to another user", dir.display()),
+        ));
+    }
+    Ok(())
+}
+
+/// Binds `path` and makes it readable and writable by this user alone.
+fn bind(path: &Path) -> io::Result<UnixListener> {
+    let listener = UnixListener::bind(path)?;
+    if let Err(err) = std::fs::set_permissions(path, Permissions::from_mode(SOCKET_MODE)) {
+        std::fs::remove_file(path).ok();
+        return Err(err);
+    }
+    Ok(listener)
+}
+
+/// Gives the socket up for another process to claim: the file goes
+/// first, then the listener closes. The other way round, a `luc` that
+/// connects in between finds the socket refusing, takes it for a crash's
+/// leftover and binds its own, which the removal would then unlink.
+pub fn release(listener: UnixListener, path: &Path) {
+    release_with(listener, path, || {});
+}
+
+/// [`release`], running `between` after the file is removed and before
+/// the listener closes.
+fn release_with(listener: UnixListener, path: &Path, between: impl FnOnce()) {
+    if let Err(err) = std::fs::remove_file(path) {
+        tracing::warn!(%err, path = %path.display(), "could not release the luc socket");
+    }
+    between();
+    drop(listener);
 }
 
 /// Connects to `path`, giving up after `timeout`. The standard library
@@ -178,32 +272,59 @@ fn connect(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
         .unwrap_or_else(|_| Err(io::Error::new(ErrorKind::TimedOut, "connect timed out")))
 }
 
+/// Why a request got no reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendError {
+    /// No app could be reached.
+    Unreachable(String),
+    /// The request was delivered, but the app did not answer in time: it
+    /// opens the paths once it is ready.
+    NoReplyInTime,
+    /// Anything else: writing, reading, a reply that does not parse.
+    Failed(String),
+}
+
+impl fmt::Display for SendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SendError::Unreachable(err) | SendError::Failed(err) => f.write_str(err),
+            SendError::NoReplyInTime => f.write_str("no reply from Lucerna in time"),
+        }
+    }
+}
+
 /// Sends `request` over `stream` and waits up to `timeout` for the reply.
 ///
 /// # Errors
-/// What went wrong writing, reading or parsing.
+/// [`SendError::NoReplyInTime`] when the reply does not come within
+/// `timeout`; [`SendError::Failed`] for the rest.
 pub fn send(
     mut stream: UnixStream,
     request: &CliRequest,
     timeout: Duration,
-) -> Result<CliReply, String> {
+) -> Result<CliReply, SendError> {
+    let failed = |what: &str, err: &dyn fmt::Display| SendError::Failed(format!("{what}: {err}"));
     stream
         .set_write_timeout(Some(timeout))
         .and_then(|()| stream.set_read_timeout(Some(timeout)))
-        .map_err(|err| format!("socket: {err}"))?;
-    let mut line = serde_json::to_string(request).map_err(|err| err.to_string())?;
+        .map_err(|err| failed("socket", &err))?;
+    let mut line = serde_json::to_string(request).map_err(|err| failed("request", &err))?;
     line.push('\n');
     stream
         .write_all(line.as_bytes())
-        .map_err(|err| format!("could not send the request: {err}"))?;
+        .map_err(|err| failed("could not send the request", &err))?;
     let mut reply = String::new();
-    BufReader::new(stream)
-        .read_line(&mut reply)
-        .map_err(|err| format!("no reply from Lucerna: {err}"))?;
-    if reply.is_empty() {
-        return Err("no reply from Lucerna".to_owned());
+    match BufReader::new(stream).read_line(&mut reply) {
+        Ok(_) => {}
+        Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+            return Err(SendError::NoReplyInTime);
+        }
+        Err(err) => return Err(failed("no reply from Lucerna", &err)),
     }
-    serde_json::from_str(&reply).map_err(|err| format!("bad reply from Lucerna: {err}"))
+    if reply.is_empty() {
+        return Err(SendError::Failed("no reply from Lucerna".to_owned()));
+    }
+    serde_json::from_str(&reply).map_err(|err| failed("bad reply from Lucerna", &err))
 }
 
 /// A request and where its reply goes.
@@ -232,9 +353,11 @@ pub fn serve(listener: UnixListener, tx: mpsc::UnboundedSender<CliMessage>) {
     }
 }
 
-/// Answers one connection: one request line, one reply line.
+/// Answers one connection: one request line, one reply line. A process
+/// of another user is refused before anything is read.
 fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
-    let reply = match read_request(&stream) {
+    let allowed = peer_allowed(peer_uid(&stream), euid());
+    let reply = match allowed.and_then(|()| read_request(&stream)) {
         Ok(request) => {
             let (reply_tx, reply_rx) = oneshot::channel();
             if tx.unbounded_send((request, reply_tx)).is_err() {
@@ -250,6 +373,62 @@ fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
     let line = serde_json::to_string(&reply).unwrap_or_else(|_| r#"{"ok":false}"#.to_owned());
     if let Err(err) = stream.write_all(format!("{line}\n").as_bytes()) {
         tracing::warn!(%err, "luc socket: could not reply");
+    }
+}
+
+/// The user id of the process at the other end of `stream`.
+///
+/// # Errors
+/// When the platform cannot tell.
+pub fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
+    let fd = stream.as_raw_fd();
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: `cred` and `len` are valid for writes of the sizes given.
+        let result = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&raw mut cred).cast(),
+                &raw mut len,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(cred.uid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let (mut uid, mut gid) = (0, 0);
+        // SAFETY: `uid` and `gid` are valid for writes.
+        if unsafe { libc::getpeereid(fd, &raw mut uid, &raw mut gid) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(uid)
+    }
+}
+
+/// Whether a peer of user `peer` may ask an app of user `ours` to open
+/// paths: the same user only.
+fn peer_allowed(peer: io::Result<u32>, ours: u32) -> Result<(), String> {
+    match peer {
+        Ok(uid) if uid == ours => Ok(()),
+        Ok(uid) => {
+            tracing::warn!(uid, "luc socket: refused a request of another user");
+            Err("permission denied: another user's Lucerna".to_owned())
+        }
+        Err(err) => {
+            tracing::warn!(%err, "luc socket: could not tell who connected");
+            Err(format!("permission denied: {err}"))
+        }
     }
 }
 
@@ -404,9 +583,101 @@ mod tests {
     fn long_data_dir_uses_temp() {
         let long = PathBuf::from("/").join("d".repeat(120));
         let path = socket_path(&long);
-        assert_eq!(path.parent(), Some(std::env::temp_dir().as_path()));
+        assert_eq!(path.parent(), Some(fallback_dir().as_path()));
+        #[cfg(target_os = "macos")]
+        assert_eq!(fallback_dir(), std::env::temp_dir(), "per-user on macOS");
         assert!(path.as_os_str().len() < 104, "{}", path.display());
         assert_eq!(path, socket_path(&long), "the same folder, the same socket");
         assert_ne!(path, socket_path(&long.join("x")));
+    }
+
+    #[test]
+    fn socket_and_folder_are_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("data");
+        let path = folder.join("t.sock");
+        let Claim::Server(_listener) = claim(&path) else {
+            panic!("binds");
+        };
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&folder), 0o700);
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    #[test]
+    fn stale_socket_rebound_private() {
+        let (_dir, path) = temp_socket();
+        drop(UnixListener::bind(&path).unwrap());
+        std::fs::set_permissions(&path, Permissions::from_mode(0o777)).unwrap();
+        let Claim::Server(_listener) = claim(&path) else {
+            panic!("rebinds");
+        };
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn peer_uid_is_ours() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        assert_eq!(peer_uid(&a).unwrap(), euid());
+    }
+
+    #[test]
+    fn other_users_refused() {
+        assert_eq!(peer_allowed(Ok(501), 501), Ok(()));
+        assert!(peer_allowed(Ok(502), 501).is_err());
+        assert!(peer_allowed(Ok(0), 501).is_err(), "not even root");
+        assert!(peer_allowed(Err(io::Error::other("?")), 501).is_err());
+    }
+
+    #[test]
+    fn release_keeps_a_new_claimers_socket() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(first) = claim(&path) else {
+            panic!("binds");
+        };
+        // Another `luc` (or the app this one starts) claims while the
+        // first lets go.
+        let mut second = None;
+        release_with(first, &path, || second = Some(claim(&path)));
+        let Some(Claim::Server(second)) = second else {
+            panic!("the other claimer binds");
+        };
+        second.set_nonblocking(true).unwrap();
+        let _client = UnixStream::connect(&path).expect("its socket is still there");
+        assert!(second.accept().is_ok(), "and it is the one listening");
+        assert!(matches!(claim(&path), Claim::Client(_)), "one app only");
+    }
+
+    #[test]
+    fn send_times_out_after_delivery() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(listener) = claim(&path) else {
+            panic!("binds");
+        };
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            // Never replies while the client waits.
+            std::thread::sleep(Duration::from_millis(500));
+            line
+        });
+        let stream = UnixStream::connect(&path).unwrap();
+        let request = CliRequest::new(PathBuf::from("/w"), Vec::new());
+        assert_eq!(
+            send(stream, &request, Duration::from_millis(100)),
+            Err(SendError::NoReplyInTime)
+        );
+        assert!(!server.join().unwrap().is_empty(), "the request arrived");
+    }
+
+    #[test]
+    fn activate_request() {
+        let request = CliRequest::activate(PathBuf::from("/"));
+        assert!(request.activate && request.paths.is_empty());
+        let old: CliRequest =
+            serde_json::from_str(r#"{"version":1,"cwd":"/w","paths":[]}"#).unwrap();
+        assert!(!old.activate, "defaults to false");
     }
 }

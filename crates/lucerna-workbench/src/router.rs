@@ -386,7 +386,11 @@ pub fn open_then(request: OpenRequest, done: OpenDone, cx: &mut App) {
 /// Answers a request `luc` sent over the socket ([`crate::cli_socket`]):
 /// opens its paths ([`Source::Cli`], [`Target::Auto`]) and replies with
 /// the result, after the restore when one runs. A request from a newer
-/// `luc` is refused.
+/// `luc` is refused. One to [`CliRequest::activate`] the app does what a
+/// click on its Dock icon does ([`reopen`]); during a restore, the
+/// restore brings the windows up.
+///
+/// [`CliRequest::activate`]: crate::cli_socket::CliRequest::activate
 #[cfg(unix)]
 pub fn answer_cli(
     request: crate::cli_socket::CliRequest,
@@ -398,6 +402,14 @@ pub fn answer_cli(
     if let Some(refused) = reply_for_version(request.version) {
         tracing::warn!(version = request.version, "a newer luc asked to open");
         reply.send(refused).ok();
+        return;
+    }
+    if request.activate && request.paths.is_empty() {
+        let restoring = router(cx).borrow().restoring;
+        if !restoring {
+            reopen(cx);
+        }
+        reply.send(CliReply::ok()).ok();
         return;
     }
     let request = OpenRequest {
@@ -547,6 +559,16 @@ pub(crate) fn window_showing(path: &Path, cx: &mut App) -> Option<AnyWindowHandl
         .filter(|e| e.shown.kind() == kind)
         .max_by_key(|e| e.last_active)
         .map(|e| e.handle)
+}
+
+/// What a click on the Dock icon does (spec M9): the most recently used
+/// window comes forward, or the Welcome screen opens in a new window
+/// when there is none.
+pub fn reopen(cx: &mut App) {
+    match windows(cx).first() {
+        Some((handle, _)) => activate(*handle, cx),
+        None => open_welcome(Target::NewWindow, cx),
+    }
 }
 
 /// Brings `handle` to the front and makes it the most recently used.

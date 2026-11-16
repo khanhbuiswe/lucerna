@@ -37,6 +37,9 @@ unicode-segmentation.workspace = true
 unicode-width.workspace = true
 url.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 lucerna-extension = { workspace = true, features = ["test-support"] }

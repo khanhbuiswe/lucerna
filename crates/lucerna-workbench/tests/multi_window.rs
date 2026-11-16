@@ -1265,3 +1265,70 @@ fn cli_newer_version_rejected(cx: &mut TestAppContext) {
     );
     assert!(kinds(cx).is_empty(), "nothing opens");
 }
+
+/// `luc` in `/` with no path while the app runs: as a click on the Dock
+/// icon, the Welcome screen when no window is open, else the most
+/// recently used window comes forward and nothing opens (spec M9).
+#[cfg(unix)]
+#[gpui::test]
+fn cli_activate_reopens(cx: &mut TestAppContext) {
+    use futures::channel::oneshot;
+    use lucerna_workbench::cli_socket::{CliReply, CliRequest};
+
+    routed(&[], cx);
+    open_routed(Vec::new(), Target::Auto, cx);
+    let activate = |cx: &mut TestAppContext| {
+        let (tx, mut rx) = oneshot::channel();
+        cx.update(|cx| router::answer_cli(CliRequest::activate(PathBuf::from("/")), tx, cx));
+        cx.run_until_parked();
+        assert_eq!(rx.try_recv().unwrap(), Some(CliReply::ok()));
+    };
+    activate(cx);
+    assert_eq!(kinds(cx), vec![WindowKind::Welcome], "Welcome, not `/`");
+    let (a, b) = (project(cx), project(cx));
+    open_routed(vec![a.clone()], Target::NewWindow, cx);
+    open_routed(vec![b.clone()], Target::NewWindow, cx);
+    let (front, _) = routed_windows(cx)[0];
+    activate(cx);
+    assert_eq!(cx.update(|cx| cx.windows().len()), 3, "nothing new opens");
+    assert_eq!(
+        routed_windows(cx)[0].0,
+        front,
+        "the last used stays in front"
+    );
+}
+
+/// The detach path of `luc <file>`: the started app opens the file from
+/// its launch, then `luc` sends the same path; rule 1 only focuses it, no
+/// second window or tab.
+#[cfg(unix)]
+#[gpui::test]
+fn cli_same_file_as_launch_opens_once(cx: &mut TestAppContext) {
+    use futures::channel::oneshot;
+    use lucerna_workbench::cli_socket::{CliReply, CliRequest};
+
+    routed(&[], cx);
+    let a = project(cx);
+    let file = a.join("src").join("x.rs");
+    open_routed(vec![file.clone()], Target::Auto, cx);
+    let (tx, mut rx) = oneshot::channel();
+    cx.update(|cx| router::answer_cli(CliRequest::new(a.clone(), vec![file.clone()]), tx, cx));
+    cx.run_until_parked();
+    assert_eq!(rx.try_recv().unwrap(), Some(CliReply::ok()));
+    assert_eq!(kinds(cx), vec![WindowKind::File(file.clone())]);
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+    let handle = routed_workbench(&WindowKind::File(file.clone()), cx);
+    let tabs = handle
+        .read_with(cx, |wb, cx| {
+            let groups = wb.editor_groups().read(cx);
+            groups
+                .model()
+                .groups()
+                .iter()
+                .map(|g| g.tabs.len())
+                .sum::<usize>()
+        })
+        .unwrap();
+    assert_eq!(tabs, 1, "one tab on the file");
+    assert_eq!(active_tab(handle, cx), Some(file));
+}

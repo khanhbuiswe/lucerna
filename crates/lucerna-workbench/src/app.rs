@@ -220,10 +220,7 @@ fn quit_if_no_window(what: &str, cx: &mut App) {
 /// screen in a new window, as VS Code opens an empty one. With windows
 /// that are only minimized, the most recently used comes forward.
 fn on_reopen(cx: &mut App) {
-    match router::windows(cx).first() {
-        Some((handle, _)) => router::activate(*handle, cx),
-        None => router::open_welcome(Target::NewWindow, cx),
-    }
+    router::reopen(cx);
 }
 
 /// [`on_reopen`], which the test platform cannot call.
