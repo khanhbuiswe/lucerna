@@ -30,6 +30,8 @@ use crate::explorer::{ClipOp, ExplorerClipboard, ExplorerView, SelectedKind};
 use crate::extensions::{ExtensionService, ExtensionsPage, Toast, installable_ids};
 use crate::git::branch_picker::ShownBranchPicker;
 use crate::git::{GitStore, GitStoreEvent};
+use crate::hot_exit::HotExit;
+use crate::hot_exit::store::WorkspaceKey;
 use crate::hover::SHOW_HOVER;
 use crate::language_servers::LanguageServers;
 use crate::layout::panel::{self, EDITOR_MIN_SIZE, PanelPosition, PanelSash, PanelState};
@@ -284,6 +286,9 @@ pub struct Workbench {
     /// Fresh installs whose index entry had not arrived when looked at.
     pub(crate) fresh_installs_waiting: Vec<String>,
     persistence: Option<Persistence>,
+    /// Backs up unsaved documents; `None` without a data dir (hot exit
+    /// off).
+    hot_exit: Option<Entity<HotExit>>,
     /// A quit or window close is waiting on the save prompt.
     confirming_quit: bool,
 }
@@ -582,6 +587,13 @@ impl Workbench {
             None => Worktree::start(root.clone(), scan_options.clone()),
         };
         let trust = Trust::new(store.as_ref().map(|s| s.data_dir().to_path_buf()));
+        let hot_exit = store.as_ref().map(|store| {
+            let key = match &single_file_path {
+                Some(file) => WorkspaceKey::File(file.clone()),
+                None => WorkspaceKey::Folder(root.clone()),
+            };
+            HotExit::new(documents.clone(), store.data_dir().to_path_buf(), key, cx)
+        });
         let restored = store
             .as_ref()
             .and_then(WorkspaceStateStore::load)
@@ -855,6 +867,7 @@ impl Workbench {
             fresh_installs_seen,
             fresh_installs_waiting: Vec::new(),
             persistence: None,
+            hot_exit,
             confirming_quit: false,
         };
         let weak = cx.weak_entity();
@@ -1632,6 +1645,12 @@ impl Workbench {
     /// Every open file, shown by the code views in the tabs.
     pub fn documents(&self) -> &Entity<Documents> {
         &self.documents
+    }
+
+    /// What backs up this window's unsaved documents; `None` without a
+    /// data dir, where hot exit is off.
+    pub fn hot_exit(&self) -> Option<&Entity<HotExit>> {
+        self.hot_exit.as_ref()
     }
 
     /// The language servers of this window's folder.

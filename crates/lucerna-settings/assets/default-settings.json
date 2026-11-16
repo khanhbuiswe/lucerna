@@ -37,6 +37,7 @@
   "files.trimTrailingWhitespace": false,
   "files.autoSave": "off",
   "files.autoSaveDelay": 1000,
+  "files.hotExit": "onExit",
   "files.saveConflictResolution": "askUser",
   "lucerna.externalChanges.autoMerge": true,
   "search.exclude": { "**/node_modules": true, "**/target": true },

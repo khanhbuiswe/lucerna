@@ -151,6 +151,42 @@ impl Stamp {
             len: meta.len(),
         }
     }
+
+    /// The modification time as seconds and nanoseconds since the Unix
+    /// epoch (`None` when unknown or before it), and the size: how a
+    /// hot exit backup keeps the stamp.
+    pub(crate) fn to_parts(self) -> (Option<(u64, u32)>, u64) {
+        let modified = self
+            .modified
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|d| (d.as_secs(), d.subsec_nanos()));
+        (modified, self.len)
+    }
+
+    /// The stamp [`Stamp::to_parts`] gave these parts.
+    #[cfg_attr(not(test), expect(dead_code, reason = "restoring a backup uses it"))]
+    pub(crate) fn from_parts(modified: Option<(u64, u32)>, len: u64) -> Stamp {
+        Stamp {
+            modified: modified.map(|(secs, nanos)| {
+                SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos)
+            }),
+            len,
+        }
+    }
+}
+
+/// What a hot exit backup of an unsaved document is made of
+/// ([`Documents::backup_source`]).
+pub(crate) struct BackupSource {
+    /// The unsaved text.
+    pub text: BufferSnapshot,
+    /// The file's text the unsaved changes were made on.
+    pub base: Option<BufferSnapshot>,
+    /// The file's stamp as last loaded or saved.
+    pub stamp: Option<Stamp>,
+    pub encoding: &'static str,
+    pub bom: bool,
+    pub line_ending: LineEnding,
 }
 
 pub(crate) type Edits = Vec<(Range<usize>, Arc<str>)>;
@@ -971,6 +1007,21 @@ impl Documents {
             .get(&self.key(path))
             .and_then(|d| d.buffer.as_ref())
             .is_some_and(Buffer::is_dirty)
+    }
+
+    /// What a backup of the document at `path` holds: `None` unless its
+    /// text is loaded and has unsaved changes.
+    pub(crate) fn backup_source(&self, path: &Path) -> Option<BackupSource> {
+        let doc = self.docs.get(&self.key(path))?;
+        let buffer = doc.buffer.as_ref().filter(|b| b.is_dirty())?;
+        Some(BackupSource {
+            text: buffer.snapshot(),
+            base: doc.base.clone(),
+            stamp: doc.stamp,
+            encoding: buffer.encoding().name(),
+            bom: buffer.has_bom(),
+            line_ending: buffer.line_ending(),
+        })
     }
 
     /// Whether a document is open at `path` or under it (a tab of a file
@@ -2749,5 +2800,21 @@ mod tests {
         let result = contain(|| -> u32 { panic!("boom") });
         assert_eq!(result, Err(LoadError::Io("internal error: boom".into())));
         assert_eq!(contain(|| 7), Ok(7));
+    }
+
+    #[test]
+    fn stamp_parts_round_trip() {
+        let stamp = Stamp {
+            modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 5)),
+            len: 42,
+        };
+        assert_eq!(stamp.to_parts(), (Some((1_700_000_000, 5)), 42));
+        let (modified, len) = stamp.to_parts();
+        assert_eq!(Stamp::from_parts(modified, len), stamp);
+        let unknown = Stamp {
+            modified: None,
+            len: 0,
+        };
+        assert_eq!(Stamp::from_parts(None, 0), unknown);
     }
 }
