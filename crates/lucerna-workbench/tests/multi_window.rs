@@ -995,7 +995,12 @@ fn close_last_window_keeps_app(cx: &mut TestAppContext) {
     assert!(routed_windows(cx).is_empty());
     assert!(cx.update(|cx| cx.windows().is_empty()));
     assert!(!file_item_disabled("New Window", cx), "New Window runs");
-    assert!(!file_item_disabled("Open…", cx) || !cfg!(target_os = "macos"));
+    let open = if cfg!(target_os = "macos") {
+        "Open…"
+    } else {
+        "Open Folder…"
+    };
+    assert!(!file_item_disabled(open, cx), "{open} runs");
     assert!(file_item_disabled("Save", cx), "Save needs a workbench");
     assert!(
         file_item_disabled("Close Folder", cx),
