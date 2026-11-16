@@ -1059,11 +1059,14 @@ impl Workbench {
     }
 
     /// What this window shows, which Open Recent leaves out: the folder,
-    /// and in single-file mode the file too.
+    /// or in single-file mode only the file (its parent folder is not
+    /// open).
     pub fn opened_paths(&self) -> Vec<PathBuf> {
-        let mut paths = vec![self.root.clone()];
-        paths.extend(self.single_file.clone());
-        paths
+        vec![
+            self.single_file
+                .clone()
+                .unwrap_or_else(|| self.root.clone()),
+        ]
     }
 
     /// Whether the window shows one file alone (single-file mode).

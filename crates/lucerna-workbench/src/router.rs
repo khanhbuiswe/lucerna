@@ -760,9 +760,9 @@ fn index_or_adopt(handle: AnyWindowHandle, cx: &mut App) -> Option<usize> {
     }
     let id = handle.window_id();
     let shown = if let Ok(kind) =
-        WindowHandle::<Workbench>::new(id).read_with(cx, |wb, _| match wb.opened_paths().get(1) {
-            Some(file) => WindowKind::File(file.clone()),
-            None => WindowKind::Folder(wb.root().to_path_buf()),
+        WindowHandle::<Workbench>::new(id).read_with(cx, |wb, _| match wb.opened_paths().pop() {
+            Some(file) if wb.is_single_file() => WindowKind::File(file),
+            _ => WindowKind::Folder(wb.root().to_path_buf()),
         }) {
         Shown::Workbench(kind)
     } else if WindowHandle::<OnboardingPage>::new(id).read(cx).is_ok() {
