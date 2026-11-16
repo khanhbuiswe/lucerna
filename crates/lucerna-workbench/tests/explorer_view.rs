@@ -1235,3 +1235,51 @@ fn scan_depth_setting_reaches_scan_options(cx: &mut TestAppContext) {
         assert_eq!(wb.scan_options().home, std::env::home_dir());
     });
 }
+
+/// A `files.scanDepth` that is not an integer falls back to the default
+/// depth instead of meaning "no limit"; only `0` or less means that.
+#[gpui::test]
+fn scan_depth_of_wrong_type_is_the_default(cx: &mut TestAppContext) {
+    for json in [
+        r#"{ "files.scanDepth": "2" }"#,
+        r#"{ "files.scanDepth": 2.5 }"#,
+    ] {
+        init(cx, Some(json));
+        let dir = deep_project();
+        let (wb, vcx) = open(dir.path(), cx);
+        assert_eq!(
+            wb.read_with(vcx, |wb, _| wb.scan_options().scan_depth),
+            Some(5),
+            "{json}"
+        );
+    }
+    init(cx, Some(r#"{ "files.scanDepth": -1 }"#));
+    let dir = deep_project();
+    let (wb, vcx) = open(dir.path(), cx);
+    assert_eq!(
+        wb.read_with(vcx, |wb, _| wb.scan_options().scan_depth),
+        None
+    );
+}
+
+/// Opening a file inside an unloaded folder loads the folders on the way
+/// even with `explorer.autoReveal` off; the tree is not revealed.
+#[gpui::test]
+fn opening_file_in_unloaded_folder_loads_it_without_auto_reveal(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{ "files.scanDepth": 2, "explorer.autoReveal": false }"#),
+    );
+    let dir = deep_project();
+    let (wb, cx) = open(dir.path(), cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(p("a/b/c.txt"), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    deliver_loaded(&wb, "a/b/c.txt", "a/b", cx);
+    assert!(wb.read_with(cx, |wb, _| {
+        !wb.worktree().snapshot().is_unloaded(Path::new("a/b"))
+    }));
+    assert_eq!(selection(&wb, cx), Selection::Root);
+    assert_eq!(visible(&wb, cx), ["a"]);
+}

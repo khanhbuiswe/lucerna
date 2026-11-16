@@ -111,8 +111,15 @@ pub struct SearchView {
     /// The window's settings: `search.*` and `files.exclude`.
     settings: Entity<WindowSettings>,
     /// Folders the worktree has not loaded (`files.scanDepth`): searches
-    /// skip them. Kept current by the workbench.
-    unloaded: Arc<HashSet<Arc<Path>>>,
+    /// skip them. Kept current by the workbench; `None` until its first
+    /// scan completes, when which folders are unloaded is not known yet.
+    unloaded: Option<Arc<HashSet<Arc<Path>>>>,
+    /// A search was asked for while `unloaded` was unknown: it runs once
+    /// the set arrives.
+    search_pending: bool,
+    /// The home folder: parent folders' ignore files count up to it, as in
+    /// the worktree's scan.
+    home: Option<PathBuf>,
 }
 
 /// The most query characters the tab title shows.
@@ -179,14 +186,27 @@ impl SearchView {
             searchable,
             restore_changes: 0,
             settings,
-            unloaded: Arc::default(),
+            // Without a scan (single-file mode) nothing is unloaded.
+            unloaded: (!searchable).then(Arc::default),
+            search_pending: false,
+            home: None,
         }
     }
 
-    /// Sets the folders later searches skip: the worktree's unloaded ones.
-    pub fn set_unloaded(&mut self, unloaded: &HashSet<Arc<Path>>) {
-        if *self.unloaded != *unloaded {
-            self.unloaded = Arc::new(unloaded.clone());
+    /// The home folder: parent folders' ignore files count up to it. The
+    /// workbench passes its scan's, so search and scan agree.
+    pub fn set_home(&mut self, home: Option<PathBuf>) {
+        self.home = home;
+    }
+
+    /// Sets the folders later searches skip: the worktree's unloaded ones,
+    /// once its scan completed. A search asked for before then runs now.
+    pub fn set_unloaded(&mut self, unloaded: &HashSet<Arc<Path>>, cx: &mut Context<Self>) {
+        if self.unloaded.as_deref() != Some(unloaded) {
+            self.unloaded = Some(Arc::new(unloaded.clone()));
+        }
+        if std::mem::take(&mut self.search_pending) {
+            self.run_search(cx);
         }
     }
 
@@ -530,6 +550,13 @@ impl SearchView {
             return;
         }
         self._debounce = Task::ready(());
+        // Walking before the scan says which folders are unloaded would
+        // read every folder `files.scanDepth` leaves alone.
+        let Some(unloaded) = self.unloaded.clone() else {
+            self.search_pending = true;
+            return;
+        };
+        self.search_pending = false;
         self.stale = false;
         self.cancel_search();
         self.done = None;
@@ -575,9 +602,8 @@ impl SearchView {
                 .collect()
         };
         let (root, cancel, generation) = (self.root.clone(), self.cancel.clone(), self.generation);
-        let unloaded = self.unloaded.clone();
         // As in the scan: parent folders' ignore files count up to `$HOME`.
-        let home = std::env::home_dir();
+        let home = self.home.clone();
         let (sink, events) = crossbeam_channel::unbounded();
         let (forward, mut received) = futures::channel::mpsc::unbounded();
         // `search` blocks: it runs on its own thread while this background

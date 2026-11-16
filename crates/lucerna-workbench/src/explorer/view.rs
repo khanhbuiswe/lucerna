@@ -125,6 +125,10 @@ pub struct ExplorerView {
     focus: FocusHandle,
     name_edit: Option<NameEdit>,
     pending_reveal: Option<PendingReveal>,
+    /// A file opened with `explorer.autoReveal` off inside an unloaded
+    /// folder: the folders on the way load, one `Loaded` at a time, but
+    /// nothing is revealed.
+    pending_load: Option<Arc<Path>>,
     /// The input of an edit ended because its folder vanished: if it still
     /// held the focus, the next frame gives the focus to the sidebar.
     refocus_sidebar: Option<FocusHandle>,
@@ -173,6 +177,7 @@ impl ExplorerView {
             focus,
             name_edit: None,
             pending_reveal: None,
+            pending_load: None,
             refocus_sidebar: None,
             pending_rename: None,
             cut: None,
@@ -1010,6 +1015,12 @@ impl ExplorerView {
         self.load(path, cx);
     }
 
+    /// Loads the folders on the way to `path` without revealing it.
+    fn load_quietly(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        self.pending_load = Some(path.clone());
+        self.load(path, cx);
+    }
+
     /// The icon the active icon theme gives the visible row at `path`
     /// (root-relative); `None` when no such row is shown.
     pub fn row_icon(&self, path: &Path, cx: &App) -> Option<IconSource> {
@@ -1062,6 +1073,11 @@ impl ExplorerView {
                     && self.model.unloaded_ancestor(&path).is_some()
                 {
                     self.load(path, cx);
+                }
+                if let Some(path) = self.pending_load.take()
+                    && self.model.unloaded_ancestor(&path).is_some()
+                {
+                    self.load_quietly(path, cx);
                 }
             }
             // The active tab may have been opened before the tree had it.
@@ -1124,6 +1140,10 @@ impl ExplorerView {
             .get::<bool>("explorer.autoReveal", None, cx)
             .unwrap_or(true);
         if !enabled {
+            // An opened file's folders still load (spec: scan depth).
+            if !self.model.contains(path) && self.model.unloaded_ancestor(path).is_some() {
+                self.load_quietly(Arc::from(path), cx);
+            }
             return;
         }
         // Reveal first: `select` keeps a hidden path, but its kind is only

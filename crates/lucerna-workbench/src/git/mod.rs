@@ -193,6 +193,9 @@ pub struct GitStore {
     git_override: Option<GitBinary>,
     /// The window whose status bar shows what goes wrong here.
     window: Option<gpui::WindowId>,
+    /// Repository discovery stops here (set by the workbench, from its
+    /// scan options); `None` looks all the way up.
+    home: Option<PathBuf>,
     _settings: Subscription,
 }
 
@@ -202,6 +205,12 @@ impl GitStore {
     /// Tells the store which window it belongs to.
     pub fn set_window(&mut self, window: gpui::WindowId) {
         self.window = Some(window);
+    }
+
+    /// The home folder: as in Zed, a repository above it is not the
+    /// project's. Takes effect on the next discovery.
+    pub fn set_home(&mut self, home: Option<PathBuf>) {
+        self.home = home;
     }
 
     /// Starts in [`GitState::Off`]; nothing runs until `set_trusted(true)`.
@@ -230,6 +239,7 @@ impl GitStore {
             not_found_reported: false,
             too_many_reported: false,
             window: None,
+            home: None,
             git_override: None,
         }
     }
@@ -421,6 +431,7 @@ impl GitStore {
         }
         let epoch = self.epoch;
         let root = self.root.clone();
+        let home = self.home.clone();
         let setting = self.settings.path.clone();
         let git = self.git_override.clone();
         // The watcher is not started on GPUI's test scheduler, which rejects
@@ -434,7 +445,7 @@ impl GitStore {
         self.setup = Some(cx.spawn(async move |this, cx| {
             let found = cx
                 .background_executor()
-                .spawn(async move { discover(git, setting, &root, watch_tx) })
+                .spawn(async move { discover(git, setting, &root, home.as_deref(), watch_tx) })
                 .await;
             this.update(cx, |s, cx| s.finish_setup(epoch, found, watch_rx, cx))
                 .ok();
@@ -753,6 +764,7 @@ fn discover(
     git: Option<GitBinary>,
     setting: Option<PathBuf>,
     root: &Path,
+    home: Option<&Path>,
     watch: Option<WatchSender>,
 ) -> Setup {
     if !GitStore::has_repo_hint(root) {
@@ -773,7 +785,7 @@ fn discover(
         }
     };
     // As in Zed, a repository above the home folder is not the project's.
-    match Repo::discover_with_ceiling(git, root, std::env::home_dir().as_deref()) {
+    match Repo::discover_with_ceiling(git, root, home) {
         Err(GitError::NotFound) => Setup::NoGit,
         Ok(Some(repo)) => {
             let watcher = watch.and_then(|tx| {

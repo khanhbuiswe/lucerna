@@ -1789,3 +1789,43 @@ fn unsaved_changes_are_searched_and_clicked(cx: &mut TestAppContext) {
         vec![(p("a.rs"), (1..=10).collect())]
     );
 }
+
+/// `files.scanDepth`: until the first scan completes, which folders are
+/// unloaded is unknown, so a search (a restored one here) waits for
+/// `ScanComplete` instead of walking every folder, then runs and skips
+/// the unloaded ones.
+#[gpui::test]
+fn search_before_scan_complete_waits_for_it(cx: &mut TestAppContext) {
+    init(cx);
+    cx.update_global::<AppState, _>(|state, _| {
+        let json = r#"{ "lucerna.lsp.enabled": false, "files.scanDepth": 2 }"#;
+        state.settings.set_layer(Layer::User, json).unwrap();
+    });
+    let dir = project(&[("top.txt", "needle\n"), ("a/b/deep.txt", "needle\n")]);
+    let data = TempDir::new().unwrap();
+    let state = SearchState {
+        query: "needle".into(),
+        ..Default::default()
+    };
+    saved_search(dir.path(), data.path(), state, true);
+    let (root, data_dir) = (dir.path().to_path_buf(), data.path().to_path_buf());
+    let (wb, cx) =
+        cx.add_window_view(move |window, cx| Workbench::with_data_dir(root, data_dir, window, cx));
+    draw(cx);
+    settle_search(cx);
+    let view = search(&wb, cx);
+    assert!(
+        files(&view, cx).is_empty(),
+        "nothing walked before the scan"
+    );
+
+    finish_scan(&wb, cx);
+    settle_search(cx);
+    let found = files(&view, cx);
+    assert_eq!(
+        found.len(),
+        1,
+        "only loaded folders are searched: {found:?}"
+    );
+    assert!(found[0].0.ends_with("top.txt"));
+}

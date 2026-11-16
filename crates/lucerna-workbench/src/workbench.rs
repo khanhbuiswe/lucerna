@@ -401,12 +401,18 @@ impl Workbench {
             let workbench = cx.weak_entity();
             cx.new(|cx| ExtensionsPage::new(workbench, cx))
         };
+        // Read once: the scan, search and git discovery share its `$HOME`.
+        let scan_options = scan_options(settings.read(cx).view(cx));
         let search_view = {
             let (root, workbench) = (root.clone(), cx.weak_entity());
             let searchable = single_file.is_none();
+            let home = scan_options.home.clone();
             let (settings, documents) = (settings.clone(), documents.clone());
             cx.new(|cx| {
-                SearchView::new(root, workbench, documents, searchable, settings, window, cx)
+                let mut view =
+                    SearchView::new(root, workbench, documents, searchable, settings, window, cx);
+                view.set_home(home);
+                view
             })
         };
         let references_view = {
@@ -431,9 +437,11 @@ impl Workbench {
         let git = {
             let settings = settings.clone();
             let id = window.window_handle().window_id();
+            let home = scan_options.home.clone();
             cx.new(|cx| {
                 let mut store = GitStore::new(root.clone(), settings, cx);
                 store.set_window(id);
+                store.set_home(home);
                 store
             })
         };
@@ -587,7 +595,6 @@ impl Workbench {
             let (groups, docs) = (editor_groups.clone(), documents.clone());
             cx.new(|_| DocumentStatusItem::new(groups, docs))
         };
-        let scan_options = scan_options(settings.read(cx).view(cx));
         let scan_started = std::time::Instant::now();
         let scanning = single_file.is_none();
         let single_file_path = single_file.as_ref().map(|rel| root.join(rel));
@@ -1353,8 +1360,12 @@ impl Workbench {
             }
         }
         let snapshot = self.worktree.snapshot();
-        self.search_view
-            .update(cx, |view, _| view.set_unloaded(snapshot.unloaded()));
+        // Set on the first `ScanComplete`: until then the unloaded folders
+        // are not all known, and searches wait.
+        if self.scan_complete_logged {
+            self.search_view
+                .update(cx, |view, cx| view.set_unloaded(snapshot.unloaded(), cx));
+        }
         // Only a finished scan lists every unloaded folder.
         if matches!(ev, WorktreeEvent::ScanComplete | WorktreeEvent::Rescanned) {
             self.show_unloaded_notice(&snapshot, cx);
@@ -3112,11 +3123,16 @@ fn keymap_generation(cx: &App) -> u64 {
         .map_or(0, ConfigState::keymap_generation)
 }
 
+/// The default `files.scanDepth`, for a value that is not an integer.
+const DEFAULT_SCAN_DEPTH: i64 = 5;
+
 /// The options of the folder scan: `files.exclude`, and `files.scanDepth`
 /// (`0` or less scans everything). Lookups above the root stop at `$HOME`,
 /// as search and git discovery do.
 fn scan_options(settings: SettingsView<'_>) -> ScanOptions {
-    let depth = settings.get::<i64>("files.scanDepth", None).unwrap_or(0);
+    let depth = settings
+        .get::<i64>("files.scanDepth", None)
+        .unwrap_or(DEFAULT_SCAN_DEPTH);
     ScanOptions {
         exclude: enabled_globs(settings, "files.exclude"),
         scan_depth: usize::try_from(depth).ok().filter(|d| *d > 0),
