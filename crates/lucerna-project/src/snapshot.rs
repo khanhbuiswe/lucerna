@@ -18,6 +18,18 @@ pub struct Entry {
     pub kind: EntryKind,
 }
 
+/// Whether the opened folder itself could be read when last scanned.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum RootStatus {
+    #[default]
+    Readable,
+    /// Renamed, moved to the Trash, deleted, or its drive ejected.
+    Missing,
+    /// It is there but cannot be listed; the reason, as the OS gives it
+    /// (`Permission denied`).
+    Unreadable(Arc<str>),
+}
+
 /// Immutable view of the scanned tree. Cloning is cheap.
 #[derive(Debug, Clone)]
 pub struct WorktreeSnapshot {
@@ -28,6 +40,7 @@ pub struct WorktreeSnapshot {
     by_parent: Arc<Vec<Entry>>,
     index: Arc<HashMap<Arc<Path>, Range<usize>>>,
     complete: bool,
+    root_status: RootStatus,
 }
 
 impl WorktreeSnapshot {
@@ -65,7 +78,20 @@ impl WorktreeSnapshot {
             by_parent: Arc::new(by_parent),
             index: Arc::new(index),
             complete,
+            root_status: RootStatus::Readable,
         }
+    }
+
+    /// The same tree, scanned with the root in `status`. Test support too.
+    #[doc(hidden)]
+    pub fn with_root_status(mut self, status: RootStatus) -> Self {
+        self.root_status = status;
+        self
+    }
+
+    /// Whether the root could be read; when not, the tree is empty.
+    pub fn root_status(&self) -> &RootStatus {
+        &self.root_status
     }
 
     pub fn entries(&self) -> &[Entry] {

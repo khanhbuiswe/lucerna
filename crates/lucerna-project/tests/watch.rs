@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use lucerna_project::{ChangeKind, ScanOptions, Worktree, WorktreeEvent};
+use lucerna_project::{ChangeKind, RootStatus, ScanOptions, Worktree, WorktreeEvent};
 use tempfile::TempDir;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
@@ -329,4 +329,83 @@ fn case_only_rename_of_a_folder_leaves_only_the_new_subtree() {
         "{all:?}"
     );
     assert!(has(&all, "src", ChangeKind::Removed), "{all:?}");
+}
+
+/// Waits for a `Rescanned` event, for at most the timeout.
+fn wait_for_rescan(wt: &Worktree) -> bool {
+    let rx = wt.events();
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(WorktreeEvent::Rescanned) => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+}
+
+/// T4-1: the opened folder renamed away (Move to Trash is a rename too):
+/// the tree empties and says the root is missing; renamed back, it is
+/// whole again.
+#[test]
+fn root_renamed_away_and_back() {
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("proj");
+    fs::create_dir(&proj).unwrap();
+    fs::write(proj.join("a.txt"), "x").unwrap();
+    let wt = started(&proj);
+
+    let away = dir.path().join("proj2");
+    fs::rename(&proj, &away).unwrap();
+    assert!(wait_for_rescan(&wt), "no rescan after the root moved away");
+    let snapshot = wt.snapshot();
+    assert_eq!(*snapshot.root_status(), RootStatus::Missing);
+    assert!(snapshot.entries().is_empty(), "{:?}", snapshot.entries());
+
+    fs::rename(&away, &proj).unwrap();
+    assert!(wait_for_rescan(&wt), "no rescan after the root came back");
+    let snapshot = wt.snapshot();
+    assert_eq!(*snapshot.root_status(), RootStatus::Readable);
+    assert!(snapshot.contains(Path::new("a.txt")));
+}
+
+/// Gives the folder its permissions back, so the temporary folder can go.
+#[cfg(unix)]
+struct Restore<'a>(&'a Path);
+
+#[cfg(unix)]
+impl Drop for Restore<'_> {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// T3-5: a root that cannot be listed (`chmod 000`, a privacy denial)
+/// says why instead of looking empty, until it can be read again.
+#[cfg(unix)]
+#[test]
+fn unreadable_root_says_why_until_it_can_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("proj");
+    fs::create_dir(&proj).unwrap();
+    fs::write(proj.join("a.txt"), "x").unwrap();
+    fs::set_permissions(&proj, fs::Permissions::from_mode(0o000)).unwrap();
+    let _restore = Restore(&proj);
+    if fs::read_dir(&proj).is_ok() {
+        return; // root ignores permissions
+    }
+    let wt = started(&proj);
+    let status = wt.snapshot().root_status().clone();
+    assert!(
+        matches!(&status, RootStatus::Unreadable(why) if &**why == "Permission denied"),
+        "{status:?}"
+    );
+
+    fs::set_permissions(&proj, fs::Permissions::from_mode(0o755)).unwrap();
+    wait_for_snapshot(&wt, |s| s.contains(Path::new("a.txt")));
+    assert_eq!(*wt.snapshot().root_status(), RootStatus::Readable);
+    assert!(wt.snapshot().contains(Path::new("a.txt")));
 }

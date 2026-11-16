@@ -17,5 +17,5 @@ pub use search::{
 };
 pub use watch::DEBOUNCE;
 
-pub use snapshot::{Entry, EntryKind, WorktreeSnapshot};
+pub use snapshot::{Entry, EntryKind, RootStatus, WorktreeSnapshot};
 pub use worktree::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};

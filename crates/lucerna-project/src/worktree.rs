@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -16,7 +16,7 @@ use ignore::overrides::OverrideBuilder;
 
 use crate::coalesce::{Coalesced, RESCAN_THRESHOLD};
 use crate::ignored::{IgnoreChecker, is_ignore_source};
-use crate::snapshot::{Entry, EntryKind, WorktreeSnapshot};
+use crate::snapshot::{Entry, EntryKind, RootStatus, WorktreeSnapshot};
 use crate::watch::{Watcher, panic_message};
 
 /// How many times the initial scan is repeated when the watcher reports lost
@@ -108,6 +108,7 @@ impl Worktree {
             initial_scan: Cell::new(true),
             replay_until: Cell::new(None),
             ignores_case: Cell::new(None),
+            root_status: RefCell::new(RootStatus::Readable),
             #[cfg(test)]
             folders_listed: Cell::new(0),
             #[cfg(test)]
@@ -309,6 +310,8 @@ struct Worker {
     replay_until: Cell<Option<Instant>>,
     /// Whether the root's file system ignores case, once a probe could tell.
     ignores_case: Cell<Option<bool>>,
+    /// The root as the last scan found it; published with each snapshot.
+    root_status: RefCell<RootStatus>,
     /// How many folders the last batch listed to catch respelled paths.
     #[cfg(test)]
     folders_listed: Cell<usize>,
@@ -467,6 +470,14 @@ impl Worker {
         #[cfg(test)]
         if self.fail_next_apply.swap(false, Ordering::SeqCst) {
             panic!("injected apply failure");
+        }
+        // A report about the root itself: renamed away or back, moved to
+        // the Trash, its permissions changed.
+        let (root, changes): (Vec<Change>, Vec<Change>) = changes
+            .into_iter()
+            .partition(|c| c.path.as_os_str().is_empty());
+        if !root.is_empty() && self.root_report_calls_for_rescan() {
+            return true;
         }
         let snapshot = self
             .snapshot
@@ -629,6 +640,17 @@ impl Worker {
         changed < self.watch_started.get()
     }
 
+    /// Whether a report about the root itself needs a rescan: always,
+    /// except for a replay of the root's creation (FSEvents replays it for
+    /// a folder made just before the watch started) while the root is
+    /// still as the last scan found it.
+    fn root_report_calls_for_rescan(&self) -> bool {
+        if root_status(&self.root) != *self.root_status.borrow() {
+            return true;
+        }
+        fs::symlink_metadata(&self.root).map_or(true, |meta| !self.is_stale(&meta))
+    }
+
     /// Whether the root's file system ignores case (APFS and HFS+ by
     /// default, NTFS), probed once and then remembered. While the root holds
     /// no name with a cased letter the probe cannot tell, and the answer is
@@ -691,7 +713,8 @@ impl Worker {
     }
 
     fn publish(&self, entries: Vec<Entry>, complete: bool) {
-        let snap = WorktreeSnapshot::build(entries, complete);
+        let snap = WorktreeSnapshot::build(entries, complete)
+            .with_root_status(self.root_status.borrow().clone());
         *self.snapshot.lock().unwrap_or_else(|e| e.into_inner()) = snap;
     }
 
@@ -709,6 +732,14 @@ impl Worker {
         #[cfg(test)]
         if self.fail_next_scan.swap(false, Ordering::SeqCst) {
             panic!("injected scan failure");
+        }
+        // The walker skips an unreadable root as silently as any folder,
+        // and a root that is gone as well: say why the tree is empty.
+        let status = root_status(&self.root);
+        let readable = status == RootStatus::Readable;
+        *self.root_status.borrow_mut() = status;
+        if !readable {
+            return ScanOutcome::Completed;
         }
         let mut last_publish = Instant::now();
         for result in walk_builder(&self.root, opts).build() {
@@ -775,6 +806,30 @@ impl Listings {
             }
         }
         None
+    }
+}
+
+/// Whether `root` is there and can be listed. A file where the folder was
+/// counts as missing.
+fn root_status(root: &Path) -> RootStatus {
+    let unreadable = |err: std::io::Error| RootStatus::Unreadable(io_reason(&err).into());
+    match fs::metadata(root) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => RootStatus::Missing,
+        Err(err) => unreadable(err),
+        Ok(meta) if !meta.is_dir() => RootStatus::Missing,
+        Ok(_) => match fs::read_dir(root) {
+            Ok(_) => RootStatus::Readable,
+            Err(err) => unreadable(err),
+        },
+    }
+}
+
+/// The OS's text for `err` without the trailing ` (os error 13)`.
+fn io_reason(err: &std::io::Error) -> String {
+    let text = err.to_string();
+    match text.rfind(" (os error ") {
+        Some(at) if text.ends_with(')') => text[..at].to_string(),
+        _ => text,
     }
 }
 
@@ -898,6 +953,7 @@ mod tests {
             initial_scan: Cell::new(false),
             replay_until: Cell::new(None),
             ignores_case: Cell::new(None),
+            root_status: RefCell::new(RootStatus::Readable),
             folders_listed: Cell::new(0),
             fail_next_scan: Arc::new(AtomicBool::new(false)),
             fail_next_apply: Arc::new(AtomicBool::new(false)),
@@ -922,6 +978,40 @@ mod tests {
         assert!(!worker.is_stale(&meta), "grace period over");
         worker.initial_scan.set(true);
         assert!(worker.is_stale(&meta), "during the initial scan");
+    }
+
+    /// T4-1: a report about the root itself rescans, unless it is a
+    /// replay of the root's creation from before the scan, the root still
+    /// as the scan found it.
+    #[test]
+    fn a_root_report_rescans_unless_it_is_a_replay() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(dir.path().join("f"), "x").unwrap();
+        let worker = bare_worker(dir.path());
+        worker.publish(vec![entry("f", EntryKind::File)], true);
+        let root_report = || Coalesced::Changes(vec![change("", ChangeKind::Modified)]);
+        let opts = ScanOptions::default();
+
+        // The root's ctime is "before" watch_started (an hour ahead).
+        worker
+            .replay_until
+            .set(Some(Instant::now() + Duration::from_secs(60)));
+        assert!(!worker.apply_fs_events(root_report(), &opts), "a replay");
+        assert_eq!(sorted_paths(&worker), ["f"]);
+
+        worker
+            .replay_until
+            .set(Some(Instant::now() - Duration::from_millis(1)));
+        assert!(worker.apply_fs_events(root_report(), &opts), "window over");
+
+        // In the window, but the root is gone: not what the scan found.
+        worker
+            .replay_until
+            .set(Some(Instant::now() + Duration::from_secs(60)));
+        let root = dir.path().to_path_buf();
+        drop(dir);
+        assert!(!root.exists());
+        assert!(worker.apply_fs_events(root_report(), &opts), "root gone");
     }
 
     fn ignores_case(dir: &Path) -> bool {

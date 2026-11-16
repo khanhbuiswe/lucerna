@@ -36,6 +36,9 @@ pub enum Coalesced {
 /// write is. Removed-then-Added folds to Modified, so an atomic write reports
 /// only `Modified`. A rename into a fresh name therefore also comes out as
 /// `Modified`; the worktree reconciles kinds against its snapshot.
+///
+/// A report about the root itself (renamed away or back, its permissions
+/// changed) comes out as a change to the empty path.
 pub fn coalesce(events: Vec<RawEvent>, root: &Path) -> Coalesced {
     if events.len() > RESCAN_THRESHOLD || events.contains(&RawEvent::Overflow) {
         return Coalesced::Rescan;
@@ -43,12 +46,10 @@ pub fn coalesce(events: Vec<RawEvent>, root: &Path) -> Coalesced {
     let mut order: Vec<Arc<Path>> = Vec::new();
     let mut state: HashMap<Arc<Path>, Option<ChangeKind>> = HashMap::new();
     let mut apply = |abs: &Path, kind: ChangeKind| {
+        // The root itself stays, as the empty path.
         let Ok(rel) = abs.strip_prefix(root) else {
             return;
         };
-        if rel.as_os_str().is_empty() {
-            return;
-        }
         let slot = match state.get_mut(rel) {
             Some(slot) => slot,
             None => {

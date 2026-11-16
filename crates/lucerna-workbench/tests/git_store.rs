@@ -697,3 +697,31 @@ fn git_refresh_finds_a_new_repository(cx: &mut TestAppContext) {
         Some("main".to_owned())
     );
 }
+
+/// T4-1: the opened folder renamed away drops its marks at the rescan the
+/// worktree sends; renamed back, the next rescan finds the repository.
+#[gpui::test]
+fn root_renamed_away_and_back(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_t, parent) = repo();
+    let dir = parent.join("proj");
+    std::fs::create_dir(&dir).unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("new.txt"), "n\n").unwrap();
+    let store = store(&dir, cx);
+    let expected = HashMap::from([(p("new.txt"), FileStatus::Untracked)]);
+    assert_eq!(statuses(&store, cx), expected);
+
+    let away = parent.join("proj2");
+    std::fs::rename(&dir, &away).unwrap();
+    store.update(cx, |s, cx| s.rescan(cx));
+    cx.run_until_parked();
+    assert_eq!(store.read_with(cx, |s, _| s.state()), GitState::NoRepo);
+    assert!(statuses(&store, cx).is_empty());
+
+    std::fs::rename(&away, &dir).unwrap();
+    store.update(cx, |s, cx| s.rescan(cx));
+    cx.run_until_parked();
+    assert_eq!(store.read_with(cx, |s, _| s.state()), GitState::Ready);
+    assert_eq!(statuses(&store, cx), expected);
+}

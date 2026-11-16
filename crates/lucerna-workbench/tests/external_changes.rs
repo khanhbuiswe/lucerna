@@ -738,3 +738,79 @@ fn keep_mine_on_unreadable_file_still_checks_later_writes(cx: &mut TestAppContex
     assert_eq!(disk(&dir, "file.txt"), "agent wrote this later\n");
     assert!(cx.has_pending_prompt() || has_conflict(&wb, "file.txt", cx));
 }
+
+/// Waits until the worktree's own snapshot satisfies `cond` (the real
+/// watcher and rescan, not a hand-made event), for at most 10 s.
+fn wait_for_worktree(
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    cond: impl Fn(&lucerna_project::WorktreeSnapshot) -> bool,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| cond(&wb.worktree().snapshot())) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worktree never got there"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn explorer_message(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<String> {
+    cx.update(|_, cx| wb.read(cx).explorer().read(cx).root_message())
+}
+
+/// T4-1 and Review Focus 1: the opened folder renamed away (as Move to
+/// Trash does) turns every tab Deleted and the Explorer says so; renamed
+/// back, everything is as before, the unsaved text included.
+#[gpui::test]
+fn root_renamed_away_and_back_keeps_unsaved_text(cx: &mut TestAppContext) {
+    use lucerna_project::RootStatus;
+    init(cx, None);
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("proj");
+    fs::create_dir(&proj).unwrap();
+    fs::write(proj.join("file.txt"), "abc\n").unwrap();
+    fs::write(proj.join("other.txt"), "other\n").unwrap();
+    let root = proj.clone();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    wait_for_worktree(&wb, cx, |s| s.scan_complete());
+    open(&wb, "other.txt", cx);
+    let view = open(&wb, "file.txt", cx);
+    input("x", cx);
+    assert_eq!(explorer_message(&wb, cx), None);
+
+    let away = dir.path().join("proj2");
+    fs::rename(&proj, &away).unwrap();
+    wait_for_worktree(&wb, cx, |s| *s.root_status() == RootStatus::Missing);
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Rescanned, cx)
+    });
+    settle(cx);
+    assert_eq!(state(&wb, cx), Some(DocState::Deleted));
+    let docs = documents(&wb, cx);
+    assert_eq!(
+        docs.read_with(cx, |d, _| d.state(Path::new("other.txt")).cloned()),
+        Some(DocState::Deleted)
+    );
+    assert_eq!(text_of(&view, cx), "xabc\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert_eq!(
+        explorer_message(&wb, cx).as_deref(),
+        Some("Folder proj no longer exists")
+    );
+
+    fs::rename(&away, &proj).unwrap();
+    wait_for_worktree(&wb, cx, |s| s.contains(Path::new("file.txt")));
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Rescanned, cx)
+    });
+    settle(cx);
+    assert_eq!(explorer_message(&wb, cx), None);
+    assert_eq!(state(&wb, cx), Some(DocState::Ready));
+    assert_eq!(text_of(&view, cx), "xabc\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert_eq!(notice(&wb, cx), None);
+    keys("cmd-s", cx);
+    assert_eq!(fs::read_to_string(proj.join("file.txt")).unwrap(), "xabc\n");
+}
