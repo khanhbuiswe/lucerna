@@ -1,5 +1,6 @@
-//! Lucerna workbench UI: the GPUI shell (Zed-style chrome), command
-//! registry and key dispatch.
+//! Lucerna workbench UI: the GPUI shell (a minimal UI), command registry
+//! and key dispatch. Every window of the app lives in one process; the
+//! [`router`] keeps track of them.
 
 mod about;
 pub mod app;

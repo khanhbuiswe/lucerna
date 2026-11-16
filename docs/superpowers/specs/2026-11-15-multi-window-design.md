@@ -140,8 +140,10 @@ hai cách.
 
 - `lucerna-settings`: tách lớp workspace ra kiểu riêng `WorkspaceLayer`
   (map đã parse). `SettingsStore` giữ default và user; thêm
-  `get_in(workspace: Option<&WorkspaceLayer>, key, language)` và
-  `get_trusted` tương ứng. `get(key, language)` giữ nguyên nghĩa "không có
+  `view(workspace: Option<&WorkspaceLayer>)` trả `SettingsView`, kiểu mượn
+  store và lớp workspace, có `get(key, language)` và `get_trusted` như
+  store. *(Bản đầu của spec gọi là `get_in`; code dùng `SettingsView`.)*
+  `SettingsStore::get(key, language)` giữ nguyên nghĩa "không có
   workspace" để code phạm vi app và test cũ không đổi. Thứ tự ưu tiên và
   gộp object (R26) không đổi.
 - `lucerna-workbench`: `WindowSettings` là một GPUI entity mỗi `Workbench`
@@ -192,9 +194,12 @@ khóa trong editor như VS Code, để sau.)*
 `files.associations` trong workspace vẫn có tác dụng cho cửa sổ đó:
 `WindowSettings` giữ `Arc<LanguageRegistry>` của cửa sổ. Không có
 `files.associations` trong workspace thì dùng chung `AppState.languages`;
-có thì cửa sổ dựng registry riêng với associations gộp (dựng ở luồng nền,
-registry không nạp grammar nên rẻ). `Documents` tra ngôn ngữ qua registry
-của cửa sổ.
+có thì cửa sổ dựng registry riêng với associations gộp. Lần dựng đầu, khi
+tạo `WindowSettings`, chạy ngay trên luồng chính để tài liệu khôi phục lúc
+mở cửa sổ có đúng ngôn ngữ từ đầu: việc này chỉ biên dịch glob, không đọc
+file, không nạp grammar, nên rẻ. Các lần dựng lại sau đó (file workspace
+hay registry của app đổi) chạy ở luồng nền. `Documents` tra ngôn ngữ qua
+registry của cửa sổ.
 
 #### 6.1.4 File cấu hình, watcher, lỗi
 
@@ -304,6 +309,17 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
     một dòng JSON, đợi một dòng trả lời (timeout 5 s), in lỗi nếu có, thoát.
     `ECONNREFUSED` (file socket còn lại sau crash) thì xoá file và `bind`
     lại một lần.
+  - Hết thời gian đợi trả lời mà yêu cầu đã gửi đi (app đang bận, ví dụ
+    đang khôi phục cửa sổ): in "Lucerna is busy; the path will open when it
+    is ready" và thoát mã 0, vì app vẫn mở đường dẫn khi rảnh.
+  - `luc` không đối số chạy trong `/` khi app đang chạy: gửi yêu cầu
+    `activate` (trường `"activate":true`, `paths` rỗng). App không mở `/`
+    mà ra trước như khi bấm icon Dock (M9).
+  - Thư mục chứa socket được tạo với quyền 0700, socket 0600; app chỉ nhận
+    yêu cầu từ cùng user (kiểm tra uid của đầu kia). Đường dẫn dự phòng khi
+    quá dài là thư mục riêng của user (`$TMPDIR` trên macOS,
+    `$XDG_RUNTIME_DIR` hoặc `lucerna-<uid>` nơi khác), không dùng `/tmp`
+    chung.
   - Lỗi khác (không tạo được thư mục data, quyền): in cảnh báo, chạy app
     không có socket (không chặn người dùng).
 - **Tách khỏi terminal** (M18). Khi `luc` (không có `--foreground`) phải
@@ -317,8 +333,11 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
      bundle ID; binary trong `Contents/MacOS` chạy trực tiếp vẫn hiện đúng
      một icon của bundle.
   3. Gửi yêu cầu qua socket, thử lại nối trong tối đa 10 s (app đang khởi
-     động); nhận trả lời thì thoát mã 0. Hết 10 s mà không nối được thì in
-     lỗi, thoát mã 1 (app có thể vẫn đang mở).
+     động), rồi đợi trả lời thêm tối đa 10 s (app giành socket trước cửa sổ
+     đầu, nên trả lời đợi cả lúc khởi động); nhận trả lời thì thoát mã 0.
+     Hết 10 s mà không nối được thì in lỗi, thoát mã 1 (app có thể vẫn đang
+     mở). Nối được mà hết thời gian trả lời thì in thông báo "busy" như trên
+     và thoát mã 0.
   Đường dẫn được resolve ở client như nay, nên lỗi "path not found" vẫn
   in ra terminal trước khi khởi động gì cả. Mở từ Finder/Dock (`cwd` là `/`,
   không có đối số) thì đã không có terminal: chạy app tại chỗ như nay.
@@ -338,12 +357,14 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
 
   ```json
   {"version":1,"cwd":"/abs/dir","paths":["/abs/a"],"new_window":false}
+  {"version":1,"cwd":"/","paths":[],"new_window":false,"activate":true}
   {"ok":true}
   {"ok":false,"error":"path not found: /abs/a"}
   ```
 
   `paths` rỗng (`luc` không đối số) nghĩa là thư mục `cwd`, như nay.
-  `new_window` để dành cho `-n` sau 0.1; 0.1 luôn gửi `false`. Trường lạ
+  `new_window` để dành cho `-n` sau 0.1; 0.1 luôn gửi `false`. `activate`
+  mặc định `false` (thêm sau, không tăng `version`). Trường lạ
   bị bỏ qua; `version` lớn hơn thì trả lỗi "update Lucerna".
 - **Bench:** `bench/compare` đặt `HOME` riêng nên data dir và socket riêng,
   vẫn chạy tiến trình riêng như nay. Thêm một kiểm tra trong `editors.py` để

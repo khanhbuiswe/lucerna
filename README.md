@@ -61,6 +61,9 @@ luc .                     # open the current folder
 luc src/main.rs           # open a single file
 ```
 
+`luc` hands the path to the running Lucerna, which opens it in a new window, and returns
+the prompt right away. All windows share one app.
+
 | Keys | Action |
 |---|---|
 | Cmd+P | Go to file (`>` for commands, `:` for a line) |

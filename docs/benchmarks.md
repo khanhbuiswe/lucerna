@@ -431,12 +431,85 @@ Cách đo và giới hạn:
   dưới 2,0 trước mỗi vòng. Không dùng `--ignore-preflight`.
 - Số khởi động đã công bố trước đây đã bị rút lại (commit `58540ca`). Số
   `startup_ms` ở đây chỉ là mốc nội bộ của đợt này, không công bố.
-- Chế độ `--mode after` chưa chạy được: cờ `--foreground` chưa có. Task sau sẽ
-  chạy lại bằng đúng lệnh này để so.
+- Chế độ `--mode after` lúc đó chưa chạy được vì chưa có cờ `--foreground`.
+  Số sau khi chuyển sang một tiến trình ở mục "Nhiều cửa sổ — sau".
 
 Lệnh đã chạy:
 
 ```sh
 python3 -I bench/compare/multiwindow.py --windows 1,2,3 --mode before --rounds 5 \
   --single-window --out bench/compare/results/multiwindow-before.json
+```
+
+### Nhiều cửa sổ — sau
+
+Đo trên bản release dựng từ commit `6e6fc30` của nhánh `multi-window`: mọi
+cửa sổ chạy trong một tiến trình. Cửa sổ đầu là `luc --foreground <repo>`,
+các cửa sổ sau là `luc <repo>` gửi đường dẫn qua socket. Cùng máy, cùng bộ
+repo, năm vòng, đo ngày 2026-11-16. Dữ liệu thô:
+[`bench/compare/results/multiwindow-after.json`](../bench/compare/results/multiwindow-after.json).
+
+Mỗi ô: trung vị (nhỏ nhất – lớn nhất).
+
+| Số đo | Trước (mỗi cửa sổ một tiến trình) | Sau (một tiến trình) | Ngưỡng spec §7.2 |
+|---|---|---|---|
+| RAM, 1 cửa sổ | 86,3 MB (85,9 – 86,4) | 86,9 MB (86,3 – 129,6) | — |
+| RAM, 2 cửa sổ | 161,3 MB (160,2 – 181,9) | 172,7 MB (162,7 – 185,4) | **Không đạt**: phải thấp hơn 161,3 |
+| RAM, 3 cửa sổ | 230,6 MB (230,3 – 273,2) | 219,2 MB (217,5 – 219,6) | Đạt (thấp hơn 11 MB) |
+| Mở cửa sổ thứ hai | 552 ms (518 – 586) | 432 ms (428 – 443) | Đạt |
+| Khung hình rớt ở A, B đứng yên | 0,0 % (0,0 – 0,0) | 0,0 % (0,0 – 0,5), trên 591 khung (591 – 595) | Đạt (trong sai số) |
+| Khung hình rớt ở A, B đang mở repo lớn | 0,0 % (0,0 – 0,0) | 0,0 % (0,0 – 0,0), trên 594 khung (590 – 594) | Đạt |
+| `startup_ms` một cửa sổ | 602 ms (569 – 619) | 587 ms (581 – 13138) | Đạt |
+| `idle_ram_mb` một cửa sổ | 181,3 MB (165,2 – 181,4) | 165,0 MB (131,6 – 181,5) | Đạt, nhưng số nhiễu (xem dưới) |
+| `idle_cpu_pct` một cửa sổ | 1,30 % (0,50 – 1,33) | 0,81 % (0,00 – 1,50) | — |
+
+**RAM 2 cửa sổ chưa đạt ngưỡng.** Trung vị cao hơn bản cũ 11 MB. Lý do theo
+những gì đo được:
+
+- Phần lớn RAM của mỗi cửa sổ là bộ đệm vẽ của cửa sổ (`IOSurface`), không
+  phải phần chung của tiến trình. `footprint` của một tiến trình có hai cửa
+  sổ: khoảng 163 MB, trong đó `IOSurface` 105 MB và malloc khoảng 25 MB.
+  Gộp vào một tiến trình chỉ bớt được phần chung (khoảng 5 MB mỗi tiến
+  trình), không bớt được bộ đệm vẽ.
+- Số `IOSurface` lên xuống khi app đứng yên: cùng một tiến trình hai cửa sổ
+  đo ba lần cách nhau 3 s cho 163, 163, rồi 199 MB. Vì vậy RAM 2 cửa sổ có hai
+  mức: khoảng 162 MB và khoảng 173–185 MB, ở cả bản cũ (160,2 – 181,9) lẫn bản
+  mới (162,7 – 185,4). Ba vòng của bản mới rơi vào mức cao, nên trung vị cao.
+  So mức thấp với mức thấp thì bản mới vẫn cao hơn khoảng 1,5 MB.
+- Ba cửa sổ không bị dao động này ở bản mới (217,5 – 219,6) và thấp hơn bản
+  cũ 11 MB.
+
+Năm vòng không đủ để tách mức tiết kiệm nhỏ (vài MB) khỏi dao động 20 MB của
+bộ đệm vẽ. Spec coi ngưỡng này là bắt buộc; người duyệt quyết định.
+
+Cách đo và giới hạn:
+
+- Mở cửa sổ thứ hai: macOS chạy hiệu ứng phóng to (khoảng 0,37 s) khi app đã
+  chạy mở thêm một cửa sổ phóng to. Cửa sổ hiện ra khoảng 60 ms sau lệnh
+  `luc`, rồi phóng to tới hết khoảng 430 ms. Khung hình có nội dung đầu tiên
+  rơi vào lúc hiệu ứng đã xong trong cả năm vòng, nên
+  `second_window_settled_ms` bằng `second_window_ms`. Watch chạy với
+  `--allow-resize`; không có cờ này các vòng thử lúc đầu bị bỏ vì kích thước
+  cửa sổ đổi sau khung hình đo. Số 432 ms chủ yếu là thời gian của hiệu ứng;
+  bản cũ không có hiệu ứng vì cửa sổ là cửa sổ đầu của tiến trình mới.
+- Khung hình rớt: ở bản mới A và B cùng một tiến trình. Script đặt B ra góc
+  bằng `frame --window-index 1` và cuộn A bằng `scroll --window-index 0`
+  (tùy chọn mới của `bench-helper`). Mỗi lần cuộn ghi số khung đã bắt
+  (590–595), nên 0 % là số đo thật. Một vòng có 0,5 % (3 khung trên 593) khi
+  B đứng yên.
+- Một cửa sổ: vòng 3 có `startup_ms` 13 138 ms vì cửa sổ khác che cửa sổ
+  Lucerna 82 khung (máy đang được dùng). Vòng 3 và vòng 5 có `idle_cpu_pct`
+  0,0 % và `idle_ram_mb` thấp (135, 132 MB), nhiều khả năng cửa sổ bị che nên
+  không vẽ. Trung vị vẫn được giữ; số `idle_ram_mb` vì vậy không chắc.
+  Script giờ đợi máy yên (preflight) trước mỗi vòng một cửa sổ.
+- Tải máy cao do các phiên khác; preflight đợi tải dưới 2,0 trước mỗi vòng.
+  Không dùng `--ignore-preflight`.
+- Số `startup_ms` chỉ là mốc nội bộ, không công bố.
+
+Lệnh đã chạy (`BENCH_HELPER` trỏ tới bản `bench-helper` dựng từ
+`bench/compare/helper` ở commit này):
+
+```sh
+python3 -I bench/compare/multiwindow.py --windows 1,2,3 --mode after --rounds 5 \
+  --single-window --out bench/compare/results/multiwindow-after.json
 ```
