@@ -15,7 +15,7 @@ The repository is public, so the macOS runners the workflow uses are free.
    git push origin v0.2.0
    ```
 
-3. The **Release** workflow runs on `macos-14` (Apple silicon). It:
+3. The **Release** workflow runs on `macos-15` (Apple silicon). It:
    - checks that the tag matches the version in `Cargo.toml`,
    - builds `Lucerna.app` with `scripts/bundle-app.sh` (release, signed ad hoc),
    - signs with a Developer ID and notarizes, only if the `APPLE_*` secrets are set,

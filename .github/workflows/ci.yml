@@ -10,7 +10,7 @@ env:
 
 jobs:
   check:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
@@ -30,7 +30,7 @@ jobs:
         run: cargo deny check
 
   bench:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
