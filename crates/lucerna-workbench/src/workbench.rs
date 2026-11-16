@@ -946,6 +946,14 @@ impl Workbench {
             _subscriptions: vec![
                 cx.observe(&groups, |wb, _, cx| wb.layout_changed(cx)),
                 cx.on_app_quit(|wb, cx| {
+                    // First: Dock Quit and Log Out reach only this hook,
+                    // and the windows close after it.
+                    if let Some(hot_exit) = &wb.hot_exit {
+                        hot_exit.update(cx, |h, cx| {
+                            h.set_quitting();
+                            h.flush_blocking(cx);
+                        });
+                    }
                     wb.save_workspace_state(cx);
                     async {}
                 }),
@@ -1792,13 +1800,46 @@ impl Workbench {
     /// app quits or the window closes (spec §6.3): `true` to go on. Save
     /// All saves each one and goes on only if all were saved and nothing
     /// is dirty afterwards, Don't Save
-    /// goes on, Cancel (or a dismissed prompt) stops. Then, when
+    /// goes on (deleting their hot exit backups), Cancel (or a dismissed
+    /// prompt) stops. Then, when
     /// `terminal.integrated.confirmOnExit` asks about running terminals
     /// (terminal spec §6.1), whether to terminate them. Nothing to ask:
     /// `true` at once.
     pub fn confirm_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
+        let paths = self.documents.read(cx).dirty_paths();
+        self.confirm_unsaved(paths, false, window, cx)
+    }
+
+    /// [`Workbench::confirm_quit`] for only `paths` (and the terminals):
+    /// the files whose hot exit backup failed as the app quits. The other
+    /// unsaved files are neither saved nor checked.
+    pub fn confirm_quit_for(
+        &mut self,
+        paths: Vec<Arc<Path>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
+        self.confirm_unsaved(paths, true, window, cx)
+    }
+
+    /// Asks about `paths`; once answered, acts on the files dirty then:
+    /// every one, or with `only_these`, those among `paths`.
+    fn confirm_unsaved(
+        &mut self,
+        paths: Vec<Arc<Path>>,
+        only_these: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
         let documents = self.documents.clone();
-        let paths = documents.read(cx).dirty_paths();
+        let hot_exit = self.hot_exit.clone();
+        let asked = paths.clone();
+        let dirty_now = move |d: &Documents| -> Vec<Arc<Path>> {
+            d.dirty_paths()
+                .into_iter()
+                .filter(|p| !only_these || asked.contains(p))
+                .collect()
+        };
         let terminals = self.terminals_to_confirm(cx);
         if paths.is_empty() && terminals == 0 {
             return Task::ready(true);
@@ -1817,13 +1858,19 @@ impl Workbench {
                 None => true,
                 Some(answer) => match SaveChoice::of(answer.await) {
                     SaveChoice::Save => {
-                        let paths = documents.read_with(cx, |d, _| d.dirty_paths());
+                        let paths = documents.read_with(cx, |d, _| dirty_now(d));
                         // An edit typed while the saves wrote is not saved:
                         // stop rather than lose it.
                         save::save_each(documents.clone(), paths, cx).await
-                            && documents.read_with(cx, |d, _| d.dirty_paths().is_empty())
+                            && documents.read_with(cx, |d, _| dirty_now(d).is_empty())
                     }
-                    SaveChoice::DontSave => true,
+                    SaveChoice::DontSave => {
+                        if let Some(hot_exit) = &hot_exit {
+                            let paths = documents.read_with(cx, |d, _| dirty_now(d));
+                            hot_exit.update(cx, |h, cx| h.discard(&paths, cx));
+                        }
+                        true
+                    }
                     SaveChoice::Cancel => false,
                 },
             };
@@ -1838,6 +1885,34 @@ impl Workbench {
             }
             wb.update(cx, |wb, _| wb.confirming_quit = false).ok();
             go_on
+        })
+    }
+
+    /// What Cmd+Q asks of this window (hot exit spec §5.3). With hot exit
+    /// on: saves the files `files.autoSave` saves, writes every backup now,
+    /// and asks only about the files whose backup failed, and running
+    /// terminals. Otherwise (or without a data dir) [`Workbench::confirm_quit`].
+    fn confirm_app_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
+        let Some(hot_exit) = self.hot_exit.clone().filter(|_| HotExit::enabled(cx)) else {
+            return self.confirm_quit(window, cx);
+        };
+        let documents = self.documents.clone();
+        let auto_saved = self.auto_save_paths(cx);
+        cx.spawn_in(window, async move |wb, cx| {
+            if !auto_saved.is_empty() {
+                save::save_each(documents, auto_saved, cx).await;
+            }
+            // Documents closed from here on keep their backups.
+            let flush = hot_exit.update(cx, |h, cx| {
+                h.set_quitting();
+                h.flush(cx)
+            });
+            let failed = flush.await;
+            match wb.update_in(cx, |wb, window, cx| wb.confirm_quit_for(failed, window, cx)) {
+                Ok(confirm) => confirm.await,
+                // The window closed meanwhile: nothing left to ask.
+                Err(_) => true,
+            }
         })
     }
 
@@ -3034,8 +3109,10 @@ fn prompt_terminate_terminals(
 }
 
 /// Quits the app once every workbench window agreed to
-/// ([`Workbench::confirm_quit`], one window after another, the most
-/// recently used first; spec M11). Cancel in any window stops the quit.
+/// ([`Workbench::confirm_app_quit`], one window after another, the most
+/// recently used first; spec M11). With hot exit on, a window agrees
+/// without asking once its backups are written. Cancel in any window
+/// stops the quit.
 /// Before quitting, every window is checked again: one opened meanwhile,
 /// or one edited since it agreed (beyond what it agreed to lose), is asked
 /// too, so nothing unsaved is lost without a question. Then the window
@@ -3051,12 +3128,14 @@ pub(crate) fn quit(cx: &mut App) {
                 break;
             }
             for handle in ask {
-                let Ok(confirm) = handle.update(cx, |wb, window, cx| wb.confirm_quit(window, cx))
+                let Ok(confirm) =
+                    handle.update(cx, |wb, window, cx| wb.confirm_app_quit(window, cx))
                 else {
                     // The window closed meanwhile.
                     continue;
                 };
                 if !confirm.await {
+                    cx.update(cancel_quitting);
                     return;
                 }
                 let dirty = handle
@@ -3071,6 +3150,18 @@ pub(crate) fn quit(cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// A cancelled [`quit`]: the windows that flushed their backups for it
+/// delete them again when a document closes with Don't Save.
+fn cancel_quitting(cx: &mut App) {
+    for window in cx.windows() {
+        let handle = WindowHandle::<Workbench>::new(window.window_id());
+        let Ok(Some(hot_exit)) = handle.read_with(cx, |wb, _| wb.hot_exit.clone()) else {
+            continue;
+        };
+        hot_exit.update(cx, |h, _| h.cancel_quitting());
+    }
 }
 
 /// The workbench windows [`quit`] must still ask, the most recently used

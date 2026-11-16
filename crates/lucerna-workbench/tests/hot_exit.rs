@@ -17,7 +17,7 @@ use lucerna_workbench::hot_exit::HotExit;
 use lucerna_workbench::hot_exit::store::{
     Backup, WorkspaceKey, backup_dir, read_backups, text_sha256,
 };
-use lucerna_workbench::{AppState, OpenMode, SaveOptions, SaveReason, Workbench};
+use lucerna_workbench::{AppState, OpenMode, SaveOptions, SaveReason, Workbench, app, app_menu};
 use tempfile::TempDir;
 
 fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
@@ -636,4 +636,108 @@ fn outside_root_file_restored(cx: &mut TestAppContext) {
     assert!(tab_paths(&wb, cx).contains(&b));
     assert!(is_dirty(&wb, &b, cx));
     assert_eq!(text_of(&wb, &b, cx), "pub fn b() {}\n");
+}
+
+// ---- Quit (spec §5.3) ----
+
+/// Cmd+Q through the app menu, with quits counted instead of done.
+fn quit_app(cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        app_menu::install(cx);
+        app::count_quits_for_test(cx);
+        cx.dispatch_action(&app_menu::Quit);
+    });
+    cx.run_until_parked();
+}
+
+fn quits(cx: &mut VisualTestContext) -> usize {
+    cx.update(|_, cx| app::quits_for_test(cx))
+}
+
+#[gpui::test]
+fn quit_with_hot_exit_does_not_ask(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    // Before the 1000 ms backup delay.
+    quit_app(cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(quits(cx), 1);
+    let backups = project.backups();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(backups[0].text, "hello");
+}
+
+#[gpui::test]
+fn quit_asks_for_files_whose_backup_failed(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    // A file where the backups folder goes: no backup can be written.
+    fs::write(project.data.path().join("backups"), "").unwrap();
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    quit_app(cx);
+    let (message, _) = cx.pending_prompt().expect("the failed file is asked about");
+    assert!(message.contains("a.rs"), "{message}");
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(quits(cx), 0, "Cancel stops the quit");
+    assert!(is_dirty(&wb, Path::new("a.rs"), cx));
+}
+
+#[gpui::test]
+fn quit_hot_exit_off_asks(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"files.hotExit":"off"}"#));
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    quit_app(cx);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    assert_eq!(quits(cx), 0);
+    assert!(!project.dir().exists());
+}
+
+#[gpui::test]
+fn quit_saves_auto_save_files(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"files.autoSave":"afterDelay","files.autoSaveDelay":60000}"#),
+    );
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    quit_app(cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(quits(cx), 1);
+    assert_eq!(
+        fs::read_to_string(project.root.path().join("a.rs")).unwrap(),
+        "hello"
+    );
+    assert!(project.backups().is_empty());
+}
+
+#[gpui::test]
+fn close_window_still_asks(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    advance(1001, cx);
+    assert_eq!(project.backups().len(), 1);
+    drop((wb, view));
+    assert!(!cx.simulate_close(), "the window waits for the answer");
+    settle(cx);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    assert!(project.backups().is_empty());
 }

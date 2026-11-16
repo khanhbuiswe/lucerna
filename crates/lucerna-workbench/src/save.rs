@@ -455,6 +455,21 @@ impl Workbench {
         }
     }
 
+    /// The dirty documents `files.autoSave` saves (not `"off"`) that can
+    /// be saved without asking: neither in conflict with the disk nor
+    /// deleted. Saved as the app quits with hot exit on.
+    pub(crate) fn auto_save_paths(&self, cx: &App) -> Vec<Arc<Path>> {
+        let docs = self.documents().read(cx);
+        docs.dirty_paths()
+            .into_iter()
+            .filter(|path| {
+                !docs.has_conflict(path)
+                    && docs.state(path) == Some(&DocState::Ready)
+                    && self.auto_save_mode(path, cx) != "off"
+            })
+            .collect()
+    }
+
     /// Saves the document at `path` if it has unsaved changes and is
     /// neither in conflict with the disk nor deleted. While a view of it is
     /// in the middle of an IME composition, the save waits another

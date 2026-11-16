@@ -203,6 +203,20 @@ impl HotExit {
         self.quitting = true;
     }
 
+    /// The quit was cancelled: documents closed from now on lose their
+    /// backups again.
+    pub fn cancel_quitting(&mut self) {
+        self.quitting = false;
+    }
+
+    /// Deletes the backups of `paths`: their changes were let go with
+    /// Don't Save as the window closes, which emits no `Closed`.
+    pub fn discard(&mut self, paths: &[Arc<Path>], cx: &mut Context<Self>) {
+        for path in paths {
+            self.remove(path, cx);
+        }
+    }
+
     fn document_event(&mut self, ev: &DocumentEvent, cx: &mut Context<Self>) {
         match ev {
             DocumentEvent::Opened { path, .. }
