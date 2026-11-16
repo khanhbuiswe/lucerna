@@ -51,6 +51,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["e
 tracing-appender = "0.2"
 futures = "0.3"
 nucleo-matcher = "0.3"
+unicode-normalization = "0.1"
 tempfile = "3"
 trash = "5"
 sha2 = "0.10"

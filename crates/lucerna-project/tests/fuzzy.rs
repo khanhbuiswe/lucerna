@@ -126,3 +126,34 @@ fn eighty_thousand_files_under_budget() {
     println!("80k files: {took:?}, {} matches", m.len());
     assert!(!m.is_empty());
 }
+
+#[test]
+fn nfc_query_matches_nfd_name_with_valid_char_positions() {
+    let name = "ghi-chu\u{301}.md"; // NFD
+    let s = snapshot(&[name]);
+    let m = run(&s, "chú", &[], 10); // NFC query
+    assert_eq!(m.len(), 1);
+    let chars = name.chars().count() as u32;
+    assert!(m[0].positions.iter().all(|&p| p < chars));
+    // "chu" + combining acute are chars 4..=7 of the displayed string.
+    assert_eq!(m[0].positions, vec![4, 5, 6, 7]);
+}
+
+#[test]
+fn nfd_query_matches_nfc_name() {
+    let s = snapshot(&["ghi-chú.md"]);
+    let m = run(&s, "chu\u{301}", &[], 10);
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].positions, vec![4, 5, 6]);
+}
+
+#[test]
+fn emoji_names_do_not_panic_and_positions_are_valid() {
+    let name = "\u{2764}\u{fe0f}-chú.md";
+    let s = snapshot(&[name]);
+    let m = run(&s, "chú", &[], 10);
+    assert_eq!(m.len(), 1);
+    let chars = name.chars().count() as u32;
+    assert!(m[0].positions.iter().all(|&p| p < chars));
+    assert_eq!(m[0].positions, vec![3, 4, 5]);
+}

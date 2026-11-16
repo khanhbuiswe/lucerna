@@ -8,6 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::char::canonical_combining_class;
 
 pub const QUICK_OPEN_LIMIT: usize = 50;
 
@@ -113,6 +115,34 @@ fn compare(a: &Candidate, b: &Candidate) -> Ordering {
     }
 }
 
+/// `text` as NFC chars in `chars`, so NFD and NFC spellings match each
+/// other. `spans[i]` is the char range of `text` that `chars[i]` came from
+/// (a combining sequence maps to its whole range). Matching on chars rather
+/// than letting nucleo split graphemes keeps positions valid char indices.
+fn nfc_chars(text: &str, chars: &mut Vec<char>, spans: &mut Vec<(u32, u32)>) {
+    chars.clear();
+    spans.clear();
+    let mut cluster = String::new();
+    let mut start = 0u32;
+    let mut index = 0u32;
+    let mut flush = |cluster: &mut String, start: u32, end: u32, chars: &mut Vec<char>| {
+        for c in cluster.nfc() {
+            chars.push(c);
+            spans.push((start, end));
+        }
+        cluster.clear();
+    };
+    for c in text.chars() {
+        if canonical_combining_class(c) == 0 {
+            flush(&mut cluster, start, index, chars);
+            start = index;
+        }
+        cluster.push(c);
+        index += 1;
+    }
+    flush(&mut cluster, start, index, chars);
+}
+
 fn fuzzy_query(
     snapshot: &WorktreeSnapshot,
     query: &str,
@@ -120,14 +150,16 @@ fn fuzzy_query(
     limit: usize,
     cancel: &AtomicBool,
 ) -> Vec<FileMatch> {
+    let query: String = query.nfc().collect();
     let pattern = Pattern::new(
-        query,
+        &query,
         CaseMatching::Smart,
         Normalization::Smart,
         AtomKind::Fuzzy,
     );
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
     let mut buf: Vec<char> = Vec::new();
+    let mut spans: Vec<(u32, u32)> = Vec::new();
     let mut recent_rank: HashMap<&Path, usize> = HashMap::with_capacity(recent.len());
     for (i, p) in recent.iter().enumerate() {
         recent_rank.entry(&**p).or_insert(i);
@@ -142,7 +174,8 @@ fn fuzzy_query(
             continue;
         }
         let text = entry.path.to_string_lossy();
-        let Some(score) = pattern.score(Utf32Str::new(&text, &mut buf), &mut matcher) else {
+        nfc_chars(&text, &mut buf, &mut spans);
+        let Some(score) = pattern.score(Utf32Str::Unicode(&buf), &mut matcher) else {
             continue;
         };
         candidates.push(Candidate {
@@ -164,7 +197,14 @@ fn fuzzy_query(
     for c in candidates {
         let text = c.path.to_string_lossy();
         let mut positions = Vec::new();
-        pattern.indices(Utf32Str::new(&text, &mut buf), &mut matcher, &mut positions);
+        nfc_chars(&text, &mut buf, &mut spans);
+        let mut matched = Vec::new();
+        pattern.indices(Utf32Str::Unicode(&buf), &mut matcher, &mut matched);
+        for m in matched {
+            if let Some(&(from, to)) = spans.get(m as usize) {
+                positions.extend(from..to);
+            }
+        }
         positions.sort_unstable();
         positions.dedup();
         out.push(FileMatch {
