@@ -1,5 +1,6 @@
 use std::cell::Cell;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -433,6 +434,8 @@ impl Worker {
     /// (directories: nothing). Existing and new: Added, with missing parent
     /// directories and, for a directory, its not-ignored contents. Missing and
     /// known: Removed, with everything below it. Anything else is dropped.
+    /// A path that exists only through a case-insensitive file system (one
+    /// of its names is listed on disk with other case) counts as missing.
     fn apply_fs_events(&self, batch: Coalesced, opts: &ScanOptions) -> bool {
         let Coalesced::Changes(changes) = batch else {
             return true;
@@ -466,9 +469,20 @@ impl Worker {
         let known = |path: &Path, added_paths: &HashSet<Arc<Path>>| {
             added_paths.contains(path) || snapshot.contains(path)
         };
+        let mut listings = Listings::default();
         for change in changes {
-            let rel = change.path;
-            let Ok(meta) = fs::symlink_metadata(self.root.join(&rel)) else {
+            let mut rel = change.path;
+            let mut meta = fs::symlink_metadata(self.root.join(&rel)).ok();
+            // On a case-insensitive file system `foo.rs` still resolves
+            // after a rename to `Foo.rs`, but that spelling is gone, and so
+            // is a folder spelled the old way, with everything below it.
+            if meta.is_some()
+                && let Some(gone) = listings.respelled_prefix(&self.root, &rel)
+            {
+                rel = Arc::from(gone);
+                meta = None;
+            }
+            let Some(meta) = meta else {
                 // Under a removed directory already: reported with it.
                 if rel.ancestors().skip(1).any(|a| removed.contains(a)) {
                     continue;
@@ -684,6 +698,50 @@ impl Worker {
     }
 }
 
+/// Directory listings read while applying one watcher batch, to tell a path
+/// spelled as on disk from one a case-insensitive file system only resolves
+/// to an entry spelled otherwise (`foo.rs` after a rename to `Foo.rs`).
+#[derive(Default)]
+struct Listings {
+    /// Root-relative directory to its entries' names; `None` if unreadable.
+    dirs: HashMap<PathBuf, Option<HashSet<OsString>>>,
+}
+
+impl Listings {
+    /// The shortest prefix of the existing root-relative `rel` whose last
+    /// name is listed in its folder only with other case, if any.
+    ///
+    /// Only a difference in case counts: a name missing for another reason
+    /// (an unreadable folder, a Unicode normalization difference) keeps the
+    /// path as it is.
+    fn respelled_prefix(&mut self, root: &Path, rel: &Path) -> Option<PathBuf> {
+        let mut prefix = PathBuf::new();
+        for component in rel.components() {
+            let name = component.as_os_str();
+            let names = self.dirs.entry(prefix.clone()).or_insert_with(|| {
+                fs::read_dir(root.join(&prefix))
+                    .ok()
+                    .map(|read| read.flatten().map(|d| d.file_name()).collect())
+            });
+            prefix.push(name);
+            if let Some(names) = names
+                && !names.contains(name)
+                && names.iter().any(|n| same_but_case(n, name))
+            {
+                return Some(prefix);
+            }
+        }
+        None
+    }
+}
+
+fn same_but_case(a: &OsStr, b: &OsStr) -> bool {
+    match (a.to_str(), b.to_str()) {
+        (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
+        _ => a.eq_ignore_ascii_case(b),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,5 +843,96 @@ mod tests {
         assert!(!worker.is_stale(&meta), "grace period over");
         worker.initial_scan.set(true);
         assert!(worker.is_stale(&meta), "during the initial scan");
+    }
+
+    fn ignores_case(dir: &Path) -> bool {
+        fs::write(dir.join("case-probe-a"), "").unwrap();
+        let ignores = fs::symlink_metadata(dir.join("CASE-PROBE-A")).is_ok();
+        fs::remove_file(dir.join("case-probe-a")).unwrap();
+        ignores
+    }
+
+    fn entry(path: &str, kind: EntryKind) -> Entry {
+        Entry {
+            path: Arc::from(Path::new(path)),
+            kind,
+        }
+    }
+
+    fn change(path: &str, kind: ChangeKind) -> Change {
+        Change {
+            path: Arc::from(Path::new(path)),
+            kind,
+        }
+    }
+
+    fn sorted_paths(worker: &Worker) -> Vec<String> {
+        let snapshot = worker.snapshot.lock().unwrap().clone();
+        let mut paths: Vec<String> = snapshot
+            .entries()
+            .iter()
+            .map(|e| e.path.to_string_lossy().into_owned())
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// T2-2: after `foo.rs` became `Foo.rs` on a case-insensitive file
+    /// system, `foo.rs` still stats fine, but it is gone: whichever order
+    /// the watcher reports the two names in.
+    #[test]
+    fn case_only_rename_drops_the_old_name() {
+        let dir = tempfile::TempDir::new().unwrap();
+        if !ignores_case(dir.path()) {
+            return;
+        }
+        for order in [["foo.rs", "Foo.rs"], ["Foo.rs", "foo.rs"]] {
+            fs::write(dir.path().join("Foo.rs"), "x").unwrap();
+            let worker = bare_worker(dir.path());
+            worker.publish(vec![entry("foo.rs", EntryKind::File)], true);
+            let batch = order
+                .iter()
+                .map(|p| change(p, ChangeKind::Modified))
+                .collect();
+            let rescan = worker.apply_fs_events(Coalesced::Changes(batch), &ScanOptions::default());
+            assert!(!rescan);
+            assert_eq!(sorted_paths(&worker), ["Foo.rs"], "order {order:?}");
+            fs::remove_file(dir.path().join("Foo.rs")).unwrap();
+        }
+    }
+
+    #[test]
+    fn case_only_rename_of_a_folder_leaves_no_duplicate_subtree() {
+        let dir = tempfile::TempDir::new().unwrap();
+        if !ignores_case(dir.path()) {
+            return;
+        }
+        fs::create_dir_all(dir.path().join("Src/inner")).unwrap();
+        fs::write(dir.path().join("Src/a.rs"), "x").unwrap();
+        fs::write(dir.path().join("Src/inner/b.rs"), "x").unwrap();
+        let old = vec![
+            entry("src", EntryKind::Dir),
+            entry("src/a.rs", EntryKind::File),
+            entry("src/inner", EntryKind::Dir),
+            entry("src/inner/b.rs", EntryKind::File),
+        ];
+        let want = ["Src", "Src/a.rs", "Src/inner", "Src/inner/b.rs"];
+        // Some batches also name a file below the old folder.
+        for order in [
+            vec!["src", "Src"],
+            vec!["Src", "src"],
+            vec!["src/a.rs", "Src", "src"],
+            vec!["Src", "src/inner/b.rs"],
+        ] {
+            let worker = bare_worker(dir.path());
+            worker.publish(old.clone(), true);
+            let batch = order
+                .iter()
+                .map(|p| change(p, ChangeKind::Modified))
+                .collect();
+            let rescan = worker.apply_fs_events(Coalesced::Changes(batch), &ScanOptions::default());
+            assert!(!rescan);
+            assert_eq!(sorted_paths(&worker), want, "order {order:?}");
+        }
     }
 }

@@ -236,3 +236,73 @@ fn edit_after_the_replay_window_is_reported_despite_old_mtime() {
     let seen = collect_until(&wt, |s| has(s, "f", ChangeKind::Modified));
     assert!(has(&seen, "f", ChangeKind::Modified), "{seen:?}");
 }
+
+/// True if the file system holding `dir` ignores case (APFS and HFS+ by
+/// default, NTFS): a file created as `a` can be looked up as `A`.
+fn ignores_case(dir: &Path) -> bool {
+    let probe = dir.join("case-probe-a");
+    fs::write(&probe, "").unwrap();
+    let ignores = fs::symlink_metadata(dir.join("CASE-PROBE-A")).is_ok();
+    fs::remove_file(probe).unwrap();
+    ignores
+}
+
+/// Waits until `cond` holds on the snapshot, for at most the timeout.
+fn wait_for_snapshot(wt: &Worktree, cond: impl Fn(&lucerna_project::WorktreeSnapshot) -> bool) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !cond(&wt.snapshot()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn case_only_rename_of_a_file_leaves_only_the_new_name() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    if !ignores_case(r) {
+        return;
+    }
+    fs::write(r.join("foo.rs"), "x").unwrap();
+    let wt = started(r);
+
+    fs::rename(r.join("foo.rs"), r.join("Foo.rs")).unwrap();
+    let seen = collect_until(&wt, |s| has(s, "Foo.rs", ChangeKind::Added));
+    let more = collect_until(&wt, |_| false);
+    let all: Vec<_> = seen.into_iter().chain(more).collect();
+    wait_for_snapshot(&wt, |s| !s.contains(Path::new("foo.rs")));
+    let snapshot = wt.snapshot();
+    assert!(snapshot.contains(Path::new("Foo.rs")), "{all:?}");
+    assert!(!snapshot.contains(Path::new("foo.rs")), "{all:?}");
+    assert!(has(&all, "foo.rs", ChangeKind::Removed), "{all:?}");
+}
+
+#[test]
+fn case_only_rename_of_a_folder_leaves_only_the_new_subtree() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    if !ignores_case(r) {
+        return;
+    }
+    fs::create_dir_all(r.join("src/inner")).unwrap();
+    fs::write(r.join("src/a.rs"), "x").unwrap();
+    fs::write(r.join("src/inner/b.rs"), "x").unwrap();
+    let wt = started(r);
+
+    fs::rename(r.join("src"), r.join("Src")).unwrap();
+    let seen = collect_until(&wt, |s| has(s, "Src/inner/b.rs", ChangeKind::Added));
+    let more = collect_until(&wt, |_| false);
+    let all: Vec<_> = seen.into_iter().chain(more).collect();
+    wait_for_snapshot(&wt, |s| !s.contains(Path::new("src")));
+    let snapshot = wt.snapshot();
+    let mut paths: Vec<String> = snapshot
+        .entries()
+        .iter()
+        .map(|e| e.path.to_string_lossy().into_owned())
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        ["Src", "Src/a.rs", "Src/inner", "Src/inner/b.rs"],
+        "{all:?}"
+    );
+}
