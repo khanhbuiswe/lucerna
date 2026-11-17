@@ -746,7 +746,8 @@ impl CodeView {
         let old_line_height = self.line_height();
         let mut changed = false;
         let mut wrap_changed = false;
-        let font_size = crate::font_zoom::zoomed(font_size, cx);
+        font_zoom::drop_stale(cx);
+        let font_size = font_zoom::zoomed(font_size, cx);
         if font_size != self.font_size {
             self.font_size = font_size;
             changed = true;
@@ -1909,7 +1910,7 @@ fn with_active_view(
     }
 }
 
-/// Changes the app's font zoom with `change`, from this window's
+/// Changes the app's font zoom with `change`, from the active file's
 /// `editor.fontSize`, and shows the new size in the status bar. Every view
 /// in every window follows; no view needs focus.
 fn zoom_command(
@@ -1918,7 +1919,15 @@ fn zoom_command(
     cx: &mut Context<Workbench>,
     change: impl FnOnce(f32, &mut App) -> Option<f32>,
 ) {
-    let base = font_zoom::base_size(wb.settings().read(cx).view(cx), None);
+    // The active file's own size (a `[language]` override), so the step
+    // and the message match what the user is looking at.
+    let language = wb
+        .editor_groups()
+        .read(cx)
+        .active_body()
+        .and_then(|v| v.downcast::<CodeView>().ok())
+        .and_then(|v| v.read(cx).language_id.clone());
+    let base = font_zoom::base_size(wb.settings().read(cx).view(cx), language.as_deref());
     if let Some(size) = change(base, cx) {
         crate::status_message::show(
             window.window_handle().window_id(),

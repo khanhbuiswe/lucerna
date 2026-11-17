@@ -56,6 +56,18 @@ pub fn reset(base: f32, cx: &mut App) -> Option<f32> {
     set(delta(cx), 0., cx).then(|| clamp(base))
 }
 
+/// Drops the zoom for good once the user's `editor.fontSize` changed, so
+/// setting it back later does not bring the old zoom back. Called when the
+/// settings change; until then [`zoomed`] already ignores a stale zoom.
+pub fn drop_stale(cx: &mut App) {
+    if let Some(zoom) = cx.try_global::<FontZoom>()
+        && zoom.delta != 0.
+        && zoom.user_size != user_size(cx)
+    {
+        cx.remove_global::<FontZoom>();
+    }
+}
+
 /// The zoom in effect: none once the user's `editor.fontSize` changed.
 fn delta(cx: &App) -> f32 {
     match cx.try_global::<FontZoom>() {

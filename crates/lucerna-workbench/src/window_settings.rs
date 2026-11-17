@@ -85,6 +85,7 @@ impl WindowSettings {
             _pump: pump,
             _zoom: cx.observe_global::<crate::font_zoom::FontZoom>(|_, cx| cx.notify()),
             _user: cx.observe_global::<AppState>(|this, cx| {
+                crate::font_zoom::drop_stale(cx);
                 this.refresh_languages(cx);
                 cx.notify();
             }),
