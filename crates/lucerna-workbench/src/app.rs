@@ -90,10 +90,9 @@ pub fn run(launch: Option<Launch>, listener: Option<CliListener>) {
             if waiting {
                 let grace = cx.background_executor().timer(OPEN_REQUEST_GRACE);
                 match future::select(requests.next(), pin!(grace)).await {
-                    Either::Left((Some(urls), _)) => cx.update(|cx| {
-                        open_urls(&urls, cx);
-                        quit_if_no_window("the requested paths", cx);
-                    }),
+                    Either::Left((Some(urls), _)) => {
+                        open_urls_at_start(&urls, cx).await;
+                    }
                     Either::Left((None, _)) => {}
                     Either::Right(_) => open_without_folder(cx).await,
                 }
@@ -181,14 +180,20 @@ impl CliRequests {
     }
 }
 
-/// Opens `launch`, the path `luc` was started with. With
-/// `window.restoreWindows: "preserve"` the last session's windows reopen
-/// first (read in the background); otherwise only `launch` opens, as in
-/// VS Code.
+/// Opens `launch`, the path `luc` was started with, after the windows
+/// that come back (see [`windows_at_launch`]): with
+/// `window.restoreWindows: "preserve"` the last session's windows, and
+/// with `files.hotExit` the single-file windows that left backups. All
+/// read in the background; without a data directory only `launch` opens.
 fn open_launch_at_start(launch: Launch, cx: &mut App) {
-    let preserve = restore_windows(&cx.global::<AppState>().settings) == RestoreWindows::Preserve;
-    let data_dir = app_data_dir(cx);
-    let Some(data_dir) = data_dir.filter(|_| preserve) else {
+    let (preserve, hot_exit) = {
+        let settings = &cx.global::<AppState>().settings;
+        (
+            restore_windows(settings) == RestoreWindows::Preserve,
+            hot_exit_on(settings),
+        )
+    };
+    let Some(data_dir) = app_data_dir(cx) else {
         router::open_launch(launch, Target::Auto, cx);
         quit_if_no_window("the first window", cx);
         return;
@@ -196,10 +201,7 @@ fn open_launch_at_start(launch: Launch, cx: &mut App) {
     router::begin_restore(cx);
     cx.spawn(async move |cx| {
         let windows = cx
-            .background_spawn(async move {
-                let saved = session::load(&session_path(&data_dir));
-                session::to_restore(&saved, RestoreWindows::Preserve, Path::exists)
-            })
+            .background_spawn(async move { windows_at_launch(Some(&data_dir), preserve, hot_exit) })
             .await;
         cx.update(|cx| {
             router::restore(windows, cx);
@@ -208,6 +210,32 @@ fn open_launch_at_start(launch: Launch, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// The windows that reopen when the start has a path: with `preserve`
+/// the last session's windows (`window.restoreWindows: "preserve"`),
+/// then, with `hot_exit`, the single-file windows that left backups
+/// (spec §5.4). Folder windows follow the setting only. Reads
+/// `windows.json` and the backups; call it in the background.
+fn windows_at_launch(
+    data_dir: Option<&Path>,
+    preserve: bool,
+    hot_exit: bool,
+) -> Vec<SessionWindow> {
+    let Some(dir) = data_dir else {
+        return Vec::new();
+    };
+    let mut windows = match preserve {
+        true => {
+            let saved = session::load(&session_path(dir));
+            session::to_restore(&saved, RestoreWindows::Preserve, Path::exists)
+        }
+        false => Vec::new(),
+    };
+    if hot_exit {
+        add_backed_up_files(&mut windows, dir);
+    }
+    windows
 }
 
 /// Whether a start must quit after trying to open its first window: no
@@ -265,6 +293,27 @@ pub(crate) fn quit_now(cx: &mut App) {
     } else {
         cx.quit();
     }
+}
+
+/// The first request from the platform, before any window: reopens the
+/// single-file windows that left backups (read in the background), then
+/// the requested paths. Requests that arrive meanwhile wait in the router.
+async fn open_urls_at_start(urls: &[String], cx: &mut AsyncApp) {
+    let (data_dir, hot_exit) = cx.update(|cx| {
+        router::begin_restore(cx);
+        (
+            app_data_dir(cx),
+            hot_exit_on(&cx.global::<AppState>().settings),
+        )
+    });
+    let windows = cx
+        .background_spawn(async move { windows_at_launch(data_dir.as_deref(), false, hot_exit) })
+        .await;
+    cx.update(|cx| {
+        router::restore(windows, cx);
+        open_urls(urls, cx);
+        quit_if_no_window("the requested paths", cx);
+    });
 }
 
 /// Opens the paths the platform asks for (Finder's "Open With", the Dock).
@@ -616,6 +665,52 @@ mod tests {
         write_session(dir.path(), Vec::new());
         let off = with_user(r#"{"files.hotExit":"off"}"#);
         assert_ne!(first_screen(Some(dir.path()), &off), expected);
+    }
+
+    fn file_window(path: PathBuf) -> SessionWindow {
+        SessionWindow {
+            kind: RecentKind::File,
+            path,
+        }
+    }
+
+    #[test]
+    fn launch_restores_backed_up_file_windows() {
+        use crate::hot_exit::store::{
+            Backup, BackupHeader, WorkspaceKey, backup_dir, text_sha256, write_backup,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.rs");
+        std::fs::write(&file, "base").unwrap();
+        let folder = dir.path().join("proj");
+        std::fs::create_dir(&folder).unwrap();
+        let key = WorkspaceKey::File(file.clone());
+        let backup = Backup {
+            header: BackupHeader {
+                path: file.clone(),
+                mtime: None,
+                size: None,
+                base_sha256: Some(text_sha256("base")),
+                encoding: "UTF-8".into(),
+                bom: false,
+                line_ending: lucerna_text::LineEnding::Lf,
+                lossy: false,
+            },
+            text: "edited".into(),
+        };
+        write_backup(&backup_dir(dir.path(), &key), &key, &backup).unwrap();
+        write_session(dir.path(), vec![folder_window(folder.clone())]);
+        let data = Some(dir.path());
+        assert_eq!(
+            windows_at_launch(data, false, true),
+            vec![file_window(file.clone())]
+        );
+        assert!(windows_at_launch(data, false, false).is_empty());
+        assert_eq!(
+            windows_at_launch(data, true, true),
+            vec![folder_window(folder), file_window(file)]
+        );
+        assert!(windows_at_launch(None, true, true).is_empty());
     }
 
     #[test]

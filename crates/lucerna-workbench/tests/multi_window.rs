@@ -1177,6 +1177,13 @@ fn reopen_opens_welcome(cx: &mut TestAppContext) {
 // `windows.json` (spec §6.6): the router writes its workbench windows,
 // most recently used first, and a start reopens them.
 
+fn file_window(path: &Path) -> SessionWindow {
+    SessionWindow {
+        kind: RecentKind::File,
+        path: path.to_path_buf(),
+    }
+}
+
 fn folder_window(path: &Path) -> SessionWindow {
     SessionWindow {
         kind: RecentKind::Folder,
@@ -1270,6 +1277,18 @@ fn restore_reopens_a_deleted_file_window(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(kinds(cx), vec![WindowKind::File(path)]);
+}
+
+#[gpui::test]
+fn launch_on_a_restored_file_window_opens_one_window(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let file = project(cx).join("src").join("x.rs");
+    cx.update(|cx| {
+        router::restore(vec![file_window(&file)], cx);
+        router::open_for_test(vec![file.clone()], Target::Auto, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![WindowKind::File(file)]);
 }
 
 #[gpui::test]
