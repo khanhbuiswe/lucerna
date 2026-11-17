@@ -495,6 +495,53 @@ fn large_file_substitute_cancelled_by_outside_change(cx: &mut TestAppContext) {
     assert_eq!(indicator(&wb, &view, cx), "E: file changed, :s cancelled");
 }
 
+/// Presses `keystrokes` one by one without letting background work run.
+fn press(keystrokes: &'static str, cx: &mut VisualTestContext) {
+    for k in keystrokes.split(' ') {
+        let k = Keystroke::parse(k).unwrap();
+        cx.update(|window, cx| window.dispatch_keystroke(k, cx));
+    }
+}
+
+#[gpui::test(iterations = 10)]
+fn large_file_substitute_applies_after_a_key(cx: &mut TestAppContext) {
+    // A key typed while the background `:s` runs is like Vim's typeahead:
+    // the `:s` still applies.
+    let text = large_text();
+    let (_dir, wb, view, cx) = vim_editor(&text, cx);
+    keys(":", cx);
+    type_text("%s/abc/X/g", cx);
+    press("enter l", cx);
+    draw(cx);
+    assert!(
+        text_of(&view, cx) == text.replace("abc", "X"),
+        "not applied"
+    );
+    assert_eq!(indicator(&wb, &view, cx), "60 substitutions on 60 lines");
+}
+
+#[gpui::test(iterations = 10)]
+fn save_and_close_wait_for_a_background_substitute(cx: &mut TestAppContext) {
+    let text = large_text();
+    let (dir, wb, view, cx) = vim_editor(&text, cx);
+    keys(":", cx);
+    type_text("%s/abc/X/g", cx);
+    press("enter : w q enter", cx);
+    assert_eq!(indicator(&wb, &view, cx), "E: :s still running");
+    draw(cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(tab_count(&wb, cx), 1);
+    assert!(disk(&dir) == text, "saved");
+    assert!(
+        text_of(&view, cx) == text.replace("abc", "X"),
+        "not applied"
+    );
+    // Once it is done, `:wq` works.
+    ex("wq", cx);
+    assert!(disk(&dir) == text.replace("abc", "X"), "not saved");
+    assert_eq!(tab_count(&wb, cx), 0);
+}
+
 #[gpui::test]
 fn large_file_substitute_runs_in_background(cx: &mut TestAppContext) {
     let text = large_text();

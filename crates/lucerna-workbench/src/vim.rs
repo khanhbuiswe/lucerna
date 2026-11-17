@@ -103,6 +103,8 @@ struct VimSearch {
 
 /// The message shown when the text changed under a background `:s`.
 const SUBSTITUTE_CANCELLED: &str = "E: file changed, :s cancelled";
+/// Shown for a save or close while a background `:s` runs in the view.
+const SUBSTITUTE_RUNNING: &str = "E: :s still running";
 
 /// What to run again once a background search has found the matches vim
 /// asked for.
@@ -180,8 +182,11 @@ pub struct VimLayer {
     /// next key or command line.
     message: Option<String>,
     /// The `:s` running in the background; it applies its result only
-    /// while no key came and the text did not change.
+    /// while the text did not change.
     _substitute: Option<Task<()>>,
+    /// The view `_substitute` runs in, until it ends: saving and closing
+    /// wait for it.
+    substitute_view: Option<EntityId>,
     /// The editor groups whose code views vim follows, set by
     /// [`VimLayer::attach`].
     groups: Option<WeakEntity<EditorGroupsView>>,
@@ -218,6 +223,7 @@ impl VimLayer {
             command_line_open: None,
             message: None,
             _substitute: None,
+            substitute_view: None,
             groups: None,
             _new_views: None,
             _settings: cx.observe(&window_settings, |vim, _, cx| vim.settings_changed(cx)),
@@ -561,6 +567,7 @@ impl VimLayer {
             self._retry = None;
             self.retry_view = None;
             self._substitute = None;
+            self.substitute_view = None;
             self.message = None;
             self.end_search(cx);
             self.match_cache.clear();
@@ -984,9 +991,9 @@ impl VimLayer {
     }
 
     /// Runs a large `:s` on a snapshot in the background. Its result is
-    /// applied (as one undo step) only while no other key or command came
-    /// and the text did not change; a changed text cancels it with a
-    /// message.
+    /// applied (as one undo step) when the text did not change, whatever
+    /// keys came meanwhile (as Vim's typeahead); a changed text cancels it
+    /// with a message.
     fn substitute_in_background(
         &mut self,
         view: &Entity<CodeView>,
@@ -997,8 +1004,8 @@ impl VimLayer {
             let v = view.read(cx);
             (v.snapshot().clone(), v.revision())
         };
-        let generation = self.key_generation;
         let background = job.clone();
+        self.substitute_view = Some(view.entity_id());
         let result =
             cx.background_spawn(
                 async move { guarded("vim substitute", || background.run(&snapshot)) },
@@ -1007,10 +1014,11 @@ impl VimLayer {
         self._substitute = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
             let result = result.await;
             this.update(cx, |this, cx| {
+                this.substitute_view = None;
                 let Some(view) = view.upgrade() else {
                     return;
                 };
-                if this.key_generation != generation || !this.enabled {
+                if !this.enabled {
                     return;
                 }
                 if view.read(cx).revision() != revision {
@@ -1424,6 +1432,15 @@ impl VimLayer {
                     view.update(cx, |v, cx| {
                         v.set_match_highlights(Vec::<Range<usize>>::new(), None, cx)
                     });
+                }
+                Action::RunEx(
+                    ExCommand::Save { .. }
+                    | ExCommand::SaveAll
+                    | ExCommand::Close { .. }
+                    | ExCommand::CloseAll
+                    | ExCommand::SaveAndClose { .. },
+                ) if self.substitute_view == Some(id) => {
+                    self.message = Some(SUBSTITUTE_RUNNING.to_string());
                 }
                 Action::RunEx(command) => self.ex_requests.push(command),
                 Action::OpenCommandLine { prefill } => self.command_line = Some((id, prefill)),
