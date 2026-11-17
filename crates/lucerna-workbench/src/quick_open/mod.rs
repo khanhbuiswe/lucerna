@@ -8,7 +8,7 @@ pub(crate) mod picker;
 mod query;
 mod view;
 
-pub use query::{QuickOpenQuery, parse_query, resolve_line};
+pub use query::{QuickOpenQuery, parse_query, parse_query_vim, resolve_line};
 pub use view::{QuickOpen, QuickOpenEvent};
 
 use std::path::Path;
@@ -149,6 +149,10 @@ impl Workbench {
                 .active_code_view(cx)
                 .map(|view| view.read(cx).snapshot().line_count()),
             extension_ids: None,
+            vim_command_line: self.vim().read(cx).enabled()
+                && self
+                    .active_code_view(cx)
+                    .is_some_and(|v| crate::vim::takes_keys(v.read(cx))),
         };
         self.open_quick_open(prefix, sources, window, cx);
     }
@@ -172,6 +176,7 @@ impl Workbench {
             commands: Vec::new(),
             editor_lines: None,
             extension_ids: Some(ids),
+            vim_command_line: false,
         };
         self.open_quick_open("", sources, window, cx);
     }
@@ -293,6 +298,7 @@ impl Workbench {
                 })
                 .detach();
             }
+            QuickOpenEvent::VimCommand(line) => self.run_vim_command(line, window, cx),
             QuickOpenEvent::Dismiss => {}
         }
     }

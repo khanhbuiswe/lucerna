@@ -382,6 +382,7 @@ fn edit_during_save_stays_dirty(cx: &mut TestAppContext) {
     let opts = SaveOptions {
         reason: SaveReason::Explicit,
         participants: true,
+        overwrite: false,
     };
     let save = cx.update(|window, cx| {
         docs.update(cx, |d, cx| d.save(Path::new("file.txt"), opts, window, cx))
@@ -736,6 +737,7 @@ fn start_save(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> gpui::Task<
     let opts = SaveOptions {
         reason: SaveReason::Explicit,
         participants: false,
+        overwrite: false,
     };
     cx.update(|window, cx| docs.update(cx, |d, cx| d.save(Path::new("file.txt"), opts, window, cx)))
 }

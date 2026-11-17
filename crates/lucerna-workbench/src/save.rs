@@ -42,6 +42,9 @@ pub struct SaveOptions {
     /// Run the save participants (`files.trimTrailingWhitespace`,
     /// `files.insertFinalNewline`, `files.trimFinalNewlines`).
     pub participants: bool,
+    /// Write over a file that changed on disk without asking or checking
+    /// (`:w!`).
+    pub overwrite: bool,
 }
 
 /// The conflict prompt's message and buttons (spec §7.3).
@@ -167,6 +170,7 @@ pub(crate) async fn save_each(
     let opts = SaveOptions {
         reason: SaveReason::Explicit,
         participants: true,
+        overwrite: false,
     };
     let mut all = true;
     for path in paths {
@@ -620,6 +624,7 @@ impl Workbench {
         let opts = SaveOptions {
             reason: SaveReason::Auto,
             participants: true,
+            overwrite: false,
         };
         documents
             .update(cx, |d, cx| d.save(path, opts, window, cx))
@@ -635,6 +640,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             let opts = SaveOptions {
                 reason: SaveReason::Explicit,
                 participants: true,
+                overwrite: false,
             };
             save_active(wb, opts, window, cx)
         },
@@ -651,6 +657,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             let opts = SaveOptions {
                 reason: SaveReason::Explicit,
                 participants: false,
+                overwrite: false,
             };
             save_active(wb, opts, window, cx)
         },

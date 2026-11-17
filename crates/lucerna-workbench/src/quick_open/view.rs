@@ -20,7 +20,7 @@ use super::picker::{
     fuzzy_filter, highlighted, picker_input_row, picker_list, picker_row, picker_row_sized,
     wrap_index,
 };
-use super::query::{QuickOpenQuery, parse_query, resolve_line};
+use super::query::{QuickOpenQuery, parse_query, parse_query_vim, resolve_line};
 use crate::fonts::{EDITOR_FONT_FAMILY, editor_font_family};
 use crate::layout::color;
 use crate::symbols::SymbolState;
@@ -57,6 +57,9 @@ pub(crate) struct Sources {
     /// installs the selected one. `Err` holds the message shown while
     /// there are none yet, such as "Loading extension list…".
     pub extension_ids: Option<ExtensionIds>,
+    /// Vim is on and the active editor is a code view it takes keys in:
+    /// `:` is a Vim command line.
+    pub vim_command_line: bool,
 }
 
 /// The ids the install command lists, or the message shown instead.
@@ -88,6 +91,8 @@ pub enum QuickOpenEvent {
         item: Box<WorkspaceSymbolItem>,
         to_side: bool,
     },
+    /// Run this Vim command line (the text after `:`).
+    VimCommand(String),
     Dismiss,
 }
 
@@ -118,6 +123,13 @@ enum Row {
         location: SharedString,
     },
     Message(&'static str),
+    /// The Vim command line `line` and what it does (or why it is not a
+    /// command).
+    VimCommand {
+        line: String,
+        label: SharedString,
+        valid: bool,
+    },
 }
 
 impl Row {
@@ -137,6 +149,7 @@ pub struct QuickOpen {
     recent: Arc<[Arc<Path>]>,
     commands: Rc<[CommandItem]>,
     editor_lines: Option<u32>,
+    vim_command_line: bool,
     extension_ids: Option<Result<Rc<[String]>, &'static str>>,
     /// The active editor's symbols, for `@`; read from the workbench when
     /// `@` is first typed.
@@ -194,6 +207,7 @@ impl QuickOpen {
             recent: sources.recent,
             commands: sources.commands.into(),
             editor_lines: sources.editor_lines,
+            vim_command_line: sources.vim_command_line,
             extension_ids: sources.extension_ids.map(|ids| ids.map(Into::into)),
             symbols: None,
             symbols_loaded: false,
@@ -377,6 +391,7 @@ impl QuickOpen {
             Row::Extension { index, .. } => (self.extension_id(*index).to_string().into(), None),
             Row::Symbol(_) | Row::WorkspaceSymbol { .. } => (SharedString::default(), None),
             Row::Message(text) => ((*text).into(), None),
+            Row::VimCommand { label, .. } => (label.clone(), None),
         }
     }
 
@@ -401,7 +416,11 @@ impl QuickOpen {
             }
             None => {}
         }
-        let query = parse_query(text);
+        let query = if self.vim_command_line {
+            parse_query_vim(text)
+        } else {
+            parse_query(text)
+        };
         if !matches!(query, QuickOpenQuery::Symbols { .. }) {
             self.end_preview(cx);
         }
@@ -430,6 +449,22 @@ impl QuickOpen {
                 self.show_symbols(&text, group_by_kind, None, cx);
             }
             QuickOpenQuery::WorkspaceSymbols(text) => self.search_workspace_symbols(text, cx),
+            QuickOpenQuery::VimCommand(line) => {
+                let row = if line.is_empty() {
+                    Row::Message("Type a Vim command…")
+                } else {
+                    let (label, valid) = match lucerna_vim::describe_command(&line) {
+                        Ok(what) => (format!(":{line} — {what}"), true),
+                        Err(error) => (error, false),
+                    };
+                    Row::VimCommand {
+                        line,
+                        label: label.into(),
+                        valid,
+                    }
+                };
+                self.set_rows(vec![row], cx);
+            }
         }
     }
 
@@ -602,6 +637,8 @@ impl QuickOpen {
                 item: Box::new(self.workspace_symbols[*index].clone()),
                 to_side,
             },
+            // An invalid line runs too: vim reports why in the status bar.
+            Some(Row::VimCommand { line, .. }) => QuickOpenEvent::VimCommand(line.clone()),
             Some(Row::Symbol(SymbolRow::Header { .. }) | Row::Message(_)) | None => return,
         };
         cx.emit(event);
@@ -703,6 +740,9 @@ impl QuickOpen {
                 .child(highlighted(main, positions, cx))
                 .children(detail.map(|label| div().text_color(color(ui.text_muted)).child(label))),
             Row::Extension { .. } => div().child(highlighted(main, positions, cx)),
+            Row::VimCommand { valid: false, .. } => {
+                div().text_color(color(ui.text_muted)).child(main)
+            }
             _ => div().child(main),
         };
         picker_row("quick-open-row", index, index == self.selected, cx)

@@ -17,6 +17,8 @@ pub enum QuickOpenQuery {
     Symbols { text: String, group_by_kind: bool },
     /// `#`: symbols of the whole workspace.
     WorkspaceSymbols(String),
+    /// `:` with Vim on: a Vim command line (leading spaces trimmed).
+    VimCommand(String),
 }
 
 /// Parses the Quick Open input. A leading `>` gives
@@ -52,6 +54,15 @@ pub fn parse_query(input: &str) -> QuickOpenQuery {
         }
     } else {
         QuickOpenQuery::Files(input.trim().to_string())
+    }
+}
+
+/// As [`parse_query`], but `:` gives [`QuickOpenQuery::VimCommand`]: the
+/// meaning while Vim is on and the active editor takes its keys.
+pub fn parse_query_vim(input: &str) -> QuickOpenQuery {
+    match input.strip_prefix(':') {
+        Some(rest) => QuickOpenQuery::VimCommand(rest.trim_start().to_string()),
+        None => parse_query(input),
     }
 }
 

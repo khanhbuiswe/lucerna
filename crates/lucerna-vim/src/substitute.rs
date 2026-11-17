@@ -168,8 +168,6 @@ pub struct SubstituteResult {
     edits: Vec<(Range<usize>, String)>,
     substitutions: u32,
     lines: u32,
-    /// The row (before the edit) of the last match.
-    last_row: u32,
     /// Where the line that holds the end of the last replacement starts, in
     /// the text after the edit, and its row there.
     cursor_offset: usize,
@@ -197,7 +195,6 @@ impl SubstituteJob {
             edits: Vec::new(),
             substitutions: 0,
             lines: 0,
-            last_row: 0,
             cursor_offset: 0,
             cursor_row: 0,
         };
@@ -236,7 +233,6 @@ impl SubstituteJob {
             }
             if found {
                 result.lines += 1;
-                result.last_row = row;
                 result.cursor_offset = line_start;
                 result.cursor_row = row + rows_added;
             }

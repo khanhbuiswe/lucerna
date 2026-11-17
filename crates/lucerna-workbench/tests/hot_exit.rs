@@ -280,6 +280,7 @@ fn save_while_edits_are_in_flight_leaves_a_backup_with_the_new_base(cx: &mut Tes
     let opts = SaveOptions {
         reason: SaveReason::Explicit,
         participants: false,
+        overwrite: false,
     };
     let save = cx
         .update(|window, cx| docs.update(cx, |d, cx| d.save(Path::new("a.rs"), opts, window, cx)));

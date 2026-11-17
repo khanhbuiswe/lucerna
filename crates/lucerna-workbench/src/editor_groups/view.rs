@@ -241,6 +241,69 @@ impl EditorGroupsView {
         .detach();
     }
 
+    /// Closes every tab (`workbench.action.closeAllEditors`, `:qa`). When
+    /// some show documents with unsaved changes, asks once for all of them:
+    /// Save All closes every tab once they are saved (and still clean),
+    /// Don't Save closes every tab and drops those documents with their
+    /// history, Cancel keeps them all.
+    pub fn request_close_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tabs = || self.model.groups().iter().flat_map(|g| &g.tabs);
+        let ids: Vec<TabId> = tabs().map(|t| t.id).collect();
+        let dirty: Vec<Arc<Path>> = match &self.documents {
+            Some(documents) => {
+                let docs = documents.read(cx);
+                let mut paths: Vec<Arc<Path>> = tabs()
+                    .filter_map(|t| t.path())
+                    .filter(|p| docs.is_dirty(p))
+                    .cloned()
+                    .collect();
+                paths.sort();
+                paths.dedup();
+                paths
+            }
+            None => Vec::new(),
+        };
+        let close_all = move |view: &mut Self, cx: &mut Context<Self>| {
+            view.update_model(cx, |m| {
+                for id in &ids {
+                    m.close(*id);
+                }
+            });
+        };
+        let documents = match self.documents.clone() {
+            Some(documents) if !dirty.is_empty() => documents,
+            _ => {
+                close_all(self, cx);
+                return;
+            }
+        };
+        let names: Vec<String> = dirty.iter().map(|p| save::display_name(p)).collect();
+        let answer = save::prompt_unsaved_all(&names, window, cx);
+        cx.spawn_in(window, async move |view, cx| {
+            match SaveChoice::of(answer.await) {
+                SaveChoice::Save => {
+                    // An edit typed while the saves wrote is not saved: every
+                    // tab stays.
+                    let saved = save::save_each(documents.clone(), dirty.clone(), cx).await
+                        && documents.read_with(cx, |d, _| !dirty.iter().any(|p| d.is_dirty(p)));
+                    if saved {
+                        view.update(cx, |view, cx| close_all(view, cx)).ok();
+                    }
+                }
+                SaveChoice::DontSave => {
+                    view.update(cx, |view, cx| close_all(view, cx)).ok();
+                    documents.update(cx, |d, cx| {
+                        for path in &dirty {
+                            d.discard(path, cx);
+                        }
+                    });
+                }
+                SaveChoice::Cancel => {}
+            }
+        })
+        .detach();
+    }
+
     /// Close on a deleted file's bar: closes tab `id` without asking and
     /// drops the document at `path` (with its unsaved text and history)
     /// when no other tab shows it, as Don't Save does.

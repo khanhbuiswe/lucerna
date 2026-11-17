@@ -1285,7 +1285,8 @@ impl Documents {
     ///    does nothing (`Ok(false)`) and any other save asks first; Cancel
     ///    is `Ok(false)`, Save is remembered for the document.
     /// 1. When the document is in conflict with the disk and
-    ///    `files.saveConflictResolution` is `askUser`, asks first.
+    ///    `files.saveConflictResolution` is `askUser`, asks first, unless
+    ///    `opts.overwrite` says to write over the file (`:w!`).
     /// 2. With `opts.participants`, runs the save participants as one undo
     ///    step.
     /// 3. Captures the text and its history state and writes it on a
@@ -1320,8 +1321,9 @@ impl Documents {
         let (done, previous) = queue_disk_work(doc);
         // With nothing to wait for or ask, the text is captured now: an
         // edit made after this call is not part of the save.
-        let started = (previous.is_none() && !lossy && !self.asks(&key, cx))
-            .then(|| self.start_write(&key, opts, false, cx));
+        // `opts.overwrite` (`:w!`) neither asks nor checks the disk.
+        let started = (previous.is_none() && !lossy && (opts.overwrite || !self.asks(&key, cx)))
+            .then(|| self.start_write(&key, opts, opts.overwrite, cx));
         cx.spawn_in(window, async move |this, cx| {
             // Dropped at the end: the next save of the document goes on.
             let _done = done;
@@ -1331,8 +1333,9 @@ impl Documents {
             {
                 previous.await.ok();
             }
-            // The user chose Overwrite: write without asking or checking.
-            let mut overwrite = false;
+            // The user chose Overwrite (or `:w!`): write without asking or
+            // checking.
+            let mut overwrite = opts.overwrite;
             loop {
                 let write = match started.take() {
                     Some(write) => write,
