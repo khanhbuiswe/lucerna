@@ -5,7 +5,6 @@
 
 mod classify;
 mod edit;
-#[allow(dead_code)] // the runner and the workbench use it in later steps
 mod ex;
 mod ex_run;
 mod macros;
