@@ -335,7 +335,9 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
   thành app, nó không chạy app trong tiến trình này mà khởi động một tiến
   trình app tách rời rồi gửi yêu cầu cho nó như client:
   1. Nhả socket vừa giành (để tiến trình app giành).
-  2. Khởi động app: chạy chính binary với `--foreground`, `setsid` (phiên
+  2. Khởi động app: chạy chính binary với cờ ẩn `--detached-child`
+     (thay cho `--foreground`; tiến trình con gặp app khác đã giữ socket thì
+     chuyển yêu cầu cho nó, M1-1, còn không thì chạy app tại chỗ), `setsid` (phiên
      mới, không còn terminal điều khiển), stdin/stdout/stderr về
      `/dev/null` (log vẫn ghi file như nay), `cwd` giữ nguyên. Không dùng
      `open -a`: nó chỉ có với bản đóng gói và dễ mở nhầm bản cài khác cùng
@@ -353,8 +355,11 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
 - **`--foreground`** (ẩn khỏi `--help`): giành socket và chạy app trong
   tiến trình này như hành vi hiện nay. `bench/compare` và
   `scripts/` khởi chạy `luc` để đo thì thêm cờ này (pidfile vẫn đúng
-  tiến trình app). `--trace-startup` chỉ có nghĩa khi đi cùng
-  `--foreground` (không có thì tự bật `--foreground`).
+  tiến trình app). `--trace-startup` cũng chạy app tại chỗ như
+  `--foreground`. Cả hai chỉ giành socket, không bao giờ chuyển request:
+  socket đã bị giữ thì thoát mã 1 và in "Lucerna is already running; quit it
+  to measure startup." (`--trace-startup`) hoặc "Lucerna is already running;
+  quit it to run in the foreground." (`--foreground`) (M1-6).
 - **Phía app:** mỗi kết nối: đọc một dòng ở luồng nền, gửi vào kênh của
   router trên luồng chính, trả lời sau khi `open` xong. Thoát app thì xoá
   file socket.

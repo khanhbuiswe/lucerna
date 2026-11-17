@@ -18,14 +18,20 @@ struct Cli {
     /// must be opened as `luc ./ext` or `luc ./lsp`.
     path: Option<PathBuf>,
     /// Print `startup_ms=<n>` to stderr once the first frame is painted.
-    /// Implies `--foreground`.
+    /// Runs the app in this process, like `--foreground`: it refuses when
+    /// an app already runs.
     #[arg(long)]
     trace_startup: bool,
     /// Run the app in this process, tied to the terminal, instead of
-    /// handing the path to a running app or starting one apart from the
-    /// terminal. For benchmarks and debugging.
+    /// starting one apart from the terminal. For benchmarks and debugging.
+    /// It refuses when an app already runs: it never hands the path over.
     #[arg(long, hide = true)]
     foreground: bool,
+    /// Set by `luc` on the app process it starts apart from the terminal:
+    /// hand the request to an app that came up meanwhile, else run the app
+    /// here.
+    #[arg(long, hide = true)]
+    detached_child: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -56,7 +62,6 @@ fn main() {
 /// starts one apart from the terminal, or runs the app here. The exit
 /// code.
 fn run(cli: Cli, start: Instant) -> i32 {
-    let foreground = cli.foreground || cli.trace_startup;
     let on_first_frame = cli.trace_startup.then(|| -> Box<dyn FnOnce()> {
         Box::new(move || {
             let startup_ms = start.elapsed().as_millis();
@@ -96,11 +101,24 @@ fn run(cli: Cli, start: Instant) -> i32 {
     };
     #[cfg(unix)]
     {
-        socket::run(launch, cwd, foreground || from_finder)
+        let mode = if cli.trace_startup {
+            socket::RunMode::Exclusive {
+                refusal: socket::RUNNING_TRACE,
+            }
+        } else if cli.foreground {
+            socket::RunMode::Exclusive {
+                refusal: socket::RUNNING_FOREGROUND,
+            }
+        } else if cli.detached_child || from_finder {
+            socket::RunMode::Here
+        } else {
+            socket::RunMode::Detach
+        };
+        socket::run(launch, cwd, mode)
     }
     #[cfg(not(unix))]
     {
-        let _ = (cwd, foreground);
+        let _ = (cwd, cli.foreground, cli.detached_child);
         app::run(launch, None);
         0
     }
@@ -115,7 +133,7 @@ mod socket {
     use lucerna::launch::{send_with_retry, spawn_detached};
     use lucerna_workbench::app::{self, CliListener, Launch};
     use lucerna_workbench::cli_socket::{
-        CliReply, CliRequest, Handed, SendError, claim_and_send, release, socket_path,
+        Claim, CliReply, CliRequest, Handed, SendError, claim, claim_and_send, release, socket_path,
     };
     use lucerna_workbench::default_data_dir;
 
@@ -129,16 +147,59 @@ mod socket {
     /// before its first window, so the reply also waits for the start.
     const START_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
-    /// Claims the socket, then: hands `launch` to the app that holds it;
-    /// runs the app here (`in_place`, or no socket to use); or starts the
-    /// app apart from the terminal and hands it `launch`.
-    pub fn run(launch: Option<Launch>, cwd: Option<PathBuf>, in_place: bool) -> i32 {
+    /// The flag the app `luc` starts apart from the terminal runs with.
+    pub const DETACHED_CHILD: &str = "--detached-child";
+    /// Said for `--trace-startup` when an app already holds the socket.
+    pub const RUNNING_TRACE: &str = "Lucerna is already running; quit it to measure startup.";
+    /// Said for `--foreground` when an app already holds the socket.
+    pub const RUNNING_FOREGROUND: &str =
+        "Lucerna is already running; quit it to run in the foreground.";
+
+    /// What `luc` does once it holds the socket.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum RunMode {
+        /// A terminal `luc`: start the app apart from the terminal and
+        /// hand it the request.
+        Detach,
+        /// Run the app in this process: the app `luc` started, or a launch
+        /// from Finder. An app that holds the socket gets the request.
+        Here,
+        /// `--foreground` and `--trace-startup`: run the app here, or
+        /// refuse with `refusal` (exit 1) when an app holds the socket,
+        /// sending nothing: the user means to measure or debug this
+        /// process.
+        Exclusive { refusal: &'static str },
+    }
+
+    /// Claims the socket, then: hands `launch` to the app that holds it
+    /// (not in `Exclusive` mode, which refuses); runs the app here
+    /// (`Here`, `Exclusive`, or no socket to use); or starts the app apart
+    /// from the terminal and hands it `launch` (`Detach`).
+    pub fn run(launch: Option<Launch>, cwd: Option<PathBuf>, mode: RunMode) -> i32 {
         let Some(data_dir) = default_data_dir() else {
             tracing::warn!("no HOME: running without the luc socket");
             app::run(launch, None);
             return 0;
         };
         let socket = socket_path(&data_dir);
+        if let RunMode::Exclusive { refusal } = mode {
+            return match claim(&socket) {
+                Claim::Server(bound) => {
+                    app::run(launch, Some(bound));
+                    0
+                }
+                Claim::Client(_) => {
+                    eprintln!("luc: {refusal}");
+                    1
+                }
+                Claim::Unavailable(err) => {
+                    tracing::warn!(%err, socket = %socket.display(), "running without the luc socket");
+                    eprintln!("luc: warning: running without the luc socket: {err}");
+                    app::run(launch, None);
+                    0
+                }
+            };
+        }
         let request = match &launch {
             Some(launch) => request_for(launch, cwd.clone()),
             // `luc` in `/` with no path: `/` is not opened; the app comes
@@ -155,7 +216,7 @@ mod socket {
                 reply_code(reply)
             }
             Handed::Server(listener) => match launch {
-                Some(launch) if !in_place => detach(listener, &socket, &launch, cwd),
+                Some(launch) if mode == RunMode::Detach => detach(listener, &socket, &launch, cwd),
                 launch => {
                     app::run(launch, Some(listener));
                     0
@@ -170,27 +231,16 @@ mod socket {
         }
     }
 
-    /// Starts the app apart from the terminal (`luc --foreground <path>`)
-    /// and hands it `launch` once it listens.
+    /// Starts the app apart from the terminal (`luc --detached-child
+    /// <path>`) and hands it `launch` once it listens.
     fn detach(listener: CliListener, socket: &Path, launch: &Launch, cwd: Option<PathBuf>) -> i32 {
         // For the app to claim: the file first, then the listener.
         release(listener);
-        let exe = match std::env::current_exe() {
-            Ok(exe) => exe,
-            Err(err) => {
-                eprintln!("luc: could not start Lucerna: {err}");
-                return 1;
-            }
-        };
-        let path = launch_path(launch);
-        let dir = cwd.clone().unwrap_or_else(|| PathBuf::from("/"));
-        let args = ["--foreground".into(), path.clone().into_os_string()];
-        if let Err(err) = spawn_detached(&exe, &args, &dir) {
+        if let Err(err) = start_detached(launch, cwd.as_deref()) {
             tracing::error!(%err, "could not start the app");
             eprintln!("luc: could not start Lucerna: {err}");
             return 1;
         }
-        tracing::info!(path = %path.display(), "started the app apart from the terminal");
         let request = request_for(launch, cwd);
         match send_with_retry(socket, &request, START_CONNECT_TIMEOUT, START_REPLY_TIMEOUT) {
             Err(SendError::Unreachable(err)) => {
@@ -200,6 +250,18 @@ mod socket {
             }
             reply => reply_code(reply),
         }
+    }
+
+    /// Starts this binary apart from the terminal on `launch`, with
+    /// [`DETACHED_CHILD`], in `cwd` (else `/`).
+    fn start_detached(launch: &Launch, cwd: Option<&Path>) -> std::io::Result<()> {
+        let exe = std::env::current_exe()?;
+        let path = launch_path(launch);
+        let dir = cwd.unwrap_or(Path::new("/"));
+        let args = [DETACHED_CHILD.into(), path.clone().into_os_string()];
+        spawn_detached(&exe, &args, dir)?;
+        tracing::info!(path = %path.display(), "started the app apart from the terminal");
+        Ok(())
     }
 
     /// The path a [`Launch`] is on: the file opened alone, else the

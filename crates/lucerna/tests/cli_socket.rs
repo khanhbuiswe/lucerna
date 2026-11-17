@@ -13,7 +13,8 @@ use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin;
 use lucerna_workbench::cli_socket::socket_path;
 
-/// The app processes a test started: `luc --foreground` of this build
+/// The app processes a test started: `luc --foreground` or the
+/// `--detached-child` that `luc` starts, of this build
 /// on `dir` (canonical), the folder the test opened first; by pid.
 fn app_pids(exe: &Path, dir: &Path) -> Vec<i32> {
     let out = std::process::Command::new("ps")
@@ -27,7 +28,7 @@ fn app_pids(exe: &Path, dir: &Path) -> Vec<i32> {
         .filter_map(|line| {
             let (pid, command) = line.trim().split_once(' ')?;
             (command.starts_with(&*exe)
-                && command.contains("--foreground")
+                && (command.contains("--foreground") || command.contains("--detached-child"))
                 && command.contains(&*dir))
             .then(|| pid.parse().ok())
             .flatten()
