@@ -917,6 +917,14 @@ fn alt_cmd_c_in_explorer_still_copies_path() {
     assert_eq!(resolve("alt+cmd+r", &["editorFocus"]), "toggleFindRegex");
     assert_eq!(resolve("alt+cmd+p", &["editorFocus"]), "togglePreserveCase");
     assert_eq!(
+        resolve("alt+cmd+c", &["editorFocus", "searchViewletFocus"]),
+        "toggleSearchCaseSensitive"
+    );
+    assert_eq!(
+        resolve("alt+cmd+r", &["editorFocus", "searchViewletFocus"]),
+        "toggleSearchRegex"
+    );
+    assert_eq!(
         resolve("alt+cmd+c", &["searchViewletFocus"]),
         "toggleSearchCaseSensitive"
     );
