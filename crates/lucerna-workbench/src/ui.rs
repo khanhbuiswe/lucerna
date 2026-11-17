@@ -59,10 +59,10 @@ pub const FILES_ICON: &[u8] = icons::FILES;
 /// A magnifying glass.
 pub const SEARCH_ICON: &[u8] = icons::SEARCH;
 
-/// Two arrows swapping: the find bar's Toggle Replace.
+/// Lucide `replace`: the find bar's Toggle Replace button.
 pub const REPLACE_ICON: &[u8] = icons::REPLACE;
 
-/// The same, for Replace All Matches.
+/// Lucide `replace-all`: the Replace All Matches button.
 pub const REPLACE_ALL_ICON: &[u8] = icons::REPLACE_ALL;
 
 /// An arrow into a bar: Replace Next Match.

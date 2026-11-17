@@ -122,7 +122,7 @@ pub struct FindWidget {
     vim: bool,
     /// Set by a replace: the next search makes the first match at or
     /// after this offset active (wrapping to the first) and reveals it.
-    pending_pick_from: Option<usize>,
+    pending_pick_from: Option<(u64, usize)>,
     _search: Task<()>,
     _view_changed: gpui::Subscription,
 }
@@ -234,7 +234,9 @@ impl FindWidget {
 
     /// Whether the Replace input has focus.
     pub(crate) fn replace_input_focused(&self, window: &Window, cx: &App) -> bool {
-        self.replace_input.focus_handle(cx).is_focused(window)
+        self.replace_visible
+            && self.can_replace(cx)
+            && self.replace_input.focus_handle(cx).is_focused(window)
     }
 
     /// The view, when a replace may run: the Replace row is shown, the
@@ -299,9 +301,10 @@ impl FindWidget {
         plan.stop_after = true;
         // Before the edit: the search its revision change starts picks the
         // match after the replacement.
-        self.pending_pick_from = Some(end);
-        if !view.update(cx, |v, cx| v.transact(plan, cx)) {
-            self.pending_pick_from = None;
+        if view.update(cx, |v, cx| v.transact(plan, cx)) {
+            // The offset belongs to the search of this revision only; the
+            // view's change notification reaches us after this returns.
+            self.pending_pick_from = Some((view.read(cx).revision(), end));
         }
     }
 
@@ -526,7 +529,12 @@ impl FindWidget {
         self.error = error;
         self.pending = false;
         let last = self.matches.len().checked_sub(1);
-        let pick_from = self.pending_pick_from.take();
+        // A user edit before this search's revision makes the offset stale.
+        let pick_from = self
+            .pending_pick_from
+            .take()
+            .filter(|(revision, _)| *revision == self.revision)
+            .map(|(_, offset)| offset);
         self.active = match (pick, self.active, last) {
             (_, _, None) => None,
             _ if let Some(offset) = pick_from => {
@@ -584,7 +592,7 @@ impl FindWidget {
         if m.platform || m.control || m.alt {
             return;
         }
-        if ev.keystroke.key == "tab" && self.replace_visible {
+        if ev.keystroke.key == "tab" && self.replace_visible && self.can_replace(cx) {
             // Tab and Shift+Tab move between the two inputs.
             let (from, to) = if m.shift {
                 (&self.replace_input, &self.input)
@@ -703,7 +711,13 @@ impl Render for FindWidget {
                 if ready {
                     button.on_click(cx.listener(move |find, _, _, cx| f(find, cx)))
                 } else {
-                    button.opacity(0.4)
+                    // The occluding cover keeps the button from seeing the
+                    // mouse: no hover, no click.
+                    button
+                        .relative()
+                        .opacity(0.4)
+                        .cursor_default()
+                        .child(div().absolute().inset_0().occlude())
                 }
             };
             let field = search_query_column(input_box(&self.replace_input, cx))
@@ -843,6 +857,7 @@ pub(crate) fn open_for_vim(
     let find = show(view, cx);
     find.update(cx, |find, cx| {
         find.vim = true;
+        find.replace_visible = false;
         find.input
             .update(cx, |input, cx| input.set_text("", window, cx));
     });

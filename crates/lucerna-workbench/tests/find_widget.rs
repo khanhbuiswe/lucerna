@@ -955,3 +955,65 @@ fn stale_pick_after_replace_does_not_leak_into_a_new_search(cx: &mut TestAppCont
         "the match nearest the cursor, not the replace's stale offset"
     );
 }
+
+#[gpui::test]
+fn replace_one_preserves_case(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "Foo foo", cx);
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    click("find-toggle-preserve-case", cx);
+    fill_replace(&view, "bar", cx);
+    keys("enter", cx);
+    assert_eq!(buffer_text(&view, cx), "Bar foo");
+}
+
+#[gpui::test]
+fn replace_shortcuts_work_with_focus_in_the_editor(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo foo", cx);
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    set_replace(&view, "X", cx);
+    view.update_in(cx, |v, window, cx| {
+        let focus = gpui::Focusable::focus_handle(v, cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    keys("shift-cmd-1", cx);
+    assert_eq!(buffer_text(&view, cx), "X foo");
+    keys("alt-cmd-enter", cx);
+    assert_eq!(buffer_text(&view, cx), "X X");
+}
+
+#[gpui::test]
+fn stale_pick_offset_is_dropped_after_a_user_edit(cx: &mut TestAppContext) {
+    init(cx);
+    let filler = "x".repeat(99) + "\n";
+    let text = format!("foo\n{}foo\n", filler.repeat(11_000));
+    assert!(text.len() > lucerna_workbench::BACKGROUND_SEARCH_BYTES);
+    let (_dir, _wb, view, cx) = open_file("a.txt", &text, cx);
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    set_replace(&view, "X", cx);
+    let find = find(&view, cx);
+    cx.update(|_, cx| {
+        find.update(cx, |f, cx| f.replace_one(cx));
+        // A user edit before the re-search finishes.
+        view.update(cx, |v, cx| {
+            let selections = v.selections().clone();
+            let plan = lucerna_editor::EditPlan::new(
+                vec![(1..1, Arc::from("!"))],
+                selections,
+                lucerna_editor::EditKind::Other,
+            );
+            assert!(v.transact(plan, cx));
+        });
+    });
+    draw(cx);
+    let selection = view.read_with(cx, |v, _| v.selection());
+    assert!(
+        selection.clone().is_none_or(|s| s.start.row == 0),
+        "the selection did not jump to the next match: {selection:?}"
+    );
+}
