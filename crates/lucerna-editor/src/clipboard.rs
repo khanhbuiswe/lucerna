@@ -139,6 +139,9 @@ fn spread<'a>(
         return (pieces.len() == n)
             .then(|| pieces.iter().map(|p| Cow::Borrowed(p.as_str())).collect());
     }
+    if clip.whole_line {
+        return None;
+    }
     let text = clip.text.replace("\r\n", "\n").replace('\r', "\n");
     let text = text.strip_suffix('\n').unwrap_or(&text);
     let lines: Vec<Cow<str>> = text
@@ -444,6 +447,17 @@ bx
 y
 z|"
         );
+    }
+
+    #[test]
+    fn paste_whole_line_clip_without_pieces_is_not_split() {
+        let whole = ClipboardText {
+            text: "a\nb\n".into(),
+            pieces: None,
+            whole_line: true,
+        };
+        let out = paste_with("x|\ny|", &whole, MultiCursorPaste::Spread);
+        assert_eq!(out, "a\nb\nx|\na\nb\ny|");
     }
 
     #[test]
