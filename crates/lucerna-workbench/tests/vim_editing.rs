@@ -926,6 +926,41 @@ fn macro_records_a_command_line_dismissed_from_visual(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn macro_records_a_go_to_line_from_the_command_line(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("a\nb\nc\nd\ne\nf\n", cx);
+    keys("q a :", cx);
+    type_text("3", cx);
+    keys("enter", cx);
+    assert!(cx.update(|_, cx| wb.read(cx).quick_open().is_none()));
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+    keys("d d q", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nd\ne\nf\n");
+    // The replay goes to line 3 again, not the current line.
+    keys("g g @ a", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\ne\nf\n");
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+}
+
+#[gpui::test]
+fn macro_records_a_go_to_line_as_its_absolute_target(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("abc\ndef\nghi", cx);
+    // `-1` is the last line, `,2` the second column; the macro keeps
+    // line 3, column 2.
+    keys("q a :", cx);
+    type_text("-1,2", cx);
+    keys("enter", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 1));
+    keys("x q", cx);
+    assert_eq!(text_of(&view, cx), "abc\ndef\ngi");
+    keys("g g o", cx);
+    commit(&view, "new", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "abc\nnew\ndef\ngi");
+    keys("@ a", cx);
+    assert_eq!(text_of(&view, cx), "abc\nnew\ndf\ngi");
+}
+
+#[gpui::test]
 fn macro_stops_when_motion_fails(cx: &mut TestAppContext) {
     let (_dir, wb, view, cx) = vim_editor("a\nb\nc\nd\ne\n", cx);
     keys("q a j x q", cx);

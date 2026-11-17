@@ -673,6 +673,45 @@ mod tests {
         assert_eq!(vim.last_prefill, None);
     }
 
+    /// Feeds `keys`, reports a Go to Line to `line` (`column`) from the
+    /// `:` line, feeds `after`; returns register `a`.
+    fn recorded_go_to_line(keys: &str, line: u32, column: Option<u32>, after: &str) -> String {
+        let mut g = VimGlobals::default();
+        let view = TestView::new("|ab\ncd");
+        let mut vim = Vim::new(view.cursor);
+        let s = Settings::default();
+        for k in parse_notation(keys) {
+            vim.feed(k, &view, &mut g, &s);
+        }
+        vim.command_line_went_to_line(line, column, &mut g);
+        assert_eq!(vim.last_prefill, None);
+        for k in parse_notation(after) {
+            vim.feed(k, &view, &mut g, &s);
+        }
+        reg(&g, 'a').unwrap_or_default()
+    }
+
+    #[test]
+    fn a_go_to_line_from_the_command_line_is_recorded() {
+        assert_eq!(recorded_go_to_line("qa:", 12, None, "q"), ":12<CR>");
+        assert_eq!(recorded_go_to_line("qa:", 12, Some(5), "q"), ":12<CR>04l");
+        assert_eq!(recorded_go_to_line("qa:", 12, Some(1), "q"), ":12<CR>0");
+        // A prefill the line no longer starts with is cleared, no `<Esc>`.
+        assert_eq!(recorded_go_to_line("qaV:", 3, None, "q"), "V:<C-u>3<CR>");
+        // Not recording: nothing is kept.
+        assert_eq!(recorded_go_to_line(":", 12, None, ""), "");
+        // The replay lands on that line and column.
+        let mut g = VimGlobals::default();
+        g.registers.set_macro('a', ":3<CR>01l".into());
+        let text = crate::test_util::run_edit_globals(
+            Settings::default(),
+            "|abc\ndef\nghi\njkl",
+            "@a",
+            &mut g,
+        );
+        assert_eq!(text, "abc\ndef\ng|hi\njkl");
+    }
+
     #[test]
     fn a_recorded_search_replays_with_fresh_find_defaults() {
         // `*` searches a whole word as a regex; the recorded `/foo.bar`

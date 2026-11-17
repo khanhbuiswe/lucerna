@@ -251,6 +251,13 @@ impl Workbench {
                 .clone()
                 .update(cx, |vim, _| vim.command_line_submitted());
         }
+        if let QuickOpenEvent::GoToLine { line, column } = event
+            && let Some((line, column)) = self.go_to_line_target(*line, *column, cx)
+        {
+            self.vim()
+                .clone()
+                .update(cx, |vim, _| vim.command_line_went_to_line(line, column));
+        }
         self.close_quick_open(window, cx);
         match event {
             QuickOpenEvent::Open { path, mode } => {
@@ -334,6 +341,31 @@ impl Workbench {
         self.documents()
             .clone()
             .update(cx, |docs, cx| docs.go_to(&view, point, cx));
+    }
+
+    /// Where [`Self::go_to_line`] puts the cursor: the 1-based line and,
+    /// when `column` is given, the 1-based char column on that line, both
+    /// clamped to the active code view's text.
+    fn go_to_line_target(
+        &self,
+        line: u32,
+        column: Option<u32>,
+        cx: &gpui::App,
+    ) -> Option<(u32, Option<u32>)> {
+        let view = self.active_code_view(cx)?;
+        let snapshot = view.read(cx).snapshot();
+        let point = crate::documents::char_point(
+            snapshot,
+            line.saturating_sub(1),
+            column.unwrap_or(1).saturating_sub(1),
+        );
+        let column = column.map(|_| {
+            let line = snapshot.line(point.row);
+            let chars = line.chars().count() as u32;
+            let at = line[..point.column as usize].chars().count() as u32;
+            at.min(chars.saturating_sub(1)) + 1
+        });
+        Some((point.row + 1, column))
     }
 
     /// The code view of the focused group's active tab, once drawn.

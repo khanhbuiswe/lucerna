@@ -115,6 +115,33 @@ impl Vim {
         g.record_text(&recorded);
     }
 
+    /// The `:` line the `:` key opened ran Go to Line instead of a `:`
+    /// command, landing on 1-based `line` and, when a column was given,
+    /// on 1-based char `column` (within the line). The macro being
+    /// recorded gets the absolute jump in Vim keys: `:`, the line number
+    /// after the prefill (as [`Vim::ex_command`] records it) and `<CR>`,
+    /// then `0` and `{column-1}l` for a column.
+    pub fn command_line_went_to_line(
+        &mut self,
+        line: u32,
+        column: Option<u32>,
+        g: &mut VimGlobals,
+    ) {
+        let text = line.to_string();
+        let mut recorded = match self.last_prefill.take() {
+            Some(p) => record_line(&p, &text),
+            None => record_line_cleared(&text),
+        };
+        recorded.push_str("<CR>");
+        if let Some(column) = column {
+            recorded.push('0');
+            if column > 1 {
+                recorded.push_str(&format!("{}l", column - 1));
+            }
+        }
+        g.record_text(&recorded);
+    }
+
     /// Runs one command line (the text after `:`). Ends a Visual mode
     /// first (setting `'<` `'>`), drops pending keys and count. An error
     /// returns `[Message(err), Failed]`. The line is kept in register `:`

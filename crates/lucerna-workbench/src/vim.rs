@@ -395,6 +395,20 @@ impl VimLayer {
         self.command_line_open = None;
     }
 
+    /// The `:` line the `:` key opened ran Go to Line, landing on 1-based
+    /// `line` (and char `column`, clamped to the line): the macro being
+    /// recorded gets the jump, and the close is no dismissal.
+    pub(crate) fn command_line_went_to_line(&mut self, line: u32, column: Option<u32>) {
+        let Some(id) = self.command_line_open.take() else {
+            return;
+        };
+        if let Some(state) = self.views.get_mut(&id) {
+            state
+                .vim
+                .command_line_went_to_line(line, column, &mut self.globals);
+        }
+    }
+
     /// Quick Open closed holding `query`: a `:` line the `:` key opened
     /// was left without running.
     pub(crate) fn command_line_closed(&mut self, query: &str) {
