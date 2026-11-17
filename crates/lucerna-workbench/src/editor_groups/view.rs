@@ -587,7 +587,9 @@ impl EditorGroupsView {
                 .and_then(|d| d.read(cx).snapshot_of(path))
                 .and_then(|snapshot| {
                     let rows = snapshot.line_count().min(UNTITLED_LABEL_ROWS);
-                    let head: Vec<_> = (0..rows).map(|row| snapshot.line(row)).collect();
+                    let head: Vec<_> = (0..rows)
+                        .map(|row| snapshot.line_prefix(row, UNTITLED_LABEL_CHARS))
+                        .collect();
                     crate::untitled::label(&head.join("\n"))
                 });
             return label.unwrap_or_else(|| crate::untitled::name(path));
@@ -1031,6 +1033,10 @@ fn title_color(active: bool, focused_group: bool, ui: &UiColors) -> Rgba {
 
 /// How many rows of an Untitled document a tab label looks at.
 const UNTITLED_LABEL_ROWS: u32 = 16;
+
+/// How many chars of each row a tab label reads: a long line is never
+/// copied whole.
+const UNTITLED_LABEL_CHARS: usize = 256;
 
 /// `a` moved `t` of the way towards `b`.
 fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {

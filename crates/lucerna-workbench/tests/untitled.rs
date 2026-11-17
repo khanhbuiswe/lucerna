@@ -453,3 +453,16 @@ fn untitled_numbers_are_reused(cx: &mut TestAppContext) {
     settle(cx);
     assert_eq!(active_tab(&wb, cx).0, "untitled:Untitled-1");
 }
+
+#[gpui::test]
+fn untitled_label_of_a_huge_first_line(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, cx) = workbench(cx);
+    let key: Arc<Path> = {
+        let docs = documents(&wb, cx);
+        new_untitled(&docs, cx)
+    };
+    let long = format!("    {}", "y".repeat(2_000_000));
+    open_tab_and_type(&wb, &key, &long, cx);
+    assert_eq!(active_tab(&wb, cx).2, format!("{}…", "y".repeat(40)));
+}
