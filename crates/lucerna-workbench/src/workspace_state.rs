@@ -121,10 +121,27 @@ impl WorkspaceState {
 /// recent file and saved path goes through this, so one file has one name
 /// whatever the working directory.
 pub(crate) fn absolute_path(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
+    if path.is_absolute() || crate::untitled::is_untitled(path) {
         path.to_path_buf()
     } else {
         root.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn untitled_key_passes_through_absolute_path() {
+        assert_eq!(
+            absolute_path(Path::new("/r"), Path::new("untitled:Untitled-1")),
+            Path::new("untitled:Untitled-1")
+        );
+        assert_eq!(
+            absolute_path(Path::new("/r"), Path::new("src/a.rs")),
+            Path::new("/r/src/a.rs")
+        );
     }
 }
 

@@ -65,6 +65,7 @@ mod text_input;
 mod theme_picker;
 mod trust;
 pub mod ui;
+pub mod untitled;
 mod vim;
 mod vim_ex;
 mod vim_indicator;
