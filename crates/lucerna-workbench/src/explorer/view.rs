@@ -703,7 +703,7 @@ impl ExplorerView {
             return;
         }
         let folder = match edit.kind {
-            EditKind::NewFile => false,
+            EditKind::NewFile => fs_ops::names_folder(&text),
             EditKind::NewFolder => true,
             EditKind::Rename => {
                 if let Some(original) = edit.original {

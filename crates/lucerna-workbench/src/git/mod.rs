@@ -156,10 +156,12 @@ enum Setup {
     Found(Box<Located>),
 }
 
-/// A found repository, with its git-dir watcher when watching is on.
+/// A found repository, with its git-dir watcher when watching is on, or
+/// why that watcher could not start.
 struct Located {
     repo: Repo,
     watcher: Option<GitDirWatcher>,
+    watch_error: Option<String>,
 }
 
 /// The git-dir watcher's signal, sent from its thread.
@@ -178,6 +180,8 @@ pub struct GitStore {
     epoch: u64,
     repo: Option<Repo>,
     watcher: Option<GitDirWatcher>,
+    /// Why the git-dir watcher could not start; cleared on restart.
+    watch_error: Option<String>,
     watch_task: Option<Task<()>>,
     setup: Option<Task<()>>,
     running: Option<Task<()>>,
@@ -226,6 +230,7 @@ impl GitStore {
             epoch: 0,
             repo: None,
             watcher: None,
+            watch_error: None,
             watch_task: None,
             setup: None,
             running: None,
@@ -262,6 +267,12 @@ impl GitStore {
 
     pub fn state(&self) -> GitState {
         self.state
+    }
+
+    /// Why the git-dir watcher could not start (`notify`'s message), until
+    /// the store restarts.
+    pub fn watch_error(&self) -> Option<&str> {
+        self.watch_error.as_deref()
     }
 
     /// The `git.enabled` setting, as last read.
@@ -369,6 +380,13 @@ impl GitStore {
         self.git_override = Some(git);
     }
 
+    /// Records a git-dir watcher failure, as `discover` would.
+    #[doc(hidden)]
+    pub fn fail_watch_for_test(&mut self, reason: &str, cx: &mut Context<Self>) {
+        self.watch_error = Some(reason.to_string());
+        cx.emit(GitStoreEvent::StateChanged);
+    }
+
     /// Kills the blob reader's `git cat-file` process; the next read
     /// restarts it.
     #[doc(hidden)]
@@ -396,6 +414,7 @@ impl GitStore {
         self.epoch += 1;
         self.repo = None;
         self.watcher = None;
+        self.watch_error = None;
         self.watch_task = None;
         self.setup = None;
         self.running = None;
@@ -476,11 +495,19 @@ impl GitStore {
                 self.set_state(GitState::NoRepo, cx);
             }
             Setup::Found(found) => {
-                let Located { repo, watcher } = *found;
+                let Located {
+                    repo,
+                    watcher,
+                    watch_error,
+                } = *found;
                 if let (Some(watcher), Some(rx)) = (watcher, watch_rx) {
                     self.listen_to_watcher(watcher, rx, cx);
                 }
                 self.repo = Some(repo);
+                self.watch_error = watch_error;
+                if self.watch_error.is_some() {
+                    cx.emit(GitStoreEvent::StateChanged);
+                }
                 self.set_state(GitState::Ready, cx);
                 self.enqueue(Job::Rescan, cx);
             }
@@ -788,14 +815,22 @@ fn discover(
     match Repo::discover_with_ceiling(git, root, home) {
         Err(GitError::NotFound) => Setup::NoGit,
         Ok(Some(repo)) => {
+            let mut watch_error = None;
             let watcher = watch.and_then(|tx| {
                 GitDirWatcher::start(&repo.git_dir, &repo.common_dir, move || {
                     let _ = tx.unbounded_send(());
                 })
-                .inspect_err(|err| tracing::warn!(%err, "could not watch the git directory"))
+                .inspect_err(|err| {
+                    tracing::warn!(%err, "could not watch the git directory");
+                    watch_error = Some(lucerna_project::watch_error_reason(err));
+                })
                 .ok()
             });
-            Setup::Found(Box::new(Located { repo, watcher }))
+            Setup::Found(Box::new(Located {
+                repo,
+                watcher,
+                watch_error,
+            }))
         }
         Ok(None) => Setup::NoRepo,
         Err(err) => Setup::Failed(err),

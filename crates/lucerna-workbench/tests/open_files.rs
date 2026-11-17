@@ -200,6 +200,93 @@ fn open_file_watcher_reports_writes_to_watched_files_only() {
     }
 }
 
+/// Waits up to 10 s for a batch that names `file`, as given or by its
+/// real path.
+fn wait_for(rx: &crossbeam_channel::Receiver<Vec<PathBuf>>, file: &Path) {
+    let real = file.canonicalize().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let batch: Vec<PathBuf> = rx.recv_timeout(left).expect("a batch arrives");
+        if batch.contains(&real) || batch.iter().any(|p| p == file) {
+            return;
+        }
+    }
+}
+
+/// Removes `dir` and lets the batches about the removal pass, so the
+/// batches that follow come from what the test does next. inotify reports
+/// the deletion of `file` (in `dir`), which may come late: it is waited
+/// for up to 2 s. FSEvents may name only `dir`, which reaches no batch.
+fn remove_and_settle(rx: &crossbeam_channel::Receiver<Vec<PathBuf>>, dir: &Path, file: &Path) {
+    let real = file.canonicalize().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while let Ok(batch) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        if batch.iter().any(|p| *p == real || p == file) {
+            break;
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    while rx.try_recv().is_ok() {}
+}
+
+/// An ignored file whose folder is removed (`dist/` by a clean build)
+/// still reloads once the folder and the file are written again, even
+/// after another tab opened and closed in between.
+#[test]
+fn open_file_watcher_follows_a_recreated_parent() {
+    let root = TempDir::new().unwrap();
+    let dist = root.path().join("dist");
+    let bundle = dist.join("bundle.js");
+    let env = root.path().join(".env");
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(&bundle, "1").unwrap();
+    std::fs::write(&env, "1").unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let watcher = OpenFileWatcher::start(move |batch| {
+        let _ = tx.send(batch);
+    })
+    .unwrap();
+    watcher.set_files(vec![bundle.clone()]);
+    std::thread::sleep(Duration::from_millis(300));
+    while rx.try_recv().is_ok() {}
+
+    remove_and_settle(&rx, &dist, &bundle);
+    watcher.set_files(vec![bundle.clone(), env.clone()]);
+    watcher.set_files(vec![bundle.clone()]);
+
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(&bundle, "2").unwrap();
+    wait_for(&rx, &bundle);
+}
+
+/// The watch moves down to `dist/js` at once when both folders come
+/// back, and a file written before it got there is still reported.
+#[test]
+fn open_file_watcher_follows_a_recreated_nested_parent() {
+    let root = TempDir::new().unwrap();
+    let dist = root.path().join("dist");
+    let js = dist.join("js");
+    let bundle = js.join("bundle.js");
+    std::fs::create_dir_all(&js).unwrap();
+    std::fs::write(&bundle, "1").unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let watcher = OpenFileWatcher::start(move |batch| {
+        let _ = tx.send(batch);
+    })
+    .unwrap();
+    watcher.set_files(vec![bundle.clone()]);
+    std::thread::sleep(Duration::from_millis(300));
+    while rx.try_recv().is_ok() {}
+
+    remove_and_settle(&rx, &dist, &bundle);
+
+    std::fs::create_dir_all(&js).unwrap();
+    std::fs::write(&bundle, "2").unwrap();
+    wait_for(&rx, &bundle);
+}
+
 /// A file opened alone shows in the tree by itself; its folder is
 /// never scanned, and the file is followed by the open-file watcher.
 #[gpui::test]

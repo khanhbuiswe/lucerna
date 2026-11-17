@@ -10,11 +10,30 @@ use notify::event::{EventKind, ModifyKind};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::coalesce::{Coalesced, RawEvent, coalesce};
+use crate::worktree::io_reason;
 
 /// A batch ends once no event arrived for this long...
 pub const DEBOUNCE: Duration = Duration::from_millis(50);
 /// ...or when it has been collecting for this long.
 const MAX_BATCH: Duration = Duration::from_millis(100);
+
+/// Why a watcher could not start, worded for the user: `notify`'s text
+/// for the error without the ` about ["/path", ...]` it appends when the
+/// error names paths, and an I/O error without its ` (os error N)`.
+pub fn watch_error_reason(err: &notify::Error) -> String {
+    if let notify::ErrorKind::Io(io) = &err.kind {
+        return io_reason(io);
+    }
+    let text = err.to_string();
+    if err.paths.is_empty() {
+        return text;
+    }
+    let paths = format!(" about {:?}", err.paths);
+    match text.strip_suffix(&paths) {
+        Some(reason) => reason.to_string(),
+        None => text,
+    }
+}
 
 /// Keeps the OS watcher and the debounce thread alive; dropping it stops both.
 pub(crate) struct Watcher {
@@ -142,4 +161,33 @@ fn to_raw(res: notify::Result<Event>) -> Vec<RawEvent> {
 enum PresentAs {
     Created,
     Modified,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_error_reason_leaves_out_paths_and_os_error_codes() {
+        let path = PathBuf::from("/home/u/proj/node_modules/x/y");
+        let limit = notify::Error::new(notify::ErrorKind::MaxFilesWatch).add_path(path.clone());
+        assert!(limit.to_string().contains("about"));
+        assert_eq!(watch_error_reason(&limit), "OS file watch limit reached.");
+        let missing = notify::Error::path_not_found().add_path(path.clone());
+        assert_eq!(watch_error_reason(&missing), "No path was found.");
+        let two = notify::Error::generic("could not start").set_paths(vec![path.clone(), path]);
+        assert_eq!(watch_error_reason(&two), "could not start");
+        assert_eq!(
+            watch_error_reason(&notify::Error::path_not_found()),
+            "No path was found."
+        );
+        let io =
+            notify::Error::io(std::io::Error::from_raw_os_error(24)).add_path(PathBuf::from("/p"));
+        let reason = watch_error_reason(&io);
+        assert!(
+            !reason.contains("os error") && !reason.contains("about"),
+            "{reason}"
+        );
+        assert!(!reason.is_empty());
+    }
 }

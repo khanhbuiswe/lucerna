@@ -232,6 +232,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** Explorer → New File → gõ `components/` → Enter. Kết quả là file rỗng tên `components`.
 - **Ghi chú:** VS Code tạo folder trong trường hợp này. Agent chưa kiểm lại trong source VS Code.
 - **Hướng sửa:** tên kết thúc bằng dấu phân cách thì coi là New Folder.
+- **Đã sửa** (commit d48a109): tên kết thúc bằng `/` tạo folder, như VS Code; `a/b/c.rs` tạo cả folder trung gian (đã đúng từ trước, nay có test).
 
 ### T3-3 [P3] Mục recent không còn tồn tại bị xoá vĩnh viễn ở lần ghi kế tiếp
 
@@ -247,6 +248,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Vị trí:** [worktree.rs:312](../../../crates/lucerna-project/src/worktree.rs), [git/mod.rs:762](../../../crates/lucerna-workbench/src/git/mod.rs).
 - **Tái hiện:** watcher của worktree hoặc của `.git` không khởi động được, ví dụ trên volume mạng, hoặc hết inotify watch trên Linux. Auto-reload và màu git ngừng hoạt động mà không có thông báo nào. Trên macOS hiếm gặp.
 - **Hướng sửa:** hiện thông báo trên status bar.
+- **Đã sửa** (commit 328019d, 43bd55f, 021390d): watcher của worktree hoặc của `.git` không khởi động được thì status bar hiện icon cảnh báo, tooltip "File watching is off for <folder>: <reason>. Changes made outside Lucerna won't show."
 
 ### T4-5 [P3] File bị ignore có thư mục cha bị xoá rồi tạo lại có thể không được watch lại
 
@@ -261,6 +263,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
   Kết quả: tab vẫn ở trạng thái Deleted.
 - **Ghi chú:** một lần Rescanned sẽ tự cứu được.
 - **Hướng sửa:** watch thư mục tổ tiên gần nhất còn tồn tại.
+- **Đã sửa** (commit 3314e15, 288c127, df6711d, caf3dfe): watcher của file đang mở theo dõi thư mục tổ tiên gần nhất còn tồn tại và chuyển xuống khi thư mục cha xuất hiện lại; file đã được ghi lúc đó cũng được báo.
 
 ### T5-1 [P3] Click kết quả search vượt cuối file để lại observer, về sau con trỏ nhảy
 

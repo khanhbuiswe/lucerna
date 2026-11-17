@@ -2012,7 +2012,8 @@ impl Documents {
             // Reading a folder changes no file.
             WorktreeEvent::ScanProgress
             | WorktreeEvent::ScanComplete
-            | WorktreeEvent::Loaded(_) => {}
+            | WorktreeEvent::Loaded(_)
+            | WorktreeEvent::WatchFailed(_) => {}
         }
         cx.notify();
     }
