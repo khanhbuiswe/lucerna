@@ -1328,7 +1328,7 @@ fn cli_newer_version_rejected(cx: &mut TestAppContext) {
     assert_eq!(
         rx.try_recv().unwrap(),
         Some(CliReply::error(
-            "this Lucerna is older than luc; update Lucerna"
+            "Lucerna was updated. Quit Lucerna and open it again."
         ))
     );
     assert!(kinds(cx).is_empty(), "nothing opens");

@@ -21,7 +21,8 @@ use futures::channel::{mpsc, oneshot};
 use serde::{Deserialize, Serialize};
 
 /// The version of the protocol this build speaks. A request of a newer
-/// version is answered with an error asking to update the app.
+/// version is answered with an error asking to quit and reopen the app,
+/// which was updated since it started.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// How long a client waits to connect to a socket that is bound.
@@ -52,7 +53,7 @@ pub struct CliRequest {
     /// With no `paths`: bring the app forward as a click on its Dock icon
     /// does (spec M9) instead of opening `cwd`. Sent by `luc` in `/` with
     /// no path. The protocol stays at version 1: an app without the field
-    /// ignores it, and the socket is per build anyway.
+    /// ignores it.
     #[serde(default)]
     pub activate: bool,
 }
@@ -125,17 +126,19 @@ impl From<Result<(), String>> for CliReply {
 /// one from a newer `luc`. `None` when it can.
 pub fn reply_for_version(version: u32) -> Option<CliReply> {
     (version > PROTOCOL_VERSION)
-        .then(|| CliReply::error("this Lucerna is older than luc; update Lucerna"))
+        .then(|| CliReply::error("Lucerna was updated. Quit Lucerna and open it again."))
 }
 
-/// The socket in `data_dir`: `luc-<version>.sock`, `luc-<version>-dev.sock`
-/// for a debug build, so a dev build never hands paths to the release the
-/// user runs. A path too long for `sun_path` is replaced by one in a
+/// The socket in `data_dir`: `luc.sock`, `luc-dev.sock` for a debug build,
+/// so a dev build never hands paths to the release the user runs. The name
+/// has no version: every version of a build channel shares one socket, so
+/// updating Lucerna while the old app runs never makes a second app, and
+/// the protocol `version` tells them apart. A path too long for `sun_path` is replaced by one in a
 /// folder only this user can use ([`fallback_dir`]), named by a hash of
 /// the full path.
 pub fn socket_path(data_dir: &Path) -> PathBuf {
     let dev = if cfg!(debug_assertions) { "-dev" } else { "" };
-    let name = format!("luc-{}{dev}.sock", env!("CARGO_PKG_VERSION"));
+    let name = format!("luc{dev}.sock");
     let path = data_dir.join(name);
     if path.as_os_str().len() <= MAX_SOCKET_PATH {
         return path;
@@ -737,18 +740,20 @@ mod tests {
         assert_eq!(
             reply_for_version(PROTOCOL_VERSION + 1),
             Some(CliReply::error(
-                "this Lucerna is older than luc; update Lucerna"
+                "Lucerna was updated. Quit Lucerna and open it again."
             ))
         );
     }
 
     #[test]
-    fn socket_path_is_versioned() {
+    fn socket_path_has_no_version() {
         let path = socket_path(Path::new("/d"));
-        let name = path.file_name().unwrap().to_str().unwrap();
-        assert_eq!(path.parent(), Some(Path::new("/d")));
-        assert!(name.starts_with(&format!("luc-{}", env!("CARGO_PKG_VERSION"))));
-        assert_eq!(name.ends_with("-dev.sock"), cfg!(debug_assertions));
+        let expected = if cfg!(debug_assertions) {
+            "luc-dev.sock"
+        } else {
+            "luc.sock"
+        };
+        assert_eq!(path, Path::new("/d").join(expected));
     }
 
     #[test]

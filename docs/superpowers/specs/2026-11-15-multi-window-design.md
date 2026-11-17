@@ -125,7 +125,7 @@ hai cách.
 | M10 | Các lệnh cần chạy được khi không có cửa sổ: Quit, New Window, Open…, Open Folder…, Open File…, Open Recent (mục trong menu), Preferences (settings, keybindings), About. Đăng ký `cx.on_action` cấp app; có cửa sổ thì vẫn chạy trong cửa sổ đó như nay. | GPUI gửi action của menu tới cửa sổ focus, không có thì tới handler cấp app. |
 | M11 | ⌘Q: hỏi lưu lần lượt từng cửa sổ, cửa sổ active trước; Cancel ở cửa sổ nào cũng huỷ việc thoát. Ghi danh sách cửa sổ (§6.6) **trước** `cx.quit()`. | Như `workbench::quit` hiện tại; Zed cho cửa sổ active hỏi trước. |
 | M12 | `window.restoreWindows` mặc định đổi từ `"one"` sang `"all"`. Nhận `"preserve"`, `"all"`, `"folders"`, `"one"`, `"none"` (§6.6). | Mặc định của VS Code. |
-| M13 | `luc` **giành socket trước** (`<data dir>/luc-<version>[-dev].sock`), trước cả khi khởi động GPUI. Bind được thì nó là app. `EADDRINUSE` thì nối vào làm client: gửi yêu cầu, đợi trả lời rồi thoát với mã 0 (lỗi thì in ra stderr, mã 1). | VS Code `claimInstance`. Giành trước để hai `luc` chạy gần như cùng lúc không thành hai app. Socket theo phiên bản và build để bản dev không đẩy đường dẫn vào bản release người dùng đang chạy. |
+| M13 | `luc` **giành socket trước** (`<data dir>/luc[-dev].sock`), trước cả khi khởi động GPUI. Bind được thì nó là app. `EADDRINUSE` thì nối vào làm client: gửi yêu cầu, đợi trả lời rồi thoát với mã 0 (lỗi thì in ra stderr, mã 1). | VS Code `claimInstance`. Giành trước để hai `luc` chạy gần như cùng lúc không thành hai app. Chỉ hậu tố `-dev` để bản dev không đẩy đường dẫn vào bản release người dùng đang chạy; tên không có version nên app khác version cùng giao thức vẫn nhận request, và cập nhật Lucerna khi app cũ còn chạy không ra hai app. Giao thức mới hơn app thì `luc` in "Lucerna was updated. Quit Lucerna and open it again." và thoát 1. |
 | M18 | `luc` trong terminal **tách app khỏi terminal** rồi trả dấu nhắc ngay, như `code .`. Cờ ẩn `--foreground` giữ kiểu cũ (chạy app ngay trong terminal) cho `bench/compare`, `--trace-startup` và debug. | Người dùng chọn. Một tiến trình giữ mọi cửa sổ, nên tắt tab terminal hay Ctrl+C không được kéo theo mọi cửa sổ và bỏ qua bước hỏi lưu. |
 | M14 | Yêu cầu từ socket hoặc `on_open_urls` đến khi app chưa mở lại xong cửa sổ thì xếp hàng, xử lý sau khi restore xong. | Lỗi Zed #61346. |
 | M15 | Language server, terminal, git, workspace state: theo từng cửa sổ như nay. Trust: kho `trusted.json` chung. Tin một thư mục thì mọi cửa sổ có gốc là đúng thư mục đó chuyển sang tin. Chọn thêm "tin cả thư mục cha" thì mọi cửa sổ có gốc nằm trong thư mục cha đó cũng chuyển sang tin. Cửa sổ có gốc là thư mục con của thư mục được tin một mình thì vẫn ở Restricted Mode. | Cả hai bên làm vậy. |
@@ -297,8 +297,9 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
 
 ### 6.5 `luc` từ terminal (socket)
 
-- **Đường dẫn socket:** `<data dir>/luc-<CARGO_PKG_VERSION>.sock`, thêm
-  `-dev` khi `debug_assertions`. `sun_path` macOS giới hạn 104 byte: dài
+- **Đường dẫn socket:** `<data dir>/luc.sock`, `luc-dev.sock` khi
+  `debug_assertions`; tên không có version, mọi version của cùng kênh build
+  dùng chung một socket. `sun_path` macOS giới hạn 104 byte: dài
   hơn thì dùng `$TMPDIR/lucerna-<hash của data dir>.sock`.
 - **Giành socket** (`crates/lucerna/src/main.rs`, ngay sau khi parse đối
   số, trước `app::run`; `luc ext …` và `luc lsp …` không đụng tới socket):
@@ -369,7 +370,7 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
   `paths` rỗng (`luc` không đối số) nghĩa là thư mục `cwd`, như nay.
   `new_window` để dành cho `-n` sau 0.1; 0.1 luôn gửi `false`. `activate`
   mặc định `false` (thêm sau, không tăng `version`). Trường lạ
-  bị bỏ qua; `version` lớn hơn thì trả lỗi "update Lucerna".
+  bị bỏ qua; `version` lớn hơn thì trả lỗi "Lucerna was updated. Quit Lucerna and open it again."
 - **Bench:** `bench/compare` đặt `HOME` riêng nên data dir và socket riêng,
   vẫn chạy tiến trình riêng như nay. Thêm một kiểm tra trong `editors.py` để
   chắc điều đó (§8.4).
@@ -597,8 +598,9 @@ Mỗi bước build và test được riêng:
 - Thay `QuitMode` đổi hành vi: macOS không còn thoát khi đóng cửa sổ cuối.
   Bench nào dựa vào việc đóng cửa sổ để kết thúc tiến trình phải kill thay
   vì đóng cửa sổ (kiểm tra `bench/compare`).
-- Bản cũ (nhiều tiến trình) và bản mới cùng chạy trong lúc nâng cấp: socket
-  theo phiên bản nên không lẫn; có thể có hai icon trong lúc đó.
+- Bản cũ (nhiều tiến trình) và bản mới cùng chạy trong lúc nâng cấp: app
+  0.1.0 dùng `luc-0.1.0.sock`, nên lần cập nhật đầu tiên lên bản không
+  version vẫn có thể có hai tiến trình (một lần); từ đó về sau không còn.
 - `"preserve"` chỉ khác `"all"` khi khởi động có đường dẫn.
 
 ## 11. Để lại cho người viết plan
