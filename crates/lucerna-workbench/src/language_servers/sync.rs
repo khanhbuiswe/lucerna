@@ -73,6 +73,10 @@ impl LanguageServers {
         ev: &DocumentEvent,
         cx: &mut Context<Self>,
     ) {
+        // An untitled document has no file: no server ever hears of it.
+        if crate::untitled::is_untitled(ev.path()) {
+            return;
+        }
         match ev {
             DocumentEvent::Opened {
                 path,

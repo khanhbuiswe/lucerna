@@ -2,6 +2,8 @@
 //! hold text, never read from or written to disk, and in the language of
 //! `files.defaultLanguage`.
 
+mod support;
+
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -12,7 +14,10 @@ use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
-use lucerna_workbench::{AppState, DocState, Documents, SaveOptions, SaveReason, Workbench};
+use lucerna_workbench::{
+    AppState, DocState, Documents, OpenMode, SaveOptions, SaveReason, Workbench, load_state,
+    state_path,
+};
 use tempfile::TempDir;
 
 fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
@@ -231,4 +236,118 @@ fn unknown_default_language_is_plain_text(cx: &mut TestAppContext) {
     docs.read_with(cx, |d, _| {
         assert_eq!(d.language_of(&key), d.language_of(&txt));
     });
+}
+
+/// Opens `key` as a tab, as ⌘N will, and types `text` into it.
+fn open_tab_and_type(
+    wb: &Entity<Workbench>,
+    key: &Arc<Path>,
+    text: &str,
+    cx: &mut VisualTestContext,
+) {
+    wb.update(cx, |wb, cx| {
+        wb.open_source(key.clone(), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+    let docs = documents(wb, cx);
+    let view = open(&docs, key, cx);
+    type_text(&docs, &view, key, text, cx);
+}
+
+#[gpui::test]
+fn untitled_never_reaches_lsp(cx: &mut TestAppContext) {
+    use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
+    use support::lsp::{
+        TRUSTED, count, lsp_workbench_with, open as open_file, settle as lsp_settle,
+    };
+
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    let fake = FakeServer::new();
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let settings = r#"{ "session.trustAllWorktrees": true, "files.defaultLanguage": "rust" }"#;
+    assert!(TRUSTED.contains("trustAllWorktrees"));
+    let (wb, cx) = lsp_workbench_with(dir.path(), launcher, settings, cx);
+
+    // The real file starts the server and is the only document it hears of.
+    open_file(&wb, "src/main.rs", cx);
+    assert_eq!(count(&fake, "textDocument/didOpen"), 1);
+
+    let docs = documents(&wb, cx);
+    let key = new_untitled(&docs, cx);
+    let view = open(&docs, &key, cx);
+    type_text(&docs, &view, &key, "fn x() {}", cx);
+    lsp_settle(cx);
+
+    assert_eq!(count(&fake, "textDocument/didOpen"), 1);
+    assert_eq!(count(&fake, "textDocument/didChange"), 0);
+    assert_eq!(count(&fake, "textDocument/didSave"), 0);
+}
+
+#[gpui::test]
+fn untitled_never_reaches_git_or_watcher(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_tmp, root) = support::git::repo();
+    let root_path = root.clone();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root_path, window, cx));
+    settle(cx);
+    let docs = documents(&wb, cx);
+    let key = docs.update(cx, |d, cx| d.new_untitled(cx));
+    settle(cx);
+    open_tab_and_type(&wb, &key, "hello", cx);
+
+    cx.update(|_, cx| {
+        let wb = wb.read(cx);
+        assert!(!wb.git().read(cx).is_tracking(&key));
+        assert!(
+            wb.open_tab_paths(cx)
+                .iter()
+                .all(|p| !p.starts_with("untitled:")),
+            "{:?}",
+            wb.open_tab_paths(cx)
+        );
+        assert!(
+            wb.watched_open_files()
+                .iter()
+                .all(|p| !p.starts_with("untitled:")),
+            "{:?}",
+            wb.watched_open_files()
+        );
+    });
+    docs.read_with(cx, |d, _| assert!(!d.follows_disk(&key)));
+    assert!(!root.join("untitled:Untitled-1").exists());
+}
+
+#[gpui::test]
+fn untitled_not_in_workspace_state_or_recent(cx: &mut TestAppContext) {
+    init(cx, None);
+    let root = TempDir::new().unwrap();
+    let data = TempDir::new().unwrap();
+    fs::write(root.path().join("a.txt"), "a\n").unwrap();
+    let (r, d) = (root.path().to_path_buf(), data.path().to_path_buf());
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::with_data_dir(r, d, window, cx));
+    settle(cx);
+    let docs = documents(&wb, cx);
+    let key = docs.update(cx, |d, cx| d.new_untitled(cx));
+    settle(cx);
+
+    let a: Arc<Path> = Arc::from(root.path().join("a.txt").as_path());
+    wb.update(cx, |wb, cx| wb.open_path(a.clone(), OpenMode::Pinned, cx));
+    open_tab_and_type(&wb, &key, "hello", cx);
+    wb.update(cx, |wb, cx| wb.save_workspace_state(cx));
+
+    let saved = load_state(&state_path(data.path(), root.path())).expect("state saved");
+    let tabs: Vec<_> = saved
+        .groups
+        .groups
+        .iter()
+        .flat_map(|g| g.tabs.iter().map(|(p, _)| p.clone()))
+        .collect();
+    assert_eq!(tabs, vec![a.to_path_buf()]);
+    assert_eq!(
+        cx.update(|_, cx| wb.read(cx).recent_files().to_vec()),
+        vec![a]
+    );
 }

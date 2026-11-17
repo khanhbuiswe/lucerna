@@ -143,6 +143,25 @@ pub enum DocumentEvent {
     Parsed { path: Arc<Path> },
 }
 
+impl DocumentEvent {
+    /// The document the event is about.
+    pub fn path(&self) -> &Arc<Path> {
+        match self {
+            DocumentEvent::Opened { path, .. }
+            | DocumentEvent::Edited { path, .. }
+            | DocumentEvent::DirtyChanged { path, .. }
+            | DocumentEvent::Saved { path, .. }
+            | DocumentEvent::ConflictChanged { path, .. }
+            | DocumentEvent::ChangedOnDisk { path }
+            | DocumentEvent::FocusLost { path }
+            | DocumentEvent::Closed { path }
+            | DocumentEvent::Discarded { path }
+            | DocumentEvent::LanguageChanged { path, .. }
+            | DocumentEvent::Parsed { path } => path,
+        }
+    }
+}
+
 /// Size and modification time, to tell whether a file changed on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Stamp {
@@ -946,11 +965,14 @@ impl Documents {
 
     /// Whether the document at `path` is open with its text loaded, so its
     /// reloads tell real disk changes from our own saves
-    /// ([`DocumentEvent::ChangedOnDisk`]).
+    /// ([`DocumentEvent::ChangedOnDisk`]). Never for an untitled document:
+    /// it has no file.
     pub fn follows_disk(&self, path: &Path) -> bool {
-        self.docs
-            .get(&self.key(path))
-            .is_some_and(|doc| doc.buffer.is_some())
+        !crate::untitled::is_untitled(path)
+            && self
+                .docs
+                .get(&self.key(path))
+                .is_some_and(|doc| doc.buffer.is_some())
     }
 
     /// The state of the document at `path`, if it is open.

@@ -40,6 +40,9 @@ pub struct RecentFiles {
 impl RecentFiles {
     /// Moves `path` to the front.
     pub fn record(&mut self, path: Arc<Path>) {
+        if crate::untitled::is_untitled(&path) {
+            return;
+        }
         self.paths.retain(|p| *p != path);
         self.paths.insert(0, path);
         self.paths.truncate(RECENT_FILES_LIMIT);

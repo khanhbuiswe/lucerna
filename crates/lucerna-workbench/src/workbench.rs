@@ -1495,7 +1495,7 @@ impl Workbench {
     /// Every open tab's path, once per path, with the file the dynamic
     /// Markdown preview shows (it has no path of its own, but its file must
     /// stay watched).
-    fn open_tab_paths(&self, cx: &App) -> Vec<PathBuf> {
+    pub fn open_tab_paths(&self, cx: &App) -> Vec<PathBuf> {
         let mut paths: Vec<PathBuf> = self
             .editor_groups
             .read(cx)
@@ -1507,6 +1507,8 @@ impl Workbench {
                     .iter()
                     .filter_map(|t| t.path().or(t.previewed_path()))
             })
+            // An untitled document has no file to watch.
+            .filter(|p| !crate::untitled::is_untitled(p))
             .map(|p| p.to_path_buf())
             .collect();
         paths.sort();
@@ -1877,7 +1879,9 @@ impl Workbench {
     ) {
         // An F8 hover still waiting for its tab is for an earlier open.
         self.marker_hover = None;
-        self.recent_files.record(path.clone());
+        if !crate::untitled::is_untitled(&path) {
+            self.recent_files.record(path.clone());
+        }
         let preview_enabled = self
             .settings
             .read(cx)
