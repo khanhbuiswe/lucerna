@@ -1342,9 +1342,10 @@ impl Workbench {
         let (folder, name) = save::save_dialog_start(self, &from, cx);
         let answer = cx.prompt_for_new_path(&folder, Some(&name));
         let documents = self.documents.clone();
+        let root = self.root.clone();
         cx.spawn_in(window, async move |wb, cx| {
             let to: Arc<Path> = match answer.await {
-                Ok(Ok(Some(to))) => Arc::from(to),
+                Ok(Ok(Some(to))) => Arc::from(save::under_root(&root, &to)),
                 Ok(Err(err)) => {
                     tracing::warn!(%err, "the save dialog failed");
                     return None;
@@ -1383,18 +1384,21 @@ impl Workbench {
 
     /// Closes every tab of the file `path` (absolute) without asking and
     /// drops its document, unsaved changes and all: Save As is about to
-    /// put another document there.
+    /// put another document there. A tab names the file under any spelling
+    /// that resolves to it ([`save::same_file`]).
     fn close_file_tabs(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let closing: Vec<TabId> = self
+        let (closing, spellings): (Vec<TabId>, Vec<Arc<Path>>) = self
             .editor_groups
             .read(cx)
             .model()
             .groups()
             .iter()
             .flat_map(|g| &g.tabs)
-            .filter(|t| matches!(&t.item, TabItem::File(p) if **p == *path))
-            .map(|t| t.id)
-            .collect();
+            .filter_map(|t| match &t.item {
+                TabItem::File(p) if save::same_file(p, path) => Some((t.id, p.clone())),
+                _ => None,
+            })
+            .unzip();
         if !closing.is_empty() {
             self.update_editor_groups(cx, |m| {
                 for id in closing {
@@ -1402,8 +1406,14 @@ impl Workbench {
                 }
             });
         }
-        if self.documents.read(cx).state(path).is_some() {
-            self.documents.update(cx, |d, cx| d.discard(path, cx));
+        let mut spellings = spellings;
+        spellings.push(Arc::from(path));
+        spellings.sort();
+        spellings.dedup();
+        for p in spellings {
+            if self.documents.read(cx).state(&p).is_some() {
+                self.documents.update(cx, |d, cx| d.discard(&p, cx));
+            }
         }
     }
 
@@ -1936,14 +1946,23 @@ impl Workbench {
         Arc::from(absolute_path(&self.root, path))
     }
 
+    /// `path` of a file in the project: absolute, a relative path (the
+    /// Explorer's and Quick Open's worktree paths) always joined onto the
+    /// root, so a real file named `untitled:…` is never taken for an
+    /// Untitled key (spec §4.1).
+    pub(crate) fn project_path(&self, path: &Path) -> Arc<Path> {
+        Arc::from(self.root.join(path))
+    }
+
     /// Opens `path` without a place to go to (the Explorer, Quick Open
     /// without `:line`, Open Recent, `luc file`, a restored session): a
     /// tab of the group already showing the file (source or preview) is
     /// activated; otherwise it opens in the editor
     /// `workbench.editorAssociations` names, the Markdown preview or the
-    /// source (spec §4.1). Otherwise like [`Workbench::open_source`].
+    /// source (spec §4.1). Otherwise like [`Workbench::open_source`]. A
+    /// relative path is a file of the project, never an Untitled key.
     pub fn open_path(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
-        let path = self.absolute_path(&path);
+        let path = self.project_path(&path);
         let view =
             markdown_preview::associated_editor(&self.root, &path, self.settings.read(cx).view(cx));
         self.open_file(path, view, mode, true, cx);

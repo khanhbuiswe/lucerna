@@ -264,7 +264,7 @@ impl Workbench {
         self.close_quick_open(window, cx);
         match event {
             QuickOpenEvent::Open { path, mode } => {
-                let path = self.absolute_path(path);
+                let path = self.project_path(path);
                 // Opening the file already shown is no jump; the cursor
                 // stays where it is.
                 if self.nav_here(cx).is_some_and(|here| here.path != path) {

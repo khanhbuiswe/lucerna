@@ -83,8 +83,8 @@ example "Open in → Default app" in Claude Desktop.
   Save Without Formatting and Revert; `files.trimTrailingWhitespace`, `files.insertFinalNewline`, `files.trimFinalNewlines`,
   `files.eol` and `files.autoSave`. Writes are atomic and keep the file's encoding, BOM and line
   ending. Tabs show a dirty dot, and a conflict dot when the file changed on disk. Saving over
-  a changed file asks first, and closing a tab or window with unsaved changes prompts. Hot exit: unsaved changes are
-  backed up about a second after you stop typing. Quitting by any means (Cmd+Q, Dock Quit, Log
+  a changed file asks first, and closing a tab or window with unsaved changes prompts. Hot exit: unsaved changes, Untitled
+  tabs included, are backed up about a second after you stop typing. Quitting by any means (Cmd+Q, Dock Quit, Log
   Out, a crash) keeps them without asking, and they come back when the folder or file is
   reopened; a file that changed on disk meanwhile asks before you overwrite it.
   `files.hotExit: "off"` restores the old asking behaviour.

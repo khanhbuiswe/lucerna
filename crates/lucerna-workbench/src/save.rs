@@ -496,13 +496,39 @@ pub fn save_dialog_start(wb: &Workbench, path: &Path, cx: &App) -> (PathBuf, Str
 
 /// Whether the absolute paths `a` and `b` name one file: equal, or equal
 /// once symlinks are resolved (the save dialog may answer with the
-/// resolved form of the folder it was given).
+/// resolved form of the folder it was given). An Untitled key only ever
+/// equals itself: it is never resolved against the working directory.
 pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
-    a == b
-        || matches!(
-            (fs::canonicalize(a), fs::canonicalize(b)),
-            (Ok(a), Ok(b)) if a == b
-        )
+    if a == b {
+        return true;
+    }
+    if untitled::is_untitled(a) || untitled::is_untitled(b) {
+        return false;
+    }
+    matches!(
+        (fs::canonicalize(a), fs::canonicalize(b)),
+        (Ok(a), Ok(b)) if a == b
+    )
+}
+
+/// `to` (absolute, from the save dialog) spelled under `root` when its
+/// folder resolves to a place inside the resolved `root`: the dialog may
+/// answer with the resolved form of a symlinked root, and the tabs, git and
+/// the Explorer know the project by the root's own spelling. Else `to`.
+pub(crate) fn under_root(root: &Path, to: &Path) -> PathBuf {
+    if to.starts_with(root) {
+        return to.to_path_buf();
+    }
+    let (Some(folder), Some(name)) = (to.parent(), to.file_name()) else {
+        return to.to_path_buf();
+    };
+    match (fs::canonicalize(folder), fs::canonicalize(root)) {
+        (Ok(folder), Ok(real_root)) => match folder.strip_prefix(&real_root) {
+            Ok(rel) => root.join(rel).join(name),
+            Err(_) => to.to_path_buf(),
+        },
+        _ => to.to_path_buf(),
+    }
 }
 
 /// Saves the document of the active code view or preview; an Untitled one
@@ -793,6 +819,16 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_file_compares_untitled_keys_by_name_only() {
+        let key = Path::new("untitled:Untitled-1");
+        assert!(same_file(key, key));
+        assert!(!same_file(key, Path::new("untitled:Untitled-2")));
+        let cwd = std::env::current_dir().unwrap();
+        assert!(!same_file(key, &cwd.join("untitled:Untitled-1")));
+        assert!(!same_file(&cwd.join("untitled:Untitled-1"), key));
+    }
 
     fn apply(text: &str, f: Participant) -> String {
         let buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();

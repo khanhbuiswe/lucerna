@@ -626,6 +626,7 @@ fn save_untitled_over_open_file(cx: &mut TestAppContext) {
     assert!(!docs.read_with(cx, |d, _| d.is_dirty(&a)));
 }
 
+#[cfg(unix)]
 #[gpui::test]
 fn save_as_write_error_keeps_untitled(cx: &mut TestAppContext) {
     use std::os::unix::fs::PermissionsExt as _;
@@ -902,4 +903,126 @@ fn close_all_with_untitled(cx: &mut TestAppContext) {
     assert_eq!(tab_paths(&wb, cx).concat().len(), 2);
     assert!(is_dirty(&docs, Path::new("untitled:Untitled-1"), cx));
     no_untitled_on_disk(&dir);
+}
+
+// ---- Final review fixes ----
+
+/// A workbench on `root` once its worktree scan is done, so the Explorer
+/// and Quick Open list its files.
+fn scanned_workbench(
+    root: std::path::PathBuf,
+    cx: &mut TestAppContext,
+) -> (Entity<Workbench>, &mut VisualTestContext) {
+    let (wb, cx) = cx.add_window_view(move |window, cx| Workbench::new(root, window, cx));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| wb.worktree().snapshot().scan_complete()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worktree scan did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::ScanComplete, cx)
+    });
+    settle(cx);
+    (wb, cx)
+}
+
+/// A real file whose name starts with `untitled:` is a file of the
+/// project (spec §4.1): opened from the Explorer, its tab has its absolute
+/// path and its text comes from disk.
+#[gpui::test]
+fn real_untitled_named_file_opens_from_explorer(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("untitled:todo.txt");
+    fs::write(&file, "hello\n").unwrap();
+    let (wb, cx) = scanned_workbench(dir.path().to_path_buf(), cx);
+    let docs = documents(&wb, cx);
+
+    let row = cx
+        .debug_bounds("explorer-row-untitled:todo.txt")
+        .expect("the Explorer lists the file")
+        .center();
+    cx.simulate_click(row, gpui::Modifiers::none());
+    settle(cx);
+
+    assert_eq!(tab_paths(&wb, cx), vec![vec![file.display().to_string()]]);
+    assert_eq!(snapshot_text(&docs, &file, cx), "hello\n");
+    assert!(docs.read_with(cx, |d, _| {
+        d.snapshot_of(Path::new("untitled:todo.txt")).is_none()
+    }));
+}
+
+/// The same file opened from Quick Open.
+#[gpui::test]
+fn real_untitled_named_file_opens_from_quick_open(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("untitled:todo.txt");
+    fs::write(&file, "hello\n").unwrap();
+    let (wb, cx) = scanned_workbench(dir.path().to_path_buf(), cx);
+    let docs = documents(&wb, cx);
+
+    cx.simulate_keystrokes("cmd-p");
+    settle(cx);
+    cx.simulate_input("todo");
+    settle(cx);
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+
+    assert_eq!(tab_paths(&wb, cx), vec![vec![file.display().to_string()]]);
+    assert_eq!(snapshot_text(&docs, &file, cx), "hello\n");
+}
+
+/// The dialog may answer with the resolved form of a symlinked root:
+/// saving over a file already open there still leaves one tab on it, under
+/// the root's own spelling.
+#[cfg(unix)]
+#[gpui::test]
+fn save_untitled_over_open_file_under_symlinked_root(cx: &mut TestAppContext) {
+    init(cx, None);
+    let dir = TempDir::new().unwrap();
+    let real = dir.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let a = link.join("a.txt");
+    fs::write(&a, "old a\n").unwrap();
+    let root = link.clone();
+    let (wb, cx) = cx.add_window_view(move |window, cx| Workbench::new(root, window, cx));
+    settle(cx);
+    let docs = documents(&wb, cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(a.as_path()), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+    untitled_tab_with(&["new a"], cx);
+
+    cx.simulate_keystrokes("cmd-s");
+    settle(cx);
+    let resolved = fs::canonicalize(&a).unwrap();
+    assert_ne!(resolved, a);
+    choose(Some(resolved), cx);
+
+    assert_eq!(fs::read_to_string(&a).unwrap(), "new a\n");
+    assert_eq!(tab_paths(&wb, cx).concat(), vec![a.display().to_string()]);
+    assert_eq!(snapshot_text(&docs, &a, cx), "new a\n");
+    assert!(!docs.read_with(cx, |d, _| d.is_dirty(&a)));
+}
+
+/// `files.eol` applies to an Untitled document's first save.
+#[gpui::test]
+fn save_untitled_uses_files_eol(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"files.eol": "\r\n"}"#));
+    let (dir, _wb, cx) = workbench(cx);
+    untitled_tab_with(&["one", "two"], cx);
+
+    cx.simulate_keystrokes("cmd-s");
+    settle(cx);
+    let file = dir.path().join("lines.txt");
+    choose(Some(file.clone()), cx);
+
+    assert_eq!(fs::read_to_string(&file).unwrap(), "one\r\ntwo\r\n");
 }
