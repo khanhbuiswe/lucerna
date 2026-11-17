@@ -156,7 +156,7 @@ pub struct BuildInput<'a> {
     /// The registered command IDs ([`Workbench::command_ids`]).
     pub commands: &'a [&'a str],
     pub platform: Platform,
-    /// The recent entries that still exist, newest first.
+    /// The recent entries, newest first.
     pub recent: &'a [RecentEntry],
     pub window: WindowKind,
 }
@@ -647,10 +647,8 @@ pub(crate) fn refresh(cx: &mut App) {
     cx.spawn(async move |cx| {
         let recent = match data_dir {
             Some(dir) => {
-                cx.background_spawn(
-                    async move { recent::load(&recent::recent_path(&dir)).entries },
-                )
-                .await
+                cx.background_spawn(async move { recent::load(&recent::recent_path(&dir)).entries })
+                    .await
             }
             None => Vec::new(),
         };
@@ -843,12 +841,23 @@ fn prompt_and_open(files: bool, directories: bool, cx: &mut App) {
 /// no window is open.
 fn open_recent_entry(entry: RecentEntry, cx: &mut App) {
     let Some(window) = active_window(cx) else {
-        let request = OpenRequest {
-            paths: vec![entry.path],
-            target: Target::Auto,
-            source: Source::Menu,
-        };
-        router::open(request, cx).ok();
+        // No window to prompt in: a missing entry is forgotten silently,
+        // as VS Code's menu bar does; anything else opens where the router
+        // puts it.
+        cx.spawn(async move |cx| {
+            let checked = entry.clone();
+            if cx.background_spawn(async move { checked.exists() }).await {
+                let request = OpenRequest {
+                    paths: vec![entry.path],
+                    target: Target::Auto,
+                    source: Source::Menu,
+                };
+                cx.update(|cx| router::open(request, cx).ok());
+            } else {
+                cx.update(|cx| crate::open_commands::forget(entry.path, cx));
+            }
+        })
+        .detach();
         return;
     };
     let opened = WindowHandle::<Workbench>::new(window).update(cx, |wb, window, cx| {
@@ -856,7 +865,9 @@ fn open_recent_entry(entry: RecentEntry, cx: &mut App) {
     });
     if opened.is_err() {
         WindowHandle::<WelcomeView>::new(window)
-            .update(cx, |view, _, cx| view.open_entry(entry, false, cx))
+            .update(cx, |view, window, cx| {
+                view.open_entry(entry, false, window, cx)
+            })
             .ok();
     }
 }

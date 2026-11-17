@@ -17,8 +17,6 @@ use gpui::{
 use crate::app_menu;
 use crate::recent::{self, RecentEntry, RecentKind, RecentStore};
 use crate::router::{self, OpenRequest, Source, Target};
-use crate::status_message;
-use crate::workspace_state::tilde_path;
 use crate::{CommandRegistry, OpenMode, RecentPicker, RecentPickerEvent, Workbench};
 
 const CLEAR_MESSAGE: &str = "Do you want to clear all recently opened folders?";
@@ -164,7 +162,7 @@ pub(crate) fn clear_recent_with_prompt(window: &mut Window, cx: &mut App) -> Tas
 
 /// Forgets `path` in the stored recent list, in the background, then
 /// refreshes the menu bar.
-fn forget(path: PathBuf, cx: &mut App) {
+pub(crate) fn forget(path: PathBuf, cx: &mut App) {
     let Some(dir) = data_dir(cx) else {
         return;
     };
@@ -181,6 +179,21 @@ fn forget(path: PathBuf, cx: &mut App) {
         cx.update(app_menu::refresh);
     })
     .detach();
+}
+
+/// Tells the user that a chosen recent entry is gone, with VS Code's
+/// OK-only box. Callers forget the entry first, so it is already off the
+/// list while the box is open; the answer needs no waiting for.
+pub(crate) fn report_missing(path: &Path, window: &mut Window, cx: &mut App) {
+    let detail = recent::missing_detail(path, std::env::home_dir().as_deref());
+    // The only button is OK; there is nothing to do with the answer.
+    drop(window.prompt(
+        PromptLevel::Info,
+        recent::MISSING_TITLE,
+        Some(&detail),
+        &["OK"],
+        cx,
+    ));
 }
 
 /// Opens `path` in a new window of this process, or brings forward the
@@ -220,9 +233,9 @@ impl Workbench {
         let load = cx.spawn_in(window, async move |wb, cx| {
             let entries = match dir {
                 Some(dir) => {
-                    cx.background_spawn(async move {
-                        recent::load(&recent::recent_path(&dir)).entries
-                    })
+                    cx.background_spawn(
+                        async move { recent::load(&recent::recent_path(&dir)).entries },
+                    )
                     .await
                 }
                 None => Vec::new(),
@@ -306,7 +319,7 @@ impl Workbench {
     }
 
     /// Opens a chosen recent entry unless it vanished since the list
-    /// loaded; then says so and forgets it. A folder replaces this window
+    /// loaded; then forgets it and says so. A folder replaces this window
     /// (or opens beside it when `new_window`); a file opens as a tab.
     pub(crate) fn open_recent_entry(
         &mut self,
@@ -315,7 +328,6 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let win = window.window_handle().window_id();
         cx.spawn_in(window, async move |wb, cx| {
             let exists = {
                 let entry = entry.clone();
@@ -323,9 +335,8 @@ impl Workbench {
             };
             wb.update_in(cx, |wb, window, cx| {
                 if !exists {
-                    let path = tilde_path(&entry.path, std::env::home_dir().as_deref());
-                    status_message::show(win, format!("{path} no longer exists"), cx);
-                    forget(entry.path, cx);
+                    forget(entry.path.clone(), cx);
+                    report_missing(&entry.path, window, cx);
                     return;
                 }
                 match (entry.kind, new_window) {

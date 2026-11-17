@@ -38,6 +38,19 @@ impl RecentEntry {
     }
 }
 
+/// The title of the box that says a chosen entry is gone. The wording is
+/// VS Code's `pathNotExistTitle` (`windowsMainService.ts`, MIT).
+pub(crate) const MISSING_TITLE: &str = "Path does not exist";
+
+/// The detail of that box, VS Code's `pathNotExistDetail`, with `path`
+/// shown under `home` as `~`.
+pub(crate) fn missing_detail(path: &Path, home: Option<&Path>) -> String {
+    format!(
+        "The path '{}' does not exist on this computer.",
+        tilde_path(path, home)
+    )
+}
+
 /// The recent entries, newest first.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RecentList {
@@ -164,6 +177,15 @@ impl gpui::Global for RecentStore {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn missing_detail_uses_tilde() {
+        assert_eq!(MISSING_TITLE, "Path does not exist");
+        assert_eq!(
+            missing_detail(Path::new("/Users/me/code/x"), Some(Path::new("/Users/me"))),
+            "The path '~/code/x' does not exist on this computer."
+        );
+    }
+
     use super::*;
 
     fn folder(path: PathBuf) -> RecentEntry {

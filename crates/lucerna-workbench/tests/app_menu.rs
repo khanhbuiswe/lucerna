@@ -280,6 +280,41 @@ fn open_recent_menu_lists_missing_entries(cx: &mut TestAppContext) {
     assert!(shown(&other), "{titles:?}");
 }
 
+/// With no window to prompt in, choosing a missing entry in File ▸ Open
+/// Recent forgets it silently, as VS Code's menu bar does.
+#[gpui::test]
+fn missing_entry_without_window_is_forgotten(cx: &mut TestAppContext) {
+    app_state(cx);
+    let tmp = TempDir::new().unwrap();
+    let (gone, kept) = (tmp.path().join("gone"), tmp.path().join("kept"));
+    fs::create_dir(&kept).unwrap();
+    let data = tmp.path().join("data");
+    fs::create_dir(&data).unwrap();
+    let entry = |path: &Path| RecentEntry {
+        path: path.to_path_buf(),
+        kind: RecentKind::Folder,
+    };
+    recent::record(&data, entry(&gone)).unwrap();
+    recent::record(&data, entry(&kept)).unwrap();
+    cx.set_global(RecentStore {
+        data_dir: Some(data.clone()),
+    });
+    cx.update(|cx| {
+        app_menu::install(cx);
+        cx.dispatch_action(&app_menu::OpenRecentEntry {
+            entry: entry(&gone),
+        });
+    });
+    cx.run_until_parked();
+    let stored: Vec<PathBuf> = recent::load(&recent::recent_path(&data))
+        .entries
+        .into_iter()
+        .map(|e| e.path)
+        .collect();
+    assert_eq!(stored, vec![kept]);
+    assert!(cx.windows().is_empty());
+}
+
 /// A single-file window leaves out its file.
 #[gpui::test]
 fn open_recent_menu_hides_the_single_file(cx: &mut TestAppContext) {
