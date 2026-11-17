@@ -335,12 +335,19 @@ fn colon_wq_saves_and_closes(cx: &mut TestAppContext) {
 #[gpui::test]
 fn colon_x_clean_closes_without_write(cx: &mut TestAppContext) {
     let (dir, wb, _view, cx) = vim_editor("abc\n", cx);
+    // A stamp long past: any write would put the current time there.
     let file = dir.path().join("file.txt");
-    let before = fs::metadata(&file).unwrap().modified().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
     ex("x", cx);
     assert_eq!(tab_count(&wb, cx), 0);
-    assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), before);
+    assert_eq!(disk(&dir), "abc\n");
+    assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), stamp);
 }
 
 #[gpui::test]
