@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use futures::channel::{mpsc, oneshot};
+use futures::future::{self, Either};
 use serde::{Deserialize, Serialize};
 
 /// The version of the protocol this build speaks. A request of a newer
@@ -515,8 +516,9 @@ pub enum Handed {
 /// An app that answers [`CliReply::quitting`] is still bound to the
 /// socket for a moment. It is claimed again every [`QUIT_RETRY_EVERY`]
 /// for up to [`QUIT_WAIT`] (M1-2; the limit bounds when the last retry
-/// starts, not the total time, as each send may wait up to `timeout`), until the app is gone and this process
-/// binds, or a new app answers; after that the reply is returned as is.
+/// starts, not the total time, as each send may wait up to `timeout`),
+/// until the app is gone and this process binds, or a new app answers;
+/// after that the reply is returned as is.
 pub fn claim_and_send(path: &Path, request: &CliRequest, timeout: Duration) -> Handed {
     claim_and_send_with(path, request, timeout, QUIT_WAIT)
 }
@@ -595,7 +597,20 @@ fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
             if tx.unbounded_send((request, reply_tx)).is_err() {
                 CliReply::quitting()
             } else {
-                futures::executor::block_on(reply_rx).unwrap_or_else(|_| CliReply::quitting())
+                let gone = hangup(&stream);
+                match futures::executor::block_on(future::select(reply_rx, gone)) {
+                    Either::Left((reply, _)) => reply.unwrap_or_else(|_| CliReply::quitting()),
+                    // Dropping the reply receiver tells the router that
+                    // `luc` stopped waiting; the open goes on, and a
+                    // failure is shown in the app (M1-3).
+                    Either::Right((Ok(()), _)) => {
+                        tracing::info!("luc stopped waiting; the request stays queued");
+                        return;
+                    }
+                    // No watcher (see `hangup`): wait for the reply alone.
+                    Either::Right((Err(_), reply_rx)) => futures::executor::block_on(reply_rx)
+                        .unwrap_or_else(|_| CliReply::quitting()),
+                }
             }
         }
         Err(err) => CliReply::error(err),
@@ -605,6 +620,49 @@ fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
     if let Err(err) = stream.write_all(format!("{line}\n").as_bytes()) {
         tracing::warn!(%err, "luc socket: could not reply");
     }
+    // Wakes the `hangup` thread, whose clone keeps the connection open.
+    stream.shutdown(std::net::Shutdown::Both).ok();
+}
+
+/// Resolves when the peer of `stream` has closed its end (M1-3). Starts
+/// after the request line was read, so the byte it reads is never one the
+/// request needs: `luc` sends nothing more. The thread ends with the
+/// connection, which closes when [`answer`] returns or the peer hangs up.
+/// Without a watcher it is canceled at once, and [`answer`] then waits
+/// for the reply alone (as before).
+fn hangup(stream: &UnixStream) -> oneshot::Receiver<()> {
+    let (tx, rx) = oneshot::channel();
+    // The timeout belongs to the socket, so it applies to every clone too.
+    if stream.set_read_timeout(None).is_err() {
+        return rx;
+    }
+    let Ok(mut watched) = stream.try_clone() else {
+        return rx;
+    };
+    let spawned = std::thread::Builder::new()
+        .name("luc-hangup".into())
+        .spawn(move || {
+            let mut byte = [0u8; 1];
+            loop {
+                match watched.read(&mut byte) {
+                    Ok(0) => break,
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut
+                        ) => {}
+                    // Bytes `luc` should not send are skipped; any other
+                    // error means the connection is gone.
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            tx.send(()).ok();
+        });
+    if spawned.is_err() {
+        tracing::warn!("luc socket: could not watch for a hangup");
+    }
+    rx
 }
 
 /// The user id of the process at the other end of `stream`.
@@ -1107,6 +1165,60 @@ mod tests {
             send(stream, &request, Duration::from_secs(5)),
             Ok(CliReply::quitting())
         );
+    }
+
+    /// Polls `cond` every 10 ms for up to 2 s.
+    fn eventually(mut cond: impl FnMut() -> bool) -> bool {
+        let end = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < end {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        cond()
+    }
+
+    fn serve_one() -> (
+        tempfile::TempDir,
+        PathBuf,
+        mpsc::UnboundedReceiver<CliMessage>,
+    ) {
+        let (dir, path) = temp_socket();
+        let Claim::Server(Bound { listener, .. }) = claim(&path) else {
+            panic!("binds");
+        };
+        let (tx, rx) = mpsc::unbounded::<CliMessage>();
+        serve(listener, tx);
+        (dir, path, rx)
+    }
+
+    /// M1-3: the router learns that `luc` stopped waiting.
+    #[test]
+    fn answer_drops_the_reply_when_luc_hangs_up() {
+        let (_dir, path, mut rx) = serve_one();
+        let request = CliRequest::new(PathBuf::from("/w"), vec![PathBuf::from("/x")]);
+        let mut stream = connect(&path, Duration::from_secs(5)).unwrap();
+        let line = serde_json::to_string(&request).unwrap();
+        stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+        let (got, reply) = futures::executor::block_on(rx.next()).unwrap();
+        assert_eq!(got, request);
+        assert!(!reply.is_canceled());
+        drop(stream);
+        assert!(eventually(|| reply.is_canceled()), "luc hung up");
+    }
+
+    #[test]
+    fn answer_keeps_the_reply_while_luc_waits() {
+        let (_dir, path, mut rx) = serve_one();
+        let request = CliRequest::new(PathBuf::from("/w"), vec![PathBuf::from("/x")]);
+        let stream = connect(&path, Duration::from_secs(5)).unwrap();
+        let client = std::thread::spawn(move || send(stream, &request, Duration::from_secs(10)));
+        let (_, reply) = futures::executor::block_on(rx.next()).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!reply.is_canceled());
+        reply.send(CliReply::ok()).unwrap();
+        assert_eq!(client.join().unwrap(), Ok(CliReply::ok()));
     }
 
     /// Reads one request line from the next connection and answers with

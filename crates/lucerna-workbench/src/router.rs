@@ -449,16 +449,38 @@ pub fn answer_cli(
         reply.send(CliReply::ok()).ok();
         return;
     }
+    let paths = request.paths_to_open();
     let request = OpenRequest {
-        paths: request.paths_to_open(),
+        paths: paths.clone(),
         target: Target::Auto,
         source: Source::Cli,
     };
-    let done: OpenDone = Box::new(move |result, _| {
-        // `luc` may have given up waiting.
+    let done: OpenDone = Box::new(move |result, cx| {
+        // `luc` that is still waiting prints the error itself. One that
+        // gave up (M1-3) is gone, so the app says it (spec §6.5).
+        if let Err(err) = &result
+            && reply.is_canceled()
+        {
+            report_deferred_failure(&paths, err, cx);
+        }
         reply.send(CliReply::from(result)).ok();
     });
     open_then(request, done, cx);
+}
+
+/// Shows why an open `luc` asked for failed, after `luc` stopped waiting,
+/// in the window the user is in. `err` has one line per failed path.
+#[cfg(unix)]
+fn report_deferred_failure(paths: &[PathBuf], err: &str, cx: &mut App) {
+    let window = windows(cx).first().map(|(handle, _)| handle.window_id());
+    if let [path] = paths {
+        let what = tilde_path(path, std::env::home_dir().as_deref());
+        status_message::show_or_log(window, format!("Could not open {what}: {err}"), cx);
+        return;
+    }
+    for line in err.lines() {
+        status_message::show_or_log(window, format!("Could not open: {line}"), cx);
+    }
 }
 
 /// Queues a request from `luc` or the platform while a restore runs

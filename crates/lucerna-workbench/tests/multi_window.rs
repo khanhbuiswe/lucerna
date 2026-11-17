@@ -1278,6 +1278,61 @@ fn requests_wait_for_restore(cx: &mut TestAppContext) {
     );
 }
 
+/// M1-3: a failed open is reported in the status bar only once `luc`
+/// stopped waiting for the reply.
+#[cfg(unix)]
+#[gpui::test]
+fn cli_failure_reported_when_luc_gave_up(cx: &mut TestAppContext) {
+    use futures::channel::oneshot;
+    use lucerna_workbench::cli_socket::CliRequest;
+
+    routed(&[], cx);
+    let a = project(cx);
+    open_routed(Vec::new(), Target::Auto, cx);
+    cx.update(router::begin_restore);
+    let (tx, rx) = oneshot::channel();
+    cx.update(|cx| {
+        router::answer_cli(
+            CliRequest::new(a.clone(), vec![PathBuf::from("nope")]),
+            tx,
+            cx,
+        );
+    });
+    drop(rx);
+    cx.update(|cx| router::restore(vec![folder_window(&a)], cx));
+    cx.run_until_parked();
+    let handle = routed_workbench(&WindowKind::Folder(a), cx);
+    let message = status(handle, cx).expect("a status message");
+    assert!(message.starts_with("Could not open "), "{message}");
+    assert!(message.contains("path not found"), "{message}");
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn cli_failure_not_reported_while_luc_waits(cx: &mut TestAppContext) {
+    use futures::channel::oneshot;
+    use lucerna_workbench::cli_socket::{CliReply, CliRequest};
+
+    routed(&[], cx);
+    let a = project(cx);
+    open_routed(Vec::new(), Target::Auto, cx);
+    cx.update(router::begin_restore);
+    let (tx, mut rx) = oneshot::channel();
+    cx.update(|cx| {
+        router::answer_cli(
+            CliRequest::new(a.clone(), vec![PathBuf::from("nope")]),
+            tx,
+            cx,
+        );
+    });
+    cx.update(|cx| router::restore(vec![folder_window(&a)], cx));
+    cx.run_until_parked();
+    let expected = format!("path not found: {}", a.join("nope").display());
+    assert_eq!(rx.try_recv().unwrap(), Some(CliReply::error(expected)));
+    let handle = routed_workbench(&WindowKind::Folder(a), cx);
+    assert_eq!(status(handle, cx), None);
+}
+
 /// `luc`'s reply waits for the restore and carries the real result of
 /// its open, also for a request that waited (spec M13, M14).
 #[cfg(unix)]

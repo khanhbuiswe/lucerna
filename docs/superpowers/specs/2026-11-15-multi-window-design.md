@@ -320,7 +320,10 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
     lỗi, thoát mã 1 (M1-2).
   - Hết thời gian đợi trả lời mà yêu cầu đã gửi đi (app đang bận, ví dụ
     đang khôi phục cửa sổ): in "Lucerna is busy; the path will open when it
-    is ready" và thoát mã 0, vì app vẫn mở đường dẫn khi rảnh.
+    is ready" và thoát mã 0, vì app vẫn mở đường dẫn khi rảnh. Nếu việc
+    mở sau đó thất bại, app báo "Could not open …" trong status bar của
+    cửa sổ dùng gần nhất, vì `luc` đã thoát (app biết nhờ kết nối socket
+    đã đóng); `luc` còn đợi thì lỗi chỉ in ra terminal (M1-3).
   - `luc` không đối số chạy trong `/` khi app đang chạy: gửi yêu cầu
     `activate` (trường `"activate":true`, `paths` rỗng). App không mở `/`
     mà ra trước như khi bấm icon Dock (M9).
