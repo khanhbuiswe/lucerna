@@ -46,7 +46,7 @@ deleted line. `"onYank"` is the default here; VSCodeVim defaults `vim.useSystemC
 | Commands | `:w :w! :wa :q :q! :qa :wq :x :N :$ :d :y :> :< :s :noh` |
 | Ranges | `N`, `.`, `$`, `%`, `'<,'>`, `'a`, with `+N` and `-N` offsets, joined by `,` |
 | `:s` flags | `g` (all matches in a line), `i` (ignore case), `I` (match case), `n` (count only), and a trailing count; `:s` alone repeats the last substitute. An empty pattern (`:s//x/`) reuses the last search's pattern and its case setting, so after `*` or `#` it follows `vim.ignorecase`. `c` is not supported |
-| Messages | `E492: Not an editor command: foo`, `E486: Pattern not found: foo`, `N substitutions on M lines`, `E: file changed, :s cancelled` |
+| Messages | `E492: Not an editor command: foo`, `E486: Pattern not found: foo`, `N substitutions on M lines`, `E: file changed, :s cancelled`, `E: :s still running` (a save or close while a large `:s` runs) |
 
 `:s` patterns use Rust regex syntax, with Vim's common escapes translated: `\(` `\)` `\{` `\}`
 `\+` `\?` `\|` `\<` `\>`. Unescaped `(` `)` `+` `?` `|` `{` keep their regex meaning, unlike
