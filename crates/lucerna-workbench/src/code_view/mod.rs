@@ -347,6 +347,9 @@ pub struct CodeView {
     _select_all_task: Option<Task<()>>,
     /// Bumped by every selection change, whatever made it.
     selection_generation: u64,
+    /// `(selection_generation, revision, selections, chars)` of the last
+    /// [`CodeView::selection_summary`].
+    summary_cache: Cell<Option<(u64, u64, usize, usize)>>,
     cursor_overlay: Option<CursorOverlay>,
     /// The caret's blink.
     caret: Caret,
@@ -501,6 +504,7 @@ impl CodeView {
             multi_cursor_running: false,
             _select_all_task: None,
             selection_generation: 0,
+            summary_cache: Cell::new(None),
             cursor_overlay: None,
             caret: Caret::default(),
             stop_requested: None,
@@ -1470,6 +1474,32 @@ impl CodeView {
             .collect();
         let set = SelectionSet::from_selections(collapsed, self.selections.primary().id, true);
         self.set_selections(set, false, cx);
+    }
+
+    /// The number of selections and the characters they cover in all.
+    /// Cached per selection change and text revision: the status bar asks
+    /// every frame, and nothing is copied to count.
+    pub fn selection_summary(&self) -> (usize, usize) {
+        let key = (self.selection_generation, self.revision);
+        if let Some((g, r, n, c)) = self.summary_cache.get()
+            && (g, r) == key
+        {
+            return (n, c);
+        }
+        let chars = self
+            .selections
+            .all()
+            .iter()
+            .map(|s| {
+                self.snapshot
+                    .chunks_in_range(s.range())
+                    .map(|c| c.chars().count())
+                    .sum::<usize>()
+            })
+            .sum();
+        let n = self.selections.len();
+        self.summary_cache.set(Some((key.0, key.1, n, chars)));
+        (n, chars)
     }
 
     /// Counts selection changes from any source (API, mouse, new text), so
