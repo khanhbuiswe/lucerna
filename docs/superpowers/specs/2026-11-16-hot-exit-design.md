@@ -132,7 +132,7 @@ Với các thao tác này, Don't Save xoá bản sao lưu của các file đó, 
 - **Cửa sổ nào được mở lại khi khởi động:**
   - Cửa sổ folder theo `window.restoreWindows` như hiện nay. Bản sao lưu của folder không được mở lại thì được giữ, tới khi người dùng mở lại folder đó.
   - Cửa sổ mở một file riêng mà có bản sao lưu thì luôn được mở lại, giống "empty window" của VS Code. Vì tên thư mục chỉ là hash, mỗi thư mục bản sao lưu có thêm một file `workspace.json` ghi loại cửa sổ (folder hoặc file) và đường dẫn, để lúc khởi động biết cần mở cửa sổ nào *(quyết định của mình)*.
-  - **Giới hạn đã biết:** cửa sổ một file chỉ được mở lại khi Lucerna khởi động không kèm đường dẫn; mở bằng `luc <đường dẫn>` hay từ Finder thì bản sao lưu chờ tới lần khởi động trơn kế tiếp. Nếu file của cửa sổ đó bị xoá trong lúc app tắt, cửa sổ chưa được mở lại: bản sao lưu vẫn được giữ và sẽ được khôi phục khi file có lại. Đã lên kế hoạch sửa sau.
+  - Cửa sổ một file có bản sao lưu luôn được mở lại, kể cả khi khởi động kèm đường dẫn hoặc khi file đã bị xoá (sửa ở [p3-fixes](2026-11-17-p3-fixes-design.md) §5).
 
 ### 5.5 Dọn dẹp
 

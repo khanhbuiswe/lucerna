@@ -33,7 +33,7 @@ use lucerna_settings::SettingsView;
 use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{
     Buffer, BufferSnapshot, Decoded, HistoryState, LineEnding, LoadError, Patch, PatchEdit, Point,
-    SelectionsToken, WriteError, check_regular, check_size, decode_file, diff_edits,
+    SelectionsToken, WriteError, Written, check_regular, check_size, decode_file, diff_edits,
 };
 
 use crate::WindowSettings;
@@ -157,6 +157,14 @@ impl Stamp {
         }
     }
 
+    /// The stamp of the file a save wrote, taken from its handle.
+    pub(crate) fn of_written(written: &Written) -> Stamp {
+        Stamp {
+            modified: written.modified,
+            len: written.len,
+        }
+    }
+
     /// The modification time as seconds and nanoseconds since the Unix
     /// epoch (`None` when unknown or before it), and the size: how a
     /// hot exit backup keeps the stamp.
@@ -191,6 +199,8 @@ pub(crate) struct BackupSource {
     pub encoding: &'static str,
     pub bom: bool,
     pub line_ending: LineEnding,
+    /// The text holds U+FFFD for bytes that were not valid in `encoding`.
+    pub lossy: bool,
 }
 
 /// The `base_hash` of a document restored from a backup whose base is not
@@ -252,6 +262,12 @@ pub enum DiskNotice {
         reason: Option<String>,
     },
     Deleted,
+    /// The file had bytes that are not valid in its encoding, which a save
+    /// replaces with U+FFFD (spec P3 §6.3). `encoding` is the
+    /// `encoding_rs` name, like "UTF-8" or "Shift_JIS".
+    Lossy {
+        encoding: &'static str,
+    },
 }
 
 /// Background work on one document. A reload diffs (or merges) the file
@@ -380,6 +396,12 @@ struct Document {
     /// until the file comes back. Cleared whenever the state leaves
     /// [`DocState::Deleted`].
     deleted_kept: bool,
+    /// The user dismissed the bar about invalid bytes. Cleared whenever the
+    /// file's text is taken again (load, reload, merge, revert).
+    lossy_dismissed: bool,
+    /// The user agreed to save over the invalid bytes. Cleared with
+    /// `lossy_dismissed`.
+    lossy_consent: bool,
     /// Keep Mine on a file that could not be read, when not even its stamp
     /// is known: the next write does not check the file on disk first.
     /// Consumed by that write (`start_write`); cleared whenever the file's
@@ -453,6 +475,8 @@ impl Document {
             base: None,
             conflict: None,
             deleted_kept: false,
+            lossy_dismissed: false,
+            lossy_consent: false,
             skip_disk_check: false,
             revision: 0,
             encoding: "UTF-8",
@@ -1067,6 +1091,7 @@ impl Documents {
             encoding: buffer.encoding().name(),
             bom: buffer.has_bom(),
             line_ending: buffer.line_ending(),
+            lossy: buffer.is_lossy(),
         })
     }
 
@@ -1082,10 +1107,23 @@ impl Documents {
     /// a write that would bring the old file back.
     pub(crate) fn saves_done_under(&self, path: &Path) -> impl Future<Output = ()> + use<> {
         let path = self.key(path);
+        self.saves_done_where(&|k| k.starts_with(&path))
+    }
+
+    /// Resolves once every save (or revert) asked for so far of any
+    /// document has ended, so a quit does not cut a write short.
+    pub(crate) fn saves_done(&self) -> impl Future<Output = ()> + use<> {
+        self.saves_done_where(&|_| true)
+    }
+
+    fn saves_done_where(
+        &self,
+        include: &dyn Fn(&Path) -> bool,
+    ) -> impl Future<Output = ()> + use<> {
         let pending: Vec<Shared<oneshot::Receiver<()>>> = self
             .docs
             .iter()
-            .filter(|(k, _)| k.starts_with(&path))
+            .filter(|(k, _)| include(k))
             .filter_map(|(_, d)| d.last_save.clone())
             .filter(|p| p.clone().now_or_never().is_none())
             .collect();
@@ -1121,7 +1159,9 @@ impl Documents {
 
     /// `Deleted` when the file is gone, the text is dirty and Keep was not
     /// chosen; `None` once Keep was chosen (a conflict is moot until the
-    /// file returns); else `Conflict` while in conflict; else `None`.
+    /// file returns); else `Conflict` while in conflict; else `Lossy` while
+    /// the text has invalid bytes and the bar was not dismissed; else
+    /// `None`.
     pub fn disk_notice(&self, path: &Path) -> Option<DiskNotice> {
         let doc = self.docs.get(&self.key(path))?;
         let dirty = doc.buffer.as_ref().is_some_and(Buffer::is_dirty);
@@ -1133,10 +1173,25 @@ impl Documents {
                 return Some(DiskNotice::Deleted);
             }
         }
-        let conflict = doc.conflict.as_ref()?;
-        Some(DiskNotice::Conflict {
-            reason: conflict.reason.clone(),
+        if let Some(conflict) = doc.conflict.as_ref() {
+            return Some(DiskNotice::Conflict {
+                reason: conflict.reason.clone(),
+            });
+        }
+        let buffer = doc.buffer.as_ref()?;
+        (buffer.is_lossy() && !doc.lossy_dismissed).then(|| DiskNotice::Lossy {
+            encoding: buffer.encoding().name(),
         })
+    }
+
+    /// Dismiss on the bar about invalid bytes: hides it until the file's
+    /// text is taken again and is still lossy.
+    pub fn dismiss_lossy(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let key = self.key(path);
+        if let Some(doc) = self.docs.get_mut(&key) {
+            doc.lossy_dismissed = true;
+            cx.notify();
+        }
     }
 
     /// Keep Mine (spec §7.3): ends the conflict; the disk text becomes the
@@ -1225,6 +1280,10 @@ impl Documents {
     /// clean text (which is then reloaded); a failed write is also reported
     /// in the status bar, and the text stays dirty.
     ///
+    /// 0. When the file had bytes invalid in its encoding and the user has
+    ///    not agreed yet ([`Documents::needs_lossy_consent`]), an autosave
+    ///    does nothing (`Ok(false)`) and any other save asks first; Cancel
+    ///    is `Ok(false)`, Save is remembered for the document.
     /// 1. When the document is in conflict with the disk and
     ///    `files.saveConflictResolution` is `askUser`, asks first.
     /// 2. With `opts.participants`, runs the save participants as one undo
@@ -1250,13 +1309,18 @@ impl Documents {
         cx: &mut Context<Self>,
     ) -> Task<Result<bool, WriteError>> {
         let key = self.key(path);
+        let lossy = self.needs_lossy_consent(&key);
+        // An autosave never asks: it leaves invalid bytes alone.
+        if lossy && opts.reason == SaveReason::Auto {
+            return Task::ready(Ok(false));
+        }
         let Some(doc) = self.docs.get_mut(&key) else {
             return Task::ready(Ok(false));
         };
         let (done, previous) = queue_disk_work(doc);
         // With nothing to wait for or ask, the text is captured now: an
         // edit made after this call is not part of the save.
-        let started = (previous.is_none() && !self.asks(&key, cx))
+        let started = (previous.is_none() && !lossy && !self.asks(&key, cx))
             .then(|| self.start_write(&key, opts, false, cx));
         cx.spawn_in(window, async move |this, cx| {
             // Dropped at the end: the next save of the document goes on.
@@ -1273,6 +1337,38 @@ impl Documents {
                 let write = match started.take() {
                     Some(write) => write,
                     None => {
+                        // Asked once per document, before the conflict.
+                        let Ok(lossy) = this.update(cx, |d, _| d.needs_lossy_consent(&key)) else {
+                            return Ok(false);
+                        };
+                        if lossy {
+                            // An autosave never asks: it leaves invalid
+                            // bytes alone.
+                            if opts.reason == SaveReason::Auto {
+                                return Ok(false);
+                            }
+                            let Ok(prompt) = this.update_in(cx, |d, window, cx| {
+                                let encoding = d
+                                    .docs
+                                    .get(&key)
+                                    .and_then(|doc| doc.buffer.as_ref())
+                                    .map_or("", |b| b.encoding().name());
+                                save::prompt_lossy(&save::display_name(&key), encoding, window, cx)
+                            }) else {
+                                return Ok(false);
+                            };
+                            if prompt.await != Ok(save::LOSSY_SAVE) {
+                                return Ok(false);
+                            }
+                            let agreed = this.update(cx, |d, _| {
+                                if let Some(doc) = d.docs.get_mut(&key) {
+                                    doc.lossy_consent = true;
+                                }
+                            });
+                            if agreed.is_err() {
+                                return Ok(false);
+                            }
+                        }
                         let Ok(ask) = this.update(cx, |d, cx| d.asks(&key, cx)) else {
                             return Ok(false);
                         };
@@ -1353,6 +1449,15 @@ impl Documents {
             == Some("overwriteFileOnDisk")
     }
 
+    /// Whether the text of the document at `path` has invalid bytes from
+    /// its file that the user has not yet agreed to replace with U+FFFD
+    /// (spec §6.4): a save asks first, and an autosave skips it.
+    pub(crate) fn needs_lossy_consent(&self, path: &Path) -> bool {
+        self.docs
+            .get(&self.key(path))
+            .is_some_and(|d| !d.lossy_consent && d.buffer.as_ref().is_some_and(Buffer::is_lossy))
+    }
+
     /// Whether a save of the document at `key` asks about a conflict first.
     fn asks(&self, key: &Arc<Path>, cx: &App) -> bool {
         self.docs.get(key).is_some_and(|d| d.conflict.is_some()) && !self.overwrites(key, cx)
@@ -1422,10 +1527,16 @@ impl Documents {
             // While a reload is in flight the file may be newer than the
             // text's base: hash it rather than trust an equal stamp.
             expected: check.then_some((doc.stamp.filter(|_| doc.job.is_none()), doc.base_hash)),
+            skip_if_missing: opts.reason == SaveReason::Auto,
+            temps: save::save_temps(cx),
         };
         let guard = SavingGuard::new(&doc.saving);
         let path = key.clone();
+        let hold = save::save_hold(cx);
         let task = cx.background_spawn(async move {
+            if let Some(hold) = hold {
+                hold.await.ok();
+            }
             catch_panic("save", || job.run(&path))
                 .unwrap_or_else(|message| Err(WriteError::Io(format!("internal error: {message}"))))
         });
@@ -1485,7 +1596,7 @@ impl Documents {
             return SaveStep::Done(Ok(false));
         };
         let step = match result {
-            Ok(WriteOutcome::Written(written, meta)) => {
+            Ok(WriteOutcome::Written(written)) => {
                 if let Some(buffer) = doc.buffer.as_mut() {
                     let was_dirty = buffer.is_dirty();
                     // Edits made while writing stay unsaved.
@@ -1494,9 +1605,9 @@ impl Documents {
                     doc.base_hash = written.hash;
                     doc.base = Some(snapshot.clone());
                     doc.disk_epoch += 1;
-                    if let Some(meta) = &meta {
-                        doc.stamp = Some(Stamp::of(meta));
-                    }
+                    doc.stamp = Some(Stamp::of_written(&written));
+                    // The invalid bytes are now U+FFFD on disk too.
+                    buffer.clear_lossy();
                     set_conflict(doc, key, None, cx);
                     if doc.state == DocState::Deleted {
                         // The save made the file again.
@@ -1515,6 +1626,12 @@ impl Documents {
                     }
                 }
                 SaveStep::Done(Ok(true))
+            }
+            Ok(WriteOutcome::Missing) => {
+                // Deleted or moved before the watcher said so: the tab
+                // waits for that event.
+                tracing::debug!(path = %key.display(), "file is gone; autosave skipped");
+                SaveStep::Done(Ok(false))
             }
             Ok(WriteOutcome::ChangedOnDisk) => {
                 tracing::debug!(path = %key.display(), "file changed on disk; not saved");
@@ -2292,6 +2409,8 @@ impl Documents {
         doc.stamp = Some(stamp);
         doc.disk_epoch += 1;
         doc.skip_disk_check = false;
+        doc.lossy_dismissed = false;
+        doc.lossy_consent = false;
         doc.encoding = buffer.encoding().name();
         doc.line_ending = buffer.line_ending();
         set_conflict(doc, key, None, cx);
@@ -2339,6 +2458,8 @@ impl Documents {
         doc.disk_epoch += 1;
         doc.stamp = Some(stamp);
         doc.skip_disk_check = false;
+        doc.lossy_dismissed = false;
+        doc.lossy_consent = false;
         doc.encoding = buffer.encoding().name();
         doc.line_ending = buffer.line_ending();
         set_conflict(doc, key, None, cx);
@@ -2611,6 +2732,8 @@ fn take_buffer(doc: &mut Document, buffer: Buffer, stamp: Option<Stamp>) {
     doc.base_hash = buffer.disk_hash();
     doc.base = doc.snapshot.clone();
     doc.conflict = None;
+    doc.lossy_dismissed = false;
+    doc.lossy_consent = false;
     doc.encoding = buffer.encoding().name();
     doc.line_ending = buffer.line_ending();
     doc.buffer = Some(buffer);
@@ -2831,6 +2954,8 @@ fn restore(path: &Path, backup: Backup) -> Restored {
         has_bom: header.bom,
         line_ending: header.line_ending,
         hash: RESTORED_UNKNOWN_BASE,
+        // Consent is not kept: the first save after a restore asks again.
+        lossy: header.lossy,
     });
     buffer.clear_saved();
     match disk {

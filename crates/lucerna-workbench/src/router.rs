@@ -78,6 +78,28 @@ impl Launch {
         })
     }
 
+    /// A single-file window on a file that is not there (deleted while the
+    /// app was closed), for a restore whose backup brings its text back:
+    /// rooted at the canonical parent, on the parent joined with the name.
+    ///
+    /// # Errors
+    /// `path not found: …` when the parent is not a folder.
+    pub fn for_missing_file(path: PathBuf) -> Result<Launch, String> {
+        let not_found = || format!("path not found: {}", path.display());
+        let name = path.file_name().ok_or_else(not_found)?;
+        let root = path
+            .parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok())
+            .filter(|parent| parent.is_dir())
+            .ok_or_else(not_found)?;
+        Ok(Launch {
+            file: Some(root.join(name)),
+            root,
+            single_file: true,
+            on_first_frame: None,
+        })
+    }
+
     /// The path the window is on: the file alone, else the folder.
     fn path(&self) -> &Path {
         match (&self.file, self.single_file) {
@@ -317,7 +339,15 @@ pub fn begin_restore(cx: &mut App) {
 pub fn restore(windows: Vec<SessionWindow>, cx: &mut App) {
     begin_restore(cx);
     for window in windows.into_iter().rev() {
-        match Launch::for_path(window.path.clone()) {
+        let launch = match Launch::for_path(window.path.clone()) {
+            // A single-file window whose file was deleted while the app
+            // was closed still opens: hot exit restores its text.
+            Err(_) if window.kind == RecentKind::File && !window.path.exists() => {
+                Launch::for_missing_file(window.path.clone())
+            }
+            launch => launch,
+        };
+        match launch {
             Ok(launch) => {
                 open_launch(launch, Target::NewWindow, cx);
             }

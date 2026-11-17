@@ -148,6 +148,7 @@ fn backup_of(path: &Path, source: BackupSource) -> Backup {
             encoding: source.encoding.to_owned(),
             bom: source.bom,
             line_ending: source.line_ending,
+            lossy: source.lossy,
         },
         text: source.text.text(),
     }

@@ -209,3 +209,44 @@ fn load_refuses_a_device() {
         Some(LoadError::NotRegular)
     );
 }
+
+#[test]
+fn decode_reports_invalid_bytes() {
+    let d = decode_file(b"\xEF\xBB\xBFcaf\xE9\n", false).unwrap();
+    assert!(d.lossy);
+    assert_eq!(d.encoding, encoding_rs::UTF_8);
+    assert!(d.has_bom);
+    assert_eq!(d.text, "caf\u{FFFD}\n");
+
+    let d = decode_file(b"\xFF\xFEh\0i\0x", false).unwrap(); // odd length
+    assert!(d.lossy);
+    assert_eq!(d.encoding, encoding_rs::UTF_16LE);
+
+    // Shift_JIS text with a lone 0xFD, which chardetng tolerates as a Mac
+    // extension byte and encoding_rs cannot decode.
+    let mut sjis = encoding_rs::SHIFT_JIS
+        .encode(&"日本語のテキストです。\n".repeat(20))
+        .0
+        .into_owned();
+    sjis.extend_from_slice(b"\xFD\n");
+    let d = decode_file(&sjis, false).unwrap();
+    assert_eq!(d.encoding, encoding_rs::SHIFT_JIS);
+    assert!(d.lossy);
+}
+
+#[test]
+fn valid_text_is_not_lossy() {
+    assert!(!decode_file("héllo\n".as_bytes(), false).unwrap().lossy);
+    assert!(!decode_file(b"caf\xe9 cr\xe8me", false).unwrap().lossy); // Latin-1
+    assert!(!decode_file(b"\xFF\xFEh\0i\0", false).unwrap().lossy);
+}
+
+#[test]
+fn buffer_keeps_and_clears_lossy() {
+    let mut b = Buffer::from_bytes(b"\xEF\xBB\xBFcaf\xE9\n", false).unwrap();
+    assert!(b.is_lossy());
+    b.clear_lossy();
+    assert!(!b.is_lossy());
+    b.set_disk_state(&decode_file(b"\xEF\xBB\xBF\xE9", false).unwrap());
+    assert!(b.is_lossy());
+}
