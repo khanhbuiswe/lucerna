@@ -15,7 +15,7 @@ Ngày: 2026-11-15. Spec: [2026-11-15-release-flow-review-design.md](../specs/202
 | P2 (sai nhưng có cách khác) | 14, đều đã sửa trên nhánh `claude/p2-fixes` |
 | P3 (nhỏ) | 21 (13 cũ, 8 mới) |
 
-Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được sửa trong lần merge multi-window. T2-1 đã sửa bằng hot exit; T2-2, T2-3, T3-2, T3-4, T3-5, T4-1, T4-2, T5-2, T5-3, T5-6, M1-1, M2-1, M3-1, M3-2 (và M2-2) đã sửa trên nhánh `claude/p2-fixes`. Các mục P3 còn lại chưa sửa.
+Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được sửa trong lần merge multi-window. T2-1 đã sửa bằng hot exit; T2-2, T2-3, T3-2, T3-4, T3-5, T4-1, T4-2, T5-2, T5-3, T5-6, M1-1, M2-1, M3-1, M3-2 (và M2-2) đã sửa trên nhánh `claude/p2-fixes`. T1-1, T1-2, T1-3, T1-5, T1-6, T1-7 và T2-4 đã sửa trên nhánh `claude/p3-save`. Các mục P3 còn lại chưa sửa.
 
 **Nên sửa trước release:**
 - **T2-1 [P0]:** Quit từ Dock, Log Out hoặc Restart máy thoát ngay mà không hỏi lưu, nên mất thay đổi chưa lưu.
@@ -35,6 +35,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Nguyên nhân:** `decode_without_bom_handling` bỏ cờ `had_errors`.
 - **Mức độ:** theo thang của spec, đổi byte người dùng không sửa là hỏng dữ liệu, nên xếp P0. Lỗi hiếm gặp: file UTF-8 hợp lệ và file Latin-1 không bị ảnh hưởng, và VS Code cũng ghi U+FFFD. Agent kiểm chứng đề xuất P2 vì lý do đó.
 - **Hướng sửa:** dùng `had_errors` để cảnh báo, hoặc mở chỉ đọc.
+- **Đã sửa** (commit 85d3211, 24ea121, d661116, e93a21d): giải mã báo cờ byte không hợp lệ, editor cảnh báo bằng thanh trên file, lần lưu đầu hỏi trước khi thay byte hỏng bằng U+FFFD, và cờ này được giữ trong bản sao lưu hot exit.
 
 ### T2-1 [P0] Thoát từ Dock, Log Out/Restart hoặc AppleScript bỏ qua hộp thoại lưu
 
@@ -179,6 +180,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** đặt `files.autoSave: afterDelay`, rồi gõ vào `a.rs`. Agent chạy `rm a.rs` đúng lúc timer sắp nổ. File `a.rs` xuất hiện lại.
 - **Nguyên nhân:** `changed_on_disk` coi NotFound là "không đổi". Vì vậy autosave chạy trong khoảng 50–150 ms trước khi watcher báo sẽ ghi lại file. Kết quả: `rm` của agent bị huỷ, còn `mv` thì sinh ra file trùng.
 - **Hướng sửa:** với `SaveReason::Auto`, gặp NotFound thì không ghi.
+- **Đã sửa** (commit 400054a): autosave gặp file đã bị xoá thì không ghi lại.
 
 ### T1-3 [P3] Stamp sau khi lưu lấy sau bước rename
 
@@ -186,6 +188,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Vị trí:** [save.rs:263](../../../crates/lucerna-workbench/src/save.rs).
 - **Tái hiện:** Cmd+S, agent ghi file trong vài micro giây sau bước rename, rồi người dùng lưu lại trước khi watcher báo. Bản của agent bị ghi đè mà không hỏi. Gần như chỉ xảy ra trên lý thuyết.
 - **Hướng sửa:** lấy metadata từ file handle của file tạm trước khi rename.
+- **Đã sửa** (commit e5f0ed9): stamp sau khi lưu lấy từ file handle của file tạm, trước bước rename.
 
 ### T1-5 [P3] Tên file dài hơn khoảng 241 byte thì không lưu được
 
@@ -194,6 +197,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** mở file có tên 245 byte, sửa, Cmd+S. Status bar báo "File name too long".
 - **Nguyên nhân:** tên file tạm `.{name}.luc~XXXXXXXX` dài hơn tên gốc 14 byte.
 - **Hướng sửa:** cắt ngắn hoặc hash phần tên trong tên file tạm.
+- **Đã sửa** (commit 90cb304): tên file tạm được giữ trong 255 byte.
 
 ### T1-6 [P3] Sau Keep Mine, autosave không được hẹn lại
 
@@ -201,6 +205,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Vị trí:** [documents.rs:1063](../../../crates/lucerna-workbench/src/documents.rs), [save.rs:404](../../../crates/lucerna-workbench/src/save.rs).
 - **Tái hiện:** đặt autoSave afterDelay. Gõ vào file, agent ghi đè cùng dòng nên thành conflict. Chờ quá thời gian delay rồi bấm Keep Mine. Không có lần lưu nào chạy cho tới lần gõ tiếp theo; tab vẫn có chấm "chưa lưu".
 - **Hướng sửa:** hẹn lại timer khi nhận `ConflictChanged{conflict:false}` mà văn bản vẫn chưa lưu.
+- **Đã sửa** (commit 2391aad): Keep Mine hẹn lại autosave afterDelay.
 
 ### T1-7 [P3] `files.trimFinalNewlines` với file toàn dòng trống còn lại `\n`
 
@@ -209,6 +214,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** bật `files.trimFinalNewlines`, lưu file có nội dung `\n\n\n`. File còn lại `\n`.
 - **Ghi chú:** VS Code cho ra file rỗng; agent nói chắc khoảng 80%. Test hiện tại khẳng định hành vi `\n`.
 - **Hướng sửa:** đối chiếu với `TrimFinalNewLinesParticipant` của VS Code.
+- **Đã sửa** (commit 404b591): file toàn dòng trống giờ ra file rỗng, như VS Code.
 
 ### T2-4 [P3] Cmd+Q chọn Don't Save khi đang ghi thì để lại file tạm `.name.luc~XXXX`
 
@@ -217,6 +223,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** Cmd+S một file lớn, Cmd+Q ngay, chọn Don't Save. Còn lại file `.<tên>.luc~xxxxxxxx` cạnh file gốc.
 - **Ghi chú:** file gốc vẫn nguyên. Ngoại lệ hiếm: file có hardlink đi qua `write_in_place`, khi đó file có thể bị cụt.
 - **Hướng sửa:** trước khi thoát, đợi các lần lưu đang chạy xong.
+- **Đã sửa** (commit a4ceb09): khi thoát, đợi tối đa 5 s cho các lần lưu đang chạy rồi xoá file tạm của chúng.
 
 ### T2-5 [P3] New File với tên `foo/` tạo file thay vì folder
 
