@@ -2,8 +2,7 @@
 
 Vim is built in and off by default (V1 navigation, V2a editing and V2b macros and `:` commands are done). It takes effect as soon as you save the setting.
 The status bar shows the mode, and the cursor becomes a block. Every command is one undo step,
-and a command that ends in Insert keeps the step open until `Esc`. Macros and `:` commands are
-planned (V2b).
+and a command that ends in Insert keeps the step open until `Esc`.
 
 | Group | Keys |
 |---|---|
@@ -46,7 +45,7 @@ deleted line. `"onYank"` is the default here; VSCodeVim defaults `vim.useSystemC
 | Command line | `:` opens Quick Open as a command line (`:w — Save`, `:12 — Go to line 12`, `:%s/foo/bar/g — Replace in all lines`). From Visual mode it starts with `'<,'>`; a count (`3:`) starts with `.,.+2` |
 | Commands | `:w :w! :wa :q :q! :qa :wq :x :N :$ :d :y :> :< :s :noh` |
 | Ranges | `N`, `.`, `$`, `%`, `'<,'>`, `'a`, with `+N` and `-N` offsets, joined by `,` |
-| `:s` flags | `g` (all matches in a line), `i` (ignore case), `I` (match case), `n` (count only), and a trailing count; `:s` alone repeats the last substitute. `c` is not supported |
+| `:s` flags | `g` (all matches in a line), `i` (ignore case), `I` (match case), `n` (count only), and a trailing count; `:s` alone repeats the last substitute. An empty pattern (`:s//x/`) reuses the last search's pattern and its case setting, so after `*` or `#` it follows `vim.ignorecase`. `c` is not supported |
 | Messages | `E492: Not an editor command: foo`, `E486: Pattern not found: foo`, `N substitutions on M lines`, `E: file changed, :s cancelled` |
 
 `:s` patterns use Rust regex syntax, with Vim's common escapes translated: `\(` `\)` `\{` `\}`
