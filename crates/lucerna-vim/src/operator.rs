@@ -493,17 +493,22 @@ mod tests {
 
     #[test]
     fn change_over_an_empty_range_still_inserts() {
-        for (start, keys) in [("a\n|\nb", "c$"), ("a\n|\nb", "cl"), ("|abc", "c0")] {
+        // `l` on an empty line fails (a macro stops) but `c` still inserts.
+        for (start, keys, failed) in [
+            ("a\n|\nb", "c$", false),
+            ("a\n|\nb", "cl", true),
+            ("|abc", "c0", false),
+        ] {
             let (text, actions) = run_edit(start, keys);
             assert_eq!(text, start, "{keys}");
-            assert_eq!(
-                actions,
-                vec![
-                    Action::EnterInsert(InsertAt::Before),
-                    Action::ModeChanged(Mode::Insert)
-                ],
-                "{keys}"
-            );
+            let mut want = vec![
+                Action::EnterInsert(InsertAt::Before),
+                Action::ModeChanged(Mode::Insert),
+            ];
+            if failed {
+                want.push(Action::Failed);
+            }
+            assert_eq!(actions, want, "{keys}");
         }
     }
 

@@ -519,7 +519,7 @@ mod tests {
             );
         };
         for keys in [
-            "h", "k", "b", "B", "ge", "gE", "{", "%", "Fz", "tz", ";", "N", ".", "dh", "db",
+            "h", "k", "b", "B", "ge", "gE", "{", "%", "Fz", "tz", ";", "N", ".", "dh", "ch", "db",
         ] {
             fails("|ab", keys);
         }
@@ -541,6 +541,26 @@ mod tests {
         // A motion that moves does not fail.
         let (_, actions) = run_edit("|ab", "l");
         assert_eq!(actions, [Action::CursorMoved { jump: false }]);
+    }
+
+    #[test]
+    fn a_failed_motion_under_an_operator_may_still_apply_it() {
+        // `e` at the end of the buffer: the operator takes the last char.
+        assert_edit("ab|c", "de", "a|b");
+        assert_edit("ab|c", "ceX<Esc>", "ab|X");
+        assert_edit("ab|c", "dE", "a|b");
+        // `h` at column 0 fails, but `ch` still enters Insert and `dh`
+        // changes nothing.
+        let (text, actions) = run_edit("|ab", "chX<Esc>");
+        assert_eq!(text, "|Xab");
+        assert!(actions.contains(&Action::Failed));
+        let (text, actions) = run_edit("|ab", "dh");
+        assert_eq!(text, "|ab");
+        assert_eq!(actions, [Action::Failed]);
+        // `l` on an empty line too.
+        let (text, actions) = run_edit("a\n|\nb", "x");
+        assert_eq!(text, "a\n|\nb");
+        assert_eq!(actions, [Action::Failed]);
     }
 
     #[test]

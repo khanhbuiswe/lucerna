@@ -1446,18 +1446,25 @@ impl Vim {
             Ok(None) => return Outcome::Handled(vec![Action::Failed]),
             Err(retry) => return retry,
         };
-        let Some(r) = operator::motion_range(snapshot, from, to, kind, p.force) else {
-            // The motion worked but covers nothing: `c` still inserts.
-            if p.op == Operator::Change {
-                return self.change_nothing(view);
+        // `h` at column 0 and `l` at the line end fail (a macro stops) but
+        // the operator still runs on the empty range, as in Vim.
+        let failed = prefix.is_none() && matches!(c, 'h' | 'l') && to == from;
+        let mut out = match operator::motion_range(snapshot, from, to, kind, p.force) {
+            // The motion covers nothing: `c` still inserts.
+            None if p.op == Operator::Change => self.change_nothing(view),
+            None => Outcome::Handled(vec![]),
+            Some(r) => {
+                // A yank keeps the cursor when the motion went forward,
+                // else it goes to the motion's end.
+                let forward = (to.row, to.column) >= (from.row, from.column);
+                let yank_cursor = if forward { from } else { to };
+                self.finish_op(p, r, Some(yank_cursor), view, g, s)
             }
-            return Outcome::Handled(vec![]);
         };
-        // A yank keeps the cursor when the motion went forward, else it goes
-        // to the motion's end.
-        let forward = (to.row, to.column) >= (from.row, from.column);
-        let yank_cursor = if forward { from } else { to };
-        self.finish_op(p, r, Some(yank_cursor), view, g, s)
+        if failed && let Outcome::Handled(actions) = &mut out {
+            actions.push(Action::Failed);
+        }
+        out
     }
 
     /// Where the motion `c` (after `prefix`) goes from the cursor, without
@@ -1526,9 +1533,13 @@ impl Vim {
             }),
             Some(_) => None,
             None => match c {
-                'h' | 'b' | 'B' | '^' => {
-                    probe(None, count, Key::Char(c), g)?.map(|to| (to, Exclusive))
-                }
+                // `h` at column 0 fails but keeps the operator, as in Vim:
+                // `ch` still enters Insert (the caller reports the failure).
+                'h' => Some((
+                    probe(None, count, Key::Char(c), g)?.unwrap_or(from),
+                    Exclusive,
+                )),
+                'b' | 'B' | '^' => probe(None, count, Key::Char(c), g)?.map(|to| (to, Exclusive)),
                 '0' => probe(None, None, Key::Char(c), g)?.map(|to| (to, Exclusive)),
                 'l' => {
                     // Unlike the motion, `l` here may reach the line end.
@@ -1542,7 +1553,13 @@ impl Vim {
                     operator::word_end_for_operator(snapshot, from, c == 'W', n),
                     Exclusive,
                 )),
-                '$' | 'e' | 'E' => probe(None, count, Key::Char(c), g)?.map(|to| (to, Inclusive)),
+                // Under an operator, `e` at the end of the buffer does not
+                // fail (Vim beeps only without one): `de` deletes the last
+                // char.
+                '$' | 'e' | 'E' => Some((
+                    probe(None, count, Key::Char(c), g)?.unwrap_or(from),
+                    Inclusive,
+                )),
                 'G' | 'H' | 'M' | 'L' => {
                     probe(None, count, Key::Char(c), g)?.map(|to| (to, Linewise))
                 }

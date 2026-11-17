@@ -35,11 +35,11 @@ use crate::find_widget::{
 };
 use crate::tasks::{catch_panic, guarded};
 
-/// Where keys may reach vim: the editor has focus, and neither a text
-/// input (find widget) nor Quick Open does.
 /// How deep [`Outcome::Macro`]s may nest (`@a` that runs `@a`).
 const MAX_MACRO_DEPTH: u32 = 100;
 
+/// Where keys may reach vim: the editor has focus, and neither a text
+/// input (find widget) nor Quick Open does.
 static KEY_GATE: LazyLock<WhenExpr> = LazyLock::new(|| {
     parse_when("editorFocus && !textInputFocus && !inQuickOpen").expect("a valid when clause")
 });
