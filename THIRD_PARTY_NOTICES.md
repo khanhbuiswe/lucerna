@@ -199,6 +199,10 @@ Each adapted test carries a comment of the form
 `// Adapted from VSCodeVim <file>: "<test title>"`. The cases came from these
 VSCodeVim test files:
 
+- `test/cmd_line/delete.test.ts`
+- `test/cmd_line/substitute.test.ts`
+- `test/cmd_line/yank.test.ts`
+- `test/macro.test.ts`
 - `test/marks.test.ts`
 - `test/motion.test.ts`
 - `test/mode/modeNormal.test.ts`

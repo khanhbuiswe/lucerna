@@ -17,6 +17,9 @@ pub enum QuickOpenQuery {
     Symbols { text: String, group_by_kind: bool },
     /// `#`: symbols of the whole workspace.
     WorkspaceSymbols(String),
+    /// `:` with Vim on, not followed by a go-to-line number: a Vim
+    /// command line (leading spaces trimmed).
+    VimCommand(String),
 }
 
 /// Parses the Quick Open input. A leading `>` gives
@@ -27,9 +30,9 @@ pub enum QuickOpenQuery {
 /// [`QuickOpenQuery::Symbols`] (grouped by kind after `@:`) and `#` gives
 /// [`QuickOpenQuery::WorkspaceSymbols`]. Arguments are trimmed.
 ///
-/// This is the meaning with Vim off, following VS Code's
-/// `gotoLineQuickAccess` (MIT; only its behaviour is referenced). Vim's `:`
-/// command line uses its own parser.
+/// This is the meaning with Vim off (and of numbers with Vim on),
+/// following VS Code's `gotoLineQuickAccess` (MIT; only its behaviour is
+/// referenced). Vim's `:` command line uses its own parser.
 pub fn parse_query(input: &str) -> QuickOpenQuery {
     if let Some(rest) = input.strip_prefix('@') {
         let (rest, group_by_kind) = match rest.strip_prefix(':') {
@@ -53,6 +56,37 @@ pub fn parse_query(input: &str) -> QuickOpenQuery {
     } else {
         QuickOpenQuery::Files(input.trim().to_string())
     }
+}
+
+/// As [`parse_query`], but a `:` not followed by a go-to-line number
+/// gives [`QuickOpenQuery::VimCommand`]: the meaning while Vim is on and
+/// the active editor takes its keys. Numbers (`-?N`, then optionally one
+/// of `:` `,` `#` and `-?M`) keep their go-to-line meaning, so `:-1` is
+/// the last line and `:12,5` line 12, column 5.
+pub fn parse_query_vim(input: &str) -> QuickOpenQuery {
+    match input.strip_prefix(':') {
+        Some(rest) if !is_go_to_line(rest) => {
+            QuickOpenQuery::VimCommand(rest.trim_start().to_string())
+        }
+        _ => parse_query(input),
+    }
+}
+
+/// Whether `text` (after `:`) is a go-to-line number: `-?N`, then
+/// optionally `:`, `,` or `#` and an optional `-?M`; spaces around parts
+/// are allowed.
+fn is_go_to_line(text: &str) -> bool {
+    let number = |part: &str| {
+        let part = part.trim();
+        let digits = part.strip_prefix('-').unwrap_or(part);
+        !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+    };
+    let mut parts = text.splitn(2, [':', ',', '#']);
+    let line = parts.next().unwrap_or_default();
+    number(line)
+        && parts
+            .next()
+            .is_none_or(|column| column.trim().is_empty() || number(column))
 }
 
 /// The real 1-based line for a go-to-line `line` in a file of `line_count`

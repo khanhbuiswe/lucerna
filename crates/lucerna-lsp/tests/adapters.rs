@@ -149,7 +149,10 @@ fn nearest_can_be_restored_by_setting() {
         "typescript-language-server": { "root_search": "nearest" }
     })));
     let def = table.get("typescript-language-server").unwrap();
-    assert_eq!(find_root(def, &file, root).unwrap(), root.join("packages/web"));
+    assert_eq!(
+        find_root(def, &file, root).unwrap(),
+        root.join("packages/web")
+    );
 }
 
 #[test]

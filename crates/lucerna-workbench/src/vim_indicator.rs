@@ -1,5 +1,6 @@
-//! The status-bar vim mode indicator: `-- NORMAL --`, and the pending
-//! keys after it in the editor font.
+//! The status-bar vim mode indicator: `-- NORMAL --` (with
+//! `recording @a` while a macro is recorded), and the pending keys after
+//! it in the editor font; the last `:` command's message in its place.
 
 use gpui::{
     Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Window, div,
@@ -53,17 +54,25 @@ impl Render for ModeIndicator {
         // Hidden, not just empty, so it adds no gap to the status bar.
         div()
             .when(parts.is_none(), |d| d.hidden())
-            .when_some(parts, |d, (label, pending)| {
-                let pending = pending.to_string();
-                d.debug_selector(|| "vim-mode-indicator".into())
+            .when_some(parts, |d, parts| {
+                let d = d
+                    .debug_selector(|| "vim-mode-indicator".into())
                     .flex()
                     .gap(px(2. * GRID))
                     .font_family(UI_FONT_FAMILY)
-                    .text_color(muted)
-                    .child(label)
-                    .when(!pending.is_empty(), |d| {
-                        d.child(div().font_family(EDITOR_FONT_FAMILY).child(pending))
-                    })
+                    .text_color(muted);
+                // A message stands alone, in the label's font and colour.
+                if let Some(message) = parts.message {
+                    return d.child(message.to_string());
+                }
+                let label = match parts.recording {
+                    Some(register) => format!("{} recording @{register}", parts.label),
+                    None => parts.label.to_string(),
+                };
+                let pending = parts.pending.to_string();
+                d.child(label).when(!pending.is_empty(), |d| {
+                    d.child(div().font_family(EDITOR_FONT_FAMILY).child(pending))
+                })
             })
     }
 }

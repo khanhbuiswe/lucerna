@@ -1,7 +1,7 @@
 # Lucerna — V2: Vim sửa
 
 - **Ngày:** 2026-11-13
-- **Trạng thái:** V2a đã triển khai
+- **Trạng thái:** V2a và V2b đã triển khai
 - **Lộ trình:** mục V2 trong §1.3 của `2026-11-08-lucerna-phase1-design.md`
 - **Dựa trên:**
   - V1 `2026-11-10-vim-navigation-design.md`
@@ -341,8 +341,9 @@ Các luật của Vim:
     | `Completion` | chữ đã chèn, cùng số `<BS>` tương ứng với phần bị xóa bên trái; phần bị xóa bên phải bị bỏ qua. Đây là cách làm gần đúng, ghi rõ trong README. |
     | tìm kiếm | `/pat<CR>` hoặc `?pat<CR>`, như Vim |
     | lệnh `:` | `:cmd<CR>`, như Vim |
+    | `/`, `?`, `:` bị Esc sau toán tử, count hay `'<,'>` | `d/pat<Esc>`, `:<Esc>`: lúc chạy lại cũng bỏ đúng những thứ đó |
 
-  - Khi chạy macro, `lucerna-vim` đọc `/…<CR>` và `:…<CR>` thành `ReplayStep::Search` và `ReplayStep::Ex`, rồi chạy thẳng mà không mở giao diện.
+  - Khi chạy macro, `/`, `?` và `:` không mở find widget hay Quick Open. `lucerna-vim` gom phần chữ gõ sau đó vào một dòng lệnh riêng bên trong; `<CR>` chạy nó (tìm với mặc định của một find widget mới, không lấy cờ của `*`), `<Esc>` bỏ nó.
   - Macro được lưu vào register dưới dạng text theo ký tự, nên `"ap` dán được nó.
 - **Chạy:** `[count]@{a-z}` chạy macro `count` lần. `@@` chạy lại macro chạy gần nhất.
   - Text bất kỳ trong register cũng chạy được: nó được đọc theo ký hiệu ở trên.
@@ -383,7 +384,7 @@ Các luật của Vim:
   - Một dòng duy nhất mô tả lệnh sẽ chạy, ví dụ `:%s/foo/bar/g — Replace in all lines`, `:w — Save`, `:12 — Go to line 12`.
   - Lệnh không hợp lệ thì hiện dòng lỗi màu mờ, ví dụ `Not an editor command: foo`.
   - Enter chạy lệnh, Esc đóng.
-- **Hành vi khi tắt Vim:** `:` trong Quick Open vẫn chỉ là đi tới dòng như hiện nay. Chỉ khi Vim bật, phần sau `:` không phải số mới được đọc là lệnh Vim.
+- **Hành vi khi tắt Vim:** `:` trong Quick Open vẫn chỉ là đi tới dòng như hiện nay. Chỉ khi Vim bật, phần sau `:` không phải số mới được đọc là lệnh Vim. Số (`-?N`, có thể thêm `:` `,` `#` và `-?M`) giữ nghĩa go-to-line của VS Code: `:-1` là dòng cuối, `:12,5` là dòng 12, cột 5.
 - **Kết quả của lệnh** (`3 substitutions on 2 lines`, `E492: Not an editor command`) hiện ở status bar, chỗ chỉ báo mode, cho tới phím kế tiếp.
 - **Khác Zed:** không có danh sách gợi ý nhiều lệnh, vì Lucerna chỉ có ít lệnh `:`.
 
@@ -460,6 +461,7 @@ Abbreviation theo bảng `[viết tắt, đầy đủ]` như Zed và VSCodeVim.
 - **`:%s` trên file lớn:**
   - File dưới 1 MB: chạy đồng bộ.
   - File lớn hơn: chạy ở luồng nền trên snapshot. Sau đó áp kết quả nếu revision chưa đổi; nếu đã đổi thì báo `E: file changed, :s cancelled`.
+  - Phím gõ trong lúc chờ không hủy `:s` (như typeahead của Vim). Lệnh lưu hay đóng (`:w`, `:wa`, `:q`, `:qa`, `:wq`, `:x`) trong view đó thì báo `E: :s still running` và không làm gì.
 - **Lỗi:**
   - Panic trong `feed` hoặc khi dựng plan bị bắt như V1 (`catch_panic`): không áp gì, Vim về Normal.
   - View chỉ đọc: các toán tử sửa không làm gì. `y` vẫn chạy.

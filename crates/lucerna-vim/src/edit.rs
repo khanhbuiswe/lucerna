@@ -30,9 +30,12 @@ pub(crate) fn run_operator(
         Some(ctx) => Some(apply_operator(op, r, ctx, view, g, s, register)),
         None if op == Operator::Yank => {
             let snap = view.snapshot();
-            let actions = write(&r, snap, g, s, register, WriteKind::Yank);
+            let mut actions: Vec<Action> = write(&r, snap, g, s, register, WriteKind::Yank)
+                .into_iter()
+                .collect();
+            actions.extend(yanked(&r, snap, s));
             let start = snap.offset_to_point(r.range.start);
-            Some((actions.into_iter().collect(), start, Mode::Normal))
+            Some((actions, start, Mode::Normal))
         }
         None => None,
     }
@@ -68,6 +71,7 @@ pub(crate) fn apply_operator(
     match op {
         Operator::Yank => {
             actions.extend(write(&r, snap, g, s, register, WriteKind::Yank));
+            actions.extend(yanked(&r, snap, s));
             (actions, start, Mode::Normal)
         }
         Operator::Delete => {
@@ -134,6 +138,19 @@ pub(crate) fn apply_operator(
             (actions, start, Mode::Normal)
         }
     }
+}
+
+/// The [`Action::Yanked`] for a yank of `r`, when highlighting is on.
+pub(crate) fn yanked(r: &OpRange, snap: &BufferSnapshot, s: &Settings) -> Option<Action> {
+    if !s.highlighted_yank {
+        return None;
+    }
+    let mut range = r.range.clone();
+    if r.kind == MotionKind::Linewise {
+        let last = snap.offset_to_point(range.end).row;
+        range.end = visual::next_row_start(snap, last);
+    }
+    (!range.is_empty()).then(|| Action::Yanked(vec![range]))
 }
 
 /// Writes the text of `r` to `register`; the clipboard write that is due.
@@ -636,6 +653,7 @@ fn advance(p: Point, text: &str) -> Point {
 mod tests {
     use crate::test_util::{assert_edit, assert_edit_with, run_edit, run_edit_with, run_keys};
     use crate::{Action, InsertAt, Mode, Settings};
+    use std::ops::Range;
 
     // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'D' with count 3"
     #[test]
@@ -1152,5 +1170,41 @@ mod tests {
                 "a|b\ncd",
             );
         }
+    }
+
+    fn yanked(text: &str, keys: &str) -> Vec<Vec<Range<usize>>> {
+        let settings = Settings {
+            highlighted_yank: true,
+            ..Settings::default()
+        };
+        let (_, actions) = run_edit_with(settings, |_| {}, text, keys);
+        actions
+            .into_iter()
+            .filter_map(|a| match a {
+                Action::Yanked(r) => Some(r),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn yanked_ranges_for_motions_lines_and_visual() {
+        assert_eq!(yanked("one t|wo", "yiw"), vec![vec![4..7]]);
+        assert_eq!(yanked("a\n|bc", "yy"), vec![vec![2..4]]);
+        assert_eq!(yanked("|a\nbc", "Y"), vec![vec![0..2]]);
+        assert_eq!(yanked("|a\nbc", "2yy"), vec![vec![0..4]]);
+        assert_eq!(yanked("|abc def", "vey"), vec![vec![0..3]]);
+        assert_eq!(yanked("|ab\ncd", "Vjy"), vec![vec![0..5]]);
+        assert_eq!(yanked("|abc\ndef", "<C-v>jly"), vec![vec![0..2, 4..6]]);
+        assert_eq!(yanked("|one\ntwo", ":y<CR>"), vec![vec![0..4]]);
+    }
+
+    #[test]
+    fn yanked_is_off_by_default_and_never_for_delete() {
+        let (_, _, actions) =
+            crate::test_util::run_keys(Settings::default(), |_| {}, "one t|wo", "yiw");
+        assert!(!actions.iter().any(|a| matches!(a, Action::Yanked(_))));
+        assert_eq!(yanked("one t|wo", "diw"), Vec::<Vec<Range<usize>>>::new());
+        assert_eq!(yanked("a\n|bc", "dd"), Vec::<Vec<Range<usize>>>::new());
     }
 }

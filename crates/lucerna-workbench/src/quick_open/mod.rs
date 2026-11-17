@@ -8,7 +8,7 @@ pub(crate) mod picker;
 mod query;
 mod view;
 
-pub use query::{QuickOpenQuery, parse_query, resolve_line};
+pub use query::{QuickOpenQuery, parse_query, parse_query_vim, resolve_line};
 pub use view::{QuickOpen, QuickOpenEvent};
 
 use std::path::Path;
@@ -149,6 +149,10 @@ impl Workbench {
                 .active_code_view(cx)
                 .map(|view| view.read(cx).snapshot().line_count()),
             extension_ids: None,
+            vim_command_line: self.vim().read(cx).enabled()
+                && self
+                    .active_code_view(cx)
+                    .is_some_and(|v| crate::vim::takes_keys(v.read(cx))),
         };
         self.open_quick_open(prefix, sources, window, cx);
     }
@@ -172,6 +176,7 @@ impl Workbench {
             commands: Vec::new(),
             editor_lines: None,
             extension_ids: Some(ids),
+            vim_command_line: false,
         };
         self.open_quick_open("", sources, window, cx);
     }
@@ -218,6 +223,10 @@ impl Workbench {
         let Some((qo, _)) = self.quick_open.take() else {
             return;
         };
+        let query = qo.read(cx).query(cx);
+        self.vim()
+            .clone()
+            .update(cx, |vim, _| vim.command_line_closed(&query));
         qo.update(cx, |qo, cx| qo.end_preview(cx));
         let previous = self.focus_before_quick_open.take();
         let focused = window.focused(cx);
@@ -237,6 +246,18 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(event, QuickOpenEvent::VimCommand(_)) {
+            self.vim()
+                .clone()
+                .update(cx, |vim, _| vim.command_line_submitted());
+        }
+        if let QuickOpenEvent::GoToLine { line, column } = event
+            && let Some((line, column)) = self.go_to_line_target(*line, *column, cx)
+        {
+            self.vim()
+                .clone()
+                .update(cx, |vim, _| vim.command_line_went_to_line(line, column));
+        }
         self.close_quick_open(window, cx);
         match event {
             QuickOpenEvent::Open { path, mode } => {
@@ -293,6 +314,7 @@ impl Workbench {
                 })
                 .detach();
             }
+            QuickOpenEvent::VimCommand(line) => self.run_vim_command(line, window, cx),
             QuickOpenEvent::Dismiss => {}
         }
     }
@@ -319,6 +341,31 @@ impl Workbench {
         self.documents()
             .clone()
             .update(cx, |docs, cx| docs.go_to(&view, point, cx));
+    }
+
+    /// Where [`Self::go_to_line`] puts the cursor: the 1-based line and,
+    /// when `column` is given, the 1-based char column on that line, both
+    /// clamped to the active code view's text.
+    fn go_to_line_target(
+        &self,
+        line: u32,
+        column: Option<u32>,
+        cx: &gpui::App,
+    ) -> Option<(u32, Option<u32>)> {
+        let view = self.active_code_view(cx)?;
+        let snapshot = view.read(cx).snapshot();
+        let point = crate::documents::char_point(
+            snapshot,
+            line.saturating_sub(1),
+            column.unwrap_or(1).saturating_sub(1),
+        );
+        let column = column.map(|_| {
+            let line = snapshot.line(point.row);
+            let chars = line.chars().count() as u32;
+            let at = line[..point.column as usize].chars().count() as u32;
+            at.min(chars.saturating_sub(1)) + 1
+        });
+        Some((point.row + 1, column))
     }
 
     /// The code view of the focused group's active tab, once drawn.

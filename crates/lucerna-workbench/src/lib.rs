@@ -65,6 +65,7 @@ mod theme_picker;
 mod trust;
 pub mod ui;
 mod vim;
+mod vim_ex;
 mod vim_indicator;
 mod watch_status;
 mod welcome;
@@ -125,7 +126,7 @@ pub use open_commands::{OPEN_IN_BROWSER, Replacement, browser_url};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
-    resolve_line,
+    parse_query_vim, resolve_line,
 };
 pub use recent_picker::{RecentPicker, RecentPickerEvent};
 pub use references_view::{ReferencesView, find_references_in_tab};

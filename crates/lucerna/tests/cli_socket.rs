@@ -206,8 +206,6 @@ fn luc_without_socket_starts_a_detached_app() {
         "{stderr}"
     );
     assert!(took < Duration::from_secs(10), "returned after {took:?}");
-    let pids = wait_for(&exe, &canonical, "one detached app", |pids| {
-        pids.len() == 1
-    });
+    let pids = wait_for(&exe, &canonical, "one detached app", |pids| pids.len() == 1);
     assert_ne!(pids[0], luc_pid, "the app is not the process `luc` ran as");
 }

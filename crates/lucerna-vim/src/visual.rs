@@ -129,6 +129,19 @@ pub fn yank_text(sel: &VimSelection, s: &BufferSnapshot, tab: u32) -> String {
     }
 }
 
+/// The byte ranges of the text [`yank_text`] copies, empty ones left out.
+pub(crate) fn yank_ranges(sel: &VimSelection, s: &BufferSnapshot, tab: u32) -> Vec<Range<usize>> {
+    let ranges: Vec<Range<Point>> = match sel {
+        VimSelection::Block { .. } => block_ranges(sel, s, tab),
+        _ => exclusive_range(sel, s).into_iter().collect(),
+    };
+    ranges
+        .into_iter()
+        .map(|r| s.point_to_offset(r.start)..s.point_to_offset(r.end))
+        .filter(|r| !r.is_empty())
+        .collect()
+}
+
 /// The first and last positions of `sel`, for the cursor after `y` and
 /// the `<` and `>` marks: a whole-line selection spans column 0 of its
 /// first row to the last char of its last; a block spans its top-left and

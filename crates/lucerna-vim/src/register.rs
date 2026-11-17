@@ -59,6 +59,11 @@ pub(crate) struct Registers {
     /// holds it again.
     last_linewise: Option<String>,
     dot: Option<String>,
+    /// The last command line run with `:`.
+    last_command: Option<String>,
+    /// Set while a macro runs: a delete of lines writes `"` and `1`
+    /// without shifting `1`–`9`.
+    pub(crate) hold_ring: bool,
 }
 
 impl Registers {
@@ -71,6 +76,28 @@ impl Registers {
     /// Sets the `.` register: the last inserted text.
     pub(crate) fn set_dot(&mut self, text: String) {
         self.dot = Some(text);
+    }
+
+    /// Sets the `:` register: the last command line.
+    pub(crate) fn set_last_command(&mut self, line: String) {
+        self.last_command = Some(line);
+    }
+
+    /// Stores a recorded macro: `a`–`z` replace, `A`–`Z` append (or
+    /// create), as charwise text. `"` is left alone.
+    pub(crate) fn set_macro(&mut self, name: char, text: String) {
+        let low = name.to_ascii_lowercase();
+        let text = match self.regs.get(&low) {
+            Some(old) if name.is_ascii_uppercase() => format!("{}{text}", old.text),
+            _ => text,
+        };
+        self.regs.insert(
+            low,
+            RegContent {
+                text,
+                kind: RegKind::Charwise,
+            },
+        );
     }
 
     /// Stores `content` per the write rules. Returns the clipboard write
@@ -118,7 +145,7 @@ impl Registers {
                 }
                 WriteKind::Delete => {
                     if content.kind == RegKind::Linewise || content.text.contains('\n') {
-                        for i in (1..9u8).rev() {
+                        for i in (1..9u8).rev().filter(|_| !self.hold_ring) {
                             let from = (b'0' + i) as char;
                             if let Some(c) = self.regs.remove(&from) {
                                 self.regs.insert((from as u8 + 1) as char, c);
@@ -181,7 +208,11 @@ impl Registers {
                 text,
                 kind: RegKind::Charwise,
             }),
-            Some('_' | ':' | '%' | '/') => None,
+            Some(':') => self.last_command.clone().map(|text| RegContent {
+                text,
+                kind: RegKind::Charwise,
+            }),
+            Some('_' | '%' | '/') => None,
             Some(c) => self.regs.get(&c.to_ascii_lowercase()).cloned(),
         }
     }
@@ -415,6 +446,34 @@ mod tests {
         assert_eq!(r.read(Some('+'), OnYank, Some(&c)), Some(lw("foo\n")));
         let d = clip("bar", false);
         assert_eq!(r.read(Some('*'), OnYank, Some(&d)), Some(cw("bar")));
+    }
+
+    #[test]
+    fn set_macro_replaces_or_appends_and_leaves_unnamed() {
+        let mut r = Registers::default();
+        r.write(None, cw("keep"), Yank, Never, None);
+        r.set_macro('a', "dd".into());
+        r.set_macro('A', "j".into());
+        r.set_macro('B', "x".into());
+        assert_eq!(get(&r, 'a'), Some(cw("ddj")));
+        assert_eq!(get(&r, 'b'), Some(cw("x")));
+        assert_eq!(get(&r, '"'), Some(cw("keep")));
+        r.set_macro('a', "w".into());
+        assert_eq!(get(&r, 'a'), Some(cw("w")));
+    }
+
+    #[test]
+    fn hold_ring_keeps_the_numbered_registers() {
+        let mut r = Registers::default();
+        r.write(None, lw("1\n"), Delete, Never, None);
+        r.write(None, lw("2\n"), Delete, Never, None);
+        r.hold_ring = true;
+        r.write(None, lw("3\n"), Delete, Never, None);
+        r.write(None, lw("4\n"), Delete, Never, None);
+        assert_eq!(get(&r, '1'), Some(lw("4\n")));
+        assert_eq!(get(&r, '2'), Some(lw("1\n")));
+        assert_eq!(get(&r, '3'), None);
+        assert_eq!(get(&r, '"'), Some(lw("4\n")));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Quick Open's input prefixes: files, `>` commands, `:` go to line, `@`
 //! document symbols and `#` workspace symbols.
 
-use lucerna_workbench::{QuickOpenQuery, parse_query, resolve_line};
+use lucerna_workbench::{QuickOpenQuery, parse_query, parse_query_vim, resolve_line};
 
 #[test]
 fn plain_is_files() {
@@ -140,4 +140,59 @@ fn resolve_line_counts_from_the_end_and_clamps() {
     assert_eq!(resolve_line(999, 100), 100);
     assert_eq!(resolve_line(i64::MIN, 100), 1);
     assert_eq!(resolve_line(-1, 0), 1);
+}
+
+#[test]
+fn vim_colon_is_a_command_line() {
+    assert_eq!(
+        parse_query_vim(":%s/a/b/"),
+        QuickOpenQuery::VimCommand("%s/a/b/".into())
+    );
+    assert_eq!(
+        parse_query_vim(":  w"),
+        QuickOpenQuery::VimCommand("w".into())
+    );
+    assert_eq!(
+        parse_query_vim(":"),
+        QuickOpenQuery::VimCommand(String::new())
+    );
+    // Numbers keep VS Code's go to line: `:-1` is the last line, `:12,5`
+    // line 12, column 5.
+    for input in [":12", ":-1", ":12,5", ":12:5", ": 12 # 5", ":12,", ":3,-2"] {
+        assert_eq!(parse_query_vim(input), parse_query(input), "{input}");
+    }
+    assert_eq!(
+        parse_query_vim(":-1"),
+        QuickOpenQuery::GotoLine {
+            line: Some(-1),
+            column: None
+        }
+    );
+    assert_eq!(
+        parse_query_vim(":12,5"),
+        QuickOpenQuery::GotoLine {
+            line: Some(12),
+            column: Some(5)
+        }
+    );
+    // Anything else is a Vim command, ranges included.
+    for line in ["$", "+2", ".,.+2", "1,5d", "12a", "12,5,3", "-", "1;5"] {
+        assert_eq!(
+            parse_query_vim(&format!(":{line}")),
+            QuickOpenQuery::VimCommand(line.into()),
+            "{line}"
+        );
+    }
+    // Other prefixes mean what they mean with Vim off.
+    for input in ["@x", "#y", ">z", "main.rs", ""] {
+        assert_eq!(parse_query_vim(input), parse_query(input), "{input}");
+    }
+    // With Vim off, `:` is still go to line.
+    assert_eq!(
+        parse_query(":-1"),
+        QuickOpenQuery::GotoLine {
+            line: Some(-1),
+            column: None
+        }
+    );
 }

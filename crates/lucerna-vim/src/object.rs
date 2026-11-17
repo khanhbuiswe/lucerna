@@ -932,7 +932,7 @@ mod tests {
     fn ci_quote_after_the_last_pair_fails() {
         let (text, actions) = run_edit("\"a\" b|c", "ci\"");
         assert_eq!(text, "\"a\" b|c");
-        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(actions, [Action::Failed]);
     }
 
     #[test]

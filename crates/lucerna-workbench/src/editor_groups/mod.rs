@@ -37,6 +37,14 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         },
     );
     commands.register(
+        "workbench.action.closeAllEditors",
+        "View: Close All Editors",
+        |wb, _, window, cx| {
+            let groups = wb.editor_groups().clone();
+            groups.update(cx, |view, cx| view.request_close_all(window, cx));
+        },
+    );
+    commands.register(
         "workbench.action.quickOpenPreviousRecentlyUsedEditorInGroup",
         "View: Quick Open Previous Recently Used Editor in Group",
         |wb, _, _, cx| {

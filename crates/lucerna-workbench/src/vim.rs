@@ -8,6 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use gpui::{
     App, AppContext as _, Context, Entity, EntityId, KeyDownEvent, Subscription, Task, WeakEntity,
@@ -19,9 +20,9 @@ use lucerna_settings::{Context as WhenContext, SettingsView, WhenExpr, parse_whe
 use lucerna_syntax::Language;
 use lucerna_text::{Bias, BufferSnapshot, Patch, Point, Reload};
 use lucerna_vim::{
-    Action, Clipboard, ClipboardMode, FoldAction, InsertAt, Key, Mode, Outcome, ReplayStep,
-    SearchQuery, Settings, Typed, ViewInfo, Vim, VimGlobals, VimSelection, block_ranges,
-    exclusive_range,
+    Action, Clipboard, ClipboardMode, ExCommand, FoldAction, InsertAt, Key, Mode, Outcome,
+    ReplayStep, SearchQuery, Settings, SubstituteJob, SubstituteResult, Typed, ViewInfo, Vim,
+    VimGlobals, VimSelection, block_ranges, exclusive_range,
 };
 
 use crate::WindowSettings;
@@ -34,6 +35,9 @@ use crate::find_widget::{
     self, BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find_in_snapshot,
 };
 use crate::tasks::{catch_panic, guarded};
+
+/// How deep [`Outcome::Macro`]s may nest (`@a` that runs `@a`).
+const MAX_MACRO_DEPTH: u32 = 100;
 
 /// Where keys may reach vim: the editor has focus, and neither a text
 /// input (find widget) nor Quick Open does.
@@ -70,6 +74,15 @@ enum Retry {
     No,
 }
 
+/// What a [`VimLayer::replay`] runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayKind {
+    /// The steps of an [`Outcome::Replay`]: `.`, a counted insert.
+    Dot,
+    /// The keys of an [`Outcome::Macro`]: `@a`.
+    Macro,
+}
+
 /// The matches of one query in one revision of a view's text.
 struct MatchCache {
     revision: u64,
@@ -88,10 +101,17 @@ struct VimSearch {
     _sub: Subscription,
 }
 
+/// The message shown when the text changed under a background `:s`.
+const SUBSTITUTE_CANCELLED: &str = "E: file changed, :s cancelled";
+/// Shown for a save or close while a background `:s` runs in the view.
+const SUBSTITUTE_RUNNING: &str = "E: :s still running";
+
 /// What to run again once a background search has found the matches vim
 /// asked for.
 enum Redo {
     Key(Key),
+    /// A `:` command line, the text after `:`.
+    Ex(String),
     Search {
         query: SearchQuery,
         backward: bool,
@@ -113,15 +133,23 @@ enum Reveal {
 pub struct VimLayer {
     enabled: bool,
     settings: Settings,
+    /// `vim.highlightedyank.duration`.
+    yank_duration: Duration,
     globals: VimGlobals,
     views: HashMap<EntityId, ViewState>,
     match_cache: HashMap<EntityId, MatchCache>,
     /// Set while an [`Outcome::Replay`] runs: its typing is not recorded
     /// and its undo step stays open until it ends.
     replaying: bool,
-    /// Set when a replay met a typing step outside Insert mode: the rest
-    /// is dropped.
+    /// Set when a replay met a typing step outside Insert mode (or a
+    /// macro's key failed, or macros nested too deep): the rest is
+    /// dropped, the rest of every macro running included.
     replay_stopped: bool,
+    /// Whether the last key or command [`VimLayer::run`] ran returned
+    /// [`Action::Failed`]: a running macro stops there.
+    last_failed: bool,
+    /// How many [`Outcome::Macro`]s are running, one inside the other.
+    macro_depth: u32,
     /// Per file, the edits vim made whose marks it already moved, oldest
     /// first: their reports, still to come, must not move them again.
     own_edits: HashMap<Arc<Path>, VecDeque<Arc<Patch>>>,
@@ -141,6 +169,24 @@ pub struct VimLayer {
     /// Set by [`Action::OpenSearch`]: the widget needs the window, which
     /// [`VimLayer::handle_key`] has.
     open_search: Option<bool>,
+    /// Set by [`Action::RunEx`]: the workbench carries them out once the
+    /// key or command line is consumed.
+    ex_requests: Vec<ExCommand>,
+    /// Set by [`Action::OpenCommandLine`]: the workbench opens the `:` line
+    /// with this prefill, for the view that asked.
+    command_line: Option<(EntityId, String)>,
+    /// The view whose `:` key opened the `:` line shown now: closing it
+    /// without running tells that view's vim.
+    command_line_open: Option<EntityId>,
+    /// Set by [`Action::Message`]: shown in place of the mode until the
+    /// next key or command line.
+    message: Option<String>,
+    /// The `:s` running in the background; it applies its result only
+    /// while the text did not change.
+    _substitute: Option<Task<()>>,
+    /// The view `_substitute` runs in, until it ends: saving and closing
+    /// wait for it.
+    substitute_view: Option<EntityId>,
     /// The editor groups whose code views vim follows, set by
     /// [`VimLayer::attach`].
     groups: Option<WeakEntity<EditorGroupsView>>,
@@ -153,15 +199,18 @@ pub struct VimLayer {
 impl VimLayer {
     /// Reads the window's settings and follows their changes.
     pub fn new(window_settings: Entity<WindowSettings>, cx: &mut Context<Self>) -> Self {
-        let (enabled, settings) = read_settings(window_settings.read(cx).view(cx));
+        let (enabled, settings, yank_duration) = read_settings(window_settings.read(cx).view(cx));
         VimLayer {
             enabled,
             settings,
+            yank_duration,
             globals: VimGlobals::default(),
             views: HashMap::new(),
             match_cache: HashMap::new(),
             replaying: false,
             replay_stopped: false,
+            last_failed: false,
+            macro_depth: 0,
             own_edits: HashMap::new(),
             key_generation: 0,
             _retry: None,
@@ -169,6 +218,12 @@ impl VimLayer {
             search: None,
             run_command: None,
             open_search: None,
+            ex_requests: Vec::new(),
+            command_line: None,
+            command_line_open: None,
+            message: None,
+            _substitute: None,
+            substitute_view: None,
             groups: None,
             _new_views: None,
             _settings: cx.observe(&window_settings, |vim, _, cx| vim.settings_changed(cx)),
@@ -190,22 +245,37 @@ impl VimLayer {
         Some(self.views.get(&view).map_or(Mode::Normal, |s| s.vim.mode()))
     }
 
-    /// The mode indicator for the code view `view`, e.g. `-- NORMAL --`
-    /// or, with keys pending, `-- NORMAL --  2f`; `None` while vim is off.
+    /// The mode indicator for the code view `view`, e.g. `-- NORMAL --`,
+    /// `-- NORMAL -- recording @a` or, with keys pending,
+    /// `-- NORMAL --  2f`; the message of the last command
+    /// (`3 substitutions on 2 lines`) in its place until the next key.
+    /// `None` while vim is off.
     pub fn indicator_text(&self, view: EntityId) -> Option<String> {
-        let (label, pending) = self.indicator_parts(view)?;
-        Some(if pending.is_empty() {
-            label.to_string()
-        } else {
-            format!("{label}  {pending}")
-        })
+        let parts = self.indicator_parts(view)?;
+        if let Some(message) = parts.message {
+            return Some(message.to_string());
+        }
+        let mut text = parts.label.to_string();
+        if let Some(register) = parts.recording {
+            text.push_str(&format!(" recording @{register}"));
+        }
+        if !parts.pending.is_empty() {
+            text.push_str("  ");
+            text.push_str(parts.pending);
+        }
+        Some(text)
     }
 
-    /// The mode label and the pending keys of the indicator.
-    pub(crate) fn indicator_parts(&self, view: EntityId) -> Option<(&'static str, &str)> {
+    /// The parts of the indicator of the code view `view`.
+    pub(crate) fn indicator_parts(&self, view: EntityId) -> Option<Indicator<'_>> {
         let mode = self.mode_for(view)?;
         let pending = self.views.get(&view).map_or("", |s| s.vim.pending());
-        Some((mode.label(), pending))
+        Some(Indicator {
+            label: mode.label(),
+            recording: self.globals.recording(),
+            pending,
+            message: self.message.as_deref(),
+        })
     }
 
     /// Feeds `ev` to the vim of `view`. Returns true when the key was
@@ -225,13 +295,14 @@ impl VimLayer {
         };
         // Insert mode: every key but Escape types, through the keymap and
         // the view's input handler (IME included).
+        self.clear_message(cx);
         if key != Key::Escape && self.mode_for(view.entity_id()) == Some(Mode::Insert) {
             return false;
         }
         self.key_generation += 1;
         self.abandon_retry();
         self.open_search = None;
-        self.run_command = None;
+        self.clear_requests();
         let consumed = self.feed(key, view, Retry::Async, cx);
         if let Some(backward) = self.open_search.take() {
             self.start_search(view, backward, window, cx);
@@ -246,6 +317,7 @@ impl VimLayer {
         if !self.enabled {
             return;
         }
+        self.clear_message(cx);
         for &key in keys {
             self.key_generation += 1;
             self.abandon_retry();
@@ -266,9 +338,87 @@ impl VimLayer {
         }
     }
 
+    /// Runs the `:` command line `line` (the text after `:`) in `view`, as
+    /// one undo step; the workbench then runs what it asked for
+    /// ([`VimLayer::take_ex`]).
+    pub(crate) fn run_command_line(
+        &mut self,
+        view: &Entity<CodeView>,
+        line: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        self.clear_message(cx);
+        self.key_generation += 1;
+        self.abandon_retry();
+        self.clear_requests();
+        self.run(Redo::Ex(line.to_string()), view, Retry::Async, cx);
+    }
+
+    /// Hides the message of the last command.
+    fn clear_message(&mut self, cx: &mut Context<Self>) {
+        if self.message.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Forgets what the last key or command line asked the workbench for.
+    fn clear_requests(&mut self) {
+        self.run_command = None;
+        self.ex_requests.clear();
+        self.command_line = None;
+    }
+
     /// The command the last key asked for; the caller runs it.
     pub(crate) fn take_command(&mut self) -> Option<&'static str> {
         self.run_command.take()
+    }
+
+    /// The `:` commands the last key or command line asked for; the caller
+    /// carries them out.
+    pub(crate) fn take_ex(&mut self) -> Vec<ExCommand> {
+        std::mem::take(&mut self.ex_requests)
+    }
+
+    /// The `:` line the last key asked to open: its prefill, without `:`.
+    /// The caller shows it.
+    pub(crate) fn take_command_line(&mut self) -> Option<String> {
+        let (id, prefill) = self.command_line.take()?;
+        self.command_line_open = Some(id);
+        Some(prefill)
+    }
+
+    /// The `:` line is about to run its command: it is not dismissed.
+    pub(crate) fn command_line_submitted(&mut self) {
+        self.command_line_open = None;
+    }
+
+    /// The `:` line the `:` key opened ran Go to Line, landing on 1-based
+    /// `line` (and char `column`, clamped to the line): the macro being
+    /// recorded gets the jump, and the close is no dismissal.
+    pub(crate) fn command_line_went_to_line(&mut self, line: u32, column: Option<u32>) {
+        let Some(id) = self.command_line_open.take() else {
+            return;
+        };
+        if let Some(state) = self.views.get_mut(&id) {
+            state
+                .vim
+                .command_line_went_to_line(line, column, &mut self.globals);
+        }
+    }
+
+    /// Quick Open closed holding `query`: a `:` line the `:` key opened
+    /// was left without running.
+    pub(crate) fn command_line_closed(&mut self, query: &str) {
+        let Some(id) = self.command_line_open.take() else {
+            return;
+        };
+        if let Some(state) = self.views.get_mut(&id) {
+            let line = query.strip_prefix(':').unwrap_or_default();
+            state.vim.command_line_dismissed(line, &mut self.globals);
+        }
     }
 
     /// `/` or `?`: opens the find widget of `view` for vim.
@@ -350,7 +500,10 @@ impl VimLayer {
             FindWidgetEvent::Dismissed => {
                 if let Some(state) = self.views.get_mut(&id) {
                     // An operator waiting for the search (`d/`) is dropped.
-                    state.vim.search_dismissed();
+                    let typed = find.read(cx).query().pattern;
+                    state
+                        .vim
+                        .search_cancelled(&typed, search.backward, &mut self.globals);
                     state.vim.set_cursor(search.origin);
                     // The origin may be past the text after a reload.
                     state.vim.clamp(view.read(cx).snapshot());
@@ -416,8 +569,10 @@ impl VimLayer {
     }
 
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
-        let (enabled, settings) = read_settings(self.window_settings.read(cx).view(cx));
+        let (enabled, settings, yank_duration) =
+            read_settings(self.window_settings.read(cx).view(cx));
         self.settings = settings;
+        self.yank_duration = yank_duration;
         if enabled == self.enabled {
             return;
         }
@@ -425,6 +580,9 @@ impl VimLayer {
         if !enabled {
             self._retry = None;
             self.retry_view = None;
+            self._substitute = None;
+            self.substitute_view = None;
+            self.message = None;
             self.end_search(cx);
             self.match_cache.clear();
             self.own_edits.clear();
@@ -509,7 +667,7 @@ impl VimLayer {
         match event {
             CodeViewEvent::Typed(typed) => {
                 if let Some(state) = self.views.get_mut(&view.entity_id()) {
-                    state.vim.record_typed(typed.clone());
+                    state.vim.record_typed(typed.clone(), &mut self.globals);
                 }
             }
             CodeViewEvent::Reloaded {
@@ -705,9 +863,15 @@ impl VimLayer {
             // user left the widget, so the search is over and the
             // selection the view has now is the user's, and an operator
             // waiting for the search (`d/`) is dropped.
+            let (backward, typed) = self.search.as_ref().map_or((false, String::new()), |s| {
+                let typed = s.find.upgrade().map(|f| f.read(cx).query().pattern);
+                (s.backward, typed.unwrap_or_default())
+            });
             self.end_search(cx);
             if let Some(state) = self.views.get_mut(&id) {
-                state.vim.search_dismissed();
+                state
+                    .vim
+                    .search_cancelled(&typed, backward, &mut self.globals);
             }
         }
         let outcome = {
@@ -726,6 +890,8 @@ impl VimLayer {
             let reads = match &redo {
                 Redo::Key(key) => may_use_register(&state.vim, *key),
                 Redo::Search { .. } => !state.vim.pending().is_empty(),
+                // `:d`, `:y` write registers.
+                Redo::Ex(_) => true,
             };
             self.globals
                 .set_clipboard(if reads { read_clipboard(cx) } else { None });
@@ -738,6 +904,9 @@ impl VimLayer {
             match &redo {
                 Redo::Key(key) => {
                     catch_panic("vim key", || vim.feed(*key, &info, globals, settings))
+                }
+                Redo::Ex(line) => {
+                    catch_panic("vim ex", || vim.ex_command(line, &info, globals, settings))
                 }
                 Redo::Search {
                     query,
@@ -756,16 +925,12 @@ impl VimLayer {
             }
         };
         let submitted = matches!(redo, Redo::Search { .. });
+        self.last_failed = false;
         match outcome {
             Err(_) => {
-                if let Some(state) = self.views.get_mut(&id) {
-                    let v = view.read(cx);
-                    state.vim.reset(v.selection_head());
-                    state.vim.clamp(v.snapshot());
-                    state.revision = v.revision();
-                }
-                self.sync_view(view, Reveal::None, cx);
-                cx.notify();
+                // A running macro stops at a key that panicked.
+                self.last_failed = true;
+                self.recover(view, cx);
                 true
             }
             Ok(Outcome::Unhandled) => {
@@ -774,7 +939,26 @@ impl VimLayer {
                 false
             }
             Ok(Outcome::Replay(steps)) => {
-                self.replay(view, steps, cx);
+                self.replay(view, steps, ReplayKind::Dot, cx);
+                true
+            }
+            Ok(Outcome::Macro(keys)) => {
+                let steps = keys.into_iter().map(ReplayStep::Key).collect();
+                self.replay(view, steps, ReplayKind::Macro, cx);
+                true
+            }
+            Ok(Outcome::Substitute(job)) => {
+                // A replay or macro runs its keys in order: at once.
+                if self.replaying || self.globals.macro_running() {
+                    let result =
+                        catch_panic("vim substitute", || job.run(view.read(cx).snapshot()));
+                    match result {
+                        Ok(result) => self.finish_substitute(view, &job, result, cx),
+                        Err(_) => self.recover(view, cx),
+                    }
+                } else {
+                    self.substitute_in_background(view, job, cx);
+                }
                 true
             }
             Ok(Outcome::Retry(query)) => {
@@ -792,12 +976,15 @@ impl VimLayer {
                         if let Some(state) = self.views.get_mut(&id) {
                             state.vim.search_dismissed();
                         }
+                        // The key did nothing: a running macro stops.
+                        self.last_failed = true;
                         cx.notify();
                     }
                 }
                 true
             }
             Ok(Outcome::Handled(actions)) => {
+                self.last_failed = actions.contains(&Action::Failed);
                 let synced = self.apply(view, actions, cx);
                 if submitted && !synced {
                     // No match: the view's selection is where the
@@ -806,6 +993,99 @@ impl VimLayer {
                 }
                 true
             }
+        }
+    }
+
+    /// Puts vim back in Normal mode at the view's cursor after a panic.
+    fn recover(&mut self, view: &Entity<CodeView>, cx: &mut Context<Self>) {
+        if let Some(state) = self.views.get_mut(&view.entity_id()) {
+            let v = view.read(cx);
+            state.vim.reset(v.selection_head());
+            state.vim.clamp(v.snapshot());
+            state.revision = v.revision();
+        }
+        self.sync_view(view, Reveal::None, cx);
+        cx.notify();
+    }
+
+    /// Runs a large `:s` on a snapshot in the background. Its result is
+    /// applied (as one undo step) when the text did not change, whatever
+    /// keys came meanwhile (as Vim's typeahead); a changed text cancels it
+    /// with a message.
+    fn substitute_in_background(
+        &mut self,
+        view: &Entity<CodeView>,
+        job: SubstituteJob,
+        cx: &mut Context<Self>,
+    ) {
+        let (snapshot, revision) = {
+            let v = view.read(cx);
+            (v.snapshot().clone(), v.revision())
+        };
+        let background = job.clone();
+        self.substitute_view = Some(view.entity_id());
+        let result =
+            cx.background_spawn(
+                async move { guarded("vim substitute", || background.run(&snapshot)) },
+            );
+        let view = view.downgrade();
+        self._substitute = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let result = result.await;
+            this.update(cx, |this, cx| {
+                this.substitute_view = None;
+                let Some(view) = view.upgrade() else {
+                    return;
+                };
+                if !this.enabled {
+                    return;
+                }
+                if view.read(cx).revision() != revision {
+                    this.message = Some(SUBSTITUTE_CANCELLED.to_string());
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Some(result) => this.finish_substitute(&view, &job, result, cx),
+                    None => this.recover(&view, cx),
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Applies `result`, found by `job` on the view's current text, as one
+    /// undo step.
+    fn finish_substitute(
+        &mut self,
+        view: &Entity<CodeView>,
+        job: &SubstituteJob,
+        result: SubstituteResult,
+        cx: &mut Context<Self>,
+    ) {
+        let id = view.entity_id();
+        let finished = {
+            let v = view.read(cx);
+            let edit = (!v.is_readonly()).then(|| (v.edit_config(cx), v.edit_language(cx)));
+            let Some(state) = self.views.get_mut(&id) else {
+                return;
+            };
+            let info = Info {
+                view: v,
+                cache: self.match_cache.get(&id),
+                edit,
+            };
+            let (vim, globals, settings) = (&mut state.vim, &mut self.globals, &self.settings);
+            catch_panic("vim substitute", || {
+                vim.finish_substitute(job, result, &info, globals, settings)
+            })
+        };
+        match finished {
+            Ok(Outcome::Handled(actions)) => {
+                self.last_failed = actions.contains(&Action::Failed);
+                self.apply(view, actions, cx);
+            }
+            Ok(_) => cx.notify(),
+            Err(_) => self.recover(view, cx),
         }
     }
 
@@ -886,24 +1166,49 @@ impl VimLayer {
         );
     }
 
-    /// Runs the steps of an [`Outcome::Replay`] in order, as one undo
-    /// step: keys go through [`VimLayer::feed`] (searches run at once),
-    /// an operator's search step through [`Vim::search_submitted`] from
-    /// vim's cursor (at once, no widget; with no operator pending it drops
-    /// the rest), and typing goes through the
-    /// view's typing path, unrecorded. A typing
+    /// Runs the steps of an [`Outcome::Replay`] (`run` is
+    /// [`ReplayKind::Dot`]) or the keys of an [`Outcome::Macro`]
+    /// ([`ReplayKind::Macro`]) in order, as one undo step: keys go through
+    /// [`VimLayer::feed`] (searches run at once), except that a key other
+    /// than Escape while vim is in Insert mode types; an operator's search
+    /// step goes through [`Vim::search_submitted`] from vim's cursor (at
+    /// once, no widget; with no operator pending it drops the rest), and
+    /// typing goes through the view's typing path, unrecorded. A typing
     /// step outside Insert mode (the command that should have entered it
-    /// failed) drops the rest. A key may return a replay of its own (a
-    /// counted insert ends): it runs here, in place.
+    /// failed) drops the rest. A key may return a replay or a macro of its
+    /// own (a counted insert ends, `.` or `@b` in a macro): it runs here,
+    /// in place.
+    ///
+    /// While a macro runs, a key that fails stops the whole run, every
+    /// macro it is nested in included, and so do macros nested deeper
+    /// than [`MAX_MACRO_DEPTH`].
     ///
     /// The user's Escape that ends a counted insert replays too; the
     /// Insert session's step is then still open and the replay joins it.
-    fn replay(&mut self, view: &Entity<CodeView>, steps: Vec<ReplayStep>, cx: &mut Context<Self>) {
+    fn replay(
+        &mut self,
+        view: &Entity<CodeView>,
+        steps: Vec<ReplayStep>,
+        run: ReplayKind,
+        cx: &mut Context<Self>,
+    ) {
         let id = view.entity_id();
+        if run == ReplayKind::Macro {
+            if self.macro_depth >= MAX_MACRO_DEPTH {
+                tracing::warn!("vim: macros nested deeper than {MAX_MACRO_DEPTH}");
+                self.replay_stopped = true;
+                return;
+            }
+            self.macro_depth += 1;
+            if self.macro_depth == 1 {
+                self.globals.set_macro_running(true);
+            }
+        }
         let outermost = !self.replaying;
         if outermost {
             self.replaying = true;
             self.replay_stopped = false;
+            self.globals.set_replaying(true);
             view.update(cx, |v, cx| {
                 v.set_typed_events(false);
                 v.set_suppress_stops(true, cx);
@@ -915,7 +1220,25 @@ impl VimLayer {
             }
             match step {
                 ReplayStep::Key(key) => {
-                    self.feed(key, view, Retry::Sync, cx);
+                    let insert = self
+                        .views
+                        .get(&id)
+                        .is_some_and(|s| s.vim.mode() == Mode::Insert);
+                    if insert && key != Key::Escape {
+                        self.last_failed = false;
+                        view.update(cx, |v, cx| {
+                            match key {
+                                Key::Char('\t') => v.tab(cx),
+                                Key::Char(c) => v.type_text(c.encode_utf8(&mut [0; 4]), cx),
+                                Key::Enter => v.type_text("\n", cx),
+                                Key::Backspace => v.delete_left(cx),
+                                // Insert mode has no `Ctrl` keys of its own.
+                                Key::Ctrl(_) | Key::Escape => false,
+                            };
+                        });
+                    } else {
+                        self.feed(key, view, Retry::Sync, cx);
+                    }
                 }
                 ReplayStep::Search {
                     pattern,
@@ -967,12 +1290,32 @@ impl VimLayer {
                     });
                 }
             }
+            // A failed key stops a running macro, also inside a `.` the
+            // macro runs.
+            if self.last_failed && self.globals.macro_running() {
+                self.replay_stopped = true;
+            }
+        }
+        if run == ReplayKind::Macro {
+            self.macro_depth -= 1;
+            if self.macro_depth == 0 {
+                self.globals.set_macro_running(false);
+                if let Some(state) = self.views.get_mut(&id) {
+                    state.vim.macro_ended();
+                }
+                // What the macro's keys asked of the window is dropped: its
+                // `/`, `?` and `:` ran on vim's own command line.
+                self.open_search = None;
+                self.command_line = None;
+            }
         }
         if !outermost {
             return;
         }
         self.replaying = false;
         self.replay_stopped = false;
+        self.last_failed = false;
+        self.globals.set_replaying(false);
         let insert = self
             .views
             .get(&id)
@@ -1068,6 +1411,10 @@ impl VimLayer {
                     }
                     redraw = true;
                 }
+                Action::Yanked(ranges) => {
+                    let duration = self.yank_duration;
+                    view.update(cx, |v, cx| v.flash_ranges(ranges, duration, cx));
+                }
                 Action::Highlight(query) => {
                     if let Some(matches) = self.matches_for(view, &query, cx) {
                         view.update(cx, |v, cx| v.set_match_highlights(matches, None, cx));
@@ -1096,6 +1443,25 @@ impl VimLayer {
                 Action::OpenSearch { backward } => self.open_search = Some(backward),
                 Action::RunCommand(id) => self.run_command = Some(id),
                 Action::EnterInsert(at) => insert = Some(at),
+                // `run` noted it: a running macro stops there.
+                Action::Failed => {}
+                Action::Message(message) => self.message = Some(message),
+                Action::RunEx(ExCommand::NoHighlight) => {
+                    view.update(cx, |v, cx| {
+                        v.set_match_highlights(Vec::<Range<usize>>::new(), None, cx)
+                    });
+                }
+                Action::RunEx(
+                    ExCommand::Save { .. }
+                    | ExCommand::SaveAll
+                    | ExCommand::Close { .. }
+                    | ExCommand::CloseAll
+                    | ExCommand::SaveAndClose { .. },
+                ) if self.substitute_view == Some(id) => {
+                    self.message = Some(SUBSTITUTE_RUNNING.to_string());
+                }
+                Action::RunEx(command) => self.ex_requests.push(command),
+                Action::OpenCommandLine { prefill } => self.command_line = Some((id, prefill)),
             }
         }
         if let Some(opened) = group {
@@ -1275,6 +1641,18 @@ impl VimLayer {
     }
 }
 
+/// What the status-bar mode indicator shows for a code view.
+pub(crate) struct Indicator<'a> {
+    /// `-- NORMAL --`, `-- INSERT --`...
+    pub label: &'static str,
+    /// The register a macro is being recorded into.
+    pub recording: Option<char>,
+    /// The keys typed so far of an unfinished command.
+    pub pending: &'a str,
+    /// The message of the last command, shown instead of the rest.
+    pub message: Option<&'a str>,
+}
+
 /// Moves vim's cursor to the view's after the view moved it: in Insert
 /// mode the mode stays, otherwise vim goes back to Normal mode there.
 fn follow_selection(vim: &mut Vim, v: &CodeView) {
@@ -1363,7 +1741,7 @@ pub(crate) fn takes_keys(view: &CodeView) -> bool {
     matches!(view.doc_state(), DocState::Ready | DocState::Deleted)
 }
 
-fn read_settings(store: SettingsView<'_>) -> (bool, Settings) {
+fn read_settings(store: SettingsView<'_>) -> (bool, Settings, Duration) {
     let enabled = store
         .get::<bool>("vim.enabled", None)
         .or_else(|| store.get::<bool>("vim_mode", None))
@@ -1391,8 +1769,15 @@ fn read_settings(store: SettingsView<'_>) -> (bool, Settings) {
             .get("vim.joinspaces", None)
             .unwrap_or(defaults.joinspaces),
         tildeop: store.get("vim.tildeop", None).unwrap_or(defaults.tildeop),
+        gdefault: store.get("vim.gdefault", None).unwrap_or(defaults.gdefault),
+        highlighted_yank: store
+            .get("vim.highlightedyank.enable", None)
+            .unwrap_or(defaults.highlighted_yank),
     };
-    (enabled, settings)
+    let duration = store
+        .get::<u64>("vim.highlightedyank.duration", None)
+        .unwrap_or(200);
+    (enabled, settings, Duration::from_millis(duration))
 }
 
 /// `vim.useSystemClipboard`: `true`, `false` or `"onYank"`; anything else
@@ -1406,14 +1791,27 @@ fn clipboard_mode(value: Option<serde_json::Value>) -> ClipboardMode {
 }
 
 /// Whether `key` may write or read the unnamed register: an operator,
-/// `x`, a paste, a register name (Visual `R` too), or any key while one
-/// is pending.
+/// `x`, a paste, a register name (Visual `R` too), `@` (a macro in `"`
+/// or `+`), or any key while one is pending.
 fn may_use_register(vim: &Vim, key: Key) -> bool {
     !vim.pending().is_empty()
         || matches!(
             key,
             Key::Char(
-                'p' | 'P' | 'x' | 'X' | 'd' | 'c' | 's' | 'S' | 'C' | 'D' | 'y' | 'Y' | 'R' | '"'
+                'p' | 'P'
+                    | 'x'
+                    | 'X'
+                    | 'd'
+                    | 'c'
+                    | 's'
+                    | 'S'
+                    | 'C'
+                    | 'D'
+                    | 'y'
+                    | 'Y'
+                    | 'R'
+                    | '"'
+                    | '@'
             )
         )
 }

@@ -5,6 +5,7 @@
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     ClipboardItem, Entity, EntityInputHandler as _, Focusable as _, TestAppContext,
@@ -770,4 +771,252 @@ fn named_yank_leaves_the_clipboard_alone(cx: &mut TestAppContext) {
     assert_eq!(text_of(&view, cx), "one\none\ntwo\n");
     keys("\" a p", cx);
     assert_eq!(text_of(&view, cx), "one\none\none\ntwo\n");
+}
+
+fn flashed(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> Vec<std::ops::Range<usize>> {
+    view.read_with(cx, |v, _| v.flashed_ranges().to_vec())
+}
+
+#[gpui::test]
+fn yank_flash_follows_settings(cx: &mut TestAppContext) {
+    let on = r#"{ "vim.enabled": true, "vim.highlightedyank.enable": true }"#;
+    let (_dir, _wb, view, cx) = vim_editor_with(on, "one two\n", cx);
+    keys("w y i w", cx);
+    assert_eq!(flashed(&view, cx), vec![4..7]);
+    cx.executor().advance_clock(Duration::from_millis(100));
+    assert_eq!(flashed(&view, cx), vec![4..7]);
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    assert!(flashed(&view, cx).is_empty());
+}
+
+#[gpui::test]
+fn yank_flash_duration_is_read(cx: &mut TestAppContext) {
+    let on = r#"{ "vim.enabled": true, "vim.highlightedyank.enable": true,
+                  "vim.highlightedyank.duration": 1000 }"#;
+    let (_dir, _wb, view, cx) = vim_editor_with(on, "one two\n", cx);
+    keys("y i w", cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    assert_eq!(flashed(&view, cx), vec![0..3]);
+    cx.executor().advance_clock(Duration::from_millis(900));
+    cx.run_until_parked();
+    assert!(flashed(&view, cx).is_empty());
+}
+
+#[gpui::test]
+fn yank_flash_is_off_by_default(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("one two\n", cx);
+    keys("y i w", cx);
+    assert!(flashed(&view, cx).is_empty());
+}
+
+#[gpui::test]
+fn yank_flash_cleared_by_edit(cx: &mut TestAppContext) {
+    let on = r#"{ "vim.enabled": true, "vim.highlightedyank.enable": true }"#;
+    let (_dir, _wb, view, cx) = vim_editor_with(on, "one two\n", cx);
+    keys("y i w", cx);
+    assert_eq!(flashed(&view, cx), vec![0..3]);
+    keys("x", cx);
+    assert!(flashed(&view, cx).is_empty());
+}
+
+fn indicator(
+    wb: &Entity<Workbench>,
+    view: &Entity<CodeView>,
+    cx: &mut VisualTestContext,
+) -> String {
+    let id = view.entity_id();
+    cx.update(|_, cx| wb.read(cx).vim().read(cx).indicator_text(id))
+        .expect("vim is on")
+}
+
+#[gpui::test]
+fn macro_record_and_count_is_one_undo_step(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("a\nb\nc\nd\n", cx);
+    keys("q a", cx);
+    assert_eq!(indicator(&wb, &view, cx), "-- NORMAL -- recording @a");
+    keys("shift-a", cx);
+    assert_eq!(indicator(&wb, &view, cx), "-- INSERT -- recording @a");
+    commit(&view, ";", cx);
+    keys("escape j q", cx);
+    assert_eq!(indicator(&wb, &view, cx), "-- NORMAL --");
+    assert_eq!(text_of(&view, cx), "a;\nb\nc\nd\n");
+    // The third run's `j` fails on the last line, after its `;`.
+    keys("3 @ a", cx);
+    assert_eq!(text_of(&view, cx), "a;\nb;\nc;\nd;\n");
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    // The three runs are one undo step.
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "a;\nb\nc\nd\n");
+}
+
+#[gpui::test]
+fn macro_with_vietnamese_ime_text_replays_text(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("one two\n", cx);
+    keys("q a c i w", cx);
+    view.update_in(cx, |v, window, cx| {
+        v.replace_and_mark_text_in_range(None, "chà", None, window, cx);
+    });
+    commit(&view, "chào", cx);
+    keys("escape q", cx);
+    assert_eq!(text_of(&view, cx), "chào two\n");
+    keys("w @ a", cx);
+    assert_eq!(text_of(&view, cx), "chào chào\n");
+}
+
+#[gpui::test]
+fn macro_types_through_auto_close(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("(a)\n(x)\n", cx);
+    keys("q a c i (", cx);
+    for c in ["f", "o", "o", "("] {
+        commit(&view, c, cx);
+    }
+    keys("escape q", cx);
+    let recorded = text_of(&view, cx);
+    let first = recorded.lines().next().unwrap().to_string();
+    assert_ne!(first, "(a)");
+    keys("j 0 @ a", cx);
+    let text = text_of(&view, cx);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines, [first.as_str(), first.as_str()]);
+}
+
+#[gpui::test]
+fn macro_search_runs_without_widget(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("foo a\nbar foo\nbaz foo\n", cx);
+    keys("q a /", cx);
+    assert!(find_visible(&view, cx));
+    type_text("foo", cx);
+    keys("enter", cx);
+    assert!(!find_visible(&view, cx));
+    keys("x q", cx);
+    assert_eq!(text_of(&view, cx), "foo a\nbar oo\nbaz foo\n");
+    keys("@ a", cx);
+    assert!(!find_visible(&view, cx));
+    assert_eq!(text_of(&view, cx), "foo a\nbar oo\nbaz oo\n");
+    assert_eq!(cursor(&view, cx), pt(2, 4));
+}
+
+#[gpui::test]
+fn macro_records_a_search_dismissed_after_an_operator(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("foo bar baz\n", cx);
+    keys("q a d /", cx);
+    type_text("fo", cx);
+    keys("escape w q", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 4));
+    // The replay drops its `d` too: `w` only moves.
+    keys("@ a", cx);
+    assert_eq!(text_of(&view, cx), "foo bar baz\n");
+    assert_eq!(cursor(&view, cx), pt(0, 8));
+}
+
+#[gpui::test]
+fn macro_records_a_command_line_dismissed_from_visual(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("ab\ncd\nef\ngh\n", cx);
+    keys("q a shift-v j :", cx);
+    assert!(cx.update(|_, cx| wb.read(cx).quick_open().is_some()));
+    keys("escape", cx);
+    assert!(cx.update(|_, cx| wb.read(cx).quick_open().is_none()));
+    keys("x q", cx);
+    assert_eq!(text_of(&view, cx), "ab\nd\nef\ngh\n");
+    // The replay leaves Visual at its `:` too: `x` deletes one char.
+    keys("g g @ a", cx);
+    assert_eq!(text_of(&view, cx), "ab\n\nef\ngh\n");
+}
+
+#[gpui::test]
+fn macro_records_a_go_to_line_from_the_command_line(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("a\nb\nc\nd\ne\nf\n", cx);
+    keys("q a :", cx);
+    type_text("3", cx);
+    keys("enter", cx);
+    assert!(cx.update(|_, cx| wb.read(cx).quick_open().is_none()));
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+    keys("d d q", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nd\ne\nf\n");
+    // The replay goes to line 3 again, not the current line.
+    keys("g g @ a", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\ne\nf\n");
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+}
+
+#[gpui::test]
+fn macro_go_to_line_replays_at_column_one_of_an_indented_line(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("a\nb\n  c\nd\n", cx);
+    // Go to Line puts the cursor on column 1, not the first non-blank.
+    keys("q a :", cx);
+    type_text("3", cx);
+    keys("enter", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+    keys("x q", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\n c\nd\n");
+    // The replay lands there too.
+    keys("g g @ a", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nc\nd\n");
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+}
+
+#[gpui::test]
+fn macro_records_a_go_to_line_as_its_absolute_target(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("abc\ndef\nghi", cx);
+    // `-1` is the last line, `,2` the second column; the macro keeps
+    // line 3, column 2.
+    keys("q a :", cx);
+    type_text("-1,2", cx);
+    keys("enter", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 1));
+    keys("x q", cx);
+    assert_eq!(text_of(&view, cx), "abc\ndef\ngi");
+    keys("g g o", cx);
+    commit(&view, "new", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "abc\nnew\ndef\ngi");
+    keys("@ a", cx);
+    assert_eq!(text_of(&view, cx), "abc\nnew\ndf\ngi");
+}
+
+#[gpui::test]
+fn macro_stops_when_motion_fails(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("a\nb\nc\nd\ne\n", cx);
+    keys("q a j x q", cx);
+    assert_eq!(text_of(&view, cx), "a\n\nc\nd\ne\n");
+    keys("1 0 0 @ a", cx);
+    assert_eq!(text_of(&view, cx), "a\n\n\n\n\n");
+    assert_eq!(cursor(&view, cx).row, 4);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    // The run ended: one undo step brings the three lines back.
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "a\n\nc\nd\ne\n");
+}
+
+#[gpui::test]
+fn self_calling_macro_stops_at_depth_cap(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("\n", cx);
+    keys("i", cx);
+    commit(&view, "@a", cx);
+    keys("escape 0 \" a y $ u", cx);
+    assert_eq!(text_of(&view, cx), "\n");
+    keys("@ a", cx);
+    cx.run_until_parked();
+    assert_eq!(text_of(&view, cx), "\n");
+    assert_eq!(indicator(&wb, &view, cx), "-- NORMAL --");
+    // Vim works on after the run: no macro is left running.
+    keys("i", cx);
+    commit(&view, "z", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "z\n");
+}
+
+#[gpui::test]
+fn macro_with_colon_command(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("a\na\na\n", cx);
+    keys("q a :", cx);
+    type_text("s/a/b/", cx);
+    keys("enter j q", cx);
+    assert_eq!(text_of(&view, cx), "b\na\na\n");
+    keys("@ a", cx);
+    assert_eq!(text_of(&view, cx), "b\nb\na\n");
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+    assert_eq!(indicator(&wb, &view, cx), "1 substitution on 1 line");
 }

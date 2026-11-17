@@ -8,6 +8,7 @@ use lucerna_text::{BufferSnapshot, Point};
 use unicode_segmentation::UnicodeSegmentation as _;
 
 use crate::classify::{self, display_col, last_char_col, line};
+use crate::macros::{CmdKind, CmdLine, push_key, push_typed};
 use crate::marks::FileMarks;
 use crate::motion::{self, FindChar, Goal, WordMotion};
 use crate::object::{self, Object};
@@ -35,11 +36,22 @@ pub struct VimGlobals {
     pub(crate) marks: HashMap<Arc<Path>, FileMarks>,
     /// The last search and whether it went backward, for `n` and `N`.
     pub(crate) last_search: Option<(SearchQuery, bool)>,
+    /// The last `:s`, for `:s` without a pattern and `~`.
+    pub(crate) last_substitute: Option<crate::substitute::LastSubstitute>,
     pub(crate) registers: Registers,
     /// The last change, for `.`.
     pub(crate) last_change: Option<LastChange>,
     /// The system clipboard as the workbench last read it.
     clipboard: Option<Clipboard>,
+    /// The macro being recorded: the register as typed after `q`, and the
+    /// keys so far in key notation.
+    pub(crate) record: Option<(char, String)>,
+    /// An [`Outcome::Macro`] is running.
+    pub(crate) macro_running: bool,
+    /// An [`Outcome::Replay`] is running.
+    pub(crate) replaying: bool,
+    /// The register the last `@` ran, for `@@`.
+    pub(crate) last_macro: Option<char>,
 }
 
 impl VimGlobals {
@@ -88,12 +100,12 @@ impl VimGlobals {
 /// The vim state of one view.
 #[derive(Debug, Clone)]
 pub struct Vim {
-    mode: Mode,
-    cursor: Point,
+    pub(crate) mode: Mode,
+    pub(crate) cursor: Point,
     /// `None`: derive it from the cursor on the next vertical motion.
-    goal: Option<Goal>,
+    pub(crate) goal: Option<Goal>,
     /// The other end of a visual selection.
-    anchor: Point,
+    pub(crate) anchor: Point,
     /// The pending keys, for the indicator.
     pending: String,
     count: Option<u32>,
@@ -115,7 +127,7 @@ pub struct Vim {
     insert_lines: bool,
     /// The keys of the command being typed, without the register and the
     /// counts, for `.`.
-    cmd_keys: Vec<Key>,
+    pub(crate) cmd_keys: Vec<Key>,
     /// The change that ended in this Insert session, recording its typing
     /// until Escape.
     recording: Option<LastChange>,
@@ -128,6 +140,11 @@ pub struct Vim {
     /// The typing a `.` replay will do in the Insert session it opens:
     /// the replay does not report it, so it is recorded from here.
     replay_typed: Option<Vec<Typed>>,
+    /// The text the last `:` put in the command line (`'<,'>` from Visual,
+    /// `.,.+2` after a count), for macros.
+    pub(crate) last_prefill: Option<String>,
+    /// The command line a running macro typed `/`, `?` or `:` into.
+    pub(crate) cmdline: Option<CmdLine>,
 }
 
 impl Vim {
@@ -150,6 +167,8 @@ impl Vim {
             recorded_edit: false,
             unsaved_change: None,
             replay_typed: None,
+            last_prefill: None,
+            cmdline: None,
         }
     }
 
@@ -162,21 +181,32 @@ impl Vim {
         settings: &Settings,
     ) -> Outcome {
         self.clamp(view.snapshot());
-        if let Some(change) = self.unsaved_change.take() {
+        if let Some(change) = self.unsaved_change.take()
+            && !globals.macro_running
+        {
             globals.last_change = Some(change);
         }
         let saved = self.clone();
+        let recording = globals.record.is_some();
+        // The keys of a macro's command line are not commands: the search
+        // or the `:` command they run records itself.
+        let in_cmdline = self.cmdline.is_some();
         let outcome = self.step(key, view, globals, settings);
         self.finish(&saved, saved.cursor, &outcome, view, globals);
-        if !matches!(outcome, Outcome::Retry(_)) {
+        if !matches!(outcome, Outcome::Retry(_)) && !in_cmdline {
             self.record(key, &saved, &outcome, view, globals);
         }
+        Vim::record_macro_key(key, recording, &outcome, globals);
         outcome
     }
 
     /// The workbench calls this for each typing event of an Insert session
-    /// vim opened (not for a replay's typing), for `.`.
-    pub fn record_typed(&mut self, t: Typed) {
+    /// vim opened (not for a replay's typing), for `.` and for the macro
+    /// being recorded.
+    pub fn record_typed(&mut self, t: Typed, g: &mut VimGlobals) {
+        let mut text = String::new();
+        push_typed(&mut text, &t);
+        g.record_text(&text);
         if self.mode == Mode::Insert
             && let Some(change) = &mut self.recording
         {
@@ -231,6 +261,7 @@ impl Vim {
             if self.mode != Mode::Insert
                 && let Some(change) = self.recording.take()
                 && (self.recorded_edit || !change.typed.is_empty())
+                && !g.macro_running
             {
                 g.registers.set_dot(change.inserted_text());
                 g.last_change = Some(change);
@@ -322,7 +353,7 @@ impl Vim {
                         Action::EnterInsert(InsertAt::LineBelow | InsertAt::LineAbove)
                     )
                 });
-        } else {
+        } else if !g.macro_running {
             g.last_change = Some(change);
         }
     }
@@ -331,7 +362,7 @@ impl Vim {
     /// count.
     fn dot(&mut self, count: Option<u32>, view: &dyn ViewInfo, g: &VimGlobals) -> Outcome {
         let Some(change) = &g.last_change else {
-            return Outcome::Handled(vec![]);
+            return Outcome::Handled(vec![Action::Failed]);
         };
         if view.edit_ctx().is_none() {
             return Outcome::Handled(vec![]);
@@ -401,6 +432,27 @@ impl Vim {
         g: &mut VimGlobals,
         s: &Settings,
     ) -> Outcome {
+        let mut recorded = String::from(if backward { "?" } else { "/" });
+        for c in query.pattern.chars() {
+            push_key(&mut recorded, Key::Char(c));
+        }
+        recorded.push_str("<CR>");
+        let outcome = self.submit_search(query, backward, origin, view, g, s);
+        if !matches!(outcome, Outcome::Retry(_)) {
+            g.record_text(&recorded);
+        }
+        outcome
+    }
+
+    fn submit_search(
+        &mut self,
+        query: SearchQuery,
+        backward: bool,
+        origin: Point,
+        view: &dyn ViewInfo,
+        g: &mut VimGlobals,
+        s: &Settings,
+    ) -> Outcome {
         self.clamp(view.snapshot());
         let saved = self.clone();
         let origin = self.clamp_in_mode(view.snapshot(), origin);
@@ -447,6 +499,23 @@ impl Vim {
         self.cmd_keys.clear();
     }
 
+    /// The user left the find widget of a `/` (`?` when `backward`) after
+    /// typing `typed`, without a search: as [`Vim::search_dismissed`].
+    /// When that drops an operator, a count or a register typed before
+    /// (already in the macro being recorded), the macro gets `/`, `typed`
+    /// and `<Esc>`, so its replay drops them too.
+    pub fn search_cancelled(&mut self, typed: &str, backward: bool, g: &mut VimGlobals) {
+        if self.op.is_some() || self.search_count.is_some() || self.register.is_some() {
+            let mut recorded = String::from(if backward { "?" } else { "/" });
+            for c in typed.chars() {
+                push_key(&mut recorded, Key::Char(c));
+            }
+            recorded.push_str("<Esc>");
+            g.record_text(&recorded);
+        }
+        self.search_dismissed();
+    }
+
     /// Runs the operator `p` waiting for a `/` or `?` on the text from the
     /// cursor to the nth match of `query` (an exclusive motion), `n` the
     /// counts before and after the operator. The search is remembered for
@@ -484,7 +553,7 @@ impl Vim {
         let from = self.cursor;
         let at = snapshot.point_to_offset(from);
         let Some(start) = search::nth_match(&matches, at, backward, n, s.wrapscan) else {
-            return Outcome::Handled(vec![Action::Highlight(query)]);
+            return Outcome::Handled(vec![Action::Highlight(query), Action::Failed]);
         };
         let to = snapshot.offset_to_point(start);
         let change = p.op == Operator::Change;
@@ -647,6 +716,9 @@ impl Vim {
         globals: &mut VimGlobals,
         settings: &Settings,
     ) -> Outcome {
+        if self.cmdline.is_some() {
+            return self.cmdline_key(key, view, globals, settings);
+        }
         if self.mode == Mode::Insert {
             // Every other key types.
             return match key {
@@ -812,7 +884,11 @@ impl Vim {
     }
 
     /// Back to Normal with the cursor on the head, keeping the goal.
-    fn exit_visual(&mut self, view: &dyn ViewInfo, globals: &mut VimGlobals) -> Vec<Action> {
+    pub(crate) fn exit_visual(
+        &mut self,
+        view: &dyn ViewInfo,
+        globals: &mut VimGlobals,
+    ) -> Vec<Action> {
         let head = self.cursor;
         self.end_visual(view, globals);
         let mut actions = vec![Action::ModeChanged(Mode::Normal)];
@@ -865,6 +941,12 @@ impl Vim {
             WriteKind::Yank,
             settings.use_system_clipboard,
         ));
+        if settings.highlighted_yank {
+            let ranges = visual::yank_ranges(&sel, snapshot, view.tab_size());
+            if !ranges.is_empty() {
+                actions.push(Action::Yanked(ranges));
+            }
+        }
         actions.push(Action::ModeChanged(Mode::Normal));
         actions.push(Action::CursorMoved { jump: false });
         Outcome::Handled(actions)
@@ -930,9 +1012,20 @@ impl Vim {
             && (self.op.is_some() || !matches!(self.mode, Mode::Normal | Mode::Insert));
         // `r` waits for the char to put; under an operator it cancels.
         let replace_prefix = c == 'r' && self.op.is_none();
+        // `@` waits for the register to run; `q` for the one to record
+        // into, unless it stops a recording (or a macro is running).
+        let normal = self.mode == Mode::Normal && self.op.is_none();
+        let macro_prefix = normal
+            && (c == '@'
+                || (c == 'q'
+                    && globals.record.is_none()
+                    && !globals.macro_running
+                    && self.count.is_none()
+                    && self.register.is_none()));
         if self.prefix.is_none()
             && (object_prefix
                 || replace_prefix
+                || macro_prefix
                 || matches!(
                     c,
                     'g' | 'z' | 'f' | 'F' | 't' | 'T' | 'm' | '\'' | '`' | ']' | '['
@@ -968,6 +1061,12 @@ impl Vim {
             globals.last_find = Some(find);
             return self.find(view, find, n, false);
         }
+        if prefix == Some('q') {
+            return self.start_recording(c, globals);
+        }
+        if prefix == Some('@') {
+            return self.run_macro(c, n, view, globals, settings);
+        }
         if prefix == Some('m') {
             if c.is_ascii_lowercase() {
                 globals
@@ -996,8 +1095,8 @@ impl Vim {
                     let row = explicit.map_or(0, |n| n - 1);
                     self.go_to_row(view, row, settings.startofline, true)
                 }
-                'e' => self.word(view, WordMotion::PrevEnd, false, n),
-                'E' => self.word(view, WordMotion::PrevEnd, true, n),
+                'e' => or_fail(self.word(view, WordMotion::PrevEnd, false, n)),
+                'E' => or_fail(self.word(view, WordMotion::PrevEnd, true, n)),
                 'd' => self.run_command("editor.action.revealDefinition"),
                 'D' => self.run_command("editor.action.revealDeclaration"),
                 'h' => self.run_command("editor.action.showHover"),
@@ -1120,16 +1219,16 @@ impl Vim {
             }
             'u' if !visual => self.undo_redo(Action::Undo(n), view),
             '.' if !visual => self.dot(explicit, view, globals),
-            'h' => self.move_horizontal(Point {
+            'h' => or_fail(self.move_horizontal(Point {
                 row,
                 column: motion::left(&text, col, n),
-            }),
-            'l' => self.move_horizontal(Point {
+            })),
+            'l' => or_fail(self.move_horizontal(Point {
                 row,
                 column: motion::right(&text, col, n),
-            }),
-            'j' => self.move_vertical(view, n, true),
-            'k' => self.move_vertical(view, n, false),
+            })),
+            'j' => or_fail(self.move_vertical(view, n, true)),
+            'k' => or_fail(self.move_vertical(view, n, false)),
             '0' => self.move_horizontal(Point { row, column: 0 }),
             '^' => self.move_horizontal(Point {
                 row,
@@ -1140,12 +1239,12 @@ impl Vim {
                 let column = self.eol_col(snapshot, row);
                 self.move_to(Point { row, column }, Some(Goal::Eol))
             }
-            'w' => self.word(view, WordMotion::NextStart, false, n),
-            'W' => self.word(view, WordMotion::NextStart, true, n),
-            'b' => self.word(view, WordMotion::PrevStart, false, n),
-            'B' => self.word(view, WordMotion::PrevStart, true, n),
-            'e' => self.word(view, WordMotion::NextEnd, false, n),
-            'E' => self.word(view, WordMotion::NextEnd, true, n),
+            'w' => or_fail(self.word(view, WordMotion::NextStart, false, n)),
+            'W' => or_fail(self.word(view, WordMotion::NextStart, true, n)),
+            'b' => or_fail(self.word(view, WordMotion::PrevStart, false, n)),
+            'B' => or_fail(self.word(view, WordMotion::PrevStart, true, n)),
+            'e' => or_fail(self.word(view, WordMotion::NextEnd, false, n)),
+            'E' => or_fail(self.word(view, WordMotion::NextEnd, true, n)),
             'G' => {
                 let row = explicit.map_or(u32::MAX, |n| n - 1);
                 self.go_to_row(view, row, settings.startofline, true)
@@ -1157,7 +1256,7 @@ impl Vim {
                     self.go_to_row(view, row, true, true)
                 }
                 Some(_) => Outcome::Handled(vec![]),
-                None => self.matching_bracket(view),
+                None => or_fail(self.matching_bracket(view)),
             },
             '}' | '{' => {
                 let down = c == '}';
@@ -1172,7 +1271,7 @@ impl Vim {
                 } else {
                     Point { row: 0, column: 0 }
                 };
-                self.move_to_jump(to, None, true)
+                or_fail(self.move_to_jump(to, None, true))
             }
             'H' | 'M' | 'L' => {
                 let which = match c {
@@ -1183,6 +1282,12 @@ impl Vim {
                 let row = scroll::screen_row(view, which, n, settings.scrolloff);
                 self.go_to_row(view, row, settings.startofline, true)
             }
+            ':' => self.open_command_line(explicit, view, globals),
+            '/' | '?' if globals.macro_running => {
+                self.search_count = explicit;
+                self.open_macro_cmdline(CmdKind::Search { backward: c == '?' }, String::new());
+                Outcome::Handled(vec![])
+            }
             '/' | '?' => {
                 self.search_count = explicit;
                 Outcome::Handled(vec![Action::OpenSearch { backward: c == '?' }])
@@ -1191,13 +1296,14 @@ impl Vim {
             'n' | 'N' => self.repeat_search(view, globals, c == 'N', n, settings),
             ';' | ',' => {
                 let Some(mut find) = globals.last_find else {
-                    return Outcome::Handled(vec![]);
+                    return Outcome::Handled(vec![Action::Failed]);
                 };
                 if c == ',' {
                     find.forward = !find.forward;
                 }
                 self.find(view, find, n, true)
             }
+            'q' => self.q_key(globals),
             _ => Outcome::Handled(vec![]),
         }
     }
@@ -1259,6 +1365,10 @@ impl Vim {
             self.op = Some(p);
             self.count = post;
             self.set_pending(&c.to_string());
+            if g.macro_running {
+                self.open_macro_cmdline(CmdKind::Search { backward: c == '?' }, String::new());
+                return Outcome::Handled(vec![]);
+            }
             return Outcome::Handled(vec![Action::OpenSearch { backward: c == '?' }]);
         }
         let count = match (p.count, post) {
@@ -1276,7 +1386,7 @@ impl Vim {
             let r = Object::from_key(c)
                 .and_then(|obj| object::object_range(snapshot, from, obj, pre == 'a', n, view));
             return match r {
-                None => Outcome::Handled(vec![]),
+                None => Outcome::Handled(vec![Action::Failed]),
                 Some(r) if r.range.is_empty() && r.kind != MotionKind::Linewise => {
                     // `ci(` on `()`: Insert between the brackets.
                     if p.op == Operator::Change && view.edit_ctx().is_some() {
@@ -1356,11 +1466,12 @@ impl Vim {
         }
         let (to, kind) = match self.op_target(prefix, c, count, n, view, g, s) {
             Ok(Some(target)) => target,
-            Ok(None) => return Outcome::Handled(vec![]),
+            Ok(None) => return Outcome::Handled(vec![Action::Failed]),
             Err(retry) => return retry,
         };
         let Some(r) = operator::motion_range(snapshot, from, to, kind, p.force) else {
-            // The motion worked but covers nothing: `c` still inserts.
+            // The motion covers nothing (`h` at column 0, `l` on an empty
+            // line: silent under an operator, as in Vim): `c` still inserts.
             if p.op == Operator::Change {
                 return self.change_nothing(view);
             }
@@ -1401,7 +1512,8 @@ impl Vim {
             let kind = if find.forward { Inclusive } else { Exclusive };
             Some((at(column)?, kind))
         };
-        // Runs the Normal-mode motion on a copy of the state.
+        // Runs the Normal-mode motion on a copy of the state: where it
+        // goes, `None` when it failed.
         let probe = |prefix: Option<char>, count: Option<u32>, key: Key, g: &mut VimGlobals| {
             let mut probe = self.clone();
             probe.op = None;
@@ -1411,7 +1523,8 @@ impl Vim {
             probe.prefix = prefix;
             match probe.step(key, view, g, s) {
                 Outcome::Retry(q) => Err(Outcome::Retry(q)),
-                _ => Ok(probe.cursor),
+                Outcome::Handled(actions) if actions.contains(&Action::Failed) => Ok(None),
+                _ => Ok(Some(probe.cursor)),
             }
         };
         // A motion that cannot move fails.
@@ -1427,8 +1540,8 @@ impl Vim {
                 find(f, false)
             }
             Some('g') => match c {
-                'g' => Some((probe(Some('g'), count, Key::Char(c), g)?, Linewise)),
-                'e' | 'E' => Some((probe(Some('g'), count, Key::Char(c), g)?, Inclusive)),
+                'g' => probe(Some('g'), count, Key::Char(c), g)?.map(|to| (to, Linewise)),
+                'e' | 'E' => probe(Some('g'), count, Key::Char(c), g)?.map(|to| (to, Inclusive)),
                 _ => None,
             },
             Some(p @ ('\'' | '`')) => g.marks.get(view.path()).and_then(|m| m.get(c)).map(|to| {
@@ -1437,8 +1550,14 @@ impl Vim {
             }),
             Some(_) => None,
             None => match c {
-                'h' | 'b' | 'B' | '^' => Some((probe(None, count, Key::Char(c), g)?, Exclusive)),
-                '0' => Some((probe(None, None, Key::Char(c), g)?, Exclusive)),
+                // `h` at column 0 keeps the operator, as in Vim: `ch` still
+                // enters Insert.
+                'h' => Some((
+                    probe(None, count, Key::Char(c), g)?.unwrap_or(from),
+                    Exclusive,
+                )),
+                'b' | 'B' | '^' => probe(None, count, Key::Char(c), g)?.map(|to| (to, Exclusive)),
+                '0' => probe(None, None, Key::Char(c), g)?.map(|to| (to, Exclusive)),
                 'l' => {
                     // Unlike the motion, `l` here may reach the line end.
                     let mut column = from.column as usize;
@@ -1451,14 +1570,24 @@ impl Vim {
                     operator::word_end_for_operator(snapshot, from, c == 'W', n),
                     Exclusive,
                 )),
-                '$' | 'e' | 'E' => Some((probe(None, count, Key::Char(c), g)?, Inclusive)),
-                'G' | 'H' | 'M' | 'L' => Some((probe(None, count, Key::Char(c), g)?, Linewise)),
-                'j' | 'k' => moved(probe(None, count, Key::Char(c), g)?, Linewise),
-                '\n' => moved(probe(None, count, Key::Enter, g)?, Linewise),
+                // Under an operator, `e` at the end of the buffer does not
+                // fail (Vim beeps only without one): `de` deletes the last
+                // char.
+                '$' | 'e' | 'E' => Some((
+                    probe(None, count, Key::Char(c), g)?.unwrap_or(from),
+                    Inclusive,
+                )),
+                'G' | 'H' | 'M' | 'L' => {
+                    probe(None, count, Key::Char(c), g)?.map(|to| (to, Linewise))
+                }
+                'j' | 'k' => {
+                    probe(None, count, Key::Char(c), g)?.and_then(|to| moved(to, Linewise))
+                }
+                '\n' => probe(None, count, Key::Enter, g)?.and_then(|to| moved(to, Linewise)),
                 '%' => match count {
                     Some(n) if n > 100 => None,
-                    Some(_) => Some((probe(None, count, Key::Char(c), g)?, Linewise)),
-                    None => moved(probe(None, None, Key::Char(c), g)?, Inclusive),
+                    Some(_) => probe(None, count, Key::Char(c), g)?.map(|to| (to, Linewise)),
+                    None => probe(None, None, Key::Char(c), g)?.and_then(|to| moved(to, Inclusive)),
                 },
                 '{' | '}' => {
                     let down = c == '}';
@@ -1473,7 +1602,9 @@ impl Vim {
                         (Point { row: 0, column: 0 }, Exclusive)
                     })
                 }
-                'n' | 'N' | '*' | '#' => moved(probe(None, count, Key::Char(c), g)?, Exclusive),
+                'n' | 'N' | '*' | '#' => {
+                    probe(None, count, Key::Char(c), g)?.and_then(|to| moved(to, Exclusive))
+                }
                 ';' | ',' => {
                     let Some(mut f) = g.last_find else {
                         return Ok(None);
@@ -1868,7 +1999,7 @@ impl Vim {
         let snapshot = view.snapshot();
         let text = line(snapshot, self.cursor.row);
         let Some(word) = search::word_at(&text, self.cursor.column) else {
-            return Outcome::Handled(vec![]);
+            return Outcome::Handled(vec![Action::Failed]);
         };
         let query = SearchQuery {
             pattern: search::escape_regex(&text[word.clone()]),
@@ -1900,7 +2031,7 @@ impl Vim {
         settings: &Settings,
     ) -> Outcome {
         let Some((query, backward)) = globals.last_search.clone() else {
-            return Outcome::Handled(vec![]);
+            return Outcome::Handled(vec![Action::Failed]);
         };
         let from = self.cursor;
         self.jump_to_match(view, query, from, backward != reverse, n, settings)
@@ -1924,13 +2055,17 @@ impl Vim {
         let snapshot = view.snapshot();
         let at = snapshot.point_to_offset(from);
         let mut actions = Vec::new();
-        if let Some(start) = search::nth_match(&matches, at, backward, n, settings.wrapscan) {
+        let found = search::nth_match(&matches, at, backward, n, settings.wrapscan);
+        if let Some(start) = found {
             let to = self.clamp_in_mode(snapshot, snapshot.offset_to_point(start));
             if let Outcome::Handled(moved) = self.move_to_jump(to, None, true) {
                 actions = moved;
             }
         }
         actions.push(Action::Highlight(query));
+        if found.is_none() {
+            actions.push(Action::Failed);
+        }
         Ok(Outcome::Handled(actions))
     }
 
@@ -1973,7 +2108,7 @@ impl Vim {
                 row: self.cursor.row,
                 column,
             }),
-            None => Outcome::Handled(vec![]),
+            None => Outcome::Handled(vec![Action::Failed]),
         }
     }
 
@@ -2005,7 +2140,7 @@ impl Vim {
 
     /// Jumps to `row` (clamped): the first non-blank with `startofline`,
     /// otherwise the goal column.
-    fn go_to_row(
+    pub(crate) fn go_to_row(
         &mut self,
         view: &dyn ViewInfo,
         row: u32,
@@ -2086,7 +2221,7 @@ impl Vim {
         n
     }
 
-    fn clear_pending(&mut self) {
+    pub(crate) fn clear_pending(&mut self) {
         self.pending.clear();
         self.count = None;
         self.prefix = None;
@@ -2105,6 +2240,14 @@ impl Vim {
             "{head}{}{extra}",
             self.count.map_or(String::new(), |n| n.to_string()),
         );
+    }
+}
+
+/// A motion that did not move the cursor failed.
+fn or_fail(out: Outcome) -> Outcome {
+    match out {
+        Outcome::Handled(actions) if actions.is_empty() => Outcome::Handled(vec![Action::Failed]),
+        out => out,
     }
 }
 
@@ -2398,7 +2541,7 @@ mod tests {
         );
         assert_eq!(
             feed_keys(&mut vim, &view, "h"),
-            vec![Outcome::Handled(vec![])]
+            vec![Outcome::Handled(vec![Action::Failed])]
         );
     }
 

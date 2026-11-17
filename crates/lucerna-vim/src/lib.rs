@@ -5,6 +5,9 @@
 
 mod classify;
 mod edit;
+mod ex;
+mod ex_run;
+mod macros;
 mod marks;
 mod motion;
 mod object;
@@ -14,6 +17,7 @@ mod repeat;
 mod scroll;
 mod search;
 mod state;
+mod substitute;
 #[cfg(test)]
 mod test_util;
 mod visual;
@@ -25,9 +29,13 @@ use std::sync::Arc;
 use lucerna_editor::{Ctx, EditPlan};
 use lucerna_text::BufferSnapshot;
 
+pub use ex::describe_command;
+pub use ex_run::ExCommand;
+pub use macros::parse_notation;
 pub use register::{Clipboard, ClipboardMode, RegContent, RegKind};
 pub use repeat::{ReplayStep, Typed};
 pub use state::{Vim, VimGlobals};
+pub use substitute::{BACKGROUND_SUBSTITUTE_BYTES, SubstituteJob, SubstituteResult};
 pub use visual::{VimSelection, block_ranges, exclusive_range, yank_text};
 
 /// A key as the vim layer sees it, already translated by the workbench.
@@ -113,6 +121,10 @@ pub struct Settings {
     pub joinspaces: bool,
     /// `vim.tildeop`: `~` is an operator like `g~`.
     pub tildeop: bool,
+    /// `vim.gdefault`: `:s` replaces every match in a line unless it has `g`.
+    pub gdefault: bool,
+    /// `vim.highlightedyank.enable`: a yank emits [`Action::Yanked`].
+    pub highlighted_yank: bool,
 }
 
 impl Default for Settings {
@@ -127,6 +139,8 @@ impl Default for Settings {
             change_word_includes_whitespace: false,
             joinspaces: true,
             tildeop: false,
+            gdefault: false,
+            highlighted_yank: false,
         }
     }
 }
@@ -212,6 +226,23 @@ pub enum Action {
         text: String,
         linewise: bool,
     },
+    /// The command failed: a motion that could not move, a search with
+    /// no match, an operator whose motion failed, `.` with nothing to
+    /// repeat, a `:` command with an error (its message came first as
+    /// [`Action::Message`]). A macro stops here.
+    Failed,
+    /// Carry out a `:` command the editor owns (`:w`, `:q`...).
+    RunEx(ExCommand),
+    /// Open the command line with `prefill` typed in.
+    OpenCommandLine {
+        prefill: String,
+    },
+    /// Show `text` in the status area.
+    Message(String),
+    /// Text was yanked (`y{motion}`, `yy`, `Y`, Visual `y`, `:y`) and
+    /// [`Settings::highlighted_yank`] is on: the byte ranges of the yanked
+    /// text in the current text. Whole lines include their line break.
+    Yanked(Vec<Range<usize>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,4 +277,18 @@ pub enum Outcome {
     ///   step, Escape, ends the session), and its typing is not recorded
     ///   either: the record already holds one copy.
     Replay(Vec<ReplayStep>),
+    /// A `:s` on a large buffer: run [`SubstituteJob::run`] on the view's
+    /// snapshot (it is `Send`, so it may run in the background), then pass
+    /// the result to [`Vim::finish_substitute`] if the text is unchanged.
+    /// Vim's state is unchanged until then.
+    Substitute(SubstituteJob),
+    /// `@a`: run these keys in order, all in one undo group, with
+    /// [`VimGlobals::set_macro_running`] set until they end, then call
+    /// [`Vim::macro_ended`]. A key that comes while vim is in Insert mode
+    /// (other than Escape) types: `Char('\t')` is [`Typed::Tab`],
+    /// `Char(c)` [`Typed::Text`], `Enter` [`Typed::Newline`], `Backspace`
+    /// [`Typed::DeleteLeft`]; a `Ctrl` key is skipped. The whole run stops
+    /// at a key that returns [`Action::Failed`]. A `Macro` returned by a
+    /// key in the run (`@b` inside `@a`) runs in place.
+    Macro(Vec<Key>),
 }

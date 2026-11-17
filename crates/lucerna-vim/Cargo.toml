@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 lucerna-editor.workspace = true
 lucerna-text.workspace = true
+regex.workspace = true
 unicode-segmentation.workspace = true
 
 [dev-dependencies]

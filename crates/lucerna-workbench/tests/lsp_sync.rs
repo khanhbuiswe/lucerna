@@ -1117,6 +1117,7 @@ fn did_save_sends_the_written_text(cx: &mut TestAppContext) {
     let opts = lucerna_workbench::SaveOptions {
         reason: lucerna_workbench::SaveReason::Explicit,
         participants: false,
+        overwrite: false,
     };
     let save = cx.update(|window, cx| docs.update(cx, |d, cx| d.save(path, opts, window, cx)));
     // The write runs on a background thread, which has not run yet.

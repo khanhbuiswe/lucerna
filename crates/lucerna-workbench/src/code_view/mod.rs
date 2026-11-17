@@ -378,6 +378,11 @@ pub struct CodeView {
     match_highlights: Arc<[Range<usize>]>,
     /// The index in `match_highlights` drawn with an outline.
     active_match: Option<usize>,
+    /// Byte ranges flashed by [`CodeView::flash_ranges`] (vim's highlight
+    /// on yank), painted like search matches. Cleared by every new snapshot.
+    flash: Vec<Range<usize>>,
+    /// Bumped by every change to `flash`, so an old timer clears nothing.
+    flash_generation: u64,
     /// Rows painted across with `editor.highlighted_line.background`:
     /// half-open row ranges, such as the place a picker previews.
     line_highlights: Arc<[Range<u32>]>,
@@ -486,6 +491,8 @@ impl CodeView {
             documents: None,
             match_highlights: Arc::from([]),
             active_match: None,
+            flash: Vec::new(),
+            flash_generation: 0,
             line_highlights: Arc::from([]),
             passive: false,
             find: None,
@@ -714,6 +721,8 @@ impl CodeView {
     fn replace_snapshot(&mut self, snapshot: BufferSnapshot, cx: &mut Context<Self>) {
         self.match_highlights = Arc::from([]);
         self.active_match = None;
+        self.flash.clear();
+        self.flash_generation += 1;
         self.large = snapshot.len_bytes() as u64 > self.config.max_bytes
             || snapshot.line_count() > self.config.max_lines;
         self.snapshot = snapshot;
@@ -964,6 +973,35 @@ impl CodeView {
         self.match_highlights = ranges.into();
         self.active_match = active.filter(|&i| i < self.match_highlights.len());
         cx.notify();
+    }
+
+    /// Paints `ranges` with `search_match_background` for `duration`, then
+    /// clears them. A new call, an edit or a new snapshot clears them first.
+    pub fn flash_ranges(
+        &mut self,
+        ranges: Vec<Range<usize>>,
+        duration: std::time::Duration,
+        cx: &mut Context<Self>,
+    ) {
+        self.flash = ranges;
+        self.flash_generation += 1;
+        let generation = self.flash_generation;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(duration).await;
+            this.update(cx, |view, cx| {
+                if view.flash_generation == generation && !view.flash.is_empty() {
+                    view.flash.clear();
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub fn flashed_ranges(&self) -> &[Range<usize>] {
+        &self.flash
     }
 
     pub fn match_highlights(&self) -> &[Range<usize>] {
