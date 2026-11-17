@@ -18,13 +18,12 @@ use crate::app_menu;
 use crate::icons;
 use crate::keys;
 use crate::layout::{color, title_bar};
-use crate::open_commands::clear_recent_with_prompt;
+use crate::open_commands::{self, clear_recent_with_prompt};
 use crate::recent::{self, RecentEntry, RecentKind, RecentStore, display_parts};
 use crate::ui::{
     CLOSE_ICON, GRID, UI_FONT_FAMILY, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, UI_FONT_SIZE_STATUS,
-    icon_button, list_button, popover_overlay, section_header, tooltip, warning_row,
+    icon_button, list_button, popover_overlay, section_header, tooltip,
 };
-use crate::workspace_state::tilde_path;
 use crate::{AppState, RecentPicker, RecentPickerEvent, WindowSettings};
 
 const OPEN_FILE_FOLDER: &str = "workbench.action.files.openFileFolder";
@@ -143,13 +142,11 @@ pub struct WelcomeView {
     focus: FocusHandle,
     data_dir: Option<PathBuf>,
     home: Option<PathBuf>,
-    /// The recent entries that existed when loaded, newest first; `None`
-    /// while loading.
+    /// The recent entries as loaded, newest first; `None` while loading.
     recent: Option<Vec<RecentEntry>>,
     /// Index into [`Self::buttons`] of the focused button.
     focused: usize,
-    /// "‹path› no longer exists", after a click on a vanished entry.
-    warning: Option<String>,
+    /// The Open Recent picker shown over the page, if any.
     picker: Option<(Entity<RecentPicker>, Subscription)>,
     pending_chord: Vec<Keystroke>,
     /// Whether a press began on the title bar, for its drag.
@@ -177,7 +174,7 @@ impl WelcomeView {
                 let entries = match data_dir {
                     Some(dir) => {
                         cx.background_spawn(async move {
-                            recent::load(&recent::recent_path(&dir)).existing()
+                            recent::load(&recent::recent_path(&dir)).entries
                         })
                         .await
                     }
@@ -196,7 +193,6 @@ impl WelcomeView {
             home: std::env::home_dir(),
             recent: None,
             focused: 0,
-            warning: None,
             picker: None,
             pending_chord: Vec::new(),
             title_bar_pressed: Rc::default(),
@@ -228,11 +224,6 @@ impl WelcomeView {
     /// Recent…, the recent rows, then More….
     pub fn focused_index(&self) -> usize {
         self.focused
-    }
-
-    /// The warning about a vanished recent entry, if one shows.
-    pub fn warning(&self) -> Option<&str> {
-        self.warning.as_deref()
     }
 
     /// Opens the Open Recent picker over the page with every recent entry;
@@ -363,35 +354,35 @@ impl WelcomeView {
             Button::More => self.show_recent_picker(window, cx),
             Button::Recent(index) => {
                 if let Some(entry) = self.recent.as_ref().and_then(|r| r.get(index)) {
-                    self.open_entry(entry.clone(), new_window, cx);
+                    self.open_entry(entry.clone(), new_window, window, cx);
                 }
             }
         }
     }
 
     /// Opens `entry` unless it vanished since the list loaded; then drops
-    /// it and shows a warning instead.
+    /// it and says so.
     pub(crate) fn open_entry(
         &mut self,
         entry: RecentEntry,
         new_window: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let exists = {
                 let entry = entry.clone();
                 cx.background_spawn(async move { entry.exists() }).await
             };
-            this.update(cx, |view, cx| {
+            this.update_in(cx, |view, window, cx| {
                 if exists {
                     cx.emit(WelcomeEvent::Open {
                         path: entry.path,
                         new_window,
                     });
                 } else {
-                    let path = tilde_path(&entry.path, view.home.as_deref());
-                    view.warning = Some(format!("{path} no longer exists"));
-                    view.forget(entry.path, cx);
+                    view.forget(entry.path.clone(), cx);
+                    open_commands::report_missing(&entry.path, window, cx);
                 }
             })
             .ok();
@@ -441,7 +432,7 @@ impl WelcomeView {
         match event {
             RecentPickerEvent::Open { entry, new_window } => {
                 self.close_picker(window, cx);
-                self.open_entry(entry.clone(), *new_window, cx);
+                self.open_entry(entry.clone(), *new_window, window, cx);
             }
             RecentPickerEvent::Remove(path) => self.forget(path.clone(), cx),
             RecentPickerEvent::Dismiss => self.close_picker(window, cx),
@@ -731,10 +722,6 @@ impl Render for WelcomeView {
         let ui = &cx.global::<AppState>().theme.ui;
         let (background, text) = (color(ui.editor_background), color(ui.text));
         let title_bar = title_bar::render_plain("Lucerna", self.title_bar_pressed.clone(), ui);
-        let warning = self
-            .warning
-            .clone()
-            .map(|text| warning_row("welcome-warning".into(), text, cx));
         let header = self.render_header(cx);
         let get_started = self.render_get_started(cx);
         let recent = self
@@ -776,7 +763,6 @@ impl Render for WelcomeView {
                                     .gap(px(6. * GRID))
                                     .w_full()
                                     .max_w(px(COLUMN_MAX_WIDTH))
-                                    .children(warning)
                                     .child(header)
                                     .child(get_started)
                                     .children(recent),

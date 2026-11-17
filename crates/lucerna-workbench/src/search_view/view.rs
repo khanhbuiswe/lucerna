@@ -700,7 +700,9 @@ impl SearchView {
 
     /// Opens the file of line `r` as a preview with the cursor on it. A
     /// matching line puts the cursor on its first match and highlights it;
-    /// a context line opens at its start with nothing highlighted.
+    /// a context line opens at its start with nothing highlighted. If the
+    /// file has since lost that line, the cursor goes to the last line,
+    /// once; a file that failed to load is left alone.
     pub fn open_line(&mut self, r: LineRef, window: &mut Window, cx: &mut Context<Self>) {
         let results = self.results(cx);
         let (Some(file), Some(line), Some(workbench)) = (
@@ -737,8 +739,28 @@ impl SearchView {
             return;
         };
         let reveal = move |view: &mut CodeView, cx: &mut Context<CodeView>| {
-            if view.doc_state() != &DocState::Ready || row >= view.snapshot().line_count() {
-                return false;
+            match view.doc_state() {
+                DocState::Ready => {}
+                // A load that failed has nothing to reveal; the view must
+                // not move or highlight from here (the document may still
+                // finish its original jump).
+                DocState::Error(_) => return true,
+                _ => return false,
+            }
+            let line_count = view.snapshot().line_count();
+            if row >= line_count {
+                // The file shrank since the search: go to its last line
+                // once, and watch no more.
+                tracing::debug!(row, line_count, "search result is past the end of its file");
+                view.go_to(
+                    Point {
+                        row: line_count.saturating_sub(1),
+                        column: 0,
+                    },
+                    cx,
+                );
+                view.set_match_highlights(Vec::new(), None, cx);
+                return true;
             }
             let range = match &query {
                 Some(query) => {

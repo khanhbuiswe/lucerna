@@ -7,15 +7,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{Entity, Focusable, Modifiers, TestAppContext, VisualTestContext};
-use lucerna_project::{Excerpt, LineKind, LineMatch, SearchEvent, WorktreeEvent};
+use lucerna_project::{
+    Change, ChangeKind, Excerpt, LineKind, LineMatch, SearchEvent, WorktreeEvent,
+};
 use lucerna_settings::{Keymap, Layer, SettingsStore, parse_when};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::Point;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, GroupState, GroupsState, OpenMode, SEARCH_TAB_STATE, SearchState, SearchView,
-    SidebarView, TabItem, Workbench, WorkspaceState, save_state, state_path,
+    AppState, DocState, GroupState, GroupsState, OpenMode, SEARCH_TAB_STATE, SearchState,
+    SearchView, SidebarView, TabItem, Workbench, WorkspaceState, save_state, state_path,
 };
 use tempfile::TempDir;
 
@@ -773,6 +775,104 @@ fn visible_rust_result_gets_highlights(cx: &mut TestAppContext) {
         lines.iter().any(|(n, spans)| *n == 1 && *spans > 0),
         "{lines:?}"
     );
+}
+
+/// `n` lines `l1`..`ln` joined by `\n`, line `needle_at` being `needle`.
+fn numbered(n: usize, needle_at: usize) -> String {
+    (1..=n)
+        .map(|i| {
+            if i == needle_at {
+                "needle".to_owned()
+            } else {
+                format!("l{i}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[gpui::test]
+fn stale_result_past_the_end_goes_to_last_line_once(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.rs", &numbered(120, 100))]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    let view = search(&wb, cx);
+    assert_eq!(files(&view, cx), vec![(p("a.rs"), 1)]);
+    // The file shrinks after the search: the result's line is gone.
+    let short: Vec<String> = (1..=50).map(|i| format!("l{i}")).collect();
+    fs::write(dir.path().join("a.rs"), short.join("\n")).unwrap();
+
+    // Excerpt: line 99 (context), 100 (match), 101 (context).
+    click("search-line-0-0-1", cx);
+    draw(cx);
+    let code = active_view(&wb, cx);
+    let (cursor, highlights) =
+        code.read_with(cx, |v, _| (v.cursor(), v.match_highlights().to_vec()));
+    assert_eq!(cursor, Point { row: 49, column: 0 });
+    assert!(highlights.is_empty());
+
+    // The cursor moves up, then the file grows past the old line 100: a
+    // leftover observer would jump back to row 99 once it has 100 lines.
+    for _ in 0..10 {
+        keys("up", cx);
+    }
+    for _ in 0..60 {
+        keys("enter", cx);
+    }
+    let row = code.read_with(cx, |v, _| v.cursor().row);
+    assert_eq!(row, 99, "39 + 60 Enter presses, with no jump on the way");
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn stale_result_in_unreadable_file_drops_the_observer(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    init(cx);
+    let dir = project(&[("a.rs", &numbered(120, 100))]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    type_text("needle", cx);
+    settle_search(cx);
+    let view = search(&wb, cx);
+    assert_eq!(files(&view, cx), vec![(p("a.rs"), 1)]);
+
+    let file = dir.path().join("a.rs");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&file).is_ok() {
+        // Running as root: the file is readable anyway.
+        return;
+    }
+    click("search-line-0-0-1", cx);
+    draw(cx);
+    let code = active_view(&wb, cx);
+    assert!(matches!(
+        code.read_with(cx, |v, _| v.doc_state().clone()),
+        DocState::Error(_)
+    ));
+
+    // Readable again: the reload must not highlight the result. (The
+    // cursor still lands on row 99: the document keeps the jump that
+    // opened it until its first successful load, whatever the view does.)
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::write(&file, numbered(120, 100)).unwrap();
+    let change = Change {
+        path: Arc::from(Path::new("a.rs")),
+        kind: ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while code.read_with(cx, |v, _| v.doc_state() != &DocState::Ready) {
+        assert!(Instant::now() < deadline, "the file did not reload");
+        std::thread::sleep(Duration::from_millis(10));
+        draw(cx);
+    }
+    let highlights = code.read_with(cx, |v, _| v.match_highlights().to_vec());
+    assert!(highlights.is_empty());
 }
 
 /// Draws a frame without running anything: highlight jobs it starts

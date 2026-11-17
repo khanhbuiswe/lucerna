@@ -241,6 +241,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** mở `/Volumes/SSD/proj`, rút ổ, mở folder khác, rồi cắm lại ổ. `proj` đã mất khỏi danh sách recent.
 - **Ghi chú:** đây là hành vi cố ý theo doc comment, nhưng khác VS Code.
 - **Hướng sửa:** chỉ lọc các mục không tồn tại lúc hiển thị, không lọc lúc ghi.
+- **Đã sửa** (commit 30d9e37, 7bae7da): danh sách recent giữ mục không còn trên đĩa, nên Welcome, Open Recent và menu hiện mọi mục. Chọn mục không còn thì nó bị gỡ khỏi danh sách và hiện hộp thoại "Path does not exist" / "The path '…' does not exist on this computer." chỉ có nút OK, như VS Code; menu khi không có cửa sổ nào thì gỡ mà không báo.
 
 ### T4-4 [P3] Watcher không khởi động được thì chỉ ghi log
 
@@ -277,6 +278,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 
   Con trỏ nhảy một lần về dòng 100.
 - **Hướng sửa:** khi doc đã Ready mà dòng không còn tồn tại thì gỡ observer.
+- **Đã sửa** (commit 08ba3d4): dòng không còn tồn tại thì con trỏ về dòng cuối một lần, bỏ highlight và observer bị gỡ; observer cũng bị gỡ khi doc load lỗi, nên reload về sau không highlight lại. (File không đọc được mà sau đó đọc được thì cú nhảy tới dòng của lần mở ban đầu vẫn chạy, vì đó là yêu cầu mở hoàn tất, không phải observer.)
 
 ### T5-4 [P3] Quick Open không nhận `:-N` và `:N,M`
 
@@ -284,6 +286,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Vị trí:** [quick_open/query.rs:42](../../../crates/lucerna-workbench/src/quick_open/query.rs).
 - **Tái hiện:** Cmd+P, gõ `:-1` hoặc `:12,5`, rồi Enter. Không có gì xảy ra. `:N` và `:N:M` thì vẫn chạy.
 - **Hướng sửa:** parse `i64`, số âm thì tính từ cuối file; tách phần dòng/cột theo `[:,#]`.
+- **Đã sửa** (commit 5e87b50): `:-N` đếm từ cuối file; dòng và cột tách bằng `:`, `,` hoặc `#`; dòng kẹp vào `[1, số dòng]` như VS Code. Áp dụng khi Vim tắt.
 
 ### T5-5 [P3] Tìm trong project bằng regex có `$` không khớp file CRLF
 
@@ -291,6 +294,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Vị trí:** [search.rs:122](../../../crates/lucerna-project/src/search.rs).
 - **Tái hiện:** file CRLF có dòng `foo`. Bật regex, tìm `foo$`: không có kết quả. Cmd+F trong chính file đó thì tìm thấy.
 - **Hướng sửa:** thêm `.crlf(true)` vào `RegexMatcherBuilder`.
+- **Đã sửa** (commit 45319d7): matcher regex được dựng với `multi_line(true)`, `crlf(true)` và `line_terminator(Some(b'\n'))`, searcher giữ nguyên LF. `$` và `^` khớp ở cả `\r\n` lẫn `\n`; file LF và tìm literal không đổi.
 
 ## Bổ sung: phần merge multi-window (`d765a50`)
 

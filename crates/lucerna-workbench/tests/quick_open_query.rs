@@ -1,7 +1,7 @@
 //! Quick Open's input prefixes: files, `>` commands, `:` go to line, `@`
 //! document symbols and `#` workspace symbols.
 
-use lucerna_workbench::{QuickOpenQuery, parse_query};
+use lucerna_workbench::{QuickOpenQuery, parse_query, resolve_line};
 
 #[test]
 fn plain_is_files() {
@@ -27,7 +27,7 @@ fn colon_line() {
     assert_eq!(
         parse_query(":12"),
         QuickOpenQuery::GotoLine {
-            line: Some(12),
+            line: Some(12i64),
             column: None
         }
     );
@@ -45,7 +45,7 @@ fn colon_line_col() {
     assert_eq!(
         parse_query(":12:5"),
         QuickOpenQuery::GotoLine {
-            line: Some(12),
+            line: Some(12i64),
             column: Some(5)
         }
     );
@@ -70,7 +70,7 @@ fn colon_garbage_none() {
     assert_eq!(
         parse_query(":-3"),
         QuickOpenQuery::GotoLine {
-            line: None,
+            line: Some(-3),
             column: None
         }
     );
@@ -114,4 +114,30 @@ fn at_colon_groups() {
             group_by_kind: true
         }
     );
+}
+
+#[test]
+fn colon_separators_and_negative_lines() {
+    let g = |line, column| QuickOpenQuery::GotoLine { line, column };
+    assert_eq!(parse_query(":-1"), g(Some(-1), None));
+    assert_eq!(parse_query(":12,5"), g(Some(12), Some(5)));
+    assert_eq!(parse_query(":12#5"), g(Some(12), Some(5)));
+    assert_eq!(parse_query(": 12 , 5 "), g(Some(12), Some(5)));
+    assert_eq!(parse_query(":12:5:9"), g(Some(12), Some(5)));
+    assert_eq!(parse_query(":12,"), g(Some(12), None));
+    assert_eq!(parse_query(":,5"), g(None, Some(5)));
+    assert_eq!(parse_query(":5:-1"), g(Some(5), None));
+    assert_eq!(parse_query(":99999999999999999999"), g(None, None));
+}
+
+#[test]
+fn resolve_line_counts_from_the_end_and_clamps() {
+    assert_eq!(resolve_line(-1, 100), 100);
+    assert_eq!(resolve_line(-100, 100), 1);
+    assert_eq!(resolve_line(-500, 100), 1);
+    assert_eq!(resolve_line(0, 100), 1);
+    assert_eq!(resolve_line(50, 100), 50);
+    assert_eq!(resolve_line(999, 100), 100);
+    assert_eq!(resolve_line(i64::MIN, 100), 1);
+    assert_eq!(resolve_line(-1, 0), 1);
 }

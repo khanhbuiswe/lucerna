@@ -8,7 +8,7 @@ pub(crate) mod picker;
 mod query;
 mod view;
 
-pub use query::{QuickOpenQuery, parse_query};
+pub use query::{QuickOpenQuery, parse_query, resolve_line};
 pub use view::{QuickOpen, QuickOpenEvent};
 
 use std::path::Path;
@@ -145,7 +145,9 @@ impl Workbench {
             snapshot: self.worktree().snapshot(),
             recent: self.recent_relative_to_root(),
             commands,
-            has_editor: self.active_code_view(cx).is_some(),
+            editor_lines: self
+                .active_code_view(cx)
+                .map(|view| view.read(cx).snapshot().line_count()),
             extension_ids: None,
         };
         self.open_quick_open(prefix, sources, window, cx);
@@ -168,7 +170,7 @@ impl Workbench {
             snapshot: self.worktree().snapshot(),
             recent: Arc::from([]),
             commands: Vec::new(),
-            has_editor: false,
+            editor_lines: None,
             extension_ids: Some(ids),
         };
         self.open_quick_open("", sources, window, cx);
