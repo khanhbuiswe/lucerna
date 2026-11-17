@@ -13,6 +13,13 @@ Each release's section below is copied into its GitHub Release page by
 - Save As (Cmd+Shift+S, File → Save As…). Saving an Untitled tab (Cmd+S, or `:w`, `:wq`, `:x` in
   Vim) asks where to save it. The tab becomes the new file and keeps its undo history; with Save
   As on a file, every tab of it moves to the new file and the old file is left as it was.
+- Replace in file. Alt+Cmd+F (Edit > Replace) opens the find bar with a Replace row. Enter in the
+  Replace box replaces one match and Cmd+Enter replaces all; Shift+Cmd+1 and Alt+Cmd+Enter do the
+  same while the bar is open. Each replace is one undo step.
+- Regex replace uses VS Code syntax: `$0`/`$&`, `$1`..`$99`, `$$`, `\n`, `\t`, `\\`, and the case
+  operators `\u \U \l \L`. The Preserve Case toggle (`AB`) keeps each match's casing.
+- Alt+Cmd+C, Alt+Cmd+W, Alt+Cmd+R and Alt+Cmd+P toggle match case, whole word, regex and preserve
+  case in the editor's find bar.
 
 ### Changed
 

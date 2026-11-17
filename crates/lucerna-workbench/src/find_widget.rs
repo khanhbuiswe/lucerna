@@ -14,8 +14,10 @@ use gpui::{
     KeyDownEvent, ParentElement, Render, Styled, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use lucerna_editor::find::{FindQuery, find_all};
+use lucerna_editor::{EditKind, EditPlan, SelectionSet, mk_patch};
 use lucerna_project::build_pattern;
-use lucerna_text::BufferSnapshot;
+use lucerna_project::replace::{ReplacePattern, replace_ranges, replacement_at};
+use lucerna_text::{BufferSnapshot, Point};
 use regex::{Regex, RegexBuilder};
 
 use crate::code_view::{CodeView, DEFAULT_WORD_SEPARATORS};
@@ -24,8 +26,9 @@ use crate::quick_open::picker::wrap_index;
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
-    CLOSE_ICON, ClickHandler, GRID, UI_FONT_SIZE_SMALL, bar_icon_button, bar_separator, match_nav,
-    search_bar_row, search_query_box, search_toolbar, toggle_button,
+    CLOSE_ICON, ClickHandler, GRID, REPLACE_ALL_ICON, REPLACE_ICON, REPLACE_NEXT_ICON,
+    UI_FONT_SIZE_SMALL, bar_icon_button, bar_separator, input_box, match_nav, search_bar_row,
+    search_query_box, search_query_column, search_toolbar, toggle_button, tooltip,
 };
 use crate::{AppState, CommandRegistry, Workbench};
 
@@ -98,6 +101,12 @@ pub struct FindWidget {
     input: Entity<TextInput>,
     /// The input's text.
     query: String,
+    /// The Replace row's input. Its text stays while the bar is hidden.
+    replace_input: Entity<TextInput>,
+    /// The Replace row is shown (and the view can be edited).
+    replace_visible: bool,
+    /// Replacements take the case shape of what they replace.
+    preserve_case: bool,
     case_sensitive: bool,
     whole_word: bool,
     is_regex: bool,
@@ -115,6 +124,9 @@ pub struct FindWidget {
     /// Opened for vim's `/` or `?`: Enter emits
     /// [`FindWidgetEvent::Submitted`] instead of stepping.
     vim: bool,
+    /// Set by a replace: the next search makes the first match at or
+    /// after this offset active (wrapping to the first) and reveals it.
+    pending_pick_from: Option<(u64, usize)>,
     _search: Task<()>,
     _view_changed: gpui::Subscription,
 }
@@ -135,9 +147,17 @@ impl FindWidget {
             });
             input
         });
+        let replace_input = cx.new(|cx| {
+            let mut input = TextInput::new(cx);
+            input.set_placeholder("Replace");
+            input
+        });
         FindWidget {
             view: view.downgrade(),
             input,
+            replace_input,
+            replace_visible: false,
+            preserve_case: false,
             query: String::new(),
             case_sensitive: false,
             whole_word: false,
@@ -149,6 +169,7 @@ impl FindWidget {
             revision: view.read(cx).revision(),
             generation: 0,
             vim: false,
+            pending_pick_from: None,
             _search: Task::ready(()),
             _view_changed: cx.observe(view, |find, view, cx| {
                 let view = view.read(cx);
@@ -161,6 +182,210 @@ impl FindWidget {
 
     pub fn input(&self) -> &Entity<TextInput> {
         &self.input
+    }
+
+    pub fn replace_input(&self) -> &Entity<TextInput> {
+        &self.replace_input
+    }
+
+    /// The Replace row is shown.
+    pub fn replace_visible(&self) -> bool {
+        self.replace_visible
+    }
+
+    pub fn case_sensitive(&self) -> bool {
+        self.case_sensitive
+    }
+
+    pub fn whole_word(&self) -> bool {
+        self.whole_word
+    }
+
+    pub fn is_regex(&self) -> bool {
+        self.is_regex
+    }
+
+    pub fn preserve_case(&self) -> bool {
+        self.preserve_case
+    }
+
+    /// Replacing is possible: the view is alive and editable, and the bar
+    /// is not vim's `/`.
+    fn can_replace(&self, cx: &App) -> bool {
+        !self.vim
+            && self
+                .view
+                .upgrade()
+                .is_some_and(|view| !view.read(cx).is_readonly())
+    }
+
+    /// Shows or hides the Replace row, then focuses the input that applies.
+    pub fn toggle_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_visible = !self.replace_visible && self.can_replace(cx);
+        let focus = if self.replace_visible {
+            self.replace_input.focus_handle(cx)
+        } else {
+            self.input.focus_handle(cx)
+        };
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    pub fn toggle_preserve_case(&mut self, cx: &mut Context<Self>) {
+        self.preserve_case = !self.preserve_case;
+        cx.notify();
+    }
+
+    /// Whether the Replace input has focus.
+    pub(crate) fn replace_input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.replace_visible
+            && self.can_replace(cx)
+            && self.replace_input.focus_handle(cx).is_focused(window)
+    }
+
+    /// The view, when a replace may run: the Replace row is shown, the
+    /// view takes edits, and the matches are of its current text.
+    fn replace_target(&self, cx: &App) -> Option<Entity<CodeView>> {
+        if !self.replace_visible || self.pending || !self.can_replace(cx) {
+            return None;
+        }
+        let view = self.view.upgrade()?;
+        (view.read(cx).revision() == self.revision).then_some(view)
+    }
+
+    /// The query's regex and the Replace input's pattern. The regex is the
+    /// one the bar searched with: whole word is not in it but in the bar's
+    /// matches (`editor.wordSeparators`), so replaces act on those ranges.
+    fn replace_parts(&self, cx: &App) -> Option<(Regex, ReplacePattern)> {
+        let regex =
+            lucerna_editor::find::build_regex(&self.query, self.is_regex, self.case_sensitive)
+                .ok()?;
+        let replace = self.replace_input.read(cx).text();
+        Some((regex, ReplacePattern::parse(replace, self.is_regex)))
+    }
+
+    /// Replaces the active match and moves to the next one (VS Code's
+    /// `editor.action.replaceOne`). When the selection is not the active
+    /// match, only selects the match nearest the cursor.
+    pub fn replace_one(&mut self, cx: &mut Context<Self>) {
+        let Some(view) = self.replace_target(cx) else {
+            return;
+        };
+        let Some(range) = self.active.map(|i| self.matches[i].clone()) else {
+            return self.select_nearest(cx);
+        };
+        let selected = {
+            let view = view.read(cx);
+            let snapshot = view.snapshot();
+            view.selection()
+                .map(|r| snapshot.point_to_offset(r.start)..snapshot.point_to_offset(r.end))
+        };
+        if selected != Some(range.clone()) {
+            return self.select_nearest(cx);
+        }
+        let Some((regex, pattern)) = self.replace_parts(cx) else {
+            return;
+        };
+        // Only the lines of the match: `^`, `$` and `\b` see the same
+        // neighbours there as in the whole text.
+        let snapshot = view.read(cx).snapshot().clone();
+        let first = snapshot.offset_to_point(range.start).row;
+        let last = snapshot.offset_to_point(range.end).row;
+        let lo = snapshot.point_to_offset(Point {
+            row: first,
+            column: 0,
+        });
+        let hi = if last + 1 < snapshot.line_count() {
+            snapshot.point_to_offset(Point {
+                row: last + 1,
+                column: 0,
+            })
+        } else {
+            snapshot.len_bytes()
+        };
+        let text = snapshot.text_for_range(lo..hi);
+        let local = range.start - lo..range.end - lo;
+        let Some(replacement) = replacement_at(&text, &regex, local, &pattern, self.preserve_case)
+        else {
+            return;
+        };
+        let end = range.start + replacement.len();
+        let mut plan = EditPlan::new(
+            vec![(range, Arc::from(replacement))],
+            SelectionSet::cursor(end),
+            EditKind::Other,
+        );
+        plan.stop_before = true;
+        plan.stop_after = true;
+        // Before the edit: the search its revision change starts picks the
+        // match after the replacement.
+        if view.update(cx, |v, cx| v.transact(plan, cx)) {
+            // The offset belongs to the search of this revision only; the
+            // view's change notification reaches us after this returns.
+            self.pending_pick_from = Some((view.read(cx).revision(), end));
+        }
+    }
+
+    /// Makes the match nearest the selection active and selects it.
+    fn select_nearest(&mut self, cx: &mut Context<Self>) {
+        if self.matches.is_empty() {
+            return;
+        }
+        self.active = self.nearest(cx).or(Some(0));
+        self.reveal(cx);
+        cx.notify();
+    }
+
+    /// Replaces every match as one undo step (VS Code's
+    /// `editor.action.replaceAll`). Files over [`BACKGROUND_SEARCH_BYTES`]
+    /// compute the edits on the background executor; they apply only if
+    /// the text did not change meanwhile.
+    pub fn replace_all(&mut self, cx: &mut Context<Self>) {
+        let Some(view) = self.replace_target(cx) else {
+            return;
+        };
+        if self.matches.is_empty() {
+            return;
+        }
+        let Some((regex, pattern)) = self.replace_parts(cx) else {
+            return;
+        };
+        let preserve = self.preserve_case;
+        let matches = self.matches.clone();
+        let snapshot = view.read(cx).snapshot().clone();
+        let small = snapshot.len_bytes() <= BACKGROUND_SEARCH_BYTES;
+        let edits = move || {
+            let text = snapshot.text_for_range(0..snapshot.len_bytes());
+            replace_ranges(&text, &regex, &matches, &pattern, preserve)
+        };
+        if small {
+            apply_replacements(&view, edits(), cx);
+            return;
+        }
+        // Shares the search's task and generation: a new search drops it.
+        self.cancel();
+        let (generation, revision) = (self.generation, self.revision);
+        self.pending = true;
+        let edits =
+            cx.background_spawn(async move { guarded("replace all", edits).unwrap_or_default() });
+        self._search = cx.spawn(async move |this, cx| {
+            let edits = edits.await;
+            this.update(cx, |find, cx| {
+                if find.generation != generation {
+                    return;
+                }
+                find.pending = false;
+                if find.replace_visible
+                    && let Some(view) = find.view.upgrade()
+                    && view.read(cx).revision() == revision
+                {
+                    apply_replacements(&view, edits, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
     }
 
     pub fn matches(&self) -> &[Range<usize>] {
@@ -293,6 +518,11 @@ impl FindWidget {
     /// Searches the view's current snapshot.
     fn search(&mut self, pick: Pick, cx: &mut Context<Self>) {
         self.cancel();
+        if pick == Pick::Nearest {
+            // A replace's offset belongs to the search its edit started;
+            // a search the user starts afterwards must not consume it.
+            self.pending_pick_from = None;
+        }
         let Some(view) = self.view.upgrade() else {
             return;
         };
@@ -354,17 +584,33 @@ impl FindWidget {
         self.error = error;
         self.pending = false;
         let last = self.matches.len().checked_sub(1);
+        // A user edit before this search's revision makes the offset stale.
+        let pick_from = self
+            .pending_pick_from
+            .take()
+            .filter(|(revision, _)| *revision == self.revision)
+            .map(|(_, offset)| offset);
         self.active = match (pick, self.active, last) {
             (_, _, None) => None,
+            _ if let Some(offset) = pick_from => {
+                let i = self.matches.partition_point(|r| r.start < offset);
+                Some(if i < self.matches.len() { i } else { 0 })
+            }
             (Pick::Keep, Some(i), Some(last)) => Some(i.min(last)),
             _ => self.nearest(cx).or(Some(0)),
         };
         let matches = self.matches.clone();
         let active = self.active;
-        if let Some(view) = self.view.upgrade() {
+        // A hidden bar (an option toggled by key) shows no highlights and
+        // does not move the selection.
+        let visible = self
+            .view
+            .upgrade()
+            .is_some_and(|view| view.read(cx).find_widget().is_some());
+        if visible && let Some(view) = self.view.upgrade() {
             view.update(cx, |v, cx| v.set_match_highlights(matches, active, cx));
         }
-        if pick == Pick::Nearest {
+        if visible && (pick == Pick::Nearest || pick_from.is_some()) {
             self.reveal(cx);
         }
         cx.notify();
@@ -396,9 +642,27 @@ impl FindWidget {
         });
     }
 
-    fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let m = &ev.keystroke.modifiers;
-        if ev.keystroke.key != "enter" || m.platform || m.control || m.alt {
+        if m.platform || m.control || m.alt {
+            return;
+        }
+        if ev.keystroke.key == "tab" && self.replace_visible && self.can_replace(cx) {
+            // Tab and Shift+Tab move between the two inputs.
+            let (from, to) = if m.shift {
+                (&self.replace_input, &self.input)
+            } else {
+                (&self.input, &self.replace_input)
+            };
+            if from.focus_handle(cx).is_focused(window) {
+                let to = to.focus_handle(cx);
+                window.focus(&to, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
+        // Enter in the Replace input is the keymap's (`replaceInputFocussed`).
+        if ev.keystroke.key != "enter" || !self.input.focus_handle(cx).is_focused(window) {
             return;
         }
         if self.vim {
@@ -422,6 +686,7 @@ impl Focusable for FindWidget {
 
 impl Render for FindWidget {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let can_replace = self.can_replace(cx);
         let ui = cx.global::<AppState>().theme.ui.clone();
         let view = self.view.clone();
         let toggle =
@@ -485,6 +750,55 @@ impl Render for FindWidget {
                     close(&view, window, cx);
                 }
             });
+        let toggle_replace = bar_icon_button(
+            "find-toggle-replace",
+            REPLACE_ICON,
+            self.replace_visible,
+            cx,
+        )
+        .tooltip(tooltip("Toggle Replace"))
+        .on_click(cx.listener(|find, _, window, cx| find.toggle_replace(window, cx)));
+        let replace_row = (self.replace_visible && can_replace).then(|| {
+            // Replacing needs a match to act on.
+            let ready = !self.matches.is_empty() && self.error.is_none();
+            let action = |id, icon, tip: &'static str, f: fn(&mut Self, &mut Context<Self>)| {
+                let button = bar_icon_button(id, icon, false, cx).tooltip(tooltip(tip));
+                if ready {
+                    button.on_click(cx.listener(move |find, _, _, cx| f(find, cx)))
+                } else {
+                    // The occluding cover keeps the button from seeing the
+                    // mouse: no hover, no click.
+                    button
+                        .relative()
+                        .opacity(0.4)
+                        .cursor_default()
+                        .child(div().absolute().inset_0().occlude())
+                }
+            };
+            let field = search_query_column(input_box(&self.replace_input, cx))
+                .debug_selector(|| "find-replace-input".into())
+                .child(
+                    toggle_button("find-toggle-preserve-case", "AB", self.preserve_case, cx)
+                        .tooltip(tooltip("Preserve Case"))
+                        .on_click(cx.listener(|find, _, _, cx| find.toggle_preserve_case(cx))),
+                );
+            search_bar_row()
+                .debug_selector(|| "find-replace-row".into())
+                .child(field)
+                .child(bar_separator(cx))
+                .child(action(
+                    "find-replace-next",
+                    REPLACE_NEXT_ICON,
+                    "Replace Next Match",
+                    Self::replace_one,
+                ))
+                .child(action(
+                    "find-replace-all",
+                    REPLACE_ALL_ICON,
+                    "Replace All Matches",
+                    Self::replace_all,
+                ))
+        });
         search_toolbar(cx)
             .id("find-widget")
             .debug_selector(|| "find-widget".into())
@@ -493,12 +807,14 @@ impl Render for FindWidget {
             .child(
                 search_bar_row()
                     .child(field)
+                    .children(can_replace.then_some(toggle_replace))
                     .child(bar_separator(cx))
                     .child(nav)
                     .child(div().flex_1())
                     .child(bar_separator(cx))
                     .child(close_button),
             )
+            .children(replace_row)
             .children(self.error.clone().map(|error| {
                 div()
                     .debug_selector(|| "find-error".into())
@@ -511,6 +827,26 @@ impl Render for FindWidget {
     }
 }
 
+/// Applies `edits` (sorted, in `view`'s current offsets) as one undo step;
+/// the selections move through them.
+fn apply_replacements(view: &Entity<CodeView>, edits: Vec<(Range<usize>, String)>, cx: &mut App) {
+    if edits.is_empty() {
+        return;
+    }
+    let edits: Vec<(Range<usize>, Arc<str>)> = edits
+        .into_iter()
+        .map(|(range, text)| (range, Arc::from(text)))
+        .collect();
+    view.update(cx, |v, cx| {
+        let mut selections = v.selections().clone();
+        selections.remap(&mk_patch(&edits));
+        let mut plan = EditPlan::new(edits, selections, EditKind::Other);
+        plan.stop_before = true;
+        plan.stop_after = true;
+        v.transact(plan, cx);
+    });
+}
+
 /// The selected text when the selection is on one line and not empty.
 pub(crate) fn single_line_selection(view: &CodeView) -> Option<String> {
     let range = view.selection()?;
@@ -521,10 +857,15 @@ pub(crate) fn single_line_selection(view: &CodeView) -> Option<String> {
 }
 
 /// Shows the find widget over `view`, pre-filled with a one-line
-/// selection, and focuses its input.
-fn open(view: &Entity<CodeView>, window: &mut Window, cx: &mut App) {
+/// selection. `replace` (`⌥⌘F`) also shows the Replace row and focuses its
+/// input when the Find input already had focus or was just filled in;
+/// plain `⌘F` keeps the row as it is, hidden on a hidden bar.
+fn open(view: &Entity<CodeView>, replace: bool, window: &mut Window, cx: &mut App) {
     let prefill = single_line_selection(view.read(cx));
+    let was_hidden = view.read(cx).find_widget().is_none();
     let find = show(view, cx);
+    let find_had_focus = find.read(cx).input.focus_handle(cx).is_focused(window);
+    let filled = prefill.is_some();
     match prefill {
         Some(text) => find.update(cx, |find, cx| {
             find.input
@@ -532,7 +873,20 @@ fn open(view: &Entity<CodeView>, window: &mut Window, cx: &mut App) {
         }),
         None => find.update(cx, |find, cx| find.search(Pick::Nearest, cx)),
     }
-    let focus = find.focus_handle(cx);
+    let can_replace = find.read(cx).can_replace(cx);
+    find.update(cx, |find, cx| {
+        if replace {
+            find.replace_visible = can_replace;
+        } else if was_hidden {
+            find.replace_visible = false;
+        }
+        cx.notify();
+    });
+    let focus = if replace && can_replace && (find_had_focus || filled) {
+        find.read(cx).replace_input.focus_handle(cx)
+    } else {
+        find.focus_handle(cx)
+    };
     window.focus(&focus, cx);
 }
 
@@ -558,6 +912,7 @@ pub(crate) fn open_for_vim(
     let find = show(view, cx);
     find.update(cx, |find, cx| {
         find.vim = true;
+        find.replace_visible = false;
         find.input
             .update(cx, |input, cx| input.set_text("", window, cx));
     });
@@ -591,9 +946,64 @@ pub(crate) fn close(view: &Entity<CodeView>, window: &mut Window, cx: &mut App) 
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register("actions.find", "Find", |wb, _, window, cx| {
         if let Some(view) = wb.active_code_view(cx) {
-            open(&view, window, cx);
+            open(&view, false, window, cx);
         }
     });
+    commands.register(
+        "editor.action.startFindReplaceAction",
+        "Replace",
+        |wb, _, window, cx| {
+            if let Some(view) = wb.active_code_view(cx) {
+                open(&view, true, window, cx);
+            }
+        },
+    );
+    commands.register("editor.action.replaceOne", "Replace One", |wb, _, _, cx| {
+        if let Some(find) = wb.visible_find_widget(cx) {
+            find.update(cx, FindWidget::replace_one);
+        }
+    });
+    commands.register("editor.action.replaceAll", "Replace All", |wb, _, _, cx| {
+        if let Some(find) = wb.visible_find_widget(cx) {
+            find.update(cx, FindWidget::replace_all);
+        }
+    });
+    commands.register(
+        "toggleFindCaseSensitive",
+        "Toggle Case Sensitive",
+        |wb, _, _, cx| {
+            if let Some(find) = wb.toggle_target(cx) {
+                find.update(cx, FindWidget::toggle_case_sensitive);
+            }
+        },
+    );
+    commands.register(
+        "toggleFindWholeWord",
+        "Toggle Whole Word",
+        |wb, _, _, cx| {
+            if let Some(find) = wb.toggle_target(cx) {
+                find.update(cx, FindWidget::toggle_whole_word);
+            }
+        },
+    );
+    commands.register(
+        "toggleFindRegex",
+        "Toggle Use Regular Expression",
+        |wb, _, _, cx| {
+            if let Some(find) = wb.toggle_target(cx) {
+                find.update(cx, FindWidget::toggle_regex);
+            }
+        },
+    );
+    commands.register(
+        "togglePreserveCase",
+        "Toggle Preserve Case",
+        |wb, _, _, cx| {
+            if let Some(find) = wb.toggle_target(cx) {
+                find.update(cx, FindWidget::toggle_preserve_case);
+            }
+        },
+    );
     commands.register("closeFindWidget", "Close Find", |wb, _, window, cx| {
         // Only while focus is in the view or its widget: Esc elsewhere (the
         // Search panel) must not close it or take focus.
@@ -606,6 +1016,33 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 }
 
 impl Workbench {
+    /// The active code view's find widget for a toggle key: the shown one,
+    /// or a hidden one made on first use, so the option is already set the
+    /// next time the bar opens.
+    fn toggle_target(&self, cx: &mut App) -> Option<Entity<FindWidget>> {
+        let view = self.active_code_view(cx)?;
+        if let Some(find) = view.read(cx).find_widget_any().cloned() {
+            return Some(find);
+        }
+        let find = cx.new(|cx| FindWidget::new(&view, cx));
+        view.update(cx, |v, _| v.set_find_widget_hidden(find.clone()));
+        Some(find)
+    }
+
+    /// The active code view's find widget, while it is shown.
+    fn visible_find_widget(&self, cx: &App) -> Option<Entity<FindWidget>> {
+        self.active_code_view(cx)
+            .and_then(|view| view.read(cx).find_widget().cloned())
+    }
+
+    /// Whether the active code view shows its find widget with focus in
+    /// the Replace input.
+    pub(crate) fn replace_input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.active_code_view(cx)
+            .and_then(|view| view.read(cx).find_widget().cloned())
+            .is_some_and(|find| find.read(cx).replace_input_focused(window, cx))
+    }
+
     /// Whether the active code view shows its find widget.
     pub(crate) fn find_widget_visible(&self, cx: &App) -> bool {
         self.active_code_view(cx)

@@ -59,6 +59,15 @@ pub const FILES_ICON: &[u8] = icons::FILES;
 /// A magnifying glass.
 pub const SEARCH_ICON: &[u8] = icons::SEARCH;
 
+/// Lucide `replace`: the find bar's Toggle Replace button.
+pub const REPLACE_ICON: &[u8] = icons::REPLACE;
+
+/// Lucide `replace-all`: the Replace All Matches button.
+pub const REPLACE_ALL_ICON: &[u8] = icons::REPLACE_ALL;
+
+/// An arrow into a bar: Replace Next Match.
+pub const REPLACE_NEXT_ICON: &[u8] = icons::ARROW_RIGHT_TO_LINE;
+
 /// Four blocks, one apart: the Extensions toggle.
 pub const BLOCKS_ICON: &[u8] = icons::BLOCKS;
 

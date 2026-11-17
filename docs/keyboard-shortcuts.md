@@ -10,6 +10,13 @@ Lucerna keeps VS Code's default macOS shortcuts. These are the main ones.
 | Cmd+Shift+P | Command palette |
 | Ctrl+G | Go to line |
 | Cmd+F | Find in file |
+| Alt+Cmd+F | Replace in file |
+| Shift+Cmd+1 | Replace one (find bar open) |
+| Alt+Cmd+Enter | Replace all (find bar open) |
+| Alt+Cmd+C | Toggle match case (in the editor) |
+| Alt+Cmd+W | Toggle whole word (in the editor) |
+| Alt+Cmd+R | Toggle regex (in the editor) |
+| Alt+Cmd+P | Toggle preserve case (in the editor) |
 | Cmd+Shift+F | Search the project |
 | Cmd+B | Toggle sidebar |
 | Cmd+Shift+E | Explorer |

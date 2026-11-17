@@ -2484,6 +2484,10 @@ impl Workbench {
         }
         flag("findWidgetVisible", self.find_widget_visible(cx));
         flag(
+            "replaceInputFocussed",
+            self.replace_input_focused(window, cx),
+        );
+        flag(
             "lspHoverVisible",
             self.active_code_view(cx)
                 .is_some_and(|v| v.read(cx).hover().is_visible()),

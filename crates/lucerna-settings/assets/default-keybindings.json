@@ -197,5 +197,17 @@
   { "key": "cmd+c", "command": "filesExplorer.copy", "when": "filesExplorerFocus && !textInputFocus" },
   { "key": "cmd+v", "command": "filesExplorer.paste", "when": "filesExplorerFocus && !textInputFocus" },
   { "key": "cmd+d", "command": "filesExplorer.duplicate", "when": "filesExplorerFocus && !textInputFocus" },
-  { "key": "escape", "command": "filesExplorer.cancelCut", "when": "filesExplorerFocus && explorerResourceCut && !textInputFocus" }
+  { "key": "escape", "command": "filesExplorer.cancelCut", "when": "filesExplorerFocus && explorerResourceCut && !textInputFocus" },
+
+  { "key": "alt+cmd+f", "command": "editor.action.startFindReplaceAction", "when": "editorFocus" },
+
+  { "key": "shift+cmd+1", "command": "editor.action.replaceOne", "when": "editorFocus && findWidgetVisible" },
+  { "key": "alt+cmd+enter", "command": "editor.action.replaceAll", "when": "editorFocus && findWidgetVisible" },
+  { "key": "enter", "command": "editor.action.replaceOne", "when": "editorFocus && replaceInputFocussed" },
+  { "key": "cmd+enter", "command": "editor.action.replaceAll", "when": "editorFocus && replaceInputFocussed" },
+
+  { "key": "alt+cmd+c", "command": "toggleFindCaseSensitive", "when": "editorFocus && !searchViewletFocus" },
+  { "key": "alt+cmd+w", "command": "toggleFindWholeWord", "when": "editorFocus && !searchViewletFocus" },
+  { "key": "alt+cmd+r", "command": "toggleFindRegex", "when": "editorFocus && !searchViewletFocus" },
+  { "key": "alt+cmd+p", "command": "togglePreserveCase", "when": "editorFocus && !searchViewletFocus" }
 ]

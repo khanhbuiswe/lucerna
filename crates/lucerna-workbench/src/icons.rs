@@ -30,6 +30,9 @@ pub const SCALE: &[u8] = lucide!("scale");
 pub const TERMINAL: &[u8] = lucide!("terminal");
 pub const IMAGE: &[u8] = lucide!("image");
 pub const SEARCH: &[u8] = lucide!("search");
+pub const REPLACE: &[u8] = lucide!("replace");
+pub const REPLACE_ALL: &[u8] = lucide!("replace-all");
+pub const ARROW_RIGHT_TO_LINE: &[u8] = lucide!("arrow-right-to-line");
 pub const FILES: &[u8] = lucide!("files");
 pub const X: &[u8] = lucide!("x");
 pub const CHEVRON_RIGHT: &[u8] = lucide!("chevron-right");
@@ -91,6 +94,9 @@ pub const ALL: &[(&str, &[u8])] = &[
     ("terminal", TERMINAL),
     ("image", IMAGE),
     ("search", SEARCH),
+    ("replace", REPLACE),
+    ("replace-all", REPLACE_ALL),
+    ("arrow-right-to-line", ARROW_RIGHT_TO_LINE),
     ("files", FILES),
     ("x", X),
     ("chevron-right", CHEVRON_RIGHT),

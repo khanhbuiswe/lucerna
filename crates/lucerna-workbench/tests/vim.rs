@@ -1148,3 +1148,38 @@ fn click_in_insert_mode_stays_in_insert(cx: &mut TestAppContext) {
     assert_eq!(text_of(&view, cx), "abc\ndxef\n");
     assert_eq!(cursor(&view, cx), pt(1, 1));
 }
+
+#[gpui::test]
+fn vim_search_hides_replace(cx: &mut TestAppContext) {
+    let (_wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
+    keys("alt-cmd-f", cx);
+    let find = view.read_with(cx, |v, _| v.find_widget().cloned().expect("find is shown"));
+    assert!(find.read_with(cx, |f, _| f.replace_visible()));
+    keys("escape", cx);
+    keys("/", cx);
+    assert!(find_visible(&view, cx));
+    assert!(cx.debug_bounds("find-replace-row").is_none());
+    assert!(cx.debug_bounds("find-toggle-replace").is_none());
+}
+
+#[gpui::test]
+fn vim_search_after_replace_row_keeps_focus_in_find_input(cx: &mut TestAppContext) {
+    let (_wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
+    keys("alt-cmd-f", cx);
+    keys("escape", cx);
+    keys("/", cx);
+    keys("tab", cx);
+    type_text("foo", cx);
+    let find = view.read_with(cx, |v, _| v.find_widget().cloned().expect("find is shown"));
+    let (find_text, replace_text) = cx.update(|_, cx| {
+        let f = find.read(cx);
+        (
+            f.input().read(cx).text().to_owned(),
+            f.replace_input().read(cx).text().to_owned(),
+        )
+    });
+    assert_eq!(find_text, "foo");
+    assert_eq!(replace_text, "");
+    keys("escape", cx);
+    assert!(!find_visible(&view, cx));
+}

@@ -42,7 +42,8 @@ pub(crate) struct Item {
     pub place: Place,
 }
 
-pub(crate) fn mk_patch(edits: &[(Range<usize>, Arc<str>)]) -> Patch {
+/// The patch for `edits`: sorted, non-overlapping ranges in old offsets.
+pub fn mk_patch(edits: &[(Range<usize>, Arc<str>)]) -> Patch {
     let mut delta = 0isize;
     let mut out = Vec::with_capacity(edits.len());
     for (range, text) in edits {

@@ -126,7 +126,8 @@ ISC; the icons it lists as derived from Feather are also under MIT (Copyright (c
 
 Icons: `folder`, `folder-open`, `file`, `file-code`, `braces`, `book-open`,
 `settings`, `lock`, `git-branch`, `scale`, `terminal`, `image`, `search`, `files`,
-`x`, `chevron-right`, `chevron-down`, `chevron-up`, `blocks`, `loader-circle`.
+`x`, `chevron-right`, `chevron-down`, `chevron-up`, `blocks`, `loader-circle`,
+`replace`, `replace-all`, `arrow-right-to-line`.
 
 The Seti file icons are the SVGs of seti-ui (https://github.com/jesseweed/seti-ui,
 commit `2d6c5e68`), MIT (Copyright (c) 2014 Jesse Weed), in

@@ -216,6 +216,8 @@ mod tests {
             (event("c", None, alt_cmd()), "alt+cmd+c"),
             (event("w", None, alt_cmd()), "alt+cmd+w"),
             (event("r", None, alt_cmd()), "alt+cmd+r"),
+            (event("f", None, alt_cmd()), "alt+cmd+f"),
+            (event("p", None, alt_cmd()), "alt+cmd+p"),
             (event("f", Some("ƒ"), alt_shift()), "alt+shift+f"),
             (event("j", None, cmd_shift()), "shift+cmd+j"),
             (event("f4", None, Modifiers::none()), "f4"),
@@ -389,6 +391,11 @@ mod tests {
             (event("end", None, cmd()), "cmd+end"),
             (event("c", None, ctrl_shift()), "ctrl+shift+c"),
             (event("v", None, ctrl_shift()), "ctrl+shift+v"),
+        ]);
+        // Find bar replace. macOS reports ⌘⇧1 as ⌘ + `!`.
+        rows.extend([
+            (event("!", None, cmd()), "shift+cmd+1"),
+            (event("enter", Some("\n"), alt_cmd()), "alt+cmd+enter"),
         ]);
         rows
     }
