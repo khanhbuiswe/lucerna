@@ -1,6 +1,6 @@
 # Sửa các lỗi còn mở sau release 0.1.0, rồi V2b
 
-Ngày 2026-11-17. Trạng thái: đã triển khai trên nhánh `claude/p3-fixes`.
+Ngày 2026-11-17. Trạng thái: đã triển khai, đã merge vào `main` (9a95859).
 
 ## 1. Ý định
 
@@ -78,7 +78,7 @@ Mỗi mục: hướng sửa đã chốt, và test cần có. Vị trí và cách
 
 - [x] Review: đánh dấu "Đã sửa" kèm commit cho từng mục, cập nhật dòng tóm tắt.
 - [x] Roadmap §1.3: dòng 5 ghi Git và chuyển nhánh đã xong (đã merge); thêm dòng cho đợt sửa lỗi này.
-- [ ] Merge `claude/p3-fixes` vào `main`.
+- [x] Merge `claude/p3-fixes` vào `main`.
 - [ ] Viết plan V2b từ spec có sẵn, làm trên nhánh `claude/vim-v2b`.
 
 ## 6. Thiết kế T1-1: cảnh báo byte sai encoding
