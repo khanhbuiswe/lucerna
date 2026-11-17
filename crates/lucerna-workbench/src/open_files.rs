@@ -95,7 +95,8 @@ impl WatchState {
 
     /// Watches the directories `self.files` need, and only those: each
     /// file's parent, or its nearest existing ancestor once the parent is
-    /// removed. Returns the directories watched by this call.
+    /// removed. A directory already in `dirs` is kept as is. Returns the
+    /// directories watched by this call.
     fn watch_dirs(&mut self) -> Vec<PathBuf> {
         let mut wanted = BTreeSet::new();
         for (file, real) in &self.files {
@@ -141,7 +142,21 @@ impl WatchState {
     /// Moves the watches to follow folders that were removed or came
     /// back, and returns the files (as given) in a directory watched just
     /// now: they may have been written before the watch got there.
-    fn rewatch(&mut self) -> Vec<PathBuf> {
+    ///
+    /// `changed` holds the batch's event paths. A watched folder among
+    /// them may have been removed and created again within the batch; it
+    /// is still in `dirs`, but a watch on the old folder (inotify, Windows)
+    /// died with it, so it is watched anew. Writes inside a folder do not
+    /// name the folder itself and renew nothing.
+    fn rewatch(&mut self, changed: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
+        let watcher = &mut self.watcher;
+        self.dirs.retain(|dir| {
+            let replaced = changed.contains(dir) || changed.contains(&real_path(dir));
+            if replaced {
+                let _ = watcher.unwatch(dir);
+            }
+            !replaced
+        });
         let added = self.watch_dirs();
         if added.is_empty() {
             return Vec::new();
@@ -188,15 +203,6 @@ fn debounce_loop(
         let Some(state) = state.upgrade() else {
             return;
         };
-        let (files, rewatched) = {
-            let mut state = lock(&state);
-            // Folders may have been removed or created: move the watches
-            // now rather than at the next `set_files`.
-            let rewatched = state.rewatch();
-            (state.files.clone(), rewatched)
-        };
-        drop(state);
-        let (given, reals): (Vec<PathBuf>, Vec<PathBuf>) = files.into_iter().unzip();
         let mut changed = Vec::new();
         let mut everything = false;
         for event in events {
@@ -209,10 +215,19 @@ fn debounce_loop(
                 Err(_) => everything = true,
             }
         }
+        let changed: BTreeSet<PathBuf> = changed.iter().map(|p| real_path(p)).collect();
+        let (files, rewatched) = {
+            let mut state = lock(&state);
+            // Folders may have been removed or created: move the watches
+            // now rather than at the next `set_files`.
+            let rewatched = state.rewatch(&changed);
+            (state.files.clone(), rewatched)
+        };
+        drop(state);
+        let (given, reals): (Vec<PathBuf>, Vec<PathBuf>) = files.into_iter().unzip();
         let mut batch: Vec<PathBuf> = if everything {
             given
         } else {
-            let changed: BTreeSet<PathBuf> = changed.iter().map(|p| real_path(p)).collect();
             // A link matches by its target now, or by the target it had
             // when set, which a removed target no longer resolves to.
             given
@@ -277,5 +292,60 @@ mod tests {
         assert_eq!(nearest_existing_dir(&missing), Some(dir.path().to_path_buf()));
         std::fs::create_dir_all(&missing).unwrap();
         assert_eq!(nearest_existing_dir(&missing), Some(missing));
+    }
+
+    fn state() -> WatchState {
+        WatchState {
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            files: Vec::new(),
+            dirs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rewatch_moves_down_to_a_recreated_parent_and_reports_its_files() {
+        let root = tempfile::TempDir::new().unwrap();
+        let dist = root.path().join("dist");
+        let bundle = dist.join("bundle.js");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(&bundle, "1").unwrap();
+        let mut state = state();
+        state.set_files(vec![bundle.clone()]);
+        assert_eq!(state.dirs, std::slice::from_ref(&dist));
+
+        std::fs::remove_dir_all(&dist).unwrap();
+        assert_eq!(state.rewatch(&BTreeSet::new()), Vec::<PathBuf>::new());
+        assert_eq!(state.dirs, [root.path().to_path_buf()]);
+
+        std::fs::create_dir_all(&dist).unwrap();
+        assert_eq!(state.rewatch(&BTreeSet::new()), [bundle]);
+        assert_eq!(state.dirs, [dist]);
+    }
+
+    /// A folder removed and created again within one batch is still in
+    /// `dirs`, but inotify's watch died with the old folder: its own path
+    /// among the events forces a new watch.
+    #[test]
+    fn rewatch_renews_a_watched_folder_reported_in_the_batch() {
+        let root = tempfile::TempDir::new().unwrap();
+        let dist = root.path().join("dist");
+        let bundle = dist.join("bundle.js");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(&bundle, "1").unwrap();
+        let mut state = state();
+        state.set_files(vec![bundle.clone()]);
+
+        // A write inside the folder does not renew it.
+        let write = BTreeSet::from([real_path(&bundle)]);
+        assert_eq!(state.rewatch(&write), Vec::<PathBuf>::new());
+
+        std::fs::remove_dir_all(&dist).unwrap();
+        std::fs::create_dir_all(&dist).unwrap();
+        let replaced = BTreeSet::from([real_path(&dist)]);
+        assert_eq!(state.rewatch(&replaced), std::slice::from_ref(&bundle));
+        assert_eq!(state.dirs, std::slice::from_ref(&dist));
+        // The path as watched matches too.
+        assert_eq!(state.rewatch(&BTreeSet::from([dist.clone()])), [bundle]);
+        assert_eq!(state.dirs, [dist]);
     }
 }
