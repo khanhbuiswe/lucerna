@@ -17,6 +17,7 @@ mod repeat;
 mod scroll;
 mod search;
 mod state;
+mod substitute;
 #[cfg(test)]
 mod test_util;
 mod visual;
@@ -33,6 +34,7 @@ pub use ex_run::ExCommand;
 pub use register::{Clipboard, ClipboardMode, RegContent, RegKind};
 pub use repeat::{ReplayStep, Typed};
 pub use state::{Vim, VimGlobals};
+pub use substitute::{BACKGROUND_SUBSTITUTE_BYTES, SubstituteJob, SubstituteResult};
 pub use visual::{VimSelection, block_ranges, exclusive_range, yank_text};
 
 /// A key as the vim layer sees it, already translated by the workbench.
@@ -118,6 +120,8 @@ pub struct Settings {
     pub joinspaces: bool,
     /// `vim.tildeop`: `~` is an operator like `g~`.
     pub tildeop: bool,
+    /// `vim.gdefault`: `:s` replaces every match in a line unless it has `g`.
+    pub gdefault: bool,
 }
 
 impl Default for Settings {
@@ -132,6 +136,7 @@ impl Default for Settings {
             change_word_includes_whitespace: false,
             joinspaces: true,
             tildeop: false,
+            gdefault: false,
         }
     }
 }
@@ -262,4 +267,9 @@ pub enum Outcome {
     ///   step, Escape, ends the session), and its typing is not recorded
     ///   either: the record already holds one copy.
     Replay(Vec<ReplayStep>),
+    /// A `:s` on a large buffer: run [`SubstituteJob::run`] on the view's
+    /// snapshot (it is `Send`, so it may run in the background), then pass
+    /// the result to [`Vim::finish_substitute`] if the text is unchanged.
+    /// Vim's state is unchanged until then.
+    Substitute(SubstituteJob),
 }

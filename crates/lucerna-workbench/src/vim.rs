@@ -777,6 +777,35 @@ impl VimLayer {
                 self.replay(view, steps, cx);
                 true
             }
+            Ok(Outcome::Substitute(job)) => {
+                // Task 6 runs a large one in the background; for now it
+                // runs here, on the view's current text.
+                let finished = {
+                    let v = view.read(cx);
+                    let edit = (!v.is_readonly()).then(|| (v.edit_config(cx), v.edit_language(cx)));
+                    let Some(state) = self.views.get_mut(&id) else {
+                        return false;
+                    };
+                    let info = Info {
+                        view: v,
+                        cache: self.match_cache.get(&id),
+                        edit,
+                    };
+                    let result = job.run(v.snapshot());
+                    let (vim, globals, settings) =
+                        (&mut state.vim, &mut self.globals, &self.settings);
+                    catch_panic("vim substitute", || {
+                        vim.finish_substitute(&job, result, &info, globals, settings)
+                    })
+                };
+                match finished {
+                    Ok(Outcome::Handled(actions)) => {
+                        self.apply(view, actions, cx);
+                    }
+                    _ => cx.notify(),
+                }
+                true
+            }
             Ok(Outcome::Retry(query)) => {
                 match retry {
                     Retry::Async => self.search_then_run(redo, view, query, cx),
@@ -1396,6 +1425,7 @@ fn read_settings(store: SettingsView<'_>) -> (bool, Settings) {
             .get("vim.joinspaces", None)
             .unwrap_or(defaults.joinspaces),
         tildeop: store.get("vim.tildeop", None).unwrap_or(defaults.tildeop),
+        gdefault: store.get("vim.gdefault", None).unwrap_or(defaults.gdefault),
     };
     (enabled, settings)
 }

@@ -8,8 +8,9 @@ use lucerna_text::Point;
 
 use crate::classify::line;
 use crate::edit;
-use crate::ex::{self, Command, ExError};
+use crate::ex::{self, Command, ExError, SubstituteArgs};
 use crate::operator::{MotionKind, OpRange, Operator, row_start};
+use crate::substitute::{BACKGROUND_SUBSTITUTE_BYTES, SubstituteJob};
 use crate::visual::line_end;
 use crate::{Action, Mode, Outcome, Settings, ViewInfo, Vim, VimGlobals};
 
@@ -31,6 +32,12 @@ pub enum ExCommand {
     },
     /// `:noh`
     NoHighlight,
+}
+
+/// What a `:` command did: actions now, or a substitute to run in the background.
+enum Exec {
+    Actions(Vec<Action>),
+    Job(SubstituteJob),
 }
 
 fn is_visual(mode: Mode) -> bool {
@@ -86,7 +93,16 @@ impl Vim {
         let result = self.run_ex(line, view, g, s);
         g.registers.set_last_command(line.to_string());
         match result {
-            Ok(done) => actions.extend(done),
+            Ok(Exec::Actions(done)) => actions.extend(done),
+            // Leaving Visual produced actions the job would lose: run it
+            // here (the workbench's `:` key has already left Visual).
+            Ok(Exec::Job(job)) if actions.is_empty() => return Outcome::Substitute(job),
+            Ok(Exec::Job(job)) => {
+                let result = job.run(view.snapshot());
+                if let Outcome::Handled(done) = self.finish_substitute(&job, result, view, g, s) {
+                    actions.extend(done);
+                }
+            }
             Err(e) => {
                 actions.push(Action::Message(e.message()));
                 actions.push(Action::Failed);
@@ -101,7 +117,7 @@ impl Vim {
         view: &dyn ViewInfo,
         g: &mut VimGlobals,
         s: &Settings,
-    ) -> Result<Vec<Action>, ExError> {
+    ) -> Result<Exec, ExError> {
         let parsed = ex::parse(text)?;
         let snap = view.snapshot();
         let last_row = snap.line_count().saturating_sub(1);
@@ -124,36 +140,58 @@ impl Vim {
                 None => rows.clone(),
             }
         };
-        let run = |c| Ok(vec![Action::RunEx(c)]);
-        match parsed.command {
-            Command::Goto => Ok(self.go_to_line(*rows.end(), view, g, s)),
-            Command::Write { bang } => run(ExCommand::Save { overwrite: bang }),
-            Command::WriteAll => run(ExCommand::SaveAll),
-            Command::Quit { bang } => run(ExCommand::Close { revert: bang }),
-            Command::QuitAll => run(ExCommand::CloseAll),
-            Command::WriteQuit { bang } => run(ExCommand::SaveAndClose {
-                only_if_dirty: false,
-                overwrite: bang,
-            }),
-            Command::Exit { bang } => run(ExCommand::SaveAndClose {
-                only_if_dirty: true,
-                overwrite: bang,
-            }),
-            Command::NoHighlight => run(ExCommand::NoHighlight),
+        let run = |c| Ok(Exec::Actions(vec![Action::RunEx(c)]));
+        let actions = match parsed.command {
+            Command::Goto => self.go_to_line(*rows.end(), view, g, s),
+            Command::Write { bang } => return run(ExCommand::Save { overwrite: bang }),
+            Command::WriteAll => return run(ExCommand::SaveAll),
+            Command::Quit { bang } => return run(ExCommand::Close { revert: bang }),
+            Command::QuitAll => return run(ExCommand::CloseAll),
+            Command::WriteQuit { bang } => {
+                return run(ExCommand::SaveAndClose {
+                    only_if_dirty: false,
+                    overwrite: bang,
+                });
+            }
+            Command::Exit { bang } => {
+                return run(ExCommand::SaveAndClose {
+                    only_if_dirty: true,
+                    overwrite: bang,
+                });
+            }
+            Command::NoHighlight => return run(ExCommand::NoHighlight),
             Command::Delete { register, count } => {
-                Ok(self.ex_operator(Operator::Delete, counted(count), register, view, g, s))
+                self.ex_operator(Operator::Delete, counted(count), register, view, g, s)
             }
             Command::Yank { register, count } => {
-                Ok(self.ex_operator(Operator::Yank, counted(count), register, view, g, s))
+                self.ex_operator(Operator::Yank, counted(count), register, view, g, s)
             }
             Command::Shift {
                 right,
                 depth,
                 count,
-            } => Ok(self.ex_shift(counted(count), !right, depth, view)),
-            // Task 3.
-            Command::Substitute(_) => Ok(Vec::new()),
-        }
+            } => self.ex_shift(counted(count), !right, depth, view),
+            Command::Substitute(args) => {
+                let count = match &args {
+                    SubstituteArgs::Repeat { count, .. } | SubstituteArgs::New { count, .. } => {
+                        *count
+                    }
+                };
+                let job = self.substitute_job(args, counted(count), g, s)?;
+                // Task 4 adds `g.macro_running()`: a macro runs it at once.
+                let macro_running = false;
+                if view.snapshot().len_bytes() <= BACKGROUND_SUBSTITUTE_BYTES || macro_running {
+                    let result = job.run(view.snapshot());
+                    match self.finish_substitute(&job, result, view, g, s) {
+                        Outcome::Handled(done) => done,
+                        _ => Vec::new(),
+                    }
+                } else {
+                    return Ok(Exec::Job(job));
+                }
+            }
+        };
+        Ok(Exec::Actions(actions))
     }
 
     /// A bare range: like `{N}G` on its last row.
@@ -244,7 +282,7 @@ impl Vim {
         actions
     }
 
-    fn set_cursor_after_edit(&mut self, cursor: Point) {
+    pub(crate) fn set_cursor_after_edit(&mut self, cursor: Point) {
         self.cursor = cursor;
         self.anchor = cursor;
         self.goal = None;

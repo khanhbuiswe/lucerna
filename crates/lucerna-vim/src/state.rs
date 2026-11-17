@@ -35,6 +35,8 @@ pub struct VimGlobals {
     pub(crate) marks: HashMap<Arc<Path>, FileMarks>,
     /// The last search and whether it went backward, for `n` and `N`.
     pub(crate) last_search: Option<(SearchQuery, bool)>,
+    /// The last `:s`, for `:s` without a pattern and `~`.
+    pub(crate) last_substitute: Option<crate::substitute::LastSubstitute>,
     pub(crate) registers: Registers,
     /// The last change, for `.`.
     pub(crate) last_change: Option<LastChange>,

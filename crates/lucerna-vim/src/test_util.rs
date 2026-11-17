@@ -696,6 +696,17 @@ impl Run<'_> {
                 }
                 self.view.end_group();
             }
+            Outcome::Substitute(job) => {
+                let result = job.run(&self.view.snapshot);
+                let out = self.vim.finish_substitute(
+                    &job,
+                    result,
+                    self.view,
+                    self.globals,
+                    self.settings,
+                );
+                self.outcome(out, false, from);
+            }
             Outcome::Unhandled | Outcome::Retry(_) => {}
         }
     }
