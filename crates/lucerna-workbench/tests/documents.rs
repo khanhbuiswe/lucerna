@@ -494,6 +494,12 @@ fn status_counts_selections(cx: &mut TestAppContext) {
     assert_eq!(cursor(cx), "2 selections");
     set(vec![sel(1, 6, 8), sel(2, 9, 12)], cx);
     assert_eq!(cursor(cx), "2 selections (5 characters selected)");
+    // No change: the cached count answers the same.
+    assert_eq!(cursor(cx), "2 selections (5 characters selected)");
+    // Typing replaces both selections and leaves two empty cursors: the
+    // count must follow the edit, not the cache.
+    view.update(cx, |v, cx| assert!(v.type_text("x", cx)));
+    assert_eq!(cursor(cx), "2 selections");
 }
 
 #[gpui::test]
