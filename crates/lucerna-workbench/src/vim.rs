@@ -74,6 +74,15 @@ enum Retry {
     No,
 }
 
+/// What a [`VimLayer::replay`] runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayKind {
+    /// The steps of an [`Outcome::Replay`]: `.`, a counted insert.
+    Dot,
+    /// The keys of an [`Outcome::Macro`]: `@a`.
+    Macro,
+}
+
 /// The matches of one query in one revision of a view's text.
 struct MatchCache {
     revision: u64,
@@ -131,8 +140,12 @@ pub struct VimLayer {
     /// and its undo step stays open until it ends.
     replaying: bool,
     /// Set when a replay met a typing step outside Insert mode (or a
-    /// macro's key failed): the rest is dropped.
+    /// macro's key failed, or macros nested too deep): the rest is
+    /// dropped, the rest of every macro running included.
     replay_stopped: bool,
+    /// Whether the last key or command [`VimLayer::run`] ran returned
+    /// [`Action::Failed`]: a running macro stops there.
+    last_failed: bool,
     /// How many [`Outcome::Macro`]s are running, one inside the other.
     macro_depth: u32,
     /// Per file, the edits vim made whose marks it already moved, oldest
@@ -188,6 +201,7 @@ impl VimLayer {
             match_cache: HashMap::new(),
             replaying: false,
             replay_stopped: false,
+            last_failed: false,
             macro_depth: 0,
             own_edits: HashMap::new(),
             key_generation: 0,
@@ -857,6 +871,7 @@ impl VimLayer {
             }
         };
         let submitted = matches!(redo, Redo::Search { .. });
+        self.last_failed = false;
         match outcome {
             Err(_) => {
                 self.recover(view, cx);
@@ -868,26 +883,12 @@ impl VimLayer {
                 false
             }
             Ok(Outcome::Replay(steps)) => {
-                self.replay(view, steps, cx);
+                self.replay(view, steps, ReplayKind::Dot, cx);
                 true
             }
             Ok(Outcome::Macro(keys)) => {
-                // For now a macro runs as a replay of its keys; nested
-                // ones (`@a` inside `@a`) stop at a fixed depth.
-                if self.macro_depth >= MAX_MACRO_DEPTH {
-                    return true;
-                }
-                self.macro_depth += 1;
-                self.globals.set_macro_running(true);
                 let steps = keys.into_iter().map(ReplayStep::Key).collect();
-                self.replay(view, steps, cx);
-                self.macro_depth -= 1;
-                if self.macro_depth == 0 {
-                    self.globals.set_macro_running(false);
-                    if let Some(state) = self.views.get_mut(&id) {
-                        state.vim.macro_ended();
-                    }
-                }
+                self.replay(view, steps, ReplayKind::Macro, cx);
                 true
             }
             Ok(Outcome::Substitute(job)) => {
@@ -925,6 +926,7 @@ impl VimLayer {
                 true
             }
             Ok(Outcome::Handled(actions)) => {
+                self.last_failed = actions.contains(&Action::Failed);
                 let synced = self.apply(view, actions, cx);
                 if submitted && !synced {
                     // No match: the view's selection is where the
@@ -1020,6 +1022,7 @@ impl VimLayer {
         };
         match finished {
             Ok(Outcome::Handled(actions)) => {
+                self.last_failed = actions.contains(&Action::Failed);
                 self.apply(view, actions, cx);
             }
             Ok(_) => cx.notify(),
@@ -1104,20 +1107,44 @@ impl VimLayer {
         );
     }
 
-    /// Runs the steps of an [`Outcome::Replay`] in order, as one undo
-    /// step: keys go through [`VimLayer::feed`] (searches run at once),
-    /// an operator's search step through [`Vim::search_submitted`] from
-    /// vim's cursor (at once, no widget; with no operator pending it drops
-    /// the rest), and typing goes through the
-    /// view's typing path, unrecorded. A typing
+    /// Runs the steps of an [`Outcome::Replay`] (`run` is
+    /// [`ReplayKind::Dot`]) or the keys of an [`Outcome::Macro`]
+    /// ([`ReplayKind::Macro`]) in order, as one undo step: keys go through
+    /// [`VimLayer::feed`] (searches run at once), except that a key other
+    /// than Escape while vim is in Insert mode types; an operator's search
+    /// step goes through [`Vim::search_submitted`] from vim's cursor (at
+    /// once, no widget; with no operator pending it drops the rest), and
+    /// typing goes through the view's typing path, unrecorded. A typing
     /// step outside Insert mode (the command that should have entered it
-    /// failed) drops the rest. A key may return a replay of its own (a
-    /// counted insert ends): it runs here, in place.
+    /// failed) drops the rest. A key may return a replay or a macro of its
+    /// own (a counted insert ends, `.` or `@b` in a macro): it runs here,
+    /// in place.
+    ///
+    /// While a macro runs, a key that fails stops the whole run, every
+    /// macro it is nested in included, and so do macros nested deeper
+    /// than [`MAX_MACRO_DEPTH`].
     ///
     /// The user's Escape that ends a counted insert replays too; the
     /// Insert session's step is then still open and the replay joins it.
-    fn replay(&mut self, view: &Entity<CodeView>, steps: Vec<ReplayStep>, cx: &mut Context<Self>) {
+    fn replay(
+        &mut self,
+        view: &Entity<CodeView>,
+        steps: Vec<ReplayStep>,
+        run: ReplayKind,
+        cx: &mut Context<Self>,
+    ) {
         let id = view.entity_id();
+        if run == ReplayKind::Macro {
+            if self.macro_depth >= MAX_MACRO_DEPTH {
+                tracing::warn!("vim: macros nested deeper than {MAX_MACRO_DEPTH}");
+                self.replay_stopped = true;
+                return;
+            }
+            self.macro_depth += 1;
+            if self.macro_depth == 1 {
+                self.globals.set_macro_running(true);
+            }
+        }
         let outermost = !self.replaying;
         if outermost {
             self.replaying = true;
@@ -1134,7 +1161,25 @@ impl VimLayer {
             }
             match step {
                 ReplayStep::Key(key) => {
-                    self.feed(key, view, Retry::Sync, cx);
+                    let insert = self
+                        .views
+                        .get(&id)
+                        .is_some_and(|s| s.vim.mode() == Mode::Insert);
+                    if insert && key != Key::Escape {
+                        self.last_failed = false;
+                        view.update(cx, |v, cx| {
+                            match key {
+                                Key::Char('\t') => v.tab(cx),
+                                Key::Char(c) => v.type_text(c.encode_utf8(&mut [0; 4]), cx),
+                                Key::Enter => v.type_text("\n", cx),
+                                Key::Backspace => v.delete_left(cx),
+                                // Insert mode has no `Ctrl` keys of its own.
+                                Key::Ctrl(_) | Key::Escape => false,
+                            };
+                        });
+                    } else {
+                        self.feed(key, view, Retry::Sync, cx);
+                    }
                 }
                 ReplayStep::Search {
                     pattern,
@@ -1186,12 +1231,31 @@ impl VimLayer {
                     });
                 }
             }
+            // A failed key stops a running macro, also inside a `.` the
+            // macro runs.
+            if self.last_failed && self.globals.macro_running() {
+                self.replay_stopped = true;
+            }
+        }
+        if run == ReplayKind::Macro {
+            self.macro_depth -= 1;
+            if self.macro_depth == 0 {
+                self.globals.set_macro_running(false);
+                if let Some(state) = self.views.get_mut(&id) {
+                    state.vim.macro_ended();
+                }
+                // What the macro's keys asked of the window is dropped: its
+                // `/`, `?` and `:` ran on vim's own command line.
+                self.open_search = None;
+                self.command_line = None;
+            }
         }
         if !outermost {
             return;
         }
         self.replaying = false;
         self.replay_stopped = false;
+        self.last_failed = false;
         self.globals.set_replaying(false);
         let insert = self
             .views
@@ -1320,8 +1384,7 @@ impl VimLayer {
                 Action::OpenSearch { backward } => self.open_search = Some(backward),
                 Action::RunCommand(id) => self.run_command = Some(id),
                 Action::EnterInsert(at) => insert = Some(at),
-                // A failed key stops the macro that runs it.
-                Action::Failed if self.globals.macro_running() => self.replay_stopped = true,
+                // `run` noted it: a running macro stops there.
                 Action::Failed => {}
                 Action::Message(message) => self.message = Some(message),
                 Action::RunEx(ExCommand::NoHighlight) => {
@@ -1660,14 +1723,27 @@ fn clipboard_mode(value: Option<serde_json::Value>) -> ClipboardMode {
 }
 
 /// Whether `key` may write or read the unnamed register: an operator,
-/// `x`, a paste, a register name (Visual `R` too), or any key while one
-/// is pending.
+/// `x`, a paste, a register name (Visual `R` too), `@` (a macro in `"`
+/// or `+`), or any key while one is pending.
 fn may_use_register(vim: &Vim, key: Key) -> bool {
     !vim.pending().is_empty()
         || matches!(
             key,
             Key::Char(
-                'p' | 'P' | 'x' | 'X' | 'd' | 'c' | 's' | 'S' | 'C' | 'D' | 'y' | 'Y' | 'R' | '"'
+                'p' | 'P'
+                    | 'x'
+                    | 'X'
+                    | 'd'
+                    | 'c'
+                    | 's'
+                    | 'S'
+                    | 'C'
+                    | 'D'
+                    | 'y'
+                    | 'Y'
+                    | 'R'
+                    | '"'
+                    | '@'
             )
         )
 }

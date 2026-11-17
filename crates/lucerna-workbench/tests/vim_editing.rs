@@ -820,3 +820,125 @@ fn yank_flash_cleared_by_edit(cx: &mut TestAppContext) {
     keys("x", cx);
     assert!(flashed(&view, cx).is_empty());
 }
+
+fn indicator(
+    wb: &Entity<Workbench>,
+    view: &Entity<CodeView>,
+    cx: &mut VisualTestContext,
+) -> String {
+    let id = view.entity_id();
+    cx.update(|_, cx| wb.read(cx).vim().read(cx).indicator_text(id))
+        .expect("vim is on")
+}
+
+#[gpui::test]
+fn macro_record_and_count_is_one_undo_step(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("a\nb\nc\nd\n", cx);
+    keys("q a", cx);
+    assert_eq!(indicator(&wb, &view, cx), "-- NORMAL -- recording @a");
+    keys("shift-a", cx);
+    assert_eq!(indicator(&wb, &view, cx), "-- INSERT -- recording @a");
+    commit(&view, ";", cx);
+    keys("escape j q", cx);
+    assert_eq!(indicator(&wb, &view, cx), "-- NORMAL --");
+    assert_eq!(text_of(&view, cx), "a;\nb\nc\nd\n");
+    // The third run's `j` fails on the last line, after its `;`.
+    keys("3 @ a", cx);
+    assert_eq!(text_of(&view, cx), "a;\nb;\nc;\nd;\n");
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    // The three runs are one undo step.
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "a;\nb\nc\nd\n");
+}
+
+#[gpui::test]
+fn macro_with_vietnamese_ime_text_replays_text(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("one two\n", cx);
+    keys("q a c i w", cx);
+    view.update_in(cx, |v, window, cx| {
+        v.replace_and_mark_text_in_range(None, "chà", None, window, cx);
+    });
+    commit(&view, "chào", cx);
+    keys("escape q", cx);
+    assert_eq!(text_of(&view, cx), "chào two\n");
+    keys("w @ a", cx);
+    assert_eq!(text_of(&view, cx), "chào chào\n");
+}
+
+#[gpui::test]
+fn macro_types_through_auto_close(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("(a)\n(x)\n", cx);
+    keys("q a c i (", cx);
+    for c in ["f", "o", "o", "("] {
+        commit(&view, c, cx);
+    }
+    keys("escape q", cx);
+    let recorded = text_of(&view, cx);
+    let first = recorded.lines().next().unwrap().to_string();
+    assert_ne!(first, "(a)");
+    keys("j 0 @ a", cx);
+    let text = text_of(&view, cx);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines, [first.as_str(), first.as_str()]);
+}
+
+#[gpui::test]
+fn macro_search_runs_without_widget(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("foo a\nbar foo\nbaz foo\n", cx);
+    keys("q a /", cx);
+    assert!(find_visible(&view, cx));
+    type_text("foo", cx);
+    keys("enter", cx);
+    assert!(!find_visible(&view, cx));
+    keys("x q", cx);
+    assert_eq!(text_of(&view, cx), "foo a\nbar oo\nbaz foo\n");
+    keys("@ a", cx);
+    assert!(!find_visible(&view, cx));
+    assert_eq!(text_of(&view, cx), "foo a\nbar oo\nbaz oo\n");
+    assert_eq!(cursor(&view, cx), pt(2, 4));
+}
+
+#[gpui::test]
+fn macro_stops_when_motion_fails(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("a\nb\nc\nd\ne\n", cx);
+    keys("q a j x q", cx);
+    assert_eq!(text_of(&view, cx), "a\n\nc\nd\ne\n");
+    keys("1 0 0 @ a", cx);
+    assert_eq!(text_of(&view, cx), "a\n\n\n\n\n");
+    assert_eq!(cursor(&view, cx).row, 4);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    // The run ended: one undo step brings the three lines back.
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "a\n\nc\nd\ne\n");
+}
+
+#[gpui::test]
+fn self_calling_macro_stops_at_depth_cap(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("\n", cx);
+    keys("i", cx);
+    commit(&view, "@a", cx);
+    keys("escape 0 \" a y $ u", cx);
+    assert_eq!(text_of(&view, cx), "\n");
+    keys("@ a", cx);
+    cx.run_until_parked();
+    assert_eq!(text_of(&view, cx), "\n");
+    assert_eq!(indicator(&wb, &view, cx), "-- NORMAL --");
+    // Vim works on after the run: no macro is left running.
+    keys("i", cx);
+    commit(&view, "z", cx);
+    keys("escape", cx);
+    assert_eq!(text_of(&view, cx), "z\n");
+}
+
+#[gpui::test]
+fn macro_with_colon_command(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("a\na\na\n", cx);
+    keys("q a :", cx);
+    type_text("s/a/b/", cx);
+    keys("enter j q", cx);
+    assert_eq!(text_of(&view, cx), "b\na\na\n");
+    keys("@ a", cx);
+    assert_eq!(text_of(&view, cx), "b\nb\na\n");
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+    assert_eq!(indicator(&wb, &view, cx), "1 substitution on 1 line");
+}
