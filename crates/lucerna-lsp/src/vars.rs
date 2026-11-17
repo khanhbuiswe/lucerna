@@ -122,9 +122,16 @@ pub fn expand_value(value: &Value, vars: &Vars) -> Result<Value, VarError> {
 }
 
 /// `base/lsp/<server>/<first 12 hex digits of sha256(root)>`: one
-/// directory per server and root, stable across sessions. Not created.
-pub fn data_dir_for(base: &Path, server: &str, root: &Path) -> PathBuf {
-    let digest = Sha256::digest(root.as_os_str().as_encoded_bytes());
+/// directory per server, root and slot, stable across sessions. Slot 0
+/// hashes the root alone; another slot also hashes `\0<slot>`, so two
+/// windows on one root get different directories. Not created.
+pub fn data_dir_for(base: &Path, server: &str, root: &Path, slot: u32) -> PathBuf {
+    let mut hasher = Sha256::new();
+    hasher.update(root.as_os_str().as_encoded_bytes());
+    if slot > 0 {
+        hasher.update(format!("\0{slot}").as_bytes());
+    }
+    let digest = hasher.finalize();
     let hash: String = digest
         .iter()
         .take(6)

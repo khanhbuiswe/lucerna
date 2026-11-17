@@ -6,6 +6,7 @@ use lucerna_lsp::vars::{
     VarError, Vars, data_dir_for, expand, expand_value, npm_root, uses_npm_root,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 fn vars() -> Vars {
     Vars {
@@ -88,18 +89,32 @@ fn expand_value_walks_nested_strings() {
 #[test]
 fn data_dir_is_stable_and_server_scoped() {
     let base = Path::new("/base");
-    let a = data_dir_for(base, "jdtls", Path::new("/ws/a"));
-    assert_eq!(a, data_dir_for(base, "jdtls", Path::new("/ws/a")));
+    let a = data_dir_for(base, "jdtls", Path::new("/ws/a"), 0);
+    assert_eq!(a, data_dir_for(base, "jdtls", Path::new("/ws/a"), 0));
     assert!(a.starts_with("/base/lsp/jdtls"));
     let hash = a.file_name().unwrap().to_str().unwrap();
     assert_eq!(hash.len(), 12);
     assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
-    assert_ne!(a, data_dir_for(base, "jdtls", Path::new("/ws/b")));
+    assert_ne!(a, data_dir_for(base, "jdtls", Path::new("/ws/b"), 0));
     assert_ne!(
         a.file_name(),
-        data_dir_for(base, "jdtls", Path::new("/ws/b")).file_name()
+        data_dir_for(base, "jdtls", Path::new("/ws/b"), 0).file_name()
     );
-    assert!(data_dir_for(base, "other", Path::new("/ws/a")).starts_with("/base/lsp/other"));
+    assert!(data_dir_for(base, "other", Path::new("/ws/a"), 0).starts_with("/base/lsp/other"));
+
+    let legacy: String = Sha256::digest(b"/ws/a")
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        data_dir_for(base, "jdtls", Path::new("/ws/a"), 0),
+        base.join("lsp/jdtls").join(legacy)
+    );
+    let one = data_dir_for(base, "jdtls", Path::new("/ws/a"), 1);
+    assert_ne!(one, data_dir_for(base, "jdtls", Path::new("/ws/a"), 0));
+    assert_eq!(one, data_dir_for(base, "jdtls", Path::new("/ws/a"), 1));
+    assert_ne!(one, data_dir_for(base, "jdtls", Path::new("/ws/a"), 2));
 }
 
 #[test]

@@ -22,6 +22,7 @@ use lucerna_lsp::{
 };
 use serde_json::Value;
 
+use super::data_slots::DataDirSlot;
 use super::{LanguageServers, LanguageServersEvent, selection};
 use crate::tasks::{guarded, try_spawn_guarded};
 
@@ -200,6 +201,7 @@ impl LanguageServers {
             }
             self.registry.set_slot(key, Slot::Stopped);
         }
+        self.held_slots.clear();
         self.sync = DocumentSync::default();
         self.watched = WatchedFiles::default();
         handles
@@ -231,6 +233,12 @@ impl LanguageServers {
             return;
         };
         let generation = self.bump_generation(&key);
+        // Give the old number back first, so a restart takes it again
+        // instead of holding two.
+        self.held_slots.remove(&key);
+        let slot = self.data_dir_slots.claim(&key);
+        let number = slot.number();
+        self.held_slots.insert(key.clone(), slot);
         self.registry.set_slot(key.clone(), Slot::Starting);
         self.progress.remove(&key);
         self.errors.remove(&key);
@@ -238,7 +246,7 @@ impl LanguageServers {
         let (data_dir, npm_root) = (self.data_dir.clone(), self.npm_root.clone());
         let work = cx.background_executor().spawn(async move {
             guarded("lsp-launch", move || {
-                launch(&def, &root, &*launcher, &data_dir, &npm_root)
+                launch(&def, &root, &*launcher, &data_dir, &npm_root, number)
             })
         });
         cx.spawn(async move |this, cx| {
@@ -273,6 +281,7 @@ impl LanguageServers {
             Some(Ok(launched)) => launched,
             Some(Err(StartError::NotFound { message })) => {
                 self.push_log(&key.server, LogKind::Lifecycle, message.clone(), cx);
+                self.held_slots.remove(key);
                 self.registry
                     .set_slot(key.clone(), Slot::NotFound { message });
                 self.flush_relay(None, cx);
@@ -412,6 +421,7 @@ impl LanguageServers {
     /// starting process down; events from it are ignored from now on.
     pub(super) fn stop_server(&mut self, key: &ServerKey, cx: &mut Context<Self>) {
         self.bump_generation(key);
+        self.held_slots.remove(key);
         self.pumps.remove(key);
         if let Some(server) = self.take_starting(key) {
             let _ = server.shutdown();
@@ -434,6 +444,7 @@ impl LanguageServers {
     /// The process is gone or never came up.
     pub(super) fn set_failed(&mut self, key: &ServerKey, message: String, cx: &mut Context<Self>) {
         self.starting.remove(key);
+        self.held_slots.remove(key);
         let stderr_tail = self.stderr_tail(&key.server);
         self.registry.set_slot(
             key.clone(),
@@ -453,7 +464,12 @@ impl LanguageServers {
     pub(super) fn vars_for(&self, key: &ServerKey) -> Vars {
         Vars {
             root: key.root.to_path_buf(),
-            data_dir: data_dir_for(&self.data_dir, &key.server, &key.root),
+            data_dir: data_dir_for(
+                &self.data_dir,
+                &key.server,
+                &key.root,
+                self.held_slots.get(key).map_or(0, DataDirSlot::number),
+            ),
             npm_root: self.npm_root.get().cloned().flatten(),
         }
     }
@@ -583,6 +599,7 @@ fn launch(
     launcher: &dyn Launcher,
     data_dir: &Path,
     npm_root: &OnceLock<Option<PathBuf>>,
+    slot: u32,
 ) -> Result<Launched, StartError> {
     let npm_root = if uses_npm_root(def) {
         npm_root.get_or_init(|| vars::npm_root(launcher)).clone()
@@ -591,7 +608,7 @@ fn launch(
     };
     let vars = Vars {
         root: root.to_path_buf(),
-        data_dir: data_dir_for(data_dir, &def.name, root),
+        data_dir: data_dir_for(data_dir, &def.name, root, slot),
         npm_root,
     };
     let spec = resolve_launch(def, root, launcher, &vars)?;
