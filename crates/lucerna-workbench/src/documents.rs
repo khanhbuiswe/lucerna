@@ -46,6 +46,7 @@ use crate::save::{
 use crate::status_message;
 use crate::tasks::catch_panic;
 use crate::ui::GRID;
+use crate::untitled;
 use crate::workspace_state::absolute_path;
 
 /// Where a document is in its life.
@@ -366,6 +367,8 @@ struct Restored {
 
 enum JobOutput {
     Loaded(Result<(Buffer, Stamp), LoadError>),
+    /// A new Untitled document's empty buffer: no file behind it.
+    Untitled(Buffer),
     Restored(Restored),
     /// A reload's read, and the disk epoch it started in.
     Reloaded(u64, Result<Reloaded, ReadFailure>),
@@ -640,6 +643,22 @@ impl Documents {
         self.open_view(path, true, cx)
     }
 
+    /// Makes a new, empty Untitled document (`untitled:Untitled-N`, `N` the
+    /// smallest number not in use) for a tab whose view is made next, and
+    /// returns its key. Its text is there at once: it has no file to load.
+    /// Its language is `files.defaultLanguage`'s, else plain text.
+    pub fn new_untitled(&mut self, cx: &mut Context<Self>) -> Arc<Path> {
+        self.collect_closed(cx);
+        let n = untitled::next_number(self.docs.keys().filter_map(|k| untitled::number(k)));
+        let key = untitled::path(n);
+        let language = language_for(&self.root, &self.settings, &key, None, cx);
+        let mut doc = Document::new(language, Vec::new(), None, Rc::default());
+        doc.awaiting_view = true;
+        self.docs.insert(key.clone(), doc);
+        self.finish_job(&key, Ok(JobOutput::Untitled(empty_buffer())), cx);
+        key
+    }
+
     fn open_view(
         &mut self,
         path: Arc<Path>,
@@ -725,7 +744,13 @@ impl Documents {
                         stop_requested,
                     ),
                 );
-                self.start_job(&key, cx);
+                if untitled::is_untitled(&key) {
+                    // Never read from disk: an Untitled not known yet (a
+                    // restored tab) starts empty.
+                    self.finish_job(&key, Ok(JobOutput::Untitled(empty_buffer())), cx);
+                } else {
+                    self.start_job(&key, cx);
+                }
             }
         }
         cx.notify();
@@ -955,7 +980,7 @@ impl Documents {
             buffer.push_stop();
         }
         let old = buffer.snapshot();
-        let was_dirty = buffer.is_dirty();
+        let was_dirty = text_dirty(&key, buffer);
         // An edit from a stale range must not split a char or run past
         // the end: the rope would panic.
         let edits = edits.into_iter().map(|(r, text)| {
@@ -1063,7 +1088,7 @@ impl Documents {
         let key = self.key(path);
         let buffer = self.docs.get_mut(&key)?.buffer.as_mut()?;
         let old = buffer.snapshot();
-        let was_dirty = buffer.is_dirty();
+        let was_dirty = text_dirty(&key, buffer);
         let result = if undo { buffer.undo() } else { buffer.redo() }?;
         self.commit_edit(&key, old, &result.patch, was_dirty, None, cx);
         cx.notify();
@@ -1072,18 +1097,21 @@ impl Documents {
 
     /// Whether the text of the document at `path` differs from the file
     /// as last loaded or saved.
+    /// An Untitled document is dirty while it holds any text.
     pub fn is_dirty(&self, path: &Path) -> bool {
+        let key = self.key(path);
         self.docs
-            .get(&self.key(path))
+            .get(&key)
             .and_then(|d| d.buffer.as_ref())
-            .is_some_and(Buffer::is_dirty)
+            .is_some_and(|b| text_dirty(&key, b))
     }
 
     /// What a backup of the document at `path` holds: `None` unless its
     /// text is loaded and has unsaved changes.
     pub(crate) fn backup_source(&self, path: &Path) -> Option<BackupSource> {
-        let doc = self.docs.get(&self.key(path))?;
-        let buffer = doc.buffer.as_ref().filter(|b| b.is_dirty())?;
+        let key = self.key(path);
+        let doc = self.docs.get(&key)?;
+        let buffer = doc.buffer.as_ref().filter(|b| text_dirty(&key, b))?;
         Some(BackupSource {
             text: buffer.snapshot(),
             base: doc.base.clone(),
@@ -1267,7 +1295,7 @@ impl Documents {
         let mut paths: Vec<Arc<Path>> = self
             .docs
             .iter()
-            .filter(|(_, d)| d.buffer.as_ref().is_some_and(Buffer::is_dirty))
+            .filter(|(key, d)| d.buffer.as_ref().is_some_and(|b| text_dirty(key, b)))
             .map(|(key, _)| key.clone())
             .collect();
         paths.sort();
@@ -1310,6 +1338,10 @@ impl Documents {
         cx: &mut Context<Self>,
     ) -> Task<Result<bool, WriteError>> {
         let key = self.key(path);
+        // No file to write to: Save As gives it one.
+        if untitled::is_untitled(&key) {
+            return Task::ready(Ok(false));
+        }
         let lossy = self.needs_lossy_consent(&key);
         // An autosave never asks: it leaves invalid bytes alone.
         if lossy && opts.reason == SaveReason::Auto {
@@ -1678,6 +1710,10 @@ impl Documents {
     /// it.
     pub fn revert(&mut self, path: &Path, cx: &mut Context<Self>) -> Task<()> {
         let key = self.key(path);
+        // No file to go back to.
+        if untitled::is_untitled(&key) {
+            return Task::ready(());
+        }
         let Some(doc) = self.docs.get_mut(&key) else {
             return Task::ready(());
         };
@@ -1696,6 +1732,9 @@ impl Documents {
     /// [`Documents::revert`] without waiting for saves: the caller holds
     /// the document's place in line.
     fn revert_now(&mut self, key: &Arc<Path>, cx: &mut Context<Self>) -> Task<()> {
+        if untitled::is_untitled(key) {
+            return Task::ready(());
+        }
         let key = key.clone();
         cx.spawn(async move |this, cx| {
             loop {
@@ -1797,7 +1836,7 @@ impl Documents {
             return;
         };
         doc.version = buffer.version();
-        let dirty = buffer.is_dirty();
+        let dirty = text_dirty(key, buffer);
         let can_redo = buffer.can_redo();
         if !patch.is_empty() {
             let snapshot = buffer.snapshot();
@@ -1966,6 +2005,10 @@ impl Documents {
             WorktreeEvent::Changed(changes) => {
                 for change in changes {
                     let key = self.key(&change.path);
+                    // A file of that name is not the Untitled document.
+                    if untitled::is_untitled(&key) {
+                        continue;
+                    }
                     let Some(doc) = self.docs.get_mut(&key) else {
                         continue;
                     };
@@ -1990,7 +2033,12 @@ impl Documents {
                 }
             }
             WorktreeEvent::Rescanned => {
-                let keys: Vec<Arc<Path>> = self.docs.keys().cloned().collect();
+                let keys: Vec<Arc<Path>> = self
+                    .docs
+                    .keys()
+                    .filter(|k| !untitled::is_untitled(k))
+                    .cloned()
+                    .collect();
                 for key in keys {
                     let doc = &self.docs[&key];
                     match fs::metadata(&key) {
@@ -2102,6 +2150,10 @@ impl Documents {
     /// Loads or reloads the document off the main thread. While one job
     /// runs, further requests collapse into a single follow-up reload.
     fn start_job(&mut self, key: &Arc<Path>, cx: &mut Context<Self>) {
+        // No file to load or reload.
+        if untitled::is_untitled(key) {
+            return;
+        }
         let auto_merge = self.auto_merge(key, cx);
         let Some(doc) = self.docs.get_mut(key) else {
             return;
@@ -2137,6 +2189,8 @@ impl Documents {
     /// Opens the document a hot exit backup was made of, with the backup's
     /// text as unsaved changes, for a tab whose view is made next (spec
     /// §5.4). Returns its key. A document already loaded keeps its text.
+    /// An Untitled backup is restored from its text alone, without reading
+    /// the disk (see [`restore`]).
     pub(crate) fn open_from_backup(&mut self, backup: Backup, cx: &mut Context<Self>) -> Arc<Path> {
         let key = self.key(&backup.header.path);
         if !self.docs.contains_key(&key) {
@@ -2176,9 +2230,14 @@ impl Documents {
         doc.job = None;
         let mut parse = false;
         match output {
-            Ok(output @ (JobOutput::Loaded(Ok(_)) | JobOutput::Restored(_))) => {
+            Ok(
+                output @ (JobOutput::Loaded(Ok(_))
+                | JobOutput::Untitled(_)
+                | JobOutput::Restored(_)),
+            ) => {
                 let (buffer, stamp, restored) = match output {
                     JobOutput::Loaded(Ok((buffer, stamp))) => (buffer, Some(stamp), None),
+                    JobOutput::Untitled(buffer) => (buffer, None, None),
                     JobOutput::Restored(r) => (r.buffer, r.stamp, Some((r.base, r.base_hash))),
                     _ => unreachable!("matched above"),
                 };
@@ -2821,7 +2880,7 @@ fn sync_language_id(doc: &Document, cx: &mut App) {
 /// The language of the file at `key`: by `files.associations` against its
 /// path relative to `root`, its name, and the first line of `snapshot`.
 /// The registry is the window's (`settings`): its folder may add
-/// associations.
+/// associations. An Untitled document's is `files.defaultLanguage`'s.
 fn language_for(
     root: &Path,
     settings: &Entity<WindowSettings>,
@@ -2829,12 +2888,16 @@ fn language_for(
     snapshot: Option<&BufferSnapshot>,
     cx: &App,
 ) -> Option<Arc<Language>> {
+    let settings = settings.read(cx);
+    // No name or first line to go by: `files.defaultLanguage`, else plain
+    // text.
+    if untitled::is_untitled(key) {
+        let name = settings.get::<String>("files.defaultLanguage", None, cx)?;
+        return settings.languages(cx).language_by_name(name.trim());
+    }
     let path = key.strip_prefix(root).unwrap_or(key);
     let first_line = snapshot.map(first_line).unwrap_or_default();
-    settings
-        .read(cx)
-        .languages(cx)
-        .language_for_file(path, &first_line)
+    settings.languages(cx).language_for_file(path, &first_line)
 }
 
 /// Most bytes of the first line handed to language detection.
@@ -2948,8 +3011,11 @@ fn run_job(path: &Path, job: Job) -> JobOutput {
 /// text; otherwise unknown, so a save asks before writing over the file.
 fn restore(path: &Path, backup: Backup) -> Restored {
     let header = backup.header;
-    let disk = read(path)
-        .ok()
+    // An Untitled document has no file: never read one of that name.
+    let untitled = untitled::is_untitled(path);
+    let disk = (!untitled)
+        .then(|| read(path).ok())
+        .flatten()
         .and_then(|(bytes, stamp)| Some((decode_file(&bytes, false).ok()?, stamp)));
     let mut buffer = Buffer::from_decoded(Decoded {
         text: backup.text,
@@ -2973,8 +3039,34 @@ fn restore(path: &Path, backup: Backup) -> Restored {
             buffer,
             base: None,
             base_hash: RESTORED_UNKNOWN_BASE,
-            stamp: header.size.map(|len| Stamp::from_parts(header.mtime, len)),
+            stamp: header
+                .size
+                .filter(|_| !untitled)
+                .map(|len| Stamp::from_parts(header.mtime, len)),
         },
+    }
+}
+
+/// The empty buffer of a new Untitled document.
+fn empty_buffer() -> Buffer {
+    Buffer::from_decoded(Decoded {
+        text: String::new(),
+        encoding: encoding_rs::UTF_8,
+        has_bom: false,
+        line_ending: LineEnding::Lf,
+        hash: RESTORED_UNKNOWN_BASE,
+        lossy: false,
+    })
+}
+
+/// Whether `buffer`, the text of the document at `key`, has changes to
+/// lose: an Untitled document while it holds any text, a file's while it
+/// differs from the file as last loaded or saved.
+fn text_dirty(key: &Path, buffer: &Buffer) -> bool {
+    if untitled::is_untitled(key) {
+        buffer.snapshot().len_bytes() > 0
+    } else {
+        buffer.is_dirty()
     }
 }
 
@@ -3074,5 +3166,59 @@ mod tests {
             len: 0,
         };
         assert_eq!(Stamp::from_parts(None, 0), unknown);
+    }
+
+    /// An Untitled backup comes back from its text alone, dirty, and keeps
+    /// its number for the next new Untitled.
+    #[gpui::test]
+    fn untitled_backup_restores_without_disk(cx: &mut gpui::TestAppContext) {
+        use crate::hot_exit::store::BackupHeader;
+        let (keymap, _) =
+            lucerna_settings::Keymap::load(lucerna_settings::Keymap::default_bindings(), None);
+        let themes = lucerna_theme::ThemeRegistry::builtin();
+        let theme = themes.get_or_default("Lucerna Dark");
+        let icon_themes = lucerna_theme::IconThemeRegistry::build(&[]).0;
+        let icons = icon_themes.resolve("Lucide");
+        cx.set_global(crate::AppState {
+            settings: lucerna_settings::SettingsStore::with_defaults(),
+            keymap,
+            themes,
+            theme,
+            theme_generation: 0,
+            languages: Arc::new(lucerna_syntax::LanguageRegistry::bundled()),
+            languages_generation: 0,
+            icon_themes,
+            icons,
+        });
+        let dir = tempfile::TempDir::new().unwrap();
+        let settings = cx.new(|cx| WindowSettings::new(None, cx));
+        let docs = cx.new(|_| Documents::new(dir.path().to_path_buf(), settings));
+        let backup = Backup {
+            header: BackupHeader {
+                path: PathBuf::from("untitled:Untitled-2"),
+                mtime: None,
+                size: None,
+                base_sha256: None,
+                encoding: "UTF-8".into(),
+                bom: false,
+                line_ending: LineEnding::Lf,
+                lossy: false,
+            },
+            text: "kept\n".into(),
+        };
+        let key = docs.update(cx, |d, cx| d.open_from_backup(backup, cx));
+        cx.run_until_parked();
+        assert_eq!(&*key, Path::new("untitled:Untitled-2"));
+        docs.read_with(cx, |d, _| {
+            assert_eq!(d.state(&key), Some(&DocState::Ready));
+            assert!(d.is_dirty(&key));
+            assert_eq!(d.dirty_paths(), vec![key.clone()]);
+            assert_eq!(d.snapshot_of(&key).unwrap().text(), "kept\n");
+        });
+        let next = docs.update(cx, |d, cx| d.new_untitled(cx));
+        assert_eq!(&*next, Path::new("untitled:Untitled-1"));
+        let next = docs.update(cx, |d, cx| d.new_untitled(cx));
+        assert_eq!(&*next, Path::new("untitled:Untitled-3"));
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
     }
 }

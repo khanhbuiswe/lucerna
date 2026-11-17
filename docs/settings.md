@@ -45,6 +45,7 @@ The settings use VS Code's names, for example:
 | `files.scanDepth` | `5` | Outside a git repository, folders this many levels deep load when you expand them. `0` scans everything. |
 | `files.eol` | `"auto"` | Line ending for new text |
 | `files.encoding` | `"utf8"` | Reserved: encoding for new files, not read yet (takes effect in a later release) |
+| `files.defaultLanguage` | `""` | Language of a new Untitled file, by id or name (`"rust"`, `"Python"`). Empty or unknown: Plain Text |
 | `files.insertFinalNewline` | `false` | Add a final newline on save |
 | `files.trimFinalNewlines` | `false` | Remove extra final newlines on save |
 | `files.trimTrailingWhitespace` | `false` | Remove trailing whitespace on save |
