@@ -345,18 +345,15 @@ pub fn insert_cursors_vertical(
     limit: usize,
 ) -> (SelectionSet, Vec<u64>, bool) {
     let rows = if up { -1 } else { 1 };
-    let len = snap.len_bytes();
     let mut work = set.clone();
     let mut sels = set.all().to_vec();
     let mut added = Vec::new();
     let mut limited = false;
     for s in set.all() {
-        let (offset, goal) = layout.vertical(snap, s.head, s.goal, rows);
-        let boundary = offset == 0 || offset == len;
-        let same_row = snap.offset_to_point(offset).row == snap.offset_to_point(s.head).row;
-        if offset == s.head || (boundary && same_row) {
+        if layout.at_edge(snap, s.head, up) {
             continue;
         }
+        let (offset, goal) = layout.vertical(snap, s.head, s.goal, rows);
         if sels.len() >= limit {
             limited = true;
             break;
@@ -664,11 +661,55 @@ mod tests {
         let (s2, ids2, _) = insert_cursors_vertical(&snap, &s1, false, &PLAIN, 100);
         assert_eq!(render(&snap, &s2), "ab|cdef\nx|\nab|cdef\n");
         assert_eq!(ids2.len(), 1);
+        let last = s2.all().iter().find(|s| s.id == ids2[0]).unwrap();
+        assert_eq!(last.goal, Goal::Column(2.0));
         // Two starting cursors on rows 0 and 3 give four.
         let (snap, set) = marked("a|b\nx\ny\na|b\nx\n");
         let (s, ids, _) = insert_cursors_vertical(&snap, &set, false, &PLAIN, 100);
         assert_eq!(ids.len(), 2);
         assert_eq!(s.len(), 4);
+    }
+
+    /// Buffer row 0 is shown as two display lines split at byte 3.
+    struct Wrapped;
+
+    impl Layout for Wrapped {
+        fn vertical(
+            &self,
+            _: &BufferSnapshot,
+            offset: usize,
+            goal: Goal,
+            rows: i32,
+        ) -> (usize, Goal) {
+            let to = if rows < 0 {
+                offset.saturating_sub(3)
+            } else {
+                offset + 3
+            };
+            (to, goal)
+        }
+        fn page_rows(&self) -> u32 {
+            10
+        }
+        fn home(&self, _: &BufferSnapshot, offset: usize) -> usize {
+            offset
+        }
+        fn end(&self, _: &BufferSnapshot, offset: usize) -> usize {
+            offset
+        }
+        fn at_edge(&self, _: &BufferSnapshot, offset: usize, up: bool) -> bool {
+            if up { offset < 3 } else { offset >= 3 }
+        }
+    }
+
+    #[test]
+    fn insert_above_on_second_wrapped_row() {
+        let (snap, set) = marked("abc|def");
+        let (s, ids, _) = insert_cursors_vertical(&snap, &set, true, &Wrapped, 100);
+        assert_eq!(render(&snap, &s), "|abc*|def");
+        assert_eq!(ids.len(), 1);
+        let (_, ids, _) = insert_cursors_vertical(&snap, &set, false, &Wrapped, 100);
+        assert!(ids.is_empty());
     }
 
     #[test]
