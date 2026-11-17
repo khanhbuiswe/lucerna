@@ -2,9 +2,9 @@
 
 Các nguyên tắc dưới đây áp dụng cho mọi tính năng và mọi giai đoạn. Chúng đứng trên từng spec riêng lẻ.
 
-## 1. Luôn tham khảo VS Code và Zed trước khi lên plan
+## 1. Luôn tham khảo VS Code, Zed và Helix trước khi lên plan
 
-Lucerna muốn là một bản VS Code gọn hơn với giao diện tối giản. Nó nhắm tới người để AI agent viết code, dù agent chạy dưới dạng CLI hay app desktop. Lucerna chạy trên macOS trước, rồi tới Linux và Windows. Vì vậy, **trước khi brainstorm, viết spec hay lập plan cho bất kỳ tính năng nào**, phải xem cả hai đã làm tính năng đó ra sao.
+Lucerna muốn là một bản VS Code gọn hơn với giao diện tối giản. Nó nhắm tới người để AI agent viết code, dù agent chạy dưới dạng CLI hay app desktop. Lucerna chạy trên macOS trước, rồi tới Linux và Windows. Vì vậy, **trước khi brainstorm, viết spec hay lập plan cho bất kỳ tính năng nào**, phải xem cả ba đã làm tính năng đó ra sao.
 
 1. **VS Code.** Đọc tài liệu người dùng, tài liệu API hoặc contribution points, và mã nguồn ở `microsoft/vscode`. Nếu tính năng nằm trong một extension phổ biến (ví dụ VSCodeVim), đọc luôn extension đó. Cần nắm được:
    - người dùng thấy tính năng thế nào;
@@ -14,14 +14,18 @@ Lucerna muốn là một bản VS Code gọn hơn với giao diện tối giản
    - kiến trúc;
    - cách làm cho nhanh;
    - phong cách giao diện.
-3. **Ghi lại kết quả** vào `docs/research/YYYY-MM-DD-<chủ-đề>.md`, hoặc vào mục "Tham khảo" trong spec của tính năng đó. Phần ghi lại gồm:
+3. **Helix.** Đọc tài liệu và mã nguồn ở `helix-editor/helix`. Helix là editor Rust gọn, cấu hình bằng dữ liệu, nên đặc biệt đáng xem cho LSP, tree-sitter, cấu hình ngôn ngữ và modal editing. Cần nắm được:
+   - thuật toán và cách xử lý trường hợp biên;
+   - cách mô tả tính năng bằng dữ liệu cấu hình thay vì code.
+4. **Ghi lại kết quả** vào `docs/research/YYYY-MM-DD-<chủ-đề>.md`, hoặc vào mục "Tham khảo" trong spec của tính năng đó. Phần ghi lại gồm:
    - mỗi bên làm thế nào;
-   - điểm giống nhau và khác nhau giữa hai bên;
+   - điểm giống nhau và khác nhau giữa các bên;
    - Lucerna chọn theo bên nào, và vì sao.
-4. **Thứ tự ưu tiên khi hai bên khác nhau:**
+5. **Thứ tự ưu tiên khi các bên khác nhau:**
    - Hành vi, settings, lệnh và phím tắt: theo **VS Code**, để người dùng VS Code chuyển sang không phải học lại.
    - Giao diện và hiệu năng: theo **Zed**.
-   - Nếu lệch khỏi cả hai thì phải ghi rõ lý do trong spec.
+   - Helix không thay đổi hai luật trên. Nó là góc nhìn thứ ba khi VS Code và Zed khác nhau ở phần bên trong (thuật toán, cấu trúc dữ liệu, định dạng cấu hình), hoặc khi một trong hai không có tính năng đó.
+   - Nếu lệch khỏi cả VS Code và Zed thì phải ghi rõ lý do trong spec.
 
 ### 1.1 Giao diện theo Zed ngay từ thiết kế đầu tiên
 
@@ -38,6 +42,7 @@ Bài học từ Search: Lucerna làm Search panel ở sidebar theo kiểu VS Cod
 |---|---|---|
 | Zed: phần lớn các crate (`editor`, `vim`, `extension_host`, `language`, `theme`…) | GPL-3 / AGPL | **Chỉ học thiết kế, không chép code.** Định dạng dữ liệu (theme JSON, `extension.toml`, query `.scm`, keymap) thì dùng được. |
 | Zed: `gpui*`, `sum_tree`, `zed_extension_api`, file WIT | Apache-2.0 | Được dùng làm dependency hoặc tham khảo. |
+| Helix (`helix-editor/helix`) | MPL-2.0 | **Chỉ học thiết kế, không chép code** (chép vào sẽ buộc file đó theo MPL). Dữ liệu như `languages.toml` và query `.scm` cũng mang MPL, nên chỉ đối chiếu, không chép nguyên văn. |
 | VS Code (`microsoft/vscode`) và các extension MIT | MIT | Được tham khảo hoặc dùng lại, nhưng **phải ghi nguồn** trong `THIRD_PARTY_NOTICES.md` hoặc trong comment. |
 | Font, icon (Lilex, IBM Plex, Lucide…) | OFL / ISC / MIT | Lấy từ repo gốc, kèm file giấy phép nguyên văn. |
 
