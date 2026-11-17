@@ -421,6 +421,11 @@ impl LanguageServers {
     /// starting process down; events from it are ignored from now on.
     pub(super) fn stop_server(&mut self, key: &ServerKey, cx: &mut Context<Self>) {
         self.bump_generation(key);
+        // The slot goes back while the old process may still be shutting
+        // down, so another window restarting at the same moment can get the
+        // same data directory while it is still locked. A restart in one
+        // window has the same limit, and it is still better than the old
+        // directory shared by all windows.
         self.held_slots.remove(key);
         self.pumps.remove(key);
         if let Some(server) = self.take_starting(key) {

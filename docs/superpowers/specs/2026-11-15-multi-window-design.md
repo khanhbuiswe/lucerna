@@ -618,6 +618,10 @@ Mỗi bước build và test được riêng:
   0.1.0 dùng `luc-0.1.0.sock`, nên lần cập nhật đầu tiên lên bản không
   version vẫn có thể có hai tiến trình (một lần); từ đó về sau không còn.
 - `"preserve"` chỉ khác `"all"` khi khởi động có đường dẫn.
+- Trường hợp hẹp: app nhận một yêu cầu ngay trước khi các hook thoát chạy,
+  rồi luồng chính bị chặn hơn 5 giây khi tắt language server. `luc` in
+  "will open when ready" và thoát mã 0, nhưng app thoát mà không mở đường
+  dẫn. Giới hạn chấp nhận.
 
 ## 11. Để lại cho người viết plan
 

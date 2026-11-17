@@ -594,7 +594,14 @@ pub fn serve(listener: UnixListener, tx: mpsc::UnboundedSender<CliMessage>) {
 fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
     let allowed = peer_allowed(peer_uid(&stream), euid());
     let reply = match allowed.and_then(|()| read_request(&stream)) {
-        Ok(request) => {
+        // A probe: `luc` connected only to see that an app answers (it
+        // refuses `--foreground`) and closed without a byte. Nothing to
+        // answer, nothing worth a warning.
+        Ok(None) => {
+            tracing::debug!("luc socket: a connection closed without a request");
+            return;
+        }
+        Ok(Some(request)) => {
             // A dropped reply sender also covers the router discarding the
             // request for another reason than quitting. Answering
             // `quitting` is safe then: `luc` sends again, and opening a
@@ -727,7 +734,8 @@ fn peer_allowed(peer: io::Result<u32>, ours: u32) -> Result<(), String> {
     }
 }
 
-fn read_request(stream: &UnixStream) -> Result<CliRequest, String> {
+/// `Ok(None)` when the peer closed the connection without sending a byte.
+fn read_request(stream: &UnixStream) -> Result<Option<CliRequest>, String> {
     stream
         .set_read_timeout(Some(READ_TIMEOUT))
         .map_err(|err| format!("socket: {err}"))?;
@@ -735,7 +743,12 @@ fn read_request(stream: &UnixStream) -> Result<CliRequest, String> {
     BufReader::new(stream.take(MAX_REQUEST_BYTES))
         .read_line(&mut line)
         .map_err(|err| format!("could not read the request: {err}"))?;
-    serde_json::from_str(&line).map_err(|err| format!("bad request: {err}"))
+    if line.is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_str(&line)
+        .map(Some)
+        .map_err(|err| format!("bad request: {err}"))
 }
 
 #[cfg(test)]
@@ -823,6 +836,19 @@ mod tests {
         let reply: CliReply = serde_json::from_str(&line).unwrap();
         assert!(!reply.ok);
         assert!(reply.error.unwrap().starts_with("bad request"));
+    }
+
+    #[test]
+    fn a_probe_that_sends_nothing_gets_no_reply() {
+        let (_dir, path, mut rx) = serve_one();
+        let mut stream = UnixStream::connect(&path).unwrap();
+        // Closes its write end without a byte, as `luc --foreground` does
+        // when it only checks that an app is running.
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = String::new();
+        stream.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "", "a probe gets no reply");
+        assert!(rx.try_recv().is_err(), "no request reached the router");
     }
 
     #[test]
