@@ -914,6 +914,8 @@ impl VimLayer {
         self.last_failed = false;
         match outcome {
             Err(_) => {
+                // A running macro stops at a key that panicked.
+                self.last_failed = true;
                 self.recover(view, cx);
                 true
             }
@@ -960,6 +962,8 @@ impl VimLayer {
                         if let Some(state) = self.views.get_mut(&id) {
                             state.vim.search_dismissed();
                         }
+                        // The key did nothing: a running macro stops.
+                        self.last_failed = true;
                         cx.notify();
                     }
                 }
