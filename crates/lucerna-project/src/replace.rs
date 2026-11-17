@@ -267,11 +267,37 @@ pub fn replacement_at(
     pattern: &ReplacePattern,
     preserve: bool,
 ) -> Option<String> {
-    let caps = regex.captures_at(text, range.start)?;
+    // Ends the haystack at the line end after the match: a range the regex
+    // no longer matches then fails there instead of scanning to the end of
+    // `text`. `$` and `\b` see the same line break either way.
+    let end = text
+        .get(range.end..)?
+        .find('\n')
+        .map_or(text.len(), |i| range.end + i);
+    let caps = regex.captures_at(&text[..end], range.start)?;
     if caps.get(0)?.range() != range {
         return None;
     }
     Some(replacement_for(pattern, &caps, preserve))
+}
+
+/// The edits for `ranges`: matches of `regex` in `text` that the caller
+/// found and filtered (the Find bar's whole-word rule), sorted. A range the
+/// regex no longer matches exactly is skipped.
+pub fn replace_ranges(
+    text: &str,
+    regex: &Regex,
+    ranges: &[Range<usize>],
+    pattern: &ReplacePattern,
+    preserve: bool,
+) -> Vec<(Range<usize>, String)> {
+    ranges
+        .iter()
+        .filter_map(|range| {
+            let replacement = replacement_at(text, regex, range.clone(), pattern, preserve)?;
+            Some((range.clone(), replacement))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -370,6 +396,27 @@ mod tests {
             ["bar", "Bar", "BAR"]
         );
     }
+    #[test]
+    fn replace_ranges_only_the_given_ranges() {
+        let p = ReplacePattern::parse("<$1>", true);
+        let re = Regex::new("(o+)").unwrap();
+        let edits = replace_ranges("foo boo zoo", &re, &[1..3, 9..11], &p, false);
+        assert_eq!(edits, vec![(1..3, "<oo>".into()), (9..11, "<oo>".into())]);
+        // A stale range is skipped, not searched past.
+        let stale = vec![Range { start: 0, end: 2 }];
+        assert_eq!(replace_ranges("foo\nboo", &re, &stale, &p, false), vec![]);
+    }
+
+    #[test]
+    fn replacement_at_keeps_line_end_anchors() {
+        let p = ReplacePattern::parse("X", true);
+        let re = RegexBuilder::new("o$").multi_line(true).build().unwrap();
+        assert_eq!(
+            replacement_at("fo\nbar", &re, 1..2, &p, false),
+            Some("X".into())
+        );
+    }
+
     #[test]
     fn replacement_at_checks_range() {
         let p = ReplacePattern::parse("<$1>", true);

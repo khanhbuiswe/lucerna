@@ -16,8 +16,8 @@ use gpui::{
 use lucerna_editor::find::{FindQuery, find_all};
 use lucerna_editor::{EditKind, EditPlan, SelectionSet, mk_patch};
 use lucerna_project::build_pattern;
-use lucerna_project::replace::{ReplacePattern, replace_all, replacement_at};
-use lucerna_text::BufferSnapshot;
+use lucerna_project::replace::{ReplacePattern, replace_ranges, replacement_at};
+use lucerna_text::{BufferSnapshot, Point};
 use regex::{Regex, RegexBuilder};
 
 use crate::code_view::{CodeView, DEFAULT_WORD_SEPARATORS};
@@ -253,15 +253,13 @@ impl FindWidget {
         (view.read(cx).revision() == self.revision).then_some(view)
     }
 
-    /// The query's regex and the Replace input's pattern.
+    /// The query's regex and the Replace input's pattern. The regex is the
+    /// one the bar searched with: whole word is not in it but in the bar's
+    /// matches (`editor.wordSeparators`), so replaces act on those ranges.
     fn replace_parts(&self, cx: &App) -> Option<(Regex, ReplacePattern)> {
-        let regex = build_regex(
-            &self.query,
-            self.is_regex,
-            self.case_sensitive,
-            self.whole_word,
-        )
-        .ok()?;
+        let regex =
+            lucerna_editor::find::build_regex(&self.query, self.is_regex, self.case_sensitive)
+                .ok()?;
         let replace = self.replace_input.read(cx).text();
         Some((regex, ReplacePattern::parse(replace, self.is_regex)))
     }
@@ -288,10 +286,26 @@ impl FindWidget {
         let Some((regex, pattern)) = self.replace_parts(cx) else {
             return;
         };
+        // Only the lines of the match: `^`, `$` and `\b` see the same
+        // neighbours there as in the whole text.
         let snapshot = view.read(cx).snapshot().clone();
-        let text = snapshot.text_for_range(0..snapshot.len_bytes());
-        let Some(replacement) =
-            replacement_at(&text, &regex, range.clone(), &pattern, self.preserve_case)
+        let first = snapshot.offset_to_point(range.start).row;
+        let last = snapshot.offset_to_point(range.end).row;
+        let lo = snapshot.point_to_offset(Point {
+            row: first,
+            column: 0,
+        });
+        let hi = if last + 1 < snapshot.line_count() {
+            snapshot.point_to_offset(Point {
+                row: last + 1,
+                column: 0,
+            })
+        } else {
+            snapshot.len_bytes()
+        };
+        let text = snapshot.text_for_range(lo..hi);
+        let local = range.start - lo..range.end - lo;
+        let Some(replacement) = replacement_at(&text, &regex, local, &pattern, self.preserve_case)
         else {
             return;
         };
@@ -337,23 +351,23 @@ impl FindWidget {
             return;
         };
         let preserve = self.preserve_case;
+        let matches = self.matches.clone();
         let snapshot = view.read(cx).snapshot().clone();
-        if snapshot.len_bytes() <= BACKGROUND_SEARCH_BYTES {
+        let small = snapshot.len_bytes() <= BACKGROUND_SEARCH_BYTES;
+        let edits = move || {
             let text = snapshot.text_for_range(0..snapshot.len_bytes());
-            apply_replacements(&view, replace_all(&text, &regex, &pattern, preserve), cx);
+            replace_ranges(&text, &regex, &matches, &pattern, preserve)
+        };
+        if small {
+            apply_replacements(&view, edits(), cx);
             return;
         }
         // Shares the search's task and generation: a new search drops it.
         self.cancel();
         let (generation, revision) = (self.generation, self.revision);
         self.pending = true;
-        let edits = cx.background_spawn(async move {
-            guarded("replace all", || {
-                let text = snapshot.text_for_range(0..snapshot.len_bytes());
-                replace_all(&text, &regex, &pattern, preserve)
-            })
-            .unwrap_or_default()
-        });
+        let edits =
+            cx.background_spawn(async move { guarded("replace all", edits).unwrap_or_default() });
         self._search = cx.spawn(async move |this, cx| {
             let edits = edits.await;
             this.update(cx, |find, cx| {

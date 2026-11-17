@@ -812,7 +812,7 @@ fn readonly_view_does_not_replace(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn replace_all_large_file_off_main_thread(cx: &mut TestAppContext) {
+fn replace_all_large_file_replaces_the_match(cx: &mut TestAppContext) {
     init(cx);
     let text = ("x".repeat(63) + "\n").repeat(20_000) + "the needle\n";
     let len = text.len();
@@ -1016,4 +1016,53 @@ fn stale_pick_offset_is_dropped_after_a_user_edit(cx: &mut TestAppContext) {
         selection.clone().is_none_or(|s| s.start.row == 0),
         "the selection did not jump to the next match: {selection:?}"
     );
+}
+
+fn set_user_settings(json: &str, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        cx.global_mut::<AppState>()
+            .settings
+            .set_layer(lucerna_settings::Layer::User, json)
+            .unwrap()
+    });
+}
+
+/// Whole Word follows `editor.wordSeparators`, as the bar does: with `-`
+/// not a separator, `foo` in `foo-bar` is no match and is not replaced.
+#[gpui::test]
+fn replace_whole_word_uses_word_separators(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo-bar foo\n", cx);
+    set_user_settings(
+        r#"{"editor.wordSeparators": "`~!@#$%^&*()=+[{]}\\|;:'\",.<>/?"}"#,
+        cx,
+    );
+    keys("alt-cmd-f", cx);
+    click("find-toggle-word", cx);
+    type_text("foo", cx);
+    assert_eq!(
+        highlights(&view, cx).0,
+        vec![8..11],
+        "only the free-standing foo"
+    );
+    fill_replace(&view, "X", cx);
+    keys("cmd-enter", cx);
+    assert_eq!(buffer_text(&view, cx), "foo-bar X\n");
+}
+
+/// A whole-word query that starts with a separator (`$el`) matches as the
+/// bar shows it, and both replace commands act on it.
+#[gpui::test]
+fn replace_whole_word_query_starting_with_separator(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "let $el = 1; $el\n", cx);
+    keys("alt-cmd-f", cx);
+    click("find-toggle-word", cx);
+    type_text("$el", cx);
+    assert_eq!(counter(&view, cx), "1 of 2");
+    fill_replace(&view, "x", cx);
+    keys("enter", cx);
+    assert_eq!(buffer_text(&view, cx), "let x = 1; $el\n");
+    keys("cmd-enter", cx);
+    assert_eq!(buffer_text(&view, cx), "let x = 1; x\n");
 }
