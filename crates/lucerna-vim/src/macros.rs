@@ -519,7 +519,7 @@ mod tests {
             );
         };
         for keys in [
-            "h", "k", "b", "B", "ge", "gE", "{", "%", "Fz", "tz", ";", "N", ".", "dh", "ch", "db",
+            "h", "k", "b", "B", "ge", "gE", "{", "%", "Fz", "tz", ";", "N", ".", "db",
         ] {
             fails("|ab", keys);
         }
@@ -549,18 +549,29 @@ mod tests {
         assert_edit("ab|c", "de", "a|b");
         assert_edit("ab|c", "ceX<Esc>", "ab|X");
         assert_edit("ab|c", "dE", "a|b");
-        // `h` at column 0 fails, but `ch` still enters Insert and `dh`
-        // changes nothing.
+        // `h` at column 0 and `l` on an empty line are silent under an
+        // operator: `ch` still enters Insert, `dh` and `x` change nothing.
         let (text, actions) = run_edit("|ab", "chX<Esc>");
         assert_eq!(text, "|Xab");
-        assert!(actions.contains(&Action::Failed));
-        let (text, actions) = run_edit("|ab", "dh");
-        assert_eq!(text, "|ab");
-        assert_eq!(actions, [Action::Failed]);
-        // `l` on an empty line too.
-        let (text, actions) = run_edit("a\n|\nb", "x");
-        assert_eq!(text, "a\n|\nb");
-        assert_eq!(actions, [Action::Failed]);
+        assert!(!actions.contains(&Action::Failed));
+        for (start, keys) in [
+            ("|ab", "dh"),
+            ("|ab", "X"),
+            ("a\n|\nb", "x"),
+            ("a\n|\nb", "dl"),
+        ] {
+            let (text, actions) = run_edit(start, keys);
+            assert_eq!(text, start, "{keys}");
+            assert!(!actions.contains(&Action::Failed), "{keys}: {actions:?}");
+        }
+        // Without an operator they fail.
+        assert_eq!(run_edit("|ab", "h").1, [Action::Failed]);
+        assert_eq!(run_edit("a|b", "l").1, [Action::Failed]);
+    }
+
+    #[test]
+    fn x_at_column_0_does_not_stop_a_macro() {
+        assert_edit("a|b\nab\nab\nab", "qaXjq2@a", "b\nab\nab\n|ab");
     }
 
     #[test]

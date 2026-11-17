@@ -1446,25 +1446,19 @@ impl Vim {
             Ok(None) => return Outcome::Handled(vec![Action::Failed]),
             Err(retry) => return retry,
         };
-        // `h` at column 0 and `l` at the line end fail (a macro stops) but
-        // the operator still runs on the empty range, as in Vim.
-        let failed = prefix.is_none() && matches!(c, 'h' | 'l') && to == from;
-        let mut out = match operator::motion_range(snapshot, from, to, kind, p.force) {
-            // The motion covers nothing: `c` still inserts.
-            None if p.op == Operator::Change => self.change_nothing(view),
-            None => Outcome::Handled(vec![]),
-            Some(r) => {
-                // A yank keeps the cursor when the motion went forward,
-                // else it goes to the motion's end.
-                let forward = (to.row, to.column) >= (from.row, from.column);
-                let yank_cursor = if forward { from } else { to };
-                self.finish_op(p, r, Some(yank_cursor), view, g, s)
+        let Some(r) = operator::motion_range(snapshot, from, to, kind, p.force) else {
+            // The motion covers nothing (`h` at column 0, `l` on an empty
+            // line: silent under an operator, as in Vim): `c` still inserts.
+            if p.op == Operator::Change {
+                return self.change_nothing(view);
             }
+            return Outcome::Handled(vec![]);
         };
-        if failed && let Outcome::Handled(actions) = &mut out {
-            actions.push(Action::Failed);
-        }
-        out
+        // A yank keeps the cursor when the motion went forward, else it goes
+        // to the motion's end.
+        let forward = (to.row, to.column) >= (from.row, from.column);
+        let yank_cursor = if forward { from } else { to };
+        self.finish_op(p, r, Some(yank_cursor), view, g, s)
     }
 
     /// Where the motion `c` (after `prefix`) goes from the cursor, without
@@ -1533,8 +1527,8 @@ impl Vim {
             }),
             Some(_) => None,
             None => match c {
-                // `h` at column 0 fails but keeps the operator, as in Vim:
-                // `ch` still enters Insert (the caller reports the failure).
+                // `h` at column 0 keeps the operator, as in Vim: `ch` still
+                // enters Insert.
                 'h' => Some((
                     probe(None, count, Key::Char(c), g)?.unwrap_or(from),
                     Exclusive,
