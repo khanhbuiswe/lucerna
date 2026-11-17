@@ -652,8 +652,8 @@ fn advance(p: Point, text: &str) -> Point {
 #[cfg(test)]
 mod tests {
     use crate::test_util::{assert_edit, assert_edit_with, run_edit, run_edit_with, run_keys};
-    use std::ops::Range;
     use crate::{Action, InsertAt, Mode, Settings};
+    use std::ops::Range;
 
     // Adapted from VSCodeVim test/mode/normalModeTests/commands.test.ts: "Can handle 'D' with count 3"
     #[test]
