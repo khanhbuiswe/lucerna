@@ -157,8 +157,8 @@ fn next_free(
     None
 }
 
-/// `⌘D`: add the next (or, `backwards`, previous) match as the new primary
-/// selection. With empty selections it only expands them to words.
+/// `⌘D`: add the next (or, `backwards`, previous) match to the selection set
+/// (the primary stays). With empty selections it only expands them to words.
 pub fn add_match(
     snap: &BufferSnapshot,
     set: &SelectionSet,
@@ -196,7 +196,7 @@ pub fn add_match(
     let mut sels = set.all().to_vec();
     sels.push(forward(found, id));
     Some(Step {
-        set: work.rebuild(sels, id),
+        set: work.rebuild(sels, set.primary().id),
         session: Some(new_session),
         seeded_word: None,
         limited: false,
@@ -241,8 +241,14 @@ pub fn move_match(
     let id = work.next_id();
     let mut sels = rest;
     sels.push(forward(found, id));
+    // The primary stays unless the dropped newest selection was it.
+    let primary = if newest.id == set.primary().id {
+        id
+    } else {
+        set.primary().id
+    };
     Some(Step {
-        set: work.rebuild(sels, id),
+        set: work.rebuild(sels, primary),
         session: Some(new_session),
         seeded_word: None,
         limited: false,
@@ -368,10 +374,11 @@ mod tests {
         let src = "foo «foo» foo";
         let (snap, set) = marked(src);
         let s1 = add_match(&snap, &set, None, LOOSE, SEPS, false, 100).unwrap();
-        assert_eq!(render(&snap, &s1.set), "foo «foo» *«foo»");
+        assert_eq!(render(&snap, &s1.set), "foo «foo» «foo»");
+        assert_eq!(s1.set.primary().range(), 4..7);
         let s2 = add_match(&snap, &s1.set, s1.session.as_ref(), LOOSE, SEPS, false, 100).unwrap();
         assert_eq!(s2.set.len(), 3);
-        assert_eq!(s2.set.primary().range(), 0..3);
+        assert_eq!(s2.set.primary().range(), 4..7);
         let s3 = add_match(&snap, &s2.set, s2.session.as_ref(), LOOSE, SEPS, false, 100);
         assert!(s3.is_none());
     }
@@ -380,7 +387,7 @@ mod tests {
     fn add_from_selection_uses_find_options() {
         let src = "«Foo» foo FOO";
         let step = add(src, None, LOOSE, false).unwrap();
-        assert_eq!(shown(src, &step), "«Foo» *«foo» FOO");
+        assert_eq!(shown(src, &step), "«Foo» «foo» FOO");
         let strict = MatchOptions {
             case_sensitive: true,
             whole_word: false,
@@ -397,7 +404,7 @@ mod tests {
     fn add_previous() {
         let src = "foo foo «foo»";
         let step = add(src, None, LOOSE, true).unwrap();
-        assert_eq!(shown(src, &step), "foo «foo» «foo»");
+        assert_eq!(shown(src, &step), "foo «foo» *«foo»");
     }
 
     #[test]
@@ -406,10 +413,28 @@ mod tests {
         let id = set.next_id();
         let mut sels = set.all().to_vec();
         sels[1].id = id;
-        let set = set.rebuild(sels, id);
+        let set = set.rebuild(sels, set.primary().id);
         assert_eq!(set.newest().range(), 4..7);
         let step = move_match(&snap, &set, None, LOOSE, SEPS, false).unwrap();
-        assert_eq!(render(&snap, &step.set), "«foo» foo *«foo»");
+        assert_eq!(render(&snap, &step.set), "«foo» foo «foo»");
+        assert_eq!(step.set.primary().range(), 0..3);
+    }
+
+    #[test]
+    fn move_single_selection_new_match_is_primary() {
+        let (snap, set) = marked("«foo» foo");
+        let step = move_match(&snap, &set, None, LOOSE, SEPS, false).unwrap();
+        assert_eq!(step.set.len(), 1);
+        assert_eq!(step.set.primary().range(), 4..7);
+    }
+
+    #[test]
+    fn add_keeps_primary_with_several_selections() {
+        let (snap, set) = marked("*«foo» «foo» foo");
+        let primary = set.primary().range();
+        let step = add_match(&snap, &set, None, LOOSE, SEPS, false, 100).unwrap();
+        assert_eq!(step.set.len(), 3);
+        assert_eq!(step.set.primary().range(), primary);
     }
 
     #[test]
