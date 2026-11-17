@@ -690,7 +690,7 @@ impl VimLayer {
                 self.view_edited(&view, edit, cx);
             }
             CodeViewEvent::ScrolledTo(_) | CodeViewEvent::DiffHunkClicked { .. } => {}
-            CodeViewEvent::MultiCursor => {}
+            CodeViewEvent::MultiCursor => self.start_multi_cursor_insert(&view, cx),
         }
     }
 
@@ -1565,10 +1565,52 @@ impl VimLayer {
             v.selection_generation()
         });
         state.generation = generation;
-        let v = view.read(cx);
-        state.revision = v.revision();
-        state.moves = v.record_breaks();
-        follow_selection(&mut state.vim, v);
+        insert_started(state, view.read(cx));
+    }
+
+    /// A multi-cursor command or mouse action changed the selections of
+    /// `view` (spec 2026-11-17-multi-cursor §5.2): vim goes to Insert mode
+    /// with every selection kept, so typing goes to all of them, in one
+    /// undo step until Escape. Already in Insert mode, vim only follows
+    /// the new selections. Nothing happens with vim off, in a read-only
+    /// view or while `/` is open.
+    ///
+    /// The selection change may reach [`VimLayer::view_changed`] before
+    /// this; that only resets vim's own state to Normal and leaves the
+    /// view's selections alone, so entering Insert here afterwards keeps
+    /// them.
+    fn start_multi_cursor_insert(&mut self, view: &Entity<CodeView>, cx: &mut Context<Self>) {
+        let id = view.entity_id();
+        if !self.enabled || self.searching(id) {
+            return;
+        }
+        {
+            let v = view.read(cx);
+            if v.is_readonly() || !takes_keys(v) {
+                return;
+            }
+        }
+        self.ensure_state(view, cx);
+        let Some(state) = self.views.get_mut(&id) else {
+            return;
+        };
+        if state.vim.mode() == Mode::Insert {
+            let v = view.read(cx);
+            follow_selection(&mut state.vim, v);
+            state.generation = v.selection_generation();
+            state.revision = v.revision();
+            return;
+        }
+        let head = view.read(cx).selection_head();
+        state.vim.enter_insert_here(head);
+        state.generation = view.update(cx, |v, cx| {
+            v.set_suppress_stops(true, cx);
+            v.set_cursor_overlay(Some(bar_cursor(head)), cx);
+            v.set_typed_events(true);
+            v.selection_generation()
+        });
+        insert_started(state, view.read(cx));
+        cx.notify();
     }
 
     /// The matches of `query` in `view`: cached, or found now when the
@@ -1676,6 +1718,14 @@ pub(crate) struct Indicator<'a> {
     pub pending: &'a str,
     /// The message of the last command, shown instead of the rest.
     pub message: Option<&'a str>,
+}
+
+/// Notes the view's revision and record breaks once an Insert session
+/// opened in `v`, and puts vim's cursor on the view's.
+fn insert_started(state: &mut ViewState, v: &CodeView) {
+    state.revision = v.revision();
+    state.moves = v.record_breaks();
+    follow_selection(&mut state.vim, v);
 }
 
 /// Moves vim's cursor to the view's after the view moved it: in Insert

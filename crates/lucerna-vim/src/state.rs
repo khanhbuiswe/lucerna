@@ -671,6 +671,29 @@ impl Vim {
         *self = Vim::new(cursor);
     }
 
+    /// Insert mode at `cursor` from outside vim (a multi-cursor command
+    /// made the selections), with nothing pending, no count and the goal
+    /// forgotten. The typing is recorded for `.` as an `i` (the command
+    /// itself is not).
+    pub fn enter_insert_here(&mut self, cursor: Point) {
+        self.mode = Mode::Insert;
+        self.cursor = cursor;
+        self.anchor = cursor;
+        self.goal = None;
+        self.pending.clear();
+        self.count = None;
+        self.prefix = None;
+        self.search_count = None;
+        self.register = None;
+        self.op = None;
+        self.insert_count = None;
+        self.insert_lines = false;
+        self.cmd_keys.clear();
+        self.replay_typed = None;
+        self.recording = None;
+        self.break_insert_record();
+    }
+
     /// Keeps the cursor and anchor on a char of `snapshot`, e.g. after a
     /// reload.
     pub fn clamp(&mut self, snapshot: &BufferSnapshot) {
@@ -2399,6 +2422,32 @@ mod tests {
             vec![Outcome::Handled(vec![])]
         );
         assert_eq!(vim.cursor(), Point { row: 0, column: 1 });
+    }
+
+    #[test]
+    fn enter_insert_here_drops_pending_and_count() {
+        let view = TestView::new("a|bc def");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "3d");
+        assert_eq!(vim.pending(), "3d");
+        let at = Point { row: 0, column: 4 };
+        vim.enter_insert_here(at);
+        assert_eq!(vim.mode(), Mode::Insert);
+        assert_eq!(vim.pending(), "");
+        assert_eq!(vim.cursor(), at);
+        assert_eq!(vim.anchor, at);
+        assert_eq!(vim.goal, None);
+        assert!(!vim.insert_lines);
+        assert_eq!(vim.insert_count, None);
+        // Escape repeats nothing (no count) and steps back one char.
+        assert_eq!(
+            feed_keys(&mut vim, &view, "<Esc>"),
+            vec![Outcome::Handled(vec![
+                Action::ModeChanged(Mode::Normal),
+                Action::CursorMoved { jump: false }
+            ])]
+        );
+        assert_eq!(vim.cursor(), Point { row: 0, column: 3 });
     }
 
     #[test]

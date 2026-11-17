@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    ClipboardItem, Entity, EntityInputHandler as _, Focusable as _, TestAppContext,
-    VisualTestContext,
+    BorrowAppContext as _, ClipboardItem, Entity, EntityInputHandler as _, Focusable as _,
+    TestAppContext, VisualTestContext,
 };
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
@@ -1019,4 +1019,145 @@ fn macro_with_colon_command(cx: &mut TestAppContext) {
     assert_eq!(text_of(&view, cx), "b\nb\na\n");
     assert_eq!(cursor(&view, cx), pt(2, 0));
     assert_eq!(indicator(&wb, &view, cx), "1 substitution on 1 line");
+}
+
+// Multi-cursor commands with vim on (spec 2026-11-17-multi-cursor §5.2
+// "Vim bật"): they enter Insert mode and keep every selection.
+
+fn set_user_settings(json: &str, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        cx.update_global::<AppState, _>(|state, _| {
+            state.settings.set_layer(Layer::User, json).unwrap();
+        })
+    });
+    draw(cx);
+}
+
+/// The byte ranges of every selection, in document order.
+fn ranges(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> Vec<std::ops::Range<usize>> {
+    view.read_with(cx, |v, _| {
+        v.selections().all().iter().map(|s| s.range()).collect()
+    })
+}
+
+fn alt() -> gpui::Modifiers {
+    gpui::Modifiers {
+        alt: true,
+        ..Default::default()
+    }
+}
+
+/// Just right of the left edge of the cell at `row`, `column` (not the
+/// line's last char): a click there puts the caret before it.
+fn caret_at(
+    view: &Entity<CodeView>,
+    row: u32,
+    column: u32,
+    cx: &mut VisualTestContext,
+) -> gpui::Point<gpui::Pixels> {
+    draw(cx);
+    view.read_with(cx, |v, _| {
+        let left = v.char_position(pt(row, column)).expect("on screen");
+        let right = v.char_position(pt(row, column + 1)).expect("on screen");
+        gpui::point(left.x - (right.x - left.x) * 0.4, left.y)
+    })
+}
+
+fn mouse_click(
+    at: gpui::Point<gpui::Pixels>,
+    modifiers: gpui::Modifiers,
+    cx: &mut VisualTestContext,
+) {
+    let button = gpui::MouseButton::Left;
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: at,
+        button,
+        modifiers,
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position: at,
+        button,
+        modifiers,
+        click_count: 1,
+    });
+    draw(cx);
+}
+
+#[gpui::test]
+fn vim_cmd_d_insert_escape_undo(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("foo bar foo", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    keys("cmd-d cmd-d", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    assert_eq!(indicator(&wb, &view, cx), "-- INSERT --");
+    assert_eq!(ranges(&view, cx), vec![0..3, 8..11]);
+    commit(&view, "x", cx);
+    assert_eq!(text_of(&view, cx), "x bar x");
+    keys("escape", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Normal));
+    assert_eq!(view.read_with(cx, |v, _| v.selections().len()), 1);
+    keys("u", cx);
+    assert_eq!(text_of(&view, cx), "foo bar foo");
+}
+
+#[gpui::test]
+fn vim_alt_click_enters_insert(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("foo bar baz\n", cx);
+    let bar = caret_at(&view, 0, 4, cx);
+    mouse_click(bar, alt(), cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    assert_eq!(ranges(&view, cx), vec![0..0, 4..4]);
+    commit(&view, "x", cx);
+    assert_eq!(text_of(&view, cx), "xfoo xbar baz\n");
+}
+
+#[gpui::test]
+fn vim_visual_then_cmd_d(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("foo bar foo", cx);
+    keys("v e", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Visual));
+    keys("cmd-d", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    assert_eq!(ranges(&view, cx), vec![0..3, 8..11]);
+}
+
+#[gpui::test]
+fn vim_ctrl_v_stays_visual_block(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("abc\ndef\n", cx);
+    keys("ctrl-v j", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::VisualBlock));
+    assert_eq!(view.read_with(cx, |v, _| v.selections().len()), 2);
+}
+
+#[gpui::test]
+fn vim_off_keeps_user_cursors(cx: &mut TestAppContext) {
+    let off = r#"{ "vim.enabled": false }"#;
+    let (_dir, _wb, view, cx) = vim_editor_with(off, "foo bar baz\n", cx);
+    let (bar, baz) = (caret_at(&view, 0, 4, cx), caret_at(&view, 0, 8, cx));
+    mouse_click(bar, alt(), cx);
+    mouse_click(baz, alt(), cx);
+    assert_eq!(ranges(&view, cx), vec![0..0, 4..4, 8..8]);
+    set_user_settings(VIM_ON, cx);
+    set_user_settings(off, cx);
+    assert_eq!(ranges(&view, cx), vec![0..0, 4..4, 8..8]);
+}
+
+/// ⌘D in Insert adds a cursor and keeps the one undo step open.
+#[gpui::test]
+fn vim_multi_cursor_insert_is_idempotent(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("foo foo foo foo", cx);
+    keys("cmd-d cmd-d cmd-d", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    assert_eq!(ranges(&view, cx), vec![0..3, 4..7, 8..11]);
+    commit(&view, "a", cx);
+    // Each empty cursor takes the word before it.
+    keys("cmd-d", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    assert_eq!(ranges(&view, cx), vec![0..1, 2..3, 4..5]);
+    commit(&view, "b", cx);
+    assert_eq!(text_of(&view, cx), "b b b foo");
+    keys("escape u", cx);
+    assert_eq!(text_of(&view, cx), "foo foo foo foo");
 }
