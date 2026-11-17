@@ -194,6 +194,18 @@ pub struct LanguageServers {
 
 impl EventEmitter<LanguageServersEvent> for LanguageServers {}
 
+impl Drop for LanguageServers {
+    /// Dropped with servers still running (the app went away without a
+    /// window release or quit hook, as in tests): closes every event stream
+    /// and pending `initialize` before `registry` drops the servers, so
+    /// their shutdown threads' last events cannot wake the UI executor from
+    /// another thread. Field order alone would drop `registry` first.
+    fn drop(&mut self) {
+        self.pumps.clear();
+        self.starting.clear();
+    }
+}
+
 impl LanguageServers {
     /// The servers of the folder at `root`, following `documents` and the
     /// window's `settings`. Starts processes with a [`ProcessLauncher`].

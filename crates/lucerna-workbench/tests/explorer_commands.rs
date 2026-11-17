@@ -22,7 +22,9 @@ use lucerna_workbench::{AppState, TabItem, TerminalSpawner, Workbench};
 use serde_json::json;
 use tempfile::TempDir;
 
-const TRUSTED: &str = r#"{ "session.trustAllWorktrees": true }"#;
+/// Language servers off: opening `a.rs` would otherwise start the real
+/// `rust-analyzer` from `PATH`, whose threads make the test flaky.
+const TRUSTED: &str = r#"{ "session.trustAllWorktrees": true, "lucerna.lsp.enabled": false }"#;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Call {
