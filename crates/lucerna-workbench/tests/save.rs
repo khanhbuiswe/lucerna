@@ -1630,3 +1630,35 @@ fn after_delay_saves_a_renamed_document(cx: &mut TestAppContext) {
     assert_eq!(disk(&dir, "new.txt"), "xabc\n");
     assert!(!from.exists(), "the old file is not written again");
 }
+
+#[gpui::test]
+fn after_delay_does_not_recreate_a_file_deleted_before_the_watcher_reports(
+    cx: &mut TestAppContext,
+) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    fs::remove_file(dir.path().join("file.txt")).unwrap(); // no `changed(...)`
+    advance(1000, cx);
+    assert!(!dir.path().join("file.txt").exists());
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert!(cx.pending_prompt().is_none());
+    assert_eq!(message(cx), None);
+    // A save command still makes the file again, as VS Code.
+    keys("cmd-s", cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+}
+
+#[gpui::test]
+fn after_delay_does_not_recreate_a_file_moved_before_the_watcher_reports(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    fs::rename(dir.path().join("file.txt"), dir.path().join("moved.txt")).unwrap();
+    advance(1000, cx);
+    assert!(!dir.path().join("file.txt").exists());
+    assert_eq!(disk(&dir, "moved.txt"), "abc\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert!(cx.pending_prompt().is_none());
+    assert_eq!(message(cx), None);
+}

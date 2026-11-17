@@ -245,6 +245,9 @@ pub(crate) struct WriteJob {
     /// The stamp and hash of the file as last loaded or saved. When set,
     /// a file that no longer matches them is not written over.
     pub(crate) expected: Option<(Option<Stamp>, u64)>,
+    /// An autosave: a file that is gone (deleted or moved before the
+    /// watcher reported it) is not made again; a save command does.
+    pub(crate) skip_if_missing: bool,
 }
 
 /// What a write ended in.
@@ -254,11 +257,18 @@ pub(crate) enum WriteOutcome {
     /// Another program changed the file since it was last loaded or saved;
     /// nothing was written.
     ChangedOnDisk,
+    /// An autosave found the file gone; nothing was written.
+    Missing,
 }
 
 impl WriteJob {
     /// Encodes and writes the text to `path`.
     pub(crate) fn run(self, path: &Path) -> Result<WriteOutcome, WriteError> {
+        if self.skip_if_missing
+            && matches!(fs::metadata(path), Err(e) if e.kind() == io::ErrorKind::NotFound)
+        {
+            return Ok(WriteOutcome::Missing);
+        }
         if let Some((stamp, hash)) = self.expected
             && changed_on_disk(path, stamp, hash)?
         {

@@ -1430,6 +1430,7 @@ impl Documents {
             // While a reload is in flight the file may be newer than the
             // text's base: hash it rather than trust an equal stamp.
             expected: check.then_some((doc.stamp.filter(|_| doc.job.is_none()), doc.base_hash)),
+            skip_if_missing: opts.reason == SaveReason::Auto,
         };
         let guard = SavingGuard::new(&doc.saving);
         let path = key.clone();
@@ -1521,6 +1522,12 @@ impl Documents {
                     }
                 }
                 SaveStep::Done(Ok(true))
+            }
+            Ok(WriteOutcome::Missing) => {
+                // Deleted or moved before the watcher said so: the tab
+                // waits for that event.
+                tracing::debug!(path = %key.display(), "file is gone; autosave skipped");
+                SaveStep::Done(Ok(false))
             }
             Ok(WriteOutcome::ChangedOnDisk) => {
                 tracing::debug!(path = %key.display(), "file changed on disk; not saved");
