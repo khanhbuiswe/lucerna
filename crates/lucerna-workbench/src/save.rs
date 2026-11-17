@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::hash::{DefaultHasher, Hasher};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,14 +18,15 @@ use futures::FutureExt as _;
 use futures::channel::oneshot;
 use futures::future::Shared;
 use gpui::{
-    App, AsyncWindowContext, Context, Entity, Global, PromptLevel, Subscription, Task, Window,
+    App, AsyncWindowContext, Context, Entity, Global, PromptLevel, Subscription, Task, WeakEntity,
+    Window,
 };
 use lucerna_text::{
     Buffer, BufferSnapshot, LineEnding, Point, TempFiles, WriteError, Written, write_bytes_tracked,
 };
 
 use crate::documents::{DocState, DocumentEvent, Edits, Stamp};
-use crate::{CommandRegistry, Documents, Workbench};
+use crate::{CommandRegistry, Documents, Workbench, untitled};
 
 /// Why a document is saved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,38 +151,82 @@ pub(crate) fn prompt_lossy(
     )
 }
 
-/// The file name of `path`, as prompts and messages name a document.
+/// The file name of `path`, as prompts and messages name a document; an
+/// Untitled document's `Untitled-N`.
 pub(crate) fn display_name(path: &Path) -> String {
+    if untitled::is_untitled(path) {
+        return untitled::name(path);
+    }
     path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into(),
     )
 }
 
+/// What [`save_each`] does when the Save As dialog of an Untitled document
+/// is cancelled (or its write fails).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UntitledCancel {
+    /// Closing a tab or the window, or quitting: the whole flow stops,
+    /// and no other Untitled document is asked about.
+    Stop,
+    /// Save All: that document is skipped, the next one is asked about.
+    Skip,
+}
+
 /// Saves the documents at `paths` (explicitly, with participants) one
-/// after another, each of which may ask about a conflict. `true` when
-/// every one was saved; a failure is reported in the status bar and the
-/// rest still save.
+/// after another, each of which may ask about a conflict: the files
+/// first, then each Untitled document still holding text through
+/// [`Workbench::save_as`] of `workbench`, in number order (spec §4.5).
+/// When every one was saved, the paths the documents are at now (an
+/// Untitled one's chosen file), for the caller to check for edits made
+/// while they wrote; `None` otherwise. A failed file save is reported in
+/// the status bar and the rest still save. Once a file failed with
+/// [`UntitledCancel::Stop`], or an Untitled one is cancelled with it, no
+/// Untitled document is asked about.
 pub(crate) async fn save_each(
+    workbench: WeakEntity<Workbench>,
     documents: Entity<Documents>,
     paths: Vec<Arc<Path>>,
+    on_cancel: UntitledCancel,
     cx: &mut AsyncWindowContext,
-) -> bool {
+) -> Option<Vec<Arc<Path>>> {
     let opts = SaveOptions {
         reason: SaveReason::Explicit,
         participants: true,
         overwrite: false,
     };
+    let (mut untitled, files): (Vec<_>, Vec<_>) =
+        paths.into_iter().partition(|p| untitled::is_untitled(p));
+    untitled.sort_by_key(|p| untitled::number(p));
     let mut all = true;
-    for path in paths {
-        let Ok(save) =
-            cx.update(|window, cx| documents.update(cx, |d, cx| d.save(&path, opts, window, cx)))
-        else {
-            return false;
-        };
+    let mut saved = Vec::new();
+    for path in files {
+        let save = cx
+            .update(|window, cx| documents.update(cx, |d, cx| d.save(&path, opts, window, cx)))
+            .ok()?;
         all &= matches!(save.await, Ok(true));
+        saved.push(path);
     }
-    all
+    if !all && on_cancel == UntitledCancel::Stop {
+        return None;
+    }
+    for path in untitled {
+        // Emptied while an earlier dialog was up: nothing to save.
+        if !documents.read_with(cx, |d, _| d.is_dirty(&path)) {
+            saved.push(path);
+            continue;
+        }
+        let save = workbench
+            .update_in(cx, |wb, window, cx| wb.save_as_to(path, window, cx))
+            .ok()?;
+        match save.await {
+            Some(to) => saved.push(to),
+            None if on_cancel == UntitledCancel::Stop => return None,
+            None => all = false,
+        }
+    }
+    all.then_some(saved)
 }
 
 /// A save participant: the edits it makes to `text`.
@@ -423,7 +468,71 @@ fn active_document_path(wb: &Workbench, cx: &App) -> Option<Arc<Path>> {
     tab.path().or(tab.previewed_path()).cloned()
 }
 
-/// Saves the document of the active code view or preview.
+/// Where the Save As dialog for the document at `path` starts, and the
+/// name it suggests (spec §4.3, §4.4): for an Untitled document, the
+/// opened folder (in single-file mode, the file's folder) and its tab
+/// title without the characters a file name cannot hold, else
+/// `Untitled-N`; for a file, its folder and its name. No extension is
+/// added.
+pub fn save_dialog_start(wb: &Workbench, path: &Path, cx: &App) -> (PathBuf, String) {
+    if crate::untitled::is_untitled(path) {
+        let folder = wb
+            .is_single_file()
+            .then(|| wb.opened_paths().pop())
+            .flatten()
+            .and_then(|file| file.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| wb.root().to_path_buf());
+        let title = crate::editor_groups::untitled_title(Some(wb.documents().read(cx)), path);
+        let name = crate::untitled::suggested_file_name(&title)
+            .unwrap_or_else(|| crate::untitled::name(path));
+        return (folder, name);
+    }
+    let path = wb.absolute_path(path);
+    let folder = path
+        .parent()
+        .map_or_else(|| wb.root().to_path_buf(), Path::to_path_buf);
+    (folder, display_name(&path))
+}
+
+/// Whether the absolute paths `a` and `b` name one file: equal, or equal
+/// once symlinks are resolved (the save dialog may answer with the
+/// resolved form of the folder it was given). An Untitled key only ever
+/// equals itself: it is never resolved against the working directory.
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    if untitled::is_untitled(a) || untitled::is_untitled(b) {
+        return false;
+    }
+    matches!(
+        (fs::canonicalize(a), fs::canonicalize(b)),
+        (Ok(a), Ok(b)) if a == b
+    )
+}
+
+/// `to` (absolute, from the save dialog) spelled under `root` when its
+/// folder resolves to a place inside the resolved `root`: the dialog may
+/// answer with the resolved form of a symlinked root, and the tabs, git and
+/// the Explorer know the project by the root's own spelling. Else `to`.
+pub(crate) fn under_root(root: &Path, to: &Path) -> PathBuf {
+    if to.starts_with(root) {
+        return to.to_path_buf();
+    }
+    let (Some(folder), Some(name)) = (to.parent(), to.file_name()) else {
+        return to.to_path_buf();
+    };
+    match (fs::canonicalize(folder), fs::canonicalize(root)) {
+        (Ok(folder), Ok(real_root)) => match folder.strip_prefix(&real_root) {
+            Ok(rel) => root.join(rel).join(name),
+            Err(_) => to.to_path_buf(),
+        },
+        _ => to.to_path_buf(),
+    }
+}
+
+/// Saves the document of the active code view or preview; an Untitled one
+/// goes through Save As.
 fn save_active(
     wb: &mut Workbench,
     opts: SaveOptions,
@@ -433,6 +542,10 @@ fn save_active(
     let Some(path) = active_document_path(wb, cx) else {
         return;
     };
+    if crate::untitled::is_untitled(&path) {
+        wb.save_as(path, window, cx).detach();
+        return;
+    }
     wb.documents()
         .clone()
         .update(cx, |d, cx| d.save(&path, opts, window, cx))
@@ -440,12 +553,13 @@ fn save_active(
 }
 
 /// Saves every dirty document, one after another (each may ask about a
-/// conflict).
+/// conflict), then asks where to save each Untitled one holding text; a
+/// Cancel skips that one only.
 fn save_all(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>) {
     let documents = wb.documents().clone();
     let paths = documents.read(cx).dirty_paths();
-    cx.spawn_in(window, async move |_, cx| {
-        save_each(documents, paths, cx).await;
+    cx.spawn_in(window, async move |wb, cx| {
+        save_each(wb, documents, paths, UntitledCancel::Skip, cx).await;
     })
     .detach();
 }
@@ -479,6 +593,12 @@ impl Workbench {
             }
         });
         self.auto_save._subscriptions = vec![events, activation];
+    }
+
+    /// Whether an `afterDelay` timer is armed for the document at `path`.
+    #[doc(hidden)]
+    pub fn auto_save_armed_for_test(&self, path: &Path) -> bool {
+        self.auto_save.timers.contains_key(path)
     }
 
     /// `files.autoSave` for the document at `path`.
@@ -555,8 +675,12 @@ impl Workbench {
     }
 
     /// Autosaves the document at `path` once `files.autoSaveDelay` has
-    /// passed, replacing its timer.
+    /// passed, replacing its timer. Never for an Untitled document:
+    /// autosave has no path to save it to (spec §4.5).
     fn arm_auto_save(&mut self, path: &Arc<Path>, window: &mut Window, cx: &mut Context<Self>) {
+        if untitled::is_untitled(path) {
+            return;
+        }
         let delay = self.auto_save_delay(path, cx);
         let target = path.clone();
         let timer = cx.spawn_in(window, async move |wb, cx| {
@@ -583,13 +707,14 @@ impl Workbench {
     /// The dirty documents `files.autoSave` saves (not `"off"`) that can
     /// be saved without asking: neither in conflict with the disk, nor
     /// deleted, nor holding invalid bytes the user has not agreed to
-    /// replace. Saved as the app quits with hot exit on.
+    /// replace, nor Untitled. Saved as the app quits with hot exit on.
     pub(crate) fn auto_save_paths(&self, cx: &App) -> Vec<Arc<Path>> {
         let docs = self.documents().read(cx);
         docs.dirty_paths()
             .into_iter()
             .filter(|path| {
-                !docs.has_conflict(path)
+                !untitled::is_untitled(path)
+                    && !docs.has_conflict(path)
                     && !docs.needs_lossy_consent(path)
                     && docs.state(path) == Some(&DocState::Ready)
                     && self.auto_save_mode(path, cx) != "off"
@@ -598,15 +723,16 @@ impl Workbench {
     }
 
     /// Saves the document at `path` if it has unsaved changes and is
-    /// neither in conflict with the disk nor deleted. While a view of it is
-    /// in the middle of an IME composition, the save waits another
-    /// `files.autoSaveDelay`: its participants' edits and its undo stop
-    /// would split the composition.
+    /// neither in conflict with the disk, nor deleted, nor Untitled. While
+    /// a view of it is in the middle of an IME composition, the save waits
+    /// another `files.autoSaveDelay`: its participants' edits and its undo
+    /// stop would split the composition.
     fn auto_save_document(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         let documents = self.documents().clone();
         {
             let docs = documents.read(cx);
-            if !docs.is_dirty(path)
+            if untitled::is_untitled(path)
+                || !docs.is_dirty(path)
                 || docs.has_conflict(path)
                 || docs.state(path) != Some(&DocState::Ready)
             {
@@ -646,6 +772,19 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         },
     );
     commands.register(
+        "workbench.action.files.saveAs",
+        "File: Save As...",
+        |wb, _, window, cx| {
+            // Only a code view: Search, diffs and previews have no file of
+            // their own to save elsewhere.
+            let Some(view) = wb.active_code_view(cx) else {
+                return;
+            };
+            let path = view.read(cx).path().clone();
+            wb.save_as(path, window, cx).detach();
+        },
+    );
+    commands.register(
         "workbench.action.files.saveAll",
         "File: Save All Files",
         |wb, _, window, cx| save_all(wb, window, cx),
@@ -680,6 +819,16 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_file_compares_untitled_keys_by_name_only() {
+        let key = Path::new("untitled:Untitled-1");
+        assert!(same_file(key, key));
+        assert!(!same_file(key, Path::new("untitled:Untitled-2")));
+        let cwd = std::env::current_dir().unwrap();
+        assert!(!same_file(key, &cwd.join("untitled:Untitled-1")));
+        assert!(!same_file(&cwd.join("untitled:Untitled-1"), key));
+    }
 
     fn apply(text: &str, f: Participant) -> String {
         let buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();

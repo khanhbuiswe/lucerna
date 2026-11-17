@@ -1,6 +1,6 @@
 # File mới (⌘N) và Save As (⇧⌘S)
 
-Ngày 2026-11-17. Trạng thái: thiết kế, chưa triển khai. Mục thứ hai của tầng 1 trong `docs/roadmap.md`.
+Ngày 2026-11-17. Trạng thái: đã triển khai (branch `claude/untitled-save-as`); kiểm tra thủ công §6 chưa làm. Mục thứ hai của tầng 1 trong `docs/roadmap.md`.
 
 ## 1. Mục đích
 

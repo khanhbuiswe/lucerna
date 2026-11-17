@@ -563,7 +563,8 @@ impl Workbench {
         else {
             return;
         };
-        if self.trust.prompted || !self.is_restricted(cx) {
+        // An untitled document has no file a server could start for.
+        if crate::untitled::is_untitled(path) || self.trust.prompted || !self.is_restricted(cx) {
             return;
         }
         let found = self.language_servers().update(cx, |servers, cx| {

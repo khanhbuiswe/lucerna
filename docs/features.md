@@ -80,12 +80,15 @@ example "Open in → Default app" in Claude Desktop.
   undo and redo grouped like VS Code, plus cursor undo. Multi-cursor like VS Code: Cmd+D and
   Cmd+K Cmd+D, Shift+Cmd+L, Opt+Cmd+Up/Down, Shift+Opt+I, column select (Shift+Opt+Cmd+arrows or
   Shift+Opt+drag), Opt+click and Opt+drag, paste that spreads one line per cursor, and a status bar count
-  (`editor.multiCursor*` settings). Find's whole-word option follows `editor.wordSeparators`, so `$foo` and `foo-bar` match as words. Save, Save All, Save Without Formatting
+  (`editor.multiCursor*` settings). Find's whole-word option follows `editor.wordSeparators`, so `$foo` and `foo-bar` match as words.
+  Cmd+N opens an Untitled tab (File → New File) that is never written to disk until you save it;
+  Cmd+S asks where. Save As (Cmd+Shift+S) moves every tab of the file to the new one and leaves the
+  old file as it was. Save, Save All, Save Without Formatting
   and Revert; `files.trimTrailingWhitespace`, `files.insertFinalNewline`, `files.trimFinalNewlines`,
   `files.eol` and `files.autoSave`. Writes are atomic and keep the file's encoding, BOM and line
   ending. Tabs show a dirty dot, and a conflict dot when the file changed on disk. Saving over
-  a changed file asks first, and closing a tab or window with unsaved changes prompts. Hot exit: unsaved changes are
-  backed up about a second after you stop typing. Quitting by any means (Cmd+Q, Dock Quit, Log
+  a changed file asks first, and closing a tab or window with unsaved changes prompts. Hot exit: unsaved changes, Untitled
+  tabs included, are backed up about a second after you stop typing. Quitting by any means (Cmd+Q, Dock Quit, Log
   Out, a crash) keeps them without asking, and they come back when the folder or file is
   reopened; a file that changed on disk meanwhile asks before you overwrite it.
   `files.hotExit: "off"` restores the old asking behaviour.

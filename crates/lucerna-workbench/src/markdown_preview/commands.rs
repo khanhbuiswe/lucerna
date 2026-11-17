@@ -364,6 +364,12 @@ pub(crate) fn follow_active(wb: &mut Workbench, window: &mut Window, cx: &mut Co
         return;
     };
     let path = match &tab.item {
+        // An untitled document has no file for the preview to follow.
+        TabItem::File(path) | TabItem::MarkdownPreview(path)
+            if crate::untitled::is_untitled(path) =>
+        {
+            return;
+        }
         TabItem::File(path) if is_markdown(wb.root(), path, wb.settings(), cx) => path.clone(),
         TabItem::MarkdownPreview(path) => path.clone(),
         _ => return,

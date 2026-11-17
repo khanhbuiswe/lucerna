@@ -37,6 +37,7 @@
   "files.scanDepth": 5,
   "files.eol": "auto",
   "files.encoding": "utf8",
+  "files.defaultLanguage": "",
   "files.insertFinalNewline": false,
   "files.trimFinalNewlines": false,
   "files.trimTrailingWhitespace": false,

@@ -322,6 +322,21 @@ impl BufferSnapshot {
         }
     }
 
+    /// At most the first `max_chars` chars of line `row`, without its line
+    /// break. Unlike [`Self::line`] it never copies the rest of a long
+    /// line. Out-of-range rows give "".
+    pub fn line_prefix(&self, row: u32, max_chars: usize) -> String {
+        if row >= self.line_count() {
+            return String::new();
+        }
+        self.rope
+            .line(row as usize)
+            .chars()
+            .take_while(|c| !matches!(c, '\n' | '\r'))
+            .take(max_chars)
+            .collect()
+    }
+
     /// The number of chars before `p` on its line: the column the status
     /// bar shows, 0-based. A byte column inside a char counts that char's
     /// start; past the end of the line it clamps to the line's length
@@ -419,6 +434,18 @@ mod tests {
     fn all_text(b: &Buffer) -> String {
         let s = b.snapshot();
         s.text_for_range(0..s.len_bytes())
+    }
+
+    #[test]
+    fn line_prefix_is_bounded_and_without_eol() {
+        let long = "x".repeat(2_000_000);
+        let s = BufferSnapshot::from_text(&format!("ab\r\n{long}\nlast"));
+        assert_eq!(s.line_prefix(0, 10), "ab");
+        assert_eq!(s.line_prefix(1, 5), "xxxxx");
+        assert_eq!(s.line_prefix(1, 10_000_000).len(), 2_000_000);
+        assert_eq!(s.line_prefix(2, 10), "last");
+        assert_eq!(s.line_prefix(9, 10), "");
+        assert_eq!(BufferSnapshot::from_text("héllo").line_prefix(0, 2), "hé");
     }
 
     #[test]

@@ -1929,3 +1929,33 @@ fn search_before_scan_complete_waits_for_it(cx: &mut TestAppContext) {
     );
     assert!(found[0].0.ends_with("top.txt"));
 }
+
+/// A real root-level file named like an Untitled key opens as that file
+/// from a Search result, not as an empty fake Untitled tab.
+#[gpui::test]
+fn click_result_in_real_untitled_named_file_opens_it(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("untitled:todo.txt", "hello\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-f", cx);
+    type_text("hello", cx);
+    settle_search(cx);
+    let view = search(&wb, cx);
+    assert_eq!(files(&view, cx), vec![(p("untitled:todo.txt"), 1)]);
+
+    click("search-line-0-0-0", cx);
+    let path = cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .active_tab()
+            .and_then(|t| t.path().map(|p| p.to_path_buf()))
+    });
+    assert_eq!(path, Some(dir.path().join("untitled:todo.txt")));
+    let text = active_view(&wb, cx).read_with(cx, |v, _| {
+        let s = v.snapshot();
+        s.text_for_range(0..s.len_bytes())
+    });
+    assert_eq!(text, "hello\n");
+}

@@ -586,6 +586,7 @@ impl Workbench {
                     .update(cx, |wb, cx| wb.open_breadcrumbs(group, window, cx))
                     .ok();
             }));
+            groups.set_workbench(command_target.clone());
             groups.set_on_command(Rc::new(move |id, window, cx| {
                 command_target
                     .update(cx, |wb, cx| wb.run_command(id, None, window, cx))
@@ -1307,6 +1308,115 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Save As (spec §4.3, §4.4): asks where to save the document at
+    /// `path` (a file or an Untitled document), writes its text there, and
+    /// moves the document with every tab, preview and Go Back place to the
+    /// new file, undo history and cursors kept. The old file stays as it
+    /// was on disk. A tab already open on the chosen file closes and its
+    /// document is dropped: the dialog asked before replacing the file.
+    /// Choosing the document's own file is a plain save.
+    ///
+    /// `true` once the text is saved. Cancel or a failed write (reported
+    /// in the status bar) is `false` and leaves the document where it was,
+    /// unsaved.
+    pub fn save_as(
+        &mut self,
+        path: Arc<Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
+        let saved = self.save_as_to(path, window, cx);
+        cx.spawn(async move |_, _| saved.await.is_some())
+    }
+
+    /// [`Workbench::save_as`], resolving to where the document is once
+    /// saved (the chosen file, or its own file when that was chosen), so
+    /// a caller can check that path for edits made while it wrote.
+    pub(crate) fn save_as_to(
+        &mut self,
+        path: Arc<Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Arc<Path>>> {
+        let from = self.absolute_path(&path);
+        let (folder, name) = save::save_dialog_start(self, &from, cx);
+        let answer = cx.prompt_for_new_path(&folder, Some(&name));
+        let documents = self.documents.clone();
+        let root = self.root.clone();
+        cx.spawn_in(window, async move |wb, cx| {
+            let to: Arc<Path> = match answer.await {
+                Ok(Ok(Some(to))) => Arc::from(save::under_root(&root, &to)),
+                Ok(Err(err)) => {
+                    tracing::warn!(%err, "the save dialog failed");
+                    return None;
+                }
+                _ => return None,
+            };
+            if save::same_file(&from, &to) {
+                let opts = save::SaveOptions {
+                    reason: save::SaveReason::Explicit,
+                    participants: true,
+                    overwrite: false,
+                };
+                let save = cx
+                    .update(|window, cx| {
+                        documents.update(cx, |d, cx| d.save(&from, opts, window, cx))
+                    })
+                    .ok()?;
+                return matches!(save.await, Ok(true)).then_some(from);
+            }
+            let write = cx
+                .update(|window, cx| {
+                    documents.update(cx, |d, cx| d.write_as(&from, &to, window, cx))
+                })
+                .ok()?;
+            let saved = write.await.ok()?;
+            wb.update(cx, |wb, cx| {
+                wb.close_file_tabs(&to, cx);
+                wb.paths_renamed(&from, &to, cx);
+                wb.documents
+                    .update(cx, |d, cx| d.finish_save_as(&to, saved, cx));
+            })
+            .ok()?;
+            Some(to)
+        })
+    }
+
+    /// Closes every tab of the file `path` (absolute) without asking and
+    /// drops its document, unsaved changes and all: Save As is about to
+    /// put another document there. A tab names the file under any spelling
+    /// that resolves to it ([`save::same_file`]).
+    fn close_file_tabs(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let (closing, spellings): (Vec<TabId>, Vec<Arc<Path>>) = self
+            .editor_groups
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter_map(|t| match &t.item {
+                TabItem::File(p) if save::same_file(p, path) => Some((t.id, p.clone())),
+                _ => None,
+            })
+            .unzip();
+        if !closing.is_empty() {
+            self.update_editor_groups(cx, |m| {
+                for id in closing {
+                    m.close(id);
+                }
+            });
+        }
+        let mut spellings = spellings;
+        spellings.push(Arc::from(path));
+        spellings.sort();
+        spellings.dedup();
+        for p in spellings {
+            if self.documents.read(cx).state(&p).is_some() {
+                self.documents.update(cx, |d, cx| d.discard(&p, cx));
+            }
+        }
+    }
+
     /// After Lucerna deleted `path` (absolute): the tabs of files at it or
     /// under it close, except those with unsaved changes, which stay to be
     /// marked deleted when the watcher reports the removal.
@@ -1495,7 +1605,7 @@ impl Workbench {
     /// Every open tab's path, once per path, with the file the dynamic
     /// Markdown preview shows (it has no path of its own, but its file must
     /// stay watched).
-    fn open_tab_paths(&self, cx: &App) -> Vec<PathBuf> {
+    pub fn open_tab_paths(&self, cx: &App) -> Vec<PathBuf> {
         let mut paths: Vec<PathBuf> = self
             .editor_groups
             .read(cx)
@@ -1507,6 +1617,8 @@ impl Workbench {
                     .iter()
                     .filter_map(|t| t.path().or(t.previewed_path()))
             })
+            // An untitled document has no file to watch.
+            .filter(|p| !crate::untitled::is_untitled(p))
             .map(|p| p.to_path_buf())
             .collect();
         paths.sort();
@@ -1834,14 +1946,23 @@ impl Workbench {
         Arc::from(absolute_path(&self.root, path))
     }
 
+    /// `path` of a file in the project: absolute, a relative path (the
+    /// Explorer's and Quick Open's worktree paths) always joined onto the
+    /// root, so a real file named `untitled:…` is never taken for an
+    /// Untitled key (spec §4.1).
+    pub(crate) fn project_path(&self, path: &Path) -> Arc<Path> {
+        Arc::from(self.root.join(path))
+    }
+
     /// Opens `path` without a place to go to (the Explorer, Quick Open
     /// without `:line`, Open Recent, `luc file`, a restored session): a
     /// tab of the group already showing the file (source or preview) is
     /// activated; otherwise it opens in the editor
     /// `workbench.editorAssociations` names, the Markdown preview or the
-    /// source (spec §4.1). Otherwise like [`Workbench::open_source`].
+    /// source (spec §4.1). Otherwise like [`Workbench::open_source`]. A
+    /// relative path is a file of the project, never an Untitled key.
     pub fn open_path(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
-        let path = self.absolute_path(&path);
+        let path = self.project_path(&path);
         let view =
             markdown_preview::associated_editor(&self.root, &path, self.settings.read(cx).view(cx));
         self.open_file(path, view, mode, true, cx);
@@ -1857,6 +1978,14 @@ impl Workbench {
     pub fn open_source(&mut self, path: Arc<Path>, mode: OpenMode, cx: &mut Context<Self>) {
         let path = self.absolute_path(&path);
         self.open_file(path, FileView::Source, mode, false, cx);
+    }
+
+    /// `workbench.action.files.newUntitledFile`: a new empty Untitled
+    /// document in a pinned tab of the active group, its view focused.
+    pub fn new_untitled_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.documents.update(cx, |d, cx| d.new_untitled(cx));
+        self.open_source(key, OpenMode::Pinned, cx);
+        self.focus_editor_area(window, cx);
     }
 
     /// Opens the static Markdown preview of `path` as a pinned tab, as the
@@ -1877,7 +2006,9 @@ impl Workbench {
     ) {
         // An F8 hover still waiting for its tab is for an earlier open.
         self.marker_hover = None;
-        self.recent_files.record(path.clone());
+        if !crate::untitled::is_untitled(&path) {
+            self.recent_files.record(path.clone());
+        }
         let preview_enabled = self
             .settings
             .read(cx)
@@ -1982,9 +2113,22 @@ impl Workbench {
                     SaveChoice::Save => {
                         let paths = documents.read_with(cx, |d, _| dirty_now(d));
                         // An edit typed while the saves wrote is not saved:
-                        // stop rather than lose it.
-                        save::save_each(documents.clone(), paths, cx).await
-                            && documents.read_with(cx, |d, _| dirty_now(d).is_empty())
+                        // stop rather than lose it. Also checked where the
+                        // documents are now: Save As moved Untitled ones
+                        // off the paths asked about.
+                        save::save_each(
+                            wb.clone(),
+                            documents.clone(),
+                            paths,
+                            save::UntitledCancel::Stop,
+                            cx,
+                        )
+                        .await
+                        .is_some_and(|now| {
+                            documents.read_with(cx, |d, _| {
+                                dirty_now(d).is_empty() && !now.iter().any(|p| d.is_dirty(p))
+                            })
+                        })
                     }
                     SaveChoice::DontSave => {
                         discard = true;
@@ -2039,7 +2183,19 @@ impl Workbench {
         cx.spawn_in(window, async move |wb, cx| {
             // A file that could not be saved stays dirty: its backup is
             // written below.
-            if !auto_saved.is_empty() && !save::save_each(documents, auto_saved, cx).await {
+            // No Untitled document among them: `auto_save_paths` leaves
+            // those to their backups.
+            if !auto_saved.is_empty()
+                && save::save_each(
+                    wb.clone(),
+                    documents,
+                    auto_saved,
+                    save::UntitledCancel::Stop,
+                    cx,
+                )
+                .await
+                .is_none()
+            {
                 tracing::warn!("could not auto-save every file as the app quits");
             }
             // Documents closed from here on keep their backups.
@@ -3492,6 +3648,11 @@ pub(crate) fn default_registry() -> CommandRegistry {
 }
 
 fn register_shell_commands(commands: &mut CommandRegistry) {
+    commands.register(
+        "workbench.action.files.newUntitledFile",
+        "File: New Untitled Text File",
+        |wb, _, window, cx| wb.new_untitled_file(window, cx),
+    );
     commands.register("workbench.action.quit", "File: Quit", |_, _, _, cx| {
         quit(cx)
     });
