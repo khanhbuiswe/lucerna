@@ -23,6 +23,7 @@ mod excerpt_list;
 mod explorer;
 pub mod extensions;
 mod find_widget;
+pub mod font_zoom;
 pub mod fonts;
 pub mod git;
 pub mod git_branch;

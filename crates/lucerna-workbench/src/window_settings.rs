@@ -31,6 +31,8 @@ pub struct WindowSettings {
     watcher: Option<ConfigWatcher>,
     _pump: Task<()>,
     _user: Subscription,
+    /// Notifies when the font zoom changes, so views read their size again.
+    _zoom: Subscription,
     reloading: Task<()>,
     /// The window's own language registry, when its folder's
     /// `files.associations` adds to the user's; else the app's is used.
@@ -81,6 +83,7 @@ impl WindowSettings {
             generation: 0,
             watcher,
             _pump: pump,
+            _zoom: cx.observe_global::<crate::font_zoom::FontZoom>(|_, cx| cx.notify()),
             _user: cx.observe_global::<AppState>(|this, cx| {
                 this.refresh_languages(cx);
                 cx.notify();

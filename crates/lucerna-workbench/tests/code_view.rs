@@ -261,6 +261,22 @@ fn minimap_is_off_by_default(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn zoom_resets_when_user_size_changes(cx: &mut TestAppContext) {
+    use lucerna_workbench::font_zoom;
+    init(cx, Some(r#"{ "editor.fontSize": 14 }"#));
+    cx.update(|cx| {
+        assert_eq!(font_zoom::step(14., 1., cx), Some(15.));
+        assert_eq!(font_zoom::zoomed(14., cx), 15.);
+        cx.global_mut::<AppState>()
+            .settings
+            .set_layer(Layer::User, r#"{ "editor.fontSize": 20 }"#)
+            .unwrap();
+        assert_eq!(font_zoom::zoomed(20., cx), 20.);
+        assert_eq!(font_zoom::reset(20., cx), None);
+    });
+}
+
+#[gpui::test]
 fn zoom_clamps(cx: &mut TestAppContext) {
     init(cx, None);
     let (view, cx) = code_view("text\n", cx);
