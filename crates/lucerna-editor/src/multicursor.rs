@@ -1,14 +1,17 @@
 //! Multi-cursor commands that grow the selection set from find matches:
 //! add / move the next or previous match (`⌘D`, `⌘K ⌘D`) and select all
-//! matches (`⇧⌘L`); and cursor commands: cursors above / below, at line
+//! matches (`⇧⌘L`); column selection; and cursor commands: cursors above / below, at line
 //! ends, Escape helpers and mouse toggling. Pure functions over a snapshot
 //! and a [`SelectionSet`].
 //!
-//! Adapted from microsoft/vscode src/vs/editor/contrib/multicursor/browser/multicursor.ts (MIT)
+//! Adapted from microsoft/vscode src/vs/editor/contrib/multicursor/browser/multicursor.ts,
+//! src/vs/editor/common/cursor/cursorMoveCommands.ts and
+//! src/vs/editor/common/cursor/cursorColumnSelection.ts (MIT)
 
 use std::ops::Range;
 
 use lucerna_text::{BufferSnapshot, Point};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::find::{FindQuery, find_all, find_next};
 use crate::motion::Layout;
@@ -501,6 +504,159 @@ pub fn add_selection(
     (work.rebuild(sels, id), id)
 }
 
+/// A position in column selection: a buffer row and a visual column (tabs
+/// expanded to the next multiple of the tab size).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColumnPos {
+    pub row: u32,
+    pub col: u32,
+}
+
+/// Visual column after a grapheme cluster that starts at visual column `col`.
+fn advance(cluster: &str, col: u32, tab_size: u32) -> u32 {
+    if cluster == "\t" {
+        let tab = tab_size.max(1);
+        (col / tab + 1) * tab
+    } else {
+        col + 1
+    }
+}
+
+/// The visual column of `offset` on its line: a tab advances to the next
+/// multiple of `tab_size`, every other grapheme cluster counts 1. An offset
+/// inside a cluster counts as the cluster's start.
+pub fn visual_column(snap: &BufferSnapshot, offset: usize, tab_size: u32) -> u32 {
+    let p = snap.offset_to_point(offset);
+    let line = snap.line(p.row);
+    let end = (p.column as usize).min(line.len());
+    let mut col = 0;
+    for (i, cluster) in line.grapheme_indices(true) {
+        if i + cluster.len() > end {
+            break;
+        }
+        col = advance(cluster, col, tab_size);
+    }
+    col
+}
+
+/// The byte column on `line` of the cluster boundary with the largest visual
+/// column at most `target` (rounds down inside a tab), and the visual length
+/// of the line.
+fn byte_at_visual(line: &str, target: u32, tab_size: u32) -> (usize, u32) {
+    let mut col = 0;
+    let mut byte = 0;
+    for (i, cluster) in line.grapheme_indices(true) {
+        let next = advance(cluster, col, tab_size);
+        if next > target && col <= target {
+            byte = i;
+        }
+        if next <= target {
+            byte = i + cluster.len();
+        }
+        col = next;
+    }
+    (byte, col)
+}
+
+/// Column (box) selection from `from` to `to`: one selection per row
+/// between them, anchored at `from.col` and headed at `to.col`, so a drag
+/// to the left gives reversed selections. A visual column inside a tab maps
+/// to the char boundary at or before it (rounds down). A row shorter than
+/// the smaller column gets an empty cursor at its end; a row that reaches
+/// only the start column is selected up to its end. The primary is the
+/// selection on `to.row`. At most `limit` rows are kept, nearest to
+/// `to.row`; the flag is true when rows were dropped.
+pub fn column_select(
+    snap: &BufferSnapshot,
+    from: ColumnPos,
+    to: ColumnPos,
+    tab_size: u32,
+    limit: usize,
+) -> (SelectionSet, bool) {
+    let last = snap.line_count().saturating_sub(1);
+    let (from_row, to_row) = (from.row.min(last), to.row.min(last));
+    let total = from_row.abs_diff(to_row) as usize + 1;
+    let kept = total.min(limit.max(1)) as u32;
+    let rows: Vec<u32> = if from_row <= to_row {
+        (to_row + 1 - kept..=to_row).collect()
+    } else {
+        (to_row..to_row + kept).collect()
+    };
+    let min_col = from.col.min(to.col);
+    let mut sels = Vec::with_capacity(rows.len());
+    let mut primary = 0;
+    for (id, row) in rows.into_iter().enumerate() {
+        let id = id as u64;
+        let line = snap.line(row);
+        let base = snap.point_to_offset(Point { row, column: 0 });
+        let (a, len) = byte_at_visual(&line, from.col, tab_size);
+        let (h, _) = byte_at_visual(&line, to.col, tab_size);
+        let sel = if len < min_col {
+            cursor(id, base + line.len(), Goal::None)
+        } else {
+            Selection {
+                id,
+                anchor: base + a,
+                head: base + h,
+                goal: Goal::None,
+            }
+        };
+        if row == to_row {
+            primary = id;
+        }
+        sels.push(sel);
+    }
+    (
+        SelectionSet::from_selections(sels, primary, false),
+        total > kept as usize,
+    )
+}
+
+/// How the dragged end of a column selection moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ColumnMove {
+    Left,
+    Right,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+}
+
+/// The new `to` after moving it by `mv`. Right has no upper bound: a column
+/// past every line end is allowed. Rows stay within the buffer.
+pub fn column_move(
+    snap: &BufferSnapshot,
+    _from: ColumnPos,
+    to: ColumnPos,
+    mv: ColumnMove,
+    page_rows: u32,
+) -> ColumnPos {
+    let last = snap.line_count().saturating_sub(1) as i64;
+    let row = |delta: i64| (to.row as i64 + delta).clamp(0, last) as u32;
+    let page = page_rows.max(1) as i64;
+    match mv {
+        ColumnMove::Left => ColumnPos {
+            col: to.col.saturating_sub(1),
+            ..to
+        },
+        ColumnMove::Right => ColumnPos {
+            col: to.col + 1,
+            ..to
+        },
+        ColumnMove::Up => ColumnPos { row: row(-1), ..to },
+        ColumnMove::Down => ColumnPos { row: row(1), ..to },
+        ColumnMove::PageUp => ColumnPos {
+            row: row(-page),
+            ..to
+        },
+        ColumnMove::PageDown => ColumnPos {
+            row: row(page),
+            ..to
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,5 +977,68 @@ mod tests {
         let step = select_all_matches(&snap, &set, None, LOOSE, SEPS, 5).unwrap();
         assert_eq!(step.set.len(), 5);
         assert!(!step.limited);
+    }
+
+    fn snap_of(text: &str) -> BufferSnapshot {
+        lucerna_text::Buffer::from_bytes(text.as_bytes(), false)
+            .unwrap()
+            .snapshot()
+    }
+
+    fn pos(row: u32, col: u32) -> ColumnPos {
+        ColumnPos { row, col }
+    }
+
+    #[test]
+    fn column_select_tabs_and_short_lines() {
+        let snap = snap_of("\tab\nx\n    abcd");
+        let (set, limited) = column_select(&snap, pos(0, 4), pos(2, 6), 4, 100);
+        assert!(!limited);
+        assert_eq!(render(&snap, &set), "\t«ab»\nx|\n    *«ab»cd");
+    }
+
+    #[test]
+    fn column_select_reversed() {
+        let snap = snap_of("\tab\nx\n    abcd");
+        let (set, _) = column_select(&snap, pos(2, 6), pos(0, 4), 4, 100);
+        assert_eq!(render(&snap, &set), "\t»ab«\nx|\n    »ab«cd");
+        assert_eq!(set.primary().id, set.all()[0].id);
+    }
+
+    #[test]
+    fn column_select_unicode() {
+        let snap = snap_of("chào\nabcd");
+        let (set, _) = column_select(&snap, pos(0, 1), pos(1, 3), 4, 100);
+        assert_eq!(render(&snap, &set), "c«hà»o\na*«bc»d");
+    }
+
+    #[test]
+    fn column_select_limit_keeps_rows_nearest_to() {
+        let snap = snap_of("a\nb\nc\nd");
+        let (set, limited) = column_select(&snap, pos(0, 0), pos(3, 1), 4, 2);
+        assert!(limited);
+        assert_eq!(render(&snap, &set), "a\nb\n«c»\n*«d»");
+    }
+
+    #[test]
+    fn visual_column_expands_tabs() {
+        let snap = snap_of("\tab\n  \tx");
+        assert_eq!(visual_column(&snap, 2, 4), 5);
+        assert_eq!(visual_column(&snap, 7, 4), 4);
+    }
+
+    #[test]
+    fn column_move_right_up() {
+        let snap = snap_of("a\nb");
+        let to = pos(1, 2);
+        assert_eq!(column_move(&snap, to, to, ColumnMove::Right, 10), pos(1, 3));
+        assert_eq!(column_move(&snap, to, to, ColumnMove::Left, 10), pos(1, 1));
+        let up = column_move(&snap, to, to, ColumnMove::Up, 10);
+        assert_eq!(up, pos(0, 2));
+        assert_eq!(column_move(&snap, to, up, ColumnMove::Up, 10), pos(0, 2));
+        let down = ColumnMove::PageDown;
+        assert_eq!(column_move(&snap, to, to, down, 10), pos(1, 2));
+        let page_up = ColumnMove::PageUp;
+        assert_eq!(column_move(&snap, to, to, page_up, 10), pos(0, 2));
     }
 }
