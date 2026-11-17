@@ -217,6 +217,7 @@ mod tests {
             (event("w", None, alt_cmd()), "alt+cmd+w"),
             (event("r", None, alt_cmd()), "alt+cmd+r"),
             (event("f", None, alt_cmd()), "alt+cmd+f"),
+            (event("p", None, alt_cmd()), "alt+cmd+p"),
             (event("f", Some("ƒ"), alt_shift()), "alt+shift+f"),
             (event("j", None, cmd_shift()), "shift+cmd+j"),
             (event("f4", None, Modifiers::none()), "f4"),

@@ -1050,6 +1050,14 @@ impl CodeView {
         cx.notify();
     }
 
+    /// Keeps `find` as the view's widget without showing it, so a toggle
+    /// key pressed with the bar closed has a place to store its option.
+    pub(crate) fn set_find_widget_hidden(&mut self, find: Entity<FindWidget>) {
+        if self.find.is_none() {
+            self.find = Some(find);
+        }
+    }
+
     /// Hides the find widget and clears its highlights.
     pub(crate) fn hide_find_widget(&mut self, cx: &mut Context<Self>) {
         self.find_visible = false;

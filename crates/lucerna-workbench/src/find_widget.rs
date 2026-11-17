@@ -189,6 +189,18 @@ impl FindWidget {
         self.replace_visible
     }
 
+    pub fn case_sensitive(&self) -> bool {
+        self.case_sensitive
+    }
+
+    pub fn whole_word(&self) -> bool {
+        self.whole_word
+    }
+
+    pub fn is_regex(&self) -> bool {
+        self.is_regex
+    }
+
     pub fn preserve_case(&self) -> bool {
         self.preserve_case
     }
@@ -342,7 +354,8 @@ impl FindWidget {
                     return;
                 }
                 find.pending = false;
-                if let Some(view) = find.view.upgrade()
+                if find.replace_visible
+                    && let Some(view) = find.view.upgrade()
                     && view.read(cx).revision() == revision
                 {
                     apply_replacements(&view, edits, cx);
@@ -460,6 +473,11 @@ impl FindWidget {
     /// Searches the view's current snapshot.
     fn search(&mut self, pick: Pick, cx: &mut Context<Self>) {
         self.cancel();
+        if pick == Pick::Nearest {
+            // A replace's offset belongs to the search its edit started;
+            // a search the user starts afterwards must not consume it.
+            self.pending_pick_from = None;
+        }
         let Some(view) = self.view.upgrade() else {
             return;
         };
@@ -520,10 +538,16 @@ impl FindWidget {
         };
         let matches = self.matches.clone();
         let active = self.active;
-        if let Some(view) = self.view.upgrade() {
+        // A hidden bar (an option toggled by key) shows no highlights and
+        // does not move the selection.
+        let visible = self
+            .view
+            .upgrade()
+            .is_some_and(|view| view.read(cx).find_widget().is_some());
+        if visible && let Some(view) = self.view.upgrade() {
             view.update(cx, |v, cx| v.set_match_highlights(matches, active, cx));
         }
-        if pick == Pick::Nearest || pick_from.is_some() {
+        if visible && (pick == Pick::Nearest || pick_from.is_some()) {
             self.reveal(cx);
         }
         cx.notify();
@@ -874,6 +898,42 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             find.update(cx, FindWidget::replace_all);
         }
     });
+    commands.register(
+        "toggleFindCaseSensitive",
+        "Toggle Case Sensitive",
+        |wb, _, _, cx| {
+            if let Some(find) = wb.toggle_target(cx) {
+                find.update(cx, FindWidget::toggle_case_sensitive);
+            }
+        },
+    );
+    commands.register(
+        "toggleFindWholeWord",
+        "Toggle Whole Word",
+        |wb, _, _, cx| {
+            if let Some(find) = wb.toggle_target(cx) {
+                find.update(cx, FindWidget::toggle_whole_word);
+            }
+        },
+    );
+    commands.register(
+        "toggleFindRegex",
+        "Toggle Use Regular Expression",
+        |wb, _, _, cx| {
+            if let Some(find) = wb.toggle_target(cx) {
+                find.update(cx, FindWidget::toggle_regex);
+            }
+        },
+    );
+    commands.register(
+        "togglePreserveCase",
+        "Toggle Preserve Case",
+        |wb, _, _, cx| {
+            if let Some(find) = wb.toggle_target(cx) {
+                find.update(cx, FindWidget::toggle_preserve_case);
+            }
+        },
+    );
     commands.register("closeFindWidget", "Close Find", |wb, _, window, cx| {
         // Only while focus is in the view or its widget: Esc elsewhere (the
         // Search panel) must not close it or take focus.
@@ -886,6 +946,19 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 }
 
 impl Workbench {
+    /// The active code view's find widget for a toggle key: the shown one,
+    /// or a hidden one made on first use, so the option is already set the
+    /// next time the bar opens.
+    fn toggle_target(&self, cx: &mut App) -> Option<Entity<FindWidget>> {
+        let view = self.active_code_view(cx)?;
+        if let Some(find) = view.read(cx).find_widget_any().cloned() {
+            return Some(find);
+        }
+        let find = cx.new(|cx| FindWidget::new(&view, cx));
+        view.update(cx, |v, _| v.set_find_widget_hidden(find.clone()));
+        Some(find)
+    }
+
     /// The active code view's find widget, while it is shown.
     fn visible_find_widget(&self, cx: &App) -> Option<Entity<FindWidget>> {
         self.active_code_view(cx)

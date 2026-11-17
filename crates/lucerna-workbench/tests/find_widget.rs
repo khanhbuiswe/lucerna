@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 
 use gpui::{Entity, Focusable, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
-use lucerna_settings::{Keymap, SettingsStore, parse_when};
+use lucerna_settings::{
+    Context, ContextValue, Keymap, Resolution, SettingsStore, parse_keys, parse_when,
+};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::{Buffer, BufferSnapshot, Point};
 use lucerna_theme::ThemeRegistry;
@@ -828,4 +830,120 @@ fn replace_all_large_file_off_main_thread(cx: &mut TestAppContext) {
     );
     assert_eq!(after.len(), len - 3);
     assert_eq!(counter(&view, cx), "No results");
+}
+
+#[gpui::test]
+fn toggle_keys_flip_find_options(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "Foo foo\n", cx);
+    keys("cmd-f", cx);
+    type_text("foo", cx);
+    assert_eq!(counter(&view, cx), "1 of 2");
+    keys("alt-cmd-c", cx);
+    assert_eq!(counter(&view, cx), "1 of 1");
+    keys("alt-cmd-c", cx);
+    // The selection sits on the second match, which stays the nearest.
+    assert_eq!(counter(&view, cx), "2 of 2");
+    let find = find(&view, cx);
+    let state = |cx: &mut VisualTestContext| {
+        find.read_with(cx, |f, _| {
+            (
+                f.case_sensitive(),
+                f.whole_word(),
+                f.is_regex(),
+                f.preserve_case(),
+            )
+        })
+    };
+    assert_eq!(state(cx), (false, false, false, false));
+    keys("alt-cmd-w", cx);
+    assert_eq!(state(cx), (false, true, false, false));
+    keys("alt-cmd-r", cx);
+    assert_eq!(state(cx), (false, true, true, false));
+    keys("alt-cmd-p", cx);
+    assert_eq!(state(cx), (false, true, true, true));
+    keys("alt-cmd-w alt-cmd-r alt-cmd-p", cx);
+    assert_eq!(state(cx), (false, false, false, false));
+}
+
+#[gpui::test]
+fn toggle_keys_work_with_bar_hidden(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "Foo foo\n", cx);
+    keys("alt-cmd-r", cx);
+    assert!(
+        widget(&view, cx).is_none(),
+        "the toggle does not show the bar"
+    );
+    assert!(highlights(&view, cx).0.is_empty());
+    assert_eq!(view.read_with(cx, |v, _| v.selection()), None);
+    keys("cmd-f", cx);
+    assert!(find(&view, cx).read_with(cx, |f, _| f.is_regex()));
+    // A toggle on the shown bar keeps working after a close.
+    keys("escape alt-cmd-r", cx);
+    keys("cmd-f", cx);
+    assert!(!find(&view, cx).read_with(cx, |f, _| f.is_regex()));
+}
+
+#[test]
+fn alt_cmd_c_in_explorer_still_copies_path() {
+    let (keymap, _) = Keymap::load(Keymap::default_bindings(), None);
+    let resolve = |key: &str, flags: &[&str]| {
+        let mut ctx = Context::default();
+        for flag in flags {
+            ctx.set(*flag, ContextValue::Bool(true));
+        }
+        match keymap.resolve(&parse_keys(key).unwrap(), &ctx) {
+            Resolution::Command { command, .. } => command,
+            other => panic!("expected a command, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        resolve("alt+cmd+c", &["filesExplorerFocus"]),
+        "copyFilePath"
+    );
+    assert_eq!(
+        resolve("alt+cmd+r", &["filesExplorerFocus"]),
+        "revealFileInOS"
+    );
+    assert_eq!(
+        resolve("alt+cmd+c", &["editorFocus"]),
+        "toggleFindCaseSensitive"
+    );
+    assert_eq!(
+        resolve("alt+cmd+w", &["editorFocus"]),
+        "toggleFindWholeWord"
+    );
+    assert_eq!(resolve("alt+cmd+r", &["editorFocus"]), "toggleFindRegex");
+    assert_eq!(resolve("alt+cmd+p", &["editorFocus"]), "togglePreserveCase");
+    assert_eq!(
+        resolve("alt+cmd+c", &["searchViewletFocus"]),
+        "toggleSearchCaseSensitive"
+    );
+}
+
+#[gpui::test]
+fn stale_pick_after_replace_does_not_leak_into_a_new_search(cx: &mut TestAppContext) {
+    init(cx);
+    let text = "foo\n".to_owned() + &("x".repeat(63) + "\n").repeat(20_000) + "foo\nfoo\n";
+    let (_dir, _wb, view, cx) = open_file("big.txt", &text, cx);
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    assert_eq!(counter(&view, cx), "1 of 3");
+    set_replace(&view, "X", cx);
+    let find = find(&view, cx);
+    // No parking in between: the replace's background search is still
+    // running when the next search starts and drops it.
+    find.update(cx, |f, cx| {
+        f.replace_one(cx);
+    });
+    view.update(cx, |v, cx| v.go_to(pt(20_002, 0), cx));
+    find.update(cx, |f, cx| f.toggle_case_sensitive(cx));
+    draw(cx);
+    assert_eq!(buffer_text(&view, cx).lines().next(), Some("X"));
+    assert_eq!(
+        find.read_with(cx, |f, _| f.active_index()),
+        Some(1),
+        "the match nearest the cursor, not the replace's stale offset"
+    );
 }

@@ -187,5 +187,10 @@
   { "key": "shift+cmd+1", "command": "editor.action.replaceOne", "when": "editorFocus && findWidgetVisible" },
   { "key": "alt+cmd+enter", "command": "editor.action.replaceAll", "when": "editorFocus && findWidgetVisible" },
   { "key": "enter", "command": "editor.action.replaceOne", "when": "editorFocus && replaceInputFocussed" },
-  { "key": "cmd+enter", "command": "editor.action.replaceAll", "when": "editorFocus && replaceInputFocussed" }
+  { "key": "cmd+enter", "command": "editor.action.replaceAll", "when": "editorFocus && replaceInputFocussed" },
+
+  { "key": "alt+cmd+c", "command": "toggleFindCaseSensitive", "when": "editorFocus" },
+  { "key": "alt+cmd+w", "command": "toggleFindWholeWord", "when": "editorFocus" },
+  { "key": "alt+cmd+r", "command": "toggleFindRegex", "when": "editorFocus" },
+  { "key": "alt+cmd+p", "command": "togglePreserveCase", "when": "editorFocus" }
 ]
