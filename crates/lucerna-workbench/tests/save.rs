@@ -1662,3 +1662,35 @@ fn after_delay_does_not_recreate_a_file_moved_before_the_watcher_reports(cx: &mu
     assert!(cx.pending_prompt().is_none());
     assert_eq!(message(cx), None);
 }
+
+/// Keep Mine saves the user's text against the disk it kept, so the
+/// afterDelay timer is armed again: the next save comes a delay later.
+#[gpui::test]
+fn keep_mine_rearms_after_delay(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = conflicted(cx);
+    advance(1000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "disk\n");
+    let docs = documents(&wb, cx);
+    docs.update(cx, |d, cx| d.keep_mine(Path::new("file.txt"), cx));
+    settle(cx);
+    advance(999, cx);
+    assert_eq!(disk(&dir, "file.txt"), "disk\n", "not yet");
+    advance(1, cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+}
+
+/// Keep Mine with `files.autoSave` off arms no timer: the file stays
+/// unsaved until the user saves it.
+#[gpui::test]
+fn keep_mine_without_auto_save_does_not_save(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = conflicted(cx);
+    let docs = documents(&wb, cx);
+    docs.update(cx, |d, cx| d.keep_mine(Path::new("file.txt"), cx));
+    settle(cx);
+    advance(5000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "disk\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+}

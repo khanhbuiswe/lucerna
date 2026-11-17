@@ -438,6 +438,16 @@ impl Workbench {
                 // Restarted by every edit: the old timer is dropped.
                 self.arm_auto_save(path, window, cx);
             }
+            // Keep Mine ends a conflict. The timer that ran during the
+            // conflict skipped the save and is gone, so arm it again.
+            DocumentEvent::ConflictChanged {
+                path,
+                conflict: false,
+            } if documents.read(cx).is_dirty(path)
+                && self.auto_save_mode(path, cx) == "afterDelay" =>
+            {
+                self.arm_auto_save(path, window, cx);
+            }
             DocumentEvent::DirtyChanged { path, dirty: false } | DocumentEvent::Closed { path } => {
                 self.auto_save.timers.remove(path);
             }
