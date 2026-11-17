@@ -1,18 +1,11 @@
-//! Char-boundary-safe text operations on [`Point`] ranges: selected text,
-//! words and lines for double and triple clicks.
+//! Char-boundary-safe text operations on [`Point`] ranges: words and lines
+//! for double and triple clicks.
 
 use std::ops::Range;
 
 use lucerna_text::{BufferSnapshot, Point};
 
 use super::layout::{MAX_RENDERED_LINE_CHARS, line_prefix, row_range};
-
-/// The text of `range`, with both ends moved back to char boundaries.
-pub(crate) fn text_for(snapshot: &BufferSnapshot, range: Range<Point>) -> String {
-    let start = boundary_offset(snapshot, range.start);
-    let end = boundary_offset(snapshot, range.end).max(start);
-    snapshot.text_for_range(start..end)
-}
 
 /// The byte offset of `p`, moved back to the nearest char boundary and
 /// kept within its line (a column past the line end gives the line end).
@@ -129,6 +122,5 @@ mod tests {
         // Past the end of the line stops before its `\n`.
         assert_eq!(boundary_offset(&s, pt(0, 99)), 6);
         assert_eq!(boundary_offset(&s, pt(9, 0)), s.len_bytes());
-        assert_eq!(text_for(&s, pt(0, 2)..pt(1, 2)), "éllo\nne");
     }
 }

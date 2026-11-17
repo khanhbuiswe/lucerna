@@ -852,11 +852,18 @@ pub(crate) fn split_preview_state(path: &Path) -> Option<(&'static str, &Path)> 
 /// the Health tab, a diff tab or the Get Started tab, which are not saved.
 fn saved_path(item: &TabItem) -> Option<PathBuf> {
     match item {
+        // Hot exit brings an untitled document back, not the tab list.
+        TabItem::File(path) if crate::untitled::is_untitled(path) => None,
         TabItem::File(path) => Some(path.to_path_buf()),
         TabItem::Extensions => Some(PathBuf::from(EXTENSIONS_TAB_STATE)),
         TabItem::Search => Some(PathBuf::from(SEARCH_TAB_STATE)),
         TabItem::GitChanges => Some(PathBuf::from(GIT_CHANGES_TAB_STATE)),
         TabItem::BranchChanges => Some(PathBuf::from(BRANCH_CHANGES_TAB_STATE)),
+        TabItem::MarkdownPreview(path) | TabItem::MarkdownPreviewDynamic(path)
+            if crate::untitled::is_untitled(path) =>
+        {
+            None
+        }
         TabItem::MarkdownPreview(path) => Some(prefixed(MARKDOWN_PREVIEW_STATE_PREFIX, path)),
         TabItem::MarkdownPreviewDynamic(path) => {
             Some(prefixed(MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, path))

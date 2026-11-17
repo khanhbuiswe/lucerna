@@ -326,8 +326,7 @@ pub(crate) fn message_word(view: &CodeView, point: Point) -> String {
         let is_word = |c: char| c.is_alphanumeric() || c == '_';
         (!text.is_empty() && text.chars().all(is_word)).then(|| text.to_owned())
     });
-    word.or_else(|| view.selection().and(view.copy_selection()))
-        .unwrap_or_default()
+    word.or_else(|| view.primary_text()).unwrap_or_default()
 }
 
 /// The message of an empty answer: "No definition found for 'word'".

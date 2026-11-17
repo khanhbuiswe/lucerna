@@ -41,6 +41,9 @@ pub struct SelectionSet {
     selections: Vec<Selection>,
     primary: u64,
     next_id: u64,
+    /// Whether `remap` and `rebuild` merge overlapping selections
+    /// (`editor.multiCursorMergeOverlapping`).
+    merge_overlapping: bool,
 }
 
 impl SelectionSet {
@@ -54,6 +57,7 @@ impl SelectionSet {
             }],
             primary: 0,
             next_id: 1,
+            merge_overlapping: true,
         }
     }
 
@@ -117,7 +121,34 @@ impl SelectionSet {
             selections,
             primary: primary_id,
             next_id,
+            merge_overlapping: true,
         }
+    }
+
+    /// Whether overlapping selections are merged when the set is rebuilt.
+    pub fn merge_overlapping(&self) -> bool {
+        self.merge_overlapping
+    }
+
+    pub fn set_merge_overlapping(&mut self, merge: bool) {
+        self.merge_overlapping = merge;
+    }
+
+    /// A set of `selections` that inherits this set's merge flag and id
+    /// counter, merged as the flag says.
+    pub fn rebuild(&self, selections: Vec<Selection>, primary: u64) -> Self {
+        let mut set = Self::from_selections(selections, primary, self.merge_overlapping);
+        set.merge_overlapping = self.merge_overlapping;
+        set.next_id = set.next_id.max(self.next_id);
+        set
+    }
+
+    /// The selection added last (the largest id).
+    pub fn newest(&self) -> &Selection {
+        self.selections
+            .iter()
+            .max_by_key(|s| s.id)
+            .expect("a selection set needs a selection")
     }
 
     pub fn all(&self) -> &[Selection] {
@@ -145,22 +176,45 @@ impl SelectionSet {
     /// later end and left otherwise, and empty selections stick right (after
     /// text inserted at them).
     pub fn remap(&mut self, patch: &Patch) {
-        for s in &mut self.selections {
-            let (anchor_bias, head_bias) = if s.is_empty() {
+        self.remap_with(patch, |s| {
+            if s.is_empty() {
                 (Bias::Right, Bias::Right)
             } else if s.reversed() {
                 (Bias::Right, Bias::Left)
             } else {
                 (Bias::Left, Bias::Right)
-            };
+            }
+        });
+    }
+
+    /// Like [`SelectionSet::remap`] for a change made outside the editor
+    /// (an agent writing the file): text inserted at a selection's edge
+    /// stays outside it, so the selection keeps covering the same text and
+    /// the next keystroke cannot replace what was just written. Cursors
+    /// still go after text inserted at them.
+    pub fn remap_external(&mut self, patch: &Patch) {
+        self.remap_with(patch, |s| {
+            if s.is_empty() {
+                (Bias::Right, Bias::Right)
+            } else if s.reversed() {
+                (Bias::Left, Bias::Right)
+            } else {
+                (Bias::Right, Bias::Left)
+            }
+        });
+    }
+
+    /// Moves every endpoint through `patch` with the `(anchor, head)` biases
+    /// `biases` gives for its selection, then renormalises.
+    fn remap_with(&mut self, patch: &Patch, biases: impl Fn(&Selection) -> (Bias, Bias)) {
+        for s in &mut self.selections {
+            let (anchor_bias, head_bias) = biases(s);
             s.anchor = map_endpoint(patch, s.anchor, anchor_bias);
             s.head = map_endpoint(patch, s.head, head_bias);
         }
         // Deletes can collapse or overlap selections: renormalise.
         let selections = std::mem::take(&mut self.selections);
-        let next_id = self.next_id;
-        *self = Self::from_selections(selections, self.primary, true);
-        self.next_id = self.next_id.max(next_id);
+        *self = self.rebuild(selections, self.primary);
     }
 
     pub fn clamp(&mut self, snapshot: &BufferSnapshot) {
@@ -311,6 +365,47 @@ mod tests {
         set.remap(&insert_at(0, 1));
         set.remap(&insert_at(3, 1));
         assert_eq!(set.primary().range(), 0..4);
+    }
+
+    #[test]
+    fn remap_external_edges_stay_inside() {
+        // An agent's text inserted at either edge stays outside the
+        // selection; a cursor at the insert point goes after the text.
+        let (_, mut set) = marked("«ab»");
+        set.remap_external(&insert_at(0, 1));
+        set.remap_external(&insert_at(3, 1));
+        assert_eq!(set.primary().range(), 1..3);
+        let (_, mut set) = marked("»ab«");
+        set.remap_external(&insert_at(0, 1));
+        set.remap_external(&insert_at(3, 1));
+        assert_eq!(set.primary().range(), 1..3);
+        assert!(set.primary().reversed());
+        let mut set = SelectionSet::cursor(2);
+        set.remap_external(&insert_at(2, 3));
+        assert_eq!(set.primary().head, 5);
+    }
+
+    #[test]
+    fn merge_flag_off_keeps_touching() {
+        let (_, mut set) = marked("a|bc*|d");
+        set.set_merge_overlapping(false);
+        assert!(!set.merge_overlapping());
+        set.remap(&Patch::new(vec![PatchEdit {
+            old: 1..3,
+            new: 1..1,
+        }]));
+        assert_eq!(set.len(), 2);
+        assert!(!set.merge_overlapping());
+    }
+
+    #[test]
+    fn newest_is_largest_id() {
+        let (_, mut set) = marked("|a|b");
+        let id = set.next_id();
+        let mut sels = set.all().to_vec();
+        sels[0].id = id;
+        let set = set.rebuild(sels, id);
+        assert_eq!(set.newest().id, id);
     }
 
     #[test]

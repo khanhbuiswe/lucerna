@@ -40,6 +40,9 @@ pub struct RecentFiles {
 impl RecentFiles {
     /// Moves `path` to the front.
     pub fn record(&mut self, path: Arc<Path>) {
+        if crate::untitled::is_untitled(&path) {
+            return;
+        }
         self.paths.retain(|p| *p != path);
         self.paths.insert(0, path);
         self.paths.truncate(RECENT_FILES_LIMIT);
@@ -261,7 +264,7 @@ impl Workbench {
         self.close_quick_open(window, cx);
         match event {
             QuickOpenEvent::Open { path, mode } => {
-                let path = self.absolute_path(path);
+                let path = self.project_path(path);
                 // Opening the file already shown is no jump; the cursor
                 // stays where it is.
                 if self.nav_here(cx).is_some_and(|here| here.path != path) {

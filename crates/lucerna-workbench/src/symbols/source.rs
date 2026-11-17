@@ -171,6 +171,10 @@ impl SymbolSource {
     }
 
     fn on_document_event(&mut self, ev: &DocumentEvent, cx: &mut Context<Workbench>) {
+        // An untitled document has no file to outline.
+        if crate::untitled::is_untitled(ev.path()) {
+            return;
+        }
         match ev {
             DocumentEvent::Opened { path, .. }
             | DocumentEvent::Edited { path, .. }

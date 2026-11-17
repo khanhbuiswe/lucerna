@@ -196,7 +196,9 @@ fn reload(view: &Entity<CodeView>, old: &str, new: &str, cx: &mut VisualTestCont
     let before = buffer.snapshot();
     let patch = buffer.edit(diff_edits(&before, new));
     let snapshot = buffer.snapshot();
-    view.update(cx, |v, cx| v.apply_edit(&before, snapshot, &patch, cx));
+    view.update(cx, |v, cx| {
+        v.apply_edit(&before, snapshot, &patch, true, cx)
+    });
     draw(cx);
 }
 

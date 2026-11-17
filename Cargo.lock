@@ -3340,6 +3340,7 @@ dependencies = [
  "criterion 0.5.1",
  "lucerna-syntax",
  "lucerna-text",
+ "regex",
  "similar",
  "unicode-segmentation",
 ]

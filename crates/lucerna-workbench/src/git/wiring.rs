@@ -60,8 +60,12 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 }
 
 /// `path` relative to `root`: a relative path as it is, an absolute one
-/// with `root` stripped. `None` for a file outside `root`.
+/// with `root` stripped. `None` for a file outside `root` and for an
+/// untitled document, which is in no repository.
 pub(crate) fn workspace_relative(root: &Path, path: &Path) -> Option<Arc<Path>> {
+    if crate::untitled::is_untitled(path) {
+        return None;
+    }
     if path.is_relative() {
         return Some(Arc::from(path));
     }
@@ -150,7 +154,10 @@ impl Workbench {
             return;
         };
         match view.read(cx).file_to_open(cx) {
-            Some((path, Some(point))) => self.jump_to(path, point, OpenMode::Pinned, cx),
+            Some((path, Some(point))) => {
+                let path = self.project_path(&path);
+                self.jump_to(path, point, OpenMode::Pinned, cx)
+            }
             Some((path, None)) => self.open_path(path, OpenMode::Pinned, cx),
             None => {}
         }

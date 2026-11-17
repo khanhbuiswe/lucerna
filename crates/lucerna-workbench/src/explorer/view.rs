@@ -1124,7 +1124,8 @@ impl ExplorerView {
             return;
         }
         self.active = active.clone();
-        if let Some(path) = active {
+        // An untitled document is not in the tree.
+        if let Some(path) = active.filter(|p| !crate::untitled::is_untitled(p)) {
             self.model.clear_changed(&path);
             self.auto_reveal(&path, true, cx);
         }

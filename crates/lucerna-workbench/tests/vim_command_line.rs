@@ -616,3 +616,70 @@ fn gdefault_setting_inverts_g(cx: &mut TestAppContext) {
     ex("s/a/b/", cx);
     assert_eq!(text_of(&view, cx), "bbb\n");
 }
+
+/// A Vim workbench on an empty folder with an Untitled tab (⌘N) holding
+/// `hello`, back in Normal mode.
+fn vim_untitled(cx: &mut TestAppContext) -> (TempDir, Entity<Workbench>, &mut VisualTestContext) {
+    init(cx, VIM_ON);
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    draw(cx);
+    keys("cmd-n", cx);
+    keys("i", cx);
+    type_text("hello", cx);
+    keys("escape", cx);
+    let untitled = Path::new("untitled:Untitled-1");
+    let docs = wb.read_with(cx, |wb, _| wb.documents().clone());
+    assert!(docs.read_with(cx, |d, _| d.is_dirty(untitled)));
+    assert_eq!(text_of(&active_view(&wb, cx), cx), "hello");
+    (dir, wb, cx)
+}
+
+#[gpui::test]
+fn save_untitled_with_colon_w(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = vim_untitled(cx);
+    ex("w", cx);
+    assert!(cx.did_prompt_for_new_path());
+    let file = dir.path().join("hello.txt");
+    let target = file.clone();
+    cx.simulate_new_path_selection(move |_| Some(target));
+    draw(cx);
+    assert_eq!(fs::read_to_string(&file).unwrap(), "hello");
+    assert_eq!(tab_count(&wb, cx), 1);
+    let view = active_view(&wb, cx);
+    assert_eq!(view.read_with(cx, |v, _| v.path().clone()), Arc::from(file));
+
+    // `:w!` on an Untitled asks too.
+    keys("cmd-n", cx);
+    keys("i", cx);
+    type_text("more", cx);
+    keys("escape", cx);
+    ex("w!", cx);
+    assert!(cx.did_prompt_for_new_path());
+    cx.simulate_new_path_selection(|_| None);
+    draw(cx);
+}
+
+#[gpui::test]
+fn save_untitled_colon_wq_cancel_keeps_tab(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = vim_untitled(cx);
+    ex("wq", cx);
+    assert!(cx.did_prompt_for_new_path());
+    cx.simulate_new_path_selection(|_| None);
+    draw(cx);
+    assert_eq!(tab_count(&wb, cx), 1);
+}
+
+#[gpui::test]
+fn save_untitled_colon_wq_saves_and_closes(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = vim_untitled(cx);
+    ex("wq", cx);
+    assert!(cx.did_prompt_for_new_path());
+    let file = dir.path().join("hello.txt");
+    let target = file.clone();
+    cx.simulate_new_path_selection(move |_| Some(target));
+    draw(cx);
+    assert_eq!(fs::read_to_string(&file).unwrap(), "hello");
+    assert_eq!(tab_count(&wb, cx), 0);
+}

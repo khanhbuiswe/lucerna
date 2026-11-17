@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
+use lucerna_editor::{Goal, Selection, SelectionSet};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::{LanguageRegistry, SyntaxState};
 use lucerna_text::{Buffer, BufferSnapshot, Point, Reload, decode_file, diff_edits};
@@ -26,7 +27,9 @@ fn reload_into(
     let decoded = decode_file(bytes, false).unwrap();
     let patch = buffer.edit(diff_edits(&old, &decoded.text));
     let snapshot = buffer.snapshot();
-    view.update(cx, |v, cx| v.apply_edit(&old, snapshot.clone(), &patch, cx));
+    view.update(cx, |v, cx| {
+        v.apply_edit(&old, snapshot.clone(), &patch, true, cx)
+    });
     patch.reload(&old, &snapshot)
 }
 
@@ -414,6 +417,22 @@ fn at(row: u32, column: u32) -> gpui::Point<gpui::Pixels> {
     )
 }
 
+/// One selection per range of `v`'s text, the first one primary.
+fn selections_of(v: &CodeView, ranges: &[std::ops::Range<Point>]) -> SelectionSet {
+    let s = v.snapshot();
+    let selections = ranges
+        .iter()
+        .zip(0u64..)
+        .map(|(r, id)| Selection {
+            id,
+            anchor: s.point_to_offset(r.start),
+            head: s.point_to_offset(r.end),
+            goal: Goal::None,
+        })
+        .collect();
+    SelectionSet::from_selections(selections, 0, true)
+}
+
 fn pt(row: u32, column: u32) -> Point {
     Point { row, column }
 }
@@ -768,20 +787,23 @@ fn set_cursor_inside_view_does_not_scroll(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn block_selection_copies_rows(cx: &mut TestAppContext) {
+fn multiple_selections_copy_rows(cx: &mut TestAppContext) {
     init(cx, None);
     let (view, cx) = code_view("abcd\nefgh", cx);
     view.update(cx, |v, cx| {
-        v.select(pt(0, 0)..pt(1, 1), cx);
-        v.set_block_selection(Some(vec![pt(0, 1)..pt(0, 3), pt(1, 1)..pt(1, 3)]), cx);
+        let set = selections_of(v, &[pt(0, 1)..pt(0, 3), pt(1, 1)..pt(1, 3)]);
+        v.set_selections(set, false, cx);
     });
     draw(cx);
-    assert_eq!(view.read_with(cx, |v, _| v.selection()), None);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.selection()),
+        Some(pt(0, 1)..pt(0, 3))
+    );
     assert_eq!(
         view.read_with(cx, |v, _| v.copy_selection()).as_deref(),
         Some("bc\nfg")
     );
-    view.update(cx, |v, cx| v.set_block_selection(None, cx));
+    view.update(cx, |v, cx| v.clear_selection(cx));
     assert_eq!(view.read_with(cx, |v, _| v.copy_selection()), None);
 }
 
@@ -851,9 +873,10 @@ fn selection_generation_bumps_on_mouse_select(cx: &mut TestAppContext) {
     view.update(cx, |v, cx| v.set_cursor(pt(1, 0), cx));
     bumped(cx, "set_cursor");
     view.update(cx, |v, cx| {
-        v.set_block_selection(Some(vec![pt(0, 0)..pt(0, 1)]), cx)
+        let set = selections_of(v, &[pt(0, 0)..pt(0, 1), pt(1, 0)..pt(1, 1)]);
+        v.set_selections(set, false, cx)
     });
-    bumped(cx, "set_block_selection");
+    bumped(cx, "set_selections");
     view.update(cx, |v, cx| v.set_buffer(snapshot("x\n"), cx));
     bumped(cx, "set_buffer");
 }
@@ -910,9 +933,10 @@ fn cursor_overlay_paints_without_panic(cx: &mut TestAppContext) {
         });
         draw(cx);
     }
-    // With a block selection and wrapping too.
+    // With a selection per row and wrapping too.
     view.update(cx, |v, cx| {
-        v.set_block_selection(Some(vec![pt(2, 0)..pt(2, 9), pt(3, 0)..pt(3, 6)]), cx);
+        let set = selections_of(v, &[pt(2, 0)..pt(2, 9), pt(3, 0)..pt(3, 6)]);
+        v.set_selections(set, false, cx);
         v.toggle_word_wrap(cx);
     });
     draw(cx);
@@ -1010,25 +1034,27 @@ fn set_cursor_counts_folded_rows_as_hidden(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn block_selection_reload_and_empty(cx: &mut TestAppContext) {
+fn row_selections_follow_a_reload(cx: &mut TestAppContext) {
     init(cx, None);
     let old = "abcd\nefgh\nijkl\n";
     let mut buffer = Buffer::from_bytes(old.as_bytes(), false).unwrap();
     let (view, cx) = code_view(old, cx);
-    view.update(cx, |v, cx| v.set_block_selection(Some(Vec::new()), cx));
-    assert_eq!(view.read_with(cx, |v, _| v.copy_selection()), None);
-
-    // A change on another row keeps the block; one on its rows drops it.
+    // A change on another row keeps them; a new first line moves them.
     view.update(cx, |v, cx| {
-        v.set_block_selection(Some(vec![pt(0, 1)..pt(0, 3), pt(1, 1)..pt(1, 3)]), cx)
+        let set = selections_of(v, &[pt(0, 1)..pt(0, 3), pt(1, 1)..pt(1, 3)]);
+        v.set_selections(set, false, cx)
     });
     reload_into(&view, &mut buffer, b"abcd\nefgh\nIJKL\n", cx);
     assert_eq!(
         view.read_with(cx, |v, _| v.copy_selection()).as_deref(),
         Some("bc\nfg")
     );
-    reload_into(&view, &mut buffer, b"abcd\nEFGH\nIJKL\n", cx);
-    assert_eq!(view.read_with(cx, |v, _| v.copy_selection()), None);
+    reload_into(&view, &mut buffer, b"new\nabcd\nefgh\nIJKL\n", cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.copy_selection()).as_deref(),
+        Some("bc\nfg")
+    );
+    assert_eq!(view.read_with(cx, |v, _| v.selections().len()), 2);
 }
 
 #[gpui::test]
@@ -1050,6 +1076,10 @@ fn edit_config_reads_auto_settings(cx: &mut TestAppContext) {
     assert_eq!(config.auto_closing_overtype, AutoClosingEdit::Auto);
     assert_eq!(config.auto_closing_delete, AutoClosingEdit::Auto);
     assert_eq!(config.auto_surround, AutoSurround::LanguageDefined);
+    assert_eq!(
+        config.multi_cursor_paste,
+        lucerna_editor::MultiCursorPaste::Spread
+    );
     let language = view.read_with(cx, |v, cx| v.edit_language(cx));
     assert!(language.is_some_and(|l| !l.editing().brackets.is_empty()));
 }

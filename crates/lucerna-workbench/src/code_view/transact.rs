@@ -8,7 +8,7 @@ use gpui::{App, ClipboardItem, Context, WeakEntity};
 use lucerna_editor::clipboard::{self, ClipboardText};
 use lucerna_editor::{
     AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, EditConfig, EditKind, EditPlan,
-    SelectionSet, should_stop_between,
+    MultiCursorPaste, SelectionSet, should_stop_between,
 };
 use lucerna_syntax::Language;
 use lucerna_text::SelectionsToken;
@@ -94,6 +94,13 @@ impl CodeView {
             empty_selection_clipboard: settings
                 .get("editor.emptySelectionClipboard", language)
                 .unwrap_or(true),
+            multi_cursor_paste: setting_enum(
+                settings,
+                "editor.multiCursorPaste",
+                language,
+                MultiCursorPaste::parse,
+            )
+            .unwrap_or(MultiCursorPaste::Spread),
         }
     }
 
@@ -163,7 +170,7 @@ impl CodeView {
         }
         // The document's syntax replaces the view's: no need to edit it.
         self.syntax = None;
-        self.apply_edit(&update.old, update.snapshot, &update.patch, cx);
+        self.apply_edit(&update.old, update.snapshot, &update.patch, false, cx);
         self.set_syntax(update.syntax, cx);
     }
 
@@ -329,19 +336,12 @@ impl CodeView {
             self.cursor_undo.push_back(current);
         }
         self.set_goto_message(None, cx);
-        self.block_selection = None;
         self.set_selections_inner(set, true, SelectionChange::History, cx);
     }
 
-    /// The text to copy: the block selection's rows, or the selections
-    /// (a whole line for an empty one, with `editor.emptySelectionClipboard`).
+    /// The text to copy: the selections (a whole line for an empty one,
+    /// with `editor.emptySelectionClipboard`).
     fn clipboard_text(&self, config: &EditConfig) -> Option<ClipboardText> {
-        if self.block_selection.is_some() {
-            return self.copy_selection().map(|text| ClipboardText {
-                text,
-                ..ClipboardText::default()
-            });
-        }
         let ctx = Ctx {
             snapshot: &self.snapshot,
             config,

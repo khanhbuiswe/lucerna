@@ -15,6 +15,7 @@ mod input;
 mod layout;
 mod link;
 mod minimap;
+mod multi_cursor;
 mod selection;
 mod transact;
 
@@ -31,6 +32,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use lucerna_editor::indentation::Indentation;
+use lucerna_editor::multicursor::ColumnPos;
 use lucerna_editor::{EditKind, Goal, Motion, Selection, SelectionSet, autoclose, move_selections};
 use lucerna_git::Hunk;
 use lucerna_lsp::diagnostics::Diagnostic;
@@ -66,7 +68,7 @@ use crate::{AppState, CommandRegistry, WindowSettings, Workbench};
 pub const LARGE_FILE_STATUS: &str = "Large file: highlighting disabled";
 
 /// `editor.wordSeparators` when the setting is missing.
-const DEFAULT_WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+pub(crate) const DEFAULT_WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
 /// The `editor.*` settings a view follows; re-read on every settings
 /// change by [`CodeView::reload_config`].
@@ -105,6 +107,9 @@ struct Config {
     /// `editor.scrollbar.scrollByPage`: a track click pages instead of
     /// jumping there.
     scroll_by_page: bool,
+    /// `editor.multiCursorMergeOverlapping`: every selection set the view
+    /// installs carries it.
+    merge_overlapping: bool,
 }
 
 impl Config {
@@ -180,6 +185,9 @@ impl Config {
             scroll_by_page: settings
                 .get("editor.scrollbar.scrollByPage", language)
                 .unwrap_or(false),
+            merge_overlapping: settings
+                .get("editor.multiCursorMergeOverlapping", language)
+                .unwrap_or(true),
         };
         let font_size = crate::font_zoom::base_size(settings, language);
         let wrap = settings
@@ -247,6 +255,8 @@ pub enum CodeViewEvent {
     /// A click on a git change bar or deletion marker in the gutter, with
     /// the first row of its hunk (`scm.diffDecorationsGutterAction`).
     DiffHunkClicked { row: u32 },
+    /// A multi-cursor command or mouse action changed the selections.
+    MultiCursor,
 }
 
 /// What changed the selections, which decides the undo stop and the
@@ -265,9 +275,21 @@ enum SelectionChange {
 /// How many selection states `cursorUndo` keeps, as VS Code.
 const CURSOR_HISTORY: usize = 50;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a drag with the left button down does.
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Drag {
+    /// Selects from the primary selection's anchor.
     Text,
+    /// `⌥`-drag: moves the head of the selection `id` (from `anchor`); the
+    /// other selections stay.
+    AddSelection {
+        id: u64,
+        anchor: usize,
+    },
+    /// `⇧⌥`-drag: a column selection from `from`.
+    Column {
+        from: ColumnPos,
+    },
     Minimap,
 }
 
@@ -301,11 +323,27 @@ pub struct CodeView {
     max_line_width: f32,
     /// The cursors and selections; never empty.
     selections: SelectionSet,
-    /// A rectangular selection, one range per row (vim's visual block);
-    /// shown instead of `selections` while set.
-    block_selection: Option<Vec<Range<Point>>>,
+    /// What a run of `⌘D` / `⌘K ⌘D` presses searches for.
+    match_session: Option<lucerna_editor::multicursor::MatchSession>,
+    /// The cursors each `⌥⌘↑` / `⌥⌘↓` added, newest layer last, with its
+    /// direction (`true`: up): the opposite key removes the top layer.
+    cursor_layers: Vec<(bool, Vec<u64>)>,
+    /// The ends of the column selection the `cursorColumnSelect*` keys
+    /// grow.
+    column_select: Option<(
+        lucerna_editor::multicursor::ColumnPos,
+        lucerna_editor::multicursor::ColumnPos,
+    )>,
+    /// Set while a multi-cursor command installs its selections: the
+    /// three fields above survive that change (any other clears them).
+    multi_cursor_running: bool,
+    /// The background `⇧⌘L` search of a large file.
+    _select_all_task: Option<Task<()>>,
     /// Bumped by every selection change, whatever made it.
     selection_generation: u64,
+    /// `(selection_generation, revision, selections, chars)` of the last
+    /// [`CodeView::selection_summary`].
+    summary_cache: Cell<Option<(u64, u64, usize, usize)>>,
     cursor_overlay: Option<CursorOverlay>,
     /// The caret's blink.
     caret: Caret,
@@ -453,8 +491,13 @@ impl CodeView {
             scroll_x: 0.,
             max_line_width: 0.,
             selections: SelectionSet::cursor(0),
-            block_selection: None,
+            match_session: None,
+            cursor_layers: Vec::new(),
+            column_select: None,
+            multi_cursor_running: false,
+            _select_all_task: None,
             selection_generation: 0,
+            summary_cache: Cell::new(None),
             cursor_overlay: None,
             caret: Caret::default(),
             stop_requested: None,
@@ -601,7 +644,7 @@ impl CodeView {
         self.scroll = Scroll::default();
         self.scroll_x = 0.;
         self.selections = SelectionSet::cursor(0);
-        self.block_selection = None;
+        self.clear_multi_cursor_state();
         self.selection_generation += 1;
         self.brackets = None;
         self.marked = None;
@@ -622,11 +665,15 @@ impl CodeView {
     /// folds stay on the same lines, except a fold whose header changed.
     /// The syntax tree is edited to the new text and stays until the next
     /// [`CodeView::set_syntax`], so colours do not flicker off.
+    ///
+    /// `external` marks a change read from disk (an agent wrote the file):
+    /// text it inserts at a selection's edge stays outside the selection.
     pub fn apply_edit(
         &mut self,
         old: &BufferSnapshot,
         snapshot: BufferSnapshot,
         patch: &Patch,
+        external: bool,
         cx: &mut Context<Self>,
     ) {
         let rows = snapshot.line_count();
@@ -638,27 +685,13 @@ impl CodeView {
         };
         self.hover.hide(cx);
         let mut selections = self.selections.clone();
-        selections.remap(patch);
+        if external {
+            selections.remap_external(patch);
+        } else {
+            selections.remap(patch);
+        }
         self.autoclose_regions =
             autoclose::remap_regions(&self.autoclose_regions, old, &snapshot, patch);
-        // A rectangle stays one only while no edit reaches into it.
-        self.block_selection = self
-            .block_selection
-            .take()
-            .filter(|block| {
-                !block.iter().any(|r| {
-                    touches(
-                        patch,
-                        old.point_to_offset(r.start)..old.point_to_offset(r.end),
-                    )
-                })
-            })
-            .map(|block| {
-                block
-                    .into_iter()
-                    .map(|r| map(r.start)..map(r.end))
-                    .collect()
-            });
         let (matches, active) = remap_ranges(&self.match_highlights, self.active_match, patch);
         let diagnostics: Arc<[Diagnostic]> = self
             .diagnostics
@@ -1231,12 +1264,11 @@ impl CodeView {
         &self.selections
     }
 
-    /// Replaces the selections, dropping any block selection; with
-    /// `autoscroll`, scrolls the primary cursor into view. Every call is
-    /// a cursor move, so the next edit starts a new undo step.
+    /// Replaces the selections; with `autoscroll`, scrolls the primary
+    /// cursor into view. Every call is a cursor move, so the next edit
+    /// starts a new undo step.
     pub fn set_selections(&mut self, set: SelectionSet, autoscroll: bool, cx: &mut Context<Self>) {
         self.set_goto_message(None, cx);
-        self.block_selection = None;
         self.set_selections_inner(set, autoscroll, SelectionChange::Move, cx);
     }
 
@@ -1250,14 +1282,15 @@ impl CodeView {
         cx: &mut Context<Self>,
     ) {
         self.set_goto_message(None, cx);
-        self.block_selection = None;
         self.set_selections_inner(set, autoscroll, SelectionChange::Edit, cx);
     }
 
-    /// Replaces the selections (clamped to the text) and restarts the
-    /// caret blink. A cursor move asks the document for an undo stop
-    /// before the next edit and is remembered for `cursorUndo`; following
-    /// an edit or restoring an undo step is neither.
+    /// Replaces the selections (clamped to the text, merged as
+    /// `editor.multiCursorMergeOverlapping` says) and restarts the caret
+    /// blink. A cursor move asks the document for an undo stop before the
+    /// next edit and is remembered for `cursorUndo`; following an edit or
+    /// restoring an undo step is neither. Ends any multi-cursor session
+    /// unless a multi-cursor command makes the change.
     fn set_selections_inner(
         &mut self,
         mut set: SelectionSet,
@@ -1265,7 +1298,11 @@ impl CodeView {
         change: SelectionChange,
         cx: &mut Context<Self>,
     ) {
+        set.set_merge_overlapping(self.config.merge_overlapping);
         set.clamp(&self.snapshot);
+        if !self.multi_cursor_running {
+            self.clear_multi_cursor_state();
+        }
         let old = std::mem::replace(&mut self.selections, set);
         if !self.smart_selecting {
             self.smart_select_stack.clear();
@@ -1301,6 +1338,11 @@ impl CodeView {
     /// Opens any fold hiding the primary cursor and scrolls it into view.
     fn autoscroll(&mut self) {
         let row = self.selection_head().row;
+        self.reveal_row(row);
+    }
+
+    /// Opens any fold hiding `row` and scrolls it into view.
+    fn reveal_row(&mut self, row: u32) {
         while let Some(header) = self.folds.hiding_header(row) {
             self.folds.toggle(header, &self.fold_ranges);
         }
@@ -1424,18 +1466,12 @@ impl CodeView {
         self.caret.visible()
     }
 
-    /// Whether a rectangular selection is shown.
-    pub fn has_block_selection(&self) -> bool {
-        self.block_selection.is_some()
-    }
-
     /// Selects `range` as the only selection; its end becomes the cursor.
     pub fn select(&mut self, range: Range<Point>, cx: &mut Context<Self>) {
         self.set_selection_points(range.start, range.end, cx);
     }
 
-    /// Collapses every selection to its cursor and drops the block
-    /// selection.
+    /// Collapses every selection to its cursor.
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         let collapsed = self
             .selections
@@ -1450,17 +1486,30 @@ impl CodeView {
         self.set_selections(set, false, cx);
     }
 
-    /// Selects a rectangle given as one range per row, collapsing the
-    /// selections to the primary cursor; `None` or no ranges clears it.
-    pub fn set_block_selection(
-        &mut self,
-        ranges: Option<Vec<Range<Point>>>,
-        cx: &mut Context<Self>,
-    ) {
-        let head = self.selections.primary().head;
-        let set = self.single(head, head);
-        self.set_selections_inner(set, false, SelectionChange::Move, cx);
-        self.block_selection = ranges.filter(|r| !r.is_empty());
+    /// The number of selections and the characters they cover in all.
+    /// Cached per selection change and text revision: the status bar asks
+    /// every frame, and nothing is copied to count.
+    pub fn selection_summary(&self) -> (usize, usize) {
+        let key = (self.selection_generation, self.revision);
+        if let Some((g, r, n, c)) = self.summary_cache.get()
+            && (g, r) == key
+        {
+            return (n, c);
+        }
+        let chars = self
+            .selections
+            .all()
+            .iter()
+            .map(|s| {
+                self.snapshot
+                    .chunks_in_range(s.range())
+                    .map(|c| c.chars().count())
+                    .sum::<usize>()
+            })
+            .sum();
+        let n = self.selections.len();
+        self.summary_cache.set(Some((key.0, key.1, n, chars)));
+        (n, chars)
     }
 
     /// Counts selection changes from any source (API, mouse, new text), so
@@ -1581,16 +1630,23 @@ impl CodeView {
         }
     }
 
-    /// The selected text, with ends snapped to char boundaries; a block
-    /// selection gives its rows joined with `\n`.
+    /// The selected text: every selection's, in document order, joined
+    /// with `\n` (an empty one gives an empty piece); `None` when every
+    /// selection is empty.
     pub fn copy_selection(&self) -> Option<String> {
-        if let Some(block) = &self.block_selection {
-            let rows: Vec<String> = block
-                .iter()
-                .map(|r| selection::text_for(&self.snapshot, r.clone()))
-                .collect();
-            return Some(rows.join("\n"));
+        let all = self.selections.all();
+        if all.iter().all(Selection::is_empty) {
+            return None;
         }
+        let pieces: Vec<String> = all
+            .iter()
+            .map(|s| self.snapshot.text_for_range(s.range()))
+            .collect();
+        Some(pieces.join("\n"))
+    }
+
+    /// The primary selection's text; `None` when it is empty.
+    pub(crate) fn primary_text(&self) -> Option<String> {
         let range = self.selections.primary().range();
         (!range.is_empty()).then(|| self.snapshot.text_for_range(range))
     }
@@ -2047,7 +2103,7 @@ impl Render for CodeView {
                 }
             }))
             .on_modifiers_changed(cx.listener(|v, ev: &gpui::ModifiersChangedEvent, _, cx| {
-                let held = ev.modifiers.secondary(cx);
+                let held = v.definition_modifier_held(&ev.modifiers, cx);
                 v.link_modifiers_changed(held, cx);
             }))
             .flex()

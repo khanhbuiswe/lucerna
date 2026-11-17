@@ -1919,3 +1919,78 @@ fn lossy_shift_jis_save_reports_unencodable(cx: &mut TestAppContext) {
     assert_eq!(bytes(&dir), sjis);
     assert!(is_dirty(&wb, "file.txt", cx));
 }
+
+/// The paths of every tab, in group order.
+fn tab_paths(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<String> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter_map(|t| t.path().map(|p| p.display().to_string()))
+            .collect()
+    })
+}
+
+/// Answers the pending save dialog with `path`.
+fn choose(path: std::path::PathBuf, cx: &mut VisualTestContext) {
+    assert!(cx.did_prompt_for_new_path(), "the save dialog is up");
+    cx.simulate_new_path_selection(move |_| Some(path));
+    settle(cx);
+}
+
+#[gpui::test]
+fn save_as_moves_file_tab_and_keeps_old_file(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor("old\n", cx);
+    input("x", cx);
+    run(&wb, "workbench.action.splitEditor", cx);
+    assert_eq!(tab_paths(&wb, cx).len(), 2);
+
+    keys("shift-cmd-s", cx);
+    assert!(cx.did_prompt_for_new_path(), "the save dialog is up");
+    let start = dir.path().to_path_buf();
+    cx.simulate_new_path_selection(move |folder| {
+        // The dialog starts in the file's folder.
+        assert_eq!(folder, start.as_path());
+        Some(start.join("b.txt"))
+    });
+    settle(cx);
+
+    assert_eq!(disk(&dir, "file.txt"), "old\n");
+    assert_eq!(disk(&dir, "b.txt"), "xold\n");
+    let b = dir.path().join("b.txt").display().to_string();
+    assert_eq!(tab_paths(&wb, cx), vec![b.clone(), b]);
+    assert!(!is_dirty(&wb, "b.txt", cx));
+    let docs = documents(&wb, cx);
+    assert!(
+        docs.read_with(cx, |d, _| d.snapshot_of(Path::new("file.txt")))
+            .is_none(),
+        "the old file is no longer open"
+    );
+    assert_eq!(text_of(&view, cx), "xold\n");
+
+    // Undo still reaches the edit made before Save As.
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&active_view(&wb, cx), cx), "old\n");
+    assert!(is_dirty(&wb, "b.txt", cx));
+}
+
+#[gpui::test]
+fn save_as_same_path_is_save(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    keys("shift-cmd-s", cx);
+    choose(dir.path().join("file.txt"), cx);
+
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+    assert_eq!(
+        tab_paths(&wb, cx),
+        vec![dir.path().join("file.txt").display().to_string()]
+    );
+}

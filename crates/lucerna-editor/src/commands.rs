@@ -70,7 +70,7 @@ fn cursor(id: u64, offset: usize) -> Selection {
 /// (the first one's text wins); no-op edits are dropped from the plan.
 pub(crate) fn build(
     mut items: Vec<Item>,
-    primary: u64,
+    set: &SelectionSet,
     kind: EditKind,
     stop_before: bool,
     stop_after: bool,
@@ -112,7 +112,7 @@ pub(crate) fn build(
             .into_iter()
             .filter(|(r, t)| !(r.is_empty() && t.is_empty()))
             .collect(),
-        selections: SelectionSet::from_selections(sels, primary, true),
+        selections: set.rebuild(sels, set.primary().id),
         kind,
         stop_before,
         stop_after,
@@ -157,7 +157,7 @@ pub(crate) fn build_mapped(
         .collect();
     EditPlan {
         edits,
-        selections: SelectionSet::from_selections(sels, set.primary().id, true),
+        selections: set.rebuild(sels, set.primary().id),
         kind,
         stop_before: true,
         stop_after: true,
@@ -247,7 +247,7 @@ pub fn insert(
         })
         .collect();
     let stop_after = !outdented.is_empty();
-    build(items, set.primary().id, kind, stop_before, stop_after)
+    build(items, set, kind, stop_before, stop_after)
 }
 
 /// The previous grapheme boundary before `offset` (the previous `\n` counts
@@ -306,7 +306,7 @@ fn delete_plan(
         EditKind::DeletingLeft | EditKind::DeletingRight => (multi_line, false),
         _ => (true, true),
     };
-    build(items, set.primary().id, kind, before, after)
+    build(items, set, kind, before, after)
 }
 
 /// Deletes left of every cursor. Between an empty auto-closed pair
@@ -428,7 +428,7 @@ pub fn newline(ctx: Ctx, set: &SelectionSet) -> EditPlan {
             }
         })
         .collect();
-    build(items, set.primary().id, EditKind::TypingOther, true, false)
+    build(items, set, EditKind::TypingOther, true, false)
 }
 
 /// Inserts a line break (with indent) after the cursor and leaves the cursor
@@ -447,7 +447,7 @@ pub fn line_break_insert(ctx: Ctx, set: &SelectionSet) -> EditPlan {
             }
         })
         .collect();
-    build(items, set.primary().id, EditKind::Other, true, true)
+    build(items, set, EditKind::Other, true, true)
 }
 
 /// `cols` visible columns of indent in the configured style.
@@ -551,7 +551,7 @@ pub fn tab(ctx: Ctx, set: &SelectionSet) -> EditPlan {
             }
         })
         .collect();
-    build(items, set.primary().id, EditKind::Other, true, true)
+    build(items, set, EditKind::Other, true, true)
 }
 
 /// Moves each touched line's indent back to the previous indent stop.

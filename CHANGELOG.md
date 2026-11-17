@@ -7,6 +7,12 @@ Each release's section below is copied into its GitHub Release page by
 
 ### Added
 
+- Cmd+N (File → New File) opens an Untitled tab. Its tab shows the first line you type, and it
+  counts as unsaved once it has text. `files.defaultLanguage` sets its language (Plain Text when
+  unset). Untitled tabs with text come back after quitting, as other unsaved changes do (hot exit).
+- Save As (Cmd+Shift+S, File → Save As…). Saving an Untitled tab (Cmd+S, or `:w`, `:wq`, `:x` in
+  Vim) asks where to save it. The tab becomes the new file and keeps its undo history; with Save
+  As on a file, every tab of it moves to the new file and the old file is left as it was.
 - Replace in file. Alt+Cmd+F (Edit > Replace) opens the find bar with a Replace row. Enter in the
   Replace box replaces one match and Cmd+Enter replaces all; Shift+Cmd+1 and Alt+Cmd+Enter do the
   same while the bar is open. Each replace is one undo step.

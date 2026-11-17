@@ -1237,3 +1237,28 @@ fn repository_leaving_drops_a_pending_reveal(cx: &mut TestAppContext) {
     assert!(!rows(&view, 0, cx).is_empty(), "the file loaded");
     assert_eq!(selected(&view, cx), None, "cleared with the list");
 }
+
+/// A real root-level file named like an Untitled key opens as that file
+/// from a line of the Changes tab.
+#[gpui::test]
+fn activating_a_line_of_a_real_untitled_named_file_opens_it(cx: &mut TestAppContext) {
+    let (_t, dir, wb, cx) = workbench(|dir| write(dir, "untitled:todo.txt", "hello\n"), cx);
+    let view = open_changes(&wb, cx);
+    let list = cx.update(|_, cx| view.read(cx).excerpt_list().clone());
+    list.update(cx, |l, cx| {
+        l.step_change(true, cx);
+    });
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    let path = match active_item(&wb, cx) {
+        Some((TabItem::File(path), _)) => path,
+        other => panic!("expected a file tab, got {other:?}"),
+    };
+    assert_eq!(path.as_ref(), dir.join("untitled:todo.txt").as_path());
+    let text = cx.update(|_, cx| {
+        let body = wb.read(cx).editor_groups().read(cx).active_body().unwrap();
+        let s = body.downcast::<CodeView>().unwrap().read(cx).snapshot();
+        s.text_for_range(0..s.len_bytes())
+    });
+    assert_eq!(text, "hello\n");
+}

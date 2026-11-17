@@ -4,6 +4,8 @@ Lucerna keeps VS Code's default macOS shortcuts. These are the main ones.
 
 | Keys | Action |
 |---|---|
+| Cmd+N | New untitled file |
+| Cmd+S / Cmd+Shift+S | Save / Save As |
 | Cmd+P | Go to file |
 | Cmd+Shift+P | Command palette |
 | Ctrl+G | Go to line |
@@ -33,6 +35,16 @@ Lucerna keeps VS Code's default macOS shortcuts. These are the main ones.
 | Cmd+, | Open `settings.json` |
 | Alt+Z | Toggle word wrap |
 | Cmd+= / Cmd+- / Cmd+0 | Zoom the code in / out / reset |
+| Cmd+D | Add the next match to the selection |
+| Cmd+K Cmd+D | Move the last selection to the next match |
+| Shift+Cmd+L | Select all matches of the selection |
+| Cmd+F2 | Change all occurrences |
+| Opt+Cmd+Up / Down | Add a cursor above / below |
+| Shift+Opt+I | Add a cursor at the end of each selected line |
+| Shift+Opt+Cmd+arrows | Column select |
+| Opt+click | Add a cursor |
+| Cmd+U | Cursor undo |
+| Esc | Remove extra cursors |
 | Cmd+Q | Quit |
 
 Rebind any of these in `~/.config/lucerna/keybindings.json`, which uses the same format as VS Code.

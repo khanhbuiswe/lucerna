@@ -246,6 +246,7 @@ mod tests {
             (event("r", None, ctrl()), "ctrl+r"),
             (event("r", None, ctrl_shift()), "ctrl+shift+r"),
             (event("o", None, cmd()), "cmd+o"),
+            (event("n", None, cmd()), "cmd+n"),
             (event("n", None, cmd_shift()), "cmd+shift+n"),
             (event("n", None, ctrl_shift()), "ctrl+shift+n"),
             (event("f", Some("f"), Modifiers::none()), "f"),
@@ -300,6 +301,7 @@ mod tests {
             (event("z", None, cmd()), "cmd+z"),
             (event("z", None, cmd_shift()), "shift+cmd+z"),
             (event("s", None, cmd()), "cmd+s"),
+            (event("s", None, cmd_shift()), "shift+cmd+s"),
             (event("s", None, alt_cmd()), "alt+cmd+s"),
             // The second stroke of `cmd+k s`.
             (event("s", Some("s"), Modifiers::none()), "s"),
@@ -345,6 +347,25 @@ mod tests {
             ),
             (event("left", None, ctrl_shift_cmd()), "ctrl+shift+cmd+left"),
         ]);
+        // Multiple cursors.
+        rows.extend([
+            (event("l", None, cmd_shift()), "shift+cmd+l"),
+            (event("f2", None, cmd()), "cmd+f2"),
+            (event("up", None, alt_cmd()), "alt+cmd+up"),
+            (event("down", None, alt_cmd()), "alt+cmd+down"),
+            (event("i", Some("ˆ"), alt_shift()), "shift+alt+i"),
+        ]);
+        for key in ["left", "right", "up", "down", "pageup", "pagedown"] {
+            let binding: &'static str = match key {
+                "left" => "shift+alt+cmd+left",
+                "right" => "shift+alt+cmd+right",
+                "up" => "shift+alt+cmd+up",
+                "down" => "shift+alt+cmd+down",
+                "pageup" => "shift+alt+cmd+pageup",
+                _ => "shift+alt+cmd+pagedown",
+            };
+            rows.push((event(key, None, alt_shift_cmd()), binding));
+        }
         for (digit, binding) in [
             ("1", "cmd+1"),
             ("2", "cmd+2"),

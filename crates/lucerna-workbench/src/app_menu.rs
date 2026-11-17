@@ -237,6 +237,7 @@ pub static MENUS: &[MenuSpec] = &[
         title: "File",
         role: Role::File,
         entries: &[
+            command("New File", "workbench.action.files.newUntitledFile"),
             command("New Window", NEW_WINDOW),
             Entry::Only(Platform::Mac, &command("Open…", OPEN_FILE_FOLDER)),
             Entry::Only(Platform::Other, &command("Open File…", OPEN_FILE)),
@@ -244,6 +245,7 @@ pub static MENUS: &[MenuSpec] = &[
             Entry::RecentSubmenu,
             Entry::Separator,
             command("Save", "workbench.action.files.save"),
+            command("Save As…", "workbench.action.files.saveAs"),
             command("Save All", "workbench.action.files.saveAll"),
             command(
                 "Save without Formatting",
@@ -991,8 +993,9 @@ mod tests {
         assert!(app.iter().any(|t| t == "Hide Others"), "{app:?}");
         assert_eq!(app.first().map(String::as_str), Some("About Lucerna"));
         let file = titles(menu(&menus, "File"));
-        assert_eq!(file.first().map(String::as_str), Some("New Window"));
-        assert_eq!(file.get(1).map(String::as_str), Some("Open…"));
+        assert_eq!(file.first().map(String::as_str), Some("New File"));
+        assert_eq!(file.get(1).map(String::as_str), Some("New Window"));
+        assert_eq!(file.get(2).map(String::as_str), Some("Open…"));
     }
 
     #[test]
@@ -1009,8 +1012,9 @@ mod tests {
         assert_eq!(help.last().map(String::as_str), Some("About Lucerna"));
         let file = menu(&menus, "File");
         assert_eq!(titles(file).last().map(String::as_str), Some("Exit"));
-        assert_eq!(titles(file).first().map(String::as_str), Some("New Window"));
-        assert_eq!(titles(file).get(1).map(String::as_str), Some("Open File…"));
+        assert_eq!(titles(file).first().map(String::as_str), Some("New File"));
+        assert_eq!(titles(file).get(1).map(String::as_str), Some("New Window"));
+        assert_eq!(titles(file).get(2).map(String::as_str), Some("Open File…"));
         assert!(titles(submenu(file, "Preferences")).contains(&"Color Theme…".to_string()));
         for menu in &menus {
             let titles = titles(menu);
@@ -1025,6 +1029,7 @@ mod tests {
         let menus = build_menus(&input(&commands, Platform::Mac, &[], WindowKind::Welcome));
         let file = menu(&menus, "File");
         assert!(item(file, "Save").is_disabled());
+        assert!(item(file, "New File").is_disabled());
         match item(file, "Save") {
             MenuItem::Action { action, .. } => assert!(action.partial_eq(&DisabledCommand {
                 id: "workbench.action.files.save".into()

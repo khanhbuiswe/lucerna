@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyView, App, ClickEvent, Context, Div, DragMoveEvent, Entity, IntoElement, MouseButton,
-    ParentElement, Pixels, Render, SharedString, Styled, Window, div, prelude::*, px, relative,
+    ParentElement, Pixels, Render, SharedString, Styled, WeakEntity, Window, div, prelude::*, px,
+    relative,
 };
 use lucerna_settings::SettingsView;
 use lucerna_theme::{IconSource, Rgba, UiColors};
@@ -27,7 +28,7 @@ use crate::ui::{
     self, ClickHandler, GRID, PATH_BAR_HEIGHT, SashGhost, TAB_PADDING_X, UI_FONT_SIZE,
     UI_FONT_SIZE_SMALL, icon_button, tooltip,
 };
-use crate::{AppState, WindowSettings};
+use crate::{AppState, WindowSettings, Workbench};
 
 /// What a file tab's dot says about its document.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -115,6 +116,8 @@ pub struct EditorGroupsView {
     on_breadcrumbs_click: Option<BreadcrumbsClick>,
     /// Runs a workbench command for a path bar button.
     on_command: Option<RunCommand>,
+    /// Asks where to save an Untitled document closed with Save.
+    workbench: Option<WeakEntity<Workbench>>,
 }
 
 impl EditorGroupsView {
@@ -136,6 +139,7 @@ impl EditorGroupsView {
             breadcrumbs: HashMap::new(),
             on_breadcrumbs_click: None,
             on_command: None,
+            workbench: None,
         }
     }
 }
@@ -152,6 +156,8 @@ fn show_tab_icons(settings: SettingsView<'_>) -> bool {
 fn tab_icon_source(item: &TabItem, cx: &App) -> Option<IconSource> {
     let file = |p: &Path| cx.global::<AppState>().icons.file(p);
     Some(match item {
+        // Untitled: the plain-text icon, as a `.txt` file has.
+        TabItem::File(p) if crate::untitled::is_untitled(p) => file(Path::new("Untitled.txt")),
         TabItem::File(p) | TabItem::FileDiff(p) => file(p),
         TabItem::Extensions => IconSource::Builtin("blocks"),
         TabItem::Search => IconSource::Builtin("search"),
@@ -218,13 +224,24 @@ impl EditorGroupsView {
             return;
         };
         let answer = save::prompt_unsaved(&save::display_name(&path), window, cx);
+        let workbench = self.save_target();
         cx.spawn_in(window, async move |view, cx| {
             match SaveChoice::of(answer.await) {
                 SaveChoice::Save => {
                     // An edit typed while the save wrote is not saved: the
-                    // tab stays, still dirty.
-                    let saved = save::save_each(documents.clone(), vec![path.clone()], cx).await
-                        && !documents.read_with(cx, |d, _| d.is_dirty(&path));
+                    // tab stays, still dirty. Checked where the document is
+                    // now, which Save As moved an Untitled one to.
+                    let saved = save::save_each(
+                        workbench,
+                        documents.clone(),
+                        vec![path.clone()],
+                        save::UntitledCancel::Stop,
+                        cx,
+                    )
+                    .await
+                    .is_some_and(|now| {
+                        documents.read_with(cx, |d, _| !now.iter().any(|p| d.is_dirty(p)))
+                    });
                     if saved {
                         view.update(cx, |view, cx| view.update_model(cx, |m| m.close(id)))
                             .ok();
@@ -279,13 +296,24 @@ impl EditorGroupsView {
         };
         let names: Vec<String> = dirty.iter().map(|p| save::display_name(p)).collect();
         let answer = save::prompt_unsaved_all(&names, window, cx);
+        let workbench = self.save_target();
         cx.spawn_in(window, async move |view, cx| {
             match SaveChoice::of(answer.await) {
                 SaveChoice::Save => {
                     // An edit typed while the saves wrote is not saved: every
-                    // tab stays.
-                    let saved = save::save_each(documents.clone(), dirty.clone(), cx).await
-                        && documents.read_with(cx, |d, _| !dirty.iter().any(|p| d.is_dirty(p)));
+                    // tab stays. Checked where the documents are now, which
+                    // Save As moved Untitled ones to.
+                    let saved = save::save_each(
+                        workbench,
+                        documents.clone(),
+                        dirty.clone(),
+                        save::UntitledCancel::Stop,
+                        cx,
+                    )
+                    .await
+                    .is_some_and(|now| {
+                        documents.read_with(cx, |d, _| !now.iter().any(|p| d.is_dirty(p)))
+                    });
                     if saved {
                         view.update(cx, |view, cx| close_all(view, cx)).ok();
                     }
@@ -572,6 +600,26 @@ impl EditorGroupsView {
         self.home = std::env::home_dir();
     }
 
+    /// The label of `tab`: for an Untitled document its first non-blank
+    /// line (reading only the first rows), else `Untitled-N`; otherwise
+    /// [`Tab::title`].
+    fn tab_title_of(&self, tab: &Tab, cx: &App) -> String {
+        if let TabItem::File(path) = &tab.item
+            && crate::untitled::is_untitled(path)
+        {
+            let documents = self.documents.as_ref().map(|d| d.read(cx));
+            return untitled_title(documents, path);
+        }
+        tab.title()
+    }
+
+    /// The label tab `ti` of group `gi` shows in the tab bar, apart from
+    /// the Search, References and branch-changes titles set by their views.
+    pub fn tab_title(&self, gi: usize, ti: usize, cx: &App) -> Option<String> {
+        let tab = self.model.groups().get(gi)?.tabs.get(ti)?;
+        Some(self.tab_title_of(tab, cx))
+    }
+
     /// What the path bar of group `group` shows: its active tab's path,
     /// or the file a preview shows (see [`path_bar_text`]); `None` when the
     /// group has no tab or shows the Extensions page.
@@ -615,6 +663,20 @@ impl EditorGroupsView {
     /// How the path bar buttons run their commands.
     pub(crate) fn set_on_command(&mut self, run: RunCommand) {
         self.on_command = Some(run);
+    }
+
+    /// The workbench whose Save As saves an Untitled document closed with
+    /// Save (spec §4.5).
+    pub(crate) fn set_workbench(&mut self, workbench: WeakEntity<Workbench>) {
+        self.workbench = Some(workbench);
+    }
+
+    /// The workbench for [`save::save_each`]; without one, an Untitled
+    /// document can't be saved and the close stops.
+    fn save_target(&self) -> WeakEntity<Workbench> {
+        self.workbench
+            .clone()
+            .unwrap_or_else(WeakEntity::new_invalid)
     }
 
     /// The button at the right end of group `gi`'s path bar when its
@@ -812,7 +874,7 @@ impl Render for EditorGroupsView {
                     TabItem::BranchChanges => self.branch_title.as_ref(),
                     _ => None,
                 };
-                let title = title.map_or_else(|| tab.title(), |t| t.to_string());
+                let title = title.map_or_else(|| self.tab_title_of(tab, cx), |t| t.to_string());
                 let icon = show_icons
                     .then(|| tab_icon_source(&tab.item, cx))
                     .flatten()
@@ -999,6 +1061,28 @@ fn title_color(active: bool, focused_group: bool, ui: &UiColors) -> Rgba {
     }
 }
 
+/// The title of the Untitled document at `path`: the label of its first
+/// lines, else its name (`Untitled-N`).
+pub(crate) fn untitled_title(documents: Option<&Documents>, path: &Path) -> String {
+    documents
+        .and_then(|d| d.snapshot_of(path))
+        .and_then(|snapshot| {
+            let rows = snapshot.line_count().min(UNTITLED_LABEL_ROWS);
+            let head: Vec<_> = (0..rows)
+                .map(|row| snapshot.line_prefix(row, UNTITLED_LABEL_CHARS))
+                .collect();
+            crate::untitled::label(&head.join("\n"))
+        })
+        .unwrap_or_else(|| crate::untitled::name(path))
+}
+
+/// How many rows of an Untitled document a tab label looks at.
+const UNTITLED_LABEL_ROWS: u32 = 16;
+
+/// How many chars of each row a tab label reads: a long line is never
+/// copied whole.
+const UNTITLED_LABEL_CHARS: usize = 256;
+
 /// `a` moved `t` of the way towards `b`.
 fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     let lerp = |x: f32, y: f32| x + (y - x) * t;
@@ -1013,6 +1097,9 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
 /// `path` as a path bar shows it: relative to `root` inside it, otherwise
 /// (or with no root) absolute, with `~` for the `home` folder.
 pub(crate) fn path_bar_text(path: &Path, root: Option<&Path>, home: Option<&Path>) -> String {
+    if crate::untitled::is_untitled(path) {
+        return crate::untitled::name(path);
+    }
     if let Some(rel) = root.and_then(|root| path.strip_prefix(root).ok())
         && !rel.as_os_str().is_empty()
     {

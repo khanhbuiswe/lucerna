@@ -46,6 +46,7 @@ use crate::save::{
 use crate::status_message;
 use crate::tasks::catch_panic;
 use crate::ui::GRID;
+use crate::untitled;
 use crate::workspace_state::absolute_path;
 
 /// Where a document is in its life.
@@ -142,6 +143,25 @@ pub enum DocumentEvent {
     Parsed { path: Arc<Path> },
 }
 
+impl DocumentEvent {
+    /// The document the event is about.
+    pub fn path(&self) -> &Arc<Path> {
+        match self {
+            DocumentEvent::Opened { path, .. }
+            | DocumentEvent::Edited { path, .. }
+            | DocumentEvent::DirtyChanged { path, .. }
+            | DocumentEvent::Saved { path, .. }
+            | DocumentEvent::ConflictChanged { path, .. }
+            | DocumentEvent::ChangedOnDisk { path }
+            | DocumentEvent::FocusLost { path }
+            | DocumentEvent::Closed { path }
+            | DocumentEvent::Discarded { path }
+            | DocumentEvent::LanguageChanged { path, .. }
+            | DocumentEvent::Parsed { path } => path,
+        }
+    }
+}
+
 /// Size and modification time, to tell whether a file changed on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Stamp {
@@ -220,6 +240,19 @@ struct StartedWrite {
     /// The text the write captured.
     snapshot: BufferSnapshot,
     guard: SavingGuard,
+}
+
+/// What a Save As wrote ([`Documents::write_as`]), for
+/// [`Documents::finish_save_as`]. The document's next save or revert waits
+/// until it is dropped.
+pub struct SavedAs {
+    /// The history state the write captured; it becomes the saved one.
+    state: HistoryState,
+    /// The text the write captured.
+    snapshot: BufferSnapshot,
+    /// The written file's hash, size and mtime.
+    written: Written,
+    _done: oneshot::Sender<()>,
 }
 
 /// Counts a write in flight in a document's `saving` for as long as it
@@ -311,6 +344,17 @@ enum ReloadOutcome {
 }
 
 /// A file read for a reload of version `base_version` of the buffer.
+/// Where a change to a document's text came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditSource {
+    /// Typed or run in the view with this id.
+    View(EntityId),
+    /// The editor itself: undo / redo, the `files.*` edits on save.
+    Editor,
+    /// The file on disk, reloaded or merged in.
+    Disk,
+}
+
 struct Reloaded {
     /// The decode, its `text` moved into `theirs`.
     decoded: Decoded,
@@ -366,6 +410,8 @@ struct Restored {
 
 enum JobOutput {
     Loaded(Result<(Buffer, Stamp), LoadError>),
+    /// A new Untitled document's empty buffer: no file behind it.
+    Untitled(Buffer),
     Restored(Restored),
     /// A reload's read, and the disk epoch it started in.
     Reloaded(u64, Result<Reloaded, ReadFailure>),
@@ -604,6 +650,11 @@ impl Documents {
         self.window = Some(window);
     }
 
+    /// The window whose status bar shows the documents' messages.
+    pub(crate) fn window(&self) -> Option<WindowId> {
+        self.window
+    }
+
     pub fn new(root: PathBuf, settings: Entity<WindowSettings>) -> Self {
         Documents {
             root,
@@ -638,6 +689,22 @@ impl Documents {
     /// scroll row waiting for the document's other views.
     pub fn open_preview(&mut self, path: Arc<Path>, cx: &mut Context<Self>) -> Entity<CodeView> {
         self.open_view(path, true, cx)
+    }
+
+    /// Makes a new, empty Untitled document (`untitled:Untitled-N`, `N` the
+    /// smallest number not in use) for a tab whose view is made next, and
+    /// returns its key. Its text is there at once: it has no file to load.
+    /// Its language is `files.defaultLanguage`'s, else plain text.
+    pub fn new_untitled(&mut self, cx: &mut Context<Self>) -> Arc<Path> {
+        self.collect_closed(cx);
+        let n = untitled::next_number(self.docs.keys().filter_map(|k| untitled::number(k)));
+        let key = untitled::path(n);
+        let language = language_for(&self.root, &self.settings, &key, None, cx);
+        let mut doc = Document::new(language, Vec::new(), None, Rc::default());
+        doc.awaiting_view = true;
+        self.docs.insert(key.clone(), doc);
+        self.finish_job(&key, Ok(JobOutput::Untitled(empty_buffer())), cx);
+        key
     }
 
     fn open_view(
@@ -725,7 +792,13 @@ impl Documents {
                         stop_requested,
                     ),
                 );
-                self.start_job(&key, cx);
+                if untitled::is_untitled(&key) {
+                    // Never read from disk: an Untitled not known yet (a
+                    // restored tab) starts empty.
+                    self.finish_job(&key, Ok(JobOutput::Untitled(empty_buffer())), cx);
+                } else {
+                    self.start_job(&key, cx);
+                }
             }
         }
         cx.notify();
@@ -921,11 +994,14 @@ impl Documents {
 
     /// Whether the document at `path` is open with its text loaded, so its
     /// reloads tell real disk changes from our own saves
-    /// ([`DocumentEvent::ChangedOnDisk`]).
+    /// ([`DocumentEvent::ChangedOnDisk`]). Never for an untitled document:
+    /// it has no file.
     pub fn follows_disk(&self, path: &Path) -> bool {
-        self.docs
-            .get(&self.key(path))
-            .is_some_and(|doc| doc.buffer.is_some())
+        !crate::untitled::is_untitled(path)
+            && self
+                .docs
+                .get(&self.key(path))
+                .is_some_and(|doc| doc.buffer.is_some())
     }
 
     /// The state of the document at `path`, if it is open.
@@ -955,7 +1031,7 @@ impl Documents {
             buffer.push_stop();
         }
         let old = buffer.snapshot();
-        let was_dirty = buffer.is_dirty();
+        let was_dirty = text_dirty(&key, buffer);
         // An edit from a stale range must not split a char or run past
         // the end: the rope would panic.
         let edits = edits.into_iter().map(|(r, text)| {
@@ -965,7 +1041,7 @@ impl Documents {
         buffer.start_transaction(selections_before);
         let patch = buffer.edit(edits);
         buffer.end_transaction(selections_after);
-        self.commit_edit(&key, old, &patch, was_dirty, Some(origin), cx);
+        self.commit_edit(&key, old, &patch, was_dirty, EditSource::View(origin), cx);
         cx.notify();
         Some(patch)
     }
@@ -1063,27 +1139,30 @@ impl Documents {
         let key = self.key(path);
         let buffer = self.docs.get_mut(&key)?.buffer.as_mut()?;
         let old = buffer.snapshot();
-        let was_dirty = buffer.is_dirty();
+        let was_dirty = text_dirty(&key, buffer);
         let result = if undo { buffer.undo() } else { buffer.redo() }?;
-        self.commit_edit(&key, old, &result.patch, was_dirty, None, cx);
+        self.commit_edit(&key, old, &result.patch, was_dirty, EditSource::Editor, cx);
         cx.notify();
         Some((result.patch, result.selections))
     }
 
     /// Whether the text of the document at `path` differs from the file
     /// as last loaded or saved.
+    /// An Untitled document is dirty while it holds any text.
     pub fn is_dirty(&self, path: &Path) -> bool {
+        let key = self.key(path);
         self.docs
-            .get(&self.key(path))
+            .get(&key)
             .and_then(|d| d.buffer.as_ref())
-            .is_some_and(Buffer::is_dirty)
+            .is_some_and(|b| text_dirty(&key, b))
     }
 
     /// What a backup of the document at `path` holds: `None` unless its
     /// text is loaded and has unsaved changes.
     pub(crate) fn backup_source(&self, path: &Path) -> Option<BackupSource> {
-        let doc = self.docs.get(&self.key(path))?;
-        let buffer = doc.buffer.as_ref().filter(|b| b.is_dirty())?;
+        let key = self.key(path);
+        let doc = self.docs.get(&key)?;
+        let buffer = doc.buffer.as_ref().filter(|b| text_dirty(&key, b))?;
         Some(BackupSource {
             text: buffer.snapshot(),
             base: doc.base.clone(),
@@ -1267,7 +1346,7 @@ impl Documents {
         let mut paths: Vec<Arc<Path>> = self
             .docs
             .iter()
-            .filter(|(_, d)| d.buffer.as_ref().is_some_and(Buffer::is_dirty))
+            .filter(|(key, d)| d.buffer.as_ref().is_some_and(|b| text_dirty(key, b)))
             .map(|(key, _)| key.clone())
             .collect();
         paths.sort();
@@ -1310,6 +1389,10 @@ impl Documents {
         cx: &mut Context<Self>,
     ) -> Task<Result<bool, WriteError>> {
         let key = self.key(path);
+        // No file to write to: Save As gives it one.
+        if untitled::is_untitled(&key) {
+            return Task::ready(Ok(false));
+        }
         let lossy = self.needs_lossy_consent(&key);
         // An autosave never asks: it leaves invalid bytes alone.
         if lossy && opts.reason == SaveReason::Auto {
@@ -1323,7 +1406,7 @@ impl Documents {
         // edit made after this call is not part of the save.
         // `opts.overwrite` (`:w!`) neither asks nor checks the disk.
         let started = (previous.is_none() && !lossy && (opts.overwrite || !self.asks(&key, cx)))
-            .then(|| self.start_write(&key, opts, opts.overwrite, cx));
+            .then(|| self.start_write(&key, None, opts, opts.overwrite, cx));
         cx.spawn_in(window, async move |this, cx| {
             // Dropped at the end: the next save of the document goes on.
             let _done = done;
@@ -1407,7 +1490,7 @@ impl Documents {
                             }
                         }
                         let Ok(write) =
-                            this.update(cx, |d, cx| d.start_write(&key, opts, overwrite, cx))
+                            this.update(cx, |d, cx| d.start_write(&key, None, opts, overwrite, cx))
                         else {
                             return Ok(false);
                         };
@@ -1466,18 +1549,26 @@ impl Documents {
         self.docs.get(key).is_some_and(|d| d.conflict.is_some()) && !self.overwrites(key, cx)
     }
 
-    /// Runs the save participants, captures the text and starts writing it;
-    /// with `overwrite`, without checking the file on disk first. `None`
-    /// when the document has no text to save.
+    /// Runs the save participants, captures the text and starts writing it
+    /// to its file, or to `target` (Save As: the participants of the
+    /// target's language, and no check of the file there); with
+    /// `overwrite`, without checking the file on disk first. `None` when
+    /// the document has no text to save.
     fn start_write(
         &mut self,
         key: &Arc<Path>,
+        target: Option<&Arc<Path>>,
         opts: SaveOptions,
         overwrite: bool,
         cx: &mut Context<Self>,
     ) -> Option<StartedWrite> {
-        let check = !overwrite && !self.overwrites(key, cx);
+        let check = target.is_none() && !overwrite && !self.overwrites(key, cx);
         let window = self.window;
+        let target_language = target.map(|target| {
+            let snapshot = self.docs.get(key).and_then(|d| d.snapshot.clone());
+            language_for(&self.root, &self.settings, target, snapshot.as_ref(), cx)
+                .map(|l| l.id.clone())
+        });
         let doc = self.docs.get_mut(key)?;
         let check = !std::mem::take(&mut doc.skip_disk_check) && check;
         // Only a file that never loaded has no text to save (a failed
@@ -1493,7 +1584,7 @@ impl Documents {
         };
         buffer.push_stop();
         if opts.participants {
-            let language = doc.language_id();
+            let language = target_language.unwrap_or_else(|| doc.language_id());
             let participants = save::participants(
                 self.settings.read(cx).view(cx),
                 language.as_deref(),
@@ -1516,7 +1607,7 @@ impl Documents {
                 }
                 let was_dirty = buffer.is_dirty();
                 let patch = buffer.edit(edits);
-                self.commit_edit(key, old, &patch, was_dirty, None, cx);
+                self.commit_edit(key, old, &patch, was_dirty, EditSource::Editor, cx);
             }
         }
         let doc = self.docs.get_mut(key)?;
@@ -1534,7 +1625,7 @@ impl Documents {
             temps: save::save_temps(cx),
         };
         let guard = SavingGuard::new(&doc.saving);
-        let path = key.clone();
+        let path = target.unwrap_or(key).clone();
         let hold = save::save_hold(cx);
         let task = cx.background_spawn(async move {
             if let Some(hold) = hold {
@@ -1600,34 +1691,7 @@ impl Documents {
         };
         let step = match result {
             Ok(WriteOutcome::Written(written)) => {
-                if let Some(buffer) = doc.buffer.as_mut() {
-                    let was_dirty = buffer.is_dirty();
-                    // Edits made while writing stay unsaved.
-                    buffer.set_saved(state);
-                    let dirty = buffer.is_dirty();
-                    doc.base_hash = written.hash;
-                    doc.base = Some(snapshot.clone());
-                    doc.disk_epoch += 1;
-                    doc.stamp = Some(Stamp::of_written(&written));
-                    // The invalid bytes are now U+FFFD on disk too.
-                    buffer.clear_lossy();
-                    set_conflict(doc, key, None, cx);
-                    if doc.state == DocState::Deleted {
-                        // The save made the file again.
-                        doc.set_state(DocState::Ready, cx);
-                        announce_return(doc, key, cx);
-                    }
-                    cx.emit(DocumentEvent::Saved {
-                        path: key.clone(),
-                        snapshot,
-                    });
-                    if dirty != was_dirty {
-                        cx.emit(DocumentEvent::DirtyChanged {
-                            path: key.clone(),
-                            dirty,
-                        });
-                    }
-                }
+                take_written(doc, key, state, snapshot, &written, cx);
                 SaveStep::Done(Ok(true))
             }
             Ok(WriteOutcome::Missing) => {
@@ -1671,6 +1735,90 @@ impl Documents {
         step
     }
 
+    /// Save As, step one: writes the text of the document at `from` to
+    /// `to` through the save's atomic write, after the document's saves in
+    /// flight. The participants run as for a save, by the settings of
+    /// `to`'s language; the text keeps its encoding, BOM and line endings
+    /// (an Untitled one is UTF-8 without a BOM). The file at `to` is not
+    /// checked: the save dialog asked before replacing it. The document
+    /// keeps its key; [`Documents::finish_save_as`] marks the text saved
+    /// once it has moved to `to`. A failed write is reported in the status
+    /// bar and changes nothing but the participants' edits.
+    pub fn write_as(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SavedAs, WriteError>> {
+        let (key, target) = (self.key(from), self.key(to));
+        let Some(doc) = self.docs.get_mut(&key) else {
+            return Task::ready(Err(WriteError::Io("the document is not open".into())));
+        };
+        let (done, previous) = queue_disk_work(doc);
+        let opts = SaveOptions {
+            reason: SaveReason::Explicit,
+            participants: true,
+            overwrite: true,
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            if let Some(previous) = previous {
+                previous.await.ok();
+            }
+            let started = this
+                .update(cx, |d, cx| {
+                    d.start_write(&key, Some(&target), opts, true, cx)
+                })
+                .map_err(|_| WriteError::Io("the document was closed".into()))?;
+            let StartedWrite {
+                task,
+                state,
+                snapshot,
+                guard,
+            } = started.ok_or_else(|| WriteError::Io("the file's text is not loaded".into()))?;
+            let result = task.await;
+            drop(guard);
+            match result {
+                Ok(WriteOutcome::Written(written)) => Ok(SavedAs {
+                    state,
+                    snapshot,
+                    written,
+                    _done: done,
+                }),
+                // Neither comes without a disk check or from a save
+                // command.
+                Ok(WriteOutcome::ChangedOnDisk | WriteOutcome::Missing) => {
+                    Err(WriteError::Io("the file was not written".into()))
+                }
+                Err(err) => {
+                    tracing::warn!(path = %target.display(), %err, "save as failed");
+                    this.update(cx, |d, cx| {
+                        let message = save::failure_message(&target, &err);
+                        status_message::show_or_log(d.window, message, cx);
+                    })
+                    .ok();
+                    Err(err)
+                }
+            }
+        })
+    }
+
+    /// Save As, last step: the document now at `path` (moved there after
+    /// [`Documents::write_as`]) takes what the write saved, as a save does.
+    pub fn finish_save_as(&mut self, path: &Path, saved: SavedAs, cx: &mut Context<Self>) {
+        let key = self.key(path);
+        let SavedAs {
+            state,
+            snapshot,
+            written,
+            _done,
+        } = saved;
+        if let Some(doc) = self.docs.get_mut(&key) {
+            take_written(doc, &key, state, snapshot, &written, cx);
+            cx.notify();
+        }
+    }
+
     /// Replaces the text of the document at `path` with the file's, as one
     /// undo step, and ends any conflict (`workbench.action.files.revert`,
     /// and Reload in the conflict prompt). The text counts as saved.
@@ -1678,6 +1826,10 @@ impl Documents {
     /// it.
     pub fn revert(&mut self, path: &Path, cx: &mut Context<Self>) -> Task<()> {
         let key = self.key(path);
+        // No file to go back to.
+        if untitled::is_untitled(&key) {
+            return Task::ready(());
+        }
         let Some(doc) = self.docs.get_mut(&key) else {
             return Task::ready(());
         };
@@ -1696,6 +1848,9 @@ impl Documents {
     /// [`Documents::revert`] without waiting for saves: the caller holds
     /// the document's place in line.
     fn revert_now(&mut self, key: &Arc<Path>, cx: &mut Context<Self>) -> Task<()> {
+        if untitled::is_untitled(key) {
+            return Task::ready(());
+        }
         let key = key.clone();
         cx.spawn(async move |this, cx| {
             loop {
@@ -1787,9 +1942,16 @@ impl Documents {
         old: BufferSnapshot,
         patch: &Patch,
         was_dirty: bool,
-        origin: Option<EntityId>,
+        source: EditSource,
         cx: &mut Context<Self>,
     ) {
+        let origin = match source {
+            EditSource::View(id) => Some(id),
+            EditSource::Editor | EditSource::Disk => None,
+        };
+        // Text from disk (an agent wrote the file) stays outside the
+        // selections it lands next to; see `CodeView::apply_edit`.
+        let external = source == EditSource::Disk;
         let Some(doc) = self.docs.get_mut(key) else {
             return;
         };
@@ -1797,7 +1959,7 @@ impl Documents {
             return;
         };
         doc.version = buffer.version();
-        let dirty = buffer.is_dirty();
+        let dirty = text_dirty(key, buffer);
         let can_redo = buffer.can_redo();
         if !patch.is_empty() {
             let snapshot = buffer.snapshot();
@@ -1812,7 +1974,9 @@ impl Documents {
             });
             for view in doc.views() {
                 let snapshot = snapshot.clone();
-                view.update(cx, |v, cx| v.apply_edit(&old, snapshot, patch, cx));
+                view.update(cx, |v, cx| {
+                    v.apply_edit(&old, snapshot, patch, external, cx)
+                });
             }
             cx.emit(DocumentEvent::Edited {
                 path: key.clone(),
@@ -1966,6 +2130,10 @@ impl Documents {
             WorktreeEvent::Changed(changes) => {
                 for change in changes {
                     let key = self.key(&change.path);
+                    // A file of that name is not the Untitled document.
+                    if untitled::is_untitled(&key) {
+                        continue;
+                    }
                     let Some(doc) = self.docs.get_mut(&key) else {
                         continue;
                     };
@@ -1990,7 +2158,12 @@ impl Documents {
                 }
             }
             WorktreeEvent::Rescanned => {
-                let keys: Vec<Arc<Path>> = self.docs.keys().cloned().collect();
+                let keys: Vec<Arc<Path>> = self
+                    .docs
+                    .keys()
+                    .filter(|k| !untitled::is_untitled(k))
+                    .cloned()
+                    .collect();
                 for key in keys {
                     let doc = &self.docs[&key];
                     match fs::metadata(&key) {
@@ -2034,8 +2207,15 @@ impl Documents {
         let cursor = view.cursor();
         // Runs every frame: never copy the line, which may be megabytes.
         let col = view.snapshot().char_column(cursor);
+        let (count, chars) = view.selection_summary();
+        let cursor = match (count, chars) {
+            (1, 0) => format!("Ln {}, Col {}", cursor.row + 1, col + 1),
+            (1, n) => format!("Ln {}, Col {} ({n} selected)", cursor.row + 1, col + 1),
+            (n, 0) => format!("{n} selections"),
+            (n, m) => format!("{n} selections ({m} characters selected)"),
+        };
         Some(DocumentStatus {
-            cursor: format!("Ln {}, Col {}", cursor.row + 1, col + 1),
+            cursor,
             encoding: doc.encoding,
             line_ending: match doc.line_ending {
                 LineEnding::Lf => "LF",
@@ -2102,6 +2282,10 @@ impl Documents {
     /// Loads or reloads the document off the main thread. While one job
     /// runs, further requests collapse into a single follow-up reload.
     fn start_job(&mut self, key: &Arc<Path>, cx: &mut Context<Self>) {
+        // No file to load or reload.
+        if untitled::is_untitled(key) {
+            return;
+        }
         let auto_merge = self.auto_merge(key, cx);
         let Some(doc) = self.docs.get_mut(key) else {
             return;
@@ -2137,6 +2321,8 @@ impl Documents {
     /// Opens the document a hot exit backup was made of, with the backup's
     /// text as unsaved changes, for a tab whose view is made next (spec
     /// §5.4). Returns its key. A document already loaded keeps its text.
+    /// An Untitled backup is restored from its text alone, without reading
+    /// the disk (see [`restore`]).
     pub(crate) fn open_from_backup(&mut self, backup: Backup, cx: &mut Context<Self>) -> Arc<Path> {
         let key = self.key(&backup.header.path);
         if !self.docs.contains_key(&key) {
@@ -2176,9 +2362,14 @@ impl Documents {
         doc.job = None;
         let mut parse = false;
         match output {
-            Ok(output @ (JobOutput::Loaded(Ok(_)) | JobOutput::Restored(_))) => {
+            Ok(
+                output @ (JobOutput::Loaded(Ok(_))
+                | JobOutput::Untitled(_)
+                | JobOutput::Restored(_)),
+            ) => {
                 let (buffer, stamp, restored) = match output {
                     JobOutput::Loaded(Ok((buffer, stamp))) => (buffer, Some(stamp), None),
+                    JobOutput::Untitled(buffer) => (buffer, None, None),
                     JobOutput::Restored(r) => (r.buffer, r.stamp, Some((r.base, r.base_hash))),
                     _ => unreachable!("matched above"),
                 };
@@ -2423,7 +2614,7 @@ impl Documents {
             announce_return(doc, key, cx);
         }
         let merged = !patch.is_empty();
-        self.commit_edit(key, old, &patch, was_dirty, None, cx);
+        self.commit_edit(key, old, &patch, was_dirty, EditSource::Disk, cx);
         self.default_line_ending(key, cx);
         if merged {
             status_message::show_or_log(self.window, "Merged changes from disk", cx);
@@ -2471,7 +2662,7 @@ impl Documents {
         if patch.is_empty() && was_deleted {
             announce_return(doc, key, cx);
         }
-        self.commit_edit(key, old, &patch, was_dirty, None, cx);
+        self.commit_edit(key, old, &patch, was_dirty, EditSource::Disk, cx);
         self.default_line_ending(key, cx);
         if let Some(doc) = self.docs.get_mut(key) {
             detect_indentation(doc, &self.settings, cx);
@@ -2684,6 +2875,49 @@ fn reload_failed(
     status_message::show_or_log(window, format!("Failed to reload '{name}': {err}"), cx);
 }
 
+/// Marks the text `state` and `snapshot` a write captured as the saved
+/// text of the document at `key`, whose file `written` describes: its base,
+/// hash and stamp, no conflict, a deleted file back. Sends
+/// [`DocumentEvent::Saved`], and [`DocumentEvent::DirtyChanged`] when that
+/// changed. Edits made while writing stay unsaved.
+fn take_written(
+    doc: &mut Document,
+    key: &Arc<Path>,
+    state: HistoryState,
+    snapshot: BufferSnapshot,
+    written: &Written,
+    cx: &mut Context<Documents>,
+) {
+    let Some(buffer) = doc.buffer.as_mut() else {
+        return;
+    };
+    let was_dirty = buffer.is_dirty();
+    buffer.set_saved(state);
+    let dirty = buffer.is_dirty();
+    doc.base_hash = written.hash;
+    doc.base = Some(snapshot.clone());
+    doc.disk_epoch += 1;
+    doc.stamp = Some(Stamp::of_written(written));
+    // The invalid bytes are now U+FFFD on disk too.
+    buffer.clear_lossy();
+    set_conflict(doc, key, None, cx);
+    if doc.state == DocState::Deleted {
+        // The save made the file again.
+        doc.set_state(DocState::Ready, cx);
+        announce_return(doc, key, cx);
+    }
+    cx.emit(DocumentEvent::Saved {
+        path: key.clone(),
+        snapshot,
+    });
+    if dirty != was_dirty {
+        cx.emit(DocumentEvent::DirtyChanged {
+            path: key.clone(),
+            dirty,
+        });
+    }
+}
+
 /// Puts a save or revert of `doc` in line: returns the sender to drop when
 /// it is done, and the work before it to wait for, if any is still going.
 fn queue_disk_work(
@@ -2821,7 +3055,7 @@ fn sync_language_id(doc: &Document, cx: &mut App) {
 /// The language of the file at `key`: by `files.associations` against its
 /// path relative to `root`, its name, and the first line of `snapshot`.
 /// The registry is the window's (`settings`): its folder may add
-/// associations.
+/// associations. An Untitled document's is `files.defaultLanguage`'s.
 fn language_for(
     root: &Path,
     settings: &Entity<WindowSettings>,
@@ -2829,12 +3063,16 @@ fn language_for(
     snapshot: Option<&BufferSnapshot>,
     cx: &App,
 ) -> Option<Arc<Language>> {
+    let settings = settings.read(cx);
+    // No name or first line to go by: `files.defaultLanguage`, else plain
+    // text.
+    if untitled::is_untitled(key) {
+        let name = settings.get::<String>("files.defaultLanguage", None, cx)?;
+        return settings.languages(cx).language_by_name(name.trim());
+    }
     let path = key.strip_prefix(root).unwrap_or(key);
     let first_line = snapshot.map(first_line).unwrap_or_default();
-    settings
-        .read(cx)
-        .languages(cx)
-        .language_for_file(path, &first_line)
+    settings.languages(cx).language_for_file(path, &first_line)
 }
 
 /// Most bytes of the first line handed to language detection.
@@ -2948,8 +3186,11 @@ fn run_job(path: &Path, job: Job) -> JobOutput {
 /// text; otherwise unknown, so a save asks before writing over the file.
 fn restore(path: &Path, backup: Backup) -> Restored {
     let header = backup.header;
-    let disk = read(path)
-        .ok()
+    // An Untitled document has no file: never read one of that name.
+    let untitled = untitled::is_untitled(path);
+    let disk = (!untitled)
+        .then(|| read(path).ok())
+        .flatten()
         .and_then(|(bytes, stamp)| Some((decode_file(&bytes, false).ok()?, stamp)));
     let mut buffer = Buffer::from_decoded(Decoded {
         text: backup.text,
@@ -2973,8 +3214,34 @@ fn restore(path: &Path, backup: Backup) -> Restored {
             buffer,
             base: None,
             base_hash: RESTORED_UNKNOWN_BASE,
-            stamp: header.size.map(|len| Stamp::from_parts(header.mtime, len)),
+            stamp: header
+                .size
+                .filter(|_| !untitled)
+                .map(|len| Stamp::from_parts(header.mtime, len)),
         },
+    }
+}
+
+/// The empty buffer of a new Untitled document.
+fn empty_buffer() -> Buffer {
+    Buffer::from_decoded(Decoded {
+        text: String::new(),
+        encoding: encoding_rs::UTF_8,
+        has_bom: false,
+        line_ending: LineEnding::Lf,
+        hash: RESTORED_UNKNOWN_BASE,
+        lossy: false,
+    })
+}
+
+/// Whether `buffer`, the text of the document at `key`, has changes to
+/// lose: an Untitled document while it holds any text, a file's while it
+/// differs from the file as last loaded or saved.
+fn text_dirty(key: &Path, buffer: &Buffer) -> bool {
+    if untitled::is_untitled(key) {
+        buffer.snapshot().len_bytes() > 0
+    } else {
+        buffer.is_dirty()
     }
 }
 
@@ -3074,5 +3341,59 @@ mod tests {
             len: 0,
         };
         assert_eq!(Stamp::from_parts(None, 0), unknown);
+    }
+
+    /// An Untitled backup comes back from its text alone, dirty, and keeps
+    /// its number for the next new Untitled.
+    #[gpui::test]
+    fn untitled_backup_restores_without_disk(cx: &mut gpui::TestAppContext) {
+        use crate::hot_exit::store::BackupHeader;
+        let (keymap, _) =
+            lucerna_settings::Keymap::load(lucerna_settings::Keymap::default_bindings(), None);
+        let themes = lucerna_theme::ThemeRegistry::builtin();
+        let theme = themes.get_or_default("Lucerna Dark");
+        let icon_themes = lucerna_theme::IconThemeRegistry::build(&[]).0;
+        let icons = icon_themes.resolve("Lucide");
+        cx.set_global(crate::AppState {
+            settings: lucerna_settings::SettingsStore::with_defaults(),
+            keymap,
+            themes,
+            theme,
+            theme_generation: 0,
+            languages: Arc::new(lucerna_syntax::LanguageRegistry::bundled()),
+            languages_generation: 0,
+            icon_themes,
+            icons,
+        });
+        let dir = tempfile::TempDir::new().unwrap();
+        let settings = cx.new(|cx| WindowSettings::new(None, cx));
+        let docs = cx.new(|_| Documents::new(dir.path().to_path_buf(), settings));
+        let backup = Backup {
+            header: BackupHeader {
+                path: PathBuf::from("untitled:Untitled-2"),
+                mtime: None,
+                size: None,
+                base_sha256: None,
+                encoding: "UTF-8".into(),
+                bom: false,
+                line_ending: LineEnding::Lf,
+                lossy: false,
+            },
+            text: "kept\n".into(),
+        };
+        let key = docs.update(cx, |d, cx| d.open_from_backup(backup, cx));
+        cx.run_until_parked();
+        assert_eq!(&*key, Path::new("untitled:Untitled-2"));
+        docs.read_with(cx, |d, _| {
+            assert_eq!(d.state(&key), Some(&DocState::Ready));
+            assert!(d.is_dirty(&key));
+            assert_eq!(d.dirty_paths(), vec![key.clone()]);
+            assert_eq!(d.snapshot_of(&key).unwrap().text(), "kept\n");
+        });
+        let next = docs.update(cx, |d, cx| d.new_untitled(cx));
+        assert_eq!(&*next, Path::new("untitled:Untitled-1"));
+        let next = docs.update(cx, |d, cx| d.new_untitled(cx));
+        assert_eq!(&*next, Path::new("untitled:Untitled-3"));
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
     }
 }

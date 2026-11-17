@@ -15,7 +15,7 @@ use gpui::{
     Window,
 };
 use lucerna_editor::clipboard::ClipboardText;
-use lucerna_editor::{Ctx, EditConfig};
+use lucerna_editor::{Ctx, EditConfig, Goal, Selection, SelectionSet};
 use lucerna_settings::{Context as WhenContext, SettingsView, WhenExpr, parse_when};
 use lucerna_syntax::Language;
 use lucerna_text::{Bias, BufferSnapshot, Patch, Point, Reload};
@@ -596,12 +596,15 @@ impl VimLayer {
                 // where the caret is); a visual selection goes, one made in
                 // Normal mode (with the mouse) stays.
                 let at = state.vim.cursor();
-                let visual = !matches!(state.vim.mode(), Mode::Normal | Mode::Insert);
+                let visual = matches!(
+                    state.vim.mode(),
+                    Mode::Visual | Mode::VisualLine | Mode::VisualBlock
+                );
                 view.update(cx, |v, cx| {
                     v.set_cursor_overlay(None, cx);
                     v.set_typed_events(false);
                     v.set_suppress_stops(false, cx);
-                    if visual || v.has_block_selection() {
+                    if visual {
                         v.select(at..at, cx);
                     }
                 });
@@ -687,6 +690,7 @@ impl VimLayer {
                 self.view_edited(&view, edit, cx);
             }
             CodeViewEvent::ScrolledTo(_) | CodeViewEvent::DiffHunkClicked { .. } => {}
+            CodeViewEvent::MultiCursor => self.start_multi_cursor_insert(&view, cx),
         }
     }
 
@@ -1561,10 +1565,53 @@ impl VimLayer {
             v.selection_generation()
         });
         state.generation = generation;
-        let v = view.read(cx);
-        state.revision = v.revision();
-        state.moves = v.record_breaks();
-        follow_selection(&mut state.vim, v);
+        insert_started(state, view.read(cx));
+    }
+
+    /// A multi-cursor command or mouse action changed the selections of
+    /// `view` (spec 2026-11-17-multi-cursor §5.2): vim goes to Insert mode
+    /// with every selection kept, so typing goes to all of them, in one
+    /// undo step until Escape. Already in Insert mode, vim only follows
+    /// the new selections. Nothing happens with vim off, in a read-only
+    /// view or while `/` is open.
+    ///
+    /// The selection change may reach [`VimLayer::view_changed`] before
+    /// this; that only resets vim's own state to Normal and leaves the
+    /// view's selections alone, so entering Insert here afterwards keeps
+    /// them.
+    fn start_multi_cursor_insert(&mut self, view: &Entity<CodeView>, cx: &mut Context<Self>) {
+        let id = view.entity_id();
+        if !self.enabled || self.searching(id) {
+            return;
+        }
+        {
+            let v = view.read(cx);
+            if v.is_readonly() || !takes_keys(v) {
+                return;
+            }
+        }
+        self.ensure_state(view, cx);
+        let Some(state) = self.views.get_mut(&id) else {
+            return;
+        };
+        let head = view.read(cx).selection_head();
+        if state.vim.mode() == Mode::Insert {
+            view.update(cx, |v, cx| v.set_cursor_overlay(Some(bar_cursor(head)), cx));
+            let v = view.read(cx);
+            follow_selection(&mut state.vim, v);
+            state.generation = v.selection_generation();
+            state.revision = v.revision();
+            return;
+        }
+        state.vim.enter_insert_here(head, &mut self.globals);
+        state.generation = view.update(cx, |v, cx| {
+            v.set_suppress_stops(true, cx);
+            v.set_cursor_overlay(Some(bar_cursor(head)), cx);
+            v.set_typed_events(true);
+            v.selection_generation()
+        });
+        insert_started(state, view.read(cx));
+        cx.notify();
     }
 
     /// The matches of `query` in `view`: cached, or found now when the
@@ -1609,8 +1656,7 @@ impl VimLayer {
         let at = vim.cursor();
         state.generation = view.update(cx, |v, cx| {
             let selection = vim.selection(v.snapshot(), v.tab_size());
-            // Every selection change drops a block selection, so the
-            // cursor goes first.
+            // The cursor goes first: it scrolls; the selection replaces it.
             match reveal {
                 Reveal::Jump if !row_on_screen(v, at.row) => v.reveal_centered(at, cx),
                 Reveal::Jump | Reveal::Scroll => v.set_cursor(at, cx),
@@ -1620,7 +1666,8 @@ impl VimLayer {
                 None => {}
                 Some(sel @ VimSelection::Block { .. }) => {
                     let ranges = block_ranges(&sel, v.snapshot(), v.tab_size());
-                    v.set_block_selection(Some(ranges), cx);
+                    let set = block_selections(&ranges, at.row, v.snapshot());
+                    v.set_selections(set, false, cx);
                 }
                 Some(sel) => {
                     if let Some(range) = exclusive_range(&sel, v.snapshot()) {
@@ -1641,6 +1688,34 @@ impl VimLayer {
     }
 }
 
+/// One selection per row of a visual block, start to end; the one on
+/// `cursor_row` (vim's cursor) is primary.
+fn block_selections(ranges: &[Range<Point>], cursor_row: u32, s: &BufferSnapshot) -> SelectionSet {
+    if ranges.is_empty() {
+        let at = s.point_to_offset(Point {
+            row: cursor_row,
+            column: 0,
+        });
+        return SelectionSet::cursor(at);
+    }
+    let selections: Vec<Selection> = ranges
+        .iter()
+        .zip(0u64..)
+        .map(|(r, id)| Selection {
+            id,
+            anchor: s.point_to_offset(r.start),
+            head: s.point_to_offset(r.end),
+            goal: Goal::None,
+        })
+        .collect();
+    let primary = ranges
+        .iter()
+        .zip(0u64..)
+        .find(|(r, _)| r.start.row == cursor_row)
+        .map_or(0, |(_, id)| id);
+    SelectionSet::from_selections(selections, primary, true)
+}
+
 /// What the status-bar mode indicator shows for a code view.
 pub(crate) struct Indicator<'a> {
     /// `-- NORMAL --`, `-- INSERT --`...
@@ -1651,6 +1726,14 @@ pub(crate) struct Indicator<'a> {
     pub pending: &'a str,
     /// The message of the last command, shown instead of the rest.
     pub message: Option<&'a str>,
+}
+
+/// Notes the view's revision and record breaks once an Insert session
+/// opened in `v`, and puts vim's cursor on the view's.
+fn insert_started(state: &mut ViewState, v: &CodeView) {
+    state.revision = v.revision();
+    state.moves = v.record_breaks();
+    follow_selection(&mut state.vim, v);
 }
 
 /// Moves vim's cursor to the view's after the view moved it: in Insert
@@ -1929,5 +2012,20 @@ impl ViewInfo for Info<'_> {
         self.view
             .syntax()
             .map_or_else(Vec::new, |s| s.enclosing_nodes(range))
+    }
+}
+
+#[cfg(test)]
+mod block_selection_tests {
+    use super::*;
+
+    #[test]
+    fn empty_block_ranges_fall_back_to_a_cursor() {
+        let snap = lucerna_text::Buffer::from_bytes(b"ab\ncd", false)
+            .unwrap()
+            .snapshot();
+        let set = block_selections(&[], 1, &snap);
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.newest().range(), 3..3);
     }
 }
