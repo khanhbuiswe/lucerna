@@ -9,13 +9,17 @@ use serde::Deserialize;
 use crate::table::ServerDef;
 
 /// Which marker directory wins when several enclose a file.
+///
+/// Outermost is the default, as in Helix and Zed: libraries inside the
+/// project (`vendor/`, `node_modules/`, `deps/`) carry their own markers,
+/// and the nearest one would start a second server for them.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RootSearch {
     /// The nearest directory containing any marker.
-    #[default]
     Nearest,
     /// The outermost directory containing any marker.
+    #[default]
     Outermost,
     /// Markers are ranked by their order: the nearest directory containing
     /// the first marker wins, then the second, and so on.
