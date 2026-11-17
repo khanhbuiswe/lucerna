@@ -5,6 +5,16 @@ Each release's section below is copied into its GitHub Release page by
 
 ## [Unreleased]
 
+### Added
+
+- Replace in file. Alt+Cmd+F (Edit > Replace) opens the find bar with a Replace row. Enter in the
+  Replace box replaces one match and Cmd+Enter replaces all; Shift+Cmd+1 and Alt+Cmd+Enter do the
+  same while the bar is open. Each replace is one undo step.
+- Regex replace uses VS Code syntax: `$0`/`$&`, `$1`..`$99`, `$$`, `\n`, `\t`, `\\`, and the case
+  operators `\u \U \l \L`. The Preserve Case toggle (`AB`) keeps each match's casing.
+- Alt+Cmd+C, Alt+Cmd+W, Alt+Cmd+R and Alt+Cmd+P toggle match case, whole word, regex and preserve
+  case in the editor's find bar.
+
 ### Changed
 
 - Zoom (Cmd+= / Cmd+-) applies to every editor, diff and window, and to the terminal unless
