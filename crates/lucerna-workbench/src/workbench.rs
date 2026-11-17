@@ -66,6 +66,7 @@ use crate::trust::{self, Trust};
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
 use crate::vim::{self, VimLayer};
 use crate::vim_indicator::ModeIndicator;
+use crate::watch_status::WatchStatusItem;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateStore, absolute_path};
 use crate::{AppState, CommandRegistry, WindowSettings, find_widget, keys};
 
@@ -170,6 +171,8 @@ pub struct Workbench {
     pub(crate) onboarding: TabPage,
     /// The diagnostics counts and message in the status bar.
     pub(crate) diagnostics_status: Entity<DiagnosticsStatusItem>,
+    /// The status bar's warning when a file watcher could not start.
+    watch_status: Entity<WatchStatusItem>,
     /// The F8 lookup in flight.
     pub(crate) marker_task: Option<Task<()>>,
     /// Where an F8 jump into a tab not drawn yet shows its hover.
@@ -778,6 +781,14 @@ impl Workbench {
             let settings = settings.clone();
             cx.new(|cx| ConfigErrorItem::new(workbench, settings, cx))
         };
+        let watch_status = {
+            let folder = root.file_name().map_or_else(
+                || root.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            let git = git.clone();
+            cx.new(|cx| WatchStatusItem::new(folder, git, cx))
+        };
         let vim = {
             let settings = settings.clone();
             cx.new(|cx| VimLayer::new(settings, cx))
@@ -866,6 +877,7 @@ impl Workbench {
             lsp_health: lsp_health.clone(),
             onboarding,
             diagnostics_status: diagnostics_status.clone(),
+            watch_status: watch_status.clone(),
             marker_task: None,
             marker_hover: None,
             goto_task: None,
@@ -946,6 +958,7 @@ impl Workbench {
         workbench.update_branch_title(cx);
         workbench.add_status_item(StatusBarSide::Left, diagnostics_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
+        workbench.add_status_item(StatusBarSide::Left, watch_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, mode_indicator.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, lsp_status.into(), cx);
@@ -1120,6 +1133,11 @@ impl Workbench {
     /// `git` runs for it.
     pub(crate) fn has_repo_hint(&self) -> bool {
         self.git_head.is_some()
+    }
+
+    /// The status bar's warning when a file watcher could not start.
+    pub fn watch_status(&self) -> &Entity<WatchStatusItem> {
+        &self.watch_status
     }
 
     /// The background scan of the opened folder.
@@ -1349,6 +1367,11 @@ impl Workbench {
             WorktreeEvent::ScanComplete if !self.scan_complete_logged => {
                 self.scan_complete_logged = true;
                 tracing::info!(scan_ms, "scan complete");
+            }
+            WorktreeEvent::WatchFailed(reason) => {
+                let reason = reason.clone();
+                self.watch_status
+                    .update(cx, |item, cx| item.set_worktree_error(reason, cx));
             }
             _ => {}
         }
