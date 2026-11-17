@@ -1594,15 +1594,16 @@ impl VimLayer {
         let Some(state) = self.views.get_mut(&id) else {
             return;
         };
+        let head = view.read(cx).selection_head();
         if state.vim.mode() == Mode::Insert {
+            view.update(cx, |v, cx| v.set_cursor_overlay(Some(bar_cursor(head)), cx));
             let v = view.read(cx);
             follow_selection(&mut state.vim, v);
             state.generation = v.selection_generation();
             state.revision = v.revision();
             return;
         }
-        let head = view.read(cx).selection_head();
-        state.vim.enter_insert_here(head);
+        state.vim.enter_insert_here(head, &mut self.globals);
         state.generation = view.update(cx, |v, cx| {
             v.set_suppress_stops(true, cx);
             v.set_cursor_overlay(Some(bar_cursor(head)), cx);

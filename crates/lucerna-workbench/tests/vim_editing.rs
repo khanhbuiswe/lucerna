@@ -1151,6 +1151,22 @@ fn vim_multi_cursor_insert_is_idempotent(cx: &mut TestAppContext) {
     keys("cmd-d cmd-d cmd-d", cx);
     assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
     assert_eq!(ranges(&view, cx), vec![0..3, 4..7, 8..11]);
+    // ⌥-click in Insert: the new cursor is primary and the bar moves to it.
+    let at = caret_at(&view, 0, 13, cx);
+    mouse_click(at, alt(), cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    assert_eq!(ranges(&view, cx), vec![0..3, 4..7, 8..11, 13..13]);
+    let overlay = view
+        .read_with(cx, |v, _| v.cursor_overlay())
+        .expect("a bar");
+    assert_eq!(overlay.at, pt(0, 13));
+    assert_eq!(
+        overlay.shape,
+        lucerna_workbench::code_view::CursorShape::Bar
+    );
+    // ⌥-click again removes it.
+    mouse_click(at, alt(), cx);
+    assert_eq!(ranges(&view, cx), vec![0..3, 4..7, 8..11]);
     commit(&view, "a", cx);
     // Each empty cursor takes the word before it.
     keys("cmd-d", cx);
@@ -1160,4 +1176,18 @@ fn vim_multi_cursor_insert_is_idempotent(cx: &mut TestAppContext) {
     assert_eq!(text_of(&view, cx), "b b b foo");
     keys("escape u", cx);
     assert_eq!(text_of(&view, cx), "foo foo foo foo");
+}
+
+/// A macro recorded across ⌘D replays its typing as an Insert, not as
+/// Normal-mode commands.
+#[gpui::test]
+fn vim_macro_across_cmd_d_inserts(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("foo bar\n", cx);
+    keys("q a cmd-d", cx);
+    assert_eq!(mode(&wb, &view, cx), Some(Mode::Insert));
+    commit(&view, "x", cx);
+    keys("escape q", cx);
+    assert_eq!(text_of(&view, cx), "x bar\n");
+    keys("w @ a", cx);
+    assert_eq!(text_of(&view, cx), "x xbar\n");
 }

@@ -673,9 +673,10 @@ impl Vim {
 
     /// Insert mode at `cursor` from outside vim (a multi-cursor command
     /// made the selections), with nothing pending, no count and the goal
-    /// forgotten. The typing is recorded for `.` as an `i` (the command
-    /// itself is not).
-    pub fn enter_insert_here(&mut self, cursor: Point) {
+    /// forgotten. The typing is recorded for `.` and for the macro being
+    /// recorded as after an `i` (the command itself is not).
+    pub fn enter_insert_here(&mut self, cursor: Point, g: &mut VimGlobals) {
+        g.record_text("i");
         self.mode = Mode::Insert;
         self.cursor = cursor;
         self.anchor = cursor;
@@ -2431,7 +2432,12 @@ mod tests {
         feed_keys(&mut vim, &view, "3d");
         assert_eq!(vim.pending(), "3d");
         let at = Point { row: 0, column: 4 };
-        vim.enter_insert_here(at);
+        let mut globals = crate::VimGlobals {
+            record: Some(('a', String::new())),
+            ..Default::default()
+        };
+        vim.enter_insert_here(at, &mut globals);
+        assert_eq!(globals.record, Some(('a', "i".to_string())));
         assert_eq!(vim.mode(), Mode::Insert);
         assert_eq!(vim.pending(), "");
         assert_eq!(vim.cursor(), at);
