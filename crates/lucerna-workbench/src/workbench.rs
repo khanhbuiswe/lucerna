@@ -1861,6 +1861,14 @@ impl Workbench {
         self.open_file(path, FileView::Source, mode, false, cx);
     }
 
+    /// `workbench.action.files.newUntitledFile`: a new empty Untitled
+    /// document in a pinned tab of the active group, its view focused.
+    pub fn new_untitled_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.documents.update(cx, |d, cx| d.new_untitled(cx));
+        self.open_source(key, OpenMode::Pinned, cx);
+        self.focus_editor_area(window, cx);
+    }
+
     /// Opens the static Markdown preview of `path` as a pinned tab, as the
     /// Explorer's Open Preview does.
     pub(crate) fn open_markdown_preview(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
@@ -3496,6 +3504,11 @@ pub(crate) fn default_registry() -> CommandRegistry {
 }
 
 fn register_shell_commands(commands: &mut CommandRegistry) {
+    commands.register(
+        "workbench.action.files.newUntitledFile",
+        "File: New Untitled Text File",
+        |wb, _, window, cx| wb.new_untitled_file(window, cx),
+    );
     commands.register("workbench.action.quit", "File: Quit", |_, _, _, cx| {
         quit(cx)
     });

@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use gpui::{Entity, TestAppContext, VisualTestContext};
+use gpui::{Entity, Focusable, TestAppContext, VisualTestContext};
 use lucerna_project::WorktreeEvent;
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
@@ -350,4 +350,106 @@ fn untitled_not_in_workspace_state_or_recent(cx: &mut TestAppContext) {
         cx.update(|_, cx| wb.read(cx).recent_files().to_vec()),
         vec![a]
     );
+}
+
+/// `(active tab's path, pinned, displayed title, path bar text)`.
+fn active_tab(
+    wb: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+) -> (String, bool, String, Option<String>) {
+    cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        let model = groups.model();
+        let group = model.active_group();
+        let tab = model.active_tab().expect("an active tab");
+        let ti = model.groups()[group]
+            .tabs
+            .iter()
+            .position(|t| t.id == tab.id)
+            .unwrap();
+        (
+            tab.path().unwrap().display().to_string(),
+            tab.pinned,
+            groups.tab_title(group, ti, cx).unwrap(),
+            groups.path_bar_text(group),
+        )
+    })
+}
+
+#[gpui::test]
+fn cmd_n_opens_untitled_tab(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, cx) = workbench(cx);
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+
+    let (path, pinned, title, bar) = active_tab(&wb, cx);
+    assert_eq!(path, "untitled:Untitled-1");
+    assert!(pinned);
+    assert_eq!(title, "Untitled-1");
+    assert_eq!(bar.as_deref(), Some("Untitled-1"));
+    let focused = cx.update(|window, cx| {
+        let body = wb.read(cx).editor_groups().read(cx).active_body().unwrap();
+        let view = body.downcast::<CodeView>().expect("a code view");
+        view.read(cx).focus_handle(cx).is_focused(window)
+    });
+    assert!(focused);
+}
+
+#[gpui::test]
+fn untitled_title_follows_typing(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    let docs = documents(&wb, cx);
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    let key: Arc<Path> = Path::new("untitled:Untitled-1").into();
+    assert!(!docs.read_with(cx, |d, _| d.is_dirty(&key)));
+
+    // Real keystrokes into the focused editor.
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("  hello world");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("second");
+    settle(cx);
+    assert!(docs.read_with(cx, |d, _| d.is_dirty(&key)));
+    assert_eq!(active_tab(&wb, cx).2, "hello world");
+
+    cx.simulate_keystrokes("cmd-a backspace");
+    settle(cx);
+    assert!(!docs.read_with(cx, |d, _| d.is_dirty(&key)));
+    assert_eq!(active_tab(&wb, cx).2, "Untitled-1");
+    no_untitled_on_disk(&dir);
+}
+
+#[gpui::test]
+fn untitled_numbers_are_reused(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, cx) = workbench(cx);
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    assert_eq!(active_tab(&wb, cx).0, "untitled:Untitled-2");
+
+    // Activate tab 1 and close it: it is empty, so nothing is asked.
+    cx.update(|_, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.editor_groups().update(cx, |g, cx| {
+                g.update_model(cx, |m| {
+                    let id = m.groups()[0].tabs[0].id;
+                    m.activate(id);
+                })
+            })
+        })
+    });
+    settle(cx);
+    assert_eq!(active_tab(&wb, cx).0, "untitled:Untitled-1");
+    cx.simulate_keystrokes("cmd-w");
+    settle(cx);
+    assert!(!cx.has_pending_prompt());
+
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    assert_eq!(active_tab(&wb, cx).0, "untitled:Untitled-1");
 }

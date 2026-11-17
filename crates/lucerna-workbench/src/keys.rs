@@ -244,6 +244,7 @@ mod tests {
             (event("r", None, ctrl()), "ctrl+r"),
             (event("r", None, ctrl_shift()), "ctrl+shift+r"),
             (event("o", None, cmd()), "cmd+o"),
+            (event("n", None, cmd()), "cmd+n"),
             (event("n", None, cmd_shift()), "cmd+shift+n"),
             (event("n", None, ctrl_shift()), "ctrl+shift+n"),
             (event("f", Some("f"), Modifiers::none()), "f"),

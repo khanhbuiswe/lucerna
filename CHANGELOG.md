@@ -5,6 +5,11 @@ Each release's section below is copied into its GitHub Release page by
 
 ## [Unreleased]
 
+### Added
+
+- Cmd+N (File → New File) opens an Untitled tab. Its tab shows the first line you type, and it
+  counts as unsaved once it has text.
+
 ### Changed
 
 - Zoom (Cmd+= / Cmd+-) applies to every editor, diff and window, and to the terminal unless

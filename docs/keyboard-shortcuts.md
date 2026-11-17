@@ -4,6 +4,7 @@ Lucerna keeps VS Code's default macOS shortcuts. These are the main ones.
 
 | Keys | Action |
 |---|---|
+| Cmd+N | New untitled file |
 | Cmd+P | Go to file |
 | Cmd+Shift+P | Command palette |
 | Ctrl+G | Go to line |

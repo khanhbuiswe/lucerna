@@ -137,6 +137,7 @@
   { "key": "shift+f4", "command": "references-view.prev", "when": "referencesViewFocus" },
   { "key": "ctrl+r", "command": "workbench.action.openRecent" },
   { "key": "cmd+o", "command": "workbench.action.files.openFileFolder" },
+  { "key": "cmd+n", "command": "workbench.action.files.newUntitledFile" },
   { "key": "cmd+shift+n", "command": "workbench.action.newWindow", "when": "isMac" },
   { "key": "ctrl+shift+n", "command": "workbench.action.newWindow", "when": "!isMac" },
   { "key": "cmd+k f", "command": "workbench.action.closeFolder" },

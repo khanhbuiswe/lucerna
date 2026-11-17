@@ -152,6 +152,8 @@ fn show_tab_icons(settings: SettingsView<'_>) -> bool {
 fn tab_icon_source(item: &TabItem, cx: &App) -> Option<IconSource> {
     let file = |p: &Path| cx.global::<AppState>().icons.file(p);
     Some(match item {
+        // Untitled: the plain-text icon, as a `.txt` file has.
+        TabItem::File(p) if crate::untitled::is_untitled(p) => file(Path::new("Untitled.txt")),
         TabItem::File(p) | TabItem::FileDiff(p) => file(p),
         TabItem::Extensions => IconSource::Builtin("blocks"),
         TabItem::Search => IconSource::Builtin("search"),
@@ -572,6 +574,34 @@ impl EditorGroupsView {
         self.home = std::env::home_dir();
     }
 
+    /// The label of `tab`: for an Untitled document its first non-blank
+    /// line (reading only the first rows), else `Untitled-N`; otherwise
+    /// [`Tab::title`].
+    fn tab_title_of(&self, tab: &Tab, cx: &App) -> String {
+        if let TabItem::File(path) = &tab.item
+            && crate::untitled::is_untitled(path)
+        {
+            let label = self
+                .documents
+                .as_ref()
+                .and_then(|d| d.read(cx).snapshot_of(path))
+                .and_then(|snapshot| {
+                    let rows = snapshot.line_count().min(UNTITLED_LABEL_ROWS);
+                    let head: Vec<_> = (0..rows).map(|row| snapshot.line(row)).collect();
+                    crate::untitled::label(&head.join("\n"))
+                });
+            return label.unwrap_or_else(|| crate::untitled::name(path));
+        }
+        tab.title()
+    }
+
+    /// The label tab `ti` of group `gi` shows in the tab bar, apart from
+    /// the Search, References and branch-changes titles set by their views.
+    pub fn tab_title(&self, gi: usize, ti: usize, cx: &App) -> Option<String> {
+        let tab = self.model.groups().get(gi)?.tabs.get(ti)?;
+        Some(self.tab_title_of(tab, cx))
+    }
+
     /// What the path bar of group `group` shows: its active tab's path,
     /// or the file a preview shows (see [`path_bar_text`]); `None` when the
     /// group has no tab or shows the Extensions page.
@@ -812,7 +842,7 @@ impl Render for EditorGroupsView {
                     TabItem::BranchChanges => self.branch_title.as_ref(),
                     _ => None,
                 };
-                let title = title.map_or_else(|| tab.title(), |t| t.to_string());
+                let title = title.map_or_else(|| self.tab_title_of(tab, cx), |t| t.to_string());
                 let icon = show_icons
                     .then(|| tab_icon_source(&tab.item, cx))
                     .flatten()
@@ -999,6 +1029,9 @@ fn title_color(active: bool, focused_group: bool, ui: &UiColors) -> Rgba {
     }
 }
 
+/// How many rows of an Untitled document a tab label looks at.
+const UNTITLED_LABEL_ROWS: u32 = 16;
+
 /// `a` moved `t` of the way towards `b`.
 fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     let lerp = |x: f32, y: f32| x + (y - x) * t;
@@ -1013,6 +1046,9 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
 /// `path` as a path bar shows it: relative to `root` inside it, otherwise
 /// (or with no root) absolute, with `~` for the `home` folder.
 pub(crate) fn path_bar_text(path: &Path, root: Option<&Path>, home: Option<&Path>) -> String {
+    if crate::untitled::is_untitled(path) {
+        return crate::untitled::name(path);
+    }
     if let Some(rel) = root.and_then(|root| path.strip_prefix(root).ok())
         && !rel.as_os_str().is_empty()
     {
