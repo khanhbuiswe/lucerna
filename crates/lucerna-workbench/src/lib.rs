@@ -124,6 +124,7 @@ pub use open_commands::{OPEN_IN_BROWSER, Replacement, browser_url};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
+    resolve_line,
 };
 pub use recent_picker::{RecentPicker, RecentPickerEvent};
 pub use references_view::{ReferencesView, find_references_in_tab};

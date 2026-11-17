@@ -20,7 +20,7 @@ use super::picker::{
     fuzzy_filter, highlighted, picker_input_row, picker_list, picker_row, picker_row_sized,
     wrap_index,
 };
-use super::query::{QuickOpenQuery, parse_query};
+use super::query::{QuickOpenQuery, parse_query, resolve_line};
 use crate::fonts::{EDITOR_FONT_FAMILY, editor_font_family};
 use crate::layout::color;
 use crate::symbols::SymbolState;
@@ -50,8 +50,9 @@ pub(crate) struct Sources {
     /// Recently opened files, newest first.
     pub recent: Arc<[Arc<Path>]>,
     pub commands: Vec<CommandItem>,
-    /// Whether a code view is active, so go-to-line has a target.
-    pub has_editor: bool,
+    /// The line count of the active code view, so go-to-line has a target
+    /// (`None` when there is none).
+    pub editor_lines: Option<u32>,
     /// Lists these extension ids instead (the install command): Enter
     /// installs the selected one. `Err` holds the message shown while
     /// there are none yet, such as "Loading extension list…".
@@ -135,7 +136,7 @@ pub struct QuickOpen {
     snapshot: WorktreeSnapshot,
     recent: Arc<[Arc<Path>]>,
     commands: Rc<[CommandItem]>,
-    has_editor: bool,
+    editor_lines: Option<u32>,
     extension_ids: Option<Result<Rc<[String]>, &'static str>>,
     /// The active editor's symbols, for `@`; read from the workbench when
     /// `@` is first typed.
@@ -192,7 +193,7 @@ impl QuickOpen {
             snapshot: sources.snapshot,
             recent: sources.recent,
             commands: sources.commands.into(),
-            has_editor: sources.has_editor,
+            editor_lines: sources.editor_lines,
             extension_ids: sources.extension_ids.map(|ids| ids.map(Into::into)),
             symbols: None,
             symbols_loaded: false,
@@ -411,10 +412,13 @@ impl QuickOpen {
                 self.set_rows(rows, cx);
             }
             QuickOpenQuery::GotoLine { line, column } => {
-                let row = match line {
-                    _ if !self.has_editor => Row::Message("Open a file to go to a line"),
-                    Some(line) => Row::GoToLine { line, column },
-                    None => Row::Message("Type a line number…"),
+                let row = match (self.editor_lines, line) {
+                    (None, _) => Row::Message("Open a file to go to a line"),
+                    (Some(count), Some(line)) => Row::GoToLine {
+                        line: resolve_line(line, count),
+                        column,
+                    },
+                    (Some(_), None) => Row::Message("Type a line number…"),
                 };
                 self.set_rows(vec![row], cx);
             }
