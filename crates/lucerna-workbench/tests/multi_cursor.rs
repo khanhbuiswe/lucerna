@@ -313,6 +313,24 @@ fn cmd_d_seeds_open_find(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn cmd_d_seed_is_escaped_in_regex_mode(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"editor.wordSeparators": "`~!@#%^&*()-=+[{]}\\|;:'\",.<>/?"}"#),
+    );
+    let (_dir, _wb, view, cx) = editor("a $v b $v", cx);
+    set_cursor(&view, 3, cx);
+    keys("cmd-f", cx);
+    let find = view.read_with(cx, |v, _| v.find_widget().expect("Find bar").clone());
+    find.update_in(cx, |f, _, cx| f.toggle_regex(cx));
+    focus(&view, cx);
+    keys("cmd-d", cx);
+    let query = find.read_with(cx, |f, cx| f.input().read(cx).text().to_owned());
+    assert_eq!(query, r"\$v");
+    assert_eq!(find.read_with(cx, |f, _| f.matches().len()), 2);
+}
+
+#[gpui::test]
 fn cmd_d_after_external_reload(cx: &mut TestAppContext) {
     init(cx, None);
     let (dir, wb, view, cx) = editor(FOOS, cx);

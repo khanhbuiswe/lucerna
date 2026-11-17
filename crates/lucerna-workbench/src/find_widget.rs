@@ -194,9 +194,15 @@ impl FindWidget {
     /// Replaces the query with `text` (the word `⌘D` selected) and
     /// searches again, like typing it, but leaves the selections alone.
     pub(crate) fn seed_query(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.query = text.to_owned();
+        // With the regex toggle on the word is searched literally.
+        let text = if self.is_regex {
+            regex::escape(text)
+        } else {
+            text.to_owned()
+        };
+        self.query = text.clone();
         self.input
-            .update(cx, |input, cx| input.set_text_quietly(text, cx));
+            .update(cx, |input, cx| input.set_text_quietly(&text, cx));
         self.search(Pick::Seed, cx);
     }
 

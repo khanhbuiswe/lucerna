@@ -1691,6 +1691,13 @@ impl VimLayer {
 /// One selection per row of a visual block, start to end; the one on
 /// `cursor_row` (vim's cursor) is primary.
 fn block_selections(ranges: &[Range<Point>], cursor_row: u32, s: &BufferSnapshot) -> SelectionSet {
+    if ranges.is_empty() {
+        let at = s.point_to_offset(Point {
+            row: cursor_row,
+            column: 0,
+        });
+        return SelectionSet::cursor(at);
+    }
     let selections: Vec<Selection> = ranges
         .iter()
         .zip(0u64..)
@@ -2005,5 +2012,20 @@ impl ViewInfo for Info<'_> {
         self.view
             .syntax()
             .map_or_else(Vec::new, |s| s.enclosing_nodes(range))
+    }
+}
+
+#[cfg(test)]
+mod block_selection_tests {
+    use super::*;
+
+    #[test]
+    fn empty_block_ranges_fall_back_to_a_cursor() {
+        let snap = lucerna_text::Buffer::from_bytes(b"ab\ncd", false)
+            .unwrap()
+            .snapshot();
+        let set = block_selections(&[], 1, &snap);
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.newest().range(), 3..3);
     }
 }

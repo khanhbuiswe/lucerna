@@ -80,7 +80,7 @@ example "Open in → Default app" in Claude Desktop.
   undo and redo grouped like VS Code, plus cursor undo. Multi-cursor like VS Code: Cmd+D and
   Cmd+K Cmd+D, Shift+Cmd+L, Opt+Cmd+Up/Down, Shift+Opt+I, column select (Shift+Opt+Cmd+arrows or
   Shift+Opt+drag), Opt+click and Opt+drag, paste that spreads one line per cursor, and a status bar count
-  (`editor.multiCursor*` settings). Save, Save All, Save Without Formatting
+  (`editor.multiCursor*` settings). Find's whole-word option follows `editor.wordSeparators`, so `$foo` and `foo-bar` match as words. Save, Save All, Save Without Formatting
   and Revert; `files.trimTrailingWhitespace`, `files.insertFinalNewline`, `files.trimFinalNewlines`,
   `files.eol` and `files.autoSave`. Writes are atomic and keep the file's encoding, BOM and line
   ending. Tabs show a dirty dot, and a conflict dot when the file changed on disk. Saving over

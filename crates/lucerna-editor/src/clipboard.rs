@@ -132,14 +132,16 @@ fn spread<'a>(
 ) -> Option<Vec<std::borrow::Cow<'a, str>>> {
     use std::borrow::Cow;
     let n = set.len();
-    if n < 2 || ctx.config.multi_cursor_paste == MultiCursorPaste::Full {
+    if n < 2 {
         return None;
     }
+    // Pieces from a multi-cursor copy spread whatever the setting says;
+    // `full` only stops external text from being split by line.
     if let Some(pieces) = &clip.pieces {
         return (pieces.len() == n)
             .then(|| pieces.iter().map(|p| Cow::Borrowed(p.as_str())).collect());
     }
-    if clip.whole_line {
+    if clip.whole_line || ctx.config.multi_cursor_paste == MultiCursorPaste::Full {
         return None;
     }
     let text = clip.text.replace("\r\n", "\n").replace('\r', "\n");
@@ -403,10 +405,49 @@ b|",
         );
         assert_eq!(
             out,
+            "a1|
+b2|"
+        );
+        // A piece count that does not match: the whole text everywhere.
+        let three = ClipboardText {
+            text: "1
+2
+3"
+            .into(),
+            pieces: Some(vec!["1".into(), "2".into(), "3".into()]),
+            whole_line: false,
+        };
+        let out = paste_with(
+            "a|
+b|",
+            &three,
+            MultiCursorPaste::Full,
+        );
+        assert_eq!(
+            out,
             "a1
-2|
+2
+3|
 b1
-2|"
+2
+3|"
+        );
+        // External text is not split by line under `full`.
+        let out = paste_with(
+            "a|
+b|",
+            &clip(
+                "x
+y",
+            ),
+            MultiCursorPaste::Full,
+        );
+        assert_eq!(
+            out,
+            "ax
+y|
+bx
+y|"
         );
         let out = paste_with(
             "a|

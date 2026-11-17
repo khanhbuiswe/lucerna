@@ -676,6 +676,11 @@ impl Vim {
     /// forgotten. The typing is recorded for `.` and for the macro being
     /// recorded as after an `i` (the command itself is not).
     pub fn enter_insert_here(&mut self, cursor: Point, g: &mut VimGlobals) {
+        // From Visual mode or a half-typed command the replayed `i` would
+        // not start Insert mode: leave that first.
+        if self.mode != Mode::Normal || !self.pending.is_empty() {
+            g.record_text("<Esc>");
+        }
         g.record_text("i");
         self.mode = Mode::Insert;
         self.cursor = cursor;
@@ -2426,6 +2431,37 @@ mod tests {
     }
 
     #[test]
+    fn enter_insert_here_records_escape_outside_normal() {
+        let at = Point { row: 0, column: 1 };
+        let view = TestView::new("a|bc def");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "v");
+        let mut globals = crate::VimGlobals {
+            record: Some(('a', String::new())),
+            ..Default::default()
+        };
+        vim.enter_insert_here(at, &mut globals);
+        assert_eq!(globals.record, Some(('a', "<Esc>i".to_string())));
+        // Pending keys in Normal mode count too.
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "3d");
+        let mut globals = crate::VimGlobals {
+            record: Some(('a', String::new())),
+            ..Default::default()
+        };
+        vim.enter_insert_here(at, &mut globals);
+        assert_eq!(globals.record, Some(('a', "<Esc>i".to_string())));
+        // Normal with nothing pending: just `i`.
+        let mut vim = Vim::new(view.cursor);
+        let mut globals = crate::VimGlobals {
+            record: Some(('a', String::new())),
+            ..Default::default()
+        };
+        vim.enter_insert_here(at, &mut globals);
+        assert_eq!(globals.record, Some(('a', "i".to_string())));
+    }
+
+    #[test]
     fn enter_insert_here_drops_pending_and_count() {
         let view = TestView::new("a|bc def");
         let mut vim = Vim::new(view.cursor);
@@ -2437,7 +2473,7 @@ mod tests {
             ..Default::default()
         };
         vim.enter_insert_here(at, &mut globals);
-        assert_eq!(globals.record, Some(('a', "i".to_string())));
+        assert_eq!(globals.record, Some(('a', "<Esc>i".to_string())));
         assert_eq!(vim.mode(), Mode::Insert);
         assert_eq!(vim.pending(), "");
         assert_eq!(vim.cursor(), at);
