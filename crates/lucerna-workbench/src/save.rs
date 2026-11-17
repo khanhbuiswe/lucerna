@@ -178,8 +178,10 @@ pub(crate) enum UntitledCancel {
 /// after another, each of which may ask about a conflict: the files
 /// first, then each Untitled document still holding text through
 /// [`Workbench::save_as`] of `workbench`, in number order (spec §4.5).
-/// `true` when every one was saved; a failed file save is reported in the
-/// status bar and the rest still save. Once a file failed with
+/// When every one was saved, the paths the documents are at now (an
+/// Untitled one's chosen file), for the caller to check for edits made
+/// while they wrote; `None` otherwise. A failed file save is reported in
+/// the status bar and the rest still save. Once a file failed with
 /// [`UntitledCancel::Stop`], or an Untitled one is cancelled with it, no
 /// Untitled document is asked about.
 pub(crate) async fn save_each(
@@ -188,7 +190,7 @@ pub(crate) async fn save_each(
     paths: Vec<Arc<Path>>,
     on_cancel: UntitledCancel,
     cx: &mut AsyncWindowContext,
-) -> bool {
+) -> Option<Vec<Arc<Path>>> {
     let opts = SaveOptions {
         reason: SaveReason::Explicit,
         participants: true,
@@ -198,34 +200,33 @@ pub(crate) async fn save_each(
         paths.into_iter().partition(|p| untitled::is_untitled(p));
     untitled.sort_by_key(|p| untitled::number(p));
     let mut all = true;
+    let mut saved = Vec::new();
     for path in files {
-        let Ok(save) =
-            cx.update(|window, cx| documents.update(cx, |d, cx| d.save(&path, opts, window, cx)))
-        else {
-            return false;
-        };
+        let save = cx
+            .update(|window, cx| documents.update(cx, |d, cx| d.save(&path, opts, window, cx)))
+            .ok()?;
         all &= matches!(save.await, Ok(true));
+        saved.push(path);
     }
     if !all && on_cancel == UntitledCancel::Stop {
-        return false;
+        return None;
     }
     for path in untitled {
         // Emptied while an earlier dialog was up: nothing to save.
         if !documents.read_with(cx, |d, _| d.is_dirty(&path)) {
+            saved.push(path);
             continue;
         }
-        let Ok(save) = workbench.update_in(cx, |wb, window, cx| wb.save_as(path, window, cx))
-        else {
-            return false;
-        };
-        if !save.await {
-            all = false;
-            if on_cancel == UntitledCancel::Stop {
-                return false;
-            }
+        let save = workbench
+            .update_in(cx, |wb, window, cx| wb.save_as_to(path, window, cx))
+            .ok()?;
+        match save.await {
+            Some(to) => saved.push(to),
+            None if on_cancel == UntitledCancel::Stop => return None,
+            None => all = false,
         }
     }
-    all
+    all.then_some(saved)
 }
 
 /// A save participant: the edits it makes to `text`.

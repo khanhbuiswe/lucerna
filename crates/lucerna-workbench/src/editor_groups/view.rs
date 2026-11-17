@@ -229,9 +229,8 @@ impl EditorGroupsView {
             match SaveChoice::of(answer.await) {
                 SaveChoice::Save => {
                     // An edit typed while the save wrote is not saved: the
-                    // tab stays, still dirty.
-                    // An Untitled document saved with Save As is no longer
-                    // at `path`, so it reads as clean there.
+                    // tab stays, still dirty. Checked where the document is
+                    // now, which Save As moved an Untitled one to.
                     let saved = save::save_each(
                         workbench,
                         documents.clone(),
@@ -240,7 +239,9 @@ impl EditorGroupsView {
                         cx,
                     )
                     .await
-                        && !documents.read_with(cx, |d, _| d.is_dirty(&path));
+                    .is_some_and(|now| {
+                        documents.read_with(cx, |d, _| !now.iter().any(|p| d.is_dirty(p)))
+                    });
                     if saved {
                         view.update(cx, |view, cx| view.update_model(cx, |m| m.close(id)))
                             .ok();
@@ -300,7 +301,8 @@ impl EditorGroupsView {
             match SaveChoice::of(answer.await) {
                 SaveChoice::Save => {
                     // An edit typed while the saves wrote is not saved: every
-                    // tab stays.
+                    // tab stays. Checked where the documents are now, which
+                    // Save As moved Untitled ones to.
                     let saved = save::save_each(
                         workbench,
                         documents.clone(),
@@ -309,7 +311,9 @@ impl EditorGroupsView {
                         cx,
                     )
                     .await
-                        && documents.read_with(cx, |d, _| !dirty.iter().any(|p| d.is_dirty(p)));
+                    .is_some_and(|now| {
+                        documents.read_with(cx, |d, _| !now.iter().any(|p| d.is_dirty(p)))
+                    });
                     if saved {
                         view.update(cx, |view, cx| close_all(view, cx)).ok();
                     }

@@ -824,3 +824,82 @@ fn save_all_asks_for_each_untitled(cx: &mut TestAppContext) {
     assert_eq!(snapshot_text(&docs, two, cx), "two\n");
     no_untitled_on_disk(&dir);
 }
+
+/// The code view of the active tab.
+fn active_view(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<CodeView> {
+    cx.update(|_, cx| {
+        let body = wb.read(cx).editor_groups().read(cx).active_body().unwrap();
+        body.downcast::<CodeView>().expect("a code view")
+    })
+}
+
+/// Closes the Untitled tab holding "x" with `command`, answers Save and
+/// picks `file`, then types "y" while the write is held: the tab must stay
+/// open on `file`, unsaved, with the "y".
+fn edit_during_close_save(command: &str, cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    let docs = documents(&wb, cx);
+    let key: Arc<Path> = Arc::from(Path::new("untitled:Untitled-1"));
+    let file = dir.path().join("x.txt");
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    cx.simulate_input("x");
+    settle(cx);
+    let view = active_view(&wb, cx);
+
+    run(&wb, command, cx);
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    let hold = cx.update(|_, cx| lucerna_workbench::hold_saves_for_test(cx));
+    choose(Some(file.clone()), cx);
+    // The write waits; the document is still Untitled.
+    type_text(&docs, &view, &key, "y", cx);
+    drop(hold);
+    settle(cx);
+
+    assert_eq!(fs::read_to_string(&file).unwrap(), "x");
+    assert_eq!(
+        tab_paths(&wb, cx),
+        vec![vec![file.display().to_string()]],
+        "the tab stays"
+    );
+    assert!(is_dirty(&docs, &file, cx));
+    assert_eq!(snapshot_text(&docs, &file, cx), "xy");
+}
+
+#[gpui::test]
+fn edit_during_close_save_keeps_the_tab(cx: &mut TestAppContext) {
+    edit_during_close_save("workbench.action.closeActiveEditor", cx);
+}
+
+#[gpui::test]
+fn edit_during_close_all_save_keeps_the_tab(cx: &mut TestAppContext) {
+    edit_during_close_save("workbench.action.closeAllEditors", cx);
+}
+
+#[gpui::test]
+fn close_all_with_untitled(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    let docs = documents(&wb, cx);
+    // An empty Untitled closes without asking.
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    run(&wb, "workbench.action.closeAllEditors", cx);
+    assert!(!cx.has_pending_prompt());
+    assert!(tab_paths(&wb, cx).concat().is_empty());
+
+    // Save, then Cancel in the dialog: every tab stays.
+    untitled_tab_with(&["one"], cx);
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    run(&wb, "workbench.action.closeAllEditors", cx);
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    choose(None, cx);
+    assert!(!cx.did_prompt_for_new_path());
+    assert_eq!(tab_paths(&wb, cx).concat().len(), 2);
+    assert!(is_dirty(&docs, Path::new("untitled:Untitled-1"), cx));
+    no_untitled_on_disk(&dir);
+}

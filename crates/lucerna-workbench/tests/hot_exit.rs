@@ -1162,7 +1162,7 @@ fn group_tabs(wb: &Entity<Workbench>, group: usize, cx: &mut VisualTestContext) 
 
 #[gpui::test]
 fn reopen_restores_untitled(cx: &mut TestAppContext) {
-    init(cx, None);
+    init(cx, Some(r#"{"files.defaultLanguage":"rust"}"#));
     let project = Project::new(None);
     let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
     drop(open_a(&wb, cx));
@@ -1193,7 +1193,48 @@ fn reopen_restores_untitled(cx: &mut TestAppContext) {
     );
     assert_eq!(text_of(&wb, &untitled, cx), "draft");
     assert!(is_dirty(&wb, &untitled, cx));
+    let docs = docs(&wb, cx);
+    assert_eq!(
+        docs.read_with(cx, |d, _| d.language_of(&untitled))
+            .as_deref(),
+        Some("rust")
+    );
     assert!(!project.root.path().join("untitled:Untitled-1").exists());
+}
+
+/// Cmd+Q with a backup that can't be written asks about the Untitled
+/// document only. An edit made while its Save As writes stops the quit:
+/// the saved file is unsaved again.
+#[gpui::test]
+fn quit_for_failed_backup_untitled_edited_during_save(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    // A file where the backups folder goes: no backup can be written.
+    fs::write(project.data.path().join("backups"), "").unwrap();
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    untitled_with("x", cx);
+    let untitled = Path::new("untitled:Untitled-1");
+    let view = active_view(&wb, cx);
+    quit_app(cx);
+    let (message, _) = cx.pending_prompt().expect("the Untitled is asked about");
+    assert!(message.contains("Untitled-1"), "{message}");
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    let hold = cx.update(|_, cx| hold_saves_for_test(cx));
+    let file = project.root.path().join("x.txt");
+    assert!(cx.did_prompt_for_new_path());
+    let chosen = file.clone();
+    cx.simulate_new_path_selection(move |_| Some(chosen));
+    settle(cx);
+    // The write waits; the document is still Untitled.
+    edit_range(&wb, &view, untitled, 1..1, "y", cx);
+    drop(hold);
+    settle(cx);
+
+    assert_eq!(fs::read_to_string(&file).unwrap(), "x");
+    assert_eq!(quits(cx), 0, "the edit made during the save stops the quit");
+    assert!(is_dirty(&wb, &file, cx));
+    assert_eq!(text_of(&wb, &file, cx), "xy");
 }
 
 #[gpui::test]

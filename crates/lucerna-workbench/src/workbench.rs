@@ -1325,6 +1325,19 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<bool> {
+        let saved = self.save_as_to(path, window, cx);
+        cx.spawn(async move |_, _| saved.await.is_some())
+    }
+
+    /// [`Workbench::save_as`], resolving to where the document is once
+    /// saved (the chosen file, or its own file when that was chosen), so
+    /// a caller can check that path for edits made while it wrote.
+    pub(crate) fn save_as_to(
+        &mut self,
+        path: Arc<Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Arc<Path>>> {
         let from = self.absolute_path(&path);
         let (folder, name) = save::save_dialog_start(self, &from, cx);
         let answer = cx.prompt_for_new_path(&folder, Some(&name));
@@ -1334,9 +1347,9 @@ impl Workbench {
                 Ok(Ok(Some(to))) => Arc::from(to),
                 Ok(Err(err)) => {
                     tracing::warn!(%err, "the save dialog failed");
-                    return false;
+                    return None;
                 }
-                _ => return false,
+                _ => return None,
             };
             if save::same_file(&from, &to) {
                 let opts = save::SaveOptions {
@@ -1344,28 +1357,27 @@ impl Workbench {
                     participants: true,
                     overwrite: false,
                 };
-                let Ok(save) = cx.update(|window, cx| {
-                    documents.update(cx, |d, cx| d.save(&from, opts, window, cx))
-                }) else {
-                    return false;
-                };
-                return matches!(save.await, Ok(true));
+                let save = cx
+                    .update(|window, cx| {
+                        documents.update(cx, |d, cx| d.save(&from, opts, window, cx))
+                    })
+                    .ok()?;
+                return matches!(save.await, Ok(true)).then_some(from);
             }
-            let Ok(write) = cx.update(|window, cx| {
-                documents.update(cx, |d, cx| d.write_as(&from, &to, window, cx))
-            }) else {
-                return false;
-            };
-            let Ok(saved) = write.await else {
-                return false;
-            };
+            let write = cx
+                .update(|window, cx| {
+                    documents.update(cx, |d, cx| d.write_as(&from, &to, window, cx))
+                })
+                .ok()?;
+            let saved = write.await.ok()?;
             wb.update(cx, |wb, cx| {
                 wb.close_file_tabs(&to, cx);
                 wb.paths_renamed(&from, &to, cx);
                 wb.documents
                     .update(cx, |d, cx| d.finish_save_as(&to, saved, cx));
             })
-            .is_ok()
+            .ok()?;
+            Some(to)
         })
     }
 
@@ -2082,7 +2094,9 @@ impl Workbench {
                     SaveChoice::Save => {
                         let paths = documents.read_with(cx, |d, _| dirty_now(d));
                         // An edit typed while the saves wrote is not saved:
-                        // stop rather than lose it.
+                        // stop rather than lose it. Also checked where the
+                        // documents are now: Save As moved Untitled ones
+                        // off the paths asked about.
                         save::save_each(
                             wb.clone(),
                             documents.clone(),
@@ -2091,7 +2105,11 @@ impl Workbench {
                             cx,
                         )
                         .await
-                            && documents.read_with(cx, |d, _| dirty_now(d).is_empty())
+                        .is_some_and(|now| {
+                            documents.read_with(cx, |d, _| {
+                                dirty_now(d).is_empty() && !now.iter().any(|p| d.is_dirty(p))
+                            })
+                        })
                     }
                     SaveChoice::DontSave => {
                         discard = true;
@@ -2149,7 +2167,7 @@ impl Workbench {
             // No Untitled document among them: `auto_save_paths` leaves
             // those to their backups.
             if !auto_saved.is_empty()
-                && !save::save_each(
+                && save::save_each(
                     wb.clone(),
                     documents,
                     auto_saved,
@@ -2157,6 +2175,7 @@ impl Workbench {
                     cx,
                 )
                 .await
+                .is_none()
             {
                 tracing::warn!("could not auto-save every file as the app quits");
             }
