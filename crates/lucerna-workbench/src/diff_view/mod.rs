@@ -331,7 +331,10 @@ impl DiffView {
             return;
         };
         workbench.update(cx, |wb, cx| match at {
-            Some(point) => wb.jump_to(path, point, OpenMode::Pinned, cx),
+            Some(point) => {
+                let path = wb.project_path(&path);
+                wb.jump_to(path, point, OpenMode::Pinned, cx)
+            }
             None => wb.open_path(path, OpenMode::Pinned, cx),
         });
     }
@@ -603,7 +606,12 @@ impl DiffView {
         else {
             return;
         };
-        workbench.update(cx, |wb, cx| wb.jump_to(path, point, mode, cx));
+        // The path is relative to the root: a real file named
+        // `untitled:…` is never an Untitled key.
+        workbench.update(cx, |wb, cx| {
+            let path = wb.project_path(&path);
+            wb.jump_to(path, point, mode, cx)
+        });
     }
 
     /// Folds every file, or unfolds them all when all are folded.

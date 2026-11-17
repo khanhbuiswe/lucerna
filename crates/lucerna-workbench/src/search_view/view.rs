@@ -731,6 +731,9 @@ impl SearchView {
         let view = workbench.update(cx, |wb, cx| {
             // `F4` walks the Search tab's results again.
             wb.set_references_used_last(false);
+            // A result's path is relative to the root: a real file named
+            // `untitled:…` is never an Untitled key.
+            let path = wb.project_path(&path);
             wb.jump_to(path, point, OpenMode::Preview, cx);
             wb.editor_groups()
                 .update(cx, |groups, cx| groups.ensure_active_body(window, cx))

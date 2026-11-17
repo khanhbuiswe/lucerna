@@ -154,7 +154,10 @@ impl Workbench {
             return;
         };
         match view.read(cx).file_to_open(cx) {
-            Some((path, Some(point))) => self.jump_to(path, point, OpenMode::Pinned, cx),
+            Some((path, Some(point))) => {
+                let path = self.project_path(&path);
+                self.jump_to(path, point, OpenMode::Pinned, cx)
+            }
             Some((path, None)) => self.open_path(path, OpenMode::Pinned, cx),
             None => {}
         }
