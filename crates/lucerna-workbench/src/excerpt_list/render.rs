@@ -50,7 +50,7 @@ impl ExcerptList {
         self.scale_factor = window.scale_factor();
         let settings = self.settings.read(cx).view(cx);
         let font_family = crate::fonts::editor_font_family(settings, None);
-        let font_size = px(editor_font_size(settings));
+        let font_size = px(editor_font_size(settings, cx));
         let text_system = window.text_system();
         let font_id = text_system.resolve_font(&font(font_family.clone()));
         let char_width = text_system
@@ -62,7 +62,7 @@ impl ExcerptList {
         RowStyle {
             font_family,
             font_size,
-            line_height: editor_line_height(self.scale_factor, settings),
+            line_height: editor_line_height(self.scale_factor, settings, cx),
             gutter: char_width * digits as f32 + px(4. * GRID),
             tab_size: settings
                 .get::<u32>("editor.tabSize", None)
@@ -539,12 +539,9 @@ impl Render for ExcerptList {
     }
 }
 
-/// The editor font size in pixels, from `editor.fontSize`.
-fn editor_font_size(settings: SettingsView<'_>) -> f32 {
-    settings
-        .get::<f32>("editor.fontSize", None)
-        .unwrap_or(14.)
-        .clamp(6., 40.)
+/// The editor font size in pixels: `editor.fontSize` with the font zoom.
+fn editor_font_size(settings: SettingsView<'_>, cx: &App) -> f32 {
+    crate::font_zoom::zoomed(crate::font_zoom::base_size(settings, None), cx)
 }
 
 /// One editor line, as `CodeView` computes it from `editor.lineHeight`
@@ -552,8 +549,12 @@ fn editor_font_size(settings: SettingsView<'_>) -> f32 {
 /// device pixels of `scale_factor`: layout snaps row heights to that grid,
 /// and scrolling to a row sums these heights, so they must match what the
 /// list measures.
-pub(super) fn editor_line_height(scale_factor: f32, settings: SettingsView<'_>) -> Pixels {
-    let size = editor_font_size(settings);
+pub(super) fn editor_line_height(
+    scale_factor: f32,
+    settings: SettingsView<'_>,
+    cx: &App,
+) -> Pixels {
+    let size = editor_font_size(settings, cx);
     let lh = settings
         .get::<f32>("editor.lineHeight", None)
         .unwrap_or(1.6);

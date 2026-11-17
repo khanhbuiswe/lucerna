@@ -510,7 +510,7 @@ impl ExcerptList {
             .take(room)
             .take_while(same)
             .count();
-        let lh = editor_line_height(self.scale_factor, self.settings.read(cx).view(cx));
+        let lh = editor_line_height(self.scale_factor, self.settings.read(cx).view(cx), cx);
         let top = self.list.logical_scroll_top();
         let scrolled: Pixels = old[..top.item_ix.min(old.len())]
             .iter()
@@ -564,7 +564,7 @@ impl ExcerptList {
     /// for a line. Row heights are known exactly, so this holds for rows
     /// the list has not measured yet.
     fn reveal_row(&mut self, ix: usize, cx: &App) {
-        let lh = editor_line_height(self.scale_factor, self.settings.read(cx).view(cx));
+        let lh = editor_line_height(self.scale_factor, self.settings.read(cx).view(cx), cx);
         let rows = self.results.rows();
         let Some(row) = rows.get(ix) else {
             return;

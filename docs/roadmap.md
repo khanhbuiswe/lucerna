@@ -12,7 +12,7 @@ Thiếu là người dùng mới không dùng được hoặc không cài đư�
 
 **Đang làm**, theo thứ tự (mỗi mục một spec riêng):
 
-- [ ] Zoom (⌘+ / ⌘− / ⌘0)
+- [x] Zoom (⌘+ / ⌘− / ⌘0)
 - [ ] File mới (⌘N) và Save As
 - [ ] Find & Replace trong file (⌥⌘F)
 - [ ] Replace trong project (Search)

@@ -45,19 +45,20 @@ impl TerminalFont {
 }
 
 /// The terminal font (spec §7.3): an empty `fontFamily` is
-/// `editor.fontFamily`, an unset `fontSize` is `editor.fontSize`,
-/// `lineHeight` defaults to 1.2, `letterSpacing` to 0, the weights to
-/// normal and bold.
-pub fn terminal_font(settings: SettingsView<'_>) -> TerminalFont {
+/// `editor.fontFamily`, an unset `fontSize` is `editor.fontSize` with the
+/// font zoom ([`crate::font_zoom`]), `lineHeight` defaults to 1.2,
+/// `letterSpacing` to 0, the weights to normal and bold.
+pub fn terminal_font(settings: SettingsView<'_>, cx: &App) -> TerminalFont {
     let family = settings
         .get::<String>("terminal.integrated.fontFamily", None)
         .filter(|f| !f.trim().is_empty())
         .map(SharedString::from)
         .unwrap_or_else(|| editor_font_family(settings, None));
     let positive = |key: &str| settings.get::<f32>(key, None).filter(|v| *v > 0.);
-    let size = positive("terminal.integrated.fontSize")
-        .or_else(|| positive("editor.fontSize"))
-        .unwrap_or(FALLBACK_FONT_SIZE);
+    let size = positive("terminal.integrated.fontSize").unwrap_or_else(|| {
+        let base = positive("editor.fontSize").unwrap_or(FALLBACK_FONT_SIZE);
+        crate::font_zoom::zoomed(base, cx)
+    });
     let line_height = positive("terminal.integrated.lineHeight")
         .unwrap_or(DEFAULT_LINE_HEIGHT)
         .max(1.);

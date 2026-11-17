@@ -261,29 +261,137 @@ fn minimap_is_off_by_default(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn zoom_clamps(cx: &mut TestAppContext) {
-    init(cx, None);
-    let (view, cx) = code_view("text\n", cx);
-    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 14.);
-    view.update(cx, |v, cx| v.zoom(100., cx));
-    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 40.);
-    view.update(cx, |v, cx| v.zoom(-100., cx));
-    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 6.);
-    view.update(cx, |v, cx| v.zoom(1., cx));
-    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 7.);
+fn zoom_resets_when_user_size_changes(cx: &mut TestAppContext) {
+    use lucerna_workbench::font_zoom;
+    init(cx, Some(r#"{ "editor.fontSize": 14 }"#));
+    cx.update(|cx| {
+        assert_eq!(font_zoom::step(14., 1., cx), Some(15.));
+        assert_eq!(font_zoom::zoomed(14., cx), 15.);
+        cx.global_mut::<AppState>()
+            .settings
+            .set_layer(Layer::User, r#"{ "editor.fontSize": 20 }"#)
+            .unwrap();
+        assert_eq!(font_zoom::zoomed(20., cx), 20.);
+        assert_eq!(font_zoom::reset(20., cx), None);
+    });
 }
 
 #[gpui::test]
-fn zoom_and_wrap_commands(cx: &mut TestAppContext) {
-    init(cx, Some(r#"{ "editor.fontSize": 39 }"#));
+fn zoom_applies_to_every_view(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (wb, cx) = workbench(cx);
+    let a = open(&wb, "a.txt", "text\n", cx);
+    run(&wb, "editor.action.fontZoomIn", cx);
+    run(&wb, "editor.action.fontZoomIn", cx);
+    draw(cx);
+    assert_eq!(a.read_with(cx, |v, _| v.font_size()), 16.);
+    let b = open(&wb, "b.txt", "text\n", cx);
+    assert_eq!(b.read_with(cx, |v, _| v.font_size()), 16.);
+    run(&wb, "editor.action.fontZoomReset", cx);
+    draw(cx);
+    assert_eq!(a.read_with(cx, |v, _| v.font_size()), 14.);
+    assert_eq!(b.read_with(cx, |v, _| v.font_size()), 14.);
+}
+
+#[gpui::test]
+fn zoom_keys_and_limits(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{ "editor.fontSize": 99 }"#));
+    let (wb, cx) = workbench(cx);
+    let view = open(&wb, "a.txt", "text\n", cx);
+    cx.simulate_keystrokes("cmd-= cmd-shift-=");
+    draw(cx);
+    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 100.);
+    cx.simulate_keystrokes("cmd--");
+    draw(cx);
+    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 99.);
+    cx.simulate_keystrokes("cmd-= cmd-0");
+    draw(cx);
+    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 99.);
+}
+
+#[gpui::test]
+fn zoom_shows_font_size(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (wb, cx) = workbench(cx);
+    open(&wb, "a.txt", "text\n", cx);
+    run(&wb, "editor.action.fontZoomIn", cx);
+    let shown = cx.update(|window, cx| {
+        lucerna_workbench::status_message::current(window.window_handle().window_id(), cx)
+            .map(|m| m.to_string())
+    });
+    assert_eq!(shown.as_deref(), Some("Font Size: 15"));
+}
+
+#[gpui::test]
+fn zoom_keeps_top_row(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (wb, cx) = workbench(cx);
+    let text = "line\n".repeat(500);
+    let view = open(&wb, "a.txt", &text, cx);
+    view.update(cx, |v, cx| v.set_scroll_top_row(200, cx));
+    draw(cx);
+    run(&wb, "editor.action.fontZoomIn", cx);
+    draw(cx);
+    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 15.);
+    assert_eq!(view.read_with(cx, |v, _| v.scroll_top_row()), 200);
+}
+
+#[gpui::test]
+fn user_font_size_change_resets_zoom(cx: &mut TestAppContext) {
+    init(cx, None);
     let (wb, cx) = workbench(cx);
     let view = open(&wb, "a.txt", "text\n", cx);
     run(&wb, "editor.action.fontZoomIn", cx);
-    run(&wb, "editor.action.fontZoomIn", cx);
-    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 40.);
-    run(&wb, "editor.action.fontZoomOut", cx);
-    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 39.);
+    cx.update(|_, cx| {
+        cx.global_mut::<AppState>()
+            .settings
+            .set_layer(Layer::User, r#"{ "editor.fontSize": 20 }"#)
+            .unwrap();
+        cx.refresh_windows();
+    });
+    let settings = cx.update(|_, cx| wb.read(cx).settings().clone());
+    settings.update(cx, |_, cx| cx.notify());
+    draw(cx);
+    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 20.);
 
+    // Back to the old value: the old zoom stays gone.
+    cx.update(|_, cx| {
+        cx.global_mut::<AppState>()
+            .settings
+            .set_layer(Layer::User, "{}")
+            .unwrap();
+    });
+    settings.update(cx, |_, cx| cx.notify());
+    draw(cx);
+    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 14.);
+}
+
+#[gpui::test]
+fn zoom_steps_from_the_language_size(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{ "editor.fontSize": 14, "[markdown]": { "editor.fontSize": 99 } }"#),
+    );
+    let (wb, cx) = workbench(cx);
+    let view = open(&wb, "a.md", "# a\n", cx);
+    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 99.);
+    run(&wb, "editor.action.fontZoomIn", cx);
+    let shown = cx.update(|window, cx| {
+        lucerna_workbench::status_message::current(window.window_handle().window_id(), cx)
+            .map(|m| m.to_string())
+    });
+    assert_eq!(shown.as_deref(), Some("Font Size: 100"));
+    run(&wb, "editor.action.fontZoomIn", cx);
+    run(&wb, "editor.action.fontZoomOut", cx);
+    draw(cx);
+    assert_eq!(view.read_with(cx, |v, _| v.font_size()), 99.);
+}
+
+#[gpui::test]
+fn wrap_command(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (wb, cx) = workbench(cx);
+    let view = open(&wb, "a.txt", "text\n", cx);
     assert!(!view.read_with(cx, |v, _| v.word_wrap()));
     cx.simulate_keystrokes("alt-z");
     assert!(view.read_with(cx, |v, _| v.word_wrap()));
