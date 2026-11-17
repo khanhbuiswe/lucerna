@@ -671,6 +671,35 @@ impl Vim {
         *self = Vim::new(cursor);
     }
 
+    /// Insert mode at `cursor` from outside vim (a multi-cursor command
+    /// made the selections), with nothing pending, no count and the goal
+    /// forgotten. The typing is recorded for `.` and for the macro being
+    /// recorded as after an `i` (the command itself is not).
+    pub fn enter_insert_here(&mut self, cursor: Point, g: &mut VimGlobals) {
+        // From Visual mode or a half-typed command the replayed `i` would
+        // not start Insert mode: leave that first.
+        if self.mode != Mode::Normal || !self.pending.is_empty() {
+            g.record_text("<Esc>");
+        }
+        g.record_text("i");
+        self.mode = Mode::Insert;
+        self.cursor = cursor;
+        self.anchor = cursor;
+        self.goal = None;
+        self.pending.clear();
+        self.count = None;
+        self.prefix = None;
+        self.search_count = None;
+        self.register = None;
+        self.op = None;
+        self.insert_count = None;
+        self.insert_lines = false;
+        self.cmd_keys.clear();
+        self.replay_typed = None;
+        self.recording = None;
+        self.break_insert_record();
+    }
+
     /// Keeps the cursor and anchor on a char of `snapshot`, e.g. after a
     /// reload.
     pub fn clamp(&mut self, snapshot: &BufferSnapshot) {
@@ -2399,6 +2428,68 @@ mod tests {
             vec![Outcome::Handled(vec![])]
         );
         assert_eq!(vim.cursor(), Point { row: 0, column: 1 });
+    }
+
+    #[test]
+    fn enter_insert_here_records_escape_outside_normal() {
+        let at = Point { row: 0, column: 1 };
+        let view = TestView::new("a|bc def");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "v");
+        let mut globals = crate::VimGlobals {
+            record: Some(('a', String::new())),
+            ..Default::default()
+        };
+        vim.enter_insert_here(at, &mut globals);
+        assert_eq!(globals.record, Some(('a', "<Esc>i".to_string())));
+        // Pending keys in Normal mode count too.
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "3d");
+        let mut globals = crate::VimGlobals {
+            record: Some(('a', String::new())),
+            ..Default::default()
+        };
+        vim.enter_insert_here(at, &mut globals);
+        assert_eq!(globals.record, Some(('a', "<Esc>i".to_string())));
+        // Normal with nothing pending: just `i`.
+        let mut vim = Vim::new(view.cursor);
+        let mut globals = crate::VimGlobals {
+            record: Some(('a', String::new())),
+            ..Default::default()
+        };
+        vim.enter_insert_here(at, &mut globals);
+        assert_eq!(globals.record, Some(('a', "i".to_string())));
+    }
+
+    #[test]
+    fn enter_insert_here_drops_pending_and_count() {
+        let view = TestView::new("a|bc def");
+        let mut vim = Vim::new(view.cursor);
+        feed_keys(&mut vim, &view, "3d");
+        assert_eq!(vim.pending(), "3d");
+        let at = Point { row: 0, column: 4 };
+        let mut globals = crate::VimGlobals {
+            record: Some(('a', String::new())),
+            ..Default::default()
+        };
+        vim.enter_insert_here(at, &mut globals);
+        assert_eq!(globals.record, Some(('a', "<Esc>i".to_string())));
+        assert_eq!(vim.mode(), Mode::Insert);
+        assert_eq!(vim.pending(), "");
+        assert_eq!(vim.cursor(), at);
+        assert_eq!(vim.anchor, at);
+        assert_eq!(vim.goal, None);
+        assert!(!vim.insert_lines);
+        assert_eq!(vim.insert_count, None);
+        // Escape repeats nothing (no count) and steps back one char.
+        assert_eq!(
+            feed_keys(&mut vim, &view, "<Esc>"),
+            vec![Outcome::Handled(vec![
+                Action::ModeChanged(Mode::Normal),
+                Action::CursorMoved { jump: false }
+            ])]
+        );
+        assert_eq!(vim.cursor(), Point { row: 0, column: 3 });
     }
 
     #[test]

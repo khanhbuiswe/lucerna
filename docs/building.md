@@ -72,7 +72,7 @@ Pre-release, heading for a first public build (0.1). Lucerna reads, edits and sa
 code; follows an agent's writes and merges them into unsaved text (a conflict bar with Reload /
 Keep Mine when they overlap); shows git changes in the tree, the gutter and diff tabs; has an
 integrated terminal, a Markdown preview, an Explorer context menu and optional Vim keys.
-Not done yet: multi-cursor, completion, rename and format (Phase 4.3, 4.5, 4.6), Vim macros and
+Not done yet: completion, rename and format (Phase 4.5, 4.6), Vim macros and
 `:` commands, a settings UI. Known limits: quitting from the Dock or at logout cannot show the
 save prompt (a GPUI limitation at the pinned revision), there is no hot exit, and builds are not
 notarized yet. It runs on **macOS** today. **Linux and Windows** are planned, and GPUI already
@@ -86,7 +86,7 @@ supports both. See [Roadmap](#roadmap) below.
 | 2 | Zed extensions: themes, icon themes, languages | ✅ Done |
 | 3 | Code intelligence over LSP: go to definition, references, hover, diagnostics, outline | ✅ Done |
 | 3b | WASM host for Zed extensions: language servers shipped inside `extension.wasm`. PHP, Ruby, Elixir, Vue and others already work through the language server table when their server is installed | Planned |
-| 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | 4.1 (editing core), 4.2 (smart typing) and 4.4 (agent conflicts) done; 4.3 (multi-cursor), 4.5 (completion, snippets) and 4.6 (rename, format) planned |
+| 4 | Editing: typing, saving, undo, multi-cursor, handling conflicts with agent writes | 4.1 (editing core), 4.2 (smart typing), 4.3 (multi-cursor) and 4.4 (agent conflicts) done; 4.5 (completion, snippets) and 4.6 (rename, format) planned |
 | 5 | Git status, gutter and diff tabs; integrated terminal; Markdown preview; Explorer context menu; settings UI | Done except the settings UI |
 | V1 | Vim navigation: motions, search, scroll, marks, visual copy | ✅ Done |
 | V2 | Vim editing | V2a (operators, text objects, registers, `.`) done; V2b (macros, `:` commands) planned |

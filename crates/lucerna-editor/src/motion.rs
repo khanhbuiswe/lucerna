@@ -39,6 +39,16 @@ pub trait Layout {
     /// start when already there.
     fn home(&self, snapshot: &BufferSnapshot, offset: usize) -> usize;
     fn end(&self, snapshot: &BufferSnapshot, offset: usize) -> usize;
+    /// Whether `offset` is on the first (`up`) or last display line, so a
+    /// vertical move cannot leave it. The default counts buffer rows.
+    fn at_edge(&self, snapshot: &BufferSnapshot, offset: usize, up: bool) -> bool {
+        let row = snapshot.offset_to_point(offset).row;
+        if up {
+            row == 0
+        } else {
+            row == last_row(snapshot)
+        }
+    }
 }
 
 /// A layout without wrapping.
@@ -218,7 +228,7 @@ pub fn move_selections(
             }
         })
         .collect();
-    SelectionSet::from_selections(selections, set.primary().id, true)
+    set.rebuild(selections, set.primary().id)
 }
 
 #[cfg(test)]

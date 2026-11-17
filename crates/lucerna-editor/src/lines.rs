@@ -78,7 +78,7 @@ fn shifted(s: &Selection, delta: isize) -> Selection {
 fn finish(set: &SelectionSet, edits: Edits, sels: Vec<Selection>) -> EditPlan {
     EditPlan {
         edits,
-        selections: SelectionSet::from_selections(sels, set.primary().id, true),
+        selections: set.rebuild(sels, set.primary().id),
         kind: EditKind::Other,
         stop_before: true,
         stop_after: true,
@@ -258,7 +258,7 @@ pub fn insert_line(ctx: Ctx, set: &SelectionSet, after: bool) -> EditPlan {
             }
         })
         .collect();
-    build(items, set.primary().id, EditKind::Other, true, true)
+    build(items, set, EditKind::Other, true, true)
 }
 
 /// The 4.1 line-mode shift (indent-stop snapping), also on empty selections.
@@ -334,7 +334,7 @@ pub fn join_lines(ctx: Ctx, set: &SelectionSet) -> EditPlan {
     if items.is_empty() {
         return finish(set, Vec::new(), set.all().to_vec());
     }
-    let mut plan = build(items, set.primary().id, EditKind::Other, true, true);
+    let mut plan = build(items, set, EditKind::Other, true, true);
     if !skipped.is_empty() {
         let patch = mk_patch(&plan.edits);
         let mut sels = plan.selections.all().to_vec();
@@ -349,7 +349,7 @@ pub fn join_lines(ctx: Ctx, set: &SelectionSet) -> EditPlan {
             goal: Goal::None,
             ..*s
         }));
-        plan.selections = SelectionSet::from_selections(sels, primary, true);
+        plan.selections = set.rebuild(sels, primary);
     }
     plan
 }

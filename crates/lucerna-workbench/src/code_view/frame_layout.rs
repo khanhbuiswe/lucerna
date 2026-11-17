@@ -185,6 +185,19 @@ impl Layout for FrameLayout<'_> {
     fn end(&self, snapshot: &BufferSnapshot, offset: usize) -> usize {
         self.plain().end(snapshot, offset)
     }
+
+    /// The first or last display line of the document, wraps and closed
+    /// folds counted as `vertical` counts them.
+    fn at_edge(&self, snapshot: &BufferSnapshot, offset: usize, up: bool) -> bool {
+        let p = snapshot.offset_to_point(offset);
+        let pieces = self.pieces(snapshot, p.row);
+        let index = piece_index(&pieces, p.column as usize);
+        if up {
+            index == 0 && p.row == 0
+        } else {
+            index + 1 >= pieces.len() && self.folds.next_visible(p.row + 1) >= snapshot.line_count()
+        }
+    }
 }
 
 #[cfg(test)]

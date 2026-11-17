@@ -343,6 +343,25 @@ mod tests {
             ),
             (event("left", None, ctrl_shift_cmd()), "ctrl+shift+cmd+left"),
         ]);
+        // Multiple cursors.
+        rows.extend([
+            (event("l", None, cmd_shift()), "shift+cmd+l"),
+            (event("f2", None, cmd()), "cmd+f2"),
+            (event("up", None, alt_cmd()), "alt+cmd+up"),
+            (event("down", None, alt_cmd()), "alt+cmd+down"),
+            (event("i", Some("ˆ"), alt_shift()), "shift+alt+i"),
+        ]);
+        for key in ["left", "right", "up", "down", "pageup", "pagedown"] {
+            let binding: &'static str = match key {
+                "left" => "shift+alt+cmd+left",
+                "right" => "shift+alt+cmd+right",
+                "up" => "shift+alt+cmd+up",
+                "down" => "shift+alt+cmd+down",
+                "pageup" => "shift+alt+cmd+pageup",
+                _ => "shift+alt+cmd+pagedown",
+            };
+            rows.push((event(key, None, alt_shift_cmd()), binding));
+        }
         for (digit, binding) in [
             ("1", "cmd+1"),
             ("2", "cmd+2"),

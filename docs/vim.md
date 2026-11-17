@@ -58,7 +58,9 @@ and `vim.ignorecase` applies only to `*` and `#`. `:s` matches within a line. Wi
 goes to line 12, `:-1` to the last line, `:12,5` to line 12, column 5. Anything else is a Vim
 command line, so `:+2`, `:$` and `:.,.+2` are Vim's.
 
-Known deviations: Visual Block operators come after multi-cursor; an arrow key in Insert breaks
+With Vim on, multi-cursor commands (Cmd+D, Opt+click…) enter Insert mode with all cursors, and Escape collapses them to one. `Ctrl-v` uses real selections, one per line.
+
+Known deviations: Visual Block operators are a later step; `.` after a multi-cursor Insert replays at one cursor; an arrow key in Insert breaks
 the `.` record and is not recorded in a macro (one undo step is kept); a macro records
 `Completion` only approximately (when Phase 4.5 lands).
 

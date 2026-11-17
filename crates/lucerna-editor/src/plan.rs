@@ -56,6 +56,7 @@ pub struct EditConfig {
     pub trim_auto_whitespace: bool,
     pub word_separators: Arc<str>,
     pub empty_selection_clipboard: bool,
+    pub multi_cursor_paste: MultiCursorPaste,
 }
 
 #[derive(Clone, Copy)]
@@ -125,6 +126,14 @@ setting_enum! {
         Quotes = "quotes",
         Brackets = "brackets",
         Never = "never",
+    }
+}
+
+setting_enum! {
+    /// `editor.multiCursorPaste`.
+    MultiCursorPaste {
+        Spread = "spread",
+        Full = "full",
     }
 }
 

@@ -77,7 +77,10 @@ example "Open in → Default app" in Claude Desktop.
   renders without freezing. Binary files and files in other encodings (UTF-16, Latin-1, …) are detected.
 - **Editing.** Typing (with IME), cursor movement, delete and word delete, Enter that keeps the
   indent, Tab and outdent, cut, copy and paste (a whole line when nothing is selected), and
-  undo and redo grouped like VS Code, plus cursor undo. Save, Save All, Save Without Formatting
+  undo and redo grouped like VS Code, plus cursor undo. Multi-cursor like VS Code: Cmd+D and
+  Cmd+K Cmd+D, Shift+Cmd+L, Opt+Cmd+Up/Down, Shift+Opt+I, column select (Shift+Opt+Cmd+arrows or
+  Shift+Opt+drag), Opt+click and Opt+drag, paste that spreads one line per cursor, and a status bar count
+  (`editor.multiCursor*` settings). Find's whole-word option follows `editor.wordSeparators`, so `$foo` and `foo-bar` match as words. Save, Save All, Save Without Formatting
   and Revert; `files.trimTrailingWhitespace`, `files.insertFinalNewline`, `files.trimFinalNewlines`,
   `files.eol` and `files.autoSave`. Writes are atomic and keep the file's encoding, BOM and line
   ending. Tabs show a dirty dot, and a conflict dot when the file changed on disk. Saving over

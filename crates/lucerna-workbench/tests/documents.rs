@@ -462,6 +462,47 @@ fn status_shows_cursor_encoding_eol_and_language(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn status_counts_selections(cx: &mut TestAppContext) {
+    use lucerna_editor::{Selection, SelectionSet};
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("s.txt"), "chào ab cde\n").unwrap();
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = open(&wb, "s.txt", cx);
+    settle(cx);
+    let docs = documents(&wb, cx);
+    let cursor = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| docs.read(cx).status(view.read(cx)))
+            .unwrap()
+            .cursor
+    };
+    let sel = |id: u64, a: usize, h: usize| Selection {
+        id,
+        anchor: a,
+        head: h,
+        goal: Default::default(),
+    };
+    let set = |v: Vec<Selection>, cx: &mut VisualTestContext| {
+        let set = SelectionSet::from_selections(v, 1, true);
+        view.update(cx, |v, cx| v.set_selections(set, false, cx));
+    };
+    assert_eq!(cursor(cx), "Ln 1, Col 1");
+    // `chào` is five bytes, four chars.
+    set(vec![sel(1, 0, 5)], cx);
+    assert_eq!(cursor(cx), "Ln 1, Col 5 (4 selected)");
+    set(vec![sel(1, 0, 0), sel(2, 6, 6)], cx);
+    assert_eq!(cursor(cx), "2 selections");
+    set(vec![sel(1, 6, 8), sel(2, 9, 12)], cx);
+    assert_eq!(cursor(cx), "2 selections (5 characters selected)");
+    // No change: the cached count answers the same.
+    assert_eq!(cursor(cx), "2 selections (5 characters selected)");
+    // Typing replaces both selections and leaves two empty cursors: the
+    // count must follow the edit, not the cache.
+    view.update(cx, |v, cx| assert!(v.type_text("x", cx)));
+    assert_eq!(cursor(cx), "2 selections");
+}
+
+#[gpui::test]
 fn open_path_at_jumps_once_loaded(cx: &mut TestAppContext) {
     init(cx);
     let dir = TempDir::new().unwrap();

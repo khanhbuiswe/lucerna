@@ -1,6 +1,6 @@
 # Phase 4.3: Multi-cursor
 
-Ngày 2026-11-17. Trạng thái: thiết kế, chờ duyệt. Đã qua builder check.
+Ngày 2026-11-17. Trạng thái: đã triển khai.
 
 Spec cha: [2026-11-11-lucerna-phase4-editing-design.md](2026-11-11-lucerna-phase4-editing-design.md) §8, §14, §17. Nghiên cứu VS Code / Zed: [docs/research/2026-11-11-editing.md](../../research/2026-11-11-editing.md) §3. Spec này chốt phạm vi và cách làm của bước 4.3; chỗ nào khác spec cha thì spec này thắng.
 

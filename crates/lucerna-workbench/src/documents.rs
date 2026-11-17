@@ -604,6 +604,11 @@ impl Documents {
         self.window = Some(window);
     }
 
+    /// The window whose status bar shows the documents' messages.
+    pub(crate) fn window(&self) -> Option<WindowId> {
+        self.window
+    }
+
     pub fn new(root: PathBuf, settings: Entity<WindowSettings>) -> Self {
         Documents {
             root,
@@ -2034,8 +2039,15 @@ impl Documents {
         let cursor = view.cursor();
         // Runs every frame: never copy the line, which may be megabytes.
         let col = view.snapshot().char_column(cursor);
+        let (count, chars) = view.selection_summary();
+        let cursor = match (count, chars) {
+            (1, 0) => format!("Ln {}, Col {}", cursor.row + 1, col + 1),
+            (1, n) => format!("Ln {}, Col {} ({n} selected)", cursor.row + 1, col + 1),
+            (n, 0) => format!("{n} selections"),
+            (n, m) => format!("{n} selections ({m} characters selected)"),
+        };
         Some(DocumentStatus {
-            cursor: format!("Ln {}, Col {}", cursor.row + 1, col + 1),
+            cursor,
             encoding: doc.encoding,
             line_ending: match doc.line_ending {
                 LineEnding::Lf => "LF",

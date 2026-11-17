@@ -121,6 +121,7 @@ pub fn test_config() -> crate::plan::EditConfig {
         trim_auto_whitespace: true,
         word_separators: "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?".into(),
         empty_selection_clipboard: true,
+        multi_cursor_paste: crate::plan::MultiCursorPaste::Spread,
     }
 }
 

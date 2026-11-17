@@ -39,7 +39,21 @@ scripts/bench-gate.sh target/criterion 15        # needs jq; exit 1 if any bench
 | Highlight a viewport of a 10 MB file | `highlight_10mb_viewport` (60 rows, tree pre-parsed) | informational | 96 us |
 | Reload a 10 MB buffer | `reload_10mb` (tail changed) | informational | 51 ms |
 
-`site/index.html` quotes the four numbers above and the date they were measured. When you re-measure, update the Speed section of the landing page in the same PR.
+### Editing (Phase 4.3, multi-cursor)
+
+```sh
+cargo bench -p lucerna-editor --bench typing -- '1000_cursors$|select_all|add_match_far'
+```
+
+| Target | Bench | Limit | Measured |
+|---|---|---|---|
+| One char at 1,000 cursors | `typing/insert_char_1000_cursors` | <= 16 ms | 445 us (no earlier number was recorded) |
+| `Shift+Cmd+L` on 10,000 matches | `search/select_all_matches_10k` (5 MiB file, limit 10,000) | informational | 690 us |
+| `Cmd+D` when the only match is at the end of a 50 MiB file | `search/add_match_far` (`find_next`) | < 16 ms; if over, run the search in the background above `BACKGROUND_SEARCH_BYTES` | 2.78 ms |
+
+Apple Silicon dev machine, 2026-11-17, release build. `add_match_far` is well under its limit, so `Cmd+D` stays on the UI thread.
+
+`site/index.html` quotes the four numbers in the first table above and the date they were measured. When you re-measure, update the Speed section of the landing page in the same PR.
 
 The benches build the 10 MB text in memory; `big.rs` from the generator is
 for manual opening in `luc`.

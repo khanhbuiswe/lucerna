@@ -103,7 +103,7 @@ fn overtype(
             place: Place::At(ch.len()),
         })
         .collect();
-    Some(build(items, set.primary().id, kind, stop_before, false))
+    Some(build(items, set, kind, stop_before, false))
 }
 
 /// Typing a pair's opener with every selection non-empty wraps each in the
@@ -157,7 +157,7 @@ fn surround(ctx: Ctx, lang: &LanguageEditing, set: &SelectionSet, ch: &str) -> O
     }
     Some(EditPlan {
         edits,
-        selections: SelectionSet::from_selections(selections, set.primary().id, true),
+        selections: set.rebuild(selections, set.primary().id),
         kind: EditKind::Other,
         stop_before: true,
         stop_after: true,
@@ -263,7 +263,7 @@ fn auto_close(
         .collect();
     // VS Code pushes a stop before an auto-close (`shouldPushStackElementBefore:
     // true`), so undo after `foo(` removes only `()`.
-    let mut plan = build(items, set.primary().id, kind, true, false);
+    let mut plan = build(items, set, kind, true, false);
     plan.autoclose = plan
         .selections
         .all()

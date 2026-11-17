@@ -9,8 +9,8 @@ use std::ops::Range;
 use lucerna_text::BufferSnapshot;
 
 use crate::commands::{Item, Place, build, row_start};
-use crate::plan::{Ctx, EditPlan};
-use crate::selection::SelectionSet;
+use crate::plan::{Ctx, EditPlan, MultiCursorPaste};
+use crate::selection::{Selection, SelectionSet};
 use crate::undo_stops::EditKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -25,14 +25,17 @@ pub struct ClipboardText {
 /// `(selection id, range to copy, range to delete)`.
 type Source = (u64, Range<usize>, Range<usize>);
 
-/// One source per selection, one per distinct line for empty selections.
+/// One source per selection. Only when every selection is empty does an
+/// empty one take its whole line (one per distinct line); next to a
+/// non-empty selection it contributes an empty piece.
 fn sources(ctx: Ctx, set: &SelectionSet) -> (Vec<Source>, bool) {
     let snap = ctx.snapshot;
     let mut out = Vec::new();
     let mut last_row = None;
-    let mut whole = true;
+    let all_empty = set.all().iter().all(Selection::is_empty);
+    let mut whole = all_empty;
     for s in set.all() {
-        if !s.is_empty() {
+        if !all_empty {
             whole = false;
             out.push((s.id, s.range(), s.range()));
         } else if ctx.config.empty_selection_clipboard {
@@ -103,6 +106,7 @@ pub fn cut(ctx: Ctx, set: &SelectionSet) -> (EditPlan, ClipboardText) {
         if items.iter().any(|i| i.id == s.id) {
             continue;
         }
+        // Whole-line mode only applies when every selection was empty.
         let at = if ctx.config.empty_selection_clipboard {
             row_start(ctx.snapshot, ctx.snapshot.offset_to_point(s.head).row)
         } else {
@@ -115,22 +119,54 @@ pub fn cut(ctx: Ctx, set: &SelectionSet) -> (EditPlan, ClipboardText) {
             place: Place::End,
         });
     }
-    (
-        build(items, set.primary().id, EditKind::Other, true, true),
-        clip,
-    )
+    (build(items, set, EditKind::Other, true, true), clip)
+}
+
+/// One piece of text per selection, or `None` when each gets the whole text
+/// (`editor.multiCursorPaste`). Lines split only when there are as many as
+/// selections, ignoring one trailing line break.
+fn spread<'a>(
+    ctx: Ctx,
+    set: &SelectionSet,
+    clip: &'a ClipboardText,
+) -> Option<Vec<std::borrow::Cow<'a, str>>> {
+    use std::borrow::Cow;
+    let n = set.len();
+    if n < 2 {
+        return None;
+    }
+    // Pieces from a multi-cursor copy spread whatever the setting says;
+    // `full` only stops external text from being split by line.
+    if let Some(pieces) = &clip.pieces {
+        return (pieces.len() == n)
+            .then(|| pieces.iter().map(|p| Cow::Borrowed(p.as_str())).collect());
+    }
+    if clip.whole_line || ctx.config.multi_cursor_paste == MultiCursorPaste::Full {
+        return None;
+    }
+    let text = clip.text.replace("\r\n", "\n").replace('\r', "\n");
+    let text = text.strip_suffix('\n').unwrap_or(&text);
+    let lines: Vec<Cow<str>> = text
+        .split('\n')
+        .map(|l| Cow::Owned(l.to_string()))
+        .collect();
+    (lines.len() == n).then_some(lines)
 }
 
 pub fn paste(ctx: Ctx, set: &SelectionSet, clip: &ClipboardText) -> EditPlan {
     let snap = ctx.snapshot;
     let normalize = |t: &str| t.replace("\r\n", "\n").replace('\r', "\n");
-    let per_selection = clip.pieces.as_ref().filter(|p| p.len() == set.len());
+    let per_selection = spread(ctx, set, clip);
     let items = set
         .all()
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let text = normalize(per_selection.map_or(clip.text.as_str(), |p| p[i].as_str()));
+            let text = normalize(
+                per_selection
+                    .as_ref()
+                    .map_or(clip.text.as_str(), |p| &*p[i]),
+            );
             if clip.whole_line && s.is_empty() {
                 let at = row_start(snap, snap.offset_to_point(s.head).row);
                 Item {
@@ -149,7 +185,7 @@ pub fn paste(ctx: Ctx, set: &SelectionSet, clip: &ClipboardText) -> EditPlan {
             }
         })
         .collect();
-    build(items, set.primary().id, EditKind::Other, true, true)
+    build(items, set, EditKind::Other, true, true)
 }
 
 #[cfg(test)]
@@ -272,6 +308,197 @@ mod tests {
             whole_line: false,
         };
         assert_eq!(go("|", &mismatch), "1\n2|");
+    }
+
+    fn paste_with(src: &str, c: &ClipboardText, mode: MultiCursorPaste) -> String {
+        ctx_run(src, |cx, s, snap| {
+            let mut cfg = cx.config.clone();
+            cfg.multi_cursor_paste = mode;
+            render_plan(snap, &paste(Ctx { config: &cfg, ..cx }, s, c))
+        })
+    }
+
+    #[test]
+    fn copy_mixed_empty_gives_empty_piece() {
+        let c = ctx_run("«ab» c|d", |c, s, _| copy(c, s));
+        assert_eq!(c.pieces, Some(vec!["ab".into(), String::new()]));
+        assert!(!c.whole_line);
+    }
+
+    #[test]
+    fn copy_all_empty_whole_lines() {
+        let c = ctx_run(
+            "a|
+b|",
+            |c, s, _| copy(c, s),
+        );
+        assert_eq!(
+            c.pieces,
+            Some(vec![
+                "a
+"
+                .into(),
+                "b
+"
+                .into()
+            ])
+        );
+        assert!(c.whole_line);
+    }
+
+    #[test]
+    fn cut_mixed_empty_deletes_only_ranges() {
+        let out = ctx_run("«ab» c|d", |c, s, snap| {
+            let (p, _) = cut(c, s);
+            render_plan(snap, &p)
+        });
+        assert_eq!(out, "| c|d");
+    }
+
+    #[test]
+    fn paste_external_lines_spread() {
+        let out = paste_with(
+            "a|
+b|",
+            &clip(
+                "x
+y",
+            ),
+            MultiCursorPaste::Spread,
+        );
+        assert_eq!(
+            out,
+            "ax|
+by|"
+        );
+        let out = paste_with(
+            "a|
+b|",
+            &clip(
+                "x
+y
+",
+            ),
+            MultiCursorPaste::Spread,
+        );
+        assert_eq!(
+            out,
+            "ax|
+by|"
+        );
+    }
+
+    #[test]
+    fn paste_full() {
+        let two = ClipboardText {
+            text: "1
+2"
+            .into(),
+            pieces: Some(vec!["1".into(), "2".into()]),
+            whole_line: false,
+        };
+        let out = paste_with(
+            "a|
+b|",
+            &two,
+            MultiCursorPaste::Full,
+        );
+        assert_eq!(
+            out,
+            "a1|
+b2|"
+        );
+        // A piece count that does not match: the whole text everywhere.
+        let three = ClipboardText {
+            text: "1
+2
+3"
+            .into(),
+            pieces: Some(vec!["1".into(), "2".into(), "3".into()]),
+            whole_line: false,
+        };
+        let out = paste_with(
+            "a|
+b|",
+            &three,
+            MultiCursorPaste::Full,
+        );
+        assert_eq!(
+            out,
+            "a1
+2
+3|
+b1
+2
+3|"
+        );
+        // External text is not split by line under `full`.
+        let out = paste_with(
+            "a|
+b|",
+            &clip(
+                "x
+y",
+            ),
+            MultiCursorPaste::Full,
+        );
+        assert_eq!(
+            out,
+            "ax
+y|
+bx
+y|"
+        );
+        let out = paste_with(
+            "a|
+b|",
+            &clip(
+                "x
+y",
+            ),
+            MultiCursorPaste::Full,
+        );
+        assert_eq!(
+            out,
+            "ax
+y|
+bx
+y|"
+        );
+    }
+
+    #[test]
+    fn paste_lines_count_mismatch_full_text() {
+        let out = paste_with(
+            "a|
+b|",
+            &clip(
+                "x
+y
+z",
+            ),
+            MultiCursorPaste::Spread,
+        );
+        assert_eq!(
+            out,
+            "ax
+y
+z|
+bx
+y
+z|"
+        );
+    }
+
+    #[test]
+    fn paste_whole_line_clip_without_pieces_is_not_split() {
+        let whole = ClipboardText {
+            text: "a\nb\n".into(),
+            pieces: None,
+            whole_line: true,
+        };
+        let out = paste_with("x|\ny|", &whole, MultiCursorPaste::Spread);
+        assert_eq!(out, "a\nb\nx|\na\nb\ny|");
     }
 
     #[test]

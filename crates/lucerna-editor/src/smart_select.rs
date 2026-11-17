@@ -44,7 +44,7 @@ pub fn expand(
             }
         })
         .collect();
-    SelectionSet::from_selections(selections, set.primary().id, true)
+    set.rebuild(selections, set.primary().id)
 }
 
 fn next_range(
@@ -67,7 +67,7 @@ fn next_range(
 }
 
 /// The word touching `range.start` when `range` lies inside it.
-fn word_around(
+pub(crate) fn word_around(
     snapshot: &BufferSnapshot,
     range: &Range<usize>,
     separators: &str,

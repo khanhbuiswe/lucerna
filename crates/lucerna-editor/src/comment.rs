@@ -348,7 +348,7 @@ fn plan(
         .collect();
     EditPlan {
         edits,
-        selections: SelectionSet::from_selections(sels, set.primary().id, true),
+        selections: set.rebuild(sels, set.primary().id),
         kind: EditKind::Other,
         stop_before: true,
         stop_after: true,

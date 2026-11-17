@@ -60,11 +60,6 @@ pub(super) fn paint_frame(frame: &Frame, window: &mut Window, cx: &mut App) {
                 window.paint_quad(fill(bounds, colors.selection));
             }
         }
-        for range in &frame.block_selection {
-            for bounds in range_bounds(frame, range.clone()) {
-                window.paint_quad(fill(bounds, colors.selection));
-            }
-        }
         // Over the selection and under the text, so the glyph stays
         // readable.
         if let Some(bounds) = frame
