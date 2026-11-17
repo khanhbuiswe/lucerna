@@ -48,6 +48,10 @@ pub struct BackupHeader {
     pub bom: bool,
     #[serde(with = "line_ending_name")]
     pub line_ending: LineEnding,
+    /// The text holds U+FFFD for bytes that were not valid in `encoding`.
+    /// A backup written before this field existed reads as `false`.
+    #[serde(default)]
+    pub lossy: bool,
 }
 
 /// One document's unsaved text with its header.
@@ -266,6 +270,7 @@ mod tests {
                 encoding: "UTF-8".into(),
                 bom: false,
                 line_ending: LineEnding::Lf,
+                lossy: false,
             },
             text: text.into(),
         }
@@ -280,8 +285,23 @@ mod tests {
         b.header.line_ending = LineEnding::CrLf;
         b.header.bom = true;
         b.header.encoding = "UTF-16LE".into();
+        b.header.lossy = true;
         write_backup(&dir, &key, &b).unwrap();
         assert_eq!(read_backups(&dir), vec![b]);
+    }
+
+    #[test]
+    fn header_without_lossy_reads_as_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("abc"),
+            "{\"version\":1,\"path\":\"/a\",\"mtime\":null,\"size\":null,\"base_sha256\":null,\"encoding\":\"UTF-8\",\"bom\":false,\"line_ending\":\"lf\"}\nabc",
+        )
+        .unwrap();
+        let backups = read_backups(tmp.path());
+        assert_eq!(backups.len(), 1);
+        assert!(!backups[0].header.lossy);
+        assert!(!tmp.path().join("abc.bak").exists());
     }
 
     #[test]

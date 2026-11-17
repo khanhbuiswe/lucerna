@@ -583,6 +583,7 @@ mod tests {
                 encoding: "UTF-8".into(),
                 bom: false,
                 line_ending: lucerna_text::LineEnding::Lf,
+                lossy: false,
             },
             text: "edited".into(),
         };

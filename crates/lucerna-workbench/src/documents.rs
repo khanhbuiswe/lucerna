@@ -199,6 +199,8 @@ pub(crate) struct BackupSource {
     pub encoding: &'static str,
     pub bom: bool,
     pub line_ending: LineEnding,
+    /// The text holds U+FFFD for bytes that were not valid in `encoding`.
+    pub lossy: bool,
 }
 
 /// The `base_hash` of a document restored from a backup whose base is not
@@ -1089,6 +1091,7 @@ impl Documents {
             encoding: buffer.encoding().name(),
             bom: buffer.has_bom(),
             line_ending: buffer.line_ending(),
+            lossy: buffer.is_lossy(),
         })
     }
 
@@ -2951,7 +2954,8 @@ fn restore(path: &Path, backup: Backup) -> Restored {
         has_bom: header.bom,
         line_ending: header.line_ending,
         hash: RESTORED_UNKNOWN_BASE,
-        lossy: false,
+        // Consent is not kept: the first save after a restore asks again.
+        lossy: header.lossy,
     });
     buffer.clear_saved();
     match disk {

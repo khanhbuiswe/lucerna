@@ -20,8 +20,8 @@ use lucerna_workbench::hot_exit::store::{
     Backup, WorkspaceKey, backup_dir, read_backups, text_sha256,
 };
 use lucerna_workbench::{
-    AppState, OpenMode, SaveOptions, SaveReason, Workbench, app, app_menu, hold_saves_for_test,
-    save_temps,
+    AppState, DiskNotice, OpenMode, SaveOptions, SaveReason, Workbench, app, app_menu,
+    hold_saves_for_test, save_temps,
 };
 use tempfile::TempDir;
 
@@ -641,6 +641,62 @@ fn outside_root_file_restored(cx: &mut TestAppContext) {
     assert!(tab_paths(&wb, cx).contains(&b));
     assert!(is_dirty(&wb, &b, cx));
     assert_eq!(text_of(&wb, &b, cx), "pub fn b() {}\n");
+}
+
+// ---- Invalid bytes (spec §6.2) ----
+
+/// `a.rs` with a BOM and a byte that is not valid UTF-8.
+fn write_lossy_a(project: &Project) -> PathBuf {
+    let a = project.root.path().join("a.rs");
+    fs::write(&a, b"\xEF\xBB\xBFfn \xE9\n").unwrap();
+    a
+}
+
+#[gpui::test]
+fn lossy_flag_survives_restore_and_save_asks_again(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let a = write_lossy_a(&project);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open(&wb, &a, cx);
+    edit_range(&wb, &view, &a, 0..0, "x", cx);
+    drop(view);
+    quit(wb, cx);
+    assert!(project.backups()[0].header.lossy);
+    let (wb, cx) = reopen(&project, cx);
+    let docs = docs(&wb, cx);
+    assert_eq!(
+        docs.read_with(cx, |d, _| d.disk_notice(&a)),
+        Some(DiskNotice::Lossy { encoding: "UTF-8" })
+    );
+    run(&wb, "workbench.action.files.save", cx);
+    settle(cx);
+    let (title, _) = cx.pending_prompt().expect("the first save asks");
+    assert!(
+        title.starts_with("Save 'a.rs' and replace invalid bytes?"),
+        "{title}"
+    );
+}
+
+#[gpui::test]
+fn quit_with_auto_save_backs_up_a_lossy_file_without_asking(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"files.autoSave":"afterDelay","files.autoSaveDelay":60000}"#),
+    );
+    let project = Project::new(None);
+    let a = write_lossy_a(&project);
+    let before = fs::read(&a).unwrap();
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open(&wb, &a, cx);
+    edit_range(&wb, &view, &a, 0..0, "x", cx);
+    quit_app(cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(quits(cx), 1);
+    assert_eq!(fs::read(&a).unwrap(), before, "the file is not saved");
+    let backups = project.backups();
+    assert_eq!(backups.len(), 1);
+    assert!(backups[0].header.lossy);
 }
 
 // ---- Quit (spec §5.3) ----
