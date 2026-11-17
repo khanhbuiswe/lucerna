@@ -3315,7 +3315,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -3335,7 +3335,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-editor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion 0.5.1",
  "lucerna-syntax",
@@ -3346,7 +3346,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-extension"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "jsonc-parser",
@@ -3364,7 +3364,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-git"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "lucerna-text",
@@ -3376,7 +3376,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-lsp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "futures",
@@ -3396,7 +3396,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-project"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion 0.5.1",
  "crossbeam-channel",
@@ -3416,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-settings"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jsonc-parser",
  "serde",
@@ -3425,7 +3425,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-syntax"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion 0.5.1",
  "globset",
@@ -3451,7 +3451,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-terminal"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alacritty_terminal",
  "futures",
@@ -3463,7 +3463,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-text"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chardetng",
  "criterion 0.5.1",
@@ -3475,7 +3475,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-theme"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jsonc-parser",
  "serde",
@@ -3486,7 +3486,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-vim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lucerna-editor",
  "lucerna-text",
@@ -3496,7 +3496,7 @@ dependencies = [
 
 [[package]]
 name = "lucerna-workbench"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "encoding_rs",
