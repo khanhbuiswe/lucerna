@@ -41,6 +41,9 @@ pub struct SelectionSet {
     selections: Vec<Selection>,
     primary: u64,
     next_id: u64,
+    /// Whether `remap` and `rebuild` merge overlapping selections
+    /// (`editor.multiCursorMergeOverlapping`).
+    merge_overlapping: bool,
 }
 
 impl SelectionSet {
@@ -54,6 +57,7 @@ impl SelectionSet {
             }],
             primary: 0,
             next_id: 1,
+            merge_overlapping: true,
         }
     }
 
@@ -117,7 +121,34 @@ impl SelectionSet {
             selections,
             primary: primary_id,
             next_id,
+            merge_overlapping: true,
         }
+    }
+
+    /// Whether overlapping selections are merged when the set is rebuilt.
+    pub fn merge_overlapping(&self) -> bool {
+        self.merge_overlapping
+    }
+
+    pub fn set_merge_overlapping(&mut self, merge: bool) {
+        self.merge_overlapping = merge;
+    }
+
+    /// A set of `selections` that inherits this set's merge flag and id
+    /// counter, merged as the flag says.
+    pub fn rebuild(&self, selections: Vec<Selection>, primary: u64) -> Self {
+        let mut set = Self::from_selections(selections, primary, self.merge_overlapping);
+        set.merge_overlapping = self.merge_overlapping;
+        set.next_id = set.next_id.max(self.next_id);
+        set
+    }
+
+    /// The selection added last (the largest id).
+    pub fn newest(&self) -> &Selection {
+        self.selections
+            .iter()
+            .max_by_key(|s| s.id)
+            .expect("a selection set needs a selection")
     }
 
     pub fn all(&self) -> &[Selection] {
@@ -158,9 +189,7 @@ impl SelectionSet {
         }
         // Deletes can collapse or overlap selections: renormalise.
         let selections = std::mem::take(&mut self.selections);
-        let next_id = self.next_id;
-        *self = Self::from_selections(selections, self.primary, true);
-        self.next_id = self.next_id.max(next_id);
+        *self = self.rebuild(selections, self.primary);
     }
 
     pub fn clamp(&mut self, snapshot: &BufferSnapshot) {
@@ -311,6 +340,29 @@ mod tests {
         set.remap(&insert_at(0, 1));
         set.remap(&insert_at(3, 1));
         assert_eq!(set.primary().range(), 0..4);
+    }
+
+    #[test]
+    fn merge_flag_off_keeps_touching() {
+        let (_, mut set) = marked("a|bc*|d");
+        set.set_merge_overlapping(false);
+        assert!(!set.merge_overlapping());
+        set.remap(&Patch::new(vec![PatchEdit {
+            old: 1..3,
+            new: 1..1,
+        }]));
+        assert_eq!(set.len(), 2);
+        assert!(!set.merge_overlapping());
+    }
+
+    #[test]
+    fn newest_is_largest_id() {
+        let (_, mut set) = marked("|a|b");
+        let id = set.next_id();
+        let mut sels = set.all().to_vec();
+        sels[0].id = id;
+        let set = set.rebuild(sels, id);
+        assert_eq!(set.newest().id, id);
     }
 
     #[test]

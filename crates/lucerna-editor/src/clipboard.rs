@@ -115,10 +115,7 @@ pub fn cut(ctx: Ctx, set: &SelectionSet) -> (EditPlan, ClipboardText) {
             place: Place::End,
         });
     }
-    (
-        build(items, set.primary().id, EditKind::Other, true, true),
-        clip,
-    )
+    (build(items, set, EditKind::Other, true, true), clip)
 }
 
 pub fn paste(ctx: Ctx, set: &SelectionSet, clip: &ClipboardText) -> EditPlan {
@@ -149,7 +146,7 @@ pub fn paste(ctx: Ctx, set: &SelectionSet, clip: &ClipboardText) -> EditPlan {
             }
         })
         .collect();
-    build(items, set.primary().id, EditKind::Other, true, true)
+    build(items, set, EditKind::Other, true, true)
 }
 
 #[cfg(test)]

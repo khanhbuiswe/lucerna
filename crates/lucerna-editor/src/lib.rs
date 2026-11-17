@@ -6,6 +6,7 @@ pub mod commands;
 pub mod find;
 pub mod merge;
 mod motion;
+pub mod multicursor;
 mod plan;
 mod selection;
 #[cfg(any(test, feature = "test-util"))]

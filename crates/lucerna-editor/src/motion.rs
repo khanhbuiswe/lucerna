@@ -218,7 +218,7 @@ pub fn move_selections(
             }
         })
         .collect();
-    SelectionSet::from_selections(selections, set.primary().id, true)
+    set.rebuild(selections, set.primary().id)
 }
 
 #[cfg(test)]
