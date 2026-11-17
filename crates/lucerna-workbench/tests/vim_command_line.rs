@@ -431,6 +431,23 @@ fn wq_conflict_cancel_keeps_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn wq_conflict_reload_keeps_tab(cx: &mut TestAppContext) {
+    // Reload declines the write: the quit is aborted, as in Vim, though
+    // the reloaded text is clean.
+    let (dir, wb, view, cx) = vim_editor("abc\n", cx);
+    keys("x", cx);
+    change_on_disk(&wb, &dir, "disk\n", cx);
+    ex("wq", cx);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Reload");
+    draw(cx);
+    assert_eq!(tab_count(&wb, cx), 1);
+    assert_eq!(text_of(&view, cx), "disk\n");
+    assert!(!is_dirty(&wb, cx));
+    assert_eq!(disk(&dir), "disk\n");
+}
+
+#[gpui::test]
 fn substitute_reports_in_status_bar(cx: &mut TestAppContext) {
     let (_dir, wb, view, cx) = vim_editor("a a\na", cx);
     ex("%s/a/b/g", cx);

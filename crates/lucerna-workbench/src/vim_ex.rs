@@ -98,9 +98,10 @@ impl Workbench {
                     d.save(&path, save_options(overwrite), window, cx)
                 });
                 cx.spawn(async move |_, cx| {
-                    // A conflict answered with Cancel or Reload, a failed
-                    // write, or an edit typed meanwhile keeps the tab.
-                    let saved = save.await.is_ok() && !is_dirty(&documents, &path, cx);
+                    // Only a write closes the tab: a conflict answered with
+                    // Cancel or Reload (`Ok(false)`, clean after Reload),
+                    // a failed write, or an edit typed meanwhile keeps it.
+                    let saved = matches!(save.await, Ok(true)) && !is_dirty(&documents, &path, cx);
                     if saved {
                         cx.update(|cx| close_tab(&groups, id, cx));
                     }
