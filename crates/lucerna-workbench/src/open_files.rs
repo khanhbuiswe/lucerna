@@ -1,7 +1,9 @@
 //! Follows open files that the worktree does not: files outside the root
 //! (the user's `settings.json`, a file opened by absolute path) and
 //! ignored ones (`.env`, files under `target/`). One watcher follows the
-//! parent directory of each, non-recursively, and reports writes to those
+//! parent directory of each, non-recursively, or its nearest existing
+//! ancestor while the parent is removed (`dist/` during a clean build),
+//! moving back down after each batch. It reports writes to those
 //! files in batches debounced by [`OPEN_FILE_DEBOUNCE`]; the workbench
 //! hands them to its documents as it does worktree changes.
 //!
@@ -10,7 +12,7 @@
 //! watched too.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -87,8 +89,16 @@ impl WatchState {
         if files == self.files {
             return;
         }
+        self.files = files;
+        self.watch_dirs();
+    }
+
+    /// Watches the directories `self.files` need, and only those: each
+    /// file's parent, or its nearest existing ancestor once the parent is
+    /// removed. Returns the directories watched by this call.
+    fn watch_dirs(&mut self) -> Vec<PathBuf> {
         let mut wanted = BTreeSet::new();
-        for (file, real) in &files {
+        for (file, real) in &self.files {
             let Some(parent) = file.parent() else {
                 continue;
             };
@@ -100,26 +110,58 @@ impl WatchState {
                 wanted.insert(real_parent.to_path_buf());
             }
         }
-        wanted.retain(|dir| dir.is_dir());
+        let wanted: BTreeSet<PathBuf> = wanted
+            .iter()
+            .filter_map(|dir| nearest_existing_dir(dir))
+            .collect();
         for dir in &self.dirs {
             if !wanted.contains(dir) {
                 let _ = self.watcher.unwatch(dir);
             }
         }
         let mut dirs = Vec::new();
+        let mut added = Vec::new();
         for dir in wanted {
             if self.dirs.contains(&dir) {
                 dirs.push(dir);
                 continue;
             }
             match self.watcher.watch(&dir, RecursiveMode::NonRecursive) {
-                Ok(()) => dirs.push(dir),
+                Ok(()) => {
+                    added.push(dir.clone());
+                    dirs.push(dir);
+                }
                 Err(err) => tracing::warn!(path = %dir.display(), %err, "could not watch"),
             }
         }
         self.dirs = dirs;
-        self.files = files;
+        added
     }
+
+    /// Moves the watches to follow folders that were removed or came
+    /// back, and returns the files (as given) in a directory watched just
+    /// now: they may have been written before the watch got there.
+    fn rewatch(&mut self) -> Vec<PathBuf> {
+        let added = self.watch_dirs();
+        if added.is_empty() {
+            return Vec::new();
+        }
+        self.files
+            .iter()
+            .filter(|(file, real)| {
+                [file.parent(), real.parent()]
+                    .into_iter()
+                    .flatten()
+                    .any(|dir| added.iter().any(|a| a == dir))
+            })
+            .map(|(file, _)| file.clone())
+            .collect()
+    }
+}
+
+/// The first of `dir` and its ancestors that is a directory.
+fn nearest_existing_dir(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors().find(|d| d.is_dir()).map(Path::to_path_buf)
 }
 
 fn debounce_loop(
@@ -146,7 +188,13 @@ fn debounce_loop(
         let Some(state) = state.upgrade() else {
             return;
         };
-        let files = lock(&state).files.clone();
+        let (files, rewatched) = {
+            let mut state = lock(&state);
+            // Folders may have been removed or created: move the watches
+            // now rather than at the next `set_files`.
+            let rewatched = state.rewatch();
+            (state.files.clone(), rewatched)
+        };
         drop(state);
         let (given, reals): (Vec<PathBuf>, Vec<PathBuf>) = files.into_iter().unzip();
         let mut changed = Vec::new();
@@ -161,7 +209,7 @@ fn debounce_loop(
                 Err(_) => everything = true,
             }
         }
-        let batch = if everything {
+        let mut batch: Vec<PathBuf> = if everything {
             given
         } else {
             let changed: BTreeSet<PathBuf> = changed.iter().map(|p| real_path(p)).collect();
@@ -174,6 +222,11 @@ fn debounce_loop(
                 .map(|(file, _)| file)
                 .collect()
         };
+        for file in rewatched {
+            if !batch.contains(&file) {
+                batch.push(file);
+            }
+        }
         if !batch.is_empty() {
             on_batch(batch);
         }
@@ -215,5 +268,14 @@ mod tests {
             Vec::<PathBuf>::new()
         );
         assert_eq!(matching_files(&files, std::slice::from_ref(&a)), vec![a]);
+    }
+
+    #[test]
+    fn nearest_existing_dir_walks_up_past_missing_folders() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("dist/js");
+        assert_eq!(nearest_existing_dir(&missing), Some(dir.path().to_path_buf()));
+        std::fs::create_dir_all(&missing).unwrap();
+        assert_eq!(nearest_existing_dir(&missing), Some(missing));
     }
 }

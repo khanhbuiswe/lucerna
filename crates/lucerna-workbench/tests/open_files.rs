@@ -200,6 +200,78 @@ fn open_file_watcher_reports_writes_to_watched_files_only() {
     }
 }
 
+/// Waits up to 10 s for a batch that names `file`, as given or by its
+/// real path.
+fn wait_for(rx: &crossbeam_channel::Receiver<Vec<PathBuf>>, file: &Path) {
+    let real = file.canonicalize().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let batch: Vec<PathBuf> = rx.recv_timeout(left).expect("a batch arrives");
+        if batch.contains(&real) || batch.iter().any(|p| p == file) {
+            return;
+        }
+    }
+}
+
+/// An ignored file whose folder is removed (`dist/` by a clean build)
+/// still reloads once the folder and the file are written again, even
+/// after another tab opened and closed in between.
+#[test]
+fn open_file_watcher_follows_a_recreated_parent() {
+    let root = TempDir::new().unwrap();
+    let dist = root.path().join("dist");
+    let bundle = dist.join("bundle.js");
+    let env = root.path().join(".env");
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(&bundle, "1").unwrap();
+    std::fs::write(&env, "1").unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let watcher = OpenFileWatcher::start(move |batch| {
+        let _ = tx.send(batch);
+    })
+    .unwrap();
+    watcher.set_files(vec![bundle.clone()]);
+    std::thread::sleep(Duration::from_millis(300));
+    while rx.try_recv().is_ok() {}
+
+    std::fs::remove_dir_all(&dist).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    watcher.set_files(vec![bundle.clone(), env.clone()]);
+    watcher.set_files(vec![bundle.clone()]);
+
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(&bundle, "2").unwrap();
+    wait_for(&rx, &bundle);
+}
+
+/// The watch moves down to `dist/js` at once when both folders come
+/// back, and a file written before it got there is still reported.
+#[test]
+fn open_file_watcher_follows_a_recreated_nested_parent() {
+    let root = TempDir::new().unwrap();
+    let dist = root.path().join("dist");
+    let js = dist.join("js");
+    let bundle = js.join("bundle.js");
+    std::fs::create_dir_all(&js).unwrap();
+    std::fs::write(&bundle, "1").unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let watcher = OpenFileWatcher::start(move |batch| {
+        let _ = tx.send(batch);
+    })
+    .unwrap();
+    watcher.set_files(vec![bundle.clone()]);
+    std::thread::sleep(Duration::from_millis(300));
+    while rx.try_recv().is_ok() {}
+
+    std::fs::remove_dir_all(&dist).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+
+    std::fs::create_dir_all(&js).unwrap();
+    std::fs::write(&bundle, "2").unwrap();
+    wait_for(&rx, &bundle);
+}
+
 /// A file opened alone shows in the tree by itself; its folder is
 /// never scanned, and the file is followed by the open-file watcher.
 #[gpui::test]
