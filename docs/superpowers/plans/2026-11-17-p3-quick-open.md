@@ -44,6 +44,7 @@
 1. **T3-3, theo VS Code thay cho spec.** Bản spec đầu ghi hộp thoại Remove / Cancel, nhưng VS Code không hỏi. Controller đã chốt theo VS Code và sửa spec: gỡ mục ngay, rồi báo bằng hộp thoại chỉ có **OK** (xem "Tham khảo").
 2. **T3-3, menu Open Recent khi không có cửa sổ nào** (macOS, mọi cửa sổ đã đóng): không có cửa sổ để hiện hộp thoại, vì GPUI chỉ có `Window::prompt`. Plan gỡ mục như `menubar.ts` của VS Code, không mở gì và không báo. Spec không nói tới trường hợp này.
 3. **T5-5, `.crlf(true)` một mình làm hỏng mọi lần tìm.** Matcher có `crlf(true)` báo line terminator CRLF. `Searcher` mặc định dùng LF, nên nó trả `ConfigError::MismatchedLineTerminators` cho mọi file. `search_file` chỉ ghi lỗi này ở mức debug, nên kết quả rỗng mà không báo gì. Vì vậy phải đặt thêm `SearcherBuilder::line_terminator(LineTerminator::crlf())`, như `rg --crlf`. Dòng vẫn tách theo `\n`, nên file LF không đổi.
+   **Đã thay thế:** cách này sai, searcher CRLF làm `$` hỏng trên file LF. Bản đã giao (commit 45319d7) dựng matcher với `multi_line(true)`, `crlf(true)`, `line_terminator(Some(b'\n'))` và giữ searcher LF.
 4. **T5-4, cột âm** (`:5:-1`) vẫn coi là không có cột, tức đi tới đầu dòng. Spec chỉ nói về dòng.
 5. **T5-1, doc load lỗi:** plan cũng gỡ observer khi doc ở `DocState::Error`. Nếu không, một lần reload thành công về sau sẽ làm con trỏ nhảy. Spec chỉ nói tới `Ready`.
 
@@ -111,6 +112,7 @@ fn literal_and_lf_searches_still_match() {
 - [ ] **Step 3: Sửa `search()` trong `src/search.rs`.**
   - Thêm `.crlf(true)` vào `RegexMatcherBuilder::new()`.
   - Thêm `.line_terminator(LineTerminator::crlf())` vào `SearcherBuilder::new()`, với `use grep_matcher::LineTerminator;`.
+  - **Đã thay thế:** các bước dưới đây không còn đúng (searcher CRLF làm `$` hỏng trên file LF). Bản đã giao (commit 45319d7) dựng matcher với `multi_line(true)`, `crlf(true)`, `line_terminator(Some(b'\n'))` và giữ searcher LF.
   - Thêm một dòng comment: matcher và searcher phải cùng line terminator, nếu không searcher từ chối mọi file (Ghi chú 3).
   - `line_match` đã cắt `\n` và `\r` trước khi lấy range, nên không phải sửa.
 

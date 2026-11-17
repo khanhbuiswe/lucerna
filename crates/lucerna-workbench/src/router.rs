@@ -78,6 +78,28 @@ impl Launch {
         })
     }
 
+    /// A single-file window on a file that is not there (deleted while the
+    /// app was closed), for a restore whose backup brings its text back:
+    /// rooted at the canonical parent, on the parent joined with the name.
+    ///
+    /// # Errors
+    /// `path not found: …` when the parent is not a folder.
+    pub fn for_missing_file(path: PathBuf) -> Result<Launch, String> {
+        let not_found = || format!("path not found: {}", path.display());
+        let name = path.file_name().ok_or_else(not_found)?;
+        let root = path
+            .parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok())
+            .filter(|parent| parent.is_dir())
+            .ok_or_else(not_found)?;
+        Ok(Launch {
+            file: Some(root.join(name)),
+            root,
+            single_file: true,
+            on_first_frame: None,
+        })
+    }
+
     /// The path the window is on: the file alone, else the folder.
     fn path(&self) -> &Path {
         match (&self.file, self.single_file) {
@@ -317,7 +339,15 @@ pub fn begin_restore(cx: &mut App) {
 pub fn restore(windows: Vec<SessionWindow>, cx: &mut App) {
     begin_restore(cx);
     for window in windows.into_iter().rev() {
-        match Launch::for_path(window.path.clone()) {
+        let launch = match Launch::for_path(window.path.clone()) {
+            // A single-file window whose file was deleted while the app
+            // was closed still opens: hot exit restores its text.
+            Err(_) if window.kind == RecentKind::File && !window.path.exists() => {
+                Launch::for_missing_file(window.path.clone())
+            }
+            launch => launch,
+        };
+        match launch {
             Ok(launch) => {
                 open_launch(launch, Target::NewWindow, cx);
             }
@@ -437,24 +467,52 @@ pub fn answer_cli(
         reply.send(refused).ok();
         return;
     }
+    if router(cx).borrow().quitting {
+        reply.send(CliReply::quitting()).ok();
+        return;
+    }
     if request.activate && request.paths.is_empty() {
-        let restoring = router(cx).borrow().restoring;
-        if !restoring {
-            reopen(cx);
-        }
+        reopen(cx);
         reply.send(CliReply::ok()).ok();
         return;
     }
+    let paths = request.paths_to_open();
     let request = OpenRequest {
-        paths: request.paths_to_open(),
+        paths: paths.clone(),
         target: Target::Auto,
         source: Source::Cli,
     };
-    let done: OpenDone = Box::new(move |result, _| {
-        // `luc` may have given up waiting.
+    let done: OpenDone = Box::new(move |result, cx| {
+        // `luc` that is still waiting prints the error itself. One that
+        // gave up (M1-3) is gone, so the app says it (spec §6.5). A
+        // failure that lands just before the watcher notices the hang-up
+        // (`luc` giving up at REPLY_TIMEOUT) goes unreported: a small
+        // race the design accepts.
+        if let Err(err) = &result
+            && reply.is_canceled()
+        {
+            report_deferred_failure(&paths, err, cx);
+        }
         reply.send(CliReply::from(result)).ok();
     });
     open_then(request, done, cx);
+}
+
+/// Shows why an open `luc` asked for failed, after `luc` stopped waiting,
+/// in the window the user is in. `err` has one line per failed path.
+#[cfg(unix)]
+fn report_deferred_failure(paths: &[PathBuf], err: &str, cx: &mut App) {
+    let window = windows(cx).first().map(|(handle, _)| handle.window_id());
+    if let [path] = paths {
+        let what = tilde_path(path, std::env::home_dir().as_deref());
+        status_message::show_or_log(window, format!("Could not open {what}: {err}"), cx);
+        return;
+    }
+    // The window keeps one status message, so the last line wins (`luc`
+    // always sends one path).
+    for line in err.lines() {
+        status_message::show_or_log(window, format!("Could not open: {line}"), cx);
+    }
 }
 
 /// Queues a request from `luc` or the platform while a restore runs
@@ -606,8 +664,13 @@ pub(crate) fn window_showing(path: &Path, cx: &mut App) -> Option<AnyWindowHandl
 
 /// What a click on the Dock icon does (spec M9): the most recently used
 /// window comes forward, or the Welcome screen opens in a new window
-/// when there is none.
+/// when there is none. While the restore is running it does nothing: the
+/// restore brings its own windows forward (M2-3).
 pub fn reopen(cx: &mut App) {
+    if router(cx).borrow().restoring {
+        tracing::info!("a reopen during the restore is ignored");
+        return;
+    }
     match windows(cx).first() {
         Some((handle, _)) => activate(*handle, cx),
         None => open_welcome(Target::NewWindow, cx),
@@ -939,6 +1002,12 @@ fn record_recent(entry: RecentEntry, cx: &mut App) {
 pub(crate) fn app_data_dir(cx: &App) -> Option<PathBuf> {
     cx.try_global::<RecentStore>()
         .and_then(|store| store.data_dir.clone())
+}
+
+/// Marks the router as quitting, as the app's quit hook does; for tests.
+#[doc(hidden)]
+pub fn set_quitting_for_test(cx: &mut App) {
+    router(cx).borrow_mut().quitting = true;
 }
 
 /// Opens `paths` through the router, as `luc` would, and reads the user

@@ -125,7 +125,7 @@ hai cách.
 | M10 | Các lệnh cần chạy được khi không có cửa sổ: Quit, New Window, Open…, Open Folder…, Open File…, Open Recent (mục trong menu), Preferences (settings, keybindings), About. Đăng ký `cx.on_action` cấp app; có cửa sổ thì vẫn chạy trong cửa sổ đó như nay. | GPUI gửi action của menu tới cửa sổ focus, không có thì tới handler cấp app. |
 | M11 | ⌘Q: hỏi lưu lần lượt từng cửa sổ, cửa sổ active trước; Cancel ở cửa sổ nào cũng huỷ việc thoát. Ghi danh sách cửa sổ (§6.6) **trước** `cx.quit()`. | Như `workbench::quit` hiện tại; Zed cho cửa sổ active hỏi trước. |
 | M12 | `window.restoreWindows` mặc định đổi từ `"one"` sang `"all"`. Nhận `"preserve"`, `"all"`, `"folders"`, `"one"`, `"none"` (§6.6). | Mặc định của VS Code. |
-| M13 | `luc` **giành socket trước** (`<data dir>/luc-<version>[-dev].sock`), trước cả khi khởi động GPUI. Bind được thì nó là app. `EADDRINUSE` thì nối vào làm client: gửi yêu cầu, đợi trả lời rồi thoát với mã 0 (lỗi thì in ra stderr, mã 1). | VS Code `claimInstance`. Giành trước để hai `luc` chạy gần như cùng lúc không thành hai app. Socket theo phiên bản và build để bản dev không đẩy đường dẫn vào bản release người dùng đang chạy. |
+| M13 | `luc` **giành socket trước** (`<data dir>/luc[-dev].sock`), trước cả khi khởi động GPUI. Bind được thì nó là app. `EADDRINUSE` thì nối vào làm client: gửi yêu cầu, đợi trả lời rồi thoát với mã 0 (lỗi thì in ra stderr, mã 1). | VS Code `claimInstance`. Giành trước để hai `luc` chạy gần như cùng lúc không thành hai app. Chỉ hậu tố `-dev` để bản dev không đẩy đường dẫn vào bản release người dùng đang chạy; tên không có version nên app khác version cùng giao thức vẫn nhận request, và cập nhật Lucerna khi app cũ còn chạy không ra hai app. Giao thức mới hơn app thì `luc` in "Lucerna was updated. Quit Lucerna and open it again." và thoát 1. |
 | M18 | `luc` trong terminal **tách app khỏi terminal** rồi trả dấu nhắc ngay, như `code .`. Cờ ẩn `--foreground` giữ kiểu cũ (chạy app ngay trong terminal) cho `bench/compare`, `--trace-startup` và debug. | Người dùng chọn. Một tiến trình giữ mọi cửa sổ, nên tắt tab terminal hay Ctrl+C không được kéo theo mọi cửa sổ và bỏ qua bước hỏi lưu. |
 | M14 | Yêu cầu từ socket hoặc `on_open_urls` đến khi app chưa mở lại xong cửa sổ thì xếp hàng, xử lý sau khi restore xong. | Lỗi Zed #61346. |
 | M15 | Language server, terminal, git, workspace state: theo từng cửa sổ như nay. Trust: kho `trusted.json` chung. Tin một thư mục thì mọi cửa sổ có gốc là đúng thư mục đó chuyển sang tin. Chọn thêm "tin cả thư mục cha" thì mọi cửa sổ có gốc nằm trong thư mục cha đó cũng chuyển sang tin. Cửa sổ có gốc là thư mục con của thư mục được tin một mình thì vẫn ở Restricted Mode. | Cả hai bên làm vậy. |
@@ -297,8 +297,9 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
 
 ### 6.5 `luc` từ terminal (socket)
 
-- **Đường dẫn socket:** `<data dir>/luc-<CARGO_PKG_VERSION>.sock`, thêm
-  `-dev` khi `debug_assertions`. `sun_path` macOS giới hạn 104 byte: dài
+- **Đường dẫn socket:** `<data dir>/luc.sock`, `luc-dev.sock` khi
+  `debug_assertions`; tên không có version, mọi version của cùng kênh build
+  dùng chung một socket. `sun_path` macOS giới hạn 104 byte: dài
   hơn thì dùng `$TMPDIR/lucerna-<hash của data dir>.sock`.
 - **Giành socket** (`crates/lucerna/src/main.rs`, ngay sau khi parse đối
   số, trước `app::run`; `luc ext …` và `luc lsp …` không đụng tới socket):
@@ -313,9 +314,16 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
     socket lại một lần. Thường là do `luc` khác vừa giữ socket một lúc rồi
     nhả cho app nó khởi động (M1-1). Lần giành thứ hai nối tới app đó, hoặc
     tự bind khi chưa có app. Bước 3 bên dưới cũng nối lại một lần như vậy.
+  - App đang thoát trả `{"ok":false,"error":"Lucerna is quitting","status":"quitting"}`
+    (nó vẫn giữ socket thêm một lúc). `luc` giành socket lại mỗi 100 ms,
+    tối đa 5 s, rồi gửi cho app mới hoặc tự khởi động app; quá hạn thì in
+    lỗi, thoát mã 1 (M1-2).
   - Hết thời gian đợi trả lời mà yêu cầu đã gửi đi (app đang bận, ví dụ
     đang khôi phục cửa sổ): in "Lucerna is busy; the path will open when it
-    is ready" và thoát mã 0, vì app vẫn mở đường dẫn khi rảnh.
+    is ready" và thoát mã 0, vì app vẫn mở đường dẫn khi rảnh. Nếu việc
+    mở sau đó thất bại, app báo "Could not open …" trong status bar của
+    cửa sổ dùng gần nhất, vì `luc` đã thoát (app biết nhờ kết nối socket
+    đã đóng); `luc` còn đợi thì lỗi chỉ in ra terminal (M1-3).
   - `luc` không đối số chạy trong `/` khi app đang chạy: gửi yêu cầu
     `activate` (trường `"activate":true`, `paths` rỗng). App không mở `/`
     mà ra trước như khi bấm icon Dock (M9).
@@ -324,14 +332,18 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
     quá dài là thư mục riêng của user (`$TMPDIR` trên macOS,
     `$XDG_RUNTIME_DIR` hoặc `lucerna-<uid>` nơi khác), không dùng `/tmp`
     chung.
-  - Lỗi khác (không tạo được thư mục data, quyền): in cảnh báo, chạy app
-    không có socket (không chặn người dùng).
+  - Lỗi khác (không tạo được thư mục data, quyền): in cảnh báo, khởi động
+    app tách khỏi terminal như M18 nhưng không có socket (không gửi yêu cầu),
+    rồi thoát mã 0; không chặn người dùng. `--foreground`/`--trace-startup`
+    thì chạy app tại chỗ, không có socket (M1-4).
 - **Tách khỏi terminal** (M18). Khi `luc` (không có `--foreground`) phải
   thành app, nó không chạy app trong tiến trình này mà khởi động một tiến
   trình app tách rời rồi gửi yêu cầu cho nó như client:
   1. Nhả socket vừa giành (để tiến trình app giành).
-  2. Khởi động app: chạy chính binary với `--foreground`, `setsid` (phiên
-     mới, không còn terminal điều khiển), stdin/stdout/stderr về
+  2. Khởi động app: chạy chính binary với cờ ẩn `--detached-child`
+     (thay cho `--foreground`; tiến trình con gặp app khác đã giữ socket thì
+     chuyển yêu cầu cho nó, M1-1, còn không thì chạy app tại chỗ), `setsid`
+     (phiên mới, không còn terminal điều khiển), stdin/stdout/stderr về
      `/dev/null` (log vẫn ghi file như nay), `cwd` giữ nguyên. Không dùng
      `open -a`: nó chỉ có với bản đóng gói và dễ mở nhầm bản cài khác cùng
      bundle ID; binary trong `Contents/MacOS` chạy trực tiếp vẫn hiện đúng
@@ -348,8 +360,11 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
 - **`--foreground`** (ẩn khỏi `--help`): giành socket và chạy app trong
   tiến trình này như hành vi hiện nay. `bench/compare` và
   `scripts/` khởi chạy `luc` để đo thì thêm cờ này (pidfile vẫn đúng
-  tiến trình app). `--trace-startup` chỉ có nghĩa khi đi cùng
-  `--foreground` (không có thì tự bật `--foreground`).
+  tiến trình app). `--trace-startup` cũng chạy app tại chỗ như
+  `--foreground`. Cả hai chỉ giành socket, không bao giờ chuyển request:
+  socket đã bị giữ thì thoát mã 1 và in "Lucerna is already running; quit it
+  to measure startup." (`--trace-startup`) hoặc "Lucerna is already running;
+  quit it to run in the foreground." (`--foreground`) (M1-6).
 - **Phía app:** mỗi kết nối: đọc một dòng ở luồng nền, gửi vào kênh của
   router trên luồng chính, trả lời sau khi `open` xong. Thoát app thì xoá
   file socket.
@@ -357,19 +372,21 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
   Language server và terminal vẫn lấy môi trường từ login shell như nay
   (`lucerna_lsp::env::login_shell_env`). Chở env theo cửa sổ (như Zed, VS
   Code) để sau 0.1; giao thức có `version` nên thêm trường được.
-- **Giao thức** (một dòng JSON mỗi chiều, có `version`):
+- **Giao thức** (một dòng JSON mỗi chiều, có `version`). Client giữ kết nối mở, không đóng nửa ghi, đến khi trả lời tới; đóng kết nối nghĩa là "thôi đợi" và không nhận trả lời:
 
   ```json
   {"version":1,"cwd":"/abs/dir","paths":["/abs/a"],"new_window":false}
   {"version":1,"cwd":"/","paths":[],"new_window":false,"activate":true}
   {"ok":true}
   {"ok":false,"error":"path not found: /abs/a"}
+  {"ok":false,"error":"Lucerna is quitting","status":"quitting"}
   ```
 
   `paths` rỗng (`luc` không đối số) nghĩa là thư mục `cwd`, như nay.
   `new_window` để dành cho `-n` sau 0.1; 0.1 luôn gửi `false`. `activate`
-  mặc định `false` (thêm sau, không tăng `version`). Trường lạ
-  bị bỏ qua; `version` lớn hơn thì trả lỗi "update Lucerna".
+  mặc định `false` (thêm sau, không tăng `version`). `status` trong trả lời
+  cũng thêm sau, không tăng `version`; `luc` cũ bỏ qua nó và in `error`. Trường lạ
+  bị bỏ qua; `version` lớn hơn thì trả lỗi "Lucerna was updated. Quit Lucerna and open it again."
 - **Bench:** `bench/compare` đặt `HOME` riêng nên data dir và socket riêng,
   vẫn chạy tiến trình riêng như nay. Thêm một kiểm tra trong `editors.py` để
   chắc điều đó (§8.4).
@@ -597,9 +614,14 @@ Mỗi bước build và test được riêng:
 - Thay `QuitMode` đổi hành vi: macOS không còn thoát khi đóng cửa sổ cuối.
   Bench nào dựa vào việc đóng cửa sổ để kết thúc tiến trình phải kill thay
   vì đóng cửa sổ (kiểm tra `bench/compare`).
-- Bản cũ (nhiều tiến trình) và bản mới cùng chạy trong lúc nâng cấp: socket
-  theo phiên bản nên không lẫn; có thể có hai icon trong lúc đó.
+- Bản cũ (nhiều tiến trình) và bản mới cùng chạy trong lúc nâng cấp: app
+  0.1.0 dùng `luc-0.1.0.sock`, nên lần cập nhật đầu tiên lên bản không
+  version vẫn có thể có hai tiến trình (một lần); từ đó về sau không còn.
 - `"preserve"` chỉ khác `"all"` khi khởi động có đường dẫn.
+- Trường hợp hẹp: app nhận một yêu cầu ngay trước khi các hook thoát chạy,
+  rồi luồng chính bị chặn hơn 5 giây khi tắt language server. `luc` in
+  "will open when ready" và thoát mã 0, nhưng app thoát mà không mở đường
+  dẫn. Giới hạn chấp nhận.
 
 ## 11. Để lại cho người viết plan
 

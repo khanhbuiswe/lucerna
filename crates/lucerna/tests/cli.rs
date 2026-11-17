@@ -174,3 +174,138 @@ fn resolve_refuses_a_device() {
     let err = resolve_target(Some(PathBuf::from("/dev/zero"))).unwrap_err();
     assert!(err.contains("Not a regular file"), "{err}");
 }
+
+/// Tests with a socket this test holds itself as the app: `luc` must meet
+/// it without starting an app (no display needed).
+#[cfg(unix)]
+mod running_app {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::path::Path;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use assert_cmd::Command;
+    use lucerna_workbench::cli_socket::{Bound, Claim, CliRequest, claim, socket_path};
+
+    use super::canonical;
+
+    /// Holds the `luc` socket under `home` as the app does.
+    fn held_socket(home: &Path) -> Bound {
+        let data_dir = home.join("Library/Application Support/Lucerna");
+        match claim(&socket_path(&data_dir)) {
+            Claim::Server(bound) => bound,
+            other => panic!("the test should bind the socket: {other:?}"),
+        }
+    }
+
+    /// `luc` with `args`; a `luc` that wrongly runs the app is killed at
+    /// the timeout and fails the test.
+    fn run_luc(home: &Path, cwd: Option<&Path>, args: &[&Path]) -> std::process::Output {
+        let mut command = Command::cargo_bin("luc").unwrap();
+        command
+            .env("HOME", home)
+            .timeout(Duration::from_secs(30))
+            .args(args);
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        command
+            .output()
+            .expect("luc exits by itself instead of running the app")
+    }
+
+    /// `luc` refused: exit 1, `stderr`, and nothing was sent to the app.
+    fn assert_refused(flag: &str, stderr: &str) {
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let bound = held_socket(home.path());
+        let output = run_luc(home.path(), None, &[Path::new(flag), dir.path()]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), stderr);
+        bound.listener.set_nonblocking(true).unwrap();
+        while let Ok((stream, _)) = bound.listener.accept() {
+            // A probe may connect and leave; it sends no request line.
+            // (macOS refuses socket options on a stream the peer closed.)
+            let _ = stream.set_nonblocking(false);
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+            let mut line = String::new();
+            let _ = BufReader::new(&stream).read_line(&mut line);
+            assert_eq!(line, "", "luc sent a request");
+        }
+    }
+
+    #[test]
+    fn trace_startup_refuses_when_an_app_runs() {
+        assert_refused(
+            "--trace-startup",
+            "luc: Lucerna is already running; quit it to measure startup.\n",
+        );
+    }
+
+    #[test]
+    fn foreground_refuses_when_an_app_runs() {
+        assert_refused(
+            "--foreground",
+            "luc: Lucerna is already running; quit it to run in the foreground.\n",
+        );
+    }
+
+    /// Plays the app on `listener`: answers the first request line sent,
+    /// within 30 s.
+    fn serve_one(listener: UnixListener) -> mpsc::Receiver<CliRequest> {
+        let (sent, got) = mpsc::channel();
+        listener.set_nonblocking(true).unwrap();
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline {
+                let Ok((stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut line = String::new();
+                if BufReader::new(&stream).read_line(&mut line).unwrap_or(0) == 0 {
+                    continue; // a probe
+                }
+                let request = serde_json::from_str(&line).unwrap();
+                (&stream).write_all(b"{\"ok\":true}\n").unwrap();
+                let _ = sent.send(request);
+                return;
+            }
+        });
+        got
+    }
+
+    /// Review Focus 3: the app `luc` started finds another app came up
+    /// meanwhile and hands the path to it.
+    #[test]
+    fn detached_child_hands_off_to_a_running_app() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let got = serve_one(held_socket(home.path()).listener);
+        let output = run_luc(
+            home.path(),
+            None,
+            &[Path::new("--detached-child"), dir.path()],
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let request = got.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(request.paths, vec![canonical(dir.path())]);
+    }
+
+    /// Review Focus 4: a launch from Finder (no path, in `/`) comes
+    /// forward the running app.
+    #[test]
+    fn finder_launch_activates_a_running_app() {
+        let home = tempfile::tempdir().unwrap();
+        let got = serve_one(held_socket(home.path()).listener);
+        let output = run_luc(home.path(), Some(Path::new("/")), &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let request = got.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(request.activate, "{request:?}");
+    }
+}

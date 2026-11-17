@@ -878,7 +878,7 @@ fn data_dir_variable_passed_to_server(cx: &mut TestAppContext) {
 
     open(&wb, "src/main.rs", cx);
 
-    let expected = lucerna_lsp::vars::data_dir_for(data.path(), "rust-analyzer", dir.path());
+    let expected = lucerna_lsp::vars::data_dir_for(data.path(), "rust-analyzer", dir.path(), 0);
     assert!(expected.starts_with(data.path().join("lsp").join("rust-analyzer")));
     let launches = launcher.launches();
     assert_eq!(launches.len(), 1);
@@ -888,6 +888,47 @@ fn data_dir_variable_passed_to_server(cx: &mut TestAppContext) {
     );
     assert!(expected.is_dir(), "the data dir is created");
     assert_eq!(sent(&fake, "textDocument/didOpen").len(), 1);
+}
+
+#[gpui::test]
+fn data_dir_slot_per_window_on_one_root(cx: &mut TestAppContext) {
+    let (dir, data) = (rust_project(), TempDir::new().unwrap());
+    let settings = trusted_with_lsp(&json!({
+        "rust-analyzer": { "args": ["-data", "{data_dir}"] }
+    }));
+    init_with(&settings, cx);
+    let mut app = cx.clone();
+    let dir_of = |slot: u32| {
+        let path = lucerna_lsp::vars::data_dir_for(data.path(), "rust-analyzer", dir.path(), slot);
+        ["-data".to_owned(), path.to_string_lossy().into_owned()]
+    };
+    fn window<'a>(
+        (root, data_dir): (&Path, &Path),
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+        let (root, data_dir) = (root.to_path_buf(), data_dir.to_path_buf());
+        cx.add_window_view(|window, cx| Workbench::with_data_dir(root, data_dir, window, cx))
+    }
+    let paths = (dir.path(), data.path());
+    let (la, lb) = (
+        Arc::new(FakeLauncher::new().with_server("rust-analyzer", FakeServer::new())),
+        Arc::new(FakeLauncher::new().with_server("rust-analyzer", FakeServer::new())),
+    );
+    let (wa, vcx_a) = window(paths, cx);
+    language_servers(&wa, vcx_a).update(vcx_a, |s, _| s.set_launcher(la.clone()));
+    open(&wa, "src/main.rs", vcx_a);
+    let (wb, vcx_b) = window(paths, &mut app);
+    language_servers(&wb, vcx_b).update(vcx_b, |s, _| s.set_launcher(lb.clone()));
+    open(&wb, "src/main.rs", vcx_b);
+
+    assert_eq!(la.launches()[0].args, dir_of(0));
+    assert_eq!(lb.launches()[0].args, dir_of(1));
+
+    let k = key(dir.path(), "rust-analyzer");
+    language_servers(&wa, vcx_a).update(vcx_a, |s, cx| s.stop(&k, cx));
+    language_servers(&wb, vcx_b).update(vcx_b, |s, cx| s.restart(&k, cx));
+    settle(vcx_b);
+    assert_eq!(lb.launches().last().unwrap().args, dir_of(0));
 }
 
 #[gpui::test]

@@ -1,10 +1,12 @@
 //! Writing a buffer back to disk: encoding-preserving and atomic.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::fs;
 use std::hash::{DefaultHasher, Hasher};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use encoding_rs::{EncoderResult, Encoding, UTF_16BE, UTF_16LE};
 
@@ -58,9 +60,73 @@ impl From<io::Error> for WriteError {
 
 /// A completed write. `hash` is computed exactly as `decode_file` does over
 /// the raw bytes, so a watcher event for our own write can be recognised.
+/// `modified` and `len` are read from the written file's handle after
+/// `sync_all` and before the rename, so a later write by another program
+/// is never in them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Written {
     pub hash: u64,
+    pub modified: Option<std::time::SystemTime>,
+    pub len: u64,
+}
+
+/// The temp files of atomic writes in flight, shared between threads, so
+/// whatever is quitting the app can delete the ones a write never got to
+/// rename. A failed write deletes its own temp file; this only covers a
+/// process that exits in the middle of one.
+#[derive(Clone, Default, Debug)]
+pub struct TempFiles(Arc<Mutex<HashSet<PathBuf>>>);
+
+impl TempFiles {
+    pub fn track(&self, path: PathBuf) {
+        self.lock().insert(path);
+    }
+
+    pub fn untrack(&self, path: &Path) {
+        self.lock().remove(path);
+    }
+
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.lock().iter().cloned().collect()
+    }
+
+    /// Deletes every tracked file (one already gone is skipped), empties
+    /// the set, and returns how many files were deleted.
+    pub fn remove_all(&self) -> usize {
+        let paths: Vec<PathBuf> = self.lock().drain().collect();
+        paths
+            .iter()
+            .filter(|path| fs::remove_file(path).is_ok())
+            .count()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<PathBuf>> {
+        // The set stays valid whatever panicked while holding it.
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Keeps a temp file in a [`TempFiles`] for as long as it lives: until the
+/// rename is done, or the write failed.
+struct Tracked<'a> {
+    temps: &'a TempFiles,
+    path: PathBuf,
+}
+
+impl<'a> Tracked<'a> {
+    fn new(temps: &'a TempFiles, path: &Path) -> Self {
+        temps.track(path.to_path_buf());
+        Tracked {
+            temps,
+            path: path.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for Tracked<'_> {
+    fn drop(&mut self) {
+        self.temps.untrack(&self.path);
+    }
 }
 
 /// Output side of the encoder: bytes in the file's encoding.
@@ -208,11 +274,27 @@ impl Buffer {
 /// target is refused with `PermissionDenied`. A new file gets mode 0o644
 /// (the umask is not consulted).
 pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<Written, WriteError> {
+    write_bytes_with(path, bytes, None)
+}
+
+/// [`write_bytes`], with the temp file of an atomic write in `temps` from
+/// the moment it is made until it is renamed or the write fails.
+pub fn write_bytes_tracked(
+    path: &Path,
+    bytes: &[u8],
+    temps: &TempFiles,
+) -> Result<Written, WriteError> {
+    write_bytes_with(path, bytes, Some(temps))
+}
+
+fn write_bytes_with(
+    path: &Path,
+    bytes: &[u8],
+    temps: Option<&TempFiles>,
+) -> Result<Written, WriteError> {
     let mut hasher = DefaultHasher::new();
     hasher.write(bytes);
-    let written = Written {
-        hash: hasher.finish(),
-    };
+    let hash = hasher.finish();
     let is_symlink = match fs::symlink_metadata(path) {
         Ok(meta) => meta.file_type().is_symlink(),
         Err(e) if e.kind() == io::ErrorKind::NotFound => false,
@@ -223,34 +305,58 @@ pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<Written, WriteError> {
     } else {
         path.to_path_buf()
     };
-    match fs::metadata(&target) {
+    let written = match fs::metadata(&target) {
         Ok(meta) => {
             if meta.permissions().readonly() {
                 return Err(WriteError::PermissionDenied);
             }
             if link_count(&meta) > 1 {
-                write_in_place(&target, bytes)?;
+                write_in_place(&target, bytes)?
             } else {
-                write_atomic(&target, bytes, Some(meta))?;
+                write_atomic(&target, bytes, Some(meta), temps)?
             }
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(&target, bytes, None)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(&target, bytes, None, temps)?,
         Err(e) => return Err(e.into()),
-    }
-    Ok(written)
+    };
+    Ok(Written {
+        hash,
+        modified: written.modified().ok(),
+        len: written.len(),
+    })
 }
 
-fn write_in_place(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+fn write_in_place(path: &Path, bytes: &[u8]) -> Result<fs::Metadata, WriteError> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .truncate(true)
         .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    Ok(())
+    Ok(file.metadata()?)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8], old: Option<fs::Metadata>) -> Result<(), WriteError> {
+/// Longest file name, in bytes, that common filesystems accept.
+const MAX_NAME_BYTES: usize = 255;
+/// Random characters `tempfile` appends after the prefix.
+const TEMP_RAND_BYTES: usize = 8;
+
+/// Temp file prefix `.{name}.luc~`, with `name` cut so the full temp name
+/// (prefix plus random suffix) stays within `MAX_NAME_BYTES`.
+fn temp_prefix(name: &str) -> String {
+    // 6 = the leading '.' plus the ".luc~" suffix.
+    let limit = MAX_NAME_BYTES - TEMP_RAND_BYTES - 6;
+    let cut = name.floor_char_boundary(limit.min(name.len()));
+    format!(".{}.luc~", &name[..cut])
+}
+
+/// Returns the temp file's metadata, read before the rename.
+fn write_atomic(
+    path: &Path,
+    bytes: &[u8],
+    old: Option<fs::Metadata>,
+    temps: Option<&TempFiles>,
+) -> Result<fs::Metadata, WriteError> {
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -259,20 +365,21 @@ fn write_atomic(path: &Path, bytes: &[u8], old: Option<fs::Metadata>) -> Result<
         .file_name()
         .ok_or_else(|| WriteError::Io("path has no file name".into()))?
         .to_string_lossy();
-    // `tempfile` appends 8 random characters after the prefix.
     let mut temp = tempfile::Builder::new()
-        .prefix(&format!(".{name}.luc~"))
-        .rand_bytes(8)
+        .prefix(&temp_prefix(&name))
+        .rand_bytes(TEMP_RAND_BYTES)
         .tempfile_in(parent)?;
+    let _tracked = temps.map(|temps| Tracked::new(temps, temp.path()));
     match old {
         Some(meta) => fs::set_permissions(temp.path(), meta.permissions())?,
         None => set_new_file_mode(temp.path())?,
     }
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
+    let meta = temp.as_file().metadata()?;
     temp.persist(path).map_err(|e| WriteError::from(e.error))?;
     sync_dir(parent);
-    Ok(())
+    Ok(meta)
 }
 
 #[cfg(unix)]
@@ -435,6 +542,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn written_stamp_is_the_written_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, b"old").unwrap();
+        let written = write_bytes(&path, b"new").unwrap();
+        assert_eq!(written.len, 3);
+        assert_eq!(
+            written.modified,
+            fs::metadata(&path).unwrap().modified().ok()
+        );
+        // A later write by another program is not in it.
+        fs::write(&path, b"agent, longer").unwrap();
+        assert_eq!(written.len, 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlink_written_stamp_is_the_written_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        fs::write(&a, b"old").unwrap();
+        fs::hard_link(&a, &b).unwrap();
+        let written = write_bytes(&a, b"new").unwrap();
+        assert_eq!(written.len, 3);
+        assert_eq!(written.modified, fs::metadata(&a).unwrap().modified().ok());
+        fs::write(&a, b"agent, longer").unwrap();
+        assert_eq!(written.len, 3);
+    }
+
     #[cfg(unix)]
     #[test]
     fn hardlink_is_written_in_place() {
@@ -471,6 +609,69 @@ mod tests {
             .filter(|n| n.starts_with(".f.txt.luc~"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn tracked_write_leaves_nothing_tracked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, b"old").unwrap();
+        let temps = TempFiles::default();
+        write_bytes_tracked(&path, b"new", &temps).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert!(temps.paths().is_empty());
+    }
+
+    #[test]
+    fn remove_all_deletes_tracked_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let temp = dir.path().join(".f.txt.luc~abcdefgh");
+        fs::write(&temp, b"partial").unwrap();
+        let temps = TempFiles::default();
+        temps.track(temp.clone());
+        temps.track(dir.path().join(".g.txt.luc~missing0"));
+        assert_eq!(temps.remove_all(), 1);
+        assert!(!temp.exists());
+        assert!(temps.paths().is_empty());
+    }
+
+    #[test]
+    fn temp_prefix_keeps_short_names() {
+        assert_eq!(temp_prefix("f.txt"), ".f.txt.luc~");
+    }
+
+    #[test]
+    fn temp_prefix_fits_the_name_limit() {
+        for name in ["a".repeat(250), format!("{}.rs", "ệ".repeat(83))] {
+            let prefix = temp_prefix(&name);
+            assert!(prefix.len() + TEMP_RAND_BYTES <= MAX_NAME_BYTES, "{name}");
+            let cut = &prefix[1..prefix.len() - ".luc~".len()];
+            assert!(name.starts_with(cut), "cut on a char boundary");
+            assert!(
+                cut.len() >= MAX_NAME_BYTES - TEMP_RAND_BYTES - 6 - 3,
+                "cut no shorter than needed"
+            );
+        }
+    }
+
+    #[test]
+    fn long_name_is_saved() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for name in ["a".repeat(250), format!("{}.rs", "ệ".repeat(83))] {
+            let path = dir.path().join(&name);
+            if fs::write(&path, b"old").is_err() {
+                // The filesystem itself refuses this name.
+                return;
+            }
+            write_bytes(&path, b"new").unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"new");
+        }
+        let hidden: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with('.'))
+            .collect();
+        assert!(hidden.is_empty(), "{hidden:?}");
     }
 
     #[test]

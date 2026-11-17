@@ -184,15 +184,14 @@ fn hides_recent_section_when_empty(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn skips_missing_folders(cx: &mut TestAppContext) {
+fn lists_missing_folders(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["a", "gone", "b"], &["gone"]);
     let (view, _, cx) = open_with(&fixture, None, cx);
     assert_eq!(
         recent(&view, cx),
-        vec![fixture.path("a"), fixture.path("b")]
+        vec![fixture.path("a"), fixture.path("gone"), fixture.path("b")]
     );
-    assert!(drawn("welcome-recent-1", cx));
-    assert!(!drawn("welcome-recent-2", cx));
+    assert!(drawn("welcome-recent-2", cx));
 }
 
 #[gpui::test]
@@ -265,19 +264,40 @@ fn arrows_move_focus_and_enter_presses(cx: &mut TestAppContext) {
     );
 }
 
+/// The detail line VS Code shows for a path that does not exist.
+fn detail(path: &Path) -> String {
+    let home = std::env::home_dir();
+    let shown = match home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    };
+    format!("The path '{shown}' does not exist on this computer.")
+}
+
 #[gpui::test]
-fn vanished_folder_shows_warning(cx: &mut TestAppContext) {
+fn missing_folder_is_removed_and_reported(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["a", "b"], &[]);
     let (view, events, cx) = open_with(&fixture, None, cx);
     std::fs::remove_dir(fixture.path("a")).unwrap();
     click("welcome-recent-0", Modifiers::none(), cx);
-    assert!(drawn("welcome-warning", cx));
-    assert!(
-        cx.update(|_, cx| view.read(cx).warning().map(str::to_string))
-            .is_some_and(|w| w.ends_with("a no longer exists")),
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((
+            "Path does not exist".to_string(),
+            detail(&fixture.path("a"))
+        ))
     );
-    assert!(events.lock().unwrap().is_empty());
+    // Removed before the user answers, as VS Code does.
     assert_eq!(recent(&view, cx), vec![fixture.path("b")]);
+    assert_eq!(fixture.stored(), vec![fixture.path("b")]);
+    assert!(events.lock().unwrap().is_empty());
+    cx.simulate_prompt_answer("OK");
+    draw(cx);
+    assert_eq!(cx.pending_prompt(), None);
+    assert_eq!(recent(&view, cx), vec![fixture.path("b")]);
+    // The drive comes back: the entry does not.
+    std::fs::create_dir(fixture.path("a")).unwrap();
+    draw(cx);
     assert_eq!(fixture.stored(), vec![fixture.path("b")]);
 }
 

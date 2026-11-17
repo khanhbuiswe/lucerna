@@ -31,6 +31,7 @@ pub struct Buffer {
     line_ending: LineEnding,
     has_bom: bool,
     disk_hash: u64,
+    lossy: bool,
     history: History,
     version: u64,
 }
@@ -55,6 +56,7 @@ impl Buffer {
             line_ending: decoded.line_ending,
             has_bom: decoded.has_bom,
             disk_hash: decoded.hash,
+            lossy: decoded.lossy,
             history: History::new(),
             version: 0,
         }
@@ -94,6 +96,17 @@ impl Buffer {
         self.has_bom = decoded.has_bom;
         self.line_ending = decoded.line_ending;
         self.disk_hash = decoded.hash;
+        self.lossy = decoded.lossy;
+    }
+
+    /// Some bytes of the file were not valid in its encoding and are U+FFFD
+    /// in the text; saving would write the replacement character.
+    pub fn is_lossy(&self) -> bool {
+        self.lossy
+    }
+
+    pub fn clear_lossy(&mut self) {
+        self.lossy = false;
     }
 
     /// Incremented by every edit, undo and redo.

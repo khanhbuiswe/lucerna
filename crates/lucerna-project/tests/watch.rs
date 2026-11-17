@@ -15,10 +15,34 @@ fn started(root: &Path) -> Worktree {
         let ev = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("scan timeout");
+        assert!(
+            !matches!(ev, WorktreeEvent::WatchFailed(_)),
+            "watcher failed on a normal folder: {ev:?}"
+        );
         if ev == WorktreeEvent::ScanComplete {
             return wt;
         }
     }
+}
+
+#[test]
+fn watcher_that_cannot_start_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("gone");
+    let wt = Worktree::start(missing, ScanOptions::default());
+    let events = wt.events();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut failed = Vec::new();
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match events.recv_timeout(left).expect("scan completes") {
+            WorktreeEvent::WatchFailed(reason) => failed.push(reason),
+            WorktreeEvent::ScanComplete => break,
+            _ => {}
+        }
+    }
+    assert_eq!(failed.len(), 1);
+    assert!(!failed[0].is_empty());
 }
 
 /// Collects `(path, kind)` of every `Changed` event until `done` holds or the

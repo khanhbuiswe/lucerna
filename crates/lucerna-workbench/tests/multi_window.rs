@@ -1174,8 +1174,30 @@ fn reopen_opens_welcome(cx: &mut TestAppContext) {
     assert_eq!(kinds(cx), vec![WindowKind::Welcome]);
 }
 
+/// M2-3: a Dock click while the restore is still going opens nothing;
+/// the restore brings its own windows forward.
+#[gpui::test]
+fn reopen_during_restore_opens_nothing(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let a = project(cx);
+    cx.update(router::begin_restore);
+    cx.update(app::on_reopen_for_test);
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![]);
+    cx.update(|cx| router::restore(vec![folder_window(&a)], cx));
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![WindowKind::Folder(a)]);
+}
+
 // `windows.json` (spec §6.6): the router writes its workbench windows,
 // most recently used first, and a start reopens them.
+
+fn file_window(path: &Path) -> SessionWindow {
+    SessionWindow {
+        kind: RecentKind::File,
+        path: path.to_path_buf(),
+    }
+}
 
 fn folder_window(path: &Path) -> SessionWindow {
     SessionWindow {
@@ -1255,6 +1277,36 @@ fn restore_opens_in_reverse_order(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn restore_reopens_a_deleted_file_window(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let path = project(cx).join("src").join("x.rs");
+    std::fs::remove_file(&path).unwrap();
+    cx.update(|cx| {
+        router::restore(
+            vec![SessionWindow {
+                kind: RecentKind::File,
+                path: path.clone(),
+            }],
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![WindowKind::File(path)]);
+}
+
+#[gpui::test]
+fn launch_on_a_restored_file_window_opens_one_window(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let file = project(cx).join("src").join("x.rs");
+    cx.update(|cx| {
+        router::restore(vec![file_window(&file)], cx);
+        router::open_for_test(vec![file.clone()], Target::Auto, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![WindowKind::File(file)]);
+}
+
+#[gpui::test]
 fn requests_wait_for_restore(cx: &mut TestAppContext) {
     let data = routed(&[], cx);
     let (a, b) = (project(cx), project(cx));
@@ -1276,6 +1328,61 @@ fn requests_wait_for_restore(cx: &mut TestAppContext) {
         saved_session(&data, cx).windows,
         vec![folder_window(&a), folder_window(&b)]
     );
+}
+
+/// M1-3: a failed open is reported in the status bar only once `luc`
+/// stopped waiting for the reply.
+#[cfg(unix)]
+#[gpui::test]
+fn cli_failure_reported_when_luc_gave_up(cx: &mut TestAppContext) {
+    use futures::channel::oneshot;
+    use lucerna_workbench::cli_socket::CliRequest;
+
+    routed(&[], cx);
+    let a = project(cx);
+    open_routed(Vec::new(), Target::Auto, cx);
+    cx.update(router::begin_restore);
+    let (tx, rx) = oneshot::channel();
+    cx.update(|cx| {
+        router::answer_cli(
+            CliRequest::new(a.clone(), vec![PathBuf::from("nope")]),
+            tx,
+            cx,
+        );
+    });
+    drop(rx);
+    cx.update(|cx| router::restore(vec![folder_window(&a)], cx));
+    cx.run_until_parked();
+    let handle = routed_workbench(&WindowKind::Folder(a), cx);
+    let message = status(handle, cx).expect("a status message");
+    assert!(message.starts_with("Could not open "), "{message}");
+    assert!(message.contains("path not found"), "{message}");
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn cli_failure_not_reported_while_luc_waits(cx: &mut TestAppContext) {
+    use futures::channel::oneshot;
+    use lucerna_workbench::cli_socket::{CliReply, CliRequest};
+
+    routed(&[], cx);
+    let a = project(cx);
+    open_routed(Vec::new(), Target::Auto, cx);
+    cx.update(router::begin_restore);
+    let (tx, mut rx) = oneshot::channel();
+    cx.update(|cx| {
+        router::answer_cli(
+            CliRequest::new(a.clone(), vec![PathBuf::from("nope")]),
+            tx,
+            cx,
+        );
+    });
+    cx.update(|cx| router::restore(vec![folder_window(&a)], cx));
+    cx.run_until_parked();
+    let expected = format!("path not found: {}", a.join("nope").display());
+    assert_eq!(rx.try_recv().unwrap(), Some(CliReply::error(expected)));
+    let handle = routed_workbench(&WindowKind::Folder(a), cx);
+    assert_eq!(status(handle, cx), None);
 }
 
 /// `luc`'s reply waits for the restore and carries the real result of
@@ -1313,6 +1420,23 @@ fn cli_reply_waits_for_restore(cx: &mut TestAppContext) {
 
 #[cfg(unix)]
 #[gpui::test]
+fn cli_reply_quitting(cx: &mut TestAppContext) {
+    use futures::channel::oneshot;
+    use lucerna_workbench::cli_socket::{CliReply, CliRequest};
+
+    routed(&[], cx);
+    let a = project(cx);
+    open_routed(Vec::new(), Target::Auto, cx);
+    cx.update(router::set_quitting_for_test);
+    let (tx, mut rx) = oneshot::channel();
+    cx.update(|cx| router::answer_cli(CliRequest::new(a, Vec::new()), tx, cx));
+    cx.run_until_parked();
+    assert_eq!(rx.try_recv().unwrap(), Some(CliReply::quitting()));
+    assert!(kinds(cx).is_empty(), "nothing opens");
+}
+
+#[cfg(unix)]
+#[gpui::test]
 fn cli_newer_version_rejected(cx: &mut TestAppContext) {
     use futures::channel::oneshot;
     use lucerna_workbench::cli_socket::{CliReply, CliRequest, PROTOCOL_VERSION};
@@ -1328,7 +1452,7 @@ fn cli_newer_version_rejected(cx: &mut TestAppContext) {
     assert_eq!(
         rx.try_recv().unwrap(),
         Some(CliReply::error(
-            "this Lucerna is older than luc; update Lucerna"
+            "Lucerna was updated. Quit Lucerna and open it again."
         ))
     );
     assert!(kinds(cx).is_empty(), "nothing opens");

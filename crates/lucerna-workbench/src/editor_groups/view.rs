@@ -278,7 +278,7 @@ impl EditorGroupsView {
                 });
                 BarActions {
                     primary: reload,
-                    secondary: keep_mine,
+                    secondary: Some(keep_mine),
                 }
             }
             DiskNotice::Deleted => {
@@ -292,7 +292,17 @@ impl EditorGroupsView {
                 });
                 BarActions {
                     primary: Box::new(close),
-                    secondary: keep,
+                    secondary: Some(keep),
+                }
+            }
+            DiskNotice::Lossy { .. } => {
+                let (docs, p) = (documents, path.clone());
+                let dismiss: ClickHandler = Box::new(move |_, _, cx| {
+                    docs.update(cx, |d, cx| d.dismiss_lossy(&p, cx));
+                });
+                BarActions {
+                    primary: dismiss,
+                    secondary: None,
                 }
             }
         };

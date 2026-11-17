@@ -66,6 +66,7 @@ mod trust;
 pub mod ui;
 mod vim;
 mod vim_indicator;
+mod watch_status;
 mod welcome;
 pub mod window_choice;
 mod window_settings;
@@ -124,10 +125,11 @@ pub use open_commands::{OPEN_IN_BROWSER, Replacement, browser_url};
 pub use open_files::OpenFileWatcher;
 pub use quick_open::{
     QuickOpen, QuickOpenEvent, QuickOpenQuery, RECENT_FILES_LIMIT, RecentFiles, parse_query,
+    resolve_line,
 };
 pub use recent_picker::{RecentPicker, RecentPickerEvent};
 pub use references_view::{ReferencesView, find_references_in_tab};
-pub use save::{SaveOptions, SaveReason};
+pub use save::{SaveOptions, SaveReason, hold_saves_for_test, save_temps};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
 pub use startup::{RestoreWindows, Startup, last_workspace, restore_windows, startup_choice};
 pub use symbols::{
@@ -144,6 +146,7 @@ pub use text_input::{TEXT_INPUT_KEY_CONTEXT, TextInput};
 pub use theme_picker::{ThemePicker, ThemePickerEvent};
 pub use trust::{TrustGeneration, TrustModal, TrustModalEvent, TrustStore};
 pub use vim::VimLayer;
+pub use watch_status::WatchStatusItem;
 pub use welcome::{WELCOME_COMMANDS, WelcomeEvent, WelcomeView};
 pub use window_settings::WindowSettings;
 pub use workbench::{FileOperation, SidebarView, Workbench};

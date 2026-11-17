@@ -316,9 +316,9 @@ fn slots_show_views_and_track_focus(cx: &mut TestAppContext) {
     wb.read_with(cx, |wb, _| {
         assert!(same(wb.sidebar_view(SidebarView::Explorer), &sidebar));
         assert!(same(wb.editor_area(), &editor));
-        // The built-in diagnostics counts, configuration error item and
-        // vim mode indicator come first.
-        let [_, _, _, l] = wb.status_items(StatusBarSide::Left) else {
+        // The built-in diagnostics counts, configuration error item,
+        // file-watching warning and vim mode indicator come first.
+        let [_, _, _, _, l] = wb.status_items(StatusBarSide::Left) else {
             panic!("one left item after the built-in ones")
         };
         // The built-in large-file notice, language server status and

@@ -10,15 +10,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
+use gpui::{Entity, Focusable as _, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, DocState, DocumentEvent, Documents, OpenMode, SaveOptions, SaveReason, Workbench,
-    status_message,
+    AppState, DiskNotice, DocState, DocumentEvent, Documents, OpenMode, SaveOptions, SaveReason,
+    Workbench, status_message,
 };
 use tempfile::TempDir;
 
@@ -280,6 +280,14 @@ fn trim_final_newlines_collapses_to_one(cx: &mut TestAppContext) {
     let (dir, _wb, _view, cx) = editor("a\n\n\n", cx);
     keys("cmd-s", cx);
     assert_eq!(disk(&dir, "file.txt"), "a\n");
+}
+
+#[gpui::test]
+fn trim_final_newlines_empties_a_file_of_blank_lines(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"files.trimFinalNewlines": true}"#));
+    let (dir, _wb, _view, cx) = editor("\n\n\n", cx);
+    keys("cmd-s", cx);
+    assert_eq!(disk(&dir, "file.txt"), "");
 }
 
 #[gpui::test]
@@ -1621,4 +1629,291 @@ fn after_delay_saves_a_renamed_document(cx: &mut TestAppContext) {
     advance(1000, cx);
     assert_eq!(disk(&dir, "new.txt"), "xabc\n");
     assert!(!from.exists(), "the old file is not written again");
+}
+
+#[gpui::test]
+fn after_delay_does_not_recreate_a_file_deleted_before_the_watcher_reports(
+    cx: &mut TestAppContext,
+) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    fs::remove_file(dir.path().join("file.txt")).unwrap(); // no `changed(...)`
+    advance(1000, cx);
+    assert!(!dir.path().join("file.txt").exists());
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert!(cx.pending_prompt().is_none());
+    assert_eq!(message(cx), None);
+    // A save command still makes the file again, as VS Code.
+    keys("cmd-s", cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+}
+
+#[gpui::test]
+fn after_delay_does_not_recreate_a_file_moved_before_the_watcher_reports(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor("abc\n", cx);
+    input("x", cx);
+    fs::rename(dir.path().join("file.txt"), dir.path().join("moved.txt")).unwrap();
+    advance(1000, cx);
+    assert!(!dir.path().join("file.txt").exists());
+    assert_eq!(disk(&dir, "moved.txt"), "abc\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert!(cx.pending_prompt().is_none());
+    assert_eq!(message(cx), None);
+}
+
+/// Keep Mine saves the user's text against the disk it kept, so the
+/// afterDelay timer is armed again: the next save comes a delay later.
+#[gpui::test]
+fn keep_mine_rearms_after_delay(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = conflicted(cx);
+    advance(1000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "disk\n");
+    let docs = documents(&wb, cx);
+    docs.update(cx, |d, cx| d.keep_mine(Path::new("file.txt"), cx));
+    settle(cx);
+    advance(999, cx);
+    assert_eq!(disk(&dir, "file.txt"), "disk\n", "not yet");
+    advance(1, cx);
+    assert_eq!(disk(&dir, "file.txt"), "xabc\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+}
+
+/// Keep Mine with `files.autoSave` off arms no timer: the file stays
+/// unsaved until the user saves it.
+#[gpui::test]
+fn keep_mine_without_auto_save_does_not_save(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = conflicted(cx);
+    let docs = documents(&wb, cx);
+    docs.update(cx, |d, cx| d.keep_mine(Path::new("file.txt"), cx));
+    settle(cx);
+    advance(5000, cx);
+    assert_eq!(disk(&dir, "file.txt"), "disk\n");
+    assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+/// A UTF-8 file with a BOM and a stray Latin-1 byte: its decode is lossy.
+const LOSSY: &[u8] = b"\xEF\xBB\xBFcaf\xE9\n";
+
+/// Like [`editor`], with the file's exact bytes.
+fn editor_bytes<'a>(
+    bytes: &[u8],
+    cx: &'a mut TestAppContext,
+) -> (
+    TempDir,
+    Entity<Workbench>,
+    Entity<CodeView>,
+    &'a mut VisualTestContext,
+) {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("file.txt"), bytes).unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    let view = open(&wb, "file.txt", cx);
+    (dir, wb, view, cx)
+}
+
+fn notice(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<DiskNotice> {
+    let docs = documents(wb, cx);
+    cx.update(|_, cx| docs.read(cx).disk_notice(Path::new("file.txt")))
+}
+
+fn click(selector: &'static str, cx: &mut VisualTestContext) {
+    draw(cx);
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"));
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    settle(cx);
+}
+
+#[gpui::test]
+fn lossy_file_shows_a_bar_until_dismissed(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    assert_eq!(
+        notice(&wb, cx),
+        Some(DiskNotice::Lossy { encoding: "UTF-8" })
+    );
+    assert!(drawn("lossy-bar-dismiss-0", cx));
+    click("lossy-bar-dismiss-0", cx);
+    assert!(!drawn("conflict-bar-0", cx));
+    assert_eq!(notice(&wb, cx), None);
+}
+
+#[gpui::test]
+fn valid_file_shows_no_lossy_bar(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, _view, cx) = editor("abc\n", cx);
+    assert_eq!(notice(&wb, cx), None);
+    assert!(!drawn("conflict-bar-0", cx));
+    let (_dir, wb, _view, cx) = editor_bytes(b"caf\xe9\n", cx);
+    assert_eq!(notice(&wb, cx), None);
+    assert!(!drawn("conflict-bar-0", cx));
+}
+
+#[gpui::test]
+fn reload_that_is_still_lossy_shows_the_bar_again(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    click("lossy-bar-dismiss-0", cx);
+    assert_eq!(notice(&wb, cx), None);
+    fs::write(dir.path().join("file.txt"), b"\xEF\xBB\xBFother \xE9\n").unwrap();
+    changed(&wb, "file.txt", ChangeKind::Modified, cx);
+    assert_eq!(
+        notice(&wb, cx),
+        Some(DiskNotice::Lossy { encoding: "UTF-8" })
+    );
+    fs::write(dir.path().join("file.txt"), b"abc\n").unwrap();
+    changed(&wb, "file.txt", ChangeKind::Modified, cx);
+    assert_eq!(notice(&wb, cx), None);
+}
+
+#[gpui::test]
+fn conflict_bar_wins_over_lossy(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    fs::write(dir.path().join("file.txt"), b"\xEF\xBB\xBFother \xE9\n").unwrap();
+    changed(&wb, "file.txt", ChangeKind::Modified, cx);
+    assert_eq!(notice(&wb, cx), Some(DiskNotice::Conflict { reason: None }));
+    let docs = documents(&wb, cx);
+    docs.update(cx, |d, cx| d.keep_mine(Path::new("file.txt"), cx));
+    settle(cx);
+    assert_eq!(
+        notice(&wb, cx),
+        Some(DiskNotice::Lossy { encoding: "UTF-8" })
+    );
+}
+
+const LOSSY_TITLE: &str = "Save 'file.txt' and replace invalid bytes?";
+const LOSSY_DETAIL: &str =
+    "Bytes that aren't valid UTF-8 will be written as \u{FFFD}. This can't be undone.";
+
+fn lossy_prompt() -> Option<(String, String)> {
+    Some((LOSSY_TITLE.to_string(), LOSSY_DETAIL.to_string()))
+}
+
+fn bytes(dir: &TempDir) -> Vec<u8> {
+    fs::read(dir.path().join("file.txt")).unwrap()
+}
+
+#[gpui::test]
+fn save_of_lossy_file_asks_and_cancel_writes_nothing(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    keys("cmd-s", cx);
+    assert_eq!(cx.pending_prompt(), lossy_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(bytes(&dir), LOSSY);
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert!(!cx.has_pending_prompt());
+}
+
+#[gpui::test]
+fn save_answered_writes_replacement_and_asks_no_more(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    keys("cmd-s", cx);
+    assert_eq!(cx.pending_prompt(), lossy_prompt());
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    assert_eq!(bytes(&dir), b"\xEF\xBB\xBFxcaf\xEF\xBF\xBD\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+    assert_eq!(notice(&wb, cx), None);
+    input("y", cx);
+    keys("cmd-s", cx);
+    assert!(!cx.has_pending_prompt());
+    // The cursor sits after the `x` typed first.
+    assert_eq!(bytes(&dir), b"\xEF\xBB\xBFxycaf\xEF\xBF\xBD\n");
+}
+
+#[gpui::test]
+fn save_all_and_save_without_formatting_ask_too(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    run(&wb, "workbench.action.files.saveAll", cx);
+    assert_eq!(cx.pending_prompt(), lossy_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    run(&wb, "workbench.action.files.saveWithoutFormatting", cx);
+    assert_eq!(cx.pending_prompt(), lossy_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(bytes(&dir), LOSSY);
+    assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn close_tab_save_asks_about_invalid_bytes(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    // Only the tab holds the view, so closing it closes the document.
+    drop(view);
+    close_active(&wb, cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((close_message("file.txt"), CLOSE_DETAIL.to_string()))
+    );
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    assert_eq!(cx.pending_prompt(), lossy_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(tabs(&wb, cx).concat().len(), 1, "the tab stays open");
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert_eq!(bytes(&dir), LOSSY);
+}
+
+#[gpui::test]
+fn auto_save_skips_a_lossy_file(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    advance(1000, cx);
+    settle(cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(bytes(&dir), LOSSY);
+    assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn lossy_shift_jis_save_reports_unencodable(cx: &mut TestAppContext) {
+    init(cx, None);
+    // Shift_JIS text with a lone 0xFD, which encoding_rs cannot decode.
+    let mut sjis = encoding_rs::SHIFT_JIS
+        .encode(&"日本語のテキストです。\n".repeat(20))
+        .0
+        .into_owned();
+    sjis.extend_from_slice(b"\xFD\n");
+    let (dir, wb, _view, cx) = editor_bytes(&sjis, cx);
+    input("x", cx);
+    keys("cmd-s", cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((
+            LOSSY_TITLE.to_string(),
+            "Bytes that aren't valid Shift_JIS will be written as \u{FFFD}. This can't be undone."
+                .to_string()
+        ))
+    );
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    // U+FFFD has no Shift_JIS form (spec §7): the save fails as before.
+    let message = message(cx).expect("a failure message");
+    assert!(
+        message
+            .starts_with("Failed to save 'file.txt': Shift_JIS cannot encode the character at Ln "),
+        "{message}"
+    );
+    assert_eq!(bytes(&dir), sjis);
+    assert!(is_dirty(&wb, "file.txt", cx));
 }

@@ -15,7 +15,7 @@ Ngày: 2026-11-15. Spec: [2026-11-15-release-flow-review-design.md](../specs/202
 | P2 (sai nhưng có cách khác) | 14, đều đã sửa trên nhánh `claude/p2-fixes` |
 | P3 (nhỏ) | 21 (13 cũ, 8 mới) |
 
-Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được sửa trong lần merge multi-window. T2-1 đã sửa bằng hot exit; T2-2, T2-3, T3-2, T3-4, T3-5, T4-1, T4-2, T5-2, T5-3, T5-6, M1-1, M2-1, M3-1, M3-2 (và M2-2) đã sửa trên nhánh `claude/p2-fixes`. Các mục P3 còn lại chưa sửa.
+Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được sửa trong lần merge multi-window. T2-1 đã sửa bằng hot exit; T2-2, T2-3, T3-2, T3-4, T3-5, T4-1, T4-2, T5-2, T5-3, T5-6, M1-1, M2-1, M3-1, M3-2 (và M2-2) đã sửa trên nhánh `claude/p2-fixes`. Mọi mục còn lại (T1-1 và các P3: T1-2, T1-3, T1-5, T1-6, T1-7, T2-4, T2-5, T3-3, T4-4, T4-5, T5-1, T5-4, T5-5, M1-2, M1-3, M1-4, M1-5, M1-6, M2-3, M3-4) đã sửa trên nhánh `claude/p3-fixes`, theo [spec](../specs/2026-11-17-p3-fixes-design.md). Không còn mục nào chưa sửa.
 
 **Nên sửa trước release:**
 - **T2-1 [P0]:** Quit từ Dock, Log Out hoặc Restart máy thoát ngay mà không hỏi lưu, nên mất thay đổi chưa lưu.
@@ -35,6 +35,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Nguyên nhân:** `decode_without_bom_handling` bỏ cờ `had_errors`.
 - **Mức độ:** theo thang của spec, đổi byte người dùng không sửa là hỏng dữ liệu, nên xếp P0. Lỗi hiếm gặp: file UTF-8 hợp lệ và file Latin-1 không bị ảnh hưởng, và VS Code cũng ghi U+FFFD. Agent kiểm chứng đề xuất P2 vì lý do đó.
 - **Hướng sửa:** dùng `had_errors` để cảnh báo, hoặc mở chỉ đọc.
+- **Đã sửa** (commit 85d3211, 24ea121, d661116, e93a21d): giải mã báo cờ byte không hợp lệ, editor cảnh báo bằng thanh trên file, lần lưu đầu hỏi trước khi thay byte hỏng bằng U+FFFD, và cờ này được giữ trong bản sao lưu hot exit.
 
 ### T2-1 [P0] Thoát từ Dock, Log Out/Restart hoặc AppleScript bỏ qua hộp thoại lưu
 
@@ -179,6 +180,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** đặt `files.autoSave: afterDelay`, rồi gõ vào `a.rs`. Agent chạy `rm a.rs` đúng lúc timer sắp nổ. File `a.rs` xuất hiện lại.
 - **Nguyên nhân:** `changed_on_disk` coi NotFound là "không đổi". Vì vậy autosave chạy trong khoảng 50–150 ms trước khi watcher báo sẽ ghi lại file. Kết quả: `rm` của agent bị huỷ, còn `mv` thì sinh ra file trùng.
 - **Hướng sửa:** với `SaveReason::Auto`, gặp NotFound thì không ghi.
+- **Đã sửa** (commit 400054a): autosave gặp file đã bị xoá thì không ghi lại.
 
 ### T1-3 [P3] Stamp sau khi lưu lấy sau bước rename
 
@@ -186,6 +188,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Vị trí:** [save.rs:263](../../../crates/lucerna-workbench/src/save.rs).
 - **Tái hiện:** Cmd+S, agent ghi file trong vài micro giây sau bước rename, rồi người dùng lưu lại trước khi watcher báo. Bản của agent bị ghi đè mà không hỏi. Gần như chỉ xảy ra trên lý thuyết.
 - **Hướng sửa:** lấy metadata từ file handle của file tạm trước khi rename.
+- **Đã sửa** (commit e5f0ed9): stamp sau khi lưu lấy từ file handle của file tạm, trước bước rename.
 
 ### T1-5 [P3] Tên file dài hơn khoảng 241 byte thì không lưu được
 
@@ -194,6 +197,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** mở file có tên 245 byte, sửa, Cmd+S. Status bar báo "File name too long".
 - **Nguyên nhân:** tên file tạm `.{name}.luc~XXXXXXXX` dài hơn tên gốc 14 byte.
 - **Hướng sửa:** cắt ngắn hoặc hash phần tên trong tên file tạm.
+- **Đã sửa** (commit 90cb304): tên file tạm được giữ trong 255 byte.
 
 ### T1-6 [P3] Sau Keep Mine, autosave không được hẹn lại
 
@@ -201,6 +205,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Vị trí:** [documents.rs:1063](../../../crates/lucerna-workbench/src/documents.rs), [save.rs:404](../../../crates/lucerna-workbench/src/save.rs).
 - **Tái hiện:** đặt autoSave afterDelay. Gõ vào file, agent ghi đè cùng dòng nên thành conflict. Chờ quá thời gian delay rồi bấm Keep Mine. Không có lần lưu nào chạy cho tới lần gõ tiếp theo; tab vẫn có chấm "chưa lưu".
 - **Hướng sửa:** hẹn lại timer khi nhận `ConflictChanged{conflict:false}` mà văn bản vẫn chưa lưu.
+- **Đã sửa** (commit 2391aad): Keep Mine hẹn lại autosave afterDelay.
 
 ### T1-7 [P3] `files.trimFinalNewlines` với file toàn dòng trống còn lại `\n`
 
@@ -209,6 +214,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** bật `files.trimFinalNewlines`, lưu file có nội dung `\n\n\n`. File còn lại `\n`.
 - **Ghi chú:** VS Code cho ra file rỗng; agent nói chắc khoảng 80%. Test hiện tại khẳng định hành vi `\n`.
 - **Hướng sửa:** đối chiếu với `TrimFinalNewLinesParticipant` của VS Code.
+- **Đã sửa** (commit 404b591): file toàn dòng trống giờ ra file rỗng, như VS Code.
 
 ### T2-4 [P3] Cmd+Q chọn Don't Save khi đang ghi thì để lại file tạm `.name.luc~XXXX`
 
@@ -217,6 +223,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** Cmd+S một file lớn, Cmd+Q ngay, chọn Don't Save. Còn lại file `.<tên>.luc~xxxxxxxx` cạnh file gốc.
 - **Ghi chú:** file gốc vẫn nguyên. Ngoại lệ hiếm: file có hardlink đi qua `write_in_place`, khi đó file có thể bị cụt.
 - **Hướng sửa:** trước khi thoát, đợi các lần lưu đang chạy xong.
+- **Đã sửa** (commit a4ceb09): khi thoát, đợi tối đa 5 s cho các lần lưu đang chạy rồi xoá file tạm của chúng.
 
 ### T2-5 [P3] New File với tên `foo/` tạo file thay vì folder
 
@@ -225,6 +232,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** Explorer → New File → gõ `components/` → Enter. Kết quả là file rỗng tên `components`.
 - **Ghi chú:** VS Code tạo folder trong trường hợp này. Agent chưa kiểm lại trong source VS Code.
 - **Hướng sửa:** tên kết thúc bằng dấu phân cách thì coi là New Folder.
+- **Đã sửa** (commit d48a109): tên kết thúc bằng `/` tạo folder, như VS Code; `a/b/c.rs` tạo cả folder trung gian (đã đúng từ trước, nay có test).
 
 ### T3-3 [P3] Mục recent không còn tồn tại bị xoá vĩnh viễn ở lần ghi kế tiếp
 
@@ -233,6 +241,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Tái hiện:** mở `/Volumes/SSD/proj`, rút ổ, mở folder khác, rồi cắm lại ổ. `proj` đã mất khỏi danh sách recent.
 - **Ghi chú:** đây là hành vi cố ý theo doc comment, nhưng khác VS Code.
 - **Hướng sửa:** chỉ lọc các mục không tồn tại lúc hiển thị, không lọc lúc ghi.
+- **Đã sửa** (commit 30d9e37, 7bae7da): danh sách recent giữ mục không còn trên đĩa, nên Welcome, Open Recent và menu hiện mọi mục. Chọn mục không còn thì nó bị gỡ khỏi danh sách và hiện hộp thoại "Path does not exist" / "The path '…' does not exist on this computer." chỉ có nút OK, như VS Code; menu khi không có cửa sổ nào thì gỡ mà không báo.
 
 ### T4-4 [P3] Watcher không khởi động được thì chỉ ghi log
 
@@ -240,6 +249,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Vị trí:** [worktree.rs:312](../../../crates/lucerna-project/src/worktree.rs), [git/mod.rs:762](../../../crates/lucerna-workbench/src/git/mod.rs).
 - **Tái hiện:** watcher của worktree hoặc của `.git` không khởi động được, ví dụ trên volume mạng, hoặc hết inotify watch trên Linux. Auto-reload và màu git ngừng hoạt động mà không có thông báo nào. Trên macOS hiếm gặp.
 - **Hướng sửa:** hiện thông báo trên status bar.
+- **Đã sửa** (commit 328019d, 43bd55f, 021390d): watcher của worktree hoặc của `.git` không khởi động được thì status bar hiện icon cảnh báo, tooltip "File watching is off for <folder>: <reason>. Changes made outside Lucerna won't show."
 
 ### T4-5 [P3] File bị ignore có thư mục cha bị xoá rồi tạo lại có thể không được watch lại
 
@@ -254,6 +264,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
   Kết quả: tab vẫn ở trạng thái Deleted.
 - **Ghi chú:** một lần Rescanned sẽ tự cứu được.
 - **Hướng sửa:** watch thư mục tổ tiên gần nhất còn tồn tại.
+- **Đã sửa** (commit 3314e15, 288c127, df6711d, caf3dfe): watcher của file đang mở theo dõi thư mục tổ tiên gần nhất còn tồn tại và chuyển xuống khi thư mục cha xuất hiện lại; file đã được ghi lúc đó cũng được báo.
 
 ### T5-1 [P3] Click kết quả search vượt cuối file để lại observer, về sau con trỏ nhảy
 
@@ -267,6 +278,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 
   Con trỏ nhảy một lần về dòng 100.
 - **Hướng sửa:** khi doc đã Ready mà dòng không còn tồn tại thì gỡ observer.
+- **Đã sửa** (commit 08ba3d4): dòng không còn tồn tại thì con trỏ về dòng cuối một lần, bỏ highlight và observer bị gỡ; observer cũng bị gỡ khi doc load lỗi, nên reload về sau không highlight lại. (File không đọc được mà sau đó đọc được thì cú nhảy tới dòng của lần mở ban đầu vẫn chạy, vì đó là yêu cầu mở hoàn tất, không phải observer.)
 
 ### T5-4 [P3] Quick Open không nhận `:-N` và `:N,M`
 
@@ -274,6 +286,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Vị trí:** [quick_open/query.rs:42](../../../crates/lucerna-workbench/src/quick_open/query.rs).
 - **Tái hiện:** Cmd+P, gõ `:-1` hoặc `:12,5`, rồi Enter. Không có gì xảy ra. `:N` và `:N:M` thì vẫn chạy.
 - **Hướng sửa:** parse `i64`, số âm thì tính từ cuối file; tách phần dòng/cột theo `[:,#]`.
+- **Đã sửa** (commit 5e87b50): `:-N` đếm từ cuối file; dòng và cột tách bằng `:`, `,` hoặc `#`; dòng kẹp vào `[1, số dòng]` như VS Code. Áp dụng khi Vim tắt.
 
 ### T5-5 [P3] Tìm trong project bằng regex có `$` không khớp file CRLF
 
@@ -281,6 +294,7 @@ Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được s�
 - **Vị trí:** [search.rs:122](../../../crates/lucerna-project/src/search.rs).
 - **Tái hiện:** file CRLF có dòng `foo`. Bật regex, tìm `foo$`: không có kết quả. Cmd+F trong chính file đó thì tìm thấy.
 - **Hướng sửa:** thêm `.crlf(true)` vào `RegexMatcherBuilder`.
+- **Đã sửa** (commit 45319d7): matcher regex được dựng với `multi_line(true)`, `crlf(true)` và `line_terminator(Some(b'\n'))`, searcher giữ nguyên LF. `$` và `^` khớp ở cả `\r\n` lẫn `\n`; file LF và tìm literal không đổi.
 
 ## Bổ sung: phần merge multi-window (`d765a50`)
 
@@ -346,12 +360,16 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 
 ### M1-2 [P3] `luc` đúng lúc app đang thoát thì báo lỗi thay vì mở app mới
 
+- **Đã sửa** (commit c315fe7, 8c5162b): phần EOF đã sửa cùng M1-1; app đang thoát trả `status: "quitting"`, `luc` claim lại mỗi 100 ms tối đa 5 s rồi mở trong app mới.
+
 - **Flow:** mở bằng `luc`.
 - **Vị trí:** [cli_socket.rs:478](../../../crates/lucerna-workbench/src/cli_socket.rs), [app.rs:146](../../../crates/lucerna-workbench/src/app.rs).
 - **Tái hiện:** Cmd+Q, rồi trong lúc app đang tắt gõ `luc ~/proj`. `luc` in "Lucerna is quitting" hoặc "no reply", thoát với mã 1.
 - **Hướng sửa:** phía client coi "quitting" và EOF là tín hiệu claim lại socket.
 
 ### M1-3 [P3] App bận quá 5 giây: nếu việc mở sau đó thất bại thì không có thông báo
+
+- **Đã sửa** (commit 68ff94f, 6223843): `luc` đã thôi đợi ("will open when ready") mà việc mở sau đó thất bại thì hiện status message "Could not open …" trong cửa sổ dùng gần nhất; `luc` còn đợi thì lỗi chỉ in ra terminal.
 
 - **Flow:** mở bằng `luc` trong lúc app đang khôi phục cửa sổ.
 - **Vị trí:** [router.rs:460](../../../crates/lucerna-workbench/src/router.rs).
@@ -360,6 +378,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 - **Hướng sửa:** hiện status message cả với `Source::Cli`.
 
 ### M1-4 [P3] Không dùng được socket thì app chạy ngay trong terminal; đóng terminal là mất file chưa lưu
+
+- **Đã sửa** (commit 6f920e3): không dùng được socket thì `luc` vẫn khởi động app tách khỏi terminal (không socket), cảnh báo rồi thoát 0.
 
 - **Flow:** `luc` khi thư mục data thuộc user khác, hoặc khi không có HOME.
 - **Vị trí:** [main.rs:160](../../../crates/lucerna/src/main.rs).
@@ -372,6 +392,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 
 ### M1-5 [P3] Tên socket chứa version: sau khi cập nhật mà app cũ còn chạy thì có hai app
 
+- **Đã sửa** (commit 2aab070): socket là `luc.sock` / `luc-dev.sock`; giao thức mới hơn app thì báo "Lucerna was updated. Quit Lucerna and open it again."
+
 - **Flow:** cập nhật Lucerna.
 - **Vị trí:** [cli_socket.rs:136](../../../crates/lucerna-workbench/src/cli_socket.rs).
 - **Tái hiện:** app 0.1.0 đang chạy, cài 0.1.1, chạy `luc ~/proj`: một process thứ hai mở ra. Process nào thoát sau thì `windows.json` chỉ giữ cửa sổ của process đó.
@@ -379,6 +401,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 - **Hướng sửa:** giữ hậu tố `-dev` nhưng bỏ version khỏi tên socket (giao thức đã có trường `version`).
 
 ### M1-6 [P3] `luc --trace-startup`/`--foreground` khi app cùng bản đang chạy chỉ chuyển request
+
+- **Đã sửa** (commit ba9e4c7): socket đã bị giữ thì `--trace-startup` báo "Lucerna is already running; quit it to measure startup.", `--foreground` báo "Lucerna is already running; quit it to run in the foreground.", cả hai thoát 1; tiến trình con của `luc` dùng cờ ẩn `--detached-child`.
 
 - **Flow:** công cụ dev và bench.
 - **Vị trí:** [main.rs:143](../../../crates/lucerna/src/main.rs).
@@ -397,6 +421,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 
 ### M2-3 [P3] Bấm Dock trong lúc app đang khôi phục cửa sổ thì có thêm một cửa sổ Welcome
 
+- **Đã sửa** (commit 5ceaff2): `reopen()` bỏ qua khi đang restore.
+
 - **Flow:** khởi động app.
 - **Vị trí:** [router.rs:577](../../../crates/lucerna-workbench/src/router.rs).
 - **Tái hiện:** `windows.json` có 2 folder. Bấm icon Lucerna để khởi động, rồi bấm lần nữa ngay. Kết quả là 2 cửa sổ folder và 1 cửa sổ Welcome thừa.
@@ -404,6 +430,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 - **Hướng sửa:** `reopen()` bỏ qua khi đang `restoring`.
 
 ### M3-4 [P3] Hai cửa sổ dùng chung thư mục data của jdtls khi project root trùng nhau
+
+- **Đã sửa** (commit 24a2628): `{data_dir}` có thêm slot (số nhỏ nhất chưa dùng cho cùng server và root); cửa sổ đầu tiên luôn slot 0, giữ thư mục cũ.
 
 - **Flow:** language server ở hai cửa sổ có root lồng nhau.
 - **Vị trí:** [lifecycle.rs:594](../../../crates/lucerna-workbench/src/language_servers/lifecycle.rs), [vars.rs:126](../../../crates/lucerna-lsp/src/vars.rs).

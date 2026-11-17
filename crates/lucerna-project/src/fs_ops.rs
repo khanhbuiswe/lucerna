@@ -88,6 +88,13 @@ pub fn split_components<'a>(name: &'a str, seps: &[char]) -> Result<Vec<&'a str>
     Ok(out)
 }
 
+/// True when a New File name ends in `/` (ignoring trailing whitespace), which
+/// makes it a folder. This is VS Code's behaviour (`openExplorerAndCreate`);
+/// only `/` counts, not `\`.
+pub fn names_folder(name: &str) -> bool {
+    name.trim_end().ends_with('/')
+}
+
 /// Validates `name` (possibly multi-level, split on `/`) under `parent`.
 pub fn validate_new_name(
     parent: &Path,

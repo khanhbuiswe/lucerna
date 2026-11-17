@@ -244,6 +244,59 @@ fn new_file_creates_and_opens(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn new_file_trailing_slash_creates_folder(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    right_click("explorer-row-src", cx);
+    click("context-menu-item-explorer.newFile", cx);
+    type_text(cx, "components/");
+    keys("enter", cx);
+    let root = root_of(&wb, cx);
+    wait_until(cx, |_| root.join("src/components").is_dir());
+    deliver_added(&wb, &["src/components"], cx);
+    assert!(!editing(&wb, cx));
+    assert!(tabs(&wb, cx).is_empty());
+    assert!(expanded(&wb, "src/components", cx));
+    assert_eq!(
+        selection(&wb, cx),
+        Selection::Path(Arc::from(Path::new("src/components")))
+    );
+}
+
+#[gpui::test]
+fn new_file_trailing_slash_multi_level_creates_folders(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-root", cx);
+    run(&wb, "explorer.newFile", cx);
+    type_text(cx, "a/b/");
+    keys("enter", cx);
+    let root = root_of(&wb, cx);
+    wait_until(cx, |_| root.join("a/b").is_dir());
+    deliver_added(&wb, &["a", "a/b"], cx);
+    assert!(tabs(&wb, cx).is_empty());
+    assert!(expanded(&wb, "a", cx));
+    assert!(expanded(&wb, "a/b", cx));
+}
+
+#[gpui::test]
+fn new_file_multi_level_creates_parents(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    click("explorer-root", cx);
+    run(&wb, "explorer.newFile", cx);
+    type_text(cx, "x/y/z.rs");
+    keys("enter", cx);
+    let root = root_of(&wb, cx);
+    wait_until(cx, |_| root.join("x/y/z.rs").is_file());
+    deliver_added(&wb, &["x", "x/y", "x/y/z.rs"], cx);
+    assert_eq!(tabs(&wb, cx), [(PathBuf::from("x/y/z.rs"), true)]);
+}
+
+#[gpui::test]
 fn new_folder_multi_level(cx: &mut TestAppContext) {
     init(cx);
     let dir = project();

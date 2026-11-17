@@ -48,7 +48,7 @@ for manual opening in `luc`.
 
 | Target | How to measure | Result |
 |---|---|---|
-| First frame | `target/release/luc --trace-startup /tmp/lucerna-bench` prints `startup_ms=<n>` on stderr (also logged as `first frame painted`). Run once cold (after `sudo purge`) and a few times warm. | **147 ms** warm (145–160 ms over 4 runs); 704 ms on the very first launch right after the build (cold disk cache). 2026-11-09, release build. |
+| First frame | `target/release/luc --trace-startup /tmp/lucerna-bench` prints `startup_ms=<n>` on stderr (also logged as `first frame painted`). Run once cold (after `sudo purge`) and a few times warm. If your own Lucerna is open (the same build channel shares `luc.sock`), `luc --trace-startup` exits 1 with "Lucerna is already running; quit it to measure startup."; quit Lucerna first, or run with a separate `HOME`. | **147 ms** warm (145–160 ms over 4 runs); 704 ms on the very first launch right after the build (cold disk cache). 2026-11-09, release build. |
 | Tree usable, scan done | See "Commands" below: `first scan progress` is the tree usable, `scan complete` is scan done; both carry `scan_ms`, the ms since the worktree started (first scan only). | **58 ms** to first tree batch, **1215 ms** scan complete on the 80,001-file bench repo. 2026-11-09, release build. |
 | Quick Open | `fuzzy_80k` bench, per call. | see table above |
 | Scrolling 120 fps | Open `/tmp/lucerna-bench/big.rs`, then Instruments > Core Animation (FPS), attach to `luc` and hold a trackpad scroll or Page Down. Expect a steady 120 fps on a ProMotion display. | pending |

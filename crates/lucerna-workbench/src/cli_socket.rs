@@ -5,6 +5,10 @@
 //! the app and passes the listener to `app::run`, which [`serve`]s it on a
 //! thread; a later `luc` finds the socket taken, connects and [`send`]s
 //! its request instead of starting a second app.
+//!
+//! A client keeps the connection open, without half-closing its write
+//! side, until the reply arrives. Closing it means "stopped waiting" and
+//! gets no reply.
 
 use std::fmt;
 use std::fs::{DirBuilder, Permissions};
@@ -15,13 +19,15 @@ use std::os::unix::fs::{
 };
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::channel::{mpsc, oneshot};
+use futures::future::{self, Either};
 use serde::{Deserialize, Serialize};
 
 /// The version of the protocol this build speaks. A request of a newer
-/// version is answered with an error asking to update the app.
+/// version is answered with an error asking to quit and reopen the app,
+/// which was updated since it started.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// How long a client waits to connect to a socket that is bound.
@@ -30,6 +36,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// The longest request line the app reads.
 const MAX_REQUEST_BYTES: u64 = 1 << 20;
+/// How long [`claim_and_send`] waits between claims while the app quits.
+const QUIT_RETRY_EVERY: Duration = Duration::from_millis(100);
+/// How long it keeps claiming before it gives the quitting reply back.
+const QUIT_WAIT: Duration = Duration::from_secs(5);
 /// `sun_path` holds 104 bytes on macOS (108 on Linux); longer paths are
 /// replaced by one in the temporary directory.
 const MAX_SOCKET_PATH: usize = 100;
@@ -52,7 +62,7 @@ pub struct CliRequest {
     /// With no `paths`: bring the app forward as a click on its Dock icon
     /// does (spec M9) instead of opening `cwd`. Sent by `luc` in `/` with
     /// no path. The protocol stays at version 1: an app without the field
-    /// ignores it, and the socket is per build anyway.
+    /// ignores it.
     #[serde(default)]
     pub activate: bool,
 }
@@ -88,12 +98,24 @@ impl CliRequest {
     }
 }
 
+/// Why an app refused a request, for a `luc` that can act on it. Added
+/// after protocol version 1 without raising it: an older `luc` ignores the
+/// field and prints `error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyStatus {
+    /// The app is quitting and will not open anything (M1-2).
+    Quitting,
+}
+
 /// The app's answer once it opened (or failed to open) the paths.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliReply {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ReplyStatus>,
 }
 
 impl CliReply {
@@ -101,6 +123,7 @@ impl CliReply {
         CliReply {
             ok: true,
             error: None,
+            status: None,
         }
     }
 
@@ -108,7 +131,22 @@ impl CliReply {
         CliReply {
             ok: false,
             error: Some(message.into()),
+            status: None,
         }
+    }
+
+    /// The answer of an app that is quitting. Its `error` is the text an
+    /// older `luc` prints.
+    pub fn quitting() -> CliReply {
+        CliReply {
+            status: Some(ReplyStatus::Quitting),
+            ..CliReply::error("Lucerna is quitting")
+        }
+    }
+
+    /// Whether the app said it is quitting.
+    pub fn is_quitting(&self) -> bool {
+        self.status == Some(ReplyStatus::Quitting)
     }
 }
 
@@ -125,17 +163,19 @@ impl From<Result<(), String>> for CliReply {
 /// one from a newer `luc`. `None` when it can.
 pub fn reply_for_version(version: u32) -> Option<CliReply> {
     (version > PROTOCOL_VERSION)
-        .then(|| CliReply::error("this Lucerna is older than luc; update Lucerna"))
+        .then(|| CliReply::error("Lucerna was updated. Quit Lucerna and open it again."))
 }
 
-/// The socket in `data_dir`: `luc-<version>.sock`, `luc-<version>-dev.sock`
-/// for a debug build, so a dev build never hands paths to the release the
-/// user runs. A path too long for `sun_path` is replaced by one in a
-/// folder only this user can use ([`fallback_dir`]), named by a hash of
-/// the full path.
+/// The socket in `data_dir`: `luc.sock`, `luc-dev.sock` for a debug build,
+/// so a dev build never hands paths to the release the user runs. The name
+/// has no version: every version of a build channel shares one socket, so
+/// updating Lucerna while the old app runs never makes a second app, and
+/// the protocol `version` tells them apart. A path too long for `sun_path`
+/// is replaced by one in a folder only this user can use
+/// ([`fallback_dir`]), named by a hash of the full path.
 pub fn socket_path(data_dir: &Path) -> PathBuf {
     let dev = if cfg!(debug_assertions) { "-dev" } else { "" };
-    let name = format!("luc-{}{dev}.sock", env!("CARGO_PKG_VERSION"));
+    let name = format!("luc{dev}.sock");
     let path = data_dir.join(name);
     if path.as_os_str().len() <= MAX_SOCKET_PATH {
         return path;
@@ -476,11 +516,35 @@ pub enum Handed {
 /// read (the listener closed with it in its backlog) or the app died
 /// before replying. And a path that is open already is only focused
 /// (§6.3, rule 1).
+///
+/// An app that answers [`CliReply::quitting`] is still bound to the
+/// socket for a moment. It is claimed again every [`QUIT_RETRY_EVERY`]
+/// for up to [`QUIT_WAIT`] (M1-2; the limit bounds when the last retry
+/// starts, not the total time, as each send may wait up to `timeout`),
+/// until the app is gone and this process binds, or a new app answers;
+/// after that the reply is returned as is.
 pub fn claim_and_send(path: &Path, request: &CliRequest, timeout: Duration) -> Handed {
+    claim_and_send_with(path, request, timeout, QUIT_WAIT)
+}
+
+fn claim_and_send_with(
+    path: &Path,
+    request: &CliRequest,
+    timeout: Duration,
+    quit_wait: Duration,
+) -> Handed {
+    let started = Instant::now();
     let mut again = true;
     loop {
         match claim(path) {
             Claim::Client(stream) => match send(stream, request, timeout) {
+                Ok(reply) if reply.is_quitting() && started.elapsed() < quit_wait => {
+                    tracing::info!(
+                        path = %path.display(),
+                        "the app is quitting; claiming the luc socket again"
+                    );
+                    std::thread::sleep(QUIT_RETRY_EVERY);
+                }
                 Err(SendError::Dropped(err)) if again => {
                     tracing::info!(
                         err,
@@ -524,17 +588,44 @@ pub fn serve(listener: UnixListener, tx: mpsc::UnboundedSender<CliMessage>) {
 }
 
 /// Answers one connection: one request line, one reply line. A process
-/// of another user is refused before anything is read.
+/// of another user is refused before anything is read. A peer that closes
+/// the connection before the reply is ready has stopped waiting and gets
+/// no reply (M1-3).
 fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
     let allowed = peer_allowed(peer_uid(&stream), euid());
     let reply = match allowed.and_then(|()| read_request(&stream)) {
-        Ok(request) => {
+        // A probe: `luc` connected only to see that an app answers (it
+        // refuses `--foreground`) and closed without a byte. Nothing to
+        // answer, nothing worth a warning.
+        Ok(None) => {
+            tracing::debug!("luc socket: a connection closed without a request");
+            return;
+        }
+        Ok(Some(request)) => {
+            // A dropped reply sender also covers the router discarding the
+            // request for another reason than quitting. Answering
+            // `quitting` is safe then: `luc` sends again, and opening a
+            // path twice only focuses it (§6.3, rule 1).
             let (reply_tx, reply_rx) = oneshot::channel();
+            // Watch before the router can see the request, so a hangup
+            // is never missed.
+            let gone = hangup(&stream);
             if tx.unbounded_send((request, reply_tx)).is_err() {
-                CliReply::error("Lucerna is quitting")
+                CliReply::quitting()
             } else {
-                futures::executor::block_on(reply_rx)
-                    .unwrap_or_else(|_| CliReply::error("Lucerna is quitting"))
+                match futures::executor::block_on(future::select(reply_rx, gone)) {
+                    Either::Left((reply, _)) => reply.unwrap_or_else(|_| CliReply::quitting()),
+                    // Dropping the reply receiver tells the router that
+                    // `luc` stopped waiting; the open goes on, and a
+                    // failure is shown in the app (M1-3).
+                    Either::Right((Ok(()), _)) => {
+                        tracing::info!("luc stopped waiting; the open goes on");
+                        return;
+                    }
+                    // No watcher (see `hangup`): wait for the reply alone.
+                    Either::Right((Err(_), reply_rx)) => futures::executor::block_on(reply_rx)
+                        .unwrap_or_else(|_| CliReply::quitting()),
+                }
             }
         }
         Err(err) => CliReply::error(err),
@@ -544,6 +635,49 @@ fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
     if let Err(err) = stream.write_all(format!("{line}\n").as_bytes()) {
         tracing::warn!(%err, "luc socket: could not reply");
     }
+    // Wakes the `hangup` thread, whose clone keeps the connection open.
+    stream.shutdown(std::net::Shutdown::Both).ok();
+}
+
+/// Resolves when the peer of `stream` has closed its end (M1-3). Starts
+/// after the request line was read, so the byte it reads is never one the
+/// request needs: `luc` sends nothing more. The thread ends with the
+/// connection, which closes when [`answer`] returns or the peer hangs up.
+/// Without a watcher it is canceled at once, and [`answer`] then waits
+/// for the reply alone (as before).
+fn hangup(stream: &UnixStream) -> oneshot::Receiver<()> {
+    let (tx, rx) = oneshot::channel();
+    // The timeout belongs to the socket, so it applies to every clone too.
+    // On macOS this fails with EINVAL once the peer has fully closed; the
+    // watcher then still starts, and its read returns at once.
+    stream.set_read_timeout(None).ok();
+    let Ok(mut watched) = stream.try_clone() else {
+        return rx;
+    };
+    let spawned = std::thread::Builder::new()
+        .name("luc-hangup".into())
+        .spawn(move || {
+            let mut byte = [0u8; 1];
+            loop {
+                match watched.read(&mut byte) {
+                    Ok(0) => break,
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut
+                        ) => {}
+                    // Bytes `luc` should not send are skipped; any other
+                    // error means the connection is gone.
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            tx.send(()).ok();
+        });
+    if spawned.is_err() {
+        tracing::warn!("luc socket: could not watch for a hangup");
+    }
+    rx
 }
 
 /// The user id of the process at the other end of `stream`.
@@ -602,15 +736,21 @@ fn peer_allowed(peer: io::Result<u32>, ours: u32) -> Result<(), String> {
     }
 }
 
-fn read_request(stream: &UnixStream) -> Result<CliRequest, String> {
-    stream
-        .set_read_timeout(Some(READ_TIMEOUT))
-        .map_err(|err| format!("socket: {err}"))?;
+/// `Ok(None)` when the peer closed the connection without sending a byte.
+fn read_request(stream: &UnixStream) -> Result<Option<CliRequest>, String> {
+    // A socket that refuses the option (macOS, EINVAL) has lost its peer;
+    // the read below then returns 0 bytes, which is a quiet probe.
+    stream.set_read_timeout(Some(READ_TIMEOUT)).ok();
     let mut line = String::new();
     BufReader::new(stream.take(MAX_REQUEST_BYTES))
         .read_line(&mut line)
         .map_err(|err| format!("could not read the request: {err}"))?;
-    serde_json::from_str(&line).map_err(|err| format!("bad request: {err}"))
+    if line.is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_str(&line)
+        .map(Some)
+        .map_err(|err| format!("bad request: {err}"))
 }
 
 #[cfg(test)]
@@ -618,6 +758,8 @@ mod tests {
     use futures::StreamExt as _;
 
     use std::sync::{Arc, Barrier};
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -699,6 +841,45 @@ mod tests {
     }
 
     #[test]
+    fn a_probe_that_sends_nothing_gets_no_reply() {
+        let (_dir, path, mut rx) = serve_one();
+        let mut stream = UnixStream::connect(&path).unwrap();
+        // Closes its write end without a byte, as `luc --foreground` does
+        // when it only checks that an app is running.
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = String::new();
+        stream.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "", "a probe gets no reply");
+        assert!(rx.try_recv().is_err(), "no request reached the router");
+    }
+
+    #[test]
+    fn a_probe_closed_before_accept_gets_no_reply() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(Bound { listener, .. }) = claim(&path) else {
+            panic!("binds");
+        };
+        // The connection waits in the backlog already fully closed.
+        drop(UnixStream::connect(&path).unwrap());
+        let (tx, mut rx) = mpsc::unbounded::<CliMessage>();
+        serve(listener, tx);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(rx.try_recv().is_err(), "no request reached the router");
+    }
+
+    #[test]
+    fn a_hangup_before_the_router_looks_cancels_the_reply() {
+        let (_dir, path, mut rx) = serve_one();
+        let request = CliRequest::new(PathBuf::from("/w"), vec![PathBuf::from("/x")]);
+        let mut stream = connect(&path, Duration::from_secs(5)).unwrap();
+        let line = serde_json::to_string(&request).unwrap();
+        stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+        drop(stream);
+        let (_, reply) = futures::executor::block_on(rx.next()).unwrap();
+        assert!(eventually(|| reply.is_canceled()), "luc hung up");
+    }
+
+    #[test]
     fn unknown_fields_ignored() {
         let request: CliRequest = serde_json::from_str(
             r#"{"version":1,"cwd":"/w","paths":["a"],"env":{"X":"1"},"later":true}"#,
@@ -737,18 +918,20 @@ mod tests {
         assert_eq!(
             reply_for_version(PROTOCOL_VERSION + 1),
             Some(CliReply::error(
-                "this Lucerna is older than luc; update Lucerna"
+                "Lucerna was updated. Quit Lucerna and open it again."
             ))
         );
     }
 
     #[test]
-    fn socket_path_is_versioned() {
+    fn socket_path_has_no_version() {
         let path = socket_path(Path::new("/d"));
-        let name = path.file_name().unwrap().to_str().unwrap();
-        assert_eq!(path.parent(), Some(Path::new("/d")));
-        assert!(name.starts_with(&format!("luc-{}", env!("CARGO_PKG_VERSION"))));
-        assert_eq!(name.ends_with("-dev.sock"), cfg!(debug_assertions));
+        let expected = if cfg!(debug_assertions) {
+            "luc-dev.sock"
+        } else {
+            "luc.sock"
+        };
+        assert_eq!(path, Path::new("/d").join(expected));
     }
 
     #[test]
@@ -1009,6 +1192,162 @@ mod tests {
         };
         assert!(matches!(reply, Err(SendError::Dropped(_))), "{reply:?}");
         assert!(!pending(&listener, 100), "no third try");
+    }
+
+    #[test]
+    fn quitting_reply_wire_format() {
+        assert_eq!(
+            serde_json::to_string(&CliReply::quitting()).unwrap(),
+            r#"{"ok":false,"error":"Lucerna is quitting","status":"quitting"}"#
+        );
+        let plain: CliReply = serde_json::from_str(r#"{"ok":false,"error":"x"}"#).unwrap();
+        assert_eq!(plain.status, None);
+        assert!(!plain.is_quitting());
+        assert!(CliReply::quitting().is_quitting());
+        assert_eq!(
+            serde_json::to_string(&CliReply::ok()).unwrap(),
+            r#"{"ok":true}"#
+        );
+    }
+
+    #[test]
+    fn serve_replies_quitting_when_the_router_is_gone() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(Bound { listener, .. }) = claim(&path) else {
+            panic!("binds");
+        };
+        let (tx, rx) = mpsc::unbounded::<CliMessage>();
+        drop(rx);
+        serve(listener, tx);
+        let request = CliRequest::new(PathBuf::from("/w"), Vec::new());
+        let stream = connect(&path, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            send(stream, &request, Duration::from_secs(5)),
+            Ok(CliReply::quitting())
+        );
+    }
+
+    /// Polls `cond` every 10 ms for up to 2 s.
+    fn eventually(mut cond: impl FnMut() -> bool) -> bool {
+        let end = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < end {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        cond()
+    }
+
+    fn serve_one() -> (
+        tempfile::TempDir,
+        PathBuf,
+        mpsc::UnboundedReceiver<CliMessage>,
+    ) {
+        let (dir, path) = temp_socket();
+        let Claim::Server(Bound { listener, .. }) = claim(&path) else {
+            panic!("binds");
+        };
+        let (tx, rx) = mpsc::unbounded::<CliMessage>();
+        serve(listener, tx);
+        (dir, path, rx)
+    }
+
+    /// M1-3: the router learns that `luc` stopped waiting.
+    #[test]
+    fn answer_drops_the_reply_when_luc_hangs_up() {
+        let (_dir, path, mut rx) = serve_one();
+        let request = CliRequest::new(PathBuf::from("/w"), vec![PathBuf::from("/x")]);
+        let mut stream = connect(&path, Duration::from_secs(5)).unwrap();
+        let line = serde_json::to_string(&request).unwrap();
+        stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+        let (got, reply) = futures::executor::block_on(rx.next()).unwrap();
+        assert_eq!(got, request);
+        assert!(!reply.is_canceled());
+        drop(stream);
+        assert!(eventually(|| reply.is_canceled()), "luc hung up");
+    }
+
+    #[test]
+    fn answer_keeps_the_reply_while_luc_waits() {
+        let (_dir, path, mut rx) = serve_one();
+        let request = CliRequest::new(PathBuf::from("/w"), vec![PathBuf::from("/x")]);
+        let stream = connect(&path, Duration::from_secs(5)).unwrap();
+        let client = std::thread::spawn(move || send(stream, &request, Duration::from_secs(10)));
+        let (_, reply) = futures::executor::block_on(rx.next()).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!reply.is_canceled());
+        reply.send(CliReply::ok()).unwrap();
+        assert_eq!(client.join().unwrap(), Ok(CliReply::ok()));
+    }
+
+    /// Reads one request line from the next connection and answers with
+    /// `reply`.
+    fn answer_one(listener: &UnixListener, reply: &CliReply, accepted: &AtomicUsize) {
+        let (stream, _) = listener.accept().unwrap();
+        accepted.fetch_add(1, Ordering::SeqCst);
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        let mut stream = stream;
+        let json = serde_json::to_string(reply).unwrap();
+        stream.write_all(format!("{json}\n").as_bytes()).unwrap();
+    }
+
+    /// M1-2: the app that is quitting still holds the socket; `luc` claims
+    /// it again until the app is gone and it can bind.
+    #[test]
+    fn claim_and_send_claims_past_a_quitting_app() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(app) = claim(&path) else {
+            panic!("binds");
+        };
+        let request = CliRequest::new(PathBuf::from("/w"), Vec::new());
+        let client = {
+            let (path, request) = (path.clone(), request.clone());
+            std::thread::spawn(move || {
+                claim_and_send_with(
+                    &path,
+                    &request,
+                    Duration::from_secs(5),
+                    Duration::from_secs(5),
+                )
+            })
+        };
+        assert!(pending(&app.listener, 5_000), "the client connected");
+        answer_one(&app.listener, &CliReply::quitting(), &AtomicUsize::new(0));
+        release(app);
+        assert!(matches!(client.join().unwrap(), Handed::Server(_)));
+    }
+
+    #[test]
+    fn claim_and_send_gives_up_on_a_quitting_app() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(Bound { listener, .. }) = claim(&path) else {
+            panic!("binds");
+        };
+        let connections = std::sync::Arc::new(AtomicUsize::new(0));
+        std::thread::spawn({
+            let connections = connections.clone();
+            move || {
+                loop {
+                    answer_one(&listener, &CliReply::quitting(), &connections);
+                }
+            }
+        });
+        let request = CliRequest::new(PathBuf::from("/w"), Vec::new());
+        let started = std::time::Instant::now();
+        let handed = claim_and_send_with(
+            &path,
+            &request,
+            Duration::from_secs(5),
+            Duration::from_millis(300),
+        );
+        let Handed::Reply(reply) = handed else {
+            panic!("an app held the socket");
+        };
+        assert_eq!(reply, Ok(CliReply::quitting()));
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(connections.load(Ordering::SeqCst) >= 2, "claimed again");
     }
 
     #[test]

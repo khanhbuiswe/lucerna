@@ -12,11 +12,12 @@ use crate::ui::{
     ClickHandler, UI_FONT_SIZE_SMALL, search_bar_row, search_toolbar, text_button, warning_row,
 };
 
-/// What the bar's two buttons do: `primary` is Reload (Close for a
-/// deleted file), `secondary` Keep Mine (Keep).
+/// What the bar's buttons do: `primary` is Reload (Close for a deleted
+/// file, Dismiss for invalid bytes), `secondary` Keep Mine (Keep), absent
+/// on the bar for invalid bytes.
 pub(crate) struct BarActions {
     pub(crate) primary: ClickHandler,
-    pub(crate) secondary: ClickHandler,
+    pub(crate) secondary: Option<ClickHandler>,
 }
 
 /// The bar's message for the file called `name`.
@@ -29,6 +30,9 @@ pub(crate) fn message(name: &str, notice: &DiskNotice) -> String {
             format!("{name} changed on disk and can't be read: {err}")
         }
         DiskNotice::Deleted => format!("{name} was deleted on disk."),
+        DiskNotice::Lossy { encoding } => format!(
+            "This file contains bytes that aren't valid {encoding}. Saving will replace them with \u{FFFD}."
+        ),
     }
 }
 
@@ -37,7 +41,8 @@ pub(crate) fn message(name: &str, notice: &DiskNotice) -> String {
 /// `conflict-bar-message-{group}`); the buttons are
 /// `conflict-bar-reload-{group}` and `conflict-bar-keep-mine-{group}`, or
 /// for a deleted file `deleted-bar-close-{group}` and
-/// `deleted-bar-keep-{group}`.
+/// `deleted-bar-keep-{group}`, or for invalid bytes the one button
+/// `lossy-bar-dismiss-{group}`.
 pub(crate) fn render(
     group: usize,
     name: &str,
@@ -46,15 +51,16 @@ pub(crate) fn render(
     cx: &App,
 ) -> Div {
     let ui = &cx.global::<AppState>().theme.ui;
-    let ((primary_id, primary), (secondary_id, secondary)) = match notice {
+    let ((primary_id, primary), secondary) = match notice {
         DiskNotice::Conflict { .. } => (
             (format!("conflict-bar-reload-{group}"), "Reload"),
-            (format!("conflict-bar-keep-mine-{group}"), "Keep Mine"),
+            Some((format!("conflict-bar-keep-mine-{group}"), "Keep Mine")),
         ),
         DiskNotice::Deleted => (
             (format!("deleted-bar-close-{group}"), "Close"),
-            (format!("deleted-bar-keep-{group}"), "Keep"),
+            Some((format!("deleted-bar-keep-{group}"), "Keep")),
         ),
+        DiskNotice::Lossy { .. } => ((format!("lossy-bar-dismiss-{group}"), "Dismiss"), None),
     };
     let BarActions {
         primary: on_primary,
@@ -78,7 +84,11 @@ pub(crate) fn render(
             search_bar_row()
                 .child(text)
                 .child(text_button(primary_id, primary, cx).on_click(on_primary))
-                .child(text_button(secondary_id, secondary, cx).on_click(on_secondary)),
+                .children(
+                    secondary.zip(on_secondary).map(|((id, label), on_click)| {
+                        text_button(id, label, cx).on_click(on_click)
+                    }),
+                ),
         )
 }
 
@@ -104,6 +114,10 @@ mod tests {
         assert_eq!(
             message("a.rs", &DiskNotice::Deleted),
             "a.rs was deleted on disk."
+        );
+        assert_eq!(
+            message("a.rs", &DiskNotice::Lossy { encoding: "UTF-8" }),
+            "This file contains bytes that aren't valid UTF-8. Saving will replace them with \u{FFFD}."
         );
     }
 }

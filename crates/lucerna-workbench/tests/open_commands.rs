@@ -282,19 +282,78 @@ fn close_folder_shows_welcome(cx: &mut TestAppContext) {
     assert_eq!(window_count(cx), 1, "the same window");
 }
 
+/// The detail line VS Code shows for a path that does not exist.
+fn detail(path: &Path) -> String {
+    let home = std::env::home_dir();
+    let shown = match home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    };
+    format!("The path '{shown}' does not exist on this computer.")
+}
+
 #[gpui::test]
-fn vanished_folder_in_picker_reports(cx: &mut TestAppContext) {
+fn missing_folder_in_picker_is_removed_and_reported(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["other", "third"]);
     init(&fixture, cx);
-    let (_wb, cx) = workbench(&fixture, cx);
-    keys("ctrl-r", cx);
+    let (wb, cx) = workbench(&fixture, cx);
     std::fs::remove_dir(fixture.path("other")).unwrap();
+    keys("ctrl-r", cx);
+    // Rows read "<name> <parent>"; the missing folder is still listed.
+    assert!(
+        picker_rows(&wb, cx).iter().any(|r| r.starts_with("other ")),
+        "{:?}",
+        picker_rows(&wb, cx)
+    );
     keys("enter", cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((
+            "Path does not exist".to_string(),
+            detail(&fixture.path("other"))
+        ))
+    );
+    cx.simulate_prompt_answer("OK");
+    settle(cx);
     assert_eq!(shown_root(cx), Some(fixture.path("root")));
     assert_eq!(window_count(cx), 1);
-    let status = status(cx);
-    assert!(status.ends_with("other no longer exists"), "{status:?}");
     assert_eq!(fixture.stored(), vec![fixture.path("third")]);
+    let status = status(cx);
+    assert!(!status.contains("no longer exists"), "{status:?}");
+}
+
+#[gpui::test]
+fn missing_file_in_picker_is_removed_and_reported(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(&["third"]);
+    init(&fixture, cx);
+    let gone = fixture.path("gone.txt");
+    let entries = serde_json::json!([
+        { "path": gone, "kind": "file" },
+        { "path": fixture.path("third"), "kind": "folder" },
+    ]);
+    let file = serde_json::json!({ "version": 1, "entries": entries });
+    std::fs::write(recent_path(&fixture.path("data")), file.to_string()).unwrap();
+    let (wb, cx) = workbench(&fixture, cx);
+    let tabs_before = cx.update(|_, cx| wb.read(cx).documents().read(cx).open_paths());
+    keys("ctrl-r", cx);
+    assert!(
+        picker_rows(&wb, cx)
+            .iter()
+            .any(|r| r.starts_with("gone.txt "))
+    );
+    // The picker lists folders before files: the file is the second row.
+    keys("down enter", cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some(("Path does not exist".to_string(), detail(&gone)))
+    );
+    cx.simulate_prompt_answer("OK");
+    settle(cx);
+    assert_eq!(fixture.stored(), vec![fixture.path("third")]);
+    assert_eq!(
+        cx.update(|_, cx| wb.read(cx).documents().read(cx).open_paths()),
+        tabs_before
+    );
 }
 
 #[gpui::test]

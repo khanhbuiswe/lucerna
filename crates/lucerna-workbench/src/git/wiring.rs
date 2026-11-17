@@ -269,7 +269,8 @@ impl Workbench {
             // Reading a folder changes no file.
             WorktreeEvent::ScanProgress
             | WorktreeEvent::ScanComplete
-            | WorktreeEvent::Loaded(_) => {}
+            | WorktreeEvent::Loaded(_)
+            | WorktreeEvent::WatchFailed(_) => {}
         }
     }
 

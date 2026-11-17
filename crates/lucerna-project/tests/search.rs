@@ -593,3 +593,93 @@ fn include_beats_ignore_file_in_home() {
     assert_eq!(names, expected);
     assert_eq!(names, ["b.tmp"]);
 }
+
+#[test]
+#[allow(clippy::single_range_in_vec_init)]
+fn regex_anchors_match_crlf_lines() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "crlf.txt", "foo\r\nbar foo\r\n");
+    let mut q = query("foo$");
+    q.is_regex = true;
+    let f = files(dir.path(), &run(dir.path(), &q));
+    assert_eq!(f.len(), 1);
+    let got: Vec<_> = f[0]
+        .1
+        .iter()
+        .map(|l| (l.line_number, l.line_text.clone(), l.ranges.clone()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (1, "foo".into(), vec![0..3]),
+            (2, "bar foo".into(), vec![4..7])
+        ]
+    );
+
+    let mut q = query("^bar");
+    q.is_regex = true;
+    let f = files(dir.path(), &run(dir.path(), &q));
+    assert_eq!(
+        f[0].1.iter().map(|l| l.line_number).collect::<Vec<_>>(),
+        [2]
+    );
+}
+
+#[test]
+fn literal_and_lf_searches_still_match() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "crlf.txt", "foo\r\nbar\r\n");
+    write(dir.path(), "lf.txt", "foo\nbar\n");
+    // Literal, both files.
+    let f = files(dir.path(), &run(dir.path(), &query("bar")));
+    assert_eq!(
+        f.iter()
+            .map(|(n, l)| (n.as_str(), l.len()))
+            .collect::<Vec<_>>(),
+        [("crlf.txt", 1), ("lf.txt", 1)]
+    );
+    // Regex `$` on the LF file.
+    let mut q = query("foo$");
+    q.is_regex = true;
+    let f = files(dir.path(), &run(dir.path(), &q));
+    assert_eq!(
+        f.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["crlf.txt", "lf.txt"]
+    );
+}
+
+#[test]
+fn regex_anchors_handle_mixed_endings_and_unsaved_buffers() {
+    let dir = TempDir::new().unwrap();
+    write(
+        dir.path(),
+        "mixed.txt",
+        "a foo\r\nb foo\nc foo\r\nfoo bar\n",
+    );
+    write(dir.path(), "buf.txt", "disk\n");
+    let mut q = query("foo$");
+    q.is_regex = true;
+    let buffers = [(
+        Arc::from(dir.path().join("buf.txt")),
+        "x foo\r\ny foo\n".to_string(),
+    )];
+    let f = files(dir.path(), &run_buffers(dir.path(), &q, &buffers));
+    let lines = |name: &str| -> Vec<(u32, String)> {
+        let (_, l) = f.iter().find(|(n, _)| n == name).unwrap();
+        l.iter()
+            .map(|l| (l.line_number, l.line_text.clone()))
+            .collect()
+    };
+    assert_eq!(
+        lines("mixed.txt"),
+        [
+            (1, "a foo".to_string()),
+            (2, "b foo".into()),
+            (3, "c foo".into())
+        ]
+    );
+    assert_eq!(
+        lines("buf.txt"),
+        [(1, "x foo".to_string()), (2, "y foo".into())]
+    );
+}

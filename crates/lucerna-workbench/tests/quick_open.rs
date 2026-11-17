@@ -317,6 +317,35 @@ fn goto_line_moves_view(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn goto_line_negative_and_comma(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    let (wb, cx) = open(dir.path(), cx);
+    open_long_txt(&wb, cx);
+
+    keys("ctrl-g", cx);
+    type_text("-1", cx);
+    assert_eq!(rows(&wb, cx), vec!["Go to line 100"]);
+    keys("enter", cx);
+    assert_eq!(cursor(&wb, cx), Point { row: 99, column: 0 });
+
+    keys("ctrl-g", cx);
+    type_text("12,5", cx);
+    assert_eq!(rows(&wb, cx), vec!["Go to line 12, column 5"]);
+    keys("enter", cx);
+    assert_eq!(cursor(&wb, cx), Point { row: 11, column: 4 });
+
+    keys("ctrl-g", cx);
+    type_text("-500", cx);
+    assert_eq!(rows(&wb, cx), vec!["Go to line 1"]);
+    keys("escape", cx);
+
+    keys("ctrl-g", cx);
+    type_text("0", cx);
+    assert_eq!(rows(&wb, cx), vec!["Go to line 1"]);
+}
+
+#[gpui::test]
 fn goto_line_without_editor(cx: &mut TestAppContext) {
     init(cx);
     let dir = project();

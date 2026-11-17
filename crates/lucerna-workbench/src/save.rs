@@ -14,9 +14,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use encoding_rs::Encoding;
+use futures::FutureExt as _;
 use futures::channel::oneshot;
-use gpui::{App, AsyncWindowContext, Context, Entity, PromptLevel, Subscription, Task, Window};
-use lucerna_text::{Buffer, BufferSnapshot, LineEnding, Point, WriteError, Written, write_bytes};
+use futures::future::Shared;
+use gpui::{
+    App, AsyncWindowContext, Context, Entity, Global, PromptLevel, Subscription, Task, Window,
+};
+use lucerna_text::{
+    Buffer, BufferSnapshot, LineEnding, Point, TempFiles, WriteError, Written, write_bytes_tracked,
+};
 
 use crate::documents::{DocState, DocumentEvent, Edits, Stamp};
 use crate::{CommandRegistry, Documents, Workbench};
@@ -107,6 +113,36 @@ pub(crate) fn prompt_unsaved_all(
         &message,
         Some(&detail),
         &QUIT_ANSWERS[..],
+        cx,
+    )
+}
+
+/// The buttons of the prompt before the first save of a text with invalid
+/// bytes (spec §6.4). Cancel comes first: GPUI on macOS gives Return to the
+/// first button, and Cancel is the default.
+const LOSSY_ANSWERS: [&str; 2] = ["Cancel", "Save"];
+/// The index of Save in [`LOSSY_ANSWERS`]: the only answer that agrees.
+pub(crate) const LOSSY_SAVE: usize = 1;
+
+/// The prompt before the first save of the document named `name`, whose
+/// file had bytes that aren't valid `encoding` (spec §6.4). Only
+/// [`LOSSY_SAVE`] agrees; any other answer, or a dismissed prompt, is
+/// Cancel.
+pub(crate) fn prompt_lossy(
+    name: &str,
+    encoding: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> oneshot::Receiver<usize> {
+    let message = format!("Save '{name}' and replace invalid bytes?");
+    let detail = format!(
+        "Bytes that aren't valid {encoding} will be written as \u{FFFD}. This can't be undone."
+    );
+    window.prompt(
+        PromptLevel::Warning,
+        &message,
+        Some(&detail),
+        &LOSSY_ANSWERS[..],
         cx,
     )
 }
@@ -207,20 +243,32 @@ fn insert_final_newline(text: &BufferSnapshot, cursor_rows: &[u32]) -> Edits {
     vec![(len..len, Arc::from("\n"))]
 }
 
-/// Collapses the line breaks at the end of the text to one.
+/// Removes the blank lines at the end of the text, as VS Code's
+/// `TrimFinalNewLinesParticipant` does (MIT): a line with only spaces still
+/// counts as content, one final line break stays after the last such line,
+/// and a text of only blank lines becomes empty. An autosave keeps every
+/// line up to the furthest cursor.
 fn trim_final_newlines(text: &BufferSnapshot, cursor_rows: &[u32]) -> Edits {
     let len = text.len_bytes();
-    let mut start = len;
-    while start > 0 && text.byte_at(start - 1) == b'\n' {
-        start -= 1;
+    // Rows that hold text; a final line break does not start another row.
+    let rows = text.line_count();
+    let ends_with_newline = len > 0 && text.byte_at(len - 1) == b'\n';
+    // VS Code counts the empty line after a final line break.
+    if rows + u32::from(ends_with_newline) <= 1 {
+        return Vec::new();
     }
-    // An autosave keeps the blank lines that hold a cursor.
-    let kept_row = text.offset_to_point(start).row;
-    if len - start > 1 && !cursor_rows.iter().any(|&row| row > kept_row) {
-        vec![(start + 1..len, Arc::from(""))]
-    } else {
-        Vec::new()
+    let last_content = (0..rows).rev().find(|&row| !text.line(row).is_empty());
+    let after_content = last_content.map_or(0, |row| row + 1);
+    let after_cursor = cursor_rows.iter().max().map_or(0, |&row| row + 1);
+    let keep = after_content.max(after_cursor);
+    if keep >= rows {
+        return Vec::new();
     }
+    let start = text.point_to_offset(Point {
+        row: keep,
+        column: 0,
+    });
+    vec![(start..len, Arc::from(""))]
 }
 
 /// How the captured text is stored: copied off the buffer, so the write
@@ -233,20 +281,32 @@ pub(crate) struct WriteJob {
     /// The stamp and hash of the file as last loaded or saved. When set,
     /// a file that no longer matches them is not written over.
     pub(crate) expected: Option<(Option<Stamp>, u64)>,
+    /// An autosave: a file that is gone (deleted or moved before the
+    /// watcher reported it) is not made again; a save command does.
+    pub(crate) skip_if_missing: bool,
+    /// Where the write's temp file is kept while it exists.
+    pub(crate) temps: TempFiles,
 }
 
 /// What a write ended in.
 pub(crate) enum WriteOutcome {
-    /// The written bytes' hash and the file's metadata after the write.
-    Written(Written, Option<fs::Metadata>),
+    /// The written bytes' hash, and the written file's size and mtime.
+    Written(Written),
     /// Another program changed the file since it was last loaded or saved;
     /// nothing was written.
     ChangedOnDisk,
+    /// An autosave found the file gone; nothing was written.
+    Missing,
 }
 
 impl WriteJob {
     /// Encodes and writes the text to `path`.
     pub(crate) fn run(self, path: &Path) -> Result<WriteOutcome, WriteError> {
+        if self.skip_if_missing
+            && matches!(fs::metadata(path), Err(e) if e.kind() == io::ErrorKind::NotFound)
+        {
+            return Ok(WriteOutcome::Missing);
+        }
         if let Some((stamp, hash)) = self.expected
             && changed_on_disk(path, stamp, hash)?
         {
@@ -258,9 +318,59 @@ impl WriteJob {
             self.has_bom,
             self.line_ending,
         )?;
-        let written = write_bytes(path, &bytes)?;
-        Ok(WriteOutcome::Written(written, fs::metadata(path).ok()))
+        Ok(WriteOutcome::Written(write_bytes_tracked(
+            path,
+            &bytes,
+            &self.temps,
+        )?))
     }
+}
+
+/// The temp files of the app's saves in flight.
+struct SaveTemps(TempFiles);
+
+impl Global for SaveTemps {}
+
+/// The temp files of every save in flight, shared by all windows. The
+/// first call also deletes them when the app quits by a way that runs only
+/// the `on_app_quit` hooks (Dock Quit, Log Out): those give a hook too
+/// little time to wait for the writes.
+pub fn save_temps(cx: &mut App) -> TempFiles {
+    if let Some(temps) = cx.try_global::<SaveTemps>() {
+        return temps.0.clone();
+    }
+    let temps = TempFiles::default();
+    cx.set_global(SaveTemps(temps.clone()));
+    let on_quit = temps.clone();
+    cx.on_app_quit(move |_| {
+        let removed = on_quit.remove_all();
+        if removed > 0 {
+            tracing::info!(removed, "removed the temp files of unfinished saves");
+        }
+        async {}
+    })
+    .detach();
+    temps
+}
+
+/// Holds back the writes [`hold_saves_for_test`] asked for.
+struct SaveHold(Shared<oneshot::Receiver<()>>);
+
+impl Global for SaveHold {}
+
+/// Makes every write started from now on wait until the returned sender is
+/// dropped, as a slow disk would.
+#[doc(hidden)]
+pub fn hold_saves_for_test(cx: &mut App) -> oneshot::Sender<()> {
+    let (tx, rx) = oneshot::channel();
+    cx.set_global(SaveHold(rx.shared()));
+    tx
+}
+
+/// What a write waits for before it starts: only set by
+/// [`hold_saves_for_test`].
+pub(crate) fn save_hold(cx: &App) -> Option<Shared<oneshot::Receiver<()>>> {
+    cx.try_global::<SaveHold>().map(|hold| hold.0.clone())
 }
 
 /// Whether the file at `path` differs from the one with `stamp` and
@@ -337,7 +447,8 @@ fn save_all(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>
 }
 
 /// `files.autoSave` (spec §6.2): saves dirty documents on its own, never
-/// asking and never touching a conflicted or deleted one.
+/// asking and never touching a conflicted or deleted one, or one with
+/// invalid bytes the user has not agreed to replace (spec §6.4).
 #[derive(Default)]
 pub(crate) struct AutoSave {
     /// The `afterDelay` timer of each document with unsaved changes;
@@ -417,6 +528,16 @@ impl Workbench {
                 // Restarted by every edit: the old timer is dropped.
                 self.arm_auto_save(path, window, cx);
             }
+            // Keep Mine ends a conflict. The timer that ran during the
+            // conflict skipped the save and is gone, so arm it again.
+            DocumentEvent::ConflictChanged {
+                path,
+                conflict: false,
+            } if documents.read(cx).is_dirty(path)
+                && self.auto_save_mode(path, cx) == "afterDelay" =>
+            {
+                self.arm_auto_save(path, window, cx);
+            }
             DocumentEvent::DirtyChanged { path, dirty: false } | DocumentEvent::Closed { path } => {
                 self.auto_save.timers.remove(path);
             }
@@ -456,14 +577,16 @@ impl Workbench {
     }
 
     /// The dirty documents `files.autoSave` saves (not `"off"`) that can
-    /// be saved without asking: neither in conflict with the disk nor
-    /// deleted. Saved as the app quits with hot exit on.
+    /// be saved without asking: neither in conflict with the disk, nor
+    /// deleted, nor holding invalid bytes the user has not agreed to
+    /// replace. Saved as the app quits with hot exit on.
     pub(crate) fn auto_save_paths(&self, cx: &App) -> Vec<Arc<Path>> {
         let docs = self.documents().read(cx);
         docs.dirty_paths()
             .into_iter()
             .filter(|path| {
                 !docs.has_conflict(path)
+                    && !docs.needs_lossy_consent(path)
                     && docs.state(path) == Some(&DocState::Ready)
                     && self.auto_save_mode(path, cx) != "off"
             })
@@ -577,12 +700,33 @@ mod tests {
         assert_eq!(apply("", insert_final_newline), "");
     }
 
+    fn apply_with(text: &str, f: Participant, rows: &[u32]) -> String {
+        let buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
+        let snapshot = buffer.snapshot();
+        let mut out = text.to_string();
+        for (range, new) in f(&snapshot, rows).into_iter().rev() {
+            out.replace_range(range, &new);
+        }
+        out
+    }
+
     #[test]
-    fn final_newlines_collapse_to_one() {
+    fn final_newlines_follow_vs_code() {
         assert_eq!(apply("a\n\n\n", trim_final_newlines), "a\n");
         assert_eq!(apply("a\n", trim_final_newlines), "a\n");
         assert_eq!(apply("a", trim_final_newlines), "a");
-        assert_eq!(apply("\n\n", trim_final_newlines), "\n");
+        assert_eq!(apply("", trim_final_newlines), "");
+        assert_eq!(apply("\n\n\n", trim_final_newlines), "");
+        assert_eq!(apply("\n\n", trim_final_newlines), "");
+        assert_eq!(apply("\n", trim_final_newlines), "");
+        assert_eq!(apply("a\n  \n\n", trim_final_newlines), "a\n  \n");
+        // Autosave: lines up to the furthest cursor stay.
+        assert_eq!(apply_with("a\n\n\n", trim_final_newlines, &[2]), "a\n\n\n");
+        assert_eq!(
+            apply_with("a\n\n\n\n", trim_final_newlines, &[2]),
+            "a\n\n\n"
+        );
+        assert_eq!(apply_with("\n\n\n", trim_final_newlines, &[0]), "\n");
     }
 
     #[test]

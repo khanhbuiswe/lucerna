@@ -2,12 +2,15 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures::StreamExt;
+use futures::future::Either;
+use futures::{FutureExt as _, StreamExt};
 use gpui::{
     AnyView, App, Bounds, Context, DragMoveEvent, Entity, EntityId, FocusHandle, Focusable,
     IntoElement, KeyDownEvent, ModifiersChangedEvent, ParentElement, Pixels, Render, Styled,
@@ -66,6 +69,7 @@ use crate::trust::{self, Trust};
 use crate::ui::{UI_FONT_FAMILY, UI_FONT_SIZE, popover_overlay};
 use crate::vim::{self, VimLayer};
 use crate::vim_indicator::ModeIndicator;
+use crate::watch_status::WatchStatusItem;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateStore, absolute_path};
 use crate::{AppState, CommandRegistry, WindowSettings, find_widget, keys};
 
@@ -170,6 +174,8 @@ pub struct Workbench {
     pub(crate) onboarding: TabPage,
     /// The diagnostics counts and message in the status bar.
     pub(crate) diagnostics_status: Entity<DiagnosticsStatusItem>,
+    /// The status bar's warning when a file watcher could not start.
+    watch_status: Entity<WatchStatusItem>,
     /// The F8 lookup in flight.
     pub(crate) marker_task: Option<Task<()>>,
     /// Where an F8 jump into a tab not drawn yet shows its hover.
@@ -778,6 +784,14 @@ impl Workbench {
             let settings = settings.clone();
             cx.new(|cx| ConfigErrorItem::new(workbench, settings, cx))
         };
+        let watch_status = {
+            let folder = root.file_name().map_or_else(
+                || root.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            let git = git.clone();
+            cx.new(|cx| WatchStatusItem::new(folder, git, cx))
+        };
         let vim = {
             let settings = settings.clone();
             cx.new(|cx| VimLayer::new(settings, cx))
@@ -866,6 +880,7 @@ impl Workbench {
             lsp_health: lsp_health.clone(),
             onboarding,
             diagnostics_status: diagnostics_status.clone(),
+            watch_status: watch_status.clone(),
             marker_task: None,
             marker_hover: None,
             goto_task: None,
@@ -946,6 +961,7 @@ impl Workbench {
         workbench.update_branch_title(cx);
         workbench.add_status_item(StatusBarSide::Left, diagnostics_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, config_error.into(), cx);
+        workbench.add_status_item(StatusBarSide::Left, watch_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Left, mode_indicator.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, lsp_status.into(), cx);
@@ -1120,6 +1136,11 @@ impl Workbench {
     /// `git` runs for it.
     pub(crate) fn has_repo_hint(&self) -> bool {
         self.git_head.is_some()
+    }
+
+    /// The status bar's warning when a file watcher could not start.
+    pub fn watch_status(&self) -> &Entity<WatchStatusItem> {
+        &self.watch_status
     }
 
     /// The background scan of the opened folder.
@@ -1349,6 +1370,11 @@ impl Workbench {
             WorktreeEvent::ScanComplete if !self.scan_complete_logged => {
                 self.scan_complete_logged = true;
                 tracing::info!(scan_ms, "scan complete");
+            }
+            WorktreeEvent::WatchFailed(reason) => {
+                let reason = reason.clone();
+                self.watch_status
+                    .update(cx, |item, cx| item.set_worktree_error(reason, cx));
             }
             _ => {}
         }
@@ -3317,8 +3343,10 @@ fn prompt_file_operation_running(
 /// Before quitting, every window is checked again: one opened meanwhile,
 /// or one edited since it agreed (beyond what it agreed to lose), is asked
 /// too, so nothing unsaved is lost without a question. Then the window
-/// list is written (spec §6.6). Quitting runs the `on_app_quit` hooks,
-/// which save the layout.
+/// list is written (spec §6.6). Saves still writing are waited for, up to
+/// [`QUIT_SAVE_TIMEOUT`]; past it their temp files are deleted and the app
+/// quits anyway. Quitting runs the `on_app_quit` hooks, which save the
+/// layout.
 pub(crate) fn quit(cx: &mut App) {
     cx.spawn(async move |cx| {
         // What each window agreed to lose: its dirty files once it agreed.
@@ -3348,6 +3376,15 @@ pub(crate) fn quit(cx: &mut App) {
                 agreed.insert(handle.window_id(), dirty);
             }
         }
+        let saves = cx.update(saves_done);
+        let timeout = cx.background_executor().timer(QUIT_SAVE_TIMEOUT);
+        if let Either::Right(_) = futures::future::select(saves, timeout).await {
+            let removed = cx.update(|cx| save::save_temps(cx).remove_all());
+            tracing::warn!(
+                removed,
+                "saves were still writing after {QUIT_SAVE_TIMEOUT:?}; quitting without them"
+            );
+        }
         cx.update(|cx| {
             crate::router::restore_activity(&used, cx);
             crate::session::save_now(cx);
@@ -3355,6 +3392,24 @@ pub(crate) fn quit(cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// How long [`quit`] waits for the saves still writing.
+const QUIT_SAVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Resolves once the saves asked for so far in every workbench window have
+/// ended.
+fn saves_done(cx: &mut App) -> Pin<Box<dyn Future<Output = ()>>> {
+    let waits: Vec<_> = cx
+        .windows()
+        .into_iter()
+        .filter_map(|window| {
+            WindowHandle::<Workbench>::new(window.window_id())
+                .read_with(cx, |wb, cx| wb.documents.read(cx).saves_done())
+                .ok()
+        })
+        .collect();
+    Box::pin(futures::future::join_all(waits).map(|_| ()))
 }
 
 /// A cancelled [`quit`]: the windows that flushed their backups for it

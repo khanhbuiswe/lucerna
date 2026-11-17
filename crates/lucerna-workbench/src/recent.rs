@@ -38,6 +38,19 @@ impl RecentEntry {
     }
 }
 
+/// The title of the box that says a chosen entry is gone. The wording is
+/// VS Code's `pathNotExistTitle` (`windowsMainService.ts`, MIT).
+pub(crate) const MISSING_TITLE: &str = "Path does not exist";
+
+/// The detail of that box, VS Code's `pathNotExistDetail`, with `path`
+/// shown under `home` as `~`.
+pub(crate) fn missing_detail(path: &Path, home: Option<&Path>) -> String {
+    format!(
+        "The path '{}' does not exist on this computer.",
+        tilde_path(path, home)
+    )
+}
+
 /// The recent entries, newest first.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RecentList {
@@ -89,17 +102,6 @@ fn try_load(path: &Path) -> io::Result<RecentList> {
     })
 }
 
-impl RecentList {
-    /// The entries whose path still exists as its kind.
-    pub fn existing(&self) -> Vec<RecentEntry> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.exists())
-            .cloned()
-            .collect()
-    }
-}
-
 /// Held while [`record`], [`remove`] or [`clear`] rewrites the file: each
 /// reads it, changes it and writes it back, so two at once in this process
 /// would lose one change.
@@ -120,25 +122,25 @@ fn save(path: &Path, entries: Vec<RecentEntry>) -> io::Result<()> {
     write_atomic(path, &json)
 }
 
-/// Puts `entry` first (dropping an older one with the same path) and drops
-/// entries that no longer exist. Fails without writing when the file
-/// cannot be read.
+/// Puts `entry` first, dropping an older one with the same path. Entries
+/// whose path is gone stay, as in VS Code. Fails without writing when the
+/// file cannot be read.
 pub fn record(data_dir: &Path, entry: RecentEntry) -> io::Result<()> {
     let _writing = write_lock();
     let path = recent_path(data_dir);
-    let mut entries = try_load(&path)?.existing();
+    let mut entries = try_load(&path)?.entries;
     entries.retain(|e| e.path != entry.path);
     entries.insert(0, entry);
     entries.truncate(RECENT_LIMIT);
     save(&path, entries)
 }
 
-/// Forgets `path` and drops entries that no longer exist. Fails without
-/// writing when the file cannot be read.
+/// Forgets `path`; other entries stay, even when their path is gone. Fails
+/// without writing when the file cannot be read.
 pub fn remove(data_dir: &Path, path: &Path) -> io::Result<()> {
     let _writing = write_lock();
     let file = recent_path(data_dir);
-    let mut entries = try_load(&file)?.existing();
+    let mut entries = try_load(&file)?.entries;
     entries.retain(|e| e.path != path);
     save(&file, entries)
 }
@@ -176,6 +178,15 @@ impl gpui::Global for RecentStore {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_detail_uses_tilde() {
+        assert_eq!(MISSING_TITLE, "Path does not exist");
+        assert_eq!(
+            missing_detail(Path::new("/Users/me/code/x"), Some(Path::new("/Users/me"))),
+            "The path '~/code/x' does not exist on this computer."
+        );
+    }
 
     fn folder(path: PathBuf) -> RecentEntry {
         RecentEntry {
@@ -261,28 +272,16 @@ mod tests {
     }
 
     #[test]
-    fn existing_drops_missing_and_wrong_kind() {
-        let tmp = tempfile::tempdir().unwrap();
-        let kept = mkdir(tmp.path(), "kept");
-        let gone = mkdir(tmp.path(), "gone");
-        let file = tmp.path().join("file.txt");
-        std::fs::write(&file, "x").unwrap();
-        std::fs::remove_dir(&gone).unwrap();
-        let list = RecentList {
-            entries: vec![folder(gone), folder(file), folder(kept.clone())],
-        };
-        assert_eq!(list.existing(), [folder(kept)]);
-    }
-
-    #[test]
-    fn writes_drop_missing_entries() {
+    fn writes_keep_missing_entries() {
         let tmp = tempfile::tempdir().unwrap();
         let (a, b) = (mkdir(tmp.path(), "a"), mkdir(tmp.path(), "b"));
         let data = tmp.path().join("data");
         record(&data, folder(a.clone())).unwrap();
         std::fs::remove_dir(&a).unwrap();
         record(&data, folder(b.clone())).unwrap();
-        assert_eq!(paths(&data), [b]);
+        assert_eq!(paths(&data), [b.clone(), a.clone()]);
+        remove(&data, &b).unwrap();
+        assert_eq!(paths(&data), [a]);
     }
 
     #[test]

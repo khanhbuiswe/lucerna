@@ -16,7 +16,9 @@ pub enum LoadError {
     NotFound,
     PermissionDenied,
     Binary,
-    TooLarge { bytes: u64 },
+    TooLarge {
+        bytes: u64,
+    },
     /// A FIFO, device or socket: reading it could block or never end.
     NotRegular,
     Io(String),
@@ -87,6 +89,9 @@ pub struct Decoded {
     pub line_ending: LineEnding,
     /// Hash of the raw bytes. Deterministic within one process, never persisted.
     pub hash: u64,
+    /// Some bytes are not valid in `encoding` and became U+FFFD in `text`.
+    /// Never set for valid UTF-8.
+    pub lossy: bool,
 }
 
 /// Decodes `bytes` to LF-normalised UTF-8 text.
@@ -101,17 +106,17 @@ pub fn decode_file(bytes: &[u8], force_text: bool) -> Result<Decoded, LoadError>
     if !force_text && !utf16_bom && bytes.iter().take(BINARY_SNIFF_BYTES).any(|&b| b == 0) {
         return Err(LoadError::Binary);
     }
-    let (raw, encoding, has_bom) = if let Some((encoding, bom_len)) = bom {
-        let (text, _) = encoding.decode_without_bom_handling(&bytes[bom_len..]);
-        (text.into_owned(), encoding, true)
+    let (raw, encoding, has_bom, lossy) = if let Some((encoding, bom_len)) = bom {
+        let (text, had_errors) = encoding.decode_without_bom_handling(&bytes[bom_len..]);
+        (text.into_owned(), encoding, true, had_errors)
     } else if let Ok(text) = std::str::from_utf8(bytes) {
-        (text.to_owned(), UTF_8, false)
+        (text.to_owned(), UTF_8, false, false)
     } else {
         let mut detector = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);
         detector.feed(bytes, true);
         let encoding = detector.guess(None, chardetng::Utf8Detection::Deny);
-        let (text, _) = encoding.decode_without_bom_handling(bytes);
-        (text.into_owned(), encoding, false)
+        let (text, had_errors) = encoding.decode_without_bom_handling(bytes);
+        (text.into_owned(), encoding, false, had_errors)
     };
     let line_ending = dominant_line_ending(&raw);
     let text = if raw.contains("\r\n") {
@@ -127,6 +132,7 @@ pub fn decode_file(bytes: &[u8], force_text: bool) -> Result<Decoded, LoadError>
         has_bom,
         line_ending,
         hash: hasher.finish(),
+        lossy,
     })
 }
 

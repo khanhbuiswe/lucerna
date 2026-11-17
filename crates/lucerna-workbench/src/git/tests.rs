@@ -159,3 +159,61 @@ fn write_env_is_the_login_env_without_shell_state() {
         ]
     );
 }
+
+/// A trusted store on a fresh repository, ready.
+fn ready_store(cx: &mut TestAppContext) -> (tempfile::TempDir, Entity<GitStore>) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    let settings = cx.new(|cx| WindowSettings::new(None, cx));
+    let store = cx.new(|cx| {
+        let mut store = GitStore::new(dir, settings, cx);
+        store.use_git_for_test(
+            GitBinary::new(PathBuf::from("git"))
+                .with_env("GIT_CONFIG_GLOBAL", NULL)
+                .with_env("GIT_CONFIG_SYSTEM", NULL),
+        );
+        store
+    });
+    store.update(cx, |s, cx| s.set_trusted(true, cx));
+    cx.run_until_parked();
+    (tmp, store)
+}
+
+/// Fails the `.git` watcher of a ready store as `discover` reports it.
+fn fail_git_dir_watch(store: &Entity<GitStore>, cx: &mut TestAppContext) {
+    store.update(cx, |store, cx| {
+        let repo = store.repo().unwrap();
+        let epoch = store.epoch;
+        store.finish_setup(
+            epoch,
+            Setup::Found(Box::new(Located {
+                repo,
+                watcher: None,
+                watch_error: Some("OS file watch limit reached.".into()),
+            })),
+            None,
+            cx,
+        );
+    });
+}
+
+/// A `.git` watcher that could not start is kept, and git still works.
+#[gpui::test]
+fn failed_git_dir_watch_is_kept(cx: &mut TestAppContext) {
+    let (_tmp, store) = ready_store(cx);
+    fail_git_dir_watch(&store, cx);
+    store.read_with(cx, |store, _| {
+        assert_eq!(store.watch_error(), Some("OS file watch limit reached."));
+        assert_eq!(store.state(), GitState::Ready);
+    });
+}
+
+/// Restarting the store (here: no longer trusted) drops the old error.
+#[gpui::test]
+fn restart_clears_git_watch_error(cx: &mut TestAppContext) {
+    let (_tmp, store) = ready_store(cx);
+    fail_git_dir_watch(&store, cx);
+    store.update(cx, |s, cx| s.set_trusted(false, cx));
+    store.read_with(cx, |store, _| assert_eq!(store.watch_error(), None));
+}
