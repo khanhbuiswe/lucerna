@@ -84,6 +84,18 @@ Chi tiết ở `docs/research/2026-11-09-vim-mode.md` §6. Lucerna chọn bên n
 
 Giấy phép: không chép code từ `crates/vim` của Zed. Ca test chuyển thể từ VSCodeVim ghi nguồn trong comment và trong `THIRD_PARTY_NOTICES.md` (mục "VSCodeVim test cases" đã có).
 
+### Helix (góc nhìn thứ ba, thêm khi lập plan V2b)
+
+Đọc `helix-term/src/commands.rs` (`record_macro`, `replay_macro`), `commands/typed.rs` và `helix-view/src/input.rs` (`parse_macro`) ở nhánh `master`, cùng tài liệu `keymap.html` và `commands.html`. Chỉ học thiết kế (MPL-2.0), không chép code.
+
+- **Macro:** `Q` bật/tắt ghi, `q` chạy; register mặc định là `@`, chọn register khác bằng `"x`. Phím được lưu vào register dưới dạng **text ký hiệu phím** (`<esc>`, `<ret>`…), phím cuối dừng ghi bị bỏ, nên dán và sửa được như Vim (khớp B4). Count chạy lại cả dãy phím `count` lần.
+- **Phát lại** đưa từng phím qua toàn bộ compositor, nên prompt `:` và `/` trong macro chạy đúng như lúc gõ, không cần biết trước phím nào thuộc mode nào. Lucerna làm tương tự: phát lại macro là phát lại phím, và `lucerna-vim` tự gom chữ sau `/` hay `:` khi đang chạy macro (plan V2b).
+- **Chặn đệ quy:** Helix từ chối chạy một register đang được chạy (báo lỗi). Vim và VSCodeVim cho macro đệ quy (`qa…@aq`); Lucerna theo Vim nhưng giới hạn độ sâu lồng nhau.
+- **Undo:** Helix không gom cả lần chạy macro thành một bước undo; Lucerna giữ quyết định một bước (§6.4).
+- **Dòng lệnh `:`:** lệnh có tên dài và danh sách alias cố định (`write`/`w`, `write-quit`/`wq`, `x`/`xit` lưu khi có thay đổi rồi đóng, `quit-all`/`qa`, `write-all`/`wa`), không có kiểu viết tắt theo tiền tố của Vim, **không có range kiểu ex** và không có `:s` (thay thế dùng selection và `s`). Một số đứng một mình được hiểu là `:goto`, giống cách Lucerna đọc `:12`.
+- **Highlight khi yank:** Helix không có.
+- **Kết luận:** không đổi quyết định nào của spec. Hành vi vẫn theo VSCodeVim, giao diện theo Zed.
+
 ## 3. Kiến trúc
 
 ```
