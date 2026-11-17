@@ -8,7 +8,7 @@ use gpui::{App, ClipboardItem, Context, WeakEntity};
 use lucerna_editor::clipboard::{self, ClipboardText};
 use lucerna_editor::{
     AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, EditConfig, EditKind, EditPlan,
-    SelectionSet, should_stop_between,
+    MultiCursorPaste, SelectionSet, should_stop_between,
 };
 use lucerna_syntax::Language;
 use lucerna_text::SelectionsToken;
@@ -94,6 +94,13 @@ impl CodeView {
             empty_selection_clipboard: settings
                 .get("editor.emptySelectionClipboard", language)
                 .unwrap_or(true),
+            multi_cursor_paste: setting_enum(
+                settings,
+                "editor.multiCursorPaste",
+                language,
+                MultiCursorPaste::parse,
+            )
+            .unwrap_or(MultiCursorPaste::Spread),
         }
     }
 

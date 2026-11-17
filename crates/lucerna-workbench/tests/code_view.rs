@@ -942,6 +942,10 @@ fn edit_config_reads_auto_settings(cx: &mut TestAppContext) {
     assert_eq!(config.auto_closing_overtype, AutoClosingEdit::Auto);
     assert_eq!(config.auto_closing_delete, AutoClosingEdit::Auto);
     assert_eq!(config.auto_surround, AutoSurround::LanguageDefined);
+    assert_eq!(
+        config.multi_cursor_paste,
+        lucerna_editor::MultiCursorPaste::Spread
+    );
     let language = view.read_with(cx, |v, cx| v.edit_language(cx));
     assert!(language.is_some_and(|l| !l.editing().brackets.is_empty()));
 }

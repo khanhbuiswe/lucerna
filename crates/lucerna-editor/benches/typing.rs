@@ -11,7 +11,7 @@ use std::time::Duration;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use lucerna_editor::{
     AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, EditConfig, EditKind, EditPlan,
-    Goal, Selection, SelectionSet, commands,
+    Goal, MultiCursorPaste, Selection, SelectionSet, commands,
 };
 use lucerna_syntax::{Language, LanguageRegistry, ParseOutcome, SyntaxState};
 use lucerna_text::{Buffer, Point};
@@ -110,6 +110,7 @@ fn config() -> EditConfig {
         trim_auto_whitespace: true,
         word_separators: Arc::from("`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?"),
         empty_selection_clipboard: true,
+        multi_cursor_paste: MultiCursorPaste::Spread,
     }
 }
 
