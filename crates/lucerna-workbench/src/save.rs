@@ -249,8 +249,8 @@ pub(crate) struct WriteJob {
 
 /// What a write ended in.
 pub(crate) enum WriteOutcome {
-    /// The written bytes' hash and the file's metadata after the write.
-    Written(Written, Option<fs::Metadata>),
+    /// The written bytes' hash, and the written file's size and mtime.
+    Written(Written),
     /// Another program changed the file since it was last loaded or saved;
     /// nothing was written.
     ChangedOnDisk,
@@ -270,8 +270,7 @@ impl WriteJob {
             self.has_bom,
             self.line_ending,
         )?;
-        let written = write_bytes(path, &bytes)?;
-        Ok(WriteOutcome::Written(written, fs::metadata(path).ok()))
+        Ok(WriteOutcome::Written(write_bytes(path, &bytes)?))
     }
 }
 

@@ -33,7 +33,7 @@ use lucerna_settings::SettingsView;
 use lucerna_syntax::{GrammarError, Language, ParseOutcome, SYNC_PARSE_BUDGET, SyntaxState};
 use lucerna_text::{
     Buffer, BufferSnapshot, Decoded, HistoryState, LineEnding, LoadError, Patch, PatchEdit, Point,
-    SelectionsToken, WriteError, check_regular, check_size, decode_file, diff_edits,
+    SelectionsToken, WriteError, Written, check_regular, check_size, decode_file, diff_edits,
 };
 
 use crate::WindowSettings;
@@ -154,6 +154,14 @@ impl Stamp {
         Stamp {
             modified: meta.modified().ok(),
             len: meta.len(),
+        }
+    }
+
+    /// The stamp of the file a save wrote, taken from its handle.
+    pub(crate) fn of_written(written: &Written) -> Stamp {
+        Stamp {
+            modified: written.modified,
+            len: written.len,
         }
     }
 
@@ -1485,7 +1493,7 @@ impl Documents {
             return SaveStep::Done(Ok(false));
         };
         let step = match result {
-            Ok(WriteOutcome::Written(written, meta)) => {
+            Ok(WriteOutcome::Written(written)) => {
                 if let Some(buffer) = doc.buffer.as_mut() {
                     let was_dirty = buffer.is_dirty();
                     // Edits made while writing stay unsaved.
@@ -1494,9 +1502,7 @@ impl Documents {
                     doc.base_hash = written.hash;
                     doc.base = Some(snapshot.clone());
                     doc.disk_epoch += 1;
-                    if let Some(meta) = &meta {
-                        doc.stamp = Some(Stamp::of(meta));
-                    }
+                    doc.stamp = Some(Stamp::of_written(&written));
                     set_conflict(doc, key, None, cx);
                     if doc.state == DocState::Deleted {
                         // The save made the file again.

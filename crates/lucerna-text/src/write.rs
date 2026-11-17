@@ -58,9 +58,14 @@ impl From<io::Error> for WriteError {
 
 /// A completed write. `hash` is computed exactly as `decode_file` does over
 /// the raw bytes, so a watcher event for our own write can be recognised.
+/// `modified` and `len` are read from the written file's handle after
+/// `sync_all` and before the rename, so a later write by another program
+/// is never in them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Written {
     pub hash: u64,
+    pub modified: Option<std::time::SystemTime>,
+    pub len: u64,
 }
 
 /// Output side of the encoder: bytes in the file's encoding.
@@ -210,9 +215,7 @@ impl Buffer {
 pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<Written, WriteError> {
     let mut hasher = DefaultHasher::new();
     hasher.write(bytes);
-    let written = Written {
-        hash: hasher.finish(),
-    };
+    let hash = hasher.finish();
     let is_symlink = match fs::symlink_metadata(path) {
         Ok(meta) => meta.file_type().is_symlink(),
         Err(e) if e.kind() == io::ErrorKind::NotFound => false,
@@ -223,31 +226,35 @@ pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<Written, WriteError> {
     } else {
         path.to_path_buf()
     };
-    match fs::metadata(&target) {
+    let written = match fs::metadata(&target) {
         Ok(meta) => {
             if meta.permissions().readonly() {
                 return Err(WriteError::PermissionDenied);
             }
             if link_count(&meta) > 1 {
-                write_in_place(&target, bytes)?;
+                write_in_place(&target, bytes)?
             } else {
-                write_atomic(&target, bytes, Some(meta))?;
+                write_atomic(&target, bytes, Some(meta))?
             }
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(&target, bytes, None)?,
         Err(e) => return Err(e.into()),
-    }
-    Ok(written)
+    };
+    Ok(Written {
+        hash,
+        modified: written.modified().ok(),
+        len: written.len(),
+    })
 }
 
-fn write_in_place(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+fn write_in_place(path: &Path, bytes: &[u8]) -> Result<fs::Metadata, WriteError> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .truncate(true)
         .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    Ok(())
+    Ok(file.metadata()?)
 }
 
 /// Longest file name, in bytes, that common filesystems accept.
@@ -264,7 +271,12 @@ fn temp_prefix(name: &str) -> String {
     format!(".{}.luc~", &name[..cut])
 }
 
-fn write_atomic(path: &Path, bytes: &[u8], old: Option<fs::Metadata>) -> Result<(), WriteError> {
+/// Returns the temp file's metadata, read before the rename.
+fn write_atomic(
+    path: &Path,
+    bytes: &[u8],
+    old: Option<fs::Metadata>,
+) -> Result<fs::Metadata, WriteError> {
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -283,9 +295,10 @@ fn write_atomic(path: &Path, bytes: &[u8], old: Option<fs::Metadata>) -> Result<
     }
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
+    let meta = temp.as_file().metadata()?;
     temp.persist(path).map_err(|e| WriteError::from(e.error))?;
     sync_dir(parent);
-    Ok(())
+    Ok(meta)
 }
 
 #[cfg(unix)]
@@ -446,6 +459,37 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[test]
+    fn written_stamp_is_the_written_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, b"old").unwrap();
+        let written = write_bytes(&path, b"new").unwrap();
+        assert_eq!(written.len, 3);
+        assert_eq!(
+            written.modified,
+            fs::metadata(&path).unwrap().modified().ok()
+        );
+        // A later write by another program is not in it.
+        fs::write(&path, b"agent, longer").unwrap();
+        assert_eq!(written.len, 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlink_written_stamp_is_the_written_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        fs::write(&a, b"old").unwrap();
+        fs::hard_link(&a, &b).unwrap();
+        let written = write_bytes(&a, b"new").unwrap();
+        assert_eq!(written.len, 3);
+        assert_eq!(written.modified, fs::metadata(&a).unwrap().modified().ok());
+        fs::write(&a, b"agent, longer").unwrap();
+        assert_eq!(written.len, 3);
     }
 
     #[cfg(unix)]
