@@ -171,7 +171,10 @@ fn luc_file_starts_one_app() {
 #[ignore = "starts the app: needs a display"]
 fn luc_without_socket_starts_a_detached_app() {
     let exe = cargo_bin("luc");
-    let home = tempfile::tempdir().unwrap();
+    // A short HOME, so the socket path stays inside the data directory: a
+    // long one (the default temporary directory on macOS) moves the socket
+    // to the temporary directory, which the file below does not block.
+    let home = tempfile::tempdir_in("/tmp").unwrap();
     let dir = tempfile::tempdir().unwrap();
     let canonical = std::fs::canonicalize(dir.path()).unwrap();
     let _kill = KillApps(exe.clone(), canonical.clone(), home.path().to_path_buf());
