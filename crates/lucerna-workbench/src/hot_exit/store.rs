@@ -112,15 +112,30 @@ pub fn text_sha256(text: &str) -> String {
     hex_sha256(text.as_bytes())
 }
 
+/// `path` canonical; when nothing is at `path` (a file deleted since),
+/// its canonical parent joined with its name, so the path stays the same
+/// once the file is gone. `None` when the parent cannot be canonicalised
+/// either.
+pub fn canonical_even_if_missing(path: &Path) -> Option<PathBuf> {
+    if let Ok(canonical) = path.canonicalize() {
+        return Some(canonical);
+    }
+    let name = path.file_name()?;
+    let parent = path.parent()?.canonicalize().ok()?;
+    Some(parent.join(name))
+}
+
 /// `<data_dir>/backups/<hex sha256>`: the hash is of the canonical folder
 /// path, or of `"file:"` and the canonical file path for a single-file
-/// window. A path that cannot be canonicalised is hashed as given.
+/// window. A deleted path is hashed by its canonical parent and name (the
+/// key stays the same when the file goes away); a path whose parent cannot
+/// be canonicalised either is hashed as given.
 pub fn backup_dir(data_dir: &Path, key: &WorkspaceKey) -> PathBuf {
     let (path, prefix): (&Path, &[u8]) = match key {
         WorkspaceKey::Folder(path) => (path, b""),
         WorkspaceKey::File(path) => (path, b"file:"),
     };
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let path = canonical_even_if_missing(path).unwrap_or_else(|| path.to_path_buf());
     let mut bytes = prefix.to_vec();
     bytes.extend_from_slice(path.as_os_str().as_encoded_bytes());
     data_dir.join("backups").join(hex_sha256(&bytes))
@@ -377,5 +392,18 @@ mod tests {
             file_windows_with_backups(tmp.path()),
             vec![PathBuf::from("/p/a.rs")]
         );
+    }
+
+    #[test]
+    fn backup_dir_of_a_deleted_file_is_unchanged() {
+        // On macOS the tempdir is under /var, a symlink to /private/var:
+        // the key must not fall back to the uncanonical path.
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.rs");
+        std::fs::write(&file, "x").unwrap();
+        let key = WorkspaceKey::File(file.clone());
+        let before = backup_dir(tmp.path(), &key);
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(backup_dir(tmp.path(), &key), before);
     }
 }

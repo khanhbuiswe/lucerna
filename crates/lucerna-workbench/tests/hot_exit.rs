@@ -625,6 +625,56 @@ fn deleted_while_closed_recreates_on_save(cx: &mut TestAppContext) {
     assert_eq!(fs::read_to_string(&a).unwrap(), "mine");
 }
 
+/// A single-file window on `file` (in the canonical `root`) that keeps
+/// its state in `data_dir`, with `file` opened.
+fn open_single_file<'a>(
+    root: &Path,
+    file: &Path,
+    data_dir: &Path,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+    let (root, file, data_dir) = (
+        root.to_path_buf(),
+        file.to_path_buf(),
+        data_dir.to_path_buf(),
+    );
+    let single = file.clone();
+    let (wb, cx) = cx.add_window_view(move |window, cx| {
+        Workbench::single_file(root, &single, Some(data_dir), window, cx)
+    });
+    settle(cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(file.as_path()), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+    (wb, cx)
+}
+
+#[gpui::test]
+fn deleted_single_file_window_restores_as_unsaved(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let root = fs::canonicalize(project.root.path()).unwrap();
+    let a = root.join("a.rs");
+    let (wb, cx) = open_single_file(&root, &a, project.data.path(), cx);
+    let view = active_view(&wb, cx);
+    set_text(&wb, &view, "mine", cx);
+    drop(view);
+    quit(wb, cx);
+    fs::remove_file(&a).unwrap();
+    let app: &mut TestAppContext = cx;
+    let (wb, cx) = open_single_file(&root, &a, project.data.path(), app);
+    assert_eq!(tab_paths(&wb, cx), vec![a.clone()]);
+    assert!(is_dirty(&wb, &a, cx));
+    assert_eq!(text_of(&wb, &a, cx), "mine");
+    let docs = docs(&wb, cx);
+    assert_eq!(docs.read_with(cx, |d, _| d.disk_notice(&a)), None);
+    assert!(!cx.has_pending_prompt());
+    run(&wb, "workbench.action.files.save", cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(fs::read_to_string(&a).unwrap(), "mine");
+}
+
 #[gpui::test]
 fn outside_root_file_restored(cx: &mut TestAppContext) {
     init(cx, None);

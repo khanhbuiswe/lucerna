@@ -396,16 +396,25 @@ fn screen_for(
 }
 
 /// Adds a file window for each file with backups that is not already in
-/// `windows` (compared by canonical path) and still exists.
+/// `windows` (compared by canonical path) and whose folder still exists.
+/// A file deleted while the app was closed is added by its canonical
+/// folder joined with its name: its backup reopens it as unsaved text
+/// (hot-exit spec §5.4).
 fn add_backed_up_files(windows: &mut Vec<SessionWindow>, data_dir: &Path) {
+    use crate::hot_exit::store::canonical_even_if_missing;
     let mut files = crate::hot_exit::store::file_windows_with_backups(data_dir);
     files.sort();
     let mut seen: Vec<PathBuf> = windows
         .iter()
-        .filter_map(|window| window.path.canonicalize().ok())
+        .filter_map(|window| canonical_even_if_missing(&window.path))
         .collect();
     for file in files {
-        let Ok(canonical) = file.canonicalize() else {
+        let path = if file.exists() {
+            file.canonicalize().ok().map(|canonical| (canonical, file))
+        } else {
+            canonical_even_if_missing(&file).map(|canonical| (canonical.clone(), canonical))
+        };
+        let Some((canonical, path)) = path else {
             continue;
         };
         if seen.contains(&canonical) {
@@ -414,7 +423,7 @@ fn add_backed_up_files(windows: &mut Vec<SessionWindow>, data_dir: &Path) {
         seen.push(canonical);
         windows.push(SessionWindow {
             kind: crate::recent::RecentKind::File,
-            path: file,
+            path,
         });
     }
 }
@@ -607,6 +616,47 @@ mod tests {
         write_session(dir.path(), Vec::new());
         let off = with_user(r#"{"files.hotExit":"off"}"#);
         assert_ne!(first_screen(Some(dir.path()), &off), expected);
+    }
+
+    #[test]
+    fn deleted_file_window_with_backup_reopens() {
+        use crate::hot_exit::store::{
+            Backup, BackupHeader, WorkspaceKey, backup_dir, text_sha256, write_backup,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.rs");
+        std::fs::write(&file, "base").unwrap();
+        let canonical = file.canonicalize().unwrap();
+        let key = WorkspaceKey::File(file.clone());
+        let backup = Backup {
+            header: BackupHeader {
+                path: file.clone(),
+                mtime: None,
+                size: None,
+                base_sha256: Some(text_sha256("base")),
+                encoding: "UTF-8".into(),
+                bom: false,
+                line_ending: lucerna_text::LineEnding::Lf,
+                lossy: false,
+            },
+            text: "edited".into(),
+        };
+        write_backup(&backup_dir(dir.path(), &key), &key, &backup).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        let expected = StartupScreen::Restore(vec![SessionWindow {
+            kind: RecentKind::File,
+            path: canonical,
+        }]);
+        assert_eq!(
+            first_screen(Some(dir.path()), &SettingsStore::with_defaults()),
+            expected
+        );
+        write_session(dir.path(), vec![expected_window(&expected)]);
+        assert_eq!(
+            first_screen(Some(dir.path()), &SettingsStore::with_defaults()),
+            expected,
+            "listed once when the session has it too"
+        );
     }
 
     #[test]

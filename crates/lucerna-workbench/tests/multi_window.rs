@@ -1255,6 +1255,24 @@ fn restore_opens_in_reverse_order(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn restore_reopens_a_deleted_file_window(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let path = project(cx).join("src").join("x.rs");
+    std::fs::remove_file(&path).unwrap();
+    cx.update(|cx| {
+        router::restore(
+            vec![SessionWindow {
+                kind: RecentKind::File,
+                path: path.clone(),
+            }],
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![WindowKind::File(path)]);
+}
+
+#[gpui::test]
 fn requests_wait_for_restore(cx: &mut TestAppContext) {
     let data = routed(&[], cx);
     let (a, b) = (project(cx), project(cx));
