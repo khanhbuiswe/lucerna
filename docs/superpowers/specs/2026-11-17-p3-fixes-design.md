@@ -44,7 +44,7 @@ Mỗi mục: hướng sửa đã chốt, và test cần có. Vị trí và cách
 - [ ] **T1-7 `trimFinalNewlines` với file toàn dòng trống:** đối chiếu `TrimFinalNewLinesParticipant` trong source VS Code rồi làm theo (review dự đoán ra file rỗng). Sửa test `\n` hiện có cho khớp.
 - [ ] **T2-4 File tạm còn lại khi Quit:** *(quyết định của mình)*
   - Đường `quit()` của Lucerna (Cmd+Q, menu), cả nhánh Don't Save lẫn hot exit: đợi các lần lưu đang chạy xong, tối đa 5 giây; quá hạn thì xoá các file tạm đã biết rồi thoát.
-  - Đường platform (Dock Quit, Log Out, Restart) không qua `quit()`, và GPUI chỉ cho hook `on_app_quit` tối đa 200 ms (`SHUTDOWN_TIMEOUT`). Ở đường này chỉ xoá các file tạm đã biết trong hook, không patch GPUI. File gốc vẫn nguyên trong mọi trường hợp.
+  - Đường platform (Dock Quit, Log Out, Restart) không qua `quit()`, và GPUI chỉ cho hook `on_app_quit` tối đa 200 ms (`SHUTDOWN_TIMEOUT`). Ở đường này chỉ xoá các file tạm đã biết trong hook, không patch GPUI. File gốc vẫn nguyên, trừ file có hardlink: file đó được ghi tại chỗ (`write_in_place`), không có file tạm, nên nếu bị cắt giữa chừng thì có thể bị cụt. Đây là giới hạn có từ trước, đợt này không đổi.
   - Test với lần lưu giả bị chậm.
 - [ ] **Hot exit (a): file của cửa sổ một file đã bị xoá:** cửa sổ vẫn được mở lại. Tab khôi phục **như bình thường**, đúng hot-exit spec §5.4: văn bản sao lưu, chưa lưu, không hiện thanh báo, lưu thì tạo lại file. Không đổi gì với cửa sổ folder (§5.4 đã chạy như vậy). *(Quyết định của mình, giữ đúng spec hot exit đã duyệt.)*
 - [ ] **Hot exit (b): khởi động kèm đường dẫn:** cửa sổ **một file** có bản sao lưu luôn được mở lại, kể cả khi khởi động bằng `luc <path>` hay từ Finder; đường dẫn được yêu cầu mở thêm như bình thường. Cửa sổ folder vẫn theo `window.restoreWindows` như §5.4: bản sao lưu chờ tới khi folder được mở lại. VS Code cũng chỉ luôn mở lại cửa sổ rỗng có backup ("Empty windows with backups are always restored"); cửa sổ một file của Lucerna tương đương cửa sổ đó. *(Quyết định của mình.)*
@@ -59,10 +59,10 @@ Mỗi mục: hướng sửa đã chốt, và test cần có. Vị trí và cách
 
 ### Nhóm 3: Quick Open, search, recent (nhánh `claude/p3-quick-open`)
 
-- [ ] **T3-3 Recent mất khi ổ bị rút:** lỗi thật nằm ở việc lọc lúc ghi (`record`, `remove` trong `recent.rs`); bỏ lọc ở đó. Làm như VS Code *(quyết định của mình, theo quy tắc hành vi theo VS Code)*: Welcome, menu Open Recent và picker hiện **mọi** mục, không gọi `.existing()` nữa; chọn một mục không còn tồn tại thì hỏi "The path '<path>' does not exist. Remove it from the recently opened list?" với Remove / Cancel, thay cho việc âm thầm bỏ mục kèm cảnh báo như `open_entry` của Welcome hiện nay.
+- [ ] **T3-3 Recent mất khi ổ bị rút:** lỗi thật nằm ở việc lọc lúc ghi (`record`, `remove` trong `recent.rs`); bỏ lọc ở đó. Làm như VS Code *(quyết định của mình, theo quy tắc hành vi theo VS Code)*: Welcome, menu Open Recent và picker hiện **mọi** mục, không gọi `.existing()` nữa; chọn một mục không còn tồn tại thì mục đó bị gỡ khỏi danh sách và hiện hộp thoại thông báo chỉ có nút OK, dùng đúng câu của VS Code (`windowsMainService.ts`): "Path does not exist" / "The path '<path>' does not exist on this computer." Khi không có cửa sổ nào (menu File) thì gỡ mà không báo, như menubar của VS Code. *(Sửa 2026-11-17 khi viết plan: bản trước ghi nhầm VS Code hỏi Remove / Cancel.)*
 - [ ] **T5-1 Observer search còn lại:** khi doc đã Ready mà dòng đích không còn thì gỡ observer, đặt con trỏ ở dòng cuối. Test.
 - [ ] **T5-4 `:-N` và `:N,M`:** parse dòng là `i64`, số âm đếm từ cuối file (`:-1` là dòng cuối); phần dòng và cột tách bằng `:`, `,` hoặc `#`. Đối chiếu `gotoLineQuickAccess` của VS Code. Đây là nghĩa khi **Vim tắt**. Khi Vim bật (V2b), `-1` và `12,5` không phải "số" theo vim spec §8.1 nên được đọc là range Vim (`-1` so với con trỏ, `12,5` là range dòng). Vì vậy hai nghĩa dùng hai hàm parse riêng; V2b không dùng lại hàm này. *(Quyết định của mình.)*
-- [ ] **T5-5 Regex `$` với CRLF:** `.crlf(true)` trong `RegexMatcherBuilder`. Test file CRLF.
+- [ ] **T5-5 Regex `$` với CRLF:** `.crlf(true)` trong `RegexMatcherBuilder`, đồng thời `SearcherBuilder::line_terminator(LineTerminator::crlf())` như `rg --crlf` (chỉ đặt một bên thì searcher từ chối mọi file). Test file CRLF và file LF.
 
 ### Nhóm 4: `luc`, socket, multi-window (nhánh `claude/p3-cli`)
 
@@ -107,7 +107,7 @@ Mỗi mục: hướng sửa đã chốt, và test cần có. Vị trí và cách
 - **Lưu bằng tay** (Cmd+S, Save All, `:w` sau này, lưu khi đóng tab hay thoát app): lần đầu với tab đó hỏi bằng hộp thoại cảnh báo:
   - Tiêu đề: "Save '{file}' and replace invalid bytes?"
   - Nội dung: "Bytes that aren't valid {encoding} will be written as �. This can't be undone."
-  - Nút: **Save** / **Cancel** (Cancel là mặc định).
+  - Nút: **Save** / **Cancel** (Cancel là mặc định). Với GPUI hiện tại trên macOS, nút đầu nhận Return, nên thứ tự là `[Cancel, Save]`; Space vẫn rơi vào Save. Người làm thử tay Return, Escape và Space.
   - Đồng ý một lần thì các lần lưu sau của tab đó không hỏi nữa; sau lần lưu đó file đã sạch nên `lossy` cũng thành `false`.
 - **Autosave:** bỏ qua tab lossy chưa được đồng ý; tab giữ chấm chưa lưu. Hot exit vẫn sao lưu văn bản như mọi tab.
 - **Save Without Formatting** và Save All dùng cùng luồng.
