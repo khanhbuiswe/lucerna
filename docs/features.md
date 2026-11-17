@@ -94,5 +94,5 @@ example "Open in → Default app" in Claude Desktop.
   line), move, copy, delete, insert, indent, outdent and join lines, trim trailing whitespace,
   and expand or shrink the selection by syntax.
 - **Vim (optional).** Set `"vim.enabled": true` for Vim keys: motions, search,
-  scrolling, marks, operators with motions and text objects, registers, `.` repeat and Visual mode editing. It is off by default. See [Vim mode](vim.md).
+  scrolling, marks, operators with motions and text objects, registers, `.` repeat, Visual mode editing, macros and `:` commands (`:w`, `:q`, `:%s`…). It is off by default. See [Vim mode](vim.md).
 - **Vietnamese / IME input** works in every text field (Telex, VNI).

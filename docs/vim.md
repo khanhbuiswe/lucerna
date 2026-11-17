@@ -1,6 +1,6 @@
 # Vim mode
 
-Vim is built in and off by default (V1 navigation and V2a editing are done). It takes effect as soon as you save the setting.
+Vim is built in and off by default (V1 navigation, V2a editing and V2b macros and `:` commands are done). It takes effect as soon as you save the setting.
 The status bar shows the mode, and the cursor becomes a block. Every command is one undo step,
 and a command that ends in Insert keeps the step open until `Esc`. Macros and `:` commands are
 planned (V2b).
@@ -37,8 +37,30 @@ something elsewhere, `p` pastes the copied text, but `yy`, copy elsewhere, `dd`,
 deleted line. `"onYank"` is the default here; VSCodeVim defaults `vim.useSystemClipboard` to
 `false`.
 
-Known deviations: Visual Block operators come after multi-cursor; macros (`q`, `@`) and `:`
-commands are V2b; an arrow key in Insert breaks the `.` record but keeps one undo step.
+**Macros and command line (V2b)**
+
+| Group | Keys |
+|---|---|
+| Record | `q{a-z}` starts recording into a register, `q{A-Z}` appends to it, `q` stops. The status bar shows `-- NORMAL -- recording @a` |
+| Play | `[count]@{reg}` plays a register (`5@a`), `@@` repeats the last one. A whole run, even `5@a`, is one undo step |
+| Command line | `:` opens Quick Open as a command line (`:w — Save`, `:12 — Go to line 12`, `:%s/foo/bar/g — Replace in all lines`). From Visual mode it starts with `'<,'>`; a count (`3:`) starts with `.,.+2` |
+| Commands | `:w :w! :wa :q :q! :qa :wq :x :N :$ :d :y :> :< :s :noh` |
+| Ranges | `N`, `.`, `$`, `%`, `'<,'>`, `'a`, with `+N` and `-N` offsets, joined by `,` |
+| `:s` flags | `g` (all matches in a line), `i` (ignore case), `I` (match case), `n` (count only), and a trailing count; `:s` alone repeats the last substitute. `c` is not supported |
+| Messages | `E492: Not an editor command: foo`, `E486: Pattern not found: foo`, `N substitutions on M lines`, `E: file changed, :s cancelled` |
+
+`:s` patterns use Rust regex syntax, with Vim's common escapes translated: `\(` `\)` `\{` `\}`
+`\+` `\?` `\|` `\<` `\>`. Unescaped `(` `)` `+` `?` `|` `{` keep their regex meaning, unlike
+Vim's default "magic" mode. `:s` is case-sensitive by default; the `i` and `I` flags change that,
+and `vim.ignorecase` applies only to `*` and `#`. `:s` matches within a line. With
+`vim.gdefault` the `g` flag is on by default, and typing `g` turns it off.
+
+`:qa!` is not supported, only `:qa`. `:N` with a number goes to that line; `:-1` goes up one line
+as in Vim.
+
+Known deviations: Visual Block operators come after multi-cursor; an arrow key in Insert breaks
+the `.` record and is not recorded in a macro (one undo step is kept); a macro records
+`Completion` only approximately (when Phase 4.5 lands).
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -51,4 +73,7 @@ commands are V2b; an arrow key in Insert breaks the `.` record but keeps one und
 | `vim.joinspaces` | `true` | `J` puts two spaces after `.`, `!` and `?` |
 | `vim.changeWordIncludesWhitespace` | `false` | `cw` on a word also changes the whitespace after it, like `dw` |
 | `vim.tildeop` | `false` | `~` is an operator like `g~` |
+| `vim.gdefault` | `false` | `:s` replaces all matches in a line without the `g` flag |
+| `vim.highlightedyank.enable` | `false` | Flash the yanked text |
+| `vim.highlightedyank.duration` | `200` | Milliseconds the yank highlight stays |
 | `editor.cursorSurroundingLines` | `0` | Lines kept around the cursor when it moves |

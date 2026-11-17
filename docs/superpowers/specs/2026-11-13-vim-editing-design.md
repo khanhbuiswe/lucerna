@@ -1,7 +1,7 @@
 # Lucerna — V2: Vim sửa
 
 - **Ngày:** 2026-11-13
-- **Trạng thái:** V2a đã triển khai
+- **Trạng thái:** V2a và V2b đã triển khai
 - **Lộ trình:** mục V2 trong §1.3 của `2026-11-08-lucerna-phase1-design.md`
 - **Dựa trên:**
   - V1 `2026-11-10-vim-navigation-design.md`
