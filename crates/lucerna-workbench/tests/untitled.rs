@@ -466,3 +466,216 @@ fn untitled_label_of_a_huge_first_line(cx: &mut TestAppContext) {
     open_tab_and_type(&wb, &key, &long, cx);
     assert_eq!(active_tab(&wb, cx).2, format!("{}…", "y".repeat(40)));
 }
+
+/// The paths of every tab, group by group.
+fn tab_paths(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Vec<String>> {
+    cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .map(|g| {
+                g.tabs
+                    .iter()
+                    .filter_map(|t| t.path().map(|p| p.display().to_string()))
+                    .collect()
+            })
+            .collect()
+    })
+}
+
+fn snapshot_text(docs: &Entity<Documents>, path: &Path, cx: &mut VisualTestContext) -> String {
+    docs.read_with(cx, |d, _| {
+        let s = d.snapshot_of(path).expect("the document has text");
+        s.text_for_range(0..s.len_bytes())
+    })
+}
+
+/// ⌘N, then types `lines` (a line break after each) into the new tab.
+fn untitled_tab_with(lines: &[&str], cx: &mut VisualTestContext) {
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    for line in lines {
+        cx.simulate_input(line);
+        cx.simulate_keystrokes("enter");
+    }
+    settle(cx);
+}
+
+/// Answers the pending save dialog with `path` (`None`: Cancel).
+fn choose(path: Option<std::path::PathBuf>, cx: &mut VisualTestContext) {
+    assert!(cx.did_prompt_for_new_path(), "the save dialog is up");
+    cx.simulate_new_path_selection(move |_| path);
+    settle(cx);
+}
+
+#[gpui::test]
+fn save_untitled_asks_for_path_and_becomes_file(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    let docs = documents(&wb, cx);
+    let root = dir.path().to_path_buf();
+    untitled_tab_with(&["fn main() {}"], cx);
+
+    cx.simulate_keystrokes("cmd-s");
+    settle(cx);
+    assert!(cx.did_prompt_for_new_path());
+    let start = root.clone();
+    cx.simulate_new_path_selection(move |dir| {
+        assert_eq!(dir, start.as_path());
+        Some(start.join("main.rs"))
+    });
+    settle(cx);
+
+    let file = root.join("main.rs");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "fn main() {}\n");
+    assert_eq!(tab_paths(&wb, cx), vec![vec![file.display().to_string()]]);
+    docs.read_with(cx, |d, _| {
+        assert!(!d.is_dirty(&file));
+        assert_eq!(d.language_of(&file).as_deref(), Some("rust"));
+        assert!(d.snapshot_of(Path::new("untitled:Untitled-1")).is_none());
+    });
+    // The typing is still in the undo history. A Rust file may open the
+    // Restricted Mode prompt (when rust-analyzer is installed): focus the
+    // editor again first.
+    cx.update(|window, cx| {
+        let body = wb.read(cx).editor_groups().read(cx).active_body().unwrap();
+        let view = body.downcast::<CodeView>().expect("a code view");
+        let focus = view.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    settle(cx);
+    cx.simulate_keystrokes("cmd-z");
+    settle(cx);
+    assert_ne!(snapshot_text(&docs, &file, cx), "fn main() {}\n");
+    assert!(docs.read_with(cx, |d, _| d.is_dirty(&file)));
+    no_untitled_on_disk(&dir);
+}
+
+#[gpui::test]
+fn save_untitled_suggests_first_line(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    untitled_tab_with(&["notes: todo"], cx);
+    let key = Path::new("untitled:Untitled-1");
+    let (start, name) =
+        cx.update(|_, cx| lucerna_workbench::save_dialog_start(wb.read(cx), key, cx));
+    assert_eq!(start, dir.path());
+    assert_eq!(name, "notes todo");
+
+    // Nothing typed: the tab's name.
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    let empty = Path::new("untitled:Untitled-2");
+    let (_, name) = cx.update(|_, cx| lucerna_workbench::save_dialog_start(wb.read(cx), empty, cx));
+    assert_eq!(name, "Untitled-2");
+
+    // A file: its folder and its name.
+    fs::create_dir(dir.path().join("src")).unwrap();
+    let file = dir.path().join("src/lib.rs");
+    fs::write(&file, "").unwrap();
+    let (start, name) =
+        cx.update(|_, cx| lucerna_workbench::save_dialog_start(wb.read(cx), &file, cx));
+    assert_eq!(start, dir.path().join("src"));
+    assert_eq!(name, "lib.rs");
+}
+
+#[gpui::test]
+fn save_untitled_cancel_keeps_it(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    let docs = documents(&wb, cx);
+    untitled_tab_with(&["keep me"], cx);
+
+    cx.simulate_keystrokes("cmd-s");
+    settle(cx);
+    choose(None, cx);
+
+    assert_eq!(
+        tab_paths(&wb, cx),
+        vec![vec!["untitled:Untitled-1".to_string()]]
+    );
+    let key = Path::new("untitled:Untitled-1");
+    assert!(docs.read_with(cx, |d, _| d.is_dirty(key)));
+    assert_eq!(snapshot_text(&docs, key, cx), "keep me\n");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[gpui::test]
+fn save_untitled_over_open_file(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    let docs = documents(&wb, cx);
+    let a = dir.path().join("a.txt");
+    fs::write(&a, "old a\n").unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(a.as_path()), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+    untitled_tab_with(&["new a"], cx);
+
+    cx.simulate_keystrokes("cmd-s");
+    settle(cx);
+    choose(Some(a.clone()), cx);
+
+    assert_eq!(fs::read_to_string(&a).unwrap(), "new a\n");
+    assert_eq!(tab_paths(&wb, cx).concat(), vec![a.display().to_string()]);
+    assert_eq!(snapshot_text(&docs, &a, cx), "new a\n");
+    assert!(!docs.read_with(cx, |d, _| d.is_dirty(&a)));
+}
+
+#[gpui::test]
+fn save_as_write_error_keeps_untitled(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    let docs = documents(&wb, cx);
+    let locked = dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    untitled_tab_with(&["precious"], cx);
+
+    cx.simulate_keystrokes("cmd-s");
+    settle(cx);
+    choose(Some(locked.join("x.txt")), cx);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(!locked.join("x.txt").exists());
+    assert_eq!(
+        tab_paths(&wb, cx),
+        vec![vec!["untitled:Untitled-1".to_string()]]
+    );
+    let key = Path::new("untitled:Untitled-1");
+    assert!(docs.read_with(cx, |d, _| d.is_dirty(key)));
+    assert_eq!(snapshot_text(&docs, key, cx), "precious\n");
+}
+
+#[gpui::test]
+fn untitled_in_two_groups_both_become_file(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    untitled_tab_with(&["split"], cx);
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            wb.run_command("workbench.action.splitEditor", None, window, cx)
+        })
+    });
+    settle(cx);
+    let untitled = "untitled:Untitled-1".to_string();
+    assert_eq!(
+        tab_paths(&wb, cx),
+        vec![vec![untitled.clone()], vec![untitled]]
+    );
+
+    cx.simulate_keystrokes("cmd-s");
+    settle(cx);
+    let file = dir.path().join("split.txt");
+    choose(Some(file.clone()), cx);
+
+    let shown = file.display().to_string();
+    assert_eq!(tab_paths(&wb, cx), vec![vec![shown.clone()], vec![shown]]);
+    assert_eq!(fs::read_to_string(&file).unwrap(), "split\n");
+}

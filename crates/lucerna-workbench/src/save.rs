@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::hash::{DefaultHasher, Hasher};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -423,7 +423,45 @@ fn active_document_path(wb: &Workbench, cx: &App) -> Option<Arc<Path>> {
     tab.path().or(tab.previewed_path()).cloned()
 }
 
-/// Saves the document of the active code view or preview.
+/// Where the Save As dialog for the document at `path` starts, and the
+/// name it suggests (spec §4.3, §4.4): for an Untitled document, the
+/// opened folder (in single-file mode, the file's folder) and its tab
+/// title without the characters a file name cannot hold, else
+/// `Untitled-N`; for a file, its folder and its name. No extension is
+/// added.
+pub fn save_dialog_start(wb: &Workbench, path: &Path, cx: &App) -> (PathBuf, String) {
+    if crate::untitled::is_untitled(path) {
+        let folder = wb
+            .is_single_file()
+            .then(|| wb.opened_paths().pop())
+            .flatten()
+            .and_then(|file| file.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| wb.root().to_path_buf());
+        let title = crate::editor_groups::untitled_title(Some(wb.documents().read(cx)), path);
+        let name = crate::untitled::suggested_file_name(&title)
+            .unwrap_or_else(|| crate::untitled::name(path));
+        return (folder, name);
+    }
+    let path = wb.absolute_path(path);
+    let folder = path
+        .parent()
+        .map_or_else(|| wb.root().to_path_buf(), Path::to_path_buf);
+    (folder, display_name(&path))
+}
+
+/// Whether the absolute paths `a` and `b` name one file: equal, or equal
+/// once symlinks are resolved (the save dialog may answer with the
+/// resolved form of the folder it was given).
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (fs::canonicalize(a), fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
+/// Saves the document of the active code view or preview; an Untitled one
+/// goes through Save As.
 fn save_active(
     wb: &mut Workbench,
     opts: SaveOptions,
@@ -433,6 +471,10 @@ fn save_active(
     let Some(path) = active_document_path(wb, cx) else {
         return;
     };
+    if crate::untitled::is_untitled(&path) {
+        wb.save_as(path, window, cx).detach();
+        return;
+    }
     wb.documents()
         .clone()
         .update(cx, |d, cx| d.save(&path, opts, window, cx))
@@ -643,6 +685,19 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
                 overwrite: false,
             };
             save_active(wb, opts, window, cx)
+        },
+    );
+    commands.register(
+        "workbench.action.files.saveAs",
+        "File: Save As...",
+        |wb, _, window, cx| {
+            // Only a code view: Search, diffs and previews have no file of
+            // their own to save elsewhere.
+            let Some(view) = wb.active_code_view(cx) else {
+                return;
+            };
+            let path = view.read(cx).path().clone();
+            wb.save_as(path, window, cx).detach();
         },
     );
     commands.register(

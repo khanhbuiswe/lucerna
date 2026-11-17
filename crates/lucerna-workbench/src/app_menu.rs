@@ -245,6 +245,7 @@ pub static MENUS: &[MenuSpec] = &[
             Entry::RecentSubmenu,
             Entry::Separator,
             command("Save", "workbench.action.files.save"),
+            command("Save As…", "workbench.action.files.saveAs"),
             command("Save All", "workbench.action.files.saveAll"),
             command(
                 "Save without Formatting",

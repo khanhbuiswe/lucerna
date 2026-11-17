@@ -131,6 +131,7 @@
   { "key": "ctrl+shift+cmd+right", "command": "editor.action.smartSelect.expand", "when": "editorTextFocus" },
   { "key": "ctrl+shift+cmd+left", "command": "editor.action.smartSelect.shrink", "when": "editorTextFocus" },
   { "key": "cmd+s", "command": "workbench.action.files.save" },
+  { "key": "shift+cmd+s", "command": "workbench.action.files.saveAs" },
   { "key": "alt+cmd+s", "command": "workbench.action.files.saveAll" },
   { "key": "cmd+k s", "command": "workbench.action.files.saveWithoutFormatting" },
   { "key": "f4", "command": "references-view.next", "when": "referencesViewFocus" },

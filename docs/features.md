@@ -78,8 +78,9 @@ example "Open in → Default app" in Claude Desktop.
 - **Editing.** Typing (with IME), cursor movement, delete and word delete, Enter that keeps the
   indent, Tab and outdent, cut, copy and paste (a whole line when nothing is selected), and
   undo and redo grouped like VS Code, plus cursor undo. Cmd+N opens an Untitled tab (File → New
-  File) that is never written to disk until you save it. Save, Save All, Save Without Formatting
-  and Revert; `files.trimTrailingWhitespace`, `files.insertFinalNewline`, `files.trimFinalNewlines`,
+  File) that is never written to disk until you save it; Cmd+S asks where. Save As (Cmd+Shift+S)
+  moves every tab of the file to the new one and leaves the old file as it was. Save, Save All,
+  Save Without Formatting and Revert; `files.trimTrailingWhitespace`, `files.insertFinalNewline`, `files.trimFinalNewlines`,
   `files.eol` and `files.autoSave`. Writes are atomic and keep the file's encoding, BOM and line
   ending. Tabs show a dirty dot, and a conflict dot when the file changed on disk. Saving over
   a changed file asks first, and closing a tab or window with unsaved changes prompts. Hot exit: unsaved changes are

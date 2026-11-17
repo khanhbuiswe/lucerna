@@ -1307,6 +1307,93 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Save As (spec §4.3, §4.4): asks where to save the document at
+    /// `path` (a file or an Untitled document), writes its text there, and
+    /// moves the document with every tab, preview and Go Back place to the
+    /// new file, undo history and cursors kept. The old file stays as it
+    /// was on disk. A tab already open on the chosen file closes and its
+    /// document is dropped: the dialog asked before replacing the file.
+    /// Choosing the document's own file is a plain save.
+    ///
+    /// `true` once the text is saved. Cancel or a failed write (reported
+    /// in the status bar) is `false` and leaves the document where it was,
+    /// unsaved.
+    pub fn save_as(
+        &mut self,
+        path: Arc<Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
+        let from = self.absolute_path(&path);
+        let (folder, name) = save::save_dialog_start(self, &from, cx);
+        let answer = cx.prompt_for_new_path(&folder, Some(&name));
+        let documents = self.documents.clone();
+        cx.spawn_in(window, async move |wb, cx| {
+            let to: Arc<Path> = match answer.await {
+                Ok(Ok(Some(to))) => Arc::from(to),
+                Ok(Err(err)) => {
+                    tracing::warn!(%err, "the save dialog failed");
+                    return false;
+                }
+                _ => return false,
+            };
+            if save::same_file(&from, &to) {
+                let opts = save::SaveOptions {
+                    reason: save::SaveReason::Explicit,
+                    participants: true,
+                    overwrite: false,
+                };
+                let Ok(save) = cx.update(|window, cx| {
+                    documents.update(cx, |d, cx| d.save(&from, opts, window, cx))
+                }) else {
+                    return false;
+                };
+                return matches!(save.await, Ok(true));
+            }
+            let Ok(write) = cx.update(|window, cx| {
+                documents.update(cx, |d, cx| d.write_as(&from, &to, window, cx))
+            }) else {
+                return false;
+            };
+            let Ok(saved) = write.await else {
+                return false;
+            };
+            wb.update(cx, |wb, cx| {
+                wb.close_file_tabs(&to, cx);
+                wb.paths_renamed(&from, &to, cx);
+                wb.documents
+                    .update(cx, |d, cx| d.finish_save_as(&to, saved, cx));
+            })
+            .is_ok()
+        })
+    }
+
+    /// Closes every tab of the file `path` (absolute) without asking and
+    /// drops its document, unsaved changes and all: Save As is about to
+    /// put another document there.
+    fn close_file_tabs(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let closing: Vec<TabId> = self
+            .editor_groups
+            .read(cx)
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter(|t| matches!(&t.item, TabItem::File(p) if **p == *path))
+            .map(|t| t.id)
+            .collect();
+        if !closing.is_empty() {
+            self.update_editor_groups(cx, |m| {
+                for id in closing {
+                    m.close(id);
+                }
+            });
+        }
+        if self.documents.read(cx).state(path).is_some() {
+            self.documents.update(cx, |d, cx| d.discard(path, cx));
+        }
+    }
+
     /// After Lucerna deleted `path` (absolute): the tabs of files at it or
     /// under it close, except those with unsaved changes, which stay to be
     /// marked deleted when the watcher reports the removal.

@@ -5,6 +5,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use futures::FutureExt as _;
+use futures::future::LocalBoxFuture;
 use gpui::{Context, Entity, Window};
 use lucerna_vim::ExCommand;
 
@@ -61,6 +63,11 @@ impl Workbench {
                 let Some((_, path)) = self.active_file_tab(cx) else {
                     return;
                 };
+                // No file to write over: ask where to save it.
+                if crate::untitled::is_untitled(&path) {
+                    self.save_as(path, window, cx).detach();
+                    return;
+                }
                 self.documents()
                     .clone()
                     .update(cx, |d, cx| d.save(&path, save_options(true), window, cx))
@@ -94,14 +101,25 @@ impl Workbench {
                     close_tab(&groups, id, cx);
                     return;
                 }
-                let save = documents.update(cx, |d, cx| {
-                    d.save(&path, save_options(overwrite), window, cx)
-                });
+                // An Untitled document goes through Save As, which moves it
+                // to the chosen file: the view knows where it went.
+                let view = self.active_code_view(cx);
+                let save: LocalBoxFuture<'static, bool> = if crate::untitled::is_untitled(&path) {
+                    self.save_as(path.clone(), window, cx).boxed_local()
+                } else {
+                    let save = documents.update(cx, |d, cx| {
+                        d.save(&path, save_options(overwrite), window, cx)
+                    });
+                    async move { matches!(save.await, Ok(true)) }.boxed_local()
+                };
                 cx.spawn(async move |_, cx| {
-                    // Only a write closes the tab: a conflict answered with
-                    // Cancel or Reload (`Ok(false)`, clean after Reload),
-                    // a failed write, or an edit typed meanwhile keeps it.
-                    let saved = matches!(save.await, Ok(true)) && !is_dirty(&documents, &path, cx);
+                    let written = save.await;
+                    let path = view.map_or(path, |v| v.read_with(cx, |v, _| v.path().clone()));
+                    // Only a write closes the tab: Cancel in the save
+                    // dialog, a conflict answered with Cancel or Reload
+                    // (`Ok(false)`, clean after Reload), a failed write, or
+                    // an edit typed meanwhile keeps it.
+                    let saved = written && !is_dirty(&documents, &path, cx);
                     if saved {
                         cx.update(|cx| close_tab(&groups, id, cx));
                     }

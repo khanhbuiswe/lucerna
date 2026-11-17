@@ -242,6 +242,19 @@ struct StartedWrite {
     guard: SavingGuard,
 }
 
+/// What a Save As wrote ([`Documents::write_as`]), for
+/// [`Documents::finish_save_as`]. The document's next save or revert waits
+/// until it is dropped.
+pub struct SavedAs {
+    /// The history state the write captured; it becomes the saved one.
+    state: HistoryState,
+    /// The text the write captured.
+    snapshot: BufferSnapshot,
+    /// The written file's hash, size and mtime.
+    written: Written,
+    _done: oneshot::Sender<()>,
+}
+
 /// Counts a write in flight in a document's `saving` for as long as it
 /// lives, so a save dropped half-way cannot hold reloads back for good.
 struct SavingGuard(Rc<Cell<u32>>);
@@ -1377,7 +1390,7 @@ impl Documents {
         // edit made after this call is not part of the save.
         // `opts.overwrite` (`:w!`) neither asks nor checks the disk.
         let started = (previous.is_none() && !lossy && (opts.overwrite || !self.asks(&key, cx)))
-            .then(|| self.start_write(&key, opts, opts.overwrite, cx));
+            .then(|| self.start_write(&key, None, opts, opts.overwrite, cx));
         cx.spawn_in(window, async move |this, cx| {
             // Dropped at the end: the next save of the document goes on.
             let _done = done;
@@ -1461,7 +1474,7 @@ impl Documents {
                             }
                         }
                         let Ok(write) =
-                            this.update(cx, |d, cx| d.start_write(&key, opts, overwrite, cx))
+                            this.update(cx, |d, cx| d.start_write(&key, None, opts, overwrite, cx))
                         else {
                             return Ok(false);
                         };
@@ -1520,18 +1533,26 @@ impl Documents {
         self.docs.get(key).is_some_and(|d| d.conflict.is_some()) && !self.overwrites(key, cx)
     }
 
-    /// Runs the save participants, captures the text and starts writing it;
-    /// with `overwrite`, without checking the file on disk first. `None`
-    /// when the document has no text to save.
+    /// Runs the save participants, captures the text and starts writing it
+    /// to its file, or to `target` (Save As: the participants of the
+    /// target's language, and no check of the file there); with
+    /// `overwrite`, without checking the file on disk first. `None` when
+    /// the document has no text to save.
     fn start_write(
         &mut self,
         key: &Arc<Path>,
+        target: Option<&Arc<Path>>,
         opts: SaveOptions,
         overwrite: bool,
         cx: &mut Context<Self>,
     ) -> Option<StartedWrite> {
-        let check = !overwrite && !self.overwrites(key, cx);
+        let check = target.is_none() && !overwrite && !self.overwrites(key, cx);
         let window = self.window;
+        let target_language = target.map(|target| {
+            let snapshot = self.docs.get(key).and_then(|d| d.snapshot.clone());
+            language_for(&self.root, &self.settings, target, snapshot.as_ref(), cx)
+                .map(|l| l.id.clone())
+        });
         let doc = self.docs.get_mut(key)?;
         let check = !std::mem::take(&mut doc.skip_disk_check) && check;
         // Only a file that never loaded has no text to save (a failed
@@ -1547,7 +1568,7 @@ impl Documents {
         };
         buffer.push_stop();
         if opts.participants {
-            let language = doc.language_id();
+            let language = target_language.unwrap_or_else(|| doc.language_id());
             let participants = save::participants(
                 self.settings.read(cx).view(cx),
                 language.as_deref(),
@@ -1588,7 +1609,7 @@ impl Documents {
             temps: save::save_temps(cx),
         };
         let guard = SavingGuard::new(&doc.saving);
-        let path = key.clone();
+        let path = target.unwrap_or(key).clone();
         let hold = save::save_hold(cx);
         let task = cx.background_spawn(async move {
             if let Some(hold) = hold {
@@ -1654,34 +1675,7 @@ impl Documents {
         };
         let step = match result {
             Ok(WriteOutcome::Written(written)) => {
-                if let Some(buffer) = doc.buffer.as_mut() {
-                    let was_dirty = buffer.is_dirty();
-                    // Edits made while writing stay unsaved.
-                    buffer.set_saved(state);
-                    let dirty = buffer.is_dirty();
-                    doc.base_hash = written.hash;
-                    doc.base = Some(snapshot.clone());
-                    doc.disk_epoch += 1;
-                    doc.stamp = Some(Stamp::of_written(&written));
-                    // The invalid bytes are now U+FFFD on disk too.
-                    buffer.clear_lossy();
-                    set_conflict(doc, key, None, cx);
-                    if doc.state == DocState::Deleted {
-                        // The save made the file again.
-                        doc.set_state(DocState::Ready, cx);
-                        announce_return(doc, key, cx);
-                    }
-                    cx.emit(DocumentEvent::Saved {
-                        path: key.clone(),
-                        snapshot,
-                    });
-                    if dirty != was_dirty {
-                        cx.emit(DocumentEvent::DirtyChanged {
-                            path: key.clone(),
-                            dirty,
-                        });
-                    }
-                }
+                take_written(doc, key, state, snapshot, &written, cx);
                 SaveStep::Done(Ok(true))
             }
             Ok(WriteOutcome::Missing) => {
@@ -1723,6 +1717,90 @@ impl Documents {
         }
         cx.notify();
         step
+    }
+
+    /// Save As, step one: writes the text of the document at `from` to
+    /// `to` through the save's atomic write, after the document's saves in
+    /// flight. The participants run as for a save, by the settings of
+    /// `to`'s language; the text keeps its encoding, BOM and line endings
+    /// (an Untitled one is UTF-8 without a BOM). The file at `to` is not
+    /// checked: the save dialog asked before replacing it. The document
+    /// keeps its key; [`Documents::finish_save_as`] marks the text saved
+    /// once it has moved to `to`. A failed write is reported in the status
+    /// bar and changes nothing but the participants' edits.
+    pub fn write_as(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SavedAs, WriteError>> {
+        let (key, target) = (self.key(from), self.key(to));
+        let Some(doc) = self.docs.get_mut(&key) else {
+            return Task::ready(Err(WriteError::Io("the document is not open".into())));
+        };
+        let (done, previous) = queue_disk_work(doc);
+        let opts = SaveOptions {
+            reason: SaveReason::Explicit,
+            participants: true,
+            overwrite: true,
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            if let Some(previous) = previous {
+                previous.await.ok();
+            }
+            let started = this
+                .update(cx, |d, cx| {
+                    d.start_write(&key, Some(&target), opts, true, cx)
+                })
+                .map_err(|_| WriteError::Io("the document was closed".into()))?;
+            let StartedWrite {
+                task,
+                state,
+                snapshot,
+                guard,
+            } = started.ok_or_else(|| WriteError::Io("the file's text is not loaded".into()))?;
+            let result = task.await;
+            drop(guard);
+            match result {
+                Ok(WriteOutcome::Written(written)) => Ok(SavedAs {
+                    state,
+                    snapshot,
+                    written,
+                    _done: done,
+                }),
+                // Neither comes without a disk check or from a save
+                // command.
+                Ok(WriteOutcome::ChangedOnDisk | WriteOutcome::Missing) => {
+                    Err(WriteError::Io("the file was not written".into()))
+                }
+                Err(err) => {
+                    tracing::warn!(path = %target.display(), %err, "save as failed");
+                    this.update(cx, |d, cx| {
+                        let message = save::failure_message(&target, &err);
+                        status_message::show_or_log(d.window, message, cx);
+                    })
+                    .ok();
+                    Err(err)
+                }
+            }
+        })
+    }
+
+    /// Save As, last step: the document now at `path` (moved there after
+    /// [`Documents::write_as`]) takes what the write saved, as a save does.
+    pub fn finish_save_as(&mut self, path: &Path, saved: SavedAs, cx: &mut Context<Self>) {
+        let key = self.key(path);
+        let SavedAs {
+            state,
+            snapshot,
+            written,
+            _done,
+        } = saved;
+        if let Some(doc) = self.docs.get_mut(&key) {
+            take_written(doc, &key, state, snapshot, &written, cx);
+            cx.notify();
+        }
     }
 
     /// Replaces the text of the document at `path` with the file's, as one
@@ -2763,6 +2841,49 @@ fn reload_failed(
     }
     let name = save::display_name(key);
     status_message::show_or_log(window, format!("Failed to reload '{name}': {err}"), cx);
+}
+
+/// Marks the text `state` and `snapshot` a write captured as the saved
+/// text of the document at `key`, whose file `written` describes: its base,
+/// hash and stamp, no conflict, a deleted file back. Sends
+/// [`DocumentEvent::Saved`], and [`DocumentEvent::DirtyChanged`] when that
+/// changed. Edits made while writing stay unsaved.
+fn take_written(
+    doc: &mut Document,
+    key: &Arc<Path>,
+    state: HistoryState,
+    snapshot: BufferSnapshot,
+    written: &Written,
+    cx: &mut Context<Documents>,
+) {
+    let Some(buffer) = doc.buffer.as_mut() else {
+        return;
+    };
+    let was_dirty = buffer.is_dirty();
+    buffer.set_saved(state);
+    let dirty = buffer.is_dirty();
+    doc.base_hash = written.hash;
+    doc.base = Some(snapshot.clone());
+    doc.disk_epoch += 1;
+    doc.stamp = Some(Stamp::of_written(written));
+    // The invalid bytes are now U+FFFD on disk too.
+    buffer.clear_lossy();
+    set_conflict(doc, key, None, cx);
+    if doc.state == DocState::Deleted {
+        // The save made the file again.
+        doc.set_state(DocState::Ready, cx);
+        announce_return(doc, key, cx);
+    }
+    cx.emit(DocumentEvent::Saved {
+        path: key.clone(),
+        snapshot,
+    });
+    if dirty != was_dirty {
+        cx.emit(DocumentEvent::DirtyChanged {
+            path: key.clone(),
+            dirty,
+        });
+    }
 }
 
 /// Puts a save or revert of `doc` in line: returns the sender to drop when

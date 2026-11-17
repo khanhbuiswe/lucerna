@@ -581,18 +581,8 @@ impl EditorGroupsView {
         if let TabItem::File(path) = &tab.item
             && crate::untitled::is_untitled(path)
         {
-            let label = self
-                .documents
-                .as_ref()
-                .and_then(|d| d.read(cx).snapshot_of(path))
-                .and_then(|snapshot| {
-                    let rows = snapshot.line_count().min(UNTITLED_LABEL_ROWS);
-                    let head: Vec<_> = (0..rows)
-                        .map(|row| snapshot.line_prefix(row, UNTITLED_LABEL_CHARS))
-                        .collect();
-                    crate::untitled::label(&head.join("\n"))
-                });
-            return label.unwrap_or_else(|| crate::untitled::name(path));
+            let documents = self.documents.as_ref().map(|d| d.read(cx));
+            return untitled_title(documents, path);
         }
         tab.title()
     }
@@ -1029,6 +1019,21 @@ fn title_color(active: bool, focused_group: bool, ui: &UiColors) -> Rgba {
         (true, false) => mix(ui.text, ui.text_muted, 0.5),
         (false, _) => ui.text_muted,
     }
+}
+
+/// The title of the Untitled document at `path`: the label of its first
+/// lines, else its name (`Untitled-N`).
+pub(crate) fn untitled_title(documents: Option<&Documents>, path: &Path) -> String {
+    documents
+        .and_then(|d| d.snapshot_of(path))
+        .and_then(|snapshot| {
+            let rows = snapshot.line_count().min(UNTITLED_LABEL_ROWS);
+            let head: Vec<_> = (0..rows)
+                .map(|row| snapshot.line_prefix(row, UNTITLED_LABEL_CHARS))
+                .collect();
+            crate::untitled::label(&head.join("\n"))
+        })
+        .unwrap_or_else(|| crate::untitled::name(path))
 }
 
 /// How many rows of an Untitled document a tab label looks at.

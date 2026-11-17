@@ -299,6 +299,7 @@ mod tests {
             (event("z", None, cmd()), "cmd+z"),
             (event("z", None, cmd_shift()), "shift+cmd+z"),
             (event("s", None, cmd()), "cmd+s"),
+            (event("s", None, cmd_shift()), "shift+cmd+s"),
             (event("s", None, alt_cmd()), "alt+cmd+s"),
             // The second stroke of `cmd+k s`.
             (event("s", Some("s"), Modifiers::none()), "s"),

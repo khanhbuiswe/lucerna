@@ -9,6 +9,9 @@ Each release's section below is copied into its GitHub Release page by
 
 - Cmd+N (File → New File) opens an Untitled tab. Its tab shows the first line you type, and it
   counts as unsaved once it has text.
+- Save As (Cmd+Shift+S, File → Save As…). Saving an Untitled tab (Cmd+S, or `:w`, `:wq`, `:x` in
+  Vim) asks where to save it. The tab becomes the new file and keeps its undo history; with Save
+  As on a file, every tab of it moves to the new file and the old file is left as it was.
 
 ### Changed
 

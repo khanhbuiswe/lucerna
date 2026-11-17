@@ -84,7 +84,7 @@ pub use config_files::{
 };
 pub use diagnostics_status::DiagnosticsStatusItem;
 pub use diff_view::{DiffKind, DiffView};
-pub use documents::{DiskNotice, DocState, DocumentEvent, DocumentStatus, Documents};
+pub use documents::{DiskNotice, DocState, DocumentEvent, DocumentStatus, Documents, SavedAs};
 pub use editor_groups::{
     BRANCH_CHANGES_TAB_STATE, EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView, FileView,
     GIT_CHANGES_TAB_STATE, Group, GroupState, GroupsState, MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
@@ -132,7 +132,7 @@ pub use quick_open::{
 };
 pub use recent_picker::{RecentPicker, RecentPickerEvent};
 pub use references_view::{ReferencesView, find_references_in_tab};
-pub use save::{SaveOptions, SaveReason, hold_saves_for_test, save_temps};
+pub use save::{SaveOptions, SaveReason, hold_saves_for_test, save_dialog_start, save_temps};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
 pub use startup::{RestoreWindows, Startup, last_workspace, restore_windows, startup_choice};
 pub use symbols::{

@@ -10,8 +10,8 @@ pub use model::{
     SEARCH_TAB_STATE, Tab, TabId, TabItem,
 };
 pub(crate) use model::{branch_changes_title, file_diff_title, prefixed, split_preview_state};
-pub(crate) use view::path_bar_text;
 pub use view::{EditorGroupsView, TabBodyFactory, placeholder_body};
+pub(crate) use view::{path_bar_text, untitled_title};
 
 use crate::{CommandHandler, CommandRegistry, Workbench};
 
