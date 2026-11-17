@@ -4,6 +4,7 @@ mod coalesce;
 pub mod fs_ops;
 mod fuzzy;
 mod ignored;
+pub mod replace;
 mod search;
 mod snapshot;
 mod watch;
