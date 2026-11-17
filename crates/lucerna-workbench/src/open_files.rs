@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, unbounded};
+use notify::event::{EventKind, ModifyKind};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::config_files::real_path;
@@ -26,6 +27,12 @@ use crate::tasks::try_spawn_guarded;
 pub const OPEN_FILE_DEBOUNCE: Duration = Duration::from_millis(50);
 /// ...or when it has been collecting for this long.
 const MAX_BATCH: Duration = Duration::from_millis(200);
+/// [`WatchState::watch_dirs`] checks the folders at most this many times,
+/// stopping at the first pass that moves no watch.
+const MAX_WATCH_PASSES: usize = 8;
+
+#[cfg(test)]
+type AfterWatch = Box<dyn FnMut(&Path) + Send>;
 
 /// Watches the parent directories of a set of files and reports changes
 /// to those files only. Dropping it stops watching.
@@ -40,6 +47,10 @@ struct WatchState {
     files: Vec<(PathBuf, PathBuf)>,
     /// Directories watched, non-recursively.
     dirs: Vec<PathBuf>,
+    /// Runs right after each new watch, standing in for a folder created
+    /// at that moment.
+    #[cfg(test)]
+    after_watch: Option<AfterWatch>,
 }
 
 impl OpenFileWatcher {
@@ -57,6 +68,8 @@ impl OpenFileWatcher {
             watcher,
             files: Vec::new(),
             dirs: Vec::new(),
+            #[cfg(test)]
+            after_watch: None,
         }));
         let weak = Arc::downgrade(&state);
         try_spawn_guarded("lucerna-open-files-watch", move || {
@@ -97,7 +110,23 @@ impl WatchState {
     /// file's parent, or its nearest existing ancestor once the parent is
     /// removed. A directory already in `dirs` is kept as is. Returns the
     /// directories watched by this call.
+    ///
+    /// A folder created between the check and its parent's watch sends
+    /// its event to no one, as the watch above was just dropped; so the
+    /// check runs again until the watches stop moving.
     fn watch_dirs(&mut self) -> Vec<PathBuf> {
+        let mut added = Vec::new();
+        for _ in 0..MAX_WATCH_PASSES {
+            if !self.watch_dirs_once(&mut added) {
+                break;
+            }
+        }
+        added
+    }
+
+    /// One pass of [`Self::watch_dirs`], adding to `added` the directories
+    /// it watches. Returns whether a watch was added or dropped.
+    fn watch_dirs_once(&mut self, added: &mut Vec<PathBuf>) -> bool {
         let mut wanted = BTreeSet::new();
         for (file, real) in &self.files {
             let Some(parent) = file.parent() else {
@@ -115,13 +144,14 @@ impl WatchState {
             .iter()
             .filter_map(|dir| nearest_existing_dir(dir))
             .collect();
+        let mut moved = false;
         for dir in &self.dirs {
             if !wanted.contains(dir) {
                 let _ = self.watcher.unwatch(dir);
+                moved = true;
             }
         }
         let mut dirs = Vec::new();
-        let mut added = Vec::new();
         for dir in wanted {
             if self.dirs.contains(&dir) {
                 dirs.push(dir);
@@ -129,29 +159,38 @@ impl WatchState {
             }
             match self.watcher.watch(&dir, RecursiveMode::NonRecursive) {
                 Ok(()) => {
-                    added.push(dir.clone());
+                    #[cfg(test)]
+                    if let Some(after_watch) = &mut self.after_watch {
+                        after_watch(&dir);
+                    }
+                    if !added.contains(&dir) {
+                        added.push(dir.clone());
+                    }
                     dirs.push(dir);
+                    moved = true;
                 }
                 Err(err) => tracing::warn!(path = %dir.display(), %err, "could not watch"),
             }
         }
         self.dirs = dirs;
-        added
+        moved
     }
 
     /// Moves the watches to follow folders that were removed or came
     /// back, and returns the files (as given) in a directory watched just
-    /// now: they may have been written before the watch got there.
+    /// now, by any pass: they may have been written before the watch got
+    /// there.
     ///
-    /// `changed` holds the batch's event paths. A watched folder among
-    /// them may have been removed and created again within the batch; it
-    /// is still in `dirs`, but a watch on the old folder (inotify, Windows)
-    /// died with it, so it is watched anew. Writes inside a folder do not
-    /// name the folder itself and renew nothing.
-    fn rewatch(&mut self, changed: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
+    /// `moved` holds the paths the batch created, removed or renamed
+    /// ([`Batch::moved`]). A watched folder among them may have been
+    /// removed and created again within the batch; it is still in `dirs`,
+    /// but a watch on the old folder (inotify, Windows) died with it, so it
+    /// is watched anew. Writes inside a folder do not name the folder
+    /// itself and renew nothing.
+    fn rewatch(&mut self, moved: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
         let watcher = &mut self.watcher;
         self.dirs.retain(|dir| {
-            let replaced = changed.contains(dir) || changed.contains(&real_path(dir));
+            let replaced = moved.contains(dir) || moved.contains(&real_path(dir));
             if replaced {
                 let _ = watcher.unwatch(dir);
             }
@@ -179,6 +218,55 @@ fn nearest_existing_dir(dir: &Path) -> Option<PathBuf> {
     dir.ancestors().find(|d| d.is_dir()).map(Path::to_path_buf)
 }
 
+/// What one batch of events says, with paths resolved by [`real_path`].
+#[derive(Debug, Default, PartialEq)]
+struct Batch {
+    /// Every path an event named, but for reads.
+    changed: BTreeSet<PathBuf>,
+    /// The paths created, removed or renamed: only these can name a
+    /// watched folder that was replaced. A write or a metadata change to a
+    /// folder (macOS sets extended attributes on new ones) leaves its watch
+    /// alive.
+    moved: BTreeSet<PathBuf>,
+    /// Events may have been lost: every file may have changed.
+    everything: bool,
+}
+
+impl Batch {
+    fn collect(events: Vec<notify::Result<notify::Event>>) -> Batch {
+        let mut batch = Batch::default();
+        for event in events {
+            let event = match event {
+                Ok(event) => event,
+                Err(_) => {
+                    batch.everything = true;
+                    continue;
+                }
+            };
+            batch.everything |= event.need_rescan();
+            let moved = match event.kind {
+                // Reads change nothing. inotify reports each listing of a
+                // watched folder as an open of the folder itself, which
+                // would otherwise renew its watch and reload its files
+                // whenever something (git status) lists it.
+                EventKind::Access(_) => continue,
+                EventKind::Create(_)
+                | EventKind::Remove(_)
+                | EventKind::Modify(ModifyKind::Name(_)) => true,
+                EventKind::Modify(_) | EventKind::Any | EventKind::Other => false,
+            };
+            for path in event.paths {
+                let path = real_path(&path);
+                if moved {
+                    batch.moved.insert(path.clone());
+                }
+                batch.changed.insert(path);
+            }
+        }
+        batch
+    }
+}
+
 fn debounce_loop(
     rx: &Receiver<notify::Result<notify::Event>>,
     state: &Weak<Mutex<WatchState>>,
@@ -203,24 +291,16 @@ fn debounce_loop(
         let Some(state) = state.upgrade() else {
             return;
         };
-        let mut changed = Vec::new();
-        let mut everything = false;
-        for event in events {
-            match event {
-                Ok(event) => {
-                    everything |= event.need_rescan();
-                    changed.extend(event.paths);
-                }
-                // Events may have been lost.
-                Err(_) => everything = true,
-            }
-        }
-        let changed: BTreeSet<PathBuf> = changed.iter().map(|p| real_path(p)).collect();
+        let Batch {
+            changed,
+            moved,
+            everything,
+        } = Batch::collect(events);
         let (files, rewatched) = {
             let mut state = lock(&state);
             // Folders may have been removed or created: move the watches
             // now rather than at the next `set_files`.
-            let rewatched = state.rewatch(&changed);
+            let rewatched = state.rewatch(&moved);
             (state.files.clone(), rewatched)
         };
         drop(state);
@@ -289,7 +369,10 @@ mod tests {
     fn nearest_existing_dir_walks_up_past_missing_folders() {
         let dir = tempfile::TempDir::new().unwrap();
         let missing = dir.path().join("dist/js");
-        assert_eq!(nearest_existing_dir(&missing), Some(dir.path().to_path_buf()));
+        assert_eq!(
+            nearest_existing_dir(&missing),
+            Some(dir.path().to_path_buf())
+        );
         std::fs::create_dir_all(&missing).unwrap();
         assert_eq!(nearest_existing_dir(&missing), Some(missing));
     }
@@ -299,6 +382,7 @@ mod tests {
             watcher: notify::recommended_watcher(|_| {}).unwrap(),
             files: Vec::new(),
             dirs: Vec::new(),
+            after_watch: None,
         }
     }
 
@@ -346,6 +430,84 @@ mod tests {
         assert_eq!(state.dirs, std::slice::from_ref(&dist));
         // The path as watched matches too.
         assert_eq!(state.rewatch(&BTreeSet::from([dist.clone()])), [bundle]);
+        assert_eq!(state.dirs, [dist]);
+    }
+
+    /// `dist/js` is created (and the file in it written) just after the
+    /// watch moves down to `dist`, before the watch on the root, which
+    /// would have seen it, is replaced: the next pass finds it, and the
+    /// file is reported.
+    #[test]
+    fn watch_moves_down_past_a_folder_created_while_moving() {
+        let root = tempfile::TempDir::new().unwrap();
+        let (dist, js) = (root.path().join("dist"), root.path().join("dist/js"));
+        let bundle = js.join("bundle.js");
+        let mut state = state();
+        state.set_files(vec![bundle.clone()]);
+        assert_eq!(state.dirs, [root.path().to_path_buf()]);
+
+        std::fs::create_dir(&dist).unwrap();
+        let (watched, written) = (dist.clone(), bundle.clone());
+        state.after_watch = Some(Box::new(move |dir| {
+            if dir == watched && !written.exists() {
+                std::fs::create_dir(written.parent().unwrap()).unwrap();
+                std::fs::write(&written, "2").unwrap();
+            }
+        }));
+        assert_eq!(state.rewatch(&BTreeSet::new()), [bundle]);
+        assert_eq!(state.dirs, [js]);
+    }
+
+    fn event(kind: EventKind, path: &Path) -> notify::Result<notify::Event> {
+        Ok(notify::Event::new(kind).add_path(path.to_path_buf()))
+    }
+
+    /// inotify reports a listing of a watched folder as an open of the
+    /// folder: it is not a change, and it must not renew the watch (which
+    /// would report the folder's files as changed on every `git status`).
+    #[test]
+    fn reads_and_writes_on_a_watched_folder_renew_nothing() {
+        use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, MetadataKind};
+        let root = tempfile::TempDir::new().unwrap();
+        let dist = root.path().join("dist");
+        let bundle = dist.join("bundle.js");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(&bundle, "1").unwrap();
+        let mut state = state();
+        state.set_files(vec![bundle.clone()]);
+        let (real_dist, real_bundle) = (real_path(&dist), real_path(&bundle));
+
+        let opened = Batch::collect(vec![
+            event(EventKind::Access(AccessKind::Open(AccessMode::Any)), &dist),
+            event(
+                EventKind::Access(AccessKind::Close(AccessMode::Read)),
+                &dist,
+            ),
+        ]);
+        assert_eq!(opened, Batch::default());
+        assert_eq!(state.rewatch(&opened.moved), Vec::<PathBuf>::new());
+        assert_eq!(state.dirs, std::slice::from_ref(&dist));
+
+        let touched = Batch::collect(vec![
+            event(
+                EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)),
+                &dist,
+            ),
+            event(
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                &bundle,
+            ),
+        ]);
+        assert_eq!(
+            touched.changed,
+            BTreeSet::from([real_dist.clone(), real_bundle])
+        );
+        assert!(touched.moved.is_empty());
+        assert_eq!(state.rewatch(&touched.moved), Vec::<PathBuf>::new());
+
+        let created = Batch::collect(vec![event(EventKind::Create(CreateKind::Folder), &dist)]);
+        assert_eq!(created.moved, BTreeSet::from([real_dist]));
+        assert_eq!(state.rewatch(&created.moved), [bundle]);
         assert_eq!(state.dirs, [dist]);
     }
 }
