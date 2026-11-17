@@ -4,11 +4,17 @@
 //! buffer, as the workbench does. The `rust_*` cases run on a parsed
 //! 10,000-line Rust file with the bundled language's editing data, so
 //! auto-close, overtype and closer indent see real scopes.
+//!
+//! Multi-cursor search (spec 4.3 §8): `select_all_matches_10k` (`⇧⌘L`, a
+//! 5 MiB file, 10,000 matches) and `add_match_far` (`⌘D`'s `find_next` when
+//! the only match is at the end of a 50 MiB file, target < 16 ms).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use lucerna_editor::find::{FindQuery, find_next};
+use lucerna_editor::multicursor::{MatchOptions, select_all_matches};
 use lucerna_editor::{
     AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, EditConfig, EditKind, EditPlan,
     Goal, MultiCursorPaste, Selection, SelectionSet, commands,
@@ -150,6 +156,67 @@ fn type_x(buffer: &mut Buffer, set: &SelectionSet, config: &EditConfig) {
     buffer.end_transaction(None);
 }
 
+/// `lines` lines of `line_len` bytes of filler; line `i` holds `needle` when
+/// `has_needle(i)`.
+fn filler(lines: usize, line_len: usize, has_needle: impl Fn(usize) -> bool) -> Buffer {
+    let mut text = String::with_capacity(lines * line_len);
+    for i in 0..lines {
+        let start = text.len();
+        if has_needle(i) {
+            text.push_str("needle ");
+        }
+        while text.len() - start < line_len - 1 {
+            text.push('x');
+        }
+        text.push('\n');
+    }
+    Buffer::from_bytes(text.as_bytes(), false).unwrap()
+}
+
+fn search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("search");
+    group.measurement_time(Duration::from_secs(5));
+    // 10,000 lines of 524 bytes is about 5 MiB, one match per line.
+    let buffer = filler(10_000, 524, |_| true);
+    let snapshot = buffer.snapshot();
+    let set = SelectionSet::from_selections(
+        vec![Selection {
+            id: 0,
+            anchor: 0,
+            head: 6,
+            goal: Goal::None,
+        }],
+        0,
+        true,
+    );
+    let separators = config().word_separators;
+    let options = MatchOptions {
+        case_sensitive: true,
+        whole_word: false,
+    };
+    let step = select_all_matches(&snapshot, &set, None, options, &separators, 10_000).unwrap();
+    assert_eq!(step.set.len(), 10_000);
+    group.bench_function("select_all_matches_10k", |b| {
+        b.iter(|| select_all_matches(&snapshot, &set, None, options, &separators, 10_000))
+    });
+    // 50 MiB, the only `needle` on the last line.
+    let lines = 100_000;
+    let far = filler(lines, 524, |i| i == lines - 1);
+    let snapshot = far.snapshot();
+    let q = FindQuery {
+        pattern: "needle",
+        is_regex: false,
+        case_sensitive: true,
+        whole_word: false,
+        word_separators: &separators,
+    };
+    assert!(find_next(&snapshot, &q, 0, false).is_some());
+    group.bench_function("add_match_far", |b| {
+        b.iter(|| find_next(&snapshot, &q, 0, false))
+    });
+    group.finish();
+}
+
 fn typing(c: &mut Criterion) {
     let config = config();
     let mut group = c.benchmark_group("typing");
@@ -240,5 +307,5 @@ fn typing(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, typing);
+criterion_group!(benches, typing, search);
 criterion_main!(benches);

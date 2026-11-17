@@ -1,6 +1,6 @@
 # Phase 4: sửa code đầy đủ
 
-Ngày 2026-11-11. Trạng thái: 4.1, 4.2 và 4.4 đã triển khai; 4.3, 4.5, 4.6 chưa làm.
+Ngày 2026-11-11. Trạng thái: 4.1, 4.2, 4.3 và 4.4 đã triển khai; 4.5, 4.6 chưa làm.
 
 ## 1. Mục tiêu
 
@@ -46,7 +46,7 @@ Chi tiết ở `docs/research/2026-11-11-editing.md`. Tóm tắt những điểm
 - **Zed:** transaction có độ sâu, "finalize" chặn gộp, IME gộp một bước, format là một bước và hủy nếu người dùng sửa trong lúc chờ (timeout 5 s). Chấm Warning trên tab khi xung đột, prompt Overwrite / Discard Edits / Cancel khi lưu. Menu completion 280–540 px, 3–12 dòng, tài liệu bên phải 260–500 px. Rename là editor một dòng dưới symbol, chữ đậm. Sau edit: `tree.edit` ngay, parse đồng bộ 1 ms, quá thì parse ở nền.
 - **Lucerna lệch khỏi cả hai** ở: tự gộp thay đổi không chồng lấn và thanh báo xung đột (D5); không có Compare (D6); ghi atomic (D7); timeout format cứng thay cho Skip (D9); nhãn completion tô theo loại thay vì icon (§10.3).
 
-Giấy phép: `text`, `editor`, `language`, `workspace`, `project` của Zed là GPL-3, chỉ học thiết kế. Chuyển thể từ VS Code (MIT) gồm quy tắc `shouldPushStackElementBetween`, `fuzzyScore`, danh sách ký tự phân cách từ và parser snippet; mỗi chỗ ghi nguồn trong comment và `THIRD_PARTY_NOTICES.md`. Dependency mới: `similar` (Apache-2.0, đã có trong `Cargo.lock`), `tempfile` (MIT/Apache, đã có), `aho-corasick` (MIT/Unlicense, đã có).
+Giấy phép: `text`, `editor`, `language`, `workspace`, `project` của Zed là GPL-3, chỉ học thiết kế. Chuyển thể từ VS Code (MIT) gồm quy tắc `shouldPushStackElementBetween`, `fuzzyScore`, danh sách ký tự phân cách từ và parser snippet; mỗi chỗ ghi nguồn trong comment và `THIRD_PARTY_NOTICES.md`. Dependency mới: `similar` (Apache-2.0, đã có trong `Cargo.lock`), `tempfile` (MIT/Apache, đã có).
 
 ## 3. Kiến trúc
 
@@ -90,7 +90,7 @@ lucerna-workbench Document giữ Buffer; CodeView nhận chữ (IME), vẽ con t
 
 ### 3.2 `lucerna-editor` (crate mới, không gpui)
 
-Phụ thuộc `lucerna-text`, `lucerna-syntax` (node cho smart select và thụt lề), `aho-corasick`, `similar`, `unicode-segmentation`.
+Phụ thuộc `lucerna-text`, `lucerna-syntax` (node cho smart select và thụt lề), `regex`, `similar`, `unicode-segmentation`.
 
 - **`Selection { id, anchor: usize, head: usize, goal: Goal }`**: offset byte; `Goal` giữ cột hiển thị khi đi lên/xuống (`None | Column(f32) | Block { start, end }`). `SelectionSet { selections: Vec<Selection> (đã sắp, không chồng), primary: SelectionId }`.
   - `normalize(merge_overlapping)`: theo `editor.multiCursorMergeOverlapping`; gộp khi chồng lấn, cùng điểm đầu, hoặc con trỏ rỗng chạm biên selection khác; hai selection không rỗng chỉ chạm nhau thì giữ riêng (theo Zed).
@@ -238,7 +238,7 @@ Lucerna:
 ## 8. Multi-cursor (bước 4.3)
 
 Lệnh và phím VS Code (§14). Hành vi:
-- `addSelectionToNextFindMatch` (⌘D): con trỏ rỗng → chọn từ dưới con trỏ, chế độ cả từ + phân biệt hoa thường; đã có chữ chọn (mọi selection cùng chữ) → tìm chữ đó theo `editor.selectedTextMatchMode` (`findOptions` lấy tùy chọn của thanh tìm). Tìm từ cuối selection mới thêm, quay vòng, bỏ kết quả chồng selection có sẵn (Aho-Corasick trên snapshot, ở nền nếu file lớn). Cuộn tới selection mới.
+- `addSelectionToNextFindMatch` (⌘D): con trỏ rỗng → chọn từ dưới con trỏ, chế độ cả từ + phân biệt hoa thường; đã có chữ chọn (mọi selection cùng chữ) → tìm chữ đó theo tùy chọn của thanh Find. Tìm từ cuối selection mới thêm, quay vòng, bỏ kết quả chồng selection có sẵn (quét literal theo cửa sổ 256 KiB trên snapshot, không copy cả buffer). Cuộn tới selection mới.
 - `moveSelectionToNextFindMatch` (⌘K ⌘D): bỏ selection mới nhất, chọn kết quả kế.
 - `selectHighlights` / `changeAll` (⇧⌘L / ⌘F2): mọi kết quả; selection ban đầu giữ là chính.
 - `insertCursorAbove` / `Below` (⌥⌘↑ / ⌥⌘↓): giữ cột mục tiêu qua dòng ngắn; bấm chiều ngược lại xóa con trỏ vừa thêm (stack của Zed).
@@ -404,7 +404,6 @@ Phím của lệnh chỉ thêm khi bước tương ứng giao. Phím trùng vớ
 | `editor.multiCursorMergeOverlapping` | `true` | 4.3 |
 | `editor.multiCursorPaste` | `"spread"` | 4.3 |
 | `editor.multiCursorLimit` | `10000` | 4.3 |
-| `editor.selectedTextMatchMode` | `"findOptions"` | 4.3 |
 | `lucerna.externalChanges.autoMerge` (riêng Lucerna) | `true` | 4.4 |
 | `editor.quickSuggestions` | `{ "other": "on", "comments": "off", "strings": "off" }` | 4.5 |
 | `editor.quickSuggestionsDelay` | `10` | 4.5 |
