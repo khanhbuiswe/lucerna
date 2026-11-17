@@ -49,7 +49,7 @@ Không có `roots`, `file-types` hay `language-id` theo từng server; các th�
 |---|---|
 | `name` | Id ngôn ngữ của Helix, đồng thời là khóa merge. |
 | `language-servers` | Mảng có thứ tự. Mỗi phần tử là tên server (string) hoặc `{ name = "...", only-features = [...] }` / `{ name = "...", except-features = [...] }` (hai key loại trừ nhau). |
-| `roots` | File đánh dấu để tìm root LSP, tìm ngược từ file hiện tại đến workspace root. Master chấp nhận cả glob (C# dùng `["*.slnx", "*.sln", "*.csproj"]`). |
+| `roots` | File đánh dấu để tìm root LSP, tìm ngược từ file hiện tại đến workspace root. Master chấp nhận cả glob (C# dùng `["*.slnx", "*.sln", "*.csproj"]`). Thư mục **ngoài cùng** có marker thắng: `find_lsp_workspace` ghi đè kết quả mỗi lần gặp marker khi đi lên, dừng ở workspace root hoặc một thư mục trong `workspace-lsp-roots`. Lucerna theo cách này từ 2026-11-17, xem `docs/superpowers/specs/2026-11-17-lsp-outermost-root-design.md`. |
 | `language-id` | `TextDocumentItem.languageId`. Mặc định bằng `name`; chỉ đặt khi khác (`javascriptreact`, `typescriptreact`, `terraform`, `terraform-vars`, `dockercompose`). |
 | `file-types` | Mảng đuôi file (`"rs"`) hoặc `{ glob = "..." }`. Glob được kiểm trước đuôi file. |
 | `workspace-lsp-roots` | Thư mục con coi là root LSP riêng (monorepo). Đặt ở `[editor]` hoặc theo ngôn ngữ. |

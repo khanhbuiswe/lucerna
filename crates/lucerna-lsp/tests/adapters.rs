@@ -57,7 +57,7 @@ fn go_mod_when_no_go_work() {
 }
 
 #[test]
-fn ts_nearest_package_json() {
+fn ts_monorepo_uses_outermost_package_json() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     touch(&root.join("package.json"));
@@ -66,8 +66,90 @@ fn ts_nearest_package_json() {
     touch(&file);
     assert_eq!(
         find_root(&adapter("typescript-language-server"), &file, root).unwrap(),
-        root.join("packages/web")
+        root
     );
+}
+
+#[test]
+fn php_vendor_file_shares_app_root() {
+    for with_git in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        if with_git {
+            fs::create_dir_all(root.join(".git")).unwrap();
+        }
+        touch(&root.join("apps/api/composer.json"));
+        touch(&root.join("apps/api/vendor/laravel/framework/composer.json"));
+        let app = root.join("apps/api/app/User.php");
+        let lib = root.join("apps/api/vendor/laravel/framework/src/Model.php");
+        touch(&app);
+        touch(&lib);
+        let def = adapter("intelephense");
+        // A `.git` at the repo root must not outrank the app's composer.json.
+        let expected = root.join("apps/api");
+        assert_eq!(find_root(&def, &app, root).unwrap(), expected);
+        assert_eq!(find_root(&def, &lib, root).unwrap(), expected);
+    }
+}
+
+#[test]
+fn project_marker_wins_over_repo_git() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".git")).unwrap();
+    touch(&root.join("apps/rails/Gemfile"));
+    let file = root.join("apps/rails/app/models/user.rb");
+    touch(&file);
+    assert_eq!(
+        find_root(&adapter("ruby-lsp"), &file, root).unwrap(),
+        root.join("apps/rails")
+    );
+}
+
+#[test]
+fn git_is_only_ever_a_sole_root_marker() {
+    // With outermost search a `.git` beside other markers would always win
+    // over them, so it may only be a server's sole marker.
+    let table = ServerTable::build(None);
+    for def in table.servers.values() {
+        if def.root_markers.len() > 1 {
+            assert!(
+                !def.root_markers.iter().any(|m| m == ".git"),
+                "{} lists .git with other markers",
+                def.name
+            );
+        }
+    }
+}
+
+#[test]
+fn node_modules_file_shares_project_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    touch(&root.join("web/package.json"));
+    touch(&root.join("web/node_modules/react/package.json"));
+    let app = root.join("web/src/main.ts");
+    let lib = root.join("web/node_modules/react/index.d.ts");
+    touch(&app);
+    touch(&lib);
+    let def = adapter("typescript-language-server");
+    assert_eq!(find_root(&def, &app, root).unwrap(), root.join("web"));
+    assert_eq!(find_root(&def, &lib, root).unwrap(), root.join("web"));
+}
+
+#[test]
+fn nearest_can_be_restored_by_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    touch(&root.join("package.json"));
+    touch(&root.join("packages/web/package.json"));
+    let file = root.join("packages/web/src/index.ts");
+    touch(&file);
+    let table = ServerTable::build(Some(&json!({
+        "typescript-language-server": { "root_search": "nearest" }
+    })));
+    let def = table.get("typescript-language-server").unwrap();
+    assert_eq!(find_root(def, &file, root).unwrap(), root.join("packages/web"));
 }
 
 #[test]
@@ -245,9 +327,9 @@ fn glob_marker_finds_sln() {
     })));
     let def = table.get("csharp-ls").unwrap();
     assert_eq!(find_root(def, &file, root).unwrap(), root);
-    // The nearest directory with a matching entry wins.
+    // The outermost directory with a matching entry wins.
     touch(&root.join("src/App/App.csproj"));
-    assert_eq!(find_root(def, &file, root).unwrap(), root.join("src/App"));
+    assert_eq!(find_root(def, &file, root).unwrap(), root);
 }
 
 #[test]

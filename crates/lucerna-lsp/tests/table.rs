@@ -68,7 +68,7 @@ fn defaults_match_phase3_values() {
             &["--stdio"],
             &["python"],
             &py,
-            RootSearch::Nearest,
+            RootSearch::Outermost,
             None,
             true,
         ),
@@ -78,7 +78,7 @@ fn defaults_match_phase3_values() {
             &["--stdio"],
             &["python"],
             &py,
-            RootSearch::Nearest,
+            RootSearch::Outermost,
             None,
             false,
         ),
@@ -88,7 +88,7 @@ fn defaults_match_phase3_values() {
             &["--stdio"],
             &ts_langs,
             &["tsconfig.json", "jsconfig.json", "package.json"],
-            RootSearch::Nearest,
+            RootSearch::Outermost,
             Some(&["--version"]),
             true,
         ),
@@ -98,7 +98,7 @@ fn defaults_match_phase3_values() {
             &[],
             &["c", "c++", "objective-c"],
             &["compile_commands.json", ".clangd"],
-            RootSearch::Nearest,
+            RootSearch::Outermost,
             Some(&["--version"]),
             true,
         ),
@@ -134,7 +134,7 @@ fn user_adds_new_server() {
     let d = t.get("mylang-ls").unwrap();
     assert!(d.enabled);
     assert_eq!(d.probe, Some(strs(&["--version"])));
-    assert_eq!(d.root_search, RootSearch::Nearest);
+    assert_eq!(d.root_search, RootSearch::Outermost);
     assert!(t.errors.is_empty());
 }
 

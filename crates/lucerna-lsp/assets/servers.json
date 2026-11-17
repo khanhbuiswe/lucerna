@@ -129,8 +129,7 @@
       "phtml"
     ],
     "root_markers": [
-      "composer.json",
-      ".git"
+      "composer.json"
     ],
     "probe": false,
     "install": "npm i -g intelephense",
@@ -149,8 +148,7 @@
       "phtml"
     ],
     "root_markers": [
-      "composer.json",
-      ".git"
+      "composer.json"
     ],
     "probe": [
       "--version"
@@ -175,8 +173,7 @@
       "Rakefile"
     ],
     "root_markers": [
-      "Gemfile",
-      ".git"
+      "Gemfile"
     ],
     "install": "gem install ruby-lsp",
     "homepage": "https://shopify.github.io/ruby-lsp/",
@@ -198,8 +195,7 @@
       "Rakefile"
     ],
     "root_markers": [
-      "Gemfile",
-      ".git"
+      "Gemfile"
     ],
     "enabled": false,
     "install": "gem install solargraph",
@@ -222,8 +218,7 @@
       "build.gradle",
       "build.gradle.kts",
       "settings.gradle",
-      "settings.gradle.kts",
-      ".git"
+      "settings.gradle.kts"
     ],
     "probe": false,
     "install": {
@@ -293,8 +288,7 @@
     "root_markers": [
       "Package.swift",
       "buildServer.json",
-      "compile_commands.json",
-      ".git"
+      "compile_commands.json"
     ],
     "probe": false,
     "install": {
@@ -315,8 +309,7 @@
       ".luarc.json",
       ".luarc.jsonc",
       ".stylua.toml",
-      "selene.toml",
-      ".git"
+      "selene.toml"
     ],
     "install": {
       "macos": "brew install lua-language-server",
@@ -578,8 +571,7 @@
       "tfvars"
     ],
     "root_markers": [
-      ".terraform",
-      ".git"
+      ".terraform"
     ],
     "probe": [
       "version"
@@ -603,8 +595,7 @@
       "dockerfile"
     ],
     "root_markers": [
-      "Dockerfile",
-      ".git"
+      "Dockerfile"
     ],
     "probe": false,
     "install": "npm i -g dockerfile-language-server-nodejs",
@@ -667,8 +658,7 @@
       "less"
     ],
     "root_markers": [
-      "package.json",
-      ".git"
+      "package.json"
     ],
     "probe": false,
     "install": "npm i -g vscode-langservers-extracted",
@@ -687,8 +677,7 @@
       "htm"
     ],
     "root_markers": [
-      "package.json",
-      ".git"
+      "package.json"
     ],
     "probe": false,
     "install": "npm i -g vscode-langservers-extracted",
@@ -731,8 +720,7 @@
     ],
     "root_markers": [
       ".taplo.toml",
-      "taplo.toml",
-      ".git"
+      "taplo.toml"
     ],
     "install": {
       "macos": "brew install taplo",
@@ -753,8 +741,7 @@
       "markdown"
     ],
     "root_markers": [
-      ".marksman.toml",
-      ".git"
+      ".marksman.toml"
     ],
     "probe": false,
     "install": {
@@ -772,8 +759,7 @@
       "nix"
     ],
     "root_markers": [
-      "flake.nix",
-      ".git"
+      "flake.nix"
     ],
     "install": "nix profile install nixpkgs#nil",
     "homepage": "https://github.com/oxalica/nil"
@@ -787,8 +773,7 @@
       "nix"
     ],
     "root_markers": [
-      "flake.nix",
-      ".git"
+      "flake.nix"
     ],
     "enabled": false,
     "install": "nix profile install nixpkgs#nixd",
