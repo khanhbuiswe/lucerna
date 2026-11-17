@@ -260,6 +260,12 @@ pub enum DiskNotice {
         reason: Option<String>,
     },
     Deleted,
+    /// The file had bytes that are not valid in its encoding, which a save
+    /// replaces with U+FFFD (spec P3 §6.3). `encoding` is the
+    /// `encoding_rs` name, like "UTF-8" or "Shift_JIS".
+    Lossy {
+        encoding: &'static str,
+    },
 }
 
 /// Background work on one document. A reload diffs (or merges) the file
@@ -388,6 +394,12 @@ struct Document {
     /// until the file comes back. Cleared whenever the state leaves
     /// [`DocState::Deleted`].
     deleted_kept: bool,
+    /// The user dismissed the bar about invalid bytes. Cleared whenever the
+    /// file's text is taken again (load, reload, merge, revert).
+    lossy_dismissed: bool,
+    /// The user agreed to save over the invalid bytes. Cleared with
+    /// `lossy_dismissed`.
+    lossy_consent: bool,
     /// Keep Mine on a file that could not be read, when not even its stamp
     /// is known: the next write does not check the file on disk first.
     /// Consumed by that write (`start_write`); cleared whenever the file's
@@ -461,6 +473,8 @@ impl Document {
             base: None,
             conflict: None,
             deleted_kept: false,
+            lossy_dismissed: false,
+            lossy_consent: false,
             skip_disk_check: false,
             revision: 0,
             encoding: "UTF-8",
@@ -1142,7 +1156,9 @@ impl Documents {
 
     /// `Deleted` when the file is gone, the text is dirty and Keep was not
     /// chosen; `None` once Keep was chosen (a conflict is moot until the
-    /// file returns); else `Conflict` while in conflict; else `None`.
+    /// file returns); else `Conflict` while in conflict; else `Lossy` while
+    /// the text has invalid bytes and the bar was not dismissed; else
+    /// `None`.
     pub fn disk_notice(&self, path: &Path) -> Option<DiskNotice> {
         let doc = self.docs.get(&self.key(path))?;
         let dirty = doc.buffer.as_ref().is_some_and(Buffer::is_dirty);
@@ -1154,10 +1170,25 @@ impl Documents {
                 return Some(DiskNotice::Deleted);
             }
         }
-        let conflict = doc.conflict.as_ref()?;
-        Some(DiskNotice::Conflict {
-            reason: conflict.reason.clone(),
+        if let Some(conflict) = doc.conflict.as_ref() {
+            return Some(DiskNotice::Conflict {
+                reason: conflict.reason.clone(),
+            });
+        }
+        let buffer = doc.buffer.as_ref()?;
+        (buffer.is_lossy() && !doc.lossy_dismissed).then(|| DiskNotice::Lossy {
+            encoding: buffer.encoding().name(),
         })
+    }
+
+    /// Dismiss on the bar about invalid bytes: hides it until the file's
+    /// text is taken again and is still lossy.
+    pub fn dismiss_lossy(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let key = self.key(path);
+        if let Some(doc) = self.docs.get_mut(&key) {
+            doc.lossy_dismissed = true;
+            cx.notify();
+        }
     }
 
     /// Keep Mine (spec §7.3): ends the conflict; the disk text becomes the
@@ -2323,6 +2354,8 @@ impl Documents {
         doc.stamp = Some(stamp);
         doc.disk_epoch += 1;
         doc.skip_disk_check = false;
+        doc.lossy_dismissed = false;
+        doc.lossy_consent = false;
         doc.encoding = buffer.encoding().name();
         doc.line_ending = buffer.line_ending();
         set_conflict(doc, key, None, cx);
@@ -2370,6 +2403,8 @@ impl Documents {
         doc.disk_epoch += 1;
         doc.stamp = Some(stamp);
         doc.skip_disk_check = false;
+        doc.lossy_dismissed = false;
+        doc.lossy_consent = false;
         doc.encoding = buffer.encoding().name();
         doc.line_ending = buffer.line_ending();
         set_conflict(doc, key, None, cx);
@@ -2642,6 +2677,8 @@ fn take_buffer(doc: &mut Document, buffer: Buffer, stamp: Option<Stamp>) {
     doc.base_hash = buffer.disk_hash();
     doc.base = doc.snapshot.clone();
     doc.conflict = None;
+    doc.lossy_dismissed = false;
+    doc.lossy_consent = false;
     doc.encoding = buffer.encoding().name();
     doc.line_ending = buffer.line_ending();
     doc.buffer = Some(buffer);

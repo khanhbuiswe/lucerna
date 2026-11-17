@@ -10,15 +10,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
+use gpui::{Entity, Focusable as _, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, Layer, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, DocState, DocumentEvent, Documents, OpenMode, SaveOptions, SaveReason, Workbench,
-    status_message,
+    AppState, DiskNotice, DocState, DocumentEvent, Documents, OpenMode, SaveOptions, SaveReason,
+    Workbench, status_message,
 };
 use tempfile::TempDir;
 
@@ -1693,4 +1693,98 @@ fn keep_mine_without_auto_save_does_not_save(cx: &mut TestAppContext) {
     advance(5000, cx);
     assert_eq!(disk(&dir, "file.txt"), "disk\n");
     assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+/// A UTF-8 file with a BOM and a stray Latin-1 byte: its decode is lossy.
+const LOSSY: &[u8] = b"\xEF\xBB\xBFcaf\xE9\n";
+
+/// Like [`editor`], with the file's exact bytes.
+fn editor_bytes<'a>(
+    bytes: &[u8],
+    cx: &'a mut TestAppContext,
+) -> (
+    TempDir,
+    Entity<Workbench>,
+    Entity<CodeView>,
+    &'a mut VisualTestContext,
+) {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("file.txt"), bytes).unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    let view = open(&wb, "file.txt", cx);
+    (dir, wb, view, cx)
+}
+
+fn notice(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<DiskNotice> {
+    let docs = documents(wb, cx);
+    cx.update(|_, cx| docs.read(cx).disk_notice(Path::new("file.txt")))
+}
+
+fn click(selector: &'static str, cx: &mut VisualTestContext) {
+    draw(cx);
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"));
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    settle(cx);
+}
+
+#[gpui::test]
+fn lossy_file_shows_a_bar_until_dismissed(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    assert_eq!(
+        notice(&wb, cx),
+        Some(DiskNotice::Lossy { encoding: "UTF-8" })
+    );
+    assert!(drawn("lossy-bar-dismiss-0", cx));
+    click("lossy-bar-dismiss-0", cx);
+    assert!(!drawn("conflict-bar-0", cx));
+    assert_eq!(notice(&wb, cx), None);
+}
+
+#[gpui::test]
+fn valid_file_shows_no_lossy_bar(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, wb, _view, cx) = editor("abc\n", cx);
+    assert_eq!(notice(&wb, cx), None);
+    assert!(!drawn("conflict-bar-0", cx));
+    let (_dir, wb, _view, cx) = editor_bytes(b"caf\xe9\n", cx);
+    assert_eq!(notice(&wb, cx), None);
+    assert!(!drawn("conflict-bar-0", cx));
+}
+
+#[gpui::test]
+fn reload_that_is_still_lossy_shows_the_bar_again(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    click("lossy-bar-dismiss-0", cx);
+    assert_eq!(notice(&wb, cx), None);
+    fs::write(dir.path().join("file.txt"), b"\xEF\xBB\xBFother \xE9\n").unwrap();
+    changed(&wb, "file.txt", ChangeKind::Modified, cx);
+    assert_eq!(
+        notice(&wb, cx),
+        Some(DiskNotice::Lossy { encoding: "UTF-8" })
+    );
+    fs::write(dir.path().join("file.txt"), b"abc\n").unwrap();
+    changed(&wb, "file.txt", ChangeKind::Modified, cx);
+    assert_eq!(notice(&wb, cx), None);
+}
+
+#[gpui::test]
+fn conflict_bar_wins_over_lossy(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    fs::write(dir.path().join("file.txt"), b"\xEF\xBB\xBFother \xE9\n").unwrap();
+    changed(&wb, "file.txt", ChangeKind::Modified, cx);
+    assert_eq!(notice(&wb, cx), Some(DiskNotice::Conflict { reason: None }));
+    let docs = documents(&wb, cx);
+    docs.update(cx, |d, cx| d.keep_mine(Path::new("file.txt"), cx));
+    settle(cx);
+    assert_eq!(
+        notice(&wb, cx),
+        Some(DiskNotice::Lossy { encoding: "UTF-8" })
+    );
 }
