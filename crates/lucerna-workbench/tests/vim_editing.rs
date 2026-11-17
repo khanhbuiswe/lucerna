@@ -5,6 +5,7 @@
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     ClipboardItem, Entity, EntityInputHandler as _, Focusable as _, TestAppContext,
@@ -770,4 +771,52 @@ fn named_yank_leaves_the_clipboard_alone(cx: &mut TestAppContext) {
     assert_eq!(text_of(&view, cx), "one\none\ntwo\n");
     keys("\" a p", cx);
     assert_eq!(text_of(&view, cx), "one\none\none\ntwo\n");
+}
+
+fn flashed(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> Vec<std::ops::Range<usize>> {
+    view.read_with(cx, |v, _| v.flashed_ranges().to_vec())
+}
+
+#[gpui::test]
+fn yank_flash_follows_settings(cx: &mut TestAppContext) {
+    let on = r#"{ "vim.enabled": true, "vim.highlightedyank.enable": true }"#;
+    let (_dir, _wb, view, cx) = vim_editor_with(on, "one two\n", cx);
+    keys("w y i w", cx);
+    assert_eq!(flashed(&view, cx), vec![4..7]);
+    cx.executor().advance_clock(Duration::from_millis(100));
+    assert_eq!(flashed(&view, cx), vec![4..7]);
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    assert!(flashed(&view, cx).is_empty());
+}
+
+#[gpui::test]
+fn yank_flash_duration_is_read(cx: &mut TestAppContext) {
+    let on = r#"{ "vim.enabled": true, "vim.highlightedyank.enable": true,
+                  "vim.highlightedyank.duration": 1000 }"#;
+    let (_dir, _wb, view, cx) = vim_editor_with(on, "one two\n", cx);
+    keys("y i w", cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    assert_eq!(flashed(&view, cx), vec![0..3]);
+    cx.executor().advance_clock(Duration::from_millis(900));
+    cx.run_until_parked();
+    assert!(flashed(&view, cx).is_empty());
+}
+
+#[gpui::test]
+fn yank_flash_is_off_by_default(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("one two\n", cx);
+    keys("y i w", cx);
+    assert!(flashed(&view, cx).is_empty());
+}
+
+#[gpui::test]
+fn yank_flash_cleared_by_edit(cx: &mut TestAppContext) {
+    let on = r#"{ "vim.enabled": true, "vim.highlightedyank.enable": true }"#;
+    let (_dir, _wb, view, cx) = vim_editor_with(on, "one two\n", cx);
+    keys("y i w", cx);
+    assert_eq!(flashed(&view, cx), vec![0..3]);
+    keys("x", cx);
+    assert!(flashed(&view, cx).is_empty());
 }

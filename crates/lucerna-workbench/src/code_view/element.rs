@@ -687,12 +687,28 @@ impl CodeView {
                 shape(window, "→", font_size, self.base_font(), muted),
             )
         });
-        let matches = match (frame_rows.first(), frame_rows.last()) {
+        let mut matches = match (frame_rows.first(), frame_rows.last()) {
             (Some(first), Some(last)) => {
                 self.visible_matches(first.buffer_row..last.buffer_row + 1)
             }
             _ => Vec::new(),
         };
+        if let (Some(first), Some(last)) = (frame_rows.first(), frame_rows.last()) {
+            let from = row_start(&self.snapshot, first.buffer_row);
+            let to = row_start(&self.snapshot, last.buffer_row + 1);
+            let len = self.snapshot.len_bytes();
+            matches.extend(
+                self.flash
+                    .iter()
+                    .filter(|r| r.end > from && r.start < to)
+                    .take(MAX_PAINTED_MATCHES)
+                    .map(|r| {
+                        let range = self.snapshot.offset_to_point(r.start.min(len))
+                            ..self.snapshot.offset_to_point(r.end.min(len));
+                        (range, false)
+                    }),
+            );
+        }
         let brackets = self
             .brackets
             .iter()

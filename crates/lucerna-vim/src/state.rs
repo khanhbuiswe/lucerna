@@ -924,6 +924,12 @@ impl Vim {
             WriteKind::Yank,
             settings.use_system_clipboard,
         ));
+        if settings.highlighted_yank {
+            let ranges = visual::yank_ranges(&sel, snapshot, view.tab_size());
+            if !ranges.is_empty() {
+                actions.push(Action::Yanked(ranges));
+            }
+        }
         actions.push(Action::ModeChanged(Mode::Normal));
         actions.push(Action::CursorMoved { jump: false });
         Outcome::Handled(actions)

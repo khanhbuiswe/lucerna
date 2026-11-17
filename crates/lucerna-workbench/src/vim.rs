@@ -8,6 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use gpui::{
     App, AppContext as _, Context, Entity, EntityId, KeyDownEvent, Subscription, Task, WeakEntity,
@@ -116,6 +117,8 @@ enum Reveal {
 pub struct VimLayer {
     enabled: bool,
     settings: Settings,
+    /// `vim.highlightedyank.duration`.
+    yank_duration: Duration,
     globals: VimGlobals,
     views: HashMap<EntityId, ViewState>,
     match_cache: HashMap<EntityId, MatchCache>,
@@ -158,10 +161,11 @@ pub struct VimLayer {
 impl VimLayer {
     /// Reads the window's settings and follows their changes.
     pub fn new(window_settings: Entity<WindowSettings>, cx: &mut Context<Self>) -> Self {
-        let (enabled, settings) = read_settings(window_settings.read(cx).view(cx));
+        let (enabled, settings, yank_duration) = read_settings(window_settings.read(cx).view(cx));
         VimLayer {
             enabled,
             settings,
+            yank_duration,
             globals: VimGlobals::default(),
             views: HashMap::new(),
             match_cache: HashMap::new(),
@@ -422,8 +426,10 @@ impl VimLayer {
     }
 
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
-        let (enabled, settings) = read_settings(self.window_settings.read(cx).view(cx));
+        let (enabled, settings, yank_duration) =
+            read_settings(self.window_settings.read(cx).view(cx));
         self.settings = settings;
+        self.yank_duration = yank_duration;
         if enabled == self.enabled {
             return;
         }
@@ -1124,6 +1130,10 @@ impl VimLayer {
                     }
                     redraw = true;
                 }
+                Action::Yanked(ranges) => {
+                    let duration = self.yank_duration;
+                    view.update(cx, |v, cx| v.flash_ranges(ranges, duration, cx));
+                }
                 Action::Highlight(query) => {
                     if let Some(matches) = self.matches_for(view, &query, cx) {
                         view.update(cx, |v, cx| v.set_match_highlights(matches, None, cx));
@@ -1426,7 +1436,7 @@ pub(crate) fn takes_keys(view: &CodeView) -> bool {
     matches!(view.doc_state(), DocState::Ready | DocState::Deleted)
 }
 
-fn read_settings(store: SettingsView<'_>) -> (bool, Settings) {
+fn read_settings(store: SettingsView<'_>) -> (bool, Settings, Duration) {
     let enabled = store
         .get::<bool>("vim.enabled", None)
         .or_else(|| store.get::<bool>("vim_mode", None))
@@ -1455,8 +1465,14 @@ fn read_settings(store: SettingsView<'_>) -> (bool, Settings) {
             .unwrap_or(defaults.joinspaces),
         tildeop: store.get("vim.tildeop", None).unwrap_or(defaults.tildeop),
         gdefault: store.get("vim.gdefault", None).unwrap_or(defaults.gdefault),
+        highlighted_yank: store
+            .get("vim.highlightedyank.enable", None)
+            .unwrap_or(defaults.highlighted_yank),
     };
-    (enabled, settings)
+    let duration = store
+        .get::<u64>("vim.highlightedyank.duration", None)
+        .unwrap_or(200);
+    (enabled, settings, Duration::from_millis(duration))
 }
 
 /// `vim.useSystemClipboard`: `true`, `false` or `"onYank"`; anything else

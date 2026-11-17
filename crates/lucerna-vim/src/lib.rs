@@ -124,6 +124,8 @@ pub struct Settings {
     pub tildeop: bool,
     /// `vim.gdefault`: `:s` replaces every match in a line unless it has `g`.
     pub gdefault: bool,
+    /// `vim.highlightedyank.enable`: a yank emits [`Action::Yanked`].
+    pub highlighted_yank: bool,
 }
 
 impl Default for Settings {
@@ -139,6 +141,7 @@ impl Default for Settings {
             joinspaces: true,
             tildeop: false,
             gdefault: false,
+            highlighted_yank: false,
         }
     }
 }
@@ -237,6 +240,10 @@ pub enum Action {
     },
     /// Show `text` in the status area.
     Message(String),
+    /// Text was yanked (`y{motion}`, `yy`, `Y`, Visual `y`, `:y`) and
+    /// [`Settings::highlighted_yank`] is on: the byte ranges of the yanked
+    /// text in the current text. Whole lines include their line break.
+    Yanked(Vec<Range<usize>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
