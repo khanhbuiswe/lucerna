@@ -5,6 +5,10 @@
 //! the app and passes the listener to `app::run`, which [`serve`]s it on a
 //! thread; a later `luc` finds the socket taken, connects and [`send`]s
 //! its request instead of starting a second app.
+//!
+//! A client keeps the connection open, without half-closing its write
+//! side, until the reply arrives. Closing it means "stopped waiting" and
+//! gets no reply.
 
 use std::fmt;
 use std::fs::{DirBuilder, Permissions};
@@ -584,7 +588,9 @@ pub fn serve(listener: UnixListener, tx: mpsc::UnboundedSender<CliMessage>) {
 }
 
 /// Answers one connection: one request line, one reply line. A process
-/// of another user is refused before anything is read.
+/// of another user is refused before anything is read. A peer that closes
+/// the connection before the reply is ready has stopped waiting and gets
+/// no reply (M1-3).
 fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
     let allowed = peer_allowed(peer_uid(&stream), euid());
     let reply = match allowed.and_then(|()| read_request(&stream)) {
@@ -604,7 +610,7 @@ fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
                     // `luc` stopped waiting; the open goes on, and a
                     // failure is shown in the app (M1-3).
                     Either::Right((Ok(()), _)) => {
-                        tracing::info!("luc stopped waiting; the request stays queued");
+                        tracing::info!("luc stopped waiting; the open goes on");
                         return;
                     }
                     // No watcher (see `hangup`): wait for the reply alone.

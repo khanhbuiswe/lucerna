@@ -457,7 +457,10 @@ pub fn answer_cli(
     };
     let done: OpenDone = Box::new(move |result, cx| {
         // `luc` that is still waiting prints the error itself. One that
-        // gave up (M1-3) is gone, so the app says it (spec §6.5).
+        // gave up (M1-3) is gone, so the app says it (spec §6.5). A
+        // failure that lands just before the watcher notices the hang-up
+        // (`luc` giving up at REPLY_TIMEOUT) goes unreported: a small
+        // race the design accepts.
         if let Err(err) = &result
             && reply.is_canceled()
         {
@@ -478,6 +481,8 @@ fn report_deferred_failure(paths: &[PathBuf], err: &str, cx: &mut App) {
         status_message::show_or_log(window, format!("Could not open {what}: {err}"), cx);
         return;
     }
+    // The window keeps one status message, so the last line wins (`luc`
+    // always sends one path).
     for line in err.lines() {
         status_message::show_or_log(window, format!("Could not open: {line}"), cx);
     }

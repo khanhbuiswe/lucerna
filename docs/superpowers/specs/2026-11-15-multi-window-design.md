@@ -372,7 +372,7 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
   Language server và terminal vẫn lấy môi trường từ login shell như nay
   (`lucerna_lsp::env::login_shell_env`). Chở env theo cửa sổ (như Zed, VS
   Code) để sau 0.1; giao thức có `version` nên thêm trường được.
-- **Giao thức** (một dòng JSON mỗi chiều, có `version`):
+- **Giao thức** (một dòng JSON mỗi chiều, có `version`). Client giữ kết nối mở, không đóng nửa ghi, đến khi trả lời tới; đóng kết nối nghĩa là "thôi đợi" và không nhận trả lời:
 
   ```json
   {"version":1,"cwd":"/abs/dir","paths":["/abs/a"],"new_window":false}
