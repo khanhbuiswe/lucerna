@@ -137,6 +137,14 @@ pub fn search(
     let source = build_pattern(&query.pattern, query.is_regex, query.whole_word);
     let matcher = match RegexMatcherBuilder::new()
         .case_insensitive(!query.case_sensitive)
+        // `$` and `^` must match at CRLF line ends too (VS Code does). In
+        // multi-line mode with `crlf`, they match before `\r\n` as well as
+        // `\n`, and `.` stops before `\r`. The terminator is forced back to
+        // `\n` because `crlf(true)` sets `\r\n`, which the default `\n`
+        // searcher rejects for every file. `line_match` trims the `\r`.
+        .multi_line(true)
+        .crlf(true)
+        .line_terminator(Some(b'\n'))
         .build(&source)
     {
         Ok(matcher) => matcher,
