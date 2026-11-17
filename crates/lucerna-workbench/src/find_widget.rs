@@ -23,8 +23,9 @@ use crate::quick_open::picker::wrap_index;
 use crate::tasks::guarded;
 use crate::text_input::TextInput;
 use crate::ui::{
-    CLOSE_ICON, ClickHandler, GRID, UI_FONT_SIZE_SMALL, bar_icon_button, bar_separator, match_nav,
-    search_bar_row, search_query_box, search_toolbar, toggle_button,
+    CLOSE_ICON, ClickHandler, GRID, REPLACE_ALL_ICON, REPLACE_ICON, REPLACE_NEXT_ICON,
+    UI_FONT_SIZE_SMALL, bar_icon_button, bar_separator, input_box, match_nav, search_bar_row,
+    search_query_box, search_query_column, search_toolbar, toggle_button, tooltip,
 };
 use crate::{AppState, CommandRegistry, Workbench};
 
@@ -94,6 +95,12 @@ pub struct FindWidget {
     input: Entity<TextInput>,
     /// The input's text.
     query: String,
+    /// The Replace row's input. Its text stays while the bar is hidden.
+    replace_input: Entity<TextInput>,
+    /// The Replace row is shown (and the view can be edited).
+    replace_visible: bool,
+    /// Replacements take the case shape of what they replace.
+    preserve_case: bool,
     case_sensitive: bool,
     whole_word: bool,
     is_regex: bool,
@@ -131,9 +138,17 @@ impl FindWidget {
             });
             input
         });
+        let replace_input = cx.new(|cx| {
+            let mut input = TextInput::new(cx);
+            input.set_placeholder("Replace");
+            input
+        });
         FindWidget {
             view: view.downgrade(),
             input,
+            replace_input,
+            replace_visible: false,
+            preserve_case: false,
             query: String::new(),
             case_sensitive: false,
             whole_word: false,
@@ -158,6 +173,57 @@ impl FindWidget {
     pub fn input(&self) -> &Entity<TextInput> {
         &self.input
     }
+
+    pub fn replace_input(&self) -> &Entity<TextInput> {
+        &self.replace_input
+    }
+
+    /// The Replace row is shown.
+    pub fn replace_visible(&self) -> bool {
+        self.replace_visible
+    }
+
+    pub fn preserve_case(&self) -> bool {
+        self.preserve_case
+    }
+
+    /// Replacing is possible: the view is alive and editable, and the bar
+    /// is not vim's `/`.
+    fn can_replace(&self, cx: &App) -> bool {
+        !self.vim
+            && self
+                .view
+                .upgrade()
+                .is_some_and(|view| !view.read(cx).is_readonly())
+    }
+
+    /// Shows or hides the Replace row, then focuses the input that applies.
+    pub fn toggle_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_visible = !self.replace_visible && self.can_replace(cx);
+        let focus = if self.replace_visible {
+            self.replace_input.focus_handle(cx)
+        } else {
+            self.input.focus_handle(cx)
+        };
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    pub fn toggle_preserve_case(&mut self, cx: &mut Context<Self>) {
+        self.preserve_case = !self.preserve_case;
+        cx.notify();
+    }
+
+    /// Whether the Replace input has focus.
+    pub(crate) fn replace_input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.replace_input.focus_handle(cx).is_focused(window)
+    }
+
+    /// Replaces the active match and moves to the next one.
+    pub fn replace_one(&mut self, _cx: &mut Context<Self>) {}
+
+    /// Replaces every match.
+    pub fn replace_all(&mut self, _cx: &mut Context<Self>) {}
 
     pub fn matches(&self) -> &[Range<usize>] {
         &self.matches
@@ -355,9 +421,27 @@ impl FindWidget {
         });
     }
 
-    fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let m = &ev.keystroke.modifiers;
-        if ev.keystroke.key != "enter" || m.platform || m.control || m.alt {
+        if m.platform || m.control || m.alt {
+            return;
+        }
+        if ev.keystroke.key == "tab" && self.replace_visible {
+            // Tab and Shift+Tab move between the two inputs.
+            let (from, to) = if m.shift {
+                (&self.replace_input, &self.input)
+            } else {
+                (&self.input, &self.replace_input)
+            };
+            if from.focus_handle(cx).is_focused(window) {
+                let to = to.focus_handle(cx);
+                window.focus(&to, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
+        // Enter in the Replace input is the keymap's (`replaceInputFocussed`).
+        if ev.keystroke.key != "enter" || !self.input.focus_handle(cx).is_focused(window) {
             return;
         }
         if self.vim {
@@ -381,6 +465,7 @@ impl Focusable for FindWidget {
 
 impl Render for FindWidget {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let can_replace = self.can_replace(cx);
         let ui = cx.global::<AppState>().theme.ui.clone();
         let view = self.view.clone();
         let toggle =
@@ -444,6 +529,49 @@ impl Render for FindWidget {
                     close(&view, window, cx);
                 }
             });
+        let toggle_replace = bar_icon_button(
+            "find-toggle-replace",
+            REPLACE_ICON,
+            self.replace_visible,
+            cx,
+        )
+        .tooltip(tooltip("Toggle Replace"))
+        .on_click(cx.listener(|find, _, window, cx| find.toggle_replace(window, cx)));
+        let replace_row = (self.replace_visible && can_replace).then(|| {
+            // Replacing needs a match to act on.
+            let ready = !self.matches.is_empty() && self.error.is_none();
+            let action = |id, icon, tip: &'static str, f: fn(&mut Self, &mut Context<Self>)| {
+                let button = bar_icon_button(id, icon, false, cx).tooltip(tooltip(tip));
+                if ready {
+                    button.on_click(cx.listener(move |find, _, _, cx| f(find, cx)))
+                } else {
+                    button.opacity(0.4)
+                }
+            };
+            let field = search_query_column(input_box(&self.replace_input, cx))
+                .debug_selector(|| "find-replace-input".into())
+                .child(
+                    toggle_button("find-toggle-preserve-case", "AB", self.preserve_case, cx)
+                        .tooltip(tooltip("Preserve Case"))
+                        .on_click(cx.listener(|find, _, _, cx| find.toggle_preserve_case(cx))),
+                );
+            search_bar_row()
+                .debug_selector(|| "find-replace-row".into())
+                .child(field)
+                .child(bar_separator(cx))
+                .child(action(
+                    "find-replace-next",
+                    REPLACE_NEXT_ICON,
+                    "Replace Next Match",
+                    Self::replace_one,
+                ))
+                .child(action(
+                    "find-replace-all",
+                    REPLACE_ALL_ICON,
+                    "Replace All Matches",
+                    Self::replace_all,
+                ))
+        });
         search_toolbar(cx)
             .id("find-widget")
             .debug_selector(|| "find-widget".into())
@@ -452,12 +580,14 @@ impl Render for FindWidget {
             .child(
                 search_bar_row()
                     .child(field)
+                    .children(can_replace.then_some(toggle_replace))
                     .child(bar_separator(cx))
                     .child(nav)
                     .child(div().flex_1())
                     .child(bar_separator(cx))
                     .child(close_button),
             )
+            .children(replace_row)
             .children(self.error.clone().map(|error| {
                 div()
                     .debug_selector(|| "find-error".into())
@@ -480,10 +610,15 @@ pub(crate) fn single_line_selection(view: &CodeView) -> Option<String> {
 }
 
 /// Shows the find widget over `view`, pre-filled with a one-line
-/// selection, and focuses its input.
-fn open(view: &Entity<CodeView>, window: &mut Window, cx: &mut App) {
+/// selection. `replace` (`⌥⌘F`) also shows the Replace row and focuses its
+/// input when the Find input already had focus or was just filled in;
+/// plain `⌘F` keeps the row as it is, hidden on a hidden bar.
+fn open(view: &Entity<CodeView>, replace: bool, window: &mut Window, cx: &mut App) {
     let prefill = single_line_selection(view.read(cx));
+    let was_hidden = view.read(cx).find_widget().is_none();
     let find = show(view, cx);
+    let find_had_focus = find.read(cx).input.focus_handle(cx).is_focused(window);
+    let filled = prefill.is_some();
     match prefill {
         Some(text) => find.update(cx, |find, cx| {
             find.input
@@ -491,7 +626,20 @@ fn open(view: &Entity<CodeView>, window: &mut Window, cx: &mut App) {
         }),
         None => find.update(cx, |find, cx| find.search(Pick::Nearest, cx)),
     }
-    let focus = find.focus_handle(cx);
+    let can_replace = find.read(cx).can_replace(cx);
+    find.update(cx, |find, cx| {
+        if replace {
+            find.replace_visible = can_replace;
+        } else if was_hidden {
+            find.replace_visible = false;
+        }
+        cx.notify();
+    });
+    let focus = if replace && can_replace && (find_had_focus || filled) {
+        find.read(cx).replace_input.focus_handle(cx)
+    } else {
+        find.focus_handle(cx)
+    };
     window.focus(&focus, cx);
 }
 
@@ -550,9 +698,18 @@ pub(crate) fn close(view: &Entity<CodeView>, window: &mut Window, cx: &mut App) 
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register("actions.find", "Find", |wb, _, window, cx| {
         if let Some(view) = wb.active_code_view(cx) {
-            open(&view, window, cx);
+            open(&view, false, window, cx);
         }
     });
+    commands.register(
+        "editor.action.startFindReplaceAction",
+        "Replace",
+        |wb, _, window, cx| {
+            if let Some(view) = wb.active_code_view(cx) {
+                open(&view, true, window, cx);
+            }
+        },
+    );
     commands.register("closeFindWidget", "Close Find", |wb, _, window, cx| {
         // Only while focus is in the view or its widget: Esc elsewhere (the
         // Search panel) must not close it or take focus.
@@ -565,6 +722,14 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 }
 
 impl Workbench {
+    /// Whether the active code view shows its find widget with focus in
+    /// the Replace input.
+    pub(crate) fn replace_input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.active_code_view(cx)
+            .and_then(|view| view.read(cx).find_widget().cloned())
+            .is_some_and(|find| find.read(cx).replace_input_focused(window, cx))
+    }
+
     /// Whether the active code view shows its find widget.
     pub(crate) fn find_widget_visible(&self, cx: &App) -> bool {
         self.active_code_view(cx)

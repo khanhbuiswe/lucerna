@@ -180,5 +180,7 @@
   { "key": "cmd+c", "command": "filesExplorer.copy", "when": "filesExplorerFocus && !textInputFocus" },
   { "key": "cmd+v", "command": "filesExplorer.paste", "when": "filesExplorerFocus && !textInputFocus" },
   { "key": "cmd+d", "command": "filesExplorer.duplicate", "when": "filesExplorerFocus && !textInputFocus" },
-  { "key": "escape", "command": "filesExplorer.cancelCut", "when": "filesExplorerFocus && explorerResourceCut && !textInputFocus" }
+  { "key": "escape", "command": "filesExplorer.cancelCut", "when": "filesExplorerFocus && explorerResourceCut && !textInputFocus" },
+
+  { "key": "alt+cmd+f", "command": "editor.action.startFindReplaceAction", "when": "editorFocus" }
 ]

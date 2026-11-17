@@ -425,3 +425,152 @@ fn find_bar_border_waits_for_background_search(cx: &mut TestAppContext) {
     assert!(!find.read_with(cx, |f, _| f.is_invalid()));
     assert_eq!(match_label(&view, cx), "1/1");
 }
+
+fn find(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> Entity<FindWidget> {
+    widget(view, cx).expect("the find widget is shown")
+}
+
+fn replace_visible(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> bool {
+    find(view, cx).read_with(cx, |f, _| f.replace_visible())
+}
+
+fn replace_text(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> String {
+    let find = find(view, cx);
+    cx.update(|_, cx| find.read(cx).replace_input().read(cx).text().to_owned())
+}
+
+fn find_text(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> String {
+    let find = find(view, cx);
+    cx.update(|_, cx| find.read(cx).input().read(cx).text().to_owned())
+}
+
+#[gpui::test]
+fn alt_cmd_f_shows_replace_row(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo bar\n", cx);
+    keys("alt-cmd-f", cx);
+    assert!(replace_visible(&view, cx));
+    assert!(cx.debug_bounds("find-replace-row").is_some());
+    assert!(cx.debug_bounds("find-replace-input").is_some());
+    assert!(cx.debug_bounds("find-toggle-preserve-case").is_some());
+    assert!(cx.debug_bounds("find-replace-next").is_some());
+    assert!(cx.debug_bounds("find-replace-all").is_some());
+    // No selection: focus is in the find input.
+    type_text("foo", cx);
+    assert_eq!(find_text(&view, cx), "foo");
+    assert_eq!(counter(&view, cx), "1 of 1");
+    keys("escape", cx);
+    keys("cmd-f", cx);
+    assert!(
+        !replace_visible(&view, cx),
+        "cmd-f on a hidden bar has no replace row"
+    );
+    assert!(cx.debug_bounds("find-replace-row").is_none());
+}
+
+#[gpui::test]
+fn cmd_f_keeps_open_replace_row(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo bar\n", cx);
+    keys("alt-cmd-f", cx);
+    keys("cmd-f", cx);
+    assert!(replace_visible(&view, cx));
+    assert!(cx.debug_bounds("find-replace-row").is_some());
+}
+
+#[gpui::test]
+fn alt_cmd_f_with_selection_focuses_replace(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo bar\n", cx);
+    view.update(cx, |v, cx| v.select(pt(0, 4)..pt(0, 7), cx));
+    keys("alt-cmd-f", cx);
+    assert_eq!(find_text(&view, cx), "bar");
+    type_text("x", cx);
+    assert_eq!(replace_text(&view, cx), "x");
+    assert_eq!(find_text(&view, cx), "bar");
+}
+
+#[gpui::test]
+fn alt_cmd_f_again_moves_focus_to_replace(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo bar\n", cx);
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    keys("alt-cmd-f", cx);
+    type_text("x", cx);
+    assert_eq!(find_text(&view, cx), "foo");
+    assert_eq!(replace_text(&view, cx), "x");
+}
+
+#[gpui::test]
+fn toggle_replace_button_and_tab(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo bar\n", cx);
+    keys("cmd-f", cx);
+    assert!(cx.debug_bounds("find-replace-row").is_none());
+    click("find-toggle-replace", cx);
+    assert!(cx.debug_bounds("find-replace-row").is_some());
+    type_text("a", cx);
+    assert_eq!(
+        (replace_text(&view, cx), find_text(&view, cx)),
+        ("a".into(), "".into())
+    );
+    keys("shift-tab", cx);
+    type_text("b", cx);
+    assert_eq!(
+        (replace_text(&view, cx), find_text(&view, cx)),
+        ("a".into(), "b".into())
+    );
+    keys("tab", cx);
+    type_text("c", cx);
+    assert_eq!(
+        (replace_text(&view, cx), find_text(&view, cx)),
+        ("ac".into(), "b".into())
+    );
+    click("find-toggle-replace", cx);
+    assert!(cx.debug_bounds("find-replace-row").is_none());
+    type_text("d", cx);
+    assert_eq!(find_text(&view, cx), "bd");
+    assert_eq!(replace_text(&view, cx), "ac");
+}
+
+#[gpui::test]
+fn replace_text_survives_close(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo bar\n", cx);
+    keys("alt-cmd-f", cx);
+    keys("alt-cmd-f", cx);
+    type_text("x", cx);
+    assert_eq!(replace_text(&view, cx), "x");
+    keys("escape", cx);
+    keys("alt-cmd-f", cx);
+    assert_eq!(replace_text(&view, cx), "x");
+}
+
+#[gpui::test]
+fn readonly_view_has_no_replace(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo bar\n", cx);
+    view.update(cx, |v, _| v.set_passive(true));
+    keys("alt-cmd-f", cx);
+    assert!(widget(&view, cx).is_some(), "the bar still shows");
+    assert!(!replace_visible(&view, cx));
+    assert!(cx.debug_bounds("find-toggle-replace").is_none());
+    assert!(cx.debug_bounds("find-replace-row").is_none());
+}
+
+#[gpui::test]
+fn replace_input_focused_context_key(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, wb, _view, cx) = open_file("a.txt", "foo bar\n", cx);
+    let key = |wb: &Entity<Workbench>, cx: &mut VisualTestContext| {
+        let ctx = cx.update(|window, cx| wb.read(cx).context_keys(window, cx));
+        parse_when("replaceInputFocussed").unwrap().eval(&ctx)
+    };
+    keys("alt-cmd-f", cx);
+    assert!(!key(&wb, cx));
+    keys("alt-cmd-f", cx);
+    assert!(key(&wb, cx));
+    keys("shift-tab", cx);
+    assert!(!key(&wb, cx));
+}

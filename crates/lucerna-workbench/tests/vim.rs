@@ -1146,3 +1146,14 @@ fn click_in_insert_mode_stays_in_insert(cx: &mut TestAppContext) {
     assert_eq!(text_of(&view, cx), "abc\ndxef\n");
     assert_eq!(cursor(&view, cx), pt(1, 1));
 }
+
+#[gpui::test]
+fn vim_search_hides_replace(cx: &mut TestAppContext) {
+    let (_wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
+    keys("alt-cmd-f", cx);
+    keys("escape", cx);
+    keys("/", cx);
+    assert!(find_visible(&view, cx));
+    assert!(cx.debug_bounds("find-replace-row").is_none());
+    assert!(cx.debug_bounds("find-toggle-replace").is_none());
+}
