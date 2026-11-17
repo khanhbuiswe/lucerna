@@ -607,10 +607,12 @@ fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
             // `quitting` is safe then: `luc` sends again, and opening a
             // path twice only focuses it (§6.3, rule 1).
             let (reply_tx, reply_rx) = oneshot::channel();
+            // Watch before the router can see the request, so a hangup
+            // is never missed.
+            let gone = hangup(&stream);
             if tx.unbounded_send((request, reply_tx)).is_err() {
                 CliReply::quitting()
             } else {
-                let gone = hangup(&stream);
                 match futures::executor::block_on(future::select(reply_rx, gone)) {
                     Either::Left((reply, _)) => reply.unwrap_or_else(|_| CliReply::quitting()),
                     // Dropping the reply receiver tells the router that
@@ -646,9 +648,9 @@ fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
 fn hangup(stream: &UnixStream) -> oneshot::Receiver<()> {
     let (tx, rx) = oneshot::channel();
     // The timeout belongs to the socket, so it applies to every clone too.
-    if stream.set_read_timeout(None).is_err() {
-        return rx;
-    }
+    // On macOS this fails with EINVAL once the peer has fully closed; the
+    // watcher then still starts, and its read returns at once.
+    stream.set_read_timeout(None).ok();
     let Ok(mut watched) = stream.try_clone() else {
         return rx;
     };
@@ -736,9 +738,9 @@ fn peer_allowed(peer: io::Result<u32>, ours: u32) -> Result<(), String> {
 
 /// `Ok(None)` when the peer closed the connection without sending a byte.
 fn read_request(stream: &UnixStream) -> Result<Option<CliRequest>, String> {
-    stream
-        .set_read_timeout(Some(READ_TIMEOUT))
-        .map_err(|err| format!("socket: {err}"))?;
+    // A socket that refuses the option (macOS, EINVAL) has lost its peer;
+    // the read below then returns 0 bytes, which is a quiet probe.
+    stream.set_read_timeout(Some(READ_TIMEOUT)).ok();
     let mut line = String::new();
     BufReader::new(stream.take(MAX_REQUEST_BYTES))
         .read_line(&mut line)
@@ -849,6 +851,32 @@ mod tests {
         stream.read_to_string(&mut got).unwrap();
         assert_eq!(got, "", "a probe gets no reply");
         assert!(rx.try_recv().is_err(), "no request reached the router");
+    }
+
+    #[test]
+    fn a_probe_closed_before_accept_gets_no_reply() {
+        let (_dir, path) = temp_socket();
+        let Claim::Server(Bound { listener, .. }) = claim(&path) else {
+            panic!("binds");
+        };
+        // The connection waits in the backlog already fully closed.
+        drop(UnixStream::connect(&path).unwrap());
+        let (tx, mut rx) = mpsc::unbounded::<CliMessage>();
+        serve(listener, tx);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(rx.try_recv().is_err(), "no request reached the router");
+    }
+
+    #[test]
+    fn a_hangup_before_the_router_looks_cancels_the_reply() {
+        let (_dir, path, mut rx) = serve_one();
+        let request = CliRequest::new(PathBuf::from("/w"), vec![PathBuf::from("/x")]);
+        let mut stream = connect(&path, Duration::from_secs(5)).unwrap();
+        let line = serde_json::to_string(&request).unwrap();
+        stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+        drop(stream);
+        let (_, reply) = futures::executor::block_on(rx.next()).unwrap();
+        assert!(eventually(|| reply.is_canceled()), "luc hung up");
     }
 
     #[test]
