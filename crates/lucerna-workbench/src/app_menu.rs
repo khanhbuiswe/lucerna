@@ -307,6 +307,7 @@ pub static MENUS: &[MenuSpec] = &[
             command("Word Wrap", "editor.action.toggleWordWrap"),
             command("Zoom In", "editor.action.fontZoomIn"),
             command("Zoom Out", "editor.action.fontZoomOut"),
+            command("Reset Zoom", "editor.action.fontZoomReset"),
             Entry::Separator,
             command("Language Server Health", "lucerna.lsp.health"),
             command("Language Server Log", "lucerna.lsp.showLog"),

@@ -53,6 +53,7 @@ use self::frame_layout::FrameLayout;
 use crate::documents::{DocState, Documents};
 use crate::editor_groups::{EditorGroupsView, Tab};
 use crate::find_widget::FindWidget;
+use crate::font_zoom;
 use crate::goto::GotoMessage;
 use crate::hover::{HoverConfig, HoverController};
 use crate::language_servers::LanguageServers;
@@ -66,9 +67,6 @@ pub const LARGE_FILE_STATUS: &str = "Large file: highlighting disabled";
 
 /// `editor.wordSeparators` when the setting is missing.
 const DEFAULT_WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
-
-const MIN_FONT_SIZE: f32 = 6.;
-const MAX_FONT_SIZE: f32 = 40.;
 
 /// The `editor.*` settings a view follows; re-read on every settings
 /// change by [`CodeView::reload_config`].
@@ -183,10 +181,7 @@ impl Config {
                 .get("editor.scrollbar.scrollByPage", language)
                 .unwrap_or(false),
         };
-        let font_size = settings
-            .get::<f32>("editor.fontSize", language)
-            .unwrap_or(14.)
-            .clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        let font_size = crate::font_zoom::base_size(settings, language);
         let wrap = settings
             .get::<String>("editor.wordWrap", language)
             .is_some_and(|w| w == "on");
@@ -293,9 +288,8 @@ pub struct CodeView {
     config: Config,
     font_size: f32,
     word_wrap: bool,
-    /// `editor.fontSize` and `editor.wordWrap` as last read: a settings
-    /// change overrides zoom and the wrap toggle only when these change.
-    settings_font_size: f32,
+    /// `editor.wordWrap` as last read: a settings change overrides the
+    /// wrap toggle only when it changes.
     settings_word_wrap: bool,
     /// The window's settings, which the config is read from.
     settings: Entity<WindowSettings>,
@@ -450,9 +444,8 @@ impl CodeView {
             syntax: None,
             large: false,
             config,
-            font_size,
+            font_size: crate::font_zoom::zoomed(font_size, cx),
             word_wrap,
-            settings_font_size: font_size,
             settings_word_wrap: word_wrap,
             _settings: cx.observe(&settings, |view, _, cx| view.reload_config(cx)),
             settings,
@@ -741,9 +734,9 @@ impl CodeView {
 
     /// Re-reads the `editor.*` settings and applies what changed:
     /// font, line height, wrap, minimap, whitespace, tab size and the
-    /// large-file limits. Font-size zoom and the wrap toggle survive
-    /// unless their setting changed, and the top visible row stays. Called
-    /// on every change to the window's settings.
+    /// large-file limits, and the font zoom ([`crate::font_zoom`]). The
+    /// wrap toggle survives unless its setting changed, and the top visible
+    /// row stays. Called on every change to the window's settings.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
         let (config, font_size, word_wrap) = Config::read(
             self.settings.read(cx).view(cx),
@@ -753,8 +746,8 @@ impl CodeView {
         let old_line_height = self.line_height();
         let mut changed = false;
         let mut wrap_changed = false;
-        if font_size != self.settings_font_size {
-            self.settings_font_size = font_size;
+        let font_size = crate::font_zoom::zoomed(font_size, cx);
+        if font_size != self.font_size {
             self.font_size = font_size;
             changed = true;
         }
@@ -1658,14 +1651,6 @@ impl CodeView {
         self.font_size
     }
 
-    /// Changes the font size by `delta`, clamped to 6–40.
-    pub fn zoom(&mut self, delta: f32, cx: &mut Context<Self>) {
-        self.font_size = (self.font_size + delta).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
-        self.scroll.offset = 0.;
-        self.max_line_width = 0.;
-        cx.notify();
-    }
-
     /// Puts the cursor at `p` and scrolls its row to the middle of the
     /// viewport, opening any fold that hides it.
     pub fn go_to(&mut self, p: Point, cx: &mut Context<Self>) {
@@ -1924,6 +1909,25 @@ fn with_active_view(
     }
 }
 
+/// Changes the app's font zoom with `change`, from this window's
+/// `editor.fontSize`, and shows the new size in the status bar. Every view
+/// in every window follows; no view needs focus.
+fn zoom_command(
+    wb: &mut Workbench,
+    window: &mut Window,
+    cx: &mut Context<Workbench>,
+    change: impl FnOnce(f32, &mut App) -> Option<f32>,
+) {
+    let base = font_zoom::base_size(wb.settings().read(cx).view(cx), None);
+    if let Some(size) = change(base, cx) {
+        crate::status_message::show(
+            window.window_handle().window_id(),
+            format!("Font Size: {size}"),
+            cx,
+        );
+    }
+}
+
 pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "editor.action.toggleWordWrap",
@@ -1933,12 +1937,17 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register(
         "editor.action.fontZoomIn",
         "Editor Font Zoom In",
-        |wb, _, _, cx| with_active_view(wb, cx, |v, cx| v.zoom(1., cx)),
+        |wb, _, window, cx| zoom_command(wb, window, cx, |base, cx| font_zoom::step(base, 1., cx)),
     );
     commands.register(
         "editor.action.fontZoomOut",
         "Editor Font Zoom Out",
-        |wb, _, _, cx| with_active_view(wb, cx, |v, cx| v.zoom(-1., cx)),
+        |wb, _, window, cx| zoom_command(wb, window, cx, |base, cx| font_zoom::step(base, -1., cx)),
+    );
+    commands.register(
+        "editor.action.fontZoomReset",
+        "Editor Font Zoom Reset",
+        |wb, _, window, cx| zoom_command(wb, window, cx, font_zoom::reset),
     );
     commands.register(
         "editor.action.clipboardCopyAction",

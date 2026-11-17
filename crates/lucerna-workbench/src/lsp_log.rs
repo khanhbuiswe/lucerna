@@ -118,10 +118,7 @@ impl Render for LspLogView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = self.servers.read(cx).settings().read(cx).view(cx);
         let font = crate::fonts::editor_font_family(settings, None);
-        let size = settings
-            .get::<f32>("editor.fontSize", None)
-            .unwrap_or(14.)
-            .clamp(6., 40.);
+        let size = crate::font_zoom::zoomed(crate::font_zoom::base_size(settings, None), cx);
         let count = self.servers.read(cx).log_len(&self.server);
         div()
             .id("lsp-log")

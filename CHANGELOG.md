@@ -3,6 +3,13 @@
 Each release's section below is copied into its GitHub Release page by
 `.github/workflows/release.yml`. A release fails if its version has no section here.
 
+## [Unreleased]
+
+### Changed
+
+- Zoom (Cmd+= / Cmd+-) applies to every editor, diff and window, and to the terminal unless
+  `terminal.integrated.fontSize` is set. Cmd+0 resets it, and the status bar shows the new size.
+
 ## [0.1.1] - 2026-11-17
 
 ### Added
