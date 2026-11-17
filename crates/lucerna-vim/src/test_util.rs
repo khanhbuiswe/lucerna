@@ -528,6 +528,7 @@ pub(crate) fn run_edit_with(
         settings: &settings,
         actions: &mut actions,
         search: None,
+        cmdline: None,
     };
     for key in parse_keys(keys) {
         run.key(key, false);
@@ -545,6 +546,8 @@ struct Run<'a> {
     /// The open search: its direction, the pattern typed so far, and
     /// vim's cursor when it opened.
     search: Option<(bool, String, Point)>,
+    /// The open `:` command line: its text so far.
+    cmdline: Option<String>,
 }
 
 /// The literal, case-insensitive query the test search submits.
@@ -579,6 +582,25 @@ impl Run<'_> {
                     self.vim.set_cursor(origin);
                     self.vim.clamp(&self.view.snapshot);
                 }
+                Key::Ctrl(_) => {}
+            }
+            return;
+        }
+        if let Some(text) = &mut self.cmdline {
+            match key {
+                Key::Char(c) => text.push(c),
+                Key::Backspace => {
+                    text.pop();
+                }
+                Key::Enter => {
+                    let line = self.cmdline.take().unwrap_or_default();
+                    let from = self.vim.cursor();
+                    let out = self
+                        .vim
+                        .ex_command(&line, self.view, self.globals, self.settings);
+                    self.outcome(out, false, from);
+                }
+                Key::Escape => self.cmdline = None,
                 Key::Ctrl(_) => {}
             }
             return;
@@ -628,8 +650,14 @@ impl Run<'_> {
                 }
                 self.view.apply(self.vim, &done);
                 for a in &done {
-                    if let Action::OpenSearch { backward } = a {
-                        self.search = Some((*backward, String::new(), self.vim.cursor()));
+                    match a {
+                        Action::OpenSearch { backward } => {
+                            self.search = Some((*backward, String::new(), self.vim.cursor()));
+                        }
+                        Action::OpenCommandLine { prefill } => {
+                            self.cmdline = Some(prefill.clone());
+                        }
+                        _ => {}
                     }
                 }
                 self.actions.extend(done);

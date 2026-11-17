@@ -7,6 +7,7 @@ mod classify;
 mod edit;
 #[allow(dead_code)] // the runner and the workbench use it in later steps
 mod ex;
+mod ex_run;
 mod marks;
 mod motion;
 mod object;
@@ -28,6 +29,7 @@ use lucerna_editor::{Ctx, EditPlan};
 use lucerna_text::BufferSnapshot;
 
 pub use ex::describe_command;
+pub use ex_run::ExCommand;
 pub use register::{Clipboard, ClipboardMode, RegContent, RegKind};
 pub use repeat::{ReplayStep, Typed};
 pub use state::{Vim, VimGlobals};
@@ -215,6 +217,17 @@ pub enum Action {
         text: String,
         linewise: bool,
     },
+    /// A `:` command failed (its message came first as [`Action::Message`]).
+    /// A macro stops here.
+    Failed,
+    /// Carry out a `:` command the editor owns (`:w`, `:q`...).
+    RunEx(ExCommand),
+    /// Open the command line with `prefill` typed in.
+    OpenCommandLine {
+        prefill: String,
+    },
+    /// Show `text` in the status area.
+    Message(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]

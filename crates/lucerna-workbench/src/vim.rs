@@ -1096,6 +1096,11 @@ impl VimLayer {
                 Action::OpenSearch { backward } => self.open_search = Some(backward),
                 Action::RunCommand(id) => self.run_command = Some(id),
                 Action::EnterInsert(at) => insert = Some(at),
+                // The command line arrives with the workbench UI.
+                Action::Failed
+                | Action::RunEx(_)
+                | Action::OpenCommandLine { .. }
+                | Action::Message(_) => {}
             }
         }
         if let Some(opened) = group {

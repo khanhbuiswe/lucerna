@@ -59,6 +59,8 @@ pub(crate) struct Registers {
     /// holds it again.
     last_linewise: Option<String>,
     dot: Option<String>,
+    /// The last command line run with `:`.
+    last_command: Option<String>,
 }
 
 impl Registers {
@@ -71,6 +73,11 @@ impl Registers {
     /// Sets the `.` register: the last inserted text.
     pub(crate) fn set_dot(&mut self, text: String) {
         self.dot = Some(text);
+    }
+
+    /// Sets the `:` register: the last command line.
+    pub(crate) fn set_last_command(&mut self, line: String) {
+        self.last_command = Some(line);
     }
 
     /// Stores `content` per the write rules. Returns the clipboard write
@@ -181,7 +188,11 @@ impl Registers {
                 text,
                 kind: RegKind::Charwise,
             }),
-            Some('_' | ':' | '%' | '/') => None,
+            Some(':') => self.last_command.clone().map(|text| RegContent {
+                text,
+                kind: RegKind::Charwise,
+            }),
+            Some('_' | '%' | '/') => None,
             Some(c) => self.regs.get(&c.to_ascii_lowercase()).cloned(),
         }
     }

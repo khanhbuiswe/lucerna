@@ -88,12 +88,12 @@ impl VimGlobals {
 /// The vim state of one view.
 #[derive(Debug, Clone)]
 pub struct Vim {
-    mode: Mode,
-    cursor: Point,
+    pub(crate) mode: Mode,
+    pub(crate) cursor: Point,
     /// `None`: derive it from the cursor on the next vertical motion.
-    goal: Option<Goal>,
+    pub(crate) goal: Option<Goal>,
     /// The other end of a visual selection.
-    anchor: Point,
+    pub(crate) anchor: Point,
     /// The pending keys, for the indicator.
     pending: String,
     count: Option<u32>,
@@ -115,7 +115,7 @@ pub struct Vim {
     insert_lines: bool,
     /// The keys of the command being typed, without the register and the
     /// counts, for `.`.
-    cmd_keys: Vec<Key>,
+    pub(crate) cmd_keys: Vec<Key>,
     /// The change that ended in this Insert session, recording its typing
     /// until Escape.
     recording: Option<LastChange>,
@@ -128,6 +128,9 @@ pub struct Vim {
     /// The typing a `.` replay will do in the Insert session it opens:
     /// the replay does not report it, so it is recorded from here.
     replay_typed: Option<Vec<Typed>>,
+    /// The text the last `:` put in the command line (`'<,'>` from Visual,
+    /// `.,.+2` after a count), for macros.
+    pub(crate) last_prefill: Option<String>,
 }
 
 impl Vim {
@@ -150,6 +153,7 @@ impl Vim {
             recorded_edit: false,
             unsaved_change: None,
             replay_typed: None,
+            last_prefill: None,
         }
     }
 
@@ -812,7 +816,11 @@ impl Vim {
     }
 
     /// Back to Normal with the cursor on the head, keeping the goal.
-    fn exit_visual(&mut self, view: &dyn ViewInfo, globals: &mut VimGlobals) -> Vec<Action> {
+    pub(crate) fn exit_visual(
+        &mut self,
+        view: &dyn ViewInfo,
+        globals: &mut VimGlobals,
+    ) -> Vec<Action> {
         let head = self.cursor;
         self.end_visual(view, globals);
         let mut actions = vec![Action::ModeChanged(Mode::Normal)];
@@ -1183,6 +1191,7 @@ impl Vim {
                 let row = scroll::screen_row(view, which, n, settings.scrolloff);
                 self.go_to_row(view, row, settings.startofline, true)
             }
+            ':' => self.open_command_line(explicit, view, globals),
             '/' | '?' => {
                 self.search_count = explicit;
                 Outcome::Handled(vec![Action::OpenSearch { backward: c == '?' }])
@@ -2005,7 +2014,7 @@ impl Vim {
 
     /// Jumps to `row` (clamped): the first non-blank with `startofline`,
     /// otherwise the goal column.
-    fn go_to_row(
+    pub(crate) fn go_to_row(
         &mut self,
         view: &dyn ViewInfo,
         row: u32,
@@ -2086,7 +2095,7 @@ impl Vim {
         n
     }
 
-    fn clear_pending(&mut self) {
+    pub(crate) fn clear_pending(&mut self) {
         self.pending.clear();
         self.count = None;
         self.prefix = None;
