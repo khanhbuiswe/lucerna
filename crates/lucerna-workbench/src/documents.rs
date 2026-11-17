@@ -2862,6 +2862,7 @@ fn restore(path: &Path, backup: Backup) -> Restored {
         has_bom: header.bom,
         line_ending: header.line_ending,
         hash: RESTORED_UNKNOWN_BASE,
+        lossy: false,
     });
     buffer.clear_saved();
     match disk {
