@@ -79,6 +79,9 @@ enum Pick {
     Nearest,
     /// The same index, clamped, without moving the view: the file reloaded.
     Keep,
+    /// The nearest match, without moving the view or the selection: `⌘D`
+    /// put the word it selected into the box.
+    Seed,
 }
 
 /// What a find widget opened for vim's `/` or `?` reports.
@@ -177,6 +180,24 @@ impl FindWidget {
             case_sensitive: self.case_sensitive,
             whole_word: self.whole_word,
         }
+    }
+
+    /// The case-sensitive and whole-word toggles, which `⌘D` and `⇧⌘L`
+    /// use for text the user selected.
+    pub(crate) fn match_options(&self) -> lucerna_editor::multicursor::MatchOptions {
+        lucerna_editor::multicursor::MatchOptions {
+            case_sensitive: self.case_sensitive,
+            whole_word: self.whole_word,
+        }
+    }
+
+    /// Replaces the query with `text` (the word `⌘D` selected) and
+    /// searches again, like typing it, but leaves the selections alone.
+    pub(crate) fn seed_query(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.query = text.to_owned();
+        self.input
+            .update(cx, |input, cx| input.set_text_quietly(text, cx));
+        self.search(Pick::Seed, cx);
     }
 
     /// Ends vim's use of the widget; Enter steps again.
@@ -490,7 +511,7 @@ pub(crate) fn single_line_selection(view: &CodeView) -> Option<String> {
     if range.start.row != range.end.row {
         return None;
     }
-    view.copy_selection().filter(|text| !text.is_empty())
+    view.primary_text()
 }
 
 /// Shows the find widget over `view`, pre-filled with a one-line

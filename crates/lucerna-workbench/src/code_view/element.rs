@@ -169,8 +169,6 @@ pub(crate) struct Frame {
     /// the view has focus, no cursor overlay is set and the blink is on.
     carets: Vec<std::ops::Range<Point>>,
     caret_style: CaretStyle,
-    /// The block selection's ranges, one per row.
-    block_selection: Vec<std::ops::Range<Point>>,
     /// The cell of the cursor overlay: the char under it on one row, empty
     /// at the line end or on an empty line.
     cursor_overlay: Option<std::ops::Range<Point>>,
@@ -806,7 +804,6 @@ impl CodeView {
                 }) => CaretStyle::Line(2),
                 _ => self.config.cursor_style,
             },
-            block_selection: self.block_selection.clone().unwrap_or_default(),
             cursor_overlay,
             matches,
             hover_range: self.hover.highlight_range(),
@@ -977,8 +974,8 @@ impl CodeView {
             .collect()
     }
 
-    /// The non-empty selections (none while a block selection shows) and
-    /// the caret cells (with `carets`) on buffer `rows`.
+    /// The non-empty selections and the caret cells (with `carets`) on
+    /// buffer `rows`.
     fn visible_selections(
         &self,
         rows: std::ops::Range<u32>,
@@ -993,7 +990,7 @@ impl CodeView {
         let mut cells = Vec::new();
         for s in all[first..].iter().take_while(|s| s.range().start <= end) {
             let range = s.range();
-            if !s.is_empty() && self.block_selection.is_none() {
+            if !s.is_empty() {
                 ranges.push(
                     self.snapshot.offset_to_point(range.start)
                         ..self.snapshot.offset_to_point(range.end),

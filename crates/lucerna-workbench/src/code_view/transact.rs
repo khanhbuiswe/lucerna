@@ -336,19 +336,12 @@ impl CodeView {
             self.cursor_undo.push_back(current);
         }
         self.set_goto_message(None, cx);
-        self.block_selection = None;
         self.set_selections_inner(set, true, SelectionChange::History, cx);
     }
 
-    /// The text to copy: the block selection's rows, or the selections
-    /// (a whole line for an empty one, with `editor.emptySelectionClipboard`).
+    /// The text to copy: the selections (a whole line for an empty one,
+    /// with `editor.emptySelectionClipboard`).
     fn clipboard_text(&self, config: &EditConfig) -> Option<ClipboardText> {
-        if self.block_selection.is_some() {
-            return self.copy_selection().map(|text| ClipboardText {
-                text,
-                ..ClipboardText::default()
-            });
-        }
         let ctx = Ctx {
             snapshot: &self.snapshot,
             config,

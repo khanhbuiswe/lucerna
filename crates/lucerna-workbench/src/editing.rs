@@ -1,8 +1,9 @@
 //! The editing commands of the code view, with VS Code's ids: cursor
-//! movement and selection, typing, deleting, indenting, the clipboard,
-//! undo / redo and `cursorUndo` / `cursorRedo`.
+//! movement and selection, multiple cursors, typing, deleting, indenting,
+//! the clipboard, undo / redo and `cursorUndo` / `cursorRedo`.
 
 use gpui::{Context, Focusable as _, Window};
+use lucerna_editor::multicursor::ColumnMove;
 use lucerna_editor::{Ctx, EditPlan, Motion, SelectionSet};
 use lucerna_editor::{commands, comment, lines};
 
@@ -225,6 +226,7 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
     commands.register("cursorRedo", "Cursor Redo", |wb, _, _, cx| {
         with_view(wb, cx, |v, cx| v.cursor_undo(false, cx))
     });
+    register_multi_cursor(commands);
     commands.register(
         "editor.action.smartSelect.expand",
         "Expand Selection",
@@ -243,4 +245,81 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "Paste",
         |wb, _, _, cx| with_view(wb, cx, CodeView::paste),
     );
+}
+
+/// The multi-cursor commands, with VS Code's ids and palette titles.
+fn register_multi_cursor(commands: &mut CommandRegistry) {
+    let titled: [(&'static str, &'static str, CommandHandler); 9] = [
+        (
+            "editor.action.addSelectionToNextFindMatch",
+            "Add Selection to Next Find Match",
+            |wb, _, _, cx| with_view(wb, cx, |v, cx| v.add_next_match(false, cx)),
+        ),
+        (
+            "editor.action.addSelectionToPreviousFindMatch",
+            "Add Selection to Previous Find Match",
+            |wb, _, _, cx| with_view(wb, cx, |v, cx| v.add_next_match(true, cx)),
+        ),
+        (
+            "editor.action.moveSelectionToNextFindMatch",
+            "Move Last Selection to Next Find Match",
+            |wb, _, _, cx| with_view(wb, cx, |v, cx| v.move_next_match(false, cx)),
+        ),
+        (
+            "editor.action.moveSelectionToPreviousFindMatch",
+            "Move Last Selection to Previous Find Match",
+            |wb, _, _, cx| with_view(wb, cx, |v, cx| v.move_next_match(true, cx)),
+        ),
+        (
+            "editor.action.selectHighlights",
+            "Select All Occurrences of Find Match",
+            |wb, _, _, cx| with_view(wb, cx, CodeView::select_all_matches),
+        ),
+        (
+            "editor.action.changeAll",
+            "Change All Occurrences",
+            |wb, _, _, cx| with_view(wb, cx, CodeView::select_all_matches),
+        ),
+        (
+            "editor.action.insertCursorAbove",
+            "Add Cursor Above",
+            |wb, _, _, cx| with_view(wb, cx, |v, cx| v.insert_cursor_vertical(true, cx)),
+        ),
+        (
+            "editor.action.insertCursorBelow",
+            "Add Cursor Below",
+            |wb, _, _, cx| with_view(wb, cx, |v, cx| v.insert_cursor_vertical(false, cx)),
+        ),
+        (
+            "editor.action.insertCursorAtEndOfEachLineSelected",
+            "Add Cursors to Line Ends",
+            |wb, _, _, cx| with_view(wb, cx, CodeView::cursors_at_line_ends),
+        ),
+    ];
+    for (id, title, handler) in titled {
+        commands.register(id, title, handler);
+    }
+    // Not in the command palette, as in VS Code: they are for keys.
+    macro_rules! column {
+        ($mv:ident) => {
+            |wb, _, _, cx| with_view(wb, cx, |v, cx| v.column_select_move(ColumnMove::$mv, cx))
+        };
+    }
+    let keys: [(&'static str, CommandHandler); 8] = [
+        ("cursorColumnSelectLeft", column!(Left)),
+        ("cursorColumnSelectRight", column!(Right)),
+        ("cursorColumnSelectUp", column!(Up)),
+        ("cursorColumnSelectDown", column!(Down)),
+        ("cursorColumnSelectPageUp", column!(PageUp)),
+        ("cursorColumnSelectPageDown", column!(PageDown)),
+        ("removeSecondaryCursors", |wb, _, _, cx| {
+            with_view(wb, cx, CodeView::remove_secondary_cursors)
+        }),
+        ("cancelSelection", |wb, _, _, cx| {
+            with_view(wb, cx, CodeView::cancel_selection)
+        }),
+    ];
+    for (id, handler) in keys {
+        commands.register(id, "", handler);
+    }
 }

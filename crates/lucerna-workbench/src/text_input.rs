@@ -94,6 +94,16 @@ impl TextInput {
         self.changed(window, cx);
     }
 
+    /// Replaces the text like [`TextInput::set_text`], without the change
+    /// callback: for an owner that reacts to the new text itself.
+    pub(crate) fn set_text_quietly(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.text = sanitize(text);
+        self.selected = self.text.len()..self.text.len();
+        self.reversed = false;
+        self.marked = None;
+        cx.notify();
+    }
+
     /// The selection as a byte range; empty when it is just the caret.
     pub fn selected_range(&self) -> Range<usize> {
         self.selected.clone()

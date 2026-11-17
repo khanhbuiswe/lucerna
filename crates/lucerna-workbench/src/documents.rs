@@ -604,6 +604,11 @@ impl Documents {
         self.window = Some(window);
     }
 
+    /// The window whose status bar shows the documents' messages.
+    pub(crate) fn window(&self) -> Option<WindowId> {
+        self.window
+    }
+
     pub fn new(root: PathBuf, settings: Entity<WindowSettings>) -> Self {
         Documents {
             root,
