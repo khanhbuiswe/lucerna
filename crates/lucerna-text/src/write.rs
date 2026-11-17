@@ -250,6 +250,20 @@ fn write_in_place(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
     Ok(())
 }
 
+/// Longest file name, in bytes, that common filesystems accept.
+const MAX_NAME_BYTES: usize = 255;
+/// Random characters `tempfile` appends after the prefix.
+const TEMP_RAND_BYTES: usize = 8;
+
+/// Temp file prefix `.{name}.luc~`, with `name` cut so the full temp name
+/// (prefix plus random suffix) stays within `MAX_NAME_BYTES`.
+fn temp_prefix(name: &str) -> String {
+    // 6 = the leading '.' plus the ".luc~" suffix.
+    let limit = MAX_NAME_BYTES - TEMP_RAND_BYTES - 6;
+    let cut = name.floor_char_boundary(limit.min(name.len()));
+    format!(".{}.luc~", &name[..cut])
+}
+
 fn write_atomic(path: &Path, bytes: &[u8], old: Option<fs::Metadata>) -> Result<(), WriteError> {
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
@@ -259,10 +273,9 @@ fn write_atomic(path: &Path, bytes: &[u8], old: Option<fs::Metadata>) -> Result<
         .file_name()
         .ok_or_else(|| WriteError::Io("path has no file name".into()))?
         .to_string_lossy();
-    // `tempfile` appends 8 random characters after the prefix.
     let mut temp = tempfile::Builder::new()
-        .prefix(&format!(".{name}.luc~"))
-        .rand_bytes(8)
+        .prefix(&temp_prefix(&name))
+        .rand_bytes(TEMP_RAND_BYTES)
         .tempfile_in(parent)?;
     match old {
         Some(meta) => fs::set_permissions(temp.path(), meta.permissions())?,
@@ -471,6 +484,45 @@ mod tests {
             .filter(|n| n.starts_with(".f.txt.luc~"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn temp_prefix_keeps_short_names() {
+        assert_eq!(temp_prefix("f.txt"), ".f.txt.luc~");
+    }
+
+    #[test]
+    fn temp_prefix_fits_the_name_limit() {
+        for name in ["a".repeat(250), format!("{}.rs", "ệ".repeat(83))] {
+            let prefix = temp_prefix(&name);
+            assert!(prefix.len() + TEMP_RAND_BYTES <= MAX_NAME_BYTES, "{name}");
+            let cut = &prefix[1..prefix.len() - ".luc~".len()];
+            assert!(name.starts_with(cut), "cut on a char boundary");
+            assert!(
+                cut.len() >= MAX_NAME_BYTES - TEMP_RAND_BYTES - 6 - 3,
+                "cut no shorter than needed"
+            );
+        }
+    }
+
+    #[test]
+    fn long_name_is_saved() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for name in ["a".repeat(250), format!("{}.rs", "ệ".repeat(83))] {
+            let path = dir.path().join(&name);
+            if fs::write(&path, b"old").is_err() {
+                // The filesystem itself refuses this name.
+                return;
+            }
+            write_bytes(&path, b"new").unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"new");
+        }
+        let hidden: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with('.'))
+            .collect();
+        assert!(hidden.is_empty(), "{hidden:?}");
     }
 
     #[test]
