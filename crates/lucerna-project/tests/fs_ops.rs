@@ -16,10 +16,21 @@ fn validate_rejects_bad_names() {
         other => panic!("{other:?}"),
     }
     assert_eq!(v("x/y/z.rs").unwrap(), p.join("x/y/z.rs"));
+    assert_eq!(v("x/").unwrap(), p.join("x"));
+    assert!(matches!(v("a.rs/"), Err(NameError::Exists(n)) if n == "a.rs"));
     assert_eq!(
         NameError::Exists("a.rs".into()).to_string(),
         "A file or folder a.rs already exists at this location. Please choose a different name."
     );
+}
+
+#[test]
+fn trailing_slash_names_a_folder() {
+    assert!(names_folder("components/"));
+    assert!(names_folder("a/b/"));
+    assert!(names_folder("thư-mục/ "));
+    assert!(!names_folder("components"));
+    assert!(!names_folder("a/b/c.rs"));
 }
 
 #[test]
