@@ -103,6 +103,7 @@ pub(crate) enum ExError {
     InvalidRange,
     MarkNotSet,
     NoBangAllowed,
+    NoRangeAllowed,
     TrailingCharacters(String),
     PatternNotFound(String),
     InvalidPattern(String),
@@ -118,6 +119,7 @@ impl ExError {
             ExError::InvalidRange => "E16",
             ExError::MarkNotSet => "E20",
             ExError::NoBangAllowed => "E477",
+            ExError::NoRangeAllowed => "E481",
             ExError::TrailingCharacters(_) => "E488",
             ExError::PatternNotFound(_) => "E486",
             ExError::InvalidPattern(_) => "E383",
@@ -134,6 +136,7 @@ impl ExError {
             ExError::InvalidRange => "Invalid range".into(),
             ExError::MarkNotSet => "Mark not set".into(),
             ExError::NoBangAllowed => "No ! allowed".into(),
+            ExError::NoRangeAllowed => "No range allowed".into(),
             ExError::TrailingCharacters(s) => format!("Trailing characters: {s}"),
             ExError::PatternNotFound(s) => format!("Pattern not found: {s}"),
             ExError::InvalidPattern(s) => format!("Invalid search string: {s}"),
@@ -385,6 +388,10 @@ pub(crate) fn parse(line: &str) -> Result<ExLine, ExError> {
         }
     } else {
         let full = full_name(name).ok_or_else(|| ExError::NotACommand(name.to_string()))?;
+        let takes_range = matches!(full, "delete" | "yank" | "substitute");
+        if !takes_range && !matches!(range, LineRange::Implicit) {
+            return Err(ExError::NoRangeAllowed);
+        }
         match full {
             "write" => {
                 no_args(rest)?;
@@ -669,6 +676,15 @@ mod tests {
             ExError::TrailingCharacters("q".into())
         );
         assert_eq!(parse("d !").unwrap_err(), ExError::InvalidRegister('!'));
+    }
+
+    #[test]
+    fn a_range_on_a_command_without_one_is_an_error() {
+        for line in ["'<,'>w", "5q", "%wa", "1,2qa", ".wq", "3x", "1noh", "2q!"] {
+            assert_eq!(parse(line).unwrap_err(), ExError::NoRangeAllowed, "{line}");
+        }
+        assert_eq!(ExError::NoRangeAllowed.message(), "E481: No range allowed");
+        assert_eq!(ExError::NoRangeAllowed.short(), "No range allowed");
     }
 
     #[test]
