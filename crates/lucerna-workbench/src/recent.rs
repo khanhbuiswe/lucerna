@@ -177,6 +177,8 @@ impl gpui::Global for RecentStore {}
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn missing_detail_uses_tilde() {
         assert_eq!(MISSING_TITLE, "Path does not exist");
@@ -185,8 +187,6 @@ mod tests {
             "The path '~/code/x' does not exist on this computer."
         );
     }
-
-    use super::*;
 
     fn folder(path: PathBuf) -> RecentEntry {
         RecentEntry {

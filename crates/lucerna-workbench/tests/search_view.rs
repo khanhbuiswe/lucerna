@@ -847,6 +847,11 @@ fn stale_result_in_unreadable_file_drops_the_observer(cx: &mut TestAppContext) {
     }
     click("search-line-0-0-1", cx);
     draw(cx);
+    let code = active_view(&wb, cx);
+    assert!(matches!(
+        code.read_with(cx, |v, _| v.doc_state().clone()),
+        DocState::Error(_)
+    ));
 
     // Readable again: the reload must not highlight the result. (The
     // cursor still lands on row 99: the document keeps the jump that
@@ -860,7 +865,6 @@ fn stale_result_in_unreadable_file_drops_the_observer(cx: &mut TestAppContext) {
     wb.update(cx, |wb, cx| {
         wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
     });
-    let code = active_view(&wb, cx);
     let deadline = Instant::now() + Duration::from_secs(10);
     while code.read_with(cx, |v, _| v.doc_state() != &DocState::Ready) {
         assert!(Instant::now() < deadline, "the file did not reload");

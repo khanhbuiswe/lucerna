@@ -741,8 +741,9 @@ impl SearchView {
         let reveal = move |view: &mut CodeView, cx: &mut Context<CodeView>| {
             match view.doc_state() {
                 DocState::Ready => {}
-                // A load that failed has nothing to reveal; a later
-                // reload must not move the cursor.
+                // A load that failed has nothing to reveal; the view must
+                // not move or highlight from here (the document may still
+                // finish its original jump).
                 DocState::Error(_) => return true,
                 _ => return false,
             }

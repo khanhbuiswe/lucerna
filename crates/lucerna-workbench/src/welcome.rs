@@ -142,12 +142,11 @@ pub struct WelcomeView {
     focus: FocusHandle,
     data_dir: Option<PathBuf>,
     home: Option<PathBuf>,
-    /// The recent entries as loaded, newest first; `None`
-    /// while loading.
+    /// The recent entries as loaded, newest first; `None` while loading.
     recent: Option<Vec<RecentEntry>>,
     /// Index into [`Self::buttons`] of the focused button.
     focused: usize,
-    /// "‹path› no longer exists", after a click on a vanished entry.
+    /// The Open Recent picker shown over the page, if any.
     picker: Option<(Entity<RecentPicker>, Subscription)>,
     pending_chord: Vec<Keystroke>,
     /// Whether a press began on the title bar, for its drag.
