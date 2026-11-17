@@ -85,13 +85,40 @@ fn php_vendor_file_shares_app_root() {
         touch(&app);
         touch(&lib);
         let def = adapter("intelephense");
-        let expected = if with_git {
-            root.to_path_buf()
-        } else {
-            root.join("apps/api")
-        };
+        // A `.git` at the repo root must not outrank the app's composer.json.
+        let expected = root.join("apps/api");
         assert_eq!(find_root(&def, &app, root).unwrap(), expected);
         assert_eq!(find_root(&def, &lib, root).unwrap(), expected);
+    }
+}
+
+#[test]
+fn project_marker_wins_over_repo_git() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".git")).unwrap();
+    touch(&root.join("apps/rails/Gemfile"));
+    let file = root.join("apps/rails/app/models/user.rb");
+    touch(&file);
+    assert_eq!(
+        find_root(&adapter("ruby-lsp"), &file, root).unwrap(),
+        root.join("apps/rails")
+    );
+}
+
+#[test]
+fn git_is_only_ever_a_sole_root_marker() {
+    // With outermost search a `.git` beside other markers would always win
+    // over them, so it may only be a server's sole marker.
+    let table = ServerTable::build(None);
+    for def in table.servers.values() {
+        if def.root_markers.len() > 1 {
+            assert!(
+                !def.root_markers.iter().any(|m| m == ".git"),
+                "{} lists .git with other markers",
+                def.name
+            );
+        }
     }
 }
 

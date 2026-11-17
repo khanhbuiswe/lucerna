@@ -77,8 +77,12 @@ Thay đổi:
 
 Hệ quả cần biết:
 
-- Server có `.git` trong marker (intelephense, ruby-lsp, jdtls, sourcekit-lsp,
-  yaml, bash...) giờ gần như luôn lấy root workspace khi workspace là repo git.
+- `.git` chỉ còn là marker khi nó là marker duy nhất của server (yaml, json,
+  bash). Mười lăm server có `.git` kèm marker dự án (intelephense, phpactor,
+  ruby-lsp, jdtls, sourcekit-lsp, lua, css/html...) bỏ `.git`, vì với cách tìm
+  ngoài cùng, `.git` ở gốc repo sẽ luôn thắng `composer.json`, `Gemfile`,
+  `pom.xml` ở thư mục con. Không có marker nào thì vẫn dùng root workspace, như
+  trước. (Phát hiện khi review; test `git_is_only_ever_a_sole_root_marker`.)
 - Elixir umbrella lấy `mix.exs` ở gốc umbrella, Maven/Gradle nhiều module lấy
   `pom.xml`/`settings.gradle` cha. Đó là root mà các server này muốn.
 - Server đang chạy với root cũ không tự đổi; người dùng cần Restart hoặc mở lại
