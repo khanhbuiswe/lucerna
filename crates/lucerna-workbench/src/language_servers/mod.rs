@@ -17,6 +17,7 @@
 //! not canonicalised). Servers echo the URIs they were sent, so a
 //! diagnostic's `uri_to_path` meets the key it was opened under.
 
+mod data_slots;
 mod lifecycle;
 mod pump;
 mod relay;
@@ -44,6 +45,7 @@ use crate::documents::Documents;
 use crate::tasks::guarded;
 use crate::workspace_state::absolute_path;
 
+use data_slots::{DataDirSlot, DataDirSlots};
 use lifecycle::Starting;
 use pump::{ProgressItem, Pump};
 
@@ -137,6 +139,11 @@ pub struct LanguageServers {
     launcher: Arc<dyn Launcher>,
     /// The base of each server's `{data_dir}`.
     data_dir: PathBuf,
+    /// Which `{data_dir}` slots every window's servers hold.
+    data_dir_slots: DataDirSlots,
+    /// The slot each started server holds, from its start until it stops
+    /// or fails; dropping it (or this entity) gives the number back.
+    held_slots: HashMap<ServerKey, DataDirSlot>,
     /// `npm root -g`, found the first time a server uses `{npm_root}`
     /// (off the UI thread); `None` inside when npm failed.
     npm_root: Arc<OnceLock<Option<PathBuf>>>,
@@ -212,6 +219,8 @@ impl LanguageServers {
             documents: documents.clone(),
             launcher: Arc::new(ProcessLauncher::new()),
             data_dir,
+            data_dir_slots: cx.default_global::<DataDirSlots>().clone(),
+            held_slots: HashMap::new(),
             npm_root: Arc::default(),
             lsp_setting,
             trusted,

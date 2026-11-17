@@ -360,12 +360,16 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 
 ### M1-2 [P3] `luc` đúng lúc app đang thoát thì báo lỗi thay vì mở app mới
 
+- **Đã sửa** (commit c315fe7, 8c5162b): phần EOF đã sửa cùng M1-1; app đang thoát trả `status: "quitting"`, `luc` claim lại mỗi 100 ms tối đa 5 s rồi mở trong app mới.
+
 - **Flow:** mở bằng `luc`.
 - **Vị trí:** [cli_socket.rs:478](../../../crates/lucerna-workbench/src/cli_socket.rs), [app.rs:146](../../../crates/lucerna-workbench/src/app.rs).
 - **Tái hiện:** Cmd+Q, rồi trong lúc app đang tắt gõ `luc ~/proj`. `luc` in "Lucerna is quitting" hoặc "no reply", thoát với mã 1.
 - **Hướng sửa:** phía client coi "quitting" và EOF là tín hiệu claim lại socket.
 
 ### M1-3 [P3] App bận quá 5 giây: nếu việc mở sau đó thất bại thì không có thông báo
+
+- **Đã sửa** (commit 68ff94f, 6223843): `luc` đã thôi đợi ("will open when ready") mà việc mở sau đó thất bại thì hiện status message "Could not open …" trong cửa sổ dùng gần nhất; `luc` còn đợi thì lỗi chỉ in ra terminal.
 
 - **Flow:** mở bằng `luc` trong lúc app đang khôi phục cửa sổ.
 - **Vị trí:** [router.rs:460](../../../crates/lucerna-workbench/src/router.rs).
@@ -374,6 +378,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 - **Hướng sửa:** hiện status message cả với `Source::Cli`.
 
 ### M1-4 [P3] Không dùng được socket thì app chạy ngay trong terminal; đóng terminal là mất file chưa lưu
+
+- **Đã sửa** (commit 6f920e3): không dùng được socket thì `luc` vẫn khởi động app tách khỏi terminal (không socket), cảnh báo rồi thoát 0.
 
 - **Flow:** `luc` khi thư mục data thuộc user khác, hoặc khi không có HOME.
 - **Vị trí:** [main.rs:160](../../../crates/lucerna/src/main.rs).
@@ -386,6 +392,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 
 ### M1-5 [P3] Tên socket chứa version: sau khi cập nhật mà app cũ còn chạy thì có hai app
 
+- **Đã sửa** (commit 2aab070): socket là `luc.sock` / `luc-dev.sock`; giao thức mới hơn app thì báo "Lucerna was updated. Quit Lucerna and open it again."
+
 - **Flow:** cập nhật Lucerna.
 - **Vị trí:** [cli_socket.rs:136](../../../crates/lucerna-workbench/src/cli_socket.rs).
 - **Tái hiện:** app 0.1.0 đang chạy, cài 0.1.1, chạy `luc ~/proj`: một process thứ hai mở ra. Process nào thoát sau thì `windows.json` chỉ giữ cửa sổ của process đó.
@@ -393,6 +401,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 - **Hướng sửa:** giữ hậu tố `-dev` nhưng bỏ version khỏi tên socket (giao thức đã có trường `version`).
 
 ### M1-6 [P3] `luc --trace-startup`/`--foreground` khi app cùng bản đang chạy chỉ chuyển request
+
+- **Đã sửa** (commit ba9e4c7): socket đã bị giữ thì `--trace-startup` báo "Lucerna is already running; quit it to measure startup.", `--foreground` báo "Lucerna is already running; quit it to run in the foreground.", cả hai thoát 1; tiến trình con của `luc` dùng cờ ẩn `--detached-child`.
 
 - **Flow:** công cụ dev và bench.
 - **Vị trí:** [main.rs:143](../../../crates/lucerna/src/main.rs).
@@ -411,6 +421,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 
 ### M2-3 [P3] Bấm Dock trong lúc app đang khôi phục cửa sổ thì có thêm một cửa sổ Welcome
 
+- **Đã sửa** (commit 5ceaff2): `reopen()` bỏ qua khi đang restore.
+
 - **Flow:** khởi động app.
 - **Vị trí:** [router.rs:577](../../../crates/lucerna-workbench/src/router.rs).
 - **Tái hiện:** `windows.json` có 2 folder. Bấm icon Lucerna để khởi động, rồi bấm lần nữa ngay. Kết quả là 2 cửa sổ folder và 1 cửa sổ Welcome thừa.
@@ -418,6 +430,8 @@ Ngày 2026-11-16, nhánh `multi-window` được merge vào `main`. Nhánh này 
 - **Hướng sửa:** `reopen()` bỏ qua khi đang `restoring`.
 
 ### M3-4 [P3] Hai cửa sổ dùng chung thư mục data của jdtls khi project root trùng nhau
+
+- **Đã sửa** (commit 24a2628): `{data_dir}` có thêm slot (số nhỏ nhất chưa dùng cho cùng server và root); cửa sổ đầu tiên luôn slot 0, giữ thư mục cũ.
 
 - **Flow:** language server ở hai cửa sổ có root lồng nhau.
 - **Vị trí:** [lifecycle.rs:594](../../../crates/lucerna-workbench/src/language_servers/lifecycle.rs), [vars.rs:126](../../../crates/lucerna-lsp/src/vars.rs).
