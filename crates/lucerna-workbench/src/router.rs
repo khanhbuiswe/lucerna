@@ -437,6 +437,10 @@ pub fn answer_cli(
         reply.send(refused).ok();
         return;
     }
+    if router(cx).borrow().quitting {
+        reply.send(CliReply::quitting()).ok();
+        return;
+    }
     if request.activate && request.paths.is_empty() {
         let restoring = router(cx).borrow().restoring;
         if !restoring {
@@ -939,6 +943,12 @@ fn record_recent(entry: RecentEntry, cx: &mut App) {
 pub(crate) fn app_data_dir(cx: &App) -> Option<PathBuf> {
     cx.try_global::<RecentStore>()
         .and_then(|store| store.data_dir.clone())
+}
+
+/// Marks the router as quitting, as the app's quit hook does; for tests.
+#[doc(hidden)]
+pub fn set_quitting_for_test(cx: &mut App) {
+    router(cx).borrow_mut().quitting = true;
 }
 
 /// Opens `paths` through the router, as `luc` would, and reads the user

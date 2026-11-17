@@ -314,6 +314,10 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
     socket lại một lần. Thường là do `luc` khác vừa giữ socket một lúc rồi
     nhả cho app nó khởi động (M1-1). Lần giành thứ hai nối tới app đó, hoặc
     tự bind khi chưa có app. Bước 3 bên dưới cũng nối lại một lần như vậy.
+  - App đang thoát trả `{"ok":false,"error":"Lucerna is quitting","status":"quitting"}`
+    (nó vẫn giữ socket thêm một lúc). `luc` giành socket lại mỗi 100 ms,
+    tối đa 5 s, rồi gửi cho app mới hoặc tự khởi động app; quá hạn thì in
+    lỗi, thoát mã 1 (M1-2).
   - Hết thời gian đợi trả lời mà yêu cầu đã gửi đi (app đang bận, ví dụ
     đang khôi phục cửa sổ): in "Lucerna is busy; the path will open when it
     is ready" và thoát mã 0, vì app vẫn mở đường dẫn khi rảnh.
@@ -365,11 +369,13 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
   {"version":1,"cwd":"/","paths":[],"new_window":false,"activate":true}
   {"ok":true}
   {"ok":false,"error":"path not found: /abs/a"}
+  {"ok":false,"error":"Lucerna is quitting","status":"quitting"}
   ```
 
   `paths` rỗng (`luc` không đối số) nghĩa là thư mục `cwd`, như nay.
   `new_window` để dành cho `-n` sau 0.1; 0.1 luôn gửi `false`. `activate`
-  mặc định `false` (thêm sau, không tăng `version`). Trường lạ
+  mặc định `false` (thêm sau, không tăng `version`). `status` trong trả lời
+  cũng thêm sau, không tăng `version`; `luc` cũ bỏ qua nó và in `error`. Trường lạ
   bị bỏ qua; `version` lớn hơn thì trả lỗi "Lucerna was updated. Quit Lucerna and open it again."
 - **Bench:** `bench/compare` đặt `HOME` riêng nên data dir và socket riêng,
   vẫn chạy tiến trình riêng như nay. Thêm một kiểm tra trong `editors.py` để

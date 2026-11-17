@@ -1313,6 +1313,23 @@ fn cli_reply_waits_for_restore(cx: &mut TestAppContext) {
 
 #[cfg(unix)]
 #[gpui::test]
+fn cli_reply_quitting(cx: &mut TestAppContext) {
+    use futures::channel::oneshot;
+    use lucerna_workbench::cli_socket::{CliReply, CliRequest};
+
+    routed(&[], cx);
+    let a = project(cx);
+    open_routed(Vec::new(), Target::Auto, cx);
+    cx.update(router::set_quitting_for_test);
+    let (tx, mut rx) = oneshot::channel();
+    cx.update(|cx| router::answer_cli(CliRequest::new(a, Vec::new()), tx, cx));
+    cx.run_until_parked();
+    assert_eq!(rx.try_recv().unwrap(), Some(CliReply::quitting()));
+    assert!(kinds(cx).is_empty(), "nothing opens");
+}
+
+#[cfg(unix)]
+#[gpui::test]
 fn cli_newer_version_rejected(cx: &mut TestAppContext) {
     use futures::channel::oneshot;
     use lucerna_workbench::cli_socket::{CliReply, CliRequest, PROTOCOL_VERSION};
