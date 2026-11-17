@@ -65,7 +65,7 @@ use crate::{AppState, CommandRegistry, WindowSettings, Workbench};
 pub const LARGE_FILE_STATUS: &str = "Large file: highlighting disabled";
 
 /// `editor.wordSeparators` when the setting is missing.
-const DEFAULT_WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+pub(crate) const DEFAULT_WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
 const MIN_FONT_SIZE: f32 = 6.;
 const MAX_FONT_SIZE: f32 = 40.;

@@ -13,11 +13,12 @@ use gpui::{
     App, AppContext, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
     KeyDownEvent, ParentElement, Render, Styled, Task, WeakEntity, Window, div, prelude::*, px,
 };
+use lucerna_editor::find::{FindQuery, find_all};
 use lucerna_project::build_pattern;
 use lucerna_text::BufferSnapshot;
 use regex::{Regex, RegexBuilder};
 
-use crate::code_view::CodeView;
+use crate::code_view::{CodeView, DEFAULT_WORD_SEPARATORS};
 use crate::layout::color;
 use crate::quick_open::picker::wrap_index;
 use crate::tasks::guarded;
@@ -32,9 +33,9 @@ use crate::{AppState, CommandRegistry, Workbench};
 pub const BACKGROUND_SEARCH_BYTES: usize = 1024 * 1024;
 
 /// The byte ranges of every non-empty match of `pattern` in `snapshot`, in
-/// order. The regex is built like the project search's
-/// ([`build_pattern`]); `^` and `$` match at line ends. An invalid regex
-/// gives its error message; an empty pattern finds nothing.
+/// order, with the default word separators for `whole_word`. A thin wrapper
+/// over [`lucerna_editor::find::find_all`] for vim's `/` and tests; the
+/// Find bar passes the view's own separators.
 pub fn find_in_snapshot(
     snapshot: &BufferSnapshot,
     pattern: &str,
@@ -42,19 +43,19 @@ pub fn find_in_snapshot(
     case_sensitive: bool,
     whole_word: bool,
 ) -> Result<Vec<Range<usize>>, String> {
-    if pattern.is_empty() {
-        return Ok(Vec::new());
-    }
-    let regex = build_regex(pattern, is_regex, case_sensitive, whole_word)?;
-    let text = snapshot.text_for_range(0..snapshot.len_bytes());
-    Ok(regex
-        .find_iter(&text)
-        .filter(|m| !m.is_empty())
-        .map(|m| m.range())
-        .collect())
+    find_all(
+        snapshot,
+        &FindQuery {
+            pattern,
+            is_regex,
+            case_sensitive,
+            whole_word,
+            word_separators: DEFAULT_WORD_SEPARATORS,
+        },
+    )
 }
 
-/// The regex for a find or search query, as both build it: the source from
+/// The regex for a project search query: the source from
 /// [`build_pattern`], case folding unless `case_sensitive`, and `^`/`$`
 /// at line ends.
 pub(crate) fn build_regex(
@@ -268,25 +269,38 @@ impl FindWidget {
         let Some(view) = self.view.upgrade() else {
             return;
         };
-        let (snapshot, revision) = {
+        let (snapshot, revision, separators) = {
             let view = view.read(cx);
-            (view.snapshot().clone(), view.revision())
+            (
+                view.snapshot().clone(),
+                view.revision(),
+                view.edit_config(cx).word_separators,
+            )
         };
         self.revision = revision;
         let pattern = self.query.clone();
         let (regex, case, word) = (self.is_regex, self.case_sensitive, self.whole_word);
+        let search = move |snapshot: &BufferSnapshot| {
+            find_all(
+                snapshot,
+                &FindQuery {
+                    pattern: &pattern,
+                    is_regex: regex,
+                    case_sensitive: case,
+                    whole_word: word,
+                    word_separators: &separators,
+                },
+            )
+        };
         if snapshot.len_bytes() <= BACKGROUND_SEARCH_BYTES {
-            let result = find_in_snapshot(&snapshot, &pattern, regex, case, word);
+            let result = search(&snapshot);
             self.apply(result, pick, cx);
             return;
         }
         let generation = self.generation;
         self.pending = true;
         let result = cx.background_spawn(async move {
-            guarded("find", || {
-                find_in_snapshot(&snapshot, &pattern, regex, case, word)
-            })
-            .unwrap_or_else(|| Err("internal error".into()))
+            guarded("find", || search(&snapshot)).unwrap_or_else(|| Err("internal error".into()))
         });
         self._search = cx.spawn(async move |this, cx| {
             let result = result.await;
