@@ -1,14 +1,17 @@
 //! Multi-cursor commands that grow the selection set from find matches:
 //! add / move the next or previous match (`⌘D`, `⌘K ⌘D`) and select all
-//! matches (`⇧⌘L`). Pure functions over a snapshot and a [`SelectionSet`].
+//! matches (`⇧⌘L`); and cursor commands: cursors above / below, at line
+//! ends, Escape helpers and mouse toggling. Pure functions over a snapshot
+//! and a [`SelectionSet`].
 //!
 //! Adapted from microsoft/vscode src/vs/editor/contrib/multicursor/browser/multicursor.ts (MIT)
 
 use std::ops::Range;
 
-use lucerna_text::BufferSnapshot;
+use lucerna_text::{BufferSnapshot, Point};
 
 use crate::find::{FindQuery, find_all, find_next};
+use crate::motion::Layout;
 use crate::selection::{Goal, Selection, SelectionSet};
 use crate::smart_select::word_around;
 
@@ -320,6 +323,187 @@ pub fn select_all_matches(
     })
 }
 
+fn cursor(id: u64, offset: usize, goal: Goal) -> Selection {
+    Selection {
+        id,
+        anchor: offset,
+        head: offset,
+        goal,
+    }
+}
+
+/// `⌥⌘↑` / `⌥⌘↓`: every selection gets a cursor one display row above (or
+/// below) its head, keeping its goal column. A cursor that would stay on its
+/// source's row (the first or last row) is not added. Returns the set, the
+/// ids of the cursors actually added (one layer), and whether the limit cut
+/// some off. The primary stays.
+pub fn insert_cursors_vertical(
+    snap: &BufferSnapshot,
+    set: &SelectionSet,
+    up: bool,
+    layout: &dyn Layout,
+    limit: usize,
+) -> (SelectionSet, Vec<u64>, bool) {
+    let rows = if up { -1 } else { 1 };
+    let len = snap.len_bytes();
+    let mut work = set.clone();
+    let mut sels = set.all().to_vec();
+    let mut added = Vec::new();
+    let mut limited = false;
+    for s in set.all() {
+        let (offset, goal) = layout.vertical(snap, s.head, s.goal, rows);
+        let boundary = offset == 0 || offset == len;
+        let same_row = snap.offset_to_point(offset).row == snap.offset_to_point(s.head).row;
+        if offset == s.head || (boundary && same_row) {
+            continue;
+        }
+        if sels.len() >= limit {
+            limited = true;
+            break;
+        }
+        let id = work.next_id();
+        sels.push(cursor(id, offset, goal));
+        added.push(id);
+    }
+    if added.is_empty() {
+        return (set.clone(), added, limited);
+    }
+    let out = work.rebuild(sels, set.primary().id);
+    added.retain(|id| out.all().iter().any(|s| s.id == *id));
+    (out, added, limited)
+}
+
+/// Drops the selections with these ids (never the last one). A dropped
+/// primary gives way to the newest remaining selection.
+pub fn remove_ids(set: &SelectionSet, ids: &[u64]) -> SelectionSet {
+    let rest: Vec<Selection> = set
+        .all()
+        .iter()
+        .filter(|s| !ids.contains(&s.id))
+        .copied()
+        .collect();
+    if rest.is_empty() || rest.len() == set.len() {
+        return set.clone();
+    }
+    let primary = set.primary().id;
+    let primary = if rest.iter().any(|s| s.id == primary) {
+        primary
+    } else {
+        rest.iter().max_by_key(|s| s.id).map_or(primary, |s| s.id)
+    };
+    set.rebuild(rest, primary)
+}
+
+/// `⇧⌥I`: a cursor at the end of every line of every non-empty selection;
+/// the last line only when the selection ends past its start. Empty
+/// selections are dropped. `None` when no cursor results. The first cursor
+/// of the old primary stays primary; when it was empty, the first cursor is.
+pub fn cursors_at_line_ends(
+    snap: &BufferSnapshot,
+    set: &SelectionSet,
+    limit: usize,
+) -> Option<(SelectionSet, bool)> {
+    let mut work = set.clone();
+    let old_primary = set.primary().id;
+    let mut sels: Vec<Selection> = Vec::new();
+    let mut primary = None;
+    for s in set.all().iter().filter(|s| !s.is_empty()) {
+        let r = s.range();
+        let (start, end) = (snap.offset_to_point(r.start), snap.offset_to_point(r.end));
+        let mut ends: Vec<usize> = (start.row..end.row)
+            .map(|row| snap.point_to_offset(Point { row, column: 0 }) + snap.line(row).len())
+            .collect();
+        if end.column > 0 {
+            ends.push(r.end);
+        }
+        for offset in ends {
+            let id = work.next_id();
+            if s.id == old_primary {
+                primary.get_or_insert(id);
+            }
+            sels.push(cursor(id, offset, Goal::None));
+        }
+    }
+    if sels.is_empty() {
+        return None;
+    }
+    let cap = limit.max(1);
+    let limited = sels.len() > cap;
+    sels.truncate(cap);
+    let primary = primary
+        .filter(|p| sels.iter().any(|s| s.id == *p))
+        .unwrap_or(sels[0].id);
+    Some((work.rebuild(sels, primary), limited))
+}
+
+/// First Escape step: only the primary selection remains. `None` when it
+/// already is the only one.
+pub fn remove_secondary(set: &SelectionSet) -> Option<SelectionSet> {
+    if set.len() < 2 {
+        return None;
+    }
+    let primary = *set.primary();
+    Some(set.rebuild(vec![primary], primary.id))
+}
+
+/// Second Escape step: the lone selection collapses to a cursor at its
+/// head. `None` for an empty one (or several selections).
+pub fn cancel_selection(set: &SelectionSet) -> Option<SelectionSet> {
+    let only = set.primary();
+    if set.len() != 1 || only.is_empty() {
+        return None;
+    }
+    Some(set.rebuild(vec![cursor(only.id, only.head, Goal::None)], only.id))
+}
+
+/// Alt-click: removes the selection touching `offset` (never the last one),
+/// otherwise adds a cursor there as primary. At the limit nothing is added.
+pub fn toggle_cursor_at(set: &SelectionSet, offset: usize, limit: usize) -> SelectionSet {
+    let hit = set.all().iter().find(|s| {
+        let r = s.range();
+        r.start <= offset && offset <= r.end
+    });
+    if let Some(hit) = hit {
+        return remove_ids(set, &[hit.id]);
+    }
+    if set.len() >= limit {
+        return set.clone();
+    }
+    let mut work = set.clone();
+    let id = work.next_id();
+    let mut sels = set.all().to_vec();
+    sels.push(cursor(id, offset, Goal::None));
+    work.rebuild(sels, id)
+}
+
+/// The id [`add_selection`] returns when the limit stopped it.
+pub const NO_SELECTION: u64 = u64::MAX;
+
+/// Alt-drag and alt double / triple-click: adds the selection
+/// `anchor..head` as primary and returns its id so a drag can keep updating
+/// it (it may be gone after a merge). At the limit nothing is added and the
+/// id is [`NO_SELECTION`].
+pub fn add_selection(
+    set: &SelectionSet,
+    anchor: usize,
+    head: usize,
+    limit: usize,
+) -> (SelectionSet, u64) {
+    if set.len() >= limit {
+        return (set.clone(), NO_SELECTION);
+    }
+    let mut work = set.clone();
+    let id = work.next_id();
+    let mut sels = set.all().to_vec();
+    sels.push(Selection {
+        id,
+        anchor,
+        head,
+        goal: Goal::None,
+    });
+    (work.rebuild(sels, id), id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,6 +640,135 @@ mod tests {
         assert_eq!(got, vec![0..5, 17..22]);
         let s3 = add_match(&snap, &s2.set, s2.session.as_ref(), LOOSE, SEPS, false, 100);
         assert!(s3.is_none());
+    }
+
+    use crate::motion::PlainLayout;
+
+    const PLAIN: PlainLayout = PlainLayout {
+        tab_size: 4,
+        page_rows: 10,
+    };
+
+    #[test]
+    fn insert_below_every_selection_keeps_goal() {
+        let (snap, set) = marked("ab|cdef\nx\nabcdef\n");
+        let (s1, ids1, limited) = insert_cursors_vertical(&snap, &set, false, &PLAIN, 100);
+        assert!(!limited);
+        assert_eq!(ids1.len(), 1);
+        assert_eq!(render(&snap, &s1), "ab|cdef\nx|\nabcdef\n");
+        let added = s1.all().iter().find(|s| s.id == ids1[0]).unwrap();
+        assert_eq!(added.goal, Goal::Column(2.0));
+        assert_eq!(s1.primary().id, set.primary().id);
+        // Again from every selection: the `x` cursor reaches (2, 2) with
+        // the kept goal; the first one adds a duplicate and merges.
+        let (s2, ids2, _) = insert_cursors_vertical(&snap, &s1, false, &PLAIN, 100);
+        assert_eq!(render(&snap, &s2), "ab|cdef\nx|\nab|cdef\n");
+        assert_eq!(ids2.len(), 1);
+        // Two starting cursors on rows 0 and 3 give four.
+        let (snap, set) = marked("a|b\nx\ny\na|b\nx\n");
+        let (s, ids, _) = insert_cursors_vertical(&snap, &set, false, &PLAIN, 100);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(s.len(), 4);
+    }
+
+    #[test]
+    fn insert_then_remove_layer() {
+        let (snap, set) = marked("a|b\ncd\nef");
+        let (s, ids, _) = insert_cursors_vertical(&snap, &set, false, &PLAIN, 100);
+        assert_eq!(s.len(), 2);
+        let back = remove_ids(&s, &ids);
+        assert_eq!(back.all(), set.all());
+        assert_eq!(back.primary().id, set.primary().id);
+    }
+
+    #[test]
+    fn insert_at_edge_noop() {
+        let (snap, set) = marked("ab\nc|d");
+        let (s, ids, limited) = insert_cursors_vertical(&snap, &set, false, &PLAIN, 100);
+        assert_eq!(s, set);
+        assert!(ids.is_empty() && !limited);
+        let (snap, set) = marked("a|b\ncd");
+        let (s, ids, _) = insert_cursors_vertical(&snap, &set, true, &PLAIN, 100);
+        assert_eq!(s, set);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn insert_respects_limit() {
+        let (snap, set) = marked("a|b\ncd\nef\ng|h\nij");
+        let (s, ids, limited) = insert_cursors_vertical(&snap, &set, false, &PLAIN, 3);
+        assert!(limited);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.primary().id, set.primary().id);
+    }
+
+    #[test]
+    fn line_ends_vscode() {
+        let (snap, set) = marked("«ab\ncd\nef»gh");
+        let (s, limited) = cursors_at_line_ends(&snap, &set, 100).unwrap();
+        assert!(!limited);
+        assert_eq!(render(&snap, &s), "ab|\ncd|\nef|gh");
+        let (snap, set) = marked("«ab\n»cd");
+        let (s, _) = cursors_at_line_ends(&snap, &set, 100).unwrap();
+        assert_eq!(render(&snap, &s), "ab|\ncd");
+        let (_, set) = marked("a|b c|d");
+        assert!(cursors_at_line_ends(&snap, &set, 100).is_none());
+        let (snap, set) = marked("«ab\ncd»");
+        let (s, limited) = cursors_at_line_ends(&snap, &set, 1).unwrap();
+        assert!(limited);
+        assert_eq!(render(&snap, &s), "ab|\ncd");
+    }
+
+    #[test]
+    fn line_ends_drops_empty_and_picks_primary() {
+        let (snap, set) = marked("|x *«a\nb» «c»");
+        let (s, _) = cursors_at_line_ends(&snap, &set, 100).unwrap();
+        assert_eq!(render(&snap, &s), "x a|\nb| c|");
+        // The old primary's first cursor stays primary.
+        assert_eq!(s.primary().head, 3);
+        let (snap, set) = marked("|x «a\nb»");
+        let (s, _) = cursors_at_line_ends(&snap, &set, 100).unwrap();
+        assert_eq!(render(&snap, &s), "x a|\nb|");
+        assert_eq!(s.primary().id, s.all()[0].id);
+    }
+
+    #[test]
+    fn escape_two_steps() {
+        let (snap, set) = marked("«a» *«b»");
+        let one = remove_secondary(&set).unwrap();
+        assert_eq!(render(&snap, &one), "a «b»");
+        assert!(remove_secondary(&one).is_none());
+        let cur = cancel_selection(&one).unwrap();
+        assert_eq!(render(&snap, &cur), "a b|");
+        assert!(cancel_selection(&cur).is_none());
+        assert!(remove_secondary(&cur).is_none());
+    }
+
+    #[test]
+    fn toggle_adds_and_removes() {
+        let (snap, set) = marked("a|bc de");
+        let added = toggle_cursor_at(&set, 5, 100);
+        assert_eq!(added.len(), 2);
+        assert_eq!(added.primary().head, 5);
+        let removed = toggle_cursor_at(&added, 5, 100);
+        assert_eq!(render(&snap, &removed), "a|bc de");
+        assert_eq!(removed.primary().head, 1);
+        // The only selection stays.
+        assert_eq!(toggle_cursor_at(&set, 1, 100).all(), set.all());
+        // At the limit nothing is added.
+        assert_eq!(toggle_cursor_at(&set, 5, 1).len(), 1);
+    }
+
+    #[test]
+    fn add_selection_is_primary() {
+        let (snap, set) = marked("a|bc de");
+        let (s, id) = add_selection(&set, 4, 6, 100);
+        assert_eq!(render(&snap, &s), "a|bc *«de»");
+        assert_eq!(s.primary().id, id);
+        let (s, id) = add_selection(&set, 4, 6, 1);
+        assert_eq!(s, set);
+        assert_eq!(id, NO_SELECTION);
     }
 
     #[test]
