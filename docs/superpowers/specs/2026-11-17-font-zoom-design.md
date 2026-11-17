@@ -1,6 +1,6 @@
 # Zoom cỡ chữ code (⌘+ / ⌘− / ⌘0)
 
-Ngày 2026-11-17. Trạng thái: đã duyệt, chưa triển khai. Mục đầu tiên của tầng 1 trong `docs/roadmap.md`.
+Ngày 2026-11-17. Trạng thái: đã triển khai (branch `claude/font-zoom`); kiểm tra thủ công §6 chưa làm. Mục đầu tiên của tầng 1 trong `docs/roadmap.md`.
 
 ## 1. Mục đích
 

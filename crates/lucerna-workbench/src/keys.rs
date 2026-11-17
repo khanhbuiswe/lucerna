@@ -209,6 +209,9 @@ mod tests {
             (event("z", Some("Ω"), alt()), "alt+z"),
             (event("=", None, cmd()), "cmd+="),
             (event("-", None, cmd()), "cmd+-"),
+            // macOS reports cmd+shift+= as cmd + `+` (see `to_keystroke`).
+            (event("+", None, cmd()), "shift+cmd+="),
+            (event("0", None, cmd()), "cmd+0"),
             (event("c", None, cmd()), "cmd+c"),
             (event("c", None, alt_cmd()), "alt+cmd+c"),
             (event("w", None, alt_cmd()), "alt+cmd+w"),

@@ -152,7 +152,7 @@ fn check_baseline(view: &Entity<TerminalView>, cx: &mut VisualTestContext) {
         cell.expect("a drawn cell"),
     );
     let layout = cx.update(|window, cx| {
-        let font = terminal_font(view.read(cx).settings().read(cx).view(cx));
+        let font = terminal_font(view.read(cx).settings().read(cx).view(cx), cx);
         let runs = [gpui::TextRun {
             len: 1,
             font: gpui::Font {
