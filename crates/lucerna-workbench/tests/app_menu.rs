@@ -250,6 +250,36 @@ fn open_recent_menu_hides_the_window_folder(cx: &mut TestAppContext) {
     assert!(!shown(&this), "{titles:?}");
 }
 
+/// File ▸ Open Recent lists an entry whose path is gone.
+#[gpui::test]
+fn open_recent_menu_lists_missing_entries(cx: &mut TestAppContext) {
+    app_state(cx);
+    let tmp = TempDir::new().unwrap();
+    let (this, other) = (tmp.path().join("this"), tmp.path().join("other"));
+    fs::create_dir(&this).unwrap();
+    fs::create_dir(&other).unwrap();
+    let data = tmp.path().join("data");
+    for path in [&other, &this] {
+        let entry = RecentEntry {
+            path: path.clone(),
+            kind: RecentKind::Folder,
+        };
+        recent::record(&data, entry).unwrap();
+    }
+    fs::remove_dir(&other).unwrap();
+    cx.set_global(RecentStore {
+        data_dir: Some(data),
+    });
+    let root = this.clone();
+    let (_wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    cx.update(|_, cx| app_menu::install(cx));
+    settle(cx);
+    let menus = cx.update(|_, cx| cx.get_menus()).expect("menus are set");
+    let titles = open_recent_titles(&menus);
+    let shown = |path: &Path| titles.iter().any(|t| t.ends_with(&*path.to_string_lossy()));
+    assert!(shown(&other), "{titles:?}");
+}
+
 /// A single-file window leaves out its file.
 #[gpui::test]
 fn open_recent_menu_hides_the_single_file(cx: &mut TestAppContext) {

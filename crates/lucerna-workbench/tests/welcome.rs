@@ -184,15 +184,14 @@ fn hides_recent_section_when_empty(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn skips_missing_folders(cx: &mut TestAppContext) {
+fn lists_missing_folders(cx: &mut TestAppContext) {
     let fixture = Fixture::new(&["a", "gone", "b"], &["gone"]);
     let (view, _, cx) = open_with(&fixture, None, cx);
     assert_eq!(
         recent(&view, cx),
-        vec![fixture.path("a"), fixture.path("b")]
+        vec![fixture.path("a"), fixture.path("gone"), fixture.path("b")]
     );
-    assert!(drawn("welcome-recent-1", cx));
-    assert!(!drawn("welcome-recent-2", cx));
+    assert!(drawn("welcome-recent-2", cx));
 }
 
 #[gpui::test]

@@ -648,7 +648,7 @@ pub(crate) fn refresh(cx: &mut App) {
         let recent = match data_dir {
             Some(dir) => {
                 cx.background_spawn(
-                    async move { recent::load(&recent::recent_path(&dir)).existing() },
+                    async move { recent::load(&recent::recent_path(&dir)).entries },
                 )
                 .await
             }

@@ -203,8 +203,8 @@ impl Workbench {
         self.recent_picker.as_ref().map(|shown| &shown.picker)
     }
 
-    /// Shows the Open Recent picker over the recent entries that still
-    /// exist, less this window's folder, once loaded in the background.
+    /// Shows the Open Recent picker over the recent entries, less this
+    /// window's folder, once loaded in the background.
     /// When it is shown already, selects its next row.
     pub fn show_recent_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.recent_picker.is_some() {
@@ -221,7 +221,7 @@ impl Workbench {
             let entries = match dir {
                 Some(dir) => {
                     cx.background_spawn(async move {
-                        recent::load(&recent::recent_path(&dir)).existing()
+                        recent::load(&recent::recent_path(&dir)).entries
                     })
                     .await
                 }

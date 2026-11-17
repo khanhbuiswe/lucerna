@@ -143,7 +143,7 @@ pub struct WelcomeView {
     focus: FocusHandle,
     data_dir: Option<PathBuf>,
     home: Option<PathBuf>,
-    /// The recent entries that existed when loaded, newest first; `None`
+    /// The recent entries as loaded, newest first; `None`
     /// while loading.
     recent: Option<Vec<RecentEntry>>,
     /// Index into [`Self::buttons`] of the focused button.
@@ -177,7 +177,7 @@ impl WelcomeView {
                 let entries = match data_dir {
                     Some(dir) => {
                         cx.background_spawn(async move {
-                            recent::load(&recent::recent_path(&dir)).existing()
+                            recent::load(&recent::recent_path(&dir)).entries
                         })
                         .await
                     }
