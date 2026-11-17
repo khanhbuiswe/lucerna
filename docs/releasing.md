@@ -7,7 +7,9 @@ The repository is public, so the macOS runners the workflow uses are free.
 
 ## Cut a release
 
-1. Set the new version in `[workspace.package]` in `Cargo.toml` and commit it on `main`.
+1. Set the new version in `[workspace.package]` in `Cargo.toml`. Add a `## [<version>] - <date>`
+   section at the top of `CHANGELOG.md`, listing user-visible changes under Added, Changed and
+   Fixed, plus a compare link at the bottom. Commit both on `main`.
 2. Tag that commit with the same version and push the tag:
 
    ```sh
@@ -16,7 +18,8 @@ The repository is public, so the macOS runners the workflow uses are free.
    ```
 
 3. The **Release** workflow runs on `macos-15` (Apple silicon). It:
-   - checks that the tag matches the version in `Cargo.toml`,
+   - checks that the tag matches the version in `Cargo.toml` and that `CHANGELOG.md` has a section
+     for it (the release page starts with that section),
    - builds `Lucerna.app` with `scripts/bundle-app.sh` (release, signed ad hoc),
    - signs with a Developer ID and notarizes, only if the `APPLE_*` secrets are set,
    - packs the signed app into `Lucerna-<version>-macos-aarch64.dmg` with

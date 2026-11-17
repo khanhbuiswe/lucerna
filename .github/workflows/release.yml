@@ -58,6 +58,17 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
             exit 1
           fi
+          # The release notes start with this version's CHANGELOG.md section
+          # (heading excluded), so a tag without one fails before the build.
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^(## )?\[[0-9]/ { exit }
+            on { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > "$RUNNER_TEMP/changelog.md"
+          if [ "$GITHUB_REF_TYPE" = tag ] && ! grep -q '[^[:space:]]' "$RUNNER_TEMP/changelog.md"; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
           {
             echo "version=$version"
             echo "zip=Lucerna-$version-macos-aarch64.zip"
@@ -138,6 +149,10 @@ jobs:
         run: |
           notes="$RUNNER_TEMP/notes.md"
           {
+            cat "$RUNNER_TEMP/changelog.md"
+            echo
+            echo "## Install"
+            echo
             echo "Lucerna $GITHUB_REF_NAME for macOS (Apple silicon)."
             echo
             echo "Download \`$DMG\`, open it and drag Lucerna into Applications."
