@@ -15,7 +15,7 @@ pub use search::{
     Excerpt, LineKind, LineMatch, MAX_LINE_CHARS, MAX_RESULTS, SearchEvent, SearchQuery,
     build_pattern, search,
 };
-pub use watch::DEBOUNCE;
+pub use watch::{DEBOUNCE, watch_error_reason};
 
 pub use snapshot::{Entry, EntryKind, RootStatus, WorktreeSnapshot};
 pub use worktree::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};

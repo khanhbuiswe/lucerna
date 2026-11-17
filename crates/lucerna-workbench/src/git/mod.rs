@@ -822,7 +822,7 @@ fn discover(
                 })
                 .inspect_err(|err| {
                     tracing::warn!(%err, "could not watch the git directory");
-                    watch_error = Some(err.to_string());
+                    watch_error = Some(lucerna_project::watch_error_reason(err));
                 })
                 .ok()
             });

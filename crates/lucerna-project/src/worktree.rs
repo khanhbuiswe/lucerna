@@ -68,7 +68,8 @@ pub enum WorktreeEvent {
     Loaded(Vec<Arc<Path>>),
     /// The OS file watcher could not start for the root: changes made
     /// outside are not seen until the window is reopened. Sent at most once,
-    /// before the first event of the initial scan.
+    /// before the first event of the initial scan. The reason is
+    /// [`crate::watch_error_reason`]'s.
     WatchFailed(String),
 }
 
@@ -393,7 +394,7 @@ impl Worker {
             Ok(watcher) => Some(watcher),
             Err(err) => {
                 tracing::error!(root = %self.root.display(), %err, "could not start file watcher");
-                self.send(WorktreeEvent::WatchFailed(err.to_string()));
+                self.send(WorktreeEvent::WatchFailed(crate::watch_error_reason(&err)));
                 None
             }
         };
@@ -1064,7 +1065,7 @@ fn root_status(root: &Path) -> RootStatus {
 }
 
 /// The OS's text for `err` without the trailing ` (os error 13)`.
-fn io_reason(err: &std::io::Error) -> String {
+pub(crate) fn io_reason(err: &std::io::Error) -> String {
     let text = err.to_string();
     match text.rfind(" (os error ") {
         Some(at) if text.ends_with(')') => text[..at].to_string(),
