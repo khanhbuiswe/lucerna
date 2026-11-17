@@ -171,8 +171,11 @@ pub struct VimLayer {
     /// key or command line is consumed.
     ex_requests: Vec<ExCommand>,
     /// Set by [`Action::OpenCommandLine`]: the workbench opens the `:` line
-    /// with this prefill.
-    command_line: Option<String>,
+    /// with this prefill, for the view that asked.
+    command_line: Option<(EntityId, String)>,
+    /// The view whose `:` key opened the `:` line shown now: closing it
+    /// without running tells that view's vim.
+    command_line_open: Option<EntityId>,
     /// Set by [`Action::Message`]: shown in place of the mode until the
     /// next key or command line.
     message: Option<String>,
@@ -212,6 +215,7 @@ impl VimLayer {
             open_search: None,
             ex_requests: Vec::new(),
             command_line: None,
+            command_line_open: None,
             message: None,
             _substitute: None,
             groups: None,
@@ -373,8 +377,28 @@ impl VimLayer {
     }
 
     /// The `:` line the last key asked to open: its prefill, without `:`.
+    /// The caller shows it.
     pub(crate) fn take_command_line(&mut self) -> Option<String> {
-        self.command_line.take()
+        let (id, prefill) = self.command_line.take()?;
+        self.command_line_open = Some(id);
+        Some(prefill)
+    }
+
+    /// The `:` line is about to run its command: it is not dismissed.
+    pub(crate) fn command_line_submitted(&mut self) {
+        self.command_line_open = None;
+    }
+
+    /// Quick Open closed holding `query`: a `:` line the `:` key opened
+    /// was left without running.
+    pub(crate) fn command_line_closed(&mut self, query: &str) {
+        let Some(id) = self.command_line_open.take() else {
+            return;
+        };
+        if let Some(state) = self.views.get_mut(&id) {
+            let line = query.strip_prefix(':').unwrap_or_default();
+            state.vim.command_line_dismissed(line, &mut self.globals);
+        }
     }
 
     /// `/` or `?`: opens the find widget of `view` for vim.
@@ -456,7 +480,10 @@ impl VimLayer {
             FindWidgetEvent::Dismissed => {
                 if let Some(state) = self.views.get_mut(&id) {
                     // An operator waiting for the search (`d/`) is dropped.
-                    state.vim.search_dismissed();
+                    let typed = find.read(cx).query().pattern;
+                    state
+                        .vim
+                        .search_cancelled(&typed, search.backward, &mut self.globals);
                     state.vim.set_cursor(search.origin);
                     // The origin may be past the text after a reload.
                     state.vim.clamp(view.read(cx).snapshot());
@@ -815,9 +842,15 @@ impl VimLayer {
             // user left the widget, so the search is over and the
             // selection the view has now is the user's, and an operator
             // waiting for the search (`d/`) is dropped.
+            let (backward, typed) = self.search.as_ref().map_or((false, String::new()), |s| {
+                let typed = s.find.upgrade().map(|f| f.read(cx).query().pattern);
+                (s.backward, typed.unwrap_or_default())
+            });
             self.end_search(cx);
             if let Some(state) = self.views.get_mut(&id) {
-                state.vim.search_dismissed();
+                state
+                    .vim
+                    .search_cancelled(&typed, backward, &mut self.globals);
             }
         }
         let outcome = {
@@ -1393,7 +1426,7 @@ impl VimLayer {
                     });
                 }
                 Action::RunEx(command) => self.ex_requests.push(command),
-                Action::OpenCommandLine { prefill } => self.command_line = Some(prefill),
+                Action::OpenCommandLine { prefill } => self.command_line = Some((id, prefill)),
             }
         }
         if let Some(opened) = group {

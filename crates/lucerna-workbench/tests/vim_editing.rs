@@ -899,6 +899,33 @@ fn macro_search_runs_without_widget(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn macro_records_a_search_dismissed_after_an_operator(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("foo bar baz\n", cx);
+    keys("q a d /", cx);
+    type_text("fo", cx);
+    keys("escape w q", cx);
+    assert_eq!(cursor(&view, cx), pt(0, 4));
+    // The replay drops its `d` too: `w` only moves.
+    keys("@ a", cx);
+    assert_eq!(text_of(&view, cx), "foo bar baz\n");
+    assert_eq!(cursor(&view, cx), pt(0, 8));
+}
+
+#[gpui::test]
+fn macro_records_a_command_line_dismissed_from_visual(cx: &mut TestAppContext) {
+    let (_dir, wb, view, cx) = vim_editor("ab\ncd\nef\ngh\n", cx);
+    keys("q a shift-v j :", cx);
+    assert!(cx.update(|_, cx| wb.read(cx).quick_open().is_some()));
+    keys("escape", cx);
+    assert!(cx.update(|_, cx| wb.read(cx).quick_open().is_none()));
+    keys("x q", cx);
+    assert_eq!(text_of(&view, cx), "ab\nd\nef\ngh\n");
+    // The replay leaves Visual at its `:` too: `x` deletes one char.
+    keys("g g @ a", cx);
+    assert_eq!(text_of(&view, cx), "ab\n\nef\ngh\n");
+}
+
+#[gpui::test]
 fn macro_stops_when_motion_fails(cx: &mut TestAppContext) {
     let (_dir, wb, view, cx) = vim_editor("a\nb\nc\nd\ne\n", cx);
     keys("q a j x q", cx);

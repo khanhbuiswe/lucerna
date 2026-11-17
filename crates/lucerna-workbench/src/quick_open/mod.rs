@@ -223,6 +223,10 @@ impl Workbench {
         let Some((qo, _)) = self.quick_open.take() else {
             return;
         };
+        let query = qo.read(cx).query(cx);
+        self.vim()
+            .clone()
+            .update(cx, |vim, _| vim.command_line_closed(&query));
         qo.update(cx, |qo, cx| qo.end_preview(cx));
         let previous = self.focus_before_quick_open.take();
         let focused = window.focused(cx);
@@ -242,6 +246,11 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(event, QuickOpenEvent::VimCommand(_)) {
+            self.vim()
+                .clone()
+                .update(cx, |vim, _| vim.command_line_submitted());
+        }
         self.close_quick_open(window, cx);
         match event {
             QuickOpenEvent::Open { path, mode } => {

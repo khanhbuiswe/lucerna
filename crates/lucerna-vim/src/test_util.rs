@@ -581,9 +581,9 @@ impl Run<'_> {
                     self.submit(pattern, backward, origin);
                 }
                 Key::Escape => {
-                    let origin = *origin;
+                    let (backward, typed, origin) = (*backward, pattern.clone(), *origin);
                     self.search = None;
-                    self.vim.search_dismissed();
+                    self.vim.search_cancelled(&typed, backward, self.globals);
                     self.vim.set_cursor(origin);
                     self.vim.clamp(&self.view.snapshot);
                 }
@@ -605,7 +605,10 @@ impl Run<'_> {
                         .ex_command(&line, self.view, self.globals, self.settings);
                     self.outcome(out, false, from);
                 }
-                Key::Escape => self.cmdline = None,
+                Key::Escape => {
+                    let line = self.cmdline.take().unwrap_or_default();
+                    self.vim.command_line_dismissed(&line, self.globals);
+                }
                 Key::Ctrl(_) => {}
             }
             return;

@@ -164,7 +164,9 @@ impl Vim {
     /// was being recorded before and still is (not the `q` that started
     /// or stopped it). Keys that went on to the keymap are not added, nor
     /// a `/`, `?` or `:` that opened the find widget or the command line:
-    /// the search or the command is added when it runs.
+    /// the search or the command is added when it runs, or when it is
+    /// dismissed after keys it undoes ([`Vim::search_cancelled`],
+    /// [`Vim::command_line_dismissed`]).
     pub(crate) fn record_macro_key(
         key: Key,
         recording_before: bool,
@@ -275,17 +277,13 @@ impl Vim {
                 };
                 return match cmd.kind {
                     CmdKind::Search { backward } => {
-                        let (is_regex, case_sensitive, whole_word) = g
-                            .last_search
-                            .as_ref()
-                            .map_or((false, false, false), |(q, _)| {
-                                (q.is_regex, q.case_sensitive, q.whole_word)
-                            });
+                        // What a fresh find widget searches for: never the
+                        // regex and whole word of a `*` before it.
                         let query = SearchQuery {
                             pattern: cmd.text,
-                            is_regex,
-                            case_sensitive,
-                            whole_word,
+                            is_regex: false,
+                            case_sensitive: false,
+                            whole_word: false,
                         };
                         let origin = self.cursor;
                         self.search_submitted(query, backward, origin, view, g, s)
@@ -633,6 +631,61 @@ mod tests {
     fn a_dismissed_search_is_not_recorded() {
         let (_, g) = globals_after("|foo1 foo2", "qa/foo<Esc>xq");
         assert_eq!(reg(&g, 'a').as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn a_dismissed_search_after_an_operator_is_recorded() {
+        // The `d` it dropped must not take the next key as its motion.
+        let (text, g) = globals_after("|foo bar baz", "qad/fo<Esc>wq");
+        assert_eq!(text, "foo |bar baz");
+        assert_eq!(reg(&g, 'a').as_deref(), Some("d/fo<Esc>w"));
+        assert_edit("|foo bar baz", "qad/fo<Esc>wq@a", "foo bar |baz");
+        // A count dropped with it too.
+        let (_, g) = globals_after("|foo bar baz", "qa2?fo<Esc>wq");
+        assert_eq!(reg(&g, 'a').as_deref(), Some("2?fo<Esc>w"));
+    }
+
+    #[test]
+    fn a_dismissed_command_line_from_visual_is_recorded() {
+        let (text, g) = globals_after("|ab\ncd\nef\ngh", "qaVj:<Esc>xq");
+        assert_eq!(text, "ab\n|d\nef\ngh");
+        assert_eq!(reg(&g, 'a').as_deref(), Some("Vj:<Esc>x"));
+        assert_edit("|ab\ncd\nef\ngh", "qaVj:<Esc>xqgg@a", "ab\n|\nef\ngh");
+        // What was typed after the prefill is kept.
+        let (_, g) = globals_after("|ab\ncd", "qa2:d<Esc>q");
+        assert_eq!(reg(&g, 'a').as_deref(), Some("2:d<Esc>"));
+        // A plain `:` left with Esc did nothing.
+        let (_, g) = globals_after("|ab\ncd", "qa:d<Esc>xq");
+        assert_eq!(reg(&g, 'a').as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn a_dismissed_command_line_forgets_its_prefill() {
+        let mut g = VimGlobals::default();
+        let view = TestView::new("|ab\ncd");
+        let mut vim = Vim::new(view.cursor);
+        let s = Settings::default();
+        for k in parse_notation("V:") {
+            vim.feed(k, &view, &mut g, &s);
+        }
+        assert_eq!(vim.last_prefill.as_deref(), Some("'<,'>"));
+        vim.command_line_dismissed("'<,'>", &mut g);
+        assert_eq!(vim.last_prefill, None);
+    }
+
+    #[test]
+    fn a_recorded_search_replays_with_fresh_find_defaults() {
+        // `*` searches a whole word as a regex; the recorded `/foo.bar`
+        // still finds the text inside a word, as typed in a fresh `/`.
+        let mut g = VimGlobals::default();
+        g.registers.set_macro('a', "/foo.bar<CR>".into());
+        let text = crate::test_util::run_edit_globals(
+            Settings::default(),
+            "|x foo.barx foo.bar x",
+            "*0@a",
+            &mut g,
+        );
+        assert_eq!(text, "x |foo.barx foo.bar x");
     }
 
     #[test]

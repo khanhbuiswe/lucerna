@@ -499,6 +499,23 @@ impl Vim {
         self.cmd_keys.clear();
     }
 
+    /// The user left the find widget of a `/` (`?` when `backward`) after
+    /// typing `typed`, without a search: as [`Vim::search_dismissed`].
+    /// When that drops an operator, a count or a register typed before
+    /// (already in the macro being recorded), the macro gets `/`, `typed`
+    /// and `<Esc>`, so its replay drops them too.
+    pub fn search_cancelled(&mut self, typed: &str, backward: bool, g: &mut VimGlobals) {
+        if self.op.is_some() || self.search_count.is_some() || self.register.is_some() {
+            let mut recorded = String::from(if backward { "?" } else { "/" });
+            for c in typed.chars() {
+                push_key(&mut recorded, Key::Char(c));
+            }
+            recorded.push_str("<Esc>");
+            g.record_text(&recorded);
+        }
+        self.search_dismissed();
+    }
+
     /// Runs the operator `p` waiting for a `/` or `?` on the text from the
     /// cursor to the nth match of `query` (an exclusive motion), `n` the
     /// counts before and after the operator. The search is remembered for

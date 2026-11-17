@@ -41,6 +41,31 @@ enum Exec {
     Job(SubstituteJob),
 }
 
+/// `line` in Vim key notation as typed after the `:` key put `prefill`
+/// there: `:` and the rest, or `:<C-u>` and the whole line when it no
+/// longer starts with the prefill.
+fn record_line(prefill: &str, line: &str) -> String {
+    match line.strip_prefix(prefill) {
+        Some(rest) => {
+            let mut out = String::from(":");
+            for c in rest.chars() {
+                push_key(&mut out, Key::Char(c));
+            }
+            out
+        }
+        None => record_line_cleared(line),
+    }
+}
+
+/// `:<C-u>` and `line` in Vim key notation.
+fn record_line_cleared(line: &str) -> String {
+    let mut out = String::from(":<C-u>");
+    for c in line.chars() {
+        push_key(&mut out, Key::Char(c));
+    }
+    out
+}
+
 fn is_visual(mode: Mode) -> bool {
     matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
 }
@@ -76,6 +101,20 @@ impl Vim {
         Outcome::Handled(actions)
     }
 
+    /// The `:` line the `:` key opened closed without running, holding
+    /// `line`. When the key put a prefill there (from Visual, after a
+    /// count), what it undid is already in the macro being recorded: the
+    /// macro gets the line as [`Vim::ex_command`] records it, ending in
+    /// `<Esc>`, so its replay leaves Visual too.
+    pub fn command_line_dismissed(&mut self, line: &str, g: &mut VimGlobals) {
+        let Some(prefill) = self.last_prefill.take().filter(|p| !p.is_empty()) else {
+            return;
+        };
+        let mut recorded = record_line(&prefill, line);
+        recorded.push_str("<Esc>");
+        g.record_text(&recorded);
+    }
+
     /// Runs one command line (the text after `:`). Ends a Visual mode
     /// first (setting `'<` `'>`), drops pending keys and count. An error
     /// returns `[Message(err), Failed]`. The line is kept in register `:`
@@ -93,14 +132,10 @@ impl Vim {
         s: &Settings,
     ) -> Outcome {
         let prefill = self.last_prefill.take();
-        let typed = match prefill.as_deref() {
-            Some(p) if line.starts_with(p) => (":", &line[p.len()..]),
-            _ => (":<C-u>", line),
+        let mut recorded = match prefill.as_deref() {
+            Some(p) => record_line(p, line),
+            None => record_line_cleared(line),
         };
-        let mut recorded = typed.0.to_string();
-        for c in typed.1.chars() {
-            push_key(&mut recorded, Key::Char(c));
-        }
         recorded.push_str("<CR>");
         g.record_text(&recorded);
         let mut actions = Vec::new();
