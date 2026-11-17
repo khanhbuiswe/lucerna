@@ -1151,6 +1151,8 @@ fn click_in_insert_mode_stays_in_insert(cx: &mut TestAppContext) {
 fn vim_search_hides_replace(cx: &mut TestAppContext) {
     let (_wb, view, cx) = vim_file("foo\nbar foo\nfoo", cx);
     keys("alt-cmd-f", cx);
+    let find = view.read_with(cx, |v, _| v.find_widget().cloned().expect("find is shown"));
+    assert!(find.read_with(cx, |f, _| f.replace_visible()));
     keys("escape", cx);
     keys("/", cx);
     assert!(find_visible(&view, cx));

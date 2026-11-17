@@ -12,6 +12,7 @@ pub mod test_util;
 mod undo_stops;
 pub mod words;
 
+pub use commands::mk_patch;
 pub use motion::{Layout, Motion, PlainLayout, move_selections};
 pub use plan::{AutoClosing, AutoClosingEdit, AutoIndent, AutoSurround, Ctx, EditConfig, EditPlan};
 pub use selection::{Goal, Selection, SelectionSet};

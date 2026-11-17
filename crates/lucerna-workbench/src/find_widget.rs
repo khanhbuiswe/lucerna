@@ -13,7 +13,9 @@ use gpui::{
     App, AppContext, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
     KeyDownEvent, ParentElement, Render, Styled, Task, WeakEntity, Window, div, prelude::*, px,
 };
+use lucerna_editor::{EditKind, EditPlan, SelectionSet, mk_patch};
 use lucerna_project::build_pattern;
+use lucerna_project::replace::{ReplacePattern, replace_all, replacement_at};
 use lucerna_text::BufferSnapshot;
 use regex::{Regex, RegexBuilder};
 
@@ -118,6 +120,9 @@ pub struct FindWidget {
     /// Opened for vim's `/` or `?`: Enter emits
     /// [`FindWidgetEvent::Submitted`] instead of stepping.
     vim: bool,
+    /// Set by a replace: the next search makes the first match at or
+    /// after this offset active (wrapping to the first) and reveals it.
+    pending_pick_from: Option<usize>,
     _search: Task<()>,
     _view_changed: gpui::Subscription,
 }
@@ -160,6 +165,7 @@ impl FindWidget {
             revision: view.read(cx).revision(),
             generation: 0,
             vim: false,
+            pending_pick_from: None,
             _search: Task::ready(()),
             _view_changed: cx.observe(view, |find, view, cx| {
                 let view = view.read(cx);
@@ -219,11 +225,134 @@ impl FindWidget {
         self.replace_input.focus_handle(cx).is_focused(window)
     }
 
-    /// Replaces the active match and moves to the next one.
-    pub fn replace_one(&mut self, _cx: &mut Context<Self>) {}
+    /// The view, when a replace may run: the Replace row is shown, the
+    /// view takes edits, and the matches are of its current text.
+    fn replace_target(&self, cx: &App) -> Option<Entity<CodeView>> {
+        if !self.replace_visible || self.pending || !self.can_replace(cx) {
+            return None;
+        }
+        let view = self.view.upgrade()?;
+        (view.read(cx).revision() == self.revision).then_some(view)
+    }
 
-    /// Replaces every match.
-    pub fn replace_all(&mut self, _cx: &mut Context<Self>) {}
+    /// The query's regex and the Replace input's pattern.
+    fn replace_parts(&self, cx: &App) -> Option<(Regex, ReplacePattern)> {
+        let regex = build_regex(
+            &self.query,
+            self.is_regex,
+            self.case_sensitive,
+            self.whole_word,
+        )
+        .ok()?;
+        let replace = self.replace_input.read(cx).text();
+        Some((regex, ReplacePattern::parse(replace, self.is_regex)))
+    }
+
+    /// Replaces the active match and moves to the next one (VS Code's
+    /// `editor.action.replaceOne`). When the selection is not the active
+    /// match, only selects the match nearest the cursor.
+    pub fn replace_one(&mut self, cx: &mut Context<Self>) {
+        let Some(view) = self.replace_target(cx) else {
+            return;
+        };
+        let Some(range) = self.active.map(|i| self.matches[i].clone()) else {
+            return self.select_nearest(cx);
+        };
+        let selected = {
+            let view = view.read(cx);
+            let snapshot = view.snapshot();
+            view.selection()
+                .map(|r| snapshot.point_to_offset(r.start)..snapshot.point_to_offset(r.end))
+        };
+        if selected != Some(range.clone()) {
+            return self.select_nearest(cx);
+        }
+        let Some((regex, pattern)) = self.replace_parts(cx) else {
+            return;
+        };
+        let snapshot = view.read(cx).snapshot().clone();
+        let text = snapshot.text_for_range(0..snapshot.len_bytes());
+        let Some(replacement) =
+            replacement_at(&text, &regex, range.clone(), &pattern, self.preserve_case)
+        else {
+            return;
+        };
+        let end = range.start + replacement.len();
+        let mut plan = EditPlan::new(
+            vec![(range, Arc::from(replacement))],
+            SelectionSet::cursor(end),
+            EditKind::Other,
+        );
+        plan.stop_before = true;
+        plan.stop_after = true;
+        // Before the edit: the search its revision change starts picks the
+        // match after the replacement.
+        self.pending_pick_from = Some(end);
+        if !view.update(cx, |v, cx| v.transact(plan, cx)) {
+            self.pending_pick_from = None;
+        }
+    }
+
+    /// Makes the match nearest the selection active and selects it.
+    fn select_nearest(&mut self, cx: &mut Context<Self>) {
+        if self.matches.is_empty() {
+            return;
+        }
+        self.active = self.nearest(cx).or(Some(0));
+        self.reveal(cx);
+        cx.notify();
+    }
+
+    /// Replaces every match as one undo step (VS Code's
+    /// `editor.action.replaceAll`). Files over [`BACKGROUND_SEARCH_BYTES`]
+    /// compute the edits on the background executor; they apply only if
+    /// the text did not change meanwhile.
+    pub fn replace_all(&mut self, cx: &mut Context<Self>) {
+        let Some(view) = self.replace_target(cx) else {
+            return;
+        };
+        if self.matches.is_empty() {
+            return;
+        }
+        let Some((regex, pattern)) = self.replace_parts(cx) else {
+            return;
+        };
+        let preserve = self.preserve_case;
+        let snapshot = view.read(cx).snapshot().clone();
+        if snapshot.len_bytes() <= BACKGROUND_SEARCH_BYTES {
+            let text = snapshot.text_for_range(0..snapshot.len_bytes());
+            apply_replacements(&view, replace_all(&text, &regex, &pattern, preserve), cx);
+            return;
+        }
+        // Shares the search's task and generation: a new search drops it.
+        self.cancel();
+        let (generation, revision) = (self.generation, self.revision);
+        self.pending = true;
+        let edits = cx.background_spawn(async move {
+            guarded("replace all", || {
+                let text = snapshot.text_for_range(0..snapshot.len_bytes());
+                replace_all(&text, &regex, &pattern, preserve)
+            })
+            .unwrap_or_default()
+        });
+        self._search = cx.spawn(async move |this, cx| {
+            let edits = edits.await;
+            this.update(cx, |find, cx| {
+                if find.generation != generation {
+                    return;
+                }
+                find.pending = false;
+                if let Some(view) = find.view.upgrade()
+                    && view.read(cx).revision() == revision
+                {
+                    apply_replacements(&view, edits, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
 
     pub fn matches(&self) -> &[Range<usize>] {
         &self.matches
@@ -379,8 +508,13 @@ impl FindWidget {
         self.error = error;
         self.pending = false;
         let last = self.matches.len().checked_sub(1);
+        let pick_from = self.pending_pick_from.take();
         self.active = match (pick, self.active, last) {
             (_, _, None) => None,
+            _ if let Some(offset) = pick_from => {
+                let i = self.matches.partition_point(|r| r.start < offset);
+                Some(if i < self.matches.len() { i } else { 0 })
+            }
             (Pick::Keep, Some(i), Some(last)) => Some(i.min(last)),
             _ => self.nearest(cx).or(Some(0)),
         };
@@ -389,7 +523,7 @@ impl FindWidget {
         if let Some(view) = self.view.upgrade() {
             view.update(cx, |v, cx| v.set_match_highlights(matches, active, cx));
         }
-        if pick == Pick::Nearest {
+        if pick == Pick::Nearest || pick_from.is_some() {
             self.reveal(cx);
         }
         cx.notify();
@@ -600,6 +734,26 @@ impl Render for FindWidget {
     }
 }
 
+/// Applies `edits` (sorted, in `view`'s current offsets) as one undo step;
+/// the selections move through them.
+fn apply_replacements(view: &Entity<CodeView>, edits: Vec<(Range<usize>, String)>, cx: &mut App) {
+    if edits.is_empty() {
+        return;
+    }
+    let edits: Vec<(Range<usize>, Arc<str>)> = edits
+        .into_iter()
+        .map(|(range, text)| (range, Arc::from(text)))
+        .collect();
+    view.update(cx, |v, cx| {
+        let mut selections = v.selections().clone();
+        selections.remap(&mk_patch(&edits));
+        let mut plan = EditPlan::new(edits, selections, EditKind::Other);
+        plan.stop_before = true;
+        plan.stop_after = true;
+        v.transact(plan, cx);
+    });
+}
+
 /// The selected text when the selection is on one line and not empty.
 pub(crate) fn single_line_selection(view: &CodeView) -> Option<String> {
     let range = view.selection()?;
@@ -710,6 +864,16 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
             }
         },
     );
+    commands.register("editor.action.replaceOne", "Replace One", |wb, _, _, cx| {
+        if let Some(find) = wb.visible_find_widget(cx) {
+            find.update(cx, FindWidget::replace_one);
+        }
+    });
+    commands.register("editor.action.replaceAll", "Replace All", |wb, _, _, cx| {
+        if let Some(find) = wb.visible_find_widget(cx) {
+            find.update(cx, FindWidget::replace_all);
+        }
+    });
     commands.register("closeFindWidget", "Close Find", |wb, _, window, cx| {
         // Only while focus is in the view or its widget: Esc elsewhere (the
         // Search panel) must not close it or take focus.
@@ -722,6 +886,12 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 }
 
 impl Workbench {
+    /// The active code view's find widget, while it is shown.
+    fn visible_find_widget(&self, cx: &App) -> Option<Entity<FindWidget>> {
+        self.active_code_view(cx)
+            .and_then(|view| view.read(cx).find_widget().cloned())
+    }
+
     /// Whether the active code view shows its find widget with focus in
     /// the Replace input.
     pub(crate) fn replace_input_focused(&self, window: &Window, cx: &App) -> bool {

@@ -370,6 +370,11 @@ mod tests {
             (event("c", None, ctrl_shift()), "ctrl+shift+c"),
             (event("v", None, ctrl_shift()), "ctrl+shift+v"),
         ]);
+        // Find bar replace. macOS reports ⌘⇧1 as ⌘ + `!`.
+        rows.extend([
+            (event("!", None, cmd()), "shift+cmd+1"),
+            (event("enter", Some("\n"), alt_cmd()), "alt+cmd+enter"),
+        ]);
         rows
     }
 

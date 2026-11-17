@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
+use gpui::{Entity, Focusable, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, SettingsStore, parse_when};
 use lucerna_syntax::LanguageRegistry;
@@ -543,6 +543,7 @@ fn replace_text_survives_close(cx: &mut TestAppContext) {
     type_text("x", cx);
     assert_eq!(replace_text(&view, cx), "x");
     keys("escape", cx);
+    assert!(widget(&view, cx).is_none(), "escape closes the bar");
     keys("alt-cmd-f", cx);
     assert_eq!(replace_text(&view, cx), "x");
 }
@@ -573,4 +574,258 @@ fn replace_input_focused_context_key(cx: &mut TestAppContext) {
     assert!(key(&wb, cx));
     keys("shift-tab", cx);
     assert!(!key(&wb, cx));
+}
+
+/// Focuses the Replace input and types `text` into it.
+fn fill_replace(view: &Entity<CodeView>, text: &str, cx: &mut VisualTestContext) {
+    let find = find(view, cx);
+    cx.update(|window, cx| {
+        let focus = find.read(cx).replace_input().focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    type_text(text, cx);
+}
+
+/// Sets the Replace input's text without moving focus.
+fn set_replace(view: &Entity<CodeView>, text: &str, cx: &mut VisualTestContext) {
+    let find = find(view, cx);
+    cx.update(|window, cx| {
+        let input = find.read(cx).replace_input().clone();
+        input.update(cx, |input, cx| input.set_text(text, window, cx));
+    });
+    draw(cx);
+}
+
+fn buffer_text(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> String {
+    cx.update(|_, cx| {
+        let s = view.read(cx).snapshot();
+        s.text_for_range(0..s.len_bytes())
+    })
+}
+
+fn undo(view: &Entity<CodeView>, cx: &mut VisualTestContext) {
+    view.update(cx, |v, cx| {
+        v.undo(true, cx);
+    });
+    draw(cx);
+}
+
+#[gpui::test]
+fn replace_one_replaces_active_and_moves_on(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo\nbar foo\nfoo\n", cx);
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    keys("tab", cx);
+    type_text("X", cx);
+    assert_eq!(replace_text(&view, cx), "X");
+    keys("enter", cx);
+    assert_eq!(buffer_text(&view, cx), "X\nbar foo\nfoo\n");
+    assert_eq!(counter(&view, cx), "1 of 2");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.selection()),
+        Some(pt(1, 4)..pt(1, 7))
+    );
+    undo(&view, cx);
+    assert_eq!(
+        buffer_text(&view, cx),
+        "foo\nbar foo\nfoo\n",
+        "one undo step"
+    );
+}
+
+#[gpui::test]
+fn replace_one_wraps_to_first(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo a foo", cx);
+    view.update(cx, |v, cx| v.go_to(pt(0, 4), cx));
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    assert_eq!(counter(&view, cx), "2 of 2");
+    keys("tab", cx);
+    type_text("X", cx);
+    keys("enter", cx);
+    assert_eq!(buffer_text(&view, cx), "foo a X");
+    assert_eq!(counter(&view, cx), "1 of 1");
+    let (ranges, active) = highlights(&view, cx);
+    assert_eq!(
+        (ranges.len(), ranges.first(), active),
+        (1, Some(&(0..3)), Some(0))
+    );
+    assert_eq!(
+        view.read_with(cx, |v, _| v.selection()),
+        Some(pt(0, 0)..pt(0, 3))
+    );
+}
+
+#[gpui::test]
+fn replace_one_only_selects_when_selection_moved(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo\nbar foo\nfoo\n", cx);
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    set_replace(&view, "X", cx);
+    assert_eq!(counter(&view, cx), "1 of 3");
+    view.update(cx, |v, cx| v.go_to(pt(0, 1), cx));
+    draw(cx);
+    keys("shift-cmd-1", cx);
+    assert_eq!(buffer_text(&view, cx), "foo\nbar foo\nfoo\n");
+    assert_eq!(counter(&view, cx), "2 of 3");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.selection()),
+        Some(pt(1, 4)..pt(1, 7))
+    );
+    // Now the selection is the match: the next press replaces it.
+    keys("shift-cmd-1", cx);
+    assert_eq!(buffer_text(&view, cx), "foo\nbar X\nfoo\n");
+}
+
+#[gpui::test]
+fn replace_one_ignores_stale_match(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo bar foo", cx);
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    set_replace(&view, "X", cx);
+    assert_eq!(counter(&view, cx), "1 of 2");
+    let find = find(&view, cx);
+    cx.update(|_, cx| {
+        // An edit the widget has not searched yet; the selection (the
+        // active match 0..3) stays.
+        view.update(cx, |v, cx| {
+            let selections = v.selections().clone();
+            let plan = lucerna_editor::EditPlan::new(
+                vec![(11..11, Arc::from("!"))],
+                selections,
+                lucerna_editor::EditKind::Other,
+            );
+            assert!(v.transact(plan, cx));
+        });
+        find.update(cx, |f, cx| f.replace_one(cx));
+    });
+    draw(cx);
+    assert_eq!(buffer_text(&view, cx), "foo bar foo!", "nothing replaced");
+}
+
+#[gpui::test]
+fn replace_all_is_one_undo_step(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo foo foo", cx);
+    view.update(cx, |v, cx| {
+        v.go_to(pt(0, 11), cx);
+        v.type_text("z", cx);
+    });
+    draw(cx);
+    assert_eq!(buffer_text(&view, cx), "foo foo fooz");
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    keys("tab", cx);
+    type_text("b", cx);
+    keys("cmd-enter", cx);
+    assert_eq!(buffer_text(&view, cx), "b b bz");
+    assert_eq!(counter(&view, cx), "No results");
+    undo(&view, cx);
+    assert_eq!(buffer_text(&view, cx), "foo foo fooz");
+}
+
+#[gpui::test]
+fn alt_cmd_enter_and_shift_cmd_1_from_find_input(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo foo foo\n", cx);
+    keys("alt-cmd-f", cx);
+    set_replace(&view, "X", cx);
+    type_text("foo", cx);
+    assert_eq!(find_text(&view, cx), "foo", "focus is in the find input");
+    keys("shift-cmd-1", cx);
+    assert_eq!(buffer_text(&view, cx), "X foo foo\n");
+    assert_eq!(counter(&view, cx), "1 of 2");
+    keys("alt-cmd-enter", cx);
+    assert_eq!(buffer_text(&view, cx), "X X X\n");
+    assert_eq!(find_text(&view, cx), "foo");
+    assert_eq!(replace_text(&view, cx), "X");
+}
+
+#[gpui::test]
+fn enter_in_find_input_still_steps(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo\nbar foo\nfoo\n", cx);
+    keys("alt-cmd-f", cx);
+    set_replace(&view, "X", cx);
+    type_text("foo", cx);
+    keys("enter", cx);
+    assert_eq!(counter(&view, cx), "2 of 3");
+    assert_eq!(buffer_text(&view, cx), "foo\nbar foo\nfoo\n");
+}
+
+#[gpui::test]
+fn replace_regex_groups(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "let a = 1;", cx);
+    keys("alt-cmd-f", cx);
+    click("find-toggle-regex", cx);
+    let find = find(&view, cx);
+    cx.update(|window, cx| {
+        let input = find.read(cx).input().clone();
+        input.update(cx, |input, cx| input.set_text(r"(\w+) = (\d)", window, cx));
+    });
+    draw(cx);
+    assert_eq!(counter(&view, cx), "1 of 1");
+    fill_replace(&view, "$2 = $1", cx);
+    keys("cmd-enter", cx);
+    assert_eq!(buffer_text(&view, cx), "let 1 = a;");
+}
+
+#[gpui::test]
+fn replace_preserve_case(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "Foo foo", cx);
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    click("find-toggle-preserve-case", cx);
+    assert!(find(&view, cx).read_with(cx, |f, _| f.preserve_case()));
+    fill_replace(&view, "bar", cx);
+    keys("cmd-enter", cx);
+    assert_eq!(buffer_text(&view, cx), "Bar bar");
+}
+
+#[gpui::test]
+fn readonly_view_does_not_replace(cx: &mut TestAppContext) {
+    init(cx);
+    let (_dir, _wb, view, cx) = open_file("a.txt", "foo foo\n", cx);
+    keys("cmd-f", cx);
+    type_text("foo", cx);
+    set_replace(&view, "X", cx);
+    view.update(cx, |v, _| v.set_passive(true));
+    keys("alt-cmd-enter", cx);
+    keys("shift-cmd-1", cx);
+    let find = find(&view, cx);
+    cx.update(|_, cx| {
+        find.update(cx, |f, cx| {
+            f.replace_one(cx);
+            f.replace_all(cx);
+        })
+    });
+    draw(cx);
+    assert_eq!(buffer_text(&view, cx), "foo foo\n");
+}
+
+#[gpui::test]
+fn replace_all_large_file_off_main_thread(cx: &mut TestAppContext) {
+    init(cx);
+    let text = ("x".repeat(63) + "\n").repeat(20_000) + "the needle\n";
+    let len = text.len();
+    let (_dir, _wb, view, cx) = open_file("big.txt", &text, cx);
+    keys("alt-cmd-f", cx);
+    type_text("needle", cx);
+    assert_eq!(counter(&view, cx), "1 of 1");
+    fill_replace(&view, "pin", cx);
+    keys("cmd-enter", cx);
+    let after = buffer_text(&view, cx);
+    assert!(
+        after.ends_with("the pin\n"),
+        "{:?}",
+        &after[after.len() - 20..]
+    );
+    assert_eq!(after.len(), len - 3);
+    assert_eq!(counter(&view, cx), "No results");
 }
