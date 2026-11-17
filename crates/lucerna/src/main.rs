@@ -147,7 +147,8 @@ mod socket {
         };
         // An app that holds the socket gets the request; a connection
         // another `luc` dropped while handing the socket to the app it
-        // starts is claimed once more (M1-1).
+        // starts is claimed once more (M1-1), and so is an app that answers
+        // that it is quitting, every 100 ms for up to 5 s (M1-2).
         match claim_and_send(&socket, &request, REPLY_TIMEOUT) {
             Handed::Reply(reply) => {
                 tracing::info!(socket = %socket.display(), "handed the request to the running app");

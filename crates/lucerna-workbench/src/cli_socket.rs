@@ -30,11 +30,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long the app waits for a connected client's request line.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// The longest request line the app reads.
+const MAX_REQUEST_BYTES: u64 = 1 << 20;
 /// How long [`claim_and_send`] waits between claims while the app quits.
 const QUIT_RETRY_EVERY: Duration = Duration::from_millis(100);
 /// How long it keeps claiming before it gives the quitting reply back.
 const QUIT_WAIT: Duration = Duration::from_secs(5);
-const MAX_REQUEST_BYTES: u64 = 1 << 20;
 /// `sun_path` holds 104 bytes on macOS (108 on Linux); longer paths are
 /// replaced by one in the temporary directory.
 const MAX_SOCKET_PATH: usize = 100;
@@ -514,7 +514,8 @@ pub enum Handed {
 ///
 /// An app that answers [`CliReply::quitting`] is still bound to the
 /// socket for a moment. It is claimed again every [`QUIT_RETRY_EVERY`]
-/// for up to [`QUIT_WAIT`] (M1-2), until the app is gone and this process
+/// for up to [`QUIT_WAIT`] (M1-2; the limit bounds when the last retry
+/// starts, not the total time, as each send may wait up to `timeout`), until the app is gone and this process
 /// binds, or a new app answers; after that the reply is returned as is.
 pub fn claim_and_send(path: &Path, request: &CliRequest, timeout: Duration) -> Handed {
     claim_and_send_with(path, request, timeout, QUIT_WAIT)
@@ -586,6 +587,10 @@ fn answer(stream: UnixStream, tx: &mpsc::UnboundedSender<CliMessage>) {
     let allowed = peer_allowed(peer_uid(&stream), euid());
     let reply = match allowed.and_then(|()| read_request(&stream)) {
         Ok(request) => {
+            // A dropped reply sender also covers the router discarding the
+            // request for another reason than quitting. Answering
+            // `quitting` is safe then: `luc` sends again, and opening a
+            // path twice only focuses it (§6.3, rule 1).
             let (reply_tx, reply_rx) = oneshot::channel();
             if tx.unbounded_send((request, reply_tx)).is_err() {
                 CliReply::quitting()
@@ -674,6 +679,8 @@ mod tests {
     use futures::StreamExt as _;
 
     use std::sync::{Arc, Barrier};
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -1104,8 +1111,9 @@ mod tests {
 
     /// Reads one request line from the next connection and answers with
     /// `reply`.
-    fn answer_one(listener: &UnixListener, reply: &CliReply) {
+    fn answer_one(listener: &UnixListener, reply: &CliReply, accepted: &AtomicUsize) {
         let (stream, _) = listener.accept().unwrap();
+        accepted.fetch_add(1, Ordering::SeqCst);
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line).unwrap();
         let mut stream = stream;
@@ -1134,7 +1142,7 @@ mod tests {
             })
         };
         assert!(pending(&app.listener, 5_000), "the client connected");
-        answer_one(&app.listener, &CliReply::quitting());
+        answer_one(&app.listener, &CliReply::quitting(), &AtomicUsize::new(0));
         release(app);
         assert!(matches!(client.join().unwrap(), Handed::Server(_)));
     }
@@ -1145,13 +1153,12 @@ mod tests {
         let Claim::Server(Bound { listener, .. }) = claim(&path) else {
             panic!("binds");
         };
-        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let connections = std::sync::Arc::new(AtomicUsize::new(0));
         std::thread::spawn({
             let connections = connections.clone();
             move || {
                 loop {
-                    answer_one(&listener, &CliReply::quitting());
-                    connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    answer_one(&listener, &CliReply::quitting(), &connections);
                 }
             }
         });
@@ -1168,10 +1175,7 @@ mod tests {
         };
         assert_eq!(reply, Ok(CliReply::quitting()));
         assert!(started.elapsed() >= Duration::from_millis(300));
-        assert!(
-            connections.load(std::sync::atomic::Ordering::SeqCst) >= 2,
-            "claimed again"
-        );
+        assert!(connections.load(Ordering::SeqCst) >= 2, "claimed again");
     }
 
     #[test]
