@@ -37,6 +37,9 @@ use crate::tasks::{catch_panic, guarded};
 
 /// Where keys may reach vim: the editor has focus, and neither a text
 /// input (find widget) nor Quick Open does.
+/// How deep [`Outcome::Macro`]s may nest (`@a` that runs `@a`).
+const MAX_MACRO_DEPTH: u32 = 100;
+
 static KEY_GATE: LazyLock<WhenExpr> = LazyLock::new(|| {
     parse_when("editorFocus && !textInputFocus && !inQuickOpen").expect("a valid when clause")
 });
@@ -119,9 +122,11 @@ pub struct VimLayer {
     /// Set while an [`Outcome::Replay`] runs: its typing is not recorded
     /// and its undo step stays open until it ends.
     replaying: bool,
-    /// Set when a replay met a typing step outside Insert mode: the rest
-    /// is dropped.
+    /// Set when a replay met a typing step outside Insert mode (or a
+    /// macro's key failed): the rest is dropped.
     replay_stopped: bool,
+    /// How many [`Outcome::Macro`]s are running, one inside the other.
+    macro_depth: u32,
     /// Per file, the edits vim made whose marks it already moved, oldest
     /// first: their reports, still to come, must not move them again.
     own_edits: HashMap<Arc<Path>, VecDeque<Arc<Patch>>>,
@@ -162,6 +167,7 @@ impl VimLayer {
             match_cache: HashMap::new(),
             replaying: false,
             replay_stopped: false,
+            macro_depth: 0,
             own_edits: HashMap::new(),
             key_generation: 0,
             _retry: None,
@@ -509,7 +515,7 @@ impl VimLayer {
         match event {
             CodeViewEvent::Typed(typed) => {
                 if let Some(state) = self.views.get_mut(&view.entity_id()) {
-                    state.vim.record_typed(typed.clone());
+                    state.vim.record_typed(typed.clone(), &mut self.globals);
                 }
             }
             CodeViewEvent::Reloaded {
@@ -777,6 +783,25 @@ impl VimLayer {
                 self.replay(view, steps, cx);
                 true
             }
+            Ok(Outcome::Macro(keys)) => {
+                // For now a macro runs as a replay of its keys; nested
+                // ones (`@a` inside `@a`) stop at a fixed depth.
+                if self.macro_depth >= MAX_MACRO_DEPTH {
+                    return true;
+                }
+                self.macro_depth += 1;
+                self.globals.set_macro_running(true);
+                let steps = keys.into_iter().map(ReplayStep::Key).collect();
+                self.replay(view, steps, cx);
+                self.macro_depth -= 1;
+                if self.macro_depth == 0 {
+                    self.globals.set_macro_running(false);
+                    if let Some(state) = self.views.get_mut(&id) {
+                        state.vim.macro_ended();
+                    }
+                }
+                true
+            }
             Ok(Outcome::Substitute(job)) => {
                 // Task 6 runs a large one in the background; for now it
                 // runs here, on the view's current text.
@@ -933,6 +958,7 @@ impl VimLayer {
         if outermost {
             self.replaying = true;
             self.replay_stopped = false;
+            self.globals.set_replaying(true);
             view.update(cx, |v, cx| {
                 v.set_typed_events(false);
                 v.set_suppress_stops(true, cx);
@@ -1002,6 +1028,7 @@ impl VimLayer {
         }
         self.replaying = false;
         self.replay_stopped = false;
+        self.globals.set_replaying(false);
         let insert = self
             .views
             .get(&id)
@@ -1125,6 +1152,8 @@ impl VimLayer {
                 Action::OpenSearch { backward } => self.open_search = Some(backward),
                 Action::RunCommand(id) => self.run_command = Some(id),
                 Action::EnterInsert(at) => insert = Some(at),
+                // A failed key stops the macro that runs it.
+                Action::Failed if self.globals.macro_running() => self.replay_stopped = true,
                 // The command line arrives with the workbench UI.
                 Action::Failed
                 | Action::RunEx(_)

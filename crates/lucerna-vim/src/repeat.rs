@@ -458,10 +458,10 @@ mod tests {
         let out = vim.feed(Key::Char('i'), &view, &mut g, &s);
         let Outcome::Handled(a) = out else { panic!() };
         view.apply(&mut vim, &a);
-        vim.record_typed(Typed::Text("a".into()));
-        vim.record_typed(Typed::Newline);
-        vim.record_typed(Typed::DeleteLeft);
-        vim.record_typed(Typed::Tab);
+        vim.record_typed(Typed::Text("a".into()), &mut g);
+        vim.record_typed(Typed::Newline, &mut g);
+        vim.record_typed(Typed::DeleteLeft, &mut g);
+        vim.record_typed(Typed::Tab, &mut g);
         vim.feed(Key::Escape, &view, &mut g, &s);
         let out = vim.feed(Key::Char('.'), &view, &mut g, &s);
         assert_eq!(
@@ -493,9 +493,9 @@ mod tests {
             panic!()
         };
         view.apply(&mut vim, &a);
-        vim.record_typed(Typed::Text("fo".into()));
-        vim.record_typed(Typed::Newline);
-        vim.record_typed(Typed::Text("o".into()));
+        vim.record_typed(Typed::Text("fo".into()), &mut g);
+        vim.record_typed(Typed::Newline, &mut g);
+        vim.record_typed(Typed::Text("o".into()), &mut g);
         vim.feed(Key::Escape, &view, &mut g, &s);
         assert_eq!(read(&g), Some("foo".into()));
         // `".p` puts it.
@@ -512,9 +512,9 @@ mod tests {
             panic!()
         };
         view.apply(&mut vim, &a);
-        vim.record_typed(Typed::Text("a".into()));
+        vim.record_typed(Typed::Text("a".into()), &mut g);
         vim.break_insert_record();
-        vim.record_typed(Typed::Text("b".into()));
+        vim.record_typed(Typed::Text("b".into()), &mut g);
         vim.feed(Key::Escape, &view, &mut g, &s);
         let out = vim.feed(Key::Char('.'), &view, &mut g, &s);
         assert_eq!(
@@ -531,7 +531,7 @@ mod tests {
             panic!()
         };
         view.apply(&mut vim, &a);
-        vim.record_typed(Typed::Text("c".into()));
+        vim.record_typed(Typed::Text("c".into()), &mut g);
         vim.break_insert_record();
         vim.feed(Key::Escape, &view, &mut g, &s);
         let out = vim.feed(Key::Char('.'), &view, &mut g, &s);
@@ -619,7 +619,7 @@ mod tests {
             vim.feed(k, &view, &mut g, &settings);
         }
         for t in typed {
-            vim.record_typed(t.clone());
+            vim.record_typed(t.clone(), &mut g);
         }
         vim.feed(Key::Escape, &view, &mut g, &settings)
     }

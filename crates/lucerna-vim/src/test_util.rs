@@ -395,30 +395,9 @@ impl ViewInfo for TestView {
     }
 }
 
-/// Parses `keys`: plain chars, `<C-x>`, `<Esc>`, `<CR>`, `<BS>`, `<lt>`,
-/// and `<Tab>` (a tab char, which only Insert mode types).
+/// Parses `keys` in Vim key notation (see [`crate::parse_notation`]).
 pub(crate) fn parse_keys(keys: &str) -> Vec<Key> {
-    let mut out = Vec::new();
-    let mut chars = keys.chars();
-    while let Some(c) = chars.next() {
-        if c != '<' {
-            out.push(Key::Char(c));
-            continue;
-        }
-        let name: String = chars.by_ref().take_while(|&c| c != '>').collect();
-        out.push(match name.as_str() {
-            "Esc" => Key::Escape,
-            "CR" => Key::Enter,
-            "BS" => Key::Backspace,
-            "Tab" => Key::Char('\t'),
-            "lt" => Key::Char('<'),
-            _ => match name.strip_prefix("C-") {
-                Some(rest) if rest.chars().count() == 1 => Key::Ctrl(rest.chars().next().unwrap()),
-                _ => panic!("unknown key <{name}>"),
-            },
-        });
-    }
-    out
+    crate::macros::parse_notation(keys)
 }
 
 /// Feeds `keys` with default globals and settings; returns every outcome.
@@ -516,25 +495,49 @@ pub(crate) fn run_edit_with(
     start: &str,
     keys: &str,
 ) -> (String, Vec<Action>) {
+    let mut globals = VimGlobals::default();
+    run_edit_in(settings, view_setup, start, keys, &mut globals)
+}
+
+/// [`run_edit_with`] with caller-owned globals; returns the marked text.
+pub(crate) fn run_edit_globals(
+    settings: Settings,
+    start: &str,
+    keys: &str,
+    globals: &mut VimGlobals,
+) -> String {
+    run_edit_in(settings, |_| {}, start, keys, globals).0
+}
+
+fn run_edit_in(
+    settings: Settings,
+    view_setup: impl FnOnce(&mut TestView),
+    start: &str,
+    keys: &str,
+    globals: &mut VimGlobals,
+) -> (String, Vec<Action>) {
     let mut view = TestView::new(start);
     view_setup(&mut view);
     let mut vim = Vim::new(view.cursor);
-    let mut globals = VimGlobals::default();
     let mut actions = Vec::new();
     let mut run = Run {
         view: &mut view,
         vim: &mut vim,
-        globals: &mut globals,
+        globals,
         settings: &settings,
         actions: &mut actions,
         search: None,
         cmdline: None,
+        macro_depth: 0,
     };
     for key in parse_keys(keys) {
         run.key(key, false);
     }
     (view.marked(vim.cursor()), actions)
 }
+
+/// How deep [`Outcome::Macro`]s may nest in the test runner.
+const MAX_MACRO_DEPTH: u32 = 100;
 
 /// What [`run_edit_with`] drives.
 struct Run<'a> {
@@ -548,6 +551,8 @@ struct Run<'a> {
     search: Option<(bool, String, Point)>,
     /// The open `:` command line: its text so far.
     cmdline: Option<String>,
+    /// How many [`Outcome::Macro`]s are running, one inside the other.
+    macro_depth: u32,
 }
 
 /// The literal, case-insensitive query the test search submits.
@@ -616,7 +621,7 @@ impl Run<'_> {
         if insert && let Some(typed) = typed {
             self.view.type_typed(self.vim, &typed);
             if !replaying {
-                self.vim.record_typed(typed);
+                self.vim.record_typed(typed, self.globals);
             }
             return;
         }
@@ -667,6 +672,8 @@ impl Run<'_> {
             }
             Outcome::Replay(steps) => {
                 self.view.begin_group(from);
+                let replaying = self.globals.replaying;
+                self.globals.set_replaying(true);
                 for step in steps {
                     match step {
                         ReplayStep::Key(k) => self.key(k, true),
@@ -694,7 +701,31 @@ impl Run<'_> {
                         }
                     }
                 }
+                self.globals.set_replaying(replaying);
                 self.view.end_group();
+            }
+            // Like the workbench: the keys run in one undo step, typing
+            // in Insert mode, until one fails.
+            Outcome::Macro(keys) => {
+                if self.macro_depth >= MAX_MACRO_DEPTH {
+                    return;
+                }
+                self.macro_depth += 1;
+                self.view.begin_group(from);
+                self.globals.set_macro_running(true);
+                for key in keys {
+                    let before = self.actions.len();
+                    self.key(key, true);
+                    if self.actions[before..].contains(&Action::Failed) {
+                        break;
+                    }
+                }
+                self.view.end_group();
+                self.macro_depth -= 1;
+                if self.macro_depth == 0 {
+                    self.globals.set_macro_running(false);
+                    self.vim.macro_ended();
+                }
             }
             Outcome::Substitute(job) => {
                 let result = job.run(&self.view.snapshot);

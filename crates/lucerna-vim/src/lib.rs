@@ -8,6 +8,7 @@ mod edit;
 #[allow(dead_code)] // the runner and the workbench use it in later steps
 mod ex;
 mod ex_run;
+mod macros;
 mod marks;
 mod motion;
 mod object;
@@ -31,6 +32,7 @@ use lucerna_text::BufferSnapshot;
 
 pub use ex::describe_command;
 pub use ex_run::ExCommand;
+pub use macros::parse_notation;
 pub use register::{Clipboard, ClipboardMode, RegContent, RegKind};
 pub use repeat::{ReplayStep, Typed};
 pub use state::{Vim, VimGlobals};
@@ -222,8 +224,10 @@ pub enum Action {
         text: String,
         linewise: bool,
     },
-    /// A `:` command failed (its message came first as [`Action::Message`]).
-    /// A macro stops here.
+    /// The command failed: a motion that could not move, a search with
+    /// no match, an operator whose motion failed, `.` with nothing to
+    /// repeat, a `:` command with an error (its message came first as
+    /// [`Action::Message`]). A macro stops here.
     Failed,
     /// Carry out a `:` command the editor owns (`:w`, `:q`...).
     RunEx(ExCommand),
@@ -272,4 +276,13 @@ pub enum Outcome {
     /// the result to [`Vim::finish_substitute`] if the text is unchanged.
     /// Vim's state is unchanged until then.
     Substitute(SubstituteJob),
+    /// `@a`: run these keys in order, all in one undo group, with
+    /// [`VimGlobals::set_macro_running`] set until they end, then call
+    /// [`Vim::macro_ended`]. A key that comes while vim is in Insert mode
+    /// (other than Escape) types: `Char('\t')` is [`Typed::Tab`],
+    /// `Char(c)` [`Typed::Text`], `Enter` [`Typed::Newline`], `Backspace`
+    /// [`Typed::DeleteLeft`]; a `Ctrl` key is skipped. The whole run stops
+    /// at a key that returns [`Action::Failed`]. A `Macro` returned by a
+    /// key in the run (`@b` inside `@a`) runs in place.
+    Macro(Vec<Key>),
 }

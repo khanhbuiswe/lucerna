@@ -9,10 +9,11 @@ use lucerna_text::Point;
 use crate::classify::line;
 use crate::edit;
 use crate::ex::{self, Command, ExError, SubstituteArgs};
+use crate::macros::{CmdKind, push_key};
 use crate::operator::{MotionKind, OpRange, Operator, row_start};
 use crate::substitute::{BACKGROUND_SUBSTITUTE_BYTES, SubstituteJob};
 use crate::visual::line_end;
-use crate::{Action, Mode, Outcome, Settings, ViewInfo, Vim, VimGlobals};
+use crate::{Action, Key, Mode, Outcome, Settings, ViewInfo, Vim, VimGlobals};
 
 /// What the workbench carries out for a `:` command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +66,11 @@ impl Vim {
                 Some(n) => format!(".,.+{}", n - 1),
             }
         };
+        if g.macro_running() {
+            // A running macro types the command into vim's own line.
+            self.open_macro_cmdline(CmdKind::Ex, prefill);
+            return Outcome::Handled(actions);
+        }
         self.last_prefill = Some(prefill.clone());
         actions.push(Action::OpenCommandLine { prefill });
         Outcome::Handled(actions)
@@ -74,6 +80,11 @@ impl Vim {
     /// first (setting `'<` `'>`), drops pending keys and count. An error
     /// returns `[Message(err), Failed]`. The line is kept in register `:`
     /// (also when it failed), unless it is empty.
+    ///
+    /// The macro being recorded gets `:`, the line after the prefill the
+    /// `:` key put there, and `<CR>`; a line that does not start with
+    /// that prefill (or a command line opened otherwise) is recorded as
+    /// `:<C-u>`, the whole line, and `<CR>`.
     pub fn ex_command(
         &mut self,
         line: &str,
@@ -81,6 +92,17 @@ impl Vim {
         g: &mut VimGlobals,
         s: &Settings,
     ) -> Outcome {
+        let prefill = self.last_prefill.take();
+        let typed = match prefill.as_deref() {
+            Some(p) if line.starts_with(p) => (":", &line[p.len()..]),
+            _ => (":<C-u>", line),
+        };
+        let mut recorded = typed.0.to_string();
+        for c in typed.1.chars() {
+            push_key(&mut recorded, Key::Char(c));
+        }
+        recorded.push_str("<CR>");
+        g.record_text(&recorded);
         let mut actions = Vec::new();
         if is_visual(self.mode) {
             actions.extend(self.exit_visual(view, g));
@@ -178,9 +200,8 @@ impl Vim {
                     }
                 };
                 let job = self.substitute_job(args, counted(count), g, s)?;
-                // Task 4 adds `g.macro_running()`: a macro runs it at once.
-                let macro_running = false;
-                if view.snapshot().len_bytes() <= BACKGROUND_SUBSTITUTE_BYTES || macro_running {
+                // A macro runs it at once, whatever the size.
+                if view.snapshot().len_bytes() <= BACKGROUND_SUBSTITUTE_BYTES || g.macro_running() {
                     let result = job.run(view.snapshot());
                     match self.finish_substitute(&job, result, view, g, s) {
                         Outcome::Handled(done) => done,
