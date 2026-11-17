@@ -32,9 +32,10 @@ Spec này **chỉ** mô tả giai đoạn 1. Mỗi giai đoạn sau có spec ri�
 | 3 | Hiểu code qua LSP | Định nghĩa, tham chiếu, hover, diagnostics, outline, breadcrumbs, Quick Open `@` và `#` |
 | 3b | Host WASM cho extension Zed | Language server từ `extension.wasm`. PHP, Ruby, Elixir, Vue… đã chạy qua bảng language server (`2026-11-11-lsp-server-table-design.md`) khi người dùng đã cài server |
 | 4 | Sửa code đầy đủ ([spec](2026-11-11-lucerna-phase4-editing-design.md), 4.1, 4.2 và 4.4 đã xong) | Multi-cursor, undo, xử lý xung đột với agent, completion, rename, format |
-| 5 | Mở rộng | Git gutter, xem diff, terminal tích hợp, giao diện settings (Git view: 5.1 Git lõi — màu Explorer, gutter; 5.2 tab diff — Uncommitted Changes, Changes since ‹nhánh›, diff một file; cả hai xong trên nhánh của chúng, chờ merge; chuyển nhánh từ thanh tiêu đề (xong trên nhánh, chờ merge)) |
+| 5 | Mở rộng | Git gutter, xem diff, terminal tích hợp, giao diện settings (Git view: 5.1 Git lõi — màu Explorer, gutter; 5.2 tab diff — Uncommitted Changes, Changes since ‹nhánh›, diff một file; cả hai đã xong; chuyển nhánh từ thanh tiêu đề đã xong). Giao diện settings chưa làm |
 | V1 | Vim di chuyển (đã xong) | Bật bằng `vim.enabled` trong settings. Chỉ có các thao tác đọc: motion, tìm kiếm, cuộn, số đếm, mark, chọn bằng visual rồi copy |
-| V2 | Vim sửa (làm ngay sau bước 4.2 và 4.4, trước 4.3, 4.5, 4.6). **V2a đã xong** | Insert mode, các toán tử `d`/`c`/`y`, text object, `.`, macro, register, một phần lệnh `:` |
+| V2 | Vim sửa (làm ngay sau bước 4.2 và 4.4, trước 4.3, 4.5, 4.6). **V2a đã xong**; V2b (macro, dòng lệnh `:`) làm tiếp sau đợt sửa lỗi P3 | Insert mode, các toán tử `d`/`c`/`y`, text object, `.`, macro, register, một phần lệnh `:` |
+| P3 | Sửa các lỗi còn mở sau release 0.1.0 ([spec](2026-11-17-p3-fixes-design.md)), đã xong | T1-1 (byte sai encoding) và mọi lỗi P3 trong review trước release |
 | MD | Markdown preview (đã làm xong, còn chờ hai bước kiểm tra: so giao diện với Zed, đo RAM sau khi đóng tab có ảnh) ([spec](2026-11-13-markdown-preview-design.md)) | Xem `.md` đã render ở tab riêng, cuộn đồng bộ với tab mã nguồn, ảnh và link cục bộ, mở file HTML bằng trình duyệt |
 
 Vim mode là tính năng có sẵn trong lõi editor, không phải extension, giống cách Zed làm. Xem phần nghiên cứu ở `docs/research/2026-11-09-vim-mode.md`.

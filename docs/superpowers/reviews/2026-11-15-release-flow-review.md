@@ -15,7 +15,7 @@ Ngày: 2026-11-15. Spec: [2026-11-15-release-flow-review-design.md](../specs/202
 | P2 (sai nhưng có cách khác) | 14, đều đã sửa trên nhánh `claude/p2-fixes` |
 | P3 (nhỏ) | 21 (13 cũ, 8 mới) |
 
-Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được sửa trong lần merge multi-window. T2-1 đã sửa bằng hot exit; T2-2, T2-3, T3-2, T3-4, T3-5, T4-1, T4-2, T5-2, T5-3, T5-6, M1-1, M2-1, M3-1, M3-2 (và M2-2) đã sửa trên nhánh `claude/p2-fixes`. T1-1, T1-2, T1-3, T1-5, T1-6, T1-7 và T2-4 đã sửa trên nhánh `claude/p3-save`. Các mục P3 còn lại chưa sửa.
+Có 3 mục bị loại và 2 mục bị gộp vì trùng. T3-1 đã được sửa trong lần merge multi-window. T2-1 đã sửa bằng hot exit; T2-2, T2-3, T3-2, T3-4, T3-5, T4-1, T4-2, T5-2, T5-3, T5-6, M1-1, M2-1, M3-1, M3-2 (và M2-2) đã sửa trên nhánh `claude/p2-fixes`. Mọi mục còn lại (T1-1 và các P3: T1-2, T1-3, T1-5, T1-6, T1-7, T2-4, T2-5, T3-3, T4-4, T4-5, T5-1, T5-4, T5-5, M1-2, M1-3, M1-4, M1-5, M1-6, M2-3, M3-4) đã sửa trên nhánh `claude/p3-fixes`, theo [spec](../specs/2026-11-17-p3-fixes-design.md). Không còn mục nào chưa sửa.
 
 **Nên sửa trước release:**
 - **T2-1 [P0]:** Quit từ Dock, Log Out hoặc Restart máy thoát ngay mà không hỏi lưu, nên mất thay đổi chưa lưu.
