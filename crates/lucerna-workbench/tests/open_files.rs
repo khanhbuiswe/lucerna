@@ -214,6 +214,23 @@ fn wait_for(rx: &crossbeam_channel::Receiver<Vec<PathBuf>>, file: &Path) {
     }
 }
 
+/// Removes `dir` and lets the batches about the removal pass, so the
+/// batches that follow come from what the test does next. inotify reports
+/// the deletion of `file` (in `dir`), which may come late: it is waited
+/// for up to 2 s. FSEvents may name only `dir`, which reaches no batch.
+fn remove_and_settle(rx: &crossbeam_channel::Receiver<Vec<PathBuf>>, dir: &Path, file: &Path) {
+    let real = file.canonicalize().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while let Ok(batch) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        if batch.iter().any(|p| *p == real || p == file) {
+            break;
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    while rx.try_recv().is_ok() {}
+}
+
 /// An ignored file whose folder is removed (`dist/` by a clean build)
 /// still reloads once the folder and the file are written again, even
 /// after another tab opened and closed in between.
@@ -235,8 +252,7 @@ fn open_file_watcher_follows_a_recreated_parent() {
     std::thread::sleep(Duration::from_millis(300));
     while rx.try_recv().is_ok() {}
 
-    std::fs::remove_dir_all(&dist).unwrap();
-    std::thread::sleep(Duration::from_millis(300));
+    remove_and_settle(&rx, &dist, &bundle);
     watcher.set_files(vec![bundle.clone(), env.clone()]);
     watcher.set_files(vec![bundle.clone()]);
 
@@ -264,8 +280,7 @@ fn open_file_watcher_follows_a_recreated_nested_parent() {
     std::thread::sleep(Duration::from_millis(300));
     while rx.try_recv().is_ok() {}
 
-    std::fs::remove_dir_all(&dist).unwrap();
-    std::thread::sleep(Duration::from_millis(300));
+    remove_and_settle(&rx, &dist, &bundle);
 
     std::fs::create_dir_all(&js).unwrap();
     std::fs::write(&bundle, "2").unwrap();
