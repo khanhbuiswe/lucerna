@@ -14,9 +14,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use encoding_rs::Encoding;
+use futures::FutureExt as _;
 use futures::channel::oneshot;
-use gpui::{App, AsyncWindowContext, Context, Entity, PromptLevel, Subscription, Task, Window};
-use lucerna_text::{Buffer, BufferSnapshot, LineEnding, Point, WriteError, Written, write_bytes};
+use futures::future::Shared;
+use gpui::{
+    App, AsyncWindowContext, Context, Entity, Global, PromptLevel, Subscription, Task, Window,
+};
+use lucerna_text::{
+    Buffer, BufferSnapshot, LineEnding, Point, TempFiles, WriteError, Written, write_bytes_tracked,
+};
 
 use crate::documents::{DocState, DocumentEvent, Edits, Stamp};
 use crate::{CommandRegistry, Documents, Workbench};
@@ -248,6 +254,8 @@ pub(crate) struct WriteJob {
     /// An autosave: a file that is gone (deleted or moved before the
     /// watcher reported it) is not made again; a save command does.
     pub(crate) skip_if_missing: bool,
+    /// Where the write's temp file is kept while it exists.
+    pub(crate) temps: TempFiles,
 }
 
 /// What a write ended in.
@@ -280,8 +288,59 @@ impl WriteJob {
             self.has_bom,
             self.line_ending,
         )?;
-        Ok(WriteOutcome::Written(write_bytes(path, &bytes)?))
+        Ok(WriteOutcome::Written(write_bytes_tracked(
+            path,
+            &bytes,
+            &self.temps,
+        )?))
     }
+}
+
+/// The temp files of the app's saves in flight.
+struct SaveTemps(TempFiles);
+
+impl Global for SaveTemps {}
+
+/// The temp files of every save in flight, shared by all windows. The
+/// first call also deletes them when the app quits by a way that runs only
+/// the `on_app_quit` hooks (Dock Quit, Log Out): those give a hook too
+/// little time to wait for the writes.
+pub fn save_temps(cx: &mut App) -> TempFiles {
+    if let Some(temps) = cx.try_global::<SaveTemps>() {
+        return temps.0.clone();
+    }
+    let temps = TempFiles::default();
+    cx.set_global(SaveTemps(temps.clone()));
+    let on_quit = temps.clone();
+    cx.on_app_quit(move |_| {
+        let removed = on_quit.remove_all();
+        if removed > 0 {
+            tracing::info!(removed, "removed the temp files of unfinished saves");
+        }
+        async {}
+    })
+    .detach();
+    temps
+}
+
+/// Holds back the writes [`hold_saves_for_test`] asked for.
+struct SaveHold(Shared<oneshot::Receiver<()>>);
+
+impl Global for SaveHold {}
+
+/// Makes every write started from now on wait until the returned sender is
+/// dropped, as a slow disk would.
+#[doc(hidden)]
+pub fn hold_saves_for_test(cx: &mut App) -> oneshot::Sender<()> {
+    let (tx, rx) = oneshot::channel();
+    cx.set_global(SaveHold(rx.shared()));
+    tx
+}
+
+/// What a write waits for before it starts: only set by
+/// [`hold_saves_for_test`].
+pub(crate) fn save_hold(cx: &App) -> Option<Shared<oneshot::Receiver<()>>> {
+    cx.try_global::<SaveHold>().map(|hold| hold.0.clone())
 }
 
 /// Whether the file at `path` differs from the one with `stamp` and

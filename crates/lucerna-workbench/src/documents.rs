@@ -1090,10 +1090,23 @@ impl Documents {
     /// a write that would bring the old file back.
     pub(crate) fn saves_done_under(&self, path: &Path) -> impl Future<Output = ()> + use<> {
         let path = self.key(path);
+        self.saves_done_where(&|k| k.starts_with(&path))
+    }
+
+    /// Resolves once every save (or revert) asked for so far of any
+    /// document has ended, so a quit does not cut a write short.
+    pub(crate) fn saves_done(&self) -> impl Future<Output = ()> + use<> {
+        self.saves_done_where(&|_| true)
+    }
+
+    fn saves_done_where(
+        &self,
+        include: &dyn Fn(&Path) -> bool,
+    ) -> impl Future<Output = ()> + use<> {
         let pending: Vec<Shared<oneshot::Receiver<()>>> = self
             .docs
             .iter()
-            .filter(|(k, _)| k.starts_with(&path))
+            .filter(|(k, _)| include(k))
             .filter_map(|(_, d)| d.last_save.clone())
             .filter(|p| p.clone().now_or_never().is_none())
             .collect();
@@ -1431,10 +1444,15 @@ impl Documents {
             // text's base: hash it rather than trust an equal stamp.
             expected: check.then_some((doc.stamp.filter(|_| doc.job.is_none()), doc.base_hash)),
             skip_if_missing: opts.reason == SaveReason::Auto,
+            temps: save::save_temps(cx),
         };
         let guard = SavingGuard::new(&doc.saving);
         let path = key.clone();
+        let hold = save::save_hold(cx);
         let task = cx.background_spawn(async move {
+            if let Some(hold) = hold {
+                hold.await.ok();
+            }
             catch_panic("save", || job.run(&path))
                 .unwrap_or_else(|message| Err(WriteError::Io(format!("internal error: {message}"))))
         });

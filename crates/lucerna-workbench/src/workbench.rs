@@ -2,12 +2,15 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures::StreamExt;
+use futures::future::Either;
+use futures::{FutureExt as _, StreamExt};
 use gpui::{
     AnyView, App, Bounds, Context, DragMoveEvent, Entity, EntityId, FocusHandle, Focusable,
     IntoElement, KeyDownEvent, ModifiersChangedEvent, ParentElement, Pixels, Render, Styled,
@@ -3317,8 +3320,10 @@ fn prompt_file_operation_running(
 /// Before quitting, every window is checked again: one opened meanwhile,
 /// or one edited since it agreed (beyond what it agreed to lose), is asked
 /// too, so nothing unsaved is lost without a question. Then the window
-/// list is written (spec §6.6). Quitting runs the `on_app_quit` hooks,
-/// which save the layout.
+/// list is written (spec §6.6). Saves still writing are waited for, up to
+/// [`QUIT_SAVE_TIMEOUT`]; past it their temp files are deleted and the app
+/// quits anyway. Quitting runs the `on_app_quit` hooks, which save the
+/// layout.
 pub(crate) fn quit(cx: &mut App) {
     cx.spawn(async move |cx| {
         // What each window agreed to lose: its dirty files once it agreed.
@@ -3348,6 +3353,15 @@ pub(crate) fn quit(cx: &mut App) {
                 agreed.insert(handle.window_id(), dirty);
             }
         }
+        let saves = cx.update(saves_done);
+        let timeout = cx.background_executor().timer(QUIT_SAVE_TIMEOUT);
+        if let Either::Right(_) = futures::future::select(saves, timeout).await {
+            let removed = cx.update(|cx| save::save_temps(cx).remove_all());
+            tracing::warn!(
+                removed,
+                "saves were still writing after {QUIT_SAVE_TIMEOUT:?}; quitting without them"
+            );
+        }
         cx.update(|cx| {
             crate::router::restore_activity(&used, cx);
             crate::session::save_now(cx);
@@ -3355,6 +3369,24 @@ pub(crate) fn quit(cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// How long [`quit`] waits for the saves still writing.
+const QUIT_SAVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Resolves once the saves asked for so far in every workbench window have
+/// ended.
+fn saves_done(cx: &mut App) -> Pin<Box<dyn Future<Output = ()>>> {
+    let waits: Vec<_> = cx
+        .windows()
+        .into_iter()
+        .filter_map(|window| {
+            WindowHandle::<Workbench>::new(window.window_id())
+                .read_with(cx, |wb, cx| wb.documents.read(cx).saves_done())
+                .ok()
+        })
+        .collect();
+    Box::pin(futures::future::join_all(waits).map(|_| ()))
 }
 
 /// A cancelled [`quit`]: the windows that flushed their backups for it

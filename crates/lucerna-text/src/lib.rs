@@ -15,4 +15,4 @@ pub use history::{HistoryState, SelectionsToken, TransactionId, UndoResult};
 pub use load::{Decoded, LoadError, MAX_OPEN_BYTES, check_regular, check_size, decode_file};
 pub use patch::{Bias, Patch, PatchEdit};
 pub use reload::Reload;
-pub use write::{WriteError, Written, write_bytes};
+pub use write::{TempFiles, WriteError, Written, write_bytes, write_bytes_tracked};

@@ -1,10 +1,12 @@
 //! Writing a buffer back to disk: encoding-preserving and atomic.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::fs;
 use std::hash::{DefaultHasher, Hasher};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use encoding_rs::{EncoderResult, Encoding, UTF_16BE, UTF_16LE};
 
@@ -66,6 +68,65 @@ pub struct Written {
     pub hash: u64,
     pub modified: Option<std::time::SystemTime>,
     pub len: u64,
+}
+
+/// The temp files of atomic writes in flight, shared between threads, so
+/// whatever is quitting the app can delete the ones a write never got to
+/// rename. A failed write deletes its own temp file; this only covers a
+/// process that exits in the middle of one.
+#[derive(Clone, Default, Debug)]
+pub struct TempFiles(Arc<Mutex<HashSet<PathBuf>>>);
+
+impl TempFiles {
+    pub fn track(&self, path: PathBuf) {
+        self.lock().insert(path);
+    }
+
+    pub fn untrack(&self, path: &Path) {
+        self.lock().remove(path);
+    }
+
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.lock().iter().cloned().collect()
+    }
+
+    /// Deletes every tracked file (one already gone is skipped), empties
+    /// the set, and returns how many files were deleted.
+    pub fn remove_all(&self) -> usize {
+        let paths: Vec<PathBuf> = self.lock().drain().collect();
+        paths
+            .iter()
+            .filter(|path| fs::remove_file(path).is_ok())
+            .count()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<PathBuf>> {
+        // The set stays valid whatever panicked while holding it.
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Keeps a temp file in a [`TempFiles`] for as long as it lives: until the
+/// rename is done, or the write failed.
+struct Tracked<'a> {
+    temps: &'a TempFiles,
+    path: PathBuf,
+}
+
+impl<'a> Tracked<'a> {
+    fn new(temps: &'a TempFiles, path: &Path) -> Self {
+        temps.track(path.to_path_buf());
+        Tracked {
+            temps,
+            path: path.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for Tracked<'_> {
+    fn drop(&mut self) {
+        self.temps.untrack(&self.path);
+    }
 }
 
 /// Output side of the encoder: bytes in the file's encoding.
@@ -213,6 +274,24 @@ impl Buffer {
 /// target is refused with `PermissionDenied`. A new file gets mode 0o644
 /// (the umask is not consulted).
 pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<Written, WriteError> {
+    write_bytes_with(path, bytes, None)
+}
+
+/// [`write_bytes`], with the temp file of an atomic write in `temps` from
+/// the moment it is made until it is renamed or the write fails.
+pub fn write_bytes_tracked(
+    path: &Path,
+    bytes: &[u8],
+    temps: &TempFiles,
+) -> Result<Written, WriteError> {
+    write_bytes_with(path, bytes, Some(temps))
+}
+
+fn write_bytes_with(
+    path: &Path,
+    bytes: &[u8],
+    temps: Option<&TempFiles>,
+) -> Result<Written, WriteError> {
     let mut hasher = DefaultHasher::new();
     hasher.write(bytes);
     let hash = hasher.finish();
@@ -234,10 +313,10 @@ pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<Written, WriteError> {
             if link_count(&meta) > 1 {
                 write_in_place(&target, bytes)?
             } else {
-                write_atomic(&target, bytes, Some(meta))?
+                write_atomic(&target, bytes, Some(meta), temps)?
             }
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(&target, bytes, None)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(&target, bytes, None, temps)?,
         Err(e) => return Err(e.into()),
     };
     Ok(Written {
@@ -276,6 +355,7 @@ fn write_atomic(
     path: &Path,
     bytes: &[u8],
     old: Option<fs::Metadata>,
+    temps: Option<&TempFiles>,
 ) -> Result<fs::Metadata, WriteError> {
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
@@ -289,6 +369,7 @@ fn write_atomic(
         .prefix(&temp_prefix(&name))
         .rand_bytes(TEMP_RAND_BYTES)
         .tempfile_in(parent)?;
+    let _tracked = temps.map(|temps| Tracked::new(temps, temp.path()));
     match old {
         Some(meta) => fs::set_permissions(temp.path(), meta.permissions())?,
         None => set_new_file_mode(temp.path())?,
@@ -528,6 +609,30 @@ mod tests {
             .filter(|n| n.starts_with(".f.txt.luc~"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn tracked_write_leaves_nothing_tracked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("f.txt");
+        fs::write(&path, b"old").unwrap();
+        let temps = TempFiles::default();
+        write_bytes_tracked(&path, b"new", &temps).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert!(temps.paths().is_empty());
+    }
+
+    #[test]
+    fn remove_all_deletes_tracked_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let temp = dir.path().join(".f.txt.luc~abcdefgh");
+        fs::write(&temp, b"partial").unwrap();
+        let temps = TempFiles::default();
+        temps.track(temp.clone());
+        temps.track(dir.path().join(".g.txt.luc~missing0"));
+        assert_eq!(temps.remove_all(), 1);
+        assert!(!temp.exists());
+        assert!(temps.paths().is_empty());
     }
 
     #[test]

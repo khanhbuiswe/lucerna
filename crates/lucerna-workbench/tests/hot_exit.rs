@@ -19,7 +19,10 @@ use lucerna_workbench::hot_exit::HotExit;
 use lucerna_workbench::hot_exit::store::{
     Backup, WorkspaceKey, backup_dir, read_backups, text_sha256,
 };
-use lucerna_workbench::{AppState, OpenMode, SaveOptions, SaveReason, Workbench, app, app_menu};
+use lucerna_workbench::{
+    AppState, OpenMode, SaveOptions, SaveReason, Workbench, app, app_menu, hold_saves_for_test,
+    save_temps,
+};
 use tempfile::TempDir;
 
 fn init(cx: &mut TestAppContext, user_settings: Option<&str>) {
@@ -777,6 +780,85 @@ fn app_quit_hook_writes_every_window_first(cx: &mut TestAppContext) {
     drop((wb, view));
     app.quit();
     assert_eq!(seen.take(), Some(vec!["hello".to_string()]));
+}
+
+#[gpui::test]
+fn quit_waits_for_a_save_in_flight(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    let hold = cx.update(|_, cx| hold_saves_for_test(cx));
+    run(&wb, "workbench.action.files.save", cx);
+    quit_app(cx);
+    assert_eq!(quits(cx), 0, "waits for the write");
+    drop(hold);
+    cx.run_until_parked();
+    assert_eq!(quits(cx), 1);
+    assert_eq!(
+        fs::read_to_string(project.root.path().join("a.rs")).unwrap(),
+        "hello"
+    );
+}
+
+#[gpui::test]
+fn quit_dont_save_waits_for_a_save_in_flight(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"files.hotExit":"off"}"#));
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    let hold = cx.update(|_, cx| hold_saves_for_test(cx));
+    run(&wb, "workbench.action.files.save", cx);
+    quit_app(cx);
+    cx.simulate_prompt_answer("Don't Save");
+    cx.run_until_parked();
+    assert_eq!(quits(cx), 0, "waits for the write");
+    drop(hold);
+    cx.run_until_parked();
+    assert_eq!(quits(cx), 1);
+}
+
+#[gpui::test]
+fn quit_gives_up_on_a_stuck_save_after_5_seconds(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let view = open_a(&wb, cx);
+    set_text(&wb, &view, "hello", cx);
+    let _hold = cx.update(|_, cx| hold_saves_for_test(cx));
+    run(&wb, "workbench.action.files.save", cx);
+    // Stands for the temp file of the stuck write.
+    let temp = project.root.path().join(".a.rs.luc~stuck000");
+    fs::write(&temp, "hel").unwrap();
+    cx.update(|_, cx| save_temps(cx).track(temp.clone()));
+    quit_app(cx);
+    advance(4_999, cx);
+    assert_eq!(quits(cx), 0);
+    assert!(temp.exists());
+    advance(1, cx);
+    assert_eq!(quits(cx), 1);
+    assert!(!temp.exists());
+    assert_eq!(
+        fs::read_to_string(project.root.path().join("a.rs")).unwrap(),
+        "fn main() {}\n"
+    );
+}
+
+/// Dock Quit and Log Out run only the `on_app_quit` hooks: they delete the
+/// temp files of writes in flight without waiting for them.
+#[gpui::test]
+fn app_quit_hook_removes_save_temp_files(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let app = cx.clone();
+    let _ = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    let temp = project.root.path().join(".a.rs.luc~stuck000");
+    fs::write(&temp, "hel").unwrap();
+    app.update(|cx| save_temps(cx).track(temp.clone()));
+    app.quit();
+    assert!(!temp.exists());
 }
 
 #[gpui::test]

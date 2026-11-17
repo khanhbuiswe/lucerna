@@ -127,7 +127,7 @@ pub use quick_open::{
 };
 pub use recent_picker::{RecentPicker, RecentPickerEvent};
 pub use references_view::{ReferencesView, find_references_in_tab};
-pub use save::{SaveOptions, SaveReason};
+pub use save::{SaveOptions, SaveReason, hold_saves_for_test, save_temps};
 pub use search_view::{SEARCH_DEBOUNCE, SearchView};
 pub use startup::{RestoreWindows, Startup, last_workspace, restore_windows, startup_choice};
 pub use symbols::{
