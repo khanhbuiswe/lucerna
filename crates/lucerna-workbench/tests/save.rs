@@ -1788,3 +1788,132 @@ fn conflict_bar_wins_over_lossy(cx: &mut TestAppContext) {
         Some(DiskNotice::Lossy { encoding: "UTF-8" })
     );
 }
+
+const LOSSY_TITLE: &str = "Save 'file.txt' and replace invalid bytes?";
+const LOSSY_DETAIL: &str =
+    "Bytes that aren't valid UTF-8 will be written as \u{FFFD}. This can't be undone.";
+
+fn lossy_prompt() -> Option<(String, String)> {
+    Some((LOSSY_TITLE.to_string(), LOSSY_DETAIL.to_string()))
+}
+
+fn bytes(dir: &TempDir) -> Vec<u8> {
+    fs::read(dir.path().join("file.txt")).unwrap()
+}
+
+#[gpui::test]
+fn save_of_lossy_file_asks_and_cancel_writes_nothing(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    keys("cmd-s", cx);
+    assert_eq!(cx.pending_prompt(), lossy_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(bytes(&dir), LOSSY);
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert!(!cx.has_pending_prompt());
+}
+
+#[gpui::test]
+fn save_answered_writes_replacement_and_asks_no_more(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    keys("cmd-s", cx);
+    assert_eq!(cx.pending_prompt(), lossy_prompt());
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    assert_eq!(bytes(&dir), b"\xEF\xBB\xBFxcaf\xEF\xBF\xBD\n");
+    assert!(!is_dirty(&wb, "file.txt", cx));
+    assert_eq!(notice(&wb, cx), None);
+    input("y", cx);
+    keys("cmd-s", cx);
+    assert!(!cx.has_pending_prompt());
+    // The cursor sits after the `x` typed first.
+    assert_eq!(bytes(&dir), b"\xEF\xBB\xBFxycaf\xEF\xBF\xBD\n");
+}
+
+#[gpui::test]
+fn save_all_and_save_without_formatting_ask_too(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    run(&wb, "workbench.action.files.saveAll", cx);
+    assert_eq!(cx.pending_prompt(), lossy_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    run(&wb, "workbench.action.files.saveWithoutFormatting", cx);
+    assert_eq!(cx.pending_prompt(), lossy_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(bytes(&dir), LOSSY);
+    assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn close_tab_save_asks_about_invalid_bytes(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    // Only the tab holds the view, so closing it closes the document.
+    drop(view);
+    close_active(&wb, cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((close_message("file.txt"), CLOSE_DETAIL.to_string()))
+    );
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    assert_eq!(cx.pending_prompt(), lossy_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(tabs(&wb, cx).concat().len(), 1, "the tab stays open");
+    assert!(is_dirty(&wb, "file.txt", cx));
+    assert_eq!(bytes(&dir), LOSSY);
+}
+
+#[gpui::test]
+fn auto_save_skips_a_lossy_file(cx: &mut TestAppContext) {
+    init(cx, Some(AFTER_DELAY));
+    let (dir, wb, _view, cx) = editor_bytes(LOSSY, cx);
+    input("x", cx);
+    advance(1000, cx);
+    settle(cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(bytes(&dir), LOSSY);
+    assert!(is_dirty(&wb, "file.txt", cx));
+}
+
+#[gpui::test]
+fn lossy_shift_jis_save_reports_unencodable(cx: &mut TestAppContext) {
+    init(cx, None);
+    // Shift_JIS text with a lone 0xFD, which encoding_rs cannot decode.
+    let mut sjis = encoding_rs::SHIFT_JIS
+        .encode(&"日本語のテキストです。\n".repeat(20))
+        .0
+        .into_owned();
+    sjis.extend_from_slice(b"\xFD\n");
+    let (dir, wb, _view, cx) = editor_bytes(&sjis, cx);
+    input("x", cx);
+    keys("cmd-s", cx);
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((
+            LOSSY_TITLE.to_string(),
+            "Bytes that aren't valid Shift_JIS will be written as \u{FFFD}. This can't be undone."
+                .to_string()
+        ))
+    );
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    // U+FFFD has no Shift_JIS form (spec §7): the save fails as before.
+    let message = message(cx).expect("a failure message");
+    assert!(
+        message
+            .starts_with("Failed to save 'file.txt': Shift_JIS cannot encode the character at Ln "),
+        "{message}"
+    );
+    assert_eq!(bytes(&dir), sjis);
+    assert!(is_dirty(&wb, "file.txt", cx));
+}

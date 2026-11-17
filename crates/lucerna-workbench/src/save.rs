@@ -117,6 +117,36 @@ pub(crate) fn prompt_unsaved_all(
     )
 }
 
+/// The buttons of the prompt before the first save of a text with invalid
+/// bytes (spec §6.4). Cancel comes first: GPUI on macOS gives Return to the
+/// first button, and Cancel is the default.
+const LOSSY_ANSWERS: [&str; 2] = ["Cancel", "Save"];
+/// The index of Save in [`LOSSY_ANSWERS`]: the only answer that agrees.
+pub(crate) const LOSSY_SAVE: usize = 1;
+
+/// The prompt before the first save of the document named `name`, whose
+/// file had bytes that aren't valid `encoding` (spec §6.4). Only
+/// [`LOSSY_SAVE`] agrees; any other answer, or a dismissed prompt, is
+/// Cancel.
+pub(crate) fn prompt_lossy(
+    name: &str,
+    encoding: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> oneshot::Receiver<usize> {
+    let message = format!("Save '{name}' and replace invalid bytes?");
+    let detail = format!(
+        "Bytes that aren't valid {encoding} will be written as \u{FFFD}. This can't be undone."
+    );
+    window.prompt(
+        PromptLevel::Warning,
+        &message,
+        Some(&detail),
+        &LOSSY_ANSWERS[..],
+        cx,
+    )
+}
+
 /// The file name of `path`, as prompts and messages name a document.
 pub(crate) fn display_name(path: &Path) -> String {
     path.file_name().map_or_else(
@@ -417,7 +447,8 @@ fn save_all(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>
 }
 
 /// `files.autoSave` (spec §6.2): saves dirty documents on its own, never
-/// asking and never touching a conflicted or deleted one.
+/// asking and never touching a conflicted or deleted one, or one with
+/// invalid bytes the user has not agreed to replace (spec §6.4).
 #[derive(Default)]
 pub(crate) struct AutoSave {
     /// The `afterDelay` timer of each document with unsaved changes;
@@ -546,14 +577,16 @@ impl Workbench {
     }
 
     /// The dirty documents `files.autoSave` saves (not `"off"`) that can
-    /// be saved without asking: neither in conflict with the disk nor
-    /// deleted. Saved as the app quits with hot exit on.
+    /// be saved without asking: neither in conflict with the disk, nor
+    /// deleted, nor holding invalid bytes the user has not agreed to
+    /// replace. Saved as the app quits with hot exit on.
     pub(crate) fn auto_save_paths(&self, cx: &App) -> Vec<Arc<Path>> {
         let docs = self.documents().read(cx);
         docs.dirty_paths()
             .into_iter()
             .filter(|path| {
                 !docs.has_conflict(path)
+                    && !docs.needs_lossy_consent(path)
                     && docs.state(path) == Some(&DocState::Ready)
                     && self.auto_save_mode(path, cx) != "off"
             })

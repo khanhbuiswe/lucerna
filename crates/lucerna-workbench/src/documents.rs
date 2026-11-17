@@ -1277,6 +1277,10 @@ impl Documents {
     /// clean text (which is then reloaded); a failed write is also reported
     /// in the status bar, and the text stays dirty.
     ///
+    /// 0. When the file had bytes invalid in its encoding and the user has
+    ///    not agreed yet ([`Documents::needs_lossy_consent`]), an autosave
+    ///    does nothing (`Ok(false)`) and any other save asks first; Cancel
+    ///    is `Ok(false)`, Save is remembered for the document.
     /// 1. When the document is in conflict with the disk and
     ///    `files.saveConflictResolution` is `askUser`, asks first.
     /// 2. With `opts.participants`, runs the save participants as one undo
@@ -1302,13 +1306,18 @@ impl Documents {
         cx: &mut Context<Self>,
     ) -> Task<Result<bool, WriteError>> {
         let key = self.key(path);
+        let lossy = self.needs_lossy_consent(&key);
+        // An autosave never asks: it leaves invalid bytes alone.
+        if lossy && opts.reason == SaveReason::Auto {
+            return Task::ready(Ok(false));
+        }
         let Some(doc) = self.docs.get_mut(&key) else {
             return Task::ready(Ok(false));
         };
         let (done, previous) = queue_disk_work(doc);
         // With nothing to wait for or ask, the text is captured now: an
         // edit made after this call is not part of the save.
-        let started = (previous.is_none() && !self.asks(&key, cx))
+        let started = (previous.is_none() && !lossy && !self.asks(&key, cx))
             .then(|| self.start_write(&key, opts, false, cx));
         cx.spawn_in(window, async move |this, cx| {
             // Dropped at the end: the next save of the document goes on.
@@ -1325,6 +1334,38 @@ impl Documents {
                 let write = match started.take() {
                     Some(write) => write,
                     None => {
+                        // Asked once per document, before the conflict.
+                        let Ok(lossy) = this.update(cx, |d, _| d.needs_lossy_consent(&key)) else {
+                            return Ok(false);
+                        };
+                        if lossy {
+                            // An autosave never asks: it leaves invalid
+                            // bytes alone.
+                            if opts.reason == SaveReason::Auto {
+                                return Ok(false);
+                            }
+                            let Ok(prompt) = this.update_in(cx, |d, window, cx| {
+                                let encoding = d
+                                    .docs
+                                    .get(&key)
+                                    .and_then(|doc| doc.buffer.as_ref())
+                                    .map_or("", |b| b.encoding().name());
+                                save::prompt_lossy(&save::display_name(&key), encoding, window, cx)
+                            }) else {
+                                return Ok(false);
+                            };
+                            if prompt.await != Ok(save::LOSSY_SAVE) {
+                                return Ok(false);
+                            }
+                            let agreed = this.update(cx, |d, _| {
+                                if let Some(doc) = d.docs.get_mut(&key) {
+                                    doc.lossy_consent = true;
+                                }
+                            });
+                            if agreed.is_err() {
+                                return Ok(false);
+                            }
+                        }
                         let Ok(ask) = this.update(cx, |d, cx| d.asks(&key, cx)) else {
                             return Ok(false);
                         };
@@ -1403,6 +1444,15 @@ impl Documents {
             .get::<String>("files.saveConflictResolution", language.as_deref(), cx)
             .as_deref()
             == Some("overwriteFileOnDisk")
+    }
+
+    /// Whether the text of the document at `path` has invalid bytes from
+    /// its file that the user has not yet agreed to replace with U+FFFD
+    /// (spec §6.4): a save asks first, and an autosave skips it.
+    pub(crate) fn needs_lossy_consent(&self, path: &Path) -> bool {
+        self.docs
+            .get(&self.key(path))
+            .is_some_and(|d| !d.lossy_consent && d.buffer.as_ref().is_some_and(Buffer::is_lossy))
     }
 
     /// Whether a save of the document at `key` asks about a conflict first.
@@ -1553,6 +1603,8 @@ impl Documents {
                     doc.base = Some(snapshot.clone());
                     doc.disk_epoch += 1;
                     doc.stamp = Some(Stamp::of_written(&written));
+                    // The invalid bytes are now U+FFFD on disk too.
+                    buffer.clear_lossy();
                     set_conflict(doc, key, None, cx);
                     if doc.state == DocState::Deleted {
                         // The save made the file again.
