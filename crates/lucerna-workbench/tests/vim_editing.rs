@@ -942,6 +942,22 @@ fn macro_records_a_go_to_line_from_the_command_line(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn macro_go_to_line_replays_at_column_one_of_an_indented_line(cx: &mut TestAppContext) {
+    let (_dir, _wb, view, cx) = vim_editor("a\nb\n  c\nd\n", cx);
+    // Go to Line puts the cursor on column 1, not the first non-blank.
+    keys("q a :", cx);
+    type_text("3", cx);
+    keys("enter", cx);
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+    keys("x q", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\n c\nd\n");
+    // The replay lands there too.
+    keys("g g @ a", cx);
+    assert_eq!(text_of(&view, cx), "a\nb\nc\nd\n");
+    assert_eq!(cursor(&view, cx), pt(2, 0));
+}
+
+#[gpui::test]
 fn macro_records_a_go_to_line_as_its_absolute_target(cx: &mut TestAppContext) {
     let (_dir, _wb, view, cx) = vim_editor("abc\ndef\nghi", cx);
     // `-1` is the last line, `,2` the second column; the macro keeps

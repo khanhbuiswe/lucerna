@@ -119,8 +119,8 @@ impl Vim {
     /// command, landing on 1-based `line` and, when a column was given,
     /// on 1-based char `column` (within the line). The macro being
     /// recorded gets the absolute jump in Vim keys: `:`, the line number
-    /// after the prefill (as [`Vim::ex_command`] records it) and `<CR>`,
-    /// then `0` and `{column-1}l` for a column.
+    /// after the prefill (as [`Vim::ex_command`] records it), `<CR>` and
+    /// `0`, then `{column-1}l` for a column past the first.
     pub fn command_line_went_to_line(
         &mut self,
         line: u32,
@@ -132,12 +132,10 @@ impl Vim {
             Some(p) => record_line(&p, &text),
             None => record_line_cleared(&text),
         };
-        recorded.push_str("<CR>");
-        if let Some(column) = column {
-            recorded.push('0');
-            if column > 1 {
-                recorded.push_str(&format!("{}l", column - 1));
-            }
+        // `:N` goes to the first non-blank; Go to Line to column 1.
+        recorded.push_str("<CR>0");
+        if let Some(column) = column.filter(|&c| c > 1) {
+            recorded.push_str(&format!("{}l", column - 1));
         }
         g.record_text(&recorded);
     }

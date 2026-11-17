@@ -693,11 +693,11 @@ mod tests {
 
     #[test]
     fn a_go_to_line_from_the_command_line_is_recorded() {
-        assert_eq!(recorded_go_to_line("qa:", 12, None, "q"), ":12<CR>");
+        assert_eq!(recorded_go_to_line("qa:", 12, None, "q"), ":12<CR>0");
         assert_eq!(recorded_go_to_line("qa:", 12, Some(5), "q"), ":12<CR>04l");
         assert_eq!(recorded_go_to_line("qa:", 12, Some(1), "q"), ":12<CR>0");
         // A prefill the line no longer starts with is cleared, no `<Esc>`.
-        assert_eq!(recorded_go_to_line("qaV:", 3, None, "q"), "V:<C-u>3<CR>");
+        assert_eq!(recorded_go_to_line("qaV:", 3, None, "q"), "V:<C-u>3<CR>0");
         // Not recording: nothing is kept.
         assert_eq!(recorded_go_to_line(":", 12, None, ""), "");
         // The replay lands on that line and column.
