@@ -18,14 +18,15 @@ use futures::FutureExt as _;
 use futures::channel::oneshot;
 use futures::future::Shared;
 use gpui::{
-    App, AsyncWindowContext, Context, Entity, Global, PromptLevel, Subscription, Task, Window,
+    App, AsyncWindowContext, Context, Entity, Global, PromptLevel, Subscription, Task, WeakEntity,
+    Window,
 };
 use lucerna_text::{
     Buffer, BufferSnapshot, LineEnding, Point, TempFiles, WriteError, Written, write_bytes_tracked,
 };
 
 use crate::documents::{DocState, DocumentEvent, Edits, Stamp};
-use crate::{CommandRegistry, Documents, Workbench};
+use crate::{CommandRegistry, Documents, Workbench, untitled};
 
 /// Why a document is saved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,21 +151,42 @@ pub(crate) fn prompt_lossy(
     )
 }
 
-/// The file name of `path`, as prompts and messages name a document.
+/// The file name of `path`, as prompts and messages name a document; an
+/// Untitled document's `Untitled-N`.
 pub(crate) fn display_name(path: &Path) -> String {
+    if untitled::is_untitled(path) {
+        return untitled::name(path);
+    }
     path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into(),
     )
 }
 
+/// What [`save_each`] does when the Save As dialog of an Untitled document
+/// is cancelled (or its write fails).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UntitledCancel {
+    /// Closing a tab or the window, or quitting: the whole flow stops,
+    /// and no other Untitled document is asked about.
+    Stop,
+    /// Save All: that document is skipped, the next one is asked about.
+    Skip,
+}
+
 /// Saves the documents at `paths` (explicitly, with participants) one
-/// after another, each of which may ask about a conflict. `true` when
-/// every one was saved; a failure is reported in the status bar and the
-/// rest still save.
+/// after another, each of which may ask about a conflict: the files
+/// first, then each Untitled document still holding text through
+/// [`Workbench::save_as`] of `workbench`, in number order (spec §4.5).
+/// `true` when every one was saved; a failed file save is reported in the
+/// status bar and the rest still save. Once a file failed with
+/// [`UntitledCancel::Stop`], or an Untitled one is cancelled with it, no
+/// Untitled document is asked about.
 pub(crate) async fn save_each(
+    workbench: WeakEntity<Workbench>,
     documents: Entity<Documents>,
     paths: Vec<Arc<Path>>,
+    on_cancel: UntitledCancel,
     cx: &mut AsyncWindowContext,
 ) -> bool {
     let opts = SaveOptions {
@@ -172,14 +194,36 @@ pub(crate) async fn save_each(
         participants: true,
         overwrite: false,
     };
+    let (mut untitled, files): (Vec<_>, Vec<_>) =
+        paths.into_iter().partition(|p| untitled::is_untitled(p));
+    untitled.sort_by_key(|p| untitled::number(p));
     let mut all = true;
-    for path in paths {
+    for path in files {
         let Ok(save) =
             cx.update(|window, cx| documents.update(cx, |d, cx| d.save(&path, opts, window, cx)))
         else {
             return false;
         };
         all &= matches!(save.await, Ok(true));
+    }
+    if !all && on_cancel == UntitledCancel::Stop {
+        return false;
+    }
+    for path in untitled {
+        // Emptied while an earlier dialog was up: nothing to save.
+        if !documents.read_with(cx, |d, _| d.is_dirty(&path)) {
+            continue;
+        }
+        let Ok(save) = workbench.update_in(cx, |wb, window, cx| wb.save_as(path, window, cx))
+        else {
+            return false;
+        };
+        if !save.await {
+            all = false;
+            if on_cancel == UntitledCancel::Stop {
+                return false;
+            }
+        }
     }
     all
 }
@@ -482,12 +526,13 @@ fn save_active(
 }
 
 /// Saves every dirty document, one after another (each may ask about a
-/// conflict).
+/// conflict), then asks where to save each Untitled one holding text; a
+/// Cancel skips that one only.
 fn save_all(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>) {
     let documents = wb.documents().clone();
     let paths = documents.read(cx).dirty_paths();
-    cx.spawn_in(window, async move |_, cx| {
-        save_each(documents, paths, cx).await;
+    cx.spawn_in(window, async move |wb, cx| {
+        save_each(wb, documents, paths, UntitledCancel::Skip, cx).await;
     })
     .detach();
 }
@@ -521,6 +566,12 @@ impl Workbench {
             }
         });
         self.auto_save._subscriptions = vec![events, activation];
+    }
+
+    /// Whether an `afterDelay` timer is armed for the document at `path`.
+    #[doc(hidden)]
+    pub fn auto_save_armed_for_test(&self, path: &Path) -> bool {
+        self.auto_save.timers.contains_key(path)
     }
 
     /// `files.autoSave` for the document at `path`.
@@ -597,8 +648,12 @@ impl Workbench {
     }
 
     /// Autosaves the document at `path` once `files.autoSaveDelay` has
-    /// passed, replacing its timer.
+    /// passed, replacing its timer. Never for an Untitled document:
+    /// autosave has no path to save it to (spec §4.5).
     fn arm_auto_save(&mut self, path: &Arc<Path>, window: &mut Window, cx: &mut Context<Self>) {
+        if untitled::is_untitled(path) {
+            return;
+        }
         let delay = self.auto_save_delay(path, cx);
         let target = path.clone();
         let timer = cx.spawn_in(window, async move |wb, cx| {
@@ -625,13 +680,14 @@ impl Workbench {
     /// The dirty documents `files.autoSave` saves (not `"off"`) that can
     /// be saved without asking: neither in conflict with the disk, nor
     /// deleted, nor holding invalid bytes the user has not agreed to
-    /// replace. Saved as the app quits with hot exit on.
+    /// replace, nor Untitled. Saved as the app quits with hot exit on.
     pub(crate) fn auto_save_paths(&self, cx: &App) -> Vec<Arc<Path>> {
         let docs = self.documents().read(cx);
         docs.dirty_paths()
             .into_iter()
             .filter(|path| {
-                !docs.has_conflict(path)
+                !untitled::is_untitled(path)
+                    && !docs.has_conflict(path)
                     && !docs.needs_lossy_consent(path)
                     && docs.state(path) == Some(&DocState::Ready)
                     && self.auto_save_mode(path, cx) != "off"
@@ -640,15 +696,16 @@ impl Workbench {
     }
 
     /// Saves the document at `path` if it has unsaved changes and is
-    /// neither in conflict with the disk nor deleted. While a view of it is
-    /// in the middle of an IME composition, the save waits another
-    /// `files.autoSaveDelay`: its participants' edits and its undo stop
-    /// would split the composition.
+    /// neither in conflict with the disk, nor deleted, nor Untitled. While
+    /// a view of it is in the middle of an IME composition, the save waits
+    /// another `files.autoSaveDelay`: its participants' edits and its undo
+    /// stop would split the composition.
     fn auto_save_document(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         let documents = self.documents().clone();
         {
             let docs = documents.read(cx);
-            if !docs.is_dirty(path)
+            if untitled::is_untitled(path)
+                || !docs.is_dirty(path)
                 || docs.has_conflict(path)
                 || docs.state(path) != Some(&DocState::Ready)
             {

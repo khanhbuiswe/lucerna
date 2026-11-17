@@ -1138,3 +1138,99 @@ fn discarded_path_is_backed_up_again_after_an_edit(cx: &mut TestAppContext) {
     assert_eq!(backups.len(), 1);
     assert_eq!(backups[0].text, "hello again");
 }
+
+// ---- Untitled documents (untitled spec §4.5) ----
+
+/// ⌘N, then types `text` into the new tab.
+fn untitled_with(text: &str, cx: &mut VisualTestContext) {
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    cx.simulate_input(text);
+    settle(cx);
+}
+
+/// The paths of the tabs of group `group`, in order.
+fn group_tabs(wb: &Entity<Workbench>, group: usize, cx: &mut VisualTestContext) -> Vec<PathBuf> {
+    cx.update(|_, cx| {
+        wb.read(cx).editor_groups().read(cx).model().groups()[group]
+            .tabs
+            .iter()
+            .filter_map(|t| t.path().map(|p| p.to_path_buf()))
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn reopen_restores_untitled(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    drop(open_a(&wb, cx));
+    untitled_with("draft", cx);
+    quit(wb, cx);
+
+    let untitled = PathBuf::from("untitled:Untitled-1");
+    let backups = project.backups();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(backups[0].header.path, untitled);
+    assert_eq!(backups[0].header.mtime, None);
+    assert_eq!(backups[0].header.size, None);
+    assert_eq!(backups[0].text, "draft");
+
+    let (wb, cx) = reopen(&project, cx);
+    let tabs = group_tabs(&wb, 0, cx);
+    assert_eq!(
+        tabs.last(),
+        Some(&untitled),
+        "last in the first group: {tabs:?}"
+    );
+    assert_eq!(
+        tab_paths(&wb, cx)
+            .iter()
+            .filter(|p| **p == untitled)
+            .count(),
+        1
+    );
+    assert_eq!(text_of(&wb, &untitled, cx), "draft");
+    assert!(is_dirty(&wb, &untitled, cx));
+    assert!(!project.root.path().join("untitled:Untitled-1").exists());
+}
+
+#[gpui::test]
+fn empty_untitled_leaves_no_backup(cx: &mut TestAppContext) {
+    init(cx, None);
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    untitled_with("x", cx);
+    advance(1100, cx);
+    assert_eq!(project.backups().len(), 1, "written while it has text");
+    cx.simulate_keystrokes("backspace");
+    settle(cx);
+    advance(1100, cx);
+    quit(wb, cx);
+    assert!(project.backups().is_empty());
+
+    let (wb, cx) = reopen(&project, cx);
+    let untitled = Path::new("untitled:Untitled-1");
+    assert!(!tab_paths(&wb, cx).iter().any(|p| p == untitled));
+}
+
+#[gpui::test]
+fn hot_exit_off_quit_asks_for_untitled_path(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"files.hotExit":"off"}"#));
+    let project = Project::new(None);
+    let (wb, cx) = open_with_data_dir(project.root.path(), project.data.path(), cx);
+    untitled_with("draft", cx);
+    let quit = cx.update(|window, cx| wb.update(cx, |wb, cx| wb.confirm_quit(window, cx)));
+    settle(cx);
+    let (message, _) = cx.pending_prompt().expect("the quit asks");
+    assert!(message.contains("Untitled-1"), "{message}");
+    // One file: the prompt's Save is its Save All.
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    assert!(cx.did_prompt_for_new_path(), "Save asks where to save");
+    cx.simulate_new_path_selection(|_| None);
+    settle(cx);
+    assert_eq!(quit.now_or_never(), Some(false), "Cancel stops the quit");
+    assert!(is_dirty(&wb, Path::new("untitled:Untitled-1"), cx));
+}

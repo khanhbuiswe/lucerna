@@ -679,3 +679,148 @@ fn untitled_in_two_groups_both_become_file(cx: &mut TestAppContext) {
     assert_eq!(tab_paths(&wb, cx), vec![vec![shown.clone()], vec![shown]]);
     assert_eq!(fs::read_to_string(&file).unwrap(), "split\n");
 }
+
+// ---- Close, Save All and autosave (spec §4.5) ----
+
+fn is_dirty(docs: &Entity<Documents>, path: &Path, cx: &mut VisualTestContext) -> bool {
+    docs.read_with(cx, |d, _| d.is_dirty(path))
+}
+
+fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| wb.update(cx, |wb, cx| wb.run_command(command, None, window, cx)));
+    settle(cx);
+}
+
+#[gpui::test]
+fn emptied_untitled_closes_silently(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    cx.simulate_input("x");
+    settle(cx);
+    cx.simulate_keystrokes("backspace");
+    settle(cx);
+
+    cx.simulate_keystrokes("cmd-w");
+    settle(cx);
+    assert!(!cx.has_pending_prompt());
+    assert!(tab_paths(&wb, cx).concat().is_empty());
+    no_untitled_on_disk(&dir);
+}
+
+#[gpui::test]
+fn closing_untitled_with_text_asks(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    let docs = documents(&wb, cx);
+    let key = Path::new("untitled:Untitled-1");
+    let file = dir.path().join("x.txt");
+
+    // Save, then a path: the file is written and the tab closes.
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    cx.simulate_input("x");
+    settle(cx);
+    cx.simulate_keystrokes("cmd-w");
+    settle(cx);
+    let (message, _) = cx.pending_prompt().expect("closing asks");
+    assert_eq!(
+        message,
+        "Do you want to save the changes you made to Untitled-1?"
+    );
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    choose(Some(file.clone()), cx);
+    assert!(fs::read_to_string(&file).unwrap().starts_with('x'));
+    assert!(tab_paths(&wb, cx).concat().is_empty());
+    fs::remove_file(&file).unwrap();
+
+    // Save, then Cancel in the dialog: the tab stays, unsaved.
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    cx.simulate_input("x");
+    settle(cx);
+    cx.simulate_keystrokes("cmd-w");
+    settle(cx);
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    choose(None, cx);
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(
+        tab_paths(&wb, cx),
+        vec![vec!["untitled:Untitled-1".to_string()]]
+    );
+    assert!(is_dirty(&docs, key, cx));
+
+    // Don't Save: the tab closes and nothing is written.
+    cx.simulate_keystrokes("cmd-w");
+    settle(cx);
+    cx.simulate_prompt_answer("Don't Save");
+    settle(cx);
+    assert!(!cx.did_prompt_for_new_path());
+    assert!(tab_paths(&wb, cx).concat().is_empty());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[gpui::test]
+fn autosave_skips_untitled(cx: &mut TestAppContext) {
+    init(
+        cx,
+        Some(r#"{"files.autoSave": "afterDelay", "files.autoSaveDelay": 10}"#),
+    );
+    let (dir, wb, cx) = workbench(cx);
+    let docs = documents(&wb, cx);
+    let key = Path::new("untitled:Untitled-1");
+    cx.simulate_keystrokes("cmd-n");
+    settle(cx);
+    cx.simulate_input("x");
+    settle(cx);
+    // No timer is armed for an Untitled document.
+    assert!(!cx.update(|_, cx| wb.read(cx).auto_save_armed_for_test(key)));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(100));
+    settle(cx);
+
+    assert!(!cx.did_prompt_for_new_path());
+    assert_eq!(
+        tab_paths(&wb, cx),
+        vec![vec!["untitled:Untitled-1".to_string()]]
+    );
+    assert!(is_dirty(&docs, key, cx));
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[gpui::test]
+fn save_all_asks_for_each_untitled(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, cx) = workbench(cx);
+    let docs = documents(&wb, cx);
+    let a = dir.path().join("a.txt");
+    fs::write(&a, "a\n").unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(a.as_path()), OpenMode::Pinned, cx)
+    });
+    settle(cx);
+    cx.simulate_input("z");
+    settle(cx);
+    assert!(is_dirty(&docs, &a, cx));
+    untitled_tab_with(&["one"], cx);
+    untitled_tab_with(&["two"], cx);
+
+    run(&wb, "workbench.action.files.saveAll", cx);
+    let one = dir.path().join("one.txt");
+    choose(Some(one.clone()), cx);
+    // Cancel for the second skips that one only.
+    choose(None, cx);
+    assert!(!cx.did_prompt_for_new_path());
+
+    assert_eq!(fs::read_to_string(&a).unwrap(), "za\n");
+    assert_eq!(fs::read_to_string(&one).unwrap(), "one\n");
+    assert!(!is_dirty(&docs, &a, cx));
+    assert!(!is_dirty(&docs, &one, cx));
+    let two = Path::new("untitled:Untitled-2");
+    assert!(is_dirty(&docs, two, cx));
+    assert_eq!(snapshot_text(&docs, two, cx), "two\n");
+    no_untitled_on_disk(&dir);
+}

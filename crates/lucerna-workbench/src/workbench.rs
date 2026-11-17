@@ -586,6 +586,7 @@ impl Workbench {
                     .update(cx, |wb, cx| wb.open_breadcrumbs(group, window, cx))
                     .ok();
             }));
+            groups.set_workbench(command_target.clone());
             groups.set_on_command(Rc::new(move |id, window, cx| {
                 command_target
                     .update(cx, |wb, cx| wb.run_command(id, None, window, cx))
@@ -2082,7 +2083,14 @@ impl Workbench {
                         let paths = documents.read_with(cx, |d, _| dirty_now(d));
                         // An edit typed while the saves wrote is not saved:
                         // stop rather than lose it.
-                        save::save_each(documents.clone(), paths, cx).await
+                        save::save_each(
+                            wb.clone(),
+                            documents.clone(),
+                            paths,
+                            save::UntitledCancel::Stop,
+                            cx,
+                        )
+                        .await
                             && documents.read_with(cx, |d, _| dirty_now(d).is_empty())
                     }
                     SaveChoice::DontSave => {
@@ -2138,7 +2146,18 @@ impl Workbench {
         cx.spawn_in(window, async move |wb, cx| {
             // A file that could not be saved stays dirty: its backup is
             // written below.
-            if !auto_saved.is_empty() && !save::save_each(documents, auto_saved, cx).await {
+            // No Untitled document among them: `auto_save_paths` leaves
+            // those to their backups.
+            if !auto_saved.is_empty()
+                && !save::save_each(
+                    wb.clone(),
+                    documents,
+                    auto_saved,
+                    save::UntitledCancel::Stop,
+                    cx,
+                )
+                .await
+            {
                 tracing::warn!("could not auto-save every file as the app quits");
             }
             // Documents closed from here on keep their backups.

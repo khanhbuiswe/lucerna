@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyView, App, ClickEvent, Context, Div, DragMoveEvent, Entity, IntoElement, MouseButton,
-    ParentElement, Pixels, Render, SharedString, Styled, Window, div, prelude::*, px, relative,
+    ParentElement, Pixels, Render, SharedString, Styled, WeakEntity, Window, div, prelude::*, px,
+    relative,
 };
 use lucerna_settings::SettingsView;
 use lucerna_theme::{IconSource, Rgba, UiColors};
@@ -27,7 +28,7 @@ use crate::ui::{
     self, ClickHandler, GRID, PATH_BAR_HEIGHT, SashGhost, TAB_PADDING_X, UI_FONT_SIZE,
     UI_FONT_SIZE_SMALL, icon_button, tooltip,
 };
-use crate::{AppState, WindowSettings};
+use crate::{AppState, WindowSettings, Workbench};
 
 /// What a file tab's dot says about its document.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -115,6 +116,8 @@ pub struct EditorGroupsView {
     on_breadcrumbs_click: Option<BreadcrumbsClick>,
     /// Runs a workbench command for a path bar button.
     on_command: Option<RunCommand>,
+    /// Asks where to save an Untitled document closed with Save.
+    workbench: Option<WeakEntity<Workbench>>,
 }
 
 impl EditorGroupsView {
@@ -136,6 +139,7 @@ impl EditorGroupsView {
             breadcrumbs: HashMap::new(),
             on_breadcrumbs_click: None,
             on_command: None,
+            workbench: None,
         }
     }
 }
@@ -220,12 +224,22 @@ impl EditorGroupsView {
             return;
         };
         let answer = save::prompt_unsaved(&save::display_name(&path), window, cx);
+        let workbench = self.save_target();
         cx.spawn_in(window, async move |view, cx| {
             match SaveChoice::of(answer.await) {
                 SaveChoice::Save => {
                     // An edit typed while the save wrote is not saved: the
                     // tab stays, still dirty.
-                    let saved = save::save_each(documents.clone(), vec![path.clone()], cx).await
+                    // An Untitled document saved with Save As is no longer
+                    // at `path`, so it reads as clean there.
+                    let saved = save::save_each(
+                        workbench,
+                        documents.clone(),
+                        vec![path.clone()],
+                        save::UntitledCancel::Stop,
+                        cx,
+                    )
+                    .await
                         && !documents.read_with(cx, |d, _| d.is_dirty(&path));
                     if saved {
                         view.update(cx, |view, cx| view.update_model(cx, |m| m.close(id)))
@@ -281,12 +295,20 @@ impl EditorGroupsView {
         };
         let names: Vec<String> = dirty.iter().map(|p| save::display_name(p)).collect();
         let answer = save::prompt_unsaved_all(&names, window, cx);
+        let workbench = self.save_target();
         cx.spawn_in(window, async move |view, cx| {
             match SaveChoice::of(answer.await) {
                 SaveChoice::Save => {
                     // An edit typed while the saves wrote is not saved: every
                     // tab stays.
-                    let saved = save::save_each(documents.clone(), dirty.clone(), cx).await
+                    let saved = save::save_each(
+                        workbench,
+                        documents.clone(),
+                        dirty.clone(),
+                        save::UntitledCancel::Stop,
+                        cx,
+                    )
+                    .await
                         && documents.read_with(cx, |d, _| !dirty.iter().any(|p| d.is_dirty(p)));
                     if saved {
                         view.update(cx, |view, cx| close_all(view, cx)).ok();
@@ -637,6 +659,20 @@ impl EditorGroupsView {
     /// How the path bar buttons run their commands.
     pub(crate) fn set_on_command(&mut self, run: RunCommand) {
         self.on_command = Some(run);
+    }
+
+    /// The workbench whose Save As saves an Untitled document closed with
+    /// Save (spec §4.5).
+    pub(crate) fn set_workbench(&mut self, workbench: WeakEntity<Workbench>) {
+        self.workbench = Some(workbench);
+    }
+
+    /// The workbench for [`save::save_each`]; without one, an Untitled
+    /// document can't be saved and the close stops.
+    fn save_target(&self) -> WeakEntity<Workbench> {
+        self.workbench
+            .clone()
+            .unwrap_or_else(WeakEntity::new_invalid)
     }
 
     /// The button at the right end of group `gi`'s path bar when its
