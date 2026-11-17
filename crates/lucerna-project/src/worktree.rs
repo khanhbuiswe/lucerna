@@ -66,6 +66,10 @@ pub enum WorktreeEvent {
     /// contain. Nothing changed on disk. Sent even for an empty folder,
     /// since it is no longer unloaded.
     Loaded(Vec<Arc<Path>>),
+    /// The OS file watcher could not start for the root: changes made
+    /// outside are not seen until the window is reopened. Sent at most once,
+    /// before the first event of the initial scan.
+    WatchFailed(String),
 }
 
 /// Input to the background thread.
@@ -389,6 +393,7 @@ impl Worker {
             Ok(watcher) => Some(watcher),
             Err(err) => {
                 tracing::error!(root = %self.root.display(), %err, "could not start file watcher");
+                self.send(WorktreeEvent::WatchFailed(err.to_string()));
                 None
             }
         };
