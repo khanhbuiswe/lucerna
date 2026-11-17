@@ -170,7 +170,7 @@ impl CodeView {
         }
         // The document's syntax replaces the view's: no need to edit it.
         self.syntax = None;
-        self.apply_edit(&update.old, update.snapshot, &update.patch, cx);
+        self.apply_edit(&update.old, update.snapshot, &update.patch, false, cx);
         self.set_syntax(update.syntax, cx);
     }
 

@@ -665,11 +665,15 @@ impl CodeView {
     /// folds stay on the same lines, except a fold whose header changed.
     /// The syntax tree is edited to the new text and stays until the next
     /// [`CodeView::set_syntax`], so colours do not flicker off.
+    ///
+    /// `external` marks a change read from disk (an agent wrote the file):
+    /// text it inserts at a selection's edge stays outside the selection.
     pub fn apply_edit(
         &mut self,
         old: &BufferSnapshot,
         snapshot: BufferSnapshot,
         patch: &Patch,
+        external: bool,
         cx: &mut Context<Self>,
     ) {
         let rows = snapshot.line_count();
@@ -681,7 +685,11 @@ impl CodeView {
         };
         self.hover.hide(cx);
         let mut selections = self.selections.clone();
-        selections.remap(patch);
+        if external {
+            selections.remap_external(patch);
+        } else {
+            selections.remap(patch);
+        }
         self.autoclose_regions =
             autoclose::remap_regions(&self.autoclose_regions, old, &snapshot, patch);
         let (matches, active) = remap_ranges(&self.match_highlights, self.active_match, patch);

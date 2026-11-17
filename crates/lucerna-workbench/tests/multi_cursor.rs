@@ -355,6 +355,30 @@ fn cmd_d_after_external_reload(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn external_insert_at_selection_start_keeps_selection(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (dir, wb, view, cx) = editor(FOOS, cx);
+    // On the first `foo`: the agent's new line lands right at its start.
+    set_cursor(&view, 1, cx);
+    keys("cmd-d", cx);
+    assert_eq!(ranges(&view, cx), vec![0..3]);
+    let new = format!("new line\n{FOOS}");
+    fs::write(dir.path().join("file.txt"), &new).unwrap();
+    let change = Change {
+        path: Arc::from(Path::new("file.txt")),
+        kind: ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    settle(cx);
+    assert_eq!(text_of(&view, cx), new);
+    assert_eq!(selected(&view, cx), vec!["foo"]);
+    keys("cmd-d", cx);
+    assert_eq!(selected(&view, cx), vec!["foo", "foo"]);
+}
+
+#[gpui::test]
 fn select_highlights_limit_large_file(cx: &mut TestAppContext) {
     init(cx, Some(r#"{ "editor.multiCursorLimit": 100 }"#));
     let text = "foo ".repeat(512 * 1024);

@@ -176,14 +176,39 @@ impl SelectionSet {
     /// later end and left otherwise, and empty selections stick right (after
     /// text inserted at them).
     pub fn remap(&mut self, patch: &Patch) {
-        for s in &mut self.selections {
-            let (anchor_bias, head_bias) = if s.is_empty() {
+        self.remap_with(patch, |s| {
+            if s.is_empty() {
                 (Bias::Right, Bias::Right)
             } else if s.reversed() {
                 (Bias::Right, Bias::Left)
             } else {
                 (Bias::Left, Bias::Right)
-            };
+            }
+        });
+    }
+
+    /// Like [`SelectionSet::remap`] for a change made outside the editor
+    /// (an agent writing the file): text inserted at a selection's edge
+    /// stays outside it, so the selection keeps covering the same text and
+    /// the next keystroke cannot replace what was just written. Cursors
+    /// still go after text inserted at them.
+    pub fn remap_external(&mut self, patch: &Patch) {
+        self.remap_with(patch, |s| {
+            if s.is_empty() {
+                (Bias::Right, Bias::Right)
+            } else if s.reversed() {
+                (Bias::Left, Bias::Right)
+            } else {
+                (Bias::Right, Bias::Left)
+            }
+        });
+    }
+
+    /// Moves every endpoint through `patch` with the `(anchor, head)` biases
+    /// `biases` gives for its selection, then renormalises.
+    fn remap_with(&mut self, patch: &Patch, biases: impl Fn(&Selection) -> (Bias, Bias)) {
+        for s in &mut self.selections {
+            let (anchor_bias, head_bias) = biases(s);
             s.anchor = map_endpoint(patch, s.anchor, anchor_bias);
             s.head = map_endpoint(patch, s.head, head_bias);
         }
@@ -340,6 +365,24 @@ mod tests {
         set.remap(&insert_at(0, 1));
         set.remap(&insert_at(3, 1));
         assert_eq!(set.primary().range(), 0..4);
+    }
+
+    #[test]
+    fn remap_external_edges_stay_inside() {
+        // An agent's text inserted at either edge stays outside the
+        // selection; a cursor at the insert point goes after the text.
+        let (_, mut set) = marked("«ab»");
+        set.remap_external(&insert_at(0, 1));
+        set.remap_external(&insert_at(3, 1));
+        assert_eq!(set.primary().range(), 1..3);
+        let (_, mut set) = marked("»ab«");
+        set.remap_external(&insert_at(0, 1));
+        set.remap_external(&insert_at(3, 1));
+        assert_eq!(set.primary().range(), 1..3);
+        assert!(set.primary().reversed());
+        let mut set = SelectionSet::cursor(2);
+        set.remap_external(&insert_at(2, 3));
+        assert_eq!(set.primary().head, 5);
     }
 
     #[test]

@@ -27,7 +27,9 @@ fn reload_into(
     let decoded = decode_file(bytes, false).unwrap();
     let patch = buffer.edit(diff_edits(&old, &decoded.text));
     let snapshot = buffer.snapshot();
-    view.update(cx, |v, cx| v.apply_edit(&old, snapshot.clone(), &patch, cx));
+    view.update(cx, |v, cx| {
+        v.apply_edit(&old, snapshot.clone(), &patch, true, cx)
+    });
     patch.reload(&old, &snapshot)
 }
 

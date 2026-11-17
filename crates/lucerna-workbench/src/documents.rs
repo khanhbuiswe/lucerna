@@ -311,6 +311,17 @@ enum ReloadOutcome {
 }
 
 /// A file read for a reload of version `base_version` of the buffer.
+/// Where a change to a document's text came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditSource {
+    /// Typed or run in the view with this id.
+    View(EntityId),
+    /// The editor itself: undo / redo, the `files.*` edits on save.
+    Editor,
+    /// The file on disk, reloaded or merged in.
+    Disk,
+}
+
 struct Reloaded {
     /// The decode, its `text` moved into `theirs`.
     decoded: Decoded,
@@ -970,7 +981,7 @@ impl Documents {
         buffer.start_transaction(selections_before);
         let patch = buffer.edit(edits);
         buffer.end_transaction(selections_after);
-        self.commit_edit(&key, old, &patch, was_dirty, Some(origin), cx);
+        self.commit_edit(&key, old, &patch, was_dirty, EditSource::View(origin), cx);
         cx.notify();
         Some(patch)
     }
@@ -1070,7 +1081,7 @@ impl Documents {
         let old = buffer.snapshot();
         let was_dirty = buffer.is_dirty();
         let result = if undo { buffer.undo() } else { buffer.redo() }?;
-        self.commit_edit(&key, old, &result.patch, was_dirty, None, cx);
+        self.commit_edit(&key, old, &result.patch, was_dirty, EditSource::Editor, cx);
         cx.notify();
         Some((result.patch, result.selections))
     }
@@ -1521,7 +1532,7 @@ impl Documents {
                 }
                 let was_dirty = buffer.is_dirty();
                 let patch = buffer.edit(edits);
-                self.commit_edit(key, old, &patch, was_dirty, None, cx);
+                self.commit_edit(key, old, &patch, was_dirty, EditSource::Editor, cx);
             }
         }
         let doc = self.docs.get_mut(key)?;
@@ -1792,9 +1803,16 @@ impl Documents {
         old: BufferSnapshot,
         patch: &Patch,
         was_dirty: bool,
-        origin: Option<EntityId>,
+        source: EditSource,
         cx: &mut Context<Self>,
     ) {
+        let origin = match source {
+            EditSource::View(id) => Some(id),
+            EditSource::Editor | EditSource::Disk => None,
+        };
+        // Text from disk (an agent wrote the file) stays outside the
+        // selections it lands next to; see `CodeView::apply_edit`.
+        let external = source == EditSource::Disk;
         let Some(doc) = self.docs.get_mut(key) else {
             return;
         };
@@ -1817,7 +1835,9 @@ impl Documents {
             });
             for view in doc.views() {
                 let snapshot = snapshot.clone();
-                view.update(cx, |v, cx| v.apply_edit(&old, snapshot, patch, cx));
+                view.update(cx, |v, cx| {
+                    v.apply_edit(&old, snapshot, patch, external, cx)
+                });
             }
             cx.emit(DocumentEvent::Edited {
                 path: key.clone(),
@@ -2435,7 +2455,7 @@ impl Documents {
             announce_return(doc, key, cx);
         }
         let merged = !patch.is_empty();
-        self.commit_edit(key, old, &patch, was_dirty, None, cx);
+        self.commit_edit(key, old, &patch, was_dirty, EditSource::Disk, cx);
         self.default_line_ending(key, cx);
         if merged {
             status_message::show_or_log(self.window, "Merged changes from disk", cx);
@@ -2483,7 +2503,7 @@ impl Documents {
         if patch.is_empty() && was_deleted {
             announce_return(doc, key, cx);
         }
-        self.commit_edit(key, old, &patch, was_dirty, None, cx);
+        self.commit_edit(key, old, &patch, was_dirty, EditSource::Disk, cx);
         self.default_line_ending(key, cx);
         if let Some(doc) = self.docs.get_mut(key) {
             detect_indentation(doc, &self.settings, cx);
