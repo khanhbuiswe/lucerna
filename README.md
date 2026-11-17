@@ -8,6 +8,12 @@
   A fast, minimal code editor. Written in Rust. No AI inside.
 </p>
 
+<p align="center">
+  <a href="https://lucerna.skynomadlabs.dev"><b>Website</b></a> ·
+  <a href="https://github.com/khanhbuiswe/lucerna/releases"><b>Download</b></a> ·
+  <a href="docs/features.md"><b>Docs</b></a>
+</p>
+
 ---
 
 Your agent writes the code in Claude Code, Codex or a desktop app. Lucerna is where you read it:
@@ -46,7 +52,7 @@ agent; Lucerna leaves the agent to the tool you already use.
 
 Lucerna runs on macOS 13 or later today. Linux and Windows are planned.
 
-- **Release build:** download `Lucerna-<version>-macos-aarch64.dmg` from the Releases page, open it
+- **Release build:** download `Lucerna-<version>-macos-aarch64.dmg` from the [Releases page](https://github.com/khanhbuiswe/lucerna/releases), open it
   and drag Lucerna into Applications. Builds are not notarized yet, so the first time, open Lucerna,
   then choose **Open Anyway** in System Settings > Privacy & Security, or run
   `xattr -dr com.apple.quarantine /Applications/Lucerna.app`.
