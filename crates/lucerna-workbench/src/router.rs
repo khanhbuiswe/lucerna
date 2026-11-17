@@ -442,10 +442,7 @@ pub fn answer_cli(
         return;
     }
     if request.activate && request.paths.is_empty() {
-        let restoring = router(cx).borrow().restoring;
-        if !restoring {
-            reopen(cx);
-        }
+        reopen(cx);
         reply.send(CliReply::ok()).ok();
         return;
     }
@@ -637,8 +634,13 @@ pub(crate) fn window_showing(path: &Path, cx: &mut App) -> Option<AnyWindowHandl
 
 /// What a click on the Dock icon does (spec M9): the most recently used
 /// window comes forward, or the Welcome screen opens in a new window
-/// when there is none.
+/// when there is none. While the restore is running it does nothing: the
+/// restore brings its own windows forward (M2-3).
 pub fn reopen(cx: &mut App) {
+    if router(cx).borrow().restoring {
+        tracing::info!("a reopen during the restore is ignored");
+        return;
+    }
     match windows(cx).first() {
         Some((handle, _)) => activate(*handle, cx),
         None => open_welcome(Target::NewWindow, cx),

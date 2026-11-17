@@ -1174,6 +1174,21 @@ fn reopen_opens_welcome(cx: &mut TestAppContext) {
     assert_eq!(kinds(cx), vec![WindowKind::Welcome]);
 }
 
+/// M2-3: a Dock click while the restore is still going opens nothing;
+/// the restore brings its own windows forward.
+#[gpui::test]
+fn reopen_during_restore_opens_nothing(cx: &mut TestAppContext) {
+    routed(&[], cx);
+    let a = project(cx);
+    cx.update(router::begin_restore);
+    cx.update(app::on_reopen_for_test);
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![]);
+    cx.update(|cx| router::restore(vec![folder_window(&a)], cx));
+    cx.run_until_parked();
+    assert_eq!(kinds(cx), vec![WindowKind::Folder(a)]);
+}
+
 // `windows.json` (spec §6.6): the router writes its workbench windows,
 // most recently used first, and a start reopens them.
 
