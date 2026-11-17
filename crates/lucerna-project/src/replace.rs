@@ -149,6 +149,7 @@ impl ReplacePattern {
     }
 }
 
+/// `\U`/`\L` apply before `\u`/`\l` regardless of their order in the source.
 fn apply_ops(ops: &[CaseOp], s: &str) -> String {
     if ops.is_empty() {
         return s.to_string();
@@ -182,19 +183,20 @@ fn apply_ops(ops: &[CaseOp], s: &str) -> String {
 
 /// Preserve Case: shape `replacement` like `matched`.
 pub fn preserve_case(matched: &str, replacement: &str) -> String {
-    for sep in ['-', '_'] {
-        if matched.contains(sep) && replacement.contains(sep) {
-            let ms: Vec<&str> = matched.split(sep).collect();
-            let rs: Vec<&str> = replacement.split(sep).collect();
-            if ms.len() == rs.len() {
-                let parts: Vec<String> = ms
-                    .iter()
-                    .zip(&rs)
-                    .map(|(m, r)| preserve_case(m, r))
-                    .collect();
-                return parts.join(&sep.to_string());
-            }
-        }
+    let qualifies = |sep: char| {
+        matched.contains(sep)
+            && replacement.contains(sep)
+            && matched.split(sep).count() == replacement.split(sep).count()
+    };
+    let (hyphen, underscore) = (qualifies('-'), qualifies('_'));
+    if hyphen != underscore {
+        let sep = if hyphen { '-' } else { '_' };
+        let parts: Vec<String> = matched
+            .split(sep)
+            .zip(replacement.split(sep))
+            .map(|(m, r)| preserve_case(m, r))
+            .collect();
+        return parts.join(&sep.to_string());
     }
     let Some(first) = matched.chars().next() else {
         return replacement.to_string();
@@ -330,6 +332,11 @@ mod tests {
         assert_eq!(preserve_case("Foo-Bar", "baz"), "Baz");
         assert_eq!(preserve_case("123", "bar"), "BAR");
         assert_eq!(preserve_case("", "bar"), "bar");
+        // Both separators qualify: segment step skipped, rule 4 applies.
+        assert_eq!(preserve_case("Foo-bar_baz", "a-b_c"), "A-b_c");
+        // Only `_` qualifies (hyphen counts differ).
+        assert_eq!(preserve_case("Foo-Bar_baz", "qux_quux"), "Qux_quux");
+        assert_eq!(preserve_case("Foo_Bar-baz", "a_b"), "A_B");
     }
     #[test]
     fn preserve_case_unicode() {
