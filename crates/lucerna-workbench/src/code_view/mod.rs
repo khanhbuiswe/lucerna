@@ -32,6 +32,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use lucerna_editor::indentation::Indentation;
+use lucerna_editor::multicursor::ColumnPos;
 use lucerna_editor::{EditKind, Goal, Motion, Selection, SelectionSet, autoclose, move_selections};
 use lucerna_git::Hunk;
 use lucerna_lsp::diagnostics::Diagnostic;
@@ -279,9 +280,21 @@ enum SelectionChange {
 /// How many selection states `cursorUndo` keeps, as VS Code.
 const CURSOR_HISTORY: usize = 50;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a drag with the left button down does.
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Drag {
+    /// Selects from the primary selection's anchor.
     Text,
+    /// `⌥`-drag: moves the head of the selection `id` (from `anchor`); the
+    /// other selections stay.
+    AddSelection {
+        id: u64,
+        anchor: usize,
+    },
+    /// `⇧⌥`-drag: a column selection from `from`.
+    Column {
+        from: ColumnPos,
+    },
     Minimap,
 }
 
@@ -2026,7 +2039,7 @@ impl Render for CodeView {
                 }
             }))
             .on_modifiers_changed(cx.listener(|v, ev: &gpui::ModifiersChangedEvent, _, cx| {
-                let held = ev.modifiers.secondary(cx);
+                let held = v.definition_modifier_held(&ev.modifiers, cx);
                 v.link_modifiers_changed(held, cx);
             }))
             .flex()

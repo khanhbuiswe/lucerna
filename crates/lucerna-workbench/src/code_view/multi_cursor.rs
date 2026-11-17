@@ -3,11 +3,12 @@
 //! cursors above / below and at line ends, column selection and the two
 //! Escape steps. The selections come from [`lucerna_editor::multicursor`];
 //! this module keeps each command's session state, reveals, reports the
-//! cursor limit and seeds the Find bar.
+//! cursor limit and seeds the Find bar. The mouse (`⌥`-click, `⌥`-drag,
+//! `⇧⌥`-drag) adds cursors through the same path.
 
 use gpui::{App, AppContext as _, Context};
-use lucerna_editor::SelectionSet;
 use lucerna_editor::multicursor::{self, ColumnMove, ColumnPos, MatchOptions, Step};
+use lucerna_editor::{Goal, SelectionSet};
 
 use super::frame_layout::FrameLayout;
 use super::{CodeView, CodeViewEvent};
@@ -35,6 +36,91 @@ impl CodeView {
             .get::<usize>("editor.multiCursorLimit", self.language_id.as_deref())
             .unwrap_or(DEFAULT_CURSOR_LIMIT)
             .max(1)
+    }
+
+    /// `editor.multiCursorModifier` is `"ctrlCmd"`: ⌘ (Ctrl elsewhere)
+    /// adds cursors with the mouse and ⌥ goes to definition. Otherwise
+    /// (`"alt"`) the other way round.
+    pub(super) fn add_cursor_with_secondary(&self, cx: &App) -> bool {
+        self.settings
+            .read(cx)
+            .view(cx)
+            .get::<String>("editor.multiCursorModifier", self.language_id.as_deref())
+            .is_some_and(|m| m == "ctrlCmd")
+    }
+
+    /// The modifier of go to definition by mouse (⌘-hover underlines,
+    /// ⌘-click jumps) is held: ⌥ when `editor.multiCursorModifier` is
+    /// `"ctrlCmd"`, else the platform's secondary key.
+    pub(crate) fn definition_modifier_held(&self, modifiers: &gpui::Modifiers, cx: &App) -> bool {
+        if self.add_cursor_with_secondary(cx) {
+            modifiers.alt
+        } else {
+            modifiers.secondary(cx)
+        }
+    }
+
+    /// `⌥`-click: removes the selection touching `offset` (never the only
+    /// one) or adds a cursor there. Returns the id of the cursor added.
+    pub(super) fn mouse_toggle_cursor(
+        &mut self,
+        offset: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<u64> {
+        let limit = self.multi_cursor_limit(cx);
+        let before = self.selections.len();
+        let set = multicursor::toggle_cursor_at(&self.selections, offset, limit);
+        let limited = set.len() == before && set.len() >= limit;
+        let added = (set.len() > before).then(|| set.primary().id);
+        self.install(set, Reveal::Nothing, limited, cx);
+        added
+    }
+
+    /// `⌥` double / triple-click: adds `anchor..head` as a new selection,
+    /// in place of the cursor the first click of the series added. Returns
+    /// its id, `None` at the cursor limit.
+    pub(super) fn mouse_add_selection(
+        &mut self,
+        anchor: usize,
+        head: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<u64> {
+        let limit = self.multi_cursor_limit(cx);
+        let primary = *self.selections.primary();
+        let range = anchor.min(head)..=anchor.max(head);
+        let base =
+            if self.selections.len() > 1 && primary.is_empty() && range.contains(&primary.head) {
+                multicursor::remove_ids(&self.selections, &[primary.id])
+            } else {
+                self.selections.clone()
+            };
+        let (set, id) = multicursor::add_selection(&base, anchor, head, limit);
+        let added = id != multicursor::NO_SELECTION;
+        self.install(set, Reveal::Nothing, !added, cx);
+        added.then_some(id)
+    }
+
+    /// `⌥`-drag: the selection `id` now runs from `anchor` to `head`; the
+    /// others stay. Nothing when it is gone.
+    pub(super) fn mouse_update_selection(
+        &mut self,
+        id: u64,
+        anchor: usize,
+        head: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let mut sels = self.selections.all().to_vec();
+        let Some(sel) = sels.iter_mut().find(|s| s.id == id) else {
+            return;
+        };
+        if sel.anchor == anchor && sel.head == head {
+            return;
+        }
+        sel.anchor = anchor;
+        sel.head = head;
+        sel.goal = Goal::None;
+        let set = self.selections.rebuild(sels, id);
+        self.install(set, Reveal::Nothing, false, cx);
     }
 
     /// Drops the state of every multi-cursor session.
@@ -328,7 +414,7 @@ impl CodeView {
     }
 
     /// The row and visual column of `offset`.
-    fn column_pos(&self, offset: usize) -> ColumnPos {
+    pub(super) fn column_pos(&self, offset: usize) -> ColumnPos {
         ColumnPos {
             row: self.snapshot.offset_to_point(offset).row,
             col: multicursor::visual_column(&self.snapshot, offset, self.config.tab_size),

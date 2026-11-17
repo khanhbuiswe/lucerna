@@ -1,6 +1,8 @@
 //! Multiple cursors driven through the workbench's keys: `⌘D`, `⌘K ⌘D`,
 //! `⇧⌘L`, `⌘F2`, cursors above / below, column selection, the two Escape
-//! steps, `⌘U`, the Find bar and the cursor limit.
+//! steps, `⌘U`, the Find bar and the cursor limit; and the mouse.
+
+mod support;
 
 use std::fs;
 use std::path::Path;
@@ -414,4 +416,282 @@ fn palette_titles(cx: &mut TestAppContext) {
     ] {
         assert_eq!(title(id, cx).as_deref(), Some(expected), "{id}");
     }
+}
+
+// The mouse (spec §5.2 "Chuột"): ⌥-click, ⌥-drag, ⇧⌥-drag and
+// `editor.multiCursorModifier`.
+
+fn alt() -> gpui::Modifiers {
+    gpui::Modifiers {
+        alt: true,
+        ..Default::default()
+    }
+}
+
+fn shift_alt() -> gpui::Modifiers {
+    gpui::Modifiers {
+        shift: true,
+        ..alt()
+    }
+}
+
+/// The platform's secondary modifier (⌘ on macOS, Ctrl elsewhere), plus ⌥
+/// when `with_alt`.
+fn secondary(with_alt: bool, cx: &mut VisualTestContext) -> gpui::Modifiers {
+    let mut modifiers = cx.update(|_, cx| gpui::Modifiers::secondary_key(cx));
+    modifiers.alt = with_alt;
+    modifiers
+}
+
+/// The width of one char cell on row 0 (at least two chars long).
+fn cell_width(view: &Entity<CodeView>, cx: &mut VisualTestContext) -> gpui::Pixels {
+    draw(cx);
+    view.read_with(cx, |v, _| {
+        let p = |column| lucerna_text::Point { row: 0, column };
+        v.char_position(p(1)).unwrap().x - v.char_position(p(0)).unwrap().x
+    })
+}
+
+/// Just right of the left edge of the cell at `row`, `column` (the char
+/// there, or the end of the line): a click there puts the caret before it.
+fn caret_at(
+    view: &Entity<CodeView>,
+    row: u32,
+    column: u32,
+    cx: &mut VisualTestContext,
+) -> gpui::Point<gpui::Pixels> {
+    let width = cell_width(view, cx);
+    let mid = view
+        .read_with(cx, |v, _| {
+            v.char_position(lucerna_text::Point { row, column })
+        })
+        .expect("on screen");
+    gpui::point(mid.x - width * 0.4, mid.y)
+}
+
+fn mouse_click(
+    at: gpui::Point<gpui::Pixels>,
+    modifiers: gpui::Modifiers,
+    click_count: usize,
+    cx: &mut VisualTestContext,
+) {
+    let button = gpui::MouseButton::Left;
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: at,
+        button,
+        modifiers,
+        click_count,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position: at,
+        button,
+        modifiers,
+        click_count,
+    });
+    settle(cx);
+}
+
+fn mouse_drag(
+    from: gpui::Point<gpui::Pixels>,
+    to: gpui::Point<gpui::Pixels>,
+    modifiers: gpui::Modifiers,
+    cx: &mut VisualTestContext,
+) {
+    let button = gpui::MouseButton::Left;
+    cx.simulate_mouse_down(from, button, modifiers);
+    cx.simulate_mouse_move(to, button, modifiers);
+    cx.simulate_mouse_up(to, button, modifiers);
+    settle(cx);
+}
+
+/// Counts the view's `CodeViewEvent::MultiCursor` events from now on.
+fn multi_cursor_events(
+    view: &Entity<CodeView>,
+    cx: &mut VisualTestContext,
+) -> std::rc::Rc<std::cell::Cell<usize>> {
+    use lucerna_workbench::code_view::CodeViewEvent;
+    let events = std::rc::Rc::new(std::cell::Cell::new(0));
+    cx.update(|_, cx| {
+        let events = events.clone();
+        cx.subscribe(view, move |_, event: &CodeViewEvent, _| {
+            if matches!(event, CodeViewEvent::MultiCursor) {
+                events.set(events.get() + 1);
+            }
+        })
+        .detach();
+    });
+    events
+}
+
+const WORDS: &str = "foo bar baz\n";
+
+#[gpui::test]
+fn alt_click_adds_then_removes(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor(WORDS, cx);
+    let events = multi_cursor_events(&view, cx);
+    let bar = caret_at(&view, 0, 4, cx);
+    let baz = caret_at(&view, 0, 8, cx);
+    mouse_click(bar, alt(), 1, cx);
+    mouse_click(baz, alt(), 1, cx);
+    assert_eq!(ranges(&view, cx), vec![0..0, 4..4, 8..8]);
+    assert_eq!(events.get(), 2, "mouse cursors are multi-cursor changes");
+    mouse_click(bar, alt(), 1, cx);
+    assert_eq!(ranges(&view, cx), vec![0..0, 8..8]);
+    // The last cursor left stays.
+    mouse_click(baz, alt(), 1, cx);
+    mouse_click(caret_at(&view, 0, 0, cx), alt(), 1, cx);
+    assert_eq!(ranges(&view, cx), vec![0..0]);
+}
+
+#[gpui::test]
+fn alt_drag_adds_selection(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor(WORDS, cx);
+    view.update(cx, |v, cx| {
+        let p = |column| lucerna_text::Point { row: 0, column };
+        v.select(p(0)..p(3), cx)
+    });
+    settle(cx);
+    let (from, to) = (caret_at(&view, 0, 8, cx), caret_at(&view, 0, 11, cx));
+    mouse_drag(from, to, alt(), cx);
+    assert_eq!(selected(&view, cx), vec!["foo", "baz"]);
+    // The new one is primary, its head where the mouse went up.
+    let primary = view.read_with(cx, |v, _| *v.selections().primary());
+    assert_eq!((primary.anchor, primary.head), (8, 11));
+}
+
+#[gpui::test]
+fn shift_alt_drag_then_type_and_undo(cx: &mut TestAppContext) {
+    init(cx, None);
+    let text = "abcdef\nab\n\tcdefg\n";
+    let (_dir, _wb, view, cx) = editor(text, cx);
+    // From column 4 of the first line to visual column 5 of the third
+    // (its tab spans columns 0–3): the short line gets a cursor at its end.
+    let from = caret_at(&view, 0, 4, cx);
+    let to = caret_at(&view, 2, 2, cx);
+    mouse_drag(from, to, shift_alt(), cx);
+    assert_eq!(selected(&view, cx), vec!["e", "", "c"]);
+    input("z", cx);
+    assert_eq!(text_of(&view, cx), "abcdzf\nabz\n\tzdefg\n");
+    keys("cmd-z", cx);
+    assert_eq!(text_of(&view, cx), text);
+}
+
+#[gpui::test]
+fn shift_alt_drag_past_line_end(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor("ab\nabcdef\n", cx);
+    // From two columns past the end of `ab` (visual column 4) to column 6
+    // below: the first line has nothing there, the second selects `ef`.
+    let width = cell_width(&view, cx);
+    let end = caret_at(&view, 0, 2, cx);
+    let from = gpui::point(end.x + width * 2., end.y);
+    let to = caret_at(&view, 1, 6, cx);
+    mouse_drag(from, to, shift_alt(), cx);
+    assert_eq!(selected(&view, cx), vec!["", "ef"]);
+    assert_eq!(ranges(&view, cx), vec![2..2, 7..9]);
+}
+
+#[gpui::test]
+fn plain_click_collapses(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor(WORDS, cx);
+    mouse_click(caret_at(&view, 0, 4, cx), alt(), 1, cx);
+    mouse_click(caret_at(&view, 0, 8, cx), alt(), 1, cx);
+    assert_eq!(count(&view, cx), 3);
+    mouse_click(caret_at(&view, 0, 2, cx), gpui::Modifiers::none(), 1, cx);
+    assert_eq!(ranges(&view, cx), vec![2..2]);
+}
+
+#[gpui::test]
+fn alt_double_click_adds_word(cx: &mut TestAppContext) {
+    init(cx, None);
+    let (_dir, _wb, view, cx) = editor(WORDS, cx);
+    let bar = caret_at(&view, 0, 5, cx);
+    // A double-click is a click, then a second press with a count of 2.
+    mouse_click(bar, alt(), 1, cx);
+    mouse_click(bar, alt(), 2, cx);
+    assert_eq!(ranges(&view, cx), vec![0..0, 4..7]);
+    assert_eq!(selected(&view, cx), vec!["", "bar"]);
+}
+
+const MAIN_RS: &str = "fn main() {\n    b::helper();\n}\n";
+const DEFINITION: &str = "textDocument/definition";
+
+/// A trusted Rust project with `src/main.rs` open, its server answering
+/// every definition request with nothing; `extra_settings` goes after the
+/// trust setting in the User layer.
+fn rust_editor<'a>(
+    extra_settings: &str,
+    cx: &'a mut TestAppContext,
+) -> (
+    TempDir,
+    lucerna_lsp::test_support::FakeServer,
+    Entity<CodeView>,
+    &'a mut VisualTestContext,
+) {
+    use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), MAIN_RS).unwrap();
+    let fake = FakeServer::new().on_request(DEFINITION, |_| Ok(serde_json::Value::Null));
+    let launcher = Arc::new(FakeLauncher::new().with_server("rust-analyzer", fake.clone()));
+    let settings = format!(r#"{{ "session.trustAllWorktrees": true {extra_settings} }}"#);
+    let (wb, cx) = support::lsp::lsp_workbench_with(dir.path(), launcher, &settings, cx);
+    let view = support::lsp::open(&wb, "src/main.rs", cx);
+    (dir, fake, view, cx)
+}
+
+/// The middle of the char at `row`, `column`.
+fn char_mid(
+    view: &Entity<CodeView>,
+    row: u32,
+    column: u32,
+    cx: &mut VisualTestContext,
+) -> gpui::Point<gpui::Pixels> {
+    draw(cx);
+    view.read_with(cx, |v, _| {
+        v.char_position(lucerna_text::Point { row, column })
+    })
+    .expect("on screen")
+}
+
+#[gpui::test]
+fn ctrl_cmd_modifier_swaps(cx: &mut TestAppContext) {
+    let (_dir, fake, view, cx) = rust_editor(r#", "editor.multiCursorModifier": "ctrlCmd""#, cx);
+    // ⌥-click alone is go to definition.
+    mouse_click(char_mid(&view, 1, 8, cx), alt(), 1, cx);
+    assert_eq!(support::lsp::count(&fake, DEFINITION), 1);
+    assert_eq!(count(&view, cx), 1);
+    // ⌘-click adds a cursor and asks nothing.
+    let cmd = secondary(false, cx);
+    mouse_click(caret_at(&view, 0, 3, cx), cmd, 1, cx);
+    assert_eq!(count(&view, cx), 2);
+    assert_eq!(support::lsp::count(&fake, DEFINITION), 1);
+}
+
+#[gpui::test]
+fn cmd_alt_click_definition_to_side_both_modes(cx: &mut TestAppContext) {
+    let (_dir, fake, view, cx) = rust_editor("", cx);
+    let cmd_alt = secondary(true, cx);
+    mouse_click(char_mid(&view, 1, 8, cx), cmd_alt, 1, cx);
+    assert_eq!(support::lsp::count(&fake, DEFINITION), 1);
+    assert_eq!(count(&view, cx), 1);
+
+    cx.update(|_, cx| {
+        use gpui::BorrowAppContext as _;
+        cx.update_global::<AppState, _>(|state, _| {
+            let user = r#"{ "session.trustAllWorktrees": true,
+                            "editor.multiCursorModifier": "ctrlCmd" }"#;
+            state.settings.set_layer(Layer::User, user).unwrap();
+        });
+    });
+    settle(cx);
+    // Another char: the first answer says (1, 8) links nowhere.
+    mouse_click(char_mid(&view, 0, 4, cx), cmd_alt, 1, cx);
+    assert_eq!(support::lsp::count(&fake, DEFINITION), 2);
+    assert_eq!(count(&view, cx), 1);
 }

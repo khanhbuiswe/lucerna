@@ -16,6 +16,7 @@ use gpui::{
     ShapedLine, SharedString, Style, TextRun, UnderlineStyle, Window, font, point, px, relative,
     size, underline_y_offset,
 };
+use lucerna_editor::multicursor::ColumnPos;
 use lucerna_lsp::diagnostics::Severity;
 use lucerna_text::Point;
 use lucerna_theme::{Theme, UiColors};
@@ -312,17 +313,34 @@ impl Frame {
 
     /// The buffer position under `position`, clamped to the rows on screen.
     pub(crate) fn point_at(&self, position: gpui::Point<Pixels>) -> Option<Point> {
+        self.point_past_end(position).map(|(p, _)| p)
+    }
+
+    /// [`Frame::point_at`], and how many whole columns `position` lies
+    /// past the end of its buffer line (0 inside the text, or at the end
+    /// of a wrapped piece that is not the line's last). For `⇧⌥`-drag,
+    /// which may select past the line end.
+    pub(crate) fn point_past_end(&self, position: gpui::Point<Pixels>) -> Option<(Point, u32)> {
         let row = self
             .rows
             .iter()
             .find(|r| position.y < r.top + self.line_height)
             .or(self.rows.last())?;
         let piece = row.piece();
-        let index = piece.line.closest_index_for_x(position.x - self.text_x);
-        Some(Point {
-            row: row.buffer_row,
-            column: piece.map.to_buffer(index),
-        })
+        let x = position.x - self.text_x;
+        let index = piece.line.closest_index_for_x(x);
+        let past = if row.is_last_piece() && x > piece.line.width() && self.char_width > px(0.) {
+            ((x - piece.line.width()) / self.char_width).round().max(0.) as u32
+        } else {
+            0
+        };
+        Some((
+            Point {
+                row: row.buffer_row,
+                column: piece.map.to_buffer(index),
+            },
+            past,
+        ))
     }
 
     /// The char with text under `position`: over the text area, inside a
@@ -1193,23 +1211,44 @@ impl CodeView {
             self.drag = Some(Drag::Text);
             return;
         }
-        let secondary = ev.modifiers.secondary(cx) && !ev.modifiers.shift;
-        if secondary
+        let m = ev.modifiers;
+        let secondary = m.secondary(cx);
+        // `⇧⌥`-drag selects a column whatever `editor.multiCursorModifier`
+        // says, as in VS Code.
+        if m.shift && m.alt && !secondary {
+            if let Some(from) = self.column_pos_at(&frame, ev.position) {
+                self.set_column_selection(from, from, cx);
+                self.drag = Some(Drag::Column { from });
+            }
+            return;
+        }
+        // `⌘⌥`-click is always go to definition to the side.
+        let (add_cursor, definition) = if self.add_cursor_with_secondary(cx) {
+            (secondary && !m.alt, m.alt)
+        } else {
+            (m.alt && !secondary, secondary)
+        };
+        let (add_cursor, definition) = (add_cursor && !m.shift, definition && !m.shift);
+        if definition
             && ev.click_count == 1
             && let Some(p) = frame.char_at(ev.position)
         {
             // The cursor goes to the click first, so the answer is for
             // where the cursor is; a drag from here still selects.
             self.select(p..p, cx);
-            self.link_mouse_down(Some((p, ev.modifiers.alt)));
+            self.link_mouse_down(Some((p, m.alt && secondary)));
             self.drag = Some(Drag::Text);
             return;
         }
         let Some(p) = frame.point_at(ev.position) else {
             return;
         };
+        if add_cursor {
+            self.add_cursor_mouse_down(p, ev.click_count, cx);
+            return;
+        }
         let range = match ev.click_count {
-            0 | 1 if ev.modifiers.shift => self.selection_anchor()..p,
+            0 | 1 if m.shift => self.selection_anchor()..p,
             0 | 1 => p..p,
             2 => selection::word_at(&self.snapshot, p),
             _ => selection::line_at(&self.snapshot, p.row),
@@ -1218,14 +1257,70 @@ impl CodeView {
         self.drag = Some(Drag::Text);
     }
 
+    /// A click with the add-cursor modifier at `p`: a single click toggles
+    /// a cursor there, a double / triple-click adds the word / line. A
+    /// drag from here moves the head of what was added.
+    fn add_cursor_mouse_down(
+        &mut self,
+        p: Point,
+        click_count: usize,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let offset = self.snapshot.point_to_offset(p);
+        let added = match click_count {
+            0 | 1 => self.mouse_toggle_cursor(offset, cx).map(|id| (id, offset)),
+            _ => {
+                let range = if click_count == 2 {
+                    selection::word_at(&self.snapshot, p)
+                } else {
+                    selection::line_at(&self.snapshot, p.row)
+                };
+                let start = self.snapshot.point_to_offset(range.start);
+                let end = self.snapshot.point_to_offset(range.end);
+                self.mouse_add_selection(start, end, cx)
+                    .map(|id| (id, start))
+            }
+        };
+        self.drag = added.map(|(id, anchor)| Drag::AddSelection { id, anchor });
+    }
+
+    /// The row and visual column under `position` for a column selection;
+    /// past the line end it counts the columns the mouse is beyond it.
+    fn column_pos_at(&self, frame: &Frame, position: gpui::Point<Pixels>) -> Option<ColumnPos> {
+        let (p, past) = frame.point_past_end(position)?;
+        let pos = self.column_pos(self.snapshot.point_to_offset(p));
+        Some(ColumnPos {
+            row: pos.row,
+            col: pos.col + past,
+        })
+    }
+
     fn mouse_drag(&mut self, position: gpui::Point<Pixels>, cx: &mut gpui::Context<Self>) {
         let Some(frame) = self.frame.clone() else {
             return;
         };
-        if let Some(p) = frame.point_at(position)
-            && p != self.selection_head()
-        {
-            self.select(self.selection_anchor()..p, cx);
+        match self.drag {
+            Some(Drag::Text) => {
+                if let Some(p) = frame.point_at(position)
+                    && p != self.selection_head()
+                {
+                    self.select(self.selection_anchor()..p, cx);
+                }
+            }
+            Some(Drag::AddSelection { id, anchor }) => {
+                if let Some(p) = frame.point_at(position) {
+                    let head = self.snapshot.point_to_offset(p);
+                    self.mouse_update_selection(id, anchor, head, cx);
+                }
+            }
+            Some(Drag::Column { from }) => {
+                if let Some(to) = self.column_pos_at(&frame, position)
+                    && self.column_select != Some((from, to))
+                {
+                    self.set_column_selection(from, to, cx);
+                }
+            }
+            Some(Drag::Minimap) | None => {}
         }
     }
 
@@ -1330,7 +1425,10 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
             if phase != DispatchPhase::Bubble || ev.pressed_button != Some(MouseButton::Left) {
                 return;
             }
-            if view.read(cx).drag == Some(Drag::Text) {
+            if matches!(
+                view.read(cx).drag,
+                Some(Drag::Text | Drag::AddSelection { .. } | Drag::Column { .. })
+            ) {
                 view.update(cx, |v, cx| v.mouse_drag(ev.position, cx));
             }
         }
@@ -1360,7 +1458,7 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
             let point = (ev.pressed_button.is_none() && hitbox.is_hovered(window))
                 .then(|| frame.char_at(ev.position))
                 .flatten();
-            let held = ev.modifiers.secondary(cx);
+            let held = view.read(cx).definition_modifier_held(&ev.modifiers, cx);
             view.update(cx, |v, cx| {
                 v.link_mouse_moved(point, held, cx);
                 let hover_point = point.filter(|_| !held);
@@ -1379,7 +1477,7 @@ fn register_mouse(view: &gpui::Entity<CodeView>, frame: &Arc<Frame>, window: &mu
             if view.read(cx).gutter_hovered() {
                 view.update(cx, |v, cx| v.set_gutter_hovered(false, cx));
             }
-            let held = ev.modifiers.secondary(cx);
+            let held = view.read(cx).definition_modifier_held(&ev.modifiers, cx);
             view.update(cx, |v, cx| {
                 v.link_mouse_moved(None, held, cx);
                 v.hover.mouse_moved(None, ev.position, cx);
