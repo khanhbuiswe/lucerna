@@ -283,6 +283,14 @@ fn trim_final_newlines_collapses_to_one(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn trim_final_newlines_empties_a_file_of_blank_lines(cx: &mut TestAppContext) {
+    init(cx, Some(r#"{"files.trimFinalNewlines": true}"#));
+    let (dir, _wb, _view, cx) = editor("\n\n\n", cx);
+    keys("cmd-s", cx);
+    assert_eq!(disk(&dir, "file.txt"), "");
+}
+
+#[gpui::test]
 fn participants_run_in_order(cx: &mut TestAppContext) {
     // Trimming whitespace first leaves the blank lines empty, so trimming
     // final newlines removes them.

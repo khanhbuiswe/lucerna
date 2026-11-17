@@ -207,20 +207,32 @@ fn insert_final_newline(text: &BufferSnapshot, cursor_rows: &[u32]) -> Edits {
     vec![(len..len, Arc::from("\n"))]
 }
 
-/// Collapses the line breaks at the end of the text to one.
+/// Removes the blank lines at the end of the text, as VS Code's
+/// `TrimFinalNewLinesParticipant` does (MIT): a line with only spaces still
+/// counts as content, one final line break stays after the last such line,
+/// and a text of only blank lines becomes empty. An autosave keeps every
+/// line up to the furthest cursor.
 fn trim_final_newlines(text: &BufferSnapshot, cursor_rows: &[u32]) -> Edits {
     let len = text.len_bytes();
-    let mut start = len;
-    while start > 0 && text.byte_at(start - 1) == b'\n' {
-        start -= 1;
+    // Rows that hold text; a final line break does not start another row.
+    let rows = text.line_count();
+    let ends_with_newline = len > 0 && text.byte_at(len - 1) == b'\n';
+    // VS Code counts the empty line after a final line break.
+    if rows + u32::from(ends_with_newline) <= 1 {
+        return Vec::new();
     }
-    // An autosave keeps the blank lines that hold a cursor.
-    let kept_row = text.offset_to_point(start).row;
-    if len - start > 1 && !cursor_rows.iter().any(|&row| row > kept_row) {
-        vec![(start + 1..len, Arc::from(""))]
-    } else {
-        Vec::new()
+    let last_content = (0..rows).rev().find(|&row| !text.line(row).is_empty());
+    let after_content = last_content.map_or(0, |row| row + 1);
+    let after_cursor = cursor_rows.iter().max().map_or(0, |&row| row + 1);
+    let keep = after_content.max(after_cursor);
+    if keep >= rows {
+        return Vec::new();
     }
+    let start = text.point_to_offset(Point {
+        row: keep,
+        column: 0,
+    });
+    vec![(start..len, Arc::from(""))]
 }
 
 /// How the captured text is stored: copied off the buffer, so the write
@@ -577,12 +589,33 @@ mod tests {
         assert_eq!(apply("", insert_final_newline), "");
     }
 
+    fn apply_with(text: &str, f: Participant, rows: &[u32]) -> String {
+        let buffer = Buffer::from_bytes(text.as_bytes(), false).unwrap();
+        let snapshot = buffer.snapshot();
+        let mut out = text.to_string();
+        for (range, new) in f(&snapshot, rows).into_iter().rev() {
+            out.replace_range(range, &new);
+        }
+        out
+    }
+
     #[test]
-    fn final_newlines_collapse_to_one() {
+    fn final_newlines_follow_vs_code() {
         assert_eq!(apply("a\n\n\n", trim_final_newlines), "a\n");
         assert_eq!(apply("a\n", trim_final_newlines), "a\n");
         assert_eq!(apply("a", trim_final_newlines), "a");
-        assert_eq!(apply("\n\n", trim_final_newlines), "\n");
+        assert_eq!(apply("", trim_final_newlines), "");
+        assert_eq!(apply("\n\n\n", trim_final_newlines), "");
+        assert_eq!(apply("\n\n", trim_final_newlines), "");
+        assert_eq!(apply("\n", trim_final_newlines), "");
+        assert_eq!(apply("a\n  \n\n", trim_final_newlines), "a\n  \n");
+        // Autosave: lines up to the furthest cursor stay.
+        assert_eq!(apply_with("a\n\n\n", trim_final_newlines, &[2]), "a\n\n\n");
+        assert_eq!(
+            apply_with("a\n\n\n\n", trim_final_newlines, &[2]),
+            "a\n\n\n"
+        );
+        assert_eq!(apply_with("\n\n\n", trim_final_newlines, &[0]), "\n");
     }
 
     #[test]
