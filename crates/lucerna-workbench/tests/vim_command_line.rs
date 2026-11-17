@@ -207,7 +207,7 @@ fn large_text() -> String {
 
 #[gpui::test]
 fn colon_opens_quick_open_with_rows(cx: &mut TestAppContext) {
-    let (_dir, wb, _view, cx) = vim_editor("foo\n", cx);
+    let (_dir, wb, _view, cx) = vim_editor(&twenty_lines(), cx);
     keys(":", cx);
     assert_eq!(query(&wb, cx), ":");
     assert_eq!(rows(&wb, cx), ["Type a Vim command…"]);
@@ -217,6 +217,10 @@ fn colon_opens_quick_open_with_rows(cx: &mut TestAppContext) {
     assert_eq!(rows(&wb, cx), [":w — Save"]);
     set_query(&wb, ":12", cx);
     assert_eq!(rows(&wb, cx), [":12 — Go to line 12"]);
+    set_query(&wb, ":12,5", cx);
+    assert_eq!(rows(&wb, cx), [":12,5 — Go to line 12, column 5"]);
+    set_query(&wb, ":-1", cx);
+    assert_eq!(rows(&wb, cx), [":-1 — Go to line 20"]);
     set_query(&wb, ":foo", cx);
     assert_eq!(rows(&wb, cx), ["Not an editor command: foo"]);
 }
@@ -246,11 +250,15 @@ fn colon_dispatch_vim_on(cx: &mut TestAppContext) {
     let (_dir, wb, view, cx) = vim_editor(&twenty_lines(), cx);
     keys("1 0 shift-g", cx);
     assert_eq!(cursor(&view, cx).row, 9);
+    // Numbers keep VS Code's go to line: `:-1` is the last line, `:12,5`
+    // line 12, column 5.
     ex("-1", cx);
-    assert_eq!(cursor(&view, cx).row, 8);
-    // A reversed range is swapped; it goes to the range's last line.
+    assert_eq!(cursor(&view, cx).row, 19);
     ex("12,5", cx);
-    assert_eq!(cursor(&view, cx).row, 11);
+    assert_eq!(cursor(&view, cx), pt(11, 4));
+    // Anything else is a Vim command: `:+2` goes two lines down.
+    ex("+2", cx);
+    assert_eq!(cursor(&view, cx).row, 13);
     // With no editor open, `:` is go to line.
     cx.update(|window, cx| {
         wb.update(cx, |wb, cx| {

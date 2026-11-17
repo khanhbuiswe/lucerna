@@ -54,8 +54,9 @@ Vim's default "magic" mode. `:s` is case-sensitive by default; the `i` and `I` f
 and `vim.ignorecase` applies only to `*` and `#`. `:s` matches within a line. With
 `vim.gdefault` the `g` flag is on by default, and typing `g` turns it off.
 
-`:qa!` is not supported, only `:qa`. `:N` with a number goes to that line; `:-1` goes up one line
-as in Vim.
+`:qa!` is not supported, only `:qa`. Numbers after `:` keep VS Code's go-to-line meaning: `:12`
+goes to line 12, `:-1` to the last line, `:12,5` to line 12, column 5. Anything else is a Vim
+command line, so `:+2`, `:$` and `:.,.+2` are Vim's.
 
 Known deviations: Visual Block operators come after multi-cursor; an arrow key in Insert breaks
 the `.` record and is not recorded in a macro (one undo step is kept); a macro records

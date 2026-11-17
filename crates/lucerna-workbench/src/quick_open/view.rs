@@ -106,6 +106,9 @@ enum Row {
     GoToLine {
         line: u32,
         column: Option<u32>,
+        /// With Vim on, the text after `:`, shown first as Vim's command
+        /// line rows are (`:12 — Go to line 12`).
+        vim_line: Option<SharedString>,
     },
     Extension {
         index: usize,
@@ -387,7 +390,18 @@ impl QuickOpen {
                 let c = &self.commands[*index];
                 (c.title.clone().into(), c.keybinding.clone().map(Into::into))
             }
-            Row::GoToLine { line, column } => (go_to_line_label(*line, *column).into(), None),
+            Row::GoToLine {
+                line,
+                column,
+                vim_line,
+            } => {
+                let label = go_to_line_label(*line, *column);
+                let label = match vim_line {
+                    Some(typed) => format!(":{typed} — {label}"),
+                    None => label,
+                };
+                (label.into(), None)
+            }
             Row::Extension { index, .. } => (self.extension_id(*index).to_string().into(), None),
             Row::Symbol(_) | Row::WorkspaceSymbol { .. } => (SharedString::default(), None),
             Row::Message(text) => ((*text).into(), None),
@@ -436,6 +450,10 @@ impl QuickOpen {
                     (Some(count), Some(line)) => Row::GoToLine {
                         line: resolve_line(line, count),
                         column,
+                        vim_line: self.vim_command_line.then(|| {
+                            let typed = text.strip_prefix(':').unwrap_or(text);
+                            typed.trim().to_string().into()
+                        }),
                     },
                     (Some(_), None) => Row::Message("Type a line number…"),
                 };
@@ -617,7 +635,7 @@ impl QuickOpen {
             Some(Row::Command { index, .. }) => {
                 QuickOpenEvent::RunCommand(self.commands[*index].id.clone())
             }
-            Some(&Row::GoToLine { line, column }) => QuickOpenEvent::GoToLine { line, column },
+            Some(&Row::GoToLine { line, column, .. }) => QuickOpenEvent::GoToLine { line, column },
             Some(Row::Extension { index, .. }) => {
                 QuickOpenEvent::InstallExtension(self.extension_id(*index).to_string())
             }
