@@ -178,8 +178,7 @@ mod socket {
     pub fn run(launch: Option<Launch>, cwd: Option<PathBuf>, mode: RunMode) -> i32 {
         let Some(data_dir) = default_data_dir() else {
             tracing::warn!("no HOME: running without the luc socket");
-            app::run(launch, None);
-            return 0;
+            return without_socket(launch, cwd, mode);
         };
         let socket = socket_path(&data_dir);
         if let RunMode::Exclusive { refusal } = mode {
@@ -193,10 +192,8 @@ mod socket {
                     1
                 }
                 Claim::Unavailable(err) => {
-                    tracing::warn!(%err, socket = %socket.display(), "running without the luc socket");
-                    eprintln!("luc: warning: running without the luc socket: {err}");
-                    app::run(launch, None);
-                    0
+                    warn_without_socket(&err, &socket);
+                    without_socket(launch, cwd, mode)
                 }
             };
         }
@@ -223,8 +220,31 @@ mod socket {
                 }
             },
             Handed::Unavailable(err) => {
-                tracing::warn!(%err, socket = %socket.display(), "running without the luc socket");
-                eprintln!("luc: warning: running without the luc socket: {err}");
+                warn_without_socket(&err, &socket);
+                without_socket(launch, cwd, mode)
+            }
+        }
+    }
+
+    fn warn_without_socket(err: &dyn std::fmt::Display, socket: &Path) {
+        tracing::warn!(%err, socket = %socket.display(), "running without the luc socket");
+        eprintln!("luc: warning: running without the luc socket: {err}");
+    }
+
+    /// No socket to claim: a terminal `luc` still starts the app apart
+    /// from the terminal (that child has no socket either, so it runs the
+    /// app in place); `Here` and `Exclusive` run it here (M1-4).
+    fn without_socket(launch: Option<Launch>, cwd: Option<PathBuf>, mode: RunMode) -> i32 {
+        match launch {
+            Some(launch) if mode == RunMode::Detach => {
+                if let Err(err) = start_detached(&launch, cwd.as_deref()) {
+                    tracing::error!(%err, "could not start the app");
+                    eprintln!("luc: could not start Lucerna: {err}");
+                    return 1;
+                }
+                0
+            }
+            launch => {
                 app::run(launch, None);
                 0
             }

@@ -329,16 +329,18 @@ Welcome`, và thêm `WorkbenchEvent::OpenInNewWindow(PathBuf)`.
     quá dài là thư mục riêng của user (`$TMPDIR` trên macOS,
     `$XDG_RUNTIME_DIR` hoặc `lucerna-<uid>` nơi khác), không dùng `/tmp`
     chung.
-  - Lỗi khác (không tạo được thư mục data, quyền): in cảnh báo, chạy app
-    không có socket (không chặn người dùng).
+  - Lỗi khác (không tạo được thư mục data, quyền): in cảnh báo, khởi động
+    app tách khỏi terminal như M18 nhưng không có socket (không gửi yêu cầu),
+    rồi thoát mã 0; không chặn người dùng. `--foreground`/`--trace-startup`
+    thì chạy app tại chỗ, không có socket (M1-4).
 - **Tách khỏi terminal** (M18). Khi `luc` (không có `--foreground`) phải
   thành app, nó không chạy app trong tiến trình này mà khởi động một tiến
   trình app tách rời rồi gửi yêu cầu cho nó như client:
   1. Nhả socket vừa giành (để tiến trình app giành).
   2. Khởi động app: chạy chính binary với cờ ẩn `--detached-child`
      (thay cho `--foreground`; tiến trình con gặp app khác đã giữ socket thì
-     chuyển yêu cầu cho nó, M1-1, còn không thì chạy app tại chỗ), `setsid` (phiên
-     mới, không còn terminal điều khiển), stdin/stdout/stderr về
+     chuyển yêu cầu cho nó, M1-1, còn không thì chạy app tại chỗ), `setsid`
+     (phiên mới, không còn terminal điều khiển), stdin/stdout/stderr về
      `/dev/null` (log vẫn ghi file như nay), `cwd` giữ nguyên. Không dùng
      `open -a`: nó chỉ có với bản đóng gói và dễ mở nhầm bản cài khác cùng
      bundle ID; binary trong `Contents/MacOS` chạy trực tiếp vẫn hiện đúng

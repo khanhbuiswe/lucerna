@@ -164,3 +164,47 @@ fn luc_file_starts_one_app() {
     assert!(took < Duration::from_secs(10), "returned after {took:?}");
     wait_for(&exe, &file, "one app", |pids| pids.len() == 1);
 }
+
+/// No socket (the data directory cannot be created): `luc` still starts
+/// the app apart from the terminal, warns, and exits 0 (M1-4).
+#[test]
+#[ignore = "starts the app: needs a display"]
+fn luc_without_socket_starts_a_detached_app() {
+    let exe = cargo_bin("luc");
+    let home = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = std::fs::canonicalize(dir.path()).unwrap();
+    let _kill = KillApps(exe.clone(), canonical.clone(), home.path().to_path_buf());
+    // A plain file where the data directory should be.
+    let support = home.path().join("Library").join("Application Support");
+    std::fs::create_dir_all(&support).unwrap();
+    std::fs::write(support.join("Lucerna"), "not a directory").unwrap();
+
+    let start = Instant::now();
+    let child = std::process::Command::new(&exe)
+        .env("HOME", home.path())
+        .arg(&canonical)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let luc_pid = i32::try_from(child.id()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    let took = start.elapsed();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("luc: warning: running without the luc socket"),
+        "{stderr}"
+    );
+    assert!(took < Duration::from_secs(10), "returned after {took:?}");
+    let pids = wait_for(&exe, &canonical, "one detached app", |pids| {
+        pids.len() == 1
+    });
+    assert_ne!(pids[0], luc_pid, "the app is not the process `luc` ran as");
+}
