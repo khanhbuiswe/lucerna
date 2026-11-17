@@ -5,6 +5,8 @@
 
 mod classify;
 mod edit;
+#[allow(dead_code)] // the runner and the workbench use it in later steps
+mod ex;
 mod marks;
 mod motion;
 mod object;
@@ -25,6 +27,7 @@ use std::sync::Arc;
 use lucerna_editor::{Ctx, EditPlan};
 use lucerna_text::BufferSnapshot;
 
+pub use ex::describe_command;
 pub use register::{Clipboard, ClipboardMode, RegContent, RegKind};
 pub use repeat::{ReplayStep, Typed};
 pub use state::{Vim, VimGlobals};

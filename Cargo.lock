@@ -3490,6 +3490,7 @@ version = "0.1.0"
 dependencies = [
  "lucerna-editor",
  "lucerna-text",
+ "regex",
  "unicode-segmentation",
 ]
 
