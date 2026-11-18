@@ -1,6 +1,6 @@
 # Replace trong project (tab Search)
 
-Ngày: 2026-11-18. Trạng thái: bản nháp, chờ duyệt.
+Ngày: 2026-11-18. Trạng thái: đã duyệt.
 
 ## Mục đích
 
