@@ -13,7 +13,7 @@ fn version_flag_prints_name_and_version() {
         .arg("--version")
         .assert()
         .success()
-        .stdout("luc 0.1.0\n");
+        .stdout(format!("luc {}\n", env!("CARGO_PKG_VERSION")));
 }
 
 fn canonical(path: impl Into<PathBuf>) -> PathBuf {
