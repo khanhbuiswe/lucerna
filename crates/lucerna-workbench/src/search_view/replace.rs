@@ -27,7 +27,9 @@ use crate::tasks::guarded;
 
 /// A result file and the match lines the results show for it.
 pub(crate) struct ReplaceTarget {
-    /// Relative to the root, as in the results.
+    /// Relative to the root, as in the results. `Documents` is always
+    /// given it joined onto the root: a relative `untitled:…` path would
+    /// be taken for an Untitled document's key.
     pub path: Arc<Path>,
     pub lines: Vec<ShownLine>,
 }
@@ -57,10 +59,8 @@ enum OpenOutcome {
     },
 }
 
-/// The save of an open document the replace edited: the text was at
-/// `revision` right after the replace.
+/// The save of an open document the replace edited.
 struct ReplaceSave {
-    revision: u64,
     task: Task<Result<bool, WriteError>>,
 }
 
@@ -107,8 +107,9 @@ pub(crate) fn run_replace(
     {
         let docs = documents.read(cx);
         for target in targets {
-            let state = docs.state(&target.path);
-            if state == Some(&DocState::Ready) && docs.snapshot_of(&target.path).is_some() {
+            let absolute = root.join(&target.path);
+            let state = docs.state(&absolute);
+            if state == Some(&DocState::Ready) && docs.snapshot_of(&absolute).is_some() {
                 open.push(target);
             } else if let Some(reason) = state.and_then(state_skip) {
                 report.skipped.push((display(&target.path), reason));
@@ -172,7 +173,7 @@ pub(crate) fn run_replace(
             if cancel.load(Ordering::SeqCst) {
                 break;
             }
-            let outcome = replace_open(&target, &spec, &documents, cx).await;
+            let outcome = replace_open(&target, &root, &spec, &documents, cx).await;
             match outcome {
                 OpenOutcome::Skipped(reason) => {
                     report.skipped.push((display(&target.path), reason))
@@ -219,7 +220,7 @@ pub(crate) fn run_replace(
         }
         for (path, count, save) in saves {
             let result = save.task.await;
-            match finish_save(&path, result, save.revision, &documents, &root, cx).await {
+            match finish_save(&path, result, &documents, &root, cx).await {
                 SaveEnd::Saved => {
                     report.replaced += count;
                     report.files += 1;
@@ -237,12 +238,11 @@ pub(crate) fn run_replace(
     })
 }
 
-/// How the save of an edited document ended; its text was at `revision`
-/// right after the replace.
+/// How the save of an edited document ended. `path` is relative to
+/// `root`.
 async fn finish_save(
     path: &Path,
     result: Result<bool, WriteError>,
-    revision: u64,
     documents: &Entity<Documents>,
     root: &Path,
     cx: &mut AsyncWindowContext,
@@ -250,17 +250,16 @@ async fn finish_save(
     match result {
         Ok(true) => SaveEnd::Saved,
         Ok(false) => {
-            let (conflict, typed) = cx
+            let absolute = root.join(path);
+            let (conflict, dirty) = cx
                 .update(|_, cx| {
                     let docs = documents.read(cx);
-                    let typed = docs.is_dirty(path) && docs.revision_of(path) != Some(revision);
-                    (docs.has_conflict(path), typed)
+                    (docs.has_conflict(&absolute), docs.is_dirty(&absolute))
                 })
                 .unwrap_or((false, false));
             if conflict {
                 return SaveEnd::Skipped(SkipReason::ChangedOnDisk);
             }
-            let absolute = root.join(path);
             let exists = cx
                 .background_executor()
                 .spawn(async move { absolute.exists() })
@@ -268,15 +267,18 @@ async fn finish_save(
             if !exists {
                 return SaveEnd::Skipped(SkipReason::Missing);
             }
-            if typed {
-                // Edited after the replace: the buffer keeps both, unsaved.
+            if dirty {
+                // The buffer still holds the replace, unsaved: typed in
+                // after it, or not written for another reason.
                 return SaveEnd::Unsaved;
             }
-            // Not written for another reason (the file was reloaded from
-            // disk meanwhile): nothing was saved.
+            // Clean but not saved: the text was reloaded from disk
+            // meanwhile, so the replace is gone with it.
             SaveEnd::Skipped(SkipReason::ChangedOnDisk)
         }
-        Err(err) => SaveEnd::Skipped(SkipReason::Unwritable(err.to_string())),
+        // The write failed (the status bar says why); the buffer keeps the
+        // replace, unsaved.
+        Err(_) => SaveEnd::Unsaved,
     }
 }
 
@@ -305,12 +307,13 @@ fn open_skip(documents: &Documents, path: &Path) -> Option<SkipReason> {
 /// text did not change meanwhile (worked out once more if it did).
 async fn replace_open(
     target: &ReplaceTarget,
+    root: &Path,
     spec: &Arc<ReplaceSpec>,
     documents: &Entity<Documents>,
     cx: &mut AsyncWindowContext,
 ) -> OpenOutcome {
     let lines = Arc::new(target.lines.clone());
-    let path = target.path.clone();
+    let path = root.join(&target.path);
     for _ in 0..2 {
         let taken = cx.update(|_, cx| {
             let docs = documents.read(cx);
@@ -360,7 +363,7 @@ async fn replace_open(
                 documents.update(cx, |docs, cx| {
                     let revision = docs.revision_of(&path)?;
                     let task = docs.save_replaced(&path, revision, window, cx);
-                    Some(ReplaceSave { revision, task })
+                    Some(ReplaceSave { task })
                 })
             };
             Some(OpenOutcome::Replaced { count, save })

@@ -849,7 +849,9 @@ impl SearchView {
         self._replace = cx.spawn(async move |this, cx| {
             let report = job.await;
             this.update(cx, |view, cx| match kind {
-                ReplaceKind::All { value } => view.finish_replace(generation, report, &value, cx),
+                ReplaceKind::All { value } => {
+                    view.finish_replace(generation, report, &value, window_id, cx)
+                }
                 kind => view.finish_one(generation, report, kind, window_id, cx),
             })
             .ok();
@@ -933,14 +935,16 @@ impl SearchView {
             cx.notify();
             return;
         };
+        // Joined onto the root: a relative `untitled:…` path would be
+        // taken for an Untitled document's key.
+        let absolute = self.root.join(&path);
         let snapshot = {
             let docs = self.documents.read(cx);
-            match docs.state(&path) {
-                Some(DocState::Ready) => docs.snapshot_of(&path),
+            match docs.state(&absolute) {
+                Some(DocState::Ready) => docs.snapshot_of(&absolute),
                 _ => None,
             }
         };
-        let absolute = self.root.join(&path);
         let generation = self.generation;
         let job = cx.background_spawn(async move {
             let text = match snapshot {
@@ -989,29 +993,37 @@ impl SearchView {
     }
 
     /// A Replace All ended. Unless a search started since, the results go
-    /// and the message says what was done.
+    /// and the message says what was done. If one did, its results stay
+    /// and the status bar still names the skipped and unsaved files.
     fn finish_replace(
         &mut self,
         generation: u64,
         report: ReplaceReport,
         value: &str,
+        window_id: WindowId,
         cx: &mut Context<Self>,
     ) {
         self.replacing = None;
         cx.notify();
-        if generation != self.generation {
-            return;
-        }
-        self.list.update(cx, |list, cx| list.clear(cx));
-        self.invalid = false;
         let skipped: Vec<(String, String)> = report
             .skipped
             .iter()
             .map(|(path, reason)| (path.clone(), reason.message()))
             .collect();
+        let notes: Vec<String> = skipped_message(&skipped)
+            .into_iter()
+            .chain(unsaved_message(report.unsaved))
+            .collect();
+        if generation != self.generation {
+            if !notes.is_empty() {
+                status_message::show(window_id, notes.join(" "), cx);
+            }
+            return;
+        }
+        self.list.update(cx, |list, cx| list.clear(cx));
+        self.invalid = false;
         let mut lines = vec![replaced_message(report.replaced, report.files, value)];
-        lines.extend(skipped_message(&skipped));
-        lines.extend(unsaved_message(report.unsaved));
+        lines.extend(notes);
         self.last_replace_message = Some(lines.join("\n"));
     }
 

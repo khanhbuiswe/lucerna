@@ -1277,3 +1277,153 @@ fn replace_all_skips_deleted_open_document(cx: &mut TestAppContext) {
         "{message}"
     );
 }
+
+// Replace All: what the merge review found.
+
+/// The text of the document at `path` (absolute or an Untitled key).
+fn doc_text_at(wb: &Entity<Workbench>, path: &Path, cx: &mut VisualTestContext) -> String {
+    let docs = documents(wb, cx);
+    docs.read_with(cx, |d, _| {
+        let s = d.snapshot_of(path).expect("the document is loaded");
+        s.text_for_range(0..s.len_bytes())
+    })
+}
+
+#[gpui::test]
+fn replace_all_never_takes_a_file_named_untitled_for_the_untitled_document(
+    cx: &mut TestAppContext,
+) {
+    init(cx);
+    let name = "untitled:Untitled-1";
+    let dir = project(&[(name, "foo foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let real = dir.path().join(name);
+    // The real file, open with unsaved changes.
+    let code = open(&wb, name, cx);
+    focus_view(&code, cx);
+    type_text("x", cx);
+    assert_eq!(doc_text_at(&wb, &real, cx), "xfoo foo\n");
+    // An Untitled tab whose key is the file's name, with the same line.
+    keys("cmd-n", cx);
+    type_text("xfoo foo", cx);
+    let untitled = Path::new(name);
+    assert_eq!(doc_text_at(&wb, untitled, cx), "xfoo foo");
+
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    assert_eq!(match_count(&view, cx), 1);
+    replace_all("Replace", cx);
+    assert_eq!(doc_text_at(&wb, untitled, cx), "xfoo foo", "never touched");
+    assert_eq!(
+        doc_text_at(&wb, &real, cx),
+        "xbar bar\n",
+        "in its own buffer"
+    );
+    let docs = documents(&wb, cx);
+    assert!(docs.read_with(cx, |d, _| d.is_dirty(&real)), "not saved");
+    assert_eq!(disk(&dir, name), "foo foo\n");
+    let message = replace_message(&view, cx).expect("a message");
+    assert!(
+        message.contains("Replaced 2 occurrences across 1 file with 'bar'."),
+        "{message}"
+    );
+    assert!(
+        message.contains("1 file with unsaved changes was not saved."),
+        "{message}"
+    );
+}
+
+#[gpui::test]
+fn replace_all_failed_save_reports_unsaved_not_skipped(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt as _;
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    assert!(!is_dirty(&wb, "a.txt", cx));
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    // The save of the clean document will fail.
+    let a = dir.path().join("a.txt");
+    fs::set_permissions(&a, fs::Permissions::from_mode(0o444)).unwrap();
+    replace_all("Replace", cx);
+    fs::set_permissions(&a, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(disk(&dir, "a.txt"), "foo foo\n", "not written");
+    assert_eq!(disk(&dir, "b.txt"), "bar\n");
+    assert_eq!(
+        doc_text(&wb, "a.txt", cx),
+        "bar bar\n",
+        "the buffer keeps it"
+    );
+    assert!(is_dirty(&wb, "a.txt", cx));
+    let message = replace_message(&view, cx).expect("a message");
+    assert!(
+        message.contains("Replaced 3 occurrences across 2 files with 'bar'."),
+        "{message}"
+    );
+    assert!(
+        message.contains("1 file with unsaved changes was not saved."),
+        "{message}"
+    );
+    assert!(!message.contains("Skipped"), "{message}");
+}
+
+#[gpui::test]
+fn new_search_during_replace_still_reports_skipped_files(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[
+        ("a.txt", "foo foo\nkeep\n"),
+        ("b.txt", "foo\n"),
+        ("c.txt", "foo\n"),
+    ]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let code = open(&wb, "c.txt", cx);
+    focus_view(&code, cx);
+    type_text("x", cx);
+    assert!(is_dirty(&wb, "c.txt", cx));
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    fs::write(dir.path().join("b.txt"), "x\nfoo\n").unwrap();
+    keys("alt-cmd-enter", cx);
+    cx.simulate_prompt_answer("Replace");
+    let mut ticks = 0;
+    while !view.read_with(cx, |v, _| v.is_replacing()) {
+        assert!(cx.executor().tick(), "the replace starts");
+        ticks += 1;
+        assert!(ticks < 10_000);
+    }
+    let input = view.read_with(cx, |v, _| v.query_input().clone());
+    cx.update(|window, cx| input.update(cx, |i, cx| i.set_text("keep", window, cx)));
+    draw(cx);
+    settle_search(cx);
+    assert!(!view.read_with(cx, |v, _| v.is_replacing()));
+    assert_eq!(disk(&dir, "a.txt"), "bar bar\nkeep\n");
+    assert_eq!(disk(&dir, "b.txt"), "x\nfoo\n");
+    assert_eq!(replace_message(&view, cx), None, "no Replaced message");
+    let status = status(cx).expect("a status message");
+    assert!(
+        status.contains("Skipped 1 file: b.txt (changed since the search)"),
+        "{status}"
+    );
+    assert!(
+        status.contains("1 file with unsaved changes was not saved."),
+        "{status}"
+    );
+    assert!(!status.contains("Replaced"), "{status}");
+}
+
+#[gpui::test]
+fn replace_line_searches_a_file_named_untitled_on_its_own_text(cx: &mut TestAppContext) {
+    init(cx);
+    let name = "untitled:Untitled-1";
+    let dir = project(&[(name, "foo\nx\nfoo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    // An Untitled tab whose key is the file's name, with no match.
+    keys("cmd-n", cx);
+    type_text("zzz", cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    focus_list(&view, cx);
+    select_line_number(&view, 1, cx);
+    keys("shift-cmd-1", cx);
+    assert_eq!(disk(&dir, name), "bar\nx\nfoo\n");
+    assert_eq!(match_lines(&view, cx), vec![3], "searched on the file");
+    assert_eq!(doc_text_at(&wb, Path::new(name), cx), "zzz");
+}
