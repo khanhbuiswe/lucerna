@@ -20,7 +20,7 @@ Thiếu là người dùng mới không dùng được hoặc không cài đư�
 
 **Để sau:**
 
-- [ ] Multi-cursor (bước 4.3, đã có spec và plan)
+- [x] Multi-cursor (bước 4.3)
 - [ ] Mở lại tab vừa đóng (⇧⌘T), Close Others
 - [ ] Bản build cho Intel Mac
 - [ ] Linux (dự án riêng)
