@@ -254,3 +254,48 @@ fn save_and_revert_on_image_tab_do_nothing(cx: &mut TestAppContext) {
     let (item, _) = active_item(&wb, cx);
     assert!(matches!(item, TabItem::ImagePreview(_)));
 }
+
+/// The bounds of the element with debug selector `selector`.
+fn bounds(selector: &'static str, cx: &mut VisualTestContext) -> gpui::Bounds<gpui::Pixels> {
+    cx.debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} drawn"))
+}
+
+#[gpui::test]
+fn image_that_fits_is_drawn_at_natural_size(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    cx.simulate_resize(gpui::size(gpui::px(1600.), gpui::px(1200.)));
+    write_png(&dir.path().join("n.png"), 30, 20);
+    let _preview = open(&wb, "n.png", cx);
+    draw(cx);
+    let image = bounds("image-preview-image", cx);
+    assert_eq!(image.size, gpui::size(gpui::px(30.), gpui::px(20.)));
+    // The border goes around the image, not into it.
+    let frame = bounds("image-preview-box", cx);
+    assert!(frame.size.width > image.size.width && frame.size.height > image.size.height);
+    assert!(frame.contains(&image.origin));
+}
+
+#[gpui::test]
+fn large_image_shrinks_to_fit_keeping_aspect(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    cx.simulate_resize(gpui::size(gpui::px(800.), gpui::px(600.)));
+    write_png(&dir.path().join("big.png"), 2000, 1500);
+    let preview = open(&wb, "big.png", cx);
+    draw(cx);
+    preview.read_with(cx, |p, _| assert_eq!(p.dims(), Some((2000, 1500))));
+    let area = bounds("image-preview", cx);
+    let frame = bounds("image-preview-box", cx);
+    let image = bounds("image-preview-image", cx);
+    // Inside the view, and as large as it can be along one side.
+    assert!(frame.left() >= area.left() && frame.right() <= area.right());
+    assert!(frame.top() >= area.top() && frame.bottom() <= area.bottom());
+    assert!(image.size.width < gpui::px(2000.));
+    let (w, h) = (f32::from(image.size.width), f32::from(image.size.height));
+    assert!((w / h - 4. / 3.).abs() < 0.01, "aspect kept: {w}×{h}");
+    let (aw, ah) = (f32::from(area.size.width), f32::from(area.size.height));
+    assert!(
+        aw - w < 40. || ah - h < 40.,
+        "fills a side: {w}×{h} in {aw}×{ah}"
+    );
+}

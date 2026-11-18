@@ -22,6 +22,8 @@ use crate::workbench::Workbench;
 
 /// The side of a checkerboard square behind the image, in px.
 const CHECKER_SIZE: f32 = 8.;
+/// The width of the border around the image, in px.
+const BORDER_WIDTH: f32 = 1.;
 
 /// What the view shows.
 enum State {
@@ -158,11 +160,13 @@ impl ImagePreview {
     ) -> gpui::Div {
         let ui = &cx.global::<AppState>().theme.ui;
         let (w, h) = (w.max(1) as f32, h.max(1) as f32);
+        // The border is drawn around the image, so it takes from the space.
+        let border = 2. * BORDER_WIDTH;
         let fit = self.available.get().map_or(1., |a| {
-            (f32::from(a.width) / w)
-                .min(f32::from(a.height) / h)
-                .min(1.)
+            let (aw, ah) = (f32::from(a.width) - border, f32::from(a.height) - border);
+            (aw / w).min(ah / h).clamp(0., 1.)
         });
+        let (iw, ih) = (w * fit, h * fit);
         let available = self.available.clone();
         let view = cx.entity_id();
         let measure = canvas(
@@ -189,15 +193,23 @@ impl ImagePreview {
                 .overflow_hidden()
                 .child(measure)
                 .child(
+                    // Sizes are border-box: the frame is the image plus its
+                    // border, so the image keeps its full size.
                     div()
-                        .debug_selector(|| "image-preview-image".into())
+                        .debug_selector(|| "image-preview-box".into())
                         .flex_none()
-                        .w(px(w * fit))
-                        .h(px(h * fit))
-                        .border_1()
+                        .w(px(iw + border))
+                        .h(px(ih + border))
+                        .border(px(BORDER_WIDTH))
                         .border_color(color(ui.border_variant))
                         .bg(checkerboard(color(ui.element_background), CHECKER_SIZE))
-                        .child(img(ImageSource::Render(image)).size_full()),
+                        .child(
+                            div()
+                                .debug_selector(|| "image-preview-image".into())
+                                .w(px(iw))
+                                .h(px(ih))
+                                .child(img(ImageSource::Render(image)).size_full()),
+                        ),
                 ),
         )
     }
