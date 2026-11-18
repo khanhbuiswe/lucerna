@@ -366,11 +366,16 @@ fn search_file(
     excerpts
 }
 
+/// Largest file read whole into memory by [`search_disk_file`].
+const WHOLE_READ_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Searches a file on disk as the editor and the replace job see it: a file
 /// that is not valid UTF-8 and has no BOM (which grep transcodes itself) is
 /// decoded with `decode_file` first, so `line_text` of a Windows-1252 file
 /// reads "café", not "caf\u{FFFD}". Valid UTF-8 and BOM files go straight to
-/// the searcher. Files past `MAX_OPEN_BYTES` keep the streaming path.
+/// the searcher. Files past `WHOLE_READ_BYTES` keep the streaming path, so
+/// the parallel walk never holds many big files in memory; a large non-UTF-8
+/// file keeps a lossy `line_text` and the replace job skips it.
 fn search_disk_file(
     searcher: &mut Searcher,
     matcher: &RegexMatcher,
@@ -378,7 +383,7 @@ fn search_disk_file(
     sink: &mut ExcerptSink<'_>,
 ) -> Result<(), std::io::Error> {
     let meta = std::fs::metadata(path)?;
-    if meta.len() > lucerna_text::MAX_OPEN_BYTES {
+    if meta.len() > WHOLE_READ_BYTES {
         return searcher.search_path(matcher, path, sink);
     }
     let bytes = std::fs::read(path)?;
