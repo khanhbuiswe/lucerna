@@ -30,6 +30,11 @@ Lucerna keeps VS Code's default macOS shortcuts. These are the main ones.
 | Cmd+K V | Markdown preview to the side |
 | Cmd+1…8 | Focus editor group N |
 | Cmd+W | Close tab |
+| Cmd+Shift+T | Reopen closed tab |
+| Alt+Cmd+T | Close other tabs |
+| Cmd+K U | Close saved tabs |
+| Cmd+K W | Close tabs in group |
+| Cmd+K Cmd+W | Close all tabs |
 | Ctrl+Tab | Recent tabs |
 | Cmd+K Cmd+T | Pick a theme |
 | Cmd+, | Open `settings.json` |
