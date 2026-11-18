@@ -170,9 +170,57 @@ enum ReplaceKind {
     /// Replace All, with the Replace text it used.
     All { value: String },
     /// One match line of file `path` (root-relative).
-    Line { path: Arc<Path>, line_number: u32 },
+    Line(LineReplace),
     /// Every match line of file `path` the results show.
     File { path: Arc<Path> },
+}
+
+/// A per-line replace: what the results showed of its file, so the file's
+/// new search keeps only those match lines (never the dismissed ones, nor
+/// matches that came since).
+struct LineReplace {
+    /// Root-relative.
+    path: Arc<Path>,
+    /// The replaced line.
+    line_number: u32,
+    /// Newlines the replacement adds: lines after the replaced one move
+    /// down by this many.
+    added_lines: u32,
+    /// The match lines shown of the file before the replace, the replaced
+    /// one included.
+    shown: Vec<u32>,
+}
+
+impl LineReplace {
+    /// Whether line `n` of the file's new text was a shown match line:
+    /// lines before the replaced one keep their number, lines after it
+    /// move down by `added_lines`, and the replaced line spans
+    /// `line_number..=line_number + added_lines`.
+    fn keeps(&self, n: u32) -> bool {
+        let (line, added) = (self.line_number, self.added_lines);
+        if n < line {
+            self.shown.binary_search(&n).is_ok()
+        } else if n <= line + added {
+            true
+        } else {
+            self.shown.binary_search(&(n - added)).is_ok()
+        }
+    }
+}
+
+/// `excerpts` with only the match lines `keep` accepts: the others are
+/// dropped as Dismiss drops them, and so is an excerpt left without a
+/// match line (with its context).
+fn keep_matches(excerpts: Vec<Excerpt>, keep: impl Fn(u32) -> bool) -> Vec<Excerpt> {
+    excerpts
+        .into_iter()
+        .filter_map(|mut excerpt| {
+            excerpt
+                .lines
+                .retain(|l| l.ranges.is_empty() || keep(l.line_number));
+            (excerpt.match_count() > 0).then_some(excerpt)
+        })
+        .collect()
 }
 
 /// The status bar text for a per-line or per-file replace of file `name`
@@ -679,6 +727,28 @@ impl SearchView {
         }
         let path = file.path.clone();
         let line_number = line.line_number;
+        let mut shown: Vec<u32> = file
+            .excerpts
+            .iter()
+            .flat_map(|e| &e.lines)
+            .filter(|l| !l.ranges.is_empty())
+            .map(|l| l.line_number)
+            .collect();
+        shown.sort_unstable();
+        shown.dedup();
+        // The new text of the line, as the preview works it out (the same
+        // matcher and replacement as the job): its newlines move the lines
+        // after it.
+        let added_lines = ReplacePreview::new(&query, &self.replace_text, self.preserve_case)
+            .map(|preview| {
+                preview
+                    .replacements(line)
+                    .iter()
+                    .flatten()
+                    .map(|new| new.matches('\n').count() as u32)
+                    .sum()
+            })
+            .unwrap_or(0);
         let target = ReplaceTarget {
             path: path.clone(),
             lines: vec![ShownLine {
@@ -687,7 +757,12 @@ impl SearchView {
             }],
         };
         let spec = self.replace_spec(query);
-        let kind = ReplaceKind::Line { path, line_number };
+        let kind = ReplaceKind::Line(LineReplace {
+            path,
+            line_number,
+            added_lines,
+            shown,
+        });
         self.start_replace(vec![target], spec, kind, window, cx);
     }
 
@@ -795,7 +870,9 @@ impl SearchView {
         cx: &mut Context<Self>,
     ) {
         let path = match &kind {
-            ReplaceKind::Line { path, .. } | ReplaceKind::File { path } => path.clone(),
+            ReplaceKind::Line(LineReplace { path, .. }) | ReplaceKind::File { path } => {
+                path.clone()
+            }
             ReplaceKind::All { .. } => return,
         };
         let name = file_name(&path);
@@ -815,10 +892,10 @@ impl SearchView {
             return;
         }
         match kind {
-            ReplaceKind::Line { path, line_number } => {
+            ReplaceKind::Line(line) => {
                 // Still replacing until the file is searched again, so the
                 // next replace works on current results.
-                self.research_file(path, line_number, cx);
+                self.research_file(line, cx);
             }
             ReplaceKind::File { path } => {
                 self.replacing = None;
@@ -842,11 +919,15 @@ impl SearchView {
         }
     }
 
-    /// Searches file `path` again on its current text (the open
+    /// Searches the file of `line` again on its current text (the open
     /// document's, else the disk's, read on a background thread), puts its
-    /// new excerpts in the results and selects the match line after
-    /// `line_number`, else the one before.
-    fn research_file(&mut self, path: Arc<Path>, line_number: u32, cx: &mut Context<Self>) {
+    /// new excerpts in the results (only the match lines shown before, see
+    /// [`LineReplace::keeps`]) and selects the match line after the
+    /// replaced one, else the one before.
+    fn research_file(&mut self, line: LineReplace, cx: &mut Context<Self>) {
+        let path = line.path.clone();
+        // Where the replaced line ends in the new text.
+        let line_number = line.line_number + line.added_lines;
         let Some(query) = self.last_query.clone() else {
             self.replacing = None;
             cx.notify();
@@ -869,7 +950,8 @@ impl SearchView {
                     lucerna_text::decode_file(&bytes, false).ok()?.text
                 }
             };
-            search_text(&query, &text).ok()
+            let excerpts = search_text(&query, &text).ok()?;
+            Some(keep_matches(excerpts, |n| line.keeps(n)))
         });
         self._research = cx.spawn(async move |this, cx| {
             let excerpts = job.await.unwrap_or_default();

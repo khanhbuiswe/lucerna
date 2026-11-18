@@ -1053,3 +1053,82 @@ fn replace_line_in_dirty_document_reports_unsaved(cx: &mut TestAppContext) {
     assert_eq!(match_count(&view, cx), 1, "searched again on the buffer");
     assert_eq!(selected_line_number(&view, cx), Some(3));
 }
+
+/// Presses `↓`, then `↑`, in the results list until line `n` is selected.
+fn select_line_number(view: &Entity<SearchView>, n: u32, cx: &mut VisualTestContext) {
+    for key in ["down", "up"] {
+        for _ in 0..30 {
+            if selected_line_number(view, cx) == Some(n) {
+                return;
+            }
+            keys(key, cx);
+        }
+    }
+    panic!("line {n} is never selected");
+}
+
+/// The match lines' numbers the results show, by file.
+fn match_lines(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> Vec<u32> {
+    view.read_with(cx, |v, cx| {
+        v.results(cx)
+            .files()
+            .iter()
+            .flat_map(|f| &f.excerpts)
+            .flat_map(|e| &e.lines)
+            .filter(|l| !l.ranges.is_empty())
+            .map(|l| l.line_number)
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn replace_line_keeps_dismissed_lines_out(cx: &mut TestAppContext) {
+    init(cx);
+    let text = "foo1\na\nb\nc\nfoo2\nd\ne\nf\nfoo3\n";
+    let dir = project(&[("a.txt", text)]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    focus_list(&view, cx);
+    select_line_number(&view, 1, cx);
+    keys("cmd-backspace", cx);
+    assert_eq!(match_lines(&view, cx), vec![5, 9]);
+    select_line_number(&view, 5, cx);
+    keys("shift-cmd-1", cx);
+    assert_eq!(disk(&dir, "a.txt"), "foo1\na\nb\nc\nbar2\nd\ne\nf\nfoo3\n");
+    assert_eq!(match_lines(&view, cx), vec![9], "line 1 stays dismissed");
+
+    replace_all("Replace", cx);
+    assert_eq!(
+        disk(&dir, "a.txt"),
+        "foo1\na\nb\nc\nbar2\nd\ne\nf\nbar3\n",
+        "Replace All leaves the dismissed line alone"
+    );
+}
+
+#[gpui::test]
+fn replace_line_with_newline_renumbers_shown_lines(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo\nx\nfoo\ny\nfoo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    keys("cmd-shift-h", cx);
+    let view = search(&wb, cx);
+    type_text("foo", cx);
+    keys("alt-cmd-r", cx);
+    assert!(view.read_with(cx, |v, _| v.is_regex()));
+    settle_search(cx);
+    keys("tab", cx);
+    type_text(r"a\nb", cx);
+    focus_list(&view, cx);
+    select_line_number(&view, 3, cx);
+    keys("cmd-backspace", cx);
+    assert_eq!(match_lines(&view, cx), vec![1, 5]);
+    select_line_number(&view, 1, cx);
+    keys("shift-cmd-1", cx);
+    assert_eq!(disk(&dir, "a.txt"), "a\nb\nx\nfoo\ny\nfoo\n");
+    assert_eq!(
+        match_lines(&view, cx),
+        vec![6],
+        "line 5 is now 6; the dismissed line 3 (now 4) stays out"
+    );
+    assert_eq!(selected_line_number(&view, cx), Some(6));
+}
