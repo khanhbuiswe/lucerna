@@ -5,7 +5,7 @@ use lucerna_git::{
 };
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use support::{bin, git, repo};
+use support::{add_remote_config, bin, git, repo};
 use tempfile::TempDir;
 
 fn discover(dir: &Path) -> Repo {
@@ -157,10 +157,7 @@ fn branch_list_uses_longest_matching_remote() {
     let (_c, bare, work) = clone_of(&src);
     // Remote `origin/sub` makes `refs/remotes/origin/sub/x` ambiguous with a
     // branch `sub/x` of `origin`; the longest remote wins.
-    git(
-        &work,
-        &["remote", "add", "origin/sub", bare.to_str().unwrap()],
-    );
+    add_remote_config(&work, "origin/sub", bare.to_str().unwrap());
     git(&work, &["fetch", "-q", "origin/sub"]);
     let list = discover(&work).branch_list().unwrap();
     let b = list.iter().find(|b| b.name == "origin/sub/x").unwrap();
@@ -483,10 +480,7 @@ fn overlapping_remotes_fail_cleanly() {
     let (_t, src) = repo();
     git(&src, &["branch", "x"]);
     let (_c, bare, work) = clone_of(&src);
-    git(
-        &work,
-        &["remote", "add", "origin/sub", bare.to_str().unwrap()],
-    );
+    add_remote_config(&work, "origin/sub", bare.to_str().unwrap());
     git(&work, &["fetch", "-q", "origin/sub"]);
     let r = discover(&work).switch_branch(&SwitchTarget::Remote {
         remote: "origin/sub".into(),
