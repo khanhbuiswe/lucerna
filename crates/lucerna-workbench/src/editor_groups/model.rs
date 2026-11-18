@@ -264,8 +264,9 @@ impl Default for EditorGroups {
 }
 
 impl TabId {
-    /// For keying per-tab UI state, such as element ids.
-    pub(crate) fn as_u64(self) -> u64 {
+    /// For keying per-tab UI state, such as element ids, and for naming a
+    /// tab in command arguments (`{"tab": <id>}`).
+    pub fn as_u64(self) -> u64 {
         self.0
     }
 }
@@ -727,6 +728,12 @@ impl EditorGroups {
             .filter(|(i, _)| keep(*i, at))
             .map(|(_, t)| t.id)
             .collect()
+    }
+
+    /// The open tab whose [`TabId::as_u64`] is `raw`.
+    pub(crate) fn tab_from_u64(&self, raw: u64) -> Option<TabId> {
+        let id = TabId(raw);
+        self.group_of(id).map(|_| id)
     }
 
     /// The other tabs of `target`'s group (Close Others), in tab order.

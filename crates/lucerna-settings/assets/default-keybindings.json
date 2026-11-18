@@ -209,5 +209,10 @@
   { "key": "alt+cmd+c", "command": "toggleFindCaseSensitive", "when": "editorFocus && !searchViewletFocus" },
   { "key": "alt+cmd+w", "command": "toggleFindWholeWord", "when": "editorFocus && !searchViewletFocus" },
   { "key": "alt+cmd+r", "command": "toggleFindRegex", "when": "editorFocus && !searchViewletFocus" },
-  { "key": "alt+cmd+p", "command": "togglePreserveCase", "when": "editorFocus && !searchViewletFocus" }
+  { "key": "alt+cmd+p", "command": "togglePreserveCase", "when": "editorFocus && !searchViewletFocus" },
+  { "key": "shift+cmd+t", "command": "workbench.action.reopenClosedEditor" },
+  { "key": "alt+cmd+t", "command": "workbench.action.closeOtherEditors" },
+  { "key": "cmd+k u", "command": "workbench.action.closeUnmodifiedEditors" },
+  { "key": "cmd+k w", "command": "workbench.action.closeEditorsInGroup" },
+  { "key": "cmd+k cmd+w", "command": "workbench.action.closeAllEditors" }
 ]

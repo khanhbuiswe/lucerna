@@ -2376,6 +2376,56 @@ impl Workbench {
         });
     }
 
+    /// Reopen Closed Editor: brings back the last tabs the user closed
+    /// (see [`EditorGroups::reopen_closed`]), each file tab with its cursor
+    /// and scroll. Entries whose file is gone are dropped, found by one
+    /// `stat` each on this thread when the key is pressed.
+    pub(crate) fn reopen_closed_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let reopened = self.update_editor_groups(cx, |m| m.reopen_closed(|p| p.exists()));
+        if reopened.is_empty() {
+            return;
+        }
+        let active = self
+            .editor_groups
+            .read(cx)
+            .model()
+            .active_tab()
+            .map(|t| t.id);
+        for (id, state) in reopened {
+            let Some(state) = state else {
+                continue;
+            };
+            let path = self
+                .editor_groups
+                .read(cx)
+                .model()
+                .groups()
+                .iter()
+                .flat_map(|g| &g.tabs)
+                .find(|t| t.id == id)
+                .and_then(|t| match &t.item {
+                    TabItem::File(path) => Some(path.clone()),
+                    _ => None,
+                });
+            let Some(path) = path else {
+                continue;
+            };
+            let view = (active == Some(id))
+                .then(|| {
+                    self.editor_groups
+                        .update(cx, |groups, cx| groups.ensure_active_body(window, cx))
+                })
+                .flatten()
+                .and_then(|v| v.downcast::<CodeView>().ok());
+            let (point, row) = (state.cursor, state.scroll_top_row);
+            self.documents.update(cx, |docs, cx| match view {
+                Some(view) => docs.go_to_and_scroll(&view, point, row, cx),
+                None => docs.go_to_and_scroll_when_opened(&path, point, row),
+            });
+        }
+        self.focus_editor_area(window, cx);
+    }
+
     /// The `when`-clause context for key bindings.
     pub fn context_keys(&self, window: &Window, cx: &App) -> WhenContext {
         let sidebar_focus = self.sidebar_visible && self.sidebar_focus.contains_focused(window, cx);

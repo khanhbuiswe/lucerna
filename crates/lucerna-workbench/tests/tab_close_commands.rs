@@ -300,3 +300,162 @@ fn close_others_does_not_ask_for_document_shown_elsewhere(cx: &mut TestAppContex
     assert_eq!(tabs(&wb, cx), [["a.txt"]]);
     assert!(is_dirty(&wb, &dir, "a.txt", cx));
 }
+
+#[gpui::test]
+fn reopen_restores_tab_cursor_and_scroll(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt", "b.txt", "c.txt"], cx);
+    open(&wb, "a.txt", cx);
+    open(&wb, "b.txt", cx);
+    open(&wb, "c.txt", cx);
+    // Back to b, the middle tab.
+    let view = open(&wb, "b.txt", cx);
+    cx.update(|_, cx| {
+        view.update(cx, |v, cx| {
+            v.set_cursor(Point { row: 12, column: 3 }, cx);
+            v.set_scroll_top_row(4, cx);
+        })
+    });
+    settle(cx);
+    drop(view);
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt", "c.txt"]]);
+    run(&wb, "workbench.action.closeActiveEditor", None, cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt", "c.txt"]]);
+    keys("cmd-shift-t", cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt", "c.txt"]]);
+    assert_eq!(active_name(&wb, cx).as_deref(), Some("b.txt"));
+    let view = active_view(&wb, cx);
+    let (cursor, top) = view.read_with(cx, |v, _| (v.cursor(), v.scroll_top_row()));
+    assert_eq!(cursor, Point { row: 12, column: 3 });
+    assert_eq!(top, 4);
+}
+
+#[gpui::test]
+fn reopen_walks_back_and_stops(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt", "b.txt", "c.txt"], cx);
+    open(&wb, "a.txt", cx);
+    open(&wb, "b.txt", cx);
+    open(&wb, "c.txt", cx);
+    run(&wb, "workbench.action.closeActiveEditor", None, cx); // c
+    run(&wb, "workbench.action.closeActiveEditor", None, cx); // b
+    assert_eq!(tabs(&wb, cx), [["a.txt"]]);
+    keys("cmd-shift-t", cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt"]]);
+    keys("cmd-shift-t", cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt", "c.txt"]]);
+    keys("cmd-shift-t", cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt", "c.txt"]]);
+}
+
+#[gpui::test]
+fn reopen_skips_deleted_file(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workspace(&["a.txt", "b.txt"], cx);
+    open(&wb, "a.txt", cx);
+    open(&wb, "b.txt", cx);
+    run(&wb, "workbench.action.closeActiveEditor", None, cx);
+    fs::remove_file(dir.path().join("b.txt")).unwrap();
+    keys("cmd-shift-t", cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt"]]);
+}
+
+#[gpui::test]
+fn close_others_key_and_pin(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt", "b.txt", "c.txt"], cx);
+    open(&wb, "a.txt", cx);
+    open(&wb, "b.txt", cx);
+    open_as(&wb, "c.txt", OpenMode::Preview, cx);
+    keys("alt-cmd-t", cx);
+    assert_eq!(tabs(&wb, cx), [["c.txt"]]);
+    let pinned = cx.update(|_, cx| {
+        wb.read(cx).editor_groups().read(cx).model().groups()[0].tabs[0].pinned
+    });
+    assert!(pinned);
+    assert_eq!(active_name(&wb, cx).as_deref(), Some("c.txt"));
+    keys("cmd-shift-t", cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt", "c.txt"]]);
+    assert_eq!(active_name(&wb, cx).as_deref(), Some("c.txt"));
+}
+
+#[gpui::test]
+fn close_to_right_and_left_with_tab_arg(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt", "b.txt", "c.txt", "d.txt"], cx);
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        open(&wb, name, cx);
+    }
+    let b = tab_id(&wb, 0, 1, cx);
+    run(
+        &wb,
+        "workbench.action.closeEditorsToTheRight",
+        Some(serde_json::json!({ "tab": b.as_u64() })),
+        cx,
+    );
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt"]]);
+    assert_eq!(active_name(&wb, cx).as_deref(), Some("b.txt"));
+
+    keys("cmd-shift-t", cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt", "c.txt", "d.txt"]]);
+    let c = tab_id(&wb, 0, 2, cx);
+    run(
+        &wb,
+        "workbench.action.closeEditorsToTheLeft",
+        Some(serde_json::json!({ "tab": c.as_u64() })),
+        cx,
+    );
+    assert_eq!(tabs(&wb, cx), [["c.txt", "d.txt"]]);
+    assert_eq!(active_name(&wb, cx).as_deref(), Some("c.txt"));
+}
+
+#[gpui::test]
+fn close_saved_keeps_dirty(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt", "b.txt", "c.txt"], cx);
+    open(&wb, "a.txt", cx);
+    input("x", cx);
+    open(&wb, "b.txt", cx);
+    open(&wb, "c.txt", cx);
+    keys("cmd-k u", cx);
+    assert!(cx.pending_prompt().is_none());
+    assert_eq!(tabs(&wb, cx), [["a.txt"]]);
+}
+
+#[gpui::test]
+fn close_group_keys(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt", "b.txt", "c.txt"], cx);
+    open(&wb, "a.txt", cx);
+    open(&wb, "b.txt", cx);
+    run(&wb, "workbench.action.splitEditor", None, cx);
+    open(&wb, "c.txt", cx);
+    assert_eq!(tabs(&wb, cx), [vec!["a.txt", "b.txt"], vec!["b.txt", "c.txt"]]);
+    keys("cmd-k w", cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt"]]);
+    keys("cmd-k cmd-w", cx);
+    assert!(tabs(&wb, cx).concat().is_empty());
+}
+
+#[gpui::test]
+fn registers_commands(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&[], cx);
+    let all: Vec<(String, String)> = wb.read_with(cx, |wb, _| {
+        wb.commands()
+            .all()
+            .map(|(id, title)| (id.to_string(), title.to_string()))
+            .collect()
+    });
+    for (id, title) in [
+        ("workbench.action.reopenClosedEditor", "View: Reopen Closed Editor"),
+        ("workbench.action.closeOtherEditors", "View: Close Other Editors in Group"),
+        (
+            "workbench.action.closeEditorsToTheRight",
+            "View: Close Editors to the Right in Group",
+        ),
+        (
+            "workbench.action.closeEditorsToTheLeft",
+            "View: Close Editors to the Left in Group",
+        ),
+        ("workbench.action.closeUnmodifiedEditors", "View: Close Saved Editors in Group"),
+        ("workbench.action.closeEditorsInGroup", "View: Close All Editors in Group"),
+    ] {
+        assert!(
+            all.contains(&(id.to_string(), title.to_string())),
+            "missing {id} \"{title}\""
+        );
+    }
+}
