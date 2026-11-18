@@ -36,7 +36,7 @@ use crate::git::{GitStore, GitStoreEvent};
 use crate::hot_exit::HotExit;
 use crate::hot_exit::store::WorkspaceKey;
 use crate::hover::SHOW_HOVER;
-use crate::image_preview::ImagePreview;
+use crate::image_preview::{ImagePreview, ImageStatusItem};
 use crate::language_servers::LanguageServers;
 use crate::layout::panel::{self, EDITOR_MIN_SIZE, PanelPosition, PanelSash, PanelState};
 use crate::layout::sidebar::SidebarSash;
@@ -609,6 +609,10 @@ impl Workbench {
             let (groups, docs) = (editor_groups.clone(), documents.clone());
             cx.new(|_| DocumentStatusItem::new(groups, docs))
         };
+        let image_status = {
+            let groups = editor_groups.clone();
+            cx.new(|_| ImageStatusItem::new(groups))
+        };
         let scan_started = std::time::Instant::now();
         let scanning = single_file.is_none();
         let single_file_path = single_file.as_ref().map(|rel| root.join(rel));
@@ -974,6 +978,7 @@ impl Workbench {
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, lsp_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
+        workbench.add_status_item(StatusBarSide::Right, image_status.into(), cx);
         // A restored layout may already show a preview beside its editor.
         cx.defer_in(window, |wb, window, cx| {
             let groups = wb.editor_groups.clone();

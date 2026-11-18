@@ -27,8 +27,9 @@ pub enum LoadOutcome {
     },
     /// The file is larger than [`MAX_IMAGE_BYTES`]; not read.
     TooLargeBytes(u64),
-    /// A raster image of more than [`MAX_IMAGE_PIXELS`]; not decoded.
-    TooLargePixels(u32, u32),
+    /// A raster image of more than [`MAX_IMAGE_PIXELS`] (width, height),
+    /// in a file of `bytes`; not decoded.
+    TooLargePixels(u32, u32, u64),
     /// A Git LFS pointer, not the image.
     LfsPointer { bytes: u64 },
     /// Unreadable, or not an image this preview decodes. `bytes` is the
@@ -74,7 +75,7 @@ pub fn load_image(path: &Path, scale_factor: f32, svg: SvgRenderer) -> LoadOutco
         return failed;
     };
     if u64::from(w) * u64::from(h) > MAX_IMAGE_PIXELS {
-        return LoadOutcome::TooLargePixels(w, h);
+        return LoadOutcome::TooLargePixels(w, h, bytes);
     }
     match Image::from_bytes(format, data).to_image_data(svg) {
         Ok(image) => LoadOutcome::Loaded {

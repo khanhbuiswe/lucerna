@@ -317,9 +317,9 @@ fn state_for(outcome: LoadOutcome) -> State {
             ),
             Some(bytes),
         ),
-        LoadOutcome::TooLargePixels(w, h) => error(
+        LoadOutcome::TooLargePixels(w, h, bytes) => error(
             format!("The image is too large to preview ({w} \u{d7} {h})."),
-            None,
+            Some(bytes),
         ),
         LoadOutcome::LfsPointer { bytes } => error(
             "This image is stored with Git LFS and has not been downloaded.".into(),

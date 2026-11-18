@@ -13,7 +13,10 @@ use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::Point;
 use lucerna_theme::ThemeRegistry;
-use lucerna_workbench::{AppState, ImagePreview, OpenMode, TabItem, Workbench};
+use lucerna_workbench::{
+    AppState, ImagePreview, ImageStatusItem, OpenMode, StatusBarSide, TabItem, Workbench,
+    status_text,
+};
 use tempfile::TempDir;
 
 fn init(cx: &mut TestAppContext) {
@@ -750,4 +753,75 @@ fn explorer_menu_has_open_preview_for_svg(cx: &mut TestAppContext) {
         cx
     ));
     assert!(!explorer_menu_has("a.png", "markdown.showPreview", cx));
+}
+
+/// The text of the image status item, or `None` when it shows nothing.
+fn status_image(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<String> {
+    let shown = cx.debug_bounds("status-image").is_some();
+    let text = cx.update(|_, cx| {
+        wb.read(cx)
+            .status_items(StatusBarSide::Right)
+            .iter()
+            .find_map(|v| v.clone().downcast::<ImageStatusItem>().ok())
+            .expect("the image status item")
+            .read(cx)
+            .text(cx)
+    });
+    assert_eq!(shown, text.is_some(), "drawn exactly when it has text");
+    text
+}
+
+#[gpui::test]
+fn status_bar_shows_dims_and_size(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    open(&wb, "a.png", cx);
+    let len = |name: &str| fs::metadata(dir.path().join(name)).unwrap().len();
+    assert_eq!(
+        status_image(&wb, cx),
+        Some(status_text(Some((3, 2)), len("a.png")))
+    );
+    assert!(cx.debug_bounds("status-cursor").is_none());
+
+    write_png(&dir.path().join("a.png"), 5, 4);
+    report(&wb, "a.png", ChangeKind::Modified, cx);
+    settle(cx);
+    assert_eq!(
+        status_image(&wb, cx),
+        Some(status_text(Some((5, 4)), len("a.png")))
+    );
+}
+
+#[gpui::test]
+fn status_bar_shows_only_size_for_an_error(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(dir.path().join("c.png"), b"not an image").unwrap();
+    open(&wb, "c.png", cx);
+    assert_eq!(status_image(&wb, cx).as_deref(), Some("12 B"));
+
+    // Too many pixels: a valid PNG shell of 20000 x 12000 with no pixel data.
+    let header: [u8; 65] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x4e, 0x20, 0x00, 0x00, 0x2e, 0xe0, 0x08, 0x02, 0x00, 0x00, 0x00, 0xf6,
+        0x4c, 0x83, 0x3f, 0x00, 0x00, 0x00, 0x08, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x03, 0x00,
+        0x00, 0x00, 0x00, 0x01, 0x48, 0x06, 0x89, 0xd2, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    fs::write(dir.path().join("huge.png"), header).unwrap();
+    let preview = open(&wb, "huge.png", cx);
+    preview.read_with(cx, |p, _| {
+        assert_eq!(
+            p.error_message().as_deref(),
+            Some("The image is too large to preview (20000 \u{d7} 12000).")
+        );
+    });
+    assert_eq!(status_image(&wb, cx).as_deref(), Some("65 B"));
+}
+
+#[gpui::test]
+fn status_bar_shows_only_size_for_too_large_bytes(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let file = fs::File::create(dir.path().join("big.png")).unwrap();
+    file.set_len(21 * 1024 * 1024).unwrap();
+    open(&wb, "big.png", cx);
+    assert_eq!(status_image(&wb, cx).as_deref(), Some("21.0 MB"));
 }

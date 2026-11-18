@@ -108,8 +108,9 @@ pub use git::branch_picker::{BranchPicker, BranchPickerEvent, BranchPickerMode, 
 pub use git::checkout::CheckoutAnchor;
 pub use git::{GitSnapshot, GitState, GitStore, GitStoreEvent};
 pub use image_preview::{
-    IMAGE_EDITOR_ID, IMAGE_EXTENSIONS, ImagePreview, LoadOutcome, MAX_IMAGE_PIXELS, format_size,
-    is_image_path, is_lfs_pointer, is_svg_path, load_image, status_text,
+    IMAGE_EDITOR_ID, IMAGE_EXTENSIONS, ImagePreview, ImageStatusItem, LoadOutcome,
+    MAX_IMAGE_PIXELS, format_size, is_image_path, is_lfs_pointer, is_svg_path, load_image,
+    status_text,
 };
 pub use language_servers::{
     HoverInfo, LanguageServers, LanguageServersEvent, ServerStatus, SlotState,

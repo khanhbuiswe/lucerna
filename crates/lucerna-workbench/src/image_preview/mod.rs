@@ -5,6 +5,7 @@
 pub mod commands;
 pub mod info;
 pub mod load;
+pub mod status;
 pub mod view;
 
 use std::path::Path;
@@ -22,6 +23,7 @@ pub use info::{
     is_lfs_pointer, is_svg_path, status_text,
 };
 pub use load::{LoadOutcome, load_image};
+pub use status::ImageStatusItem;
 pub use view::ImagePreview;
 
 /// Every image preview made so far.
