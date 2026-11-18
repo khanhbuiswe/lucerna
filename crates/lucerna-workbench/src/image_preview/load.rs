@@ -11,14 +11,19 @@ use gpui::{DevicePixels, Image, ImageFormat, RenderImage, SvgRenderer, SvgSize, 
 use super::info::{MAX_IMAGE_PIXELS, is_lfs_pointer};
 use crate::markdown_preview::MAX_IMAGE_BYTES;
 
+/// The longest side an SVG is rasterised to, in device px.
+const MAX_SVG_SIDE: f64 = 8192.;
+
 /// What reading an image file gave.
 pub enum LoadOutcome {
     /// Decoded (an SVG: rasterised). `dims` is the pixel size (an SVG's
-    /// intrinsic size, rounded); `bytes` the file's length.
+    /// intrinsic size, rounded); `bytes` the file's length; `svg` whether
+    /// it was rasterised from an SVG (so a new scale factor needs a reload).
     Loaded {
         image: Arc<RenderImage>,
         dims: (u32, u32),
         bytes: u64,
+        svg: bool,
     },
     /// The file is larger than [`MAX_IMAGE_BYTES`]; not read.
     TooLargeBytes(u64),
@@ -76,19 +81,22 @@ pub fn load_image(path: &Path, scale_factor: f32, svg: SvgRenderer) -> LoadOutco
             image,
             dims: (w, h),
             bytes,
+            svg: false,
         },
         Err(_) => failed,
     }
 }
 
 /// Rasterises SVG `data` at `scale_factor` device pixels per CSS pixel,
-/// lowered so the result has at most [`MAX_IMAGE_PIXELS`]; `None` when it
+/// lowered so the result has at most [`MAX_IMAGE_PIXELS`] and sides of at most 8192; `None` when it
 /// does not parse.
 fn load_svg(data: &[u8], scale_factor: f32, svg: &SvgRenderer) -> Option<LoadOutcome> {
     let tree = usvg::Tree::from_data(data, &usvg::Options::default()).ok()?;
     let (w, h) = (tree.size().width(), tree.size().height());
     let area = f64::from(w) * f64::from(h);
     let mut scale = f64::from(scale_factor.max(f32::MIN_POSITIVE));
+    // gpui caps a side itself, with a warning and a blurry upscale.
+    scale = scale.min(MAX_SVG_SIDE / f64::from(w.max(h)).max(1.));
     if area * scale * scale > MAX_IMAGE_PIXELS as f64 {
         scale = (MAX_IMAGE_PIXELS as f64 / area).sqrt();
     }
@@ -104,6 +112,7 @@ fn load_svg(data: &[u8], scale_factor: f32, svg: &SvgRenderer) -> Option<LoadOut
         image,
         dims,
         bytes: data.len() as u64,
+        svg: true,
     })
 }
 

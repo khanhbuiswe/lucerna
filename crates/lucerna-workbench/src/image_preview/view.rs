@@ -33,6 +33,8 @@ enum State {
         image: Arc<RenderImage>,
         dims: (u32, u32),
         bytes: u64,
+        /// Rasterised from an SVG, at `ImagePreview::scale_factor`.
+        svg: bool,
     },
     /// The image cannot be shown: why, and the file's length if known.
     Error {
@@ -65,6 +67,8 @@ impl ImagePreview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Frees the decoded image from the window's atlas with the view.
+        cx.on_release(|this, cx| this.release(None, cx)).detach();
         let mut view = ImagePreview {
             path,
             state: State::Loading,
@@ -86,11 +90,20 @@ impl ImagePreview {
         self._load = Some(cx.spawn(async move |this, cx| {
             let outcome = outcome.await;
             this.update(cx, |this, cx| {
+                this.release(None, cx);
                 this.state = state_for(outcome);
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    /// Drops the decoded image, if any, from every window's atlas; the view
+    /// is left empty. Call it before the image is replaced.
+    pub fn release(&mut self, window: Option<&mut Window>, cx: &mut App) {
+        if let State::Loaded { image, .. } = std::mem::replace(&mut self.state, State::Loading) {
+            cx.drop_image(image, window);
+        }
     }
 
     pub fn path(&self) -> &Arc<Path> {
@@ -222,7 +235,17 @@ fn state_for(outcome: LoadOutcome) -> State {
         bytes,
     };
     match outcome {
-        LoadOutcome::Loaded { image, dims, bytes } => State::Loaded { image, dims, bytes },
+        LoadOutcome::Loaded {
+            image,
+            dims,
+            bytes,
+            svg,
+        } => State::Loaded {
+            image,
+            dims,
+            bytes,
+            svg,
+        },
         LoadOutcome::TooLargeBytes(bytes) => error(
             format!(
                 "The image is too large to preview ({}).",
@@ -249,7 +272,17 @@ impl Focusable for ImagePreview {
 }
 
 impl Render for ImagePreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // An SVG is rasterised for one scale factor: another display needs
+        // a new raster. The old one stays until the new one arrives.
+        let scale_factor = window.scale_factor();
+        if scale_factor != self.scale_factor {
+            self.scale_factor = scale_factor;
+            // Still loading: the kind is not known yet.
+            if matches!(self.state, State::Loaded { svg: true, .. } | State::Loading) {
+                self.load(cx);
+            }
+        }
         let ui = &cx.global::<AppState>().theme.ui;
         let root = div()
             .id("image-preview")

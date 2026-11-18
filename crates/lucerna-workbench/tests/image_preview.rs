@@ -299,3 +299,58 @@ fn large_image_shrinks_to_fit_keeping_aspect(cx: &mut TestAppContext) {
         "fills a side: {w}×{h} in {aw}×{ah}"
     );
 }
+
+#[gpui::test]
+fn closing_tab_frees_image(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workbench(cx);
+    let preview = open(&wb, "a.png", cx);
+    let weak = preview.read_with(cx, |p, _| {
+        Arc::downgrade(&p.render_image().expect("decoded"))
+    });
+    let tab = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups.model().active_tab().expect("a tab").id
+    });
+    drop(preview);
+    wb.update(cx, |wb, cx| wb.update_editor_groups(cx, |m| m.close(tab)));
+    draw(cx);
+    assert!(weak.upgrade().is_none(), "no cache holds the image");
+}
+
+#[gpui::test]
+fn svg_rerasters_on_scale_change(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(
+        dir.path().join("i.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"/>"#,
+    )
+    .unwrap();
+    let preview = open(&wb, "i.svg", cx);
+    let width = |cx: &mut VisualTestContext| {
+        preview.read_with(cx, |p, _| {
+            i32::from(p.render_image().unwrap().size(0).width)
+        })
+    };
+    cx.simulate_scale_factor_change(1.0);
+    draw(cx);
+    assert_eq!(width(cx), 40);
+    cx.simulate_scale_factor_change(3.0);
+    draw(cx);
+    assert_eq!(width(cx), 120);
+}
+
+#[gpui::test]
+fn svg_raster_side_is_capped(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(
+        dir.path().join("w.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="20000" height="10"/>"#,
+    )
+    .unwrap();
+    let preview = open(&wb, "w.svg", cx);
+    preview.read_with(cx, |p, _| {
+        let size = p.render_image().expect("rasterised").size(0);
+        assert!(i32::from(size.width) <= 8192, "{size:?}");
+        assert_eq!(p.dims(), Some((20000, 10)));
+    });
+}
