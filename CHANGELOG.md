@@ -3,10 +3,22 @@
 Each release's section below is copied into its GitHub Release page by
 `.github/workflows/release.yml`. A release fails if its version has no section here.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-18
 
 ### Added
 
+- Image preview. PNG, JPEG, GIF (animated), WebP, BMP, TIFF, ICO and SVG files open in their own
+  tab, centred on a checkerboard and shrunk to fit; the status bar shows `W × H • size`. The tab
+  reloads when the file changes on disk, also in gitignored folders, and its title is struck
+  through when the file is deleted. SVG opens as an image; Cmd+Shift+V, the path bar button or
+  Reopen as Text / Reopen as Image Preview switch it to its source and back, asking first when
+  the text has unsaved changes. `workbench.editorAssociations` with `"*.svg": "default"` opens SVG
+  as text. Files over 20 MB or 100 megapixels, and Git LFS pointers, show a notice with Open as
+  Text.
+- Multi-cursor like VS Code: Cmd+D and Cmd+K Cmd+D, Shift+Cmd+L, Opt+Cmd+Up/Down, Shift+Opt+I,
+  column select (Shift+Opt+Cmd+arrows or Shift+Opt+drag), Opt+click and Opt+drag, paste that
+  spreads one line per cursor, and a cursor count in the status bar (`editor.multiCursor*`
+  settings).
 - Cmd+N (File → New File) opens an Untitled tab. Its tab shows the first line you type, and it
   counts as unsaved once it has text. `files.defaultLanguage` sets its language (Plain Text when
   unset). Untitled tabs with text come back after quitting, as other unsaved changes do (hot exit).
@@ -83,5 +95,6 @@ Each release's section below is copied into its GitHub Release page by
 
 First release, for macOS on Apple silicon.
 
+[0.2.0]: https://github.com/khanhbuiswe/lucerna/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/khanhbuiswe/lucerna/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/khanhbuiswe/lucerna/releases/tag/v0.1.0
