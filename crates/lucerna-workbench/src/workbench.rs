@@ -1688,6 +1688,8 @@ impl Workbench {
         let ev = WorktreeEvent::Changed(changes);
         self.documents
             .update(cx, |documents, cx| documents.on_worktree_event(&ev, cx));
+        // Images in ignored folders under the root (an agent's screenshots).
+        crate::image_preview::on_worktree_event(self, &ev, cx);
         self.language_servers
             .update(cx, |servers, cx| servers.on_worktree_event(&ev, cx));
         // Open files the worktree does not report (single-file mode).

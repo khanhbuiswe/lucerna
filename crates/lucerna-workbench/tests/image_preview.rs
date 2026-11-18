@@ -484,3 +484,33 @@ fn reload_keeps_preview_tab_unpinned(cx: &mut TestAppContext) {
     assert_eq!(preview.read_with(cx, |p, _| p.dims()), Some((5, 4)));
     assert_eq!(active_item(&wb, cx), (item, false));
 }
+
+/// An image in a gitignored folder (an agent's screenshot output): the
+/// worktree does not report it, the open-file watcher does, and it reloads
+/// and is marked deleted all the same.
+#[gpui::test]
+fn image_in_ignored_folder_reloads(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(dir.path().join(".gitignore"), "out/\n").unwrap();
+    fs::create_dir(dir.path().join("out")).unwrap();
+    let shot = dir.path().join("out/shot.png");
+    write_png(&shot, 3, 2);
+    let preview = open(&wb, "out/shot.png", cx);
+    assert_eq!(preview.read_with(cx, |p, _| p.dims()), Some((3, 2)));
+
+    write_png(&shot, 5, 4);
+    let changed = shot.canonicalize().unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.on_open_file_changes(std::slice::from_ref(&changed), cx)
+    });
+    settle(cx);
+    assert_eq!(preview.read_with(cx, |p, _| p.dims()), Some((5, 4)));
+
+    fs::remove_file(&shot).unwrap();
+    wb.update(cx, |wb, cx| wb.on_open_file_changes(&[changed], cx));
+    settle(cx);
+    preview.read_with(cx, |p, _| {
+        assert!(p.is_deleted());
+        assert_eq!(p.dims(), Some((5, 4)));
+    });
+}

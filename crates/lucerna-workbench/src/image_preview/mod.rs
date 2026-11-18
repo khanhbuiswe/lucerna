@@ -35,20 +35,24 @@ fn previews(wb: &Workbench, cx: &App) -> Vec<Entity<ImagePreview>> {
         .collect()
 }
 
-/// Hands the worktree's changes to the previews of the changed files.
-/// After a rescan every preview checks its file. Files outside the root
-/// get no events: they are read once.
+/// Hands the changes to the previews of the changed files: the
+/// worktree's (root-relative paths), and the open-file watcher's for
+/// ignored files (absolute paths). After a rescan every preview checks
+/// its file. Files outside the root are read once and never reload.
 pub(crate) fn on_worktree_event(wb: &Workbench, ev: &WorktreeEvent, cx: &mut App) {
     let mut touched = false;
     for preview in previews(wb, cx) {
         let path = preview.read(cx).path().clone();
+        if !path.starts_with(wb.root()) {
+            continue;
+        }
         let kinds: Vec<ChangeKind> = match ev {
             WorktreeEvent::Changed(changes) => changes
                 .iter()
                 .filter(|c| wb.root().join(&c.path) == *path)
                 .map(|c| c.kind)
                 .collect(),
-            WorktreeEvent::Rescanned if path.starts_with(wb.root()) => {
+            WorktreeEvent::Rescanned => {
                 vec![if path.exists() {
                     ChangeKind::Modified
                 } else {
