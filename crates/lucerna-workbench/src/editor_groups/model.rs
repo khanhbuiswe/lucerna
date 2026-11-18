@@ -1041,9 +1041,10 @@ fn saved_item(path: &Path) -> TabItem {
 }
 
 /// A saved preview tab split into its prefix
-/// ([`MARKDOWN_PREVIEW_STATE_PREFIX`] or
-/// [`MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX`]) and the path of the file it
-/// shows; `None` for any other saved tab, and for a path that is not UTF-8.
+/// ([`MARKDOWN_PREVIEW_STATE_PREFIX`],
+/// [`MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX`] or
+/// [`IMAGE_PREVIEW_STATE_PREFIX`]) and the path of the file it shows;
+/// `None` for any other saved tab, and for a path that is not UTF-8.
 pub(crate) fn split_preview_state(path: &Path) -> Option<(&'static str, &Path)> {
     let text = path.to_str()?;
     // The dynamic prefix first: the static one is not a prefix of it, but

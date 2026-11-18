@@ -7,6 +7,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use gpui::{DevicePixels, Image, ImageFormat, RenderImage, SvgRenderer, SvgSize, size};
+use image::codecs::gif::GifDecoder;
+use image::codecs::webp::WebPDecoder;
+use image::{AnimationDecoder, Frame, Rgba};
 
 use super::info::{MAX_IMAGE_PIXELS, is_lfs_pointer};
 use crate::markdown_preview::MAX_IMAGE_BYTES;
@@ -16,9 +19,10 @@ const MAX_SVG_SIDE: f64 = 8192.;
 
 /// What reading an image file gave.
 pub enum LoadOutcome {
-    /// Decoded (an SVG: rasterised). `dims` is the pixel size (an SVG's
-    /// intrinsic size, rounded); `bytes` the file's length; `svg` whether
-    /// it was rasterised from an SVG (so a new scale factor needs a reload).
+    /// Decoded (an SVG: rasterised). `dims` is the pixel size as shown,
+    /// after any EXIF orientation (an SVG's intrinsic size, rounded);
+    /// `bytes` the file's length; `svg` whether it was rasterised from an
+    /// SVG (so a new scale factor needs a reload).
     Loaded {
         image: Arc<RenderImage>,
         dims: (u32, u32),
@@ -67,25 +71,68 @@ pub fn load_image(path: &Path, scale_factor: f32, svg: SvgRenderer) -> LoadOutco
     let Some(format) = gpui_format(guessed) else {
         return failed;
     };
-    let dims = image::ImageReader::new(Cursor::new(&data))
+    // The header's size: the same area as the decoded one, which an EXIF
+    // orientation may turn.
+    let header = image::ImageReader::new(Cursor::new(&data))
         .with_guessed_format()
         .ok()
         .and_then(|reader| reader.into_dimensions().ok());
-    let Some((w, h)) = dims else {
+    let Some((w, h)) = header else {
         return failed;
     };
     if u64::from(w) * u64::from(h) > MAX_IMAGE_PIXELS {
         return LoadOutcome::TooLargePixels(w, h, bytes);
     }
-    match Image::from_bytes(format, data).to_image_data(svg) {
-        Ok(image) => LoadOutcome::Loaded {
-            image,
-            dims: (w, h),
-            bytes,
-            svg: false,
-        },
-        Err(_) => failed,
+    let image = match animation(guessed, &data) {
+        Animation::Frames(frames) => Ok(Arc::new(RenderImage::new(frames))),
+        Animation::Failed => return failed,
+        Animation::Still => Image::from_bytes(format, data).to_image_data(svg),
+    };
+    let Ok(image) = image else {
+        return failed;
+    };
+    // As shown: EXIF orientations 5 to 8 swap the sides.
+    let shown = image.size(0);
+    let dims = (shown.width.0.max(0) as u32, shown.height.0.max(0) as u32);
+    LoadOutcome::Loaded {
+        image,
+        dims,
+        bytes,
+        svg: false,
     }
+}
+
+/// What decoding a file as an animation gave.
+enum Animation {
+    /// Its frames, BGRA.
+    Frames(Vec<Frame>),
+    /// An animated file none of whose frames decodes.
+    Failed,
+    /// Not an animation: gpui decodes it.
+    Still,
+}
+
+/// Decodes a GIF or animated WebP here rather than in gpui, which keeps
+/// every frame however many there are; [`animation_frames`] bounds them by
+/// [`MAX_IMAGE_PIXELS`].
+fn animation(format: image::ImageFormat, data: &[u8]) -> Animation {
+    let frames = match format {
+        image::ImageFormat::Gif => match GifDecoder::new(Cursor::new(data)) {
+            Ok(decoder) => animation_frames(decoder, MAX_IMAGE_PIXELS),
+            Err(_) => None,
+        },
+        image::ImageFormat::WebP => match WebPDecoder::new(Cursor::new(data)) {
+            Ok(mut decoder) if decoder.has_animation() => {
+                // Transparent where no frame has drawn yet, as gpui does.
+                decoder.set_background_color(Rgba([0, 0, 0, 0])).ok();
+                animation_frames(decoder, MAX_IMAGE_PIXELS)
+            }
+            Ok(_) => return Animation::Still,
+            Err(_) => None,
+        },
+        _ => return Animation::Still,
+    };
+    frames.map_or(Animation::Failed, Animation::Frames)
 }
 
 /// Rasterises SVG `data` at `scale_factor` device pixels per CSS pixel,
@@ -129,4 +176,67 @@ fn gpui_format(format: image::ImageFormat) -> Option<ImageFormat> {
         image::ImageFormat::Ico => ImageFormat::Ico,
         _ => return None,
     })
+}
+
+/// The frames of an animation, BGRA as gpui draws them, while frames ×
+/// width × height stays within `budget` pixels; past it, only the first
+/// frame (shown still). Frames that fail to decode are skipped, as gpui
+/// does; `None` when none decodes.
+fn animation_frames<'a>(decoder: impl AnimationDecoder<'a>, budget: u64) -> Option<Vec<Frame>> {
+    let mut frames = Vec::new();
+    let mut pixels = 0u64;
+    for frame in decoder.into_frames().flatten() {
+        let (w, h) = frame.buffer().dimensions();
+        pixels += u64::from(w) * u64::from(h);
+        if pixels > budget && !frames.is_empty() {
+            // Too many to keep: the first frame, still.
+            frames.truncate(1);
+            break;
+        }
+        frames.push(frame);
+    }
+    for frame in &mut frames {
+        for pixel in frame.buffer_mut().as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+    }
+    (!frames.is_empty()).then_some(frames)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A GIF of `frames` frames of `w`×`h`.
+    fn gif(w: u32, h: u32, frames: u8) -> Vec<u8> {
+        let mut gif = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            for i in 0..frames {
+                let buffer = image::RgbaImage::from_pixel(w, h, image::Rgba([i * 40, 0, 0, 255]));
+                encoder.encode_frame(Frame::new(buffer)).unwrap();
+            }
+        }
+        gif
+    }
+
+    fn frames(data: &[u8], budget: u64) -> Vec<Frame> {
+        animation_frames(GifDecoder::new(Cursor::new(data)).unwrap(), budget).unwrap()
+    }
+
+    #[test]
+    fn animation_within_budget_keeps_every_frame() {
+        let frames = frames(&gif(10, 10, 5), 500);
+        assert_eq!(frames.len(), 5);
+        // BGRA: the red channel moved to the third byte.
+        assert_eq!(&frames[1].buffer().as_raw()[..4], &[0, 0, 40, 255]);
+    }
+
+    #[test]
+    fn animation_over_budget_keeps_first_frame() {
+        let frames = frames(&gif(10, 10, 5), 499);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].buffer().dimensions(), (10, 10));
+        assert_eq!(&frames[0].buffer().as_raw()[..4], &[0, 0, 0, 255]);
+    }
 }

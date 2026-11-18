@@ -448,8 +448,12 @@ impl EditorGroupsView {
     /// The conflict or deleted-file bar (spec §7.3) for group `group`,
     /// whose active tab is `tab`; `None` unless it is a file tab or a
     /// Markdown preview (static or dynamic) whose document has a
-    /// [`DiskNotice`].
+    /// [`DiskNotice`]. An image preview tab has none (it does not show the
+    /// document), even when a text tab of its file keeps one open.
     fn disk_bar(&self, group: usize, tab: &Tab, cx: &mut Context<Self>) -> Option<Div> {
+        if matches!(tab.item, TabItem::ImagePreview(_)) {
+            return None;
+        }
         let path = tab.path().or(tab.previewed_path())?.clone();
         let documents = self.documents.clone()?;
         let notice = documents.read(cx).disk_notice(&path)?;

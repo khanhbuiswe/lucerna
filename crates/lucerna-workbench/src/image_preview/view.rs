@@ -98,10 +98,10 @@ impl ImagePreview {
     }
 
     /// Starts reading the file, cancelling a load still running. A new
-    /// image replaces the shown one, which is freed only then. While an
-    /// image is shown, a failure (a file still being written) is ignored:
-    /// the image stays and the next change tries again. Only the first
-    /// load can show a notice instead of an image.
+    /// image, or a definitive notice (too large, an LFS pointer), replaces
+    /// the shown one, which is freed then. While an image is shown, a
+    /// failure (a file still being written) is ignored: the image stays and
+    /// the next change tries again.
     fn load(&mut self, cx: &mut Context<Self>) {
         self.loads_started += 1;
         let (path, scale_factor, svg) = (self.path.clone(), self.scale_factor, cx.svg_renderer());
@@ -109,8 +109,7 @@ impl ImagePreview {
         self._load = Some(cx.spawn(async move |this, cx| {
             let outcome = outcome.await;
             this.update(cx, |this, cx| {
-                let loaded = matches!(outcome, LoadOutcome::Loaded { .. });
-                if !loaded && this.is_loaded() {
+                if matches!(outcome, LoadOutcome::Failed { .. }) && this.is_loaded() {
                     return;
                 }
                 let old = std::mem::replace(&mut this.state, state_for(outcome));

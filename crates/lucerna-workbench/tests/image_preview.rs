@@ -825,3 +825,137 @@ fn status_bar_shows_only_size_for_too_large_bytes(cx: &mut TestAppContext) {
     open(&wb, "big.png", cx);
     assert_eq!(status_image(&wb, cx).as_deref(), Some("21.0 MB"));
 }
+
+/// A `w`×`h` JPEG whose EXIF says Orientation=6 (rotate 90° clockwise), so
+/// it shows as `h`×`w`.
+fn write_rotated_jpeg(path: &Path, w: u32, h: u32) {
+    let mut jpeg = Vec::new();
+    image::RgbImage::from_pixel(w, h, image::Rgb([30, 200, 30]))
+        .write_with_encoder(image::codecs::jpeg::JpegEncoder::new(&mut jpeg))
+        .unwrap();
+    // APP1: "Exif\0\0", a big-endian TIFF header, one IFD entry
+    // (0x0112 Orientation, SHORT, 1, value 6), no next IFD.
+    let mut app1 = vec![0xFF, 0xE1, 0x00, 0x22];
+    app1.extend_from_slice(b"Exif\0\0MM\0\x2A\0\0\0\x08");
+    app1.extend_from_slice(&[0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(app1.len(), 2 + 0x22);
+    // After SOI.
+    jpeg.splice(2..2, app1);
+    fs::write(path, jpeg).unwrap();
+}
+
+#[gpui::test]
+fn exif_rotated_jpeg_is_portrait(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    cx.simulate_resize(gpui::size(gpui::px(1600.), gpui::px(1200.)));
+    write_rotated_jpeg(&dir.path().join("r.jpg"), 40, 20);
+    let preview = open(&wb, "r.jpg", cx);
+    draw(cx);
+    preview.read_with(cx, |p, _| {
+        assert_eq!(p.dims(), Some((20, 40)));
+        let size = p.render_image().expect("decoded").size(0);
+        assert_eq!((i32::from(size.width), i32::from(size.height)), (20, 40));
+    });
+    let image = bounds("image-preview-image", cx);
+    assert_eq!(image.size, gpui::size(gpui::px(20.), gpui::px(40.)));
+}
+
+/// An animated GIF of `frames` frames of `w`×`h`.
+fn write_gif(path: &Path, w: u32, h: u32, frames: u8) {
+    let mut gif = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+        for i in 0..frames {
+            let buffer = image::RgbaImage::from_pixel(w, h, image::Rgba([i * 40, 0, 0, 255]));
+            encoder.encode_frame(image::Frame::new(buffer)).unwrap();
+        }
+    }
+    fs::write(path, gif).unwrap();
+}
+
+#[gpui::test]
+fn small_animated_gif_keeps_its_frames(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    write_gif(&dir.path().join("g.gif"), 4, 3, 3);
+    let preview = open(&wb, "g.gif", cx);
+    preview.read_with(cx, |p, _| {
+        assert_eq!(p.dims(), Some((4, 3)));
+        assert_eq!(p.render_image().expect("decoded").frame_count(), 3);
+    });
+}
+
+/// A file that becomes too large on a reload shows its notice; the old
+/// image is freed.
+#[gpui::test]
+fn too_large_reload_replaces_image(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let preview = open(&wb, "a.png", cx);
+    let old = preview.read_with(cx, |p, _| p.render_image().expect("decoded"));
+    assert!(cx.update(|window, _| window.has_image_atlas_entry(&old)));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(dir.path().join("a.png"))
+        .unwrap();
+    file.set_len(21 * 1024 * 1024).unwrap();
+    drop(file);
+    report(&wb, "a.png", ChangeKind::Modified, cx);
+    settle(cx);
+    preview.read_with(cx, |p, _| {
+        assert!(!p.is_loaded());
+        assert_eq!(
+            p.error_message().as_deref(),
+            Some("The image is too large to preview (21.0 MB).")
+        );
+    });
+    assert!(
+        !cx.update(|window, _| window.has_image_atlas_entry(&old)),
+        "the old image's atlas entry is freed"
+    );
+}
+
+/// An SVG shown both as an edited text tab and as an image tab: its dirty
+/// document lingers in Documents, yet deleting the file shows no Documents
+/// bar while the image tab is active (image tabs have none).
+#[gpui::test]
+fn image_tab_has_no_disk_bar(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(dir.path().join("i.svg"), SVG).unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("i.svg")), OpenMode::Pinned, cx);
+        wb.open_source(Arc::from(Path::new("i.svg")), OpenMode::Pinned, cx);
+    });
+    draw(cx);
+    cx.simulate_input("x");
+    draw(cx);
+    let svg: Arc<Path> = Arc::from(dir.path().join("i.svg"));
+    let image = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        let model = groups.model();
+        model.groups()[model.active_group()].tabs[0].id
+    });
+    fs::remove_file(&svg).unwrap();
+    report(&wb, "i.svg", ChangeKind::Removed, cx);
+    settle(cx);
+    let notice = cx.update(|_, cx| wb.read(cx).documents().read(cx).disk_notice(&svg));
+    assert_eq!(notice, Some(lucerna_workbench::DiskNotice::Deleted));
+    assert!(
+        cx.debug_bounds("conflict-bar-0").is_some(),
+        "on the text tab"
+    );
+
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.activate(image))
+    });
+    draw(cx);
+    assert_eq!(
+        tabs(&wb, cx),
+        (
+            vec![TabItem::ImagePreview(svg.clone()), TabItem::File(svg)],
+            Some(0)
+        )
+    );
+    assert!(
+        cx.debug_bounds("conflict-bar-0").is_none(),
+        "none on the image tab"
+    );
+}
