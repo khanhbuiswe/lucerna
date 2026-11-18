@@ -2427,6 +2427,15 @@ impl Workbench {
         );
         flag("contextMenuVisible", menu_open);
         flag("searchViewletFocus", self.search_focused(window, cx));
+        // The Search tab's Replace row (VS Code's `replaceActive` and
+        // `replaceInputBoxFocus`), only while the tab is open.
+        let search_open = self.editor_groups.read(cx).model().search_tab().is_some();
+        let search = self.search_view.read(cx);
+        flag("replaceActive", search_open && search.replace_active(cx));
+        flag(
+            "replaceInputBoxFocus",
+            search_open && search.replace_input_focused(window, cx),
+        );
         flag("referencesViewFocus", self.references_view_focus(cx));
         flag(
             "gitDiffViewFocus",

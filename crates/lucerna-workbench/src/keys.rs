@@ -220,6 +220,7 @@ mod tests {
             (event("p", None, alt_cmd()), "alt+cmd+p"),
             (event("f", Some("ƒ"), alt_shift()), "alt+shift+f"),
             (event("j", None, cmd_shift()), "shift+cmd+j"),
+            (event("h", None, cmd_shift()), "shift+cmd+h"),
             (event("f4", None, Modifiers::none()), "f4"),
             (event("f4", None, Modifiers::shift()), "shift+f4"),
             (event("f10", None, Modifiers::shift()), "shift+f10"),

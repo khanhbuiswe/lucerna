@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use lucerna_project::{Excerpt, LineKind, LineMatch};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LineRef {
     pub file: usize,
     pub excerpt: usize,

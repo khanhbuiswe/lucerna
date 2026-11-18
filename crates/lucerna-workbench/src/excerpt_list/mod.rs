@@ -10,6 +10,10 @@
 //! host gives ([`ExcerptList::set_text_source`]), with per-file counts,
 //! tags and notes on the headers ([`ExcerptList::set_file_meta`]) and
 //! change navigation ([`ExcerptList::step_change`]).
+//!
+//! The Search tab can turn on a replace preview
+//! ([`ExcerptList::set_replace_preview`]): each match is drawn struck out,
+//! followed by its replacement. Off by default (the diff view never has it).
 
 pub(crate) mod highlight;
 pub(crate) mod model;
@@ -24,7 +28,9 @@ use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Hsla, KeyDownEvent, ListAlignment, ListOffset,
     ListState, Pixels, Subscription, Task, px,
 };
-use lucerna_project::{Excerpt, LineKind};
+use lucerna_project::replace::{ReplacePattern, replacement_at};
+use lucerna_project::{Excerpt, LineKind, LineMatch, SearchQuery, line_matches, search_regex};
+use regex::Regex;
 
 use crate::layout::color;
 use crate::{AppState, WindowSettings};
@@ -60,6 +66,54 @@ pub enum ListSelection {
 enum Selected {
     Line(LineAnchor),
     Header(Arc<Path>),
+}
+
+/// What the replace preview draws: the replacement of each match, worked
+/// out from the query the shown results came from.
+pub struct ReplacePreview {
+    regex: Regex,
+    query: SearchQuery,
+    pattern: ReplacePattern,
+    preserve: bool,
+}
+
+impl ReplacePreview {
+    /// The preview of replacing `query`'s matches with `replace` (`$1` and
+    /// friends when the query is a regex), with Preserve Case or not. An
+    /// error when the query's pattern is not valid.
+    pub fn new(query: &SearchQuery, replace: &str, preserve: bool) -> Result<Self, String> {
+        Ok(ReplacePreview {
+            regex: search_regex(query)?,
+            query: query.clone(),
+            pattern: ReplacePattern::parse(replace, query.is_regex),
+            preserve,
+        })
+    }
+
+    /// The new text of each of `line`'s ranges, in order: `None` where the
+    /// range does not match again on the shown text (cut at 1,000 chars, a
+    /// lookaround) or is empty.
+    pub fn replacements(&self, line: &LineMatch) -> Vec<Option<String>> {
+        let text = line.line_text.as_str();
+        // The same matcher as the search (the whole-word rule included):
+        // a range it does not report is not replaced.
+        let found = line_matches(&self.regex, &self.query, text);
+        line.ranges
+            .iter()
+            .map(|range| {
+                if range.is_empty() || !found.contains(range) {
+                    return None;
+                }
+                replacement_at(
+                    text,
+                    &self.regex,
+                    range.clone(),
+                    &self.pattern,
+                    self.preserve,
+                )
+            })
+            .collect()
+    }
 }
 
 pub enum ExcerptListEvent {
@@ -124,6 +178,13 @@ pub struct ExcerptList {
     /// The last generation given to a text source; files without one
     /// are generation 0.
     last_source_generation: u64,
+    /// The replace preview drawn over the matches; `None` (the default)
+    /// draws the matches plain.
+    replace_preview: Option<Arc<ReplacePreview>>,
+    /// The replacements of the lines drawn with `replace_preview`, worked
+    /// out only for rows on screen. Emptied when the preview or the
+    /// results change.
+    preview_cache: HashMap<LineRef, Arc<[Option<String>]>>,
 }
 
 impl EventEmitter<ExcerptListEvent> for ExcerptList {}
@@ -161,7 +222,52 @@ impl ExcerptList {
             selection_resolves: 0,
             text_sources: HashMap::new(),
             last_source_generation: 0,
+            replace_preview: None,
+            preview_cache: HashMap::new(),
         }
+    }
+
+    /// Draws each match struck out, followed by its replacement from
+    /// `preview`; `None` draws the matches plain. Setting the same `Arc`
+    /// again keeps the replacements already worked out.
+    pub fn set_replace_preview(
+        &mut self,
+        preview: Option<Arc<ReplacePreview>>,
+        cx: &mut Context<Self>,
+    ) {
+        let same = match (&self.replace_preview, &preview) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.replace_preview = preview;
+        self.preview_cache.clear();
+        cx.notify();
+    }
+
+    /// The replace preview drawn over the matches, if any.
+    pub fn replace_preview(&self) -> Option<&Arc<ReplacePreview>> {
+        self.replace_preview.as_ref()
+    }
+
+    /// The replacements of line `r`'s ranges under the replace preview;
+    /// `None` without a preview or for a context line. Worked out once per
+    /// line and preview.
+    fn preview_of(&mut self, r: LineRef) -> Option<Arc<[Option<String>]>> {
+        let preview = self.replace_preview.as_ref()?;
+        if let Some(cached) = self.preview_cache.get(&r) {
+            return Some(cached.clone());
+        }
+        let line = self.results.line(r)?;
+        if line.ranges.is_empty() {
+            return None;
+        }
+        let replacements: Arc<[Option<String>]> = preview.replacements(line).into();
+        self.preview_cache.insert(r, replacements.clone());
+        Some(replacements)
     }
 
     /// Replaces every file; the gutter is sized for the new ones. The
@@ -244,6 +350,8 @@ impl ExcerptList {
                 .collect()
         };
         change(&mut self.results);
+        // Line refs may now name other lines.
+        self.preview_cache.clear();
         for path in listed {
             if self.results.file_index(&path).is_none() {
                 self.text_sources.remove(&path);
@@ -263,6 +371,7 @@ impl ExcerptList {
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.results.clear();
         self.text_sources.clear();
+        self.preview_cache.clear();
         self.sync_list(cx);
         self.selected = None;
         self.max_line_number = 0;

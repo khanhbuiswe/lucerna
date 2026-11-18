@@ -209,5 +209,9 @@
   { "key": "alt+cmd+c", "command": "toggleFindCaseSensitive", "when": "editorFocus && !searchViewletFocus" },
   { "key": "alt+cmd+w", "command": "toggleFindWholeWord", "when": "editorFocus && !searchViewletFocus" },
   { "key": "alt+cmd+r", "command": "toggleFindRegex", "when": "editorFocus && !searchViewletFocus" },
-  { "key": "alt+cmd+p", "command": "togglePreserveCase", "when": "editorFocus && !searchViewletFocus" }
+  { "key": "alt+cmd+p", "command": "togglePreserveCase", "when": "editorFocus && !searchViewletFocus" },
+
+  { "key": "shift+cmd+h", "command": "workbench.action.replaceInFiles" },
+  { "key": "alt+cmd+p", "command": "toggleSearchPreserveCase", "when": "searchViewletFocus" },
+  { "key": "escape", "command": "closeReplaceInFilesWidget", "when": "searchViewletFocus && replaceInputBoxFocus" }
 ]

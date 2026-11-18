@@ -1,14 +1,17 @@
 //! Drawing an [`ExcerptList`]: file headers (with a sticky copy pinned over
 //! the list), code lines with their gutter, excerpt separators and file
 //! notes. Diff lines get the diff backgrounds and a change bar at the
-//! gutter's left edge, as wide as the editor's.
+//! gutter's left edge, as wide as the editor's. Under a replace preview a
+//! match is drawn struck out, followed by its replacement.
 
+use std::borrow::Cow;
 use std::ops::Range;
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Context, Div, ElementId, FontStyle, FontWeight, HighlightStyle, IntoElement,
-    MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, Styled, StyledText, Window,
-    div, font, list, prelude::*, px, relative, svg,
+    MouseButton, ParentElement, Pixels, Render, SharedString, Stateful, StrikethroughStyle, Styled,
+    StyledText, Window, div, font, list, prelude::*, px, relative, svg,
 };
 
 use lucerna_project::LineKind;
@@ -86,7 +89,9 @@ impl ExcerptList {
         match row {
             Row::Header(file) => self.render_header(file, false, style, selected, cx),
             Row::Line(r) => {
-                self.render_line(ix, r, style, selected == Some(ListSelection::Line(r)), cx)
+                let preview = self.preview_of(r);
+                let selected = selected == Some(ListSelection::Line(r));
+                self.render_line(ix, r, style, selected, preview, cx)
             }
             Row::Separator { file } => {
                 // The excerpt it comes before.
@@ -300,12 +305,15 @@ impl ExcerptList {
             .into_any_element()
     }
 
+    /// A code line. `preview` holds the replacement of each of its ranges
+    /// when a replace preview is on.
     fn render_line(
         &self,
         ix: usize,
         r: LineRef,
         style: &RowStyle,
         selected: bool,
+        preview: Option<Arc<[Option<String>]>>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let state = cx.global::<AppState>();
@@ -313,7 +321,6 @@ impl ExcerptList {
         let Some(line) = self.results.line(r) else {
             return div().into_any_element();
         };
-        let text = &line.line_text;
         let mark = HighlightStyle {
             background_color: Some(color(ui.search_match_background).into()),
             ..Default::default()
@@ -323,19 +330,47 @@ impl ExcerptList {
             .files()
             .get(r.file)
             .and_then(|f| self.highlight_cache.get(&f.path, line));
+        let (shown, spans) = match &preview {
+            Some(replacements) => (
+                preview_line(&line.line_text, &line.ranges, replacements),
+                spans.map(|s| {
+                    Cow::Owned(shift_spans(s, &line.line_text, &line.ranges, replacements))
+                }),
+            ),
+            None => (
+                PreviewLine {
+                    text: Cow::Borrowed(&line.line_text),
+                    old: line.ranges.clone(),
+                    new: Vec::new(),
+                },
+                spans.map(Cow::Borrowed),
+            ),
+        };
         // `CodeView` expands tabs itself; gpui would draw them raw.
-        let expanded = expand_tabs(text, style.tab_size);
-        let ranges: Vec<Range<usize>> = line
-            .ranges
-            .iter()
-            .map(|r| expanded.map(r.start)..expanded.map(r.end))
-            .collect();
-        let spans: Option<LineSpans> = spans.map(|s| {
-            s.iter()
-                .map(|(r, c)| (expanded.map(r.start)..expanded.map(r.end), c.clone()))
-                .collect()
-        });
-        let highlights = line_highlights(&expanded.text, &ranges, spans.as_ref(), theme, mark);
+        let expanded = expand_tabs(&shown.text, style.tab_size);
+        let map = |r: &Range<usize>| expanded.map(r.start)..expanded.map(r.end);
+        let marks: Vec<(Range<usize>, HighlightStyle)> = if preview.is_some() {
+            let removed = HighlightStyle {
+                background_color: Some(color(ui.diff_deleted_background).into()),
+                strikethrough: Some(StrikethroughStyle {
+                    thickness: px(1.),
+                    color: None,
+                }),
+                ..Default::default()
+            };
+            let inserted = HighlightStyle {
+                background_color: Some(color(ui.diff_added_background).into()),
+                ..Default::default()
+            };
+            let old = shown.old.iter().map(|r| (map(r), removed));
+            let new = shown.new.iter().map(|r| (map(r), inserted));
+            old.chain(new).collect()
+        } else {
+            shown.old.iter().map(|r| (map(r), mark)).collect()
+        };
+        let spans: Option<LineSpans> =
+            spans.map(|s| s.iter().map(|(r, c)| (map(r), c.clone())).collect());
+        let highlights = line_highlights(&expanded.text, &marks, spans.as_ref(), theme);
         let styled = StyledText::new(expanded.text.clone()).with_highlights(highlights);
         let selector = format!(
             "{}-line-{}-{}-{}",
@@ -389,6 +424,7 @@ impl ExcerptList {
                     .child(line.line_number.to_string()),
             );
         }
+        let previewed = preview.is_some();
         el.on_click(cx.listener(move |list, _, _, cx| {
             if let Some(anchor) = &anchor {
                 list.open_anchor(anchor, cx);
@@ -397,6 +433,9 @@ impl ExcerptList {
         .child(gutter)
         .child(
             div()
+                .when(previewed, |d| {
+                    d.debug_selector(move || format!("{}-preview-{}-{}-{}", id.0, id.1, id.2, id.3))
+                })
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
@@ -583,25 +622,25 @@ pub(super) fn row_height(row: &Row, lh: Pixels) -> Pixels {
     }
 }
 
-/// The runs of one line: syntax colors from `spans` with `mark` laid over
-/// the match `ranges`. Runs never overlap; where a match and a syntax span
-/// meet, the run takes the syntax style plus the match background. Ranges
-/// are clamped and anything off a char boundary or empty (a match past the
-/// 1,000-char cut) is dropped.
+/// The runs of one line: syntax colors from `spans` with the `marks` (the
+/// match background, or a preview's old and new text styles) laid over
+/// their ranges, which never overlap. Runs never overlap; where a mark and
+/// a syntax span meet, the run takes the syntax style plus the mark.
+/// Ranges are clamped and anything off a char boundary or empty (a match
+/// past the 1,000-char cut) is dropped.
 fn line_highlights(
     text: &str,
-    ranges: &[Range<usize>],
+    marks: &[(Range<usize>, HighlightStyle)],
     spans: Option<&LineSpans>,
     theme: &lucerna_theme::Theme,
-    mark: HighlightStyle,
 ) -> Vec<(Range<usize>, HighlightStyle)> {
     let valid = |r: &Range<usize>| {
         r.start < r.end && text.is_char_boundary(r.start) && text.is_char_boundary(r.end)
     };
-    let matches: Vec<Range<usize>> = ranges
+    let matches: Vec<(Range<usize>, HighlightStyle)> = marks
         .iter()
-        .map(|r| r.start..r.end.min(text.len()))
-        .filter(valid)
+        .map(|(r, style)| (r.start..r.end.min(text.len()), *style))
+        .filter(|(r, _)| valid(r))
         .collect();
     let syntax: Vec<(Range<usize>, &lucerna_theme::HighlightStyle)> = spans
         .into_iter()
@@ -611,8 +650,7 @@ fn line_highlights(
         .collect();
     let mut edges: Vec<usize> = matches
         .iter()
-        .map(|r| r.start)
-        .chain(matches.iter().map(|r| r.end))
+        .flat_map(|(r, _)| [r.start, r.end])
         .chain(syntax.iter().flat_map(|(r, _)| [r.start, r.end]))
         .collect();
     edges.sort_unstable();
@@ -629,15 +667,12 @@ fn line_highlights(
                 .map(|(_, s)| *s);
             let marked = matches
                 .iter()
-                .any(|r| r.start <= seg.start && seg.end <= r.end);
-            if style.is_none() && !marked {
+                .find(|(r, _)| r.start <= seg.start && seg.end <= r.end)
+                .map(|(_, mark)| *mark);
+            if style.is_none() && marked.is_none() {
                 return None;
             }
-            let mut run = if marked {
-                mark
-            } else {
-                HighlightStyle::default()
-            };
+            let mut run = marked.unwrap_or_default();
             if let Some(s) = style {
                 run.color = s.color.map(|c| color(c).into());
                 if s.bold {
@@ -650,6 +685,121 @@ fn line_highlights(
             Some((seg, run))
         })
         .collect()
+}
+
+/// A line as a replace preview draws it: the text with each replacement
+/// put right after its match, the old (matched) and new (inserted) ranges
+/// in that text, and the syntax spans moved with it.
+struct PreviewLine<'a> {
+    text: Cow<'a, str>,
+    old: Vec<Range<usize>>,
+    new: Vec<Range<usize>>,
+}
+
+/// The ranges kept of a line's matches: non-empty, in order, inside
+/// `text` and on char boundaries, each with its replacement.
+fn preview_ranges<'a>(
+    text: &'a str,
+    ranges: &'a [Range<usize>],
+    replacements: &'a [Option<String>],
+) -> impl Iterator<Item = (Range<usize>, Option<&'a str>)> + 'a {
+    let mut cursor = 0;
+    ranges
+        .iter()
+        .zip(
+            replacements
+                .iter()
+                .map(Option::as_deref)
+                .chain(std::iter::repeat(None)),
+        )
+        .filter_map(move |(r, new)| {
+            let new = new.filter(|s| !s.is_empty());
+            let ok = r.start < r.end
+                && r.start >= cursor
+                && r.end <= text.len()
+                && text.is_char_boundary(r.start)
+                && text.is_char_boundary(r.end);
+            if !ok {
+                return None;
+            }
+            cursor = r.end;
+            Some((r.clone(), new))
+        })
+}
+
+/// `text` with each replacement put right after its match. A range
+/// without a replacement is only struck out.
+fn preview_line(
+    text: &str,
+    ranges: &[Range<usize>],
+    replacements: &[Option<String>],
+) -> PreviewLine<'static> {
+    let mut out = String::with_capacity(text.len());
+    let (mut old, mut new) = (Vec::new(), Vec::new());
+    let mut cursor = 0;
+    for (r, replacement) in preview_ranges(text, ranges, replacements) {
+        out.push_str(&text[cursor..r.start]);
+        let start = out.len();
+        out.push_str(&text[r.clone()]);
+        old.push(start..out.len());
+        if let Some(replacement) = replacement {
+            let start = out.len();
+            out.push_str(replacement);
+            new.push(start..out.len());
+        }
+        cursor = r.end;
+    }
+    out.push_str(&text[cursor..]);
+    PreviewLine {
+        text: Cow::Owned(out),
+        old,
+        new,
+    }
+}
+
+/// Syntax `spans` of the original line, moved into [`preview_line`]'s text:
+/// an offset shifts by the replacements inserted before it. A span ending
+/// at a match's end stops before that match's replacement; the inserted
+/// text itself takes no syntax colors.
+fn shift_spans(
+    spans: &LineSpans,
+    text: &str,
+    ranges: &[Range<usize>],
+    replacements: &[Option<String>],
+) -> LineSpans {
+    // (offset in the original text, replacement length inserted there)
+    let inserts: Vec<(usize, usize)> = preview_ranges(text, ranges, replacements)
+        .filter_map(|(r, new)| Some((r.end, new?.len())))
+        .filter(|(_, len)| *len > 0)
+        .collect();
+    let shift = |offset: usize, inclusive: bool| {
+        offset
+            + inserts
+                .iter()
+                .filter(|(at, _)| {
+                    if inclusive {
+                        *at <= offset
+                    } else {
+                        *at < offset
+                    }
+                })
+                .map(|(_, len)| len)
+                .sum::<usize>()
+    };
+    let mut out = Vec::new();
+    for (r, capture) in spans {
+        // Split a span around each insertion inside it.
+        let mut start = r.start;
+        for &(at, _) in inserts
+            .iter()
+            .filter(|(at, _)| r.start < *at && *at < r.end)
+        {
+            out.push((shift(start, true)..shift(at, false), capture.clone()));
+            start = at;
+        }
+        out.push((shift(start, true)..shift(r.end, false), capture.clone()));
+    }
+    out
 }
 
 /// A clickable row, one editor line tall; add `on_click` and the content.
@@ -693,8 +843,8 @@ mod tests {
         };
         // "fn main": keyword over 0..2, function over 3..7, match on 1..5.
         let spans: LineSpans = vec![(0..2, "keyword".into()), (3..7, "function".into())];
-        let ranges = [1..3, 3..5];
-        let runs = line_highlights("fn main", &ranges, Some(&spans), &theme, mark);
+        let marks = [(1..3, mark), (3..5, mark)];
+        let runs = line_highlights("fn main", &marks, Some(&spans), &theme);
         assert!(runs.windows(2).all(|w| w[0].0.end <= w[1].0.start));
         let covered: Vec<_> = runs
             .iter()
@@ -717,13 +867,55 @@ mod tests {
     fn bad_ranges_are_dropped() {
         let theme = ThemeRegistry::builtin().get_or_default("Lucerna Dark");
         let spans: LineSpans = vec![(0..1, "keyword".into()), (0..99, "keyword".into())];
+        let mark = HighlightStyle::default();
         let runs = line_highlights(
             "é",
-            &[1..2, 5..9, 0..0],
+            &[(1..2, mark), (5..9, mark), (0..0, mark)],
             Some(&spans),
             &theme,
-            Default::default(),
         );
         assert!(runs.is_empty(), "{runs:?}");
+    }
+
+    #[test]
+    fn preview_puts_each_replacement_after_its_match() {
+        let text = "a foo b foo c";
+        let ranges = [2..5, 8..11];
+        let line = preview_line(text, &ranges, &[Some("X".into()), None]);
+        assert_eq!(line.text, "a fooX b foo c");
+        assert_eq!(line.old, vec![2..5, 9..12]);
+        assert_eq!(line.new, vec![5..6]);
+        // Empty or bad ranges are skipped; an empty replacement inserts nothing.
+        let line = preview_line(text, &[0..0, 2..5, 99..100], &[None, Some(String::new())]);
+        assert_eq!(line.text, text);
+        assert_eq!(line.old, vec![2..5]);
+        assert!(line.new.is_empty());
+    }
+
+    #[test]
+    fn spans_move_with_the_inserted_text() {
+        let text = "let foo = 1";
+        let ranges = [4..7, 11..11];
+        let replacements = [Some("barbaz".to_string())];
+        let spans: LineSpans = vec![
+            (0..3, "keyword".into()),
+            (4..7, "variable".into()),
+            (2..9, "outer".into()),
+            (10..11, "number".into()),
+        ];
+        let shifted = shift_spans(&spans, text, &ranges, &replacements);
+        let line = preview_line(text, &ranges, &replacements);
+        assert_eq!(line.text, "let foobarbaz = 1");
+        let r = |name: &str| -> Vec<Range<usize>> {
+            shifted
+                .iter()
+                .filter(|(_, c)| &**c == name)
+                .map(|(r, _)| r.clone())
+                .collect()
+        };
+        assert_eq!(r("keyword"), vec![0..3]);
+        assert_eq!(r("variable"), vec![4..7], "the old text keeps its color");
+        assert_eq!(r("outer"), vec![2..7, 13..15], "split around the insertion");
+        assert_eq!(r("number"), vec![16..17]);
     }
 }

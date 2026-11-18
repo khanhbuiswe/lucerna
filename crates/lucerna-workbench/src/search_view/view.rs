@@ -2,6 +2,10 @@
 //! with case / word / regex toggles, optional include and exclude globs,
 //! and the results as excerpts grouped by file as they stream in.
 //!
+//! A Replace row (`workbench.action.replaceInFiles`, `⇧⌘H`) sits under the
+//! query: while it shows and has text, the results preview each match's
+//! replacement. Typing in it never searches.
+//!
 //! Every change waits [`SEARCH_DEBOUNCE`] before searching and cancels the
 //! running search through its `AtomicBool`. Each search gets a fresh
 //! channel and a generation; events of a superseded search are dropped
@@ -28,10 +32,11 @@ use crate::code_view::{CodeView, DEFAULT_WORD_SEPARATORS};
 use crate::documents::Documents;
 use crate::excerpt_list::highlight::FileHighlights;
 use crate::excerpt_list::model::{LineRef, Results, thousands};
-use crate::excerpt_list::{ExcerptList, ExcerptListEvent, ListSelection};
+use crate::excerpt_list::{ExcerptList, ExcerptListEvent, ListSelection, ReplacePreview};
 use crate::find_widget::single_line_selection;
 use crate::icons::{
-    CASE_SENSITIVE, CHEVRONS_DOWN_UP, CHEVRONS_UP_DOWN, LIST_FILTER, REFRESH_CW, REGEX, WHOLE_WORD,
+    CASE_SENSITIVE, CHEVRONS_DOWN_UP, CHEVRONS_UP_DOWN, LIST_FILTER, REFRESH_CW, REGEX, REPLACE,
+    REPLACE_ALL, WHOLE_WORD,
 };
 use crate::layout::color;
 use crate::tasks::guarded;
@@ -39,7 +44,7 @@ use crate::text_input::TextInput;
 use crate::ui::{
     ClickHandler, GRID, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, bar_icon_button, bar_separator,
     centered_message, input_box, match_nav, search_bar_row, search_query_box, search_query_column,
-    search_toolbar, toggle_button,
+    search_toolbar, toggle_button, tooltip,
 };
 use crate::workbench::enabled_globs;
 use crate::workspace_state::SearchState;
@@ -72,6 +77,14 @@ pub struct SearchView {
     query: Entity<TextInput>,
     include: Entity<TextInput>,
     exclude: Entity<TextInput>,
+    /// The Replace input; its text is kept while the row is hidden.
+    replace: Entity<TextInput>,
+    /// The Replace input's text, kept as it changes.
+    replace_text: String,
+    /// The Replace row is shown.
+    replace_visible: bool,
+    /// The `AB` toggle in the Replace input.
+    preserve_case: bool,
     case_sensitive: bool,
     whole_word: bool,
     is_regex: bool,
@@ -91,6 +104,9 @@ pub struct SearchView {
     invalid: bool,
     /// The query the shown results came from.
     last_query: Option<SearchQuery>,
+    /// What the list's replace preview was made from: the Replace text,
+    /// Preserve Case and the query; `None` while there is no preview.
+    preview_key: Option<(String, bool, Option<SearchQuery>)>,
     /// The inputs changed since the last search started (a debounced
     /// search is still waiting): `Enter` searches instead of stepping.
     stale: bool,
@@ -171,6 +187,27 @@ impl SearchView {
             query: input("Search", cx),
             include: input("e.g. src/**, *.rs", cx),
             exclude: input("e.g. target, *.min.js", cx),
+            replace: {
+                let this = cx.weak_entity();
+                cx.new(|cx| {
+                    let mut input = TextInput::new(cx);
+                    input.set_placeholder("Replace");
+                    // Only the preview follows the Replace text: never a
+                    // search. Runs inside the input's update: the text
+                    // comes as an argument.
+                    input.on_change(move |text, _, cx| {
+                        this.update(cx, |view, cx| {
+                            view.replace_text = text.to_owned();
+                            view.update_preview(cx);
+                        })
+                        .ok();
+                    });
+                    input
+                })
+            },
+            replace_text: String::new(),
+            replace_visible: false,
+            preserve_case: false,
             case_sensitive: false,
             whole_word: false,
             is_regex: false,
@@ -181,6 +218,7 @@ impl SearchView {
             pattern_error: false,
             invalid: false,
             last_query: None,
+            preview_key: None,
             stale: false,
             generation: 0,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -287,6 +325,102 @@ impl SearchView {
     pub fn exclude_input(&self) -> &Entity<TextInput> {
         &self.exclude
     }
+
+    /// The Replace input.
+    pub fn replace_input(&self) -> &Entity<TextInput> {
+        &self.replace
+    }
+
+    /// The Replace row is shown.
+    pub fn replace_visible(&self) -> bool {
+        self.replace_visible
+    }
+
+    /// The `AB` (Preserve Case) toggle is on.
+    pub fn preserve_case(&self) -> bool {
+        self.preserve_case
+    }
+
+    /// Shows or hides the Replace row. Showing it focuses the Replace
+    /// input, hiding it the query.
+    pub fn set_replace_visible(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_visible = on;
+        if on {
+            self.replace
+                .update(cx, |input, cx| input.select_all(window, cx));
+            let focus = self.replace.focus_handle(cx);
+            window.focus(&focus, cx);
+        } else {
+            let focus = self.query.focus_handle(cx);
+            window.focus(&focus, cx);
+        }
+        self.update_preview(cx);
+        cx.notify();
+    }
+
+    /// `toggleSearchPreserveCase` and the `AB` toggle: only the preview
+    /// changes, nothing is searched again.
+    pub fn toggle_preserve_case(&mut self, cx: &mut Context<Self>) {
+        self.preserve_case = !self.preserve_case;
+        self.update_preview(cx);
+        cx.notify();
+    }
+
+    /// The Replace input has the focus (`replaceInputBoxFocus`).
+    pub fn replace_input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.replace_visible && self.replace.focus_handle(cx).is_focused(window)
+    }
+
+    /// The Replace row shows and there is a result to replace
+    /// (`replaceActive`, as in VS Code).
+    pub fn replace_active(&self, cx: &App) -> bool {
+        self.replace_visible && self.results(cx).match_count() > 0
+    }
+
+    /// The replace preview the results are drawn with, if any.
+    #[doc(hidden)]
+    pub fn replace_preview(&self, cx: &App) -> Option<Arc<ReplacePreview>> {
+        self.list.read(cx).replace_preview().cloned()
+    }
+
+    /// Bumped each time a search starts or is cancelled.
+    #[doc(hidden)]
+    pub fn search_generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Gives the list the preview of the current Replace text and toggle,
+    /// for the query the shown results came from; none while the row is
+    /// hidden or empty. A new preview is made only when one of those
+    /// changed, so the list keeps the replacements it worked out.
+    fn update_preview(&mut self, cx: &mut Context<Self>) {
+        let replace = self.replace_text.as_str();
+        let preview = match &self.last_query {
+            Some(query) if self.replace_visible && !replace.is_empty() => {
+                ReplacePreview::new(query, replace, self.preserve_case)
+                    .ok()
+                    .map(Arc::new)
+            }
+            _ => None,
+        };
+        let key = preview.as_ref().map(|_| {
+            (
+                replace.to_owned(),
+                self.preserve_case,
+                self.last_query.clone(),
+            )
+        });
+        if key == self.preview_key {
+            return;
+        }
+        self.preview_key = key;
+        self.list
+            .update(cx, |list, cx| list.set_replace_preview(preview, cx));
+    }
+
+    /// The Replace All button. The replace job comes with its own task;
+    /// until then the button does nothing.
+    pub fn replace_all(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 
     pub fn case_sensitive(&self) -> bool {
         self.case_sensitive
@@ -605,6 +739,8 @@ impl SearchView {
         // VS Code: `search.exclude` inherits `files.exclude`.
         let mut settings_exclude = enabled_globs(settings, "search.exclude");
         settings_exclude.extend(enabled_globs(settings, "files.exclude"));
+        // The preview follows the query the results now come from.
+        self.update_preview(cx);
         // VS Code: open files with unsaved changes are searched on their
         // text, so lines and clicks match the buffer (T5-6). Snapshots are
         // cheap to clone; their text is copied on the background thread.
@@ -822,6 +958,11 @@ impl SearchView {
             return;
         }
         match (ev.keystroke.key.as_str(), m.shift) {
+            // As in the find bar: Tab goes on to the Replace input.
+            ("tab", false) if self.replace_visible => {
+                let focus = self.replace.focus_handle(cx);
+                window.focus(&focus, cx);
+            }
             // As in Zed: `Enter` / `Shift+Enter` step to the next or
             // previous match inside the tab once the results are current;
             // with a change still waiting, `Enter` searches now.
@@ -835,6 +976,25 @@ impl SearchView {
             ("escape", false) => {
                 window.focus(&self.list_focus.clone(), cx);
             }
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// Keys in the Replace input: `Shift+Tab` goes back to the query and
+    /// `Enter` searches now. `Esc` is the keymap's
+    /// (`closeReplaceInFilesWidget`).
+    fn replace_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let m = &ev.keystroke.modifiers;
+        if m.platform || m.control || m.alt {
+            return;
+        }
+        match (ev.keystroke.key.as_str(), m.shift) {
+            ("tab", true) => {
+                let focus = self.query.focus_handle(cx);
+                window.focus(&focus, cx);
+            }
+            ("enter", false) => self.run_search(cx),
             _ => return,
         }
         cx.stop_propagation();
@@ -1049,6 +1209,13 @@ impl Render for SearchView {
                 ),
             )
             .child(
+                bar_icon_button("search-toggle-replace", REPLACE, self.replace_visible, cx)
+                    .tooltip(tooltip("Toggle Replace"))
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.set_replace_visible(!view.replace_visible, window, cx)
+                    })),
+            )
+            .child(
                 bar_icon_button("search-refresh", REFRESH_CW, false, cx)
                     .on_click(cx.listener(|view, _, _, cx| view.run_search(cx))),
             )
@@ -1059,6 +1226,45 @@ impl Render for SearchView {
                 self.match_label(cx),
                 cx,
             ));
+        // The Replace input lines up under the query box, as the filters do.
+        let replace_row = self.replace_visible.then(|| {
+            // Replacing needs results of a finished search.
+            let ready = self.replace_active(cx) && self.done.is_some() && !self.stale;
+            let replace_all = bar_icon_button("search-replace-all", REPLACE_ALL, false, cx)
+                .tooltip(tooltip("Replace All"));
+            let replace_all = if ready {
+                replace_all
+                    .on_click(cx.listener(|view, _, window, cx| view.replace_all(window, cx)))
+            } else {
+                // The occluding cover keeps the button from seeing the
+                // mouse: no hover, no click (as in the find bar).
+                replace_all
+                    .relative()
+                    .opacity(0.4)
+                    .cursor_default()
+                    .child(div().absolute().inset_0().occlude())
+            };
+            search_bar_row()
+                .debug_selector(|| "search-replace-row".into())
+                .child(div().flex_none().w(px(6. * GRID)))
+                .child(
+                    search_query_column(input_box(&self.replace, cx))
+                        .debug_selector(|| "search-replace".into())
+                        .on_key_down(cx.listener(Self::replace_key_down))
+                        .child(
+                            toggle_button(
+                                "search-toggle-preserve-case",
+                                "AB",
+                                self.preserve_case,
+                                cx,
+                            )
+                            .tooltip(tooltip("Preserve Case"))
+                            .on_click(cx.listener(|view, _, _, cx| view.toggle_preserve_case(cx))),
+                        ),
+                )
+                .child(bar_separator(cx))
+                .child(replace_all)
+        });
         // The filter inputs line up under the query box, as in Zed.
         let filters = self.filters_shown.then(|| {
             search_bar_row()
@@ -1078,6 +1284,7 @@ impl Render for SearchView {
         let toolbar = search_toolbar(cx)
             .debug_selector(|| "search-toolbar".into())
             .child(bar)
+            .children(replace_row)
             .children(filters);
         // The status lives in the counter, and a message without results
         // sits in the list area: nothing above the list ever comes or
@@ -1130,6 +1337,20 @@ fn find_in_files(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workb
     view.update(cx, |view, cx| view.focus_query(selection, window, cx));
 }
 
+/// `⇧⌘H`: does what [`find_in_files`] does, then shows the Replace row
+/// (never hides it) and puts the cursor in Replace when the query has
+/// text, else in the query.
+fn replace_in_files(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>) {
+    find_in_files(wb, window, cx);
+    let view = wb.search_view().clone();
+    view.update(cx, |view, cx| {
+        view.set_replace_visible(true, window, cx);
+        if view.query.read(cx).text().is_empty() {
+            view.focus_query(None, window, cx);
+        }
+    });
+}
+
 /// Opens the next / previous match. Deferred: opening a file updates the
 /// workbench, which a command handler already holds.
 fn focus_match(
@@ -1149,6 +1370,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "workbench.action.findInFiles",
         "Search: Find in Files",
         |wb, _, window, cx| find_in_files(wb, window, cx),
+    );
+    commands.register(
+        "workbench.action.replaceInFiles",
+        "Search: Replace in Files",
+        |wb, _, window, cx| replace_in_files(wb, window, cx),
     );
     // Command handlers are plain `fn`s: a macro stamps one per command.
     macro_rules! on_view {
@@ -1172,6 +1398,16 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "toggleSearchRegex",
         "Search: Toggle Use Regular Expression",
         |v, _w, cx| v.toggle_regex(cx)
+    );
+    on_view!(
+        "toggleSearchPreserveCase",
+        "Search: Toggle Preserve Case",
+        |v, _w, cx| v.toggle_preserve_case(cx)
+    );
+    on_view!(
+        "closeReplaceInFilesWidget",
+        "Search: Close Replace Widget",
+        |v, window, cx| v.set_replace_visible(false, window, cx)
     );
     on_view!(
         "workbench.action.search.toggleQueryDetails",
