@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use super::closed::{ClosedHistory, ClosedTab, TabViewState, item_path};
+
 /// How [`EditorGroups::open`] places a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenMode {
@@ -246,6 +248,8 @@ pub struct EditorGroups {
     groups: Vec<Group>,
     active_group: usize,
     next_id: u64,
+    /// The tabs the user closed, for Reopen Closed Editor.
+    closed: ClosedHistory,
 }
 
 impl Default for EditorGroups {
@@ -254,13 +258,15 @@ impl Default for EditorGroups {
             groups: vec![Group::default()],
             active_group: 0,
             next_id: 0,
+            closed: ClosedHistory::default(),
         }
     }
 }
 
 impl TabId {
-    /// For keying per-tab UI state, such as element ids.
-    pub(crate) fn as_u64(self) -> u64 {
+    /// For keying per-tab UI state, such as element ids, and for naming a
+    /// tab in command arguments (`{"tab": <id>}`).
+    pub fn as_u64(self) -> u64 {
         self.0
     }
 }
@@ -445,7 +451,7 @@ impl EditorGroups {
         let group = &mut self.groups[g];
         if let Some(other) = group.tabs.iter().find(|t| t.id != id && t.item == item) {
             let other = other.id;
-            self.close(id);
+            self.remove(id);
             self.activate(other);
             return Some(other);
         }
@@ -575,6 +581,7 @@ impl EditorGroups {
                 changed = true;
             }
         }
+        self.closed.retarget(from, to);
         changed
     }
 
@@ -589,11 +596,190 @@ impl EditorGroups {
         true
     }
 
-    /// Closes tab `id`. Its group then shows its most recently used
-    /// remaining tab; an emptied group is removed while others remain
-    /// (VS Code's `closeEmptyGroups`), so at least one group always exists.
-    /// Returns the active tab afterwards.
+    /// Closes tab `id` for the user, remembering it for Reopen Closed
+    /// Editor (see [`EditorGroups::remove`]). Returns the active tab
+    /// afterwards.
     pub fn close(&mut self, id: TabId) -> Option<TabId> {
+        self.close_many(&[id])
+    }
+
+    /// Closes tabs `ids` for the user as one batch: Reopen Closed Editor
+    /// brings them all back. Each is remembered at its place before the
+    /// first of them closed. Returns the active tab afterwards.
+    pub fn close_many(&mut self, ids: &[TabId]) -> Option<TabId> {
+        let batch = self.closed.new_batch();
+        let entries: Vec<ClosedTab> = ids
+            .iter()
+            .filter_map(|&id| {
+                let group = &self.groups[self.group_of(id)?];
+                let index = group.position(id)?;
+                Some(ClosedTab {
+                    item: group.tabs[index].item.clone(),
+                    group: group.id,
+                    index,
+                    was_active: group.active == Some(id),
+                    batch,
+                    tab: id,
+                    view: None,
+                })
+            })
+            .collect();
+        for &id in ids {
+            self.remove(id);
+        }
+        for entry in entries {
+            self.closed.record(entry);
+        }
+        self.active_tab().map(|t| t.id)
+    }
+
+    /// The tabs the user closed that Reopen Closed Editor can bring back,
+    /// oldest first.
+    pub fn closed(&self) -> &std::collections::VecDeque<ClosedTab> {
+        self.closed.entries()
+    }
+
+    /// Remembers where the editor of closed tab `tab` was.
+    pub fn set_closed_view(&mut self, tab: TabId, view: TabViewState) {
+        self.closed.set_view(tab, view);
+    }
+
+    /// Reopens the newest batch of closed tabs, pinned, each in its old
+    /// group at its old place; a tab whose group is gone goes at the end of
+    /// the active group. Entries whose file `exists` rejects, or that their
+    /// group already shows, are dropped. When none is left, a tab of the
+    /// batch that is open again is activated and returned; only a batch
+    /// whose files are all gone gives way to the batch before. A single
+    /// tab is activated; of several, those that were active are. Returns
+    /// the new tabs with their editor's place.
+    pub fn reopen_closed(
+        &mut self,
+        exists: impl Fn(&Path) -> bool,
+    ) -> Vec<(TabId, Option<TabViewState>)> {
+        loop {
+            let batch = self.closed.pop_batch();
+            if batch.is_empty() {
+                return Vec::new();
+            }
+            // (target group, group was found, entry)
+            let mut plan: Vec<(usize, bool, ClosedTab)> = Vec::new();
+            // A tab of the batch that is open again: (group, tab).
+            let mut open_again: Option<(usize, TabId)> = None;
+            for entry in batch {
+                if item_path(&entry.item).is_some_and(|p| !exists(p)) {
+                    continue;
+                }
+                let found = self.groups.iter().position(|g| g.id == entry.group);
+                let g = found.unwrap_or(self.active_group);
+                if let Some(tab) = self.groups[g].tabs.iter().find(|t| t.item == entry.item) {
+                    open_again = Some((g, tab.id));
+                    continue;
+                }
+                let planned = plan
+                    .iter()
+                    .any(|(pg, _, e)| *pg == g && e.item == entry.item);
+                if !planned {
+                    plan.push((g, found.is_some(), entry));
+                }
+            }
+            if plan.is_empty() {
+                // As in VS Code and Zed: a batch whose tabs are open again
+                // shows them and is used up; only a batch whose files are
+                // all gone gives way to the one before.
+                let Some((g, id)) = open_again else {
+                    continue;
+                };
+                self.groups[g].activate(id);
+                self.active_group = g;
+                return vec![(id, None)];
+            }
+            // Within a group, tabs of the group itself by their old place,
+            // then those whose group is gone.
+            plan.sort_by_key(|(g, found, e)| (*g, !*found, e.index));
+            let single = plan.len() == 1;
+            let mut reopened = Vec::with_capacity(plan.len());
+            for (g, found, entry) in plan {
+                let id = self.new_id();
+                let group = &mut self.groups[g];
+                let at = if found {
+                    entry.index.min(group.tabs.len())
+                } else {
+                    group.tabs.len()
+                };
+                group.tabs.insert(
+                    at,
+                    Tab {
+                        id,
+                        item: entry.item,
+                        pinned: true,
+                    },
+                );
+                if single || entry.was_active || group.active.is_none() {
+                    group.activate(id);
+                } else {
+                    // Next in line after the active tab.
+                    group.mru.insert(1.min(group.mru.len()), id);
+                }
+                if single || entry.was_active {
+                    self.active_group = g;
+                }
+                reopened.push((id, entry.view));
+            }
+            return reopened;
+        }
+    }
+
+    /// The ids of the tabs of `target`'s group that `keep` accepts, given
+    /// each tab's index and `target`'s; empty when `target` is not open.
+    fn tabs_around(&self, target: TabId, keep: impl Fn(usize, usize) -> bool) -> Vec<TabId> {
+        let Some(group) = self.group_of(target).map(|g| &self.groups[g]) else {
+            return Vec::new();
+        };
+        let Some(at) = group.position(target) else {
+            return Vec::new();
+        };
+        group
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| keep(*i, at))
+            .map(|(_, t)| t.id)
+            .collect()
+    }
+
+    /// The open tab whose [`TabId::as_u64`] is `raw`.
+    pub(crate) fn tab_from_u64(&self, raw: u64) -> Option<TabId> {
+        let id = TabId(raw);
+        self.group_of(id).map(|_| id)
+    }
+
+    /// The other tabs of `target`'s group (Close Others), in tab order.
+    pub fn others(&self, target: TabId) -> Vec<TabId> {
+        self.tabs_around(target, |i, at| i != at)
+    }
+
+    /// The tabs after `target` in its group (Close to the Right).
+    pub fn to_the_right(&self, target: TabId) -> Vec<TabId> {
+        self.tabs_around(target, |i, at| i > at)
+    }
+
+    /// The tabs before `target` in its group (Close to the Left).
+    pub fn to_the_left(&self, target: TabId) -> Vec<TabId> {
+        self.tabs_around(target, |i, at| i < at)
+    }
+
+    /// Every tab of `target`'s group, `target` included.
+    pub fn group_tabs(&self, target: TabId) -> Vec<TabId> {
+        self.tabs_around(target, |_, _| true)
+    }
+
+    /// Closes tab `id` without remembering it: for tabs code closes (a
+    /// deleted file, a file Save As wrote over, Get Started when it is
+    /// done). Its group then shows its most recently used remaining tab;
+    /// an emptied group is removed while others remain (VS Code's
+    /// `closeEmptyGroups`), so at least one group always exists. Returns
+    /// the active tab afterwards.
+    pub fn remove(&mut self, id: TabId) -> Option<TabId> {
         if let Some(g) = self.group_of(id) {
             let group = &mut self.groups[g];
             if let Some(i) = group.position(id) {
@@ -692,6 +878,7 @@ impl EditorGroups {
             groups: Vec::new(),
             active_group: 0,
             next_id: 0,
+            closed: ClosedHistory::default(),
         };
         // Restored index of each saved group; `None` when it was dropped.
         let mut restored_index = Vec::with_capacity(state.groups.len());

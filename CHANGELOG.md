@@ -20,6 +20,10 @@ Each release's section below is copied into its GitHub Release page by
   operators `\u \U \l \L`. The Preserve Case toggle (`AB`) keeps each match's casing.
 - Alt+Cmd+C, Alt+Cmd+W, Alt+Cmd+R and Alt+Cmd+P toggle match case, whole word, regex and preserve
   case in the editor's find bar.
+- Cmd+Shift+T reopens the last closed tab, in its group and place, with its cursor and scroll;
+  press again to go further back. Close Others (Alt+Cmd+T), Close to the Left/Right, Close Saved
+  (Cmd+K U) and Close All in Group (Cmd+K W) are in the Command Palette and in a new right-click
+  menu on tabs; unsaved files are asked about once for all.
 - Replace in Files (⇧⌘H): Replace All across the project, per file and per line, with a preview in the Search tab.
 
 ### Changed

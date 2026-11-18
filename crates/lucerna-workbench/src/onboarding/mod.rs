@@ -697,7 +697,7 @@ impl Workbench {
             return;
         };
         self.update_editor_groups(cx, |m| {
-            m.close(id);
+            m.remove(id);
         });
         self.refocus_if_hidden(window, cx);
     }

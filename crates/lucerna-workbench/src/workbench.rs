@@ -1402,7 +1402,7 @@ impl Workbench {
         if !closing.is_empty() {
             self.update_editor_groups(cx, |m| {
                 for id in closing {
-                    m.close(id);
+                    m.remove(id);
                 }
             });
         }
@@ -1446,7 +1446,7 @@ impl Workbench {
         if !closing.is_empty() {
             self.update_editor_groups(cx, |m| {
                 for id in closing {
-                    m.close(id);
+                    m.remove(id);
                 }
             });
         }
@@ -2376,6 +2376,56 @@ impl Workbench {
         });
     }
 
+    /// Reopen Closed Editor: brings back the last tabs the user closed
+    /// (see [`EditorGroups::reopen_closed`]), each file tab with its cursor
+    /// and scroll. Entries whose file is gone are dropped, found by one
+    /// `stat` each on this thread when the key is pressed.
+    pub(crate) fn reopen_closed_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let reopened = self.update_editor_groups(cx, |m| m.reopen_closed(|p| p.exists()));
+        if reopened.is_empty() {
+            return;
+        }
+        let active = self
+            .editor_groups
+            .read(cx)
+            .model()
+            .active_tab()
+            .map(|t| t.id);
+        for (id, state) in reopened {
+            let Some(state) = state else {
+                continue;
+            };
+            let path = self
+                .editor_groups
+                .read(cx)
+                .model()
+                .groups()
+                .iter()
+                .flat_map(|g| &g.tabs)
+                .find(|t| t.id == id)
+                .and_then(|t| match &t.item {
+                    TabItem::File(path) => Some(path.clone()),
+                    _ => None,
+                });
+            let Some(path) = path else {
+                continue;
+            };
+            let view = (active == Some(id))
+                .then(|| {
+                    self.editor_groups
+                        .update(cx, |groups, cx| groups.ensure_active_body(window, cx))
+                })
+                .flatten()
+                .and_then(|v| v.downcast::<CodeView>().ok());
+            let (point, row) = (state.cursor, state.scroll_top_row);
+            self.documents.update(cx, |docs, cx| match view {
+                Some(view) => docs.go_to_and_scroll(&view, point, row, cx),
+                None => docs.go_to_and_scroll_when_opened(&path, point, row),
+            });
+        }
+        self.focus_editor_area(window, cx);
+    }
+
     /// The `when`-clause context for key bindings.
     pub fn context_keys(&self, window: &Window, cx: &App) -> WhenContext {
         let sidebar_focus = self.sidebar_visible && self.sidebar_focus.contains_focused(window, cx);
@@ -2425,7 +2475,8 @@ impl Workbench {
                 .as_ref()
                 .is_some_and(|c| c.op == ClipOp::Cut),
         );
-        flag("contextMenuVisible", menu_open);
+        let tab_menu_open = self.editor_groups.read(cx).tab_menu().is_some();
+        flag("contextMenuVisible", menu_open || tab_menu_open);
         flag("searchViewletFocus", self.search_focused(window, cx));
         // The Search tab's Replace row (VS Code's `replaceActive` and
         // `replaceInputBoxFocus`), only while the tab is open.
@@ -3150,6 +3201,11 @@ impl Workbench {
     /// a plain character (no cmd/ctrl/alt) must carry a `when` clause, or it
     /// swallows that character in every text input.
     fn dispatch_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // The tab bar's menu, like any open menu, takes every key: arrows,
+        // Enter and Escape drive it, not the editor under it.
+        if self.editor_groups.read(cx).tab_menu_focused(window, cx) {
+            return;
+        }
         let stroke = keys::to_keystroke(ev);
         self.note_results_focus(window, cx);
         let ctx = self.context_keys(window, cx);

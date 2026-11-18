@@ -254,6 +254,10 @@ pub static MENUS: &[MenuSpec] = &[
             command("Revert File", "workbench.action.files.revert"),
             Entry::Separator,
             command("Close Editor", "workbench.action.closeActiveEditor"),
+            command(
+                "Reopen Closed Editor",
+                "workbench.action.reopenClosedEditor",
+            ),
             command("Close Folder", "workbench.action.closeFolder"),
         ],
     },
