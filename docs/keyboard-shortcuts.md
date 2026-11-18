@@ -28,6 +28,7 @@ Lucerna keeps VS Code's default macOS shortcuts. These are the main ones.
 | Alt+F5 / Shift+Alt+F5 | Next / previous change |
 | Cmd+Shift+V | Toggle Markdown preview |
 | Cmd+K V | Markdown preview to the side |
+| Cmd+Shift+V (on an SVG) | Toggle between image and source |
 | Cmd+1…8 | Focus editor group N |
 | Cmd+W | Close tab |
 | Cmd+Shift+T | Reopen closed tab |

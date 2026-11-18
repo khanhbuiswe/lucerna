@@ -60,6 +60,12 @@ example "Open in → Default app" in Claude Desktop.
 - **Markdown preview.** Cmd+Shift+V toggles a `.md` file between source and a rendered preview;
   Cmd+K V opens a preview to the side that follows the active Markdown file. Tables, task lists,
   images and code blocks render natively, and the preview follows edits and agent writes.
+- **Image preview.** PNG, JPEG, GIF, WebP, BMP, ICO, TIFF and SVG files open as an image in a tab,
+  shrunk to fit (never enlarged) on a checkerboard; the status bar shows `W × H • size`. The image
+  reloads when the file changes on disk, so an agent rewriting a picture shows up at once. SVG
+  opens as an image by default: Cmd+Shift+V, the path-bar button or "Reopen as Text" switches to
+  the source, and `"workbench.editorAssociations": { "*.svg": "default" }` makes SVG open as text.
+  Files over 20 MB or 100 megapixels show a message instead.
 - **Explorer context menu.** Right-click (or Shift+F10) a file or folder: New File, New Folder,
   Rename (open tabs follow), Delete to Trash or Delete Permanently, Copy Path, Copy Relative Path,
   Reveal in Finder, Open to the Side and Find in Folder.

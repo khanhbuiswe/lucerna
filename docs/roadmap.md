@@ -16,6 +16,7 @@ Thiếu là người dùng mới không dùng được hoặc không cài đư�
 - [x] File mới (⌘N) và Save As
 - [x] Find & Replace trong file (⌥⌘F)
 - [x] Replace trong project (Search)
+- [x] Image preview (png, jpg, gif, webp, svg…, tự tải lại khi file đổi)
 - [ ] Format document (⇧⌥F) và format on save (một nửa bước 4.6)
 
 **Để sau:**
