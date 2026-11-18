@@ -213,5 +213,6 @@
 
   { "key": "shift+cmd+h", "command": "workbench.action.replaceInFiles" },
   { "key": "alt+cmd+p", "command": "toggleSearchPreserveCase", "when": "searchViewletFocus" },
-  { "key": "escape", "command": "closeReplaceInFilesWidget", "when": "searchViewletFocus && replaceInputBoxFocus" }
+  { "key": "escape", "command": "closeReplaceInFilesWidget", "when": "searchViewletFocus && replaceInputBoxFocus" },
+  { "key": "alt+cmd+enter", "command": "search.action.replaceAll", "when": "searchViewletFocus && replaceActive" }
 ]

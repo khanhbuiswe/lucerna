@@ -8,15 +8,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{AppContext as _, Entity, Focusable, Modifiers, TestAppContext, VisualTestContext};
-use lucerna_project::{Excerpt, LineKind, LineMatch, SearchQuery, WorktreeEvent};
+use lucerna_project::{
+    Change, ChangeKind, Excerpt, LineKind, LineMatch, SearchQuery, WorktreeEvent,
+};
 use lucerna_settings::{Keymap, Layer, SettingsStore, parse_when};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::Point;
 use lucerna_theme::ThemeRegistry;
 use lucerna_workbench::code_view::CodeView;
 use lucerna_workbench::{
-    AppState, ExcerptList, ListSelection, OpenMode, ReplacePreview, SearchLineRef, SearchView,
-    WindowSettings, Workbench,
+    AppState, Documents, ExcerptList, ListSelection, OpenMode, ReplacePreview, SearchLineRef,
+    SearchView, WindowSettings, Workbench,
 };
 use tempfile::TempDir;
 
@@ -448,4 +450,336 @@ fn alt_cmd_p_toggles_preserve_case_in_search_only(cx: &mut TestAppContext) {
         .expect("the find bar");
     assert!(find.read_with(cx, |f, _| f.preserve_case()));
     assert!(view.read_with(cx, |v, _| v.preserve_case()), "unchanged");
+}
+
+// Replace All across files.
+
+fn disk(dir: &TempDir, name: &str) -> String {
+    fs::read_to_string(dir.path().join(name)).unwrap()
+}
+
+fn documents(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<Documents> {
+    cx.update(|_, cx| wb.read(cx).documents().clone())
+}
+
+fn doc_text(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) -> String {
+    let docs = documents(wb, cx);
+    docs.read_with(cx, |d, _| {
+        let s = d
+            .snapshot_of(Path::new(name))
+            .expect("the document is loaded");
+        s.text_for_range(0..s.len_bytes())
+    })
+}
+
+fn is_dirty(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) -> bool {
+    let docs = documents(wb, cx);
+    docs.read_with(cx, |d, _| d.is_dirty(Path::new(name)))
+}
+
+fn has_conflict(wb: &Entity<Workbench>, name: &str, cx: &mut VisualTestContext) -> bool {
+    let docs = documents(wb, cx);
+    docs.read_with(cx, |d, _| d.has_conflict(Path::new(name)))
+}
+
+fn focus_view(view: &Entity<CodeView>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        let focus = view.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+}
+
+fn replace_message(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> Option<String> {
+    view.read_with(cx, |v, _| v.last_replace_message().map(str::to_owned))
+}
+
+/// Opens the Search tab with its Replace row, searches `query` and types
+/// `value` in Replace.
+fn replace_ready(
+    wb: &Entity<Workbench>,
+    query: &str,
+    value: &str,
+    cx: &mut VisualTestContext,
+) -> Entity<SearchView> {
+    keys("cmd-shift-h", cx);
+    let view = search(wb, cx);
+    assert!(query_focused(&view, cx));
+    type_text(query, cx);
+    settle_search(cx);
+    keys("tab", cx);
+    assert!(replace_focused(&view, cx));
+    if !value.is_empty() {
+        type_text(value, cx);
+    }
+    view
+}
+
+/// `⌥⌘Enter`, then answers the confirmation with `answer`.
+fn replace_all(answer: &str, cx: &mut VisualTestContext) {
+    keys("alt-cmd-enter", cx);
+    assert!(cx.has_pending_prompt(), "Replace All asks first");
+    cx.simulate_prompt_answer(answer);
+    draw(cx);
+    assert!(!cx.has_pending_prompt());
+}
+
+#[gpui::test]
+fn replace_all_asks_then_writes(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    assert!(holds(&wb, "searchViewletFocus && replaceActive", cx));
+
+    keys("alt-cmd-enter", cx);
+    assert_eq!(
+        cx.pending_prompt().map(|(m, _)| m).as_deref(),
+        Some("Replace 3 occurrences across 2 files with 'bar'?")
+    );
+    cx.simulate_prompt_answer("Cancel");
+    draw(cx);
+    assert_eq!(disk(&dir, "a.txt"), "foo foo\n");
+    assert_eq!(disk(&dir, "b.txt"), "foo\n");
+    assert_eq!(view.read_with(cx, |v, cx| v.results(cx).match_count()), 2);
+    assert_eq!(replace_message(&view, cx), None);
+
+    replace_all("Replace", cx);
+    assert_eq!(disk(&dir, "a.txt"), "bar bar\n");
+    assert_eq!(disk(&dir, "b.txt"), "bar\n");
+    assert!(view.read_with(cx, |v, cx| v.results(cx).files().is_empty()));
+    assert!(!view.read_with(cx, |v, _| v.is_replacing()));
+    assert_eq!(
+        replace_message(&view, cx).as_deref(),
+        Some("Replaced 3 occurrences across 2 files with 'bar'.")
+    );
+    assert!(cx.debug_bounds("search-replace-message").is_some());
+
+    // The next search clears the message.
+    keys("enter", cx);
+    assert_eq!(replace_message(&view, cx), None);
+}
+
+#[gpui::test]
+fn replace_all_button_disabled_without_results(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "zzz", "bar", cx);
+    assert_eq!(view.read_with(cx, |v, cx| v.results(cx).match_count()), 0);
+    click("search-replace-all", cx);
+    assert!(!cx.has_pending_prompt(), "nothing to replace");
+    keys("alt-cmd-enter", cx);
+    assert!(!cx.has_pending_prompt());
+
+    // With results, the button asks.
+    keys("shift-tab", cx);
+    keys("cmd-a", cx);
+    type_text("foo", cx);
+    settle_search(cx);
+    click("search-replace-all", cx);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    draw(cx);
+    assert_eq!(disk(&dir, "a.txt"), "foo foo\n");
+}
+
+#[gpui::test]
+fn replace_all_open_clean_document_undoable(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    replace_all("Replace", cx);
+    assert_eq!(disk(&dir, "a.txt"), "bar bar\n");
+    assert_eq!(disk(&dir, "b.txt"), "bar\n");
+    assert_eq!(doc_text(&wb, "a.txt", cx), "bar bar\n");
+    assert!(!is_dirty(&wb, "a.txt", cx), "saved");
+    assert_eq!(
+        replace_message(&view, cx).as_deref(),
+        Some("Replaced 3 occurrences across 2 files with 'bar'.")
+    );
+
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    keys("cmd-z", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "foo foo\n", "one undo step");
+}
+
+#[gpui::test]
+fn replace_all_dirty_document_not_saved(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    type_text("foo", cx);
+    keys("enter", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "foo\nfoo foo\n");
+    assert!(is_dirty(&wb, "a.txt", cx));
+
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    replace_all("Replace", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "bar\nbar bar\n");
+    assert!(is_dirty(&wb, "a.txt", cx), "never saved");
+    assert_eq!(disk(&dir, "a.txt"), "foo foo\n");
+    let message = replace_message(&view, cx).expect("a message");
+    assert!(
+        message.contains("Replaced 3 occurrences across 1 file with 'bar'."),
+        "{message}"
+    );
+    assert!(
+        message.contains("1 file with unsaved changes was not saved."),
+        "{message}"
+    );
+
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    keys("cmd-z", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "foo\nfoo foo\n");
+    assert!(is_dirty(&wb, "a.txt", cx));
+}
+
+#[gpui::test]
+fn replace_all_skips_conflicted_document(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    type_text("x", cx);
+    fs::write(dir.path().join("a.txt"), "foo\n").unwrap();
+    let change = Change {
+        path: Arc::from(Path::new("a.txt")),
+        kind: ChangeKind::Modified,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    draw(cx);
+    assert!(has_conflict(&wb, "a.txt", cx));
+
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    replace_all("Replace", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "xfoo foo\n", "left alone");
+    assert_eq!(disk(&dir, "a.txt"), "foo\n");
+    assert_eq!(disk(&dir, "b.txt"), "bar\n");
+    let message = replace_message(&view, cx).expect("a message");
+    assert!(
+        message.contains("Skipped 1 file: a.txt (has a conflict with the file on disk)"),
+        "{message}"
+    );
+}
+
+#[gpui::test]
+fn replace_all_skips_file_changed_since_search(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    fs::write(dir.path().join("b.txt"), "x\nfoo\n").unwrap();
+    replace_all("Replace", cx);
+    assert_eq!(disk(&dir, "a.txt"), "bar bar\n");
+    assert_eq!(disk(&dir, "b.txt"), "x\nfoo\n");
+    let message = replace_message(&view, cx).expect("a message");
+    assert!(
+        message.contains("Replaced 2 occurrences across 1 file with 'bar'."),
+        "{message}"
+    );
+    assert!(
+        message.contains("Skipped 1 file: b.txt (changed since the search)"),
+        "{message}"
+    );
+}
+
+#[gpui::test]
+fn replace_all_empty_value_message(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "", cx);
+    keys("alt-cmd-enter", cx);
+    assert_eq!(
+        cx.pending_prompt().map(|(m, _)| m).as_deref(),
+        Some("Replace 3 occurrences across 2 files?")
+    );
+    cx.simulate_prompt_answer("Replace");
+    draw(cx);
+    assert_eq!(disk(&dir, "a.txt"), " \n");
+    assert_eq!(disk(&dir, "b.txt"), "\n");
+    assert_eq!(
+        replace_message(&view, cx).as_deref(),
+        Some("Replaced 3 occurrences across 2 files.")
+    );
+}
+
+#[gpui::test]
+fn new_search_during_replace_keeps_its_results(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\nkeep\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    keys("alt-cmd-enter", cx);
+    cx.simulate_prompt_answer("Replace");
+    let mut ticks = 0;
+    while !view.read_with(cx, |v, _| v.is_replacing()) {
+        assert!(cx.executor().tick(), "the replace starts");
+        ticks += 1;
+        assert!(ticks < 10_000);
+    }
+    assert!(
+        view.read_with(cx, |v, cx| v.match_label(cx))
+            .starts_with("Replacing… 0/2 files"),
+    );
+    // A new search starts while the replace runs.
+    let input = view.read_with(cx, |v, _| v.query_input().clone());
+    cx.update(|window, cx| input.update(cx, |i, cx| i.set_text("keep", window, cx)));
+    draw(cx);
+    settle_search(cx);
+    assert!(!view.read_with(cx, |v, _| v.is_replacing()));
+    assert_eq!(disk(&dir, "a.txt"), "bar bar\nkeep\n");
+    assert_eq!(disk(&dir, "b.txt"), "bar\n");
+    assert_eq!(replace_message(&view, cx), None);
+    let files = view.read_with(cx, |v, cx| {
+        v.results(cx)
+            .files()
+            .iter()
+            .map(|f| f.path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(files, vec!["a.txt".to_string()], "the new search's results");
+}
+
+#[gpui::test]
+fn find_bar_alt_cmd_enter_still_works_in_editor(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    keys("alt-cmd-f", cx);
+    type_text("foo", cx);
+    keys("tab", cx);
+    type_text("X", cx);
+    keys("alt-cmd-enter", cx);
+    assert!(!cx.has_pending_prompt(), "the find bar replaces");
+    assert_eq!(doc_text(&wb, "a.txt", cx), "X X\n");
+    assert_eq!(disk(&dir, "b.txt"), "foo\n");
+
+    // Back in the Search tab, with the find bar still open in a.txt.
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| wb.open_search(window, cx));
+        let focus = view.read(cx).query_input().focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    keys("alt-cmd-enter", cx);
+    assert!(cx.has_pending_prompt(), "the Search tab's Replace All");
+    cx.simulate_prompt_answer("Cancel");
+    draw(cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "X X\n");
 }

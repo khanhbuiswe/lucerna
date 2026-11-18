@@ -70,20 +70,16 @@ pub fn summary(matches: usize, files: usize, searched: bool, done: Option<bool>)
 /// Shown in the replace-all confirmation when the results cover only part of
 /// the matches. Wording as VS Code's `buildReplaceAllConfirmationMessage`
 /// (MIT, src/vs/workbench/contrib/search/browser/searchView.ts).
-#[allow(dead_code)] // until the replace-all dialog uses it
 pub const REPLACE_ALL_TRUNCATED_DETAIL: &str =
     "The results only contain a subset of all matches. Files not in the results are not changed.";
 
 /// The replacement value is cut to this many lines in the confirmation.
-#[allow(dead_code)] // until the replace-all dialog uses it
 const CONFIRM_VALUE_LINES: usize = 10;
 
 /// At most this many skipped files are named in `skipped_message`.
-#[allow(dead_code)] // until the replace-all dialog uses it
 const SKIPPED_LISTED: usize = 5;
 
 /// `1 file`, `2 files`, `20,000 occurrences`.
-#[allow(dead_code)] // until the replace-all dialog uses it
 fn count(n: usize, word: &str) -> String {
     match n {
         1 => format!("1 {word}"),
@@ -92,7 +88,6 @@ fn count(n: usize, word: &str) -> String {
 }
 
 /// ` with 'value'`, or nothing when the replacement is empty (a deletion).
-#[allow(dead_code)] // until the replace-all dialog uses it
 fn with_value(value: &str) -> String {
     if value.is_empty() {
         String::new()
@@ -104,7 +99,6 @@ fn with_value(value: &str) -> String {
 /// The replace-all confirmation. Wording as VS Code's
 /// `buildReplaceAllConfirmationMessage` (MIT, src/vs/workbench/contrib/search/browser/searchView.ts).
 /// A value longer than ten lines is cut to ten and `...` is appended.
-#[allow(dead_code)] // until the replace-all dialog uses it
 pub fn replace_all_confirmation(occurrences: usize, files: usize, value: &str) -> String {
     let lines: Vec<&str> = value.lines().collect();
     let shown = if lines.len() > CONFIRM_VALUE_LINES {
@@ -123,7 +117,6 @@ pub fn replace_all_confirmation(occurrences: usize, files: usize, value: &str) -
 /// The message once replace-all is done. Wording as VS Code's
 /// `buildAfterReplaceAllMessage` (MIT, src/vs/workbench/contrib/search/browser/searchView.ts).
 /// The value is never cut here.
-#[allow(dead_code)] // until the replace-all dialog uses it
 pub fn replaced_message(occurrences: usize, files: usize, value: &str) -> String {
     format!(
         "Replaced {} across {}{}.",
@@ -135,7 +128,6 @@ pub fn replaced_message(occurrences: usize, files: usize, value: &str) -> String
 
 /// Names the skipped files with their reasons, at most five. `skipped` holds
 /// `(file name, reason)`. `None` when nothing was skipped.
-#[allow(dead_code)] // until the replace-all dialog uses it
 pub fn skipped_message(skipped: &[(String, String)]) -> Option<String> {
     if skipped.is_empty() {
         return None;
@@ -158,7 +150,6 @@ pub fn skipped_message(skipped: &[(String, String)]) -> Option<String> {
 
 /// The notice for files with unsaved edits that replace-all left alone.
 /// `None` when there are none.
-#[allow(dead_code)] // until the replace-all dialog uses it
 pub fn unsaved_message(files: usize) -> Option<String> {
     match files {
         0 => None,

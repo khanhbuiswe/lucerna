@@ -21,13 +21,20 @@ use std::time::Duration;
 use futures::StreamExt;
 use gpui::{
     App, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, IntoElement, KeyDownEvent,
-    MouseButton, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
-    Window, div, prelude::*, px, svg,
+    MouseButton, ParentElement, PromptLevel, Render, SharedString, Styled, Subscription, Task,
+    WeakEntity, Window, div, prelude::*, px, svg,
 };
-use lucerna_project::{SearchEvent, SearchQuery, search, search_regex};
+use lucerna_project::replace::ReplacePattern;
+use lucerna_project::{
+    ReplaceProgress, ReplaceSpec, SearchEvent, SearchQuery, ShownLine, search, search_regex,
+};
 use lucerna_text::{BufferSnapshot, Point};
 
-use super::model::{first_match, globs, summary};
+use super::model::{
+    REPLACE_ALL_TRUNCATED_DETAIL, first_match, globs, replace_all_confirmation, replaced_message,
+    skipped_message, summary, unsaved_message,
+};
+use super::replace::{ReplaceReport, ReplaceTarget, run_replace};
 use crate::code_view::{CodeView, DEFAULT_WORD_SEPARATORS};
 use crate::documents::Documents;
 use crate::excerpt_list::highlight::FileHighlights;
@@ -136,6 +143,18 @@ pub struct SearchView {
     /// The home folder: parent folders' ignore files count up to it, as in
     /// the worktree's scan.
     home: Option<PathBuf>,
+    /// Files done of all while a Replace All runs.
+    replacing: Option<ReplaceProgress>,
+    /// Stops the running Replace All's background job; set when this view
+    /// is dropped.
+    replace_cancel: Arc<AtomicBool>,
+    /// Waits for the Replace All confirmation.
+    _confirm: Task<()>,
+    /// The running Replace All.
+    _replace: Task<()>,
+    /// What the last Replace All did, shown instead of the results until
+    /// the next search.
+    last_replace_message: Option<String>,
 }
 
 /// The most query characters the tab title shows.
@@ -233,6 +252,11 @@ impl SearchView {
             unloaded: (!searchable).then(Arc::default),
             search_pending: false,
             home: None,
+            replacing: None,
+            replace_cancel: Arc::new(AtomicBool::new(false)),
+            _confirm: Task::ready(()),
+            _replace: Task::ready(()),
+            last_replace_message: None,
         }
     }
 
@@ -418,9 +442,163 @@ impl SearchView {
             .update(cx, |list, cx| list.set_replace_preview(preview, cx));
     }
 
-    /// The Replace All button. The replace job comes with its own task;
-    /// until then the button does nothing.
-    pub fn replace_all(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+    /// A Replace All is running.
+    pub fn is_replacing(&self) -> bool {
+        self.replacing.is_some()
+    }
+
+    /// What the last Replace All did, until the next search.
+    pub fn last_replace_message(&self) -> Option<&str> {
+        self.last_replace_message.as_deref()
+    }
+
+    /// `search.action.replaceAll` and the Replace All button: asks, then
+    /// replaces the match lines the results show. Does nothing without
+    /// results of a finished search or while a replace runs; with inputs
+    /// changed since the search, searches instead.
+    pub fn replace_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.replace_visible || self.is_replacing() {
+            return;
+        }
+        if self.stale {
+            self.run_search(cx);
+            return;
+        }
+        if !self.replace_active(cx) || self.done.is_none() {
+            return;
+        }
+        // The job would skip every file of a query that does not build.
+        let Some(query) = self.last_query.clone() else {
+            return;
+        };
+        if search_regex(&query).is_err() {
+            return;
+        }
+        let value = self.replace_text.clone();
+        let results = self.results(cx);
+        let targets: Vec<ReplaceTarget> = results
+            .files()
+            .iter()
+            .filter_map(|file| {
+                let lines: Vec<ShownLine> = file
+                    .excerpts
+                    .iter()
+                    .flat_map(|e| &e.lines)
+                    .filter(|l| !l.ranges.is_empty())
+                    .map(|l| ShownLine {
+                        line_number: l.line_number,
+                        text: l.line_text.to_string(),
+                    })
+                    .collect();
+                (!lines.is_empty()).then(|| ReplaceTarget {
+                    path: file.path.clone(),
+                    lines,
+                })
+            })
+            .collect();
+        let message = replace_all_confirmation(results.occurrence_count(), targets.len(), &value);
+        let detail = (self.done == Some(true)).then_some(REPLACE_ALL_TRUNCATED_DETAIL);
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            detail,
+            &["Replace", "Cancel"],
+            cx,
+        );
+        let generation = self.generation;
+        self._confirm = cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            this.update_in(cx, |view, window, cx| {
+                // The results changed while the dialog was up: they are
+                // not what was agreed to.
+                if view.generation != generation || view.is_replacing() {
+                    return;
+                }
+                let spec = ReplaceSpec {
+                    pattern: ReplacePattern::parse(&value, query.is_regex),
+                    query,
+                    preserve_case: view.preserve_case,
+                };
+                view.start_replace(targets, spec, value, window, cx);
+            })
+            .ok();
+        });
+    }
+
+    /// Runs the agreed Replace All; the results and the message follow
+    /// when it ends.
+    fn start_replace(
+        &mut self,
+        targets: Vec<ReplaceTarget>,
+        spec: ReplaceSpec,
+        value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.replacing = Some(ReplaceProgress {
+            done: 0,
+            total: targets.len(),
+        });
+        self.replace_cancel = Arc::new(AtomicBool::new(false));
+        let this = cx.weak_entity();
+        let on_progress = move |progress: ReplaceProgress, cx: &mut App| {
+            this.update(cx, |view, cx| {
+                if view.replacing.is_some() {
+                    view.replacing = Some(progress);
+                    cx.notify();
+                }
+            })
+            .ok();
+        };
+        let job = run_replace(
+            targets,
+            spec,
+            self.documents.clone(),
+            self.root.clone(),
+            self.replace_cancel.clone(),
+            on_progress,
+            window,
+            cx,
+        );
+        let generation = self.generation;
+        self._replace = cx.spawn(async move |this, cx| {
+            let report = job.await;
+            this.update(cx, |view, cx| {
+                view.finish_replace(generation, report, &value, cx)
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    /// A Replace All ended. Unless a search started since, the results go
+    /// and the message says what was done.
+    fn finish_replace(
+        &mut self,
+        generation: u64,
+        report: ReplaceReport,
+        value: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.replacing = None;
+        cx.notify();
+        if generation != self.generation {
+            return;
+        }
+        self.list.update(cx, |list, cx| list.clear(cx));
+        self.invalid = false;
+        let skipped: Vec<(String, String)> = report
+            .skipped
+            .iter()
+            .map(|(path, reason)| (path.clone(), reason.message()))
+            .collect();
+        let mut lines = vec![replaced_message(report.replaced, report.files, value)];
+        lines.extend(skipped_message(&skipped));
+        lines.extend(unsaved_message(report.unsaved));
+        self.last_replace_message = Some(lines.join("\n"));
+    }
 
     pub fn case_sensitive(&self) -> bool {
         self.case_sensitive
@@ -560,6 +738,13 @@ impl SearchView {
     /// without matches. A search cut short says
     /// `"20,000+"` (the cap is [`lucerna_project::MAX_RESULTS`]).
     pub fn match_label(&self, cx: &App) -> String {
+        if let Some(progress) = self.replacing {
+            return format!(
+                "Replacing… {}/{} files",
+                thousands(progress.done),
+                thousands(progress.total)
+            );
+        }
         if self.searched && self.done.is_none() && self.error.is_none() {
             return "Searching…".into();
         }
@@ -703,6 +888,7 @@ impl SearchView {
         };
         self.search_pending = false;
         self.stale = false;
+        self.last_replace_message = None;
         self.cancel_search();
         self.done = None;
         self.error = None;
@@ -1117,6 +1303,7 @@ type EmptyAction = fn(&mut SearchView, &mut Window, &mut Context<SearchView>);
 impl Drop for SearchView {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::SeqCst);
+        self.replace_cancel.store(true, Ordering::SeqCst);
     }
 }
 
@@ -1228,8 +1415,12 @@ impl Render for SearchView {
             ));
         // The Replace input lines up under the query box, as the filters do.
         let replace_row = self.replace_visible.then(|| {
-            // Replacing needs results of a finished search.
-            let ready = self.replace_active(cx) && self.done.is_some() && !self.stale;
+            // Replacing needs results of a finished search, and no other
+            // replace running.
+            let ready = self.replace_active(cx)
+                && self.done.is_some()
+                && !self.stale
+                && !self.is_replacing();
             let replace_all = bar_icon_button("search-replace-all", REPLACE_ALL, false, cx)
                 .tooltip(tooltip("Replace All"));
             let replace_all = if ready {
@@ -1291,6 +1482,12 @@ impl Render for SearchView {
         // goes while searching, so the rows never jump (as in Zed).
         let message = match (&self.error, self.summary(cx)) {
             (Some(error), _) => Some(("search-error", error.clone(), color(ui.error))),
+            (None, _)
+                if self.results(cx).rows().is_empty() && self.last_replace_message.is_some() =>
+            {
+                let text = self.last_replace_message.clone().unwrap_or_default();
+                Some(("search-replace-message", text, muted))
+            }
             (None, Some(summary)) if self.results(cx).rows().is_empty() => {
                 Some(("search-summary", summary, muted))
             }
@@ -1408,6 +1605,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "closeReplaceInFilesWidget",
         "Search: Close Replace Widget",
         |v, window, cx| v.set_replace_visible(false, window, cx)
+    );
+    on_view!(
+        "search.action.replaceAll",
+        "Search: Replace All",
+        |v, window, cx| v.replace_all(window, cx)
     );
     on_view!(
         "workbench.action.search.toggleQueryDetails",

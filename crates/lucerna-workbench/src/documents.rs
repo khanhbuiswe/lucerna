@@ -1228,6 +1228,15 @@ impl Documents {
         }
     }
 
+    /// Whether the text of the document at `path` was decoded with invalid
+    /// bytes replaced by U+FFFD.
+    pub fn is_lossy(&self, path: &Path) -> bool {
+        self.docs
+            .get(&self.key(path))
+            .and_then(|d| d.buffer.as_ref())
+            .is_some_and(Buffer::is_lossy)
+    }
+
     /// Whether the file at `path` changed on disk while its text had
     /// unsaved changes.
     pub fn has_conflict(&self, path: &Path) -> bool {

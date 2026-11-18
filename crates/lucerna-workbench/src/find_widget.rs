@@ -811,10 +811,15 @@ impl Render for FindWidget {
 }
 
 /// Applies `edits` (sorted, in `view`'s current offsets) as one undo step;
-/// the selections move through them.
-fn apply_replacements(view: &Entity<CodeView>, edits: Vec<(Range<usize>, String)>, cx: &mut App) {
+/// the selections move through them. Returns whether they were applied
+/// (not in a read-only view).
+pub(crate) fn apply_replacements(
+    view: &Entity<CodeView>,
+    edits: Vec<(Range<usize>, String)>,
+    cx: &mut App,
+) -> bool {
     if edits.is_empty() {
-        return;
+        return false;
     }
     let edits: Vec<(Range<usize>, Arc<str>)> = edits
         .into_iter()
@@ -826,8 +831,8 @@ fn apply_replacements(view: &Entity<CodeView>, edits: Vec<(Range<usize>, String)
         let mut plan = EditPlan::new(edits, selections, EditKind::Other);
         plan.stop_before = true;
         plan.stop_after = true;
-        v.transact(plan, cx);
-    });
+        v.transact(plan, cx)
+    })
 }
 
 /// The selected text when the selection is on one line and not empty.
