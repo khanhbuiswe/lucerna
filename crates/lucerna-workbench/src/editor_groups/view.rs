@@ -14,7 +14,9 @@ use gpui::{
 use lucerna_settings::SettingsView;
 use lucerna_theme::{IconSource, Rgba, UiColors};
 
+use super::closed::TabViewState;
 use super::model::{EditorGroups, FileView, GroupsState, OpenMode, Tab, TabId, TabItem};
+use crate::code_view::CodeView;
 use crate::conflict_bar::{self, BarActions};
 use crate::documents::{DiskNotice, DocState, Documents};
 use crate::icons;
@@ -193,7 +195,9 @@ impl EditorGroupsView {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditorGroups) -> R,
     ) -> R {
+        let newest = self.model.closed().back().map(|e| (e.batch, e.tab));
         let result = f(&mut self.model);
+        self.remember_closed_views(newest, cx);
         // A closed tab's element is gone and never reports hover-leave.
         if let Some(hovered) = self.hovered_tab {
             let exists = self
@@ -213,84 +217,77 @@ impl EditorGroupsView {
         result
     }
 
-    /// Closes tab `id` for the user (the tab's ×, a middle click,
-    /// `workbench.action.closeActiveEditor`). When it is the last tab
-    /// showing a document with unsaved changes, asks first (spec §6.3):
-    /// Save closes it once saved (and still clean), Don't Save closes it
-    /// and drops the document with its history, Cancel keeps it.
-    pub fn request_close(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((path, documents)) = self.last_tab_of_dirty(id, cx) else {
-            self.update_model(cx, |m| m.close(id));
-            return;
-        };
-        let answer = save::prompt_unsaved(&save::display_name(&path), window, cx);
-        let workbench = self.save_target();
-        cx.spawn_in(window, async move |view, cx| {
-            match SaveChoice::of(answer.await) {
-                SaveChoice::Save => {
-                    // An edit typed while the save wrote is not saved: the
-                    // tab stays, still dirty. Checked where the document is
-                    // now, which Save As moved an Untitled one to.
-                    let saved = save::save_each(
-                        workbench,
-                        documents.clone(),
-                        vec![path.clone()],
-                        save::UntitledCancel::Stop,
-                        cx,
-                    )
-                    .await
-                    .is_some_and(|now| {
-                        documents.read_with(cx, |d, _| !now.iter().any(|p| d.is_dirty(p)))
-                    });
-                    if saved {
-                        view.update(cx, |view, cx| view.update_model(cx, |m| m.close(id)))
-                            .ok();
-                    }
-                }
-                SaveChoice::DontSave => {
-                    view.update(cx, |view, cx| view.update_model(cx, |m| m.close(id)))
-                        .ok();
-                    documents.update(cx, |d, cx| d.discard(&path, cx));
-                }
-                SaveChoice::Cancel => {}
-            }
-        })
-        .detach();
+    /// Attaches the cursor and scroll of each tab closed since the history's
+    /// newest entry was `before` to its entry. The closed tabs' bodies are
+    /// still here: they go at the next draw.
+    fn remember_closed_views(&mut self, before: Option<(u64, TabId)>, cx: &App) {
+        let fresh: Vec<TabId> = self
+            .model
+            .closed()
+            .iter()
+            .rev()
+            .take_while(|e| Some((e.batch, e.tab)) != before)
+            .map(|e| e.tab)
+            .collect();
+        for tab in fresh {
+            let Some(view) = self
+                .bodies
+                .get(&tab)
+                .and_then(|b| b.clone().downcast::<CodeView>().ok())
+            else {
+                continue;
+            };
+            let v = view.read(cx);
+            let state = TabViewState {
+                cursor: v.cursor(),
+                scroll_top_row: v.scroll_top_row(),
+            };
+            self.model.set_closed_view(tab, state);
+        }
     }
 
-    /// Closes every tab (`workbench.action.closeAllEditors`, `:qa`). When
-    /// some show documents with unsaved changes, asks once for all of them:
-    /// Save All closes every tab once they are saved (and still clean),
-    /// Don't Save closes every tab and drops those documents with their
-    /// history, Cancel keeps them all.
+    /// Closes tab `id` for the user (the tab's ×, a middle click,
+    /// `workbench.action.closeActiveEditor`); see
+    /// [`EditorGroupsView::request_close_tabs`].
+    pub fn request_close(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_close_tabs(vec![id], window, cx);
+    }
+
+    /// Closes every tab (`workbench.action.closeAllEditors`, `:qa`); see
+    /// [`EditorGroupsView::request_close_tabs`].
     pub fn request_close_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let tabs = || self.model.groups().iter().flat_map(|g| &g.tabs);
-        let ids: Vec<TabId> = tabs().map(|t| t.id).collect();
-        let dirty: Vec<Arc<Path>> = match &self.documents {
-            Some(documents) => {
-                let docs = documents.read(cx);
-                let mut paths: Vec<Arc<Path>> = tabs()
-                    .filter_map(|t| t.path())
-                    .filter(|p| docs.is_dirty(p))
-                    .cloned()
-                    .collect();
-                paths.sort();
-                paths.dedup();
-                paths
-            }
-            None => Vec::new(),
-        };
-        let close_all = move |view: &mut Self, cx: &mut Context<Self>| {
-            view.update_model(cx, |m| {
-                for id in &ids {
-                    m.close(*id);
-                }
-            });
+        let ids = self
+            .model
+            .groups()
+            .iter()
+            .flat_map(|g| g.tabs.iter().map(|t| t.id))
+            .collect();
+        self.request_close_tabs(ids, window, cx);
+    }
+
+    /// Closes tabs `ids` for the user as one batch (Reopen Closed Editor
+    /// brings them back together). Documents with unsaved changes that no
+    /// other tab shows are asked about once for all (spec §6.3): Save
+    /// (Save All) closes the tabs once those are saved and still clean,
+    /// Don't Save closes them and drops those documents with their
+    /// history, Cancel keeps every tab.
+    pub fn request_close_tabs(
+        &mut self,
+        ids: Vec<TabId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if ids.is_empty() {
+            return;
+        }
+        let dirty = self.unsaved_only_in(&ids, cx);
+        let close = move |view: &mut Self, cx: &mut Context<Self>| {
+            view.update_model(cx, |m| m.close_many(&ids));
         };
         let documents = match self.documents.clone() {
             Some(documents) if !dirty.is_empty() => documents,
             _ => {
-                close_all(self, cx);
+                close(self, cx);
                 return;
             }
         };
@@ -315,11 +312,11 @@ impl EditorGroupsView {
                         documents.read_with(cx, |d, _| !now.iter().any(|p| d.is_dirty(p)))
                     });
                     if saved {
-                        view.update(cx, |view, cx| close_all(view, cx)).ok();
+                        view.update(cx, |view, cx| close(view, cx)).ok();
                     }
                 }
                 SaveChoice::DontSave => {
-                    view.update(cx, |view, cx| close_all(view, cx)).ok();
+                    view.update(cx, |view, cx| close(view, cx)).ok();
                     documents.update(cx, |d, cx| {
                         for path in &dirty {
                             d.discard(path, cx);
@@ -406,14 +403,24 @@ impl EditorGroupsView {
         ))
     }
 
-    /// The path and documents of tab `id` when it shows a document with
-    /// unsaved changes that no other tab, in any group, shows.
-    fn last_tab_of_dirty(&self, id: TabId, cx: &App) -> Option<(Arc<Path>, Entity<Documents>)> {
+    /// The documents with unsaved changes that tabs `ids` show and no
+    /// other tab, in any group, does; sorted, each once.
+    fn unsaved_only_in(&self, ids: &[TabId], cx: &App) -> Vec<Arc<Path>> {
+        let Some(documents) = &self.documents else {
+            return Vec::new();
+        };
+        let docs = documents.read(cx);
         let tabs = || self.model.groups().iter().flat_map(|g| &g.tabs);
-        let path = tabs().find(|t| t.id == id)?.path()?.clone();
-        let documents = self.documents.clone()?;
-        let shown_elsewhere = tabs().any(|t| t.id != id && t.path() == Some(&path));
-        (!shown_elsewhere && documents.read(cx).is_dirty(&path)).then_some((path, documents))
+        let mut paths: Vec<Arc<Path>> = tabs()
+            .filter(|t| ids.contains(&t.id))
+            .filter_map(|t| t.path())
+            .filter(|p| docs.is_dirty(p))
+            .filter(|p| !tabs().any(|t| !ids.contains(&t.id) && t.path() == Some(p)))
+            .cloned()
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
     }
 
     /// Replaces the layout with the one saved in `state` (see
