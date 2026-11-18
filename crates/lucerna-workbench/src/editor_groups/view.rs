@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyView, App, ClickEvent, Context, Div, DragMoveEvent, Entity, IntoElement, MouseButton,
-    ParentElement, Pixels, Render, SharedString, Styled, WeakEntity, Window, div, prelude::*, px,
-    relative,
+    Focusable as _, MouseDownEvent, ParentElement, Pixels, Point, Render, SharedString, Styled, WeakEntity, Window,
+    div, prelude::*, px, relative,
 };
 use lucerna_settings::SettingsView;
 use lucerna_theme::{IconSource, Rgba, UiColors};
@@ -27,8 +27,8 @@ use crate::symbols::breadcrumbs::{
     BreadcrumbSettings, Crumbs, breadcrumb_segments, breadcrumbs_row, segments_text,
 };
 use crate::ui::{
-    self, ClickHandler, GRID, PATH_BAR_HEIGHT, SashGhost, TAB_PADDING_X, UI_FONT_SIZE,
-    UI_FONT_SIZE_SMALL, icon_button, tooltip,
+    self, ClickHandler, ContextMenu, DeployedMenu, GRID, PATH_BAR_HEIGHT, SashGhost,
+    TAB_PADDING_X, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, deploy_context_menu, icon_button, tooltip,
 };
 use crate::{AppState, WindowSettings, Workbench};
 
@@ -120,6 +120,10 @@ pub struct EditorGroupsView {
     on_command: Option<RunCommand>,
     /// Asks where to save an Untitled document closed with Save.
     workbench: Option<WeakEntity<Workbench>>,
+    /// The right-click menu of a tab, while open.
+    tab_menu: Option<DeployedMenu>,
+    /// Counts menus opened, so closing an old one leaves a newer one.
+    menu_generation: u64,
 }
 
 impl EditorGroupsView {
@@ -142,6 +146,8 @@ impl EditorGroupsView {
             on_breadcrumbs_click: None,
             on_command: None,
             workbench: None,
+            tab_menu: None,
+            menu_generation: 0,
         }
     }
 }
@@ -215,6 +221,96 @@ impl EditorGroupsView {
         }
         cx.notify();
         result
+    }
+
+    /// The tab menu, while it is open.
+    pub fn tab_menu(&self) -> Option<Entity<ContextMenu>> {
+        self.tab_menu.as_ref().map(|d| d.menu.clone())
+    }
+
+    /// Whether the tab menu is open and holds the keyboard focus.
+    pub(crate) fn tab_menu_focused(&self, window: &Window, cx: &App) -> bool {
+        self.tab_menu
+            .as_ref()
+            .is_some_and(|d| d.menu.read(cx).focus_handle(cx).contains_focused(window, cx))
+    }
+
+    /// Opens the right-click menu of tab `id` at `position`: the close
+    /// commands, aimed at that tab (`{"tab": <id>}`), those with nothing to
+    /// close disabled. The active tab stays as it is.
+    pub fn deploy_tab_menu(
+        &mut self,
+        id: TabId,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(group) = self
+            .model
+            .groups()
+            .iter()
+            .find(|g| g.tabs.iter().any(|t| t.id == id))
+        else {
+            return;
+        };
+        let count = group.tabs.len();
+        let at = group.tabs.iter().position(|t| t.id == id).unwrap_or(0);
+        let args = serde_json::json!({ "tab": id.as_u64() });
+        let owner = window.focused(cx).unwrap_or_else(|| cx.focus_handle());
+        let menu = cx.new(|cx| {
+            ContextMenu::new(owner, cx)
+                .entry_with_args("Close", "workbench.action.closeActiveEditor", args.clone())
+                .entry_with_args(
+                    "Close Others",
+                    "workbench.action.closeOtherEditors",
+                    args.clone(),
+                )
+                .disabled_when(count < 2)
+                .separator()
+                .entry_with_args(
+                    "Close to the Left",
+                    "workbench.action.closeEditorsToTheLeft",
+                    args.clone(),
+                )
+                .disabled_when(at == 0)
+                .entry_with_args(
+                    "Close to the Right",
+                    "workbench.action.closeEditorsToTheRight",
+                    args.clone(),
+                )
+                .disabled_when(at + 1 >= count)
+                .separator()
+                .entry_with_args(
+                    "Close Saved",
+                    "workbench.action.closeUnmodifiedEditors",
+                    args.clone(),
+                )
+                .entry_with_args("Close All", "workbench.action.closeEditorsInGroup", args)
+        });
+        self.menu_generation += 1;
+        let generation = self.menu_generation;
+        self.tab_menu = Some(deploy_context_menu(
+            menu,
+            position,
+            window,
+            cx,
+            move |view, command, window, cx| {
+                if view.menu_generation == generation {
+                    view.tab_menu = None;
+                    cx.notify();
+                }
+                let (Some(command), Some(workbench)) = (command, view.workbench.clone()) else {
+                    return;
+                };
+                // Run once this update ends: the commands update this view.
+                window.defer(cx, move |window, cx| {
+                    let _ = workbench.update(cx, |wb, cx| {
+                        wb.run_command(command.command, command.args.as_ref(), window, cx)
+                    });
+                });
+            },
+        ));
+        cx.notify();
     }
 
     /// Attaches the cursor and scroll of each tab closed since the history's
@@ -951,6 +1047,13 @@ impl Render for EditorGroupsView {
                         view.request_close(id, window, cx);
                     }),
                 )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |view, ev: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        view.deploy_tab_menu(id, ev.position, window, cx);
+                    }),
+                )
             });
             let tab_bar = ui::tab_bar(("tab-bar", gi), cx)
                 .w_full()
@@ -1053,7 +1156,7 @@ impl Render for EditorGroupsView {
                     .children(sash),
             );
         }
-        row
+        row.children(self.tab_menu.as_ref().map(ui::render_deployed))
     }
 }
 

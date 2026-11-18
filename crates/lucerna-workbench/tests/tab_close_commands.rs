@@ -459,3 +459,121 @@ fn registers_commands(cx: &mut TestAppContext) {
         );
     }
 }
+
+/// Right-clicks tab `ti` of group `gi` on screen.
+fn right_click_tab(gi: usize, ti: usize, cx: &mut VisualTestContext) {
+    let bounds = cx
+        .debug_bounds(Box::leak(format!("tab-{gi}-{ti}").into_boxed_str()))
+        .expect("the tab is drawn");
+    cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Right, gpui::Modifiers::none());
+    cx.simulate_mouse_up(bounds.center(), gpui::MouseButton::Right, gpui::Modifiers::none());
+    settle(cx);
+}
+
+/// `(label, command, disabled, tab arg)` of each entry of the open tab
+/// menu; `None` for a separator.
+type Line = Option<(String, &'static str, bool, Option<u64>)>;
+
+fn menu_lines(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Line> {
+    cx.update(|_, cx| {
+        let menu = wb
+            .read(cx)
+            .editor_groups()
+            .read(cx)
+            .tab_menu()
+            .expect("the tab menu is open");
+        menu.read(cx)
+            .items()
+            .iter()
+            .map(|item| match item {
+                lucerna_workbench::ui::MenuItem::Entry {
+                    label,
+                    command,
+                    args,
+                    disabled,
+                } => Some((
+                    label.to_string(),
+                    *command,
+                    *disabled,
+                    args.as_ref().and_then(|a| a.get("tab")).and_then(|t| t.as_u64()),
+                )),
+                lucerna_workbench::ui::MenuItem::Separator => None,
+            })
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn tab_menu_items_and_disabled_states(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt", "b.txt", "c.txt"], cx);
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        open(&wb, name, cx);
+    }
+    let a = tab_id(&wb, 0, 0, cx).as_u64();
+    right_click_tab(0, 0, cx);
+    let entry = |label: &str, command: &'static str, disabled: bool| {
+        Some((label.to_string(), command, disabled, Some(a)))
+    };
+    assert_eq!(
+        menu_lines(&wb, cx),
+        vec![
+            entry("Close", "workbench.action.closeActiveEditor", false),
+            entry("Close Others", "workbench.action.closeOtherEditors", false),
+            None,
+            entry("Close to the Left", "workbench.action.closeEditorsToTheLeft", true),
+            entry("Close to the Right", "workbench.action.closeEditorsToTheRight", false),
+            None,
+            entry("Close Saved", "workbench.action.closeUnmodifiedEditors", false),
+            entry("Close All", "workbench.action.closeEditorsInGroup", false),
+        ]
+    );
+    // A right-click does not change the active tab.
+    assert_eq!(active_name(&wb, cx).as_deref(), Some("c.txt"));
+}
+
+#[gpui::test]
+fn tab_menu_on_single_tab_disables_others_left_right(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt"], cx);
+    open(&wb, "a.txt", cx);
+    right_click_tab(0, 0, cx);
+    let disabled: Vec<(String, bool)> = menu_lines(&wb, cx)
+        .into_iter()
+        .flatten()
+        .map(|(label, _, disabled, _)| (label, disabled))
+        .collect();
+    assert_eq!(
+        disabled,
+        [
+            ("Close".to_string(), false),
+            ("Close Others".to_string(), true),
+            ("Close to the Left".to_string(), true),
+            ("Close to the Right".to_string(), true),
+            ("Close Saved".to_string(), false),
+            ("Close All".to_string(), false),
+        ]
+    );
+}
+
+#[gpui::test]
+fn menu_targets_right_clicked_tab_in_other_group(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt", "b.txt", "c.txt", "d.txt"], cx);
+    open(&wb, "a.txt", cx);
+    open(&wb, "b.txt", cx);
+    run(&wb, "workbench.action.splitEditor", None, cx);
+    // Group 1: [b, c, d] with d active; drop the copy of b.
+    open(&wb, "c.txt", cx);
+    open(&wb, "d.txt", cx);
+    let b_copy = tab_id(&wb, 1, 0, cx);
+    request_close_tabs(&wb, vec![b_copy], cx);
+    assert_eq!(tabs(&wb, cx), [vec!["a.txt", "b.txt"], vec!["c.txt", "d.txt"]]);
+    right_click_tab(0, 0, cx);
+    // Close Others is the second entry.
+    keys("down down enter", cx);
+    assert!(cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).tab_menu().is_none()));
+    assert_eq!(tabs(&wb, cx), [vec!["a.txt"], vec!["c.txt", "d.txt"]]);
+    let active_group = cx.update(|_, cx| {
+        wb.read(cx).editor_groups().read(cx).model().active_group()
+    });
+    assert_eq!(active_group, 0);
+    assert_eq!(active_name(&wb, cx).as_deref(), Some("a.txt"));
+}

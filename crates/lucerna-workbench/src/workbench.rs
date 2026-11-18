@@ -2475,7 +2475,8 @@ impl Workbench {
                 .as_ref()
                 .is_some_and(|c| c.op == ClipOp::Cut),
         );
-        flag("contextMenuVisible", menu_open);
+        let tab_menu_open = self.editor_groups.read(cx).tab_menu().is_some();
+        flag("contextMenuVisible", menu_open || tab_menu_open);
         flag("searchViewletFocus", self.search_focused(window, cx));
         flag("referencesViewFocus", self.references_view_focus(cx));
         flag(
@@ -3180,6 +3181,11 @@ impl Workbench {
     /// a plain character (no cmd/ctrl/alt) must carry a `when` clause, or it
     /// swallows that character in every text input.
     fn dispatch_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // The tab bar's menu, like any open menu, takes every key: arrows,
+        // Enter and Escape drive it, not the editor under it.
+        if self.editor_groups.read(cx).tab_menu_focused(window, cx) {
+            return;
+        }
         let stroke = keys::to_keystroke(ev);
         self.note_results_focus(window, cx);
         let ctx = self.context_keys(window, cx);
