@@ -20,16 +20,16 @@ use gpui::{
     MouseButton, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
     Window, div, prelude::*, px, svg,
 };
-use lucerna_project::{SearchEvent, SearchQuery, search};
+use lucerna_project::{SearchEvent, SearchQuery, search, search_regex};
 use lucerna_text::{BufferSnapshot, Point};
 
 use super::model::{first_match, globs, summary};
-use crate::code_view::CodeView;
+use crate::code_view::{CodeView, DEFAULT_WORD_SEPARATORS};
 use crate::documents::Documents;
 use crate::excerpt_list::highlight::FileHighlights;
 use crate::excerpt_list::model::{LineRef, Results, thousands};
 use crate::excerpt_list::{ExcerptList, ExcerptListEvent};
-use crate::find_widget::{build_regex, single_line_selection};
+use crate::find_widget::single_line_selection;
 use crate::icons::{
     CASE_SENSITIVE, CHEVRONS_DOWN_UP, CHEVRONS_UP_DOWN, LIST_FILTER, REFRESH_CW, REGEX, WHOLE_WORD,
 };
@@ -586,6 +586,9 @@ impl SearchView {
             include: globs(self.include.read(cx).text()),
             exclude: globs(self.exclude.read(cx).text()),
             context_lines,
+            word_separators: settings
+                .get::<String>("editor.wordSeparators", None)
+                .unwrap_or_else(|| DEFAULT_WORD_SEPARATORS.to_string()),
         };
         self.last_query = Some(query.clone());
         // VS Code: `search.exclude` inherits `files.exclude`.
@@ -669,9 +672,10 @@ impl SearchView {
                     // `search` reports an error when the matcher cannot be
                     // built; tell that apart from any other failure by
                     // building the pattern here too.
-                    self.pattern_error = self.last_query.as_ref().is_some_and(|q| {
-                        build_regex(&q.pattern, q.is_regex, q.case_sensitive, q.whole_word).is_err()
-                    });
+                    self.pattern_error = self
+                        .last_query
+                        .as_ref()
+                        .is_some_and(|q| search_regex(q).is_err());
                     self.error = Some(err);
                     failed = true;
                 }

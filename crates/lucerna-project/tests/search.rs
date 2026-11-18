@@ -190,6 +190,30 @@ fn whole_word() {
 }
 
 #[test]
+fn whole_word_uses_word_separators() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.txt", "foobar\nfoo\nfoo-bar\n");
+    let mut q = query("foo");
+    q.whole_word = true;
+    q.word_separators = "-".into();
+    let f = files(dir.path(), &run(dir.path(), &q));
+    let lines: Vec<u32> = f[0].1.iter().map(|m| m.line_number).collect();
+    assert_eq!(lines, vec![2, 3]);
+    q.word_separators = String::new();
+    let events = run(dir.path(), &q);
+    let lines: Vec<u32> = files(dir.path(), &events)[0]
+        .1
+        .iter()
+        .map(|m| m.line_number)
+        .collect();
+    assert_eq!(lines, vec![2]);
+    assert!(matches!(
+        events.last(),
+        Some(SearchEvent::Done { total: 1, .. })
+    ));
+}
+
+#[test]
 fn include_glob_limits() {
     let dir = TempDir::new().unwrap();
     write(dir.path(), "src/deep/a.rs", "needle\n");

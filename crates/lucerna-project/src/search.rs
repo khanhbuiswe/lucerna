@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crossbeam_channel::Sender;
-use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ignore::{WalkParallel, WalkState};
+use regex::Regex;
 
 use crate::watch::panic_message;
 use crate::worktree::{ScanOptions, walk_builder_with_includes};
@@ -24,6 +24,9 @@ pub struct SearchQuery {
     pub exclude: Vec<String>,
     /// Lines of context kept before and after each matching line.
     pub context_lines: u32,
+    /// `editor.wordSeparators`: what `whole_word` accepts as a boundary.
+    /// Empty means only whitespace and line edges bound a word.
+    pub word_separators: String,
 }
 
 /// What a reported line is. Search results are always [`Normal`]; a diff
@@ -83,20 +86,93 @@ pub const MAX_RESULTS: usize = 20_000;
 /// Most characters of a matching line that are reported.
 pub const MAX_LINE_CHARS: usize = 1000;
 
-/// The regex source for a search pattern: escaped unless `is_regex`, and
-/// wrapped as `\b(?:…)\b` for whole-word. Case folding is left to the
-/// regex builder (`case_insensitive`).
-pub fn build_pattern(pattern: &str, is_regex: bool, whole_word: bool) -> String {
-    let source = if is_regex {
+/// The regex source for a search pattern: escaped unless `is_regex`. Whole
+/// word is not part of it; [`line_matches`] filters matches by
+/// `editor.wordSeparators`. Case folding is left to the regex builder.
+pub fn build_pattern(pattern: &str, is_regex: bool) -> String {
+    if is_regex {
         pattern.to_owned()
     } else {
         regex::escape(pattern)
-    };
-    if whole_word {
-        format!(r"\b(?:{source})\b")
-    } else {
-        source
     }
+}
+
+/// The regex that decides matches inside one line: case folding unless
+/// `case_sensitive`, `^`/`$` at line ends (CRLF too). Keep its flags aligned
+/// with the grep matcher built in [`search`].
+pub fn search_regex(query: &SearchQuery) -> Result<Regex, String> {
+    regex::RegexBuilder::new(&build_pattern(&query.pattern, query.is_regex))
+        .case_insensitive(!query.case_sensitive)
+        .multi_line(true)
+        .crlf(true)
+        .build()
+        .map_err(|err| err.to_string())
+}
+
+/// The non-empty matches in one line (no `\n`), filtered by whole word via
+/// [`lucerna_text::words::is_word_bounded`] when `query.whole_word`. Search,
+/// the replace preview and the replace job all decide "a match" here.
+pub fn line_matches(regex: &Regex, query: &SearchQuery, line: &str) -> Vec<Range<usize>> {
+    regex
+        .find_iter(line)
+        .filter(|m| !m.is_empty())
+        .filter(|m| {
+            if !query.whole_word {
+                return true;
+            }
+            let text = &line[m.range()];
+            lucerna_text::words::is_word_bounded(
+                line[..m.start()].chars().next_back(),
+                text.chars().next(),
+                text.chars().next_back(),
+                line[m.end()..].chars().next(),
+                &query.word_separators,
+            )
+        })
+        .map(|m| m.range())
+        .collect()
+}
+
+/// The excerpts of one text, as [`search`] would report a file with that
+/// text: same context lines and `MAX_LINE_CHARS` cut, but no `MAX_RESULTS`
+/// across files.
+pub fn search_text(query: &SearchQuery, text: &str) -> Result<Vec<Excerpt>, String> {
+    let matcher = grep_matcher_for(query)?;
+    let regex = search_regex(query)?;
+    let mut searcher = searcher_for(query);
+    Ok(search_file(
+        &mut searcher,
+        &matcher,
+        &regex,
+        query,
+        Path::new(""),
+        Some(text),
+        &AtomicBool::new(false),
+    ))
+}
+
+fn grep_matcher_for(query: &SearchQuery) -> Result<RegexMatcher, String> {
+    RegexMatcherBuilder::new()
+        .case_insensitive(!query.case_sensitive)
+        // `$` and `^` must match at CRLF line ends too (VS Code does). In
+        // multi-line mode with `crlf`, they match before `\r\n` as well as
+        // `\n`, and `.` stops before `\r`. The terminator is forced back to
+        // `\n` because `crlf(true)` sets `\r\n`, which the default `\n`
+        // searcher rejects for every file. `line_match` trims the `\r`.
+        .multi_line(true)
+        .crlf(true)
+        .line_terminator(Some(b'\n'))
+        .build(&build_pattern(&query.pattern, query.is_regex))
+        .map_err(|err| err.to_string())
+}
+
+fn searcher_for(query: &SearchQuery) -> Searcher {
+    let context = query.context_lines as usize;
+    SearcherBuilder::new()
+        .before_context(context)
+        .after_context(context)
+        .binary_detection(BinaryDetection::quit(0))
+        .build()
 }
 
 /// Searches the files below `root` and streams one `File` event per file
@@ -134,25 +210,14 @@ pub fn search(
     sink: Sender<SearchEvent>,
     cancel: Arc<AtomicBool>,
 ) {
-    let source = build_pattern(&query.pattern, query.is_regex, query.whole_word);
-    let matcher = match RegexMatcherBuilder::new()
-        .case_insensitive(!query.case_sensitive)
-        // `$` and `^` must match at CRLF line ends too (VS Code does). In
-        // multi-line mode with `crlf`, they match before `\r\n` as well as
-        // `\n`, and `.` stops before `\r`. The terminator is forced back to
-        // `\n` because `crlf(true)` sets `\r\n`, which the default `\n`
-        // searcher rejects for every file. `line_match` trims the `\r`.
-        .multi_line(true)
-        .crlf(true)
-        .line_terminator(Some(b'\n'))
-        .build(&source)
-    {
-        Ok(matcher) => matcher,
+    let built = grep_matcher_for(query).and_then(|m| Ok((m, search_regex(query)?)));
+    let (matcher, regex) = match built {
+        Ok(pair) => pair,
         Err(err) => {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            let _ = sink.send(SearchEvent::Error(err.to_string()));
+            let _ = sink.send(SearchEvent::Error(err));
             let _ = sink.send(SearchEvent::Done {
                 total: 0,
                 truncated: false,
@@ -188,13 +253,8 @@ pub fn search(
     let total = AtomicUsize::new(0);
     let truncated = AtomicBool::new(false);
     walker.run(|| {
-        let context = query.context_lines as usize;
-        let mut searcher = SearcherBuilder::new()
-            .before_context(context)
-            .after_context(context)
-            .binary_detection(BinaryDetection::quit(0))
-            .build();
-        let (matcher, sink, cancel, buffers) = (&matcher, &sink, &cancel, &buffers);
+        let mut searcher = searcher_for(query);
+        let (matcher, regex, sink, cancel, buffers) = (&matcher, &regex, &sink, &cancel, &buffers);
         let (total, truncated) = (&total, &truncated);
         Box::new(move |entry| {
             if cancel.load(Ordering::Relaxed) {
@@ -211,6 +271,8 @@ pub fn search(
                 search_file(
                     &mut searcher,
                     matcher,
+                    regex,
+                    query,
                     path,
                     buffers.get(path).copied(),
                     cancel,
@@ -276,12 +338,15 @@ pub fn search(
 fn search_file(
     searcher: &mut Searcher,
     matcher: &RegexMatcher,
+    regex: &Regex,
+    query: &SearchQuery,
     path: &Path,
     buffer: Option<&str>,
     cancel: &AtomicBool,
 ) -> Vec<Excerpt> {
     let mut sink = ExcerptSink {
-        matcher,
+        regex,
+        query,
         cancel,
         excerpts: Vec::new(),
         match_count: 0,
@@ -294,12 +359,17 @@ fn search_file(
     if let Err(err) = result {
         tracing::debug!(path = %path.display(), %err, "could not search file");
     }
-    sink.excerpts
+    // A line whose matches were all filtered out (whole word) is context;
+    // an excerpt left without a match line is dropped.
+    let mut excerpts = sink.excerpts;
+    excerpts.retain(|e| e.match_count() > 0);
+    excerpts
 }
 
 /// Collects matching and context lines into excerpts.
 struct ExcerptSink<'a> {
-    matcher: &'a RegexMatcher,
+    regex: &'a Regex,
+    query: &'a SearchQuery,
     cancel: &'a AtomicBool,
     excerpts: Vec<Excerpt>,
     match_count: usize,
@@ -308,10 +378,30 @@ struct ExcerptSink<'a> {
 }
 
 impl ExcerptSink<'_> {
+    /// Removes the line pushed last, and its excerpt if that is left empty.
+    fn drop_last(&mut self) {
+        if let Some(excerpt) = self.excerpts.last_mut() {
+            excerpt.lines.pop();
+            if excerpt.lines.is_empty() {
+                self.excerpts.pop();
+                self.new_excerpt = true;
+            }
+        }
+    }
+
+    /// Whether the line pushed last has a match (not filtered, not context).
+    fn last_is_match(&self) -> bool {
+        self.excerpts
+            .last()
+            .and_then(|e| e.lines.last())
+            .is_some_and(|l| !l.ranges.is_empty())
+    }
+
     fn push(&mut self, line_number: Option<u64>, bytes: &[u8], is_match: bool) {
         let line_number = line_number.unwrap_or(0);
         let line = line_match(
-            self.matcher,
+            self.regex,
+            self.query,
             line_number,
             &String::from_utf8_lossy(bytes),
             is_match,
@@ -336,7 +426,13 @@ impl Sink for ExcerptSink<'_> {
 
     fn matched(&mut self, _: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
         self.push(mat.line_number(), mat.bytes(), true);
-        self.match_count += 1;
+        if self.last_is_match() {
+            self.match_count += 1;
+        } else if self.query.context_lines == 0 {
+            // Every match was filtered out: with no context lines the line
+            // is not reported at all.
+            self.drop_last();
+        }
         Ok(self.match_count < MAX_RESULTS && !self.cancel.load(Ordering::Relaxed))
     }
 
@@ -379,16 +475,22 @@ fn truncate_matches(excerpts: &mut Vec<Excerpt>, allowed: usize) {
 
 /// A reported line. A matching line always has a range, even when every match
 /// lies past the cut: then it is the empty range at the cut, so the line is
-/// not mistaken for context.
-fn line_match(matcher: &RegexMatcher, line_number: u64, line: &str, is_match: bool) -> LineMatch {
+/// not mistaken for context. A line whose matches were all filtered out by
+/// whole word is reported as context.
+fn line_match(
+    regex: &Regex,
+    query: &SearchQuery,
+    line_number: u64,
+    line: &str,
+    is_match: bool,
+) -> LineMatch {
     let line = line.trim_end_matches(['\n', '\r']);
-    let mut ranges = Vec::new();
-    if is_match {
-        let _ = matcher.find_iter(line.as_bytes(), |m| {
-            ranges.push(m.start()..m.end());
-            true
-        });
-    }
+    let mut ranges = if is_match {
+        line_matches(regex, query, line)
+    } else {
+        Vec::new()
+    };
+    let is_match = is_match && !ranges.is_empty();
     let keep = line
         .char_indices()
         .nth(MAX_LINE_CHARS)
@@ -410,22 +512,87 @@ fn line_match(matcher: &RegexMatcher, line_number: u64, line: &str, is_match: bo
 
 #[cfg(test)]
 mod tests {
-    use super::build_pattern;
+    use super::*;
+
+    const SEPS: &str = "-";
+
+    fn q(pattern: &str, whole_word: bool, seps: &str) -> SearchQuery {
+        SearchQuery {
+            pattern: pattern.into(),
+            case_sensitive: true,
+            whole_word,
+            word_separators: seps.into(),
+            ..Default::default()
+        }
+    }
+
+    fn matches(query: &SearchQuery, line: &str) -> Vec<Range<usize>> {
+        line_matches(&search_regex(query).unwrap(), query, line)
+    }
 
     #[test]
     fn literal_is_escaped() {
-        assert_eq!(build_pattern("a.b(c)", false, false), r"a\.b\(c\)");
+        assert_eq!(build_pattern("a.b(c)", false), r"a\.b\(c\)");
     }
 
     #[test]
     fn regex_passes_through() {
-        assert_eq!(build_pattern(r"a.+b", true, false), "a.+b");
+        assert_eq!(build_pattern(r"a.+b", true), "a.+b");
     }
 
     #[test]
-    fn whole_word_wraps() {
-        assert_eq!(build_pattern("log", false, true), r"\b(?:log)\b");
-        assert_eq!(build_pattern("a|b", true, true), r"\b(?:a|b)\b");
-        assert_eq!(build_pattern("a.b", false, true), r"\b(?:a\.b)\b");
+    fn pattern_never_adds_word_boundary() {
+        assert_eq!(build_pattern("log", false), "log");
+        assert_eq!(build_pattern("a.b", false), r"a\.b");
+    }
+
+    #[test]
+    fn whole_word_by_separators() {
+        let query = q("foo", true, SEPS);
+        assert_eq!(matches(&query, "foo-bar foo"), vec![0..3, 8..11]);
+        assert!(matches(&query, "foobar").is_empty());
+        assert!(matches(&q("foo", true, ""), "foo-bar").is_empty());
+    }
+
+    #[test]
+    fn partial_matches_without_whole_word() {
+        assert_eq!(matches(&q("foo", false, SEPS), "foobar"), vec![0..3]);
+    }
+
+    #[test]
+    fn empty_matches_are_ignored() {
+        assert!(matches(&q("x*", true, SEPS), "ab").is_empty());
+        assert!(matches(&q("x*", false, SEPS), "ab").is_empty());
+    }
+
+    #[test]
+    fn search_text_reports_excerpts_with_context() {
+        let mut query = q("foo", true, SEPS);
+        query.context_lines = 1;
+        let excerpts = search_text(&query, "a\nfoo\nb").unwrap();
+        assert_eq!(excerpts.len(), 1);
+        let lines = &excerpts[0].lines;
+        let numbers: Vec<u32> = lines.iter().map(|l| l.line_number).collect();
+        assert_eq!(numbers, vec![1, 2, 3]);
+        assert!(lines[0].ranges.is_empty());
+        assert_eq!(lines[1].ranges, vec![0..3]);
+        assert!(lines[2].ranges.is_empty());
+    }
+
+    #[test]
+    fn search_text_drops_fully_filtered_lines() {
+        let query = q("foo", true, SEPS);
+        let excerpts = search_text(&query, "foobar\nfoo\n").unwrap();
+        assert_eq!(excerpts.len(), 1);
+        assert_eq!(excerpts[0].lines.len(), 1);
+        assert_eq!(excerpts[0].lines[0].line_number, 2);
+        assert!(search_text(&query, "foobar\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_text_reports_bad_pattern() {
+        let mut query = q("(", false, SEPS);
+        query.is_regex = true;
+        assert!(search_text(&query, "x").is_err());
     }
 }

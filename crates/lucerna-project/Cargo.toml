@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+lucerna-text.workspace = true
 ignore.workspace = true
 grep-searcher.workspace = true
 grep-regex.workspace = true

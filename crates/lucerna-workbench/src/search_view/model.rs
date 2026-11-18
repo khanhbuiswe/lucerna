@@ -3,24 +3,14 @@
 
 use std::ops::Range;
 
-use lucerna_project::{MAX_RESULTS, SearchQuery};
+use lucerna_project::{MAX_RESULTS, SearchQuery, line_matches, search_regex};
 
 use crate::excerpt_list::model::thousands;
-use crate::find_widget::build_regex;
 
 /// The first non-empty match of `query` in `line`.
 pub fn first_match(query: &SearchQuery, line: &str) -> Option<Range<usize>> {
-    let regex = build_regex(
-        &query.pattern,
-        query.is_regex,
-        query.case_sensitive,
-        query.whole_word,
-    )
-    .ok()?;
-    regex
-        .find_iter(line)
-        .find(|m| !m.is_empty())
-        .map(|m| m.range())
+    let regex = search_regex(query).ok()?;
+    line_matches(&regex, query, line).into_iter().next()
 }
 
 /// Comma-separated globs, trimmed, empty ones dropped. As VS Code's

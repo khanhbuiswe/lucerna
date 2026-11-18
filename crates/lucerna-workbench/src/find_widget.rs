@@ -15,10 +15,9 @@ use gpui::{
 };
 use lucerna_editor::find::{FindQuery, find_all};
 use lucerna_editor::{EditKind, EditPlan, SelectionSet, mk_patch};
-use lucerna_project::build_pattern;
 use lucerna_project::replace::{ReplacePattern, replace_ranges, replacement_at};
 use lucerna_text::{BufferSnapshot, Point};
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 
 use crate::code_view::{CodeView, DEFAULT_WORD_SEPARATORS};
 use crate::layout::color;
@@ -56,22 +55,6 @@ pub fn find_in_snapshot(
             word_separators: DEFAULT_WORD_SEPARATORS,
         },
     )
-}
-
-/// The regex for a project search query: the source from
-/// [`build_pattern`], case folding unless `case_sensitive`, and `^`/`$`
-/// at line ends.
-pub(crate) fn build_regex(
-    pattern: &str,
-    is_regex: bool,
-    case_sensitive: bool,
-    whole_word: bool,
-) -> Result<Regex, String> {
-    RegexBuilder::new(&build_pattern(pattern, is_regex, whole_word))
-        .case_insensitive(!case_sensitive)
-        .multi_line(true)
-        .build()
-        .map_err(|err| err.to_string())
 }
 
 /// Which match becomes active after a search.

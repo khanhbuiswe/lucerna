@@ -3406,6 +3406,7 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "libc",
+ "lucerna-text",
  "notify",
  "nucleo-matcher",
  "regex",

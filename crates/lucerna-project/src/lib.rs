@@ -14,7 +14,7 @@ pub use coalesce::{Coalesced, RESCAN_THRESHOLD, RawEvent, coalesce};
 pub use fuzzy::{FileMatch, QUICK_OPEN_LIMIT, match_files};
 pub use search::{
     Excerpt, LineKind, LineMatch, MAX_LINE_CHARS, MAX_RESULTS, SearchEvent, SearchQuery,
-    build_pattern, search,
+    build_pattern, line_matches, search, search_regex, search_text,
 };
 pub use watch::{DEBOUNCE, watch_error_reason};
 
