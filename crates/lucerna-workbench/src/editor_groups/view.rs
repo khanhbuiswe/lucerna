@@ -380,14 +380,62 @@ impl EditorGroupsView {
         if ids.is_empty() {
             return;
         }
-        let dirty = self.unsaved_only_in(&ids, cx);
-        let close = move |view: &mut Self, cx: &mut Context<Self>| {
-            view.update_model(cx, |m| m.close_many(&ids));
-        };
+        let closing = ids.clone();
+        self.after_unsaved_prompt(
+            &ids,
+            move |view, _, cx| {
+                view.update_model(cx, |m| m.close_many(&closing));
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Replaces tab `id` with a tab showing `item` (see
+    /// [`EditorGroups::replace_item`]) for the user, asking first about its
+    /// unsaved document as closing it would: the tab's text goes. Runs
+    /// `done` once the tab is replaced; not on Cancel.
+    pub(crate) fn request_replace_item(
+        &mut self,
+        id: TabId,
+        item: TabItem,
+        done: impl FnOnce(&mut Window, &mut App) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.after_unsaved_prompt(
+            &[id],
+            move |view, window, cx| {
+                if view
+                    .update_model(cx, |m| m.replace_item(id, item))
+                    .is_some()
+                {
+                    // Not inside this update: `done` may update the workbench.
+                    window.defer(cx, done);
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Runs `then` (closing or replacing tabs `ids`) once the documents
+    /// with unsaved changes that only those tabs show are dealt with
+    /// (spec §6.3), asked about once for all: Save (Save All) runs it once
+    /// they are saved and still clean, Don't Save runs it and drops them
+    /// with their history, Cancel does nothing. With none, runs it now.
+    fn after_unsaved_prompt(
+        &mut self,
+        ids: &[TabId],
+        then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dirty = self.unsaved_only_in(ids, cx);
         let documents = match self.documents.clone() {
             Some(documents) if !dirty.is_empty() => documents,
             _ => {
-                close(self, cx);
+                then(self, window, cx);
                 return;
             }
         };
@@ -412,11 +460,13 @@ impl EditorGroupsView {
                         documents.read_with(cx, |d, _| !now.iter().any(|p| d.is_dirty(p)))
                     });
                     if saved {
-                        view.update(cx, |view, cx| close(view, cx)).ok();
+                        view.update_in(cx, |view, window, cx| then(view, window, cx))
+                            .ok();
                     }
                 }
                 SaveChoice::DontSave => {
-                    view.update(cx, |view, cx| close(view, cx)).ok();
+                    view.update_in(cx, |view, window, cx| then(view, window, cx))
+                        .ok();
                     documents.update(cx, |d, cx| {
                         for path in &dirty {
                             d.discard(path, cx);
@@ -508,7 +558,8 @@ impl EditorGroupsView {
     }
 
     /// The documents with unsaved changes that tabs `ids` show and no
-    /// other tab, in any group, does; sorted, each once.
+    /// other tab, in any group, does; sorted, each once. An image preview
+    /// tab shows no document: it reads the file itself.
     fn unsaved_only_in(&self, ids: &[TabId], cx: &App) -> Vec<Arc<Path>> {
         let Some(documents) = &self.documents else {
             return Vec::new();
@@ -517,9 +568,9 @@ impl EditorGroupsView {
         let tabs = || self.model.groups().iter().flat_map(|g| &g.tabs);
         let mut paths: Vec<Arc<Path>> = tabs()
             .filter(|t| ids.contains(&t.id))
-            .filter_map(|t| t.path())
+            .filter_map(shown_document)
             .filter(|p| docs.is_dirty(p))
-            .filter(|p| !tabs().any(|t| !ids.contains(&t.id) && t.path() == Some(p)))
+            .filter(|p| !tabs().any(|t| !ids.contains(&t.id) && shown_document(t) == Some(p)))
             .cloned()
             .collect();
         paths.sort();
@@ -1309,6 +1360,15 @@ fn empty_hint(ui: &UiColors, settings: SettingsView<'_>, cx: &App) -> gpui::AnyE
         .child(div().flex().flex_col().gap(px(GRID)).children(labels))
         .child(div().flex().flex_col().gap(px(GRID)).children(keys))
         .into_any_element()
+}
+
+/// The file whose document tab `tab` shows: none for an image preview,
+/// which reads the file itself.
+fn shown_document(tab: &Tab) -> Option<&Arc<Path>> {
+    match tab.item {
+        TabItem::ImagePreview(_) => None,
+        _ => tab.path(),
+    }
 }
 
 #[cfg(test)]

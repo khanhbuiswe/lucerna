@@ -959,3 +959,113 @@ fn image_tab_has_no_disk_bar(cx: &mut TestAppContext) {
         "none on the image tab"
     );
 }
+
+/// `i.svg` opened as text with `x` typed at its start, unsaved.
+fn dirty_svg(wb: &Entity<Workbench>, dir: &TempDir, cx: &mut VisualTestContext) -> Arc<Path> {
+    fs::write(dir.path().join("i.svg"), SVG).unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.open_source(Arc::from(Path::new("i.svg")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    cx.simulate_input("x");
+    draw(cx);
+    let svg: Arc<Path> = Arc::from(dir.path().join("i.svg"));
+    assert!(is_dirty(wb, &svg, cx));
+    svg
+}
+
+fn is_dirty(wb: &Entity<Workbench>, path: &Path, cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| wb.read(cx).documents().read(cx).is_dirty(path))
+}
+
+/// ⌘⇧V on a dirty SVG asks as closing its tab would; Cancel keeps the
+/// text tab and its edits.
+#[gpui::test]
+fn reopen_dirty_svg_as_image_cancel_keeps_text(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let svg = dirty_svg(&wb, &dir, cx);
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    assert_eq!(
+        cx.pending_prompt().map(|(message, _)| message),
+        Some("Do you want to save the changes you made to i.svg?".to_string())
+    );
+    assert_eq!(
+        tabs(&wb, cx).0,
+        vec![TabItem::File(svg.clone())],
+        "open until answered"
+    );
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+    assert_eq!(tabs(&wb, cx).0, vec![TabItem::File(svg.clone())]);
+    assert!(is_dirty(&wb, &svg, cx));
+    assert_eq!(fs::read_to_string(&svg).unwrap(), SVG);
+}
+
+#[gpui::test]
+fn reopen_dirty_svg_as_image_dont_save_drops_edits(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let svg = dirty_svg(&wb, &dir, cx);
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    cx.simulate_prompt_answer("Don't Save");
+    settle(cx);
+    assert_eq!(tabs(&wb, cx).0, vec![TabItem::ImagePreview(svg.clone())]);
+    assert_eq!(fs::read_to_string(&svg).unwrap(), SVG);
+    assert!(!is_dirty(&wb, &svg, cx));
+}
+
+#[gpui::test]
+fn reopen_dirty_svg_as_image_save_writes_edits(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let svg = dirty_svg(&wb, &dir, cx);
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    cx.simulate_prompt_answer("Save");
+    settle(cx);
+    assert_eq!(fs::read_to_string(&svg).unwrap(), format!("x{SVG}"));
+    assert_eq!(tabs(&wb, cx).0, vec![TabItem::ImagePreview(svg)]);
+}
+
+/// A clean SVG toggles at once, with no prompt.
+#[gpui::test]
+fn reopen_clean_svg_as_image_does_not_ask(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(dir.path().join("i.svg"), SVG).unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.open_source(Arc::from(Path::new("i.svg")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    assert!(!cx.has_pending_prompt());
+    let svg: Arc<Path> = Arc::from(dir.path().join("i.svg"));
+    assert_eq!(tabs(&wb, cx).0, vec![TabItem::ImagePreview(svg)]);
+}
+
+/// Closing a dirty text tab asks even while an image tab of the same file
+/// is open: the image tab does not keep the document.
+#[gpui::test]
+fn close_dirty_svg_text_asks_beside_image_tab(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(dir.path().join("i.svg"), SVG).unwrap();
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("i.svg")), OpenMode::Pinned, cx);
+        wb.open_source(Arc::from(Path::new("i.svg")), OpenMode::Pinned, cx);
+    });
+    draw(cx);
+    cx.simulate_input("x");
+    draw(cx);
+    let text = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups.model().active_tab().expect("a tab").id
+    });
+    cx.update(|window, cx| {
+        let groups = wb.read(cx).editor_groups().clone();
+        groups.update(cx, |view, cx| view.request_close(text, window, cx));
+    });
+    draw(cx);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    settle(cx);
+}

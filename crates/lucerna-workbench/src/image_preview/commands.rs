@@ -50,7 +50,9 @@ fn active(wb: &Workbench, cx: &App) -> Option<(TabId, TabItem)> {
 }
 
 /// Replaces the source tab `tab` with the image preview of `path` in its
-/// place (or activates the group's preview of it), and focuses it.
+/// place (or activates the group's preview of it), and focuses it. Unsaved
+/// text that no other tab shows is asked about first, as closing the tab
+/// would: the preview shows the file on disk, and the text would be lost.
 fn reopen_as_image_preview(
     wb: &mut Workbench,
     tab: TabId,
@@ -58,11 +60,18 @@ fn reopen_as_image_preview(
     window: &mut Window,
     cx: &mut Context<Workbench>,
 ) {
-    if wb
-        .update_editor_groups(cx, |m| m.replace_item(tab, TabItem::ImagePreview(path)))
-        .is_none()
-    {
-        return;
-    }
-    wb.focus_editor_area(window, cx);
+    let workbench = cx.entity().downgrade();
+    wb.editor_groups().clone().update(cx, |view, cx| {
+        view.request_replace_item(
+            tab,
+            TabItem::ImagePreview(path),
+            move |window, cx| {
+                workbench
+                    .update(cx, |wb, cx| wb.focus_editor_area(window, cx))
+                    .ok();
+            },
+            window,
+            cx,
+        );
+    });
 }
