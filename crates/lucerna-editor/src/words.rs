@@ -9,24 +9,7 @@
 
 use lucerna_text::{BufferSnapshot, Point};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CharClass {
-    Regular,
-    Whitespace,
-    Separator,
-}
-
-/// Space and tab are whitespace, chars of `separators` are separators,
-/// everything else is regular.
-pub fn classify(c: char, separators: &str) -> CharClass {
-    if c == ' ' || c == '\t' {
-        CharClass::Whitespace
-    } else if separators.contains(c) {
-        CharClass::Separator
-    } else {
-        CharClass::Regular
-    }
-}
+pub use lucerna_text::words::{CharClass, classify};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WordType {

@@ -7,6 +7,7 @@ mod history;
 mod load;
 mod patch;
 mod reload;
+pub mod words;
 mod write;
 
 pub use buffer::{Buffer, BufferSnapshot, LineEnding, Point};

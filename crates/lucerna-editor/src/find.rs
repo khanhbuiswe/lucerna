@@ -10,7 +10,7 @@ use std::ops::Range;
 use lucerna_text::BufferSnapshot;
 use regex::{Regex, RegexBuilder};
 
-use crate::words::{CharClass, classify};
+use lucerna_text::words::is_word_bounded;
 
 /// Bytes [`find_next`] copies out of the buffer per window.
 const WINDOW_BYTES: usize = 256 * 1024;
@@ -139,8 +139,6 @@ fn scan_range(
 /// the match's own edge char is not one.
 pub fn is_whole_word(snap: &BufferSnapshot, range: Range<usize>, separators: &str) -> bool {
     let len = snap.len_bytes();
-    // VS Code matches line by line, so a line break is a boundary too.
-    let regular = |c: char| c != '\n' && c != '\r' && classify(c, separators) == CharClass::Regular;
     let before = |at: usize| {
         let lo = snap.floor_char_boundary(at.saturating_sub(4));
         snap.text_for_range(lo..at).chars().next_back()
@@ -149,13 +147,14 @@ pub fn is_whole_word(snap: &BufferSnapshot, range: Range<usize>, separators: &st
         let hi = snap.floor_char_boundary((at + 4).min(len));
         snap.text_for_range(at..hi).chars().next()
     };
-    let left = range.start == 0
-        || before(range.start).is_none_or(|c| !regular(c))
-        || after(range.start).is_some_and(|c| !regular(c));
-    let right = range.end == len
-        || after(range.end).is_none_or(|c| !regular(c))
-        || before(range.end).is_some_and(|c| !regular(c));
-    left && right
+    // VS Code matches line by line, so a line break is a boundary too.
+    is_word_bounded(
+        before(range.start),
+        after(range.start),
+        before(range.end),
+        after(range.end),
+        separators,
+    )
 }
 
 #[cfg(test)]
