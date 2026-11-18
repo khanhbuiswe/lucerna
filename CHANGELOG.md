@@ -24,6 +24,7 @@ Each release's section below is copied into its GitHub Release page by
   press again to go further back. Close Others (Alt+Cmd+T), Close to the Left/Right, Close Saved
   (Cmd+K U) and Close All in Group (Cmd+K W) are in the Command Palette and in a new right-click
   menu on tabs; unsaved files are asked about once for all.
+- Replace in Files (⇧⌘H): Replace All across the project, per file and per line, with a preview in the Search tab.
 
 ### Changed
 

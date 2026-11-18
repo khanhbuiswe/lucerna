@@ -2,11 +2,16 @@
 //! with case / word / regex toggles, optional include and exclude globs,
 //! and the results as excerpts grouped by file as they stream in.
 //!
+//! A Replace row (`workbench.action.replaceInFiles`, `⇧⌘H`) sits under the
+//! query: while it shows and has text, the results preview each match's
+//! replacement. Typing in it never searches.
+//!
 //! Every change waits [`SEARCH_DEBOUNCE`] before searching and cancels the
 //! running search through its `AtomicBool`. Each search gets a fresh
 //! channel and a generation; events of a superseded search are dropped
 //! (ruling R17).
 
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::HashSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -17,21 +22,32 @@ use std::time::Duration;
 use futures::StreamExt;
 use gpui::{
     App, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, IntoElement, KeyDownEvent,
-    MouseButton, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
-    Window, div, prelude::*, px, svg,
+    MouseButton, ParentElement, PromptLevel, Render, SharedString, Styled, Subscription, Task,
+    WeakEntity, Window, WindowId, div, prelude::*, px, svg,
 };
-use lucerna_project::{SearchEvent, SearchQuery, search};
+use lucerna_project::replace::ReplacePattern;
+use lucerna_project::{
+    Excerpt, ReplaceProgress, ReplaceSpec, SearchEvent, SearchQuery, ShownLine, SkipReason, search,
+    search_regex, search_text,
+};
 use lucerna_text::{BufferSnapshot, Point};
 
-use super::model::{first_match, globs, summary};
-use crate::code_view::CodeView;
+use super::model::{
+    REPLACE_ALL_TRUNCATED_DETAIL, first_match, globs, replace_all_confirmation, replaced_message,
+    skipped_message, summary, unsaved_message,
+};
+use super::replace::{ReplaceReport, ReplaceTarget, run_replace};
+use crate::code_view::{CodeView, DEFAULT_WORD_SEPARATORS};
 use crate::documents::Documents;
 use crate::excerpt_list::highlight::FileHighlights;
 use crate::excerpt_list::model::{LineRef, Results, thousands};
-use crate::excerpt_list::{ExcerptList, ExcerptListEvent};
-use crate::find_widget::{build_regex, single_line_selection};
+use crate::excerpt_list::{
+    ExcerptList, ExcerptListEvent, ListSelection, ReplacePreview, RowActions,
+};
+use crate::find_widget::single_line_selection;
 use crate::icons::{
-    CASE_SENSITIVE, CHEVRONS_DOWN_UP, CHEVRONS_UP_DOWN, LIST_FILTER, REFRESH_CW, REGEX, WHOLE_WORD,
+    CASE_SENSITIVE, CHEVRONS_DOWN_UP, CHEVRONS_UP_DOWN, LIST_FILTER, REFRESH_CW, REGEX, REPLACE,
+    REPLACE_ALL, WHOLE_WORD,
 };
 use crate::layout::color;
 use crate::tasks::guarded;
@@ -39,11 +55,13 @@ use crate::text_input::TextInput;
 use crate::ui::{
     ClickHandler, GRID, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, bar_icon_button, bar_separator,
     centered_message, input_box, match_nav, search_bar_row, search_query_box, search_query_column,
-    search_toolbar, toggle_button,
+    search_toolbar, toggle_button, tooltip,
 };
 use crate::workbench::enabled_globs;
 use crate::workspace_state::SearchState;
-use crate::{AppState, CommandRegistry, DocState, OpenMode, WindowSettings, Workbench};
+use crate::{
+    AppState, CommandRegistry, DocState, OpenMode, WindowSettings, Workbench, status_message,
+};
 
 /// How long the inputs must stay unchanged before a search starts.
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -72,6 +90,14 @@ pub struct SearchView {
     query: Entity<TextInput>,
     include: Entity<TextInput>,
     exclude: Entity<TextInput>,
+    /// The Replace input; its text is kept while the row is hidden.
+    replace: Entity<TextInput>,
+    /// The Replace input's text, kept as it changes.
+    replace_text: String,
+    /// The Replace row is shown.
+    replace_visible: bool,
+    /// The `AB` toggle in the Replace input.
+    preserve_case: bool,
     case_sensitive: bool,
     whole_word: bool,
     is_regex: bool,
@@ -91,6 +117,9 @@ pub struct SearchView {
     invalid: bool,
     /// The query the shown results came from.
     last_query: Option<SearchQuery>,
+    /// What the list's replace preview was made from: the Replace text,
+    /// Preserve Case and the query; `None` while there is no preview.
+    preview_key: Option<(String, bool, Option<SearchQuery>)>,
     /// The inputs changed since the last search started (a debounced
     /// search is still waiting): `Enter` searches instead of stepping.
     stale: bool,
@@ -120,6 +149,129 @@ pub struct SearchView {
     /// The home folder: parent folders' ignore files count up to it, as in
     /// the worktree's scan.
     home: Option<PathBuf>,
+    /// Files done of all while a Replace All runs.
+    replacing: Option<ReplaceProgress>,
+    /// Stops the running Replace All's background job; set when this view
+    /// is dropped.
+    replace_cancel: Arc<AtomicBool>,
+    /// Waits for the Replace All confirmation.
+    _confirm: Task<()>,
+    /// The running Replace All.
+    _replace: Task<()>,
+    /// What the last Replace All did, shown instead of the results until
+    /// the next search.
+    last_replace_message: Option<String>,
+    /// Searches the file of a per-line replace again.
+    _research: Task<()>,
+}
+
+/// What a running replace was asked to do.
+enum ReplaceKind {
+    /// Replace All, with the Replace text it used.
+    All { value: String },
+    /// One match line of file `path` (root-relative).
+    Line(LineReplace),
+    /// Every match line of file `path` the results show.
+    File { path: Arc<Path> },
+}
+
+/// A per-line replace: what the results showed of its file, so the file's
+/// new search keeps only those match lines (never the dismissed ones, nor
+/// matches that came since).
+struct LineReplace {
+    /// Root-relative.
+    path: Arc<Path>,
+    /// The replaced line.
+    line_number: u32,
+    /// Newlines the replacement adds: lines after the replaced one move
+    /// down by this many.
+    added_lines: u32,
+    /// The match lines shown of the file before the replace, the replaced
+    /// one included.
+    shown: Vec<u32>,
+}
+
+impl LineReplace {
+    /// Whether line `n` of the file's new text was a shown match line:
+    /// lines before the replaced one keep their number, lines after it
+    /// move down by `added_lines`, and the replaced line spans
+    /// `line_number..=line_number + added_lines`.
+    fn keeps(&self, n: u32) -> bool {
+        let (line, added) = (self.line_number, self.added_lines);
+        if n < line {
+            self.shown.binary_search(&n).is_ok()
+        } else if n <= line + added {
+            true
+        } else {
+            self.shown.binary_search(&(n - added)).is_ok()
+        }
+    }
+}
+
+/// `excerpts` with only the match lines `keep` accepts: the others are
+/// dropped as Dismiss drops them, and so is an excerpt left without a
+/// match line (with its context).
+fn keep_matches(excerpts: Vec<Excerpt>, keep: impl Fn(u32) -> bool) -> Vec<Excerpt> {
+    excerpts
+        .into_iter()
+        .filter_map(|mut excerpt| {
+            excerpt
+                .lines
+                .retain(|l| l.ranges.is_empty() || keep(l.line_number));
+            (excerpt.match_count() > 0).then_some(excerpt)
+        })
+        .collect()
+}
+
+/// The status bar text for a per-line or per-file replace of file `name`
+/// that was skipped for `reason`.
+fn skipped_status(name: &str, reason: &SkipReason) -> String {
+    match reason {
+        SkipReason::ChangedSinceSearch => {
+            "The file has changed since the search. Search again to replace it.".into()
+        }
+        reason => format!("Could not replace in {name}: {}", reason.message()),
+    }
+}
+
+/// The match line that follows line `line_number` of file `path` in
+/// `results` (the file may have left them), else the last one before it.
+fn match_after(results: &Results, path: &Path, line_number: u32) -> Option<LineRef> {
+    let files = results.files();
+    let at = files.partition_point(|f| f.path.as_ref() < path);
+    let mut before = None;
+    for (file, f) in files.iter().enumerate() {
+        for (excerpt, e) in f.excerpts.iter().enumerate() {
+            for (line, l) in e.lines.iter().enumerate() {
+                if l.ranges.is_empty() {
+                    continue;
+                }
+                let r = LineRef {
+                    file,
+                    excerpt,
+                    line,
+                };
+                let after = match file.cmp(&at) {
+                    CmpOrdering::Less => false,
+                    CmpOrdering::Greater => true,
+                    CmpOrdering::Equal => f.path.as_ref() != path || l.line_number > line_number,
+                };
+                if after {
+                    return Some(r);
+                }
+                before = Some(r);
+            }
+        }
+    }
+    before
+}
+
+/// The file name of a root-relative `path`, as status messages show it.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The most query characters the tab title shows.
@@ -149,12 +301,35 @@ impl SearchView {
         let list = {
             let root = root.clone();
             let settings = settings.clone();
-            cx.new(|cx| ExcerptList::new(root, "search", settings, cx))
+            cx.new(|cx| {
+                let mut list = ExcerptList::new(root, "search", settings, cx);
+                list.set_headers_selectable(true);
+                list
+            })
         };
         let list_focus = list.read(cx).focus_handle().clone();
         let list_events =
             cx.subscribe_in(&list, window, |view, _, event, window, cx| match event {
                 ExcerptListEvent::Activate(r) => view.open_line(*r, window, cx),
+                ExcerptListEvent::ActivateHeader(file) => view.toggle_collapsed(*file, cx),
+                ExcerptListEvent::ReplaceLine(r) => view.replace_line(*r, window, cx),
+                ExcerptListEvent::ReplaceFile(file) => view.replace_file(*file, window, cx),
+                ExcerptListEvent::DismissLine(r) => {
+                    let r = *r;
+                    view.list.update(cx, |list, cx| {
+                        list.select_line(r, cx);
+                        list.dismiss_selected(cx);
+                    });
+                    cx.notify();
+                }
+                ExcerptListEvent::DismissFile(file) => {
+                    let file = *file;
+                    view.list.update(cx, |list, cx| {
+                        list.select_header(file, cx);
+                        list.dismiss_selected(cx);
+                    });
+                    cx.notify();
+                }
             });
         SearchView {
             workbench,
@@ -166,6 +341,27 @@ impl SearchView {
             query: input("Search", cx),
             include: input("e.g. src/**, *.rs", cx),
             exclude: input("e.g. target, *.min.js", cx),
+            replace: {
+                let this = cx.weak_entity();
+                cx.new(|cx| {
+                    let mut input = TextInput::new(cx);
+                    input.set_placeholder("Replace");
+                    // Only the preview follows the Replace text: never a
+                    // search. Runs inside the input's update: the text
+                    // comes as an argument.
+                    input.on_change(move |text, _, cx| {
+                        this.update(cx, |view, cx| {
+                            view.replace_text = text.to_owned();
+                            view.update_preview(cx);
+                        })
+                        .ok();
+                    });
+                    input
+                })
+            },
+            replace_text: String::new(),
+            replace_visible: false,
+            preserve_case: false,
             case_sensitive: false,
             whole_word: false,
             is_regex: false,
@@ -176,6 +372,7 @@ impl SearchView {
             pattern_error: false,
             invalid: false,
             last_query: None,
+            preview_key: None,
             stale: false,
             generation: 0,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -190,6 +387,12 @@ impl SearchView {
             unloaded: (!searchable).then(Arc::default),
             search_pending: false,
             home: None,
+            replacing: None,
+            replace_cancel: Arc::new(AtomicBool::new(false)),
+            _confirm: Task::ready(()),
+            _replace: Task::ready(()),
+            last_replace_message: None,
+            _research: Task::ready(()),
         }
     }
 
@@ -283,6 +486,547 @@ impl SearchView {
         &self.exclude
     }
 
+    /// The Replace input.
+    pub fn replace_input(&self) -> &Entity<TextInput> {
+        &self.replace
+    }
+
+    /// The Replace row is shown.
+    pub fn replace_visible(&self) -> bool {
+        self.replace_visible
+    }
+
+    /// The `AB` (Preserve Case) toggle is on.
+    pub fn preserve_case(&self) -> bool {
+        self.preserve_case
+    }
+
+    /// Shows or hides the Replace row. Showing it focuses the Replace
+    /// input, hiding it the query.
+    pub fn set_replace_visible(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_visible = on;
+        if on {
+            self.replace
+                .update(cx, |input, cx| input.select_all(window, cx));
+            let focus = self.replace.focus_handle(cx);
+            window.focus(&focus, cx);
+        } else {
+            let focus = self.query.focus_handle(cx);
+            window.focus(&focus, cx);
+        }
+        self.update_preview(cx);
+        self.sync_row_actions(cx);
+        cx.notify();
+    }
+
+    /// Gives the list its row buttons: Dismiss always, Replace while the
+    /// Replace row shows and the search has finished.
+    fn sync_row_actions(&mut self, cx: &mut Context<Self>) {
+        let actions = Some(RowActions {
+            replace: self.replace_visible && self.done.is_some(),
+        });
+        if self.list.read(cx).row_actions() != actions {
+            self.list.update(cx, |list, cx| {
+                list.set_row_actions(actions);
+                cx.notify();
+            });
+        }
+    }
+
+    /// `toggleSearchPreserveCase` and the `AB` toggle: only the preview
+    /// changes, nothing is searched again.
+    pub fn toggle_preserve_case(&mut self, cx: &mut Context<Self>) {
+        self.preserve_case = !self.preserve_case;
+        self.update_preview(cx);
+        cx.notify();
+    }
+
+    /// The Replace input has the focus (`replaceInputBoxFocus`).
+    pub fn replace_input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.replace_visible && self.replace.focus_handle(cx).is_focused(window)
+    }
+
+    /// The Replace row shows and there is a result to replace
+    /// (`replaceActive`, as in VS Code).
+    pub fn replace_active(&self, cx: &App) -> bool {
+        self.replace_visible && self.results(cx).match_count() > 0
+    }
+
+    /// The replace preview the results are drawn with, if any.
+    #[doc(hidden)]
+    pub fn replace_preview(&self, cx: &App) -> Option<Arc<ReplacePreview>> {
+        self.list.read(cx).replace_preview().cloned()
+    }
+
+    /// Bumped each time a search starts or is cancelled.
+    #[doc(hidden)]
+    pub fn search_generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Gives the list the preview of the current Replace text and toggle,
+    /// for the query the shown results came from; none while the row is
+    /// hidden or empty. A new preview is made only when one of those
+    /// changed, so the list keeps the replacements it worked out.
+    fn update_preview(&mut self, cx: &mut Context<Self>) {
+        let replace = self.replace_text.as_str();
+        let preview = match &self.last_query {
+            Some(query) if self.replace_visible && !replace.is_empty() => {
+                ReplacePreview::new(query, replace, self.preserve_case)
+                    .ok()
+                    .map(Arc::new)
+            }
+            _ => None,
+        };
+        let key = preview.as_ref().map(|_| {
+            (
+                replace.to_owned(),
+                self.preserve_case,
+                self.last_query.clone(),
+            )
+        });
+        if key == self.preview_key {
+            return;
+        }
+        self.preview_key = key;
+        self.list
+            .update(cx, |list, cx| list.set_replace_preview(preview, cx));
+    }
+
+    /// A Replace All is running.
+    pub fn is_replacing(&self) -> bool {
+        self.replacing.is_some()
+    }
+
+    /// What the last Replace All did, until the next search.
+    pub fn last_replace_message(&self) -> Option<&str> {
+        self.last_replace_message.as_deref()
+    }
+
+    /// `search.action.replaceAll` and the Replace All button: asks, then
+    /// replaces the match lines the results show. Does nothing without
+    /// results of a finished search or while a replace runs; with inputs
+    /// changed since the search, searches instead.
+    pub fn replace_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(query) = self.replace_query(cx) else {
+            return;
+        };
+        let value = self.replace_text.clone();
+        let results = self.results(cx);
+        let targets: Vec<ReplaceTarget> = results
+            .files()
+            .iter()
+            .filter_map(|file| {
+                let lines: Vec<ShownLine> = file
+                    .excerpts
+                    .iter()
+                    .flat_map(|e| &e.lines)
+                    .filter(|l| !l.ranges.is_empty())
+                    .map(|l| ShownLine {
+                        line_number: l.line_number,
+                        text: l.line_text.to_string(),
+                    })
+                    .collect();
+                (!lines.is_empty()).then(|| ReplaceTarget {
+                    path: file.path.clone(),
+                    lines,
+                })
+            })
+            .collect();
+        let message = replace_all_confirmation(results.occurrence_count(), targets.len(), &value);
+        let detail = (self.done == Some(true)).then_some(REPLACE_ALL_TRUNCATED_DETAIL);
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            detail,
+            &["Replace", "Cancel"],
+            cx,
+        );
+        let generation = self.generation;
+        self._confirm = cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            this.update_in(cx, |view, window, cx| {
+                // The results changed while the dialog was up: they are
+                // not what was agreed to.
+                if view.generation != generation || view.is_replacing() {
+                    return;
+                }
+                let spec = view.replace_spec(query);
+                view.start_replace(targets, spec, ReplaceKind::All { value }, window, cx);
+            })
+            .ok();
+        });
+    }
+
+    /// The query to replace the shown results of, when a replace may run
+    /// now: the Replace row shows, no other replace runs, and the results
+    /// are those of a finished search for a valid query. With inputs
+    /// changed since the search, searches instead.
+    fn replace_query(&mut self, cx: &mut Context<Self>) -> Option<SearchQuery> {
+        if !self.replace_visible || self.is_replacing() {
+            return None;
+        }
+        if self.stale {
+            self.run_search(cx);
+            return None;
+        }
+        if !self.replace_active(cx) || self.done.is_none() {
+            return None;
+        }
+        // The job would skip every file of a query that does not build.
+        let query = self.last_query.clone()?;
+        search_regex(&query).ok()?;
+        Some(query)
+    }
+
+    /// Replacing `query`'s matches with the Replace text and toggle.
+    fn replace_spec(&self, query: SearchQuery) -> ReplaceSpec {
+        ReplaceSpec {
+            pattern: ReplacePattern::parse(&self.replace_text, query.is_regex),
+            query,
+            preserve_case: self.preserve_case,
+        }
+    }
+
+    /// `search.action.replace` (`⇧⌘1`): replaces the selected match line,
+    /// or every match line of the selected file header.
+    pub fn replace_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.list_selection(cx) {
+            Some(ListSelection::Line(r)) => self.replace_line(r, window, cx),
+            Some(ListSelection::Header(file)) => self.replace_file(file, window, cx),
+            None => {}
+        }
+    }
+
+    /// `search.action.replaceAllInFile`: replaces the match lines of the
+    /// selected file (its header or one of its lines).
+    pub fn replace_selected_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let file = match self.list_selection(cx) {
+            Some(ListSelection::Line(r)) => r.file,
+            Some(ListSelection::Header(file)) => file,
+            None => return,
+        };
+        self.replace_file(file, window, cx);
+    }
+
+    /// Replaces the matches of result line `r` in its file, without
+    /// asking. The file is then searched again and the next match line
+    /// selected; a line changed since the search is left alone.
+    pub fn replace_line(&mut self, r: LineRef, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(query) = self.replace_query(cx) else {
+            return;
+        };
+        let results = self.results(cx);
+        let (Some(file), Some(line)) = (results.files().get(r.file), results.line(r)) else {
+            return;
+        };
+        if line.ranges.is_empty() {
+            return;
+        }
+        let path = file.path.clone();
+        let line_number = line.line_number;
+        let mut shown: Vec<u32> = file
+            .excerpts
+            .iter()
+            .flat_map(|e| &e.lines)
+            .filter(|l| !l.ranges.is_empty())
+            .map(|l| l.line_number)
+            .collect();
+        shown.sort_unstable();
+        shown.dedup();
+        // The new text of the line, as the preview works it out (the same
+        // matcher and replacement as the job): its newlines move the lines
+        // after it.
+        let added_lines = ReplacePreview::new(&query, &self.replace_text, self.preserve_case)
+            .map(|preview| {
+                preview
+                    .replacements(line)
+                    .iter()
+                    .flatten()
+                    .map(|new| new.matches('\n').count() as u32)
+                    .sum()
+            })
+            .unwrap_or(0);
+        let target = ReplaceTarget {
+            path: path.clone(),
+            lines: vec![ShownLine {
+                line_number,
+                text: line.line_text.to_string(),
+            }],
+        };
+        let spec = self.replace_spec(query);
+        let kind = ReplaceKind::Line(LineReplace {
+            path,
+            line_number,
+            added_lines,
+            shown,
+        });
+        self.start_replace(vec![target], spec, kind, window, cx);
+    }
+
+    /// Replaces the match lines the results show of file `file`, without
+    /// asking. The file then leaves the results and the first match line
+    /// of the next file is selected.
+    pub fn replace_file(&mut self, file: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(query) = self.replace_query(cx) else {
+            return;
+        };
+        let Some(f) = self.results(cx).files().get(file) else {
+            return;
+        };
+        let lines: Vec<ShownLine> = f
+            .excerpts
+            .iter()
+            .flat_map(|e| &e.lines)
+            .filter(|l| !l.ranges.is_empty())
+            .map(|l| ShownLine {
+                line_number: l.line_number,
+                text: l.line_text.to_string(),
+            })
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        let path = f.path.clone();
+        let target = ReplaceTarget {
+            path: path.clone(),
+            lines,
+        };
+        let spec = self.replace_spec(query);
+        self.start_replace(vec![target], spec, ReplaceKind::File { path }, window, cx);
+    }
+
+    /// `search.action.remove` (`⌘⌫`): removes the selected line or file
+    /// from the results; no file changes.
+    pub fn dismiss_selected(&mut self, cx: &mut Context<Self>) {
+        self.list.update(cx, |list, cx| list.dismiss_selected(cx));
+        cx.notify();
+    }
+
+    /// The results list has the focus.
+    pub fn list_focused(&self, window: &Window) -> bool {
+        self.list_focus.is_focused(window)
+    }
+
+    /// Runs a replace; the results and the message follow when it ends.
+    fn start_replace(
+        &mut self,
+        targets: Vec<ReplaceTarget>,
+        spec: ReplaceSpec,
+        kind: ReplaceKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.replacing = Some(ReplaceProgress {
+            done: 0,
+            total: targets.len(),
+        });
+        self.replace_cancel = Arc::new(AtomicBool::new(false));
+        let this = cx.weak_entity();
+        let on_progress = move |progress: ReplaceProgress, cx: &mut App| {
+            this.update(cx, |view, cx| {
+                if view.replacing.is_some() {
+                    view.replacing = Some(progress);
+                    cx.notify();
+                }
+            })
+            .ok();
+        };
+        let job = run_replace(
+            targets,
+            spec,
+            self.documents.clone(),
+            self.root.clone(),
+            self.replace_cancel.clone(),
+            on_progress,
+            window,
+            cx,
+        );
+        let generation = self.generation;
+        let window_id = window.window_handle().window_id();
+        self._replace = cx.spawn(async move |this, cx| {
+            let report = job.await;
+            this.update(cx, |view, cx| match kind {
+                ReplaceKind::All { value } => {
+                    view.finish_replace(generation, report, &value, window_id, cx)
+                }
+                kind => view.finish_one(generation, report, kind, window_id, cx),
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    /// A per-line or per-file replace ended. A skipped file stays in the
+    /// results and the status bar says why; otherwise, unless a search
+    /// started since, a replaced file leaves the results and a replaced
+    /// line's file is searched again.
+    fn finish_one(
+        &mut self,
+        generation: u64,
+        report: ReplaceReport,
+        kind: ReplaceKind,
+        window_id: WindowId,
+        cx: &mut Context<Self>,
+    ) {
+        let path = match &kind {
+            ReplaceKind::Line(LineReplace { path, .. }) | ReplaceKind::File { path } => {
+                path.clone()
+            }
+            ReplaceKind::All { .. } => return,
+        };
+        let name = file_name(&path);
+        let skipped = report.skipped.first().map(|(_, reason)| reason);
+        if let Some(reason) = skipped {
+            status_message::show(window_id, skipped_status(&name, reason), cx);
+        } else if report.unsaved > 0 {
+            status_message::show(
+                window_id,
+                format!("Replaced in {name}. The file has unsaved changes."),
+                cx,
+            );
+        }
+        if skipped.is_some() || generation != self.generation {
+            self.replacing = None;
+            cx.notify();
+            return;
+        }
+        match kind {
+            ReplaceKind::Line(line) => {
+                // Still replacing until the file is searched again, so the
+                // next replace works on current results.
+                self.research_file(line, cx);
+            }
+            ReplaceKind::File { path } => {
+                self.replacing = None;
+                self.list.update(cx, |list, cx| {
+                    let file = list.results().file_index(&path);
+                    list.remove_files(std::slice::from_ref(&path), cx);
+                    let results = list.results();
+                    let len = results.files().len();
+                    let next = file.and_then(|file| {
+                        (file..len)
+                            .chain((0..file.min(len)).rev())
+                            .find_map(|f| results.first_match_of(f))
+                    });
+                    if let Some(r) = next {
+                        list.select_line(r, cx);
+                    }
+                });
+                cx.notify();
+            }
+            ReplaceKind::All { .. } => {}
+        }
+    }
+
+    /// Searches the file of `line` again on its current text (the open
+    /// document's, else the disk's, read on a background thread), puts its
+    /// new excerpts in the results (only the match lines shown before, see
+    /// [`LineReplace::keeps`]) and selects the match line after the
+    /// replaced one, else the one before.
+    fn research_file(&mut self, line: LineReplace, cx: &mut Context<Self>) {
+        let path = line.path.clone();
+        // Where the replaced line ends in the new text.
+        let line_number = line.line_number + line.added_lines;
+        let Some(query) = self.last_query.clone() else {
+            self.replacing = None;
+            cx.notify();
+            return;
+        };
+        // Joined onto the root: a relative `untitled:…` path would be
+        // taken for an Untitled document's key.
+        let absolute = self.root.join(&path);
+        let snapshot = {
+            let docs = self.documents.read(cx);
+            match docs.state(&absolute) {
+                Some(DocState::Ready) => docs.snapshot_of(&absolute),
+                _ => None,
+            }
+        };
+        let generation = self.generation;
+        let job = cx.background_spawn(async move {
+            let text = match snapshot {
+                Some(snapshot) => snapshot.text(),
+                None => {
+                    let bytes = std::fs::read(&absolute).ok()?;
+                    lucerna_text::decode_file(&bytes, false).ok()?.text
+                }
+            };
+            let excerpts = search_text(&query, &text).ok()?;
+            Some(keep_matches(excerpts, |n| line.keeps(n)))
+        });
+        self._research = cx.spawn(async move |this, cx| {
+            let excerpts = job.await.unwrap_or_default();
+            this.update(cx, |view, cx| {
+                view.apply_research(generation, path, line_number, excerpts, cx)
+            })
+            .ok();
+        });
+    }
+
+    /// The new excerpts of a file searched again after a per-line replace.
+    fn apply_research(
+        &mut self,
+        generation: u64,
+        path: Arc<Path>,
+        line_number: u32,
+        excerpts: Vec<Excerpt>,
+        cx: &mut Context<Self>,
+    ) {
+        self.replacing = None;
+        cx.notify();
+        if generation != self.generation {
+            return;
+        }
+        self.list.update(cx, |list, cx| {
+            if excerpts.is_empty() {
+                list.remove_files(std::slice::from_ref(&path), cx);
+            } else {
+                list.set_file(path.clone(), excerpts, cx);
+            }
+            if let Some(r) = match_after(list.results(), &path, line_number) {
+                list.select_line(r, cx);
+            }
+        });
+    }
+
+    /// A Replace All ended. Unless a search started since, the results go
+    /// and the message says what was done. If one did, its results stay
+    /// and the status bar still names the skipped and unsaved files.
+    fn finish_replace(
+        &mut self,
+        generation: u64,
+        report: ReplaceReport,
+        value: &str,
+        window_id: WindowId,
+        cx: &mut Context<Self>,
+    ) {
+        self.replacing = None;
+        cx.notify();
+        let skipped: Vec<(String, String)> = report
+            .skipped
+            .iter()
+            .map(|(path, reason)| (path.clone(), reason.message()))
+            .collect();
+        let notes: Vec<String> = skipped_message(&skipped)
+            .into_iter()
+            .chain(unsaved_message(report.unsaved))
+            .collect();
+        if generation != self.generation {
+            if !notes.is_empty() {
+                status_message::show(window_id, notes.join(" "), cx);
+            }
+            return;
+        }
+        self.list.update(cx, |list, cx| list.clear(cx));
+        self.invalid = false;
+        let mut lines = vec![replaced_message(report.replaced, report.files, value)];
+        lines.extend(notes);
+        self.last_replace_message = Some(lines.join("\n"));
+    }
+
     pub fn case_sensitive(&self) -> bool {
         self.case_sensitive
     }
@@ -303,6 +1047,12 @@ impl SearchView {
     /// The selected result line, at its current position.
     pub fn selected(&self, cx: &App) -> Option<LineRef> {
         self.list.read(cx).selected()
+    }
+
+    /// The selected result line or file header, at its current position.
+    #[doc(hidden)]
+    pub fn list_selection(&self, cx: &App) -> Option<ListSelection> {
+        self.list.read(cx).selection()
     }
 
     /// The files with results, sorted by path, and the rows shown.
@@ -415,6 +1165,13 @@ impl SearchView {
     /// without matches. A search cut short says
     /// `"20,000+"` (the cap is [`lucerna_project::MAX_RESULTS`]).
     pub fn match_label(&self, cx: &App) -> String {
+        if let Some(progress) = self.replacing {
+            return format!(
+                "Replacing… {}/{} files",
+                thousands(progress.done),
+                thousands(progress.total)
+            );
+        }
         if self.searched && self.done.is_none() && self.error.is_none() {
             return "Searching…".into();
         }
@@ -558,10 +1315,12 @@ impl SearchView {
         };
         self.search_pending = false;
         self.stale = false;
+        self.last_replace_message = None;
         self.cancel_search();
         self.done = None;
         self.error = None;
         self.pattern_error = false;
+        self.sync_row_actions(cx);
         cx.notify();
         let pattern = self.query.read(cx).text().to_owned();
         self.searched = !pattern.is_empty();
@@ -586,11 +1345,16 @@ impl SearchView {
             include: globs(self.include.read(cx).text()),
             exclude: globs(self.exclude.read(cx).text()),
             context_lines,
+            word_separators: settings
+                .get::<String>("editor.wordSeparators", None)
+                .unwrap_or_else(|| DEFAULT_WORD_SEPARATORS.to_string()),
         };
         self.last_query = Some(query.clone());
         // VS Code: `search.exclude` inherits `files.exclude`.
         let mut settings_exclude = enabled_globs(settings, "search.exclude");
         settings_exclude.extend(enabled_globs(settings, "files.exclude"));
+        // The preview follows the query the results now come from.
+        self.update_preview(cx);
         // VS Code: open files with unsaved changes are searched on their
         // text, so lines and clicks match the buffer (T5-6). Snapshots are
         // cheap to clone; their text is copied on the background thread.
@@ -669,9 +1433,10 @@ impl SearchView {
                     // `search` reports an error when the matcher cannot be
                     // built; tell that apart from any other failure by
                     // building the pattern here too.
-                    self.pattern_error = self.last_query.as_ref().is_some_and(|q| {
-                        build_regex(&q.pattern, q.is_regex, q.case_sensitive, q.whole_word).is_err()
-                    });
+                    self.pattern_error = self
+                        .last_query
+                        .as_ref()
+                        .is_some_and(|q| search_regex(q).is_err());
                     self.error = Some(err);
                     failed = true;
                 }
@@ -691,6 +1456,7 @@ impl SearchView {
         });
         if let Some(truncated) = finished {
             self.done = Some(truncated);
+            self.sync_row_actions(cx);
         }
         if finished.is_some() || failed {
             self.invalid = self.compute_invalid(cx);
@@ -807,6 +1573,11 @@ impl SearchView {
             return;
         }
         match (ev.keystroke.key.as_str(), m.shift) {
+            // As in the find bar: Tab goes on to the Replace input.
+            ("tab", false) if self.replace_visible => {
+                let focus = self.replace.focus_handle(cx);
+                window.focus(&focus, cx);
+            }
             // As in Zed: `Enter` / `Shift+Enter` step to the next or
             // previous match inside the tab once the results are current;
             // with a change still waiting, `Enter` searches now.
@@ -820,6 +1591,25 @@ impl SearchView {
             ("escape", false) => {
                 window.focus(&self.list_focus.clone(), cx);
             }
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// Keys in the Replace input: `Shift+Tab` goes back to the query and
+    /// `Enter` searches now. `Esc` is the keymap's
+    /// (`closeReplaceInFilesWidget`).
+    fn replace_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let m = &ev.keystroke.modifiers;
+        if m.platform || m.control || m.alt {
+            return;
+        }
+        match (ev.keystroke.key.as_str(), m.shift) {
+            ("tab", true) => {
+                let focus = self.query.focus_handle(cx);
+                window.focus(&focus, cx);
+            }
+            ("enter", false) => self.run_search(cx),
             _ => return,
         }
         cx.stop_propagation();
@@ -942,6 +1732,7 @@ type EmptyAction = fn(&mut SearchView, &mut Window, &mut Context<SearchView>);
 impl Drop for SearchView {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::SeqCst);
+        self.replace_cancel.store(true, Ordering::SeqCst);
     }
 }
 
@@ -1034,6 +1825,13 @@ impl Render for SearchView {
                 ),
             )
             .child(
+                bar_icon_button("search-toggle-replace", REPLACE, self.replace_visible, cx)
+                    .tooltip(tooltip("Toggle Replace"))
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.set_replace_visible(!view.replace_visible, window, cx)
+                    })),
+            )
+            .child(
                 bar_icon_button("search-refresh", REFRESH_CW, false, cx)
                     .on_click(cx.listener(|view, _, _, cx| view.run_search(cx))),
             )
@@ -1044,6 +1842,49 @@ impl Render for SearchView {
                 self.match_label(cx),
                 cx,
             ));
+        // The Replace input lines up under the query box, as the filters do.
+        let replace_row = self.replace_visible.then(|| {
+            // Replacing needs results of a finished search, and no other
+            // replace running.
+            let ready = self.replace_active(cx)
+                && self.done.is_some()
+                && !self.stale
+                && !self.is_replacing();
+            let replace_all = bar_icon_button("search-replace-all", REPLACE_ALL, false, cx)
+                .tooltip(tooltip("Replace All"));
+            let replace_all = if ready {
+                replace_all
+                    .on_click(cx.listener(|view, _, window, cx| view.replace_all(window, cx)))
+            } else {
+                // The occluding cover keeps the button from seeing the
+                // mouse: no hover, no click (as in the find bar).
+                replace_all
+                    .relative()
+                    .opacity(0.4)
+                    .cursor_default()
+                    .child(div().absolute().inset_0().occlude())
+            };
+            search_bar_row()
+                .debug_selector(|| "search-replace-row".into())
+                .child(div().flex_none().w(px(6. * GRID)))
+                .child(
+                    search_query_column(input_box(&self.replace, cx))
+                        .debug_selector(|| "search-replace".into())
+                        .on_key_down(cx.listener(Self::replace_key_down))
+                        .child(
+                            toggle_button(
+                                "search-toggle-preserve-case",
+                                "AB",
+                                self.preserve_case,
+                                cx,
+                            )
+                            .tooltip(tooltip("Preserve Case"))
+                            .on_click(cx.listener(|view, _, _, cx| view.toggle_preserve_case(cx))),
+                        ),
+                )
+                .child(bar_separator(cx))
+                .child(replace_all)
+        });
         // The filter inputs line up under the query box, as in Zed.
         let filters = self.filters_shown.then(|| {
             search_bar_row()
@@ -1063,12 +1904,19 @@ impl Render for SearchView {
         let toolbar = search_toolbar(cx)
             .debug_selector(|| "search-toolbar".into())
             .child(bar)
+            .children(replace_row)
             .children(filters);
         // The status lives in the counter, and a message without results
         // sits in the list area: nothing above the list ever comes or
         // goes while searching, so the rows never jump (as in Zed).
         let message = match (&self.error, self.summary(cx)) {
             (Some(error), _) => Some(("search-error", error.clone(), color(ui.error))),
+            (None, _)
+                if self.results(cx).rows().is_empty() && self.last_replace_message.is_some() =>
+            {
+                let text = self.last_replace_message.clone().unwrap_or_default();
+                Some(("search-replace-message", text, muted))
+            }
             (None, Some(summary)) if self.results(cx).rows().is_empty() => {
                 Some(("search-summary", summary, muted))
             }
@@ -1115,6 +1963,20 @@ fn find_in_files(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workb
     view.update(cx, |view, cx| view.focus_query(selection, window, cx));
 }
 
+/// `⇧⌘H`: does what [`find_in_files`] does, then shows the Replace row
+/// (never hides it) and puts the cursor in Replace when the query has
+/// text, else in the query.
+fn replace_in_files(wb: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>) {
+    find_in_files(wb, window, cx);
+    let view = wb.search_view().clone();
+    view.update(cx, |view, cx| {
+        view.set_replace_visible(true, window, cx);
+        if view.query.read(cx).text().is_empty() {
+            view.focus_query(None, window, cx);
+        }
+    });
+}
+
 /// Opens the next / previous match. Deferred: opening a file updates the
 /// workbench, which a command handler already holds.
 fn focus_match(
@@ -1134,6 +1996,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "workbench.action.findInFiles",
         "Search: Find in Files",
         |wb, _, window, cx| find_in_files(wb, window, cx),
+    );
+    commands.register(
+        "workbench.action.replaceInFiles",
+        "Search: Replace in Files",
+        |wb, _, window, cx| replace_in_files(wb, window, cx),
     );
     // Command handlers are plain `fn`s: a macro stamps one per command.
     macro_rules! on_view {
@@ -1158,6 +2025,33 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
         "Search: Toggle Use Regular Expression",
         |v, _w, cx| v.toggle_regex(cx)
     );
+    on_view!(
+        "toggleSearchPreserveCase",
+        "Search: Toggle Preserve Case",
+        |v, _w, cx| v.toggle_preserve_case(cx)
+    );
+    on_view!(
+        "closeReplaceInFilesWidget",
+        "Search: Close Replace Widget",
+        |v, window, cx| v.set_replace_visible(false, window, cx)
+    );
+    on_view!(
+        "search.action.replaceAll",
+        "Search: Replace All",
+        |v, window, cx| v.replace_all(window, cx)
+    );
+    on_view!(
+        "search.action.replace",
+        "Search: Replace",
+        |v, window, cx| v.replace_selected(window, cx)
+    );
+    on_view!(
+        "search.action.replaceAllInFile",
+        "Search: Replace All in File",
+        |v, window, cx| v.replace_selected_file(window, cx)
+    );
+    on_view!("search.action.remove", "Search: Dismiss", |v, _w, cx| v
+        .dismiss_selected(cx));
     on_view!(
         "workbench.action.search.toggleQueryDetails",
         "Search: Toggle Search Details",

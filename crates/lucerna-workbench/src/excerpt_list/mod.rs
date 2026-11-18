@@ -10,6 +10,10 @@
 //! host gives ([`ExcerptList::set_text_source`]), with per-file counts,
 //! tags and notes on the headers ([`ExcerptList::set_file_meta`]) and
 //! change navigation ([`ExcerptList::step_change`]).
+//!
+//! The Search tab can turn on a replace preview
+//! ([`ExcerptList::set_replace_preview`]): each match is drawn struck out,
+//! followed by its replacement. Off by default (the diff view never has it).
 
 pub(crate) mod highlight;
 pub(crate) mod model;
@@ -24,7 +28,9 @@ use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Hsla, KeyDownEvent, ListAlignment, ListOffset,
     ListState, Pixels, Subscription, Task, px,
 };
-use lucerna_project::{Excerpt, LineKind};
+use lucerna_project::replace::{ReplacePattern, replacement_at};
+use lucerna_project::{Excerpt, LineKind, LineMatch, SearchQuery, line_matches, search_regex};
+use regex::Regex;
 
 use crate::layout::color;
 use crate::{AppState, WindowSettings};
@@ -47,10 +53,93 @@ pub struct TextSource {
     pub base: Option<Arc<str>>,
 }
 
+/// What the keyboard has selected: a result line, or (when the host made
+/// headers selectable) a file's header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListSelection {
+    Line(LineRef),
+    Header(usize),
+}
+
+/// [`ListSelection`] named by path so streamed results do not move it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Selected {
+    Line(LineAnchor),
+    Header(Arc<Path>),
+}
+
+/// What the replace preview draws: the replacement of each match, worked
+/// out from the query the shown results came from.
+pub struct ReplacePreview {
+    regex: Regex,
+    query: SearchQuery,
+    pattern: ReplacePattern,
+    preserve: bool,
+}
+
+impl ReplacePreview {
+    /// The preview of replacing `query`'s matches with `replace` (`$1` and
+    /// friends when the query is a regex), with Preserve Case or not. An
+    /// error when the query's pattern is not valid.
+    pub fn new(query: &SearchQuery, replace: &str, preserve: bool) -> Result<Self, String> {
+        Ok(ReplacePreview {
+            regex: search_regex(query)?,
+            query: query.clone(),
+            pattern: ReplacePattern::parse(replace, query.is_regex),
+            preserve,
+        })
+    }
+
+    /// The new text of each of `line`'s ranges, in order: `None` where the
+    /// range does not match again on the shown text (cut at 1,000 chars, a
+    /// lookaround) or is empty.
+    pub fn replacements(&self, line: &LineMatch) -> Vec<Option<String>> {
+        let text = line.line_text.as_str();
+        // The same matcher as the search (the whole-word rule included):
+        // a range it does not report is not replaced.
+        let found = line_matches(&self.regex, &self.query, text);
+        line.ranges
+            .iter()
+            .map(|range| {
+                if range.is_empty() || !found.contains(range) {
+                    return None;
+                }
+                replacement_at(
+                    text,
+                    &self.regex,
+                    range.clone(),
+                    &self.pattern,
+                    self.preserve,
+                )
+            })
+            .collect()
+    }
+}
+
+/// The buttons a host shows on hovered rows (see
+/// [`ExcerptList::set_row_actions`]): Dismiss on match lines and file
+/// headers, and Replace / Replace All too when `replace` is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RowActions {
+    pub replace: bool,
+}
+
 pub enum ExcerptListEvent {
     /// Open line `r` (a click, `Enter`, or a header's "open file" button).
     /// The line is already selected.
     Activate(LineRef),
+    /// `Enter` on a selected file header (see
+    /// [`ExcerptList::set_headers_selectable`]); the host folds the file,
+    /// as a click on the header does.
+    ActivateHeader(usize),
+    /// A match line's Replace button (see [`RowActions`]).
+    ReplaceLine(LineRef),
+    /// A file header's Replace All button.
+    ReplaceFile(usize),
+    /// A match line's Dismiss button.
+    DismissLine(LineRef),
+    /// A file header's Dismiss button.
+    DismissFile(usize),
 }
 
 pub struct ExcerptList {
@@ -68,7 +157,10 @@ pub struct ExcerptList {
     results: Results,
     /// The keyboard / last clicked line, named by path and line number so
     /// streamed results inserting files before it do not move it.
-    selected: Option<LineAnchor>,
+    selected: Option<Selected>,
+    /// Whether `↑` / `↓` also stop on file headers (the Search tab); the
+    /// diff view's do not.
+    headers_selectable: bool,
     /// The largest line number shown since the list was last cleared:
     /// sizes the gutter. It never shrinks until [`clear`](Self::clear), so
     /// a re-search never shifts the code sideways.
@@ -102,6 +194,15 @@ pub struct ExcerptList {
     /// The last generation given to a text source; files without one
     /// are generation 0.
     last_source_generation: u64,
+    /// The replace preview drawn over the matches; `None` (the default)
+    /// draws the matches plain.
+    replace_preview: Option<Arc<ReplacePreview>>,
+    /// The replacements of the lines drawn with `replace_preview`, worked
+    /// out only for rows on screen. Emptied when the preview or the
+    /// results change.
+    preview_cache: HashMap<LineRef, Arc<[Option<String>]>>,
+    /// The buttons hovered rows show; `None` (the default) shows none.
+    row_actions: Option<RowActions>,
 }
 
 impl EventEmitter<ExcerptListEvent> for ExcerptList {}
@@ -123,6 +224,7 @@ impl ExcerptList {
             focus: cx.focus_handle(),
             results: Results::default(),
             selected: None,
+            headers_selectable: false,
             max_line_number: 0,
             scale_factor: 1.,
             list: ListState::new(0, ListAlignment::Top, px(LIST_OVERDRAW)),
@@ -138,7 +240,96 @@ impl ExcerptList {
             selection_resolves: 0,
             text_sources: HashMap::new(),
             last_source_generation: 0,
+            replace_preview: None,
+            preview_cache: HashMap::new(),
+            row_actions: None,
         }
+    }
+
+    /// Draws each match struck out, followed by its replacement from
+    /// `preview`; `None` draws the matches plain. Setting the same `Arc`
+    /// again keeps the replacements already worked out.
+    pub fn set_replace_preview(
+        &mut self,
+        preview: Option<Arc<ReplacePreview>>,
+        cx: &mut Context<Self>,
+    ) {
+        let same = match (&self.replace_preview, &preview) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.replace_preview = preview;
+        self.preview_cache.clear();
+        cx.notify();
+    }
+
+    /// Shows `actions` on hovered match lines and file headers; `None`
+    /// (the default) shows no buttons. The host redraws the list.
+    pub fn set_row_actions(&mut self, actions: Option<RowActions>) {
+        self.row_actions = actions;
+    }
+
+    /// The buttons hovered rows show.
+    pub fn row_actions(&self) -> Option<RowActions> {
+        self.row_actions
+    }
+
+    /// Sends the event `make` gives for the line `anchor` names, if it is
+    /// still there (a row button's click).
+    fn emit_line(
+        &mut self,
+        anchor: &LineAnchor,
+        make: fn(LineRef) -> ExcerptListEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(r) = self.results.resolve(anchor) {
+            cx.emit(make(r));
+        }
+    }
+
+    /// Sends the event `make` gives for the file `path`, if it is still
+    /// there (a header button's click).
+    fn emit_file(
+        &mut self,
+        path: &Path,
+        make: fn(usize) -> ExcerptListEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(file) = self.results.file_index(path) {
+            cx.emit(make(file));
+        }
+    }
+
+    /// The replace preview drawn over the matches, if any.
+    pub fn replace_preview(&self) -> Option<&Arc<ReplacePreview>> {
+        self.replace_preview.as_ref()
+    }
+
+    /// The replacements of line `r`'s ranges under the replace preview;
+    /// `None` without a preview or for a context line. Worked out once per
+    /// line and preview.
+    fn preview_of(&mut self, r: LineRef) -> Option<Arc<[Option<String>]>> {
+        let preview = self.replace_preview.as_ref()?;
+        if let Some(cached) = self.preview_cache.get(&r) {
+            return Some(cached.clone());
+        }
+        let line = self.results.line(r)?;
+        if line.ranges.is_empty() {
+            return None;
+        }
+        // One row per line: a line break in the new text is drawn as a
+        // symbol.
+        let replacements: Arc<[Option<String>]> = preview
+            .replacements(line)
+            .into_iter()
+            .map(|r| r.map(|r| render::one_line(&r)))
+            .collect();
+        self.preview_cache.insert(r, replacements.clone());
+        Some(replacements)
     }
 
     /// Replaces every file; the gutter is sized for the new ones. The
@@ -221,6 +412,8 @@ impl ExcerptList {
                 .collect()
         };
         change(&mut self.results);
+        // Line refs may now name other lines.
+        self.preview_cache.clear();
         for path in listed {
             if self.results.file_index(&path).is_none() {
                 self.text_sources.remove(&path);
@@ -228,11 +421,7 @@ impl ExcerptList {
             }
         }
         self.max_line_number = self.max_line_number.max(self.results.max_line_number());
-        if self
-            .selected
-            .as_ref()
-            .is_some_and(|a| self.results.resolve(a).is_none())
-        {
+        if self.selection().is_none() {
             self.selected = None;
         }
         self.sync_list(cx);
@@ -244,6 +433,7 @@ impl ExcerptList {
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.results.clear();
         self.text_sources.clear();
+        self.preview_cache.clear();
         self.sync_list(cx);
         self.selected = None;
         self.max_line_number = 0;
@@ -257,7 +447,84 @@ impl ExcerptList {
 
     /// The selected line, at its current position.
     pub fn selected(&self) -> Option<LineRef> {
-        self.results.resolve(self.selected.as_ref()?)
+        match self.selected.as_ref()? {
+            Selected::Line(a) => self.results.resolve(a),
+            Selected::Header(_) => None,
+        }
+    }
+
+    /// The selected line or header, at its current position.
+    pub fn selection(&self) -> Option<ListSelection> {
+        match self.selected.as_ref()? {
+            Selected::Line(a) => self.results.resolve(a).map(ListSelection::Line),
+            Selected::Header(path) => self.results.file_index(path).map(ListSelection::Header),
+        }
+    }
+
+    /// Lets `↑` / `↓` stop on file headers, and `Enter` on one send
+    /// [`ExcerptListEvent::ActivateHeader`]. Off by default.
+    pub fn set_headers_selectable(&mut self, on: bool) {
+        self.headers_selectable = on;
+    }
+
+    /// Selects the header of file `file`, scrolling it into view.
+    pub fn select_header(&mut self, file: usize, cx: &mut Context<Self>) {
+        let Some(f) = self.results.files().get(file) else {
+            return;
+        };
+        self.selected = Some(Selected::Header(f.path.clone()));
+        if let Some(ix) = self.results.header_row(file) {
+            self.reveal_row(ix, cx);
+        }
+        cx.notify();
+    }
+
+    /// Removes the selected line or file from the results, then selects
+    /// the next one of the same kind, else the previous, else nothing.
+    pub fn dismiss_selected(&mut self, cx: &mut Context<Self>) {
+        match self.selection() {
+            Some(ListSelection::Line(r)) => {
+                // The lines shown, as names that survive the removal.
+                let lines: Vec<LineRef> = self
+                    .results
+                    .rows()
+                    .iter()
+                    .filter_map(|row| match row {
+                        Row::Line(l) => Some(*l),
+                        _ => None,
+                    })
+                    .collect();
+                let Some(at) = lines.iter().position(|l| *l == r) else {
+                    return;
+                };
+                let order = lines[at + 1..].iter().chain(lines[..at].iter().rev());
+                let anchors: Vec<LineAnchor> =
+                    order.filter_map(|l| self.results.anchor_of(*l)).collect();
+                self.update_results(|res| res.dismiss_line(r), cx);
+                let next = anchors.iter().find_map(|a| self.results.resolve(a));
+                self.selected = None;
+                if let Some(next) = next {
+                    self.select(next, cx);
+                }
+            }
+            Some(ListSelection::Header(file)) => {
+                let paths: Vec<Arc<Path>> = self
+                    .results
+                    .files()
+                    .iter()
+                    .map(|f| f.path.clone())
+                    .collect();
+                let order = paths[file + 1..].iter().chain(paths[..file].iter().rev());
+                let order: Vec<Arc<Path>> = order.cloned().collect();
+                self.update_results(|res| res.dismiss_file(file), cx);
+                self.selected = None;
+                if let Some(next) = order.iter().find_map(|p| self.results.file_index(p)) {
+                    self.select_header(next, cx);
+                }
+            }
+            None => {}
+        }
+        cx.notify();
     }
 
     pub fn focus_handle(&self) -> &FocusHandle {
@@ -391,7 +658,7 @@ impl ExcerptList {
 
     /// Selects line `r`, scrolling it into view.
     fn select(&mut self, r: LineRef, cx: &mut Context<Self>) {
-        self.selected = self.results.anchor_of(r);
+        self.selected = self.results.anchor_of(r).map(Selected::Line);
         if let Some(ix) = self.results.row_of(r) {
             self.reveal_row(ix, cx);
         }
@@ -450,40 +717,44 @@ impl ExcerptList {
         match ev.keystroke.key.as_str() {
             "down" => self.move_selection(true, cx),
             "up" => self.move_selection(false, cx),
-            "enter" => {
-                if let Some(r) = self.selected() {
-                    cx.emit(ExcerptListEvent::Activate(r));
+            "enter" => match self.selection() {
+                Some(ListSelection::Line(r)) => cx.emit(ExcerptListEvent::Activate(r)),
+                Some(ListSelection::Header(file)) => {
+                    cx.emit(ExcerptListEvent::ActivateHeader(file))
                 }
-            }
+                None => {}
+            },
             _ => return false,
         }
         true
     }
 
-    /// `↑` / `↓`: moves over the lines, skipping headers and separators
-    /// and stopping at the ends.
+    /// `↑` / `↓`: moves over the lines (and the headers, when they are
+    /// selectable), skipping separators and notes and stopping at the ends.
     fn move_selection(&mut self, forward: bool, cx: &mut Context<Self>) {
-        let lines: Vec<(usize, LineRef)> = self
+        let stops: Vec<ListSelection> = self
             .results
             .rows()
             .iter()
-            .enumerate()
-            .filter_map(|(ix, row)| match row {
-                Row::Line(r) => Some((ix, *r)),
+            .filter_map(|row| match row {
+                Row::Line(r) => Some(ListSelection::Line(*r)),
+                Row::Header(f) if self.headers_selectable => Some(ListSelection::Header(*f)),
                 _ => None,
             })
             .collect();
         let current = self
-            .selected()
-            .and_then(|r| lines.iter().position(|(_, l)| *l == r));
+            .selection()
+            .and_then(|s| stops.iter().position(|l| *l == s));
         let next = match (current, forward) {
             (None, true) => 0,
-            (None, false) => lines.len().saturating_sub(1),
-            (Some(i), true) => (i + 1).min(lines.len().saturating_sub(1)),
+            (None, false) => stops.len().saturating_sub(1),
+            (Some(i), true) => (i + 1).min(stops.len().saturating_sub(1)),
             (Some(i), false) => i.saturating_sub(1),
         };
-        if let Some((_, r)) = lines.get(next) {
-            self.select(*r, cx);
+        match stops.get(next) {
+            Some(ListSelection::Line(r)) => self.select(*r, cx),
+            Some(ListSelection::Header(f)) => self.select_header(*f, cx),
+            None => {}
         }
     }
 

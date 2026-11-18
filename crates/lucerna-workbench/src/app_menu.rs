@@ -279,6 +279,7 @@ pub static MENUS: &[MenuSpec] = &[
             command("Find", "actions.find"),
             command("Replace", "editor.action.startFindReplaceAction"),
             command("Find in Files", "workbench.action.findInFiles"),
+            command("Replace in Files", "workbench.action.replaceInFiles"),
             Entry::Separator,
             command("Toggle Line Comment", "editor.action.commentLine"),
         ],

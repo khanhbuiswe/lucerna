@@ -2478,6 +2478,26 @@ impl Workbench {
         let tab_menu_open = self.editor_groups.read(cx).tab_menu().is_some();
         flag("contextMenuVisible", menu_open || tab_menu_open);
         flag("searchViewletFocus", self.search_focused(window, cx));
+        // The Search tab's Replace row (VS Code's `replaceActive` and
+        // `replaceInputBoxFocus`), only while the tab is open.
+        let search_open = self.editor_groups.read(cx).model().search_tab().is_some();
+        let search = self.search_view.read(cx);
+        flag("replaceActive", search_open && search.replace_active(cx));
+        flag(
+            "replaceInputBoxFocus",
+            search_open && search.replace_input_focused(window, cx),
+        );
+        // The selected result in the focused results list (VS Code's
+        // `matchFocus`, `fileMatchFocus` and `fileMatchOrMatchFocus`).
+        let selection = (search_open && search.list_focused(window))
+            .then(|| search.list_selection(cx))
+            .flatten();
+        let match_focus = matches!(selection, Some(crate::ListSelection::Line(r))
+            if search.results(cx).line(r).is_some_and(|l| !l.ranges.is_empty()));
+        let file_match_focus = matches!(selection, Some(crate::ListSelection::Header(_)));
+        flag("matchFocus", match_focus);
+        flag("fileMatchFocus", file_match_focus);
+        flag("fileMatchOrMatchFocus", match_focus || file_match_focus);
         flag("referencesViewFocus", self.references_view_focus(cx));
         flag(
             "gitDiffViewFocus",

@@ -1060,21 +1060,23 @@ fn arrows_and_enter_open_selected_line(cx: &mut TestAppContext) {
     let (dir, wb, view, cx) = searched(cx);
     keys("escape", cx);
     assert_eq!(view.read_with(cx, |v, cx| v.selected(cx)), None);
+    // The arrows also stop on the headers; `selected` is only a line.
+    keys("down", cx);
+    assert_eq!(view.read_with(cx, |v, cx| v.selected(cx)), None);
     keys("down", cx);
     let sel = |cx: &mut VisualTestContext| view.read_with(cx, |v, cx| v.selected(cx).unwrap());
     let at = |file, line| (file, 0, line);
     let key = |r: lucerna_workbench::SearchLineRef| (r.file, r.excerpt, r.line);
-    assert_eq!(key(sel(cx)), at(0, 0), "a.rs line, header skipped");
-    keys("down", cx);
-    assert_eq!(key(sel(cx)), at(1, 0), "b.rs, header skipped");
+    assert_eq!(key(sel(cx)), at(0, 0), "a.rs line");
+    keys("down down", cx);
+    assert_eq!(key(sel(cx)), at(1, 0), "b.rs, past its header");
     keys("down", cx);
     assert_eq!(key(sel(cx)), at(1, 1), "context lines can be selected");
-    keys("up", cx);
-    keys("up", cx);
+    keys("up up up", cx);
     assert_eq!(key(sel(cx)), at(0, 0));
-    keys("up", cx);
-    assert_eq!(key(sel(cx)), at(0, 0), "stops at the first line");
-    keys("down down", cx);
+    keys("up up", cx);
+    assert_eq!(view.read_with(cx, |v, cx| v.selected(cx)), None);
+    keys("down down down down", cx);
     keys("enter", cx);
     assert_eq!(active_path(&dir, &wb, cx), Some(p("b.rs")));
     assert_eq!(cursor_row(&wb, cx), 1);
@@ -1126,7 +1128,7 @@ fn run(wb: &Entity<Workbench>, command: &str, cx: &mut VisualTestContext) {
 #[gpui::test]
 fn selection_follows_its_line_when_files_arrive_before_it(cx: &mut TestAppContext) {
     let (dir, _wb, view, cx) = searched(cx);
-    keys("escape down down", cx);
+    keys("escape down down down down", cx);
     let sel = view.read_with(cx, |v, cx| v.selected(cx).unwrap());
     assert_eq!((sel.file, sel.line), (1, 0));
     // A new file sorting first, as streaming would insert it.
@@ -1692,7 +1694,7 @@ fn re_search_keeps_rows_and_layout_until_replaced(cx: &mut TestAppContext) {
 #[gpui::test]
 fn file_matching_both_queries_never_leaves_the_rows(cx: &mut TestAppContext) {
     let (_dir, _wb, view, cx) = searched(cx);
-    keys("escape down down", cx);
+    keys("escape down down down down", cx);
     let b_line = |view: &Entity<SearchView>, cx: &mut VisualTestContext| {
         view.read_with(cx, |v, cx| {
             v.results(cx)

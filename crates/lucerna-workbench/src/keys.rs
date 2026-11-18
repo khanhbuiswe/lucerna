@@ -220,6 +220,7 @@ mod tests {
             (event("p", None, alt_cmd()), "alt+cmd+p"),
             (event("f", Some("ƒ"), alt_shift()), "alt+shift+f"),
             (event("j", None, cmd_shift()), "shift+cmd+j"),
+            (event("h", None, cmd_shift()), "shift+cmd+h"),
             (event("f4", None, Modifiers::none()), "f4"),
             (event("f4", None, Modifiers::shift()), "shift+f4"),
             (event("f10", None, Modifiers::shift()), "shift+f10"),
@@ -396,6 +397,7 @@ mod tests {
         rows.extend([
             (event("!", None, cmd()), "shift+cmd+1"),
             (event("enter", Some("\n"), alt_cmd()), "alt+cmd+enter"),
+            (event("enter", Some("\n"), cmd_shift()), "shift+cmd+enter"),
         ]);
         // Reopen Closed Editor and the close commands.
         rows.extend([

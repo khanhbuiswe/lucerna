@@ -50,6 +50,12 @@ Lucerna keeps VS Code's default macOS shortcuts. These are the main ones.
 | Opt+click | Add a cursor |
 | Cmd+U | Cursor undo |
 | Esc | Remove extra cursors |
+| Shift+Cmd+H | Replace in files |
+| Opt+Cmd+Enter | Replace all in the project (Search tab, Replace open) |
+| Shift+Cmd+1 | Replace the focused match or file (Search tab, Replace open) |
+| Shift+Cmd+Enter | Replace all in the focused file (Search tab, Replace open) |
+| Cmd+Backspace | Dismiss the focused match or file from the results (Search tab) |
+| Opt+Cmd+P | Toggle preserve case (Search tab) |
 | Cmd+Q | Quit |
 
 Rebind any of these in `~/.config/lucerna/keybindings.json`, which uses the same format as VS Code.

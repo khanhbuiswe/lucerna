@@ -15,7 +15,7 @@ Thiếu là người dùng mới không dùng được hoặc không cài đư�
 - [x] Zoom (⌘+ / ⌘− / ⌘0)
 - [x] File mới (⌘N) và Save As
 - [x] Find & Replace trong file (⌥⌘F)
-- [ ] Replace trong project (Search)
+- [x] Replace trong project (Search)
 - [ ] Format document (⇧⌥F) và format on save (một nửa bước 4.6)
 
 **Để sau:**
