@@ -98,11 +98,7 @@ fn not_recorded() {
 
     // An Untitled document.
     let mut g = EditorGroups::default();
-    let id = g.open(
-        lucerna_workbench::untitled::path(1),
-        OpenMode::Pinned,
-        true,
-    );
+    let id = g.open(lucerna_workbench::untitled::path(1), OpenMode::Pinned, true);
     g.close(id);
     assert!(g.closed().is_empty(), "untitled");
 

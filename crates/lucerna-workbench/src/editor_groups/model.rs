@@ -668,7 +668,9 @@ impl EditorGroups {
                 let found = self.groups.iter().position(|g| g.id == entry.group);
                 let g = found.unwrap_or(self.active_group);
                 let shown = self.groups[g].tabs.iter().any(|t| t.item == entry.item)
-                    || plan.iter().any(|(pg, _, e)| *pg == g && e.item == entry.item);
+                    || plan
+                        .iter()
+                        .any(|(pg, _, e)| *pg == g && e.item == entry.item);
                 if !shown {
                     plan.push((g, found.is_some(), entry));
                 }

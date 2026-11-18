@@ -7,9 +7,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, ClickEvent, Context, Div, DragMoveEvent, Entity, IntoElement, MouseButton,
-    Focusable as _, MouseDownEvent, ParentElement, Pixels, Point, Render, SharedString, Styled, WeakEntity, Window,
-    div, prelude::*, px, relative,
+    AnyView, App, ClickEvent, Context, Div, DragMoveEvent, Entity, Focusable as _, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, SharedString, Styled,
+    WeakEntity, Window, div, prelude::*, px, relative,
 };
 use lucerna_settings::SettingsView;
 use lucerna_theme::{IconSource, Rgba, UiColors};
@@ -27,8 +27,8 @@ use crate::symbols::breadcrumbs::{
     BreadcrumbSettings, Crumbs, breadcrumb_segments, breadcrumbs_row, segments_text,
 };
 use crate::ui::{
-    self, ClickHandler, ContextMenu, DeployedMenu, GRID, PATH_BAR_HEIGHT, SashGhost,
-    TAB_PADDING_X, UI_FONT_SIZE, UI_FONT_SIZE_SMALL, deploy_context_menu, icon_button, tooltip,
+    self, ClickHandler, ContextMenu, DeployedMenu, GRID, PATH_BAR_HEIGHT, SashGhost, TAB_PADDING_X,
+    UI_FONT_SIZE, UI_FONT_SIZE_SMALL, deploy_context_menu, icon_button, tooltip,
 };
 use crate::{AppState, WindowSettings, Workbench};
 
@@ -230,9 +230,12 @@ impl EditorGroupsView {
 
     /// Whether the tab menu is open and holds the keyboard focus.
     pub(crate) fn tab_menu_focused(&self, window: &Window, cx: &App) -> bool {
-        self.tab_menu
-            .as_ref()
-            .is_some_and(|d| d.menu.read(cx).focus_handle(cx).contains_focused(window, cx))
+        self.tab_menu.as_ref().is_some_and(|d| {
+            d.menu
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+        })
     }
 
     /// Opens the right-click menu of tab `id` at `position`: the close

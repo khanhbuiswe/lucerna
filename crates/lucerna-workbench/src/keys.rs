@@ -397,6 +397,13 @@ mod tests {
             (event("!", None, cmd()), "shift+cmd+1"),
             (event("enter", Some("\n"), alt_cmd()), "alt+cmd+enter"),
         ]);
+        // Reopen Closed Editor and the close commands.
+        rows.extend([
+            (event("t", None, cmd_shift()), "shift+cmd+t"),
+            (event("t", None, alt_cmd()), "alt+cmd+t"),
+            (event("u", Some("u"), Modifiers::none()), "u"),
+            (event("w", Some("w"), Modifiers::none()), "w"),
+        ]);
         rows
     }
 

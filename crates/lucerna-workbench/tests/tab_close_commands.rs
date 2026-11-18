@@ -84,7 +84,9 @@ fn open_as(
     mode: OpenMode,
     cx: &mut VisualTestContext,
 ) -> Entity<CodeView> {
-    wb.update(cx, |wb, cx| wb.open_path(Arc::from(Path::new(name)), mode, cx));
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new(name)), mode, cx)
+    });
     settle(cx);
     let view = active_view(wb, cx);
     cx.update(|window, cx| {
@@ -153,21 +155,14 @@ fn tabs(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Vec<String>> 
 
 /// The id of tab `ti` of group `gi`.
 fn tab_id(wb: &Entity<Workbench>, gi: usize, ti: usize, cx: &mut VisualTestContext) -> TabId {
-    cx.update(|_, cx| {
-        wb.read(cx).editor_groups().read(cx).model().groups()[gi].tabs[ti].id
-    })
+    cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).model().groups()[gi].tabs[ti].id)
 }
 
 fn active_name(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Option<String> {
     cx.update(|_, cx| {
         let groups = wb.read(cx).editor_groups().read(cx);
         let tab = groups.model().active_tab()?;
-        Some(
-            tab.path()?
-                .file_name()?
-                .to_string_lossy()
-                .into_owned(),
-        )
+        Some(tab.path()?.file_name()?.to_string_lossy().into_owned())
     })
 }
 
@@ -250,8 +245,16 @@ fn close_many_dirty_asks_once(cx: &mut TestAppContext) {
     cx.simulate_prompt_answer("Save All");
     settle(cx);
     assert!(cx.pending_prompt().is_none(), "asked once");
-    assert!(fs::read_to_string(dir.path().join("a.txt")).unwrap().starts_with('x'));
-    assert!(fs::read_to_string(dir.path().join("b.txt")).unwrap().starts_with('y'));
+    assert!(
+        fs::read_to_string(dir.path().join("a.txt"))
+            .unwrap()
+            .starts_with('x')
+    );
+    assert!(
+        fs::read_to_string(dir.path().join("b.txt"))
+            .unwrap()
+            .starts_with('y')
+    );
     assert!(tabs(&wb, cx).concat().is_empty());
     let batches: Vec<u64> = cx.update(|_, cx| {
         let groups = wb.read(cx).editor_groups().read(cx);
@@ -271,7 +274,10 @@ fn dont_save_closes_and_discards(cx: &mut TestAppContext) {
     assert!(tabs(&wb, cx).concat().is_empty());
     assert!(!is_dirty(&wb, &dir, "a.txt", cx));
     assert!(!is_dirty(&wb, &dir, "b.txt", cx));
-    assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), long_text());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        long_text()
+    );
 }
 
 #[gpui::test]
@@ -365,9 +371,8 @@ fn close_others_key_and_pin(cx: &mut TestAppContext) {
     open_as(&wb, "c.txt", OpenMode::Preview, cx);
     keys("alt-cmd-t", cx);
     assert_eq!(tabs(&wb, cx), [["c.txt"]]);
-    let pinned = cx.update(|_, cx| {
-        wb.read(cx).editor_groups().read(cx).model().groups()[0].tabs[0].pinned
-    });
+    let pinned =
+        cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).model().groups()[0].tabs[0].pinned);
     assert!(pinned);
     assert_eq!(active_name(&wb, cx).as_deref(), Some("c.txt"));
     keys("cmd-shift-t", cx);
@@ -423,7 +428,10 @@ fn close_group_keys(cx: &mut TestAppContext) {
     open(&wb, "b.txt", cx);
     run(&wb, "workbench.action.splitEditor", None, cx);
     open(&wb, "c.txt", cx);
-    assert_eq!(tabs(&wb, cx), [vec!["a.txt", "b.txt"], vec!["b.txt", "c.txt"]]);
+    assert_eq!(
+        tabs(&wb, cx),
+        [vec!["a.txt", "b.txt"], vec!["b.txt", "c.txt"]]
+    );
     keys("cmd-k w", cx);
     assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt"]]);
     keys("cmd-k cmd-w", cx);
@@ -440,8 +448,14 @@ fn registers_commands(cx: &mut TestAppContext) {
             .collect()
     });
     for (id, title) in [
-        ("workbench.action.reopenClosedEditor", "View: Reopen Closed Editor"),
-        ("workbench.action.closeOtherEditors", "View: Close Other Editors in Group"),
+        (
+            "workbench.action.reopenClosedEditor",
+            "View: Reopen Closed Editor",
+        ),
+        (
+            "workbench.action.closeOtherEditors",
+            "View: Close Other Editors in Group",
+        ),
         (
             "workbench.action.closeEditorsToTheRight",
             "View: Close Editors to the Right in Group",
@@ -450,8 +464,14 @@ fn registers_commands(cx: &mut TestAppContext) {
             "workbench.action.closeEditorsToTheLeft",
             "View: Close Editors to the Left in Group",
         ),
-        ("workbench.action.closeUnmodifiedEditors", "View: Close Saved Editors in Group"),
-        ("workbench.action.closeEditorsInGroup", "View: Close All Editors in Group"),
+        (
+            "workbench.action.closeUnmodifiedEditors",
+            "View: Close Saved Editors in Group",
+        ),
+        (
+            "workbench.action.closeEditorsInGroup",
+            "View: Close All Editors in Group",
+        ),
     ] {
         assert!(
             all.contains(&(id.to_string(), title.to_string())),
@@ -465,8 +485,16 @@ fn right_click_tab(gi: usize, ti: usize, cx: &mut VisualTestContext) {
     let bounds = cx
         .debug_bounds(Box::leak(format!("tab-{gi}-{ti}").into_boxed_str()))
         .expect("the tab is drawn");
-    cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Right, gpui::Modifiers::none());
-    cx.simulate_mouse_up(bounds.center(), gpui::MouseButton::Right, gpui::Modifiers::none());
+    cx.simulate_mouse_down(
+        bounds.center(),
+        gpui::MouseButton::Right,
+        gpui::Modifiers::none(),
+    );
+    cx.simulate_mouse_up(
+        bounds.center(),
+        gpui::MouseButton::Right,
+        gpui::Modifiers::none(),
+    );
     settle(cx);
 }
 
@@ -495,7 +523,9 @@ fn menu_lines(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Line> {
                     label.to_string(),
                     *command,
                     *disabled,
-                    args.as_ref().and_then(|a| a.get("tab")).and_then(|t| t.as_u64()),
+                    args.as_ref()
+                        .and_then(|a| a.get("tab"))
+                        .and_then(|t| t.as_u64()),
                 )),
                 lucerna_workbench::ui::MenuItem::Separator => None,
             })
@@ -520,10 +550,22 @@ fn tab_menu_items_and_disabled_states(cx: &mut TestAppContext) {
             entry("Close", "workbench.action.closeActiveEditor", false),
             entry("Close Others", "workbench.action.closeOtherEditors", false),
             None,
-            entry("Close to the Left", "workbench.action.closeEditorsToTheLeft", true),
-            entry("Close to the Right", "workbench.action.closeEditorsToTheRight", false),
+            entry(
+                "Close to the Left",
+                "workbench.action.closeEditorsToTheLeft",
+                true
+            ),
+            entry(
+                "Close to the Right",
+                "workbench.action.closeEditorsToTheRight",
+                false
+            ),
             None,
-            entry("Close Saved", "workbench.action.closeUnmodifiedEditors", false),
+            entry(
+                "Close Saved",
+                "workbench.action.closeUnmodifiedEditors",
+                false
+            ),
             entry("Close All", "workbench.action.closeEditorsInGroup", false),
         ]
     );
@@ -565,15 +607,17 @@ fn menu_targets_right_clicked_tab_in_other_group(cx: &mut TestAppContext) {
     open(&wb, "d.txt", cx);
     let b_copy = tab_id(&wb, 1, 0, cx);
     request_close_tabs(&wb, vec![b_copy], cx);
-    assert_eq!(tabs(&wb, cx), [vec!["a.txt", "b.txt"], vec!["c.txt", "d.txt"]]);
+    assert_eq!(
+        tabs(&wb, cx),
+        [vec!["a.txt", "b.txt"], vec!["c.txt", "d.txt"]]
+    );
     right_click_tab(0, 0, cx);
     // Close Others is the second entry.
     keys("down down enter", cx);
     assert!(cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).tab_menu().is_none()));
     assert_eq!(tabs(&wb, cx), [vec!["a.txt"], vec!["c.txt", "d.txt"]]);
-    let active_group = cx.update(|_, cx| {
-        wb.read(cx).editor_groups().read(cx).model().active_group()
-    });
+    let active_group =
+        cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).model().active_group());
     assert_eq!(active_group, 0);
     assert_eq!(active_name(&wb, cx).as_deref(), Some("a.txt"));
 }

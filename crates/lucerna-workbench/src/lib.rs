@@ -87,10 +87,9 @@ pub use diff_view::{DiffKind, DiffView};
 pub use documents::{DiskNotice, DocState, DocumentEvent, DocumentStatus, Documents, SavedAs};
 pub use editor_groups::{
     BRANCH_CHANGES_TAB_STATE, ClosedTab, EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView,
-    FileView, TabViewState,
-    GIT_CHANGES_TAB_STATE, Group, GroupState, GroupsState, MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
-    MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode, SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem,
-    placeholder_body,
+    FileView, GIT_CHANGES_TAB_STATE, Group, GroupState, GroupsState,
+    MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
+    SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, TabViewState, placeholder_body,
 };
 pub use excerpt_list::model::{
     FileMeta, FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,

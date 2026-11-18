@@ -40,9 +40,7 @@ pub struct ClosedTab {
 /// Markdown previews, not Untitled ones.
 pub(crate) fn is_recorded(item: &TabItem) -> bool {
     match item {
-        TabItem::File(path) | TabItem::MarkdownPreview(path) => {
-            !crate::untitled::is_untitled(path)
-        }
+        TabItem::File(path) | TabItem::MarkdownPreview(path) => !crate::untitled::is_untitled(path),
         _ => false,
     }
 }
