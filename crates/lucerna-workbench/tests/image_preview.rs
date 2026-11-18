@@ -304,9 +304,11 @@ fn large_image_shrinks_to_fit_keeping_aspect(cx: &mut TestAppContext) {
 fn closing_tab_frees_image(cx: &mut TestAppContext) {
     let (_dir, wb, cx) = workbench(cx);
     let preview = open(&wb, "a.png", cx);
-    let weak = preview.read_with(cx, |p, _| {
-        Arc::downgrade(&p.render_image().expect("decoded"))
-    });
+    let image = preview.read_with(cx, |p, _| p.render_image().expect("decoded"));
+    assert!(
+        cx.update(|window, _| window.has_image_atlas_entry(&image)),
+        "drawn into the atlas"
+    );
     let tab = cx.update(|_, cx| {
         let groups = wb.read(cx).editor_groups().read(cx);
         groups.model().active_tab().expect("a tab").id
@@ -314,7 +316,10 @@ fn closing_tab_frees_image(cx: &mut TestAppContext) {
     drop(preview);
     wb.update(cx, |wb, cx| wb.update_editor_groups(cx, |m| m.close(tab)));
     draw(cx);
-    assert!(weak.upgrade().is_none(), "no cache holds the image");
+    assert!(
+        !cx.update(|window, _| window.has_image_atlas_entry(&image)),
+        "the atlas entry is freed"
+    );
 }
 
 #[gpui::test]
@@ -334,9 +339,15 @@ fn svg_rerasters_on_scale_change(cx: &mut TestAppContext) {
     cx.simulate_scale_factor_change(1.0);
     draw(cx);
     assert_eq!(width(cx), 40);
+    let old = preview.read_with(cx, |p, _| p.render_image().unwrap());
+    assert!(cx.update(|window, _| window.has_image_atlas_entry(&old)));
     cx.simulate_scale_factor_change(3.0);
     draw(cx);
     assert_eq!(width(cx), 120);
+    assert!(
+        !cx.update(|window, _| window.has_image_atlas_entry(&old)),
+        "the old raster's atlas entry is freed"
+    );
 }
 
 #[gpui::test]
