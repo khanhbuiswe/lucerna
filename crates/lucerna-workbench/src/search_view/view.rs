@@ -28,7 +28,7 @@ use crate::code_view::{CodeView, DEFAULT_WORD_SEPARATORS};
 use crate::documents::Documents;
 use crate::excerpt_list::highlight::FileHighlights;
 use crate::excerpt_list::model::{LineRef, Results, thousands};
-use crate::excerpt_list::{ExcerptList, ExcerptListEvent};
+use crate::excerpt_list::{ExcerptList, ExcerptListEvent, ListSelection};
 use crate::find_widget::single_line_selection;
 use crate::icons::{
     CASE_SENSITIVE, CHEVRONS_DOWN_UP, CHEVRONS_UP_DOWN, LIST_FILTER, REFRESH_CW, REGEX, WHOLE_WORD,
@@ -149,12 +149,17 @@ impl SearchView {
         let list = {
             let root = root.clone();
             let settings = settings.clone();
-            cx.new(|cx| ExcerptList::new(root, "search", settings, cx))
+            cx.new(|cx| {
+                let mut list = ExcerptList::new(root, "search", settings, cx);
+                list.set_headers_selectable(true);
+                list
+            })
         };
         let list_focus = list.read(cx).focus_handle().clone();
         let list_events =
             cx.subscribe_in(&list, window, |view, _, event, window, cx| match event {
                 ExcerptListEvent::Activate(r) => view.open_line(*r, window, cx),
+                ExcerptListEvent::ActivateHeader(file) => view.toggle_collapsed(*file, cx),
             });
         SearchView {
             workbench,
@@ -303,6 +308,12 @@ impl SearchView {
     /// The selected result line, at its current position.
     pub fn selected(&self, cx: &App) -> Option<LineRef> {
         self.list.read(cx).selected()
+    }
+
+    /// The selected result line or file header, at its current position.
+    #[doc(hidden)]
+    pub fn list_selection(&self, cx: &App) -> Option<ListSelection> {
+        self.list.read(cx).selection()
     }
 
     /// The files with results, sorted by path, and the rows shown.

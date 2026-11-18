@@ -128,8 +128,9 @@ fn activations(
     cx.update(|_, cx| {
         let events = events.clone();
         cx.subscribe(list, move |_, ev: &ExcerptListEvent, _| {
-            let ExcerptListEvent::Activate(r) = ev;
-            events.borrow_mut().push(*r);
+            if let ExcerptListEvent::Activate(r) = ev {
+                events.borrow_mut().push(*r);
+            }
         })
         .detach();
     });

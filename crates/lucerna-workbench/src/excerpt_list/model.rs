@@ -443,6 +443,50 @@ impl Results {
         self.match_count
     }
 
+    /// Replaceable occurrences in all files: the sum of each match line's
+    /// non-empty ranges, counting a line whose only range is empty (a cut
+    /// one) once.
+    pub fn occurrence_count(&self) -> usize {
+        self.files
+            .iter()
+            .flat_map(|f| &f.excerpts)
+            .flat_map(|e| &e.lines)
+            .filter(|l| !l.ranges.is_empty())
+            .map(
+                |l| match l.ranges.iter().filter(|r| !r.is_empty()).count() {
+                    0 => 1,
+                    n => n,
+                },
+            )
+            .sum()
+    }
+
+    /// Removes line `r` from the results. An excerpt left with no match
+    /// line is dropped (its context goes with it), and a file left with
+    /// no excerpt too. A line that is gone changes nothing.
+    pub fn dismiss_line(&mut self, r: LineRef) {
+        if self.line(r).is_none() {
+            return;
+        }
+        let file = &mut self.files[r.file];
+        file.excerpts[r.excerpt].lines.remove(r.line);
+        if file.excerpts[r.excerpt].match_count() == 0 {
+            file.excerpts.remove(r.excerpt);
+        }
+        if file.excerpts.is_empty() {
+            self.files.remove(r.file);
+        }
+        self.rebuild();
+    }
+
+    /// Removes file `file` from the results.
+    pub fn dismiss_file(&mut self, file: usize) {
+        if file < self.files.len() {
+            self.files.remove(file);
+            self.rebuild();
+        }
+    }
+
     /// The 0-based position of the match line `r` among all match lines,
     /// or `None` when `r` is a context line or gone.
     pub fn match_index(&self, r: LineRef) -> Option<usize> {
@@ -1006,5 +1050,82 @@ mod tests {
         assert_eq!(paths(&r), ["b", "c"]);
         assert_eq!(r.match_count(), 4);
         assert_eq!(r.max_line_number(), 42);
+    }
+
+    #[test]
+    fn dismiss_line_drops_empty_excerpt_and_file() {
+        let mut r = Results::default();
+        r.add_file(path("a"), vec![excerpt(1), excerpt(10)]);
+        r.add_file(path("b"), vec![excerpt(1)]);
+        let before = r.revision();
+        let at = |file, excerpt, line| LineRef {
+            file,
+            excerpt,
+            line,
+        };
+        r.dismiss_line(at(0, 0, 1));
+        assert!(r.revision() > before);
+        assert_eq!(r.match_count(), 2);
+        assert_eq!(r.files()[0].excerpts.len(), 1, "the excerpt is dropped");
+        assert_eq!(r.files()[0].excerpts[0].lines[0].line_number, 10);
+        r.dismiss_line(at(0, 0, 1));
+        assert_eq!(r.files().len(), 1, "the file is dropped");
+        assert_eq!(r.files()[0].path, path("b"));
+        assert_eq!(r.match_count(), 1);
+        assert_eq!(r.rows()[0], Row::Header(0));
+        // A context line or a gone line changes nothing.
+        let rev = r.revision();
+        r.dismiss_line(at(0, 0, 9));
+        assert_eq!(r.revision(), rev);
+    }
+
+    #[test]
+    fn dismiss_line_keeps_context_of_other_matches() {
+        let mut r = Results::default();
+        let mut e = excerpt(1);
+        e.lines.push(line(4, true));
+        e.lines.push(line(5, false));
+        r.add_file(path("a"), vec![e]);
+        r.dismiss_line(LineRef {
+            file: 0,
+            excerpt: 0,
+            line: 1,
+        });
+        let numbers: Vec<u32> = r.files()[0].excerpts[0]
+            .lines
+            .iter()
+            .map(|l| l.line_number)
+            .collect();
+        assert_eq!(numbers, [1, 3, 4, 5], "context stays for the other match");
+        assert_eq!(r.match_count(), 1);
+    }
+
+    #[test]
+    fn dismiss_file_drops_it() {
+        let mut r = Results::default();
+        r.add_file(path("a"), vec![excerpt(1)]);
+        r.add_file(path("b"), vec![excerpt(1)]);
+        r.dismiss_file(0);
+        assert_eq!(r.files().len(), 1);
+        assert_eq!(r.files()[0].path, path("b"));
+        r.dismiss_file(7);
+        assert_eq!(r.files().len(), 1);
+    }
+
+    #[test]
+    fn occurrence_count_counts_ranges() {
+        let mut r = Results::default();
+        let mut two = line(2, true);
+        two.ranges = vec![0..1, 2..3].into_iter().collect();
+        let mut cut = line(3, true);
+        cut.ranges = std::iter::once(5..5).collect();
+        r.add_file(
+            path("a"),
+            vec![Excerpt {
+                lines: vec![line(1, false), two, cut],
+            }],
+        );
+        assert_eq!(r.occurrence_count(), 3);
+        assert_eq!(r.match_count(), 2);
     }
 }

@@ -98,6 +98,8 @@ impl ReferencesView {
         let list_events =
             cx.subscribe_in(&list, window, |view, _, event, window, cx| match event {
                 ExcerptListEvent::Activate(r) => view.open_line(*r, window, cx),
+                // Headers are not selectable here.
+                ExcerptListEvent::ActivateHeader(_) => {}
             });
         ReferencesView {
             workbench,

@@ -151,6 +151,8 @@ impl DiffView {
             cx.subscribe(&list, |view, _, event, cx| match event {
                 // Like Search and References: a preview.
                 ExcerptListEvent::Activate(r) => view.open_line(*r, OpenMode::Preview, cx),
+                // Headers are not selectable here.
+                ExcerptListEvent::ActivateHeader(_) => {}
             }),
             cx.subscribe(&git, |view, _, event, cx| match event {
                 GitStoreEvent::SnapshotChanged => view.refresh_list(cx),

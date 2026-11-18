@@ -14,9 +14,9 @@ use gpui::{
 use lucerna_project::LineKind;
 use lucerna_settings::SettingsView;
 
-use super::ExcerptList;
 use super::highlight::LineSpans;
 use super::model::{LineRef, Row, expand_tabs, thousands};
+use super::{ExcerptList, ListSelection};
 use crate::AppState;
 use crate::code_view::hunk_bar_width;
 use crate::icons::ARROW_UP_RIGHT;
@@ -72,12 +72,12 @@ impl ExcerptList {
     }
 
     /// Row `ix` of the list.
-    /// `selected` is the selected line, resolved once for the frame.
+    /// `selected` is the selected line or header, resolved once for the frame.
     fn render_row(
         &mut self,
         ix: usize,
         style: &RowStyle,
-        selected: Option<LineRef>,
+        selected: Option<ListSelection>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(row) = self.results.rows().get(ix).copied() else {
@@ -85,7 +85,9 @@ impl ExcerptList {
         };
         match row {
             Row::Header(file) => self.render_header(file, false, style, selected, cx),
-            Row::Line(r) => self.render_line(ix, r, style, selected == Some(r), cx),
+            Row::Line(r) => {
+                self.render_line(ix, r, style, selected == Some(ListSelection::Line(r)), cx)
+            }
             Row::Separator { file } => {
                 // The excerpt it comes before.
                 let excerpt = match self.results.rows().get(ix + 1) {
@@ -111,7 +113,7 @@ impl ExcerptList {
         index: usize,
         sticky: bool,
         style: &RowStyle,
-        selected: Option<LineRef>,
+        selected: Option<ListSelection>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let state = cx.global::<AppState>();
@@ -154,7 +156,9 @@ impl ExcerptList {
                 )
             };
         let group: SharedString = format!("{selector}-group").into();
-        let selected_here = selected.is_some_and(|r| r.file == index);
+        let header_selected = selected == Some(ListSelection::Header(index));
+        let selected_here =
+            header_selected || matches!(selected, Some(ListSelection::Line(r)) if r.file == index);
         let meta = self.results.meta(&file.path).copied();
         let openable = meta.is_none_or(|m| m.openable);
         let open_path = path.clone();
@@ -197,6 +201,9 @@ impl ExcerptList {
             .size_full()
             .pl(px(GRID))
             .pr(px(GRID))
+            .when(header_selected, |d| {
+                d.bg(color(ui.editor_active_line_background))
+            })
             .hover(move |s| s.bg(hover))
             .when(sticky, |d| d.shadow_md())
             .cursor_pointer()
@@ -480,7 +487,7 @@ impl Render for ExcerptList {
         let style = self.row_style(window, cx);
         let lh = style.line_height;
         // Found once per frame, not per row: resolving it scans its file.
-        let selected = self.selected();
+        let selected = self.selection();
         self.selection_resolves += 1;
         // The rows on screen get their syntax colors first.
         let viewport = match self.list.viewport_bounds().size.height {
