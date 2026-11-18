@@ -5,6 +5,7 @@ pub mod fs_ops;
 mod fuzzy;
 mod ignored;
 pub mod replace;
+mod replace_files;
 mod search;
 mod snapshot;
 mod watch;
@@ -18,5 +19,9 @@ pub use search::{
 };
 pub use watch::{DEBOUNCE, watch_error_reason};
 
+pub use replace_files::{
+    FileOutcome, ReplaceProgress, ReplaceSpec, ShownLine, SkipReason, edits_for_text, replace_file,
+    replace_file_with_hook, replace_files,
+};
 pub use snapshot::{Entry, EntryKind, RootStatus, WorktreeSnapshot};
 pub use worktree::{Change, ChangeKind, ScanOptions, Worktree, WorktreeEvent};
