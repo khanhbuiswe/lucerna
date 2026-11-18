@@ -254,3 +254,37 @@ fn progress_reports_each_file() {
     assert_eq!(seen.last(), Some(&(3, 3)));
     assert!(!cancel.load(Ordering::SeqCst));
 }
+
+#[test]
+fn search_output_feeds_the_job_for_windows_1252() {
+    use lucerna_project::{SearchEvent, search};
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = file(&dir, "w.txt", b"caf\xe9 foo\r\n");
+    let s = plain("foo", "bar");
+    let (tx, rx) = crossbeam_channel::unbounded();
+    search(
+        dir.path(),
+        &s.query,
+        &[],
+        None,
+        &HashSet::new(),
+        &[],
+        tx,
+        Arc::new(AtomicBool::new(false)),
+    );
+    let mut lines = Vec::new();
+    for event in rx.try_iter() {
+        if let SearchEvent::File { excerpts, .. } = event {
+            for l in excerpts.iter().flat_map(|e| &e.lines) {
+                if !l.ranges.is_empty() {
+                    lines.push(shown(l.line_number, &l.line_text));
+                }
+            }
+        }
+    }
+    assert_eq!(run(&path, &lines, &s), FileOutcome::Replaced(1));
+    assert_eq!(fs::read(&path).unwrap(), b"caf\xe9 bar\r\n");
+}

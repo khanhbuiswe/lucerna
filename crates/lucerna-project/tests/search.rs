@@ -707,3 +707,13 @@ fn regex_anchors_handle_mixed_endings_and_unsaved_buffers() {
         [(1, "x foo".to_string()), (2, "y foo".into())]
     );
 }
+
+#[test]
+fn non_utf8_file_is_decoded_for_line_text() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "w.txt", b"x\r\ncaf\xe9 foo\r\n");
+    let got = files(dir.path(), &run(dir.path(), &query("foo")));
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].1[0].line_number, 2);
+    assert_eq!(got[0].1[0].line_text, "café foo");
+}

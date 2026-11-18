@@ -354,7 +354,7 @@ fn search_file(
     };
     let result = match buffer {
         Some(text) => searcher.search_slice(matcher, text.as_bytes(), &mut sink),
-        None => searcher.search_path(matcher, path, &mut sink),
+        None => search_disk_file(searcher, matcher, path, &mut sink),
     };
     if let Err(err) = result {
         tracing::debug!(path = %path.display(), %err, "could not search file");
@@ -364,6 +364,38 @@ fn search_file(
     let mut excerpts = sink.excerpts;
     excerpts.retain(|e| e.match_count() > 0);
     excerpts
+}
+
+/// Searches a file on disk as the editor and the replace job see it: a file
+/// that is not valid UTF-8 and has no BOM (which grep transcodes itself) is
+/// decoded with `decode_file` first, so `line_text` of a Windows-1252 file
+/// reads "café", not "caf\u{FFFD}". Valid UTF-8 and BOM files go straight to
+/// the searcher. Files past `MAX_OPEN_BYTES` keep the streaming path.
+fn search_disk_file(
+    searcher: &mut Searcher,
+    matcher: &RegexMatcher,
+    path: &Path,
+    sink: &mut ExcerptSink<'_>,
+) -> Result<(), std::io::Error> {
+    let meta = std::fs::metadata(path)?;
+    if meta.len() > lucerna_text::MAX_OPEN_BYTES {
+        return searcher.search_path(matcher, path, sink);
+    }
+    let bytes = std::fs::read(path)?;
+    if has_bom(&bytes) || std::str::from_utf8(&bytes).is_ok() {
+        return searcher.search_slice(matcher, &bytes, sink);
+    }
+    // A decode error (binary) means the file yields nothing, as before.
+    if let Ok(decoded) = lucerna_text::decode_file(&bytes, false) {
+        searcher.search_slice(matcher, decoded.text.as_bytes(), sink)?;
+    }
+    Ok(())
+}
+
+fn has_bom(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xEF, 0xBB, 0xBF])
+        || bytes.starts_with(&[0xFF, 0xFE])
+        || bytes.starts_with(&[0xFE, 0xFF])
 }
 
 /// Collects matching and context lines into excerpts.
