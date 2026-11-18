@@ -1,6 +1,6 @@
 # Image preview — thiết kế
 
-Ngày: 2026-11-18. Trạng thái: chờ duyệt.
+Ngày: 2026-11-18. Trạng thái: đã duyệt.
 
 ## 1. Ý định
 
