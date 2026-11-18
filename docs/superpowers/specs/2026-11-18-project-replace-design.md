@@ -410,8 +410,9 @@ lý.
 
 - Job gửi tiến độ (số file đã xong trên tổng số) qua channel. Bộ đếm của tab ghi
   `Replacing… {done}/{total} files`.
-- Đóng tab Search hoặc đóng window thì hủy job. File đã ghi xong thì giữ nguyên; file đang ghi dở
-  thì nhờ ghi atomic nên không bị hỏng.
+- Đóng tab Search không dừng lần thay đang chạy (thay xong vẫn an toàn hơn thay dở). Đóng window
+  thì hủy job. File đã ghi xong thì giữ nguyên; file đang ghi dở thì nhờ ghi atomic nên không bị
+  hỏng.
 - Không có nút hủy riêng (VS Code cũng không có).
 
 **Watcher:** file được job ghi sẽ phát sự kiện worktree như mọi thay đổi trên đĩa. Document của
@@ -468,3 +469,9 @@ file đó (nếu vừa được mở trong lúc thay) sẽ reload như bình th�
 - Dòng mà mọi match đều bị luật whole word lọc: thành dòng ngữ cảnh hay bị bỏ.
 - Cấu trúc bên trong job (thread pool, kích thước lô tiến độ), miễn là luồng UI không chờ.
 - Tên hàm và kiểu dữ liệu bên trong module mới.
+
+## Hạn chế đã biết
+
+- Match nằm vắt qua mốc 1.000 ký tự đầu của dòng (bắt đầu trong phần hiện, kết thúc sau đó): phần
+  xem trước không hiện chữ mới cho match đó, nhưng job vẫn thay nó. Vì vậy số trong hộp hỏi có thể
+  khác số đã thay trong thông báo kết quả.
