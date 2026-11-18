@@ -36,6 +36,7 @@ use crate::git::{GitStore, GitStoreEvent};
 use crate::hot_exit::HotExit;
 use crate::hot_exit::store::WorkspaceKey;
 use crate::hover::SHOW_HOVER;
+use crate::image_preview::ImagePreview;
 use crate::language_servers::LanguageServers;
 use crate::layout::panel::{self, EDITOR_MIN_SIZE, PanelPosition, PanelSash, PanelState};
 use crate::layout::sidebar::SidebarSash;
@@ -487,9 +488,11 @@ impl Workbench {
                                 })
                                 .into();
                         }
-                        TabItem::ImagePreview(_) => {
-                            // Replaced by the image view in a later task.
-                            return crate::editor_groups::placeholder_body(tab, window, cx);
+                        TabItem::ImagePreview(path) => {
+                            let (path, workbench) = (path.clone(), workbench.clone());
+                            return cx
+                                .new(|cx| ImagePreview::new(path, workbench, window, cx))
+                                .into();
                         }
                         TabItem::Extensions => {
                             page.update(cx, |page, cx| page.shown(cx));
@@ -1997,6 +2000,61 @@ impl Workbench {
     pub(crate) fn open_markdown_preview(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
         let path = self.absolute_path(&path);
         self.open_file(path, FileView::Preview, OpenMode::Pinned, false, cx);
+    }
+
+    /// Replaces image preview tab `tab` with the source of its file; with
+    /// `force_text`, the file is read as text even if it looks binary.
+    // Task 5 replaces this stub with the full command.
+    pub(crate) fn reopen_image_as_text(
+        &mut self,
+        tab: TabId,
+        force_text: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let groups = self.editor_groups.clone();
+        let path = groups.read(cx).model().groups().iter().find_map(|g| {
+            g.tabs.iter().find_map(|t| match &t.item {
+                TabItem::ImagePreview(path) if t.id == tab => Some(path.clone()),
+                _ => None,
+            })
+        });
+        let Some(path) = path else {
+            return;
+        };
+        if self
+            .update_editor_groups(cx, |m| m.replace_item(tab, TabItem::File(path.clone())))
+            .is_none()
+        {
+            return;
+        }
+        if force_text {
+            groups.update(cx, |view, cx| view.ensure_active_body(window, cx));
+            self.documents
+                .update(cx, |docs, cx| docs.open_as_text(&path, cx));
+        }
+        self.focus_editor_area(window, cx);
+    }
+
+    /// [`Workbench::reopen_image_as_text`] with `force_text` for the tab
+    /// whose body is the image preview `view` ("Open as Text").
+    pub(crate) fn reopen_image_view_as_text(
+        &mut self,
+        view: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let groups = self.editor_groups.read(cx);
+        let tab = groups
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .find(|t| groups.body_of(t.id).is_some_and(|b| b.entity_id() == view))
+            .map(|t| t.id);
+        if let Some(tab) = tab {
+            self.reopen_image_as_text(tab, true, window, cx);
+        }
     }
 
     /// Opens absolute `path` as `view` (see [`EditorGroups::open_file`]).

@@ -2187,26 +2187,9 @@ impl CodeView {
             )),
             ErrorAction::None => None,
         };
-        div()
+        crate::ui::centered_notice("doc-error", message, button, cx)
             .id("code-view")
             .track_focus(&self.focus)
-            .flex()
-            .size_full()
-            .justify_center()
-            .items_center()
-            .bg(color(ui.editor_background))
-            .child(
-                div()
-                    .debug_selector(|| "doc-error".into())
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(3. * GRID))
-                    .max_w(px(480.))
-                    .text_color(color(ui.text_muted))
-                    .child(message)
-                    .children(button),
-            )
     }
 }
 

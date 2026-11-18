@@ -3504,6 +3504,7 @@ dependencies = [
  "futures",
  "gpui",
  "gpui_platform",
+ "image",
  "jsonc-parser",
  "libc",
  "lsp-types",
@@ -3531,6 +3532,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "url",
+ "usvg",
 ]
 
 [[package]]

@@ -92,6 +92,9 @@ similar = "2"
 # UI: only lucerna-workbench may depend on these. Pinned to one Zed commit.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "b5cd310b3b54dfc659fcc06453e6358843dfe216" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "b5cd310b3b54dfc659fcc06453e6358843dfe216", features = ["font-kit", "runtime_shaders"] }
+# Image preview: the versions gpui already locks, so no new crate.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
+usvg = { version = "0.46", default-features = false }
 
 # Keep build output small: the dev disk is tight. `test` inherits from `dev`.
 [profile.dev]

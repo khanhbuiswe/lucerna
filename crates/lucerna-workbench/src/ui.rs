@@ -415,6 +415,38 @@ fn styled_text_button(
         .child(label)
 }
 
+/// A page that only says why it shows nothing: `message`, muted and
+/// centred on the editor background, with at most one action `button`
+/// under it. The message column's debug selector is `selector`. Used by
+/// views that cannot show their file (the code view's load errors, the
+/// image preview).
+pub fn centered_notice(
+    selector: &'static str,
+    message: impl Into<SharedString>,
+    button: Option<Stateful<Div>>,
+    cx: &App,
+) -> Div {
+    let ui = &cx.global::<AppState>().theme.ui;
+    div()
+        .flex()
+        .size_full()
+        .justify_center()
+        .items_center()
+        .bg(color(ui.editor_background))
+        .child(
+            div()
+                .debug_selector(move || selector.into())
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(3. * GRID))
+                .max_w(px(480.))
+                .text_color(color(ui.text_muted))
+                .child(message.into())
+                .children(button),
+        )
+}
+
 /// A command to copy, such as a language server's install command: the
 /// command in `code_font` (caption size, `text.muted`, cut off with an
 /// ellipsis; debug selector `text_selector`) and a "Copy" [`text_button`]
