@@ -647,9 +647,11 @@ impl EditorGroups {
     /// Reopens the newest batch of closed tabs, pinned, each in its old
     /// group at its old place; a tab whose group is gone goes at the end of
     /// the active group. Entries whose file `exists` rejects, or that their
-    /// group already shows, are dropped; when none is left the batch
-    /// before is tried. A single tab is activated; of several, those that
-    /// were active are. Returns the new tabs with their editor's place.
+    /// group already shows, are dropped. When none is left, a tab of the
+    /// batch that is open again is activated and returned; only a batch
+    /// whose files are all gone gives way to the batch before. A single
+    /// tab is activated; of several, those that were active are. Returns
+    /// the new tabs with their editor's place.
     pub fn reopen_closed(
         &mut self,
         exists: impl Fn(&Path) -> bool,
@@ -661,22 +663,35 @@ impl EditorGroups {
             }
             // (target group, group was found, entry)
             let mut plan: Vec<(usize, bool, ClosedTab)> = Vec::new();
+            // A tab of the batch that is open again: (group, tab).
+            let mut open_again: Option<(usize, TabId)> = None;
             for entry in batch {
                 if item_path(&entry.item).is_some_and(|p| !exists(p)) {
                     continue;
                 }
                 let found = self.groups.iter().position(|g| g.id == entry.group);
                 let g = found.unwrap_or(self.active_group);
-                let shown = self.groups[g].tabs.iter().any(|t| t.item == entry.item)
-                    || plan
-                        .iter()
-                        .any(|(pg, _, e)| *pg == g && e.item == entry.item);
-                if !shown {
+                if let Some(tab) = self.groups[g].tabs.iter().find(|t| t.item == entry.item) {
+                    open_again = Some((g, tab.id));
+                    continue;
+                }
+                let planned = plan
+                    .iter()
+                    .any(|(pg, _, e)| *pg == g && e.item == entry.item);
+                if !planned {
                     plan.push((g, found.is_some(), entry));
                 }
             }
             if plan.is_empty() {
-                continue;
+                // As in VS Code and Zed: a batch whose tabs are open again
+                // shows them and is used up; only a batch whose files are
+                // all gone gives way to the one before.
+                let Some((g, id)) = open_again else {
+                    continue;
+                };
+                self.groups[g].activate(id);
+                self.active_group = g;
+                return vec![(id, None)];
             }
             // Within a group, tabs of the group itself by their old place,
             // then those whose group is gone.

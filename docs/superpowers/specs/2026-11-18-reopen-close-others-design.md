@@ -186,7 +186,11 @@ pub struct TabViewState { pub cursor: Point, pub scroll_top_row: u32 }
 - `reopen_closed(exists: impl Fn(&Path) -> bool) -> Vec<(TabId, Option<TabViewState>)>`:
   1. Lấy batch mới nhất ra khỏi lịch sử. Bỏ những mục có `exists` trả `false` và những mục mà
      nhóm đích đã có tab cùng item.
-  2. Không còn mục nào thì lùi sang batch trước; hết lịch sử thì trả rỗng, không làm gì.
+  2. Không còn mục nào để mở:
+     - nếu có mục bị bỏ vì tab của nó **đang mở lại** trong nhóm đích, activate tab đó rồi dừng
+       (mục đã dùng hết, không lùi sang batch cũ hơn), như VS Code và Zed;
+     - chỉ khi mọi mục bị bỏ vì **file không còn**, mới lùi sang batch trước;
+     - hết lịch sử thì trả rỗng, không làm gì.
   3. Mỗi mục mở vào nhóm có `GroupId` cũ nếu còn, không thì nhóm active, ở vị trí
      `min(index, số tab)`, dạng ghim. Trong một nhóm, mở theo `index` tăng dần để các tab về
      đúng chỗ.
@@ -245,9 +249,9 @@ và mình coi chuyện đó là vô hại.
 
 ### Tab đích và đối số lệnh
 
-Các lệnh nhận đối số tùy chọn `{"tab": <số>}` (id của tab, `TabId::as_u64`). Không có đối số, hoặc
-id không còn, thì tab đích là tab active của nhóm active; không có tab active thì lệnh không làm
-gì. Menu chuột phải truyền id của tab bị bấm. `closeActiveEditor` cũng nhận đối số này để mục
+Các lệnh nhận đối số tùy chọn `{"tab": <số>}` (id của tab, `TabId::as_u64`). Không có đối số thì
+tab đích là tab active của nhóm active; không có tab active thì lệnh không làm gì. Có đối số mà id
+không còn (tab đã đóng) thì lệnh không làm gì, để không đóng nhầm tab quanh một tab khác. Menu chuột phải truyền id của tab bị bấm. `closeActiveEditor` cũng nhận đối số này để mục
 "Close" của menu đóng đúng tab bị chuột phải.
 
 ### Menu chuột phải trên tab
@@ -284,7 +288,7 @@ gì. Menu chuột phải truyền id của tab bị bấm. `closeActiveEditor` c
   - batch: `close_many` tạo một batch, mở lại cả batch;
   - đúng nhóm, đúng `index`, tab active sau khi mở lại;
   - nhóm đã mất thì mở vào nhóm active;
-  - bỏ mục có file không còn, bỏ mục đã mở, lùi batch;
+  - bỏ mục có file không còn và lùi batch; mục đã mở lại thì activate tab đó, không lùi batch;
   - `retarget` sửa lịch sử.
 - **Test GPUI** (`tests/editor_groups_view.rs` hoặc file mới `tests/tab_close_commands.rs`):
   - ⇧⌘T sau ⌘W khôi phục tab, con trỏ và cuộn;

@@ -168,12 +168,14 @@ fn focus(
 
 /// The tab a close command acts on: the one its `{"tab": <id>}` argument
 /// names (the tab bar's menu), else the active tab of the active group.
+/// `None` when the named tab is gone: closing around another tab could
+/// close the wrong ones.
 fn target_tab(wb: &Workbench, args: Option<&Value>, cx: &App) -> Option<TabId> {
     let model = wb.editor_groups().read(cx).model();
-    args.and_then(|a| a.get("tab"))
-        .and_then(Value::as_u64)
-        .and_then(|raw| model.tab_from_u64(raw))
-        .or_else(|| model.active_tab().map(|t| t.id))
+    match args.and_then(|a| a.get("tab")) {
+        Some(tab) => tab.as_u64().and_then(|raw| model.tab_from_u64(raw)),
+        None => model.active_tab().map(|t| t.id),
+    }
 }
 
 /// Which tabs of the target's group a close command closes.

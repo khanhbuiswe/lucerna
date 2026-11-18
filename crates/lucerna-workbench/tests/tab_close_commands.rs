@@ -621,3 +621,121 @@ fn menu_targets_right_clicked_tab_in_other_group(cx: &mut TestAppContext) {
     assert_eq!(active_group, 0);
     assert_eq!(active_name(&wb, cx).as_deref(), Some("a.txt"));
 }
+
+#[gpui::test]
+fn reopen_does_not_jump_to_an_older_batch_when_newest_is_open(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.rs", "b.rs", "c.rs"], cx);
+    open(&wb, "a.rs", cx);
+    open(&wb, "b.rs", cx);
+    open(&wb, "c.rs", cx);
+    keys("alt-cmd-t", cx); // Close Others: batch [a, b]
+    assert_eq!(tabs(&wb, cx), [["c.rs"]]);
+    run(&wb, "workbench.action.closeActiveEditor", None, cx); // batch [c]
+    assert!(tabs(&wb, cx).concat().is_empty());
+    open(&wb, "c.rs", cx); // opened again, say from the Explorer
+    keys("cmd-shift-t", cx);
+    assert_eq!(tabs(&wb, cx), [["c.rs"]], "a and b stay closed");
+    assert_eq!(active_name(&wb, cx).as_deref(), Some("c.rs"));
+    keys("cmd-shift-t", cx);
+    assert_eq!(tabs(&wb, cx), [["a.rs", "b.rs", "c.rs"]]);
+}
+
+#[gpui::test]
+fn stale_tab_arg_closes_nothing(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt", "b.txt"], cx);
+    open(&wb, "a.txt", cx);
+    open(&wb, "b.txt", cx);
+    let a = tab_id(&wb, 0, 0, cx);
+    run(
+        &wb,
+        "workbench.action.closeActiveEditor",
+        Some(serde_json::json!({ "tab": a.as_u64() })),
+        cx,
+    );
+    assert_eq!(tabs(&wb, cx), [["b.txt"]]);
+    for command in [
+        "workbench.action.closeActiveEditor",
+        "workbench.action.closeOtherEditors",
+        "workbench.action.closeEditorsToTheLeft",
+        "workbench.action.closeEditorsToTheRight",
+        "workbench.action.closeUnmodifiedEditors",
+        "workbench.action.closeEditorsInGroup",
+    ] {
+        run(
+            &wb,
+            command,
+            Some(serde_json::json!({ "tab": a.as_u64() })),
+            cx,
+        );
+        assert_eq!(tabs(&wb, cx), [["b.txt"]], "{command}");
+    }
+}
+
+#[gpui::test]
+fn closing_many_with_dirty_untitled_saves_it_through_save_as(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workspace(&["a.txt"], cx);
+    open(&wb, "a.txt", cx);
+    input("x", cx);
+    keys("cmd-n", cx);
+    input("hello", cx);
+    run(&wb, "workbench.action.closeAllEditors", None, cx);
+    let (message, _) = cx.pending_prompt().expect("a prompt");
+    assert_eq!(
+        message,
+        "Do you want to save the changes to the following 2 files?"
+    );
+    cx.simulate_prompt_answer("Save All");
+    settle(cx);
+    assert!(cx.did_prompt_for_new_path(), "Save As for the Untitled tab");
+    let saved = dir.path().join("hello.txt");
+    let chosen = saved.clone();
+    cx.simulate_new_path_selection(move |_| Some(chosen));
+    settle(cx);
+    assert_eq!(fs::read_to_string(&saved).unwrap(), "hello");
+    assert!(
+        fs::read_to_string(dir.path().join("a.txt"))
+            .unwrap()
+            .starts_with('x')
+    );
+    assert!(tabs(&wb, cx).concat().is_empty());
+    let closed: Vec<String> = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups
+            .model()
+            .closed()
+            .iter()
+            .map(|e| format!("{:?}", e.item))
+            .collect()
+    });
+    assert!(
+        closed.iter().any(|item| item.contains("hello.txt")),
+        "recorded under its saved path: {closed:?}"
+    );
+    assert!(!closed.iter().any(|item| item.contains("untitled:")));
+}
+
+#[gpui::test]
+fn tab_menu_keyboard_escape_closes_it_and_arrows_skip_disabled(cx: &mut TestAppContext) {
+    let (_dir, wb, cx) = workspace(&["a.txt", "b.txt"], cx);
+    open(&wb, "a.txt", cx);
+    open(&wb, "b.txt", cx);
+    right_click_tab(0, 0, cx);
+    let menu = cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).tab_menu().unwrap());
+    // Close, Close Others, (Close to the Left is disabled), Close to the Right.
+    keys("down down down", cx);
+    let selected = menu.read_with(cx, |m, _| m.selected());
+    let label = menu.read_with(cx, |m, _| match &m.items()[selected.unwrap()] {
+        lucerna_workbench::ui::MenuItem::Entry { label, .. } => label.to_string(),
+        lucerna_workbench::ui::MenuItem::Separator => String::new(),
+    });
+    assert_eq!(label, "Close to the Right");
+    keys("escape", cx);
+    assert!(cx.update(|_, cx| wb.read(cx).editor_groups().read(cx).tab_menu().is_none()));
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt"]]);
+    // Keys reach the editor again.
+    keys("cmd-shift-t", cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt", "b.txt"]]);
+    right_click_tab(0, 0, cx);
+    keys("down down down enter", cx);
+    assert_eq!(tabs(&wb, cx), [["a.txt"]]);
+}

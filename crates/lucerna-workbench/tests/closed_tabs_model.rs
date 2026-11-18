@@ -267,15 +267,20 @@ fn reopen_skips_missing_files_and_falls_back_a_batch() {
 }
 
 #[test]
-fn reopen_skips_tab_already_open_in_group() {
+fn reopen_of_open_tab_activates_it_and_stops() {
     let mut g = EditorGroups::default();
     pinned(&mut g, "keep.rs");
+    let x = pinned(&mut g, "x.rs");
+    g.close(x); // an older batch that must stay put
     let a = pinned(&mut g, "a.rs");
     g.close(a);
-    pinned(&mut g, "a.rs");
-    assert!(g.reopen_closed(|_| true).is_empty());
+    let a = pinned(&mut g, "a.rs");
+    g.activate(g.groups()[0].tabs[0].id);
+    let reopened = g.reopen_closed(|_| true);
+    assert_eq!(reopened, [(a, None)]);
     assert_eq!(names(&g, 0), ["keep.rs", "a.rs"]);
-    assert!(g.closed().is_empty());
+    assert_eq!(active_name(&g).as_deref(), Some("a.rs"));
+    assert_eq!(closed_names(&g), ["x.rs"], "only a.rs's entry is used up");
 }
 
 #[test]
