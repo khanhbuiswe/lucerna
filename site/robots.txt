@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://lucerna.skynomadlabs.dev/sitemap.xml
