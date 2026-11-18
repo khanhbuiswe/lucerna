@@ -1397,6 +1397,40 @@ impl Documents {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<bool, WriteError>> {
+        self.save_with(path, opts, None, window, cx)
+    }
+
+    /// The save of a document a project-wide replace just edited, its
+    /// text then at `revision`: an autosave that always checks the file on
+    /// disk first, whatever `files.saveConflictResolution` says (a change
+    /// an agent made is never written over), and that saves nothing
+    /// (`Ok(false)`) when the text changed after the replace by the time
+    /// it is captured (a save already in flight made it wait).
+    pub(crate) fn save_replaced(
+        &mut self,
+        path: &Path,
+        revision: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<bool, WriteError>> {
+        let opts = SaveOptions {
+            reason: SaveReason::Auto,
+            participants: false,
+            overwrite: false,
+        };
+        self.save_with(path, opts, Some(revision), window, cx)
+    }
+
+    /// [`Documents::save`]; with `replaced`, [`Documents::save_replaced`].
+    fn save_with(
+        &mut self,
+        path: &Path,
+        opts: SaveOptions,
+        replaced: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<bool, WriteError>> {
+        let checks = replaced.is_some();
         let key = self.key(path);
         // No file to write to: Save As gives it one.
         if untitled::is_untitled(&key) {
@@ -1414,8 +1448,9 @@ impl Documents {
         // With nothing to wait for or ask, the text is captured now: an
         // edit made after this call is not part of the save.
         // `opts.overwrite` (`:w!`) neither asks nor checks the disk.
-        let started = (previous.is_none() && !lossy && (opts.overwrite || !self.asks(&key, cx)))
-            .then(|| self.start_write(&key, None, opts, opts.overwrite, cx));
+        let started =
+            (previous.is_none() && !lossy && (opts.overwrite || !self.asks(&key, checks, cx)))
+                .then(|| self.start_write(&key, None, opts, opts.overwrite, replaced, cx));
         cx.spawn_in(window, async move |this, cx| {
             // Dropped at the end: the next save of the document goes on.
             let _done = done;
@@ -1464,7 +1499,7 @@ impl Documents {
                                 return Ok(false);
                             }
                         }
-                        let Ok(ask) = this.update(cx, |d, cx| d.asks(&key, cx)) else {
+                        let Ok(ask) = this.update(cx, |d, cx| d.asks(&key, checks, cx)) else {
                             return Ok(false);
                         };
                         // An autosave never asks: it leaves a conflict alone.
@@ -1498,9 +1533,9 @@ impl Documents {
                                 _ => return Ok(false),
                             }
                         }
-                        let Ok(write) =
-                            this.update(cx, |d, cx| d.start_write(&key, None, opts, overwrite, cx))
-                        else {
+                        let Ok(write) = this.update(cx, |d, cx| {
+                            d.start_write(&key, None, opts, overwrite, replaced, cx)
+                        }) else {
                             return Ok(false);
                         };
                         write
@@ -1553,25 +1588,37 @@ impl Documents {
             .is_some_and(|d| !d.lossy_consent && d.buffer.as_ref().is_some_and(Buffer::is_lossy))
     }
 
-    /// Whether a save of the document at `key` asks about a conflict first.
-    fn asks(&self, key: &Arc<Path>, cx: &App) -> bool {
-        self.docs.get(key).is_some_and(|d| d.conflict.is_some()) && !self.overwrites(key, cx)
+    /// Whether a save of the document at `key` asks about a conflict
+    /// first; with `checks`, whatever `files.saveConflictResolution` says.
+    fn asks(&self, key: &Arc<Path>, checks: bool, cx: &App) -> bool {
+        self.docs.get(key).is_some_and(|d| d.conflict.is_some())
+            && (checks || !self.overwrites(key, cx))
     }
 
     /// Runs the save participants, captures the text and starts writing it
     /// to its file, or to `target` (Save As: the participants of the
     /// target's language, and no check of the file there); with
     /// `overwrite`, without checking the file on disk first. `None` when
-    /// the document has no text to save.
+    /// the document has no text to save. With `replaced` (see
+    /// [`Documents::save_replaced`]), the file is always checked, and
+    /// nothing is captured (`None`) unless the text is still at that
+    /// revision.
     fn start_write(
         &mut self,
         key: &Arc<Path>,
         target: Option<&Arc<Path>>,
         opts: SaveOptions,
         overwrite: bool,
+        replaced: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Option<StartedWrite> {
-        let check = target.is_none() && !overwrite && !self.overwrites(key, cx);
+        let check =
+            target.is_none() && !overwrite && (replaced.is_some() || !self.overwrites(key, cx));
+        if let Some(revision) = replaced
+            && self.docs.get(key).map(|d| d.revision) != Some(revision)
+        {
+            return None;
+        }
         let window = self.window;
         let target_language = target.map(|target| {
             let snapshot = self.docs.get(key).and_then(|d| d.snapshot.clone());
@@ -1776,7 +1823,7 @@ impl Documents {
             }
             let started = this
                 .update(cx, |d, cx| {
-                    d.start_write(&key, Some(&target), opts, true, cx)
+                    d.start_write(&key, Some(&target), opts, true, None, cx)
                 })
                 .map_err(|_| WriteError::Io("the document was closed".into()))?;
             let StartedWrite {

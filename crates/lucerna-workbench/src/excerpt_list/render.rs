@@ -820,6 +820,19 @@ fn preview_ranges<'a>(
         })
 }
 
+/// A replacement as the one-line preview shows it: a line break is drawn
+/// as `↵` (`\r` is dropped). Only the preview: the replace writes the
+/// real text.
+pub(super) fn one_line(text: &str) -> String {
+    if !text.contains(['\n', '\r']) {
+        return text.to_owned();
+    }
+    text.chars()
+        .filter(|&c| c != '\r')
+        .map(|c| if c == '\n' { '↵' } else { c })
+        .collect()
+}
+
 /// `text` with each replacement put right after its match. A range
 /// without a replacement is only struck out.
 fn preview_line(
@@ -1021,6 +1034,17 @@ mod tests {
         assert_eq!(line.text, text);
         assert_eq!(line.old, vec![2..5]);
         assert!(line.new.is_empty());
+    }
+
+    #[test]
+    fn preview_shows_a_line_break_as_a_symbol() {
+        assert_eq!(one_line("a\r\nb\nc"), "a↵b↵c");
+        assert_eq!(one_line("plain"), "plain");
+        let text = "foo x foo";
+        let line = preview_line(text, &[0..3, 6..9], &[Some(one_line("a\nb")), None]);
+        assert_eq!(line.text, "fooa↵b x foo");
+        assert!(!line.text.contains('\n'));
+        assert_eq!(line.new, vec![3..8]);
     }
 
     #[test]

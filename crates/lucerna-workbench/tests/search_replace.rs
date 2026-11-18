@@ -1132,3 +1132,148 @@ fn replace_line_with_newline_renumbers_shown_lines(cx: &mut TestAppContext) {
     );
     assert_eq!(selected_line_number(&view, cx), Some(6));
 }
+
+// Replace All: what the final review found.
+
+/// The message of a Replace All of `foo` with `bar` over an open clean
+/// `a.txt` that an agent rewrote on disk before the replace saved it (the
+/// watcher has not reported the write yet).
+fn replace_over_agent_write(cx: &mut TestAppContext, user_settings: &str) {
+    init_with(cx, user_settings);
+    let dir = project(&[("a.txt", "foo foo\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    fs::write(dir.path().join("a.txt"), "the agent wrote this\n").unwrap();
+    replace_all("Replace", cx);
+    assert_eq!(disk(&dir, "a.txt"), "the agent wrote this\n", "kept");
+    assert_eq!(disk(&dir, "b.txt"), "bar\n");
+    assert_eq!(
+        doc_text(&wb, "a.txt", cx),
+        "bar bar\n",
+        "the buffer keeps it"
+    );
+    assert!(has_conflict(&wb, "a.txt", cx));
+    let message = replace_message(&view, cx).expect("a message");
+    assert!(
+        message.contains("Replaced 1 occurrence across 1 file with 'bar'."),
+        "{message}"
+    );
+    assert!(
+        message.contains("Skipped 1 file: a.txt (changed on disk)"),
+        "{message}"
+    );
+}
+
+#[gpui::test]
+fn replace_all_save_of_clean_document_hits_disk_change(cx: &mut TestAppContext) {
+    replace_over_agent_write(cx, r#"{ "lucerna.lsp.enabled": false }"#);
+}
+
+#[gpui::test]
+fn replace_all_checks_disk_despite_overwrite_setting(cx: &mut TestAppContext) {
+    replace_over_agent_write(
+        cx,
+        r#"{
+            "lucerna.lsp.enabled": false,
+            "files.saveConflictResolution": "overwriteFileOnDisk"
+        }"#,
+    );
+}
+
+#[gpui::test]
+fn replace_all_leaves_dismissed_line_alone(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo\nx\nfoo\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    focus_list(&view, cx);
+    select_line_number(&view, 3, cx);
+    keys("cmd-backspace", cx);
+    assert_eq!(match_count(&view, cx), 2);
+    replace_all("Replace", cx);
+    assert_eq!(disk(&dir, "a.txt"), "bar\nx\nfoo\n", "line 3 dismissed");
+    assert_eq!(disk(&dir, "b.txt"), "bar\n");
+    assert_eq!(
+        replace_message(&view, cx).as_deref(),
+        Some("Replaced 2 occurrences across 2 files with 'bar'.")
+    );
+}
+
+#[gpui::test]
+fn replace_all_queued_save_never_saves_later_typing(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    // A save of the clean file is in flight (a slow disk) when the
+    // replace asks for its own: that one waits its turn.
+    let hold = cx.update(|_, cx| lucerna_workbench::hold_saves_for_test(cx));
+    let docs = documents(&wb, cx);
+    let opts = lucerna_workbench::SaveOptions {
+        reason: lucerna_workbench::SaveReason::Explicit,
+        participants: false,
+        overwrite: false,
+    };
+    let _first = cx
+        .update(|window, cx| docs.update(cx, |d, cx| d.save(Path::new("a.txt"), opts, window, cx)));
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    replace_all("Replace", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "bar bar\n");
+    // The user types before the replace's save has its turn.
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    type_text("x", cx);
+    assert!(doc_text(&wb, "a.txt", cx).contains('x'));
+    drop(hold);
+    draw(cx);
+    assert_eq!(
+        disk(&dir, "a.txt"),
+        "foo foo\n",
+        "only the first save wrote"
+    );
+    assert!(is_dirty(&wb, "a.txt", cx));
+    let message = replace_message(&view, cx).expect("a message");
+    assert!(
+        message.contains("Replaced 2 occurrences across 1 file with 'bar'."),
+        "{message}"
+    );
+    assert!(
+        message.contains("1 file with unsaved changes was not saved."),
+        "{message}"
+    );
+}
+
+#[gpui::test]
+fn replace_all_skips_deleted_open_document(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n"), ("b.txt", "foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    fs::remove_file(dir.path().join("a.txt")).unwrap();
+    let change = Change {
+        path: Arc::from(Path::new("a.txt")),
+        kind: ChangeKind::Removed,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    draw(cx);
+    let docs = documents(&wb, cx);
+    assert_eq!(
+        docs.read_with(cx, |d, _| d.state(Path::new("a.txt")).cloned()),
+        Some(lucerna_workbench::DocState::Deleted)
+    );
+    replace_all("Replace", cx);
+    assert!(!dir.path().join("a.txt").exists(), "not made again");
+    assert_eq!(disk(&dir, "b.txt"), "bar\n");
+    let message = replace_message(&view, cx).expect("a message");
+    assert!(
+        message.contains("Skipped 1 file: a.txt (no longer exists)"),
+        "{message}"
+    );
+}

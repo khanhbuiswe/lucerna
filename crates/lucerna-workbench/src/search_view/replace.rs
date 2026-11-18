@@ -22,7 +22,7 @@ use lucerna_text::WriteError;
 use crate::DocState;
 use crate::documents::{Documents, Edits};
 use crate::find_widget::apply_replacements;
-use crate::save::{self, SaveOptions, SaveReason};
+use crate::save;
 use crate::tasks::guarded;
 
 /// A result file and the match lines the results show for it.
@@ -53,18 +53,38 @@ enum OpenOutcome {
     /// clean before, `None` for one that was dirty.
     Replaced {
         count: usize,
-        save: Option<Task<Result<bool, WriteError>>>,
+        save: Option<ReplaceSave>,
     },
 }
 
-/// Never asks: an autosave's semantics (a conflict or a missing file is
-/// left alone), and no format or trim on a file whose text was only
-/// replaced.
-const SAVE: SaveOptions = SaveOptions {
-    reason: SaveReason::Auto,
-    participants: false,
-    overwrite: false,
-};
+/// The save of an open document the replace edited: the text was at
+/// `revision` right after the replace.
+struct ReplaceSave {
+    revision: u64,
+    task: Task<Result<bool, WriteError>>,
+}
+
+/// How the save of an edited document ended. The edit stays in the buffer
+/// either way.
+enum SaveEnd {
+    Saved,
+    /// Not saved: the user edited the text after the replace, before the
+    /// save's turn came.
+    Unsaved,
+    Skipped(SkipReason),
+}
+
+/// Why an open document in `state` cannot be replaced, if it cannot.
+fn state_skip(state: &DocState) -> Option<SkipReason> {
+    match state {
+        DocState::Ready => None,
+        // Its first load is still running: the text the results show may
+        // not be the file's any more by the time it ends.
+        DocState::Loading => Some(SkipReason::ChangedWhileReplacing),
+        DocState::Error(_) => Some(SkipReason::Unreadable),
+        DocState::Deleted => Some(SkipReason::Missing),
+    }
+}
 
 /// Replaces the shown match lines of `targets`. Closed files are handled
 /// by a background job; open documents one per foreground turn. Progress
@@ -87,16 +107,13 @@ pub(crate) fn run_replace(
     {
         let docs = documents.read(cx);
         for target in targets {
-            match docs.state(&target.path) {
-                Some(DocState::Ready) if docs.snapshot_of(&target.path).is_some() => {
-                    open.push(target);
-                }
-                Some(DocState::Loading | DocState::Error(_)) => {
-                    report
-                        .skipped
-                        .push((display(&target.path), SkipReason::Unreadable));
-                }
-                _ => closed.push(target),
+            let state = docs.state(&target.path);
+            if state == Some(&DocState::Ready) && docs.snapshot_of(&target.path).is_some() {
+                open.push(target);
+            } else if let Some(reason) = state.and_then(state_skip) {
+                report.skipped.push((display(&target.path), reason));
+            } else {
+                closed.push(target);
             }
         }
     }
@@ -201,12 +218,18 @@ pub(crate) fn run_replace(
             }
         }
         for (path, count, save) in saves {
-            match finish_save(&path, save.await, &documents, &root, cx).await {
-                None => {
+            let result = save.task.await;
+            match finish_save(&path, result, save.revision, &documents, &root, cx).await {
+                SaveEnd::Saved => {
                     report.replaced += count;
                     report.files += 1;
                 }
-                Some(reason) => report.skipped.push((display(&path), reason)),
+                SaveEnd::Unsaved => {
+                    report.replaced += count;
+                    report.files += 1;
+                    report.unsaved += 1;
+                }
+                SaveEnd::Skipped(reason) => report.skipped.push((display(&path), reason)),
             }
         }
         report.skipped.sort_by(|a, b| a.0.cmp(&b.0));
@@ -214,45 +237,59 @@ pub(crate) fn run_replace(
     })
 }
 
-/// How a save of an edited document ended: `None` when it was written,
-/// else why not. The edit stays in the buffer either way.
+/// How the save of an edited document ended; its text was at `revision`
+/// right after the replace.
 async fn finish_save(
     path: &Path,
     result: Result<bool, WriteError>,
+    revision: u64,
     documents: &Entity<Documents>,
     root: &Path,
     cx: &mut AsyncWindowContext,
-) -> Option<SkipReason> {
+) -> SaveEnd {
     match result {
-        Ok(true) => None,
+        Ok(true) => SaveEnd::Saved,
         Ok(false) => {
-            let conflict = cx
-                .update(|_, cx| documents.read(cx).has_conflict(path))
-                .unwrap_or(false);
+            let (conflict, typed) = cx
+                .update(|_, cx| {
+                    let docs = documents.read(cx);
+                    let typed = docs.is_dirty(path) && docs.revision_of(path) != Some(revision);
+                    (docs.has_conflict(path), typed)
+                })
+                .unwrap_or((false, false));
             if conflict {
-                return Some(SkipReason::ChangedOnDisk);
+                return SaveEnd::Skipped(SkipReason::ChangedOnDisk);
             }
             let absolute = root.join(path);
             let exists = cx
                 .background_executor()
                 .spawn(async move { absolute.exists() })
                 .await;
-            Some(if exists {
-                // Not written for another reason (the file was reloaded
-                // from disk meanwhile): nothing was saved.
-                SkipReason::ChangedOnDisk
-            } else {
-                SkipReason::Missing
-            })
+            if !exists {
+                return SaveEnd::Skipped(SkipReason::Missing);
+            }
+            if typed {
+                // Edited after the replace: the buffer keeps both, unsaved.
+                return SaveEnd::Unsaved;
+            }
+            // Not written for another reason (the file was reloaded from
+            // disk meanwhile): nothing was saved.
+            SaveEnd::Skipped(SkipReason::ChangedOnDisk)
         }
-        Err(err) => Some(SkipReason::Unwritable(err.to_string())),
+        Err(err) => SaveEnd::Skipped(SkipReason::Unwritable(err.to_string())),
     }
 }
 
 /// Why the open document at `path` cannot be replaced now, if it cannot.
 fn open_skip(documents: &Documents, path: &Path) -> Option<SkipReason> {
-    if documents.state(path) != Some(&DocState::Ready) {
-        return Some(SkipReason::Unreadable);
+    match documents.state(path) {
+        Some(state) => {
+            if let Some(reason) = state_skip(state) {
+                return Some(reason);
+            }
+        }
+        // Closed meanwhile.
+        None => return Some(SkipReason::ChangedWhileReplacing),
     }
     if documents.has_conflict(path) {
         return Some(SkipReason::Conflict);
@@ -317,8 +354,15 @@ async fn replace_open(
             }
             let was_dirty = docs.is_dirty(&path);
             apply(documents, &path, edits, cx);
-            let save = (!was_dirty)
-                .then(|| documents.update(cx, |docs, cx| docs.save(&path, SAVE, window, cx)));
+            let save = if was_dirty {
+                None
+            } else {
+                documents.update(cx, |docs, cx| {
+                    let revision = docs.revision_of(&path)?;
+                    let task = docs.save_replaced(&path, revision, window, cx);
+                    Some(ReplaceSave { revision, task })
+                })
+            };
             Some(OpenOutcome::Replaced { count, save })
         });
         match applied {

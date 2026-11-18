@@ -321,7 +321,13 @@ impl ExcerptList {
         if line.ranges.is_empty() {
             return None;
         }
-        let replacements: Arc<[Option<String>]> = preview.replacements(line).into();
+        // One row per line: a line break in the new text is drawn as a
+        // symbol.
+        let replacements: Arc<[Option<String>]> = preview
+            .replacements(line)
+            .into_iter()
+            .map(|r| r.map(|r| render::one_line(&r)))
+            .collect();
         self.preview_cache.insert(r, replacements.clone());
         Some(replacements)
     }
