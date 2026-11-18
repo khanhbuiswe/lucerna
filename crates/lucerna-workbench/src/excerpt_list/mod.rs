@@ -116,6 +116,14 @@ impl ReplacePreview {
     }
 }
 
+/// The buttons a host shows on hovered rows (see
+/// [`ExcerptList::set_row_actions`]): Dismiss on match lines and file
+/// headers, and Replace / Replace All too when `replace` is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RowActions {
+    pub replace: bool,
+}
+
 pub enum ExcerptListEvent {
     /// Open line `r` (a click, `Enter`, or a header's "open file" button).
     /// The line is already selected.
@@ -124,6 +132,14 @@ pub enum ExcerptListEvent {
     /// [`ExcerptList::set_headers_selectable`]); the host folds the file,
     /// as a click on the header does.
     ActivateHeader(usize),
+    /// A match line's Replace button (see [`RowActions`]).
+    ReplaceLine(LineRef),
+    /// A file header's Replace All button.
+    ReplaceFile(usize),
+    /// A match line's Dismiss button.
+    DismissLine(LineRef),
+    /// A file header's Dismiss button.
+    DismissFile(usize),
 }
 
 pub struct ExcerptList {
@@ -185,6 +201,8 @@ pub struct ExcerptList {
     /// out only for rows on screen. Emptied when the preview or the
     /// results change.
     preview_cache: HashMap<LineRef, Arc<[Option<String>]>>,
+    /// The buttons hovered rows show; `None` (the default) shows none.
+    row_actions: Option<RowActions>,
 }
 
 impl EventEmitter<ExcerptListEvent> for ExcerptList {}
@@ -224,6 +242,7 @@ impl ExcerptList {
             last_source_generation: 0,
             replace_preview: None,
             preview_cache: HashMap::new(),
+            row_actions: None,
         }
     }
 
@@ -246,6 +265,43 @@ impl ExcerptList {
         self.replace_preview = preview;
         self.preview_cache.clear();
         cx.notify();
+    }
+
+    /// Shows `actions` on hovered match lines and file headers; `None`
+    /// (the default) shows no buttons. The host redraws the list.
+    pub fn set_row_actions(&mut self, actions: Option<RowActions>) {
+        self.row_actions = actions;
+    }
+
+    /// The buttons hovered rows show.
+    pub fn row_actions(&self) -> Option<RowActions> {
+        self.row_actions
+    }
+
+    /// Sends the event `make` gives for the line `anchor` names, if it is
+    /// still there (a row button's click).
+    fn emit_line(
+        &mut self,
+        anchor: &LineAnchor,
+        make: fn(LineRef) -> ExcerptListEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(r) = self.results.resolve(anchor) {
+            cx.emit(make(r));
+        }
+    }
+
+    /// Sends the event `make` gives for the file `path`, if it is still
+    /// there (a header button's click).
+    fn emit_file(
+        &mut self,
+        path: &Path,
+        make: fn(usize) -> ExcerptListEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(file) = self.results.file_index(path) {
+            cx.emit(make(file));
+        }
     }
 
     /// The replace preview drawn over the matches, if any.

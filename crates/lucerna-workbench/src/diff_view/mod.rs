@@ -148,11 +148,13 @@ impl DiffView {
         };
         let list_focus = list.read(cx).focus_handle().clone();
         let subscriptions = vec![
-            cx.subscribe(&list, |view, _, event, cx| match event {
-                // Like Search and References: a preview.
-                ExcerptListEvent::Activate(r) => view.open_line(*r, OpenMode::Preview, cx),
-                // Headers are not selectable here.
-                ExcerptListEvent::ActivateHeader(_) => {}
+            // Headers are not selectable here, and no row buttons show:
+            // only `Activate` comes, which opens a preview as in Search and
+            // References.
+            cx.subscribe(&list, |view, _, event, cx| {
+                if let ExcerptListEvent::Activate(r) = event {
+                    view.open_line(*r, OpenMode::Preview, cx);
+                }
             }),
             cx.subscribe(&git, |view, _, event, cx| match event {
                 GitStoreEvent::SnapshotChanged => view.refresh_list(cx),

@@ -214,5 +214,9 @@
   { "key": "shift+cmd+h", "command": "workbench.action.replaceInFiles" },
   { "key": "alt+cmd+p", "command": "toggleSearchPreserveCase", "when": "searchViewletFocus" },
   { "key": "escape", "command": "closeReplaceInFilesWidget", "when": "searchViewletFocus && replaceInputBoxFocus" },
-  { "key": "alt+cmd+enter", "command": "search.action.replaceAll", "when": "searchViewletFocus && replaceActive" }
+  { "key": "alt+cmd+enter", "command": "search.action.replaceAll", "when": "searchViewletFocus && replaceActive" },
+  { "key": "shift+cmd+1", "command": "search.action.replace", "when": "searchViewletFocus && replaceActive && matchFocus" },
+  { "key": "shift+cmd+1", "command": "search.action.replaceAllInFile", "when": "searchViewletFocus && replaceActive && fileMatchFocus" },
+  { "key": "shift+cmd+enter", "command": "search.action.replaceAllInFile", "when": "searchViewletFocus && replaceActive && fileMatchFocus" },
+  { "key": "cmd+backspace", "command": "search.action.remove", "when": "searchViewletFocus && fileMatchOrMatchFocus" }
 ]

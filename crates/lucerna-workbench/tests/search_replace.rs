@@ -820,3 +820,236 @@ fn replace_all_in_vim_insert_session_is_its_own_undo_step(cx: &mut TestAppContex
     keys("u", cx);
     assert_eq!(doc_text(&wb, "a.txt", cx), "foo foo\n", "then the typing");
 }
+
+// Per-line and per-file replace, Dismiss.
+
+/// The status bar's message in the test window.
+fn status(cx: &mut VisualTestContext) -> Option<String> {
+    cx.update(|window, cx| {
+        lucerna_workbench::status_message::current(window.window_handle().window_id(), cx)
+            .map(|s| s.to_string())
+    })
+}
+
+/// From the Replace input, focuses the results list (by way of the query).
+fn focus_list(view: &Entity<SearchView>, cx: &mut VisualTestContext) {
+    keys("shift-tab", cx);
+    assert!(query_focused(view, cx));
+    keys("escape", cx);
+}
+
+/// The line number of the selected line.
+fn selected_line_number(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> Option<u32> {
+    view.read_with(cx, |v, cx| match v.list_selection(cx)? {
+        ListSelection::Line(r) => Some(v.results(cx).line(r)?.line_number),
+        ListSelection::Header(_) => None,
+    })
+}
+
+fn result_files(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> Vec<String> {
+    view.read_with(cx, |v, cx| {
+        v.results(cx)
+            .files()
+            .iter()
+            .map(|f| f.path.to_string_lossy().into_owned())
+            .collect()
+    })
+}
+
+fn match_count(view: &Entity<SearchView>, cx: &mut VisualTestContext) -> usize {
+    view.read_with(cx, |v, cx| v.results(cx).match_count())
+}
+
+#[gpui::test]
+fn shift_cmd_1_replaces_selected_line(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo\nx\nfoo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    focus_list(&view, cx);
+    keys("down", cx);
+    assert_eq!(selection(&view, cx), Some(ListSelection::Header(0)));
+    assert!(holds(&wb, "fileMatchFocus && fileMatchOrMatchFocus", cx));
+    assert!(!holds(&wb, "matchFocus", cx));
+    keys("down", cx);
+    assert_eq!(selected_line_number(&view, cx), Some(1));
+    assert!(holds(
+        &wb,
+        "searchViewletFocus && replaceActive && matchFocus && fileMatchOrMatchFocus",
+        cx
+    ));
+    assert!(!holds(&wb, "fileMatchFocus", cx));
+
+    keys("shift-cmd-1", cx);
+    assert!(!cx.has_pending_prompt(), "never asks");
+    assert_eq!(disk(&dir, "a.txt"), "bar\nx\nfoo\n");
+    assert_eq!(match_count(&view, cx), 1);
+    assert_eq!(selected_line_number(&view, cx), Some(3), "the next match");
+    assert!(!view.read_with(cx, |v, _| v.is_replacing()));
+    assert_eq!(replace_message(&view, cx), None, "the results stay");
+
+    // The last match: replaced, nothing left to select.
+    keys("shift-cmd-1", cx);
+    assert_eq!(disk(&dir, "a.txt"), "bar\nx\nbar\n");
+    assert_eq!(match_count(&view, cx), 0);
+}
+
+#[gpui::test]
+fn replace_line_selects_previous_when_last(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo\nx\ny\nz\nfoo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    focus_list(&view, cx);
+    // Header, 1, 2 (context), 4 (context), 5.
+    keys("down down down down down", cx);
+    assert_eq!(selected_line_number(&view, cx), Some(5));
+    keys("shift-cmd-1", cx);
+    assert_eq!(disk(&dir, "a.txt"), "foo\nx\ny\nz\nbar\n");
+    assert_eq!(
+        selected_line_number(&view, cx),
+        Some(1),
+        "the previous match"
+    );
+}
+
+#[gpui::test]
+fn replace_line_refuses_changed_line(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo\nx\nfoo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    fs::write(dir.path().join("a.txt"), "zfoo\nx\nfoo\n").unwrap();
+    focus_list(&view, cx);
+    keys("down down", cx);
+    keys("shift-cmd-1", cx);
+    assert_eq!(disk(&dir, "a.txt"), "zfoo\nx\nfoo\n", "left alone");
+    assert_eq!(
+        status(cx).as_deref(),
+        Some("The file has changed since the search. Search again to replace it.")
+    );
+    assert_eq!(match_count(&view, cx), 2, "the results stay");
+}
+
+#[gpui::test]
+fn shift_cmd_1_on_header_replaces_file(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo foo\n"), ("b.txt", "x\nfoo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    focus_list(&view, cx);
+    keys("down", cx);
+    assert_eq!(selection(&view, cx), Some(ListSelection::Header(0)));
+    keys("shift-cmd-1", cx);
+    assert!(!cx.has_pending_prompt(), "never asks");
+    assert_eq!(disk(&dir, "a.txt"), "bar bar\n");
+    assert_eq!(disk(&dir, "b.txt"), "x\nfoo\n");
+    assert_eq!(result_files(&view, cx), vec!["b.txt".to_string()]);
+    assert_eq!(
+        selected_line_number(&view, cx),
+        Some(2),
+        "b.txt's first match"
+    );
+
+    // ⇧⌘Enter on a header does the same (above line 1, a context line).
+    keys("up up", cx);
+    assert_eq!(selection(&view, cx), Some(ListSelection::Header(0)));
+    keys("shift-cmd-enter", cx);
+    assert_eq!(disk(&dir, "b.txt"), "x\nbar\n");
+    assert!(result_files(&view, cx).is_empty());
+}
+
+#[gpui::test]
+fn cmd_backspace_dismisses_line_and_file(cx: &mut TestAppContext) {
+    let (dir, wb, view, cx) = searched(cx);
+    let before: Vec<String> = ["a.rs", "b.rs", "sub/c.rs"]
+        .iter()
+        .map(|p| disk(&dir, p))
+        .collect();
+    assert_eq!(match_count(&view, cx), 4);
+    keys("escape down down", cx);
+    assert_eq!(selected_line_number(&view, cx), Some(1));
+    assert!(holds(
+        &wb,
+        "searchViewletFocus && fileMatchOrMatchFocus",
+        cx
+    ));
+    keys("cmd-backspace", cx);
+    assert_eq!(match_count(&view, cx), 3);
+    assert_eq!(
+        result_files(&view, cx),
+        vec!["b.rs".to_string(), "sub/c.rs".to_string()]
+    );
+    assert!(
+        matches!(selection(&view, cx), Some(ListSelection::Line(r)) if r.file == 0),
+        "the next line"
+    );
+
+    keys("up", cx);
+    assert_eq!(selection(&view, cx), Some(ListSelection::Header(0)));
+    keys("cmd-backspace", cx);
+    assert_eq!(result_files(&view, cx), vec!["sub/c.rs".to_string()]);
+    assert_eq!(match_count(&view, cx), 1);
+    assert_eq!(view.read_with(cx, |v, cx| v.match_label(cx)), "1 result");
+    let after: Vec<String> = ["a.rs", "b.rs", "sub/c.rs"]
+        .iter()
+        .map(|p| disk(&dir, p))
+        .collect();
+    assert_eq!(before, after, "nothing on disk changes");
+}
+
+#[gpui::test]
+fn hover_buttons_only_with_replace_row(cx: &mut TestAppContext) {
+    let (dir, _wb, view, cx) = searched(cx);
+    assert!(cx.debug_bounds("search-line-replace-0-0-0").is_none());
+    assert!(cx.debug_bounds("search-line-dismiss-0-0-0").is_some());
+    assert!(cx.debug_bounds("search-file-replace-0").is_none());
+    assert!(cx.debug_bounds("search-file-dismiss-0").is_some());
+    // Context lines have no buttons.
+    assert!(cx.debug_bounds("search-line-dismiss-1-0-1").is_none());
+
+    click("search-toggle-replace", cx);
+    assert!(cx.debug_bounds("search-line-replace-0-0-0").is_some());
+    assert!(cx.debug_bounds("search-file-replace-0").is_some());
+    type_text("pin", cx);
+
+    // The buttons do their job, and never open the line.
+    click("search-line-dismiss-0-0-0", cx);
+    assert_eq!(match_count(&view, cx), 3);
+    assert_eq!(disk(&dir, "a.rs"), "a needle\n");
+    click("search-line-replace-0-0-0", cx);
+    assert_eq!(disk(&dir, "b.rs"), "pin one\nnothing\nneedle two needle\n");
+    assert_eq!(match_count(&view, cx), 2);
+    click("search-file-replace-0", cx);
+    assert_eq!(disk(&dir, "b.rs"), "pin one\nnothing\npin two pin\n");
+    assert_eq!(result_files(&view, cx), vec!["sub/c.rs".to_string()]);
+    click("search-file-dismiss-0", cx);
+    assert!(result_files(&view, cx).is_empty());
+    assert_eq!(disk(&dir, "sub/c.rs"), "NEEDLE\n");
+}
+
+#[gpui::test]
+fn replace_line_in_dirty_document_reports_unsaved(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project(&[("a.txt", "foo\nx\nfoo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    type_text("y", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "yfoo\nx\nfoo\n");
+    assert!(is_dirty(&wb, "a.txt", cx));
+
+    let view = replace_ready(&wb, "foo", "bar", cx);
+    focus_list(&view, cx);
+    keys("down down", cx);
+    keys("shift-cmd-1", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "ybar\nx\nfoo\n");
+    assert!(is_dirty(&wb, "a.txt", cx), "never saved");
+    assert_eq!(disk(&dir, "a.txt"), "foo\nx\nfoo\n");
+    assert_eq!(
+        status(cx).as_deref(),
+        Some("Replaced in a.txt. The file has unsaved changes.")
+    );
+    assert_eq!(match_count(&view, cx), 1, "searched again on the buffer");
+    assert_eq!(selected_line_number(&view, cx), Some(3));
+}

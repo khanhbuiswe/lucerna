@@ -397,6 +397,7 @@ mod tests {
         rows.extend([
             (event("!", None, cmd()), "shift+cmd+1"),
             (event("enter", Some("\n"), alt_cmd()), "alt+cmd+enter"),
+            (event("enter", Some("\n"), cmd_shift()), "shift+cmd+enter"),
         ]);
         rows
     }

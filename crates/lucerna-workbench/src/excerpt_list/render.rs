@@ -19,14 +19,14 @@ use lucerna_settings::SettingsView;
 
 use super::highlight::LineSpans;
 use super::model::{LineRef, Row, expand_tabs, thousands};
-use super::{ExcerptList, ListSelection};
+use super::{ExcerptList, ExcerptListEvent, ListSelection};
 use crate::AppState;
 use crate::code_view::hunk_bar_width;
-use crate::icons::ARROW_UP_RIGHT;
+use crate::icons::{ARROW_UP_RIGHT, REPLACE, REPLACE_ALL, X};
 use crate::layout::color;
 use crate::ui::{
     CHEVRON_DOWN_ICON, CHEVRON_RIGHT_ICON, FILE_ICON_SIZE, GRID, UI_FONT_SIZE_CAPTION,
-    file_icon_sized, subheader_card,
+    file_icon_sized, subheader_card, tooltip,
 };
 
 /// A file header is this many editor lines tall, as in Zed.
@@ -198,6 +198,53 @@ impl ExcerptList {
                     .size(px(14.))
                     .text_color(color(ui.icon_muted)),
             );
+        // Replace All and Dismiss, before Open File (see `RowActions`).
+        let actions = self.row_actions.map(|actions| {
+            let id = |name: &str| -> (ElementId, String) {
+                if sticky {
+                    (
+                        format!("sticky-{name}").into(),
+                        format!("{prefix}-sticky-{name}"),
+                    )
+                } else {
+                    (
+                        (SharedString::from(format!("file-{name}")), index).into(),
+                        format!("{prefix}-file-{name}-{index}"),
+                    )
+                }
+            };
+            let (replace_path, dismiss_path) = (path.clone(), path.clone());
+            let replace = actions.replace.then(|| {
+                let (id, selector) = id("replace");
+                row_button(
+                    id,
+                    selector,
+                    REPLACE_ALL,
+                    "Replace All",
+                    &group,
+                    selected_here,
+                    ui,
+                )
+                .h(px(5. * GRID))
+                .on_click(cx.listener(move |list, _, _, cx| {
+                    cx.stop_propagation();
+                    list.emit_file(&replace_path, ExcerptListEvent::ReplaceFile, cx);
+                }))
+            });
+            let (id, selector) = id("dismiss");
+            let dismiss = row_button(id, selector, X, "Dismiss", &group, selected_here, ui)
+                .h(px(5. * GRID))
+                .on_click(cx.listener(move |list, _, _, cx| {
+                    cx.stop_propagation();
+                    list.emit_file(&dismiss_path, ExcerptListEvent::DismissFile, cx);
+                }));
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .children(replace)
+                .child(dismiss)
+        });
         let card = subheader_card(cx)
             .id(card_id)
             .debug_selector(move || selector)
@@ -296,6 +343,7 @@ impl ExcerptList {
                     .text_color(color(ui.text_muted))
                     .child(thousands(file.match_count())),
             })
+            .children(actions)
             .child(open);
         div()
             .w_full()
@@ -385,7 +433,51 @@ impl ExcerptList {
             LineKind::Added => Some(ui.vc_added),
             LineKind::Deleted { .. } => Some(ui.vc_deleted),
         };
-        let mut el = row(ix, selector, style).relative();
+        let group: SharedString = format!("{selector}-group").into();
+        // Replace and Dismiss on a match line (see `RowActions`); a
+        // context line has none.
+        let actions = self
+            .row_actions
+            .filter(|_| !line.ranges.is_empty())
+            .map(|actions| {
+                let name = |what: &str| {
+                    format!(
+                        "{}-line-{what}-{}-{}-{}",
+                        self.id_prefix, r.file, r.excerpt, r.line
+                    )
+                };
+                let button = |what: &str, icon, label| {
+                    let id = (SharedString::from(format!("line-{what}")), ix);
+                    row_button(id.into(), name(what), icon, label, &group, selected, ui).h_full()
+                };
+                let replace = actions.replace.then(|| {
+                    let anchor = anchor.clone();
+                    button("replace", REPLACE, "Replace").on_click(cx.listener(
+                        move |list, _, _, cx| {
+                            cx.stop_propagation();
+                            if let Some(anchor) = &anchor {
+                                list.emit_line(anchor, ExcerptListEvent::ReplaceLine, cx);
+                            }
+                        },
+                    ))
+                });
+                let dismiss_anchor = anchor.clone();
+                let dismiss =
+                    button("dismiss", X, "Dismiss").on_click(cx.listener(move |list, _, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(anchor) = &dismiss_anchor {
+                            list.emit_line(anchor, ExcerptListEvent::DismissLine, cx);
+                        }
+                    }));
+                div()
+                    .flex()
+                    .flex_none()
+                    .h_full()
+                    .items_center()
+                    .children(replace)
+                    .child(dismiss)
+            });
+        let mut el = row(ix, selector, style).relative().group(group.clone());
         if let Some(bg) = self.background_of(line.kind, selected, cx) {
             el = el.bg(bg);
         }
@@ -445,6 +537,7 @@ impl ExcerptList {
                 .text_color(color(ui.editor_foreground))
                 .child(styled),
         )
+        .children(actions)
         .into_any_element()
     }
 
@@ -800,6 +893,44 @@ fn shift_spans(
         out.push((shift(start, true)..shift(r.end, false), capture.clone()));
     }
     out
+}
+
+/// A row's hover button (Replace, Dismiss): an icon shown while `group`
+/// is hovered, or always when its row is `selected`. Swallows the mouse
+/// down so the list keeps the focus; add its height and `on_click`.
+fn row_button(
+    id: ElementId,
+    selector: String,
+    icon: &'static [u8],
+    label: &'static str,
+    group: &SharedString,
+    selected: bool,
+    ui: &lucerna_theme::UiColors,
+) -> Stateful<Div> {
+    let hover = color(ui.ghost_element_hover);
+    let group = group.clone();
+    div()
+        .id(id)
+        .debug_selector(move || selector)
+        .flex()
+        .flex_none()
+        .justify_center()
+        .items_center()
+        .w(px(6. * GRID))
+        .rounded(px(GRID))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .when(!selected, |d| {
+            d.opacity(0.).group_hover(group, |s| s.opacity(1.))
+        })
+        .tooltip(tooltip(label))
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .child(
+            svg()
+                .data(icon)
+                .size(px(14.))
+                .text_color(color(ui.icon_muted)),
+        )
 }
 
 /// A clickable row, one editor line tall; add `on_click` and the content.

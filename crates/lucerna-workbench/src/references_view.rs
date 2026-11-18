@@ -96,10 +96,12 @@ impl ReferencesView {
         };
         let list_focus = list.read(cx).focus_handle().clone();
         let list_events =
-            cx.subscribe_in(&list, window, |view, _, event, window, cx| match event {
-                ExcerptListEvent::Activate(r) => view.open_line(*r, window, cx),
-                // Headers are not selectable here.
-                ExcerptListEvent::ActivateHeader(_) => {}
+            // Headers are not selectable here, and no row buttons show:
+            // only `Activate` comes.
+            cx.subscribe_in(&list, window, |view, _, event, window, cx| {
+                if let ExcerptListEvent::Activate(r) = event {
+                    view.open_line(*r, window, cx);
+                }
             });
         ReferencesView {
             workbench,
