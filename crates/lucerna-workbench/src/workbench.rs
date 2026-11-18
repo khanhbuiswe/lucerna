@@ -1402,7 +1402,7 @@ impl Workbench {
         if !closing.is_empty() {
             self.update_editor_groups(cx, |m| {
                 for id in closing {
-                    m.close(id);
+                    m.remove(id);
                 }
             });
         }
@@ -1446,7 +1446,7 @@ impl Workbench {
         if !closing.is_empty() {
             self.update_editor_groups(cx, |m| {
                 for id in closing {
-                    m.close(id);
+                    m.remove(id);
                 }
             });
         }

@@ -1,8 +1,10 @@
 //! The editor area: groups of tabs laid out left to right.
 
+mod closed;
 mod model;
 mod view;
 
+pub use closed::{ClosedTab, TabViewState};
 pub use model::{
     BRANCH_CHANGES_TAB_STATE, EXTENSIONS_TAB_STATE, EditorGroups, FileView, GIT_CHANGES_TAB_STATE,
     GIT_CHANGES_TAB_TITLE, Group, GroupId, GroupState, GroupsState,
