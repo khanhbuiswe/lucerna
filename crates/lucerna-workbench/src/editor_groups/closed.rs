@@ -40,7 +40,9 @@ pub struct ClosedTab {
 /// Markdown previews, not Untitled ones.
 pub(crate) fn is_recorded(item: &TabItem) -> bool {
     match item {
-        TabItem::File(path) | TabItem::MarkdownPreview(path) => !crate::untitled::is_untitled(path),
+        TabItem::File(path) | TabItem::MarkdownPreview(path) | TabItem::ImagePreview(path) => {
+            !crate::untitled::is_untitled(path)
+        }
         _ => false,
     }
 }
@@ -48,7 +50,9 @@ pub(crate) fn is_recorded(item: &TabItem) -> bool {
 /// The path a reopen checks for existence, if `item` has one.
 pub(crate) fn item_path(item: &TabItem) -> Option<&Path> {
     match item {
-        TabItem::File(path) | TabItem::MarkdownPreview(path) => Some(path),
+        TabItem::File(path) | TabItem::MarkdownPreview(path) | TabItem::ImagePreview(path) => {
+            Some(path)
+        }
         _ => None,
     }
 }
@@ -106,7 +110,9 @@ impl ClosedHistory {
     /// After `from` was renamed to `to`: entries in or under it follow.
     pub(crate) fn retarget(&mut self, from: &Path, to: &Path) {
         for entry in &mut self.entries {
-            if let TabItem::File(path) | TabItem::MarkdownPreview(path) = &mut entry.item
+            if let TabItem::File(path)
+            | TabItem::MarkdownPreview(path)
+            | TabItem::ImagePreview(path) = &mut entry.item
                 && let Some(moved) = crate::workspace_state::moved_path(path, from, to)
             {
                 *path = std::sync::Arc::from(moved);

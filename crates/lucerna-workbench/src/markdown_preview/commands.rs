@@ -114,12 +114,11 @@ pub(crate) fn register_commands(commands: &mut CommandRegistry) {
 /// first value of the longest glob matching `rel` (the path relative to the
 /// root, or the file name for a glob without `/`), else of one matching the
 /// absolute `path` (a glob such as `/notes/**/*.md`). The preview for
-/// [`PREVIEW_EDITOR_ID`]; the source for `"default"`, any other id and no
-/// match.
+/// [`PREVIEW_EDITOR_ID`], the image preview for
+/// [`IMAGE_EDITOR_ID`](crate::image_preview::IMAGE_EDITOR_ID); the source
+/// for `"default"` and any other id. With no match, an image extension
+/// opens the image preview, anything else the source.
 pub fn editor_for(path: &Path, rel: &Path, map: &BTreeMap<String, String>) -> FileView {
-    if map.is_empty() {
-        return FileView::Source;
-    }
     let associations = Associations::new(map);
     let editor = associations
         .matches(rel)
@@ -128,7 +127,10 @@ pub fn editor_for(path: &Path, rel: &Path, map: &BTreeMap<String, String>) -> Fi
         .or_else(|| associations.matches(path).first().copied());
     match editor {
         Some(PREVIEW_EDITOR_ID) => FileView::Preview,
-        _ => FileView::Source,
+        Some(crate::image_preview::IMAGE_EDITOR_ID) => FileView::Image,
+        Some(_) => FileView::Source,
+        None if crate::image_preview::is_image_path(path) => FileView::Image,
+        None => FileView::Source,
     }
 }
 

@@ -487,6 +487,10 @@ impl Workbench {
                                 })
                                 .into();
                         }
+                        TabItem::ImagePreview(_) => {
+                            // Replaced by the image view in a later task.
+                            return crate::editor_groups::placeholder_body(tab, window, cx);
+                        }
                         TabItem::Extensions => {
                             page.update(cx, |page, cx| page.shown(cx));
                             return page.clone().into();

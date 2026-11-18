@@ -166,7 +166,7 @@ fn tab_icon_source(item: &TabItem, cx: &App) -> Option<IconSource> {
     Some(match item {
         // Untitled: the plain-text icon, as a `.txt` file has.
         TabItem::File(p) if crate::untitled::is_untitled(p) => file(Path::new("Untitled.txt")),
-        TabItem::File(p) | TabItem::FileDiff(p) => file(p),
+        TabItem::File(p) | TabItem::FileDiff(p) | TabItem::ImagePreview(p) => file(p),
         TabItem::Extensions => IconSource::Builtin("blocks"),
         TabItem::Search => IconSource::Builtin("search"),
         TabItem::LspLog(_) | TabItem::LspHealth => IconSource::Builtin("zap"),

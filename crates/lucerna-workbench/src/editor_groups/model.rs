@@ -48,6 +48,9 @@ pub enum TabItem {
     /// The Markdown preview that follows the file being edited. At most
     /// one in all groups (whatever its path); saved.
     MarkdownPreviewDynamic(Arc<Path>),
+    /// The image preview of this file. Any number may be open, like file
+    /// tabs; saved.
+    ImagePreview(Arc<Path>),
     /// The Uncommitted Changes tab (`git.viewChanges`, spec §4.7). At most
     /// one in all groups; never a preview; saved.
     GitChanges,
@@ -69,7 +72,10 @@ impl TabItem {
     /// server log or the dynamic preview: at most one in all groups, never
     /// a preview and never split.
     pub fn is_singleton(&self) -> bool {
-        !matches!(self, TabItem::File(_) | TabItem::MarkdownPreview(_))
+        !matches!(
+            self,
+            TabItem::File(_) | TabItem::MarkdownPreview(_) | TabItem::ImagePreview(_)
+        )
     }
 
     /// Whether `self` and `other` take the same singleton slot: any two
@@ -87,11 +93,17 @@ impl TabItem {
 pub enum FileView {
     Source,
     Preview,
+    /// The image preview.
+    Image,
 }
 
 /// How a static Markdown preview is saved in [`GroupState::tabs`]: this
 /// prefix followed by the absolute path of the file.
 pub const MARKDOWN_PREVIEW_STATE_PREFIX: &str = "lucerna:markdown-preview:";
+
+/// How an image preview is saved: this prefix followed by the absolute path
+/// of the file.
+pub const IMAGE_PREVIEW_STATE_PREFIX: &str = "lucerna:image-preview:";
 
 /// How the dynamic Markdown preview is saved: this prefix followed by the
 /// absolute path of the file it shows.
@@ -146,7 +158,9 @@ impl Tab {
     /// and the dynamic preview (which follows whichever file is active).
     pub fn path(&self) -> Option<&Arc<Path>> {
         match &self.item {
-            TabItem::File(path) | TabItem::MarkdownPreview(path) => Some(path),
+            TabItem::File(path) | TabItem::MarkdownPreview(path) | TabItem::ImagePreview(path) => {
+                Some(path)
+            }
             _ => None,
         }
     }
@@ -166,7 +180,9 @@ impl Tab {
     /// bar names the ref, see [`branch_changes_title`]) or "Get Started".
     pub fn title(&self) -> String {
         match &self.item {
-            TabItem::File(path) | TabItem::MarkdownPreview(path) => file_name(path),
+            TabItem::File(path) | TabItem::MarkdownPreview(path) | TabItem::ImagePreview(path) => {
+                file_name(path)
+            }
             TabItem::MarkdownPreviewDynamic(path) => format!("Preview {}", file_name(path)),
             TabItem::Extensions => EXTENSIONS_TAB_TITLE.to_string(),
             TabItem::Search => SEARCH_TAB_TITLE.to_string(),
@@ -305,8 +321,15 @@ impl EditorGroups {
         let item = match view {
             FileView::Source => TabItem::File(path.clone()),
             FileView::Preview => TabItem::MarkdownPreview(path.clone()),
+            FileView::Image => TabItem::ImagePreview(path.clone()),
         };
-        let shows_file = |t: &Tab| matches!(&t.item, TabItem::File(p) | TabItem::MarkdownPreview(p) if *p == path);
+        let shows_file = |t: &Tab| {
+            matches!(
+                &t.item,
+                TabItem::File(p) | TabItem::MarkdownPreview(p) | TabItem::ImagePreview(p)
+                    if *p == path
+            )
+        };
         let existing = if reuse_any {
             group
                 .active
@@ -574,7 +597,8 @@ impl EditorGroups {
         for tab in self.groups.iter_mut().flat_map(|g| g.tabs.iter_mut()) {
             if let TabItem::File(path)
             | TabItem::MarkdownPreview(path)
-            | TabItem::MarkdownPreviewDynamic(path) = &mut tab.item
+            | TabItem::MarkdownPreviewDynamic(path)
+            | TabItem::ImagePreview(path) = &mut tab.item
                 && let Some(moved) = crate::workspace_state::moved_path(path, from, to)
             {
                 *path = Arc::from(moved);
@@ -1006,6 +1030,8 @@ fn saved_item(path: &Path) -> TabItem {
     } else if let Some((prefix, rest)) = split_preview_state(path) {
         if prefix == MARKDOWN_PREVIEW_STATE_PREFIX {
             TabItem::MarkdownPreview(Arc::from(rest))
+        } else if prefix == IMAGE_PREVIEW_STATE_PREFIX {
+            TabItem::ImagePreview(Arc::from(rest))
         } else {
             TabItem::MarkdownPreviewDynamic(Arc::from(rest))
         }
@@ -1025,6 +1051,7 @@ pub(crate) fn split_preview_state(path: &Path) -> Option<(&'static str, &Path)> 
     [
         MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
         MARKDOWN_PREVIEW_STATE_PREFIX,
+        IMAGE_PREVIEW_STATE_PREFIX,
     ]
     .into_iter()
     .find_map(|prefix| {
@@ -1055,6 +1082,7 @@ fn saved_path(item: &TabItem) -> Option<PathBuf> {
         TabItem::MarkdownPreviewDynamic(path) => {
             Some(prefixed(MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, path))
         }
+        TabItem::ImagePreview(path) => Some(prefixed(IMAGE_PREVIEW_STATE_PREFIX, path)),
         TabItem::LspLog(_)
         | TabItem::References
         | TabItem::LspHealth

@@ -488,6 +488,46 @@ fn rs_unaffected(cx: &mut TestAppContext) {
     assert_eq!(active_item(&wb, cx), TabItem::File(abs(&dirs, "x.rs")));
 }
 
+fn assoc(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+#[test]
+fn editor_for_image_extensions_ignore_case() {
+    let m = assoc(&[]);
+    assert_eq!(
+        editor_for(Path::new("/r/a.PNG"), Path::new("a.PNG"), &m),
+        FileView::Image
+    );
+    assert_eq!(
+        editor_for(Path::new("/r/i.svg"), Path::new("i.svg"), &m),
+        FileView::Image
+    );
+    assert_eq!(
+        editor_for(Path::new("/r/a.rs"), Path::new("a.rs"), &m),
+        FileView::Source
+    );
+}
+
+#[test]
+fn editor_for_image_associations() {
+    let m = assoc(&[
+        ("*.svg", "default"),
+        ("*.dat", "imagePreview.previewEditor"),
+    ]);
+    assert_eq!(
+        editor_for(Path::new("/r/i.svg"), Path::new("i.svg"), &m),
+        FileView::Source
+    );
+    assert_eq!(
+        editor_for(Path::new("/r/x.dat"), Path::new("x.dat"), &m),
+        FileView::Image
+    );
+}
+
 #[test]
 fn editor_for_matches_relative_and_absolute_globs() {
     let map = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
