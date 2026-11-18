@@ -20,6 +20,7 @@ Each release's section below is copied into its GitHub Release page by
   operators `\u \U \l \L`. The Preserve Case toggle (`AB`) keeps each match's casing.
 - Alt+Cmd+C, Alt+Cmd+W, Alt+Cmd+R and Alt+Cmd+P toggle match case, whole word, regex and preserve
   case in the editor's find bar.
+- Replace in Files (⇧⌘H): Replace All across the project, per file and per line, with a preview in the Search tab.
 
 ### Changed
 

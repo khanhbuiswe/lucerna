@@ -190,6 +190,30 @@ fn whole_word() {
 }
 
 #[test]
+fn whole_word_uses_word_separators() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.txt", "foobar\nfoo\nfoo-bar\n");
+    let mut q = query("foo");
+    q.whole_word = true;
+    q.word_separators = "-".into();
+    let f = files(dir.path(), &run(dir.path(), &q));
+    let lines: Vec<u32> = f[0].1.iter().map(|m| m.line_number).collect();
+    assert_eq!(lines, vec![2, 3]);
+    q.word_separators = String::new();
+    let events = run(dir.path(), &q);
+    let lines: Vec<u32> = files(dir.path(), &events)[0]
+        .1
+        .iter()
+        .map(|m| m.line_number)
+        .collect();
+    assert_eq!(lines, vec![2]);
+    assert!(matches!(
+        events.last(),
+        Some(SearchEvent::Done { total: 1, .. })
+    ));
+}
+
+#[test]
 fn include_glob_limits() {
     let dir = TempDir::new().unwrap();
     write(dir.path(), "src/deep/a.rs", "needle\n");
@@ -682,4 +706,14 @@ fn regex_anchors_handle_mixed_endings_and_unsaved_buffers() {
         lines("buf.txt"),
         [(1, "x foo".to_string()), (2, "y foo".into())]
     );
+}
+
+#[test]
+fn non_utf8_file_is_decoded_for_line_text() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "w.txt", b"x\r\ncaf\xe9 foo\r\n");
+    let got = files(dir.path(), &run(dir.path(), &query("foo")));
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].1[0].line_number, 2);
+    assert_eq!(got[0].1[0].line_text, "café foo");
 }

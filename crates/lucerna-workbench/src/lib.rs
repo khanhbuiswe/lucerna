@@ -95,7 +95,9 @@ pub use excerpt_list::model::{
     FileMeta, FileResult as SearchFileResult, LineRef as SearchLineRef, Results as SearchResults,
     Row as SearchRow,
 };
-pub use excerpt_list::{ExcerptList, ExcerptListEvent, TextSource};
+pub use excerpt_list::{
+    ExcerptList, ExcerptListEvent, ListSelection, ReplacePreview, RowActions, TextSource,
+};
 pub use explorer::{
     CHANGE_DECORATION, ClipOp, EditKind, EditState, ExplorerClipboard, ExplorerModel, ExplorerView,
     Row, SelectedKind, Selection,

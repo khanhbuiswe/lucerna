@@ -15,10 +15,9 @@ use gpui::{
 };
 use lucerna_editor::find::{FindQuery, find_all};
 use lucerna_editor::{EditKind, EditPlan, SelectionSet, mk_patch};
-use lucerna_project::build_pattern;
 use lucerna_project::replace::{ReplacePattern, replace_ranges, replacement_at};
 use lucerna_text::{BufferSnapshot, Point};
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 
 use crate::code_view::{CodeView, DEFAULT_WORD_SEPARATORS};
 use crate::layout::color;
@@ -56,22 +55,6 @@ pub fn find_in_snapshot(
             word_separators: DEFAULT_WORD_SEPARATORS,
         },
     )
-}
-
-/// The regex for a project search query: the source from
-/// [`build_pattern`], case folding unless `case_sensitive`, and `^`/`$`
-/// at line ends.
-pub(crate) fn build_regex(
-    pattern: &str,
-    is_regex: bool,
-    case_sensitive: bool,
-    whole_word: bool,
-) -> Result<Regex, String> {
-    RegexBuilder::new(&build_pattern(pattern, is_regex, whole_word))
-        .case_insensitive(!case_sensitive)
-        .multi_line(true)
-        .build()
-        .map_err(|err| err.to_string())
 }
 
 /// Which match becomes active after a search.
@@ -828,10 +811,15 @@ impl Render for FindWidget {
 }
 
 /// Applies `edits` (sorted, in `view`'s current offsets) as one undo step;
-/// the selections move through them.
-fn apply_replacements(view: &Entity<CodeView>, edits: Vec<(Range<usize>, String)>, cx: &mut App) {
+/// the selections move through them. Returns whether they were applied
+/// (not in a read-only view).
+pub(crate) fn apply_replacements(
+    view: &Entity<CodeView>,
+    edits: Vec<(Range<usize>, String)>,
+    cx: &mut App,
+) -> bool {
     if edits.is_empty() {
-        return;
+        return false;
     }
     let edits: Vec<(Range<usize>, Arc<str>)> = edits
         .into_iter()
@@ -843,8 +831,8 @@ fn apply_replacements(view: &Entity<CodeView>, edits: Vec<(Range<usize>, String)
         let mut plan = EditPlan::new(edits, selections, EditKind::Other);
         plan.stop_before = true;
         plan.stop_after = true;
-        v.transact(plan, cx);
-    });
+        v.transact(plan, cx)
+    })
 }
 
 /// The selected text when the selection is on one line and not empty.
