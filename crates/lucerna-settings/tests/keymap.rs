@@ -290,6 +290,18 @@ fn svg_toggle_bindings_parse() {
         )),
         "imagePreview.reopenAsText"
     );
+    // Upper case, as in screenshots from Windows.
+    assert_eq!(
+        command(km.resolve(&keys("cmd+shift+v"), &ctx(".SVG", "", "xml"))),
+        "imagePreview.reopenAsPreview"
+    );
+    assert_eq!(
+        command(km.resolve(
+            &keys("cmd+shift+v"),
+            &ctx(".SVG", "imagePreview.previewEditor", "")
+        )),
+        "imagePreview.reopenAsText"
+    );
     // A raster image tab: no binding.
     assert_eq!(
         km.resolve(

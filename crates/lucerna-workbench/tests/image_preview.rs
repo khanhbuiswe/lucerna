@@ -555,6 +555,22 @@ fn cmd_shift_v_toggles_svg(cx: &mut TestAppContext) {
     assert_eq!(active, Some(1));
 }
 
+/// `.SVG` in upper case, as in screenshots from Windows.
+#[gpui::test]
+fn cmd_shift_v_toggles_upper_case_svg(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(dir.path().join("I.SVG"), SVG).unwrap();
+    let svg: Arc<Path> = Arc::from(dir.path().join("I.SVG"));
+    let _preview = open(&wb, "I.SVG", cx);
+    assert_eq!(tabs(&wb, cx).0, vec![TabItem::ImagePreview(svg.clone())]);
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    assert_eq!(tabs(&wb, cx).0, vec![TabItem::File(svg.clone())]);
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    assert_eq!(tabs(&wb, cx).0, vec![TabItem::ImagePreview(svg)]);
+}
+
 #[gpui::test]
 fn cmd_shift_v_noop_on_png(cx: &mut TestAppContext) {
     let (dir, wb, cx) = workbench(cx);
