@@ -46,6 +46,10 @@ Tính năng coi là thành công khi:
 **Phản mục tiêu** (chạy được nhưng vẫn coi là thất bại):
 - Luồng UI bị đứng khi đọc hoặc giải mã ảnh lớn.
 - Đóng tab mà RAM không giảm, hoặc tải lại liên tục làm RAM tăng dần.
+  Đo thực tế (2026-11-18): đóng tab giải phóng texture GPU và dữ liệu ảnh;
+  phần footprint còn lại là large cache của libmalloc trên macOS, không tăng
+  qua các lần mở lại, và ít hơn Zed lẫn VS Code. Chi tiết và quyết định chấp
+  nhận ở `docs/research/2026-11-18-image-preview.md` §6.
 - Ảnh cũ vẫn hiện sau khi file trên đĩa đã đổi.
 - Ảnh nháy trắng mỗi lần agent ghi lại file.
 - Thêm một crate mới vào `Cargo.lock`, hoặc binary tăng quá 200 KB.

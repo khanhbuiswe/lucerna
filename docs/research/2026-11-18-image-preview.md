@@ -64,3 +64,40 @@ Helix không xem được ảnh. Picker hiện `<Binary file>`. Mở URL `file:`
 | Nền ô cờ | Có, 16px cố định | Có, 32px theo zoom | không |
 | Tải lại | Watcher, 100 ms, giữ zoom | Đổi trên đĩa thì đọc lại, giải mã xong mới thay | không |
 | Setting | Không | `image_viewer.unit` | không |
+
+## 6. RAM sau khi đóng ảnh lớn (đo 2026-11-18)
+
+Máy: macOS 26.7.1. Mỗi app mở cùng một PNG 5000×5000 (khoảng 100 MB khi giải
+mã ra RGBA), rồi đóng tab. Số đo là physical footprint (`footprint`, `vmmap`).
+VS Code là tổng mọi tiến trình.
+
+| | Ban đầu | Đang mở | Sau khi đóng tab | Còn giữ lại |
+|---|---|---|---|---|
+| Lucerna (bản debug, `dc0f728`) | 85 MB | 411 MB | 317 MB | khoảng 230 MB |
+| Zed 1.28.1 | 158 MB | 443 MB | 442 MB | khoảng 284 MB |
+| VS Code 1.146 | 733 MB | 1162 MB | 1033 MB (sau 40 s) | khoảng 300 MB |
+
+**Mỗi app giữ lại phần nào:**
+- **Lucerna:**
+  - Texture GPU (IOAccelerator) về lại 4 MB.
+  - Dữ liệu ảnh còn sống trên CPU (`MALLOC_LARGE`) về 0.
+  - Phần còn lại là khoảng 190 MB `MALLOC_LARGE (empty)`: hai bộ đệm khoảng 95 MB sinh ra lúc giải mã. App đã `free` chúng, nhưng libmalloc vẫn giữ trong large cache.
+  - Mở rồi đóng lại lần nữa thì không tăng thêm, vì cache được dùng lại.
+- **Zed:** giữ cả texture GPU (103 MB) lẫn đúng 190 MB large cache như Lucerna. Zed có `mimalloc` làm `#[global_allocator]`, nhưng chỉ là feature tuỳ chọn và mặc định tắt (`crates/zed/src/main.rs`).
+- **VS Code:** tiến trình Renderer trả lại RAM sau GC. Tiến trình GPU của Chromium vẫn giữ khoảng 316 MB.
+
+**Nguyên nhân phía Lucerna** (kiểm chứng bằng một chương trình C nhỏ):
+- `malloc` rồi `free` 100 MB: footprint vẫn giữ 100 MB, kể cả sau 20 s.
+- Free 300 MB: footprint vẫn giữ nguyên.
+- `malloc_zone_pressure_relief` không trả lại được gì.
+- Chạy với `MallocLargeCache=0` thì footprint về 0 ngay sau khi free.
+
+Đây là chính sách large cache của libmalloc trên macOS, không phải rò rỉ trong
+image preview.
+
+**Quyết định:** chấp nhận.
+- Lucerna đã giải phóng mọi thứ nó sở hữu, và còn giữ ít hơn cả Zed lẫn VS Code.
+- Các cách đã cân nhắc và để lại:
+  - Một `#[global_allocator]` đưa các khối từ khoảng 16 MiB sang `mmap`/`munmap`. Cách này đụng allocator của cả chương trình, nên nếu làm thì cần spec riêng.
+  - Đặt `MallocLargeCache=0` qua `LSEnvironment`. Cách này chỉ có tác dụng khi app mở qua LaunchServices, và tắt cache cho mọi khối lớn.
+- Markdown preview có ảnh lớn cũng đi qua cùng đường giải mã, nên chịu cùng mức giữ lại này.

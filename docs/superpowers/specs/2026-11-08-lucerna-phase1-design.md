@@ -37,7 +37,7 @@ Spec này **chỉ** mô tả giai đoạn 1. Mỗi giai đoạn sau có spec ri�
 | V2 | Vim sửa (làm ngay sau bước 4.2 và 4.4, trước 4.3, 4.5, 4.6). **V2a và V2b đã xong** | Insert mode, các toán tử `d`/`c`/`y`, text object, `.`, macro, register, một phần lệnh `:` |
 | P3 | Sửa các lỗi còn mở sau release 0.1.0 ([spec](2026-11-17-p3-fixes-design.md)), đã xong | T1-1 (byte sai encoding) và mọi lỗi P3 trong review trước release |
 | MD | Markdown preview (đã làm xong, còn chờ hai bước kiểm tra: so giao diện với Zed, đo RAM sau khi đóng tab có ảnh) ([spec](2026-11-13-markdown-preview-design.md)) | Xem `.md` đã render ở tab riêng, cuộn đồng bộ với tab mã nguồn, ảnh và link cục bộ, mở file HTML bằng trình duyệt |
-| IMG | Image preview (đã làm xong, còn chờ kiểm tra thủ công trong app) ([spec](2026-11-18-image-preview-design.md)) | Mở ảnh png, jpg, gif, webp, bmp, ico, tiff và svg ở tab riêng, tự tải lại khi file đổi, SVG mở dạng ảnh theo mặc định |
+| IMG | Image preview (đã làm xong và đã kiểm tra trong app; RAM sau khi đóng ảnh lớn xem [research §6](../../research/2026-11-18-image-preview.md)) ([spec](2026-11-18-image-preview-design.md)) | Mở ảnh png, jpg, gif, webp, bmp, ico, tiff và svg ở tab riêng, tự tải lại khi file đổi, SVG mở dạng ảnh theo mặc định |
 
 Vim mode là tính năng có sẵn trong lõi editor, không phải extension, giống cách Zed làm. Xem phần nghiên cứu ở `docs/research/2026-11-09-vim-mode.md`.
 
