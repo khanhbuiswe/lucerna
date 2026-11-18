@@ -1948,3 +1948,66 @@ fn rename_keeps_preview_position(cx: &mut TestAppContext) {
     assert!(preview.read_with(cx, |p, _| p.blocks().is_some()));
     assert_eq!(preview_path(&other, cx), root.join("other.md"));
 }
+
+/// An image tab follows its file's rename: the tab item and the view's
+/// path move, and the watcher's later report does not mark it deleted.
+#[gpui::test]
+fn rename_follows_image_preview(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = project();
+    image::RgbaImage::from_pixel(3, 2, image::Rgba([200, 30, 30, 255]))
+        .save_with_format(dir.path().join("a.png"), image::ImageFormat::Png)
+        .unwrap();
+    let (wb, cx) = open(dir.path(), cx);
+    let root = root_of(&wb, cx);
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("a.png")), OpenMode::Pinned, cx)
+    });
+    draw(cx);
+    let preview = cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .expect("drawn")
+            .downcast::<lucerna_workbench::ImagePreview>()
+            .expect("an image preview")
+    });
+
+    rename_row("explorer-row-a.png", "b", cx);
+    wait_until(cx, |_| root.join("b.png").is_file());
+    wait_until(cx, |cx| !editing(&wb, cx));
+    draw(cx);
+    let item = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        groups.model().active_tab().expect("a tab").item.clone()
+    });
+    assert_eq!(
+        item,
+        lucerna_workbench::TabItem::ImagePreview(Arc::from(root.join("b.png")))
+    );
+    assert_eq!(
+        preview.read_with(cx, |p, _| p.path().to_path_buf()),
+        root.join("b.png")
+    );
+
+    // The watcher's report of the rename, as the app gets it.
+    let changes = vec![
+        Change {
+            path: Arc::from(Path::new("a.png")),
+            kind: ChangeKind::Removed,
+        },
+        Change {
+            path: Arc::from(Path::new("b.png")),
+            kind: ChangeKind::Added,
+        },
+    ];
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(changes), cx)
+    });
+    draw(cx);
+    preview.read_with(cx, |p, _| {
+        assert!(!p.is_deleted());
+        assert_eq!(p.dims(), Some((3, 2)));
+    });
+}

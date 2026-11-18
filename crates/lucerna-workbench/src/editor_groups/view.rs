@@ -20,6 +20,7 @@ use crate::code_view::CodeView;
 use crate::conflict_bar::{self, BarActions};
 use crate::documents::{DiskNotice, DocState, Documents};
 use crate::icons;
+use crate::image_preview::ImagePreview;
 use crate::layout::color;
 use crate::markdown_preview::{self, SHOW_PREVIEW_TO_SIDE, TOGGLE_PREVIEW};
 use crate::save::{self, SaveChoice};
@@ -933,6 +934,15 @@ impl Render for EditorGroupsView {
                 g.tabs
                     .iter()
                     .map(|t| {
+                        // An image is read by its view, not by `Documents`.
+                        if let TabItem::ImagePreview(_) = t.item {
+                            let deleted = self
+                                .bodies
+                                .get(&t.id)
+                                .and_then(|body| body.clone().downcast::<ImagePreview>().ok())
+                                .is_some_and(|preview| preview.read(cx).is_deleted());
+                            return (deleted, None);
+                        }
                         let Some((path, docs)) = t.path().zip(self.documents.as_ref()) else {
                             return (false, None);
                         };

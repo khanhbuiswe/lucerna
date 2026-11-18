@@ -6,12 +6,14 @@ use std::cell::Cell;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     App, Context, FocusHandle, Focusable, ImageSource, IntoElement, MouseButton, ParentElement,
     Pixels, Render, RenderImage, SharedString, Size, Styled, Task, WeakEntity, Window, canvas,
     checkerboard, div, img, prelude::*, px,
 };
+use lucerna_project::ChangeKind;
 
 use super::info::format_size;
 use super::load::{LoadOutcome, load_image};
@@ -53,6 +55,12 @@ pub struct ImagePreview {
     workbench: WeakEntity<Workbench>,
     /// The running load; dropped with the view, which cancels it.
     _load: Option<Task<()>>,
+    /// The wait before a reload; a newer change replaces it.
+    _reload: Option<Task<()>>,
+    /// Loads started so far, for tests.
+    loads_started: u64,
+    /// The file is gone from disk; the last image stays shown.
+    deleted: bool,
     /// The window's scale factor the load rasterises an SVG at.
     scale_factor: f32,
     /// The space the image may take, measured at the last paint.
@@ -60,6 +68,10 @@ pub struct ImagePreview {
 }
 
 impl ImagePreview {
+    /// How long a change on disk waits for the next before the file is
+    /// read again, so a burst of writes reloads once.
+    pub const RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
+
     /// A view of `path` (absolute), loading it at once.
     pub fn new(
         path: Arc<Path>,
@@ -75,6 +87,9 @@ impl ImagePreview {
             focus_handle: cx.focus_handle(),
             workbench,
             _load: None,
+            _reload: None,
+            loads_started: 0,
+            deleted: false,
             scale_factor: window.scale_factor(),
             available: Rc::default(),
         };
@@ -82,24 +97,73 @@ impl ImagePreview {
         view
     }
 
-    /// Starts reading the file; the result replaces the state, unless the
-    /// view is gone by then.
+    /// Starts reading the file, cancelling a load still running. A new
+    /// image replaces the shown one, which is freed only then. While an
+    /// image is shown, a failure (a file still being written) is ignored:
+    /// the image stays and the next change tries again. Only the first
+    /// load can show a notice instead of an image.
     fn load(&mut self, cx: &mut Context<Self>) {
+        self.loads_started += 1;
         let (path, scale_factor, svg) = (self.path.clone(), self.scale_factor, cx.svg_renderer());
         let outcome = cx.background_spawn(async move { load_image(&path, scale_factor, svg) });
         self._load = Some(cx.spawn(async move |this, cx| {
             let outcome = outcome.await;
             this.update(cx, |this, cx| {
-                this.release(None, cx);
-                this.state = state_for(outcome);
+                let loaded = matches!(outcome, LoadOutcome::Loaded { .. });
+                if !loaded && this.is_loaded() {
+                    return;
+                }
+                let old = std::mem::replace(&mut this.state, state_for(outcome));
+                if let State::Loaded { image, .. } = old {
+                    cx.drop_image(image, None);
+                }
                 cx.notify();
             })
             .ok();
         }));
     }
 
+    /// The file changed on disk. A write or a new file reloads it once
+    /// [`Self::RELOAD_DEBOUNCE`] passes with no other change; a removal
+    /// keeps the last image and marks the view deleted.
+    pub fn file_changed(&mut self, kind: ChangeKind, cx: &mut Context<Self>) {
+        match kind {
+            ChangeKind::Removed => {
+                self.deleted = true;
+                // Reading the gone file would only fail.
+                self._reload = None;
+            }
+            ChangeKind::Modified | ChangeKind::Added => {
+                self.deleted = false;
+                self._reload = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(Self::RELOAD_DEBOUNCE).await;
+                    this.update(cx, |this, cx| this.load(cx)).ok();
+                }));
+            }
+        }
+        cx.notify();
+    }
+
+    /// The file is gone from disk; its tab title is struck through.
+    pub fn is_deleted(&self) -> bool {
+        self.deleted
+    }
+
+    /// The file was renamed to `path` (absolute): the shown image stays.
+    pub fn follow_rename(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        if path != self.path {
+            self.path = path;
+            cx.notify();
+        }
+    }
+
+    /// Loads started so far, the first one included.
+    pub fn loads_started(&self) -> u64 {
+        self.loads_started
+    }
+
     /// Drops the decoded image, if any, from every window's atlas; the view
-    /// is left empty. Call it before the image is replaced.
+    /// is left empty. Called when the view goes.
     pub fn release(&mut self, window: Option<&mut Window>, cx: &mut App) {
         if let State::Loaded { image, .. } = std::mem::replace(&mut self.state, State::Loading) {
             cx.drop_image(image, window);

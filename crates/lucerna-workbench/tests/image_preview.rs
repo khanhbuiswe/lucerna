@@ -5,8 +5,10 @@
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{Entity, TestAppContext, VisualTestContext};
+use lucerna_project::{Change, ChangeKind, WorktreeEvent};
 use lucerna_settings::{Keymap, SettingsStore};
 use lucerna_syntax::LanguageRegistry;
 use lucerna_text::Point;
@@ -364,4 +366,121 @@ fn svg_raster_side_is_capped(cx: &mut TestAppContext) {
         assert!(i32::from(size.width) <= 8192, "{size:?}");
         assert_eq!(p.dims(), Some((20000, 10)));
     });
+}
+
+/// The watcher reports a `kind` change of the root-relative `name`; the
+/// clock does not move.
+fn report(wb: &Entity<Workbench>, name: &str, kind: ChangeKind, cx: &mut VisualTestContext) {
+    let change = Change {
+        path: Arc::from(Path::new(name)),
+        kind,
+    };
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::Changed(vec![change]), cx)
+    });
+    draw(cx);
+}
+
+/// Lets the reload debounce pass and the reload finish.
+fn settle(cx: &mut VisualTestContext) {
+    cx.executor().advance_clock(ImagePreview::RELOAD_DEBOUNCE);
+    draw(cx);
+}
+
+fn loads(preview: &Entity<ImagePreview>, cx: &mut VisualTestContext) -> u64 {
+    preview.read_with(cx, |p, _| p.loads_started())
+}
+
+#[gpui::test]
+fn rewrite_reloads_new_dims(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let preview = open(&wb, "a.png", cx);
+    let old = preview.read_with(cx, |p, _| p.render_image().expect("decoded"));
+    write_png(&dir.path().join("a.png"), 5, 4);
+    report(&wb, "a.png", ChangeKind::Modified, cx);
+    // Within the debounce: the old image stays.
+    assert_eq!(preview.read_with(cx, |p, _| p.dims()), Some((3, 2)));
+    settle(cx);
+    preview.read_with(cx, |p, _| {
+        assert_eq!(p.dims(), Some((5, 4)));
+        assert_eq!(p.error_message(), None);
+    });
+    assert!(
+        !cx.update(|window, _| window.has_image_atlas_entry(&old)),
+        "the old image's atlas entry is freed"
+    );
+}
+
+#[gpui::test]
+fn rewrites_in_a_burst_reload_once(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let preview = open(&wb, "a.png", cx);
+    let before = loads(&preview, cx);
+    for side in 4..9 {
+        write_png(&dir.path().join("a.png"), side, side);
+        report(&wb, "a.png", ChangeKind::Modified, cx);
+        cx.executor().advance_clock(Duration::from_millis(20));
+        draw(cx);
+        // No flash to an empty page while the burst lasts.
+        assert!(preview.read_with(cx, |p, _| p.is_loaded()));
+    }
+    settle(cx);
+    assert_eq!(loads(&preview, cx), before + 1);
+    assert_eq!(preview.read_with(cx, |p, _| p.dims()), Some((8, 8)));
+}
+
+#[gpui::test]
+fn failed_reload_keeps_old_image(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let preview = open(&wb, "a.png", cx);
+    let before = loads(&preview, cx);
+    // Half-written: the PNG signature and nothing more.
+    fs::write(dir.path().join("a.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    report(&wb, "a.png", ChangeKind::Modified, cx);
+    settle(cx);
+    assert_eq!(loads(&preview, cx), before + 1, "the reload ran");
+    preview.read_with(cx, |p, _| {
+        assert_eq!(p.dims(), Some((3, 2)));
+        assert!(p.is_loaded());
+        assert_eq!(p.error_message(), None);
+    });
+}
+
+#[gpui::test]
+fn removed_marks_deleted_and_back_reloads(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let preview = open(&wb, "a.png", cx);
+    assert!(cx.debug_bounds("tab-deleted-0-0").is_none());
+    fs::remove_file(dir.path().join("a.png")).unwrap();
+    report(&wb, "a.png", ChangeKind::Removed, cx);
+    settle(cx);
+    preview.read_with(cx, |p, _| {
+        assert!(p.is_deleted());
+        assert_eq!(p.dims(), Some((3, 2)), "the last image stays");
+    });
+    assert!(cx.debug_bounds("tab-deleted-0-0").is_some(), "title struck");
+
+    let before = loads(&preview, cx);
+    write_png(&dir.path().join("a.png"), 5, 4);
+    report(&wb, "a.png", ChangeKind::Added, cx);
+    settle(cx);
+    assert_eq!(loads(&preview, cx), before + 1);
+    preview.read_with(cx, |p, _| {
+        assert!(!p.is_deleted());
+        assert_eq!(p.dims(), Some((5, 4)));
+    });
+    assert!(cx.debug_bounds("tab-deleted-0-0").is_none());
+}
+
+#[gpui::test]
+fn reload_keeps_preview_tab_unpinned(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let preview = open(&wb, "a.png", cx);
+    let (item, pinned) = active_item(&wb, cx);
+    assert!(!pinned);
+    write_png(&dir.path().join("a.png"), 5, 4);
+    report(&wb, "a.png", ChangeKind::Modified, cx);
+    settle(cx);
+    assert_eq!(preview.read_with(cx, |p, _| p.dims()), Some((5, 4)));
+    assert_eq!(active_item(&wb, cx), (item, false));
 }

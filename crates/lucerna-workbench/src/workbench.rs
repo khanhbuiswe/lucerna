@@ -1289,6 +1289,7 @@ impl Workbench {
             .update(cx, |documents, cx| documents.rename(&from, &to, cx));
         self.update_editor_groups(cx, |m| m.retarget(&from, &to));
         crate::markdown_preview::retarget_previews(self, &from, &to, cx);
+        crate::image_preview::retarget_previews(self, &from, &to, cx);
         self.recent_files.retarget(&from, &to);
         for history in self.nav_history.values_mut() {
             history.retarget(&from, &to);
@@ -1566,6 +1567,7 @@ impl Workbench {
         });
         self.documents
             .update(cx, |documents, cx| documents.on_worktree_event(ev, cx));
+        crate::image_preview::on_worktree_event(self, ev, cx);
         // After the documents: removed files are closed in their servers.
         self.language_servers
             .update(cx, |servers, cx| servers.on_worktree_event(ev, cx));
