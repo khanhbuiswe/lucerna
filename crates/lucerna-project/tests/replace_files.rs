@@ -288,3 +288,32 @@ fn search_output_feeds_the_job_for_windows_1252() {
     assert_eq!(run(&path, &lines, &s), FileOutcome::Replaced(1));
     assert_eq!(fs::read(&path).unwrap(), b"caf\xe9 bar\r\n");
 }
+
+#[test]
+fn replace_files_2000_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let content: String = (0..10).map(|_| "foo\n").collect();
+    let files: Vec<_> = (0..2000)
+        .map(|i| {
+            let lines = (1..=10).map(|n| shown(n, "foo")).collect();
+            (file(&dir, &format!("{i}.txt"), content.as_bytes()), lines)
+        })
+        .collect();
+    let paths: Vec<_> = files.iter().map(|(p, _)| p.clone()).collect();
+    let cancel = AtomicBool::new(false);
+    let start = std::time::Instant::now();
+    let out = replace_files(
+        files,
+        &plain("foo", "bar"),
+        &TempFiles::default(),
+        &cancel,
+        &|_| {},
+    );
+    eprintln!("replace_files_2000_files: {:?}", start.elapsed());
+    assert_eq!(out.len(), 2000);
+    assert!(out.iter().all(|(_, o)| *o == FileOutcome::Replaced(10)));
+    let expected: String = (0..10).map(|_| "bar\n").collect();
+    for p in paths {
+        assert_eq!(fs::read_to_string(p).unwrap(), expected);
+    }
+}
