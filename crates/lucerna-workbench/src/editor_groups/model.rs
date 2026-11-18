@@ -711,6 +711,44 @@ impl EditorGroups {
         }
     }
 
+    /// The ids of the tabs of `target`'s group that `keep` accepts, given
+    /// each tab's index and `target`'s; empty when `target` is not open.
+    fn tabs_around(&self, target: TabId, keep: impl Fn(usize, usize) -> bool) -> Vec<TabId> {
+        let Some(group) = self.group_of(target).map(|g| &self.groups[g]) else {
+            return Vec::new();
+        };
+        let Some(at) = group.position(target) else {
+            return Vec::new();
+        };
+        group
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| keep(*i, at))
+            .map(|(_, t)| t.id)
+            .collect()
+    }
+
+    /// The other tabs of `target`'s group (Close Others), in tab order.
+    pub fn others(&self, target: TabId) -> Vec<TabId> {
+        self.tabs_around(target, |i, at| i != at)
+    }
+
+    /// The tabs after `target` in its group (Close to the Right).
+    pub fn to_the_right(&self, target: TabId) -> Vec<TabId> {
+        self.tabs_around(target, |i, at| i > at)
+    }
+
+    /// The tabs before `target` in its group (Close to the Left).
+    pub fn to_the_left(&self, target: TabId) -> Vec<TabId> {
+        self.tabs_around(target, |i, at| i < at)
+    }
+
+    /// Every tab of `target`'s group, `target` included.
+    pub fn group_tabs(&self, target: TabId) -> Vec<TabId> {
+        self.tabs_around(target, |_, _| true)
+    }
+
     /// Closes tab `id` without remembering it: for tabs code closes (a
     /// deleted file, a file Save As wrote over, Get Started when it is
     /// done). Its group then shows its most recently used remaining tab;

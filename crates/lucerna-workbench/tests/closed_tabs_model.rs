@@ -307,3 +307,27 @@ fn set_closed_view_attaches_state() {
     assert_eq!(reopened.len(), 1);
     assert_eq!(reopened[0].1, Some(state));
 }
+
+#[test]
+fn tab_sets() {
+    let mut g = EditorGroups::default();
+    let a = pinned(&mut g, "a");
+    let b = pinned(&mut g, "b");
+    let c = pinned(&mut g, "c");
+    let d = pinned(&mut g, "d");
+    g.activate(d);
+    g.split_active(); // group 1: [d copy]
+    let e = g.active_tab().unwrap().id;
+    assert_eq!(g.others(c), [a, b, d]);
+    assert_eq!(g.to_the_right(c), [d]);
+    assert_eq!(g.to_the_left(c), [a, b]);
+    assert_eq!(g.group_tabs(c), [a, b, c, d]);
+    assert!(g.to_the_right(d).is_empty());
+    assert!(g.others(e).is_empty());
+    assert_eq!(g.group_tabs(e), [e]);
+    g.close(c);
+    assert!(g.others(c).is_empty());
+    assert!(g.to_the_right(c).is_empty());
+    assert!(g.to_the_left(c).is_empty());
+    assert!(g.group_tabs(c).is_empty());
+}
