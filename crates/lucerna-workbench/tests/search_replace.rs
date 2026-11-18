@@ -25,6 +25,10 @@ use tempfile::TempDir;
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
 fn init(cx: &mut TestAppContext) {
+    init_with(cx, r#"{ "lucerna.lsp.enabled": false }"#);
+}
+
+fn init_with(cx: &mut TestAppContext, user_settings: &str) {
     let (keymap, error) = Keymap::load(Keymap::default_bindings(), None);
     assert!(error.is_none(), "keymap error: {error:?}");
     let themes = ThemeRegistry::builtin();
@@ -33,7 +37,7 @@ fn init(cx: &mut TestAppContext) {
     // file) would take the focus these tests follow.
     let mut settings = SettingsStore::with_defaults();
     settings
-        .set_layer(Layer::User, r#"{ "lucerna.lsp.enabled": false }"#)
+        .set_layer(Layer::User, user_settings)
         .expect("valid user settings");
     cx.set_global(AppState {
         settings,
@@ -782,4 +786,37 @@ fn find_bar_alt_cmd_enter_still_works_in_editor(cx: &mut TestAppContext) {
     cx.simulate_prompt_answer("Cancel");
     draw(cx);
     assert_eq!(doc_text(&wb, "a.txt", cx), "X X\n");
+}
+
+#[gpui::test]
+fn replace_all_in_vim_insert_session_is_its_own_undo_step(cx: &mut TestAppContext) {
+    init_with(
+        cx,
+        r#"{ "lucerna.lsp.enabled": false, "vim.enabled": true }"#,
+    );
+    let dir = project(&[("a.txt", "foo foo\n")]);
+    let (wb, cx) = workbench(dir.path(), cx);
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    // Insert mode: the vim session holds undo stops back.
+    keys("i", cx);
+    type_text("foo ", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "foo foo foo\n");
+
+    let _view = replace_ready(&wb, "foo", "bar", cx);
+    replace_all("Replace", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "bar bar bar\n");
+    assert_eq!(disk(&dir, "a.txt"), "foo foo\n", "dirty: not saved");
+
+    let code = open(&wb, "a.txt", cx);
+    focus_view(&code, cx);
+    keys("escape", cx);
+    keys("u", cx);
+    assert_eq!(
+        doc_text(&wb, "a.txt", cx),
+        "foo foo foo\n",
+        "one undo takes back the replace only"
+    );
+    keys("u", cx);
+    assert_eq!(doc_text(&wb, "a.txt", cx), "foo foo\n", "then the typing");
 }

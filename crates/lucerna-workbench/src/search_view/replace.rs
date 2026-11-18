@@ -348,26 +348,27 @@ fn apply(
     edits: Vec<(std::ops::Range<usize>, String)>,
     cx: &mut App,
 ) {
+    // Stops on the document itself, around the step: a view in vim's
+    // Insert session pushes none (`suppress_stops`), and the replace must
+    // never merge with the user's typing on either side.
+    documents.update(cx, |docs, _| docs.push_stop(path));
     let view = documents
         .read(cx)
         .views_of(path)
         .into_iter()
         .find(|view| !view.read(cx).is_readonly());
-    if let Some(view) = view
-        && apply_replacements(&view, edits.clone(), cx)
-    {
-        return;
+    let applied = view.is_some_and(|view| apply_replacements(&view, edits.clone(), cx));
+    if !applied {
+        let edits: Edits = edits
+            .into_iter()
+            .map(|(range, text)| (range, Arc::from(text)))
+            .collect();
+        documents.update(cx, |docs, cx| {
+            let origin = cx.entity_id();
+            docs.apply_edits(path, edits, None, None, origin, cx);
+        });
     }
-    let edits: Edits = edits
-        .into_iter()
-        .map(|(range, text)| (range, Arc::from(text)))
-        .collect();
-    documents.update(cx, |docs, cx| {
-        docs.push_stop(path);
-        let origin = cx.entity_id();
-        docs.apply_edits(path, edits, None, None, origin, cx);
-        docs.push_stop(path);
-    });
+    documents.update(cx, |docs, _| docs.push_stop(path));
 }
 
 fn display(path: &Path) -> String {
