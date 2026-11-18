@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use lucerna_project::replace::ReplacePattern;
 use lucerna_project::{
-    FileOutcome, ReplaceProgress, ReplaceSpec, SearchQuery, ShownLine, SkipReason, replace_file,
-    replace_file_with_hook, replace_files,
+    FileOutcome, ReplaceProgress, ReplaceSpec, SearchQuery, ShownLine, SkipReason,
+    WHOLE_READ_BYTES, replace_file, replace_file_with_hook, replace_file_with_limit, replace_files,
 };
 use lucerna_text::TempFiles;
 
@@ -316,4 +316,56 @@ fn replace_files_2000_files() {
     for p in paths {
         assert_eq!(fs::read_to_string(p).unwrap(), expected);
     }
+}
+
+#[test]
+fn skips_file_over_the_size_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = file(&dir, "a.txt", b"foo foo\n");
+    let lines = [shown(1, "foo foo")];
+    let temps = TempFiles::default();
+    let s = plain("foo", "bar");
+    // 8 bytes: one byte over a limit of 7.
+    let out = replace_file_with_limit(&path, &lines, &s, &temps, 7);
+    assert_eq!(out, FileOutcome::Skipped(SkipReason::TooLarge));
+    assert_eq!(SkipReason::TooLarge.message(), "too large to replace");
+    assert_eq!(fs::read(&path).unwrap(), b"foo foo\n", "untouched");
+    // At the limit, it is replaced.
+    let out = replace_file_with_limit(&path, &lines, &s, &temps, 8);
+    assert_eq!(out, FileOutcome::Replaced(2));
+}
+
+#[test]
+fn replace_files_skips_files_over_the_whole_read_limit() {
+    assert_eq!(WHOLE_READ_BYTES, 16 * 1024 * 1024);
+    let dir = tempfile::tempdir().unwrap();
+    let big = file(&dir, "big.txt", b"foo\n");
+    // Sparse: the size is checked from metadata, nothing is read.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&big)
+        .unwrap()
+        .set_len(WHOLE_READ_BYTES + 1)
+        .unwrap();
+    let small = file(&dir, "small.txt", b"foo\n");
+    let files = vec![
+        (big.clone(), vec![shown(1, "foo")]),
+        (small.clone(), vec![shown(1, "foo")]),
+    ];
+    let out = replace_files(
+        files,
+        &plain("foo", "bar"),
+        &TempFiles::default(),
+        &AtomicBool::new(false),
+        &|_| {},
+    );
+    assert_eq!(
+        out,
+        vec![
+            (big.clone(), FileOutcome::Skipped(SkipReason::TooLarge)),
+            (small.clone(), FileOutcome::Replaced(1)),
+        ]
+    );
+    assert_eq!(fs::metadata(&big).unwrap().len(), WHOLE_READ_BYTES + 1);
+    assert_eq!(fs::read(&small).unwrap(), b"bar\n");
 }

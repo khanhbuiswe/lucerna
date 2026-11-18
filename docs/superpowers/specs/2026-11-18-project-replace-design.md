@@ -351,7 +351,10 @@ trong kết quả"):
 
 1. Đọc byte, `check_regular` và `check_size`, `decode_file(bytes, false)`. Giữ lại hash và stamp
    của lúc đọc.
-2. Bỏ qua và báo lý do nếu: binary, quá lớn, lossy, hoặc không đọc được.
+2. Bỏ qua và báo lý do nếu: binary, lossy, hoặc không đọc được. File lớn hơn 16 MiB (mốc đọc
+   nguyên file của search, `WHOLE_READ_BYTES`) bị bỏ qua với lý do `too large to replace`; cỡ file
+   được xem từ metadata trước khi đọc, vì job chạy nhiều file cùng lúc và mỗi file chiếm bộ nhớ gấp
+   vài lần cỡ của nó. File đang mở không bị giới hạn này (text đã nằm trong bộ nhớ).
 3. Kiểm tra dòng theo "Chỉ thay những gì đang hiện", tìm match trên các dòng đó, rồi tính edit
    bằng `replace_ranges`. Không có edit thì không ghi.
 4. Áp dụng edit vào text, rồi `Buffer::encode` với encoding, BOM và line ending của file. Ký tự mới
@@ -400,7 +403,8 @@ lý.
 | Đổi trên đĩa giữa lúc đọc và lúc ghi | `changed on disk` |
 | Document đang conflict với đĩa | `has a conflict with the file on disk` |
 | Decode lossy | `was not decoded cleanly` |
-| Binary, quá lớn, hết quyền, lỗi I/O | `could not be read` hoặc `could not be written: {error}` |
+| Binary, hết quyền, lỗi I/O | `could not be read` hoặc `could not be written: {error}` |
+| File đang đóng lớn hơn 16 MiB | `too large to replace` |
 | Ký tự không encode được | `cannot encode the replacement in {encoding}` |
 | Document đổi hai lần trong lúc thay | `changed while replacing` |
 | Dòng được giao không còn khớp với file | `changed since the search` |
@@ -475,3 +479,10 @@ file đó (nếu vừa được mở trong lúc thay) sẽ reload như bình th�
 - Match nằm vắt qua mốc 1.000 ký tự đầu của dòng (bắt đầu trong phần hiện, kết thúc sau đó): phần
   xem trước không hiện chữ mới cho match đó, nhưng job vẫn thay nó. Vì vậy số trong hộp hỏi có thể
   khác số đã thay trong thông báo kết quả.
+- Phép kiểm "dòng còn khớp với kết quả" (`changed since the search`) so theo số dòng và chữ của
+  dòng, nên không phân biệt được các dòng giống hệt nhau: nếu các dòng giống nhau trong file bị dời
+  chỗ sau lần tìm, file vẫn có thể qua phép kiểm và được thay ở dòng mang số cũ.
+- Hủy chỉ xảy ra giữa hai file, và chỉ khi đóng window (không có nút hủy; đóng tab Search không
+  hủy).
+- File không phải UTF-8 lớn hơn 16 MiB: kết quả tìm hiện chữ lossy (U+FFFD) vì search đọc nó theo
+  luồng, và Replace bỏ qua file đó với lý do `too large to replace`.

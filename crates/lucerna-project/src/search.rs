@@ -366,8 +366,9 @@ fn search_file(
     excerpts
 }
 
-/// Largest file read whole into memory by [`search_disk_file`].
-const WHOLE_READ_BYTES: u64 = 16 * 1024 * 1024;
+/// Largest file read whole into memory by [`search_disk_file`], and the
+/// largest closed file the replace job takes (`SkipReason::TooLarge`).
+pub const WHOLE_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Searches a file on disk as the editor and the replace job see it: a file
 /// that is not valid UTF-8 and has no BOM (which grep transcodes itself) is

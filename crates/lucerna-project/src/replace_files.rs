@@ -21,7 +21,7 @@ use lucerna_text::{
 use regex::Regex;
 
 use crate::replace::{ReplacePattern, replace_ranges};
-use crate::search::{SearchQuery, line_matches, search_regex};
+use crate::search::{SearchQuery, WHOLE_READ_BYTES, line_matches, search_regex};
 
 /// A result line the user saw: 1-based number, text as shown (no `\r`,
 /// cut to the display limit).
@@ -51,6 +51,9 @@ pub enum SkipReason {
     ChangedWhileReplacing,
     Missing,
     Conflict,
+    /// Larger than the limit the job reads into memory
+    /// ([`WHOLE_READ_BYTES`]); open documents have no limit.
+    TooLarge,
 }
 
 impl SkipReason {
@@ -68,6 +71,7 @@ impl SkipReason {
             SkipReason::ChangedWhileReplacing => "changed while replacing".into(),
             SkipReason::Missing => "no longer exists".into(),
             SkipReason::Conflict => "has a conflict with the file on disk".into(),
+            SkipReason::TooLarge => "too large to replace".into(),
         }
     }
 }
@@ -178,8 +182,38 @@ pub fn replace_file_with_hook(
     temps: &TempFiles,
     before_write: &dyn Fn(),
 ) -> FileOutcome {
+    with_regex(spec, |regex| {
+        replace_one(
+            path,
+            lines,
+            spec,
+            regex,
+            temps,
+            WHOLE_READ_BYTES,
+            before_write,
+        )
+    })
+}
+
+/// [`replace_file`] with files larger than `max_bytes` skipped instead of
+/// those larger than [`WHOLE_READ_BYTES`], so a test need not write a big
+/// file.
+#[doc(hidden)]
+pub fn replace_file_with_limit(
+    path: &Path,
+    lines: &[ShownLine],
+    spec: &ReplaceSpec,
+    temps: &TempFiles,
+    max_bytes: u64,
+) -> FileOutcome {
+    with_regex(spec, |regex| {
+        replace_one(path, lines, spec, regex, temps, max_bytes, &|| {})
+    })
+}
+
+fn with_regex(spec: &ReplaceSpec, run: impl FnOnce(&Regex) -> FileOutcome) -> FileOutcome {
     match search_regex(&spec.query) {
-        Ok(regex) => replace_one(path, lines, spec, &regex, temps, before_write),
+        Ok(regex) => run(&regex),
         Err(_) => FileOutcome::Skipped(SkipReason::ChangedSinceSearch),
     }
 }
@@ -202,6 +236,7 @@ fn replace_one(
     spec: &ReplaceSpec,
     regex: &Regex,
     temps: &TempFiles,
+    max_bytes: u64,
     before_write: &dyn Fn(),
 ) -> FileOutcome {
     // The stamp comes before the bytes: a change in between makes the
@@ -212,6 +247,11 @@ fn replace_one(
     };
     if check_regular(&meta).is_err() || check_size(meta.len()).is_err() {
         return skipped(SkipReason::Unreadable);
+    }
+    // Checked before reading: up to 8 files are worked on at once, each
+    // held several times over (bytes, text, new text, encoded bytes).
+    if meta.len() > max_bytes {
+        return skipped(SkipReason::TooLarge);
     }
     let stamp = Stamp::of(&meta);
     let bytes = match fs::read(path) {
@@ -336,7 +376,8 @@ pub fn replace_files(
                     let Some((path, lines)) = files.get(index) else {
                         break;
                     };
-                    let outcome = replace_one(path, lines, spec, &regex, temps, &|| {});
+                    let outcome =
+                        replace_one(path, lines, spec, &regex, temps, WHOLE_READ_BYTES, &|| {});
                     results
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
