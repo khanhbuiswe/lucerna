@@ -31,6 +31,7 @@ pub mod goto;
 pub mod hot_exit;
 pub mod hover;
 pub mod icons;
+mod image_preview;
 pub mod keys;
 mod language_servers;
 mod layout;
@@ -87,7 +88,7 @@ pub use diff_view::{DiffKind, DiffView};
 pub use documents::{DiskNotice, DocState, DocumentEvent, DocumentStatus, Documents, SavedAs};
 pub use editor_groups::{
     BRANCH_CHANGES_TAB_STATE, ClosedTab, EXTENSIONS_TAB_STATE, EditorGroups, EditorGroupsView,
-    FileView, GIT_CHANGES_TAB_STATE, Group, GroupState, GroupsState,
+    FileView, GIT_CHANGES_TAB_STATE, Group, GroupState, GroupsState, IMAGE_PREVIEW_STATE_PREFIX,
     MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
     SEARCH_TAB_STATE, Tab, TabBodyFactory, TabId, TabItem, TabViewState, placeholder_body,
 };
@@ -106,6 +107,11 @@ pub use find_widget::{BACKGROUND_SEARCH_BYTES, FindWidget, FindWidgetEvent, find
 pub use git::branch_picker::{BranchPicker, BranchPickerEvent, BranchPickerMode, NameCheck};
 pub use git::checkout::CheckoutAnchor;
 pub use git::{GitSnapshot, GitState, GitStore, GitStoreEvent};
+pub use image_preview::{
+    IMAGE_EDITOR_ID, IMAGE_EXTENSIONS, ImagePreview, ImageStatusItem, LoadOutcome,
+    MAX_IMAGE_PIXELS, format_size, is_image_path, is_lfs_pointer, is_svg_path, load_image,
+    status_text,
+};
 pub use language_servers::{
     HoverInfo, LanguageServers, LanguageServersEvent, ServerStatus, SlotState,
 };

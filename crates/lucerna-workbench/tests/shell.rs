@@ -321,9 +321,9 @@ fn slots_show_views_and_track_focus(cx: &mut TestAppContext) {
         let [_, _, _, _, l] = wb.status_items(StatusBarSide::Left) else {
             panic!("one left item after the built-in ones")
         };
-        // The built-in large-file notice, language server status and
-        // document status come first.
-        let [_, _, _, r] = wb.status_items(StatusBarSide::Right) else {
+        // The built-in large-file notice, language server status,
+        // document status and image status come first.
+        let [_, _, _, _, r] = wb.status_items(StatusBarSide::Right) else {
             panic!("one right item after the built-in ones")
         };
         assert_eq!(l.entity_id(), left.entity_id());

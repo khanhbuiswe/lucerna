@@ -20,6 +20,7 @@ use crate::code_view::CodeView;
 use crate::conflict_bar::{self, BarActions};
 use crate::documents::{DiskNotice, DocState, Documents};
 use crate::icons;
+use crate::image_preview::{ImagePreview, REOPEN_AS_PREVIEW, REOPEN_AS_TEXT, is_svg_path};
 use crate::layout::color;
 use crate::markdown_preview::{self, SHOW_PREVIEW_TO_SIDE, TOGGLE_PREVIEW};
 use crate::save::{self, SaveChoice};
@@ -166,7 +167,7 @@ fn tab_icon_source(item: &TabItem, cx: &App) -> Option<IconSource> {
     Some(match item {
         // Untitled: the plain-text icon, as a `.txt` file has.
         TabItem::File(p) if crate::untitled::is_untitled(p) => file(Path::new("Untitled.txt")),
-        TabItem::File(p) | TabItem::FileDiff(p) => file(p),
+        TabItem::File(p) | TabItem::FileDiff(p) | TabItem::ImagePreview(p) => file(p),
         TabItem::Extensions => IconSource::Builtin("blocks"),
         TabItem::Search => IconSource::Builtin("search"),
         TabItem::LspLog(_) | TabItem::LspHealth => IconSource::Builtin("zap"),
@@ -379,14 +380,62 @@ impl EditorGroupsView {
         if ids.is_empty() {
             return;
         }
-        let dirty = self.unsaved_only_in(&ids, cx);
-        let close = move |view: &mut Self, cx: &mut Context<Self>| {
-            view.update_model(cx, |m| m.close_many(&ids));
-        };
+        let closing = ids.clone();
+        self.after_unsaved_prompt(
+            &ids,
+            move |view, _, cx| {
+                view.update_model(cx, |m| m.close_many(&closing));
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Replaces tab `id` with a tab showing `item` (see
+    /// [`EditorGroups::replace_item`]) for the user, asking first about its
+    /// unsaved document as closing it would: the tab's text goes. Runs
+    /// `done` once the tab is replaced; not on Cancel.
+    pub(crate) fn request_replace_item(
+        &mut self,
+        id: TabId,
+        item: TabItem,
+        done: impl FnOnce(&mut Window, &mut App) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.after_unsaved_prompt(
+            &[id],
+            move |view, window, cx| {
+                if view
+                    .update_model(cx, |m| m.replace_item(id, item))
+                    .is_some()
+                {
+                    // Not inside this update: `done` may update the workbench.
+                    window.defer(cx, done);
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Runs `then` (closing or replacing tabs `ids`) once the documents
+    /// with unsaved changes that only those tabs show are dealt with
+    /// (spec §6.3), asked about once for all: Save (Save All) runs it once
+    /// they are saved and still clean, Don't Save runs it and drops them
+    /// with their history, Cancel does nothing. With none, runs it now.
+    fn after_unsaved_prompt(
+        &mut self,
+        ids: &[TabId],
+        then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dirty = self.unsaved_only_in(ids, cx);
         let documents = match self.documents.clone() {
             Some(documents) if !dirty.is_empty() => documents,
             _ => {
-                close(self, cx);
+                then(self, window, cx);
                 return;
             }
         };
@@ -411,11 +460,13 @@ impl EditorGroupsView {
                         documents.read_with(cx, |d, _| !now.iter().any(|p| d.is_dirty(p)))
                     });
                     if saved {
-                        view.update(cx, |view, cx| close(view, cx)).ok();
+                        view.update_in(cx, |view, window, cx| then(view, window, cx))
+                            .ok();
                     }
                 }
                 SaveChoice::DontSave => {
-                    view.update(cx, |view, cx| close(view, cx)).ok();
+                    view.update_in(cx, |view, window, cx| then(view, window, cx))
+                        .ok();
                     documents.update(cx, |d, cx| {
                         for path in &dirty {
                             d.discard(path, cx);
@@ -447,8 +498,12 @@ impl EditorGroupsView {
     /// The conflict or deleted-file bar (spec §7.3) for group `group`,
     /// whose active tab is `tab`; `None` unless it is a file tab or a
     /// Markdown preview (static or dynamic) whose document has a
-    /// [`DiskNotice`].
+    /// [`DiskNotice`]. An image preview tab has none (it does not show the
+    /// document), even when a text tab of its file keeps one open.
     fn disk_bar(&self, group: usize, tab: &Tab, cx: &mut Context<Self>) -> Option<Div> {
+        if matches!(tab.item, TabItem::ImagePreview(_)) {
+            return None;
+        }
         let path = tab.path().or(tab.previewed_path())?.clone();
         let documents = self.documents.clone()?;
         let notice = documents.read(cx).disk_notice(&path)?;
@@ -503,7 +558,8 @@ impl EditorGroupsView {
     }
 
     /// The documents with unsaved changes that tabs `ids` show and no
-    /// other tab, in any group, does; sorted, each once.
+    /// other tab, in any group, does; sorted, each once. An image preview
+    /// tab shows no document: it reads the file itself.
     fn unsaved_only_in(&self, ids: &[TabId], cx: &App) -> Vec<Arc<Path>> {
         let Some(documents) = &self.documents else {
             return Vec::new();
@@ -512,9 +568,9 @@ impl EditorGroupsView {
         let tabs = || self.model.groups().iter().flat_map(|g| &g.tabs);
         let mut paths: Vec<Arc<Path>> = tabs()
             .filter(|t| ids.contains(&t.id))
-            .filter_map(|t| t.path())
+            .filter_map(shown_document)
             .filter(|p| docs.is_dirty(p))
-            .filter(|p| !tabs().any(|t| !ids.contains(&t.id) && t.path() == Some(p)))
+            .filter(|p| !tabs().any(|t| !ids.contains(&t.id) && shown_document(t) == Some(p)))
             .cloned()
             .collect();
         paths.sort();
@@ -786,40 +842,66 @@ impl EditorGroupsView {
     }
 
     /// The button at the right end of group `gi`'s path bar when its
-    /// active tab is a markdown file (spec §4.2): on the source, the eye
-    /// opens the preview to the side (Alt: in place); on a preview, the
-    /// code icon goes back to the source. Tooltips name the user's keys.
+    /// active tab is a markdown file or an SVG (spec §4.2): on a markdown
+    /// source, the eye opens the preview to the side (Alt: in place); on a
+    /// markdown preview, the code icon goes back to the source. On an SVG
+    /// source, the image icon reopens it as an image preview; on its
+    /// preview, the code icon reopens it as text. Raster images have no
+    /// button. Tooltips name the user's keys.
     fn markdown_button(&self, gi: usize, tab: &Tab, cx: &mut Context<Self>) -> Option<Div> {
-        let source = match &tab.item {
+        // (icon, title, command, command with Alt, debug selector prefix)
+        let (icon, title, command, alt_command, prefix) = match &tab.item {
+            TabItem::File(path) if is_svg_path(path) => (
+                icons::IMAGE,
+                "Reopen as Image Preview",
+                REOPEN_AS_PREVIEW,
+                REOPEN_AS_PREVIEW,
+                "image-preview-toggle",
+            ),
+            TabItem::ImagePreview(path) if is_svg_path(path) => (
+                icons::FILE_CODE,
+                "Reopen as Text",
+                REOPEN_AS_TEXT,
+                REOPEN_AS_TEXT,
+                "image-preview-toggle",
+            ),
             TabItem::File(path) => {
                 let root = self.root.as_deref().unwrap_or(Path::new(""));
                 if !markdown_preview::is_markdown(root, path, &self.settings, cx) {
                     return None;
                 }
-                true
+                (
+                    icons::EYE,
+                    "Open Preview to the Side",
+                    SHOW_PREVIEW_TO_SIDE,
+                    TOGGLE_PREVIEW,
+                    "md-preview-toggle",
+                )
             }
-            TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_) => false,
+            TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_) => (
+                icons::FILE_CODE,
+                "Show Source",
+                TOGGLE_PREVIEW,
+                TOGGLE_PREVIEW,
+                "md-preview-toggle",
+            ),
             _ => return None,
         };
-        let (icon, title, key_command) = if source {
-            (icons::EYE, "Open Preview to the Side", SHOW_PREVIEW_TO_SIDE)
-        } else {
-            (icons::FILE_CODE, "Show Source", TOGGLE_PREVIEW)
-        };
-        let tip = match cx.global::<AppState>().keymap.label_for(key_command) {
+        let tip = match cx.global::<AppState>().keymap.label_for(command) {
             Some(keys) => format!("{title} ({keys})"),
             None => title.to_string(),
         };
-        let id = format!("md-preview-toggle-{gi}");
+        let id = format!("{prefix}-{gi}");
         let button = icon_button(SharedString::from(id.clone()), icon, false, cx)
             .debug_selector(move || id.clone())
             .tooltip(tooltip(tip))
             // Focus stays in the editor.
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .on_click(cx.listener(move |view, ev: &ClickEvent, window, cx| {
-                let command = match (source, ev.modifiers().alt) {
-                    (true, false) => SHOW_PREVIEW_TO_SIDE,
-                    _ => TOGGLE_PREVIEW,
+                let command = if ev.modifiers().alt {
+                    alt_command
+                } else {
+                    command
                 };
                 if let Some(run) = view.on_command.clone() {
                     window.defer(cx, move |window, cx| run(command, window, cx));
@@ -933,6 +1015,15 @@ impl Render for EditorGroupsView {
                 g.tabs
                     .iter()
                     .map(|t| {
+                        // An image is read by its view, not by `Documents`.
+                        if let TabItem::ImagePreview(_) = t.item {
+                            let deleted = self
+                                .bodies
+                                .get(&t.id)
+                                .and_then(|body| body.clone().downcast::<ImagePreview>().ok())
+                                .is_some_and(|preview| preview.read(cx).is_deleted());
+                            return (deleted, None);
+                        }
                         let Some((path, docs)) = t.path().zip(self.documents.as_ref()) else {
                             return (false, None);
                         };
@@ -1269,6 +1360,15 @@ fn empty_hint(ui: &UiColors, settings: SettingsView<'_>, cx: &App) -> gpui::AnyE
         .child(div().flex().flex_col().gap(px(GRID)).children(labels))
         .child(div().flex().flex_col().gap(px(GRID)).children(keys))
         .into_any_element()
+}
+
+/// The file whose document tab `tab` shows: none for an image preview,
+/// which reads the file itself.
+fn shown_document(tab: &Tab) -> Option<&Arc<Path>> {
+    match tab.item {
+        TabItem::ImagePreview(_) => None,
+        _ => tab.path(),
+    }
 }
 
 #[cfg(test)]

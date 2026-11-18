@@ -183,6 +183,8 @@
   { "key": "ctrl+shift+c", "command": "workbench.action.terminal.copySelection", "when": "terminalFocus && terminalTextSelected && (isLinux || isWindows)" },
   { "key": "ctrl+shift+v", "command": "workbench.action.terminal.paste", "when": "terminalFocus && (isLinux || isWindows)" },
   { "key": "cmd+shift+v", "command": "markdown.togglePreview", "when": "editorLangId == markdown || activeEditor == 'markdownPreview'" },
+  { "key": "cmd+shift+v", "command": "imagePreview.reopenAsPreview", "when": "(resourceExtname == .svg || resourceExtname == .SVG) && activeEditor == ''" },
+  { "key": "cmd+shift+v", "command": "imagePreview.reopenAsText", "when": "(resourceExtname == .svg || resourceExtname == .SVG) && activeEditor == 'imagePreview.previewEditor'" },
   { "key": "cmd+k v", "command": "markdown.showPreviewToSide", "when": "editorLangId == markdown" },
   { "key": "shift+f10", "command": "filesExplorer.openContextMenu", "when": "filesExplorerFocus && !textInputFocus" },
   { "key": "ctrl+enter", "command": "explorer.openToSide", "when": "filesExplorerFocus && !explorerResourceIsFolder && !textInputFocus" },

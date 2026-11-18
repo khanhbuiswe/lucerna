@@ -46,6 +46,7 @@ The settings use VS Code's names, for example:
 | `editor.multiCursorMergeOverlapping` | `true` | Merge cursors and selections that overlap |
 | `editor.multiCursorPaste` | `"spread"` | Pasting with several cursors: `spread` gives each cursor one line when the line count matches, `full` pastes the whole text at each |
 | `editor.multiCursorLimit` | `10000` | Most cursors allowed at once |
+| `workbench.editorAssociations` | `{ "*.md": "vscode.markdown.preview.editor", "*.markdown": "vscode.markdown.preview.editor" }` | Choose the editor for files matching a glob. `"vscode.markdown.preview.editor"` is the Markdown preview and `"imagePreview.previewEditor"` is the image preview (the built-in default for image files, so SVG opens as an image). `"*.svg": "default"` opens SVG files as text. An entry of yours for `*.md` replaces the default. Commands "Reopen as Text" and "Reopen as Image Preview" switch one tab |
 | `files.scanDepth` | `5` | Outside a git repository, folders this many levels deep load when you expand them. `0` scans everything. |
 | `files.eol` | `"auto"` | Line ending for new text |
 | `files.encoding` | `"utf8"` | Reserved: encoding for new files, not read yet (takes effect in a later release) |

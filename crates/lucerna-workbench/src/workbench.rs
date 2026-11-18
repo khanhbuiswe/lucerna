@@ -36,6 +36,7 @@ use crate::git::{GitStore, GitStoreEvent};
 use crate::hot_exit::HotExit;
 use crate::hot_exit::store::WorkspaceKey;
 use crate::hover::SHOW_HOVER;
+use crate::image_preview::{ImagePreview, ImageStatusItem};
 use crate::language_servers::LanguageServers;
 use crate::layout::panel::{self, EDITOR_MIN_SIZE, PanelPosition, PanelSash, PanelState};
 use crate::layout::sidebar::SidebarSash;
@@ -487,6 +488,12 @@ impl Workbench {
                                 })
                                 .into();
                         }
+                        TabItem::ImagePreview(path) => {
+                            let (path, workbench) = (path.clone(), workbench.clone());
+                            return cx
+                                .new(|cx| ImagePreview::new(path, workbench, window, cx))
+                                .into();
+                        }
                         TabItem::Extensions => {
                             page.update(cx, |page, cx| page.shown(cx));
                             return page.clone().into();
@@ -601,6 +608,10 @@ impl Workbench {
         let document_status = {
             let (groups, docs) = (editor_groups.clone(), documents.clone());
             cx.new(|_| DocumentStatusItem::new(groups, docs))
+        };
+        let image_status = {
+            let groups = editor_groups.clone();
+            cx.new(|_| ImageStatusItem::new(groups))
         };
         let scan_started = std::time::Instant::now();
         let scanning = single_file.is_none();
@@ -967,6 +978,7 @@ impl Workbench {
         workbench.add_status_item(StatusBarSide::Right, large_file_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, lsp_status.into(), cx);
         workbench.add_status_item(StatusBarSide::Right, document_status.into(), cx);
+        workbench.add_status_item(StatusBarSide::Right, image_status.into(), cx);
         // A restored layout may already show a preview beside its editor.
         cx.defer_in(window, |wb, window, cx| {
             let groups = wb.editor_groups.clone();
@@ -1282,6 +1294,7 @@ impl Workbench {
             .update(cx, |documents, cx| documents.rename(&from, &to, cx));
         self.update_editor_groups(cx, |m| m.retarget(&from, &to));
         crate::markdown_preview::retarget_previews(self, &from, &to, cx);
+        crate::image_preview::retarget_previews(self, &from, &to, cx);
         self.recent_files.retarget(&from, &to);
         for history in self.nav_history.values_mut() {
             history.retarget(&from, &to);
@@ -1559,6 +1572,7 @@ impl Workbench {
         });
         self.documents
             .update(cx, |documents, cx| documents.on_worktree_event(ev, cx));
+        crate::image_preview::on_worktree_event(self, ev, cx);
         // After the documents: removed files are closed in their servers.
         self.language_servers
             .update(cx, |servers, cx| servers.on_worktree_event(ev, cx));
@@ -1679,6 +1693,8 @@ impl Workbench {
         let ev = WorktreeEvent::Changed(changes);
         self.documents
             .update(cx, |documents, cx| documents.on_worktree_event(&ev, cx));
+        // Images in ignored folders under the root (an agent's screenshots).
+        crate::image_preview::on_worktree_event(self, &ev, cx);
         self.language_servers
             .update(cx, |servers, cx| servers.on_worktree_event(&ev, cx));
         // Open files the worktree does not report (single-file mode).
@@ -1993,6 +2009,69 @@ impl Workbench {
     pub(crate) fn open_markdown_preview(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
         let path = self.absolute_path(&path);
         self.open_file(path, FileView::Preview, OpenMode::Pinned, false, cx);
+    }
+
+    /// Opens the image preview of `path` as a pinned tab, as the
+    /// Explorer's Open Preview on an SVG does.
+    pub(crate) fn open_image_preview(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        let path = self.absolute_path(&path);
+        self.open_file(path, FileView::Image, OpenMode::Pinned, false, cx);
+    }
+
+    /// `imagePreview.reopenAsText` and "Open as Text": replaces image
+    /// preview tab `tab` with the source of its file in its place, or
+    /// activates the group's source tab of it; with `force_text`, the file
+    /// is read as text even if it looks binary. Focuses the editor area.
+    pub(crate) fn reopen_image_as_text(
+        &mut self,
+        tab: TabId,
+        force_text: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let groups = self.editor_groups.clone();
+        let path = groups.read(cx).model().groups().iter().find_map(|g| {
+            g.tabs.iter().find_map(|t| match &t.item {
+                TabItem::ImagePreview(path) if t.id == tab => Some(path.clone()),
+                _ => None,
+            })
+        });
+        let Some(path) = path else {
+            return;
+        };
+        if self
+            .update_editor_groups(cx, |m| m.replace_item(tab, TabItem::File(path.clone())))
+            .is_none()
+        {
+            return;
+        }
+        if force_text {
+            groups.update(cx, |view, cx| view.ensure_active_body(window, cx));
+            self.documents
+                .update(cx, |docs, cx| docs.open_as_text(&path, cx));
+        }
+        self.focus_editor_area(window, cx);
+    }
+
+    /// [`Workbench::reopen_image_as_text`] with `force_text` for the tab
+    /// whose body is the image preview `view` ("Open as Text").
+    pub(crate) fn reopen_image_view_as_text(
+        &mut self,
+        view: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let groups = self.editor_groups.read(cx);
+        let tab = groups
+            .model()
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .find(|t| groups.body_of(t.id).is_some_and(|b| b.entity_id() == view))
+            .map(|t| t.id);
+        if let Some(tab) = tab {
+            self.reopen_image_as_text(tab, true, window, cx);
+        }
     }
 
     /// Opens absolute `path` as `view` (see [`EditorGroups::open_file`]).
@@ -2575,18 +2654,14 @@ impl Workbench {
             None => active.and_then(|tab| tab.path().or(tab.previewed_path())),
         };
         let extname = path.map(|p| extname(p)).unwrap_or_default();
-        let preview_active = active.is_some_and(|tab| tab.previewed_path().is_some());
-        ctx.set(
-            "activeEditor",
-            ContextValue::Str(
-                if preview_active {
-                    "markdownPreview"
-                } else {
-                    ""
-                }
-                .into(),
-            ),
-        );
+        let active_editor = match active.map(|tab| &tab.item) {
+            Some(TabItem::ImagePreview(_)) => crate::image_preview::IMAGE_EDITOR_ID,
+            Some(TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_)) => {
+                "markdownPreview"
+            }
+            _ => "",
+        };
+        ctx.set("activeEditor", ContextValue::Str(active_editor.into()));
         // The language the document resolved (`files.associations`
         // included); before its view exists, the same lookup by path.
         let view = body.and_then(|body| body.downcast::<CodeView>().ok());
@@ -3722,6 +3797,7 @@ pub(crate) fn default_registry() -> CommandRegistry {
     crate::save::register_commands(&mut commands);
     crate::about::register_commands(&mut commands);
     markdown_preview::register_commands(&mut commands);
+    crate::image_preview::commands::register_commands(&mut commands);
     crate::explorer::register_commands(&mut commands);
     onboarding::register_commands(&mut commands);
     commands

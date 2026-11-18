@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use lucerna_workbench::{
     BRANCH_CHANGES_TAB_STATE, EXTENSIONS_TAB_STATE, EditorGroups, FileView, GroupState,
-    GroupsState, MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
-    SEARCH_TAB_STATE, TabItem,
+    GroupsState, IMAGE_PREVIEW_STATE_PREFIX, MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX,
+    MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode, SEARCH_TAB_STATE, TabItem,
 };
 
 fn p(name: &str) -> Arc<Path> {
@@ -847,4 +847,70 @@ fn onboarding_not_saved() {
     let state = g.state();
     assert_eq!(state.groups[0].tabs, [(PathBuf::from("/w/a.rs"), true)]);
     assert!(EditorGroups::restore(&state).onboarding_tab().is_none());
+}
+
+#[test]
+fn image_tab_opens_as_preview_and_reuses() {
+    let mut g = EditorGroups::default();
+    let id = g.open_file(
+        p("/r/p.png"),
+        FileView::Image,
+        OpenMode::Preview,
+        true,
+        true,
+    );
+    let tab = &g.groups()[0].tabs[0];
+    assert_eq!(tab.id, id);
+    assert_eq!(tab.item, TabItem::ImagePreview(p("/r/p.png")));
+    assert!(!tab.pinned);
+    assert!(!tab.item.is_singleton());
+    let again = g.open_file(
+        p("/r/p.png"),
+        FileView::Image,
+        OpenMode::Preview,
+        true,
+        true,
+    );
+    assert_eq!(again, id);
+    assert_eq!(g.groups()[0].tabs.len(), 1);
+}
+
+#[test]
+fn image_tab_saves_and_restores() {
+    let mut g = EditorGroups::default();
+    g.open_file(
+        p("/abs/p.png"),
+        FileView::Image,
+        OpenMode::Pinned,
+        true,
+        false,
+    );
+    let state = g.state();
+    assert_eq!(
+        state.groups[0].tabs[0].0,
+        PathBuf::from(format!("{IMAGE_PREVIEW_STATE_PREFIX}/abs/p.png"))
+    );
+    assert_eq!(IMAGE_PREVIEW_STATE_PREFIX, "lucerna:image-preview:");
+    let restored = EditorGroups::restore(&state);
+    assert_eq!(
+        restored.groups()[0].tabs[0].item,
+        TabItem::ImagePreview(p("/abs/p.png"))
+    );
+}
+
+#[test]
+fn image_tab_follows_rename() {
+    let mut g = EditorGroups::default();
+    g.open_file(
+        p("/r/a.png"),
+        FileView::Image,
+        OpenMode::Pinned,
+        true,
+        false,
+    );
+    assert!(g.retarget(Path::new("/r/a.png"), Path::new("/r/b.png")));
+    assert_eq!(
+        g.groups()[0].tabs[0].item,
+        TabItem::ImagePreview(p("/r/b.png"))
+    );
 }

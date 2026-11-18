@@ -7,7 +7,7 @@ mod view;
 pub use closed::{ClosedTab, TabViewState};
 pub use model::{
     BRANCH_CHANGES_TAB_STATE, EXTENSIONS_TAB_STATE, EditorGroups, FileView, GIT_CHANGES_TAB_STATE,
-    GIT_CHANGES_TAB_TITLE, Group, GroupId, GroupState, GroupsState,
+    GIT_CHANGES_TAB_TITLE, Group, GroupId, GroupState, GroupsState, IMAGE_PREVIEW_STATE_PREFIX,
     MARKDOWN_PREVIEW_DYNAMIC_STATE_PREFIX, MARKDOWN_PREVIEW_STATE_PREFIX, OpenMode,
     SEARCH_TAB_STATE, Tab, TabId, TabItem,
 };
