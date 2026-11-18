@@ -514,3 +514,224 @@ fn image_in_ignored_folder_reloads(cx: &mut TestAppContext) {
         assert_eq!(p.dims(), Some((5, 4)));
     });
 }
+
+const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"/>"#;
+
+/// The items of the active group's tabs and its active tab's index.
+fn tabs(wb: &Entity<Workbench>, cx: &mut VisualTestContext) -> (Vec<TabItem>, Option<usize>) {
+    cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        let model = groups.model();
+        let group = &model.groups()[model.active_group()];
+        let items = group.tabs.iter().map(|t| t.item.clone()).collect();
+        let active = group.tabs.iter().position(|t| Some(t.id) == group.active);
+        (items, active)
+    })
+}
+
+#[gpui::test]
+fn cmd_shift_v_toggles_svg(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(dir.path().join("i.svg"), SVG).unwrap();
+    let svg: Arc<Path> = Arc::from(dir.path().join("i.svg"));
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("a.png")), OpenMode::Pinned, cx)
+    });
+    let _preview = open(&wb, "i.svg", cx);
+    assert_eq!(tabs(&wb, cx).0[1], TabItem::ImagePreview(svg.clone()));
+
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    let (items, active) = tabs(&wb, cx);
+    assert_eq!(items.len(), 2, "{items:?}");
+    assert_eq!(items[1], TabItem::File(svg.clone()));
+    assert_eq!(active, Some(1));
+
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    let (items, active) = tabs(&wb, cx);
+    assert_eq!(items.len(), 2, "{items:?}");
+    assert_eq!(items[1], TabItem::ImagePreview(svg));
+    assert_eq!(active, Some(1));
+}
+
+#[gpui::test]
+fn cmd_shift_v_noop_on_png(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let _preview = open(&wb, "a.png", cx);
+    cx.simulate_keystrokes("cmd-shift-v");
+    draw(cx);
+    let (items, _) = tabs(&wb, cx);
+    assert_eq!(
+        items,
+        vec![TabItem::ImagePreview(Arc::from(dir.path().join("a.png")))]
+    );
+}
+
+#[gpui::test]
+fn reopen_as_text_activates_existing_source(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(dir.path().join("i.svg"), SVG).unwrap();
+    let svg: Arc<Path> = Arc::from(dir.path().join("i.svg"));
+    wb.update(cx, |wb, cx| {
+        wb.open_path(Arc::from(Path::new("i.svg")), OpenMode::Pinned, cx);
+        // The source opens beside the preview, which is not reused.
+        wb.open_source(Arc::from(Path::new("i.svg")), OpenMode::Pinned, cx);
+    });
+    draw(cx);
+    let preview = cx.update(|_, cx| {
+        let groups = wb.read(cx).editor_groups().read(cx);
+        let model = groups.model();
+        let group = &model.groups()[model.active_group()];
+        group.tabs[0].id
+    });
+    wb.update(cx, |wb, cx| {
+        wb.update_editor_groups(cx, |m| m.activate(preview))
+    });
+    draw(cx);
+    assert_eq!(
+        tabs(&wb, cx),
+        (
+            vec![
+                TabItem::ImagePreview(svg.clone()),
+                TabItem::File(svg.clone())
+            ],
+            Some(0)
+        )
+    );
+
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            assert!(wb.run_command("imagePreview.reopenAsText", None, window, cx))
+        })
+    });
+    draw(cx);
+    assert_eq!(tabs(&wb, cx), (vec![TabItem::File(svg)], Some(0)));
+}
+
+#[gpui::test]
+fn open_as_text_button_forces_text(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    let file = dir.path().join("c.png");
+    // Not an image, and binary: only a forced text load opens it.
+    fs::write(&file, b"\x89PNG\r\n\x1a\n\0\0junk").unwrap();
+    let preview = open(&wb, "c.png", cx);
+    assert!(preview.read_with(cx, |p, _| p.error_message().is_some()));
+    let button = bounds("image-open-as-text", cx);
+    cx.simulate_click(button.center(), gpui::Modifiers::default());
+    draw(cx);
+    let view = cx.update(|_, cx| {
+        wb.read(cx)
+            .editor_groups()
+            .read(cx)
+            .active_body()
+            .expect("drawn")
+            .downcast::<lucerna_workbench::code_view::CodeView>()
+            .ok()
+    });
+    let view = view.expect("a code view");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.doc_state().clone()),
+        lucerna_workbench::DocState::Ready
+    );
+}
+
+#[gpui::test]
+fn reopen_as_preview_command_and_path_bar_button(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(dir.path().join("i.svg"), SVG).unwrap();
+    let svg: Arc<Path> = Arc::from(dir.path().join("i.svg"));
+    let _preview = open(&wb, "i.svg", cx);
+    let button = bounds("image-preview-toggle-0", cx);
+    cx.simulate_click(button.center(), gpui::Modifiers::default());
+    draw(cx);
+    assert_eq!(tabs(&wb, cx).0, vec![TabItem::File(svg.clone())]);
+    let button = bounds("image-preview-toggle-0", cx);
+    cx.simulate_click(button.center(), gpui::Modifiers::default());
+    draw(cx);
+    assert_eq!(tabs(&wb, cx).0, vec![TabItem::ImagePreview(svg)]);
+    // No button on a raster image.
+    let _png = open(&wb, "a.png", cx);
+    assert!(cx.debug_bounds("image-preview-toggle-0").is_none());
+}
+
+#[gpui::test]
+fn reopen_as_preview_with_path_opens_pinned_image(cx: &mut TestAppContext) {
+    let (dir, wb, cx) = workbench(cx);
+    fs::write(dir.path().join("i.svg"), SVG).unwrap();
+    let args = serde_json::json!({ "path": "i.svg" });
+    cx.update(|window, cx| {
+        wb.update(cx, |wb, cx| {
+            assert!(wb.run_command("imagePreview.reopenAsPreview", Some(&args), window, cx))
+        })
+    });
+    draw(cx);
+    let (item, pinned) = active_item(&wb, cx);
+    assert_eq!(
+        item,
+        TabItem::ImagePreview(Arc::from(dir.path().join("i.svg")))
+    );
+    assert!(pinned);
+}
+
+/// Right-clicks the Explorer row of `name` and says whether its menu runs
+/// `command`; closes the menu.
+fn explorer_menu_has(name: &str, command: &str, cx: &mut VisualTestContext) -> bool {
+    let row: &'static str = Box::leak(format!("explorer-row-{name}").into_boxed_str());
+    let position = bounds(row, cx).center();
+    for event in [true, false] {
+        let (button, modifiers) = (gpui::MouseButton::Right, gpui::Modifiers::none());
+        if event {
+            cx.simulate_event(gpui::MouseDownEvent {
+                position,
+                modifiers,
+                button,
+                click_count: 1,
+                first_mouse: false,
+            });
+        } else {
+            cx.simulate_event(gpui::MouseUpEvent {
+                position,
+                modifiers,
+                button,
+                click_count: 1,
+            });
+        }
+    }
+    draw(cx);
+    let item: &'static str = Box::leak(format!("context-menu-item-{command}").into_boxed_str());
+    let has = cx.debug_bounds(item).is_some();
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    has
+}
+
+#[gpui::test]
+fn explorer_menu_has_open_preview_for_svg(cx: &mut TestAppContext) {
+    init(cx);
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("a.png"), 3, 2);
+    fs::write(dir.path().join("i.svg"), SVG).unwrap();
+    let root = dir.path().to_path_buf();
+    let (wb, cx) = cx.add_window_view(|window, cx| Workbench::new(root, window, cx));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !wb.read_with(cx, |wb, _| wb.worktree().snapshot().scan_complete()) {
+        assert!(std::time::Instant::now() < deadline, "scan did not finish");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    wb.update(cx, |wb, cx| {
+        wb.on_worktree_event(&WorktreeEvent::ScanComplete, cx)
+    });
+    draw(cx);
+    assert!(explorer_menu_has(
+        "i.svg",
+        "imagePreview.reopenAsPreview",
+        cx
+    ));
+    assert!(!explorer_menu_has(
+        "a.png",
+        "imagePreview.reopenAsPreview",
+        cx
+    ));
+    assert!(!explorer_menu_has("a.png", "markdown.showPreview", cx));
+}

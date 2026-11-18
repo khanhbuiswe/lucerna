@@ -267,3 +267,47 @@ fn markdown_bindings_parse() {
     rust.set("editorLangId", ContextValue::Str("rust".into()));
     assert_eq!(km.resolve(&keys("cmd+shift+v"), &rust), Resolution::NoMatch);
 }
+
+#[test]
+fn svg_toggle_bindings_parse() {
+    let (km, error) = Keymap::load(Keymap::default_bindings(), None);
+    assert!(error.is_none(), "{error:?}");
+    let ctx = |ext: &str, editor: &str, lang: &str| {
+        let mut ctx = Context::default();
+        ctx.set("resourceExtname", ContextValue::Str(ext.into()));
+        ctx.set("activeEditor", ContextValue::Str(editor.into()));
+        ctx.set("editorLangId", ContextValue::Str(lang.into()));
+        ctx
+    };
+    assert_eq!(
+        command(km.resolve(&keys("cmd+shift+v"), &ctx(".svg", "", "xml"))),
+        "imagePreview.reopenAsPreview"
+    );
+    assert_eq!(
+        command(km.resolve(
+            &keys("cmd+shift+v"),
+            &ctx(".svg", "imagePreview.previewEditor", "")
+        )),
+        "imagePreview.reopenAsText"
+    );
+    // A raster image tab: no binding.
+    assert_eq!(
+        km.resolve(
+            &keys("cmd+shift+v"),
+            &ctx(".png", "imagePreview.previewEditor", "")
+        ),
+        Resolution::NoMatch
+    );
+    // Markdown keeps its toggle.
+    assert_eq!(
+        command(km.resolve(&keys("cmd+shift+v"), &ctx(".md", "", "markdown"))),
+        "markdown.togglePreview"
+    );
+    assert_eq!(
+        command(km.resolve(
+            &keys("cmd+shift+v"),
+            &ctx(".md", "markdownPreview", "markdown")
+        )),
+        "markdown.togglePreview"
+    );
+}

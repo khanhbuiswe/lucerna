@@ -20,7 +20,7 @@ use crate::code_view::CodeView;
 use crate::conflict_bar::{self, BarActions};
 use crate::documents::{DiskNotice, DocState, Documents};
 use crate::icons;
-use crate::image_preview::ImagePreview;
+use crate::image_preview::{ImagePreview, REOPEN_AS_PREVIEW, REOPEN_AS_TEXT, is_svg_path};
 use crate::layout::color;
 use crate::markdown_preview::{self, SHOW_PREVIEW_TO_SIDE, TOGGLE_PREVIEW};
 use crate::save::{self, SaveChoice};
@@ -787,40 +787,66 @@ impl EditorGroupsView {
     }
 
     /// The button at the right end of group `gi`'s path bar when its
-    /// active tab is a markdown file (spec §4.2): on the source, the eye
-    /// opens the preview to the side (Alt: in place); on a preview, the
-    /// code icon goes back to the source. Tooltips name the user's keys.
+    /// active tab is a markdown file or an SVG (spec §4.2): on a markdown
+    /// source, the eye opens the preview to the side (Alt: in place); on a
+    /// markdown preview, the code icon goes back to the source. On an SVG
+    /// source, the image icon reopens it as an image preview; on its
+    /// preview, the code icon reopens it as text. Raster images have no
+    /// button. Tooltips name the user's keys.
     fn markdown_button(&self, gi: usize, tab: &Tab, cx: &mut Context<Self>) -> Option<Div> {
-        let source = match &tab.item {
+        // (icon, title, command, command with Alt, debug selector prefix)
+        let (icon, title, command, alt_command, prefix) = match &tab.item {
+            TabItem::File(path) if is_svg_path(path) => (
+                icons::IMAGE,
+                "Reopen as Image Preview",
+                REOPEN_AS_PREVIEW,
+                REOPEN_AS_PREVIEW,
+                "image-preview-toggle",
+            ),
+            TabItem::ImagePreview(path) if is_svg_path(path) => (
+                icons::FILE_CODE,
+                "Reopen as Text",
+                REOPEN_AS_TEXT,
+                REOPEN_AS_TEXT,
+                "image-preview-toggle",
+            ),
             TabItem::File(path) => {
                 let root = self.root.as_deref().unwrap_or(Path::new(""));
                 if !markdown_preview::is_markdown(root, path, &self.settings, cx) {
                     return None;
                 }
-                true
+                (
+                    icons::EYE,
+                    "Open Preview to the Side",
+                    SHOW_PREVIEW_TO_SIDE,
+                    TOGGLE_PREVIEW,
+                    "md-preview-toggle",
+                )
             }
-            TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_) => false,
+            TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_) => (
+                icons::FILE_CODE,
+                "Show Source",
+                TOGGLE_PREVIEW,
+                TOGGLE_PREVIEW,
+                "md-preview-toggle",
+            ),
             _ => return None,
         };
-        let (icon, title, key_command) = if source {
-            (icons::EYE, "Open Preview to the Side", SHOW_PREVIEW_TO_SIDE)
-        } else {
-            (icons::FILE_CODE, "Show Source", TOGGLE_PREVIEW)
-        };
-        let tip = match cx.global::<AppState>().keymap.label_for(key_command) {
+        let tip = match cx.global::<AppState>().keymap.label_for(command) {
             Some(keys) => format!("{title} ({keys})"),
             None => title.to_string(),
         };
-        let id = format!("md-preview-toggle-{gi}");
+        let id = format!("{prefix}-{gi}");
         let button = icon_button(SharedString::from(id.clone()), icon, false, cx)
             .debug_selector(move || id.clone())
             .tooltip(tooltip(tip))
             // Focus stays in the editor.
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .on_click(cx.listener(move |view, ev: &ClickEvent, window, cx| {
-                let command = match (source, ev.modifiers().alt) {
-                    (true, false) => SHOW_PREVIEW_TO_SIDE,
-                    _ => TOGGLE_PREVIEW,
+                let command = if ev.modifiers().alt {
+                    alt_command
+                } else {
+                    command
                 };
                 if let Some(run) = view.on_command.clone() {
                     window.defer(cx, move |window, cx| run(command, window, cx));

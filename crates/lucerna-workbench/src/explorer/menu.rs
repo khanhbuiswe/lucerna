@@ -49,6 +49,7 @@ pub(super) fn build_menu(
     let is_file = kind == SelectedKind::File;
     let is_root = kind == SelectedKind::Root;
     let is_markdown = is_file && is_markdown;
+    let is_svg = is_file && crate::image_preview::is_svg_path(std::path::Path::new(&path));
     let args: Value = json!({ "path": path });
     let entry = |m: ContextMenu, label: &'static str, command: &'static str| {
         m.entry_with_args(label, command, args.clone())
@@ -64,6 +65,9 @@ pub(super) fn build_menu(
         })
         .when(is_markdown, |m| {
             entry(m, "Open Preview", "markdown.showPreview")
+        })
+        .when(is_svg, |m| {
+            entry(m, "Open Preview", crate::image_preview::REOPEN_AS_PREVIEW)
         });
     let menu = entry(menu, REVEAL_LABEL, "revealFileInOS");
     // `terminal.explorerKind` (VS Code): "integrated" (default),

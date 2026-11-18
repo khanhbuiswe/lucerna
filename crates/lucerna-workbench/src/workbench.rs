@@ -2006,9 +2006,17 @@ impl Workbench {
         self.open_file(path, FileView::Preview, OpenMode::Pinned, false, cx);
     }
 
-    /// Replaces image preview tab `tab` with the source of its file; with
-    /// `force_text`, the file is read as text even if it looks binary.
-    // Task 5 replaces this stub with the full command.
+    /// Opens the image preview of `path` as a pinned tab, as the
+    /// Explorer's Open Preview on an SVG does.
+    pub(crate) fn open_image_preview(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
+        let path = self.absolute_path(&path);
+        self.open_file(path, FileView::Image, OpenMode::Pinned, false, cx);
+    }
+
+    /// `imagePreview.reopenAsText` and "Open as Text": replaces image
+    /// preview tab `tab` with the source of its file in its place, or
+    /// activates the group's source tab of it; with `force_text`, the file
+    /// is read as text even if it looks binary. Focuses the editor area.
     pub(crate) fn reopen_image_as_text(
         &mut self,
         tab: TabId,
@@ -2641,18 +2649,14 @@ impl Workbench {
             None => active.and_then(|tab| tab.path().or(tab.previewed_path())),
         };
         let extname = path.map(|p| extname(p)).unwrap_or_default();
-        let preview_active = active.is_some_and(|tab| tab.previewed_path().is_some());
-        ctx.set(
-            "activeEditor",
-            ContextValue::Str(
-                if preview_active {
-                    "markdownPreview"
-                } else {
-                    ""
-                }
-                .into(),
-            ),
-        );
+        let active_editor = match active.map(|tab| &tab.item) {
+            Some(TabItem::ImagePreview(_)) => crate::image_preview::IMAGE_EDITOR_ID,
+            Some(TabItem::MarkdownPreview(_) | TabItem::MarkdownPreviewDynamic(_)) => {
+                "markdownPreview"
+            }
+            _ => "",
+        };
+        ctx.set("activeEditor", ContextValue::Str(active_editor.into()));
         // The language the document resolved (`files.associations`
         // included); before its view exists, the same lookup by path.
         let view = body.and_then(|body| body.downcast::<CodeView>().ok());
@@ -3788,6 +3792,7 @@ pub(crate) fn default_registry() -> CommandRegistry {
     crate::save::register_commands(&mut commands);
     crate::about::register_commands(&mut commands);
     markdown_preview::register_commands(&mut commands);
+    crate::image_preview::commands::register_commands(&mut commands);
     crate::explorer::register_commands(&mut commands);
     onboarding::register_commands(&mut commands);
     commands
