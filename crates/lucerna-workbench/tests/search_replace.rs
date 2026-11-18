@@ -1280,6 +1280,7 @@ fn replace_all_skips_deleted_open_document(cx: &mut TestAppContext) {
 
 // Replace All: what the merge review found.
 
+#[cfg(unix)] // used only by the unix-only tests below
 /// The text of the document at `path` (absolute or an Untitled key).
 fn doc_text_at(wb: &Entity<Workbench>, path: &Path, cx: &mut VisualTestContext) -> String {
     let docs = documents(wb, cx);
@@ -1289,6 +1290,7 @@ fn doc_text_at(wb: &Entity<Workbench>, path: &Path, cx: &mut VisualTestContext) 
     })
 }
 
+#[cfg(unix)] // `:` is not allowed in Windows file names
 #[gpui::test]
 fn replace_all_never_takes_a_file_named_untitled_for_the_untitled_document(
     cx: &mut TestAppContext,
@@ -1332,6 +1334,7 @@ fn replace_all_never_takes_a_file_named_untitled_for_the_untitled_document(
     );
 }
 
+#[cfg(unix)] // file permissions
 #[gpui::test]
 fn replace_all_failed_save_reports_unsaved_not_skipped(cx: &mut TestAppContext) {
     use std::os::unix::fs::PermissionsExt as _;
@@ -1410,6 +1413,7 @@ fn new_search_during_replace_still_reports_skipped_files(cx: &mut TestAppContext
     assert!(!status.contains("Replaced"), "{status}");
 }
 
+#[cfg(unix)] // `:` is not allowed in Windows file names
 #[gpui::test]
 fn replace_line_searches_a_file_named_untitled_on_its_own_text(cx: &mut TestAppContext) {
     init(cx);
