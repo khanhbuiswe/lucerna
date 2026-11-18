@@ -167,16 +167,18 @@ Definition, kết quả tìm kiếm) thì vẫn mở mã nguồn, như `.md` đa
   màn hình, để không bị mờ trên màn hình Retina. Kích thước "gốc" của SVG lấy
   từ `width`/`height`/`viewBox` của file.
   - *(Claude quyết định.)* Ở revision GPUI đang pin, `Image::from_bytes` với
-    SVG luôn raster ở kích thước gốc của file (scale 1.0), nên SVG nhỏ vẽ to
-    sẽ bị mờ. Vì vậy SVG có đường raster riêng:
-    - Parse một lần bằng `usvg`.
-    - Raster bằng `resvg` ở kích thước hiển thị nhân scale factor, rồi đưa
-      vào GPUI dạng ảnh bitmap.
-    - Khung đổi kích thước hoặc scale factor đổi thì raster lại sau 150 ms
-      debounce. Raster cũ được giải phóng như §4.5.
-    - `resvg` 0.46 đã có trong `Cargo.lock` qua GPUI. Thêm nó làm dependency
-      trực tiếp của `lucerna-workbench`, đúng version đó, nên không thêm crate
-      mới.
+    SVG luôn raster ở scale 1.0, nên trên Retina sẽ bị mờ. Vì vậy SVG có
+    đường raster riêng:
+    - Đọc kích thước gốc bằng `usvg`, crate này đã có trong `Cargo.lock` qua
+      GPUI (thêm làm dependency trực tiếp, đúng version 0.46).
+    - Raster bằng `SvgRenderer::render_single_frame(bytes, scale)` của GPUI,
+      với `scale` là scale factor của cửa sổ.
+    - Vì ảnh chỉ thu nhỏ, không bao giờ phóng to, nên một bản raster ở kích
+      thước gốc nhân scale factor luôn đủ nét. Không cần raster lại khi
+      khung đổi kích thước, chỉ khi scale factor đổi (ví dụ kéo cửa sổ sang
+      màn hình khác).
+    - Nếu bản raster vượt giới hạn megapixel ở §4.6 thì hạ `scale` cho vừa,
+      thay vì báo lỗi.
 - GIF chuyển động thì chạy, nhờ GPUI.
 
 ### 4.5 Tải lại và bộ nhớ
