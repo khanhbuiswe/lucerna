@@ -537,8 +537,12 @@ impl Workbench {
             == Some(true);
         let trusted = all || self.trust.stored == Some(true);
         let known = all || self.trust.stored.is_some();
-        // No `git` runs until the folder is trusted (spec §4.2).
-        self.git.update(cx, |git, cx| git.set_trusted(trusted, cx));
+        // No `git` runs until the folder is trusted (spec §4.2). While the
+        // store is still being read the store stays Off (not started), not
+        // Restricted: a trusted folder's diff tab would flash Restricted Mode.
+        if known {
+            self.git.update(cx, |git, cx| git.set_trusted(trusted, cx));
+        }
         let servers = self.language_servers().clone();
         if servers.read(cx).is_trusted() != trusted {
             servers.update(cx, |servers, cx| servers.set_trusted(trusted, cx));

@@ -62,6 +62,8 @@ impl Workbench {
                 self.show_trust_modal(window, cx);
                 return;
             }
+            // Enabled but not started: the folder's trust is still being read.
+            GitState::Off if git.is_enabled() => Some(GIT_LOADING),
             GitState::Off => Some(GIT_OFF),
             GitState::Locating => Some(GIT_LOADING),
             GitState::NoGit | GitState::NoRepo => Some(GIT_UNAVAILABLE),

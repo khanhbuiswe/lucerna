@@ -263,7 +263,10 @@ impl DiffView {
     /// The line shown instead of the list: why there is nothing to show,
     /// or `None` when files are listed.
     pub fn message(&self, cx: &App) -> Option<String> {
-        let text = match self.git.read(cx).state() {
+        let git = self.git.read(cx);
+        let text = match git.state() {
+            // Enabled but not started: the folder's trust is still being read.
+            GitState::Off if git.is_enabled() => LOADING_NOTE,
             GitState::Off => "Git is off",
             GitState::Locating => LOADING_NOTE,
             GitState::NoGit => "Git is not available",

@@ -3,14 +3,16 @@
 
 mod support;
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{AppContext, BorrowAppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
 use lucerna_lsp::test_support::{FakeLauncher, FakeServer};
 use lucerna_settings::Layer;
-use lucerna_workbench::{AppState, GitState, TrustStore, Workbench};
+use lucerna_workbench::{AppState, GitState, GitStore, GitStoreEvent, TrustStore, Workbench};
 use serde_json::Value;
 use support::git::{isolated_git, repo};
 use support::lsp::*;
@@ -660,6 +662,59 @@ fn trusting_starts_git(cx: &mut TestAppContext) {
     let statuses = cx.update(|_, cx| wb.read(cx).git().read(cx).snapshot().statuses);
     assert!(statuses.contains_key(Path::new("a.txt")), "{statuses:?}");
     assert!(!shown("restricted-mode", cx));
+}
+
+/// A trusted repository is not in Restricted Mode while the trust store is
+/// still being read at startup: a restored "Uncommitted Changes" tab used
+/// to flash "Git is off in Restricted Mode" until the read finished.
+#[gpui::test]
+fn trusted_repo_is_not_restricted_while_trust_loads(cx: &mut TestAppContext) {
+    let ((_t, dir), data) = (repo(), TempDir::new().unwrap());
+    TrustStore::load(data.path()).trust(&dir, false).unwrap();
+    init_with("{}", cx);
+    // Every state the window's store takes, from the moment it is made.
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let _new = cx.update({
+        let seen = seen.clone();
+        |cx| {
+            cx.observe_new(move |store: &mut GitStore, _, cx| {
+                store.use_git_for_test(isolated_git());
+                seen.borrow_mut().push(store.state());
+                let seen = seen.clone();
+                cx.subscribe_self(move |store: &mut GitStore, ev, _| {
+                    if *ev == GitStoreEvent::StateChanged {
+                        seen.borrow_mut().push(store.state());
+                    }
+                })
+                .detach();
+            })
+        }
+    });
+    let (root, data_dir) = (dir.clone(), data.path().to_path_buf());
+    let (wb, cx) =
+        cx.add_window_view(|window, cx| Workbench::with_data_dir(root, data_dir, window, cx));
+
+    settle(cx);
+
+    let seen = seen.borrow().clone();
+    assert!(!seen.contains(&GitState::Restricted), "{seen:?}");
+    assert_eq!(git_state(&wb, cx), GitState::Ready, "{seen:?}");
+    assert!(!shown("restricted-mode", cx));
+}
+
+/// An untrusted repository still ends in Restricted Mode once the store
+/// is read.
+#[gpui::test]
+fn untrusted_repo_is_restricted_after_trust_loads(cx: &mut TestAppContext) {
+    let ((_t, dir), data) = (repo(), TempDir::new().unwrap());
+    init_with("{}", cx);
+    let (root, data_dir) = (dir.clone(), data.path().to_path_buf());
+    let (wb, cx) =
+        cx.add_window_view(|window, cx| Workbench::with_data_dir(root, data_dir, window, cx));
+
+    settle(cx);
+
+    assert_eq!(git_state(&wb, cx), GitState::Restricted);
 }
 
 #[gpui::test]
