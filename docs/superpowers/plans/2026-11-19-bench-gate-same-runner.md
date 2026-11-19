@@ -35,7 +35,7 @@
 - Test: `scripts/test-bench-run.sh`
 
 **Interfaces:**
-- Produces: `scripts/bench-run.sh <save|compare>`, run from the repo root. `save` → `cargo bench -p <crate> --bench <name> -- --save-baseline main`; `compare` → `... -- --baseline main`. One `cargo bench` call per bench; skips (prints `skip <crate>/<name>: no benches/<name>.rs`) when `crates/<crate>/benches/<name>.rs` is missing. With `BENCH_DRY_RUN=1` it prints each command (`cargo bench -p ...`) instead of running it. Any other argument → usage to stderr, exit 2.
+- Produces: `scripts/bench-run.sh <save|compare>`, run from the repo root. `save` → `cargo bench -p <crate> --bench <name> -- --save-baseline main`; `compare` → `... -- --baseline-lenient main` (strict `--baseline` panics on a bench with no saved baseline). One `cargo bench` call per bench; skips (prints `skip <crate>/<name>: no benches/<name>.rs`) when `crates/<crate>/benches/<name>.rs` is missing. With `BENCH_DRY_RUN=1` it prints each command (`cargo bench -p ...`) instead of running it. Any other argument → usage to stderr, exit 2.
 
 - [ ] **Step 1: Write the failing test** `scripts/test-bench-run.sh` (sh, `set -eu`), which builds a temp tree under `mktemp -d` with `crates/lucerna-project/benches/{scan,fuzzy}.rs`, `crates/lucerna-syntax/benches/highlight.rs`, and no `lucerna-text` bench, `cd`s into it and runs the script by absolute path with `BENCH_DRY_RUN=1`. Asserts:
   - `save` output contains exactly these three lines, in this order:
@@ -43,7 +43,7 @@
     `cargo bench -p lucerna-project --bench fuzzy -- --save-baseline main`
     `cargo bench -p lucerna-syntax --bench highlight -- --save-baseline main`
     plus the line `skip lucerna-text/reload: no benches/reload.rs`.
-  - `compare` prints the same three with `--baseline main`.
+  - `compare` prints the same three with `--baseline-lenient main`.
   - `bogus` exits 2.
   Prints `ok` and exits 0 when all pass.
 

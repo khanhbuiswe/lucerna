@@ -9,7 +9,9 @@ set -eu
 
 case ${1:-} in
   save) flag=--save-baseline ;;
-  compare) flag=--baseline ;;
+  # Lenient: a bench the base lacks (new or renamed id) is measured without a
+  # baseline instead of panicking, and bench-gate.sh reports it as NEW.
+  compare) flag=--baseline-lenient ;;
   *)
     echo "usage: $0 <save|compare>" >&2
     exit 2

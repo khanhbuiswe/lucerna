@@ -32,7 +32,7 @@ $got"
 }
 
 expect save --save-baseline
-expect compare --baseline
+expect compare --baseline-lenient
 
 status=0
 sh "$script" bogus 2>/dev/null || status=$?
