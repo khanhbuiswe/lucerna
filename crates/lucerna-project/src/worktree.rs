@@ -124,6 +124,7 @@ impl Worktree {
             stop: stop.clone(),
             generation: generation.clone(),
             watch_started: Cell::new(UNIX_EPOCH),
+            root_at_watch: Cell::new(None),
             initial_scan: Cell::new(true),
             replay_until: Cell::new(None),
             ignores_case: Cell::new(None),
@@ -360,6 +361,9 @@ struct Worker {
     /// When the OS watcher was started. FSEvents can replay changes made
     /// just before that; the scan already saw them (see `is_stale`).
     watch_started: Cell<SystemTime>,
+    /// The root as it was when the OS watcher started; a report about the
+    /// root is a replay only while the root still matches it.
+    root_at_watch: Cell<Option<RootIdentity>>,
     /// True until the initial scan completes.
     initial_scan: Cell<bool>,
     /// End of the post-initial-scan grace period (monotonic).
@@ -387,7 +391,7 @@ impl Worker {
         // gap between the walk and the watcher. Batches that arrive meanwhile
         // queue up and are applied before `ScanComplete`.
         let tx = self.command_tx.clone();
-        self.watch_started.set(SystemTime::now());
+        self.note_watch_start();
         let _watcher = match Watcher::start(&self.root, move |batch| {
             let _ = tx.send(Command::FsEvents(batch));
         }) {
@@ -718,15 +722,27 @@ impl Worker {
         changed < self.watch_started.get()
     }
 
+    /// Records when, and on what root, the OS watcher starts.
+    fn note_watch_start(&self) {
+        self.watch_started.set(SystemTime::now());
+        self.root_at_watch.set(root_identity(&self.root));
+    }
+
     /// Whether a report about the root itself needs a rescan: always,
-    /// except for a replay of the root's creation (FSEvents replays it for
-    /// a folder made just before the watch started) while the root is
-    /// still as the last scan found it.
+    /// except in the replay window for a replay of the root's creation
+    /// (FSEvents replays it for a folder made just before the watch
+    /// started) while the root is still as the last scan found it and
+    /// still the folder, with the permissions, the watch started on.
+    ///
+    /// The root's ctime cannot tell a replay: adding or removing an entry
+    /// in the root bumps it, so a replay batched with a new file would look
+    /// like a change to the root and turn that file into a rescan.
     fn root_report_calls_for_rescan(&self) -> bool {
         if root_status(&self.root) != *self.root_status.borrow() {
             return true;
         }
-        fs::symlink_metadata(&self.root).map_or(true, |meta| !self.is_stale(&meta))
+        let at_watch = self.root_at_watch.get();
+        !(self.in_replay_window() && at_watch.is_some() && root_identity(&self.root) == at_watch)
     }
 
     /// Whether the root's file system ignores case (APFS and HFS+ by
@@ -1049,6 +1065,27 @@ impl Listings {
     }
 }
 
+/// What a report about the root itself can change: which folder the root
+/// path names (renamed away, replaced) and who may list it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RootIdentity {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+}
+
+fn root_identity(root: &Path) -> Option<RootIdentity> {
+    fs::metadata(root).ok().map(|meta| RootIdentity {
+        dev: meta.dev(),
+        ino: meta.ino(),
+        mode: meta.mode(),
+        uid: meta.uid(),
+        gid: meta.gid(),
+    })
+}
+
 /// Whether `root` is there and can be listed. A file where the folder was
 /// counts as missing.
 fn root_status(root: &Path) -> RootStatus {
@@ -1192,6 +1229,7 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
             watch_started: Cell::new(SystemTime::now() + Duration::from_secs(3600)),
+            root_at_watch: Cell::new(root_identity(dir)),
             initial_scan: Cell::new(false),
             replay_until: Cell::new(None),
             ignores_case: Cell::new(None),
@@ -1236,7 +1274,7 @@ mod tests {
         let root_report = || Coalesced::Changes(vec![change("", ChangeKind::Modified)]);
         let opts = ScanOptions::default();
 
-        // The root's ctime is "before" watch_started (an hour ahead).
+        // In the window, the root as the watch found it.
         worker
             .replay_until
             .set(Some(Instant::now() + Duration::from_secs(60)));
@@ -1256,6 +1294,40 @@ mod tests {
         drop(dir);
         assert!(!root.exists());
         assert!(worker.apply_fs_events(root_report(), &opts), "root gone");
+    }
+
+    /// An entry added to (or removed from) the root bumps the root's ctime
+    /// past the watch start. A replayed report of the root's creation that
+    /// lands in the same batch is still a replay, not a reason to rescan;
+    /// a change to the root's own permissions is.
+    #[test]
+    fn a_root_report_after_an_entry_was_added_is_still_a_replay() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let worker = bare_worker(dir.path());
+        worker.note_watch_start();
+        worker
+            .replay_until
+            .set(Some(Instant::now() + Duration::from_secs(60)));
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(dir.path().join("new.txt"), "1").unwrap();
+        let batch = || {
+            Coalesced::Changes(vec![
+                change("", ChangeKind::Modified),
+                change("new.txt", ChangeKind::Added),
+            ])
+        };
+        let opts = ScanOptions::default();
+        assert!(!worker.apply_fs_events(batch(), &opts), "a replay");
+        assert_eq!(sorted_paths(&worker), ["new.txt"]);
+
+        // Flip group write: whatever the umask, the mode now differs.
+        let mode = fs::metadata(dir.path()).unwrap().permissions().mode();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(mode ^ 0o020)).unwrap();
+        assert!(
+            worker.apply_fs_events(batch(), &opts),
+            "permissions changed"
+        );
     }
 
     fn ignores_case(dir: &Path) -> bool {
