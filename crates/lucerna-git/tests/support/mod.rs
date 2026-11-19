@@ -18,6 +18,22 @@ pub fn bin() -> GitBinary {
         .with_env("LC_ALL", "C")
 }
 
+/// Adds remote `name` at `url` by writing its config, as `git remote add`
+/// would. Newer git refuses `remote add` for a name that nests under an
+/// existing remote (`origin/sub` under `origin`), but such repositories
+/// exist (older git, hand-edited config), and Lucerna must handle them.
+pub fn add_remote_config(dir: &Path, name: &str, url: &str) {
+    git(dir, &["config", &format!("remote.{name}.url"), url]);
+    git(
+        dir,
+        &[
+            "config",
+            &format!("remote.{name}.fetch"),
+            &format!("+refs/heads/*:refs/remotes/{name}/*"),
+        ],
+    );
+}
+
 pub fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .current_dir(dir)
