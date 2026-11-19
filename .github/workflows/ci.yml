@@ -44,8 +44,8 @@ jobs:
           scripts/gen-bench-repo.sh "$RUNNER_TEMP/lucerna-bench"
           echo "LUCERNA_BENCH_REPO=$RUNNER_TEMP/lucerna-bench" >> "$GITHUB_ENV"
       # The PR's base and the PR are measured in this one job, so both runs
-      # share a runner and its speed cancels out. The base may predate
-      # bench-run.sh, so it runs from a copy taken out of the tree first.
+      # share a runner. The base may predate bench-run.sh, so it runs from a
+      # copy taken out of the tree first.
       - name: Measure base
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -59,4 +59,20 @@ jobs:
         run: |
           git checkout --detach "$HEAD_SHA"
           scripts/bench-run.sh compare
-          scripts/bench-gate.sh target/criterion 15
+      # Report only: on shared macOS runners identical code still swings
+      # about -20%..+30% within one job (PR #2), so the 15% gate would fail
+      # on noise. The table goes to the job summary; a slowdown is a warning.
+      - name: Bench report
+        run: |
+          status=0
+          scripts/bench-gate.sh target/criterion 15 > bench-gate.txt || status=$?
+          cat bench-gate.txt
+          {
+            echo '### Bench vs PR base (report only, 15% threshold)'
+            echo '```'
+            cat bench-gate.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            echo "::warning title=Bench::Some benches are over 15% slower than the PR base; runner noise is often this large, so check the job summary."
+          fi
