@@ -30,9 +30,12 @@ jobs:
         run: cargo deny check
 
   bench:
+    if: github.event_name == 'pull_request'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Install toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -40,31 +43,20 @@ jobs:
         run: |
           scripts/gen-bench-repo.sh "$RUNNER_TEMP/lucerna-bench"
           echo "LUCERNA_BENCH_REPO=$RUNNER_TEMP/lucerna-bench" >> "$GITHUB_ENV"
-      # Pull requests compare against the baseline saved by the last push to main.
-      - name: Restore main baseline
-        if: github.event_name == 'pull_request'
-        uses: actions/cache/restore@v4
-        with:
-          path: target/criterion
-          key: criterion-main-${{ github.sha }}
-          restore-keys: criterion-main-
-      # Benches are listed per crate so gpui-dependent crates are never built.
-      - name: Save main baseline
-        if: github.event_name == 'push'
+      # The PR's base and the PR are measured in this one job, so both runs
+      # share a runner and its speed cancels out. The base may predate
+      # bench-run.sh, so it runs from a copy taken out of the tree first.
+      - name: Measure base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          cargo bench -p lucerna-project --bench scan --bench fuzzy -- --save-baseline main
-          cargo bench -p lucerna-syntax --bench highlight -- --save-baseline main
-          cargo bench -p lucerna-text --bench reload -- --save-baseline main
-      - name: Cache main baseline
-        if: github.event_name == 'push'
-        uses: actions/cache/save@v4
-        with:
-          path: target/criterion
-          key: criterion-main-${{ github.sha }}
-      - name: Compare with main baseline
-        if: github.event_name == 'pull_request'
+          cp scripts/bench-run.sh "$RUNNER_TEMP/bench-run.sh"
+          git checkout --detach "$BASE_SHA"
+          sh "$RUNNER_TEMP/bench-run.sh" save
+      - name: Measure PR
+        env:
+          HEAD_SHA: ${{ github.sha }}
         run: |
-          cargo bench -p lucerna-project --bench scan --bench fuzzy -- --baseline main
-          cargo bench -p lucerna-syntax --bench highlight -- --baseline main
-          cargo bench -p lucerna-text --bench reload -- --baseline main
+          git checkout --detach "$HEAD_SHA"
+          scripts/bench-run.sh compare
           scripts/bench-gate.sh target/criterion 15
