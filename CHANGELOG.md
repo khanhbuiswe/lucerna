@@ -3,6 +3,14 @@
 Each release's section below is copied into its GitHub Release page by
 `.github/workflows/release.yml`. A release fails if its version has no section here.
 
+## [0.2.1] - 2026-11-19
+
+### Fixed
+
+- Opening a trusted folder no longer flashes "Git is off in Restricted Mode" and a Manage
+  Workspace Trust button in a restored Uncommitted Changes tab while the folder's trust is being
+  read. The tab shows Loading… until Git starts.
+
 ## [0.2.0] - 2026-11-18
 
 ### Added
@@ -95,6 +103,7 @@ Each release's section below is copied into its GitHub Release page by
 
 First release, for macOS on Apple silicon.
 
+[0.2.1]: https://github.com/khanhbuiswe/lucerna/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/khanhbuiswe/lucerna/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/khanhbuiswe/lucerna/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/khanhbuiswe/lucerna/releases/tag/v0.1.0
