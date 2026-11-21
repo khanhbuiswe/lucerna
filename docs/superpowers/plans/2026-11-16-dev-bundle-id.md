@@ -131,7 +131,7 @@ Expected: `<stdin>: OK` twice.
 - `scripts/make-dmg.sh`: both calls gain `--stable` (`scripts/bundle-app.sh --debug --stable`, `scripts/bundle-app.sh --stable`).
 - `.github/workflows/release.yml`: `run: scripts/bundle-app.sh --stable`.
 - `.github/workflows/pages.yml`: add `scripts/test_bundle_plist.py`, `scripts/render-plist.sh`, `scripts/bundle-app.sh` and `crates/lucerna/resources/macos/Info.plist` to both `paths` lists, and a step `python3 -m unittest scripts/test_bundle_plist.py`.
-- `docs/research/2026-11-09-app-bundle.md`: after the Bundle ID sentence, one paragraph in Vietnamese: build mặc định là kênh dev (`dev.lucerna.Lucerna-Dev`, "Lucerna Dev"), `--stable` hoặc `--install` cho id chính, giống Zed; lý do là App Exposé gửi yêu cầu mở theo bundle id tới nhầm bản (spec 2026-11-16).
+- `docs/research/2026-11-09-app-bundle.md`: after the Bundle ID sentence, one paragraph: the default build is the dev channel (`dev.lucerna.Lucerna-Dev`, "Lucerna Dev"), and `--stable` or `--install` use the main id, like Zed; the reason is that App Exposé sends open requests by bundle id to the wrong copy (spec 2026-11-16).
 
 Check: `grep -n "bundle-app.sh" scripts/make-dmg.sh .github/workflows/release.yml`
 Expected: every call line contains `--stable`.

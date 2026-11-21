@@ -213,13 +213,13 @@ Layout (spec §7.3, Zed look): `search_toolbar(cx).child(search_bar_row().child(
 - [x] **Step 2: Run** — fail.
 - [x] **Step 3: Implement.** Make sure the groups view redraws on `ConflictChanged` and on `disk_notice` changes (the test proves it).
 - [x] **Step 4: Run** `cargo test -p lucerna-workbench --test external_changes --test editor_groups_view --test save` — PASS.
-- [ ] **Step 5: Manual look** (record in the commit body, not a blocker for tests): `cargo run -p lucerna -- <folder>`; edit a file, make an overlapping change from a shell; compare the bar's height, background and border with the find bar (⌘F) — they must match. (bỏ qua: chưa kiểm tra tay)
+- [ ] **Step 5: Manual look** (record in the commit body, not a blocker for tests): `cargo run -p lucerna -- <folder>`; edit a file, make an overlapping change from a shell; compare the bar's height, background and border with the find bar (⌘F) — they must match. (skipped: not checked by hand)
 - [x] **Step 6: Commit** `feat(workbench): conflict bar with Reload / Keep Mine and deleted-file bar`.
 
 ### Task 6: Docs and final check
 
 **Files:**
-- Modify: spec status line (line 3: "4.1 và 4.4 đã triển khai"), `README.md` (feature list: auto-merge of agent changes, conflict bar), roadmap table §1.3 of `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md` (4.4 delivered), this plan's checkboxes.
+- Modify: spec status line (line 3: "4.1 and 4.4 implemented"), `README.md` (feature list: auto-merge of agent changes, conflict bar), roadmap table §1.3 of `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md` (4.4 delivered), this plan's checkboxes.
 
 - [x] **Step 1:** Update the docs above (Vietnamese, as the existing text).
 - [x] **Step 2:** `scripts/prune-target.sh`, then `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`, `cargo deny check` — all pass.

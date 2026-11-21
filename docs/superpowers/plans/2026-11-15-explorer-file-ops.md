@@ -82,4 +82,4 @@ Another session is changing `explorer/menu.rs` and `explorer/commands.rs` on mai
 
 ### Task 6: Whole-branch check
 
-- [ ] `cargo test --workspace --no-fail-fast`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`, `cargo deny check` (shared target). Update the main spec's "Quyết định của Claude" only if behaviour diverged from this spec.
+- [ ] `cargo test --workspace --no-fail-fast`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`, `cargo deny check` (shared target). Update the main spec's "Claude's decisions" only if behaviour diverged from this spec.

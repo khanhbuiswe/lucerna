@@ -382,7 +382,7 @@ Spec §5 (smart select bullet) and §3.3 (`enclosing_nodes`).
 **Files:**
 - Modify: `THIRD_PARTY_NOTICES.md` (the indentation guesser, plus anything else marked "Adapted from")
 - Modify: `README.md` (4.2 features; add the new settings to the editing settings table)
-- Modify: `docs/superpowers/specs/2026-11-11-lucerna-phase4-editing-design.md` status line (`4.1 và 4.2 đã triển khai; 4.3–4.6 chưa làm`)
+- Modify: `docs/superpowers/specs/2026-11-11-lucerna-phase4-editing-design.md` status line (`4.1 and 4.2 implemented; 4.3–4.6 not done`)
 - Modify: `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md` roadmap row 4 status
 
 - [ ] **Step 1:** Make the edits.

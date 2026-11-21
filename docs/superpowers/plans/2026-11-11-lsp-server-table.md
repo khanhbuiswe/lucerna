@@ -237,7 +237,7 @@ UI per spec §7: one tab, not persisted; header rows per language (reuse the `ex
 
 ## Task 8: Docs, verification, real-server check, bundle
 
-**Files:** Modify `docs/superpowers/specs/2026-11-10-lucerna-phase3-lsp-design.md` (D3, out-of-scope line, §3.1 adapters paragraph, §8 settings table per spec §8), `docs/superpowers/specs/2026-11-11-lsp-server-table-design.md` (status line → "đã triển khai (commit …)"; add `note` to the §3.1 field table), README feature list if it lists LSP languages.
+**Files:** Modify `docs/superpowers/specs/2026-11-10-lucerna-phase3-lsp-design.md` (D3, out-of-scope line, §3.1 adapters paragraph, §8 settings table per spec §8), `docs/superpowers/specs/2026-11-11-lsp-server-table-design.md` (status line → "implemented (commit …)"; add `note` to the §3.1 field table), README feature list if it lists LSP languages.
 
 - [ ] **Step 1:** Doc edits in Vietnamese matching existing style.
 - [ ] **Step 2:** Full verification: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `cargo deny check` → all clean; `cargo test -p lucerna-lsp -- --ignored rust_analyzer` → PASS.

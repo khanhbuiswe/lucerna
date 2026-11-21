@@ -115,7 +115,7 @@
     - if nothing is left, loop to the previous batch;
     - insert per target group in ascending `index` at `min(index, len)`, pinned, with new ids;
     - add each new tab to its group's MRU: behind the active tab, or at the front for `was_active`;
-    - apply the activation rule from the spec (§"Lịch sử trong model", step 4).
+    - apply the activation rule from the spec (§"History in the model", step 4).
 
     Target group: the group whose `id == entry.group`, else the active group.
 
@@ -346,7 +346,7 @@
 **Files:**
 - Modify: `docs/keyboard-shortcuts.md` (rows appended after "Cmd+W | Close tab")
 - Modify: `CHANGELOG.md` (under `## [Unreleased]` → `### Added`, appended as the last bullet)
-- Modify: `docs/roadmap.md` (`- [ ] Mở lại tab vừa đóng (⇧⌘T), Close Others` → `- [x]`)
+- Modify: `docs/roadmap.md` (`- [ ] Reopen the tab you just closed (⇧⌘T), Close Others` → `- [x]`)
 
 - [ ] **Step 1: Add the docs text.**
   - **Shortcut rows:**

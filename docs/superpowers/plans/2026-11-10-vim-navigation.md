@@ -721,7 +721,7 @@ Spec: §9.3, §10, and §12 step 11.
 - `CLAUDE.md`: add `lucerna-vim` to the crate list.
 - `README.md`: in the settings and features sections, document `vim.enabled` and the V1 key list in one short table. Mention Zed only for GPUI and extensions, per `CLAUDE.md`.
 - The roadmap row V1 in the phase 1 spec §1.3: mark it as done.
-- The status line of the vim spec: `Đã triển khai`.
+- The status line of the vim spec: `Implemented`.
 
 Steps:
 - [ ] **Step 1:** Edit the docs listed above.

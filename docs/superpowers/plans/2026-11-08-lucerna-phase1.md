@@ -1167,7 +1167,7 @@
 
 ### Task 22: Zed-style chrome (runs after Task 13, before Task 12)
 
-Spec: section 12 ("Thay đổi 2026-11-08: giao diện kiểu Zed"). This is a user decision that replaces the activity bar layout.
+Spec: section 12 ("Change 2026-11-08: Zed-style UI"). This is a user decision that replaces the activity bar layout.
 
 **Files:**
 - Modify: `crates/lucerna-theme/src/lib.rs`, `src/schema.rs`, `tests/theme.rs`

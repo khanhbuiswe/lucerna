@@ -720,7 +720,7 @@ Spec §17 (after each step) and §21.
 **Files:**
 - Modify: `THIRD_PARTY_NOTICES.md`: add VS Code (MIT) entries for the files adapted in Tasks 5 and 6, and Task 7 if any.
 - Modify: `README.md`: state that Lucerna edits files (typing, undo, save, the conflict guard) and drop "read-only" wording.
-- Modify: `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md`: in §1.3 row 4, link the Phase 4 spec and note "4.1 done". In §2.1, replace "Chỉ đọc" with a pointer to the Phase 4 spec.
+- Modify: `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md`: in §1.3 row 4, link the Phase 4 spec and note "4.1 done". In §2.1, replace "Read-only" with a pointer to the Phase 4 spec.
 - Modify: `docs/superpowers/specs/2026-11-10-lucerna-phase3-lsp-design.md` §1 and `docs/superpowers/specs/2026-11-10-vim-navigation-design.md`: add the one-line notes listed in spec §21.
 
 - [ ] **Step 1:** Make the edits above.

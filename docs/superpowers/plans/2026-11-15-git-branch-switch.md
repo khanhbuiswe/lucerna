@@ -202,7 +202,7 @@
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** `cargo test -p lucerna-workbench` (full), `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo deny check`. Expected: PASS.
 - [ ] **Step 5: Update docs.**
-  - In `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md` §1.3, roadmap row 5: add "chuyển nhánh từ thanh tiêu đề (xong trên nhánh, chờ merge)".
+  - In `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md` §1.3, roadmap row 5: add "branch switching from the title bar (done on the branch, awaiting merge)".
   - Commit `feat(git): switch branches from the title bar`.
 
 ---

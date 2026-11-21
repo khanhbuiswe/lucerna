@@ -603,8 +603,8 @@ Spec: §12, last paragraph.
   - Note the `"onYank"` default and how it differs from VSCodeVim.
   - Note that `.` replays typing through auto-close.
 - `THIRD_PARTY_NOTICES.md`: add the new VSCodeVim test files used to the existing "VSCodeVim test cases" list (grep `Adapted from VSCodeVim`).
-- `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md` §1.3, V2 row: mark "V2a đã xong".
-- `docs/superpowers/specs/2026-11-13-vim-editing-design.md`: set the status line to `V2a đã triển khai`.
+- `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md` §1.3, V2 row: mark "V2a done".
+- `docs/superpowers/specs/2026-11-13-vim-editing-design.md`: set the status line to `V2a implemented`.
 - `docs/superpowers/specs/2026-11-11-lucerna-phase4-editing-design.md` §13: note that `transact_group` now exists (signature in Task 8).
 
 Steps:

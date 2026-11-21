@@ -815,7 +815,7 @@ The user chose (2026-11-09) a Zed-style dedicated page in an editor tab instead 
 **Files:**
 - Modify: `crates/lucerna-syntax/benches/highlight.rs`. Add `wasm_json_vs_native` (record-only) and `html_large_script_injection` / `markdown_many_fences` (with the 15% gate).
 - Modify: `THIRD_PARTY_NOTICES.md` (wasmtime and cranelift as Apache-2.0 WITH LLVM-exception, the `json.wasm` fixture, and the injection query sources)
-- Modify: `docs/superpowers/specs/2026-11-09-lucerna-phase2-extensions-design.md`, setting the status to "Đã triển khai" and adding a short "Kết quả đo" section
+- Modify: `docs/superpowers/specs/2026-11-09-lucerna-phase2-extensions-design.md`, setting the status to "Implemented" and adding a short "Measurement results" section
 - Modify: `README.md`, adding a short "Extensions" section that covers `luc ext`, the panel, and the Xcode CLT requirement
 
 - [ ] **Step 1: Run the benchmarks** with `cargo bench -p lucerna-syntax` and record the numbers in the spec.
@@ -827,6 +827,6 @@ The user chose (2026-11-09) a Zed-style dedicated page in an editor tab instead 
   - Install `vue` and open a `.vue` file. The `<script>` and `<style>` blocks should be coloured.
   - Uninstall each of them; none needs a restart.
 
-  Record the results, including any extension that failed and why, in the spec's "Kết quả đo" section.
+  Record the results, including any extension that failed and why, in the spec's "Measurement results" section.
 - [ ] **Step 4: Run** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` and `cargo deny check`. Expected: all green.
 - [ ] **Step 5: Commit** with message `docs: Phase 2 measurements, notices and README`.
