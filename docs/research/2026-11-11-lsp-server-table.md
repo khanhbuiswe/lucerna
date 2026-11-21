@@ -1,321 +1,321 @@
-# Nghiên cứu: bảng language server theo dữ liệu (Helix, Zed, VS Code)
+# Research: language server table from data (Helix, Zed, VS Code)
 
-- **Ngày:** 2026-11-11
-- **Trạng thái:** ghi chú nghiên cứu, làm nền cho việc "language server cho mọi ngôn ngữ" (Phase 3b / sau Phase 4). Phần "Lucerna chọn gì" (§9) chỉ là **đề xuất ban đầu**, sẽ chốt trong spec sau khi thảo luận với người dùng.
-- **Nguồn:**
-  - Helix: `helix-editor/helix` nhánh `master` lấy ngày 2026-11-11 (bản tag mới nhất là 25.07.1, 2025-07-18); tài liệu https://docs.helix-editor.com/languages.html, wiki https://github.com/helix-editor/helix/wiki/Language-Server-Configurations. Helix là MPL-2.0.
-  - Zed: checkout cục bộ `~/.cargo/git/checkouts/zed-a70e2ad075855582/b5cd310/` (`docs/src/configuring-languages.md`, `assets/settings/default.json`, `crates/settings_content/src/project.rs`, `crates/project/src/lsp_store/vue_language_server_ext.rs`). Các crate này là **GPL-3**: chỉ học thiết kế, không chép code.
-  - VS Code: https://code.visualstudio.com/api/language-extensions/language-server-extension-guide và các extension generic client. Sublime LSP: https://lsp.sublimetext.io/client_configuration/.
-  - Wu: https://github.com/dstrml/wu. Điều khoản Zed: https://zed.dev/terms.
-  - Tài liệu upstream của từng server (URL ở cuối file).
-- Mục nào chưa kiểm chứng với nguồn gốc trong ngày được đánh dấu **(chưa kiểm chứng)**.
-- Bối cảnh: `crates/lucerna-lsp/src/settings.rs` đã có shape của Zed `lsp.<server>.{binary{path,arguments,env}, initialization_options, settings}` cho 5 adapter viết sẵn (rust-analyzer, gopls, pyright/basedpyright, typescript-language-server, clangd). Tài liệu này trả lời câu hỏi: làm sao thêm hàng loạt ngôn ngữ khác mà không viết một adapter Rust cho mỗi server.
+- **Date:** 2026-11-11
+- **Status:** research notes, the basis for "a language server for every language" (Phase 3b / after Phase 4). The "What Lucerna chooses" section (§9) is only an **initial proposal**, to be settled in the spec after discussion with the user.
+- **Sources:**
+  - Helix: `helix-editor/helix` branch `master` taken on 2026-11-11 (the latest tagged release is 25.07.1, 2025-07-18); docs https://docs.helix-editor.com/languages.html, wiki https://github.com/helix-editor/helix/wiki/Language-Server-Configurations. Helix is MPL-2.0.
+  - Zed: the local checkout `~/.cargo/git/checkouts/zed-a70e2ad075855582/b5cd310/` (`docs/src/configuring-languages.md`, `assets/settings/default.json`, `crates/settings_content/src/project.rs`, `crates/project/src/lsp_store/vue_language_server_ext.rs`). These crates are **GPL-3**: we only learn the design and copy no code.
+  - VS Code: https://code.visualstudio.com/api/language-extensions/language-server-extension-guide and the generic client extensions. Sublime LSP: https://lsp.sublimetext.io/client_configuration/.
+  - Wu: https://github.com/dstrml/wu. Zed terms: https://zed.dev/terms.
+  - Each server's upstream documentation (URLs at the end of the file).
+- Items not verified against the original source on the day are marked **(unverified)**.
+- Context: `crates/lucerna-lsp/src/settings.rs` already has Zed's `lsp.<server>.{binary{path,arguments,env}, initialization_options, settings}` shape for the 5 prebuilt adapters (rust-analyzer, gopls, pyright/basedpyright, typescript-language-server, clangd). This document answers the question: how to add many more languages without writing a Rust adapter for each server.
 
-## 1. Tóm tắt
+## 1. Summary
 
-| Chủ đề | Helix | Zed | VS Code / Sublime | Lucerna nghiêng về |
+| Topic | Helix | Zed | VS Code / Sublime | Lucerna leans toward |
 |---|---|---|---|---|
-| Định nghĩa server mới bằng config | Có: `[language-server.<name>]` + `[[language]]` | **Không**: `lsp.<name>` chỉ chỉnh server do adapter hoặc extension đăng ký | Lõi VS Code không có; extension generic dùng key riêng; Sublime có `clients` | Có, theo shape JSON của Zed + vài key bổ sung |
-| Gắn server với ngôn ngữ | `language-servers` trong `[[language]]`, hỗ trợ `only-features` / `except-features` | `languages.<L>.language_servers` với `!name` và `"..."` | Sublime: `selector` (scope) | Giữ `languages.<L>.language_servers` kiểu Zed |
-| Merge cấu hình | Mặc định, user, project; gộp theo `name`, mảng bị thay cả | Settings nhiều lớp; mảng `language_servers` của user thay hẳn mặc định | Tùy extension | Gộp object theo key, thay mảng, `!`/`...` chỉ cho `language_servers` |
-| Cấu hình server | Một khối `config` dùng cho cả `initializationOptions` và `workspace/configuration` | Tách `initialization_options` và `settings` | Tách (client option và settings) | Tách hai khối như Zed |
-| Tin cậy file project | Master (2026-06): hỏi trust cho `.helix/languages.toml`, gắn hash SHA-256 | Restricted Mode | Workspace Trust | File project không được đặt `command`/`binary.path`/`env` khi chưa trust |
-| Kiểm tra cài đặt | `hx --health [lang]`: chỉ `which(command)` | Không có view tương đương | Không | View "LSP health" dò `--version`, kèm gợi ý cài |
-| Mặc định trong binary | `languages.toml` (MPL-2.0) | Adapter Rust + extension | Extension | Bảng riêng của Lucerna, viết từ tài liệu upstream, không chép file Helix |
-| Kéo extension từ `api.zed.dev` | Wu vẫn làm | Có | Không | **Không**: vướng ToS §2.2 và §2.4(b) |
+| Defining a new server in config | Yes: `[language-server.<name>]` + `[[language]]` | **No**: `lsp.<name>` only tweaks servers registered by an adapter or extension | VS Code core has none; generic extensions use their own keys; Sublime has `clients` | Yes, following Zed's JSON shape + a few extra keys |
+| Binding a server to a language | `language-servers` in `[[language]]`, supports `only-features` / `except-features` | `languages.<L>.language_servers` with `!name` and `"..."` | Sublime: `selector` (scope) | Keep Zed-style `languages.<L>.language_servers` |
+| Config merge | Default, user, project; merged by `name`, arrays replaced wholesale | Layered settings; the user's `language_servers` array fully replaces the default | Depends on the extension | Merge objects by key, replace arrays, `!`/`...` only for `language_servers` |
+| Server configuration | One `config` block used for both `initializationOptions` and `workspace/configuration` | `initialization_options` and `settings` are separate | Separate (client option and settings) | Two separate blocks like Zed |
+| Trusting project files | Master (2026-06): asks for trust for `.helix/languages.toml`, bound to a SHA-256 hash | Restricted Mode | Workspace Trust | A project file may not set `command`/`binary.path`/`env` until trusted |
+| Install check | `hx --health [lang]`: only `which(command)` | No equivalent view | No | An "LSP health" view that probes `--version`, with install hints |
+| Defaults in the binary | `languages.toml` (MPL-2.0) | Rust adapters + extensions | Extensions | Lucerna's own table, written from upstream docs, not copying Helix's file |
+| Pulling extensions from `api.zed.dev` | Wu still does | Yes | No | **No**: conflicts with ToS §2.2 and §2.4(b) |
 
 ## 2. Helix
 
-Nguồn: docs `languages.html`; `languages.toml` (5.657 dòng), `helix-loader/src/lib.rs` (`merge_toml_values`), `helix-loader/src/config.rs` (`user_lang_config`), `helix-loader/src/workspace_trust.rs`, `helix-term/src/health.rs`, `helix-term/src/application.rs`, `helix-lsp/src/client.rs`.
+Sources: the docs `languages.html`; `languages.toml` (5,657 lines), `helix-loader/src/lib.rs` (`merge_toml_values`), `helix-loader/src/config.rs` (`user_lang_config`), `helix-loader/src/workspace_trust.rs`, `helix-term/src/health.rs`, `helix-term/src/application.rs`, `helix-lsp/src/client.rs`.
 
 ### 2.1 `[language-server.<name>]`
 
-Trong file mặc định, mọi server nằm trong một bảng `[language-server]` dưới dạng inline table (ví dụ `bash-language-server = { command = "bash-language-server", args = ["start"] }`). Người dùng có thể viết `[language-server.<name>]` như thường.
+In the default file, every server lives in one `[language-server]` table as an inline table (for example `bash-language-server = { command = "bash-language-server", args = ["start"] }`). Users can write `[language-server.<name>]` as usual.
 
-| Key | Kiểu | Ý nghĩa |
+| Key | Type | Meaning |
 |---|---|---|
-| `command` | string | Tên binary (tìm trong `$PATH`) hoặc đường dẫn. Bắt buộc. |
-| `args` | string[] | argv sau command. |
-| `config` | TOML bất kỳ | Gửi làm `initializationOptions`; đồng thời là nguồn trả lời `workspace/configuration`. Sub-table `format` dùng làm option khi format. |
-| `timeout` | số giây | Thời gian tối đa của một request, mặc định 20. |
-| `environment` | bảng string sang string | Biến môi trường cho tiến trình. |
-| `required-root-patterns` | string[] (glob) | Server chỉ chạy nếu có ít nhất một glob khớp trong workspace. Dùng cho trường hợp như tailwind chỉ chạy khi có file config. |
+| `command` | string | Binary name (looked up in `$PATH`) or a path. Required. |
+| `args` | string[] | argv after the command. |
+| `config` | any TOML | Sent as `initializationOptions`; also the source for answering `workspace/configuration`. The `format` sub-table is used as options when formatting. |
+| `timeout` | seconds | Maximum time of one request, default 20. |
+| `environment` | table of string to string | Environment variables for the process. |
+| `required-root-patterns` | string[] (glob) | The server only runs if at least one glob matches in the workspace. Used for cases like tailwind running only when a config file exists. |
 
-Không có `roots`, `file-types` hay `language-id` theo từng server; các thứ đó nằm ở ngôn ngữ. Nhờ vậy một server dùng lại được cho nhiều ngôn ngữ (`vscode-css-language-server` cho css/scss/less).
+There is no per-server `roots`, `file-types` or `language-id`; those live on the language. This lets one server be reused for several languages (`vscode-css-language-server` for css/scss/less).
 
-### 2.2 `[[language]]` (phần liên quan LSP)
+### 2.2 `[[language]]` (the LSP-related part)
 
-| Key | Ý nghĩa |
+| Key | Meaning |
 |---|---|
-| `name` | Id ngôn ngữ của Helix, đồng thời là khóa merge. |
-| `language-servers` | Mảng có thứ tự. Mỗi phần tử là tên server (string) hoặc `{ name = "...", only-features = [...] }` / `{ name = "...", except-features = [...] }` (hai key loại trừ nhau). |
-| `roots` | File đánh dấu để tìm root LSP, tìm ngược từ file hiện tại đến workspace root. Master chấp nhận cả glob (C# dùng `["*.slnx", "*.sln", "*.csproj"]`). Thư mục **ngoài cùng** có marker thắng: `find_lsp_workspace` ghi đè kết quả mỗi lần gặp marker khi đi lên, dừng ở workspace root hoặc một thư mục trong `workspace-lsp-roots`. Lucerna theo cách này từ 2026-11-17, xem `docs/superpowers/specs/2026-11-17-lsp-outermost-root-design.md`. |
-| `language-id` | `TextDocumentItem.languageId`. Mặc định bằng `name`; chỉ đặt khi khác (`javascriptreact`, `typescriptreact`, `terraform`, `terraform-vars`, `dockercompose`). |
-| `file-types` | Mảng đuôi file (`"rs"`) hoặc `{ glob = "..." }`. Glob được kiểm trước đuôi file. |
-| `workspace-lsp-roots` | Thư mục con coi là root LSP riêng (monorepo). Đặt ở `[editor]` hoặc theo ngôn ngữ. |
+| `name` | Helix's language id, also the merge key. |
+| `language-servers` | An ordered array. Each element is a server name (string) or `{ name = "...", only-features = [...] }` / `{ name = "...", except-features = [...] }` (the two keys are mutually exclusive). |
+| `roots` | Marker files for finding the LSP root, searched upward from the current file to the workspace root. Master also accepts globs (C# uses `["*.slnx", "*.sln", "*.csproj"]`). The **outermost** directory with a marker wins: `find_lsp_workspace` overwrites the result each time it meets a marker while walking up, stopping at the workspace root or at a directory in `workspace-lsp-roots`. Lucerna has followed this since 2026-11-17, see `docs/superpowers/specs/2026-11-17-lsp-outermost-root-design.md`. |
+| `language-id` | `TextDocumentItem.languageId`. Defaults to `name`; set only when different (`javascriptreact`, `typescriptreact`, `terraform`, `terraform-vars`, `dockercompose`). |
+| `file-types` | An array of file suffixes (`"rs"`) or `{ glob = "..." }`. Globs are checked before suffixes. |
+| `workspace-lsp-roots` | Subdirectories treated as separate LSP roots (monorepos). Set under `[editor]` or per language. |
 
-Tên feature của `only-features` / `except-features` (chính xác): `format`, `goto-definition`, `goto-declaration`, `goto-type-definition`, `goto-reference`, `goto-implementation`, `signature-help`, `hover`, `document-highlight`, `completion`, `code-action`, `workspace-command`, `document-symbols`, `workspace-symbols`, `diagnostics`, `rename-symbol`, `inlay-hints`.
+The feature names of `only-features` / `except-features` (exact): `format`, `goto-definition`, `goto-declaration`, `goto-type-definition`, `goto-reference`, `goto-implementation`, `signature-help`, `hover`, `document-highlight`, `completion`, `code-action`, `workspace-command`, `document-symbols`, `workspace-symbols`, `diagnostics`, `rename-symbol`, `inlay-hints`.
 
-Cách điều phối (theo docs): với đa số feature, server đầu tiên trong danh sách hỗ trợ request đó sẽ thắng. Riêng `diagnostics`, `code-action`, `completion`, `document-symbols`, `workspace-symbols` được gửi cho mọi server đang bật rồi gộp kết quả. Ví dụ trong bảng mặc định: Erlang liệt kê `erlang-ls` và `elp`, cả hai đều `except-features = ["document-symbols", "workspace-symbols"]`.
+How it coordinates (per the docs): for most features, the first server in the list that supports the request wins. `diagnostics`, `code-action`, `completion`, `document-symbols` and `workspace-symbols` alone are sent to every enabled server and the results are merged. Example in the default table: Erlang lists `erlang-ls` and `elp`, both with `except-features = ["document-symbols", "workspace-symbols"]`.
 
-### 2.3 Merge ba lớp
+### 2.3 Three-layer merge
 
-`user_lang_config` nạp `languages.toml` biên dịch sẵn trong binary (`include_bytes!`), rồi chồng `~/.config/helix/languages.toml` và (nếu được trust) `<workspace>/.helix/languages.toml`, mỗi lớp bằng `merge_toml_values(left, right, 3)`. Lớp sau thắng. Quy tắc:
+`user_lang_config` loads the `languages.toml` compiled into the binary (`include_bytes!`), then overlays `~/.config/helix/languages.toml` and (if trusted) `<workspace>/.helix/languages.toml`, each layer with `merge_toml_values(left, right, 3)`. The later layer wins. Rules:
 
-- Bảng + bảng, depth > 0: hợp key; key có ở cả hai thì merge đệ quy với depth-1.
-- Mảng + mảng, depth > 0: với mỗi phần tử bên phải có key `name`, phần tử cùng `name` bên trái bị bỏ và kết quả đã merge được nối vào cuối. Phần tử không trùng tên thì nối thêm. Vì thế `[[language]] name = "php"` trong file user merge vào mục php mặc định thay vì tạo mục thứ hai.
-- depth 0 hoặc các cặp giá trị khác (string, số, mảng string): giá trị bên phải thay thế.
+- Table + table, depth > 0: union of keys; a key present in both is merged recursively with depth-1.
+- Array + array, depth > 0: for each right-hand element that has a `name` key, the left-hand element with the same `name` is dropped and the merged result is appended at the end. Elements with no matching name are appended. That is why `[[language]] name = "php"` in the user file merges into the default php entry instead of creating a second one.
+- Depth 0 or other value pairs (string, number, string array): the right-hand value replaces.
 
-Hệ quả (depth 3 tính từ gốc tài liệu):
-- `[language-server.foo]`: từng key của server được merge; `args` bị thay cả mảng; sub-table của `config` sâu hơn depth 3 bị thay, không merge.
-- `[[language]]` merge theo `name`; các mảng `language-servers`, `roots`, `file-types` bị thay cả mảng (không có cú pháp append, không có `!`/`...` như Zed). Muốn thêm server phải viết lại cả danh sách.
-- Project áp dụng sau cùng nên project thắng user.
+Consequences (depth 3 counted from the document root):
+- `[language-server.foo]`: each key of the server is merged; `args` is replaced as a whole array; sub-tables of `config` deeper than depth 3 are replaced, not merged.
+- `[[language]]` merges by `name`; the arrays `language-servers`, `roots`, `file-types` are replaced as a whole (there is no append syntax, and no `!`/`...` like Zed). To add a server you must rewrite the whole list.
+- The project applies last, so project wins over user.
 
 ### 2.4 Trust
 
-Bản 25.07.1 nạp `.helix/languages.toml` vô điều kiện. Master thêm workspace trust (PR https://github.com/helix-editor/helix/pull/15857, merge 2026-06-20):
+Version 25.07.1 loads `.helix/languages.toml` unconditionally. Master adds workspace trust (PR https://github.com/helix-editor/helix/pull/15857, merged 2026-06-20):
 
-- `TrustQuery` gồm: language server, debug adapter, config `.helix/` cục bộ, git config.
-- `ImplicitTrustLevel`: `None` (hỏi mọi thứ), `Servers` (mặc định: LSP/DAP từ config **global** chạy ngầm vì binary do người dùng cài và tìm qua PATH; config cục bộ của workspace vẫn cần trust rõ ràng), `Insecure`.
-- Trust gắn với hash SHA-256 của cây `.helix/` (kiểu direnv): đổi nội dung sau khi trust thì thành "stale" và phải duyệt lại, nên kéo một nhánh độc hại về không thể lặng lẽ đổi `command`.
-- Có cờ `prompt` và glob các đường dẫn tin cậy. `hx --health` chạy với `WorkspaceTrust::fully_trusted()`.
+- `TrustQuery` covers: language server, debug adapter, local `.helix/` config, git config.
+- `ImplicitTrustLevel`: `None` (ask about everything), `Servers` (default: LSP/DAP from the **global** config run silently because the binaries are installed by the user and found through PATH; the workspace's local config still needs explicit trust), `Insecure`.
+- Trust is tied to the SHA-256 hash of the `.helix/` tree (direnv-style): changing the content after trusting makes it "stale" and it must be approved again, so pulling in a malicious branch cannot silently change `command`.
+- There is a `prompt` flag and globs of trusted paths. `hx --health` runs with `WorkspaceTrust::fully_trusted()`.
 
-### 2.5 `config`: initializationOptions và workspace/configuration
+### 2.5 `config`: initializationOptions and workspace/configuration
 
-- `initialize` gửi `initialization_options: self.config.clone()` (`helix-lsp/src/client.rs`).
-- Với `workspace/configuration`, Helix lấy chính giá trị `config` rồi đi theo `item.section.split('.')`. Section rỗng trả cả `config`; đường dẫn không có thì trả `null`; bỏ qua `scopeUri` (`helix-term/src/application.rs`).
-- Helix khai báo dynamic registration cho `didChangeConfiguration` và gọi nó khi reload config.
-- Tức là Helix dùng **một khối** cho cả hai việc. Cách này chạy được với server dùng namespace có tiền tố (`Lua.*`, `elixirLS.*`, `yaml.*`), nên entry mặc định có dạng `config = { elixirLS.dialyzerEnabled = false }`. Zed và VS Code tách riêng; cách tách của Lucerna đúng hơn, giữ nguyên.
+- `initialize` sends `initialization_options: self.config.clone()` (`helix-lsp/src/client.rs`).
+- For `workspace/configuration`, Helix takes the `config` value itself and walks `item.section.split('.')`. An empty section returns the whole `config`; a missing path returns `null`; `scopeUri` is ignored (`helix-term/src/application.rs`).
+- Helix declares dynamic registration for `didChangeConfiguration` and calls it when reloading config.
+- That is, Helix uses **one block** for both purposes. This works with servers that use prefixed namespaces (`Lua.*`, `elixirLS.*`, `yaml.*`), so default entries look like `config = { elixirLS.dialyzerEnabled = false }`. Zed and VS Code keep them separate; Lucerna's split is more correct and stays as it is.
 
 ### 2.6 `hx --health`
 
-- Phần đầu: `Config file:`, `Language file:`, `Log file:`, thư mục runtime, clipboard provider.
-- Bảng cột `Language`, `Language servers`, `Debug adapter`, `Formatter`, rồi mỗi loại query tree-sitter một cột.
-- Cột language server in server đầu tiên là `✓ name` hoặc `✘ name`, server phụ nằm ở các dòng tiếp. Kiểm tra chỉ là `which(command)` trên `$PATH`: không spawn server, không chạy `--version`.
-- `hx --health <lang>` in `Configured language servers:` kèm `✓ name: /đường/dẫn/đã/resolve` hoặc `✘ name: 'cmd' not found in $PATH`, rồi tương tự cho debug adapter, formatter, file query.
-- Không có đối số thì lọc theo `use-grammars`; `all` / `all-languages` hiện tất cả.
+- The top part: `Config file:`, `Language file:`, `Log file:`, the runtime directory, the clipboard provider.
+- A table with columns `Language`, `Language servers`, `Debug adapter`, `Formatter`, then one column per kind of tree-sitter query.
+- The language server column prints the first server as `✓ name` or `✘ name`, with additional servers on the following lines. The check is only `which(command)` on `$PATH`: it does not spawn the server or run `--version`.
+- `hx --health <lang>` prints `Configured language servers:` followed by `✓ name: /resolved/path` or `✘ name: 'cmd' not found in $PATH`, then likewise for the debug adapter, formatter, and query files.
+- With no argument it filters by `use-grammars`; `all` / `all-languages` shows everything.
 
-Lucerna đã dò bằng `--version` (`probe_args`), chặt hơn Helix. View "LSP health" có thể theo `hx --health <lang>`: server đã cấu hình, đường dẫn đã resolve hoặc "not found on PATH", kèm gợi ý cài từ bảng.
+Lucerna already probes with `--version` (`probe_args`), stricter than Helix. The "LSP health" view can follow `hx --health <lang>`: the configured servers, the resolved path or "not found on PATH", with an install hint from the table.
 
-### 2.7 Wiki "Language Server Configurations"
+### 2.7 The "Language Server Configurations" wiki
 
-Trang cộng đồng, có hướng dẫn cài và đoạn `languages.toml` cho từng ngôn ngữ. Các điểm dùng ở §7: Phpactor qua `phpactor.phar` với `args = ["language-server"]`; intelephense qua npm, bản premium cần `licenceKey`; jdtls qua `brew install jdtls`; Elixir qua `elixir-ls.zip` và đổi tên `language_server.sh`; Vue cần `@vue/language-server` + `@vue/typescript-plugin` đăng ký làm plugin của `typescript-language-server`; taplo cần bản build có feature `lsp` (`cargo install taplo-cli --locked --features lsp`, hoặc `brew install taplo`); Gleam dùng `gleam lsp` từ v0.21; Docker Compose có server riêng `docker-compose-langserver --stdio`. Wiki là nội dung người dùng đóng góp: chỉ coi là gợi ý, không phải nguồn sự thật.
+A community page with install instructions and a `languages.toml` snippet for each language. The points used in §7: Phpactor via `phpactor.phar` with `args = ["language-server"]`; intelephense via npm, the premium version needs a `licenceKey`; jdtls via `brew install jdtls`; Elixir via `elixir-ls.zip` and renaming `language_server.sh`; Vue needs `@vue/language-server` + `@vue/typescript-plugin` registered as a plugin of `typescript-language-server`; taplo needs a build with the `lsp` feature (`cargo install taplo-cli --locked --features lsp`, or `brew install taplo`); Gleam uses `gleam lsp` since v0.21; Docker Compose has its own server `docker-compose-langserver --stdio`. The wiki is user-contributed content: treat it only as a hint, not a source of truth.
 
-### 2.8 Giống và khác với Lucerna hiện tại
+### 2.8 Similarities and differences with Lucerna today
 
-- Giống: server là một map có tên; ngôn ngữ giữ danh sách server có thứ tự.
-- Khác: Helix tách `command` khỏi binding ngôn ngữ và root, Lucerna/Zed gom mọi thứ vào `lsp.<server>`. Helix gộp `config` một khối, Lucerna tách đôi. Helix không có `!`/`...`.
+- Same: servers are a named map; a language keeps an ordered list of servers.
+- Different: Helix separates `command` from the language binding and root, while Lucerna/Zed gather everything into `lsp.<server>`. Helix merges `config` as one block, Lucerna splits it in two. Helix has no `!`/`...`.
 
-## 3. Giấy phép: lấy bảng mặc định từ Helix
+## 3. License: taking the default table from Helix
 
-Helix là MPL-2.0 (LICENSE của repo). `languages.toml` không có header riêng (chỉ hai dòng comment trỏ tới docs), nên áp dụng MPL của cả repo. Đây không phải tư vấn pháp lý.
+Helix is MPL-2.0 (the repo's LICENSE). `languages.toml` has no header of its own (only two comment lines pointing to the docs), so the repo-wide MPL applies. This is not legal advice.
 
-1. **Dữ kiện không có bản quyền.** Tên server, file thực thi, cờ bắt buộc (`--stdio`, `serve`, `lsp stdio`), languageId và file đánh dấu của build tool là dữ kiện do chính dự án server công bố. Luật Mỹ (Feist v. Rural, 1991) và đa số nước không bảo hộ dữ kiện, chỉ bảo hộ cách chọn lọc, sắp xếp và biểu đạt gốc. Phần dễ được bảo hộ nhất của một file TOML ~300 mục là cách sắp xếp, comment và các giá trị tinh chỉnh `config` đặc thù của Helix.
-2. **MPL-2.0 là copyleft cấp file.** Nếu Lucerna chép `languages.toml` (hoặc một khối lớn) vào, ví dụ, `crates/lucerna-lsp/assets/servers.toml` thì file đó vẫn là MPL-2.0: phải công bố mã nguồn của file theo MPL, giữ nguyên thông báo, sửa đổi file cũng là MPL. MPL §3.3 cho phép file MPL nằm trong "Larger Work" dưới MIT/Apache nên tương thích, nhưng:
-   - crate thành kiểu `MIT OR Apache-2.0` kèm MPL-2.0, `cargo deny` phải cho phép MPL-2.0, trường `license` và NOTICE phải sửa;
-   - phá câu chuyện giấy phép gọn "MIT OR Apache-2.0" của dự án.
-3. **Cách làm đề xuất:**
-   - **Không chép file Helix.** Mỗi mục trong bảng mặc định lấy từ tài liệu upstream của chính server (README, docs), là dữ kiện công bố. Ghi URL upstream vào trường `docs` của mục đó; trường này đồng thời là link gợi ý cài trong UI.
-   - Dùng Helix chỉ để kiểm tra chéo "lệnh này đúng chưa"; không chép file, thứ tự, comment hay khối `config` của Helix.
-   - Đối chiếu được với nvim-lspconfig (https://github.com/neovim/nvim-lspconfig, Apache-2.0); mason-registry cũng Apache-2.0 (chưa kiểm chứng). Cả hai tương thích giấy phép. Nếu có lúc suy ra máy móc từ một trong hai thì nvim-lspconfig là nguồn an toàn, kèm dòng ghi nguồn trong NOTICE hoặc header bảng ("lệnh server được đối chiếu với nvim-lspconfig, Apache-2.0").
-   - Một dòng cảm ơn ("lấy cảm hứng từ `languages.toml` của Helix") trong mục Tham khảo của spec là lịch sự và không tạo nghĩa vụ.
-4. Tương đương của Zed (`crates/languages`, extensions) là GPL/Apache hỗn hợp; theo CLAUDE.md chỉ học thiết kế.
+1. **Facts are not copyrightable.** Server names, executable files, mandatory flags (`--stdio`, `serve`, `lsp stdio`), languageIds and the build tool's marker files are facts published by the server projects themselves. US law (Feist v. Rural, 1991) and most countries do not protect facts, only the selection, arrangement and original expression. The part of a ~300-entry TOML file most likely to be protected is the arrangement, the comments, and the Helix-specific fine-tuned `config` values.
+2. **MPL-2.0 is file-level copyleft.** If Lucerna copies `languages.toml` (or a large block of it) into, for example, `crates/lucerna-lsp/assets/servers.toml`, that file stays MPL-2.0: its source must be made available under the MPL, notices kept, and modifications to the file are also MPL. MPL §3.3 allows an MPL file inside a "Larger Work" under MIT/Apache, so it is compatible, but:
+   - the crate becomes `MIT OR Apache-2.0` plus MPL-2.0, `cargo deny` must allow MPL-2.0, and the `license` field and NOTICE must be changed;
+   - it breaks the project's clean "MIT OR Apache-2.0" license story.
+3. **Proposed approach:**
+   - **Do not copy Helix's file.** Each entry in the default table comes from the server's own upstream documentation (README, docs), which is published fact. Record the upstream URL in that entry's `docs` field; this field is also the install-hint link in the UI.
+   - Use Helix only to cross-check "is this command right"; do not copy Helix's file, ordering, comments or `config` blocks.
+   - Cross-checkable against nvim-lspconfig (https://github.com/neovim/nvim-lspconfig, Apache-2.0); mason-registry is also Apache-2.0 (unverified). Both are license-compatible. If at some point we derive anything mechanically from either, nvim-lspconfig is the safe source, with an attribution line in NOTICE or in the table header ("server commands cross-checked against nvim-lspconfig, Apache-2.0").
+   - A line of thanks ("inspired by Helix's `languages.toml`") in the spec's References section is polite and creates no obligation.
+4. Zed's equivalent (`crates/languages`, extensions) is a mix of GPL/Apache; per CLAUDE.md we only learn the design.
 
 ## 4. Zed
 
-Nguồn cục bộ: `docs/src/configuring-languages.md`, `assets/settings/default.json`, `crates/settings_content/src/project.rs`.
+Local sources: `docs/src/configuring-languages.md`, `assets/settings/default.json`, `crates/settings_content/src/project.rs`.
 
 - `lsp.<server-name>` (`LspSettings`):
-  - `binary: { path, arguments, env, ignore_system_version }` (`BinarySettings`): `path` thay binary tải về hoặc trên PATH, `arguments` thay args, `env` thêm biến môi trường.
-  - `initialization_options`: JSON merge vào mặc định của adapter rồi gửi trong `initialize`.
-  - `settings`: JSON trả cho `workspace/configuration` (và đẩy qua `didChangeConfiguration`).
-  - `enable_lsp_tasks` (mặc định true), `fetch.pre_release`.
-- `languages.<Language>.language_servers`: danh sách tên có thứ tự; `"!name"` tắt server; `"..."` mở rộng thành mọi server khác đã đăng ký cho ngôn ngữ đó mà chưa được nêu (trừ server tắt theo mặc định nếu không nêu tên). Danh sách của người dùng **thay hẳn** danh sách mặc định (các `!x` mặc định mất nếu không viết lại). `language_servers: ["..."]` ở cấp cao nhất là mặc định toàn cục.
-- `global_lsp_settings`: `button`, `request_timeout` (mặc định 120 s, 0 = không timeout), `max_buffer_line_length` (20000), thông báo, rule semantic token.
-- **Xác nhận: không thể định nghĩa server mới chỉ bằng settings.** `LspSettings` không có trường nào gắn server với ngôn ngữ, đuôi file hay root marker; `language_servers` chỉ sắp xếp và lọc tên các server do adapter dựng sẵn hoặc extension đăng ký. Một entry `lsp.foo` với `foo` lạ là vô hiệu. Con đường duy nhất là viết extension (Rust biên dịch ra WASM, `language_server_command`).
+  - `binary: { path, arguments, env, ignore_system_version }` (`BinarySettings`): `path` replaces the downloaded binary or the one on PATH, `arguments` replaces the args, `env` adds environment variables.
+  - `initialization_options`: JSON merged into the adapter's defaults and then sent in `initialize`.
+  - `settings`: JSON returned for `workspace/configuration` (and pushed through `didChangeConfiguration`).
+  - `enable_lsp_tasks` (default true), `fetch.pre_release`.
+- `languages.<Language>.language_servers`: an ordered list of names; `"!name"` disables a server; `"..."` expands to every other server registered for that language and not yet named (except servers disabled by default unless named). The user's list **fully replaces** the default list (the default `!x` entries are lost unless rewritten). `language_servers: ["..."]` at the top level is the global default.
+- `global_lsp_settings`: `button`, `request_timeout` (default 120 s, 0 = no timeout), `max_buffer_line_length` (20000), notifications, semantic token rules.
+- **Confirmed: a new server cannot be defined with settings alone.** `LspSettings` has no field that binds a server to a language, a file suffix or a root marker; `language_servers` only orders and filters the names of servers built by an adapter or registered by an extension. An `lsp.foo` entry with an unknown `foo` has no effect. The only route is writing an extension (Rust compiled to WASM, `language_server_command`).
 
-Giống và khác: Lucerna đã có `ServerSettings { binary, initialization_options, settings }` giống hệt shape này. Khác biệt cần bù là khả năng khai báo server mới (Helix/Sublime có, Zed không).
+Similarities and differences: Lucerna already has `ServerSettings { binary, initialization_options, settings }`, identical to this shape. The difference to make up is the ability to declare a new server (Helix/Sublime have it, Zed does not).
 
-## 5. VS Code, Sublime LSP, Wu và điều khoản Zed
+## 5. VS Code, Sublime LSP, Wu and Zed's terms
 
-### 5.1 VS Code và các generic client
+### 5.1 VS Code and the generic clients
 
-Lõi VS Code không có generic LSP client; mỗi server đi kèm một extension dựng trên `vscode-languageclient` (`ServerOptions = { command, args, options: { env, cwd } }`, `LanguageClientOptions = { documentSelector, initializationOptions, synchronize.configurationSection }`). `workspace/configuration` được trả lời từ settings của VS Code theo tên section (`yaml` ra các setting `yaml.*`).
+VS Code core has no generic LSP client; each server comes with an extension built on `vscode-languageclient` (`ServerOptions = { command, args, options: { env, cwd } }`, `LanguageClientOptions = { documentSelector, initializationOptions, synchronize.configurationSection }`). `workspace/configuration` is answered from VS Code's settings by section name (`yaml` gives the `yaml.*` settings).
 
-Các extension generic client (không có schema chuẩn):
+The generic client extensions (no standard schema):
 
 | Extension | Settings | Shape |
 |---|---|---|
-| Generic LSP Client "glspc" (llllvvuu/vscode-glspc) | `glspc.serverCommand`, `glspc.serverCommandArguments`, `glspc.languageId`, `glspc.environmentVariables` (mở rộng `$VAR`), `glspc.initializationOptions`, `glspc.trace.server` | một server mỗi workspace |
-| vscode-lsp-config (pepebecker) | `lspConfig.servers: [{ language, cmd, args }]` | danh sách |
-| Alloglot (MercuryTechnologies) | `alloglot.languages: [{ languageId, serverCommand, formatCommand, onSaveCommand, ... }]`, `alloglot.mergeConfigs` merge `.vscode/alloglot.json` | danh sách, thiên về Haskell |
-| langoustine-vscode | `langoustine-vscode.servers` khóa theo đuôi file | danh sách |
+| Generic LSP Client "glspc" (llllvvuu/vscode-glspc) | `glspc.serverCommand`, `glspc.serverCommandArguments`, `glspc.languageId`, `glspc.environmentVariables` (expands `$VAR`), `glspc.initializationOptions`, `glspc.trace.server` | one server per workspace |
+| vscode-lsp-config (pepebecker) | `lspConfig.servers: [{ language, cmd, args }]` | list |
+| Alloglot (MercuryTechnologies) | `alloglot.languages: [{ languageId, serverCommand, formatCommand, onSaveCommand, ... }]`, `alloglot.mergeConfigs` merges `.vscode/alloglot.json` | list, Haskell-leaning |
+| langoustine-vscode | `langoustine-vscode.servers` keyed by file suffix | list |
 
-### 5.2 Sublime LSP và Neovim
+### 5.2 Sublime LSP and Neovim
 
-- Sublime LSP `clients.<name>`: `enabled`, `command` (mảng argv), `selector` (scope, ví dụ `source.php`), `env`, `settings`, `initialization_options`, `priority_selector`, `diagnostics_mode`, `disabled_capabilities`, `experimental_capabilities`, `tcp_port`.
-- Neovim 0.11+ `vim.lsp.config(name, { cmd, filetypes, root_markers, settings, init_options })` + `vim.lsp.enable(name)` (chưa kiểm chứng), với danh mục nvim-lspconfig (Apache-2.0) làm mặc định.
-- **Mẫu số chung** của Helix, Sublime, Neovim, glspc: `command` + `args` (hoặc argv), gắn ngôn ngữ/đuôi file, root marker, `env`, `initialization_options`, `settings`. Đó là schema tối thiểu của Lucerna.
+- Sublime LSP `clients.<name>`: `enabled`, `command` (an argv array), `selector` (scope, for example `source.php`), `env`, `settings`, `initialization_options`, `priority_selector`, `diagnostics_mode`, `disabled_capabilities`, `experimental_capabilities`, `tcp_port`.
+- Neovim 0.11+ `vim.lsp.config(name, { cmd, filetypes, root_markers, settings, init_options })` + `vim.lsp.enable(name)` (unverified), with the nvim-lspconfig catalog (Apache-2.0) as the defaults.
+- The **common denominator** of Helix, Sublime, Neovim, glspc: `command` + `args` (or argv), a language/file suffix binding, root markers, `env`, `initialization_options`, `settings`. That is Lucerna's minimal schema.
 
 ### 5.3 Wu (github.com/dstrml/wu)
 
-Nguồn: README, `assets/settings/default.json`, `crates/http_client/src/http_client.rs`, `crates/extension_host/src/extension_host.rs`.
+Sources: the README, `assets/settings/default.json`, `crates/http_client/src/http_client.rs`, `crates/extension_host/src/extension_host.rs`.
 
-- README: "a fork of Zed" "diverges heavily from it"; ghi công đội Zed; mô tả "The fast, native code editor and agent workspace"; hỗ trợ sẵn agent Claude Code, Codex, OpenCode; tuyên bố "No account or telemetry".
-- Giấy phép: GPL-3.0-or-later kèm phần Apache-2.0 (LICENSE-GPL, LICENSE-APACHE). Repo không phải đối tượng "fork" trên GitHub (`fork: false`), tạo 2026-08-28, push gần nhất 2026-11-10, khoảng 640 sao.
-- Extension: **vẫn trỏ về server của Zed theo mặc định.** `assets/settings/default.json` có `"server_url": "https://zed.dev"` (ghi đè bằng env `ZED_SERVER_URL`); `http_client.rs` giữ `build_zed_api_url`, ánh xạ `https://zed.dev` sang `https://api.zed.dev` (và cloud.zed.dev cho endpoint khác). `extension_host.rs` gọi `/extensions/updates` và các endpoint extension khác qua `build_zed_api_url`. Tức gallery extension của Wu chính là registry của Zed phục vụ từ `api.zed.dev`.
-- Khác Zed (theo README, chưa audit): đổi thương hiệu (action có namespace `wu:`), tính năng agent workspace, bỏ telemetry và tài khoản.
-- **Lucerna không theo hướng này.** Lý do ở §5.4.
+- README: "a fork of Zed" that "diverges heavily from it"; credits the Zed team; described as "The fast, native code editor and agent workspace"; has built-in support for the agents Claude Code, Codex, OpenCode; claims "No account or telemetry".
+- License: GPL-3.0-or-later with an Apache-2.0 part (LICENSE-GPL, LICENSE-APACHE). The repo is not a GitHub "fork" object (`fork: false`), created 2026-08-28, last pushed 2026-11-10, about 640 stars.
+- Extensions: **still points to Zed's server by default.** `assets/settings/default.json` has `"server_url": "https://zed.dev"` (overridable with the env `ZED_SERVER_URL`); `http_client.rs` keeps `build_zed_api_url`, mapping `https://zed.dev` to `https://api.zed.dev` (and cloud.zed.dev for other endpoints). `extension_host.rs` calls `/extensions/updates` and the other extension endpoints through `build_zed_api_url`. That is, Wu's extension gallery is Zed's registry served from `api.zed.dev`.
+- Differences from Zed (per the README, not audited): rebranding (actions namespaced `wu:`), an agent workspace feature, telemetry and accounts removed.
+- **Lucerna does not go this way.** The reason is in §5.4.
 
-### 5.4 Điều khoản của Zed
+### 5.4 Zed's terms
 
-Nguồn: https://zed.dev/terms ("Last Updated: March 2, 2026", tức 2026-03-02).
+Source: https://zed.dev/terms ("Last Updated: March 2, 2026", that is 2026-03-02).
 
 - §2.2 (Access Grant): "Customer agrees to access the Service only through the mechanisms designated by Zed."
-- §2.4 (Restrictions), mục (b): "(b) seek to access non-public APIs associated with the Service;"
+- §2.4 (Restrictions), item (b): "(b) seek to access non-public APIs associated with the Service;"
 
-Tài liệu công khai cho endpoint extension của `api.zed.dev`: docs của Zed mô tả quy trình *xuất bản* extension (PR submodule vào `zed-industries/extensions`, CI của Zed đóng gói) và crate `zed_extension_api` cho tác giả (https://zed.dev/docs/extensions/developing-extensions, https://zed.dev/docs/extensions/publishing/prerequisites). **Không thấy** tài liệu công khai cho các endpoint HTTP mà app dùng (`/extensions`, `/extensions/updates`, `/extensions/<id>/download`...); chúng chỉ lộ ra trong mã nguồn Zed. Hiểu chúng là "non-public APIs associated with the Service" là cách đọc thận trọng; editor bên thứ ba gọi chúng tốt nhất là vùng xám, xấu nhất là vi phạm §2.4(b) (điều khoản ràng buộc người chấp nhận). Đây là một lý do để Lucerna dùng PATH + bảng thay vì kéo extension từ `api.zed.dev`. Điều khoản này tồn tại công khai; điều không công khai là tài liệu API của endpoint.
+Public documentation for the extension endpoints of `api.zed.dev`: Zed's docs describe the *publishing* workflow for extensions (a submodule PR into `zed-industries/extensions`, packaged by Zed's CI) and the `zed_extension_api` crate for authors (https://zed.dev/docs/extensions/developing-extensions, https://zed.dev/docs/extensions/publishing/prerequisites). **We found no** public documentation for the HTTP endpoints the app uses (`/extensions`, `/extensions/updates`, `/extensions/<id>/download`...); they only show up in Zed's source code. Reading them as "non-public APIs associated with the Service" is the cautious interpretation; a third-party editor calling them is, at best, a gray area and, at worst, a violation of §2.4(b) (a term that binds the person who accepts). This is one reason for Lucerna to use PATH + a table instead of pulling extensions from `api.zed.dev`. The terms are publicly available; what is not public is the API documentation of the endpoints.
 
-## 6. Các phương án "language server cho mọi ngôn ngữ"
+## 6. Options for "a language server for every language"
 
-Người dùng đã duyệt: **chọn f trước, d sau Phase 4** (nếu cần "cài là chạy").
+The user approved: **pick f first, d after Phase 4** (if "install and it just works" is needed).
 
-| | Phương án | Ưu | Nhược |
+| | Option | Pros | Cons |
 |---|---|---|---|
-| a | Bắt buộc có `cargo` để build `extension.wasm` từ repo extension | Dùng được hệ extension Zed nguyên bản | Người dùng phải cài Rust toolchain, build chậm, đĩa nặng |
-| b | Lucerna tự cài toolchain (rustup, wasm target) | Người dùng không phải làm gì | Tải vài trăm MB ngầm, nhiều điểm hỏng, khó hỗ trợ |
-| c | Dùng `api.zed.dev` (như Wu) để lấy archive build sẵn | Dễ nhất, có sẵn kho extension | Vướng ToS §2.2 và §2.4(b); phụ thuộc hạ tầng của Zed |
-| d | CI của Lucerna build sẵn `extension.wasm` và tự host (ký ed25519, kiểm giấy phép) | Cài là chạy, độc lập Zed, kiểm soát chất lượng và giấy phép | Phải vận hành CI và hosting, lo bảo mật chuỗi cung ứng; để Phase 3b sau Phase 4 |
-| e | Đóng gói sẵn WASM vào app | Offline, không cần mạng | App phình, cập nhật server phải phát hành lại app, vướng giấy phép từng extension |
-| f | Bảng server kiểu Helix (dữ liệu trong binary, người dùng ghi đè) | Không cần WASM, nhanh, tính năng LSP đầy đủ, hợp giấy phép | Người dùng tự cài server (có gợi ý cài); không có logic riêng ngoài vài hook (Vue) |
-| g | Adapter Rust tự tải server (như adapter native của Zed) | Trải nghiệm tốt nhất cho từng server | Mỗi server một adapter, tốn công bảo trì, phải xử lý tải và cập nhật |
-| h | Xin phép Zed dùng API extension | Hợp lệ nếu được đồng ý | Phụ thuộc người khác, không chắc có phản hồi; vẫn bị ràng buộc hạ tầng Zed |
+| a | Require `cargo` to build `extension.wasm` from the extension repo | Uses the original Zed extension system | The user must install a Rust toolchain, slow builds, heavy on disk |
+| b | Lucerna installs the toolchain itself (rustup, wasm target) | The user has to do nothing | Silently downloads a few hundred MB, many points of failure, hard to support |
+| c | Use `api.zed.dev` (like Wu) to fetch prebuilt archives | Easiest, the extension catalog is ready | Conflicts with ToS §2.2 and §2.4(b); depends on Zed's infrastructure |
+| d | Lucerna's CI prebuilds `extension.wasm` and hosts it itself (ed25519-signed, license-checked) | Install and it works, independent of Zed, quality and license control | Must operate CI and hosting, deal with supply-chain security; to be Phase 3b after Phase 4 |
+| e | Bundle the WASM into the app | Offline, no network needed | Bloated app, updating a server needs an app release, per-extension license issues |
+| f | A Helix-style server table (data in the binary, user overrides) | No WASM needed, fast, full LSP features, license-friendly | The user installs servers themselves (with install hints); no custom logic beyond a few hooks (Vue) |
+| g | Rust adapters that download servers themselves (like Zed's native adapters) | The best experience for each server | One adapter per server, costly to maintain, must handle downloads and updates |
+| h | Ask Zed for permission to use the extension API | Legitimate if agreed | Depends on others, a reply is not certain; still tied to Zed's infrastructure |
 
-## 7. Bảng server theo ngôn ngữ
+## 7. Server table by language
 
-languageId lấy từ bảng "Language identifiers" của LSP 3.17 (https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentItem) khi có; id đánh dấu `*` không nằm trong bảng spec, là giá trị thực tế các extension VS Code đang dùng. "Node" = cần Node.js trên PATH; "JVM" = cần JDK; "BEAM" = cần Erlang/Elixir.
+The languageId comes from the "Language identifiers" table of LSP 3.17 (https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentItem) when present; ids marked `*` are not in the spec table and are the values VS Code extensions use in practice. "Node" = needs Node.js on PATH; "JVM" = needs a JDK; "BEAM" = needs Erlang/Elixir.
 
-### 7.1 Bảng
+### 7.1 Table
 
-| Ngôn ngữ | Server | Lệnh stdio | Root markers | languageId | Cài trên macOS | Cần Node? |
+| Language | Server | stdio command | Root markers | languageId | Install on macOS | Needs Node? |
 |---|---|---|---|---|---|---|
-| PHP | intelephense | `intelephense --stdio` | `composer.json`, `.git` | `php` | `npm i -g intelephense` | Có |
-| PHP | phpactor | `phpactor language-server` | `composer.json`, `.phpactor.json`, `.git` | `php` | `composer global require phpactor/phpactor` hoặc phar (Homebrew core không có formula) | Không (PHP 8.1+) |
-| Ruby | ruby-lsp | `ruby-lsp` | `Gemfile`, `.git` | `ruby` | `gem install ruby-lsp` | Không (Ruby) |
-| Ruby | solargraph | `solargraph stdio` | `Gemfile`, `.git` | `ruby` | `gem install solargraph` | Không (Ruby) |
-| Java | jdtls | `jdtls` (+ `-data <dir>`) | `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `.git` | `java` | `brew install jdtls` | Không (JDK 21+, Python 3) |
-| Kotlin | kotlin-lsp (JetBrains) | `kotlin-lsp --stdio` | `settings.gradle(.kts)`, `build.gradle(.kts)`, `pom.xml` | `kotlin`* | `brew install JetBrains/utils/kotlin-lsp` | Không (JVM đi kèm, chưa kiểm chứng) |
-| Kotlin | kotlin-language-server (fwcd) | `kotlin-language-server` | như trên | `kotlin`* | `brew install kotlin-language-server` (chưa kiểm chứng) | Không (JVM) |
-| Swift | sourcekit-lsp | `sourcekit-lsp` (hoặc `xcrun sourcekit-lsp`) | `Package.swift`, `buildServer.json`, `compile_commands.json`, `.git` | `swift` | đi kèm Xcode / CLT / toolchain Swift | Không |
-| Lua | lua-language-server | `lua-language-server` | `.luarc.json`, `.luarc.jsonc`, `.stylua.toml`, `selene.toml`, `.git` | `lua` | `brew install lua-language-server` | Không |
-| Elixir | elixir-ls | `elixir-ls` (= `language_server.sh` đổi tên) | `mix.exs` | `elixir` | `brew install elixir-ls` | Không (BEAM) |
-| Elixir | expert | `expert --stdio` | `mix.exs` | `elixir` | binary từ GitHub release (`expert_darwin_arm64`) | Không (tự chứa) |
-| Elixir | next-ls | `nextls --stdio` | `mix.exs` | `elixir` | binary release (chưa kiểm chứng) | Không |
-| Elixir | lexical | `lexical` (`start_lexical.sh`) | `mix.exs` | `elixir` | build từ nguồn / release | Không (BEAM) |
-| Zig | zls | `zls` | `build.zig`, `zls.json` | `zig`* | `brew install zls` | Không |
-| Dart | dart | `dart language-server` | `pubspec.yaml` | `dart` | Dart hoặc Flutter SDK (tap `dart-lang/dart`) | Không |
-| Vue | vue-language-server | `vue-language-server --stdio` | `package.json` | `vue`* | `npm i -g @vue/language-server` | Có |
-| Vue (phần TS) | vtsls + plugin | `vtsls --stdio` | `package.json`, `tsconfig.json` | `vue`* | `npm i -g @vtsls/language-server` | Có |
-| C/C++ | clangd | `clangd` | `compile_commands.json`, `compile_flags.txt`, `.clangd`, `.git` | `c`, `cpp`, `objective-c`, `objective-cpp` | CLT có `clangd`; hoặc `brew install llvm` (keg-only) | Không |
-| C# | roslyn-language-server | `roslyn-language-server --stdio --autoLoadProjects` | `*.sln`, `*.slnx`, `*.csproj` | `csharp` | `dotnet tool install -g roslyn-language-server --prerelease` | Không (.NET SDK, có báo cáo cần 10) |
-| C# | csharp-ls | `csharp-ls` | `*.sln`, `*.csproj` | `csharp` | `dotnet tool install -g csharp-ls` | Không (.NET SDK) |
-| C# | OmniSharp | `OmniSharp --languageserver` | `*.sln`, `*.csproj` | `csharp` | GitHub release (bản `-net6.0`) | Không (.NET) |
-| Haskell | hls | `haskell-language-server-wrapper --lsp` | `hie.yaml`, `cabal.project`, `stack.yaml`, `*.cabal`, `package.yaml` | `haskell` | `ghcup install hls` (hoặc `brew install haskell-language-server`) | Không (GHC) |
-| OCaml | ocamllsp | `ocamllsp` | `dune-project`, `dune-workspace`, `*.opam`, `esy.json` | `ocaml` | `opam install ocaml-lsp-server` | Không (opam switch) |
-| Scala | metals | `metals` | `build.sbt`, `build.sc`, `build.mill`, `.scala-build`, `pom.xml`, `build.gradle` | `scala` | `cs install metals` (Coursier: `brew install coursier`) | Không (JVM) |
-| Terraform | terraform-ls | `terraform-ls serve` | `.terraform`, `.git` | `terraform`* / `terraform-vars`* | `brew install hashicorp/tap/terraform-ls` | Không |
-| Dockerfile | docker-langserver | `docker-langserver --stdio` | `Dockerfile`, `.git` | `dockerfile` | `npm i -g dockerfile-language-server-nodejs` | Có |
-| Dockerfile | docker-language-server (Docker Inc., Go) | `docker-language-server start --stdio` | như trên | `dockerfile` | GitHub release (chưa kiểm chứng) | Không |
-| YAML | yaml-language-server | `yaml-language-server --stdio` | `.git` | `yaml` | `brew install yaml-language-server` hoặc npm | Có |
-| JSON | vscode-json-language-server | `vscode-json-language-server --stdio` | `.git` | `json`, `jsonc` | `npm i -g vscode-langservers-extracted` | Có |
-| CSS | vscode-css-language-server | `vscode-css-language-server --stdio` | `package.json`, `.git` | `css`, `scss`, `less` | cùng gói | Có |
-| HTML | vscode-html-language-server | `vscode-html-language-server --stdio` | `package.json`, `.git` | `html` | cùng gói | Có |
-| Bash | bash-language-server | `bash-language-server start` | `.git` | `shellscript` | `brew install bash-language-server` hoặc npm | Có |
-| TOML | taplo | `taplo lsp stdio` | `.taplo.toml`, `taplo.toml`, `.git` | `toml`* | `brew install taplo` (bản npm không có LSP) | Không |
-| Markdown | marksman | `marksman server` | `.marksman.toml`, `.git` | `markdown` | `brew install marksman` | Không (.NET tự chứa) |
-| Nix | nil | `nil` | `flake.nix`, `.git` | `nix`* | `nix profile install nixpkgs#nil` | Không (cần Nix) |
-| Nix | nixd | `nixd` | `flake.nix`, `.git` | `nix`* | `nix profile install nixpkgs#nixd` | Không (cần Nix) |
-| Gleam | gleam | `gleam lsp` | `gleam.toml` | `gleam`* | `brew install gleam` | Không (BEAM khi build) |
-| Erlang | elp | `elp server` | `rebar.config`, `.elp.toml`, `erlang.mk` | `erlang` | `brew install erlang-language-platform` | Không (Erlang/OTP) |
-| Erlang | erlang_ls | `erlang_ls` | `rebar.config`, `erlang_ls.config` | `erlang` | `brew install erlang_ls` (chưa kiểm chứng) | Không (Erlang/OTP) |
+| PHP | intelephense | `intelephense --stdio` | `composer.json`, `.git` | `php` | `npm i -g intelephense` | Yes |
+| PHP | phpactor | `phpactor language-server` | `composer.json`, `.phpactor.json`, `.git` | `php` | `composer global require phpactor/phpactor` or the phar (Homebrew core has no formula) | No (PHP 8.1+) |
+| Ruby | ruby-lsp | `ruby-lsp` | `Gemfile`, `.git` | `ruby` | `gem install ruby-lsp` | No (Ruby) |
+| Ruby | solargraph | `solargraph stdio` | `Gemfile`, `.git` | `ruby` | `gem install solargraph` | No (Ruby) |
+| Java | jdtls | `jdtls` (+ `-data <dir>`) | `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `.git` | `java` | `brew install jdtls` | No (JDK 21+, Python 3) |
+| Kotlin | kotlin-lsp (JetBrains) | `kotlin-lsp --stdio` | `settings.gradle(.kts)`, `build.gradle(.kts)`, `pom.xml` | `kotlin`* | `brew install JetBrains/utils/kotlin-lsp` | No (bundled JVM, unverified) |
+| Kotlin | kotlin-language-server (fwcd) | `kotlin-language-server` | same as above | `kotlin`* | `brew install kotlin-language-server` (unverified) | No (JVM) |
+| Swift | sourcekit-lsp | `sourcekit-lsp` (or `xcrun sourcekit-lsp`) | `Package.swift`, `buildServer.json`, `compile_commands.json`, `.git` | `swift` | ships with Xcode / CLT / the Swift toolchain | No |
+| Lua | lua-language-server | `lua-language-server` | `.luarc.json`, `.luarc.jsonc`, `.stylua.toml`, `selene.toml`, `.git` | `lua` | `brew install lua-language-server` | No |
+| Elixir | elixir-ls | `elixir-ls` (= `language_server.sh` renamed) | `mix.exs` | `elixir` | `brew install elixir-ls` | No (BEAM) |
+| Elixir | expert | `expert --stdio` | `mix.exs` | `elixir` | binary from a GitHub release (`expert_darwin_arm64`) | No (self-contained) |
+| Elixir | next-ls | `nextls --stdio` | `mix.exs` | `elixir` | release binary (unverified) | No |
+| Elixir | lexical | `lexical` (`start_lexical.sh`) | `mix.exs` | `elixir` | build from source / release | No (BEAM) |
+| Zig | zls | `zls` | `build.zig`, `zls.json` | `zig`* | `brew install zls` | No |
+| Dart | dart | `dart language-server` | `pubspec.yaml` | `dart` | Dart or Flutter SDK (tap `dart-lang/dart`) | No |
+| Vue | vue-language-server | `vue-language-server --stdio` | `package.json` | `vue`* | `npm i -g @vue/language-server` | Yes |
+| Vue (TS part) | vtsls + plugin | `vtsls --stdio` | `package.json`, `tsconfig.json` | `vue`* | `npm i -g @vtsls/language-server` | Yes |
+| C/C++ | clangd | `clangd` | `compile_commands.json`, `compile_flags.txt`, `.clangd`, `.git` | `c`, `cpp`, `objective-c`, `objective-cpp` | CLT has `clangd`; or `brew install llvm` (keg-only) | No |
+| C# | roslyn-language-server | `roslyn-language-server --stdio --autoLoadProjects` | `*.sln`, `*.slnx`, `*.csproj` | `csharp` | `dotnet tool install -g roslyn-language-server --prerelease` | No (.NET SDK, some report needing 10) |
+| C# | csharp-ls | `csharp-ls` | `*.sln`, `*.csproj` | `csharp` | `dotnet tool install -g csharp-ls` | No (.NET SDK) |
+| C# | OmniSharp | `OmniSharp --languageserver` | `*.sln`, `*.csproj` | `csharp` | GitHub release (the `-net6.0` build) | No (.NET) |
+| Haskell | hls | `haskell-language-server-wrapper --lsp` | `hie.yaml`, `cabal.project`, `stack.yaml`, `*.cabal`, `package.yaml` | `haskell` | `ghcup install hls` (or `brew install haskell-language-server`) | No (GHC) |
+| OCaml | ocamllsp | `ocamllsp` | `dune-project`, `dune-workspace`, `*.opam`, `esy.json` | `ocaml` | `opam install ocaml-lsp-server` | No (opam switch) |
+| Scala | metals | `metals` | `build.sbt`, `build.sc`, `build.mill`, `.scala-build`, `pom.xml`, `build.gradle` | `scala` | `cs install metals` (Coursier: `brew install coursier`) | No (JVM) |
+| Terraform | terraform-ls | `terraform-ls serve` | `.terraform`, `.git` | `terraform`* / `terraform-vars`* | `brew install hashicorp/tap/terraform-ls` | No |
+| Dockerfile | docker-langserver | `docker-langserver --stdio` | `Dockerfile`, `.git` | `dockerfile` | `npm i -g dockerfile-language-server-nodejs` | Yes |
+| Dockerfile | docker-language-server (Docker Inc., Go) | `docker-language-server start --stdio` | same as above | `dockerfile` | GitHub release (unverified) | No |
+| YAML | yaml-language-server | `yaml-language-server --stdio` | `.git` | `yaml` | `brew install yaml-language-server` or npm | Yes |
+| JSON | vscode-json-language-server | `vscode-json-language-server --stdio` | `.git` | `json`, `jsonc` | `npm i -g vscode-langservers-extracted` | Yes |
+| CSS | vscode-css-language-server | `vscode-css-language-server --stdio` | `package.json`, `.git` | `css`, `scss`, `less` | same package | Yes |
+| HTML | vscode-html-language-server | `vscode-html-language-server --stdio` | `package.json`, `.git` | `html` | same package | Yes |
+| Bash | bash-language-server | `bash-language-server start` | `.git` | `shellscript` | `brew install bash-language-server` or npm | Yes |
+| TOML | taplo | `taplo lsp stdio` | `.taplo.toml`, `taplo.toml`, `.git` | `toml`* | `brew install taplo` (the npm build has no LSP) | No |
+| Markdown | marksman | `marksman server` | `.marksman.toml`, `.git` | `markdown` | `brew install marksman` | No (self-contained .NET) |
+| Nix | nil | `nil` | `flake.nix`, `.git` | `nix`* | `nix profile install nixpkgs#nil` | No (needs Nix) |
+| Nix | nixd | `nixd` | `flake.nix`, `.git` | `nix`* | `nix profile install nixpkgs#nixd` | No (needs Nix) |
+| Gleam | gleam | `gleam lsp` | `gleam.toml` | `gleam`* | `brew install gleam` | No (BEAM when building) |
+| Erlang | elp | `elp server` | `rebar.config`, `.elp.toml`, `erlang.mk` | `erlang` | `brew install erlang-language-platform` | No (Erlang/OTP) |
+| Erlang | erlang_ls | `erlang_ls` | `rebar.config`, `erlang_ls.config` | `erlang` | `brew install erlang_ls` (unverified) | No (Erlang/OTP) |
 
-Server cần Node: intelephense, vue-language-server, vtsls, typescript-language-server, docker-langserver, yaml-language-server, vscode-langservers-extracted (json/css/html), bash-language-server. Formula Homebrew của yaml-language-server và bash-language-server tự kéo `node`.
+Servers that need Node: intelephense, vue-language-server, vtsls, typescript-language-server, docker-langserver, yaml-language-server, vscode-langservers-extracted (json/css/html), bash-language-server. The Homebrew formulas of yaml-language-server and bash-language-server pull in `node` themselves.
 
-Root marker của Helix (để đối chiếu, chỉ dữ kiện): php `composer.json`, `index.php`; java `pom.xml`, `build.gradle`, `build.gradle.kts`; kotlin `settings.gradle(.kts)`; swift `Package.swift`; elixir `mix.exs`, `mix.lock`; zig `build.zig`; dart `pubspec.yaml`; haskell `Setup.hs`, `stack.yaml`, `cabal.project`, `hie.yaml`; scala `build.sbt`, `build.sc`, `build.gradle(.kts)`, `pom.xml`, `.scala-build`; erlang `rebar.config`; C# `*.slnx`, `*.sln`, `*.csproj`. Ruby và Nix không có `roots`.
+Helix's root markers (for cross-checking, facts only): php `composer.json`, `index.php`; java `pom.xml`, `build.gradle`, `build.gradle.kts`; kotlin `settings.gradle(.kts)`; swift `Package.swift`; elixir `mix.exs`, `mix.lock`; zig `build.zig`; dart `pubspec.yaml`; haskell `Setup.hs`, `stack.yaml`, `cabal.project`, `hie.yaml`; scala `build.sbt`, `build.sc`, `build.gradle(.kts)`, `pom.xml`, `.scala-build`; erlang `rebar.config`; C# `*.slnx`, `*.sln`, `*.csproj`. Ruby and Nix have no `roots`.
 
-### 7.2 Các quirk quan trọng
+### 7.2 Important quirks
 
 **jdtls (Java).**
-- `jdtls` trên PATH là launcher Python `bin/jdtls` (`jdtls.py`), cần **Java 21+** (kiểm tra rồi thoát nếu thiếu; `--no-validate-java-version` bỏ qua) và Python 3.
-- Thư mục dữ liệu workspace: không truyền `-data` thì launcher dùng `<cache>/jdtls/jdtls-<sha1 của cwd>` (`~/Library/Caches/jdtls/...` trên macOS). Vì vậy cwd khi spawn quan trọng: spawn với cwd = root LSP, hoặc truyền tường minh `-data <cache-của-lucerna>/jdtls/<hash-của-root>`. Thư mục này không được nằm trong project; mỗi root một thư mục, không dùng chung cho hai tiến trình jdtls cùng lúc. **Luôn truyền `-data`** trong cache của Lucerna.
-- Launcher thêm cờ Equinox `-configuration`/OSGi, `-Xms1G`, `--add-modules=ALL-SYSTEM`, `--add-opens` cho `java.base`. JVM arg thêm qua `--jvm-arg=...`.
-- Lần đầu rất chậm (import Maven/Gradle, có thể vài phút); gửi `language/status` và `$/progress`. Timeout phải rộng.
-- Setting `java.import.generatesMetadataFilesAtProjectRoot` (mặc định false ở bản hiện tại, chưa kiểm chứng) quyết định có ghi `.project`/`.classpath`/`.settings` vào project hay không.
-- jdtls trả URI `jdt://` (goto-definition vào class thư viện) mà client phải lấy qua `java/classFileContents`. Client chưa resolve được nên bỏ các location này.
+- `jdtls` on PATH is the Python launcher `bin/jdtls` (`jdtls.py`), which needs **Java 21+** (it checks and exits if missing; `--no-validate-java-version` skips this) and Python 3.
+- Workspace data directory: without `-data`, the launcher uses `<cache>/jdtls/jdtls-<sha1 of cwd>` (`~/Library/Caches/jdtls/...` on macOS). So the cwd at spawn matters: spawn with cwd = the LSP root, or pass explicitly `-data <lucerna-cache>/jdtls/<hash-of-root>`. This directory must not be inside the project; one directory per root, not shared by two jdtls processes at once. **Always pass `-data`** inside Lucerna's cache.
+- The launcher adds the Equinox flags `-configuration`/OSGi, `-Xms1G`, `--add-modules=ALL-SYSTEM`, `--add-opens` for `java.base`. Extra JVM args go through `--jvm-arg=...`.
+- The first run is very slow (importing Maven/Gradle, possibly minutes); it sends `language/status` and `$/progress`. The timeout must be generous.
+- The setting `java.import.generatesMetadataFilesAtProjectRoot` (false by default in the current version, unverified) decides whether `.project`/`.classpath`/`.settings` are written into the project.
+- jdtls returns `jdt://` URIs (go-to-definition into a library class) that the client must fetch through `java/classFileContents`. The client cannot resolve them yet, so these locations are dropped.
 
 **Vue.**
-- `@vue/language-server` 2.x có "hybrid mode" tùy chọn; 3.0 bỏ tùy chọn và chỉ còn hybrid. Server Vue lo template/style/cấu trúc SFC; TypeScript trong `<script>` và biểu thức template do tsserver nạp `@vue/typescript-plugin` phục vụ.
-- 3.0 thêm cặp notification tùy biến: server Vue gửi `tsserver/request` (params `[[id, command, args]]`, dạng chính xác chưa kiểm chứng) cho client; client phải chuyển cho server TypeScript và trả lại `tsserver/response`. Client bỏ qua thì log "Unknown notification" và tính năng Vue lặng lẽ suy giảm (lsp-mode issue #4838).
-- nvim-lspconfig `vue_ls` (Apache-2.0) làm cầu nối trong `on_init`: chuyển sang `vtsls` (hoặc `ts_ls`) qua `workspace/executeCommand` với command `typescript.tsserverRequest`, rồi notify `tsserver/response`. vtsls nhận plugin qua `settings.vtsls.tsserver.globalPlugins = [{ name = "@vue/typescript-plugin", location = <đường dẫn @vue/language-server>, languages = ["vue"], configNamespace = "typescript" }]`.
-- Zed làm tương tự trong lõi: `crates/project/src/lsp_store/vue_language_server_ext.rs` (133 dòng) đăng ký handler `tsserver/request` cho server `vue-language-server`, tìm `vtsls` (rơi về `typescript-language-server`) của cùng buffer, gửi `workspace/executeCommand typescript.tsserverRequest`, trả `tsserver/response`. `default.json` của Zed đặt server Vue là `["vue-language-server", "vtsls", "..."]`.
-- Mặc định Helix chỉ liệt kê `vuels` cho Vue với `typescript.tsdk = "node_modules/typescript/lib/"`; không thấy xử lý `tsserver/request` trong Helix, nên Vue 3.x trên Helix chỉ có tính năng phía Vue; wiki bảo người dùng thêm `typescript-language-server` với plugin TS.
-- Thiết lập tối thiểu hữu ích cho trình xem: chạy `vtsls --stdio` cho `.vue` với global plugin `@vue/typescript-plugin` (location = thư mục cài `@vue/language-server` toàn cục, tìm qua `npm root -g`), cộng `vue-language-server --stdio`, cộng một hook "chuyển tiếp request" nhỏ trong client LSP của Lucerna: nhận `tsserver/request` từ server A thì gọi `workspace/executeCommand(typescript.tsserverRequest, ...)` trên server B cùng root, rồi notify A bằng `tsserver/response`. Đây là phần Rust riêng duy nhất cho Vue; phần còn lại là dữ liệu bảng.
-- Vue 2: nhánh 3.x vẫn hỗ trợ Vue 2.7; thiết lập cũ dùng `@vue/language-server@2` với `vue.hybridMode = false` (takeover), đã deprecated.
+- `@vue/language-server` 2.x has an optional "hybrid mode"; 3.0 removes the option and only hybrid remains. The Vue server handles the template/style/SFC structure; the TypeScript in `<script>` and template expressions is served by tsserver loading `@vue/typescript-plugin`.
+- 3.0 adds a pair of custom notifications: the Vue server sends `tsserver/request` (params `[[id, command, args]]`, exact form unverified) to the client; the client must forward it to the TypeScript server and return `tsserver/response`. If the client ignores it, it logs "Unknown notification" and Vue features silently degrade (lsp-mode issue #4838).
+- nvim-lspconfig's `vue_ls` (Apache-2.0) bridges this in `on_init`: it forwards to `vtsls` (or `ts_ls`) through `workspace/executeCommand` with the command `typescript.tsserverRequest`, then notifies `tsserver/response`. vtsls receives the plugin through `settings.vtsls.tsserver.globalPlugins = [{ name = "@vue/typescript-plugin", location = <path of @vue/language-server>, languages = ["vue"], configNamespace = "typescript" }]`.
+- Zed does the same in its core: `crates/project/src/lsp_store/vue_language_server_ext.rs` (133 lines) registers a `tsserver/request` handler for the server `vue-language-server`, finds `vtsls` (falling back to `typescript-language-server`) of the same buffer, sends `workspace/executeCommand typescript.tsserverRequest`, and returns `tsserver/response`. Zed's `default.json` sets the Vue servers to `["vue-language-server", "vtsls", "..."]`.
+- Helix's defaults only list `vuels` for Vue with `typescript.tsdk = "node_modules/typescript/lib/"`; no handling of `tsserver/request` was found in Helix, so Vue 3.x on Helix only gets the Vue-side features; the wiki tells users to add `typescript-language-server` with the TS plugin.
+- A useful minimal setup for a viewer: run `vtsls --stdio` for `.vue` with the global plugin `@vue/typescript-plugin` (location = the global install directory of `@vue/language-server`, found via `npm root -g`), plus `vue-language-server --stdio`, plus a small "request forwarding" hook in Lucerna's LSP client: on receiving `tsserver/request` from server A, call `workspace/executeCommand(typescript.tsserverRequest, ...)` on server B with the same root, then notify A with `tsserver/response`. This is the only Rust piece specific to Vue; the rest is table data.
+- Vue 2: the 3.x branch still supports Vue 2.7; the old setup used `@vue/language-server@2` with `vue.hybridMode = false` (takeover), which is deprecated.
 
-**Server ghi vào thư mục project** (đáng chú ý với trình xem chỉ-đọc):
+**Servers that write into the project directory** (notable for a read-only viewer):
 
-| Server | Ghi gì | Giảm thiểu |
+| Server | What it writes | Mitigation |
 |---|---|---|
-| ruby-lsp | `.ruby-lsp/` (composed bundle), có thể chạy bundler (chưa kiểm chứng); chạy không kèm `bundle exec` | chấp nhận hoặc ghi chú |
-| elixir-ls | `.elixir_ls/`, biên dịch project; dialyzer chậm nên tắt (`elixirLS.dialyzerEnabled = false`) | chấp nhận |
-| expert | `.expert/` (chưa kiểm chứng) | chấp nhận |
-| metals | `.metals/`, `.bloop/`, `project/metals.sbt`; hỏi import build qua `window/showMessageRequest` | mặc định tắt hoặc hỏi |
-| clangd | `.cache/clangd/index/` | `--background-index=false` (tùy chọn) hoặc `.clangd` `Index: Background: Skip` |
-| sourcekit-lsp | `.build/index-build/` (background indexing, mặc định bật từ Swift 6.1, chưa kiểm chứng) | chấp nhận |
-| jdtls | thư mục dữ liệu ngoài project nếu có `-data`; tùy chọn `.project`/`.classpath` | luôn truyền `-data` trong cache |
-| gleam / zls / hls / ocamllsp | thư mục build (`build/`, `.zig-cache`, `dist-newstyle`, `_build`) | chấp nhận, là output build bình thường |
+| ruby-lsp | `.ruby-lsp/` (composed bundle), may run bundler (unverified); runs without `bundle exec` | accept or note |
+| elixir-ls | `.elixir_ls/`, compiles the project; dialyzer is slow so turn it off (`elixirLS.dialyzerEnabled = false`) | accept |
+| expert | `.expert/` (unverified) | accept |
+| metals | `.metals/`, `.bloop/`, `project/metals.sbt`; asks to import the build via `window/showMessageRequest` | off by default or ask |
+| clangd | `.cache/clangd/index/` | `--background-index=false` (optional) or `.clangd` `Index: Background: Skip` |
+| sourcekit-lsp | `.build/index-build/` (background indexing, on by default since Swift 6.1, unverified) | accept |
+| jdtls | a data directory outside the project if `-data` is given; optionally `.project`/`.classpath` | always pass `-data` in the cache |
+| gleam / zls / hls / ocamllsp | build directories (`build/`, `.zig-cache`, `dist-newstyle`, `_build`) | accept, normal build output |
 
-Gợi ý trường trong bảng: `writes_to_project: bool` (hiện ở view health), và `enabled_by_default: false` cho metals.
+Suggested fields in the table: `writes_to_project: bool` (shown in the health view), and `enabled_by_default: false` for metals.
 
-**Các quirk khác (ngắn):**
-- intelephense: đóng nguồn (free + premium). Khóa premium qua `initializationOptions.licenceKey` (viết kiểu Anh) hoặc `~/intelephense/licence.txt`. Phải có `--stdio`, nếu không dùng node-ipc. Mặc định: intelephense trước, phpactor là lựa chọn thay thế (Zed đặt `["phpactor", "!intelephense", ...]` nhưng bản `windows` đảo lại).
-- ruby-lsp và solargraph: solargraph cần subcommand `stdio`. Zed cho Ruby `["..."]` mở ra solargraph trước ruby-lsp; Helix đặt ruby-lsp trước.
-- kotlin-lsp: Alpha, "một phần đóng nguồn"; cần `--stdio` (không thì nghe TCP, chưa kiểm chứng). Zed ưu tiên `kotlin-lsp` hơn `kotlin-language-server`; fwcd gần như không còn bảo trì.
-- sourcekit-lsp: trên macOS `/usr/bin/sourcekit-lsp` là shim xcrun, toolchain phải khớp toolchain build project. SwiftPM chạy ngay; project Xcode cần cầu nối BSP (`xcode-build-server` ghi `buildServer.json`) hoặc `compile_commands.json`.
-- lua-language-server: settings dùng namespace `Lua.*`; đặt `Lua.workspace.checkThirdParty = false` để tránh hộp thoại tương tác (chưa kiểm chứng).
-- elixir-ls và expert: mặc định `elixir-ls`, expert là lựa chọn; bỏ next-ls, lexical (đã bị thay thế, chưa kiểm chứng lịch sử hợp nhất). Expert (https://github.com/elixir-lang/expert) Alpha, cần `--stdio`.
-- zls: phải khớp phiên bản compiler Zig (zls 0.15 cho zig 0.15); có thể chạy `zig build` khi mở (chưa kiểm chứng).
-- dart: `dart language-server` mặc định LSP; README yêu cầu client khai báo qua env `DASH__IDE_NAME`, `DASH__IDE_VERSION`, `DASH__PLUGIN_NAME`, `DASH__PLUGIN_VERSION`. `initializationOptions` hữu ích: `onlyAnalyzeProjectsWithOpenFiles` (hợp với trình xem), `outline`, `flutterOutline`, `suggestFromUnimportedLibraries`, `allowOpenUri`. Flutter có `dart` trong `flutter/bin/dart`.
-- clangd: không có `compile_commands.json`/`compile_flags.txt` thì đoán cờ.
-- roslyn-language-server: `--autoLoadProjects` để tự mở solution (không thì client phải gửi `solution/open`/`project/open`); chỉ hỗ trợ pull diagnostics (`textDocument/diagnostic`). Mọi server C# cần `dotnet restore`. Helix ưu tiên roslyn, omnisharp, csharp-ls; Zed ưu tiên `roslyn`.
-- hls: luôn chạy bản **wrapper** để chọn đúng binary theo GHC của project; lần đầu chậm.
-- ocamllsp: phải cài trong cùng opam switch với project (hay dùng `_opam` cục bộ), nên PATH từ app GUI thường thiếu; logic lấy PATH từ login shell của Lucerna quan trọng ở đây.
-- terraform-ls: root là thư mục module; `.terraform` chỉ có sau `terraform init`.
-- yaml-language-server: schema qua `yaml.schemas`; mặc định tải SchemaStore qua mạng (`yaml.schemaStore.enable`), nên để người dùng chọn.
-- JSON/CSS/HTML: cùng gói `vscode-langservers-extracted` (MIT, tách từ VS Code). Server JSON cần client đẩy schema qua `json/schemaAssociations` hoặc `json.schemas`, hoặc nhờ client tải qua request tùy biến `vscode/content` (Zed có `json_language_server_ext`); không có thì chỉ kiểm cú pháp. `provideFormatter: true` để bật format.
-- bash-language-server: diagnostics từ `shellcheck` nếu có trên PATH; format từ `shfmt`.
-- taplo: bản npm `@taplo/cli` và vài bản build thiếu LSP; dùng brew hoặc `cargo install taplo-cli --locked --features lsp`. Phương án khác: `tombi`. Kiến thức Cargo.toml lấy từ SchemaStore (mạng).
-- marksman: cần root (`.marksman.toml` hoặc `.git`) để link chéo file; file đơn chạy ở "single-file mode".
-- nil (MIT) hoặc nixd (LGPL-3.0, chỉ dùng binary); cả hai cần `nix` cho tính năng đánh giá; format qua `nixfmt` ngoài.
-- gleam: `gleam lsp` nằm trong binary compiler; build vào `<root>/build/` (chưa kiểm chứng).
-- Erlang: ELP (`elp server`, cấu hình `.elp.toml`); Helix chạy cả erlang_ls và elp, mỗi cái `except-features = ["document-symbols", "workspace-symbols"]`; Zed ưu tiên `erlang-ls` và tắt `elp` theo mặc định.
+**Other quirks (short):**
+- intelephense: closed source (free + premium). The premium key goes through `initializationOptions.licenceKey` (British spelling) or `~/intelephense/licence.txt`. `--stdio` is required, otherwise it uses node-ipc. Default: intelephense first, with phpactor as the alternative (Zed sets `["phpactor", "!intelephense", ...]` but the `windows` build reverses it).
+- ruby-lsp and solargraph: solargraph needs the `stdio` subcommand. For Ruby, Zed's `["..."]` expands to solargraph before ruby-lsp; Helix puts ruby-lsp first.
+- kotlin-lsp: Alpha, "partly closed source"; needs `--stdio` (otherwise it listens on TCP, unverified). Zed prefers `kotlin-lsp` over `kotlin-language-server`; fwcd's is almost unmaintained.
+- sourcekit-lsp: on macOS `/usr/bin/sourcekit-lsp` is an xcrun shim, and the toolchain must match the toolchain that builds the project. SwiftPM works right away; Xcode projects need a BSP bridge (`xcode-build-server` writing `buildServer.json`) or `compile_commands.json`.
+- lua-language-server: settings use the `Lua.*` namespace; set `Lua.workspace.checkThirdParty = false` to avoid an interactive dialog (unverified).
+- elixir-ls and expert: default to `elixir-ls`, with expert as an option; drop next-ls and lexical (replaced, merge history unverified). Expert (https://github.com/elixir-lang/expert) is Alpha and needs `--stdio`.
+- zls: must match the Zig compiler version (zls 0.15 for zig 0.15); may run `zig build` on open (unverified).
+- dart: `dart language-server` is LSP by default; the README requires the client to identify itself via the env `DASH__IDE_NAME`, `DASH__IDE_VERSION`, `DASH__PLUGIN_NAME`, `DASH__PLUGIN_VERSION`. Useful `initializationOptions`: `onlyAnalyzeProjectsWithOpenFiles` (fits a viewer), `outline`, `flutterOutline`, `suggestFromUnimportedLibraries`, `allowOpenUri`. Flutter has `dart` in `flutter/bin/dart`.
+- clangd: without `compile_commands.json`/`compile_flags.txt` it guesses the flags.
+- roslyn-language-server: `--autoLoadProjects` to open the solution automatically (otherwise the client must send `solution/open`/`project/open`); only supports pull diagnostics (`textDocument/diagnostic`). Every C# server needs `dotnet restore`. Helix prefers roslyn, omnisharp, csharp-ls; Zed prefers `roslyn`.
+- hls: always run the **wrapper** version so it picks the right binary for the project's GHC; slow the first time.
+- ocamllsp: must be installed in the same opam switch as the project (often a local `_opam`), so the PATH from a GUI app is often missing it; Lucerna's logic for taking PATH from the login shell matters here.
+- terraform-ls: the root is the module directory; `.terraform` only exists after `terraform init`.
+- yaml-language-server: schemas via `yaml.schemas`; by default it downloads SchemaStore over the network (`yaml.schemaStore.enable`), so leave the choice to the user.
+- JSON/CSS/HTML: the same package `vscode-langservers-extracted` (MIT, split out from VS Code). The JSON server needs the client to push schemas through `json/schemaAssociations` or `json.schemas`, or have the client fetch them via the custom request `vscode/content` (Zed has `json_language_server_ext`); without this it only checks syntax. `provideFormatter: true` turns on formatting.
+- bash-language-server: diagnostics from `shellcheck` if it is on PATH; formatting from `shfmt`.
+- taplo: the npm package `@taplo/cli` and a few builds lack LSP; use brew or `cargo install taplo-cli --locked --features lsp`. Alternative: `tombi`. Cargo.toml knowledge comes from SchemaStore (network).
+- marksman: needs a root (`.marksman.toml` or `.git`) for cross-file links; a single file runs in "single-file mode".
+- nil (MIT) or nixd (LGPL-3.0, use the binary only); both need `nix` for evaluation features; formatting through an external `nixfmt`.
+- gleam: `gleam lsp` is inside the compiler binary; it builds into `<root>/build/` (unverified).
+- Erlang: ELP (`elp server`, configured with `.elp.toml`); Helix runs both erlang_ls and elp, each with `except-features = ["document-symbols", "workspace-symbols"]`; Zed prefers `erlang-ls` and turns `elp` off by default.
 
-## 8. Sơ đồ một mục trong bảng của Lucerna
+## 8. Sketch of one entry in Lucerna's table
 
-Chỉ để minh họa; key dạng snake_case khớp settings hiện có.
+For illustration only; keys in snake_case matching the existing settings.
 
 ```jsonc
 "lsp": {
   "intelephense": {
-    "command": "intelephense",          // hoặc binary.path
-    "args": ["--stdio"],                // hoặc binary.arguments
+    "command": "intelephense",          // or binary.path
+    "args": ["--stdio"],                // or binary.arguments
     "languages": ["php"],
     "root_markers": ["composer.json", ".git"],
-    "language_id": "php",               // mặc định: id ngôn ngữ của Lucerna
+    "language_id": "php",               // default: Lucerna's language id
     "initialization_options": {},
     "settings": {},
     "enabled": true,
-    "install": "npm i -g intelephense", // gợi ý ở view health
+    "install": "npm i -g intelephense", // hint in the health view
     "docs": "https://github.com/bmewburn/intelephense-docs"
   }
 },
@@ -324,39 +324,39 @@ Chỉ để minh họa; key dạng snake_case khớp settings hiện có.
 }
 ```
 
-Quy tắc merge đề xuất: gộp object theo key (như Zed/Helix), thay mảng (như cả hai), `!`/`...` chỉ cho `language_servers`. File cấp project chỉ được đặt `initialization_options`, `settings`, `language_servers` và `enabled` cho đến khi thư mục được trust.
+Proposed merge rule: merge objects by key (like Zed/Helix), replace arrays (like both), `!`/`...` only for `language_servers`. A project-level file may only set `initialization_options`, `settings`, `language_servers` and `enabled` until the directory is trusted.
 
-## 9. Lucerna chọn gì
+## 9. What Lucerna chooses
 
-**Đây là đề xuất ban đầu; sẽ chốt trong spec sau khi thảo luận với người dùng.** Các điểm đã được người dùng duyệt được ghi rõ.
+**This is an initial proposal; it will be settled in the spec after discussion with the user.** Points already approved by the user are marked explicitly.
 
-| Chủ đề | Đề xuất | Vì sao |
+| Topic | Proposal | Why |
 |---|---|---|
-| Hướng chính | Phương án **f**: bảng server kiểu Helix, dữ liệu trong binary, người dùng ghi đè (đã duyệt) | Không cần WASM hay toolchain; LSP đầy đủ; hợp giấy phép |
-| Về sau | Phương án **d** (CI Lucerna build sẵn và tự host, ký ed25519) để Phase 3b sau Phase 4 nếu cần "cài là chạy" (đã duyệt) | Độc lập Zed, không vướng ToS |
-| Không làm | c (dùng `api.zed.dev`), và không theo Wu | ToS §2.2, §2.4(b); không có tài liệu công khai cho endpoint |
-| Shape cấu hình | Giữ `lsp.<server>.{binary, initialization_options, settings}` + thêm `command`/`args`, `languages`, `root_markers`, `language_id`, `enabled`, `install`, `docs` | Tương thích Zed (extension WASM cần đúng shape), mẫu số chung của Helix/Sublime/Neovim |
-| Thứ tự server | `languages.<L>.language_servers` với `!` và `...` | Theo Zed; VS Code không có ý kiến trong lõi |
-| `config` | Tách `initialization_options` và `settings` | Đúng hơn Helix một khối |
-| Giấy phép bảng mặc định | Viết từ tài liệu upstream, ghi `docs`, đối chiếu nvim-lspconfig, không chép `languages.toml` | MPL-2.0 cấp file |
-| Trust | Built-in và user settings được spawn binary trên PATH; file project không đặt được `command`/`binary.path`/`env` khi chưa trust; cân nhắc hash file project như Helix | Chặn nhánh độc hại đổi `command` |
-| Health | View "LSP health" kiểu `hx --health <lang>` nhưng dò `--version` | Có sẵn `probe_args` |
-| Hook riêng | Chuyển tiếp `tsserver/request` cho Vue; jdtls luôn truyền `-data` trong cache Lucerna | Hai chỗ bảng dữ liệu không đủ |
-| Server ghi vào project | Cờ `writes_to_project`; metals mặc định tắt hoặc hỏi | Trình xem chỉ-đọc |
-| Mặc định chọn server | PHP: intelephense; Ruby: ruby-lsp; Kotlin: kotlin-lsp; Elixir: elixir-ls; C#: roslyn; Dockerfile: docker-langserver; Erlang: elp | Theo mặc định Zed/Helix và độ bảo trì |
+| Main direction | Option **f**: a Helix-style server table, data in the binary, user overrides (approved) | No WASM or toolchain needed; full LSP; license-friendly |
+| Later | Option **d** (Lucerna's CI prebuilds and self-hosts, ed25519-signed) as Phase 3b after Phase 4 if "install and it works" is needed (approved) | Independent of Zed, no ToS conflict |
+| Not doing | c (using `api.zed.dev`), and not following Wu | ToS §2.2, §2.4(b); no public documentation for the endpoints |
+| Config shape | Keep `lsp.<server>.{binary, initialization_options, settings}` + add `command`/`args`, `languages`, `root_markers`, `language_id`, `enabled`, `install`, `docs` | Compatible with Zed (WASM extensions need exactly this shape), the common denominator of Helix/Sublime/Neovim |
+| Server order | `languages.<L>.language_servers` with `!` and `...` | Follows Zed; VS Code has no opinion in its core |
+| `config` | Separate `initialization_options` and `settings` | More correct than Helix's single block |
+| License of the default table | Write from upstream docs, record `docs`, cross-check nvim-lspconfig, do not copy `languages.toml` | MPL-2.0 is file-level |
+| Trust | Built-in and user settings may spawn binaries on PATH; a project file cannot set `command`/`binary.path`/`env` until trusted; consider hashing the project file like Helix | Blocks a malicious branch from changing `command` |
+| Health | An "LSP health" view like `hx --health <lang>` but probing `--version` | `probe_args` already exists |
+| Custom hooks | Forward `tsserver/request` for Vue; jdtls always gets `-data` in Lucerna's cache | The two places where a data table is not enough |
+| Servers that write into the project | A `writes_to_project` flag; metals off by default or asks | A read-only viewer |
+| Default server choice | PHP: intelephense; Ruby: ruby-lsp; Kotlin: kotlin-lsp; Elixir: elixir-ls; C#: roslyn; Dockerfile: docker-langserver; Erlang: elp | Following Zed/Helix defaults and maintenance status |
 
-## Nguồn
+## Sources
 
 - Helix docs: https://docs.helix-editor.com/languages.html
 - Helix languages.toml: https://github.com/helix-editor/helix/blob/master/languages.toml
 - Helix loader, merge: https://github.com/helix-editor/helix/blob/master/helix-loader/src/lib.rs
-- Helix config và trust: https://github.com/helix-editor/helix/blob/master/helix-loader/src/config.rs, https://github.com/helix-editor/helix/blob/master/helix-loader/src/workspace_trust.rs, PR https://github.com/helix-editor/helix/pull/15857
+- Helix config and trust: https://github.com/helix-editor/helix/blob/master/helix-loader/src/config.rs, https://github.com/helix-editor/helix/blob/master/helix-loader/src/workspace_trust.rs, PR https://github.com/helix-editor/helix/pull/15857
 - Helix health: https://github.com/helix-editor/helix/blob/master/helix-term/src/health.rs
 - Helix workspace/configuration: https://github.com/helix-editor/helix/blob/master/helix-term/src/application.rs
 - Helix initialization options: https://github.com/helix-editor/helix/blob/master/helix-lsp/src/client.rs
 - Helix wiki: https://github.com/helix-editor/helix/wiki/Language-Server-Configurations
 - Helix release 25.07.1: https://github.com/helix-editor/helix/releases
-- MPL-2.0: https://www.mozilla.org/en-US/MPL/2.0/ và FAQ https://www.mozilla.org/en-US/MPL/2.0/FAQ/
+- MPL-2.0: https://www.mozilla.org/en-US/MPL/2.0/ and FAQ https://www.mozilla.org/en-US/MPL/2.0/FAQ/
 - nvim-lspconfig: https://github.com/neovim/nvim-lspconfig (Vue: https://github.com/neovim/nvim-lspconfig/blob/master/lsp/vue_ls.lua)
 - LSP language ids: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentItem
 - jdtls launcher: https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/main/org.eclipse.jdt.ls.product/scripts/jdtls.py
@@ -370,7 +370,7 @@ Quy tắc merge đề xuất: gộp object theo key (như Zed/Helix), thay mản
 - Wu: https://github.com/dstrml/wu
 - Zed ToS: https://zed.dev/terms
 - Zed extension docs: https://zed.dev/docs/extensions/developing-extensions, https://zed.dev/docs/extensions/publishing/prerequisites
-- Zed (cục bộ): `docs/src/configuring-languages.md`, `assets/settings/default.json`, `crates/settings_content/src/project.rs`, `crates/project/src/lsp_store/vue_language_server_ext.rs`
+- Zed (local): `docs/src/configuring-languages.md`, `assets/settings/default.json`, `crates/settings_content/src/project.rs`, `crates/project/src/lsp_store/vue_language_server_ext.rs`
 - VS Code LSP guide: https://code.visualstudio.com/api/language-extensions/language-server-extension-guide
 - glspc: https://github.com/llllvvuu/vscode-glspc
 - vscode-lsp-config: https://github.com/pepebecker/vscode-lsp-config
