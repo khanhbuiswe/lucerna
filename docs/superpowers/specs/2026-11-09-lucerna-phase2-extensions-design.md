@@ -414,10 +414,10 @@ Other fields are ignored.
   - on error: a short error in the `status.error` color and a "Show Log" button, which opens `logs/<id>.log` in a preview tab.
 - Clicking Install while the description of the same id is being fetched: the install is queued to run right after the description fetch finishes, and the button switches to the installing state.
 - **Empty states and general errors:**
-  - no registry yet: "Loading list…";
+  - no registry yet: "Loading extension list…";
   - `git` missing: instructions to run `xcode-select --install`;
   - registry fetch fails: a message with a Retry button, and the installed extensions are still shown.
-- **When an extension with a theme or icon theme finishes installing:** a small notification at the bottom right asks "Use theme X?" with a "Set Theme" button. This button writes to the user settings.
+- **When an extension with a theme or icon theme finishes installing:** a small notification at the bottom right asks `Use theme “<name>”?` with a "Set Theme" button. This button writes to the user settings.
 - Zed-like style: 4 px grid, hover background is `ghost_element.hover`, cards have a 1 px `border.variant` border, 6 px rounded corners.
 
 ### 5.3 Commands
