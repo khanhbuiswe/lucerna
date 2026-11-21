@@ -1,38 +1,38 @@
 # Lucerna — Logo
 
-- **Ngày:** 2026-11-09
-- **Trạng thái:** Bản nháp chờ duyệt
-- **Hướng đã chọn:** J2 "Ánh sáng trên dòng chữ, tối giản", chọn từ 15 hướng và 8 biến thể vẽ thử trong buổi brainstorm
+- **Date:** 2026-11-09
+- **Status:** Draft, awaiting approval
+- **Chosen direction:** J2 "Light over a line of text, minimal", picked from 15 directions and 8 sketched variants in the brainstorm session
 
-## 1. Mục tiêu
+## 1. Goal
 
-Thay logo tạm (giọt lửa trên bát đèn) bằng một logo có bản sắc riêng, dùng được từ icon app 1024 px xuống tới favicon 16 px.
+Replace the temporary logo (a flame on a lamp bowl) with a logo that has its own identity and works from the 1024 px app icon down to the 16 px favicon.
 
-Ý nghĩa: một vầng sáng nhô lên từ một dòng chữ, như ánh đèn rọi lên trang code. Hình vẫn giữ tinh thần tên "Lucerna" (Latin là đèn) và câu "A quiet place to read", nhưng không vẽ cái đèn ra.
+Meaning: a glow rising from a line of text, like lamplight falling on a page of code. The shape keeps the spirit of the name "Lucerna" (Latin for lamp) and the line "A quiet place to read", but does not draw a lamp.
 
-**Phạm vi:** chỉ làm logo. Palette Cobalt, font và giọng văn giữ nguyên như spec landing page.
+**Scope:** the logo only. The Cobalt palette, fonts and tone of voice stay as in the landing page spec.
 
-**Tiêu chí thành công:**
+**Success criteria:**
 
-- Ở 16 px vẫn nhận ra là vầng sáng nằm trên một đường kẻ, không bị nhòe thành một vệt.
-- Trên site, favicon, logo trên nav và `og.png` đều dùng logo mới. Không còn chỗ nào dùng logo đèn cũ.
-- Có đủ file gốc trong `assets/brand/` để dùng cho README, icon app và bản phát hành sau này.
-- `python3 scripts/check-site.py` vẫn chạy qua.
+- At 16 px it still reads as a glow sitting on a line, not a smudge.
+- On the site, the favicon, the nav logo and `og.png` all use the new logo. No place still uses the old lamp logo.
+- `assets/brand/` has all the source files needed for the README, the app icon and later releases.
+- `python3 scripts/check-site.py` still passes.
 
-**Ngoài phạm vi:** tạo `.icns` và đóng gói `.app` (repo chưa có bước bundle), đổi palette, đổi font, làm brand guideline cho các kênh khác.
+**Out of scope:** creating the `.icns` and packaging the `.app` (the repo has no bundle step yet), changing the palette, changing fonts, making a brand guideline for other channels.
 
-## 2. Hình dựng
+## 2. Construction
 
-Lưới `viewBox="0 0 64 64"`. Tâm vầng sáng ở (32, 42).
+Grid `viewBox="0 0 64 64"`. The glow's center is at (32, 42).
 
-| Phần | Hình | Màu |
+| Part | Shape | Color |
 |---|---|---|
-| Lớp sáng ngoài | Nửa hình tròn phía trên, r = 22 | accent `#4f8cff`, độ đậm 0.18 |
-| Lớp sáng giữa | Nửa hình tròn phía trên, r = 14 | accent, độ đậm 0.45 |
-| Lõi | Nửa hình tròn phía trên, r = 7 | accent, độ đậm 1 |
-| Đường kẻ | `M4 44H60`, nét dày 5, đầu bo tròn | ink `#e6eaf2` |
+| Outer glow | Upper half circle, r = 22 | accent `#4f8cff`, opacity 0.18 |
+| Middle glow | Upper half circle, r = 14 | accent, opacity 0.45 |
+| Core | Upper half circle, r = 7 | accent, opacity 1 |
+| Line | `M4 44H60`, stroke width 5, round caps | ink `#e6eaf2` |
 
-Bản gốc (dùng từ 24 px trở lên):
+Base version (use at 24 px and above):
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
@@ -43,57 +43,57 @@ Bản gốc (dùng từ 24 px trở lên):
 </svg>
 ```
 
-Các nửa hình tròn đều lấy đáy tại y = 42. Đường kẻ dày 5 phủ từ y = 41.5 đến 46.5, nên che kín mép đáy của vầng sáng và không để lộ khe hở nào.
+All the half circles have their base at y = 42. The line, 5 thick, covers y = 41.5 to 46.5, so it fully hides the base edge of the glow and leaves no gap.
 
-## 3. Các biến thể
+## 3. Variants
 
-| Biến thể | Khác bản gốc | Dùng ở đâu |
+| Variant | Difference from the base | Where used |
 |---|---|---|
-| **Gốc** (`mark.svg`) | như mục 2 | từ 24 px trở lên: README, og, icon app |
-| **Cỡ nhỏ** (`mark-small.svg`) | chỉ 2 lớp: lớp ngoài r = 22 độ đậm 0.3, lõi r = 10 độ đậm 1; đường kẻ dày 6 | dưới 24 px: favicon, logo trên nav |
-| **Đơn sắc** (`mark-mono.svg`) | một màu, không trong suốt: lõi đặc r = 8, vòng cung r = 15 nét 3.5 không tô, đường kẻ; tất cả dùng `currentColor` | icon thanh menu, khắc, những chỗ không hiển thị được độ trong |
-| **Nền sáng** | đường kẻ và chữ đổi sang `#080b12`; vầng sáng giữ nguyên | README trên GitHub ở chế độ sáng, bản in |
+| **Base** (`mark.svg`) | as in section 2 | 24 px and above: README, og, app icon |
+| **Small** (`mark-small.svg`) | only 2 layers: outer layer r = 22 opacity 0.3, core r = 10 opacity 1; line width 6 | below 24 px: favicon, nav logo |
+| **Monochrome** (`mark-mono.svg`) | one color, no transparency: solid core r = 8, arc r = 15 stroke 3.5 unfilled, the line; all use `currentColor` | menu bar icon, engraving, places that cannot show opacity |
+| **Light background** | line and text change to `#080b12`; the glow stays the same | README on GitHub in light mode, print |
 
-## 4. Logo ghép chữ
+## 4. Lockup with text
 
-- Chữ "Lucerna" dùng Bricolage Grotesque, độ đậm 650, letter-spacing −0.02em. Đây là font tiêu đề đang dùng trên site.
-- Logo đặt bên trái chữ. Logo dùng viewBox cắt sát `1 18 62 29` (chừa đủ chỗ cho đầu bo tròn của đường kẻ, chạy từ x = 1.5 đến 62.5), tức bỏ phần lưới trống phía trên và dưới.
-- **Quy tắc chính:** mép dưới đường kẻ trong logo nằm trên đường chân chữ, để vầng sáng như mọc lên từ dòng chữ.
-- Chiều cao logo (theo viewBox đã cắt) bằng khoảng 1.25 lần chiều cao chữ hoa. Khoảng cách giữa logo và chữ bằng 0.3 lần chiều cao logo.
-- Trong file gốc, chữ được chuyển thành path, nên không phụ thuộc font cài trên máy. Path lấy từ `site/fonts/BricolageGrotesque-latin-wght.woff2` ở độ đậm 650, dùng fonttools. Font có giấy phép OFL, cho phép làm việc này.
+- The word "Lucerna" uses Bricolage Grotesque, weight 650, letter-spacing −0.02em. This is the heading font already used on the site.
+- The mark sits to the left of the text. The mark uses a viewBox cropped tight to `1 18 62 29` (leaving room for the round caps of the line, which run from x = 1.5 to 62.5), which drops the empty grid above and below.
+- **Main rule:** the bottom edge of the line in the mark sits on the text baseline, so the glow looks like it rises from the line of text.
+- The mark's height (per the cropped viewBox) is about 1.25 times the cap height. The gap between the mark and the text is 0.3 times the mark's height.
+- In the source file, the text is converted to paths, so it does not depend on the fonts installed on the machine. The paths come from `site/fonts/BricolageGrotesque-latin-wght.woff2` at weight 650, using fonttools. The font is licensed under the OFL, which allows this.
 
-## 5. Icon app macOS
+## 5. macOS app icon
 
-- Canvas 1024×1024, ô bo góc rx ≈ 230 (tỷ lệ 22.5% như các icon macOS), nền `#0f1420`, viền 1.5% màu `#1b2232`.
-- Đặt bản logo gốc vào giữa, đúng tỷ lệ trong mockup đã duyệt: toàn bộ logo (đường kẻ tính cả đầu bo tròn) rộng khoảng 60% canvas, tức scale 10 đơn vị lưới. Phần hình (x 1.5–62.5, y 20–46.5) được canh vào giữa ô: `translate(192 179.5) scale(10)`.
-- Chỉ làm file gốc `app-icon.svg`. Việc xuất `.icns` để sang lúc đóng gói bản phát hành.
+- Canvas 1024×1024, rounded tile rx ≈ 230 (the 22.5% ratio of macOS icons), background `#0f1420`, 1.5% border in `#1b2232`.
+- Place the base mark in the middle, at the proportions in the approved mockup: the whole mark (the line counted with its round caps) is about 60% of the canvas wide, i.e. a scale of 10 grid units. The shape (x 1.5–62.5, y 20–46.5) is centered in the tile: `translate(192 179.5) scale(10)`.
+- Only make the source file `app-icon.svg`. Exporting the `.icns` is left for release packaging.
 
-## 6. File thay đổi
+## 6. Files changed
 
 ```
-assets/brand/                 # mới
-  mark.svg                    # bản gốc
-  mark-small.svg              # dưới 24 px
+assets/brand/                 # new
+  mark.svg                    # base version
+  mark-small.svg              # below 24 px
   mark-mono.svg               # currentColor
-  lockup-dark.svg             # logo ghép chữ trên nền tối (chữ #e6eaf2)
-  lockup-light.svg            # logo ghép chữ trên nền sáng (chữ #080b12)
+  lockup-dark.svg             # mark with text on a dark background (text #e6eaf2)
+  lockup-light.svg            # mark with text on a light background (text #080b12)
   app-icon.svg                # 1024×1024
-  README.md                   # bảng ngắn: file nào dùng ở đâu, màu, khoảng trống tối thiểu
+  README.md                   # short table: which file is used where, colors, minimum clear space
 
-site/favicon.svg              # thay bằng mark-small.svg (màu viết cứng); đường kẻ #080b12, đổi sang #e6eaf2
-                              # qua @media (prefers-color-scheme: dark) bên trong SVG, để không mất trên tab sáng
-site/index.html               # logo SVG trong .brand đổi sang bản cỡ nhỏ, dùng var(--accent) / var(--ink)
-site/styles.css               # chỉnh .brand svg theo tỷ lệ mới và canh chân chữ
-site/og.png                   # chụp lại phần hero sau khi đổi logo, vẫn 1200×630
-docs/superpowers/specs/2026-11-09-landing-page-design.md   # sửa dòng "logo ngọn đèn" ở mục 3
+site/favicon.svg              # replaced by mark-small.svg (hard-coded colors); the line is #080b12, switched to #e6eaf2
+                              # via @media (prefers-color-scheme: dark) inside the SVG, so it does not vanish on a light tab
+site/index.html               # the SVG logo in .brand switches to the small version, using var(--accent) / var(--ink)
+site/styles.css               # adjust .brand svg for the new proportions and align to the text baseline
+site/og.png                   # re-capture the hero after the logo change, still 1200×630
+docs/superpowers/specs/2026-11-09-landing-page-design.md   # fix the "lamp flame logo" line in section 3
 ```
 
-Khoảng trống tối thiểu quanh logo bằng bán kính lõi (7 đơn vị lưới).
+The minimum clear space around the mark equals the core radius (7 grid units).
 
-## 7. Kiểm tra
+## 7. Verification
 
-- `python3 scripts/check-site.py` và `python3 scripts/test_check_site.py` vẫn chạy qua.
-- Mở site ở màn hình 1x và 2x, kiểm bằng mắt rằng đường kẻ của logo nằm trên chân chữ "Lucerna" trên nav.
-- Xem favicon trên tab trình duyệt ở 16 px, cả tab sáng lẫn tab tối của trình duyệt. Cần nhìn ra vầng sáng nằm trên đường kẻ.
-- Mở từng file trong `assets/brand/` trên nền sáng và nền tối. Riêng `mark-mono.svg` thì kiểm với một màu `color` bất kỳ.
-- Tìm trong `site/` không còn path của logo cũ (`M12 2.5c2.6 3`).
+- `python3 scripts/check-site.py` and `python3 scripts/test_check_site.py` still pass.
+- Open the site at 1x and 2x and check by eye that the mark's line sits on the baseline of the "Lucerna" text in the nav.
+- Look at the favicon in a browser tab at 16 px, on both light and dark browser tabs. The glow sitting on the line must be recognizable.
+- Open each file in `assets/brand/` on a light and a dark background. For `mark-mono.svg` specifically, check it with an arbitrary `color` value.
+- Search `site/` to confirm no path of the old logo remains (`M12 2.5c2.6 3`).

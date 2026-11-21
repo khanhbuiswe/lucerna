@@ -1,49 +1,49 @@
 # Lucerna — Landing page
 
-- **Ngày:** 2026-11-09
-- **Trạng thái:** Bản nháp chờ duyệt
-- **Mockup đã duyệt:** [`2026-11-09-landing-page-mockup.html`](2026-11-09-landing-page-mockup.html) (bản xem trực tuyến: https://claude.ai/artifact/Xh8wbLS9o9Q2c67mk8yuVx)
+- **Date:** 2026-11-09
+- **Status:** Draft, awaiting approval
+- **Approved mockup:** [`2026-11-09-landing-page-mockup.html`](2026-11-09-landing-page-mockup.html) (online version: https://claude.ai/artifact/Xh8wbLS9o9Q2c67mk8yuVx)
 
-## 1. Mục tiêu
+## 1. Goal
 
-Một trang giới thiệu Lucerna, chuyên nghiệp ngang tầm trang của Wu (wu.dstrml.org), nhưng có bản sắc riêng và chỉ nói đúng những gì Lucerna đang làm được.
+A page that introduces Lucerna, as professional as Wu's page (wu.dstrml.org), but with its own identity and saying only what Lucerna can actually do.
 
-Người xem là dev viết code chủ yếu qua agent trong terminal (Claude Code, Codex…). Trong 10 giây đầu, họ phải hiểu được ba điều:
+The audience is developers who write code mostly through an agent in the terminal (Claude Code, Codex…). Within the first 10 seconds, they must understand three things:
 
-1. Lucerna là trình xem code native, nhanh, viết bằng Rust, dành cho việc đọc code mà agent vừa sửa.
-2. Lucerna không có AI bên trong, và giữ phím tắt cùng `settings.json` giống VS Code.
-3. Cách cài đặt: bản release sắp ra mắt, hiện tại build từ source.
+1. Lucerna is a native, fast code viewer written in Rust, made for reading the code an agent just changed.
+2. Lucerna has no AI inside, and keeps the same shortcuts and `settings.json` as VS Code.
+3. How to install: the release is coming soon, for now build from source.
 
-**Tiêu chí thành công:**
+**Success criteria:**
 
-- Trang deploy được lên GitHub Pages từ thư mục `site/`.
-- Hiển thị đúng ở độ rộng 1280 px và 375 px, không cuộn ngang.
-- Mọi con số và mọi khẳng định trên trang đều kiểm chứng được trong repo, xem mục 5.
-- Lighthouse (mobile) đạt ≥ 95 cho Performance, Accessibility, Best Practices và SEO.
+- The page can be deployed to GitHub Pages from the `site/` folder.
+- It displays correctly at 1280 px and 375 px wide, with no horizontal scrolling.
+- Every number and every claim on the page can be verified in the repo, see section 5.
+- Lighthouse (mobile) scores ≥ 95 for Performance, Accessibility, Best Practices and SEO.
 
-## 2. Những gì đã quyết định
+## 2. What was decided
 
-| Câu hỏi | Quyết định |
+| Question | Decision |
 |---|---|
-| Nơi đặt và cách host | HTML/CSS thuần trong `site/` của repo này, không có bước build, deploy bằng GitHub Pages |
-| CTA chính | Khu download thiết kế sẵn (lệnh `curl`, nút theo nền tảng), gắn nhãn "Soon" cho tới khi có release; kèm lệnh build từ source |
-| Ngôn ngữ | Chỉ tiếng Anh |
-| Ảnh editor trong hero | Dựng bằng HTML/CSS theo màu One Dark, không dùng ảnh chụp |
-| Số liệu hiệu năng | Chỉ dùng số đã đo trong `docs/perf-checklist.md`; số chưa đo ghi là mục tiêu; không so sánh với VS Code hay Zed |
-| Giao diện | Chỉ có giao diện tối (Lucerna mặc định One Dark), palette **Cobalt**: nền xanh đen `#080b12`, màu nhấn xanh điện `#4f8cff`, chữ trắng ngả xanh. Toàn bộ token màu nằm ở `:root` của mockup. Đã chọn Cobalt thay cho vàng hổ phách vì palette đó trông chưa đủ "tech" |
+| Where it lives and how it is hosted | Plain HTML/CSS in the `site/` folder of this repo, no build step, deployed with GitHub Pages |
+| Primary CTA | A pre-designed download area (a `curl` command, per-platform buttons), labeled "Soon" until there is a release; with the build-from-source command alongside |
+| Language | English only |
+| Editor image in the hero | Built with HTML/CSS in One Dark colors, no screenshot |
+| Performance figures | Only use numbers measured in `docs/perf-checklist.md`; unmeasured numbers are written as targets; no comparison with VS Code or Zed |
+| Look | Dark theme only (Lucerna defaults to One Dark), **Cobalt** palette: blue-black background `#080b12`, electric blue accent `#4f8cff`, blue-tinged white text. All color tokens live in the mockup's `:root`. Cobalt was chosen over amber because that palette did not look "tech" enough |
 
-**Ngoài phạm vi:** trang docs, blog, bản tiếng Việt, analytics, form đăng ký nhận tin, trang changelog, script `install.sh` thật.
+**Out of scope:** a docs page, a blog, a Vietnamese version, analytics, a newsletter sign-up form, a changelog page, a real `install.sh` script.
 
-## 3. Cấu trúc file
+## 3. File structure
 
 ```
 site/
-  index.html          # toàn bộ nội dung, HTML có ngữ nghĩa
-  styles.css          # token màu/chữ ở :root, rồi từng section
-  main.js             # chỉ có nút Copy (~20 dòng), trang vẫn dùng được khi tắt JS
-  favicon.svg         # logo J2 bản cỡ nhỏ, giống logo trên thanh nav
-  og.png              # ảnh 1200×630 để chia sẻ link (chụp từ phần hero)
-  fonts/              # woff2 tự host, kèm file license OFL
+  index.html          # all the content, semantic HTML
+  styles.css          # color/type tokens in :root, then each section
+  main.js             # only the Copy button (~20 lines), the page still works with JS off
+  favicon.svg         # small version of the J2 logo, same as the logo on the nav bar
+  og.png              # 1200×630 image for link sharing (captured from the hero)
+  fonts/              # self-hosted woff2, with the OFL license files
     BricolageGrotesque-*.woff2
     InstrumentSans-*.woff2
     JetBrainsMono-*.woff2
@@ -51,84 +51,84 @@ site/
 .github/workflows/pages.yml
 ```
 
-- **Tự host font, không gọi Google Fonts.** Trang không gửi request nào tới bên thứ ba, đúng với câu "no telemetry" trong FAQ. Chỉ subset Latin, mỗi font tối đa hai weight. Ba font đều dùng giấy phép OFL 1.1, được ghi thêm vào `THIRD_PARTY_NOTICES.md`.
-- `<head>` gồm: `title`, `meta description`, Open Graph và Twitter card, `theme-color`, `link rel=canonical`, preload font hiển thị chính.
-- Không dùng framework hay thư viện JS, cũng không có bước build.
+- **Self-host fonts, no calls to Google Fonts.** The page sends no request to any third party, matching the "no telemetry" line in the FAQ. Subset to Latin only, at most two weights per font. All three fonts use the OFL 1.1 license, which is also added to `THIRD_PARTY_NOTICES.md`.
+- `<head>` contains: `title`, `meta description`, Open Graph and Twitter card, `theme-color`, `link rel=canonical`, a preload for the main display font.
+- No framework or JS library, and no build step.
 
-## 4. Các section
+## 4. Sections
 
-Thứ tự và nội dung lấy theo mockup. Văn bản trong mockup là văn bản chính thức, chỉ đổi những chỗ ghi ở mục 6.
+The order and content follow the mockup. The text in the mockup is the official text, changed only where noted in section 6.
 
-| # | Section | Nội dung chính |
+| # | Section | Main content |
 |---|---|---|
-| 1 | Nav (sticky) | Logo + "Lucerna"; các link Speed, Features, Roadmap, GitHub; nút "Download · Soon" dẫn tới `#download` |
-| 2 | Hero | Eyebrow "Open source · Written in Rust · macOS"; H1 "A quiet place to *read* the code your agents write."; đoạn mô tả; lệnh `curl` + nút Copy + nhãn "First release coming soon" + link build từ source; khung editor mock và ô terminal của agent |
-| 3 | Speed (`#speed`) | 4 số đo thật: 887 ms, 2.04 ms, 96 µs, 51 ms; thanh so với ngân sách cho hai số đầu; ghi chú cách đo |
-| 4 | Features (`#features`) | 6 tính năng giai đoạn 1 bên phải; danh sách 6 phím tắt bên trái (sticky trên desktop) |
+| 1 | Nav (sticky) | Logo + "Lucerna"; links Speed, Features, Roadmap, GitHub; a "Download · Soon" button leading to `#download` |
+| 2 | Hero | Eyebrow "Open source · Written in Rust · macOS"; H1 "A quiet place to *read* the code your agents write."; a description paragraph; a `curl` command + Copy button + "First release coming soon" label + a build-from-source link; a mock editor frame and an agent terminal pane |
+| 3 | Speed (`#speed`) | 4 real measurements: 887 ms, 2.04 ms, 96 µs, 51 ms; bars against the budget for the first two; a note on how they were measured |
+| 4 | Features (`#features`) | 6 Phase 1 features on the right; a list of 6 shortcuts on the left (sticky on desktop) |
 | 5 | Principles | No AI inside · Native · Open source |
-| 6 | Roadmap (`#roadmap`) | 5 giai đoạn theo spec giai đoạn 1; giai đoạn 1 được làm nổi bật |
-| 7 | Download (`#download`) | Lệnh build từ source + Copy; macOS Apple Silicon và Intel gắn "Soon"; Linux và Windows mờ, ghi "after Phase 1" |
-| 8 | FAQ | 5 câu hỏi dùng `<details>`, câu đầu mở sẵn |
-| 9 | Footer | "Latin for lamp", giấy phép, các link GitHub, Roadmap, Report a problem |
+| 6 | Roadmap (`#roadmap`) | 5 phases per the Phase 1 spec; Phase 1 is highlighted |
+| 7 | Download (`#download`) | Build-from-source command + Copy; macOS Apple Silicon and Intel labeled "Soon"; Linux and Windows dimmed, labeled "after Phase 1" |
+| 8 | FAQ | 5 questions using `<details>`, the first one open |
+| 9 | Footer | "Latin for lamp", license, links to GitHub, Roadmap, Report a problem |
 
-**Khung editor mock trong hero:**
+**Mock editor frame in the hero:**
 
-- Dựng bằng HTML, có `role="img"` và `aria-label` mô tả nội dung.
-- Code bên trong lấy từ `crates/lucerna-text/src/buffer.rs`: dòng 59–82, gồm hàm `reload()`.
-- Dòng 65–77 tô xanh kiểu "vừa thay đổi". Khi load trang, các dòng này nháy nhẹ một lần, và không nháy nếu người dùng bật `prefers-reduced-motion`.
-- Explorer đánh dấu `buffer.rs` và `reload.rs` là bị sửa từ bên ngoài. Tab `reload.rs` chữ nghiêng (preview tab). Status bar hiện "Reloaded from disk".
-- Ô terminal của agent chỉ để trang trí (`aria-hidden`) và bị ẩn khi màn hình hẹp hơn 960 px.
-- Nếu code của `buffer.rs` thay đổi, đoạn code trong mock **không** cần cập nhật theo. Nó chỉ là minh hoạ.
+- Built in HTML, with `role="img"` and an `aria-label` describing the content.
+- The code inside comes from `crates/lucerna-text/src/buffer.rs`: lines 59–82, including the `reload()` function.
+- Lines 65–77 are highlighted blue in a "just changed" style. When the page loads, these lines flash gently once, and do not flash if the user has `prefers-reduced-motion` on.
+- The explorer marks `buffer.rs` and `reload.rs` as modified externally. The `reload.rs` tab is in italics (preview tab). The status bar shows "Reloaded from disk".
+- The agent terminal pane is decorative only (`aria-hidden`) and is hidden when the screen is narrower than 960 px.
+- If the code of `buffer.rs` changes, the code in the mock does **not** need to be updated to match. It is only an illustration.
 
 **Responsive:**
 
-- Từ 960 px trở xuống: ẩn ô terminal, phần Features còn một cột, roadmap còn hai cột.
-- Từ 640 px trở xuống: ẩn link trên nav, ẩn explorer và minimap của mock, mọi lưới còn một cột.
-- Lệnh dài cuộn ngang bên trong khung của nó, không làm cả trang cuộn ngang.
+- At 960 px and below: hide the terminal pane, Features becomes one column, the roadmap becomes two columns.
+- At 640 px and below: hide the nav links, hide the mock's explorer and minimap, every grid becomes one column.
+- Long commands scroll horizontally inside their own box, without making the whole page scroll horizontally.
 
-## 5. Nguồn của mọi khẳng định
+## 5. Source of every claim
 
-| Khẳng định trên trang | Nguồn trong repo |
+| Claim on the page | Source in the repo |
 |---|---|
-| 887 ms quét 80.000 file; 2.04 ms Quick Open; 96 µs highlight; 51 ms reload | `docs/perf-checklist.md`, bảng Automated, đo ngày 2026-11-09 |
-| Ngân sách 5 s và 16 ms; mục tiêu 200 ms, 150 MB, 120 fps | Spec giai đoạn 1, mục 6 |
-| CI chặn khi benchmark chậm hơn 15% | `scripts/bench-gate.sh`, job `bench` trong `ci.yml` |
-| Không có dependency GPL, kiểm bằng `cargo deny` | `deny.toml`, `ci.yml` |
-| Search dùng engine của ripgrep | các crate `grep-searcher`, `grep-regex` trong `Cargo.toml` |
-| Không telemetry; log nằm ở `~/Library/Logs/Lucerna` | không crate nào gọi mạng (không có reqwest/hyper/ureq); `crates/lucerna/src/logging.rs` |
-| Chỉ macOS 13 trở lên; Linux và Windows làm sau giai đoạn 1 | Spec giai đoạn 1, dòng 92 |
-| Tính năng, phím tắt, lộ trình 5 giai đoạn | Spec giai đoạn 1, mục 1.3, 2.1 và 5.4 |
+| 887 ms to scan 80,000 files; 2.04 ms Quick Open; 96 µs highlight; 51 ms reload | `docs/perf-checklist.md`, the Automated table, measured on 2026-11-09 |
+| Budgets of 5 s and 16 ms; targets of 200 ms, 150 MB, 120 fps | Phase 1 spec, section 6 |
+| CI blocks when a benchmark is more than 15% slower | `scripts/bench-gate.sh`, the `bench` job in `ci.yml` |
+| No GPL dependencies, checked with `cargo deny` | `deny.toml`, `ci.yml` |
+| Search uses the ripgrep engine | the `grep-searcher` and `grep-regex` crates in `Cargo.toml` |
+| No telemetry; logs are at `~/Library/Logs/Lucerna` | no crate makes network calls (no reqwest/hyper/ureq); `crates/lucerna/src/logging.rs` |
+| macOS 13 and later only; Linux and Windows come after Phase 1 | Phase 1 spec, line 92 |
+| Features, shortcuts, 5-phase roadmap | Phase 1 spec, sections 1.3, 2.1 and 5.4 |
 
-Khi một trong các nguồn này thay đổi (ví dụ đo lại benchmark hoặc ra bản release đầu tiên), trang phải được cập nhật trong cùng PR đó. Dòng này sẽ được thêm vào `docs/perf-checklist.md`.
+When one of these sources changes (for example the benchmarks are re-measured or the first release ships), the page must be updated in the same PR. This line will be added to `docs/perf-checklist.md`.
 
-## 6. Những chỗ khác so với mockup
+## 6. Differences from the mockup
 
-1. Mockup dùng Google Fonts; bản thật tự host font (mục 3).
-2. Mockup bỏ qua `<!doctype>` và `<head>` vì nền tảng artifact tự thêm vào; bản thật phải có đầy đủ.
-3. **Tên miền:** chưa có. Lệnh `curl` và thẻ canonical dùng một hằng số duy nhất, tạm đặt là `https://lucerna.dev`. Nếu khi deploy vẫn chưa có tên miền thì dùng địa chỉ mặc định của GitHub Pages (`https://lucerna-dev.github.io/lucerna/`). Mọi link nội bộ đều là đường dẫn tương đối, nên trang chạy được ở cả hai địa chỉ.
-4. **Repo GitHub:** link dùng `https://github.com/lucerna-dev/lucerna`, lấy từ `Cargo.toml`. Repo hiện chưa có remote, nên link sẽ hỏng cho tới khi repo được đẩy lên.
-5. Nút "Download" trên nav trỏ tới `#download`, không tải file nào.
+1. The mockup uses Google Fonts; the real page self-hosts the fonts (section 3).
+2. The mockup omits `<!doctype>` and `<head>` because the artifact platform adds them; the real page must have them in full.
+3. **Domain name:** there is none yet. The `curl` command and the canonical tag use a single constant, temporarily set to `https://lucerna.dev`. If there is still no domain at deploy time, use the default GitHub Pages address (`https://lucerna-dev.github.io/lucerna/`). All internal links are relative paths, so the page works at both addresses.
+4. **GitHub repo:** the links use `https://github.com/lucerna-dev/lucerna`, taken from `Cargo.toml`. The repo has no remote yet, so the links will be broken until the repo is pushed.
+5. The "Download" button on the nav points to `#download` and does not download any file.
 
 ## 7. Deploy
 
-File `.github/workflows/pages.yml`:
+The file `.github/workflows/pages.yml`:
 
-- Chạy khi push lên `main` có thay đổi trong `site/**` hoặc chính file workflow này; chạy tay được bằng `workflow_dispatch`.
-- Dùng `actions/configure-pages`, `actions/upload-pages-artifact` (đường dẫn `site`) và `actions/deploy-pages`.
-- Quyền tối thiểu: `pages: write`, `id-token: write`, `contents: read`; `concurrency: pages`.
-- Không ảnh hưởng tới `ci.yml` hiện có.
+- Runs on a push to `main` with changes in `site/**` or in this workflow file itself; can be run manually with `workflow_dispatch`.
+- Uses `actions/configure-pages`, `actions/upload-pages-artifact` (path `site`) and `actions/deploy-pages`.
+- Minimal permissions: `pages: write`, `id-token: write`, `contents: read`; `concurrency: pages`.
+- Does not affect the existing `ci.yml`.
 
-Bật GitHub Pages (Source: GitHub Actions) trong cài đặt repo là việc tác giả tự làm sau khi có remote.
+Enabling GitHub Pages (Source: GitHub Actions) in the repo settings is something the author does after the remote exists.
 
-## 8. Kiểm tra
+## 8. Verification
 
-Đây là trang tĩnh nên không viết unit test. Kiểm tra bằng các bước sau:
+This is a static page, so no unit tests are written. Verify with these steps:
 
-1. Mở `site/index.html` trực tiếp từ đĩa và qua `python3 -m http.server`, ở độ rộng 1280 px và 375 px: không cuộn ngang, font tải đúng, không có lỗi trong console.
-2. Tắt JS: trang vẫn đọc được, lệnh vẫn chọn được để copy.
-3. Bật `prefers-reduced-motion`: không có animation.
-4. Dùng bàn phím: Tab đi hết các link, nút và `<details>` theo đúng thứ tự, focus luôn nhìn thấy được.
-5. Lighthouse mobile ≥ 95 cho cả bốn mục.
-6. Validator HTML của W3C không báo lỗi.
-7. Tab Network chỉ có request tới chính origin của trang.
-8. Đối chiếu từng dòng trong bảng ở mục 5 với nội dung trên trang.
+1. Open `site/index.html` directly from disk and through `python3 -m http.server`, at 1280 px and 375 px wide: no horizontal scrolling, fonts load correctly, no errors in the console.
+2. With JS off: the page is still readable, and the command can still be selected for copying.
+3. With `prefers-reduced-motion` on: no animation.
+4. With the keyboard: Tab goes through all the links, buttons and `<details>` in the correct order, and focus is always visible.
+5. Lighthouse mobile ≥ 95 in all four categories.
+6. The W3C HTML validator reports no errors.
+7. The Network tab shows only requests to the page's own origin.
+8. Check each row of the table in section 5 against the content on the page.

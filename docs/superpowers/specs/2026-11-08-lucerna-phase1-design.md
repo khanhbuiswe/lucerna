@@ -1,372 +1,372 @@
-# Lucerna — Giai đoạn 1: Trình xem lõi
+# Lucerna — Phase 1: Core Viewer
 
-- **Ngày:** 2026-11-08
-- **Trạng thái:** Bản nháp chờ duyệt
-- **Tên sản phẩm:** Lucerna (Latin: "ngọn đèn")
-- **Lệnh CLI:** `luc`
-- **Crate gốc:** `lucerna`
+- **Date:** 2026-11-08
+- **Status:** Draft, awaiting approval
+- **Product name:** Lucerna (Latin: "lamp")
+- **CLI command:** `luc`
+- **Root crate:** `lucerna`
 
-## 1. Bối cảnh và mục tiêu
+## 1. Background and goals
 
-### 1.1 Sản phẩm là gì
+### 1.1 What the product is
 
-Lucerna là một bản VS Code gọn hơn và nhanh hơn, viết bằng Rust, phát hành mã nguồn mở với giấy phép thoáng (MIT OR Apache-2.0).
+Lucerna is a leaner and faster take on VS Code, written in Rust and released as open source under a permissive license (MIT OR Apache-2.0).
 
-Người dùng mục tiêu viết code chủ yếu qua các agent chạy trong terminal, như Claude Code hay Codex. Họ mở editor phần lớn để **xem**: duyệt project, đọc code, theo dõi những gì agent vừa thay đổi. Những ai muốn code trực tiếp trên Lucerna vẫn sửa được đầy đủ, nhưng phần sửa thuộc giai đoạn sau.
+The target users write code mostly through agents running in a terminal, such as Claude Code or Codex. They open the editor mainly to **view**: browse the project, read code, and follow what the agent just changed. Those who want to code directly in Lucerna can still edit fully, but editing belongs to a later phase.
 
-### 1.2 Những gì đã quyết định
+### 1.2 What was decided
 
-- **Không có tính năng AI** trong editor: không chat, không ghost text, không MCP.
-- **Trải nghiệm giống VS Code:** bố cục, Quick Open, `settings.json`, `keybindings.json`, phím tắt mặc định.
-- **Extension dùng định dạng của Zed** (WASM, tree-sitter, theme JSON), không dùng định dạng VS Code. Phần này thuộc giai đoạn 2.
-- **UI viết bằng GPUI** (Apache-2.0). Mọi phần còn lại tự viết, không phụ thuộc crate GPL nào của Zed.
+- **No AI features** in the editor: no chat, no ghost text, no MCP.
+- **VS Code-like experience:** layout, Quick Open, `settings.json`, `keybindings.json`, default shortcuts.
+- **Extensions use Zed's format** (WASM, tree-sitter, theme JSON), not the VS Code format. This belongs to Phase 2.
+- **UI written in GPUI** (Apache-2.0). Everything else is written from scratch, with no dependency on any of Zed's GPL crates.
 
-### 1.3 Lộ trình tổng thể
+### 1.3 Overall roadmap
 
-Spec này **chỉ** mô tả giai đoạn 1. Mỗi giai đoạn sau có spec riêng.
+This spec describes Phase 1 **only**. Each later phase has its own spec.
 
-| # | Giai đoạn | Kết quả |
+| # | Phase | Result |
 |---|---|---|
-| **1** | **Trình xem lõi** (spec này) | Thay được VS Code cho việc xem code |
-| 2 | Host extension Zed | Theme, icon theme, ngôn ngữ và grammar, snippet từ extension của Zed |
-| 3 | Hiểu code qua LSP | Định nghĩa, tham chiếu, hover, diagnostics, outline, breadcrumbs, Quick Open `@` và `#` |
-| 3b | Host WASM cho extension Zed | Language server từ `extension.wasm`. PHP, Ruby, Elixir, Vue… đã chạy qua bảng language server (`2026-11-11-lsp-server-table-design.md`) khi người dùng đã cài server |
-| 4 | Sửa code đầy đủ ([spec](2026-11-11-lucerna-phase4-editing-design.md), 4.1, 4.2, 4.3 và 4.4 đã xong) | Multi-cursor, undo, xử lý xung đột với agent, completion, rename, format |
-| 5 | Mở rộng | Git gutter, xem diff, terminal tích hợp, giao diện settings (Git view: 5.1 Git lõi — màu Explorer, gutter; 5.2 tab diff — Uncommitted Changes, Changes since ‹nhánh›, diff một file; cả hai đã xong; chuyển nhánh từ thanh tiêu đề đã xong). Giao diện settings chưa làm |
-| V1 | Vim di chuyển (đã xong) | Bật bằng `vim.enabled` trong settings. Chỉ có các thao tác đọc: motion, tìm kiếm, cuộn, số đếm, mark, chọn bằng visual rồi copy |
-| V2 | Vim sửa (làm ngay sau bước 4.2 và 4.4, trước 4.3, 4.5, 4.6). **V2a và V2b đã xong** | Insert mode, các toán tử `d`/`c`/`y`, text object, `.`, macro, register, một phần lệnh `:` |
-| P3 | Sửa các lỗi còn mở sau release 0.1.0 ([spec](2026-11-17-p3-fixes-design.md)), đã xong | T1-1 (byte sai encoding) và mọi lỗi P3 trong review trước release |
-| MD | Markdown preview (đã làm xong, còn chờ hai bước kiểm tra: so giao diện với Zed, đo RAM sau khi đóng tab có ảnh) ([spec](2026-11-13-markdown-preview-design.md)) | Xem `.md` đã render ở tab riêng, cuộn đồng bộ với tab mã nguồn, ảnh và link cục bộ, mở file HTML bằng trình duyệt |
-| IMG | Image preview (đã làm xong và đã kiểm tra trong app; RAM sau khi đóng ảnh lớn xem [research §6](../../research/2026-11-18-image-preview.md)) ([spec](2026-11-18-image-preview-design.md)) | Mở ảnh png, jpg, gif, webp, bmp, ico, tiff và svg ở tab riêng, tự tải lại khi file đổi, SVG mở dạng ảnh theo mặc định |
+| **1** | **Core viewer** (this spec) | Can replace VS Code for viewing code |
+| 2 | Zed extension host | Themes, icon themes, languages and grammars, snippets from Zed extensions |
+| 3 | Understanding code via LSP | Definitions, references, hover, diagnostics, outline, breadcrumbs, Quick Open `@` and `#` |
+| 3b | WASM host for Zed extensions | Language servers from `extension.wasm`. PHP, Ruby, Elixir, Vue… already run through the language server table (`2026-11-11-lsp-server-table-design.md`) once the user has installed the server |
+| 4 | Full editing ([spec](2026-11-11-lucerna-phase4-editing-design.md), 4.1, 4.2, 4.3 and 4.4 done) | Multi-cursor, undo, conflict handling with agents, completion, rename, format |
+| 5 | Extensions | Git gutter, diff view, integrated terminal, settings UI (Git view: 5.1 core Git — Explorer colors, gutter; 5.2 diff tab — Uncommitted Changes, Changes since ‹branch›, single-file diff; both done; branch switching from the title bar done). Settings UI not done yet |
+| V1 | Vim navigation (done) | Enabled with `vim.enabled` in settings. Read-only operations only: motions, search, scrolling, counts, marks, selecting with visual mode then copying |
+| V2 | Vim editing (done right after steps 4.2 and 4.4, before 4.3, 4.5, 4.6). **V2a and V2b done** | Insert mode, the `d`/`c`/`y` operators, text objects, `.`, macros, registers, part of the `:` commands |
+| P3 | Fix the bugs still open after the 0.1.0 release ([spec](2026-11-17-p3-fixes-design.md)), done | T1-1 (wrong bytes for the encoding) and every P3 bug from the pre-release review |
+| MD | Markdown preview (done, still waiting on two checks: compare the look with Zed, measure RAM after closing a tab with an image) ([spec](2026-11-13-markdown-preview-design.md)) | View rendered `.md` in its own tab, scroll synced with the source tab, local images and links, open HTML files in the browser |
+| IMG | Image preview (done and checked in the app; for RAM after closing a large image see [research §6](../../research/2026-11-18-image-preview.md)) ([spec](2026-11-18-image-preview-design.md)) | Open png, jpg, gif, webp, bmp, ico, tiff and svg images in their own tab, auto-reload when the file changes, SVG opens as an image by default |
 
-Vim mode là tính năng có sẵn trong lõi editor, không phải extension, giống cách Zed làm. Xem phần nghiên cứu ở `docs/research/2026-11-09-vim-mode.md`.
+Vim mode is a built-in feature of the editor core, not an extension, the same way Zed does it. See the research in `docs/research/2026-11-09-vim-mode.md`.
 
-**Nguyên tắc cho mọi giai đoạn:** trước khi lên plan cho bất kỳ tính năng nào, luôn tham khảo cách VS Code và Zed đã triển khai. Chi tiết xem `docs/design-principles.md`.
+**Principle for every phase:** before planning any feature, always look at how VS Code and Zed implemented it. See `docs/design-principles.md` for details.
 
-### 1.4 Tiêu chí thành công của giai đoạn 1
+### 1.4 Success criteria for Phase 1
 
-Giai đoạn 1 xong khi tác giả dùng Lucerna thay VS Code để đọc code hằng ngày trong một tuần mà không phải mở lại VS Code để xem code, và đạt các mục tiêu hiệu năng ở mục 6.
+Phase 1 is done when the author uses Lucerna instead of VS Code to read code every day for a week without having to reopen VS Code to view code, and it meets the performance targets in section 6.
 
-## 2. Phạm vi
+## 2. Scope
 
-### 2.1 Có trong giai đoạn 1
+### 2.1 In Phase 1
 
-- Chạy `luc [đường-dẫn]` để mở một thư mục hoặc một file. Mỗi lần chạy mở một cửa sổ.
-- **Bố cục:**
-  - Activity bar có hai mục, Explorer và Search.
-  - Sidebar có thể ẩn hoặc hiện bằng Cmd+B.
-  - Vùng editor chia được thành nhiều ô (Cmd+\), mỗi ô có tab.
+- Run `luc [path]` to open a folder or a file. Each run opens one window.
+- **Layout:**
+  - An activity bar with two items, Explorer and Search.
+  - The sidebar can be hidden or shown with Cmd+B.
+  - The editor area can be split into several panes (Cmd+\), each with tabs.
   - Status bar.
 - **Explorer:**
-  - Cây thư mục tôn trọng `.gitignore` và `files.exclude`.
-  - Tự cập nhật khi file trên đĩa thay đổi.
-  - Đánh dấu file vừa bị thay đổi từ bên ngoài, tắt được qua `explorer.decorations.externalChanges`.
-  - Tự làm nổi bật file đang mở, theo `explorer.autoReveal`.
-- **Tab:**
-  - Preview tab: chữ nghiêng, bị thay bởi file mở tiếp theo. Double-click để giữ lại tab.
-  - Cmd+W đóng tab.
-  - Ctrl+Tab chuyển qua lại giữa các tab gần đây.
-- **Khung xem code:**
-  - Sửa được từ Phase 4: xem [2026-11-11-lucerna-phase4-editing-design.md](2026-11-11-lucerna-phase4-editing-design.md).
-  - Số dòng, tô màu cú pháp, cuộn mượt, word wrap bật tắt được.
-  - Chọn văn bản và copy (Cmd+C).
-  - Tìm trong file (Cmd+F), có tùy chọn phân biệt hoa thường, cả từ và regex.
-  - Minimap, tắt được qua `editor.minimap.enabled`.
-  - Folding theo thụt lề.
-  - Tô sáng cặp ngoặc tương ứng.
+  - A folder tree that respects `.gitignore` and `files.exclude`.
+  - Updates itself when files on disk change.
+  - Marks files just changed from outside, which can be turned off via `explorer.decorations.externalChanges`.
+  - Automatically highlights the open file, per `explorer.autoReveal`.
+- **Tabs:**
+  - Preview tab: italic text, replaced by the next file opened. Double-click to keep the tab.
+  - Cmd+W closes a tab.
+  - Ctrl+Tab switches back and forth between recent tabs.
+- **Code view:**
+  - Editable from Phase 4: see [2026-11-11-lucerna-phase4-editing-design.md](2026-11-11-lucerna-phase4-editing-design.md).
+  - Line numbers, syntax coloring, smooth scrolling, togglable word wrap.
+  - Select text and copy (Cmd+C).
+  - Find in file (Cmd+F), with options for case sensitivity, whole word and regex.
+  - Minimap, which can be turned off via `editor.minimap.enabled`.
+  - Indent-based folding.
+  - Highlighting of matching bracket pairs.
 - **Quick Open:**
-  - Một widget duy nhất.
-  - Không tiền tố: tìm file (Cmd+P).
-  - `>`: chạy lệnh (Cmd+Shift+P).
-  - `:`: nhảy tới dòng (Ctrl+G).
+  - A single widget.
+  - No prefix: find a file (Cmd+P).
+  - `>`: run a command (Cmd+Shift+P).
+  - `:`: jump to a line (Ctrl+G).
 - **Search** (Cmd+Shift+F):
-  - Tìm trong toàn project, có tùy chọn phân biệt hoa thường, cả từ, regex, và glob include/exclude.
-  - Kết quả hiển thị trong sidebar, nhóm theo file.
-- **Settings và keybindings:**
-  - `settings.json` và `keybindings.json` theo ngữ nghĩa của VS Code.
-  - Lệnh mở hai file này có trong command palette.
+  - Search the whole project, with options for case sensitivity, whole word, regex, and include/exclude globs.
+  - Results are shown in the sidebar, grouped by file.
+- **Settings and keybindings:**
+  - `settings.json` and `keybindings.json` with VS Code semantics.
+  - Commands to open these two files are in the command palette.
 - **Theme:**
-  - Đọc theme JSON theo schema Zed v0.2.0.
-  - Đi kèm One Dark và One Light (MIT, lấy từ thư mục `assets/themes` của Zed, kèm file license).
-- **Ngôn ngữ:**
-  - Đi kèm sẵn grammar tree-sitter cho Rust, TypeScript, TSX, JavaScript, Python, Go, JSON, Markdown (gồm cả inline), TOML, YAML, Bash, HTML và CSS.
-  - Query lấy từ repo gốc của từng grammar.
-- **Lưu trạng thái workspace:** bố cục, kích thước các ô, tab đang mở, vị trí cuộn.
+  - Reads theme JSON following the Zed v0.2.0 schema.
+  - Ships with One Dark and One Light (MIT, taken from Zed's `assets/themes` folder, with the license file).
+- **Languages:**
+  - Ships with built-in tree-sitter grammars for Rust, TypeScript, TSX, JavaScript, Python, Go, JSON, Markdown (including inline), TOML, YAML, Bash, HTML and CSS.
+  - Queries are taken from each grammar's original repo.
+- **Saving workspace state:** layout, pane sizes, open tabs, scroll positions.
 
-### 2.2 Không có trong giai đoạn 1
+### 2.2 Not in Phase 1
 
-Sửa văn bản, LSP, extension, git, terminal, debug, giao diện chỉnh settings, đa nền tảng, remote, mở nhiều thư mục gốc trong một cửa sổ, auto-update, telemetry (Lucerna không bao giờ có telemetry).
+Text editing, LSP, extensions, git, terminal, debugging, a settings editing UI, multi-platform support, remote, opening several root folders in one window, auto-update, telemetry (Lucerna never has telemetry).
 
-### 2.3 Nền tảng
+### 2.3 Platform
 
-Chỉ macOS 13 trở lên, chạy trên Apple Silicon và Intel. Linux và Windows làm sau giai đoạn 1.
+macOS 13 and later only, running on Apple Silicon and Intel. Linux and Windows come after Phase 1.
 
-## 3. Kiến trúc
+## 3. Architecture
 
-### 3.1 Nguyên tắc
+### 3.1 Principles
 
-1. **Luồng UI không bao giờ chờ** I/O, parse hay tìm kiếm. Việc nặng chạy ở luồng nền trên snapshot bất biến, rồi gửi kết quả về UI.
-2. **Chỉ crate `workbench` phụ thuộc GPUI.** Các crate còn lại là Rust thuần, kiểm thử được mà không cần cửa sổ.
-3. **Không dùng code GPL.** Chỉ đọc định dạng dữ liệu (theme JSON, file `.scm`, cấu trúc keymap) như một interface, không chép mã nguồn GPL của Zed. CI chặn điều này bằng `cargo-deny`.
-4. **Viết sẵn để sau này sửa được.** `text` dùng rope ngay từ đầu, dù giai đoạn 1 chỉ đọc. Nhờ vậy giai đoạn 4 không phải đổi cấu trúc dữ liệu.
+1. **The UI thread never waits** for I/O, parsing or search. Heavy work runs on a background thread over an immutable snapshot, then sends the result back to the UI.
+2. **Only the `workbench` crate depends on GPUI.** The other crates are pure Rust, testable without a window.
+3. **No GPL code.** Only data formats (theme JSON, `.scm` files, keymap structure) are read, as an interface; no GPL source code of Zed is copied. CI enforces this with `cargo-deny`.
+4. **Written so editing can be added later.** `text` uses a rope from the start, even though Phase 1 is read-only. That way Phase 4 does not have to change the data structures.
 
-### 3.2 Các crate
+### 3.2 Crates
 
-Tất cả nằm trong một Cargo workspace, thư mục `crates/`.
+All live in one Cargo workspace, in the `crates/` folder.
 
-| Crate | Trách nhiệm | Phụ thuộc chính |
+| Crate | Responsibility | Main dependencies |
 |---|---|---|
-| `lucerna-text` | Buffer rope, snapshot rẻ (clone bằng `Arc`), chuyển đổi dòng/cột ↔ byte, nhận diện encoding và dòng kết thúc | `ropey`, `encoding_rs` |
-| `lucerna-syntax` | Đăng ký ngôn ngữ (theo phần mở rộng và tên file), parse tree-sitter ở nền, tính highlight cho một khoảng dòng, folding | `tree-sitter`, các crate grammar |
-| `lucerna-project` | Quét thư mục ở nền, cây file, watcher, fuzzy tìm file, tìm nội dung | `ignore`, `notify`, `grep-searcher`, `grep-regex`, `nucleo-matcher` |
-| `lucerna-settings` | Gộp các lớp settings, schema mặc định, đọc keybindings, đánh giá `when` clause | `serde`, `serde_json`, `jsonc-parser` |
-| `lucerna-theme` | Đọc theme JSON của Zed, ánh xạ tên capture tree-sitter sang style | `serde`, `palette` |
-| `lucerna-workbench` | Toàn bộ UI: bố cục, explorer, tab, khung xem code, Quick Open, panel search, status bar, lưu trạng thái | `gpui` (git, pin theo revision) |
-| `lucerna` (bin `luc`) | Đọc tham số CLI, khởi tạo log, ghép các crate | `clap`, `tracing` |
+| `lucerna-text` | Rope buffer, cheap snapshots (clone via `Arc`), line/column ↔ byte conversion, encoding and line-ending detection | `ropey`, `encoding_rs` |
+| `lucerna-syntax` | Language registry (by extension and file name), background tree-sitter parsing, highlight computation for a range of lines, folding | `tree-sitter`, grammar crates |
+| `lucerna-project` | Background directory scan, file tree, watcher, fuzzy file search, content search | `ignore`, `notify`, `grep-searcher`, `grep-regex`, `nucleo-matcher` |
+| `lucerna-settings` | Merging settings layers, default schema, reading keybindings, evaluating `when` clauses | `serde`, `serde_json`, `jsonc-parser` |
+| `lucerna-theme` | Reading Zed theme JSON, mapping tree-sitter capture names to styles | `serde`, `palette` |
+| `lucerna-workbench` | All of the UI: layout, explorer, tabs, code view, Quick Open, search panel, status bar, state saving | `gpui` (git, pinned by revision) |
+| `lucerna` (bin `luc`) | Reading CLI arguments, initializing logging, wiring the crates together | `clap`, `tracing` |
 
-**Ghim phiên bản GPUI.** `gpui` được lấy qua git từ repo `zed-industries/zed`, pin theo một commit cụ thể. Commit đó được chọn khi bắt đầu triển khai và ghi vào `Cargo.toml`. Chỉ cập nhật bằng một PR riêng, kèm kiểm thử lại.
+**Pinning the GPUI version.** `gpui` is taken via git from the `zed-industries/zed` repo, pinned to a specific commit. That commit is chosen when implementation starts and recorded in `Cargo.toml`. Update it only in a separate PR, with re-testing.
 
-### 3.3 Interface giữa các crate
+### 3.3 Interfaces between crates
 
-- `project::Worktree` cung cấp:
-  - `snapshot()`: một danh sách file bất biến.
-  - Luồng sự kiện `WorktreeEvent`, gồm `Added`, `Removed`, `Modified` và `Rescanned`.
-- `text::Buffer` cung cấp:
-  - `load(path)`: trả về `Result<Buffer, LoadError>`.
-  - `snapshot()`: trả về `BufferSnapshot`.
-  - `reload(new_contents)`: trả về một `Reload` cho biết dòng nào đã đổi, dùng để giữ vị trí cuộn.
-- `syntax::SyntaxMap` cung cấp:
-  - `parse(snapshot)`: hàm bất đồng bộ.
-  - `highlights(snapshot, line_range)`: trả về danh sách `(byte_range, capture_name)`.
-- `theme::Theme::style_for(capture_name)`: trả về `HighlightStyle`, đi lùi theo tên capture (`function.method` → `function`).
-- `settings::Settings::get::<T>(key, language)`: trả về giá trị đã gộp các lớp. Mỗi khi settings đổi, phát sự kiện thay đổi.
-- `workbench` chỉ dùng các interface trên. Nó không biết bên trong rope hay tree-sitter hoạt động thế nào.
+- `project::Worktree` provides:
+  - `snapshot()`: an immutable list of files.
+  - A stream of `WorktreeEvent` events, including `Added`, `Removed`, `Modified` and `Rescanned`.
+- `text::Buffer` provides:
+  - `load(path)`: returns `Result<Buffer, LoadError>`.
+  - `snapshot()`: returns `BufferSnapshot`.
+  - `reload(new_contents)`: returns a `Reload` saying which lines changed, used to keep the scroll position.
+- `syntax::SyntaxMap` provides:
+  - `parse(snapshot)`: an asynchronous function.
+  - `highlights(snapshot, line_range)`: returns a list of `(byte_range, capture_name)`.
+- `theme::Theme::style_for(capture_name)`: returns `HighlightStyle`, falling back by capture name (`function.method` → `function`).
+- `settings::Settings::get::<T>(key, language)`: returns the value merged across layers. Whenever settings change, it emits a change event.
+- `workbench` uses only the interfaces above. It does not know how the rope or tree-sitter work inside.
 
-## 4. Luồng dữ liệu
+## 4. Data flow
 
-### 4.1 Khởi động
+### 4.1 Startup
 
-1. `luc` đọc tham số, khởi tạo `tracing`, rồi nạp settings (mặc định → user → workspace) và theme.
-2. GPUI mở cửa sổ và khôi phục trạng thái workspace từ file JSON. Nếu file không có hoặc hỏng thì dùng bố cục mặc định.
-3. `project` bắt đầu quét thư mục ở nền. Cây file hiện dần theo từng đợt khoảng 16 ms trong lúc quét.
-4. Tab đang active được đọc file và hiển thị ngay, chưa tô màu. Màu xuất hiện khi parse xong.
-5. Các tab khác chỉ được đọc file khi người dùng chuyển sang.
+1. `luc` reads the arguments, initializes `tracing`, then loads settings (default → user → workspace) and the theme.
+2. GPUI opens the window and restores the workspace state from a JSON file. If the file is missing or corrupt, the default layout is used.
+3. `project` starts scanning the folder in the background. The file tree appears gradually in batches of about 16 ms during the scan.
+4. The active tab's file is read and shown right away, not yet colored. Colors appear when parsing finishes.
+5. Other tabs only have their files read when the user switches to them.
 
-### 4.2 Mở và xem file
+### 4.2 Opening and viewing a file
 
-1. Đọc file và nhận diện encoding: UTF-8 trước, sau đó kiểm tra BOM, cuối cùng đoán bằng `encoding_rs`. File nhị phân được nhận diện qua byte NUL trong 8 KB đầu.
-2. Tạo `Buffer` và `BufferSnapshot`.
-3. Parse tree-sitter: chờ đồng bộ tối đa 1 ms, quá thời gian thì để luồng nền làm tiếp và vẽ lại khi xong.
-4. Chỉ tính highlight cho các dòng đang hiển thị, cộng thêm 100 dòng đệm trên và dưới.
-5. **Ngưỡng file lớn** (đặt được trong settings):
-   - File trên 20 MB hoặc trên 300.000 dòng: không tô màu, không có minimap, không folding.
-   - Dòng dài hơn 10.000 ký tự: chỉ render phần đầu, kèm dấu `…`.
-   - File trên 512 MB: không mở, chỉ hiện thông báo.
+1. Read the file and detect the encoding: UTF-8 first, then check for a BOM, and finally guess with `encoding_rs`. A binary file is recognized by a NUL byte in the first 8 KB.
+2. Create the `Buffer` and `BufferSnapshot`.
+3. Tree-sitter parse: wait synchronously for at most 1 ms; if that is exceeded, leave it to the background thread and redraw when done.
+4. Only compute highlights for the lines being displayed, plus a 100-line margin above and below.
+5. **Large-file thresholds** (configurable in settings):
+   - A file over 20 MB or over 300,000 lines: no coloring, no minimap, no folding.
+   - A line longer than 10,000 characters: render only the beginning, followed by a `…` mark.
+   - A file over 512 MB: not opened, only a notice is shown.
 
-### 4.3 Khi file thay đổi từ bên ngoài
+### 4.3 When a file changes from outside
 
-1. `notify` (FSEvents trên macOS) gửi sự kiện. `project` gộp các sự kiện trong 50 ms.
-2. Nếu `notify` báo tràn hàng đợi, hoặc có hơn 1.000 sự kiện trong một đợt (ví dụ khi agent chạy `git checkout`), `project` quét lại toàn bộ ở nền và phát `Rescanned`.
-3. Cây file được cập nhật và file vừa đổi được đánh dấu. Dấu này tự mất sau 10 giây hoặc khi người dùng mở file.
-4. Với file đang mở:
-   - Đọc lại file.
-   - Gọi `Buffer::reload`.
-   - Giữ dòng trên cùng của khung nhìn, dịch theo số dòng bị thêm hoặc bớt phía trên.
-   - Parse lại.
-5. File đang mở mà bị xóa: tab chuyển sang trạng thái "đã xóa" (gạch ngang tên), nội dung vẫn còn để xem. Nếu file xuất hiện lại thì tab trở về bình thường.
-6. Mục tiêu: dưới 100 ms từ lúc file được ghi tới lúc màn hình cập nhật.
+1. `notify` (FSEvents on macOS) sends an event. `project` merges events within 50 ms.
+2. If `notify` reports a queue overflow, or there are more than 1,000 events in one batch (for example when an agent runs `git checkout`), `project` rescans everything in the background and emits `Rescanned`.
+3. The file tree is updated and the changed file is marked. The mark disappears by itself after 10 seconds or when the user opens the file.
+4. For a file that is open:
+   - Re-read the file.
+   - Call `Buffer::reload`.
+   - Keep the top line of the viewport, shifted by the number of lines added or removed above it.
+   - Re-parse.
+5. If an open file is deleted: the tab switches to a "deleted" state (name struck through), and the content remains for viewing. If the file reappears, the tab returns to normal.
+6. Goal: under 100 ms from the moment the file is written to the screen updating.
 
 ### 4.4 Quick Open
 
 - **Cmd+P:**
-  - Fuzzy match bằng `nucleo-matcher` trên snapshot danh sách file.
-  - Chạy ở nền, trả 50 kết quả đầu tiên. Mỗi lần gõ phím thì hủy lượt match trước.
-  - Thứ tự ưu tiên: file mở gần đây, sau đó điểm match, sau đó đường dẫn ngắn.
-- **`>`:** liệt kê lệnh trong command registry, hiển thị kèm phím tắt.
-- **`:N` hoặc `:N:C`:** nhảy tới dòng N, cột C, trong file đang mở.
-- Enter mở file dưới dạng preview tab. Cmd+Enter mở file trong ô bên cạnh.
+  - Fuzzy match with `nucleo-matcher` over a snapshot of the file list.
+  - Runs in the background, returns the first 50 results. On each keystroke, the previous match run is cancelled.
+  - Priority order: recently opened files, then match score, then shorter path.
+- **`>`:** lists the commands in the command registry, shown with their shortcuts.
+- **`:N` or `:N:C`:** jump to line N, column C, in the open file.
+- Enter opens the file as a preview tab. Cmd+Enter opens the file in the adjacent pane.
 
-### 4.5 Tìm kiếm toàn project
+### 4.5 Project-wide search
 
-- Chạy trên nhiều luồng bằng `ignore::WalkParallel` kết hợp `grep-searcher`. Tôn trọng `.gitignore`, `search.exclude` và glob nhập tay.
-- Kết quả đổ dần vào panel, nhóm theo file.
-- Giới hạn 20.000 kết quả, kèm thông báo khi bị cắt.
-- Đổi truy vấn thì hủy lượt tìm cũ (debounce 150 ms).
-- Bấm vào một kết quả: mở file và tô sáng chỗ khớp.
+- Runs on multiple threads using `ignore::WalkParallel` combined with `grep-searcher`. Respects `.gitignore`, `search.exclude` and hand-typed globs.
+- Results stream into the panel gradually, grouped by file.
+- Limit of 20,000 results, with a notice when truncated.
+- Changing the query cancels the old search (150 ms debounce).
+- Clicking a result: opens the file and highlights the match.
 
-## 5. Settings, keybindings và lệnh
+## 5. Settings, keybindings and commands
 
-### 5.1 Đường dẫn
+### 5.1 Paths
 
-| Loại | Đường dẫn |
+| Kind | Path |
 |---|---|
 | User settings | `~/.config/lucerna/settings.json` |
 | User keybindings | `~/.config/lucerna/keybindings.json` |
 | User themes | `~/.config/lucerna/themes/*.json` |
 | Workspace settings | `<root>/.lucerna/settings.json` |
-| Trạng thái workspace | `~/Library/Application Support/Lucerna/workspaces/<sha256(root)>.json` |
+| Workspace state | `~/Library/Application Support/Lucerna/workspaces/<sha256(root)>.json` |
 | Log | `~/Library/Logs/Lucerna/` |
 
 ### 5.2 Settings
 
-- Định dạng JSON có comment (JSONC).
-- Gộp theo thứ tự: mặc định → user → workspace. Override theo ngôn ngữ bằng khóa `"[rust]": { … }`.
-- Tên khóa giữ đúng như VS Code khi có khái niệm tương đương. Danh sách khóa giai đoạn 1:
+- JSON with comments (JSONC) format.
+- Merged in order: default → user → workspace. Per-language overrides use the key `"[rust]": { … }`.
+- Key names stay exactly as in VS Code when an equivalent concept exists. The Phase 1 key list:
   - `editor.fontFamily`, `editor.fontSize`, `editor.lineHeight`, `editor.wordWrap`, `editor.minimap.enabled`, `editor.renderWhitespace`, `editor.tabSize`
   - `files.exclude`, `search.exclude`
   - `workbench.colorTheme`, `workbench.editor.enablePreview`
   - `explorer.autoReveal`, `explorer.decorations.externalChanges`
   - `lucerna.largeFile.maxBytes`, `lucerna.largeFile.maxLines`
-- Settings được nạp lại tự động khi file thay đổi trên đĩa.
+- Settings are reloaded automatically when the file changes on disk.
 
 ### 5.3 Keybindings
 
-- Định dạng giống VS Code: mảng các phần tử `{ "key": "cmd+p", "command": "workbench.action.quickOpen", "when": "…" }`.
-- Lệnh có tiền tố `-` để gỡ một binding mặc định.
+- Same format as VS Code: an array of elements `{ "key": "cmd+p", "command": "workbench.action.quickOpen", "when": "…" }`.
+- A command with a `-` prefix removes a default binding.
 - **`when` clause:**
-  - Hỗ trợ `!`, `&&`, `||`, `==`, `!=`, dấu ngoặc và context key kiểu boolean hoặc chuỗi.
-  - Context key giai đoạn 1: `editorFocus`, `sideBarVisible`, `sideBarFocus`, `explorerViewletFocus`, `searchViewletFocus`, `inQuickOpen`, `findWidgetVisible`, `resourceExtname`, `editorLangId`.
-- Hỗ trợ chord, ví dụ `cmd+k cmd+t`.
-- Rule nằm sau và có `when` đúng thì thắng, giống VS Code.
-- ID lệnh dùng tên của VS Code khi có lệnh tương đương, để người dùng chép keybinding cũ sang được.
+  - Supports `!`, `&&`, `||`, `==`, `!=`, parentheses and context keys of boolean or string type.
+  - Phase 1 context keys: `editorFocus`, `sideBarVisible`, `sideBarFocus`, `explorerViewletFocus`, `searchViewletFocus`, `inQuickOpen`, `findWidgetVisible`, `resourceExtname`, `editorLangId`.
+- Supports chords, for example `cmd+k cmd+t`.
+- The later rule with a matching `when` wins, like VS Code.
+- Command IDs use VS Code's names when an equivalent command exists, so users can copy their old keybindings over.
 
-### 5.4 Phím tắt mặc định (macOS)
+### 5.4 Default shortcuts (macOS)
 
-| Phím | Lệnh |
+| Key | Command |
 |---|---|
 | Cmd+P | Quick Open |
 | Cmd+Shift+P | Command palette |
-| Ctrl+G | Đi tới dòng |
-| Cmd+Shift+F | Tìm trong project |
-| Cmd+F | Tìm trong file |
-| Cmd+B | Ẩn/hiện sidebar |
-| Cmd+Shift+E | Mở Explorer |
-| Cmd+\ | Chia ô editor |
-| Cmd+1…9 | Chuyển tới ô thứ N |
-| Cmd+W | Đóng tab |
-| Ctrl+Tab | Tab gần đây |
-| Cmd+K Cmd+T | Chọn theme |
-| Cmd+, | Mở settings.json |
-| Alt+Z | Bật/tắt word wrap |
-| Cmd+= / Cmd+- | Phóng to / thu nhỏ chữ |
+| Ctrl+G | Go to line |
+| Cmd+Shift+F | Search in project |
+| Cmd+F | Find in file |
+| Cmd+B | Hide/show sidebar |
+| Cmd+Shift+E | Open Explorer |
+| Cmd+\ | Split editor pane |
+| Cmd+1…9 | Switch to pane N |
+| Cmd+W | Close tab |
+| Ctrl+Tab | Recent tabs |
+| Cmd+K Cmd+T | Choose theme |
+| Cmd+, | Open settings.json |
+| Alt+Z | Toggle word wrap |
+| Cmd+= / Cmd+- | Zoom text in / out |
 
-## 6. Hiệu năng
+## 6. Performance
 
-Đo trên MacBook Pro M-series, bản build release.
+Measured on a MacBook Pro M-series, release build.
 
-| Chỉ số | Mục tiêu |
+| Metric | Target |
 |---|---|
-| Từ chạy `luc` tới khung hình đầu có nội dung | < 200 ms |
-| Mở repo khoảng 80.000 file (Linux kernel) | Cây file dùng được < 300 ms; quét xong < 5 s |
-| Quick Open trên 80.000 file, mỗi phím gõ | < 16 ms tới khi hiện kết quả |
-| Cuộn file 10 MB | 120 fps, không rớt khung hình |
-| Khi rỗi, repo trung bình (khoảng 5.000 file, 10 tab) | < 150 MB RAM |
-| File thay đổi trên đĩa → màn hình cập nhật | < 100 ms |
+| From running `luc` to the first frame with content | < 200 ms |
+| Opening a repo of about 80,000 files (Linux kernel) | File tree usable < 300 ms; scan finished < 5 s |
+| Quick Open on 80,000 files, per keystroke | < 16 ms until results appear |
+| Scrolling a 10 MB file | 120 fps, no dropped frames |
+| Idle, average repo (about 5,000 files, 10 tabs) | < 150 MB RAM |
+| File changes on disk → screen updates | < 100 ms |
 
-## 7. Xử lý lỗi
+## 7. Error handling
 
-Nguyên tắc: một lỗi không bao giờ làm sập toàn bộ editor.
+Principle: one error never brings down the whole editor.
 
-| Tình huống | Cách xử lý |
+| Situation | Handling |
 |---|---|
-| Không có quyền đọc, file không tồn tại | Tab hiện thông báo lỗi và nút "Thử lại" |
-| File nhị phân | Tab hiện "File nhị phân" và nút "Mở dạng text" |
-| Encoding lạ | Đoán bằng `encoding_rs`; status bar hiện encoding đang dùng |
-| `settings.json` hoặc `keybindings.json` sai cú pháp | Giữ cấu hình hợp lệ gần nhất; status bar báo lỗi kèm số dòng; bấm vào thì mở file tại dòng đó |
-| Theme hỏng hoặc không tìm thấy | Dùng One Dark, ghi cảnh báo vào log |
-| Parse tree-sitter lỗi hoặc quá thời gian | Hiển thị không tô màu, ghi log |
-| Watcher tràn hàng đợi | Quét lại toàn bộ (mục 4.3) |
-| Panic trong tác vụ nền | `catch_unwind` bắt lại, hủy tác vụ đó, ghi log; UI vẫn chạy |
-| File trạng thái workspace hỏng | Bỏ qua, dùng bố cục mặc định, đổi tên file hỏng thành `.bak` |
+| No read permission, file does not exist | The tab shows an error message and a "Retry" button |
+| Binary file | The tab shows "Binary file" and an "Open as text" button |
+| Unusual encoding | Guess with `encoding_rs`; the status bar shows the encoding in use |
+| `settings.json` or `keybindings.json` has a syntax error | Keep the last valid configuration; the status bar reports the error with the line number; clicking it opens the file at that line |
+| Theme broken or not found | Use One Dark, write a warning to the log |
+| Tree-sitter parse fails or times out | Display without coloring, write to the log |
+| Watcher queue overflow | Rescan everything (section 4.3) |
+| Panic in a background task | `catch_unwind` catches it, cancels that task, writes to the log; the UI keeps running |
+| Corrupt workspace state file | Skip it, use the default layout, rename the corrupt file to `.bak` |
 
-Log dùng `tracing` cùng `tracing-appender`, xoay vòng theo ngày, giữ 7 ngày. Lệnh "Lucerna: Open Logs Folder" có trong command palette.
+Logging uses `tracing` with `tracing-appender`, rotated daily, kept for 7 days. The command "Lucerna: Open Logs Folder" is in the command palette.
 
-## 8. Kiểm thử
+## 8. Testing
 
-- **Unit test** cho từng crate không có UI:
-  - `text`: chuyển đổi dòng, cột và byte; reload và tính dòng thay đổi; nhận diện encoding.
-  - `syntax`: chọn ngôn ngữ; highlight trên mẫu nhỏ mỗi ngôn ngữ (snapshot test bằng `insta`).
-  - `project`: lọc gitignore; điểm fuzzy match; gộp sự kiện.
-  - `settings`: gộp các lớp; override theo ngôn ngữ; parser và bộ đánh giá `when` clause; gỡ binding bằng `-`; chord.
-  - `theme`: đọc One Dark và One Light; đi lùi theo tên capture.
-- **Test tích hợp cho `project`:**
-  - Tạo thư mục tạm, rồi giả lập agent: tạo, sửa, xóa, đổi tên file, và ghi 5.000 file trong một đợt.
-  - Kiểm tra snapshot và sự kiện phát ra là đúng.
-- **Test UI** bằng `gpui::TestAppContext`, chạy không cần cửa sổ: bố cục mặc định, preview tab, chia ô, Quick Open, lưu và khôi phục trạng thái, keybinding có `when`.
-- **Benchmark** bằng `criterion`: quét repo lớn, fuzzy match, highlight file 10 MB, reload file. CI báo lỗi khi một chỉ số chậm đi quá 15%.
-- **CI** (GitHub Actions, chạy trên macOS): `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo deny check` (cấm GPL, AGPL, LGPL), benchmark.
+- **Unit tests** for each crate without UI:
+  - `text`: line, column and byte conversion; reload and changed-line computation; encoding detection.
+  - `syntax`: language selection; highlights on a small sample per language (snapshot tests with `insta`).
+  - `project`: gitignore filtering; fuzzy match scores; event merging.
+  - `settings`: layer merging; per-language overrides; the `when` clause parser and evaluator; removing bindings with `-`; chords.
+  - `theme`: reading One Dark and One Light; falling back by capture name.
+- **Integration tests for `project`:**
+  - Create a temp folder, then simulate an agent: create, edit, delete and rename files, and write 5,000 files in one batch.
+  - Check that the snapshot and the emitted events are correct.
+- **UI tests** with `gpui::TestAppContext`, run without a window: default layout, preview tab, pane splitting, Quick Open, saving and restoring state, keybindings with `when`.
+- **Benchmarks** with `criterion`: large repo scan, fuzzy match, highlighting a 10 MB file, file reload. CI fails when a metric gets more than 15% slower.
+- **CI** (GitHub Actions, running on macOS): `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo deny check` (bans GPL, AGPL, LGPL), benchmarks.
 
-## 9. Giấy phép
+## 9. Licensing
 
-- **Mã nguồn Lucerna:** MIT OR Apache-2.0.
-- **Dependency được phép:** MIT, Apache-2.0, BSD-2/3, ISC, Zlib, Unicode-3.0, MPL-2.0 (dạng thư viện). Được thực thi bằng `deny.toml`.
-- **Từ Zed chỉ được dùng:**
-  - Các crate Apache-2.0: `gpui` và các crate nền tảng của nó, cùng các dependency nội bộ Apache của chúng.
-  - Theme One (MIT), kèm file license.
-- **Grammar và query:** lấy từ repo gốc của từng grammar (phần lớn MIT). Liệt kê trong `THIRD_PARTY_NOTICES.md`.
+- **Lucerna source code:** MIT OR Apache-2.0.
+- **Allowed dependencies:** MIT, Apache-2.0, BSD-2/3, ISC, Zlib, Unicode-3.0, MPL-2.0 (library form). Enforced by `deny.toml`.
+- **From Zed, only the following may be used:**
+  - Apache-2.0 crates: `gpui` and its foundation crates, plus their internal Apache dependencies.
+  - The One theme (MIT), with the license file.
+- **Grammars and queries:** taken from each grammar's original repo (mostly MIT). Listed in `THIRD_PARTY_NOTICES.md`.
 
-## 10. Rủi ro
+## 10. Risks
 
-| Rủi ro | Cách giảm thiểu |
+| Risk | Mitigation |
 |---|---|
-| GPUI thay đổi API, chưa có bản phát hành mới | Pin theo một commit; cập nhật bằng PR riêng; giữ toàn bộ code GPUI trong `lucerna-workbench` |
-| GPUI thiếu widget (cây, input, danh sách ảo) | Tự viết trên `uniform_list` và `div`; tham khảo `gpui-component` sau khi kiểm tra giấy phép |
-| Vô tình chép code GPL từ Zed | `cargo-deny` trong CI; quy ước không mở mã nguồn crate GPL khi đang viết module tương ứng |
-| Render chữ hoặc fallback font tiếng Việt và CJK không đúng | Đưa file mẫu tiếng Việt, CJK và emoji vào test thủ công trước khi phát hành |
-| Quét repo lớn tốn RAM | Lưu đường dẫn dạng `Arc<str>` hoặc dùng chung tiền tố; đo trong benchmark |
+| GPUI changes its API, no new release yet | Pin to a commit; update in a separate PR; keep all GPUI code inside `lucerna-workbench` |
+| GPUI lacks widgets (tree, input, virtual list) | Write them on top of `uniform_list` and `div`; consult `gpui-component` after checking the license |
+| Accidentally copying GPL code from Zed | `cargo-deny` in CI; a convention of not opening the source of GPL crates while writing the corresponding module |
+| Text rendering or font fallback for Vietnamese and CJK is wrong | Put Vietnamese, CJK and emoji sample files into manual testing before release |
+| Scanning a large repo uses a lot of RAM | Store paths as `Arc<str>` or share prefixes; measure in benchmarks |
 
-## 11. Các bước kế tiếp
+## 11. Next steps
 
-Sau khi spec này được duyệt, viết kế hoạch triển khai bằng skill `writing-plans`. Thứ tự dự kiến:
+After this spec is approved, write the implementation plan with the `writing-plans` skill. Expected order:
 
-1. Tạo workspace và CI.
-2. `settings` và `theme`.
+1. Create the workspace and CI.
+2. `settings` and `theme`.
 3. `text`.
 4. `project`.
 5. `syntax`.
-6. `workbench`: khung cửa sổ, sau đó explorer, rồi khung xem code.
-7. Quick Open và search.
-8. Lưu trạng thái workspace.
-9. Benchmark và tinh chỉnh.
+6. `workbench`: window frame, then explorer, then code view.
+7. Quick Open and search.
+8. Saving workspace state.
+9. Benchmarks and tuning.
 
-## 12. Thay đổi 2026-11-08: giao diện kiểu Zed
+## 12. Change 2026-11-08: Zed-style UI
 
-Người dùng đã quyết định dùng **bố cục và phong cách hiện đại kiểu Zed**, đồng thời **giữ phím tắt, `settings.json` và `keybindings.json` kiểu VS Code**. Mục này thay thế phần "Bố cục" ở mục 2.1 và phần "Thiết kế, phần 1" liên quan tới activity bar.
+The user decided on a **modern Zed-style layout and look**, while **keeping VS Code-style shortcuts, `settings.json` and `keybindings.json`**. This section replaces the "Layout" part of section 2.1 and the part of "Design, part 1" about the activity bar.
 
-**Bố cục**
-- **Không có activity bar.** Sidebar (dock trái) bật/tắt bằng Cmd+B.
-- **Nút đổi panel ở status bar.** Hai nút icon Explorer và Search nằm ở góc trái status bar. Bấm vào nút của panel đang mở thì ẩn sidebar, bấm nút còn lại thì đổi panel. Cmd+Shift+E và Cmd+Shift+F vẫn hoạt động như cũ.
-  - *Thay đổi 2026-11-10:* Search không còn là panel ở sidebar mà là một tab trong editor. Nút kính lúp mở tab đó. Xem `2026-11-10-project-search-tab-design.md`.
-- **Title bar tích hợp:** cao 34 px, nền trong suốt, ba nút đèn giao thông của macOS nằm trong cửa sổ. Bên phải ba nút là tên thư mục gốc của project. Kéo title bar để di chuyển cửa sổ, double-click để phóng to.
-- **Status bar** cao 26 px. Bên trái là các nút đổi panel, bên phải là các mục thông tin (dòng/cột, ngôn ngữ, encoding, LF/CRLF).
+**Layout**
+- **No activity bar.** The sidebar (left dock) is toggled with Cmd+B.
+- **Panel switch buttons in the status bar.** Two icon buttons, Explorer and Search, sit at the left corner of the status bar. Clicking the button of the open panel hides the sidebar; clicking the other button switches panels. Cmd+Shift+E and Cmd+Shift+F still work as before.
+  - *Change 2026-11-10:* Search is no longer a panel in the sidebar but a tab in the editor. The magnifier button opens that tab. See `2026-11-10-project-search-tab-design.md`.
+- **Integrated title bar:** 34 px tall, transparent background, the three macOS traffic-light buttons sit inside the window. To the right of the three buttons is the project's root folder name. Drag the title bar to move the window, double-click to zoom.
+- **Status bar** 26 px tall. On the left are the panel switch buttons, on the right are info items (line/column, language, encoding, LF/CRLF).
 
-**Phong cách**
-- **Tab:** phẳng, cao 32 px. Tab đang chọn có nền trùng nền editor và không có viền dưới. Tab không chọn dùng `tab.inactive_background`. Nút đóng chỉ hiện khi rê chuột qua tab hoặc ở tab đang chọn. Viền giữa các tab dày 1 px, màu `border.variant`.
-- **Khoảng cách theo lưới 4 px.** Mỗi dòng trong cây file cao 24 px. Font giao diện là font hệ thống, cỡ 13 px. Font editor giữ theo `editor.fontFamily`.
-- **Popup** (Quick Open, chọn theme, widget tìm kiếm): nổi phía trên giữa màn hình, rộng tối đa 600 px, bo góc 8 px, viền 1 px, có bóng đổ, nền `elevated_surface.background`.
-- **Hover:** khi rê chuột, nền chuyển sang `ghost_element.hover`.
-- **Panel không có header nặng.** Explorer chỉ có một dòng tên thư mục gốc, chữ nhỏ, màu nhạt.
-- **Màu mới cần đọc từ theme Zed**, đều có giá trị dự phòng: `title_bar.background`, `elevated_surface.background`, `ghost_element.hover`, `border.variant`, `icon`, `icon.muted`.
+**Style**
+- **Tabs:** flat, 32 px tall. The selected tab has a background matching the editor background and no bottom border. An unselected tab uses `tab.inactive_background`. The close button only shows when hovering over the tab or on the selected tab. The border between tabs is 1 px thick, in the `border.variant` color.
+- **Spacing on a 4 px grid.** Each row in the file tree is 24 px tall. The UI font is the system font, 13 px. The editor font follows `editor.fontFamily`.
+- **Popups** (Quick Open, theme picker, search widget): float at the top center of the screen, at most 600 px wide, 8 px rounded corners, 1 px border, with a drop shadow, background `elevated_surface.background`.
+- **Hover:** on mouse hover, the background switches to `ghost_element.hover`.
+- **Panels have no heavy header.** Explorer only has one line with the root folder name, small text, in a faint color.
+- **New colors to read from the Zed theme**, all with fallback values: `title_bar.background`, `elevated_surface.background`, `ghost_element.hover`, `border.variant`, `icon`, `icon.muted`.
 
-## 13. Thay đổi 2026-11-09: tinh chỉnh giao diện cho gọn như Zed
+## 13. Change 2026-11-09: UI refinement to be as compact as Zed
 
-Người dùng đã duyệt mục này sau khi so ảnh chụp Lucerna với Zed. Nó thay thế các điểm tương ứng ở mục 2.1, 5.2 và 12.
+The user approved this section after comparing Lucerna screenshots with Zed. It replaces the corresponding points in sections 2.1, 5.2 and 12.
 
-**Font**
-- Lucerna đóng gói sẵn font **Lilex** (Regular, Bold, Italic, BoldItalic) và **IBM Plex Sans** (Regular, Medium). Font lấy từ repo gốc, kèm giấy phép OFL-1.1, và được ghi vào `THIRD_PARTY_NOTICES.md`.
-- Font được đăng ký với GPUI lúc khởi động.
-- Giá trị mặc định mới:
+**Fonts**
+- Lucerna bundles the **Lilex** font (Regular, Bold, Italic, BoldItalic) and **IBM Plex Sans** (Regular, Medium). The fonts come from their original repos, with the OFL-1.1 license, and are recorded in `THIRD_PARTY_NOTICES.md`.
+- The fonts are registered with GPUI at startup.
+- New default values:
   - `editor.fontFamily` = `"Lilex"`, `editor.fontSize` = 14, `editor.lineHeight` = 1.6.
-  - Font giao diện là IBM Plex Sans cỡ 14. Tab, status bar và header dùng cỡ 13.
+  - The UI font is IBM Plex Sans at size 14. Tabs, the status bar and headers use size 13.
 
-**Icon**
-- Mọi icon dùng bộ **Lucide** (giấy phép ISC). Các file SVG được chép vào `crates/lucerna-workbench/assets/icons/` và nhúng vào binary bằng `include_bytes!`.
-- Có icon thư mục mở và đóng.
-- Icon file chọn theo phần mở rộng hoặc tên file:
+**Icons**
+- All icons use the **Lucide** set (ISC license). The SVG files are copied into `crates/lucerna-workbench/assets/icons/` and embedded in the binary with `include_bytes!`.
+- There are open and closed folder icons.
+- File icons are chosen by extension or file name:
 
-  | Icon | Áp dụng cho |
+  | Icon | Applies to |
   |---|---|
-  | file-code | file mã nguồn |
+  | file-code | source code files |
   | braces | json |
   | book-open | md |
   | settings | toml, yaml |
@@ -374,27 +374,27 @@ Người dùng đã duyệt mục này sau khi so ảnh chụp Lucerna với Zed
   | git-branch | `.gitignore`, `.gitattributes` |
   | scale | `LICENSE*` |
   | terminal | sh, bash, zsh |
-  | image | ảnh |
-  | file | mặc định |
+  | image | images |
+  | file | default |
 
-- Màu icon là `icon.muted`.
+- The icon color is `icon.muted`.
 
-**Cây file**
-- Dòng đầu là dòng gốc gồm icon thư mục và tên thư mục project đúng như trên ổ đĩa (không ép chữ hoa). Dòng này thay cho header chữ hoa ở mục 12.
-- Mỗi cấp thụt lề có đường kẻ dọc 1 px màu `border.variant`.
-- Có thanh cuộn mảnh.
+**File tree**
+- The first row is the root row, with a folder icon and the project folder name exactly as on disk (case not forced). This row replaces the uppercase header in section 12.
+- Each indent level has a 1 px vertical guide line in the `border.variant` color.
+- There is a thin scrollbar.
 
 **Editor**
-- `editor.minimap.enabled` mặc định là `false`.
-- Mũi tên gập ở gutter chỉ hiện khi rê chuột vào gutter. Dòng đang gập thì luôn hiện mũi tên.
-- Có thanh cuộn dọc mảnh (khoảng 6 px) ở bên phải.
-- Ngay dưới thanh tab có thanh đường dẫn mỏng, hiện đường dẫn tương đối của file đang mở bằng màu `text.muted`.
+- `editor.minimap.enabled` defaults to `false`.
+- The fold arrow in the gutter only shows when hovering over the gutter. A folded line always shows the arrow.
+- There is a thin vertical scrollbar (about 6 px) on the right.
+- Right below the tab bar there is a thin path bar, showing the relative path of the open file in the `text.muted` color.
 
-**Tab và title bar**
-- Chữ trên tab cỡ 13, padding gọn hơn. Tab không được chọn dùng màu `text.muted`.
-- Tab đang chọn của nhóm editor đang có focus dùng màu `text`. Tab đang chọn của nhóm không có focus mờ hơn một chút: màu nằm giữa `text` và `text.muted`.
-- Title bar hiện tên nhánh git cạnh tên project, kèm icon Lucide `git-branch` (không dùng ký tự ⎇): `lucerna [git-branch] main`. Tên nhánh đọc từ `.git/HEAD` và hỗ trợ cả trường hợp `.git` là file. Tên tự cập nhật khi đổi nhánh và không thêm thư viện git nào. Ở detached HEAD thì hiện SHA rút gọn.
+**Tabs and title bar**
+- Tab text is size 13, with tighter padding. An unselected tab uses the `text.muted` color.
+- The selected tab of the focused editor group uses the `text` color. The selected tab of an unfocused group is a bit dimmer: a color between `text` and `text.muted`.
+- The title bar shows the git branch name next to the project name, with the Lucide `git-branch` icon (not the ⎇ character): `lucerna [git-branch] main`. The branch name is read from `.git/HEAD` and also supports the case where `.git` is a file. The name updates itself when the branch changes and adds no git library. On a detached HEAD, the abbreviated SHA is shown.
 
-**Chưa làm**
-- Hiện file bị gitignore ở dạng mờ, vì cần đổi cách quét.
-- Nút back/forward, vì cần lịch sử điều hướng.
+**Not done**
+- Showing gitignored files dimmed, because it requires changing how scanning works.
+- Back/forward buttons, because they need navigation history.

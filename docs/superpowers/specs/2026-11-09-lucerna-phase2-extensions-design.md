@@ -1,91 +1,91 @@
-# Lucerna — Giai đoạn 2: Host extension Zed
+# Lucerna — Phase 2: Zed Extension Host
 
-- **Ngày:** 2026-11-09
-- **Trạng thái:** Đã triển khai (còn các kiểm tra bằng mắt ở mục Kết quả đo chờ người dùng xác nhận)
-- **Spec trước:** `2026-11-08-lucerna-phase1-design.md` (lộ trình ở §1.3, giao diện ở §12–§13)
-- **Nghiên cứu nền:** `docs/research/2026-11-09-extensions.md` (so sánh Zed và VS Code)
+- **Date:** 2026-11-09
+- **Status:** Implemented (the visual checks in the Measurement results section are still waiting for the user to confirm)
+- **Previous spec:** `2026-11-08-lucerna-phase1-design.md` (roadmap in §1.3, UI in §12–§13)
+- **Background research:** `docs/research/2026-11-09-extensions.md` (Zed and VS Code compared)
 
-## 1. Mục tiêu
+## 1. Goals
 
-### 1.1 Kết quả
+### 1.1 Outcome
 
-Người dùng cài được extension từ registry của Zed ngay trong Lucerna, và những gì extension mang theo dùng được ngay, không cần khởi động lại:
+Users can install extensions from Zed's registry right inside Lucerna, and what an extension brings is usable immediately, with no restart:
 
-- theme;
-- icon theme;
-- ngôn ngữ, gồm grammar tree-sitter và các query;
-- snippet: được cài và kiểm tra, nhưng chưa dùng tới. Phần chèn snippet thuộc giai đoạn 4.
+- themes;
+- icon themes;
+- languages, including tree-sitter grammars and queries;
+- snippets: installed and validated, but not used yet. Snippet insertion belongs to Phase 4.
 
-Extension được tự build từ repo `zed-industries/extensions`. Lucerna **không** gọi `api.zed.dev`. Zed có điều khoản công khai (https://zed.dev/terms): §2.2 chỉ cho truy cập qua cơ chế do Zed chỉ định, §2.4(b) cấm truy cập API không công khai, mà endpoint extension của `api.zed.dev` không có tài liệu công khai. Chi tiết ở `docs/research/2026-11-11-lsp-server-table.md` §5.
+Extensions are built by Lucerna itself from the `zed-industries/extensions` repo. Lucerna does **not** call `api.zed.dev`. Zed has public terms (https://zed.dev/terms): §2.2 only allows access through mechanisms Zed designates, §2.4(b) forbids access to non-public APIs, and the extension endpoint of `api.zed.dev` has no public documentation. Details in `docs/research/2026-11-11-lsp-server-table.md` §5.
 
-### 1.2 Tiêu chí thành công
+### 1.2 Success criteria
 
-1. Từ panel Extensions hoặc bằng `luc ext install`, cài được và dùng được ba loại extension sau, không phải khởi động lại:
-   - một theme (Catppuccin);
-   - một icon theme (ví dụ `material-icon-theme`);
-   - một ngôn ngữ có grammar riêng (Zig).
-2. Một extension ngôn ngữ cần injection, như Vue hoặc Svelte, được tô màu cả phần nhúng: `<script>`, `<style>`, biểu thức trong template.
-3. Mọi mục tiêu hiệu năng của giai đoạn 1 (§6) vẫn đạt.
-4. Một extension hỏng, dù ở lúc cài hay lúc chạy, không làm sập hay treo editor.
+1. From the Extensions panel or with `luc ext install`, the following three kinds of extension can be installed and used, with no restart:
+   - a theme (Catppuccin);
+   - an icon theme (for example `material-icon-theme`);
+   - a language with its own grammar (Zig).
+2. A language extension that needs injection, such as Vue or Svelte, gets colored for the embedded parts too: `<script>`, `<style>`, expressions in the template.
+3. All the Phase 1 performance targets (§6) are still met.
+4. A broken extension, whether at install time or at run time, does not crash or hang the editor.
 
-### 1.3 Những gì đã quyết định khi brainstorm
+### 1.3 What was decided during brainstorming
 
-| # | Quyết định | Lý do |
+| # | Decision | Reason |
 |---|---|---|
-| D1 | **Chưa có host WASM component** (WIT, `extension.wasm`, các hàm host) ở giai đoạn này. Để sang giai đoạn 3b. | Bốn thứ trong scope đều là dữ liệu. Chỉ language server cần chạy code của extension. |
-| D2 | **Grammar từ extension được biên dịch sang WASM** bằng wasi-sdk và chạy qua `WasmStore` của tree-sitter trên wasmtime. Grammar bundled vẫn native. | Có sandbox: grammar lỗi chỉ gây trap, không làm sập app. Zed cũng làm như vậy. Giai đoạn 3 vẫn cần wasmtime. |
-| D3 | **Panel Extensions trong app**, cộng thêm lệnh CLI `luc ext …`. | Trải nghiệm giống VS Code; CLI tiện cho script và test. |
-| D4 | **Snippet** được cài và kiểm tra, nhưng chưa dùng. | Lucerna vẫn chỉ đọc cho tới giai đoạn 4. |
-| D5 | **Cập nhật:** tự kiểm tra định kỳ, người dùng bấm để cập nhật. | Không âm thầm tải và build code khi người dùng không yêu cầu. |
-| D6 | **Injection tổng quát** theo quy ước của Zed. | Khoảng một phần ba extension ngôn ngữ cần injection. |
-| D7 | **Thứ tự ưu tiên khi trùng:** người dùng, rồi extension, rồi built-in. Khi hai extension trùng nhau, extension có id lớn hơn theo alphabet thắng, kèm cảnh báo trong log. | Đi theo hướng chung của Zed và VS Code, nhưng luật được ghi rõ và có tính quyết định. |
-| D8 | **Lấy dữ liệu bằng `git` và `curl` có sẵn trên macOS.** Không thêm crate mạng hay git. | Gọn. Giống `extension_builder` của Zed. Chạy được với mọi host git. |
-| D9 | **Registry chỉ có id và version.** Tên và mô tả lấy từ manifest khi extension được cài hoặc khi người dùng mở mục đó. | Không phải fetch hơn 1.590 repo. |
+| D1 | **No WASM component host yet** (WIT, `extension.wasm`, host functions) in this phase. Left for Phase 3b. | The four things in scope are all data. Only language servers need to run the extension's code. |
+| D2 | **Grammars from extensions are compiled to WASM** with wasi-sdk and run through tree-sitter's `WasmStore` on wasmtime. Bundled grammars stay native. | Sandboxed: a broken grammar only causes a trap and does not crash the app. Zed does the same. Phase 3 still needs wasmtime. |
+| D3 | **An Extensions panel in the app**, plus a `luc ext …` CLI command. | A VS Code-like experience; the CLI is handy for scripts and tests. |
+| D4 | **Snippets** are installed and validated, but not used. | Lucerna stays read-only until Phase 4. |
+| D5 | **Updates:** check periodically on its own, the user clicks to update. | No silently downloading and building code when the user did not ask. |
+| D6 | **General injection** following Zed's conventions. | About a third of language extensions need injection. |
+| D7 | **Priority on conflicts:** the user, then extensions, then built-in. When two extensions collide, the extension whose id is greater alphabetically wins, with a warning in the log. | Follows the general direction of Zed and VS Code, but the rule is stated explicitly and deterministic. |
+| D8 | **Fetch data with the `git` and `curl` already on macOS.** Add no network or git crate. | Lean. Like Zed's `extension_builder`. Works with any git host. |
+| D9 | **The registry has only id and version.** Name and description come from the manifest when the extension is installed or when the user opens that entry. | Avoids fetching more than 1,590 repos. |
 
-### 1.4 Không có trong giai đoạn 2
+### 1.4 Not in Phase 2
 
-- Host WASM và các hàm host (`download-file`, `process`, `nodejs`, `github`…), capability prompt, language server, slash command, context server. Phần nào thuộc giai đoạn 3 thì làm ở giai đoạn 3; các tính năng AI thì không bao giờ làm.
-- Chèn snippet.
-- Các query `outline`, `indents`, `textobjects`, `runnables`, `overrides`, `redactions`, `debugger`. Chúng được chép vào lúc cài nhưng chưa dùng.
-- Grammar có scanner viết bằng C++ (`scanner.cc`). Zed cũng không hỗ trợ.
-- Extension của VS Code, Open VSX, Microsoft Marketplace.
-- Bật hoặc tắt extension theo workspace, gợi ý extension cho workspace.
+- The WASM host and host functions (`download-file`, `process`, `nodejs`, `github`…), capability prompts, language servers, slash commands, context servers. Whatever belongs to Phase 3 is done in Phase 3; AI features are never done.
+- Snippet insertion.
+- The `outline`, `indents`, `textobjects`, `runnables`, `overrides`, `redactions`, `debugger` queries. They are copied at install time but not used yet.
+- Grammars with a scanner written in C++ (`scanner.cc`). Zed does not support them either.
+- VS Code extensions, Open VSX, the Microsoft Marketplace.
+- Enabling or disabling extensions per workspace, extension recommendations for a workspace.
 
-## 2. Kiến trúc
+## 2. Architecture
 
-### 2.1 Crate mới: `lucerna-extension`
+### 2.1 New crate: `lucerna-extension`
 
-Rust thuần, không phụ thuộc GPUI, `lucerna-syntax` hay `lucerna-theme`. Crate này chỉ trả về **dữ liệu**: đường dẫn và mô tả của những gì đã cài. Việc nạp dữ liệu đó vào các registry do `lucerna-workbench` (hoặc CLI) đảm nhận.
+Pure Rust, with no dependency on GPUI, `lucerna-syntax` or `lucerna-theme`. This crate only returns **data**: the paths and descriptions of what is installed. Loading that data into the registries is done by `lucerna-workbench` (or the CLI).
 
-| Module | Trách nhiệm |
+| Module | Responsibility |
 |---|---|
-| `manifest` | Đọc `extension.toml` (schema 0 và 1) và `extension.json` cũ. Tự điền đường dẫn mặc định theo bố cục thư mục (§3.2). Đọc `config.toml` của từng ngôn ngữ (§3.3). |
-| `registry` | Clone và fetch repo `zed-industries/extensions`. Ghép `extensions.toml`, `.gitmodules` và `git ls-tree` thành danh sách `RegistryEntry`. Cache ra `registry.json`. |
-| `process` | Chạy tiến trình con (`git`, `curl`, `tar`, clang) có timeout, hủy được, giữ lại stderr. |
-| `toolchain` | Đảm bảo có wasi-sdk 34: tải về, kiểm tra SHA-256, giải nén. Ưu tiên `WASI_SDK_PATH` nếu biến này trỏ tới một `bin/clang` có thật. |
-| `builder` | Fetch mã extension, fetch và biên dịch grammar, kiểm tra tài nguyên, dựng thư mục trong `staging/`. |
-| `validate` | Kiểm tra JSON của theme, icon theme và snippet; kiểm tra cú pháp body snippet theo TextMate. Việc nạp grammar và biên dịch query được gọi qua một trait `GrammarValidator`, do bên gọi cung cấp (§2.3). |
-| `store` | Quản lý các extension đã cài: `install`, `uninstall`, `update`, `index()`. Dựng `index.json`. Phát sự kiện. Mỗi id chỉ có một thao tác tại một thời điểm. |
+| `manifest` | Reads `extension.toml` (schema 0 and 1) and the legacy `extension.json`. Fills in default paths from the directory layout (§3.2). Reads each language's `config.toml` (§3.3). |
+| `registry` | Clones and fetches the `zed-industries/extensions` repo. Combines `extensions.toml`, `.gitmodules` and `git ls-tree` into a list of `RegistryEntry`. Caches it to `registry.json`. |
+| `process` | Runs child processes (`git`, `curl`, `tar`, clang) with a timeout, cancellable, keeping stderr. |
+| `toolchain` | Ensures wasi-sdk 34 is present: downloads it, checks the SHA-256, extracts it. Prefers `WASI_SDK_PATH` if this variable points to a real `bin/clang`. |
+| `builder` | Fetches extension code, fetches and compiles grammars, checks resources, builds the directory in `staging/`. |
+| `validate` | Validates the JSON of themes, icon themes and snippets; validates the snippet body syntax per TextMate. Grammar loading and query compilation are called through a `GrammarValidator` trait, supplied by the caller (§2.3). |
+| `store` | Manages installed extensions: `install`, `uninstall`, `update`, `index()`. Builds `index.json`. Emits events. Each id has only one operation at a time. |
 
-### 2.2 Các crate cũ được mở rộng
+### 2.2 Existing crates that are extended
 
 - **`lucerna-syntax`**
-  - Bật feature `wasm` của tree-sitter (kéo theo `wasmtime-c-api-impl` 48).
-  - `Language` có thêm nguồn gốc `Extension`.
-  - Thêm hai thứ mới: injection tổng quát (§4.3) và `files.associations` (§4.2).
-  - Cung cấp `WasmGrammarValidator`, một bản cài đặt của `GrammarValidator`.
+  - Enable tree-sitter's `wasm` feature (which pulls in `wasmtime-c-api-impl` 48).
+  - `Language` gains an `Extension` origin.
+  - Add two new things: general injection (§4.3) and `files.associations` (§4.2).
+  - Provide `WasmGrammarValidator`, an implementation of `GrammarValidator`.
 - **`lucerna-theme`**
-  - `ThemeRegistry` nạp theme theo từng lớp (§4.4).
-  - Thêm `IconTheme` và `IconThemeRegistry` (§4.5).
-  - Bảng icon Lucide hiện có trở thành icon theme built-in tên "Lucide". Phần dữ liệu ánh xạ chuyển sang `lucerna-theme`; các byte SVG vẫn nằm trong `lucerna-workbench`.
-- **`lucerna-settings`:** thêm các khóa mới ở §6.
+  - `ThemeRegistry` loads themes in layers (§4.4).
+  - Add `IconTheme` and `IconThemeRegistry` (§4.5).
+  - The existing Lucide icon table becomes the built-in icon theme named "Lucide". The mapping data moves to `lucerna-theme`; the SVG bytes stay in `lucerna-workbench`.
+- **`lucerna-settings`:** add the new keys in §6.
 - **`lucerna-workbench`**
-  - Panel Extensions và nút trên status bar.
-  - Hoán đổi các registry khi có sự kiện `ExtensionsChanged`.
-  - Vẽ icon theme bằng `img()`.
-- **`lucerna` (bin `luc`):** thêm lệnh con `luc ext`.
+  - The Extensions panel and a button on the status bar.
+  - Swap the registries on an `ExtensionsChanged` event.
+  - Draw icon themes with `img()`.
+- **`lucerna` (bin `luc`):** add the `luc ext` subcommand.
 
-### 2.3 Interface giữa các crate
+### 2.3 Interfaces between crates
 
 - **`extension::Store`**
   - `open(root) -> Store`
@@ -94,344 +94,344 @@ Rust thuần, không phụ thuộc GPUI, `lucerna-syntax` hay `lucerna-theme`. C
   - `uninstall(id)`, `update(id)`
   - `install_dev(dir)`
   - `subscribe() -> Receiver<StoreEvent>`
-- **`ExtensionIndex`** chứa, cho từng extension:
-  - manifest đã điền đủ;
-  - commit;
-  - danh sách `LanguageEntry { name, extension_id, dir, grammar: Option<GrammarRef { name, wasm_path }>, matcher: { path_suffixes, first_line_pattern }, hidden, queries: QueryFlags }`;
-  - danh sách `ThemeEntry { name, appearance, extension_id, path }`;
-  - danh sách `IconThemeEntry { name, appearance, extension_id, path, icons_root }`;
-  - snippet: số lượng theo từng ngôn ngữ.
+- **`ExtensionIndex`** holds, for each extension:
+  - the fully filled-in manifest;
+  - the commit;
+  - a list of `LanguageEntry { name, extension_id, dir, grammar: Option<GrammarRef { name, wasm_path }>, matcher: { path_suffixes, first_line_pattern }, hidden, queries: QueryFlags }`;
+  - a list of `ThemeEntry { name, appearance, extension_id, path }`;
+  - a list of `IconThemeEntry { name, appearance, extension_id, path, icons_root }`;
+  - snippets: the count per language.
 - **`trait GrammarValidator`**
   - `fn load(&self, name, wasm: &[u8]) -> Result<(), String>`
   - `fn check_query(&self, name, wasm, kind, source) -> Result<(), String>`
 
-  `lucerna-syntax` cung cấp bản cài đặt thật. Test dùng bản giả.
+  `lucerna-syntax` provides the real implementation. Tests use a fake one.
 - **`syntax::LanguageRegistry::build(bundled, extensions: &[LanguageEntry], associations: &Associations) -> LanguageRegistry`**
 - **`theme::ThemeRegistry::build(builtin, extension_themes, user_dir)`**, **`theme::IconThemeRegistry::build(builtin_lucide, extension_icon_themes)`**
 
-## 3. Cài đặt
+## 3. Installation
 
-### 3.1 Bố cục trên đĩa
+### 3.1 Layout on disk
 
-Tất cả nằm trong `~/Library/Application Support/Lucerna/extensions/`:
+Everything lives in `~/Library/Application Support/Lucerna/extensions/`:
 
 ```
-registry/                 clone nông của zed-industries/extensions
-registry.json             cache danh sách RegistryEntry + thời điểm fetch
-toolchain/wasi-sdk-34/    wasi-sdk đã giải nén
-work/<id>/src/            mã extension tại commit đã ghim (cache, xóa được)
-work/<id>/grammars/<g>/   mã grammar tại rev đã ghim (cache, xóa được)
-staging/<id>-<uuid>/      đang build
+registry/                 shallow clone of zed-industries/extensions
+registry.json             cache of the RegistryEntry list + fetch time
+toolchain/wasi-sdk-34/    extracted wasi-sdk
+work/<id>/src/            extension code at the pinned commit (cache, deletable)
+work/<id>/grammars/<g>/   grammar code at the pinned rev (cache, deletable)
+staging/<id>-<uuid>/      being built
 installed/<id>/
-  extension.toml          manifest đã điền đủ
+  extension.toml          fully filled-in manifest
   lucerna.json            { commit, version, installed_at, source: "registry" | "dev" }
   grammars/<g>.wasm
   languages/<dir>/{config.toml,*.scm}
   themes/*.json
   icon_themes/*.json
   icons/**
-  snippets/…              giữ nguyên đường dẫn tương đối như trong manifest
+  snippets/…              keeps the relative paths as in the manifest
 index.json                ExtensionIndex
-logs/<id>.log             log của lượt cài gần nhất
+logs/<id>.log             log of the most recent install
 ```
 
 ### 3.2 Manifest
 
 - **`extension.toml`**
-  - **Bắt buộc:** `id`, `name`, `version`, `schema_version`.
-  - **Không bắt buộc:**
+  - **Required:** `id`, `name`, `version`, `schema_version`.
+  - **Optional:**
     - `description`, `repository`, `authors`;
     - `lib`;
     - `themes[]`, `icon_themes[]`, `languages[]`;
-    - `grammars.<name> = { repository, rev (hoặc commit), path? }`;
-    - `snippets` (một chuỗi hoặc một mảng);
-    - `language_servers`, `context_servers`, `slash_commands`, `capabilities`… (giữ lại ở dạng thô cho giai đoạn 3).
-  - Khóa không nhận ra được bỏ qua, không báo lỗi.
-- **Tự điền khi thiếu:**
-  - `languages/<dir>/` có `config.toml`;
+    - `grammars.<name> = { repository, rev (or commit), path? }`;
+    - `snippets` (a string or an array);
+    - `language_servers`, `context_servers`, `slash_commands`, `capabilities`… (kept in raw form for Phase 3).
+  - Unrecognized keys are ignored, with no error.
+- **Filled in automatically when missing:**
+  - `languages/<dir>/` that has a `config.toml`;
   - `themes/*.json`;
   - `icon_themes/*.json`;
-  - `snippets.json` ở thư mục gốc.
+  - `snippets.json` at the root.
 
-  Mục khai báo tường minh được giữ nguyên; mục tìm thấy tự động được thêm vào nếu chưa có.
-- **Schema 0:** xóa `languages`, `grammars` và `themes` rồi dựng lại từ thư mục. Đọc thêm `grammars/*.toml` (`repository`, `commit`, `path?`).
-- **`extension.json` cũ:** id lấy theo tên thư mục, schema được coi là 0.
-- **Từ chối** khi `schema_version` lớn hơn 1, hoặc khi tên grammar không phải snake_case.
+  Explicitly declared entries are kept as they are; entries found automatically are added if not already present.
+- **Schema 0:** delete `languages`, `grammars` and `themes` and rebuild them from the directories. Also read `grammars/*.toml` (`repository`, `commit`, `path?`).
+- **Legacy `extension.json`:** the id is taken from the directory name, and the schema is treated as 0.
+- **Reject** when `schema_version` is greater than 1, or when a grammar name is not snake_case.
 
-### 3.3 `config.toml` của ngôn ngữ
+### 3.3 A language's `config.toml`
 
-Các trường được dùng:
+The fields used:
 
 - `name`;
 - `grammar`;
-- `path_suffixes`: khớp phần mở rộng, tên file đầy đủ, hoặc đuôi `.<suffix>`;
+- `path_suffixes`: matches the extension, the full file name, or the `.<suffix>` tail;
 - `first_line_pattern`;
 - `line_comments`, `block_comment`;
 - `brackets`;
 - `hidden`;
 - `tab_size`.
 
-Các trường khác được bỏ qua.
+Other fields are ignored.
 
-**Các file query được nhận:** `highlights`, `injections`, `brackets`, `outline`, `indents`, `textobjects`, `overrides`, `redactions`, `runnables`, `debugger` (đuôi `.scm`). File `.scm` không có trong danh sách này bị bỏ qua và ghi cảnh báo.
+**Query files accepted:** `highlights`, `injections`, `brackets`, `outline`, `indents`, `textobjects`, `overrides`, `redactions`, `runnables`, `debugger` (with the `.scm` extension). A `.scm` file not in this list is ignored and a warning is logged.
 
-### 3.4 Làm mới registry
+### 3.4 Refreshing the registry
 
-1. **Lần đầu:** `git clone --depth 1 --filter=blob:none --no-checkout https://github.com/zed-industries/extensions registry/`.
-   **Các lần sau:** `git -C registry fetch --depth 1 origin main`, rồi `git -C registry update-ref HEAD FETCH_HEAD`.
-2. Đọc ba nguồn và ghép theo id:
-   - `git show HEAD:extensions.toml` cho `[<id>] submodule, version, path?`;
-   - `git show HEAD:.gitmodules` cho URL theo submodule;
-   - `git ls-tree HEAD extensions/` cho commit theo submodule.
+1. **First time:** `git clone --depth 1 --filter=blob:none --no-checkout https://github.com/zed-industries/extensions registry/`.
+   **Later times:** `git -C registry fetch --depth 1 origin main`, then `git -C registry update-ref HEAD FETCH_HEAD`.
+2. Read three sources and join them by id:
+   - `git show HEAD:extensions.toml` for `[<id>] submodule, version, path?`;
+   - `git show HEAD:.gitmodules` for the URL per submodule;
+   - `git ls-tree HEAD extensions/` for the commit per submodule.
 
-   Mục nào thiếu URL hoặc commit thì bỏ qua và ghi cảnh báo.
-3. Ghi `registry.json` gồm `fetched_at` và danh sách `RegistryEntry { id, version, url, commit, path }`. `name` và `description` được điền khi có (D9).
-4. **Khi nào chạy:**
-   - khi mở panel và `fetched_at` đã quá 24 giờ;
-   - khi khởi động, nếu `extensions.autoCheckUpdates` bật và đã quá 24 giờ;
-   - khi người dùng chạy lệnh "Extensions: Check for Updates".
+   An entry missing its URL or commit is skipped and a warning is logged.
+3. Write `registry.json` with `fetched_at` and the list of `RegistryEntry { id, version, url, commit, path }`. `name` and `description` are filled in when available (D9).
+4. **When it runs:**
+   - when the panel opens and `fetched_at` is more than 24 hours old;
+   - at startup, if `extensions.autoCheckUpdates` is on and more than 24 hours have passed;
+   - when the user runs the "Extensions: Check for Updates" command.
 
-**Lấy mô tả của một mục** (D9): khi người dùng mở rộng một dòng chưa cài, Lucerna fetch nông repo đó tại commit vào `work/<id>/src`. Bước này cũng là bước đầu của việc cài, nên không phí công. Sau đó đọc `extension.toml` và lưu `name` và `description` vào `registry.json`.
+**Getting an entry's description** (D9): when the user expands a row that is not installed, Lucerna shallow-fetches that repo at the commit into `work/<id>/src`. This step is also the first step of installing, so no work is wasted. It then reads `extension.toml` and saves `name` and `description` into `registry.json`.
 
-### 3.5 Cài một extension
+### 3.5 Installing an extension
 
-**Kiểm tra trước:**
-- Tìm thấy `<id>` trong registry.
-- `git --version` chạy được.
-- Ổ đĩa còn trên 1,2 GB.
-- Không có thao tác nào khác đang chạy trên cùng id.
+**Pre-checks:**
+- `<id>` is found in the registry.
+- `git --version` runs.
+- The disk has more than 1.2 GB free.
+- No other operation is running on the same id.
 
-**Các bước**, mỗi bước phát `InstallProgress`:
+**Steps**, each emitting `InstallProgress`:
 1. **`Fetching`:**
-   - Chạy `git init`, `git fetch --depth 1 <url> <commit>` và `git checkout FETCH_HEAD` trong `work/<id>/src`.
-   - Nếu thư mục đã có sẵn ở đúng commit thì bỏ qua bước này.
-   - Áp dụng `path`.
+   - Run `git init`, `git fetch --depth 1 <url> <commit>` and `git checkout FETCH_HEAD` in `work/<id>/src`.
+   - If the directory already exists at the right commit, skip this step.
+   - Apply `path`.
 2. **`ReadingManifest`:**
-   - Đọc và điền manifest.
-   - `version` phải trùng với version trong registry.
-   - Ghi nhận các phần chưa hỗ trợ để hiển thị trên panel.
-3. **`PreparingToolchain`**, chỉ chạy khi extension có grammar:
-   - Tải `https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-<arm64|x86_64>-macos.tar.gz` bằng `curl -fL`.
-   - So SHA-256 với hằng số ghim trong code.
-   - Giải nén bằng `tar` vào `toolchain/`.
-4. **`BuildingGrammar(name, i, n)`:** với từng grammar:
-   - Chạy `git init`, `git fetch --depth 1 <repository> <rev>` và `git checkout` vào `work/<id>/grammars/<name>`.
-   - Áp dụng `path`. Nếu thiếu `src/parser.c` thì báo lỗi. Nếu có `src/scanner.cc` mà không có `scanner.c` thì báo lỗi "C++ scanner không được hỗ trợ".
-   - Biên dịch:
+   - Read and fill in the manifest.
+   - `version` must match the version in the registry.
+   - Record the unsupported parts to show on the panel.
+3. **`PreparingToolchain`**, runs only when the extension has grammars:
+   - Download `https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-<arm64|x86_64>-macos.tar.gz` with `curl -fL`.
+   - Compare the SHA-256 with the constant pinned in the code.
+   - Extract with `tar` into `toolchain/`.
+4. **`BuildingGrammar(name, i, n)`:** for each grammar:
+   - Run `git init`, `git fetch --depth 1 <repository> <rev>` and `git checkout` into `work/<id>/grammars/<name>`.
+   - Apply `path`. If `src/parser.c` is missing, report an error. If `src/scanner.cc` exists without a `scanner.c`, report the error "C++ scanner is not supported".
+   - Compile:
      ```
      <wasi-sdk>/bin/clang -fPIC -shared -Os -Wl,--export=tree_sitter_<name> \
        -Wl,--max-memory=4294967296 -o <staging>/grammars/<name>.wasm \
        -I src src/parser.c [src/scanner.c]
      ```
-   - Có cache: nếu `work/<id>/grammars/<name>.wasm` đã có, cùng rev và mới hơn mã nguồn, thì chép lại file đó thay vì biên dịch.
+   - There is a cache: if `work/<id>/grammars/<name>.wasm` already exists, with the same rev and newer than the source, copy that file instead of compiling.
 5. **`Validating`:**
-   - Nạp từng grammar bằng `GrammarValidator::load`.
-   - Biên dịch từng file `.scm` với grammar của nó.
-   - Đọc JSON của theme và icon theme. Kiểm tra mọi `path` của icon nằm trong thư mục extension.
-   - Đọc snippet.
-   - Tài nguyên nào lỗi thì bỏ riêng tài nguyên đó và ghi vào `warnings`. Ngôn ngữ có grammar lỗi bị bỏ cả ngôn ngữ.
-   - Nếu sau khi lọc không còn tài nguyên nào dùng được, lượt cài thất bại với lỗi `NothingUsable`.
+   - Load each grammar with `GrammarValidator::load`.
+   - Compile each `.scm` file with its grammar.
+   - Read the JSON of themes and icon themes. Check that every icon `path` is inside the extension directory.
+   - Read the snippets.
+   - A resource that fails is dropped on its own and recorded in `warnings`. A language whose grammar fails is dropped entirely.
+   - If no usable resource is left after filtering, the install fails with a `NothingUsable` error.
 6. **`Installing`:**
-   - Chép tài nguyên vào `staging/<id>-<uuid>/` theo bố cục ở §3.1.
-   - Ghi `extension.toml` (bản đã điền đủ) và `lucerna.json`.
-   - Nếu đã có bản cài cũ, đổi tên `installed/<id>` thành `installed/.old-<id>-<uuid>`.
-   - `rename` staging sang `installed/<id>`.
-   - Dựng lại `index.json` và ghi nguyên tử: ghi ra file tạm rồi `rename`.
-   - Xóa thư mục `.old-…` ở nền.
-   - Phát `StoreEvent::Changed`.
-7. **`Done { warnings }`**, hoặc **`Failed(InstallError)`**. Khi thất bại, Lucerna xóa `staging/` và giữ nguyên bản cài cũ.
+   - Copy the resources into `staging/<id>-<uuid>/` following the layout in §3.1.
+   - Write `extension.toml` (the fully filled-in version) and `lucerna.json`.
+   - If an older install exists, rename `installed/<id>` to `installed/.old-<id>-<uuid>`.
+   - `rename` staging to `installed/<id>`.
+   - Rebuild `index.json` and write it atomically: write to a temp file then `rename`.
+   - Delete the `.old-…` directory in the background.
+   - Emit `StoreEvent::Changed`.
+7. **`Done { warnings }`**, or **`Failed(InstallError)`**. On failure, Lucerna deletes `staging/` and keeps the old install as it was.
 
-**Hủy:** `CancelToken` kill tiến trình con đang chạy, xóa `staging/`, rồi trả `Failed(Cancelled)`.
+**Cancel:** `CancelToken` kills the running child process, deletes `staging/`, then returns `Failed(Cancelled)`.
 
-**Timeout:** mỗi tiến trình `git` hoặc `curl` có 120 giây; mỗi lần biên dịch grammar có 300 giây.
+**Timeout:** each `git` or `curl` process gets 120 seconds; each grammar compile gets 300 seconds.
 
-**Log:** toàn bộ stdout và stderr của các tiến trình con được ghi vào `logs/<id>.log`, ghi đè ở mỗi lượt cài.
+**Log:** all stdout and stderr of the child processes are written to `logs/<id>.log`, overwritten on each install.
 
-### 3.6 Cập nhật, gỡ, cài từ thư mục local
+### 3.6 Updating, removing, installing from a local directory
 
-- **Có bản cập nhật** khi registry có `version` khác hoặc `commit` khác so với `lucerna.json` của bản đã cài. Cập nhật đi qua đúng luồng ở §3.5.
-- **Gỡ:**
-  - Đổi tên `installed/<id>` thành `installed/.trash-<id>-<uuid>`.
-  - Dựng lại index, phát sự kiện.
-  - Xóa thư mục `.trash-…` ở nền.
-  - `work/<id>` được giữ lại làm cache.
-- **Khởi động:** xóa mọi thư mục `.old-*`, `.trash-*` và `staging/*` còn sót lại.
-- **`luc ext install --dev <dir>`:** build từ `<dir>` theo §3.5, bỏ bước 1 và bỏ kiểm tra version với registry, rồi chép vào `installed/<id>` với `source: "dev"`. Lucerna không dùng symlink. Muốn cập nhật thì chạy lại lệnh.
-- **"Extensions: Clear Build Cache":** xóa `work/`.
+- **An update is available** when the registry has a different `version` or a different `commit` compared with the installed copy's `lucerna.json`. Updating goes through exactly the flow in §3.5.
+- **Remove:**
+  - Rename `installed/<id>` to `installed/.trash-<id>-<uuid>`.
+  - Rebuild the index, emit the event.
+  - Delete the `.trash-…` directory in the background.
+  - `work/<id>` is kept as a cache.
+- **Startup:** delete any leftover `.old-*`, `.trash-*` and `staging/*` directories.
+- **`luc ext install --dev <dir>`:** build from `<dir>` per §3.5, skipping step 1 and the version check against the registry, then copy into `installed/<id>` with `source: "dev"`. Lucerna does not use symlinks. To update, run the command again.
+- **"Extensions: Clear Build Cache":** deletes `work/`.
 
 ### 3.7 Index
 
-- `index.json` được dựng lại từ `installed/*`, bỏ qua các mục có tên bắt đầu bằng `.`.
-- Với mỗi extension, Lucerna đọc `extension.toml`, `lucerna.json`, `config.toml` của từng ngôn ngữ (lấy matcher, grammar và cờ query), tên và `appearance` của theme và icon theme, và số snippet theo ngôn ngữ.
-- **Khi khởi động:**
-  - đọc `index.json`;
-  - nếu file không có, hỏng, hoặc mtime của `installed/` mới hơn file, thì dựng lại ở nền;
-  - trong lúc chờ, giao diện dùng index cũ hoặc index rỗng.
-- Thư mục cài hỏng (thiếu hoặc lỗi `extension.toml`) được đánh dấu `broken` trong index, kèm lý do.
-- **Watcher** cho `installed/` là một watcher `notify` riêng, debounce 200 ms. Nó nằm ngoài worktree, nên không vi phạm R21. Nhờ watcher, một lệnh `luc ext` chạy ở terminal khác cũng làm cửa sổ đang mở cập nhật theo.
+- `index.json` is rebuilt from `installed/*`, skipping entries whose names start with `.`.
+- For each extension, Lucerna reads `extension.toml`, `lucerna.json`, each language's `config.toml` (taking the matcher, grammar and query flags), the name and `appearance` of themes and icon themes, and the snippet count per language.
+- **At startup:**
+  - read `index.json`;
+  - if the file is missing, corrupt, or the mtime of `installed/` is newer than the file, rebuild it in the background;
+  - while waiting, the UI uses the old index or an empty one.
+- A broken install directory (missing or faulty `extension.toml`) is marked `broken` in the index, with the reason.
+- **The watcher** for `installed/` is a separate `notify` watcher, debounced at 200 ms. It sits outside the worktree, so it does not violate R21. Thanks to the watcher, a `luc ext` command run in another terminal also makes an already-open window update.
 
-## 4. Tích hợp lúc chạy
+## 4. Runtime integration
 
-### 4.1 Grammar WASM
+### 4.1 WASM grammars
 
-- Một `wasmtime::Engine` toàn cục, tạo lười khi lần đầu cần.
-- Mỗi `SyntaxState`, và mỗi parser của một layer injection, dùng một `Parser`. Một `WasmStore` chỉ được gắn vào parser khi grammar của nó là WASM.
-- Grammar được nạp lười. Lần đầu mở một file của ngôn ngữ đó, Lucerna đọc file `.wasm` và gọi `load_language` ở luồng nền, sau đó cache `tree_sitter::Language` trong `GrammarCache` theo khóa `(extension_id, grammar_name)`.
-- **Tách namespace:** tên grammar chỉ có nghĩa trong phạm vi extension của nó. Hai extension cùng có grammar `toml` không ghi đè nhau.
-- **Lỗi:**
-  - Nạp lỗi, hoặc gặp trap lúc parse (tree-sitter trả lỗi hoặc không có cây): ngôn ngữ đó bị đánh dấu `failed` cho tới lần khởi động sau.
-  - File hiển thị không tô màu và ghi log.
-  - Panic được `catch_unwind` bắt lại (R3).
+- One global `wasmtime::Engine`, created lazily the first time it is needed.
+- Each `SyntaxState`, and each parser of an injection layer, uses one `Parser`. A `WasmStore` is only attached to a parser when its grammar is WASM.
+- Grammars load lazily. The first time a file of that language is opened, Lucerna reads the `.wasm` file and calls `load_language` on a background thread, then caches the `tree_sitter::Language` in `GrammarCache` keyed by `(extension_id, grammar_name)`.
+- **Namespace separation:** a grammar name only has meaning within its own extension. Two extensions that both have a `toml` grammar do not overwrite each other.
+- **Errors:**
+  - A load error, or a trap during parsing (tree-sitter returns an error or no tree): that language is marked `failed` until the next startup.
+  - The file is shown without coloring and a log entry is written.
+  - Panics are caught with `catch_unwind` (R3).
 
-### 4.2 Chọn ngôn ngữ cho một file
+### 4.2 Choosing a language for a file
 
-`LanguageRegistry` gồm ba lớp: bundled, extension, associations. Thứ tự xét:
+`LanguageRegistry` has three layers: bundled, extension, associations. The order of consideration:
 
 1. **`files.associations`:**
-   - Áp dụng glob theo kiểu VS Code cho tên file. Nếu pattern có `/` thì áp dụng cho đường dẫn tương đối.
-   - Giá trị là id ngôn ngữ (ví dụ `rust`, `typescriptreact`) hoặc tên ngôn ngữ của extension, không phân biệt hoa thường.
-   - Nếu nhiều glob cùng khớp, glob dài nhất thắng.
-2. **Tên file chính xác**, xét lớp extension trước lớp bundled.
-3. **Suffix dài nhất:** so phần mở rộng và các đuôi `.<suffix>` theo khoảng cách. Xét lớp extension trước lớp bundled. Nếu hai extension cùng khớp ở cùng độ dài, extension có id lớn hơn theo alphabet thắng, và Lucerna ghi cảnh báo một lần.
-4. **`first_line_pattern`:** khớp với dòng đầu tiên, tối đa 256 byte. Chỉ xét khi các bước trên không ra kết quả, và chỉ áp dụng cho ngôn ngữ từ extension.
+   - Apply VS Code-style globs to the file name. If the pattern contains `/`, apply it to the relative path.
+   - The value is a language id (for example `rust`, `typescriptreact`) or an extension language's name, case-insensitive.
+   - If several globs match, the longest glob wins.
+2. **Exact file name**, with the extension layer considered before the bundled layer.
+3. **Longest suffix:** compare the extension and the `.<suffix>` tails by distance. The extension layer is considered before the bundled layer. If two extensions match at the same length, the extension whose id is greater alphabetically wins, and Lucerna logs a warning once.
+4. **`first_line_pattern`:** matched against the first line, at most 256 bytes. Considered only when the steps above give no result, and applies only to languages from extensions.
 
-**Ngôn ngữ ẩn:** ngôn ngữ có `hidden = true` không tham gia bước 2–4. Nó chỉ dùng được cho injection và cho `files.associations`.
+**Hidden languages:** a language with `hidden = true` does not take part in steps 2–4. It can only be used for injection and for `files.associations`.
 
-**Id ngôn ngữ:**
-- Ngôn ngữ từ extension dùng id là tên viết thường, với khoảng trắng thay bằng `-`. Ví dụ `Zig` thành `zig`.
-- Id này là giá trị của context key `editorLangId` và của khóa override `"[zig]"`.
-- Nếu id trùng với một ngôn ngữ bundled, ngôn ngữ của extension thay thế ngôn ngữ đó (D7).
+**Language ids:**
+- A language from an extension uses its lowercased name as the id, with spaces replaced by `-`. For example `Zig` becomes `zig`.
+- This id is the value of the `editorLangId` context key and of the `"[zig]"` override key.
+- If the id collides with a bundled language, the extension's language replaces it (D7).
 
-### 4.3 Highlight và injection
+### 4.3 Highlighting and injection
 
 **Precedence**
-- Ngôn ngữ từ extension dùng `LastPatternWins`.
-- Một capture chỉ được tính nếu `Theme::style_for` trả về style. Nhờ đó luật `@a @b` của Zed (thử `@b` trước) và việc bỏ qua capture có tiền tố `_` được giữ đúng.
-- Ngôn ngữ bundled giữ precedence hiện tại.
+- Languages from extensions use `LastPatternWins`.
+- A capture only counts if `Theme::style_for` returns a style. This keeps Zed's `@a @b` rule (try `@b` first) and the skipping of captures with a `_` prefix correct.
+- Bundled languages keep the current precedence.
 
-**Predicate**
-- Các predicate chuẩn do tree-sitter xử lý.
-- Thêm `#has-parent?` và `#not-has-parent?`.
-- Predicate lạ: pattern đó bị coi là không khớp, và Lucerna ghi cảnh báo một lần.
+**Predicates**
+- The standard predicates are handled by tree-sitter.
+- Add `#has-parent?` and `#not-has-parent?`.
+- Unknown predicate: that pattern is treated as not matching, and Lucerna logs a warning once.
 
 **Injection**
-- Đọc `injections.scm`:
-  - `@injection.content` (hoặc `@content`);
-  - `@injection.language` (hoặc `@language`);
-  - `#set! injection.language "<tên>"`;
+- Read `injections.scm`:
+  - `@injection.content` (or `@content`);
+  - `@injection.language` (or `@language`);
+  - `#set! injection.language "<name>"`;
   - `#set! injection.combined`.
-- **Tra tên ngôn ngữ:**
-  - Không phân biệt hoa thường, theo tên ngôn ngữ, id, rồi tới path suffix.
-  - Nếu chuỗi có dấu `.`, chỉ lấy phần sau dấu chấm cuối. Ví dụ `foo.rs` thành `rs`.
-- **Cây layer:**
-  - `SyntaxState` giữ layer gốc và các layer con.
-  - Mỗi layer con có ngôn ngữ, các khoảng byte (`included_ranges`) và một `Tree` riêng.
-  - Nhiều vùng `combined` được gộp chung một layer.
-  - Tối đa 4 tầng, và tối đa 1.000 layer con cho mỗi file. Vượt giới hạn thì không inject thêm.
+- **Language name lookup:**
+  - Case-insensitive, by language name, then id, then path suffix.
+  - If the string contains a `.`, take only the part after the last dot. For example `foo.rs` becomes `rs`.
+- **Layer tree:**
+  - `SyntaxState` holds the root layer and the child layers.
+  - Each child layer has a language, byte ranges (`included_ranges`) and its own `Tree`.
+  - Several `combined` regions are merged into one layer.
+  - At most 4 levels, and at most 1,000 child layers per file. Past the limit, no more injection happens.
 - **Parse:**
-  - Sau khi layer cha được parse, Lucerna chạy `injections.scm` trên toàn bộ cây cha, rồi parse các layer con.
-  - Khi file thay đổi, các layer con được dựng lại.
-  - Mọi việc này nằm trong cùng một lượt parse nền như hiện nay, và chịu chung ngân sách 1 ms chạy đồng bộ.
+  - After the parent layer is parsed, Lucerna runs `injections.scm` over the whole parent tree, then parses the child layers.
+  - When the file changes, the child layers are rebuilt.
+  - All of this is within the same background parse pass as today, and shares the 1 ms synchronous budget.
 - **Highlight:**
-  - Với các dòng đang hiển thị, Lucerna chạy `highlights.scm` của từng layer có giao với vùng đó.
-  - Các span được gộp lại; layer sâu hơn thắng khi chồng lên nhau.
-- **Ngôn ngữ inject chưa có:** vùng đó bỏ trống. Khi registry đổi, file được parse lại.
+  - For the lines being displayed, Lucerna runs each layer's `highlights.scm` for the layers that intersect that area.
+  - The spans are merged; the deeper layer wins where they overlap.
+- **Injected language not yet available:** that region is left blank. When the registry changes, the file is re-parsed.
 - **Markdown:**
-  - Cơ chế inline viết tay ở Phase 1 bị bỏ, thay bằng `injections.scm` của `tree-sitter-md`: inline và code fence.
-  - Query injection của các grammar bundled lấy từ crate grammar nếu crate có xuất (`INJECTIONS_QUERY`), nếu không thì từ repo upstream, kèm ghi chú trong `THIRD_PARTY_NOTICES.md`.
+  - The hand-written inline mechanism from Phase 1 is dropped, replaced by the `injections.scm` of `tree-sitter-md`: inline and code fences.
+  - The injection queries of bundled grammars come from the grammar crate if the crate exports them (`INJECTIONS_QUERY`), otherwise from the upstream repo, with a note in `THIRD_PARTY_NOTICES.md`.
 
-**Cặp ngoặc**
-- Nếu ngôn ngữ có `brackets.scm` (yêu cầu `@open` và `@close`), Lucerna dùng query này để tìm cặp ngoặc.
-- Nếu không có, Lucerna dùng thuật toán của Phase 1.
+**Bracket pairs**
+- If a language has `brackets.scm` (requiring `@open` and `@close`), Lucerna uses this query to find bracket pairs.
+- If not, Lucerna uses the Phase 1 algorithm.
 
-### 4.4 Theme
+### 4.4 Themes
 
-- **Thứ tự nạp vào `ThemeRegistry`:** built-in (One), rồi theme của các extension theo thứ tự id tăng dần, rồi `~/.config/lucerna/themes/*.json`. Lớp nạp sau thắng khi trùng tên. Lucerna ghi cảnh báo khi hai extension trùng tên theme.
-- Theme JSON đọc theo schema v0.2.0 của Zed, như Phase 1, ở chế độ lenient: chấp nhận comment và dấu phẩy thừa.
-- **Khi `workbench.colorTheme` trỏ tới một theme chưa có:**
-  - Lucerna dùng One Dark nhưng giữ nguyên setting.
-  - Mỗi khi registry được dựng lại, Lucerna áp dụng lại theme trong setting. Vì vậy cài extension xong là theme có hiệu lực ngay.
+- **Load order into `ThemeRegistry`:** built-in (One), then the themes of extensions in ascending id order, then `~/.config/lucerna/themes/*.json`. The layer loaded later wins on a name collision. Lucerna logs a warning when two extensions have the same theme name.
+- Theme JSON is read per Zed's v0.2.0 schema, as in Phase 1, in lenient mode: comments and trailing commas are accepted.
+- **When `workbench.colorTheme` points to a theme that does not exist yet:**
+  - Lucerna uses One Dark but keeps the setting as it is.
+  - Every time the registry is rebuilt, Lucerna re-applies the theme in the setting. So right after installing an extension, the theme takes effect.
 
-### 4.5 Icon theme
+### 4.5 Icon themes
 
-- **Schema** theo v0.3.0 của Zed: `{ name, author, themes: [{ name, appearance, directory_icons, named_directory_icons, chevron_icons, file_stems, file_suffixes, file_icons }] }`.
-- **Đường dẫn icon** tính từ `installed/<id>/`. Đường dẫn nào ra ngoài thư mục đó bị từ chối.
-- **Thứ tự tra một file:**
-  1. tên file đầy đủ;
-  2. các đuôi ghép từ dài tới ngắn (`a.b.c` thử `b.c`, rồi `c`);
-  3. phần trước dấu chấm đầu tiên;
+- **Schema** follows Zed's v0.3.0: `{ name, author, themes: [{ name, appearance, directory_icons, named_directory_icons, chevron_icons, file_stems, file_suffixes, file_icons }] }`.
+- **Icon paths** are resolved from `installed/<id>/`. Any path that goes outside that directory is rejected.
+- **Lookup order for a file:**
+  1. the full file name;
+  2. the compound suffixes from longest to shortest (`a.b.c` tries `b.c`, then `c`);
+  3. the part before the first dot;
   4. `default`.
 
-  Ở mỗi bước, tra `file_stems` trước, rồi `file_suffixes`. Kết quả là một type, rồi `file_icons[type].path`. Khi thiếu, lùi về icon theme "Lucide".
-- **Thư mục:** tra `named_directory_icons[name]`, rồi `directory_icons`, rồi Lucide. Chevron cũng làm như vậy.
-- **Built-in "Lucide":** là bảng `icon_for_path` hiện tại chuyển thành dữ liệu của icon theme. Explorer chỉ hỏi `IconThemeRegistry`.
-- **Vẽ:**
-  - Icon Lucide dùng `svg()` và màu `icon.muted`, như hiện nay.
-  - Icon từ extension dùng `img(path)` để giữ màu gốc của SVG, kích thước như icon hiện tại.
-- **Setting:** `workbench.iconTheme`, mặc định `"Lucide"`. Nếu giá trị trỏ tới icon theme chưa có, Lucerna dùng Lucide nhưng giữ nguyên setting, như §4.4.
+  At each step, look up `file_stems` first, then `file_suffixes`. The result is a type, then `file_icons[type].path`. When missing, fall back to the "Lucide" icon theme.
+- **Directories:** look up `named_directory_icons[name]`, then `directory_icons`, then Lucide. Chevrons work the same way.
+- **Built-in "Lucide":** the current `icon_for_path` table turned into icon theme data. The Explorer only asks `IconThemeRegistry`.
+- **Drawing:**
+  - Lucide icons use `svg()` and the `icon.muted` color, as today.
+  - Icons from extensions use `img(path)` to keep the SVG's original colors, at the same size as the current icons.
+- **Setting:** `workbench.iconTheme`, default `"Lucide"`. If the value points to an icon theme that does not exist yet, Lucerna uses Lucide but keeps the setting, as in §4.4.
 
-### 4.6 Snippet
+### 4.6 Snippets
 
-- Lúc cài, Lucerna đọc từng file snippet, định dạng `{ "<tên>": { prefix?, body, description? } }` (chấp nhận chuỗi hoặc mảng), và kiểm tra cú pháp body theo TextMate (`$1`, `${1:x}`, `${1|a,b|}`, `$0`, biến).
-- Ngôn ngữ của một file snippet lấy theo stem của file, viết thường: `snippets` nghĩa là dùng chung, các tên khác là tên ngôn ngữ.
-- `index.json` lưu số snippet hợp lệ theo từng ngôn ngữ. Lucerna chưa có runtime cho snippet.
+- At install time, Lucerna reads each snippet file, in the format `{ "<name>": { prefix?, body, description? } }` (a string or an array is accepted), and validates the body syntax per TextMate (`$1`, `${1:x}`, `${1|a,b|}`, `$0`, variables).
+- The language of a snippet file is taken from the file's stem, lowercased: `snippets` means shared, any other name is a language name.
+- `index.json` stores the number of valid snippets per language. Lucerna has no runtime for snippets yet.
 
-### 4.7 Hoán đổi registry
+### 4.7 Swapping registries
 
-- `workbench` nhận `StoreEvent::Changed` qua một task nền đọc từ `Store::subscribe()`.
-- Ở luồng nền, nó dựng lại `LanguageRegistry`, `ThemeRegistry` và `IconThemeRegistry` từ index mới, rồi trên luồng UI thay các `Arc` trong `AppState`.
-- Sau khi thay:
-  - mỗi tab đang mở tra lại ngôn ngữ, và nếu khác thì parse lại;
-  - theme và icon theme được áp dụng lại theo setting;
-  - Explorer vẽ lại.
-- Không cần khởi động lại.
+- `workbench` receives `StoreEvent::Changed` through a background task reading from `Store::subscribe()`.
+- On a background thread, it rebuilds `LanguageRegistry`, `ThemeRegistry` and `IconThemeRegistry` from the new index, then on the UI thread replaces the `Arc`s in `AppState`.
+- After the swap:
+  - each open tab re-resolves its language, and re-parses if it differs;
+  - the theme and icon theme are re-applied per the settings;
+  - the Explorer redraws.
+- No restart is needed.
 
-## 5. Giao diện
+## 5. UI
 
 ### 5.1 Status bar
 
-> Thay đổi 2026-11-09: người dùng chọn để Extensions là **trang riêng trong tab editor** giống Zed, thay cho panel ở sidebar. Mục 5.1 và 5.2 dưới đây là bản đã sửa.
+> Change 2026-11-09: the user chose to make Extensions a **dedicated page in an editor tab**, like Zed, instead of a panel in the sidebar. Sections 5.1 and 5.2 below are the corrected version.
 
-- Thêm nút thứ ba ở góc trái, icon Lucide `blocks`, ngay sau Explorer và Search. Bấm vào thì mở (hoặc focus) tab Extensions. Nút này không bật/tắt sidebar.
-- Nút có badge số khi có bản cập nhật, và có spinner khi đang cài.
-- Phím tắt: Cmd+Shift+X, lệnh `workbench.view.extensions`.
+- Add a third button at the left corner, with the Lucide `blocks` icon, right after Explorer and Search. Clicking it opens (or focuses) the Extensions tab. This button does not toggle the sidebar.
+- The button has a number badge when updates are available, and a spinner while installing.
+- Shortcut: Cmd+Shift+X, command `workbench.view.extensions`.
 
-### 5.2 Trang Extensions
+### 5.2 Extensions page
 
-- **Một tab duy nhất** tên "Extensions", mở trong nhóm editor đang active. Nếu tab đã mở ở bất kỳ nhóm nào thì chỉ focus nó. Tab không phải preview tab. Tab được lưu trong trạng thái workspace và mở lại khi khôi phục.
-- Khi mở hoặc focus tab, con trỏ nằm trong ô tìm kiếm.
-- Context key `extensionsViewletFocus` đúng khi tab Extensions có focus.
-- **Đầu trang:**
-  - Ô tìm kiếm lớn. Fuzzy match bằng `nucleo-matcher` trên id, cùng tên và mô tả nếu đã có.
-  - Hàng nút lọc: **All · Installed · Updates · Themes · Icon Themes · Languages**. Vẫn gõ được `@installed`, `@updates`, `@themes`, `@icons`, `@languages`. Ba bộ lọc cuối chỉ áp dụng cho extension đã cài, vì registry không có thông tin về những gì extension cung cấp.
-- **Danh sách thẻ**, ảo hóa (GPUI `list`, chiều cao thay đổi được). Extension đã cài đứng trước, rồi tới các mục chưa cài. Mỗi thẻ gồm:
-  - dòng 1: tên (hoặc id nếu chưa biết tên), version, id bằng chữ mờ;
-  - dòng 2: mô tả. Với mục chưa cài, mô tả được lấy theo §3.4 khi thẻ hiện lên màn hình lần đầu; trong lúc lấy hiện "Loading description…";
-  - dòng 3: những gì extension cung cấp, ví dụ "2 themes · 1 language · 14 snippets (Phase 4)", kèm "Language server: Phase 3b" nếu có; với mục chưa cài là repository và commit rút gọn;
-  - bên phải: nút Install / Update / Uninstall / Reinstall, hoặc Cancel khi đang cài;
-  - khi đang cài: bước hiện tại, ví dụ "Building grammar 2/3: zig";
-  - khi xong mà có cảnh báo: danh sách cảnh báo;
-  - khi lỗi: lỗi ngắn gọn bằng màu `status.error` và nút "Show Log", mở `logs/<id>.log` trong một preview tab.
-- Bấm Install trong lúc đang lấy mô tả của cùng id: việc cài được xếp hàng chạy ngay sau khi lấy mô tả xong, nút chuyển sang trạng thái đang cài.
-- **Trạng thái rỗng và lỗi chung:**
-  - chưa có registry: "Đang tải danh sách…";
-  - thiếu `git`: hướng dẫn chạy `xcode-select --install`;
-  - fetch registry lỗi: thông báo kèm nút Retry, và vẫn hiện các extension đã cài.
-- **Khi cài xong một extension có theme hoặc icon theme:** một thông báo nhỏ ở góc dưới phải hỏi "Dùng theme X?" kèm nút "Set Theme". Nút này ghi vào user settings.
-- Phong cách giống Zed: lưới 4 px, nền hover là `ghost_element.hover`, thẻ có viền 1 px `border.variant`, bo góc 6 px.
+- **A single tab** named "Extensions", opened in the active editor group. If the tab is already open in any group, just focus it. The tab is not a preview tab. The tab is saved in the workspace state and reopened on restore.
+- When the tab is opened or focused, the cursor sits in the search box.
+- The context key `extensionsViewletFocus` is true when the Extensions tab has focus.
+- **Top of the page:**
+  - A large search box. Fuzzy match with `nucleo-matcher` over the id, plus the name and description if already known.
+  - A row of filter buttons: **All · Installed · Updates · Themes · Icon Themes · Languages**. `@installed`, `@updates`, `@themes`, `@icons`, `@languages` can still be typed. The last three filters only apply to installed extensions, because the registry has no information about what extensions provide.
+- **List of cards**, virtualized (GPUI `list`, variable height). Installed extensions come first, then the entries not installed. Each card has:
+  - line 1: the name (or the id if the name is not known), version, the id in faint text;
+  - line 2: the description. For an entry not installed, the description is fetched per §3.4 the first time the card appears on screen; while fetching it shows "Loading description…";
+  - line 3: what the extension provides, for example "2 themes · 1 language · 14 snippets (Phase 4)", with "Language server: Phase 3b" if present; for an entry not installed, the repository and the abbreviated commit;
+  - on the right: an Install / Update / Uninstall / Reinstall button, or Cancel while installing;
+  - while installing: the current step, for example "Building grammar 2/3: zig";
+  - when done with warnings: the list of warnings;
+  - on error: a short error in the `status.error` color and a "Show Log" button, which opens `logs/<id>.log` in a preview tab.
+- Clicking Install while the description of the same id is being fetched: the install is queued to run right after the description fetch finishes, and the button switches to the installing state.
+- **Empty states and general errors:**
+  - no registry yet: "Loading list…";
+  - `git` missing: instructions to run `xcode-select --install`;
+  - registry fetch fails: a message with a Retry button, and the installed extensions are still shown.
+- **When an extension with a theme or icon theme finishes installing:** a small notification at the bottom right asks "Use theme X?" with a "Set Theme" button. This button writes to the user settings.
+- Zed-like style: 4 px grid, hover background is `ghost_element.hover`, cards have a 1 px `border.variant` border, 6 px rounded corners.
 
-### 5.3 Lệnh
+### 5.3 Commands
 
-| ID lệnh | Tên hiển thị |
+| Command ID | Display name |
 |---|---|
 | `workbench.view.extensions` | View: Show Extensions |
-| `workbench.extensions.action.installExtension` | Extensions: Install Extension… (Quick Open liệt kê registry) |
+| `workbench.extensions.action.installExtension` | Extensions: Install Extension… (Quick Open lists the registry) |
 | `workbench.extensions.action.checkForUpdates` | Extensions: Check for Updates |
 | `workbench.extensions.action.updateAllExtensions` | Extensions: Update All |
 | `lucerna.extensions.clearBuildCache` | Extensions: Clear Build Cache |
 | `workbench.action.selectIconTheme` | Preferences: File Icon Theme |
 
-Theme picker (`workbench.action.selectTheme`) có thêm theme từ extension. Icon theme picker dùng cùng widget, có xem trước khi di chuyển lựa chọn.
+The theme picker (`workbench.action.selectTheme`) also lists themes from extensions. The icon theme picker uses the same widget, with a preview as the selection moves.
 
 ### 5.4 CLI
 
@@ -443,169 +443,169 @@ luc ext remove <id>...
 luc ext update [<id>...]
 ```
 
-- Lệnh `luc ext` chạy không cần GUI, dùng `lucerna-extension` cùng `WasmGrammarValidator`.
-- Tiến độ in ra stderr, mỗi bước một dòng.
-- Mã thoát khác 0 khi có lỗi.
+- The `luc ext` command runs without the GUI, using `lucerna-extension` and `WasmGrammarValidator`.
+- Progress is printed to stderr, one line per step.
+- The exit code is non-zero on error.
 
-## 6. Settings mới
+## 6. New settings
 
-| Khóa | Mặc định | Ý nghĩa |
+| Key | Default | Meaning |
 |---|---|---|
-| `workbench.iconTheme` | `"Lucide"` | Tên icon theme |
-| `files.associations` | `{}` | Glob → id hoặc tên ngôn ngữ, giống VS Code |
-| `extensions.autoCheckUpdates` | `true` | Kiểm tra registry định kỳ (24 giờ) |
+| `workbench.iconTheme` | `"Lucide"` | The icon theme name |
+| `files.associations` | `{}` | Glob → language id or name, like VS Code |
+| `extensions.autoCheckUpdates` | `true` | Check the registry periodically (24 hours) |
 
-Context key mới cho `when` clause: `extensionsViewletFocus`.
+New context key for `when` clauses: `extensionsViewletFocus`.
 
-## 7. Xử lý lỗi
+## 7. Error handling
 
-| Tình huống | Cách xử lý |
+| Situation | Handling |
 |---|---|
-| Thiếu `git`, mất mạng, fetch quá 120 s | Lượt cài thất bại, xóa `staging/`, panel hiện lỗi, log ở `logs/<id>.log` |
-| Ổ đĩa còn dưới 1,2 GB | Chặn trước khi tải hoặc build |
-| wasi-sdk sai SHA-256 | Xóa file đã tải, báo lỗi, không bao giờ chạy |
-| Grammar biên dịch lỗi hoặc chỉ có `scanner.cc` | Bỏ các ngôn ngữ dùng grammar đó, phần còn lại vẫn được cài, panel hiện cảnh báo |
-| Query không biên dịch được | Bỏ file query đó, kèm cảnh báo. Nếu là `highlights.scm` thì ngôn ngữ vẫn được cài nhưng không có màu. |
-| Icon trỏ ra ngoài thư mục extension | Bỏ icon đó, kèm cảnh báo |
-| Manifest sai version so với registry, hoặc `schema_version` lớn hơn 1 | Lượt cài thất bại |
-| Grammar lỗi khi nạp hoặc parse | Ngôn ngữ bị đánh dấu `failed`, file hiển thị không tô màu, ghi log |
-| `index.json` hỏng | Dựng lại từ `installed/*` |
-| Thư mục trong `installed/` hỏng | Đánh dấu `broken` trong index, panel có nút Reinstall |
-| `registry.json` hỏng | Xóa và fetch lại |
-| Panic trong tác vụ cài hoặc dựng registry | `catch_unwind` (R3), chuyển sang `Failed`, editor vẫn chạy |
-| Hai thao tác trên cùng một id | Thao tác sau bị từ chối với `Busy` |
+| Missing `git`, no network, fetch over 120 s | The install fails, `staging/` is deleted, the panel shows the error, the log is at `logs/<id>.log` |
+| Disk has less than 1.2 GB free | Blocked before downloading or building |
+| wasi-sdk has the wrong SHA-256 | Delete the downloaded file, report an error, never run it |
+| Grammar fails to compile or has only `scanner.cc` | Drop the languages that use that grammar, the rest is still installed, the panel shows a warning |
+| A query cannot be compiled | Drop that query file, with a warning. If it is `highlights.scm`, the language is still installed but has no color. |
+| An icon points outside the extension directory | Drop that icon, with a warning |
+| Manifest version differs from the registry, or `schema_version` is greater than 1 | The install fails |
+| Grammar fails when loading or parsing | The language is marked `failed`, the file is shown without coloring, a log entry is written |
+| `index.json` corrupt | Rebuild from `installed/*` |
+| A directory in `installed/` is broken | Mark it `broken` in the index, the panel has a Reinstall button |
+| `registry.json` corrupt | Delete it and fetch again |
+| Panic in an install or registry-building task | `catch_unwind` (R3), switch to `Failed`, the editor keeps running |
+| Two operations on the same id | The later operation is rejected with `Busy` |
 
-## 8. Hiệu năng
+## 8. Performance
 
-- **Khởi động** chỉ đọc `index.json`, không mở `.wasm` hay `.scm`. Mục tiêu khung hình đầu dưới 200 ms vẫn giữ.
-- **Nạp grammar WASM lần đầu** (Cranelift biên dịch) chạy ở nền. File hiện chữ trước, có màu sau.
-- **Wasmtime** chỉ được khởi tạo khi lần đầu cần một grammar WASM. Mục tiêu RAM khi rỗi dưới 150 MB vẫn giữ.
-- **Injection** chỉ tính highlight cho các dòng đang hiển thị. Thêm benchmark cho HTML có `<script>` lớn và Markdown có nhiều code fence, với cùng ngưỡng hồi quy 15% như các benchmark khác.
-- **Benchmark mới:** parse và highlight một grammar WASM, so với bản native của cùng grammar (dùng fixture JSON). Chỉ ghi nhận, không đặt ngưỡng.
+- **Startup** only reads `index.json`, and opens no `.wasm` or `.scm`. The target of a first frame under 200 ms still holds.
+- **The first load of a WASM grammar** (Cranelift compiling) runs in the background. The file shows its text first, color comes later.
+- **Wasmtime** is only initialized the first time a WASM grammar is needed. The idle RAM target of under 150 MB still holds.
+- **Injection** only computes highlights for the lines being displayed. Add benchmarks for HTML with a large `<script>` and Markdown with many code fences, with the same 15% regression threshold as the other benchmarks.
+- **New benchmark:** parse and highlight a WASM grammar, compared with the native version of the same grammar (using a JSON fixture). Recorded only, no threshold set.
 
-## 9. Giấy phép
+## 9. Licensing
 
-- Thêm `Apache-2.0 WITH LLVM-exception` vào `deny.toml` (wasmtime, cranelift và các crate liên quan).
-- wasi-sdk được tải về lúc chạy, không đóng gói. Lucerna không phân phối extension; người dùng tự build trên máy mình.
-- **Không dùng code GPL của Zed.** Chỉ đọc định dạng dữ liệu (`extension.toml`, `config.toml`, các file `.scm`, schema của theme và icon theme) như một interface. Các tham chiếu tới mã nguồn Zed trong tài liệu nghiên cứu chỉ để hiểu hành vi.
-- Query injection của các grammar bundled lấy từ crate grammar hoặc repo upstream của chúng, ghi trong `THIRD_PARTY_NOTICES.md`.
-- File `.wasm` dùng làm fixture test được build từ một grammar MIT, kèm file license trong `tests/fixtures`.
+- Add `Apache-2.0 WITH LLVM-exception` to `deny.toml` (wasmtime, cranelift and related crates).
+- wasi-sdk is downloaded at run time, not bundled. Lucerna does not distribute extensions; users build them on their own machine.
+- **No Zed GPL code is used.** Only data formats (`extension.toml`, `config.toml`, `.scm` files, the schemas of themes and icon themes) are read, as an interface. References to Zed's source code in the research documents are only for understanding behavior.
+- The injection queries of bundled grammars come from the grammar crates or their upstream repos, recorded in `THIRD_PARTY_NOTICES.md`.
+- The `.wasm` file used as a test fixture is built from an MIT grammar, with the license file in `tests/fixtures`.
 
-## 10. Kiểm thử
+## 10. Testing
 
-- **Unit test:**
+- **Unit tests:**
   - `lucerna-extension`:
-    - manifest schema 0 và 1, `extension.json` cũ, tự điền đường dẫn, tên grammar không hợp lệ;
-    - ghép registry từ ba nguồn;
-    - so sánh để phát hiện bản cập nhật;
-    - kiểm tra JSON của theme, icon theme và snippet;
-    - chặn đường dẫn icon ra ngoài thư mục;
-    - dựng `index.json`.
+    - manifest schema 0 and 1, the legacy `extension.json`, auto-filled paths, invalid grammar names;
+    - joining the registry from three sources;
+    - comparison to detect updates;
+    - validating the JSON of themes, icon themes and snippets;
+    - blocking icon paths that go outside the directory;
+    - building `index.json`.
   - `lucerna-syntax`:
-    - thứ tự chọn ngôn ngữ, gồm `files.associations`, tên file, suffix dài nhất, id hòa, `first_line_pattern`, `hidden`;
-    - `LastPatternWins` kết hợp bỏ capture không có style;
+    - the language selection order, including `files.associations`, file name, longest suffix, tied ids, `first_line_pattern`, `hidden`;
+    - `LastPatternWins` combined with skipping captures that have no style;
     - `#has-parent?`.
   - `lucerna-theme`:
-    - thứ tự ghi đè giữa các lớp theme;
-    - thứ tự tra icon theme và lùi về Lucide.
-- **Test tích hợp `lucerna-extension`, chạy offline:**
-  - Repo git giả trong thư mục tạm, truy cập qua URL `file://`: một repo registry có `extensions.toml`, `.gitmodules` và submodule; một extension theme; một extension ngôn ngữ có grammar trỏ tới repo grammar giả.
-  - Clang được thay bằng một script giả (qua `WASI_SDK_PATH`) chỉ chép file fixture `.wasm`.
-  - Kiểm tra: install, update, uninstall, hủy giữa chừng, lỗi ở từng bước, cài lại khi `broken`, dọn `.old` và `.trash` khi khởi động.
-- **Grammar WASM:**
-  - Test nạp grammar dùng fixture `.wasm` đã build sẵn, commit trong repo. Test này không cần wasi-sdk.
-  - Test build thật bằng clang có `#[ignore]` và chỉ chạy khi có `WASI_SDK_PATH`.
-- **Injection:** snapshot test bằng `insta` cho:
-  - HTML có `<script>` và `<style>`;
-  - Markdown có inline và code fence; trường hợp này phải cho kết quả giống snapshot Phase 1 ở phần inline;
-  - một trường hợp `injection.combined`;
-  - giới hạn độ sâu.
-- **UI** bằng `TestAppContext`:
-  - panel lọc và tìm kiếm;
-  - trạng thái nút theo từng `InstallProgress`;
-  - badge cập nhật;
-  - hoán đổi registry làm tab đang mở tô màu lại;
-  - đổi icon theme làm Explorer vẽ lại;
-  - setting trỏ tới theme chưa có, được áp dụng khi theme xuất hiện.
-- **CLI:** test bằng `assert_cmd` cho `luc ext list`, `luc ext install --dev`, và lỗi khi id không tồn tại.
-- **Thủ công**, trước khi đóng giai đoạn: các tiêu chí ở §1.2, kiểm tra trên registry thật.
+    - the override order between theme layers;
+    - the icon theme lookup order and fallback to Lucide.
+- **`lucerna-extension` integration tests, run offline:**
+  - Fake git repos in a temp directory, accessed via `file://` URLs: a registry repo with `extensions.toml`, `.gitmodules` and a submodule; a theme extension; a language extension with a grammar pointing to a fake grammar repo.
+  - Clang is replaced by a fake script (via `WASI_SDK_PATH`) that only copies the `.wasm` fixture file.
+  - Check: install, update, uninstall, cancelling midway, errors at each step, reinstalling when `broken`, cleaning up `.old` and `.trash` at startup.
+- **WASM grammars:**
+  - The grammar loading test uses a prebuilt `.wasm` fixture, committed in the repo. This test does not need wasi-sdk.
+  - The test that builds with real clang is `#[ignore]` and only runs when `WASI_SDK_PATH` is set.
+- **Injection:** snapshot tests with `insta` for:
+  - HTML with `<script>` and `<style>`;
+  - Markdown with inline and code fences; this case must give the same result as the Phase 1 snapshot for the inline part;
+  - one `injection.combined` case;
+  - the depth limit.
+- **UI** with `TestAppContext`:
+  - the panel's filtering and search;
+  - the button state for each `InstallProgress`;
+  - the update badge;
+  - swapping registries makes an open tab recolor;
+  - changing the icon theme makes the Explorer redraw;
+  - a setting pointing to a theme that does not exist yet is applied when the theme appears.
+- **CLI:** tests with `assert_cmd` for `luc ext list`, `luc ext install --dev`, and the error when the id does not exist.
+- **Manual**, before closing the phase: the criteria in §1.2, checked against the real registry.
 
-## 11. Rủi ro
+## 11. Risks
 
-| Rủi ro | Cách giảm thiểu |
+| Risk | Mitigation |
 |---|---|
-| Wasmtime làm tăng thời gian build và dung lượng `target/` (khoảng 1 GB), trong khi máy chỉ còn khoảng 12 GB | Không build release trong quá trình phát triển; `profile.dev` giữ `debug = false` cho dependency; kiểm tra dung lượng trống trước các bước nặng |
-| Tree-sitter 0.27 với feature `wasm` có thể chưa hỗ trợ đúng như Zed đang dùng (Zed dùng một rev git của tree-sitter) | Task đầu tiên của plan là spike: nạp fixture `.wasm` bằng `WasmStore` trên tree-sitter 0.27. Nếu không được thì dừng lại và báo |
-| Phiên bản ABI của grammar trong extension nằm ngoài khoảng tree-sitter 0.27 hỗ trợ | `load_language` báo lỗi rõ ràng; ngôn ngữ bị bỏ kèm cảnh báo khi cài |
-| `img()` của GPUI không vẽ được SVG từ đường dẫn file, hoặc vẽ chậm | Kiểm tra trong plan; nếu cần thì rasterize SVG một lần và cache thành ảnh |
-| Query của extension dùng predicate hoặc quy ước riêng của Zed mà Lucerna chưa hỗ trợ | Pattern có predicate lạ bị coi là không khớp và ghi cảnh báo; theo dõi trên Catppuccin, Zig, Vue, Svelte |
-| Registry đổi định dạng `extensions.toml` | Đọc lenient, bỏ qua mục lỗi kèm cảnh báo, có test với dữ liệu thật đã lưu làm fixture |
-| Injection làm chậm file lớn | Giới hạn 4 tầng và 1.000 layer con; tắt hẳn khi vượt ngưỡng file lớn như Phase 1 |
+| Wasmtime increases build time and the size of `target/` (about 1 GB), while the machine only has about 12 GB left | No release builds during development; `profile.dev` keeps `debug = false` for dependencies; check free space before heavy steps |
+| Tree-sitter 0.27 with the `wasm` feature may not support things exactly as Zed uses it (Zed uses a git rev of tree-sitter) | The first task of the plan is a spike: load the `.wasm` fixture with `WasmStore` on tree-sitter 0.27. If it does not work, stop and report |
+| The ABI version of a grammar in an extension is outside the range tree-sitter 0.27 supports | `load_language` reports a clear error; the language is dropped with a warning at install time |
+| GPUI's `img()` cannot draw SVGs from a file path, or draws them slowly | Check in the plan; if needed, rasterize the SVG once and cache it as an image |
+| An extension's queries use Zed-specific predicates or conventions that Lucerna does not support yet | A pattern with an unknown predicate is treated as not matching and a warning is logged; monitor with Catppuccin, Zig, Vue, Svelte |
+| The registry changes the `extensions.toml` format | Read leniently, skip faulty entries with a warning, with tests using saved real data as fixtures |
+| Injection slows down large files | Limit of 4 levels and 1,000 child layers; turned off entirely above the large-file threshold as in Phase 1 |
 
-## 12. Thứ tự triển khai dự kiến
+## 12. Expected implementation order
 
-1. Spike: tree-sitter `wasm` cùng fixture grammar; `deny.toml`.
-2. `lucerna-extension`: manifest, rồi registry, process và toolchain, builder và validate, cuối cùng store và index.
-3. `lucerna-syntax`: grammar WASM và lớp ngôn ngữ từ extension, `files.associations`, precedence, sau đó tới injection tổng quát (gồm chuyển Markdown sang cơ chế mới) và `brackets.scm`.
-4. `lucerna-theme`: theme theo lớp, icon theme, Lucide thành dữ liệu.
-5. `lucerna`: lệnh `luc ext`.
-6. `lucerna-workbench`: hoán đổi registry, vẽ icon theme, panel Extensions, lệnh và settings.
-7. Benchmark, kiểm thử thủ công theo §1.2.
+1. Spike: tree-sitter `wasm` with a fixture grammar; `deny.toml`.
+2. `lucerna-extension`: manifest, then registry, process and toolchain, builder and validate, and finally store and index.
+3. `lucerna-syntax`: WASM grammars and the extension language layer, `files.associations`, precedence, then general injection (including moving Markdown to the new mechanism) and `brackets.scm`.
+4. `lucerna-theme`: layered themes, icon themes, Lucide as data.
+5. `lucerna`: the `luc ext` command.
+6. `lucerna-workbench`: registry swapping, icon theme drawing, the Extensions panel, commands and settings.
+7. Benchmarks, manual testing per §1.2.
 
-## 13. Kết quả đo
+## 13. Measurement results
 
-Đo ngày 2026-11-09 trên máy phát triển (macOS, arm64). Benchmark chạy bằng `cargo bench -p lucerna-syntax` (profile bench, tối ưu hóa); khởi động đo bằng bản debug.
+Measured on 2026-11-09 on the development machine (macOS, arm64). Benchmarks were run with `cargo bench -p lucerna-syntax` (bench profile, optimized); startup was measured with the debug build.
 
-### 13.1 Benchmark
+### 13.1 Benchmarks
 
-Số liệu là khoảng giữa của criterion (`[thấp  giữa  cao]`).
+The numbers are criterion's middle value (`[low  middle  high]`).
 
-| Benchmark | Kết quả | Ghi chú |
+| Benchmark | Result | Notes |
 |---|---|---|
-| `highlight_10mb_viewport/rows_60` | 96,5 µs | Pha 1 (commit `8bd8467`): 97,4 µs. Chênh −0,9%, trong ngưỡng 15%. |
-| `highlight_markdown_viewport/rows_60` | 82,8 µs | Bench có từ Task 4, không có bản Pha 1 để so (xem dưới). |
-| `markdown_many_fences/rows_60` | 59,5 µs | 800 code fence (rust và json), 1 viewport 60 dòng ở giữa. |
-| `html_large_script_injection/rows_60` | 472,6 µs | `<script>` 8000 dòng trong HTML, viewport ở giữa. |
-| `wasm_json_vs_native/native` | 21,5 ms | Parse + highlight 60 dòng đầu của JSON 4000 mục, grammar bundled. |
-| `wasm_json_vs_native/wasm` | 31,6 ms | Cùng dữ liệu, grammar WASM (`json.wasm`). Chậm hơn khoảng 1,47 lần. Chỉ ghi nhận, không có ngưỡng. |
+| `highlight_10mb_viewport/rows_60` | 96.5 µs | Phase 1 (commit `8bd8467`): 97.4 µs. Difference −0.9%, within the 15% threshold. |
+| `highlight_markdown_viewport/rows_60` | 82.8 µs | A bench present since Task 4, with no Phase 1 version to compare against (see below). |
+| `markdown_many_fences/rows_60` | 59.5 µs | 800 code fences (rust and json), 1 viewport of 60 lines in the middle. |
+| `html_large_script_injection/rows_60` | 472.6 µs | An 8000-line `<script>` in HTML, viewport in the middle. |
+| `wasm_json_vs_native/native` | 21.5 ms | Parse + highlight the first 60 lines of a 4000-entry JSON, bundled grammar. |
+| `wasm_json_vs_native/wasm` | 31.6 ms | Same data, WASM grammar (`json.wasm`). About 1.47 times slower. Recorded only, no threshold. |
 
-Về ngưỡng hồi quy 15%: ở Pha 1 `SyntaxState::new` chưa nhận registry nên chưa có injection, vì vậy ba bench Markdown/HTML không so được với commit trước Pha 2. Chỉ `highlight_10mb_viewport` (đường không injection) so được, và đạt. Ba bench injection đặt mốc cho các lần sau.
+On the 15% regression threshold: in Phase 1 `SyntaxState::new` did not yet take a registry, so there was no injection; therefore the three Markdown/HTML benches cannot be compared with the commit before Phase 2. Only `highlight_10mb_viewport` (the path without injection) can be compared, and it passes. The three injection benches set the baseline for later runs.
 
-### 13.2 Khởi động (bản debug, `luc --trace-startup .`)
+### 13.2 Startup (debug build, `luc --trace-startup .`)
 
-| Bản | `startup_ms` |
+| Build | `startup_ms` |
 |---|---|
-| Trước Pha 2 (`8bd8467`), lần chạy nguội đầu tiên | 553 |
-| Trước Pha 2, 5 lần ấm | 154, 160, 166, 180, 184 (trung vị 166) |
-| Pha 2 (main), lần nguội đầu tiên | 236 |
-| Pha 2, 9 lần ấm | 157, 158, 161, 166, 166, 170, 170, 171, 175 (trung vị 166) |
+| Before Phase 2 (`8bd8467`), first cold run | 553 |
+| Before Phase 2, 5 warm runs | 154, 160, 166, 180, 184 (median 166) |
+| Phase 2 (main), first cold run | 236 |
+| Phase 2, 9 warm runs | 157, 158, 161, 166, 166, 170, 170, 171, 175 (median 166) |
 
-Trung vị ấm bằng nhau (166 ms), không hồi quy. Mục tiêu bản release (dưới 200 ms) do người dùng tự kiểm.
+The warm medians are equal (166 ms), no regression. The release build target (under 200 ms) is for the user to check.
 
-### 13.3 Nghiệm thu theo §1.2 bằng CLI
+### 13.3 Acceptance per §1.2 via the CLI
 
-Chạy trên registry thật, nhưng trong thư mục cách ly (`LUCERNA_EXTENSIONS_DIR` trỏ vào thư mục tạm, `WASI_SDK_PATH` trỏ vào wasi-sdk 34 đã tải sẵn), nên thư mục extension thật của người dùng không bị đụng tới.
+Run on the real registry, but in an isolated directory (`LUCERNA_EXTENSIONS_DIR` pointing to a temp directory, `WASI_SDK_PATH` pointing to a pre-downloaded wasi-sdk 34), so the user's real extensions directory was not touched.
 
-| Extension | Phiên bản | Kết quả | Nội dung trong `index.json` |
+| Extension | Version | Result | Content in `index.json` |
 |---|---|---|---|
-| `catppuccin` | 0.2.27 | Cài được, không cảnh báo (khoảng 2 s) | 8 theme (4 sáng/tối cho mỗi file, gồm bản "No Italics") |
-| `material-icon-theme` | 1.3.2 | Cài được, không cảnh báo (khoảng 5 s) | 1 icon theme "Material Icon Theme", `icons_root` đúng |
-| `zig` | 0.4.2 | Cài được, không cảnh báo (khoảng 6 s) | ngôn ngữ Zig, hậu tố `zig` và `zon`, `grammars/zig.wasm` (695 KB), 8 query gồm `injections` |
-| `vue` | 0.4.1 | Cài được, không cảnh báo (khoảng 5 s) | ngôn ngữ Vue.js, hậu tố `vue`, `grammars/vue.wasm` (26 KB), 6 query gồm `injections` |
+| `catppuccin` | 0.2.27 | Installed, no warnings (about 2 s) | 8 themes (4 light/dark per file, including the "No Italics" versions) |
+| `material-icon-theme` | 1.3.2 | Installed, no warnings (about 5 s) | 1 icon theme "Material Icon Theme", `icons_root` correct |
+| `zig` | 0.4.2 | Installed, no warnings (about 6 s) | the Zig language, suffixes `zig` and `zon`, `grammars/zig.wasm` (695 KB), 8 queries including `injections` |
+| `vue` | 0.4.1 | Installed, no warnings (about 5 s) | the Vue.js language, suffix `vue`, `grammars/vue.wasm` (26 KB), 6 queries including `injections` |
 
-- Cả bốn: `luc ext install` thoát với mã 0, `luc ext list --installed` liệt kê đủ bốn, `broken` là `null`, log trong `logs/<id>.log` không có dòng lỗi hay cảnh báo.
-- Thư mục `installed/<id>/` có đủ `themes/`, `icon_themes/`, `languages/<tên>/*.scm` và `grammars/*.wasm` như §3.1.
-- `luc ext remove` cho từng id: xong, `index.json` về `{"extensions": {}}`, `installed/`, `staging/` và `trash/` đều rỗng.
-- Không có extension nào lỗi, nên không có lỗi nào do Lucerna cần ghi lại.
+- All four: `luc ext install` exits with code 0, `luc ext list --installed` lists all four, `broken` is `null`, and the log in `logs/<id>.log` has no error or warning lines.
+- The `installed/<id>/` directory has the full `themes/`, `icon_themes/`, `languages/<name>/*.scm` and `grammars/*.wasm` as in §3.1.
+- `luc ext remove` for each id: done, `index.json` returns to `{"extensions": {}}`, and `installed/`, `staging/` and `trash/` are all empty.
+- No extension failed, so there were no errors caused by Lucerna to record.
 
-### 13.4 Còn chờ người dùng kiểm bằng mắt
+### 13.4 Still waiting for the user to check visually
 
-Phiên làm việc này không điều khiển được GUI (không có quyền ghi màn hình), nên các điểm sau chưa kiểm:
+This working session could not control the GUI (no screen recording permission), so the following points have not been checked:
 
-- chọn "Set Theme" từ toast sau khi cài Catppuccin và thấy giao diện đổi màu;
-- chọn Material Icon Theme bằng *Preferences: File Icon Theme* và thấy icon trong cây file;
-- mở file `.zig` và thấy có màu;
-- mở file `.vue` và thấy cả `<script>` lẫn `<style>` có màu;
-- gỡ từng extension ngay trong cửa sổ đang mở, không cần khởi động lại.
+- choosing "Set Theme" from the toast after installing Catppuccin and seeing the UI change colors;
+- choosing Material Icon Theme with *Preferences: File Icon Theme* and seeing the icons in the file tree;
+- opening a `.zig` file and seeing it colored;
+- opening a `.vue` file and seeing both `<script>` and `<style>` colored;
+- removing each extension inside the already-open window, with no restart.
 
-Mới kiểm bằng CLI rằng grammar `.wasm` build ra, `languages/*/injections.scm` và index đúng. Việc nạp chúng thành màu trên màn hình do các test tích hợp ở Task 2–13 bao phủ bằng fixture `json.wasm`, chưa chạy với `zig.wasm` hay `vue.wasm` thật.
+So far it has only been checked via the CLI that the built `.wasm` grammars, `languages/*/injections.scm` and the index are correct. Loading them into on-screen colors is covered by the integration tests in Tasks 2–13 using the `json.wasm` fixture, and has not been run with the real `zig.wasm` or `vue.wasm`.
