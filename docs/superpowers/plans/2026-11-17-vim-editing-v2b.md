@@ -1,70 +1,70 @@
-# Vim V2b (macro và dòng lệnh `:`) Implementation Plan
+# Vim V2b (macros and the `:` command line) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Hoàn tất Vim sửa trong Lucerna:
-- macro `q{reg}` … `q`, `[count]@{reg}`, `@@`, lưu trong register dưới dạng ký hiệu phím;
-- dòng lệnh `:` qua Quick Open (`:w :q :wq :x :wa :qa :q! :w! :N :$ :d :y :> :< :s :noh`, range kiểu ex);
+**Goal:** Finish Vim editing in Lucerna:
+- macros `q{reg}` … `q`, `[count]@{reg}`, `@@`, stored in a register as key notation;
+- the `:` command line through Quick Open (`:w :q :wq :x :wa :qa :q! :w! :N :$ :d :y :> :< :s :noh`, ex-style ranges);
 - `vim.gdefault`;
-- highlight khi yank (`vim.highlightedyank.enable`, `vim.highlightedyank.duration`).
+- highlight on yank (`vim.highlightedyank.enable`, `vim.highlightedyank.duration`).
 
 **Architecture:**
-- `lucerna-vim` (thuần, không gpui) có thêm parser và bộ chạy lệnh `:` (`ex.rs`, `ex_run.rs`, `substitute.rs`) và macro (`macros.rs`). Lệnh cần workbench (lưu, đóng tab) đi ra thành `Action::RunEx(ExCommand)`.
-- Chạy macro là **phát lại phím**: `Outcome::Macro(Vec<Key>)`. Workbench đưa từng phím vào `feed` (trong Insert thì gõ qua đường gõ), cả lần chạy là một nhóm undo. Khi đang chạy macro, `lucerna-vim` tự gom chữ sau `/`, `?`, `:` tới `<CR>` (không mở giao diện), vì chỉ lúc chạy mới biết phím nào thuộc mode nào.
-- Quick Open có `QuickOpenQuery::VimCommand` khi Vim bật và đang ở code view. Kết quả lệnh hiện ở chỗ chỉ báo mode cho tới phím kế tiếp.
+- `lucerna-vim` (pure, no gpui) gains a parser and runner for `:` commands (`ex.rs`, `ex_run.rs`, `substitute.rs`) and macros (`macros.rs`). Commands that need the workbench (save, close a tab) come out as `Action::RunEx(ExCommand)`.
+- Running a macro is **replaying keys**: `Outcome::Macro(Vec<Key>)`. The workbench feeds each key into `feed` (in Insert, it types through the typing path), and the whole run is one undo group. While a macro runs, `lucerna-vim` itself collects the text after `/`, `?`, `:` up to `<CR>` (without opening any UI), because only at run time is it known which key belongs to which mode.
+- Quick Open has `QuickOpenQuery::VimCommand` when Vim is on and the active view is a code view. The command's result shows in the mode indicator until the next key.
 
-**Tech Stack:** Rust 2024, `lucerna-text`, `lucerna-editor`, `lucerna-vim` (+ `regex`, đã có trong workspace), gpui (chỉ workbench).
+**Tech Stack:** Rust 2024, `lucerna-text`, `lucerna-editor`, `lucerna-vim` (+ `regex`, already in the workspace), gpui (only the workbench).
 
-**Spec:** `docs/superpowers/specs/2026-11-13-vim-editing-design.md`, bước **V2b** ở §12: §6.4 macro, §8 dòng lệnh, `vim.gdefault`, highlight khi yank (§9). Đọc thêm §2 (có mục Helix), §3.1, §10, §11. Plan V2a: `docs/superpowers/plans/2026-11-13-vim-editing-v2a.md` (cùng quy ước test).
+**Spec:** `docs/superpowers/specs/2026-11-13-vim-editing-design.md`, step **V2b** in §12: §6.4 macros, §8 command line, `vim.gdefault`, highlight on yank (§9). Also read §2 (it has a Helix section), §3.1, §10, §11. The V2a plan: `docs/superpowers/plans/2026-11-13-vim-editing-v2a.md` (same test conventions).
 
 ## Global Constraints
 
-- **Chữ trong app chỉ tiếng Anh**, đúng nguyên văn spec: `E492: Not an editor command: foo`, `E486: Pattern not found: foo`, `N substitutions on M lines`, `-- NORMAL -- recording @a`, `E: file changed, :s cancelled`, `:%s/foo/bar/g — Replace in all lines`, `:w — Save`, `:12 — Go to line 12`, `Not an editor command: foo`. Tiếng Việt chỉ có trong dữ liệu test.
-- **Crate:** chỉ `lucerna-workbench` dùng gpui. `lucerna-vim` được phụ thuộc `lucerna-text`, `lucerna-editor`, `unicode-segmentation` và thêm `regex` (workspace, MIT/Apache).
-- **Giấy phép:** không chép code Zed (GPL) hay Helix (MPL), chỉ học thiết kế. Ca test chuyển thể từ VSCodeVim (MIT) ghi `// Adapted from VSCodeVim <path>: "<test title>"`.
-- **Vị trí:** `Point.column` và offset là byte UTF-8; không cắt đôi ký tự; Normal không đứng sau ký tự cuối.
-- **Sửa:** mọi thay đổi văn bản là một `EditPlan` (edit theo offset trước khi sửa). View chỉ đọc (`edit_ctx() == None`) không nhận `Action::Edit`; `:y` và `y` vẫn chạy.
-- **Undo:** một lần `feed` (hay một lệnh `:`) là một bước; cả một lần chạy macro (kể cả `5@a`) là một bước.
-- **Settings mới (spec §9):**
+- **Text in the app is English only**, exactly as in the spec: `E492: Not an editor command: foo`, `E486: Pattern not found: foo`, `N substitutions on M lines`, `-- NORMAL -- recording @a`, `E: file changed, :s cancelled`, `:%s/foo/bar/g — Replace in all lines`, `:w — Save`, `:12 — Go to line 12`, `Not an editor command: foo`. Vietnamese appears only in test data.
+- **Crates:** only `lucerna-workbench` uses gpui. `lucerna-vim` may depend on `lucerna-text`, `lucerna-editor`, `unicode-segmentation` and adds `regex` (workspace, MIT/Apache).
+- **License:** do not copy Zed code (GPL) or Helix code (MPL), only learn the design. Test cases adapted from VSCodeVim (MIT) carry `// Adapted from VSCodeVim <path>: "<test title>"`.
+- **Positions:** `Point.column` and offsets are UTF-8 bytes; never split a character; Normal does not sit after the last character.
+- **Editing:** every text change is an `EditPlan` (edits by offset before the change). A read-only view (`edit_ctx() == None`) does not accept `Action::Edit`; `:y` and `y` still run.
+- **Undo:** one `feed` (or one `:` command) is one step; a whole macro run (including `5@a`) is one step.
+- **New settings (spec §9):**
 
-  | Khóa | Mặc định |
+  | Key | Default |
   |---|---|
   | `vim.gdefault` | `false` |
   | `vim.highlightedyank.enable` | `false` |
   | `vim.highlightedyank.duration` | `200` (ms) |
 
 - **Build:**
-  - Cargo cần `export PATH="/opt/homebrew/opt/rustup/bin:$PATH"`.
-  - Chạy `scripts/prune-target.sh` trước **mọi** lần `cargo test` hay build.
-  - Không bao giờ đặt `CARGO_TARGET_DIR` hay `--target-dir`; mọi worktree build vào `target/` chung. Cargo lock đang bị giữ thì chờ.
-  - Giữ một profile: xóa `target/release` trước khi test/debug build, trừ khi `pgrep -x cargo` cho thấy cargo khác đang chạy.
-- **Git (thư mục dùng chung):**
-  - Trước mỗi commit chạy `git status`; có merge đang dở hay file staged không phải của mình thì dừng, báo BLOCKED.
-  - Stage và commit theo đường dẫn tường minh: `git commit -m "…" -- <paths>`. Không rebase, không stash, không amend.
+  - Cargo needs `export PATH="/opt/homebrew/opt/rustup/bin:$PATH"`.
+  - Run `scripts/prune-target.sh` before **every** `cargo test` or build.
+  - Never set `CARGO_TARGET_DIR` or `--target-dir`; every worktree builds into the shared `target/`. If the cargo lock is held, wait.
+  - Keep one profile: delete `target/release` before a test/debug build, unless `pgrep -x cargo` shows another cargo running.
+- **Git (shared folder):**
+  - Run `git status` before every commit; if a merge is in progress or there are staged files that are not yours, stop and report BLOCKED.
+  - Stage and commit by explicit path: `git commit -m "…" -- <paths>`. No rebase, no stash, no amend.
   - Trailer: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- `cargo deny check` phải qua.
+- `cargo deny check` must pass.
 
 ## Review Focus
 
-1. **Macro có chữ gõ Telex và auto-close.** Ghi `qa` + `ciw` + IME commit `chào` + `Esc` + `q`, rồi `@a` trên từ khác phải ra `chào`, một bước undo. Test: `Task 7: macro_with_vietnamese_ime_text_replays_text`.
-2. **Macro đệ quy hoặc count lớn không treo, không tràn stack.** Register `a` chứa `@a` rồi `@a`: dừng ở giới hạn lồng nhau, không panic, không sửa gì. Test: `Task 7: self_calling_macro_stops_at_depth_cap`.
-3. **`:%s` trên file trên 1 MB trong lúc agent sửa file.** Revision đổi trước khi kết quả về: không áp gì, status bar báo `E: file changed, :s cancelled`. Test: `Task 6: large_file_substitute_cancelled_by_reload`.
-4. **`:wq` khi file đang xung đột với đĩa.** Prompt xung đột hiện; chọn Cancel thì tab **không** đóng và vẫn bẩn. `:w!` ghi đè không hỏi. Test: `Task 6: wq_conflict_cancel_keeps_tab`, `Task 6: w_bang_overwrites_without_prompt`.
-5. **`:` khi Vim tắt và khi Vim bật.** Vim tắt: `:-1` vẫn là dòng cuối, `:12,5` là dòng 12 cột 5 (T5-4). Vim bật: `:-1` lên một dòng, `:12,5` là range đảo; không có code view thì `:12` vẫn là go-to-line cũ. Test: `Task 6: colon_dispatch_vim_on_and_off`.
+1. **A macro with Telex-typed text and auto-close.** Record `qa` + `ciw` + IME commit `chào` + `Esc` + `q`, then `@a` on another word must produce `chào`, in one undo step. Test: `Task 7: macro_with_vietnamese_ime_text_replays_text`.
+2. **A recursive macro or a large count does not hang or overflow the stack.** Register `a` containing `@a`, then `@a`: stops at the nesting limit, no panic, changes nothing. Test: `Task 7: self_calling_macro_stops_at_depth_cap`.
+3. **`:%s` on a file over 1 MB while an agent edits the file.** The revision changes before the result returns: nothing is applied, and the status bar reports `E: file changed, :s cancelled`. Test: `Task 6: large_file_substitute_cancelled_by_reload`.
+4. **`:wq` when the file conflicts with disk.** The conflict prompt shows; choosing Cancel leaves the tab **not** closed and still dirty. `:w!` overwrites without asking. Tests: `Task 6: wq_conflict_cancel_keeps_tab`, `Task 6: w_bang_overwrites_without_prompt`.
+5. **`:` with Vim off and with Vim on.** Vim off: `:-1` is still the last line, `:12,5` is line 12 column 5 (T5-4). Vim on: `:-1` goes up one line, `:12,5` is a reversed range; with no code view, `:12` is still the old go-to-line. Test: `Task 6: colon_dispatch_vim_on_and_off`.
 
 ---
 
-## Quyết định chốt trong plan (spec chưa nói rõ)
+## Decisions fixed in the plan (the spec is not explicit)
 
-- **Quick Open chia việc thế nào.** Khi Vim bật **và** editor đang active là code view Vim nhận phím, mọi text sau `:` (cắt khoảng trắng đầu) là `QuickOpenQuery::VimCommand`. Parser ex của V2b hiểu một số đứng riêng (`12`) là đi tới dòng, nên `:12` vẫn ra `:12 — Go to line 12` như spec §8.1, chỉ khác đường chạy. `resolve_line` và nghĩa VS Code của `:-1`, `:12,5` chỉ còn dùng khi Vim tắt hoặc không có code view. Giống Helix: số đứng riêng là `:goto`.
-- **`:N` khi Vim bật** chạy như `NG`: nhảy (đặt mark `''`), con trỏ về ký tự không trắng đầu tiên theo `vim.startofline`, dòng vượt quá thì kẹp về dòng cuối.
-- **`:s` khớp theo từng dòng** (text của dòng, không có ký tự xuống dòng): `^`/`$` là đầu/cuối dòng; match rỗng được (`:s/^/# /`); mẫu không vượt qua dòng. Mặc định phân biệt hoa thường; `i` thì không, `I` thì có (không đọc `vim.ignorecase`, vì setting đó chỉ cho `*` và `#`).
-- **Range trên `:w :q :wq :x :wa :qa :noh`** bị bỏ qua. `!` chỉ được trên `w q wq x`; chỗ khác: `E477: No ! allowed`. `:wq!` và `:x!` lưu ghi đè rồi đóng.
-- **Thông báo lỗi khác** (theo Vim): `E16: Invalid range`, `E20: Mark not set`, `E35: No previous regular expression`, `E383: Invalid search string: {pat}`, `E488: Trailing characters: {rest}`, `E354: Invalid register name: '{c}'`.
-- **Motion thất bại** báo bằng `Action::Failed` trong `Outcome::Handled` (spec §3.1 "mỗi `Outcome` cho biết motion có thất bại không"). Workbench chỉ dùng nó để dừng macro.
-- **Trong lúc chạy macro**, xóa nhiều dòng vẫn ghi `"` và `1` nhưng **không dịch** `1`–`9`, còn `.` và register `.` không bị ghi đè (spec §6.4, đọc đúng chữ).
-- **Giới hạn lồng macro:** `MAX_MACRO_DEPTH = 100` (Vim cho macro đệ quy, Helix chặn hẳn). Vượt quá thì dừng cả lần chạy, không báo lỗi.
-- **Màu highlight khi yank:** `theme.ui.search_match_background` (khóa Zed `search.match_background`), tương đương `editor.findMatchHighlightBackground` mà spec §9 nói.
+- **How Quick Open splits the work.** When Vim is on **and** the active editor is a code view that receives Vim's keys, all text after `:` (leading spaces trimmed) is `QuickOpenQuery::VimCommand`. V2b's ex parser understands a lone number (`12`) as go to that line, so `:12` still gives `:12 — Go to line 12` as in spec §8.1, only the execution path differs. `resolve_line` and the VS Code meaning of `:-1`, `:12,5` are used only when Vim is off or there is no code view. Like Helix: a lone number is `:goto`.
+- **`:N` when Vim is on** runs like `NG`: jump (set the `''` mark), the cursor goes to the first non-blank character per `vim.startofline`, and a line past the end is clamped to the last line.
+- **`:s` matches line by line** (the line's text, without a newline character): `^`/`$` are the start/end of the line; an empty match is allowed (`:s/^/# /`); the pattern does not cross lines. Case-sensitive by default; `i` makes it insensitive, `I` makes it sensitive (it does not read `vim.ignorecase`, because that setting is only for `*` and `#`).
+- **A range on `:w :q :wq :x :wa :qa :noh`** is ignored. `!` is only allowed on `w q wq x`; elsewhere: `E477: No ! allowed`. `:wq!` and `:x!` save overwriting, then close.
+- **Other error messages** (following Vim): `E16: Invalid range`, `E20: Mark not set`, `E35: No previous regular expression`, `E383: Invalid search string: {pat}`, `E488: Trailing characters: {rest}`, `E354: Invalid register name: '{c}'`.
+- **A failed motion** is reported with `Action::Failed` in `Outcome::Handled` (spec §3.1 "every `Outcome` tells whether the motion failed"). The workbench uses it only to stop a macro.
+- **While a macro runs**, deleting multiple lines still writes `"` and `1` but **does not shift** `1`–`9`, and `.` and the `.` register are not overwritten (spec §6.4, read literally).
+- **Macro nesting limit:** `MAX_MACRO_DEPTH = 100` (Vim allows recursive macros, Helix blocks them outright). Past it, the whole run stops, with no error.
+- **Highlight color on yank:** `theme.ui.search_match_background` (the Zed key `search.match_background`), equivalent to the `editor.findMatchHighlightBackground` that spec §9 mentions.
 
 ---
 
@@ -75,25 +75,25 @@ crates/lucerna-vim/
   Cargo.toml          + regex.workspace = true
   src/lib.rs          Action::{Failed, RunEx, OpenCommandLine, Message, Yanked}; Outcome::{Macro, Substitute};
                       ExCommand; Settings.{gdefault, highlighted_yank}; re-exports
-  src/ex.rs           NEW  parse lệnh `:`, range, viết tắt, describe_command, ExError
-  src/ex_run.rs       NEW  Vim::ex_command: đi tới dòng, :d :y :> :<, lệnh workbench, `:` register
-  src/substitute.rs   NEW  :s — dịch mẫu, phần thay, cờ, SubstituteJob
-  src/macros.rs       NEW  ký hiệu phím, ghi macro, `@`, dòng lệnh nội bộ khi chạy macro
+  src/ex.rs           NEW  parse `:` commands, ranges, abbreviations, describe_command, ExError
+  src/ex_run.rs       NEW  Vim::ex_command: go to line, :d :y :> :<, workbench commands, `:` register
+  src/substitute.rs   NEW  :s — pattern translation, replacement, flags, SubstituteJob
+  src/macros.rs       NEW  key notation, macro recording, `@`, internal command line while running a macro
   src/register.rs     set_last_command, set_macro, hold_ring
-  src/state.rs        phím `:` `q` `@`; Action::Failed; hook ghi macro; không ghi `.` khi chạy macro
-  src/test_util.rs    parse_keys → macros::parse_notation; mô phỏng Quick Open `:`; Outcome::Macro/Substitute
+  src/state.rs        keys `:` `q` `@`; Action::Failed; macro recording hook; no `.` write while running a macro
+  src/test_util.rs    parse_keys → macros::parse_notation; simulate Quick Open `:`; Outcome::Macro/Substitute
 crates/lucerna-workbench/src/
   quick_open/query.rs   QuickOpenQuery::VimCommand, parse_query_vim
   quick_open/view.rs    Sources.vim_command_line, Row::VimCommand, QuickOpenEvent::VimCommand
-  quick_open/mod.rs     show_quick_open điền vim_command_line; event → run_vim_command
-  vim.rs                Redo::Ex; chạy ex; message; ExCommand queue; macro loop; yank flash; settings mới
+  quick_open/mod.rs     show_quick_open fills vim_command_line; event → run_vim_command
+  vim.rs                Redo::Ex; run ex; message; ExCommand queue; macro loop; yank flash; new settings
   vim_ex.rs             NEW  Workbench::{run_vim_command, run_vim_requests, run_ex_command}
-  vim_indicator.rs      vẽ Indicator (recording, message)
-  workbench.rs          gọi run_vim_requests sau dispatch phím
+  vim_indicator.rs      draws Indicator (recording, message)
+  workbench.rs          calls run_vim_requests after dispatching a key
   save.rs, documents.rs SaveOptions.overwrite
   editor_groups/mod.rs, editor_groups/view.rs   workbench.action.closeAllEditors, request_close_all
   code_view/mod.rs, code_view/element.rs        flash_ranges
-crates/lucerna-settings/assets/default-settings.json   ba khóa mới
+crates/lucerna-settings/assets/default-settings.json   three new keys
 crates/lucerna-workbench/tests/vim_command_line.rs     NEW
 crates/lucerna-workbench/tests/vim_editing.rs          + macro, yank highlight
 crates/lucerna-workbench/tests/quick_open_query.rs     + parse_query_vim
@@ -101,9 +101,9 @@ crates/lucerna-workbench/tests/quick_open_query.rs     + parse_query_vim
 
 ---
 
-### Task 1: Parser lệnh `:` (`ex.rs`)
+### Task 1: The `:` command parser (`ex.rs`)
 
-Spec: §8.2 (bảng lệnh, abbreviation, range), §8.1 (dòng mô tả).
+Spec: §8.2 (command table, abbreviations, ranges), §8.1 (the description line).
 
 **Files:**
 - Create: `crates/lucerna-vim/src/ex.rs`
@@ -147,20 +147,20 @@ pub(crate) fn resolve(range: &LineRange, cursor_row: u32, last_row: u32,
 pub fn describe_command(line: &str) -> Result<String, String>;
 ```
 
-Luật parse:
-- **Address:** `N`, `.`, `$`, `'x` (`a`–`z`, `<`, `>`), rồi các offset `+N`/`-N`; `+`/`-` không số là 1; `.++1` = `.+2`; offset không có base thì base là `.`. Range: `%`, `a,b`, `a`. Range đảo thì đổi chỗ (không hỏi).
-- **Tên lệnh** là dãy chữ ASCII ngay sau range (hoặc dãy `>`/`<`), rồi `!` tùy chọn. Bảng viết tắt `[viết tắt, đầy đủ]`: `w write`, `wa wall`, `q quit`, `qa qall`, `wq wq`, `x xit`, `d delete`, `y yank`, `s substitute`, `noh nohlsearch`. Tên `n` khớp khi `full.starts_with(n) && n.len() >= abbr.len()`.
-- **`:d`/`:y`:** khoảng trắng, register tùy chọn (không phải chữ số), khoảng trắng, count tùy chọn (`:y3`, `:ya3`, `:d x 2`). Còn dư thì `E488`.
-- **`:s`:** dấu phân cách là ký tự đầu tiên sau `s`, không phải chữ/số/khoảng trắng/`\`/`"`/`|`. `\` + dấu phân cách là dấu phân cách nguyên văn. Dấu phân cách cuối có thể bỏ. Sau đó là cờ `g i I n`, khoảng trắng, count. Cờ lạ thì `E488`.
-- Dòng rỗng (chỉ khoảng trắng) parse ra `Goto` với `Implicit`, và `ex_command` coi đó là không làm gì.
+Parsing rules:
+- **Address:** `N`, `.`, `$`, `'x` (`a`–`z`, `<`, `>`), then the offsets `+N`/`-N`; a `+`/`-` with no number is 1; `.++1` = `.+2`; an offset with no base has base `.`. Range: `%`, `a,b`, `a`. A reversed range is swapped (no question asked).
+- **The command name** is a run of ASCII letters right after the range (or a run of `>`/`<`), then an optional `!`. The abbreviation table `[abbreviation, full]`: `w write`, `wa wall`, `q quit`, `qa qall`, `wq wq`, `x xit`, `d delete`, `y yank`, `s substitute`, `noh nohlsearch`. A name `n` matches when `full.starts_with(n) && n.len() >= abbr.len()`.
+- **`:d`/`:y`:** whitespace, an optional register (not a digit), whitespace, an optional count (`:y3`, `:ya3`, `:d x 2`). Anything left over gives `E488`.
+- **`:s`:** the delimiter is the first character after `s` that is not a letter/digit/whitespace/`\`/`"`/`|`. `\` + the delimiter is the delimiter itself. The final delimiter may be omitted. After that come the flags `g i I n`, whitespace, a count. An unknown flag gives `E488`.
+- An empty line (only whitespace) parses to `Goto` with `Implicit`, and `ex_command` treats it as doing nothing.
 
-`describe_command` (chữ chính xác):
+`describe_command` (exact text):
 
-| Dòng | Kết quả |
+| Line | Result |
 |---|---|
 | `12` | `Ok("Go to line 12")` |
 | `$` | `Ok("Go to last line")` |
-| range khác không lệnh | `Ok("Go to line")` |
+| another range with no command | `Ok("Go to line")` |
 | `w`, `w!`, `wa` | `Save`, `Save, overwriting the file on disk`, `Save all` |
 | `q`, `q!`, `qa` | `Close editor`, `Revert and close editor`, `Close all editors` |
 | `wq`, `x` | `Save and close editor`, `Save if modified and close editor` |
@@ -169,29 +169,29 @@ Luật parse:
 | `noh` | `Clear search highlight` |
 | `foo` | `Err("Not an editor command: foo")` |
 
-- [ ] **Step 1: Viết test hỏng** trong `ex.rs`:
+- [ ] **Step 1: Write the failing tests** in `ex.rs`:
   - `parse("%s/foo/bar/g")` → `All` + `Substitute(New{pattern:"foo", replacement:"bar", flags.global:true})`.
-  - `parse("'<,'>d")`, `parse(".+3yan2")` → `Yank{count:Some(2)}` với `One(Address{Current, 3})`; `parse(".++1s/a/b/")` → offset 2; `parse("+2s/a/b/")` → base Current offset 2.
+  - `parse("'<,'>d")`, `parse(".+3yan2")` → `Yank{count:Some(2)}` with `One(Address{Current, 3})`; `parse(".++1s/a/b/")` → offset 2; `parse("+2s/a/b/")` → base Current offset 2.
   - `parse("s/\\/\\/f/z/g")` → pattern `//f`. *Adapted from VSCodeVim `test/cmd_line/substitute.test.ts`: "Substitute with escaped delimiter"*.
   - `parse("s g")` → `Repeat{flags.global:true}`; `parse("s/a/b/ 3")` → count 3.
   - `parse("wq!")` → `WriteQuit{bang:true}`; `parse("wa!")` → `Err(NoBangAllowed)`; `parse("no")` → `Err(NotACommand("no"))`; `parse("d x 2 z")` → `Err(TrailingCharacters("z"))`.
-  - `resolve`: `3,1` → `0..=2`; `'a` chưa đặt → `MarkNotSet`; `20` trên file 5 dòng → `InvalidRange`, còn với `clamp` → `4..=4`.
+  - `resolve`: `3,1` → `0..=2`; `'a` not set → `MarkNotSet`; `20` on a 5-line file → `InvalidRange`, and with `clamp` → `4..=4`.
   - `ExError::NotACommand("foo").message() == "E492: Not an editor command: foo"`, `PatternNotFound("foo").message() == "E486: Pattern not found: foo"`.
-  - Bảng `describe_command` ở trên, từng dòng.
-- [ ] **Step 2:** `scripts/prune-target.sh && cargo test -p lucerna-vim ex::` → FAIL (chưa có module).
-- [ ] **Step 3:** Cài đặt `ex.rs`.
+  - The `describe_command` table above, line by line.
+- [ ] **Step 2:** `scripts/prune-target.sh && cargo test -p lucerna-vim ex::` → FAIL (the module does not exist yet).
+- [ ] **Step 3:** Implement `ex.rs`.
 - [ ] **Step 4:** `cargo test -p lucerna-vim` → PASS.
 - [ ] **Step 5:** `git commit -m "feat(vim): ex command line parser" -- crates/lucerna-vim/Cargo.toml crates/lucerna-vim/src/ex.rs crates/lucerna-vim/src/lib.rs Cargo.lock`
 
 ---
 
-### Task 2: Chạy lệnh `:` trong `lucerna-vim` (trừ `:s`)
+### Task 2: Run `:` commands in `lucerna-vim` (except `:s`)
 
-Spec: §3.1 (các `Action` mới), §7 (`:` từ Visual), §8.1, §8.2, §6.2 (register `:`).
+Spec: §3.1 (the new `Action`s), §7 (`:` from Visual), §8.1, §8.2, §6.2 (the `:` register).
 
 **Files:**
 - Create: `crates/lucerna-vim/src/ex_run.rs`
-- Modify: `src/lib.rs`, `src/state.rs` (phím `:`), `src/register.rs`, `src/test_util.rs`, `crates/lucerna-workbench/src/vim.rs` (match `Action` biên dịch được: biến thể mới là no-op tới Task 6).
+- Modify: `src/lib.rs`, `src/state.rs` (the `:` key), `src/register.rs`, `src/test_util.rs`, `crates/lucerna-workbench/src/vim.rs` (make the `Action` match compile: the new variants are no-ops until Task 6).
 
 **Interfaces:**
 - Consumes: Task 1 `parse`, `resolve`, `ExError`; V2a `edit::apply_operator(op, OpRange, ctx, view, g, s, register) -> (Vec<Action>, Point, Mode)`.
@@ -216,16 +216,16 @@ impl Vim {
 impl Registers { pub(crate) fn set_last_command(&mut self, line: String); } // read(Some(':')) returns it, Charwise
 ```
 
-Hành vi:
-- **Phím `:`** trong Normal: `OpenCommandLine { prefill: "" }`; với count `n`: `"."` khi `n == 1`, `".,.+{n-1}"` khi `n > 1`. Trong Visual/Visual Line: kết thúc Visual (mark `<` `>`), về Normal, `prefill: "'<,'>"`. Ghi `prefill` vào `Vim.last_prefill: Option<String>` (Task 4 dùng).
-- **`Goto`:** như `{N}G` (nhảy, mark `''`, `startofline`), dòng kẹp.
-- **`:d`:** ghi register như `dd` (`WriteKind::Delete`, Linewise), con trỏ ở ký tự không trắng đầu tiên của dòng đứng vào chỗ dòng bị xóa. **`:y`:** như `yy`, con trỏ không đổi. **`:>`/`:<`:** `depth` mức, con trỏ ở ký tự không trắng đầu tiên của dòng cuối range. Count: range mới bắt đầu ở dòng cuối của range, dài `count` dòng, kẹp ở cuối file.
-- **Lệnh workbench** trả `Handled(vec![RunEx(…)])`; range bị bỏ qua.
-- **Register `:`** ghi khi lệnh chạy xong (kể cả lỗi), trừ dòng rỗng.
+Behavior:
+- **The `:` key** in Normal: `OpenCommandLine { prefill: "" }`; with count `n`: `"."` when `n == 1`, `".,.+{n-1}"` when `n > 1`. In Visual/Visual Line: end Visual (marks `<` `>`), go back to Normal, `prefill: "'<,'>"`. Store `prefill` in `Vim.last_prefill: Option<String>` (Task 4 uses it).
+- **`Goto`:** like `{N}G` (jump, mark `''`, `startofline`), the line clamped.
+- **`:d`:** writes the register like `dd` (`WriteKind::Delete`, Linewise), the cursor on the first non-blank character of the line that takes the place of the deleted line. **`:y`:** like `yy`, the cursor unchanged. **`:>`/`:<`:** `depth` levels, the cursor on the first non-blank character of the last line of the range. Count: the new range starts at the last line of the range and is `count` lines long, clamped at the end of the file.
+- **Workbench commands** return `Handled(vec![RunEx(…)])`; the range is ignored.
+- **The `:` register** is written when the command finishes (even with an error), except for an empty line.
 
-Test harness: khi `run_edit` gặp `Action::OpenCommandLine { prefill }`, các phím sau tới `<CR>` gõ vào một dòng lệnh giả bắt đầu bằng `prefill` (`<BS>` xóa, `<Esc>` hủy); `<CR>` gọi `vim.ex_command(line, …)` rồi áp outcome, như mô phỏng `/` đã có.
+Test harness: when `run_edit` meets `Action::OpenCommandLine { prefill }`, the following keys up to `<CR>` are typed into a fake command line that starts with `prefill` (`<BS>` deletes, `<Esc>` cancels); `<CR>` calls `vim.ex_command(line, …)` and applies the outcome, like the existing `/` simulation.
 
-- [ ] **Step 1: Viết test hỏng** (`assert_edit`):
+- [ ] **Step 1: Write the failing tests** (`assert_edit`):
 
   *Adapted from VSCodeVim `test/cmd_line/delete.test.ts`:*
 
@@ -243,29 +243,29 @@ Test harness: khi `run_edit` gặp `Action::OpenCommandLine { prefill }`, các p
   | `\|one\ntwo\nthree\nfour\nfive` | `:ya3<CR>p` | `one\n\|one\ntwo\nthree\ntwo\nthree\nfour\nfive` | ":yank [x] [cnt] will yank [cnt] lines" |
   | `\|one\ntwo\nthree\nfour\nfive` | `:.+3yan<CR>p` | `one\n\|four\ntwo\nthree\nfour\nfive` | ":[range]yank will yank from the end of the range, if range a line number" |
 
-  Ca riêng của Lucerna:
-  - `:5<CR>` trên file 10 dòng có thụt lề → con trỏ ở ký tự không trắng đầu tiên dòng 5; rồi `''` quay về.
-  - `:999<CR>` → dòng cuối; `:$<CR>` → dòng cuối.
-  - `Vj:` phát `OpenCommandLine{prefill:"'<,'>"}` và mode Normal; `3:` phát `prefill: ".,.+2"`.
-  - `Vj:>` + `<CR>` thụt hai dòng; `:'a,'b>` khi chưa có mark `a` → actions `[Message("E20: Mark not set"), Failed]`, văn bản không đổi.
+  Lucerna's own cases:
+  - `:5<CR>` on a 10-line file with indentation → the cursor on the first non-blank character of line 5; then `''` goes back.
+  - `:999<CR>` → the last line; `:$<CR>` → the last line.
+  - `Vj:` emits `OpenCommandLine{prefill:"'<,'>"}` and Normal mode; `3:` emits `prefill: ".,.+2"`.
+  - `Vj:>` + `<CR>` indents two lines; `:'a,'b>` when mark `a` is not yet set → actions `[Message("E20: Mark not set"), Failed]`, text unchanged.
   - `:foo<CR>` → `[Message("E492: Not an editor command: foo"), Failed]`.
   - `:w<CR>` → `[RunEx(Save{overwrite:false})]`; `:x!<CR>` → `RunEx(SaveAndClose{only_if_dirty:true, overwrite:true})`; `:noh<CR>` → `RunEx(NoHighlight)`.
-  - `:d<CR>` trong view chỉ đọc → không có `Edit`.
-  - Sau `:d 2<CR>`, `":p` dán `d 2`.
+  - `:d<CR>` in a read-only view → no `Edit`.
+  - After `:d 2<CR>`, `":p` pastes `d 2`.
 - [ ] **Step 2:** `cargo test -p lucerna-vim ex_run` → FAIL.
-- [ ] **Step 3:** Cài đặt.
-- [ ] **Step 4:** `cargo test -p lucerna-vim` và `cargo test -p lucerna-workbench --test vim --test vim_editing` → PASS.
-- [ ] **Step 5:** `git commit -m "feat(vim): run ex commands: go to line, :d :y :> :<, workbench commands" -- <các file trên>`
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** `cargo test -p lucerna-vim` and `cargo test -p lucerna-workbench --test vim --test vim_editing` → PASS.
+- [ ] **Step 5:** `git commit -m "feat(vim): run ex commands: go to line, :d :y :> :<, workbench commands" -- <the files above>`
 
 ---
 
-### Task 3: `:s` và `vim.gdefault`
+### Task 3: `:s` and `vim.gdefault`
 
-Spec: §8.2 mục `:s`, §9 (`vim.gdefault`), §10 (`:%s` trên file lớn).
+Spec: §8.2 item `:s`, §9 (`vim.gdefault`), §10 (`:%s` on a large file).
 
 **Files:**
 - Create: `crates/lucerna-vim/src/substitute.rs`
-- Modify: `src/lib.rs` (`Settings.gdefault: bool`, mặc định `false`; `Outcome::Substitute`), `src/ex_run.rs`, `src/state.rs` (`VimGlobals.last_substitute`), `src/test_util.rs`, `crates/lucerna-workbench/src/vim.rs` (tạm thời chạy `Outcome::Substitute` đồng bộ: `job.run` rồi `finish_substitute`; Task 6 thêm luồng nền).
+- Modify: `src/lib.rs` (`Settings.gdefault: bool`, default `false`; `Outcome::Substitute`), `src/ex_run.rs`, `src/state.rs` (`VimGlobals.last_substitute`), `src/test_util.rs`, `crates/lucerna-workbench/src/vim.rs` (temporarily run `Outcome::Substitute` synchronously: `job.run` then `finish_substitute`; Task 6 adds the background thread).
 
 **Interfaces (produced):**
 
@@ -289,16 +289,16 @@ impl Vim {
 }
 ```
 
-Luật:
-- **Mẫu rỗng** dùng mẫu tìm cuối (`g.last_search`): `is_regex == false` thì `regex::escape`, `whole_word` thì bọc `\b…\b`. Không có thì `E35`. **`:s` lặp lại** (`Repeat`) dùng mẫu và phần thay của `g.last_substitute` với cờ mới; không có thì `E35`.
-- **Cờ:** `global = flags.global ^ s.gdefault`. Phân biệt hoa thường theo "Quyết định chốt".
-- **Mẫu không biên dịch được** → `E383: Invalid search string: {pat}`.
-- **Khớp theo dòng** trong range (mặc định dòng hiện tại); không `g` thì match đầu tiên mỗi dòng; match rỗng được, sau match rỗng tìm tiếp từ ký tự sau.
-- **`ex_command`** chạy đồng bộ nếu `snapshot.len_bytes() <= BACKGROUND_SUBSTITUTE_BYTES` hoặc `g.macro_running()` (Task 4; tới lúc đó coi là `false`); ngược lại trả `Outcome::Substitute(job)`, không đổi trạng thái.
-- **Sau khi áp** (`finish_substitute`, cũng dùng cho đường đồng bộ): một `Edit` dựng bằng `lucerna_editor::edit::replace_ranges(ctx, edits, cursor, EditKind::Other)`; con trỏ ở cột 0 của dòng chứa cuối phần thay cuối cùng (sau sửa); `g.last_search = (SearchQuery{pattern: dịch rồi, is_regex: true, case_sensitive, whole_word: false}, false)` và `Action::Highlight` như `/`; `g.last_substitute` cập nhật; `Message("{n} substitution{s} on {m} line{s}")` (số ít khi bằng 1). Cờ `n`: không sửa, `Message("{n} match{es} on {m} line{s}")`. Không match: `[Message("E486: Pattern not found: {pat}"), Failed]`, `{pat}` là mẫu như người dùng gõ (hoặc mẫu tìm cuối khi rỗng).
-- View chỉ đọc: không `Edit`, vẫn báo số (như cờ `n`).
+Rules:
+- **An empty pattern** uses the last search pattern (`g.last_search`): `is_regex == false` gets `regex::escape`, `whole_word` wraps it in `\b…\b`. If there is none, `E35`. **A repeated `:s`** (`Repeat`) uses the pattern and replacement of `g.last_substitute` with the new flags; if there is none, `E35`.
+- **Flags:** `global = flags.global ^ s.gdefault`. Case sensitivity per "Decisions fixed in the plan".
+- **A pattern that does not compile** → `E383: Invalid search string: {pat}`.
+- **Match line by line** within the range (the current line by default); without `g`, the first match on each line; an empty match is allowed, and after an empty match, searching continues from the next character.
+- **`ex_command`** runs synchronously if `snapshot.len_bytes() <= BACKGROUND_SUBSTITUTE_BYTES` or `g.macro_running()` (Task 4; until then treat it as `false`); otherwise it returns `Outcome::Substitute(job)`, without changing state.
+- **After applying** (`finish_substitute`, also used by the synchronous path): one `Edit` built with `lucerna_editor::edit::replace_ranges(ctx, edits, cursor, EditKind::Other)`; the cursor at column 0 of the line that contains the end of the last replacement (after the edit); `g.last_search = (SearchQuery{pattern: translated, is_regex: true, case_sensitive, whole_word: false}, false)` and `Action::Highlight` like `/`; `g.last_substitute` is updated; `Message("{n} substitution{s} on {m} line{s}")` (singular when equal to 1). The `n` flag: no edit, `Message("{n} match{es} on {m} line{s}")`. No match: `[Message("E486: Pattern not found: {pat}"), Failed]`, where `{pat}` is the pattern as the user typed it (or the last search pattern when empty).
+- A read-only view: no `Edit`, the count is still reported (like the `n` flag).
 
-- [ ] **Step 1: Viết test hỏng.**
+- [ ] **Step 1: Write the failing tests.**
   - `translate_pattern("\\(a\\|b\\)\\+")` → `"(a|b)+"`; `translate_pattern("\\<foo\\>")` → `"\\<foo\\>"`.
   - *Adapted from VSCodeVim `test/cmd_line/substitute.test.ts`* (start, keys, end, title):
 
@@ -323,29 +323,29 @@ Luật:
     | `\|she sells seashells by the seashore` | `:s/s\\S*/\\u&x/g<CR>` | `\|Shex Sellsx Seashellsx by the Seashorex` | "\\u" |
     | `\|SHE SELLS SEASHELLS BY THE SEASHORE` | `:s/S\\S*/\\L&\\EX/g<CR>` | `\|sheX sellsX seashellsX BY THE seashoreX` | "\\L then \\E" |
 
-    Với `gdefault = true` (*cùng file, suite "Effects of gdefault=true"*): `\|aba` + `:%s/a/d<CR>` → `\|dbd` ("Replace all matches in the line"); `:%s/a/d/g<CR>` → `\|dba` ("Replace with `g` flag inverts global flag").
-  - Ca riêng của Lucerna:
-    - `:%s/foo/bar/g` trên `foo foo\nfoo` → message `3 substitutions on 2 lines`; một `Edit` duy nhất.
-    - `:s/x/y/` không match → `[Message("E486: Pattern not found: x"), Failed]`.
-    - `:s/(/x/` → `E383: Invalid search string: (`, không panic.
-    - `:%s/^/# /` thêm `# ` vào đầu mọi dòng (match rỗng).
-    - `:s/chào/\\U&/` trên `xin chào` → `xin CHÀO` (Unicode).
-    - Sau `:s/foo/bar/`, `n` tìm `foo` tiếp theo.
-    - `Outcome::Substitute` được trả khi `TestView` có text trên `BACKGROUND_SUBSTITUTE_BYTES`; `job.run(&snapshot)` rồi `finish_substitute` cho cùng kết quả như đường đồng bộ.
+    With `gdefault = true` (*same file, suite "Effects of gdefault=true"*): `\|aba` + `:%s/a/d<CR>` → `\|dbd` ("Replace all matches in the line"); `:%s/a/d/g<CR>` → `\|dba` ("Replace with `g` flag inverts global flag").
+  - Lucerna's own cases:
+    - `:%s/foo/bar/g` on `foo foo\nfoo` → message `3 substitutions on 2 lines`; a single `Edit`.
+    - `:s/x/y/` with no match → `[Message("E486: Pattern not found: x"), Failed]`.
+    - `:s/(/x/` → `E383: Invalid search string: (`, no panic.
+    - `:%s/^/# /` adds `# ` to the start of every line (an empty match).
+    - `:s/chào/\\U&/` on `xin chào` → `xin CHÀO` (Unicode).
+    - After `:s/foo/bar/`, `n` finds the next `foo`.
+    - `Outcome::Substitute` is returned when `TestView` has text over `BACKGROUND_SUBSTITUTE_BYTES`; `job.run(&snapshot)` then `finish_substitute` give the same result as the synchronous path.
 - [ ] **Step 2:** `cargo test -p lucerna-vim substitute` → FAIL.
-- [ ] **Step 3:** Cài đặt. Test harness xử lý `Outcome::Substitute(job)` bằng `job.run` rồi `finish_substitute` ngay.
+- [ ] **Step 3:** Implement. The test harness handles `Outcome::Substitute(job)` by `job.run` then `finish_substitute` right away.
 - [ ] **Step 4:** `cargo test -p lucerna-vim` → PASS.
-- [ ] **Step 5:** `git commit -m "feat(vim): :s substitute and vim.gdefault" -- <các file trên>`
+- [ ] **Step 5:** `git commit -m "feat(vim): :s substitute and vim.gdefault" -- <the files above>`
 
 ---
 
-### Task 4: Macro trong `lucerna-vim`
+### Task 4: Macros in `lucerna-vim`
 
-Spec: §6.4, §3.1 (motion thất bại), §1.2 mục 4.
+Spec: §6.4, §3.1 (a failed motion), §1.2 item 4.
 
 **Files:**
 - Create: `crates/lucerna-vim/src/macros.rs`
-- Modify: `src/lib.rs`, `src/state.rs`, `src/register.rs`, `src/ex_run.rs`, `src/motion.rs`/`src/state.rs` (phát `Failed`), `src/test_util.rs`, `crates/lucerna-workbench/src/vim.rs` (lời gọi `record_typed` mới; `Outcome::Macro` tạm thời chạy như `Replay` các `Key` — Task 7 làm đầy đủ).
+- Modify: `src/lib.rs`, `src/state.rs`, `src/register.rs`, `src/ex_run.rs`, `src/motion.rs`/`src/state.rs` (emit `Failed`), `src/test_util.rs`, `crates/lucerna-workbench/src/vim.rs` (the new `record_typed` call; `Outcome::Macro` temporarily runs like `Replay` of the `Key`s — Task 7 does it fully).
 
 **Interfaces (produced):**
 
@@ -372,34 +372,34 @@ impl Registers {
 }
 ```
 
-`Outcome::Macro(keys)`: "chạy các phím theo thứ tự, cả lần chạy là một nhóm undo, giữa lúc đó `VimGlobals::set_macro_running(true)`. Phím đến khi Vim ở Insert (trừ `Escape`) thì gõ: `Char('\t')` → `Typed::Tab`, `Char(c)` → `Typed::Text(c)`, `Enter` → `Newline`, `Backspace` → `DeleteLeft`, `Ctrl(_)` bỏ qua. Dừng cả lần chạy khi một phím trả `Action::Failed`. `Macro` lồng (gặp `@` bên trong) chạy tại chỗ."
+`Outcome::Macro(keys)`: "run the keys in order, the whole run being one undo group, with `VimGlobals::set_macro_running(true)` during it. A key that arrives while Vim is in Insert (except `Escape`) is typed: `Char('\t')` → `Typed::Tab`, `Char(c)` → `Typed::Text(c)`, `Enter` → `Newline`, `Backspace` → `DeleteLeft`, `Ctrl(_)` is skipped. Stop the whole run when a key returns `Action::Failed`. A nested `Macro` (meeting `@` inside) runs in place."
 
-**Ghi:**
-- `q{a-zA-Z}` trong Normal (không pending, không đang chạy macro) bắt đầu ghi; `q` trong Normal hoặc Visual khi đang ghi thì dừng và gọi `set_macro`. `q` với tên khác thì hủy. `q` khi đang chạy macro không làm gì.
-- Trong `Vim::feed`, khi đang ghi và không chạy macro: phím được nối vào bằng `push_key`, trừ khi outcome là `Unhandled`, hoặc có `OpenSearch`/`OpenCommandLine` (`/`, `?`, `:` được ghi lúc chạy xong), hoặc là phím `q` dừng ghi.
-- `record_typed` nối `push_typed` khi đang ghi và không chạy macro (vẫn ghi cho `.` như V2a).
-- `search_submitted` nối `/` (hoặc `?`) + mẫu (thoát `<`) + `<CR>`. Find widget bị đóng bằng Esc thì không ghi gì.
-- `ex_command` nối `:` + phần dòng sau `last_prefill` + `<CR>` nếu dòng bắt đầu bằng `last_prefill.take()`; ngược lại (hoặc mở bằng ⌃G) là `:<C-u>` + dòng + `<CR>`.
-- Thứ tự: phím `"` + tên register trước `q` không phải là một phần của `q` (giữ như V2a).
+**Recording:**
+- `q{a-zA-Z}` in Normal (nothing pending, no macro running) starts recording; `q` in Normal or Visual while recording stops and calls `set_macro`. `q` with another name cancels. `q` while a macro is running does nothing.
+- In `Vim::feed`, while recording and not running a macro: the key is appended with `push_key`, unless the outcome is `Unhandled`, or has `OpenSearch`/`OpenCommandLine` (`/`, `?`, `:` are recorded when they finish running), or it is the `q` key that stops recording.
+- `record_typed` appends `push_typed` while recording and not running a macro (still recording for `.` as in V2a).
+- `search_submitted` appends `/` (or `?`) + the pattern (with `<` escaped) + `<CR>`. A Find widget closed with Esc records nothing.
+- `ex_command` appends `:` + the part of the line after `last_prefill` + `<CR>` if the line starts with `last_prefill.take()`; otherwise (or when opened with ⌃G) it is `:<C-u>` + the line + `<CR>`.
+- Order: the key `"` + a register name before `q` is not part of `q` (kept as in V2a).
 
-**Chạy:**
-- `[count]@{r}`: `r` thuộc `a-z A-Z 0-9 " - + * .` (chữ hoa đọc register thường). Đọc bằng `VimGlobals::read_register`, `parse_notation`, lặp `count` lần → `Outcome::Macro`. `g.last_macro = r`. `@@` chạy `last_macro`.
-- Register rỗng, hoặc `@@` khi chưa có → `Handled(vec![Failed])`. Tên khác → `[Message("E354: Invalid register name: '{c}'"), Failed]`.
-- **Dòng lệnh nội bộ khi chạy macro:** `/`, `?`, `:` không phát `OpenSearch`/`OpenCommandLine` mà mở `Vim.cmdline: Option<CmdLine>` (`CmdKind::Search{backward}` hoặc `Ex`, text bắt đầu bằng prefill). Rồi `Char` thêm chữ, `Backspace` xóa (rỗng thì hủy), `Ctrl('u')` xóa hết, `Escape` hủy (`search_dismissed`), `Enter` chạy: tìm bằng `search_submitted` với query lấy cờ của `g.last_search` (không có thì `is_regex/case_sensitive/whole_word = false`), từ con trỏ; lệnh bằng `ex_command`. `Retry` giữ nguyên `cmdline` (vì `feed` khôi phục trạng thái), nên workbench đưa lại `Enter` là đủ.
-- **Khi chạy macro:** `record`/`save_change` không ghi `g.last_change` và register `.`; `Registers.hold_ring` làm lần xóa nhiều dòng ghi `"` và `1` mà không dịch `1`–`9`.
+**Running:**
+- `[count]@{r}`: `r` is in `a-z A-Z 0-9 " - + * .` (an uppercase letter reads the lowercase register). Read with `VimGlobals::read_register`, `parse_notation`, repeat `count` times → `Outcome::Macro`. `g.last_macro = r`. `@@` runs `last_macro`.
+- An empty register, or `@@` with none yet → `Handled(vec![Failed])`. Another name → `[Message("E354: Invalid register name: '{c}'"), Failed]`.
+- **The internal command line while running a macro:** `/`, `?`, `:` do not emit `OpenSearch`/`OpenCommandLine` but open `Vim.cmdline: Option<CmdLine>` (`CmdKind::Search{backward}` or `Ex`, the text starting with the prefill). Then `Char` adds text, `Backspace` deletes (cancels when empty), `Ctrl('u')` deletes everything, `Escape` cancels (`search_dismissed`), `Enter` runs: a search with `search_submitted` with a query taking the flags of `g.last_search` (if none, `is_regex/case_sensitive/whole_word = false`), from the cursor; a command with `ex_command`. `Retry` keeps `cmdline` as is (because `feed` restores state), so the workbench feeding `Enter` again is enough.
+- **While running a macro:** `record`/`save_change` do not write `g.last_change` and the `.` register; `Registers.hold_ring` makes a multi-line delete write `"` and `1` without shifting `1`–`9`.
 
-**`Action::Failed`** được phát (cùng các action khác của phím) khi:
-- `h l j k w W b B e E ge gE { } %` không di chuyển được con trỏ;
-- `f F t T ; ,` không tìm thấy ký tự;
-- `n N * #` không có match, hoặc không còn match khi `wrapscan` tắt;
-- toán tử bị hủy vì motion hay text object thất bại (`dfz`, `ci"` không có cặp);
-- `.` khi chưa có thay đổi nào; lỗi của `ex_command`.
-Các test V1/V2a đang chờ `Handled(vec![])` cho các ca này được sửa thành `Handled(vec![Action::Failed])`.
+**`Action::Failed`** is emitted (together with the key's other actions) when:
+- `h l j k w W b B e E ge gE { } %` cannot move the cursor;
+- `f F t T ; ,` does not find the character;
+- `n N * #` has no match, or there is no match left when `wrapscan` is off;
+- an operator is cancelled because its motion or text object failed (`dfz`, `ci"` with no pair);
+- `.` when there has been no change yet; an `ex_command` error.
+The V1/V2a tests that currently expect `Handled(vec![])` for these cases are changed to `Handled(vec![Action::Failed])`.
 
-Test harness: `parse_keys` gọi `macros::parse_notation`; `Run::outcome` xử lý `Outcome::Macro(keys)`: `set_macro_running(true)`, `self.key(k, true)` từng phím, dừng khi phím vừa chạy có `Failed`, lồng tối đa 100, cuối cùng `set_macro_running(false)` và `vim.macro_ended()`.
+Test harness: `parse_keys` calls `macros::parse_notation`; `Run::outcome` handles `Outcome::Macro(keys)`: `set_macro_running(true)`, `self.key(k, true)` for each key, stopping when the key just run has `Failed`, nesting at most 100, and finally `set_macro_running(false)` and `vim.macro_ended()`.
 
-- [ ] **Step 1: Viết test hỏng.**
-  - `macros::tests`: `parse_notation("a<lt>b<Esc><C-r>\n<tab>")` → `[Char('a'), Char('<'), Char('b'), Escape, Ctrl('r'), Enter, Char('\t')]`; `push_typed(Text("chào <b>"))` → `"chào <lt>b>"`; với mọi chuỗi đã ghi, `parse_notation` trả lại đúng các phím.
+- [ ] **Step 1: Write the failing tests.**
+  - `macros::tests`: `parse_notation("a<lt>b<Esc><C-r>\n<tab>")` → `[Char('a'), Char('<'), Char('b'), Escape, Ctrl('r'), Enter, Char('\t')]`; `push_typed(Text("chào <b>"))` → `"chào <lt>b>"`; for every recorded string, `parse_notation` returns exactly the keys.
   - *Adapted from VSCodeVim `test/macro.test.ts`* (start, keys, end, title):
 
     | Start | Keys | End | Title |
@@ -407,40 +407,40 @@ Test harness: `parse_keys` gọi `macros::parse_notation`; `Run::outcome` xử l
     | `\|foo = 1\nbar = 'a'\nfoobar = foo + bar` | `qaA;<Esc>Ivar <Esc>qj@a` | `var foo = 1;\nvar\| bar = 'a';\nfoobar = foo + bar` | "Can record and execute" |
     | `\|foo = 1\nbar = 'a'\nfoobar = foo + bar` | `qaA;<Esc>Ivar <Esc>qj@aj@@` | `var foo = 1;\nvar bar = 'a';\nvar\| foobar = foo + bar;` | "Can repeat last invoked macro" |
     | `\|"("+a+","+b+","+c+","+d+","+e+")"` | `f+s + <Esc>qq;.q8@q` | `"(" + a + "," + b + "," + c + "," + d + "," + e +\| ")"` | "Can play back with count" |
-    | (như trên) | `f+s + <Esc>qq;.q22@q` | (như trên) | "Can play back with count, abort when a motion fails" |
+    | (as above) | `f+s + <Esc>qq;.q22@q` | (as above) | "Can play back with count, abort when a motion fails" |
     | `1. \|one\n2. two\n3. three\n4. four` | `qa0f.r)w~jq3@a` | `1) One\n2) Two\n3) Three\n4) F\|our` | "Repeat change on contiguous lines" |
-    | `1. \|one\n2. two\n3. three\n4. four` | `qa0f.r)qqAw~jq3@a` | (như trên) | "Append command to a macro" |
-    | `1. \|one\n2. two\n3. three\n4. four` | `qB0f.r)w~jq3@b` | (như trên) | "Append command to a not yet created register creates a new register" |
-    | `1. \|one\n2. two\n3. three\n4. four` | `qa0f.r)w~jq3@A` | (như trên) | "Can handle calling an uppercase register" |
+    | `1. \|one\n2. two\n3. three\n4. four` | `qa0f.r)qqAw~jq3@a` | (as above) | "Append command to a macro" |
+    | `1. \|one\n2. two\n3. three\n4. four` | `qB0f.r)w~jq3@b` | (as above) | "Append command to a not yet created register creates a new register" |
+    | `1. \|one\n2. two\n3. three\n4. four` | `qa0f.r)w~jq3@A` | (as above) | "Can handle calling an uppercase register" |
     | `1. \|one\n2. two` | `@x` | unchanged | "Can handle calling a non existing macro" |
-    | `\|test` ×7 dòng | `qadd.q@a@a` | `\|test` | "Can execute macros with dot commands properly" |
-    | `\|one two three` ×3 dòng | `/two<CR>0qqnea XXX<Esc>q5@q` (wrapscan off) | `one two XXX three\none two XXX three\none two XX\|X three` | "Failed `n` stops macro from repeating" |
+    | `\|test` ×7 lines | `qadd.q@a@a` | `\|test` | "Can execute macros with dot commands properly" |
+    | `\|one two three` ×3 lines | `/two<CR>0qqnea XXX<Esc>q5@q` (wrapscan off) | `one two XXX three\none two XXX three\none two XX\|X three` | "Failed `n` stops macro from repeating" |
     | `\|` | `qBione two<Esc>qo<Esc>@b` | `one two\none tw\|o` | "q[A-Z] (action) Creates new register, accessible by [a-z]" |
     | `one t\|wo three` | `@~` | unchanged; message `E354: Invalid register name: '~'` | "Invalid register throws E354" |
 
-  - Ca riêng của Lucerna:
-    - `macro_stops_when_motion_fails`: `qajxq` trên 3 dòng, `10@a` dừng ở dòng cuối (vì `j` thất bại), không panic.
-    - `macro_with_vietnamese_text`: `qaciwchào<Esc>q` (chữ gõ trong Insert của harness), `w@a` → từ kế tiếp thành `chào`; register `a` = `ciwchào<Esc>`.
-    - `"ap` sau khi ghi dán text của macro (Charwise).
-    - Chạy text bất kỳ: dòng `dd` được yank vào `a` bằng `"ay$`, rồi `j@a` xóa dòng kế tiếp.
-    - `qa/foo<CR>xq`: register `a` = `/foo<CR>x`; `@a` tìm và xóa ở match kế tiếp mà không phát `OpenSearch`.
+  - Lucerna's own cases:
+    - `macro_stops_when_motion_fails`: `qajxq` on 3 lines, `10@a` stops at the last line (because `j` fails), no panic.
+    - `macro_with_vietnamese_text`: `qaciwchào<Esc>q` (text typed in the harness's Insert), `w@a` → the next word becomes `chào`; register `a` = `ciwchào<Esc>`.
+    - `"ap` after recording pastes the macro's text (Charwise).
+    - Running arbitrary text: a `dd` line is yanked into `a` with `"ay$`, then `j@a` deletes the next line.
+    - `qa/foo<CR>xq`: register `a` = `/foo<CR>x`; `@a` searches and deletes at the next match without emitting `OpenSearch`.
     - `qa/foo<Esc>xq` (dismiss) → register `a` = `x`.
-    - `qa:s/a/b/<CR>jq@a` thay ở dòng kế; register `a` = `:s/a/b/<CR>j`. `qaVj:d<CR>q` → register `a` = `Vj:d<CR>` (prefill `'<,'>` không nằm trong bản ghi; lúc chạy, phím `:` dựng lại nó).
-    - `dd` ×3 trong một lần chạy macro không làm `"2`, `"3` đổi; `.` sau macro vẫn lặp thay đổi trước macro.
-    - Trong lúc ghi, `VimGlobals::recording() == Some('a')`; sau `q` là `None`.
+    - `qa:s/a/b/<CR>jq@a` replaces on the next line; register `a` = `:s/a/b/<CR>j`. `qaVj:d<CR>q` → register `a` = `Vj:d<CR>` (the prefill `'<,'>` is not in the recording; at run time, the `:` key rebuilds it).
+    - `dd` ×3 within one macro run does not change `"2`, `"3`; `.` after the macro still repeats the change from before the macro.
+    - While recording, `VimGlobals::recording() == Some('a')`; after `q` it is `None`.
 - [ ] **Step 2:** `cargo test -p lucerna-vim macros` → FAIL.
-- [ ] **Step 3:** Cài đặt.
-- [ ] **Step 4:** `cargo test -p lucerna-vim` và `cargo test -p lucerna-workbench --test vim --test vim_editing` → PASS.
-- [ ] **Step 5:** `git commit -m "feat(vim): macros: record, replay, notation, failed motions" -- <các file trên>`
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** `cargo test -p lucerna-vim` and `cargo test -p lucerna-workbench --test vim --test vim_editing` → PASS.
+- [ ] **Step 5:** `git commit -m "feat(vim): macros: record, replay, notation, failed motions" -- <the files above>`
 
 ---
 
-### Task 5: Highlight khi yank
+### Task 5: Highlight on yank
 
-Spec: §9 (`vim.highlightedyank.*`, màu theo theme).
+Spec: §9 (`vim.highlightedyank.*`, color from the theme).
 
 **Files:**
-- Modify: `crates/lucerna-vim/src/lib.rs` (`Settings.highlighted_yank: bool`, mặc định `false`; `Action::Yanked(Vec<Range<usize>>)`), `src/edit.rs`, `src/state.rs` (Visual `y`/`Y`), `src/ex_run.rs` (`:y`);
+- Modify: `crates/lucerna-vim/src/lib.rs` (`Settings.highlighted_yank: bool`, default `false`; `Action::Yanked(Vec<Range<usize>>)`), `src/edit.rs`, `src/state.rs` (Visual `y`/`Y`), `src/ex_run.rs` (`:y`);
   `crates/lucerna-workbench/src/code_view/mod.rs`, `code_view/element.rs`, `src/vim.rs`;
   `crates/lucerna-settings/assets/default-settings.json`.
 - Test: `crates/lucerna-workbench/tests/vim_editing.rs`.
@@ -460,31 +460,31 @@ impl CodeView {
 }
 ```
 
-- Linewise: từ đầu dòng đầu tới cuối dòng cuối (gồm `\n`); block: `block_ranges`.
-- `VimLayer` đọc `vim.highlightedyank.enable` vào `Settings.highlighted_yank` và `vim.highlightedyank.duration` (ms, `u64`, mặc định 200) vào `VimLayer.yank_duration`. `Action::Yanked` → `flash_ranges`. Hẹn giờ bằng `cx.background_executor().timer(duration)`, chỉ xóa khi `flash_generation` chưa đổi.
-- `default-settings.json` thêm `"vim.gdefault": false`, `"vim.highlightedyank.enable": false`, `"vim.highlightedyank.duration": 200` (cạnh các khóa `vim.*` ở dòng 139–146).
+- Linewise: from the start of the first line to the end of the last line (including `\n`); block: `block_ranges`.
+- `VimLayer` reads `vim.highlightedyank.enable` into `Settings.highlighted_yank` and `vim.highlightedyank.duration` (ms, `u64`, default 200) into `VimLayer.yank_duration`. `Action::Yanked` → `flash_ranges`. Schedule the timer with `cx.background_executor().timer(duration)`, clearing only if `flash_generation` has not changed.
+- `default-settings.json` adds `"vim.gdefault": false`, `"vim.highlightedyank.enable": false`, `"vim.highlightedyank.duration": 200` (next to the `vim.*` keys at lines 139–146).
 
-- [ ] **Step 1: Viết test hỏng.**
-  - `lucerna-vim`: với `highlighted_yank`, `yiw` trên `one t|wo` phát `Yanked(vec![4..7])`; `yy` trên `a\nbc` dòng 2 phát `Yanked(vec![2..4])`; tắt thì không phát; `dd` không bao giờ phát.
-  - Workbench `yank_flash_follows_settings`: bật `"vim.highlightedyank.enable": true`, `yiw` → `flashed_ranges() == [word]`; `cx.executor().advance_clock(Duration::from_millis(200))` → rỗng. Với `duration: 1000`, sau 200 ms vẫn còn. Mặc định (tắt) → luôn rỗng.
-  - Workbench `yank_flash_cleared_by_edit`: `yiw` rồi `x` → rỗng ngay.
-- [ ] **Step 2:** `cargo test -p lucerna-vim yanked` và `scripts/prune-target.sh && cargo test -p lucerna-workbench --test vim_editing yank_flash` → FAIL.
-- [ ] **Step 3:** Cài đặt.
-- [ ] **Step 4:** Chạy lại hai lệnh trên → PASS.
-- [ ] **Step 5:** `git commit -m "feat(vim): highlighted yank" -- <các file trên>`
+- [ ] **Step 1: Write the failing tests.**
+  - `lucerna-vim`: with `highlighted_yank`, `yiw` on `one t|wo` emits `Yanked(vec![4..7])`; `yy` on line 2 of `a\nbc` emits `Yanked(vec![2..4])`; off, it does not emit; `dd` never emits.
+  - Workbench `yank_flash_follows_settings`: turn on `"vim.highlightedyank.enable": true`, `yiw` → `flashed_ranges() == [word]`; `cx.executor().advance_clock(Duration::from_millis(200))` → empty. With `duration: 1000`, it is still there after 200 ms. By default (off) → always empty.
+  - Workbench `yank_flash_cleared_by_edit`: `yiw` then `x` → empty at once.
+- [ ] **Step 2:** `cargo test -p lucerna-vim yanked` and `scripts/prune-target.sh && cargo test -p lucerna-workbench --test vim_editing yank_flash` → FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run the two commands above again → PASS.
+- [ ] **Step 5:** `git commit -m "feat(vim): highlighted yank" -- <the files above>`
 
 ---
 
-### Task 6: Workbench — dòng lệnh `:` qua Quick Open
+### Task 6: Workbench — the `:` command line through Quick Open
 
-Spec: §8.1, §8.2, §10 (`:%s` file lớn), §11.2 (dòng lệnh), §13 (xung đột phím `:`).
+Spec: §8.1, §8.2, §10 (`:%s` large file), §11.2 (command line), §13 (the `:` key conflict).
 
 **Files:**
 - Create: `crates/lucerna-workbench/src/vim_ex.rs`, `crates/lucerna-workbench/tests/vim_command_line.rs`
 - Modify:
   - `src/quick_open/query.rs`, `src/quick_open/view.rs`, `src/quick_open/mod.rs`;
-  - `src/vim.rs`, `src/vim_indicator.rs`, `src/workbench.rs` (dòng ~3004: thay `take_command` bằng `run_vim_requests`), `src/lib.rs` (`mod vim_ex;`);
-  - `src/save.rs` (`SaveOptions.overwrite: bool`, 5 chỗ dựng thêm `overwrite: false`), `src/documents.rs` (`save`: `opts.overwrite` bỏ `asks` và gọi `start_write(…, overwrite: true)`);
+  - `src/vim.rs`, `src/vim_indicator.rs`, `src/workbench.rs` (around line 3004: replace `take_command` with `run_vim_requests`), `src/lib.rs` (`mod vim_ex;`);
+  - `src/save.rs` (`SaveOptions.overwrite: bool`, 5 construction sites gain `overwrite: false`), `src/documents.rs` (`save`: `opts.overwrite` skips `asks` and calls `start_write(…, overwrite: true)`);
   - `src/editor_groups/mod.rs`, `src/editor_groups/view.rs`;
   - `tests/quick_open_query.rs`.
 
@@ -524,110 +524,110 @@ impl EditorGroupsView { pub fn request_close_all(&mut self, window: &mut Window,
 ```
 
 Quick Open:
-- `show_quick_open` đặt `vim_command_line = vim.enabled() && active_code_view().is_some_and(|v| takes_keys(v.read(cx)))`. `query_changed` dùng `parse_query_vim` khi cờ bật.
-- `VimCommand(line)`: rỗng → `Row::Message("Type a Vim command…")`; còn lại một `Row::VimCommand` với `label` = `":{line} — {desc}"` hoặc chữ lỗi của `describe_command` (`valid: false`, vẽ màu `ui.text_muted`). Enter trên cả hai → `QuickOpenEvent::VimCommand(line)` (dòng lỗi cũng chạy, để status bar báo `E492`).
-- `on_quick_open_event` → `run_vim_command(line)`: lấy code view active, `vim.run_command_line(&view, line)`, rồi `run_vim_requests`.
+- `show_quick_open` sets `vim_command_line = vim.enabled() && active_code_view().is_some_and(|v| takes_keys(v.read(cx)))`. `query_changed` uses `parse_query_vim` when the flag is on.
+- `VimCommand(line)`: empty → `Row::Message("Type a Vim command…")`; otherwise one `Row::VimCommand` with `label` = `":{line} — {desc}"` or the error text of `describe_command` (`valid: false`, drawn in `ui.text_muted`). Enter on both → `QuickOpenEvent::VimCommand(line)` (an error line also runs, so the status bar reports `E492`).
+- `on_quick_open_event` → `run_vim_command(line)`: take the active code view, `vim.run_command_line(&view, line)`, then `run_vim_requests`.
 
 VimLayer:
-- `Redo::Ex(String)` chạy `vim.ex_command`; đọc clipboard trước khi chạy (như phím có register). `Outcome::Retry` của ex đi đường `search_then_run` như phím.
-- `Outcome::Substitute(job)`: nếu đang chạy macro hay replay thì `job.run` ngay; ngược lại chạy `job.run(&snapshot)` ở `background_spawn` (bọc `guarded`), ghi `revision` và `key_generation`; khi xong, revision còn nguyên và không có phím mới thì `finish_substitute` rồi `apply`; revision đã đổi thì `message = "E: file changed, :s cancelled"`.
-- `Action::Message(m)` → `self.message = Some(m)`; xóa ở đầu `handle_key`/`feed_keys`. `Action::RunEx(NoHighlight)` → `view.set_match_highlights(Vec::new(), None, cx)`; `RunEx` khác vào `ex_requests`. `Action::OpenCommandLine{prefill}` → `command_line = Some(prefill)`. `Action::Failed` không làm gì ở đây.
-- `indicator_text`: có `message` thì chỉ hiện message; ngược lại `{label}`, thêm ` recording @{r}` khi đang ghi, thêm `  {pending}` khi có phím chờ. `vim_indicator.rs` vẽ message cùng font và màu với nhãn mode.
-- `read_settings` đọc `vim.gdefault`.
+- `Redo::Ex(String)` runs `vim.ex_command`; it reads the clipboard before running (like a key with a register). The ex `Outcome::Retry` goes through the `search_then_run` path like a key.
+- `Outcome::Substitute(job)`: if a macro or a replay is running, `job.run` at once; otherwise run `job.run(&snapshot)` in `background_spawn` (wrapped in `guarded`), recording `revision` and `key_generation`; when done, if the revision is intact and there is no new key, `finish_substitute` then `apply`; if the revision has changed, `message = "E: file changed, :s cancelled"`.
+- `Action::Message(m)` → `self.message = Some(m)`; cleared at the start of `handle_key`/`feed_keys`. `Action::RunEx(NoHighlight)` → `view.set_match_highlights(Vec::new(), None, cx)`; any other `RunEx` goes into `ex_requests`. `Action::OpenCommandLine{prefill}` → `command_line = Some(prefill)`. `Action::Failed` does nothing here.
+- `indicator_text`: with a `message`, show only the message; otherwise `{label}`, plus ` recording @{r}` while recording, plus `  {pending}` when keys are pending. `vim_indicator.rs` draws the message in the same font and color as the mode label.
+- `read_settings` reads `vim.gdefault`.
 
 Workbench `run_ex_command`:
 
-| ExCommand | Làm gì |
+| ExCommand | What it does |
 |---|---|
 | `Save{overwrite:false}` | `run_command("workbench.action.files.save")` |
-| `Save{overwrite:true}` | lưu file active với `SaveOptions{reason: Explicit, participants: true, overwrite: true}` |
+| `Save{overwrite:true}` | save the active file with `SaveOptions{reason: Explicit, participants: true, overwrite: true}` |
 | `SaveAll` | `run_command("workbench.action.files.saveAll")` |
-| `Close{revert:false}` | `run_command("workbench.action.closeActiveEditor")` (tab bẩn hiện prompt Phase 4) |
-| `Close{revert:true}` | nhớ tab id, chờ `Documents::revert(path)`, rồi đóng tab đó không hỏi |
+| `Close{revert:false}` | `run_command("workbench.action.closeActiveEditor")` (a dirty tab shows the Phase 4 prompt) |
+| `Close{revert:true}` | remember the tab id, wait for `Documents::revert(path)`, then close that tab without asking |
 | `CloseAll` | `run_command("workbench.action.closeAllEditors")` |
-| `SaveAndClose{only_if_dirty, overwrite}` | nhớ path và tab id; `only_if_dirty` và file sạch thì đóng ngay; ngược lại chờ `Documents::save(...)`, rồi chỉ đóng khi kết quả `Ok(_)` và file không còn bẩn |
+| `SaveAndClose{only_if_dirty, overwrite}` | remember the path and tab id; with `only_if_dirty` and a clean file, close at once; otherwise wait for `Documents::save(...)`, then close only when the result is `Ok(_)` and the file is no longer dirty |
 
-`request_close_all`: không tab nào bẩn thì đóng hết; có thì `save::prompt_unsaved_all` (Save All / Don't Save / Cancel): Save All lưu rồi đóng hết, Don't Save đóng hết như `request_close` làm với Don't Save, Cancel không làm gì.
+`request_close_all`: if no tab is dirty, close everything; otherwise `save::prompt_unsaved_all` (Save All / Don't Save / Cancel): Save All saves then closes everything, Don't Save closes everything as `request_close` does with Don't Save, Cancel does nothing.
 
-- [ ] **Step 1: Viết test hỏng.**
-  - `tests/quick_open_query.rs`: `parse_query_vim(":%s/a/b/")` → `VimCommand("%s/a/b/")`; `parse_query_vim(":  w")` → `VimCommand("w")`; `parse_query_vim("@x")` == `parse_query("@x")`; `parse_query(":-1")` vẫn là `GotoLine{line: Some(-1), column: None}`.
-  - `tests/vim_command_line.rs` (helper chép từ `tests/vim_editing.rs` và `type_text`/`rows` từ `tests/quick_open.rs`):
-    - `colon_opens_quick_open_with_rows`: Vim bật, `:` → Quick Open query `":"`, row `Type a Vim command…`; gõ `%s/foo/bar/g` → row `:%s/foo/bar/g — Replace in all lines`; `w` → `:w — Save`; `12` → `:12 — Go to line 12`; `foo` → `Not an editor command: foo`.
-    - `colon_dispatch_vim_on_and_off`: Vim tắt, `⌃G`/`:-1` Enter → dòng cuối; `:12,5` → dòng 12 cột 5. Vim bật, con trỏ dòng 10: `:-1` Enter → dòng 9; `:12,5` → con trỏ dòng 12 (range đảo, đi tới dòng cuối của range); không có tab nào mở thì `:12` hiện `Open a file to go to a line`.
-    - `visual_colon_prefills_marks`: `Vj:` → query `:'<,'>`; gõ `d` Enter → hai dòng bị xóa, một bước undo.
-    - `colon_w_saves`, `colon_q_dirty_shows_prompt` (`cx.has_pending_prompt()`), `colon_q_bang_reverts_and_closes` (file trên đĩa không đổi, tab đóng, không prompt), `colon_wq_saves_and_closes`, `colon_x_clean_closes_without_write` (mtime không đổi), `colon_qa_closes_all`.
-    - `w_bang_overwrites_without_prompt`: đổi file trên đĩa (helper `change_on_disk`) khi tab bẩn → `:w!` ghi nội dung của tab, không prompt.
-    - `wq_conflict_cancel_keeps_tab`: đổi file trên đĩa → `:wq` → prompt xung đột → `simulate_prompt_answer("Cancel")` → tab còn, vẫn bẩn.
-    - `substitute_reports_in_status_bar`: `:%s/a/b/g` trên `a a\na` → text đổi, `indicator_text == "3 substitutions on 2 lines"`; phím `j` kế tiếp → lại `-- NORMAL --`; `u` khôi phục trong một bước.
+- [ ] **Step 1: Write the failing tests.**
+  - `tests/quick_open_query.rs`: `parse_query_vim(":%s/a/b/")` → `VimCommand("%s/a/b/")`; `parse_query_vim(":  w")` → `VimCommand("w")`; `parse_query_vim("@x")` == `parse_query("@x")`; `parse_query(":-1")` is still `GotoLine{line: Some(-1), column: None}`.
+  - `tests/vim_command_line.rs` (helpers copied from `tests/vim_editing.rs`, and `type_text`/`rows` from `tests/quick_open.rs`):
+    - `colon_opens_quick_open_with_rows`: Vim on, `:` → Quick Open query `":"`, row `Type a Vim command…`; type `%s/foo/bar/g` → row `:%s/foo/bar/g — Replace in all lines`; `w` → `:w — Save`; `12` → `:12 — Go to line 12`; `foo` → `Not an editor command: foo`.
+    - `colon_dispatch_vim_on_and_off`: Vim off, `⌃G`/`:-1` Enter → the last line; `:12,5` → line 12 column 5. Vim on, cursor on line 10: `:-1` Enter → line 9; `:12,5` → the cursor on line 12 (a reversed range, go to the last line of the range); with no tab open, `:12` shows `Open a file to go to a line`.
+    - `visual_colon_prefills_marks`: `Vj:` → query `:'<,'>`; type `d` Enter → two lines deleted, one undo step.
+    - `colon_w_saves`, `colon_q_dirty_shows_prompt` (`cx.has_pending_prompt()`), `colon_q_bang_reverts_and_closes` (the file on disk unchanged, the tab closed, no prompt), `colon_wq_saves_and_closes`, `colon_x_clean_closes_without_write` (mtime unchanged), `colon_qa_closes_all`.
+    - `w_bang_overwrites_without_prompt`: change the file on disk (helper `change_on_disk`) while the tab is dirty → `:w!` writes the tab's content, no prompt.
+    - `wq_conflict_cancel_keeps_tab`: change the file on disk → `:wq` → conflict prompt → `simulate_prompt_answer("Cancel")` → the tab stays, still dirty.
+    - `substitute_reports_in_status_bar`: `:%s/a/b/g` on `a a\na` → the text changes, `indicator_text == "3 substitutions on 2 lines"`; the next key `j` → back to `-- NORMAL --`; `u` restores in one step.
     - `unknown_command_message`: `:foo` Enter → `E492: Not an editor command: foo`.
-    - `large_file_substitute_cancelled_by_reload`: file > 1 MB; `:%s/x/y/g` Enter; trước khi chạy executor, reload file từ đĩa (helper `change_on_disk`); `cx.run_until_parked()` → text là nội dung mới trên đĩa, message `E: file changed, :s cancelled`.
-    - `large_file_substitute_runs_in_background`: như trên nhưng không reload → được thay, một bước undo.
-    - `noh_clears_highlights`: `/foo<CR>` rồi `:noh` → `match_highlights()` rỗng.
-    - `gdefault_setting_inverts_g`: `"vim.gdefault": true`, `:s/a/b/` trên `aaa` → `bbb`.
+    - `large_file_substitute_cancelled_by_reload`: a file > 1 MB; `:%s/x/y/g` Enter; before running the executor, reload the file from disk (helper `change_on_disk`); `cx.run_until_parked()` → the text is the new content on disk, message `E: file changed, :s cancelled`.
+    - `large_file_substitute_runs_in_background`: as above but with no reload → replaced, one undo step.
+    - `noh_clears_highlights`: `/foo<CR>` then `:noh` → `match_highlights()` is empty.
+    - `gdefault_setting_inverts_g`: `"vim.gdefault": true`, `:s/a/b/` on `aaa` → `bbb`.
 - [ ] **Step 2:** `scripts/prune-target.sh && cargo test -p lucerna-workbench --test vim_command_line --test quick_open_query` → FAIL.
-- [ ] **Step 3:** Cài đặt.
-- [ ] **Step 4:** `cargo test -p lucerna-workbench` → PASS (kể cả `tests/quick_open.rs`, `tests/save.rs`, `tests/vim.rs`, `tests/vim_editing.rs`).
-- [ ] **Step 5:** `git commit -m "feat(vim): command line through Quick Open" -- <các file trên>`
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** `cargo test -p lucerna-workbench` → PASS (including `tests/quick_open.rs`, `tests/save.rs`, `tests/vim.rs`, `tests/vim_editing.rs`).
+- [ ] **Step 5:** `git commit -m "feat(vim): command line through Quick Open" -- <the files above>`
 
 ---
 
-### Task 7: Workbench — chạy và ghi macro
+### Task 7: Workbench — run and record macros
 
-Spec: §6.4, §3.1 (vòng lặp phát lại ở workbench), §11.2 (macro).
+Spec: §6.4, §3.1 (the replay loop in the workbench), §11.2 (macros).
 
 **Files:**
 - Modify: `crates/lucerna-workbench/src/vim.rs`, `crates/lucerna-workbench/tests/vim_editing.rs`.
 
 **Interfaces:**
 - Consumes: Task 4 `Outcome::Macro`, `Action::Failed`, `VimGlobals::{set_macro_running, macro_running, recording}`, `Vim::{record_typed(t, g), macro_ended}`; Task 6 `Indicator`.
-- Produces: `const MAX_MACRO_DEPTH: u32 = 100;` và `fn replay(&mut self, view, steps: Vec<ReplayStep>, run: ReplayKind, cx)` với `enum ReplayKind { Dot, Macro }`.
+- Produces: `const MAX_MACRO_DEPTH: u32 = 100;` and `fn replay(&mut self, view, steps: Vec<ReplayStep>, run: ReplayKind, cx)` with `enum ReplayKind { Dot, Macro }`.
 
-Hành vi:
-- `Outcome::Macro(keys)` → `replay(view, keys.map(ReplayStep::Key), ReplayKind::Macro, cx)`. Lần ngoài cùng: `globals.set_macro_running(true)`, `set_typed_events(false)`, `set_suppress_stops(true)` như `.`; cuối cùng `set_macro_running(false)`, `vim.macro_ended()`, bỏ `open_search` và `command_line` còn sót.
-- Một bước `Key` khi Vim đang ở Insert và không phải `Escape` thì gõ (bảng ở Task 4) thay vì `feed`. Luật này cũng đúng cho `.` (bước `Key` của `.` trong Insert chỉ có `Escape`).
-- `run` ghi `self.last_failed = actions.contains(&Action::Failed)`. Trong `ReplayKind::Macro`, sau mỗi bước có `last_failed` thì dừng cả lần chạy (`replay_stopped`). `Replay` của `.` lồng bên trong macro chạy tại chỗ; `Failed` bên trong nó cũng dừng macro.
-- `Macro` lồng tăng `macro_depth`; vượt `MAX_MACRO_DEPTH` thì dừng cả lần chạy.
+Behavior:
+- `Outcome::Macro(keys)` → `replay(view, keys.map(ReplayStep::Key), ReplayKind::Macro, cx)`. The outermost run: `globals.set_macro_running(true)`, `set_typed_events(false)`, `set_suppress_stops(true)` like `.`; at the end `set_macro_running(false)`, `vim.macro_ended()`, and drop any leftover `open_search` and `command_line`.
+- A `Key` step when Vim is in Insert and it is not `Escape` is typed (the table in Task 4) instead of `feed`. This rule is also true for `.` (a `Key` step of `.` in Insert is only `Escape`).
+- `run` records `self.last_failed = actions.contains(&Action::Failed)`. In `ReplayKind::Macro`, after any step with `last_failed`, stop the whole run (`replay_stopped`). A `.` `Replay` nested inside a macro runs in place; a `Failed` inside it also stops the macro.
+- A nested `Macro` increments `macro_depth`; past `MAX_MACRO_DEPTH`, stop the whole run.
 - `CodeViewEvent::Typed(t)` → `state.vim.record_typed(t, &mut self.globals)`.
-- `may_use_register` thêm `'@'`.
+- `may_use_register` adds `'@'`.
 
-- [ ] **Step 1: Viết test hỏng** trong `tests/vim_editing.rs`:
-  - `macro_record_and_count_is_one_undo_step`: `qaA;<Esc>jq` trên 4 dòng, `3@a` → 4 dòng có `;`; ngay sau `qa`, `indicator_text == "-- NORMAL -- recording @a"`; trong Insert là `"-- INSERT -- recording @a"`; sau `q` là `-- NORMAL --`; một `u` gỡ cả ba lần chạy.
-  - `macro_with_vietnamese_ime_text_replays_text`: `qa`, `ciw`, `replace_and_mark_text_in_range("chà")`, `replace_text_in_range("chào")` (helper `commit`), Esc, `q`; `w@a` → từ kế tiếp thành `chào`.
-  - `macro_types_through_auto_close`: `qaci(foo(<Esc>q` rồi `@a` trên `(x)` khác → kết quả giống lần ghi.
-  - `macro_search_runs_without_widget`: `qa/foo<CR>xq` (qua find widget thật) rồi `@a` → không có find widget mở, ký tự ở match kế tiếp bị xóa.
-  - `macro_stops_when_motion_fails`: `qajxq`, `100@a` trên 5 dòng → dừng ở dòng cuối, không panic.
-  - `self_calling_macro_stops_at_depth_cap`: gõ `i@a<Esc>`, `0"ay$` (register `a` = `@a`), `u`; rồi `@a` → không panic, text không đổi, `cx.run_until_parked()` xong.
-  - `macro_with_colon_command`: `qa:s/a/b/<CR>jq@a` → dòng 2 được thay; message của lần chạy cuối hiện.
+- [ ] **Step 1: Write the failing tests** in `tests/vim_editing.rs`:
+  - `macro_record_and_count_is_one_undo_step`: `qaA;<Esc>jq` on 4 lines, `3@a` → 4 lines have `;`; right after `qa`, `indicator_text == "-- NORMAL -- recording @a"`; in Insert it is `"-- INSERT -- recording @a"`; after `q` it is `-- NORMAL --`; one `u` undoes all three runs.
+  - `macro_with_vietnamese_ime_text_replays_text`: `qa`, `ciw`, `replace_and_mark_text_in_range("chà")`, `replace_text_in_range("chào")` (helper `commit`), Esc, `q`; `w@a` → the next word becomes `chào`.
+  - `macro_types_through_auto_close`: `qaci(foo(<Esc>q` then `@a` on another `(x)` → the result is the same as the recording.
+  - `macro_search_runs_without_widget`: `qa/foo<CR>xq` (through the real find widget) then `@a` → no find widget is open, the character at the next match is deleted.
+  - `macro_stops_when_motion_fails`: `qajxq`, `100@a` on 5 lines → stops at the last line, no panic.
+  - `self_calling_macro_stops_at_depth_cap`: type `i@a<Esc>`, `0"ay$` (register `a` = `@a`), `u`; then `@a` → no panic, text unchanged, `cx.run_until_parked()` finishes.
+  - `macro_with_colon_command`: `qa:s/a/b/<CR>jq@a` → line 2 is replaced; the message of the last run shows.
 - [ ] **Step 2:** `scripts/prune-target.sh && cargo test -p lucerna-workbench --test vim_editing macro` → FAIL.
-- [ ] **Step 3:** Cài đặt.
+- [ ] **Step 3:** Implement.
 - [ ] **Step 4:** `cargo test -p lucerna-workbench` → PASS.
 - [ ] **Step 5:** `git commit -m "feat(vim): run and record macros in the workbench" -- crates/lucerna-workbench/src/vim.rs crates/lucerna-workbench/tests/vim_editing.rs`
 
 ---
 
-### Task 8: Tài liệu, notices, kiểm tra toàn bộ
+### Task 8: Docs, notices, full check
 
-Spec: §12 (đoạn cuối).
+Spec: §12 (the last paragraph).
 
 **Files:**
-- `docs/vim.md`: bỏ câu "Macros and `:` commands are planned (V2b)" và mục lệch "macros (`q`, `@`) and `:` commands are V2b". Thêm bảng **Macros and command line (V2b)**: `q{a-z}` / `q{A-Z}` / `q`, `[count]@{reg}`, `@@`, `:` (Quick Open; `'<,'>` từ Visual; `3:`), danh sách lệnh §8.2, range, cờ `:s`, các thông báo. Ghi các chỗ lệch: macro ghi `Completion` gần đúng (khi Phase 4.5 có), phím mũi tên trong Insert không vào macro, `:s` khớp theo dòng và mặc định phân biệt hoa thường, `:N` khi Vim bật theo nghĩa Vim (`:-1` là lên một dòng). Thêm ba setting vào bảng settings.
-- `docs/features.md` dòng 96–97: thêm "macros, `:` commands (`:w`, `:q`, `:%s`…)".
-- `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md` §1.3 dòng V2: "**V2a và V2b đã xong**" (bỏ "V2b … làm tiếp sau đợt sửa lỗi P3").
-- `docs/superpowers/specs/2026-11-13-vim-editing-design.md`: dòng trạng thái thành `V2a và V2b đã triển khai`.
-- `README.md`: nếu mục Vim liệt kê tính năng, thêm macro và `:`.
-- `THIRD_PARTY_NOTICES.md` mục "VSCodeVim test cases": thêm `test/macro.test.ts`, `test/cmd_line/substitute.test.ts`, `test/cmd_line/delete.test.ts`, `test/cmd_line/yank.test.ts` (đối chiếu `grep -rn "Adapted from VSCodeVim" crates/lucerna-vim`).
+- `docs/vim.md`: remove the sentence "Macros and `:` commands are planned (V2b)" and the deviation item "macros (`q`, `@`) and `:` commands are V2b". Add a table **Macros and command line (V2b)**: `q{a-z}` / `q{A-Z}` / `q`, `[count]@{reg}`, `@@`, `:` (Quick Open; `'<,'>` from Visual; `3:`), the §8.2 command list, ranges, the `:s` flags, the messages. Note the deviations: a macro records `Completion` approximately (when Phase 4.5 exists), arrow keys in Insert do not go into a macro, `:s` matches by line and is case-sensitive by default, `:N` when Vim is on follows Vim's meaning (`:-1` is up one line). Add the three settings to the settings table.
+- `docs/features.md` lines 96–97: add "macros, `:` commands (`:w`, `:q`, `:%s`…)".
+- `docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md` §1.3 row V2: "**V2a and V2b done**" (drop "V2b … continues after the P3 fix round").
+- `docs/superpowers/specs/2026-11-13-vim-editing-design.md`: the status line becomes `V2a and V2b implemented`.
+- `README.md`: if the Vim section lists features, add macros and `:`.
+- `THIRD_PARTY_NOTICES.md` section "VSCodeVim test cases": add `test/macro.test.ts`, `test/cmd_line/substitute.test.ts`, `test/cmd_line/delete.test.ts`, `test/cmd_line/yank.test.ts` (cross-check with `grep -rn "Adapted from VSCodeVim" crates/lucerna-vim`).
 
 Steps:
-- [ ] **Step 1:** Sửa tài liệu.
-- [ ] **Step 2:** Chạy từng lệnh và đối chiếu:
+- [ ] **Step 1:** Fix the docs.
+- [ ] **Step 2:** Run each command and compare:
 
-  | Lệnh | Kết quả mong đợi |
+  | Command | Expected result |
   |---|---|
   | `scripts/prune-target.sh` | — |
-  | `cargo fmt --all -- --check` | không in gì |
-  | `cargo clippy --workspace --all-targets -- -D warnings` | sạch |
-  | `cargo test --workspace` | tất cả pass |
+  | `cargo fmt --all -- --check` | prints nothing |
+  | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+  | `cargo test --workspace` | all pass |
   | `cargo deny check` | `advisories ok, bans ok, licenses ok, sources ok` |
 
-- [ ] **Step 3:** `git status`, rồi `git commit -m "docs: vim V2b macros and command line" -- docs/vim.md docs/features.md docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md docs/superpowers/specs/2026-11-13-vim-editing-design.md README.md THIRD_PARTY_NOTICES.md`
-- [ ] **Step 4:** `pgrep -x cargo` không có cargo khác, rồi `scripts/bundle-app.sh --install`. Kết quả: dòng cuối `bundle-app: installed /Applications/Lucerna.app`. Kiểm tra tay theo spec §11.3: `:` so với command palette của Zed; macro gõ Telex.
+- [ ] **Step 3:** `git status`, then `git commit -m "docs: vim V2b macros and command line" -- docs/vim.md docs/features.md docs/superpowers/specs/2026-11-08-lucerna-phase1-design.md docs/superpowers/specs/2026-11-13-vim-editing-design.md README.md THIRD_PARTY_NOTICES.md`
+- [ ] **Step 4:** `pgrep -x cargo` shows no other cargo, then `scripts/bundle-app.sh --install`. Result: the last line is `bundle-app: installed /Applications/Lucerna.app`. Check by hand per spec §11.3: `:` versus Zed's command palette; a macro with Telex typing.
