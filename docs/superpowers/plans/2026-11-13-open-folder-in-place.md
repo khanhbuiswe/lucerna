@@ -42,7 +42,7 @@
 
 - [ ] Test `open_folder_replaces_root_in_the_same_window`: open through the router (`open_launch_for_test` on `a`), emit `Replace(Path(b))` → the same single window (`cx.windows().len() == 1`, same id), `router_shown_root_for_test == b`, the old `Workbench` cannot upgrade, `b` is first in recent, no spawn. Then emit `Replace(Path(a))` on the new workbench → root `a`.
 - [ ] Test `close_folder_shows_welcome_in_the_same_window`: emit `Replace(Welcome)` → the window's root is `WelcomeView`, `router_shown_root_for_test == None`; then Welcome `Open` a folder → a workbench again in the same window.
-- [ ] Test `replace_with_missing_folder_keeps_the_window`: `Replace(Path(không tồn tại))` → root unchanged, status starts with "Could not open ".
+- [ ] Test `replace_with_missing_folder_keeps_the_window`: `Replace(Path(nonexistent))` → root unchanged, status starts with "Could not open ".
 - [ ] Implement: `Router::open_first` uses the currently shown window (Welcome or Workbench) if there is one; every `Workbench` built through the router is subscribed to `Router::on_workbench_event`; `Replace(Welcome)` builds a `WelcomeView` in that window.
 - [ ] Run all of `cargo test -p lucerna-workbench`, `cargo clippy`.
 - [ ] Commit spec, research, plan and code with `git commit -- <paths>`.

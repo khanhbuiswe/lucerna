@@ -139,9 +139,9 @@ Preflight fails when: a `cargo`/`rustc` process exists; the 1-minute load averag
 
 **Interfaces:**
 - Consumes: the JSON file from Task 5.
-- Produces: `python3 -I bench/compare/report.py <result.json> --out <dir>` writes `<dir>/results.md` (one table per configuration: columns Metric | Lucerna | Zed | VS Code; cell `trung vị (p90 …)` in the same unit; a ratio line under each metric of the form `Zed 1,4× · VS Code 2,1×` computed from the median versus Lucerna; failed rounds are written as "n/10 rounds failed") and `<dir>/<metric>-<config>.svg` (three bars in one neutral color, number labels on the bars, no winner/loser color).
+- Produces: `python3 -I bench/compare/report.py <result.json> --out <dir>` writes `<dir>/results.md` (one table per configuration: columns Metric | Lucerna | Zed | VS Code; cell `median (p90 …)` in the same unit; a ratio line under each metric of the form `Zed 1,4× · VS Code 2,1×` computed from the median versus Lucerna; failed rounds are written as "n/10 rounds failed") and `<dir>/<metric>-<config>.svg` (three bars in one neutral color, number labels on the bars, no winner/loser color).
   - `ratio(other: float, lucerna: float) -> str` (one decimal digit, decimal comma).
-- [ ] **Step 1: Tests** `test_table_has_three_editor_columns` (the header line is exactly `| Chỉ số | Lucerna | Zed | VS Code |`), `test_ratio_format` (`ratio(140, 100) == "1,4×"`), `test_failed_rounds_reported`, `test_svg_has_three_bars` (count of the bars' `<rect` = 3).
+- [ ] **Step 1: Tests** `test_table_has_three_editor_columns` (the header line is exactly `| Metric | Lucerna | Zed | VS Code |`), `test_ratio_format` (`ratio(140, 100) == "1,4×"`), `test_failed_rounds_reported`, `test_svg_has_three_bars` (count of the bars' `<rect` = 3).
 - [ ] **Step 2: FAIL.** **Step 3: Write `report.py`.** **Step 4: PASS.**
 - [ ] **Step 5: Commit** `feat(bench): comparison tables and bar charts`.
 
