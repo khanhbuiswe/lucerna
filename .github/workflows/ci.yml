@@ -13,6 +13,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: English check tests
+        run: python3 -m unittest scripts/test_check_english.py
       - name: Install toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
