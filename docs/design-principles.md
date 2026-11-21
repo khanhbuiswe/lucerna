@@ -1,58 +1,58 @@
-# Nguyên tắc thiết kế Lucerna
+# Lucerna design principles
 
-Các nguyên tắc dưới đây áp dụng cho mọi tính năng và mọi giai đoạn. Chúng đứng trên từng spec riêng lẻ.
+The principles below apply to every feature and every phase. They sit above any individual spec.
 
-## 1. Luôn tham khảo VS Code, Zed và Helix trước khi lên plan
+## 1. Always research VS Code, Zed and Helix before planning
 
-Lucerna muốn là một bản VS Code gọn hơn với giao diện tối giản. Nó nhắm tới người để AI agent viết code, dù agent chạy dưới dạng CLI hay app desktop. Lucerna chạy trên macOS trước, rồi tới Linux và Windows. Vì vậy, **trước khi brainstorm, viết spec hay lập plan cho bất kỳ tính năng nào**, phải xem cả ba đã làm tính năng đó ra sao.
+Lucerna aims to be a slimmer VS Code with a minimal UI. It targets people who let AI agents write the code, whether the agent runs as a CLI or a desktop app. Lucerna ships on macOS first, then Linux and Windows. So **before brainstorming, writing a spec or making a plan for any feature**, check how all three implemented that feature.
 
-1. **VS Code.** Đọc tài liệu người dùng, tài liệu API hoặc contribution points, và mã nguồn ở `microsoft/vscode`. Nếu tính năng nằm trong một extension phổ biến (ví dụ VSCodeVim), đọc luôn extension đó. Cần nắm được:
-   - người dùng thấy tính năng thế nào;
-   - tên khóa settings, ID lệnh và phím tắt;
-   - các trường hợp biên mà VS Code đã gặp phải.
-2. **Zed.** Đọc tài liệu và mã nguồn ở `zed-industries/zed`, ưu tiên đúng revision GPUI mà Lucerna đang pin. Cần nắm được:
-   - kiến trúc;
-   - cách làm cho nhanh;
-   - phong cách giao diện.
-3. **Helix.** Đọc tài liệu và mã nguồn ở `helix-editor/helix`. Helix là editor Rust gọn, cấu hình bằng dữ liệu, nên đặc biệt đáng xem cho LSP, tree-sitter, cấu hình ngôn ngữ và modal editing. Cần nắm được:
-   - thuật toán và cách xử lý trường hợp biên;
-   - cách mô tả tính năng bằng dữ liệu cấu hình thay vì code.
-4. **Ghi lại kết quả** vào `docs/research/YYYY-MM-DD-<chủ-đề>.md`, hoặc vào mục "Tham khảo" trong spec của tính năng đó. Phần ghi lại gồm:
-   - mỗi bên làm thế nào;
-   - điểm giống nhau và khác nhau giữa các bên;
-   - Lucerna chọn theo bên nào, và vì sao.
-5. **Thứ tự ưu tiên khi các bên khác nhau:**
-   - Hành vi, settings, lệnh và phím tắt: theo **VS Code**, để người dùng VS Code chuyển sang không phải học lại.
-   - Giao diện và hiệu năng: theo **Zed**.
-   - Helix không thay đổi hai luật trên. Nó là góc nhìn thứ ba khi VS Code và Zed khác nhau ở phần bên trong (thuật toán, cấu trúc dữ liệu, định dạng cấu hình), hoặc khi một trong hai không có tính năng đó.
-   - Nếu lệch khỏi cả VS Code và Zed thì phải ghi rõ lý do trong spec.
+1. **VS Code.** Read the user docs, the API docs or contribution points, and the source in `microsoft/vscode`. If the feature lives in a popular extension (for example VSCodeVim), read that extension too. You need to know:
+   - how users experience the feature;
+   - the settings keys, command IDs and keybindings;
+   - the edge cases VS Code has already run into.
+2. **Zed.** Read the docs and the source in `zed-industries/zed`, preferably at the exact GPUI revision Lucerna pins. You need to know:
+   - the architecture;
+   - how it is made fast;
+   - the UI style.
+3. **Helix.** Read the docs and the source in `helix-editor/helix`. Helix is a slim Rust editor configured through data, so it is especially worth reading for LSP, tree-sitter, language configuration and modal editing. You need to know:
+   - the algorithms and how it handles edge cases;
+   - how it describes features in configuration data instead of code.
+4. **Write down the findings** in `docs/research/YYYY-MM-DD-<topic>.md`, or in the "References" section of that feature's spec. The write-up covers:
+   - how each of them does it;
+   - where they agree and where they differ;
+   - which one Lucerna follows, and why.
+5. **Priority order when they differ:**
+   - Behavior, settings, commands and keybindings: follow **VS Code**, so VS Code users who switch don't have to relearn anything.
+   - UI and performance: follow **Zed**.
+   - Helix does not override these two rules. It is a third view on internals (algorithms, data structures, config formats) when VS Code and Zed differ, or when one of them lacks the feature.
+   - If Lucerna departs from both VS Code and Zed, the spec must state the reason.
 
-### 1.1 Giao diện theo Zed ngay từ thiết kế đầu tiên
+### 1.1 UI follows Zed from the first design
 
-Bài học từ Search: Lucerna làm Search panel ở sidebar theo kiểu VS Code, rồi phải làm lại thành tab và thanh tìm kiếm theo Zed. Để không lặp lại:
+A lesson from Search: Lucerna built the Search panel in the sidebar in the VS Code style, then had to redo it as a tab with a Zed-style search bar. To avoid repeating that:
 
-- **Bố cục và component lấy theo Zed ngay từ spec đầu tiên.** Tính năng gì cũng bắt đầu bằng câu hỏi "màn này Zed trông thế nào": nó là tab, panel, toolbar hay modal; nó dùng những component nào. Không làm bản giao diện kiểu VS Code trước rồi chỉnh sau. Chỉ lệnh, phím, settings và hành vi là theo VS Code.
-- **Dùng chung component giữa các tính năng**, như Zed làm. Mọi ô nhập tìm kiếm (thanh tìm trong file, tab Search, sau này là picker hay filter) đều dùng cùng một khung ô query: viền 1 px, bo góc, các toggle `Aa` `ab` `.*` nằm trong ô. Chúng cũng dùng cùng chiều cao thanh, cùng cụm nút `‹ ›` và bộ đếm, cùng màu nền. Thêm tính năng mới thì tìm component có sẵn trong `ui.rs` trước; chưa có thì tạo ở đó để các tính năng sau dùng lại.
-- **Spec phải có ảnh hoặc mô tả màn tương ứng của Zed** (đọc mã nguồn ở revision đang pin, hoặc chụp màn hình Zed). Spec cũng ghi rõ chỗ nào Lucerna khác Zed và vì sao.
-- **Review giao diện so với Zed** trước khi coi tính năng là xong: chạy app, đặt cạnh Zed, kiểm tra khoảng cách, chiều cao, màu nền, viền, hover và trạng thái trống.
+- **Layout and components follow Zed from the very first spec.** Every feature starts with the question "what does this screen look like in Zed": is it a tab, a panel, a toolbar or a modal; which components does it use. Don't build a VS Code-style UI first and adjust it later. Only commands, keys, settings and behavior follow VS Code.
+- **Share components across features**, as Zed does. Every search input (the in-file find bar, the Search tab, and later pickers or filters) uses the same query-box frame: a 1 px border, rounded corners, and the `Aa` `ab` `.*` toggles inside the box. They also share the same bar height, the same `‹ ›` buttons and counter, and the same background color. When adding a feature, look for an existing component in `ui.rs` first; if there is none, create it there so later features can reuse it.
+- **A spec must include a screenshot or description of the matching Zed screen** (read the source at the pinned revision, or take a screenshot of Zed). The spec also states where Lucerna differs from Zed and why.
+- **Review the UI against Zed** before treating a feature as done: run the app, put it next to Zed, and check spacing, heights, background colors, borders, hover and empty states.
 
-## 2. Giấy phép khi tham khảo
+## 2. Licenses when researching
 
-| Nguồn | Giấy phép | Được làm gì |
+| Source | License | What you may do |
 |---|---|---|
-| Zed: phần lớn các crate (`editor`, `vim`, `extension_host`, `language`, `theme`…) | GPL-3 / AGPL | **Chỉ học thiết kế, không chép code.** Định dạng dữ liệu (theme JSON, `extension.toml`, query `.scm`, keymap) thì dùng được. |
-| Zed: `gpui*`, `sum_tree`, `zed_extension_api`, file WIT | Apache-2.0 | Được dùng làm dependency hoặc tham khảo. |
-| Helix (`helix-editor/helix`) | MPL-2.0 | **Chỉ học thiết kế, không chép code** (chép vào sẽ buộc file đó theo MPL). Dữ liệu như `languages.toml` và query `.scm` cũng mang MPL, nên chỉ đối chiếu, không chép nguyên văn. |
-| VS Code (`microsoft/vscode`) và các extension MIT | MIT | Được tham khảo hoặc dùng lại, nhưng **phải ghi nguồn** trong `THIRD_PARTY_NOTICES.md` hoặc trong comment. |
-| Font, icon (Lilex, IBM Plex, Lucide…) | OFL / ISC / MIT | Lấy từ repo gốc, kèm file giấy phép nguyên văn. |
+| Zed: most crates (`editor`, `vim`, `extension_host`, `language`, `theme`…) | GPL-3 / AGPL | **Learn the design only, don't copy code.** Data formats (theme JSON, `extension.toml`, `.scm` queries, keymap) may be used. |
+| Zed: `gpui*`, `sum_tree`, `zed_extension_api`, WIT files | Apache-2.0 | May be used as a dependency or reference. |
+| Helix (`helix-editor/helix`) | MPL-2.0 | **Learn the design only, don't copy code** (copying it in would bind that file to MPL). Data such as `languages.toml` and `.scm` queries also carries MPL, so compare against it but don't copy it verbatim. |
+| VS Code (`microsoft/vscode`) and MIT extensions | MIT | May be referenced or reused, but **the source must be credited** in `THIRD_PARTY_NOTICES.md` or in a comment. |
+| Fonts, icons (Lilex, IBM Plex, Lucide…) | OFL / ISC / MIT | Take them from the original repo, together with the license file verbatim. |
 
-Mã nguồn Lucerna dùng giấy phép MIT OR Apache-2.0. `cargo-deny` sẽ chặn dependency có giấy phép GPL, AGPL hoặc LGPL.
+Lucerna's source code is licensed MIT OR Apache-2.0. `cargo-deny` blocks dependencies with GPL, AGPL or LGPL licenses.
 
-## 3. Các nguyên tắc khác đã chốt
+## 3. Other settled principles
 
-- Lucerna hướng tới người viết code bằng agent CLI (Claude Code, Codex). Việc **đọc code** là ưu tiên số một. Không có tính năng AI.
-- Luồng UI không bao giờ được chờ I/O hay phân tích cú pháp. Việc nặng chạy ở luồng nền trên snapshot bất biến.
-- Chỉ crate `lucerna-workbench` được phụ thuộc vào GPUI.
-- Settings và keybindings theo ngữ nghĩa của VS Code: gộp object qua các lớp, override theo ngôn ngữ, và thứ tự ưu tiên giống VS Code.
-- Mỗi tính năng có test, review từng task, rồi review toàn bộ trước khi merge.
-- **Trong app chỉ dùng tiếng Anh.** Mọi chữ người dùng thấy (menu, lệnh, nhãn, thông báo, hộp thoại, dòng in ra terminal, tooltip, lỗi) đều bằng tiếng Anh, theo cách VS Code đặt tên. Không có chuỗi tiếng Việt trong code ngoài test (dữ liệu kiểm tra gõ tiếng Việt, IME, Unicode thì được). Spec và tài liệu nội bộ viết tiếng Việt vẫn được, nhưng chữ trong spec mô tả giao diện phải ghi đúng bản tiếng Anh sẽ hiện trong app.
+- Lucerna targets people who write code through CLI agents (Claude Code, Codex). **Reading code** is the number one priority. There are no AI features.
+- The UI thread never waits on I/O or parsing. Heavy work runs on a background thread over an immutable snapshot.
+- Only the `lucerna-workbench` crate may depend on GPUI.
+- Settings and keybindings follow VS Code semantics: objects merge across layers, per-language overrides, and the same precedence order as VS Code.
+- Every feature has tests, each task is reviewed, and then the whole is reviewed before merging.
+- **The app uses English only.** Every string the user sees (menus, commands, labels, messages, dialogs, lines printed to the terminal, tooltips, errors) is in English, named the way VS Code names things. There are no Vietnamese strings in code outside tests (test data for typing Vietnamese, IME and Unicode is fine). Specs and internal docs are written in English, and any text in a spec that describes the UI must give the exact English text that will appear in the app.

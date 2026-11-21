@@ -1,63 +1,63 @@
-# Đóng gói Lucerna thành macOS app bundle
+# Packaging Lucerna as a macOS app bundle
 
-Vấn đề: chạy `luc` như một file thực thi trần thì menu bar hiện "luc" và Dock hiện icon mặc định. macOS lấy tên app từ `CFBundleName` trong `Info.plist` của bundle chứa file thực thi; `cx.set_menus` không đổi được tên này.
+Problem: running `luc` as a bare executable makes the menu bar show "luc" and the Dock show a default icon. macOS takes the app name from `CFBundleName` in the `Info.plist` of the bundle that contains the executable; `cx.set_menus` can't change this name.
 
-## VS Code (xem bản cài ở `/Applications/Visual Studio Code.app`)
+## VS Code (see the install at `/Applications/Visual Studio Code.app`)
 
 - `Info.plist`: `CFBundleName`/`CFBundleDisplayName` = Code, `CFBundleExecutable` = Code, `CFBundleIconFile` = Code.icns, `CFBundleIdentifier` = com.microsoft.VSCode, `LSMinimumSystemVersion` = 12.0, `NSHighResolutionCapable`, `LSApplicationCategoryType` = public.app-category.developer-tools.
-- Lệnh `code` là shell script `Contents/Resources/app/bin/code`. Script lần theo symlink để tìm `.app`, rồi chạy chính binary Electron trong `Contents/MacOS` (chế độ Node) với `cli.js`; `cli.js` mở app và chuyển tham số qua IPC tới instance đang chạy.
-- Lệnh "Shell Command: Install 'code' command in PATH" tạo symlink `/usr/local/bin/code` → script trên.
+- The `code` command is the shell script `Contents/Resources/app/bin/code`. The script follows symlinks to find the `.app`, then runs the Electron binary in `Contents/MacOS` itself (in Node mode) with `cli.js`; `cli.js` opens the app and passes the arguments over IPC to the running instance.
+- The command "Shell Command: Install 'code' command in PATH" creates the symlink `/usr/local/bin/code` → the script above.
 
-## Zed (xem bản cài ở `/Applications/Zed.app`)
+## Zed (see the install at `/Applications/Zed.app`)
 
 - `Info.plist`: `CFBundleName`/`CFBundleDisplayName` = Zed, `CFBundleExecutable` = zed, `CFBundleIconFile` = Zed.icns, `CFBundleIdentifier` = dev.zed.Zed, `LSMinimumSystemVersion` = 12.0, `NSHighResolutionCapable`, category developer-tools.
-- `Contents/MacOS` có ba binary: `zed` (app), `cli` và `git`. Lệnh `zed` là binary `cli`: nó tìm bundle (`Contents/MacOS/zed`), mở app và gửi đường dẫn qua IPC; app chạy một instance duy nhất. Lệnh "cli: install" tạo symlink tới `cli`.
-- Zed dựng bundle bằng `cargo-bundle` (metadata `[package.metadata.bundle]` trong `crates/zed/Cargo.toml`) trong `script/bundle-mac`, rồi ký và notarize.
+- `Contents/MacOS` has three binaries: `zed` (the app), `cli` and `git`. The `zed` command is the `cli` binary: it finds the bundle (`Contents/MacOS/zed`), opens the app and sends the paths over IPC; the app runs as a single instance. The "cli: install" command creates a symlink to `cli`.
+- Zed builds the bundle with `cargo-bundle` (the `[package.metadata.bundle]` metadata in `crates/zed/Cargo.toml`) in `script/bundle-mac`, then signs and notarizes it.
 
-## Giống và khác
+## Similarities and differences
 
-- Giống: cả hai ship `.app` với tên và icon trong `Info.plist`, và cài một lệnh CLI vào PATH bằng symlink tới một file nằm trong bundle.
-- Khác: VS Code dùng script và chính binary app; Zed dùng binary CLI riêng. Cả hai cùng chuyển tham số tới một instance app duy nhất qua IPC.
-- Icon của cả hai theo khung chuẩn của Apple: tile 824 px giữa canvas 1024 px.
+- Similar: both ship an `.app` with the name and icon in `Info.plist`, and both install a CLI command into PATH via a symlink to a file inside the bundle.
+- Different: VS Code uses a script and the app binary itself; Zed uses a separate CLI binary. Both pass arguments to a single app instance over IPC.
+- Both icons follow Apple's standard grid: an 824 px tile centered in a 1024 px canvas.
 
-## Lucerna chọn
+## What Lucerna chooses
 
-- **Dựng bundle bằng `scripts/bundle-app.sh`**, không dùng `cargo-bundle`: không thêm dependency, chỉ dùng `sips`, `iconutil`, `plutil` và `codesign` có sẵn trên macOS. Icon render từ `assets/brand/app-icon.svg`, thu về tile 824/1024 như VS Code và Zed.
-- **`Info.plist`** theo cùng bộ key với hai bên. Bundle ID là `dev.lucerna.Lucerna`, theo kiểu của Zed. `LSMinimumSystemVersion` là 13.0, đúng mức Lucerna hỗ trợ. `CFBundleVersion` là thời điểm build (`YYYYMMDD.HHMMSS`), giống Zed (`20261104.154313`). Khi máy có nhiều bản cùng bundle ID (bản đã cài, bản trong `target/`, bản trên DMG đang mount), LaunchServices chọn bản có version cao nhất, tức bản mới nhất. `CFBundleShortVersionString` vẫn là version Cargo. Có thêm `NSPrincipalClass` = `NSApplication`: thiếu key này thì khi chạy trong bundle, AppKit ghi lỗi `getApplicationProperty: called with invalid property` lúc khởi động.
-- **Hai kênh, giống Zed** (`dev.zed.Zed`, `dev.zed.Zed-Preview`, `dev.zed.Zed-Dev`). Mặc định `bundle-app.sh` dựng kênh dev: `dev.lucerna.Lucerna-Dev`, tên "Lucerna Dev". `--stable` (và `--install`, `make-dmg.sh`, workflow release) cho `dev.lucerna.Lucerna`, tên "Lucerna". Lý do: macOS gửi yêu cầu mở (folder gần đây trong App Exposé, Dock, Open With) theo bundle ID, nên khi bản build trong `target/` và bản đã cài trùng ID, yêu cầu có lúc tới nhầm bản và folder không mở. Spec: `docs/superpowers/specs/2026-11-16-dev-bundle-id-design.md`.
-- **Lệnh `luc`** là shim kiểu VS Code: shell script `exec` thẳng binary `Contents/MacOS/luc`. Binary nằm trong bundle nên macOS dùng tên và icon của bundle. Chạy thẳng binary giữ nguyên cwd, stderr, mã thoát, `luc ext …` và `--trace-startup`. Không dùng `open -a`, vì nó bỏ stdout/stderr và mã thoát.
-- **Lệch khỏi cả hai:** chưa có app một instance qua IPC. Mỗi `luc` vẫn là một tiến trình như trước. Đây là việc làm sau.
-- **Mở từ Finder hoặc Dock** (không có đường dẫn, cwd là `/`): hiện hộp thoại chọn thư mục, giống "Open Folder" của VS Code; bấm Hủy thì thoát. Không mở `/`, vì quét cả ổ đĩa vừa chậm vừa vô ích.
-- **`cargo run`** giữ như cũ: không có bundle, menu bar hiện "luc".
+- **Build the bundle with `scripts/bundle-app.sh`**, not `cargo-bundle`: no new dependency, only `sips`, `iconutil`, `plutil` and `codesign`, which ship with macOS. The icon is rendered from `assets/brand/app-icon.svg` and scaled to an 824/1024 tile like VS Code and Zed.
+- **`Info.plist`** uses the same set of keys as the other two. The bundle ID is `dev.lucerna.Lucerna`, in Zed's style. `LSMinimumSystemVersion` is 13.0, the level Lucerna supports. `CFBundleVersion` is the build time (`YYYYMMDD.HHMMSS`), like Zed (`20261104.154313`). When a machine has several copies with the same bundle ID (the installed one, one in `target/`, one on a mounted DMG), LaunchServices picks the copy with the highest version, which is the newest. `CFBundleShortVersionString` stays the Cargo version. `NSPrincipalClass` = `NSApplication` is added too: without this key, when running inside a bundle AppKit logs the error `getApplicationProperty: called with invalid property` at startup.
+- **Two channels, like Zed** (`dev.zed.Zed`, `dev.zed.Zed-Preview`, `dev.zed.Zed-Dev`). By default `bundle-app.sh` builds the dev channel: `dev.lucerna.Lucerna-Dev`, named "Lucerna Dev". `--stable` (and `--install`, `make-dmg.sh`, the release workflow) gives `dev.lucerna.Lucerna`, named "Lucerna". Reason: macOS sends open requests (recent folders in App Exposé, the Dock, Open With) by bundle ID, so when the build in `target/` and the installed copy share an ID, a request sometimes reaches the wrong copy and the folder doesn't open. Spec: `docs/superpowers/specs/2026-11-16-dev-bundle-id-design.md`.
+- **The `luc` command** is a VS Code-style shim: a shell script that `exec`s the `Contents/MacOS/luc` binary directly. The binary lives inside the bundle, so macOS uses the bundle's name and icon. Running the binary directly preserves cwd, stderr, the exit code, `luc ext …` and `--trace-startup`. It doesn't use `open -a`, because that drops stdout/stderr and the exit code.
+- **Departure from both:** there is no single-instance app over IPC yet. Each `luc` is still its own process, as before. This is later work.
+- **Opening from Finder or the Dock** (no path, cwd is `/`): shows a folder picker dialog, like VS Code's "Open Folder"; pressing Cancel quits. It does not open `/`, because scanning the whole disk is both slow and useless.
+- **`cargo run`** stays as before: no bundle, the menu bar shows "luc".
 
-## DMG cài đặt kiểu kéo-thả
+## Drag-and-drop installer DMG
 
-- **VS Code** ([`build/darwin/create-dmg.ts`](https://github.com/microsoft/vscode/blob/main/build/darwin/create-dmg.ts), `dmg-settings.py.template`) dùng `dmgbuild` (Python, MIT) trong một venv riêng. `dmgbuild` ghi thẳng `.DS_Store`, không cần Finder. Cửa sổ 480×352, icon 80 px, app ở (120, 160), symlink `Applications` ở (360, 160), ảnh nền `.tiff`, ẩn toolbar, sidebar, status bar và path bar.
-- **Zed** (`script/bundle-mac`) làm tối giản: thư mục chứa `Zed.app` và symlink `/Applications`, rồi `hdiutil create -format UDZO`. Không có ảnh nền hay bố cục; DMG được ký và notarize.
-- **Lucerna chọn `scripts/make-dmg.sh`**: `hdiutil` cộng AppleScript cho Finder, giống công cụ `create-dmg`, nhưng không thêm Python hay Node.
-  - Bố cục theo kiểu VS Code: cửa sổ 540×380, icon 96 px, app ở (140, 170), Applications ở (400, 170).
-  - Ảnh nền vẽ từ `crates/lucerna/resources/macos/dmg-background.svg`, có bản 1x và 2x gộp bằng `tiffutil`.
-  - Nền sáng, vì Finder vẽ nhãn icon màu đen trên ảnh nền, kể cả ở dark mode.
-  - Lần chạy đầu, macOS hỏi quyền cho terminal điều khiển Finder. Nếu bước bố cục lỗi, DMG vẫn dùng được, giống DMG của Zed.
-  - Nếu sau này cần build trên CI không có màn hình, chuyển sang `dmgbuild` như VS Code.
+- **VS Code** ([`build/darwin/create-dmg.ts`](https://github.com/microsoft/vscode/blob/main/build/darwin/create-dmg.ts), `dmg-settings.py.template`) uses `dmgbuild` (Python, MIT) in its own venv. `dmgbuild` writes `.DS_Store` directly, with no Finder needed. Window 480×352, 80 px icons, the app at (120, 160), the `Applications` symlink at (360, 160), a `.tiff` background image, and the toolbar, sidebar, status bar and path bar hidden.
+- **Zed** (`script/bundle-mac`) keeps it minimal: a folder containing `Zed.app` and a `/Applications` symlink, then `hdiutil create -format UDZO`. No background image or layout; the DMG is signed and notarized.
+- **Lucerna chooses `scripts/make-dmg.sh`**: `hdiutil` plus AppleScript for Finder, like the `create-dmg` tool, but without adding Python or Node.
+  - Layout in VS Code's style: window 540×380, 96 px icons, the app at (140, 170), Applications at (400, 170).
+  - The background image is drawn from `crates/lucerna/resources/macos/dmg-background.svg`, with 1x and 2x versions combined with `tiffutil`.
+  - A light background, because Finder draws icon labels in black over the background image, even in dark mode.
+  - On the first run, macOS asks whether the terminal may control Finder. If the layout step fails, the DMG is still usable, like Zed's DMG.
+  - If we later need to build on a CI machine without a display, switch to `dmgbuild` like VS Code.
 
-## Mở file từ Finder và app khác ("Open With", app mặc định)
+## Opening files from Finder and other apps ("Open With", default app)
 
-Khi macOS mở một file bằng app (Finder "Open With", app mặc định, "Default app" trong menu "Open in" của Claude Desktop), đường dẫn không nằm trong `argv`. Nó đến dưới dạng sự kiện "open URLs" (Apple Event `odoc`). Nếu app đang chạy, sự kiện được gửi cho tiến trình đó.
+When macOS opens a file with an app (Finder "Open With", the default app, "Default app" in the "Open in" menu of Claude Desktop), the path is not in `argv`. It arrives as an "open URLs" event (the `odoc` Apple Event). If the app is already running, the event is delivered to that process.
 
 - **VS Code.**
-  - `Info.plist` có 65 mục `CFBundleDocumentTypes`, mỗi mục cho một nhóm đuôi file, vai trò `Editor`.
-  - Electron nhận sự kiện `open-file`. Các sự kiện đến trước lúc app sẵn sàng được gom lại rồi xử lý một lượt.
-  - File thuộc thư mục đang mở trong một cửa sổ thì mở thành tab ở cửa sổ đó; nếu không thì mở cửa sổ mới.
+  - `Info.plist` has 65 `CFBundleDocumentTypes` entries, one per group of file extensions, with the `Editor` role.
+  - Electron receives the `open-file` event. Events that arrive before the app is ready are collected and handled in one pass.
+  - A file inside a folder that is open in a window opens as a tab in that window; otherwise it opens a new window.
 - **Zed.**
-  - `CFBundleDocumentTypes` có hai mục. Mục thứ nhất là `public.folder`, `public.text`, `public.plain-text`, `public.utf8-plain-text`, vai trò `Editor`, hạng `Alternate`. Mục thứ hai là "Zed Text Document" cho 28 đuôi file, hạng `Default`.
-  - `on_open_urls` của GPUI đẩy URL qua một channel; vòng xử lý chuyển `file://` thành đường dẫn. Đường dẫn nằm trong workspace đang mở thì mở ở đó, nếu không thì mở cửa sổ mới.
-- **Menu "Open in" của Claude Desktop** lấy từ danh sách bundle ID cố định trong Claude.app (`com.microsoft.VSCode`, `dev.zed.Zed`…). App khác không tự thêm vào được. Mục "Default app" của menu mở file bằng app mặc định của macOS.
+  - `CFBundleDocumentTypes` has two entries. The first is `public.folder`, `public.text`, `public.plain-text`, `public.utf8-plain-text`, with the `Editor` role and the `Alternate` rank. The second is "Zed Text Document" for 28 file extensions, with the `Default` rank.
+  - GPUI's `on_open_urls` pushes URLs through a channel; the processing loop converts `file://` into a path. A path inside an open workspace opens there, otherwise it opens a new window.
+- **The "Open in" menu of Claude Desktop** comes from a fixed list of bundle IDs in Claude.app (`com.microsoft.VSCode`, `dev.zed.Zed`…). Other apps can't add themselves. The menu's "Default app" entry opens the file with the macOS default app.
 
-**Lucerna chọn:**
-- Khai báo một mục `CFBundleDocumentTypes` như mục đầu của Zed, với vai trò `Editor` và hạng `Alternate`, cho thư mục, text và source code. Lucerna hiện trong "Open With" và chọn được làm app mặc định, nhưng không tự giành quyền mặc định của app khác.
-- Mỗi tiến trình Lucerna vẫn có một cửa sổ, vì cấu hình workspace (`watch_config`) là một global gắn với một thư mục gốc. Khi nhận yêu cầu mở:
-  - chưa có cửa sổ thì mở cửa sổ theo cùng quy tắc với `luc <path>`;
-  - file nằm trong thư mục gốc của cửa sổ đang mở thì mở thành tab ở đó, theo cách của VS Code;
-  - còn lại thì chạy một tiến trình `luc <path>` mới, giống như gõ `luc` lần nữa.
-- Khi app khởi động mà không có đường dẫn, nó chờ sự kiện mở file trong 300 ms rồi mới hiện hộp thoại chọn thư mục.
+**Lucerna chooses:**
+- Declare one `CFBundleDocumentTypes` entry like Zed's first one, with the `Editor` role and the `Alternate` rank, for folders, text and source code. Lucerna appears in "Open With" and can be chosen as the default app, but doesn't grab default status from other apps on its own.
+- Each Lucerna process still has one window, because the workspace configuration (`watch_config`) is a global tied to a single root folder. When it receives an open request:
+  - if there is no window yet, it opens a window by the same rules as `luc <path>`;
+  - if the file is under the root folder of the open window, it opens as a tab there, the VS Code way;
+  - otherwise it runs a new `luc <path>` process, as if you typed `luc` again.
+- When the app starts with no path, it waits 300 ms for an open-file event before showing the folder picker dialog.

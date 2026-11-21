@@ -374,142 +374,142 @@ python3 -I bench/compare/report.py bench/compare/results/2026-11-15-026bbac.json
   --out docs/benchmarks --metrics idle_ram_mb,idle_cpu_pct,app_size_mb
 ```
 
-## Nhiều cửa sổ
+## Multiple windows
 
-Mục này ghi số đo cho việc chuyển sang một tiến trình, nhiều cửa sổ
+This section records measurements for the move to one process with multiple windows
 (spec: [`2026-11-15-multi-window-design.md`](superpowers/specs/2026-11-15-multi-window-design.md),
-mục 7). Script: `bench/compare/multiwindow.py` (xem `bench/compare/README.md`).
-Chỉ đo Lucerna. Đây là số nội bộ để so trước và sau, không dùng để so với
-Zed hay VS Code.
+section 7). Script: `bench/compare/multiwindow.py` (see `bench/compare/README.md`).
+Only Lucerna is measured. These are internal numbers for a before and after
+comparison, not to be compared with Zed or VS Code.
 
-### Nhiều cửa sổ — trước
+### Multiple windows: before
 
-Đo trên bản release dựng từ commit `f6cb426` của nhánh `multi-window`. Mã của
-nó giống `main` (hơn `2a9c1e3` chỉ các commit docs). Mỗi cửa sổ là một tiến
-trình `luc <repo>` riêng. Năm vòng cho mỗi số. Máy: Apple M4, 16 GB RAM,
-macOS 26.7.1, màn hình chính 1470×956 pt, 60 Hz. `HOME` riêng như
-`editors.launch`. Dữ liệu thô:
+Measured on a release build from commit `f6cb426` of the `multi-window` branch. Its code
+is the same as `main` (ahead of `2a9c1e3` only by docs commits). Each window is its own
+`luc <repo>` process. Five rounds for each number. Machine: Apple M4, 16 GB RAM,
+macOS 26.7.1, main display 1470×956 pt, 60 Hz. A separate `HOME`, as in
+`editors.launch`. Raw data:
 [`bench/compare/results/multiwindow-before.json`](../bench/compare/results/multiwindow-before.json).
 
-Mỗi ô: trung vị (nhỏ nhất – lớn nhất).
+Each cell: median (min – max).
 
-| Số đo | Kết quả |
+| Metric | Result |
 |---|---|
-| RAM, 1 cửa sổ | 86,3 MB (85,9 – 86,4) |
-| RAM, 2 cửa sổ (tổng `footprint`) | 161,3 MB (160,2 – 181,9) |
-| RAM, 3 cửa sổ (tổng `footprint`) | 230,6 MB (230,3 – 273,2) |
-| Mở cửa sổ thứ hai | 552 ms (518 – 586) |
-| Khung hình rớt ở A, B đứng yên | 0,0 % (0,0 – 0,0) |
-| Khung hình rớt ở A, B đang mở repo lớn | 0,0 % (0,0 – 0,0) |
+| RAM, 1 window | 86.3 MB (85.9 – 86.4) |
+| RAM, 2 windows (total `footprint`) | 161.3 MB (160.2 – 181.9) |
+| RAM, 3 windows (total `footprint`) | 230.6 MB (230.3 – 273.2) |
+| Open the second window | 552 ms (518 – 586) |
+| Dropped frames in A, B idle | 0.0 % (0.0 – 0.0) |
+| Dropped frames in A, B opening a large repo | 0.0 % (0.0 – 0.0) |
 
-Số đo một cửa sổ (cùng bản build, Lucerna, `bench/compare/metrics.py`). Mốc
-cho ngưỡng "một cửa sổ không tệ hơn" của spec 7.2:
+Single-window metrics (same build, Lucerna, `bench/compare/metrics.py`). The baseline
+for the spec 7.2 threshold "one window is no worse":
 
-| Số đo | Kết quả |
+| Metric | Result |
 |---|---|
 | `startup_ms` | 602 ms (569 – 619) |
-| `idle_ram_mb` (repo vừa, 10 tệp, nghỉ 60 s) | 181,3 MB (165,2 – 181,4) |
-| `idle_cpu_pct` | 1,30 % (0,50 – 1,33) |
+| `idle_ram_mb` (medium repo, 10 files, idle 60 s) | 181.3 MB (165.2 – 181.4) |
+| `idle_cpu_pct` | 1.30 % (0.50 – 1.33) |
 
-Cách đo và giới hạn:
+How it was measured, and limits:
 
-- RAM là tổng `footprint` của mọi tiến trình `luc` mà script đã chạy, sau khi
-  n cửa sổ trên n repo khác nhau mở xong và nghỉ 8 s. Các repo là bản sao mã
-  nguồn ripgrep, nhỏ. Cửa sổ thứ nhất dùng khoảng 86 MB, nhưng `idle_ram_mb`
-  cao hơn (181 MB) vì ở đó mở 10 tệp bằng Quick Open.
-- Mở cửa sổ thứ hai: cửa sổ A đang mở một tệp rỗng, nhỏ (600×400). Đo từ lúc
-  chạy lệnh `luc` thứ hai (mở `marker.txt`) tới khung hình đầu của cửa sổ mới
-  có nội dung, như `startup_ms`. Số này gồm cả việc khởi động tiến trình.
-- Khung hình rớt: cuộn `big.rs` ở A (600 sự kiện pixel, như
-  `scroll_dropped_pct`) trong lúc B đứng yên trên repo nhỏ, rồi trong lúc B vừa
-  được yêu cầu mở repo lớn (80.000 tệp). Cả hai cho 0 % rớt: ở bản cũ hai cửa
-  sổ là hai tiến trình, nên B không tranh luồng giao diện với A. Số này chỉ có
-  ý nghĩa để so với bản một tiến trình.
-- `idle_ram_mb` thấp bất thường ở hai vòng (165 MB, các vòng khác 181 MB). Giữ
-  nguyên, vì là kết quả đo thật.
-- Bản đo chạy khi tải máy hơi cao do các phiên khác; preflight đã đợi tải
-  dưới 2,0 trước mỗi vòng. Không dùng `--ignore-preflight`.
-- Số khởi động đã công bố trước đây đã bị rút lại (commit `58540ca`). Số
-  `startup_ms` ở đây chỉ là mốc nội bộ của đợt này, không công bố.
-- Chế độ `--mode after` lúc đó chưa chạy được vì chưa có cờ `--foreground`.
-  Số sau khi chuyển sang một tiến trình ở mục "Nhiều cửa sổ — sau".
+- RAM is the total `footprint` of every `luc` process the script started, after
+  n windows on n different repos finished opening and idled for 8 s. The repos are small
+  copies of the ripgrep source. The first window uses about 86 MB, but `idle_ram_mb`
+  is higher (181 MB) because it opens 10 files there with Quick Open.
+- Open the second window: window A has an empty, small file open (600×400). Measured from when
+  the second `luc` command runs (opening `marker.txt`) to the first frame of the new window
+  that has content, like `startup_ms`. This number includes process startup.
+- Dropped frames: scroll `big.rs` in A (600 pixel events, like
+  `scroll_dropped_pct`) while B sits idle on a small repo, then while B has just
+  been asked to open a large repo (80,000 files). Both give 0 % dropped: in the old build the two
+  windows are two processes, so B doesn't compete with A for the UI thread. This number is only
+  meaningful for comparing with the single-process build.
+- `idle_ram_mb` is unusually low in two rounds (165 MB, the other rounds 181 MB). Kept
+  as is, because it is a real measurement.
+- The measurement ran while machine load was somewhat high due to other sessions; preflight waited for load
+  below 2.0 before each round. `--ignore-preflight` was not used.
+- The startup numbers published earlier were retracted (commit `58540ca`). The
+  `startup_ms` numbers here are only an internal reference point for this run, not published.
+- The `--mode after` mode could not run at the time because the `--foreground` flag didn't exist yet.
+  The numbers after moving to one process are in the section "Multiple windows: after".
 
-Lệnh đã chạy:
+Command that was run:
 
 ```sh
 python3 -I bench/compare/multiwindow.py --windows 1,2,3 --mode before --rounds 5 \
   --single-window --out bench/compare/results/multiwindow-before.json
 ```
 
-### Nhiều cửa sổ — sau
+### Multiple windows: after
 
-Đo trên bản release dựng từ commit `6e6fc30` của nhánh `multi-window`: mọi
-cửa sổ chạy trong một tiến trình. Cửa sổ đầu là `luc --foreground <repo>`,
-các cửa sổ sau là `luc <repo>` gửi đường dẫn qua socket. Cùng máy, cùng bộ
-repo, năm vòng, đo ngày 2026-11-16. Dữ liệu thô:
+Measured on a release build from commit `6e6fc30` of the `multi-window` branch: all
+windows run in one process. The first window is `luc --foreground <repo>`,
+later windows are `luc <repo>` sending the path over a socket. Same machine, same set of
+repos, five rounds, measured on 2026-11-16. Raw data:
 [`bench/compare/results/multiwindow-after.json`](../bench/compare/results/multiwindow-after.json).
 
-Mỗi ô: trung vị (nhỏ nhất – lớn nhất).
+Each cell: median (min – max).
 
-| Số đo | Trước (mỗi cửa sổ một tiến trình) | Sau (một tiến trình) | Ngưỡng spec §7.2 |
+| Metric | Before (one process per window) | After (one process) | Spec §7.2 threshold |
 |---|---|---|---|
-| RAM, 1 cửa sổ | 86,3 MB (85,9 – 86,4) | 86,9 MB (86,3 – 129,6) | — |
-| RAM, 2 cửa sổ | 161,3 MB (160,2 – 181,9) | 172,7 MB (162,7 – 185,4) | Đạt theo ngưỡng đã sửa (+7,1 %, dưới 10 %); không đạt ngưỡng ban đầu "thấp hơn 161,3" |
-| RAM, 3 cửa sổ | 230,6 MB (230,3 – 273,2) | 219,2 MB (217,5 – 219,6) | Đạt (thấp hơn 11 MB) |
-| Mở cửa sổ thứ hai | 552 ms (518 – 586) | 432 ms (428 – 443) | Đạt |
-| Khung hình rớt ở A, B đứng yên | 0,0 % (0,0 – 0,0) | 0,0 % (0,0 – 0,5), trên 591 khung (591 – 595) | Đạt (trong sai số) |
-| Khung hình rớt ở A, B đang mở repo lớn | 0,0 % (0,0 – 0,0) | 0,0 % (0,0 – 0,0), trên 594 khung (590 – 594) | Đạt |
-| `startup_ms` một cửa sổ | 602 ms (569 – 619) | 587 ms (581 – 13138) | Đạt |
-| `idle_ram_mb` một cửa sổ | 181,3 MB (165,2 – 181,4) | 165,0 MB (131,6 – 181,5) | Không kết luận: hai trong năm vòng của bản mới cửa sổ bị che, không vẽ (xem dưới) |
-| `idle_cpu_pct` một cửa sổ | 1,30 % (0,50 – 1,33) | 0,81 % (0,00 – 1,50) | — |
+| RAM, 1 window | 86.3 MB (85.9 – 86.4) | 86.9 MB (86.3 – 129.6) | — |
+| RAM, 2 windows | 161.3 MB (160.2 – 181.9) | 172.7 MB (162.7 – 185.4) | Pass under the revised threshold (+7.1 %, under 10 %); fails the original threshold "lower than 161.3" |
+| RAM, 3 windows | 230.6 MB (230.3 – 273.2) | 219.2 MB (217.5 – 219.6) | Pass (11 MB lower) |
+| Open the second window | 552 ms (518 – 586) | 432 ms (428 – 443) | Pass |
+| Dropped frames in A, B idle | 0.0 % (0.0 – 0.0) | 0.0 % (0.0 – 0.5), over 591 frames (591 – 595) | Pass (within error) |
+| Dropped frames in A, B opening a large repo | 0.0 % (0.0 – 0.0) | 0.0 % (0.0 – 0.0), over 594 frames (590 – 594) | Pass |
+| `startup_ms`, one window | 602 ms (569 – 619) | 587 ms (581 – 13138) | Pass |
+| `idle_ram_mb`, one window | 181.3 MB (165.2 – 181.4) | 165.0 MB (131.6 – 181.5) | Inconclusive: in two of the five rounds of the new build the window was occluded and not drawing (see below) |
+| `idle_cpu_pct`, one window | 1.30 % (0.50 – 1.33) | 0.81 % (0.00 – 1.50) | — |
 
-**RAM 2 cửa sổ: trung vị cao hơn bản cũ 11 MB (+7,1 %).** Bản đầu của spec
-§7.2 đòi thấp hơn bản cũ; ngày 2026-11-16 người dùng sửa ngưỡng thành "không
-cao hơn quá 10 %, và 3 cửa sổ phải thấp hơn". Theo ngưỡng mới thì đạt. Lý do
-chênh lệch theo những gì đo được:
+**RAM with 2 windows: the median is 11 MB (+7.1 %) higher than the old build.** The first version of spec
+§7.2 required it to be lower than the old build; on 2026-11-16 the user revised the threshold to "no
+more than 10 % higher, and 3 windows must be lower". Under the new threshold it passes. The reason
+for the difference, based on what was measured:
 
-- Phần lớn RAM của mỗi cửa sổ là bộ đệm vẽ của cửa sổ (`IOSurface`), không
-  phải phần chung của tiến trình. `footprint` của một tiến trình có hai cửa
-  sổ: khoảng 163 MB, trong đó `IOSurface` 105 MB và malloc khoảng 25 MB.
-  Gộp vào một tiến trình chỉ bớt được phần chung (khoảng 5 MB mỗi tiến
-  trình), không bớt được bộ đệm vẽ.
-- Số `IOSurface` lên xuống khi app đứng yên: cùng một tiến trình hai cửa sổ
-  đo ba lần cách nhau 3 s cho 163, 163, rồi 199 MB. Vì vậy RAM 2 cửa sổ có hai
-  mức: khoảng 162 MB và khoảng 173–185 MB, ở cả bản cũ (160,2 – 181,9) lẫn bản
-  mới (162,7 – 185,4). Ba vòng của bản mới rơi vào mức cao, nên trung vị cao.
-  So mức thấp với mức thấp thì bản mới vẫn cao hơn khoảng 1,5 MB.
-- Ba cửa sổ không bị dao động này ở bản mới (217,5 – 219,6) và thấp hơn bản
-  cũ 11 MB.
+- Most of each window's RAM is the window's drawing buffer (`IOSurface`), not
+  the part shared by the process. The `footprint` of one process with two windows:
+  about 163 MB, of which `IOSurface` is 105 MB and malloc about 25 MB.
+  Merging into one process only saves the shared part (about 5 MB per
+  process), not the drawing buffer.
+- The `IOSurface` number moves up and down while the app is idle: one process with two windows
+  measured three times 3 s apart gave 163, 163, then 199 MB. So the RAM with 2 windows has two
+  levels: about 162 MB and about 173–185 MB, in both the old build (160.2 – 181.9) and the
+  new one (162.7 – 185.4). Three rounds of the new build fell in the high level, so the median is high.
+  Comparing low level with low level, the new build is still about 1.5 MB higher.
+- Three windows don't show this fluctuation in the new build (217.5 – 219.6) and are 11 MB
+  lower than the old build.
 
-Năm vòng không đủ để tách mức tiết kiệm nhỏ (vài MB) khỏi dao động 20 MB của
-bộ đệm vẽ. Vì vậy ngưỡng 2–3 cửa sổ được nới thành "không cao hơn quá 10 %".
+Five rounds are not enough to separate a small saving (a few MB) from the 20 MB fluctuation of the
+drawing buffer. So the 2–3 window threshold was relaxed to "no more than 10 % higher".
 
-Cách đo và giới hạn:
+How it was measured, and limits:
 
-- Mở cửa sổ thứ hai: macOS chạy hiệu ứng phóng to (khoảng 0,37 s) khi app đã
-  chạy mở thêm một cửa sổ phóng to. Cửa sổ hiện ra khoảng 60 ms sau lệnh
-  `luc`, rồi phóng to tới hết khoảng 430 ms. Khung hình có nội dung đầu tiên
-  rơi vào lúc hiệu ứng đã xong trong cả năm vòng, nên
-  `second_window_settled_ms` bằng `second_window_ms`. Watch chạy với
-  `--allow-resize`; không có cờ này các vòng thử lúc đầu bị bỏ vì kích thước
-  cửa sổ đổi sau khung hình đo. Số 432 ms chủ yếu là thời gian của hiệu ứng;
-  bản cũ không có hiệu ứng vì cửa sổ là cửa sổ đầu của tiến trình mới.
-- Khung hình rớt: ở bản mới A và B cùng một tiến trình. Script đặt B ra góc
-  bằng `frame --window-index 1` và cuộn A bằng `scroll --window-index 0`
-  (tùy chọn mới của `bench-helper`). Mỗi lần cuộn ghi số khung đã bắt
-  (590–595), nên 0 % là số đo thật. Một vòng có 0,5 % (3 khung trên 593) khi
-  B đứng yên.
-- Một cửa sổ: vòng 3 có `startup_ms` 13 138 ms vì cửa sổ khác che cửa sổ
-  Lucerna 82 khung (máy đang được dùng). Vòng 3 và vòng 5 có `idle_cpu_pct`
-  0,0 % và `idle_ram_mb` thấp (135, 132 MB), nhiều khả năng cửa sổ bị che nên
-  không vẽ. Trung vị vẫn được giữ; số `idle_ram_mb` vì vậy không chắc.
-  Script giờ đợi máy yên (preflight) trước mỗi vòng một cửa sổ.
-- Tải máy cao do các phiên khác; preflight đợi tải dưới 2,0 trước mỗi vòng.
-  Không dùng `--ignore-preflight`.
-- Số `startup_ms` chỉ là mốc nội bộ, không công bố.
+- Open the second window: macOS plays a zoom effect (about 0.37 s) when an already
+  running app opens an additional zoomed window. The window appears about 60 ms after the
+  `luc` command, then zooms until about 430 ms. The first frame with content
+  falls after the effect has finished in all five rounds, so
+  `second_window_settled_ms` equals `second_window_ms`. Watch ran with
+  `--allow-resize`; without this flag the early trial rounds were dropped because the window size
+  changed after the measured frame. The 432 ms number is mostly the effect's duration;
+  the old build has no effect because the window is the first window of a new process.
+- Dropped frames: in the new build A and B are in the same process. The script moves B to a corner
+  with `frame --window-index 1` and scrolls A with `scroll --window-index 0`
+  (a new option of `bench-helper`). Each scroll records the number of frames captured
+  (590–595), so 0 % is a real measurement. One round had 0.5 % (3 frames out of 593) when
+  B was idle.
+- One window: round 3 has a `startup_ms` of 13,138 ms because another window covered the Lucerna window
+  for 82 frames (the machine was in use). Rounds 3 and 5 have `idle_cpu_pct`
+  0.0 % and low `idle_ram_mb` (135, 132 MB), most likely because the window was occluded and so
+  not drawing. The median is kept; the `idle_ram_mb` number is therefore uncertain.
+  The script now waits for the machine to be quiet (preflight) before each one-window round.
+- Machine load was high due to other sessions; preflight waited for load below 2.0 before each round.
+  `--ignore-preflight` was not used.
+- The `startup_ms` numbers are only an internal reference point, not published.
 
-Lệnh đã chạy (`BENCH_HELPER` trỏ tới bản `bench-helper` dựng từ
-`bench/compare/helper` ở commit này):
+Command that was run (`BENCH_HELPER` points to the `bench-helper` build from
+`bench/compare/helper` at this commit):
 
 ```sh
 python3 -I bench/compare/multiwindow.py --windows 1,2,3 --mode after --rounds 5 \

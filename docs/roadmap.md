@@ -1,41 +1,41 @@
-# Lộ trình sau 0.1.1
+# Roadmap after 0.1.1
 
-Mục tiêu: người dùng chuyển từ VS Code sang (dev để agent viết code) thay được VS Code khi làm
-việc hằng ngày. Mỗi mục phải gỡ một lý do khiến họ quay lại VS Code.
+Goal: a user switching from VS Code (a dev who lets agents write the code) can replace VS Code for
+everyday work. Each item must remove one reason for them to go back to VS Code.
 
-Lộ trình theo giai đoạn cũ (phase 1–5, V1–V2) nằm ở §1.3 của
+The older phase-based roadmap (phases 1–5, V1–V2) is in §1.3 of
 `superpowers/specs/2026-11-08-lucerna-phase1-design.md`.
 
-## Tầng 1: chặn người dùng mới
+## Tier 1: blocks new users
 
-Thiếu là người dùng mới không dùng được hoặc không cài được ngay ngày đầu.
+Without these, new users can't use or install Lucerna on day one.
 
-**Đang làm**, theo thứ tự (mỗi mục một spec riêng):
+**In progress**, in order (one spec per item):
 
 - [x] Zoom (⌘+ / ⌘− / ⌘0)
-- [x] File mới (⌘N) và Save As
-- [x] Find & Replace trong file (⌥⌘F)
-- [x] Replace trong project (Search)
-- [x] Image preview (png, jpg, gif, webp, svg…, tự tải lại khi file đổi)
-- [ ] Format document (⇧⌥F) và format on save (một nửa bước 4.6)
+- [x] New file (⌘N) and Save As
+- [x] Find & Replace in file (⌥⌘F)
+- [x] Replace in project (Search)
+- [x] Image preview (png, jpg, gif, webp, svg…, reloads automatically when the file changes)
+- [ ] Format document (⇧⌥F) and format on save (half of step 4.6)
 
-**Để sau:**
+**Later:**
 
-- [x] Multi-cursor (bước 4.3)
-- [x] Mở lại tab vừa đóng (⇧⌘T), Close Others
-- [ ] Bản build cho Intel Mac
-- [ ] Linux (dự án riêng)
+- [x] Multi-cursor (step 4.3)
+- [x] Reopen the tab you just closed (⇧⌘T), Close Others
+- [ ] Build for Intel Mac
+- [ ] Linux (separate project)
 
-## Tầng 2: thiếu thói quen VS Code
+## Tier 2: missing VS Code habits
 
-Dùng được nhưng khó chịu hằng ngày.
+Usable, but annoying every day.
 
-- [ ] Completion và snippet (bước 4.5)
-- [ ] Rename (bước 4.6)
-- [ ] Tab Problems
-- [ ] Giao diện settings
+- [ ] Completion and snippets (step 4.5)
+- [ ] Rename (step 4.6)
+- [ ] Problems tab
+- [ ] Settings UI
 - [ ] Windows
 
-## Tầng 3: tốt hơn VS Code khi làm cùng agent
+## Tier 3: better than VS Code when working with agents
 
-Lý do để người dùng ở lại. Chưa brainstorm.
+The reason for users to stay. Not brainstormed yet.

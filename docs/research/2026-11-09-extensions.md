@@ -1,161 +1,161 @@
-# Nghiên cứu: hệ thống extension của Zed và VS Code
+# Research: the extension systems of Zed and VS Code
 
-- **Ngày:** 2026-11-09
-- **Trạng thái:** ghi chú nghiên cứu, làm nền cho spec Phase 2.
-- **Nguồn:**
-  - Zed: mã nguồn tại rev `b5cd310` (các crate `extension`, `extension_host`, `extension_cli`, `language`, `theme`, `file_icons`, `snippet_provider`) và `docs/src/extensions/`. Các crate này là GPL-3: chỉ học thiết kế và định dạng dữ liệu, không chép code.
-  - VS Code: `microsoft/vscode` (MIT) tại commit `142e5584`, tài liệu `code.visualstudio.com/api`, wiki Open VSX.
-- Mục nào chưa kiểm chứng trực tiếp trong mã nguồn được đánh dấu **[chưa kiểm chứng]**.
+- **Date:** 2026-11-09
+- **Status:** research notes, groundwork for the Phase 2 spec.
+- **Sources:**
+  - Zed: source at rev `b5cd310` (the crates `extension`, `extension_host`, `extension_cli`, `language`, `theme`, `file_icons`, `snippet_provider`) and `docs/src/extensions/`. These crates are GPL-3: learn the design and data formats only, don't copy code.
+  - VS Code: `microsoft/vscode` (MIT) at commit `142e5584`, the docs at `code.visualstudio.com/api`, the Open VSX wiki.
+- Items not verified directly in the source are marked **[unverified]**.
 
-## 1. Kiến trúc tổng thể
+## 1. Overall architecture
 
 | | Zed | VS Code |
 |---|---|---|
-| Code của extension | Component WASM (`extension.wasm`, WIT `since_v*`), chạy trong wasmtime, cùng tiến trình | JavaScript trong một tiến trình Node riêng (extension host) |
-| Phần khai báo (không chạy code) | theme, icon theme, ngôn ngữ, grammar, snippet | `contributes.themes`, `iconThemes`, `languages`, `grammars` (TextMate), `snippets`, `configurationDefaults`… |
-| Extension chỉ có dữ liệu | Không nạp `extension.wasm` | Không bao giờ được kích hoạt, thêm và gỡ được khi đang chạy, luôn được phép kể cả ở workspace chưa tin cậy |
+| Extension code | WASM component (`extension.wasm`, WIT `since_v*`), runs in wasmtime, in the same process | JavaScript in a separate Node process (the extension host) |
+| Declarative part (no code runs) | themes, icon themes, languages, grammars, snippets | `contributes.themes`, `iconThemes`, `languages`, `grammars` (TextMate), `snippets`, `configurationDefaults`… |
+| Data-only extension | `extension.wasm` is not loaded | Never activated, can be added and removed while running, always allowed even in an untrusted workspace |
 
-**Kết luận cho Lucerna:** cả bốn thứ trong scope Phase 2 đều là dữ liệu. Phase 2 không cần chạy code của extension. Host WASM để sang Phase 3, cùng với LSP.
+**Conclusion for Lucerna:** all four things in Phase 2's scope are data. Phase 2 doesn't need to run extension code. The WASM host is left to Phase 3, together with LSP.
 
-## 2. Phân phối và registry
+## 2. Distribution and registry
 
 - **Zed:**
-  - Client chỉ gọi `api.zed.dev` để lấy danh sách, cập nhật và tải `archive.tar.gz` đã build sẵn.
-  - Repo `zed-industries/extensions` có:
-    - `extensions.toml`, mỗi mục là `[<id>] submodule = "extensions/<id>"`, `version = "x.y.z"`, `path = "subdir"` (không bắt buộc);
-    - các git submodule đã ghim theo commit.
-  - CI của repo đó build extension bằng `extension_cli`. Repo không chứa archive build sẵn.
-  - Lưu ý về điều khoản: Zed có điều khoản công khai (https://zed.dev/terms, cập nhật 2026-03-02). §2.2 chỉ cho truy cập Service qua "the mechanisms designated by Zed", §2.4(b) cấm "seek to access non-public APIs associated with the Service". Endpoint extension của `api.zed.dev` không có tài liệu công khai, nên Lucerna không gọi nó. Xem `docs/research/2026-11-11-lsp-server-table.md` §5.
-  - Muốn không dùng `api.zed.dev` thì phải tự làm các bước: đọc `extensions.toml` và `.gitmodules`, lấy commit của submodule, fetch về, áp dụng `path`, rồi tự build.
+  - The client only calls `api.zed.dev` to get the list, updates, and to download the prebuilt `archive.tar.gz`.
+  - The `zed-industries/extensions` repo has:
+    - `extensions.toml`, where each entry is `[<id>] submodule = "extensions/<id>"`, `version = "x.y.z"`, `path = "subdir"` (optional);
+    - git submodules pinned by commit.
+  - That repo's CI builds extensions with `extension_cli`. The repo does not contain prebuilt archives.
+  - A note on terms: Zed has public terms (https://zed.dev/terms, updated 2026-03-02). §2.2 only allows access to the Service through "the mechanisms designated by Zed", and §2.4(b) forbids "seek to access non-public APIs associated with the Service". The extension endpoint of `api.zed.dev` has no public documentation, so Lucerna doesn't call it. See `docs/research/2026-11-11-lsp-server-table.md` §5.
+  - To avoid `api.zed.dev`, you have to do the steps yourself: read `extensions.toml` and `.gitmodules`, get the submodule commit, fetch it, apply `path`, then build it yourself.
 - **VS Code:**
-  - Gói `.vsix` là một file zip. Gallery là `POST {serviceUrl}/extensionquery`.
-  - Bản OSS không cấu hình gallery nào.
-  - Điều khoản của Microsoft Marketplace chỉ cho phép dùng với các sản phẩm của Microsoft. VSCodium và các editor bên thứ ba dùng **Open VSX** (Eclipse Foundation, có giới hạn tần suất truy cập).
-  - Mỗi gói có chữ ký `.sigzip` và có danh sách chặn extension độc hại.
-- **Kết luận:**
-  - Lucerna tự build từ repo `zed-industries/extensions`, đúng như roadmap.
-  - Không dùng Microsoft Marketplace. Nếu sau này cần extension VS Code, nguồn hợp lệ là Open VSX.
+  - A `.vsix` package is a zip file. The gallery is `POST {serviceUrl}/extensionquery`.
+  - The OSS build configures no gallery.
+  - Microsoft Marketplace's terms only allow use with Microsoft products. VSCodium and third-party editors use **Open VSX** (Eclipse Foundation, with rate limits).
+  - Each package has a `.sigzip` signature, and there is a blocklist of malicious extensions.
+- **Conclusion:**
+  - Lucerna builds from the `zed-industries/extensions` repo itself, exactly as in the roadmap.
+  - Don't use Microsoft Marketplace. If VS Code extensions are needed later, the legitimate source is Open VSX.
 
-## 3. Bố cục trên đĩa, cài đặt và gỡ
+## 3. On-disk layout, install and uninstall
 
-- **Zed:** thư mục `~/Library/Application Support/Zed/extensions/` gồm:
-  - `installed/<id>/`: bản đã build, có `extension.toml` đầy đủ, `grammars/<name>.wasm`, `themes/`, `icon_themes/`, `icons/`, `languages/<dir>/`, snippet;
-  - `build/`: chứa wasi-sdk;
-  - `staging/`: nơi giải nén trước khi đổi tên sang `installed/<id>`;
-  - `index.json`: chỉ mục theme, icon theme và ngôn ngữ theo tên, kèm matcher và các file query có mặt. Được dựng lại khi mtime của `installed/` mới hơn.
+- **Zed:** the folder `~/Library/Application Support/Zed/extensions/` contains:
+  - `installed/<id>/`: the built result, with a full `extension.toml`, `grammars/<name>.wasm`, `themes/`, `icon_themes/`, `icons/`, `languages/<dir>/`, snippets;
+  - `build/`: holds wasi-sdk;
+  - `staging/`: where things are unpacked before being renamed to `installed/<id>`;
+  - `index.json`: an index of themes, icon themes and languages by name, with matchers and the query files present. It is rebuilt when the mtime of `installed/` is newer.
 
-  Extension dev là một symlink. Gỡ extension thì xóa thư mục rồi nạp lại.
+  A dev extension is a symlink. To uninstall an extension, delete the folder and reload.
 - **VS Code:**
-  - Thư mục `~/.vscode/extensions/<publisher>.<name>-<version>`, kèm `extensions.json` liệt kê các extension đã cài.
-  - Cài đặt nguyên tử: giải nén vào `.<uuid>` rồi đổi tên.
-  - Gỡ được hoãn lại qua file `.obsolete`: bỏ qua khi quét, xóa thật ở lần khởi động sau. Nhờ vậy cửa sổ đang chạy vẫn đọc được file cũ.
-- **Kết luận:**
-  - Dùng `staging/` rồi `rename` để cài đặt nguyên tử.
-  - Có một file chỉ mục để khởi động nhanh mà không phải đọc lại mọi `config.toml`.
-  - Gỡ và cập nhật cũng qua bước đổi tên. Vì Lucerna đọc grammar vào bộ nhớ khi nạp, xóa ngay là an toàn.
+  - The folder `~/.vscode/extensions/<publisher>.<name>-<version>`, with an `extensions.json` listing installed extensions.
+  - Atomic install: unpack into `.<uuid>` then rename.
+  - Uninstall is deferred via an `.obsolete` file: skipped during scanning, actually deleted on the next startup. This way running windows can still read the old files.
+- **Conclusion:**
+  - Use `staging/` then `rename` for atomic install.
+  - Keep one index file so startup is fast without re-reading every `config.toml`.
+  - Uninstall and update also go through a rename step. Since Lucerna reads grammars into memory when loading, deleting immediately is safe.
 
-## 4. Build grammar
+## 4. Building grammars
 
 - **Zed (`extension_builder`):**
-  - Lấy mã grammar: `git init`, `git fetch --depth 1 origin <rev>`, `git checkout <rev>` vào `<ext>/grammars/<name>/`.
-  - Biên dịch:
+  - Fetch the grammar source: `git init`, `git fetch --depth 1 origin <rev>`, `git checkout <rev>` into `<ext>/grammars/<name>/`.
+  - Compile:
 
     ```
     <wasi-sdk>/bin/clang -fPIC -shared -Os -Wl,--export=tree_sitter_<name> -Wl,--max-memory=4294967296 \
       -o grammars/<name>.wasm -I src src/parser.c [src/scanner.c]
     ```
-  - wasi-sdk **34**, tải từ `github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-<arm64|x86_64>-macos.tar.gz`. Biến `WASI_SDK_PATH` được ưu tiên nếu có.
-  - Chỉ hỗ trợ `scanner.c`. **Không hỗ trợ `scanner.cc` (C++).**
-  - Tên grammar phải là snake_case.
-- **Nạp lúc chạy:**
-  - Có một `wasmtime::Engine` dùng chung cho toàn tiến trình.
-  - Mỗi `Parser` trong pool có một `WasmStore` riêng.
-  - Gọi `store.load_language(name, bytes)` một lần, rồi cache `tree_sitter::Language`.
-  - Khi trùng tên, grammar native luôn thắng grammar từ extension.
-- **VS Code:** dùng grammar TextMate (JSON/plist), không cần biên dịch. Không áp dụng được cho Lucerna.
+  - wasi-sdk **34**, downloaded from `github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-<arm64|x86_64>-macos.tar.gz`. The `WASI_SDK_PATH` variable takes priority if set.
+  - Only `scanner.c` is supported. **`scanner.cc` (C++) is not supported.**
+  - The grammar name must be snake_case.
+- **Loading at runtime:**
+  - There is one `wasmtime::Engine` shared across the whole process.
+  - Each `Parser` in the pool has its own `WasmStore`.
+  - Call `store.load_language(name, bytes)` once, then cache the `tree_sitter::Language`.
+  - On a name clash, a native grammar always wins over an extension grammar.
+- **VS Code:** uses TextMate grammars (JSON/plist), no compilation needed. Not applicable to Lucerna.
 
-## 5. Ngôn ngữ và query
+## 5. Languages and queries
 
-- **`config.toml` của Zed:** các trường có ích cho trình xem là:
+- **Zed's `config.toml`:** the fields useful for a viewer are:
   - `name`, `grammar`;
-  - `path_suffixes` (khớp phần mở rộng, tên file đầy đủ, hoặc đuôi `.<suffix>`);
+  - `path_suffixes` (matches the extension, the full file name, or a `.<suffix>` ending);
   - `first_line_pattern`;
   - `line_comments`, `block_comment`;
   - `brackets`;
-  - `hidden` (ngôn ngữ chỉ dùng để inject);
+  - `hidden` (a language used only for injection);
   - `tab_size`.
-- **Các file query hợp lệ:** `highlights`, `brackets`, `outline`, `indents`, `injections`, `overrides`, `redactions`, `runnables`, `debugger`, `textobjects` (đuôi `.scm`). **Không có `folds.scm`.**
-- **Thứ tự chọn ngôn ngữ:**
-  - Zed: glob `file_types` của người dùng, sau đó path suffix khớp dài nhất, cuối cùng mới tới `first_line_pattern`.
-  - VS Code: `files.associations` của người dùng, sau đó tên file chính xác, rồi glob dài nhất, rồi phần mở rộng dài nhất, cuối cùng `firstLine`. Khi hòa, ngôn ngữ đăng ký sau thắng.
-- **Highlight trong Zed:**
-  - Các capture được xếp chồng theo thứ tự lặp. Chỉ capture nào ánh xạ được sang style trong theme mới được tính.
-  - Với cùng một node, **capture sau cùng có style thắng.** Trong một pattern `@a @b`, Zed thử `@b` trước. Giữa các pattern thì pattern sau thắng **[chưa kiểm chứng thứ tự capture của tree-sitter]**.
-  - Tên capture lùi dần theo dấu chấm khi tìm style.
-  - Capture có tiền tố `_` bị bỏ qua.
-  - Predicate riêng chỉ có `#has-parent?` và `#not-has-parent?`.
-- **Injection trong Zed:**
-  - `@injection.content` (hoặc `@content`), `@injection.language`, `#set! injection.language`, `injection.combined`.
-  - Tên ngôn ngữ được tra không phân biệt hoa thường, theo tên hoặc theo path suffix. Lồng được nhiều tầng. Lớp được inject thắng lớp chủ.
-  - Nhiều extension phụ thuộc vào injection: HTML có JS/CSS, Vue, Svelte, PHP, Markdown có code fence.
+- **Valid query files:** `highlights`, `brackets`, `outline`, `indents`, `injections`, `overrides`, `redactions`, `runnables`, `debugger`, `textobjects` (`.scm` suffix). **There is no `folds.scm`.**
+- **Language selection order:**
+  - Zed: the user's `file_types` globs, then the longest matching path suffix, and only last `first_line_pattern`.
+  - VS Code: the user's `files.associations`, then the exact file name, then the longest glob, then the longest extension, and finally `firstLine`. On a tie, the language registered later wins.
+- **Highlighting in Zed:**
+  - Captures are stacked in iteration order. Only a capture that maps to a style in the theme counts.
+  - For the same node, **the last capture with a style wins.** In a pattern `@a @b`, Zed tries `@b` first. Between patterns, the later pattern wins **[unverified: the order of tree-sitter captures]**.
+  - A capture name falls back along its dots when looking up a style.
+  - A capture with a `_` prefix is ignored.
+  - The only custom predicates are `#has-parent?` and `#not-has-parent?`.
+- **Injection in Zed:**
+  - `@injection.content` (or `@content`), `@injection.language`, `#set! injection.language`, `injection.combined`.
+  - Language names are looked up case-insensitively, by name or by path suffix. Multiple levels of nesting work. The injected layer wins over the host layer.
+  - Many extensions depend on injection: HTML with JS/CSS, Vue, Svelte, PHP, Markdown with code fences.
 
-## 6. Theme
+## 6. Themes
 
 - **Zed:**
-  - Định dạng `{ name, author, themes: [{ name, appearance, style }] }`, schema v0.2.0, đọc theo kiểu lenient.
-  - Extension theme không được cung cấp thêm thứ gì khác.
-  - Khi trùng tên, theme nạp sau thắng.
+  - Format `{ name, author, themes: [{ name, appearance, style }] }`, schema v0.2.0, read leniently.
+  - A theme extension may not provide anything else.
+  - On a name clash, the theme loaded later wins.
 - **VS Code:**
-  - `workbench.colorTheme` lưu id hoặc label. Khi trùng, theme quét thấy đầu tiên thắng.
-  - Nếu theme trong settings chưa được cài, VS Code dùng theme mặc định nhưng **không ghi đè setting**. Khi extension cung cấp theme đó được cài, theme tự được áp dụng.
-- **Kết luận:**
-  - Đặt luật hòa rõ ràng.
-  - Giữ hành vi của VS Code: setting không bị xóa, và theme tự áp dụng khi xuất hiện.
+  - `workbench.colorTheme` stores an id or a label. On a clash, the first theme found while scanning wins.
+  - If the theme in settings isn't installed, VS Code uses the default theme but **doesn't overwrite the setting**. When the extension that provides that theme is installed, the theme is applied automatically.
+- **Conclusion:**
+  - Set an explicit tie-breaking rule.
+  - Keep VS Code's behavior: the setting isn't deleted, and the theme is applied automatically when it appears.
 
-## 7. Icon theme
+## 7. Icon themes
 
 - **Zed (schema v0.3.0):**
-  - Định dạng `{ name, author, themes: [{ name, appearance, directory_icons, named_directory_icons, chevron_icons, file_stems, file_suffixes, file_icons{type: {path}} }] }`.
-  - Đường dẫn icon tính từ thư mục gốc của extension.
-  - Thứ tự tìm icon:
-    1. tên file đầy đủ;
-    2. các đuôi ghép, từ dài tới ngắn (`a.b.c`: `b.c`, rồi `c`);
-    3. stem;
-    4. phần mở rộng;
+  - Format `{ name, author, themes: [{ name, appearance, directory_icons, named_directory_icons, chevron_icons, file_stems, file_suffixes, file_icons{type: {path}} }] }`.
+  - Icon paths are relative to the extension's root folder.
+  - Icon lookup order:
+    1. the full file name;
+    2. compound suffixes, from longest to shortest (`a.b.c`: `b.c`, then `c`);
+    3. the stem;
+    4. the extension;
     5. `default`.
 
-    Ở mỗi bước, tra `file_stems` trước rồi tới `file_suffixes`. Thiếu icon thì lùi về icon theme mặc định.
-  - **SVG của icon theme được vẽ đủ màu bằng `img()`**, không tô một màu như icon có sẵn (`svg()` cộng `text_color`).
+    At each step, look in `file_stems` first and then `file_suffixes`. If an icon is missing, fall back to the default icon theme.
+  - **The SVGs of an icon theme are drawn in full color with `img()`**, not tinted a single color like the built-in icons (`svg()` plus `text_color`).
 - **VS Code:**
-  - `iconDefinitions`, `fileNames`, `fileExtensions`, `folderNames`, `languageIds`, các phần `light`/`highContrast`.
-  - Icon có thể là SVG hoặc PNG, hoặc ký tự trong font.
-  - Thứ tự tìm: tên file, rồi phần mở rộng dài nhất, rồi languageId, rồi mặc định.
-- **Kết luận:**
-  - Lucerna đọc schema của Zed và vẽ bằng `img()`.
-  - Bộ Lucide hiện tại trở thành icon theme mặc định, có tên "Lucide".
+  - `iconDefinitions`, `fileNames`, `fileExtensions`, `folderNames`, `languageIds`, the `light`/`highContrast` sections.
+  - An icon can be an SVG or PNG, or a glyph in a font.
+  - Lookup order: file name, then the longest extension, then languageId, then the default.
+- **Conclusion:**
+  - Lucerna reads Zed's schema and draws with `img()`.
+  - The current Lucide set becomes the default icon theme, named "Lucide".
 
-## 8. Snippet
+## 8. Snippets
 
-- Cả hai dùng định dạng JSON giống nhau: `{ "<tên>": { prefix, body, description } }`, body theo cú pháp TextMate.
+- Both use the same JSON format: `{ "<name>": { prefix, body, description } }`, with the body in TextMate syntax.
 - **Zed:**
-  - Tên file quyết định snippet thuộc ngôn ngữ nào: `rust.json` cho Rust, `snippets.json` dùng chung cho mọi ngôn ngữ.
-  - Body được kiểm tra bằng parser snippet.
-  - Snippet được nạp vào bộ nhớ, không chép vào thư mục snippet của người dùng.
+  - The file name decides which language a snippet belongs to: `rust.json` for Rust, `snippets.json` shared by all languages.
+  - Bodies are checked with the snippet parser.
+  - Snippets are loaded into memory, not copied into the user's snippets folder.
 
-## 9. Cập nhật và tương thích
+## 9. Updates and compatibility
 
 - **Zed:**
   - `schema_version` ≤ 1.
-  - Nếu có `lib`, `wasm_api_version` phải nằm trong khoảng hỗ trợ.
-  - Không có ràng buộc về phiên bản Zed.
-  - Tự cập nhật khi semver ở registry cao hơn.
-  - Có danh sách id bị chặn cứng, ví dụ `snippets`, `ruff`.
-  - Chỉ kiểm tra kích thước file tải về, không có checksum.
+  - If `lib` is present, `wasm_api_version` must be in the supported range.
+  - There is no constraint on the Zed version.
+  - Auto-updates when the registry's semver is higher.
+  - There is a hardcoded list of blocked ids, for example `snippets`, `ruff`.
+  - Only the size of the downloaded file is checked, with no checksum.
 - **VS Code:**
-  - `engines.vscode` là bắt buộc.
-  - Các setting `extensions.autoUpdate`, `extensions.autoCheckUpdates`.
-  - Kiểm tra chữ ký.
-- **Kết luận cho Lucerna:**
-  - Ghim theo commit của submodule. Đây là một dạng kiểm tra toàn vẹn qua git hash, mạnh hơn cách của Zed.
-  - Kiểm tra định kỳ, cập nhật thủ công, có `extensions.autoCheckUpdates`.
-  - Extension có `lib` vẫn cài được phần dữ liệu. Phần language server sẽ hoạt động từ Phase 3.
+  - `engines.vscode` is required.
+  - The settings `extensions.autoUpdate`, `extensions.autoCheckUpdates`.
+  - Signature verification.
+- **Conclusion for Lucerna:**
+  - Pin by submodule commit. This is a form of integrity check through the git hash, stronger than Zed's approach.
+  - Periodic checks, manual updates, with `extensions.autoCheckUpdates`.
+  - An extension with `lib` can still install its data part. The language server part will work from Phase 3.
