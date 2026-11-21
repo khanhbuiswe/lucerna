@@ -12,7 +12,8 @@ Usage:
       Compare the Markdown structure of each FILE at REV with the working
       tree (heading levels and numbers, fences, table columns, inline code,
       links) and report broken #anchors in the working tree.
-Both exit 1 if anything was printed.
+Both exit 1 if anything was printed (a full scan also fails on unused allow
+entries); exit 2 if git ls-files fails.
 """
 
 import argparse
@@ -20,6 +21,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import unicodedata
 
 # Written as escapes so this file itself never contains Vietnamese letters.
 VIETNAMESE = (
@@ -54,6 +56,7 @@ ANCHOR_RE = re.compile(r"\]\((#[^)\s]*)\)")
 
 
 def has_vietnamese(text):
+    text = unicodedata.normalize("NFC", text)
     return VIETNAMESE_RE.search(text) is not None
 
 
@@ -66,6 +69,7 @@ def _comment_literal(span):
 
 
 def scan_line(path, line):
+    line = unicodedata.normalize("NFC", line)
     line = NOT_VIETNAMESE_RE.sub("", line)
     if LITERAL_ALLOWED.match(path):
         marker = "#" if path.endswith(".py") else "//"
@@ -148,8 +152,11 @@ def _git(*args):
 
 
 def _tracked(paths):
-    out = _git("ls-files", "-z", "--", *paths).stdout
-    return [p for p in out.split("\0") if p]
+    result = _git("ls-files", "-z", "--", *paths)
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr, end="")
+        sys.exit(2)
+    return [p for p in result.stdout.split("\0") if p]
 
 
 DEFAULT_ALLOW = pathlib.Path(__file__).with_name("english-allow.txt")
@@ -202,12 +209,14 @@ def scan(paths, allow_file=DEFAULT_ALLOW):
             if scan_line(path, line) and not is_allowed(allow, path, line, used):
                 print(f"{path}:{n}: {line}")
                 flagged += 1
+    unused = 0
     if not paths:
         for path, snippets in allow.items():
             for snippet in snippets:
                 if (path, snippet) not in used:
                     print(f"unused allow entry: {path}\t{snippet}")
-    return 1 if flagged else 0
+                    unused += 1
+    return 1 if flagged or unused else 0
 
 
 def structure(base, files):

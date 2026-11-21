@@ -99,6 +99,53 @@ class CheckEnglishTests(unittest.TestCase):
         self.assertNotIn("a.md:1:", out.getvalue())
         self.assertIn("unused allow entry", out.getvalue())
 
+    def _repo(self, d, text, allow_text):
+        import subprocess
+        subprocess.run(["git", "init", "-q", d], check=True)
+        pathlib.Path(d, "a.md").write_text(text, encoding="utf-8")
+        allow = pathlib.Path(d, "allow.txt")
+        allow.write_text(allow_text, encoding="utf-8")
+        subprocess.run(["git", "-C", d, "add", "a.md"], check=True)
+        return allow
+
+    def _run_scan(self, d, paths, allow):
+        import contextlib, io, os
+        old = os.getcwd()
+        os.chdir(d)
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = scan(paths, allow_file=str(allow))
+        finally:
+            os.chdir(old)
+        return rc, out.getvalue()
+
+    def test_full_scan_fails_on_unused_allow_entry_only(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            allow = self._repo(d, "clean\n", "a.md\t`stale`\n")
+            rc, out = self._run_scan(d, [], allow)
+            self.assertEqual(rc, 1)
+            self.assertIn("unused allow entry", out)
+            rc, out = self._run_scan(d, ["a.md"], allow)
+            self.assertEqual(rc, 0)
+
+    def test_tracked_failure_exits_2(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            allow = pathlib.Path(d, "allow.txt")
+            allow.write_text("", encoding="utf-8")
+            with self.assertRaises(SystemExit) as cm:
+                self._run_scan(d, [], allow)
+            self.assertEqual(cm.exception.code, 2)
+
+    def test_decomposed_vietnamese_is_flagged(self):
+        import unicodedata
+        nfd = unicodedata.normalize("NFD", "ch\u00e0o")
+        self.assertNotEqual(nfd, "ch\u00e0o")
+        self.assertTrue(has_vietnamese(nfd))
+        self.assertTrue(scan_line("docs/a.md", "say " + nfd))
+
     def test_checker_does_not_flag_itself(self):
         here = pathlib.Path(__file__).parent
         for name in ("check-english.py", "test_check_english.py"):
